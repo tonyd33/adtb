@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 96
 summary: comparing values of two constructors of one sum is refused instead of checking at their join
-branch: lang
+closed: 2026-10-25
 tags:
   - lang
 ---
@@ -23,3 +23,7 @@ Actual: `expected Stage.Sent, found Stage.Paid`.
 
 Expected: the operands meet at their join, `Stage`, and the comparison
 checks.
+
+## 2026-10-25: resolved
+
+Fixed in `fix(lang): decimal literals, constructor joins, aggregate sources, anonymous sum indices and ad hoc checks`. In ad hoc text, an operand next to an anonymous sum is synthesized and both operands join.

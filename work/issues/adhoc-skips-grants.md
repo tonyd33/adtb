@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 99
 summary: "check_adhoc silently skips commands, grants, revokes, roles, peers and temp declarations, so they pass unchecked"
-branch: lang
+closed: 2026-10-25
 tags:
   - lang
 ---
@@ -21,3 +21,7 @@ ad hoc text that should be refused checks clean.
 
 Expected: each item kind is checked, or refused with a named reason
 until it is.
+
+## 2026-10-25: resolved
+
+Fixed in `fix(lang): decimal literals, constructor joins, aggregate sources, anonymous sum indices and ad hoc checks`. Commands, grants, revokes and role, peer and temp relation statements are checked and have no term.

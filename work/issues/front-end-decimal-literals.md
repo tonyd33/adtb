@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 95
 summary: "decimal literals of another scale, integer literals against Decimal s, and div over decimals are refused though the spec accepts them"
-branch: lang
+closed: 2026-10-25
 tags:
   - lang
 ---
@@ -24,3 +24,7 @@ spec accepts:
 - `div(2.0, 3, 4, HalfUp)`.
 
 Expected: all three check.
+
+## 2026-10-25: resolved
+
+Fixed in `fix(lang): decimal literals, constructor joins, aggregate sources, anonymous sum indices and ad hoc checks`.

@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 220
 summary: "adtb-reference cannot evaluate writes, change sets, delete actions, upsert, retag or transact blocks"
-branch: refw
+closed: 2026-10-25
 depends-on:
   - reference-interpreter-queries
   - kernel-writes-contract
@@ -36,3 +36,7 @@ The work is done on `refw`: 65 of the 69 new tests pass. The other 4
 fail on `norm-fresh-let-substitution.md` and
 `unique-value-level-path.md`. The constraint naming rulings it raised
 are `spec-constraint-naming-gaps.md`. Closes when it lands.
+
+## 2026-10-25: resolved
+
+Landed as `feat(reference): evaluate writes, blocks and statement boundaries`. The four failing tests wait on `norm-fresh-let-substitution.md` and `unique-value-level-path.md`.

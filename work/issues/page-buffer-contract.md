@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 401
 summary: "the interface between the pager and its clients (page kinds, page header offsets, Frame and PageRef, latching) is unstated, so heaps, trees and the commit log cannot start"
+closed: 2026-10-25
 tags:
   - engine
   - design
@@ -31,3 +32,7 @@ The deliverable is the stated contract in `docs/design/` and the Rust
 trait or types in `adtb`, with a test double clients can build against.
 The B-link tree, the slotted heap and the commit log are built against
 it while the pager is finished.
+
+## 2026-10-25: resolved
+
+Landed as `feat(storage): page header, allocation and page access interface`: `docs/design/storage.md` §1.1, §1.2, §2.1 and §2.3, and `adtb::storage::Pager`. Clients test against the pager itself in the simulator, so there is no test double. Concurrent access and unlogged kill-bit changes are still TODOs in §2.3, and the latch contract continues under `pager-and-log.md`.

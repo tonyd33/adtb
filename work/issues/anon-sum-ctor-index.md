@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 98
 summary: "an anonymous sum numbers its constructors in written order, so one type spelled two ways can compare its values unequal"
-branch: lang
+closed: 2026-10-25
 tags:
   - lang
 ---
@@ -22,3 +22,7 @@ the other.
 Ruling: the constructor indices of an anonymous sum are in name order.
 The ad hoc numbering on the wire is separate; `docs/spec/wire.md` §4.3
 keeps it.
+
+## 2026-10-25: resolved
+
+Fixed in `fix(lang): decimal literals, constructor joins, aggregate sources, anonymous sum indices and ad hoc checks`. Constructors are numbered in name order, and ad hoc joins renumber each operand into the joined sum. The joins not yet covered are in `anon-sum-join-fix-writes.md`.
