@@ -10,6 +10,7 @@ publish.workspace = true
 adtb.workspace = true
 
 [dev-dependencies]
+adtb-isolation.workspace = true
 adtb-sys.workspace = true
 
 [lints]

@@ -1,14 +1,21 @@
 mod clog;
+mod conflict;
+mod latch;
 mod snapshot;
+mod ssi;
 mod txn;
+mod wait;
 mod watermark;
 
 #[cfg(test)]
 mod tests;
 
 pub use clog::{CommitLog, PAGE_FORMAT};
+pub use conflict::{Probe, Write, check_write, probe_unique, read_before};
 pub use snapshot::Snapshot;
+pub use ssi::{Access, Limits, Safety, SerialId, Serializer};
 pub use txn::{RESERVATION, Transactions};
+pub use wait::Waits;
 pub use watermark::{Holds, Scope, SnapshotId};
 
 /// A transaction id. Ids are assigned in increasing order and never reused.
@@ -39,3 +46,7 @@ impl Status {
         }
     }
 }
+
+/// The transaction must abort, and may be retried at a new snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SerializationFailure;

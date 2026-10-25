@@ -324,6 +324,29 @@ snapshot:
 | Dead to every snapshot, or deleted by the inserter itself | Skipped |
 | Inserted by another write of the same statement | Conflict, reported at the statement boundary |
 
+A wait ends when the awaited transaction commits or aborts; the
+inserter then decides the same version again by the table, so a wait
+on an inserter that commits ends in a serialization failure, and one on
+a deleter that aborts in a conflict. Waits for a writer of a row (§6)
+are decided the same way: a version whose `xmax` names a running
+transaction waits for it, one whose deleter committed is a
+serialization failure, one whose deleter aborted proceeds.
+
+Preconditions:
+
+- The probe and the insert of the inserter's own entry are one atomic
+  step with respect to every other insert of the same key, so of two
+  concurrent inserters of a key, one finds the other's entry.
+- Nothing latched is held across a wait; a wait parks through the
+  runtime ([runtime.md §1](runtime.md#1-time-threads-and-randomness)).
+
+Postconditions:
+
+- A wait that would close a cycle of transactions waiting for each
+  other fails the waiter with a serialization failure instead.
+- An inserter never waits for itself, and never fails or conflicts on a
+  version it deleted.
+
 Invariant: a key may hold several entries, at most one of them for a
 live version. No other constructor's heap is locked.
 
@@ -435,7 +458,15 @@ locks held on the rewritten heaps and their index ranges by one heap
 lock on every heap the operator writes, so later writes to those
 constructors conflict with the old readers.
 
-TODO: the SIREAD lock a hash index probe takes is undecided; the candidate is the probed hash value and constructor set, as an equality range.
+A probe of a hash index ([indexes.md §6.2](indexes.md#62-hash-indexes))
+takes a range lock whose two bounds are the probed hash value, with the
+probe's constructor set; an insert of a bucket entry is checked as an
+insert of an entry whose key is its hash. No hash index is built yet.
+
+Range bounds are encoded keys ([indexes.md §3](indexes.md#3-key-encoding)),
+so a scan of the keys with prefix `p` locks from `p` up to the first
+byte string past every extension of `p`, and an equality probe locks
+`[k, k]`.
 
 ### 8.3 Deferrable read-only transactions
 
@@ -446,6 +477,51 @@ could still make it part of a dangerous structure. It then runs without
 SIREAD locks and never aborts with a serialization failure. The primary
 logs a marker for each safe snapshot it finds
 ([replication.md §2](replication.md#2-safe-snapshot-markers)).
+
+A read-only snapshot is pending until every read-write transaction
+running when it was taken has ended. It is unsafe once one of them
+commits with a rw-antidependency on a transaction that committed before
+the snapshot; it is safe when all have ended and none did so. A
+deferrable transaction waits, parked through the runtime, until its
+snapshot is decided, and takes a new snapshot when it is unsafe. Any
+read-only transaction whose snapshot becomes safe drops its SIREAD
+locks and records nothing more.
+
+### 8.4 Dangerous structures
+
+Two transactions are concurrent when neither committed before the
+other's snapshot was taken. A rw-antidependency `T → T'` between
+concurrent transactions is recorded at whichever comes second:
+
+- `T` reads a version whose inserter `T'` its snapshot misses, or whose
+  deleter `T'` it does not count as committed, and `T'` has not
+  aborted;
+- `T'` writes what a SIREAD lock of `T` covers.
+
+A dangerous structure is `T1 → T2 → T3` with `T3` the first of the
+three to commit (`T1` may be `T3`); if `T1` is read-only, `T3` also
+committed before `T1`'s snapshot. When a new rw-antidependency or a
+commit would complete one, the transactions layer aborts one
+transaction of it with a serialization failure: the pivot `T2` when it
+has not committed and is not the caller, else the caller.
+
+Preconditions on the transactions layer's callers:
+
+- A read takes its SIREAD lock before it reads the page, or in one
+  atomic step with the read; a write checks the SIREAD locks after its
+  change is in the page, or in one atomic step with it.
+- Taking a snapshot is atomic with registering the transaction, and
+  recording a commit in the commit log is atomic with recording it
+  committed, so a transaction counts as committed before a snapshot
+  exactly when the snapshot sees it.
+
+Postconditions:
+
+- SIREAD locks and rw-antidependencies of a committed transaction are
+  kept until no running transaction is concurrent with it, then
+  dropped; an aborted transaction's are dropped at once.
+- A transaction chosen to abort fails its next read, write or commit
+  with a serialization failure.
 
 Rulings: engine/serializable-only, engine/ssi, engine/write-skew/by-isolation, engine/retag-fk/by-isolation, mvcc/next-key, mvcc/ctor-tagged, mvcc/retag-phantom/as-insert, mvcc/split-locks/promote-heaps, engine/retry/safe-snapshot
 
@@ -783,6 +859,13 @@ Under memory pressure tuple locks promote to page locks and then to a
 heap lock, and range locks promote to an index lock; promotion keeps
 the union of the constructor sets.
 
+Pressure is counted per transaction: more tuple locks on one page than
+a threshold become a page lock, more page locks on one heap a heap
+lock, more range locks on one index an index lock whose constructor
+set is the union of theirs. A lock already covered by a coarser one the
+transaction holds is not taken. A write checks the tuple, page and heap
+locks that cover the version it writes.
+
 ### 12.8 Index-only scans
 
 An index-only scan reads `vm[heap][page(tid)]` for each entry and
@@ -794,12 +877,16 @@ change.
 
 ### 12.9 Reads that record nothing
 
-Moved from derived.md §6 (reading the past): "No read-write
-transaction can make a safe snapshot unsafe, so a past read takes no
-SIREAD locks and records no read dependency."
+A read on a safe snapshot takes no SIREAD lock and records no
+rw-antidependency: no read-write transaction can make a safe snapshot
+unsafe. A past read (`at commit p`, §10.3) reads at a safe snapshot
+marker, and a deferrable transaction or a read-only one whose snapshot
+became safe (§8.3) reads at a safe snapshot, so none of them records
+anything.
 
-Moved from derived.md §2.4: a change to a `count` or `sum` in a stored
-view is an increment that "records no read".
+A change to a `count` or `sum` in a stored view
+([../spec/derived.md §2.4](../spec/derived.md#24-concurrent-maintenance)) is an increment that
+records no read.
 
 ### 12.10 Sequence generators
 
