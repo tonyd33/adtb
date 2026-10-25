@@ -1,4 +1,5 @@
 use crate::span::{Diag, Span};
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kw {
@@ -364,7 +365,7 @@ fn lex_text(src: &str, i: &mut usize, diags: &mut Vec<Diag>) -> Tok {
     }
 }
 
-/// Returns the value of a text literal the lexer accepted, quotes included in `raw`.
+/// Returns the value of a text literal the lexer accepted, in NFC, quotes included in `raw`.
 pub fn decode_text(raw: &str) -> String {
     let inner = &raw[1..raw.len() - 1];
     let mut out = String::with_capacity(inner.len());
@@ -389,7 +390,7 @@ pub fn decode_text(raw: &str) -> String {
             None => {}
         }
     }
-    out
+    out.nfc().collect()
 }
 
 #[cfg(test)]
@@ -486,6 +487,23 @@ mod tests {
         let src = r#""a\"b\n\u{e9}""#;
         assert_eq!(kinds(src), vec![Tok::Text, Tok::Eof]);
         assert_eq!(decode_text(src), "a\"b\n\u{e9}");
+    }
+
+    #[test]
+    fn text_literals_are_nfc() {
+        assert_eq!(decode_text("\"e\u{301}\""), "\u{e9}");
+        assert_eq!(decode_text("\"e\\u{301}\""), "\u{e9}");
+        assert_eq!(decode_text("\"\u{e9}\""), "\u{e9}");
+        assert_eq!(decode_text("\"\u{212b}\""), "\u{c5}");
+        assert_eq!(decode_text("\"\u{1e0b}\u{323}\""), "\u{1e0d}\u{307}");
+    }
+
+    #[test]
+    fn identifiers_are_ascii() {
+        let (_, diags) = lex("caf\u{e9}");
+        assert_eq!(diags.len(), 1);
+        let (_, diags) = lex("cafe\u{301}");
+        assert_eq!(diags.len(), 1);
     }
 
     #[test]

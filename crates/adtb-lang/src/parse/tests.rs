@@ -704,3 +704,33 @@ fn let_and_options_that_typing_refuses_still_parse() {
     assert_eq!(b.options.len(), 2);
     assert_eq!(b.items.len(), 4);
 }
+
+#[test]
+fn text_literals_parse_to_nfc() {
+    let composed = expr("\"caf\u{e9}\"");
+    let decomposed = expr("\"cafe\u{301}\"");
+    let escaped = expr("\"cafe\\u{301}\"");
+    assert_eq!(
+        composed.kind,
+        ExprKind::Lit(Lit::Text("caf\u{e9}".to_string()))
+    );
+    assert_eq!(decomposed.kind, composed.kind);
+    assert_eq!(escaped.kind, composed.kind);
+}
+
+#[test]
+fn text_patterns_parse_to_nfc() {
+    let e = expr("match t | \"cafe\u{301}\" -> 1 | \"cafe\\u{301}\" -> 2 | _ -> 0");
+    let ExprKind::Match(_, arms) = &e.kind else {
+        unreachable!()
+    };
+    for arm in &arms[..2] {
+        assert_eq!(
+            arm.patterns[0].kind,
+            PatternKind::Lit {
+                neg: false,
+                lit: Lit::Text("caf\u{e9}".to_string()),
+            }
+        );
+    }
+}

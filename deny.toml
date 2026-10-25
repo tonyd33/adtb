@@ -12,11 +12,22 @@ yanked = "deny"
 allow = ["MIT"]
 confidence-threshold = 0.9
 
+# The Unicode data tables unicode-normalization embeds.
+[[licenses.exceptions]]
+crate = "unicode-normalization"
+allow = ["Unicode-3.0"]
+
 [bans]
 multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
-allow = []
+allow-workspace = true
+allow = [
+    # NFC normalization of text values.
+    "unicode-normalization",
+    # Inline buffers unicode-normalization requires.
+    "tinyvec",
+]
 
 [sources]
 unknown-registry = "deny"

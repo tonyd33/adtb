@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{BundleItem, ExampleItem};
-use crate::kernel::Prim;
+use crate::kernel::{Const, Prim};
 use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use crate::schema::build;
 
@@ -2365,5 +2365,27 @@ fn a_group_is_passed_as_a_set() {
     accepts(
         "fn n (xs: Set Order) -> I64 = count(x for x in xs)
          fn f () -> Set I64 = from o in orders group o by o.user into g select n(g)",
+    );
+}
+
+#[test]
+fn text_patterns_compare_in_nfc() {
+    refuses(
+        "fn f (t: Text) -> I64 = match t | \"caf\u{e9}\" -> 1 | \"cafe\u{301}\" -> 2 | _ -> 0",
+        "unreachable",
+    );
+    refuses(
+        "fn f (t: Text) -> I64 = match t | \"cafe\\u{301}\" -> 1 | \"caf\u{e9}\" -> 2 | _ -> 0",
+        "unreachable",
+    );
+    accepts("fn f (t: Text) -> I64 = match t | \"caf\u{e9}\" -> 1 | \"cafe\" -> 2 | _ -> 0");
+}
+
+#[test]
+fn text_literals_elaborate_to_nfc() {
+    let (s, p) = program("fn f () -> Text = \"cafe\u{301}\"").expect("checks");
+    assert_eq!(
+        p.terms.kind(body_of(&s, &p, "f")),
+        &Kind::Const(Const::Text("caf\u{e9}".to_string()))
     );
 }
