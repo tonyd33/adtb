@@ -8,14 +8,34 @@ runner.
 ## 1. Evaluation contract
 
 ```text
-fn eval(q: &Kernel, db: &BTreeMap<(RelVarId, CtorId), BTreeSet<Row>>) -> BTreeSet<Value>
+Interpreter::new(schema, program, db)      // plus with_caller, with_change, with_fix_limit
+  .eval(terms, t, params) -> Result<Value, Abort>
 ```
 
-Preconditions: `q` is a typed kernel term of `adtb-lang`
-([kernel.md](kernel.md)), and `db` is a database as defined below.
+Preconditions: `program` is `check_schema(schema)`; `t` is a typed
+kernel term of `terms`, an arena `adtb-lang` returned for `schema`
+([kernel.md](kernel.md)); `params` binds each free variable of `t` to a
+value of its type; `db` is a database as defined below.
 
-Postcondition: the result is the denotation of `q` over `db` by the
-equations of [../spec/semantics.md §5](../spec/semantics.md#5-queries).
+Postconditions:
+
+- `Ok(v)`: `v` is the denotation of `t` over `db` by the equations of
+  [../spec/semantics.md §5](../spec/semantics.md#5-queries). A final
+  result ordered by `order by` is a `Value::List`, in the order
+  [§5.9](../spec/semantics.md#59-top-n-and-presentation) states.
+- `Err(Abort::Fault(f))`: the denotation is the fault `f`. Inside the
+  term, `try` turns `f` into `Err` of the prelude `Fault` constructor
+  named by `f`.
+- `Err(Abort::Limit)`: a `fix` took more steps than its limit; the
+  statement is rejected with `StatementLimit`.
+- `Err(Abort::NotYet(form))`: the term holds a form the interpreter
+  does not evaluate yet: a write, `at`, a Wasm or host function, a
+  user-defined aggregate, or a prelude function that needs Unicode,
+  regular expression, collation or zone tables.
+
+`caller` denotes the value given by `with_caller`. In a constraint
+body, `inserted`, `deleted` and `prior` read the transition given by
+`with_change`, and the empty change without one.
 
 The interpreter shares nothing with the engine except the typed kernel
 terms of `adtb-lang`: no indexes, no plans, no pages.
@@ -24,10 +44,14 @@ return.
 
 ## 2. The database map
 
-A database is a map from (relation variable, constructor id) to a set
-of rows, so two relation variables of one type stay apart. A sum is the
-union of its constructor relations, a `match` the union of its arms, a
-change set the inserted and deleted relations per constructor.
+A database is a map from (relation variable, constructor index) to a
+set of rows, so two relation variables of one type stay apart. A
+constructor index is the kernel's: the constructor's position in its
+sum's declaration. A row is a `Value::Ctor` of that index holding every
+field, header fields first, each in declaration order; a key field
+holds a `Value::Key`. A sum is the union of its constructor relations,
+a `match` the union of its arms, a change set the inserted and deleted
+relations per constructor.
 
 ## 3. Comparison rules
 
