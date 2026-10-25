@@ -24,7 +24,7 @@ claims of conformance to earlier versions have no official merit"
 
 ## project/spec/versioning/semver
 
-`adtdb-spec 1.3`: a 1.x engine runs every 1.0 program unchanged.
+`adtb-spec 1.3`: a 1.x engine runs every 1.0 program unchanged.
 
 ## project/spec/versioning/engine-release
 

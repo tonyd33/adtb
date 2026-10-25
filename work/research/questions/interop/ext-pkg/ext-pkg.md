@@ -36,7 +36,7 @@ query-language code qualifies.
 ## interop/ext-pkg/linked
 
 ```toml
-adtdb = { version = "1", features = ["vector", "fts"] }
+adtb = { version = "1", features = ["vector", "fts"] }
 ```
 
 The file header lists required extensions and versions; native index

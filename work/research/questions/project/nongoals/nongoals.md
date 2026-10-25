@@ -36,7 +36,7 @@ SQLite lets several processes share one file through file locks. Here
 one process owns the file; others reach it through the server.
 
 ```
-adtdb::open("app.db")   // second process: Err(Locked { owner_pid })
+adtb::open("app.db")   // second process: Err(Locked { owner_pid })
 ```
 
 ## project/nongoals/columnar-store

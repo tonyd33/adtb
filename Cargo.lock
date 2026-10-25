@@ -3,38 +3,38 @@
 version = 4
 
 [[package]]
-name = "adtdb"
+name = "adtb"
 version = "0.1.0"
 dependencies = [
- "adtdb-lang",
- "adtdb-sys",
+ "adtb-lang",
+ "adtb-sys",
 ]
 
 [[package]]
-name = "adtdb-lang"
+name = "adtb-lang"
 version = "0.1.0"
 
 [[package]]
-name = "adtdb-reference"
+name = "adtb-reference"
 version = "0.1.0"
 dependencies = [
- "adtdb-lang",
+ "adtb-lang",
 ]
 
 [[package]]
-name = "adtdb-server"
+name = "adtb-server"
 version = "0.1.0"
 dependencies = [
- "adtdb",
+ "adtb",
 ]
 
 [[package]]
-name = "adtdb-sim"
+name = "adtb-sim"
 version = "0.1.0"
 dependencies = [
- "adtdb",
+ "adtb",
 ]
 
 [[package]]
-name = "adtdb-sys"
+name = "adtb-sys"
 version = "0.1.0"

@@ -15,20 +15,20 @@ different dependencies, consumers or stability promises:
 
 | Crate | Contents | Depends on |
 | --- | --- | --- |
-| `adtdb-lang` | Lexer, parser, type checker, exhaustiveness, desugaring to the kernel; no I/O | standard library |
-| `adtdb-reference` | The reference interpreter (§3) | `adtdb-lang` |
-| `adtdb-sys` | Every `unsafe` block: page memory, direct I/O buffers, `io_uring`, atomic page reads (§2.2) | `libc` and allowlisted system crates |
-| `adtdb` | Engine core: catalog, planner, executor, transactions, storage, over the I/O interface of §2.4 | `adtdb-lang`, `adtdb-sys` |
-| `adtdb-sim` | Simulated storage, network, clock, randomness and scheduler, fault injection (§5.1), and the tests that run the engine over them; nothing depends on it | `adtdb` |
-| `adtdb-server` | The wire protocol of [wire.md](wire.md) around `adtdb` | `adtdb` |
+| `adtb-lang` | Lexer, parser, type checker, exhaustiveness, desugaring to the kernel; no I/O | standard library |
+| `adtb-reference` | The reference interpreter (§3) | `adtb-lang` |
+| `adtb-sys` | Every `unsafe` block: page memory, direct I/O buffers, `io_uring`, atomic page reads (§2.2) | `libc` and allowlisted system crates |
+| `adtb` | Engine core: catalog, planner, executor, transactions, storage, over the I/O interface of §2.4 | `adtb-lang`, `adtb-sys` |
+| `adtb-sim` | Simulated storage, network, clock, randomness and scheduler, fault injection (§5.1), and the tests that run the engine over them; nothing depends on it | `adtb` |
+| `adtb-server` | The wire protocol of [wire.md](wire.md) around `adtb` | `adtb` |
 
-Code generation tools for host languages depend on `adtdb-lang` alone.
+Code generation tools for host languages depend on `adtb-lang` alone.
 They compute type, constructor and relation variable ids from the
 operator log ([wire.md](wire.md#43-records-and-sums)) and call ordinals
 from the order of `query`, `txn`, `import fn` and `feed` declarations
 in the bundle file ([wire.md](wire.md#51-call)), so generated code
 agrees with every database built from the same log.
-Layers inside `adtdb` (catalog, planner, transactions, storage) are
+Layers inside `adtb` (catalog, planner, transactions, storage) are
 modules, not crates.
 
 Rulings: project/arch/crates/by-boundary
@@ -56,7 +56,7 @@ testing, Loom, fuzz targets) are allowlisted separately.
 
 ### 2.2 Unsafe code
 
-`unsafe` appears only in `adtdb-sys`, which states its contract in its
+`unsafe` appears only in `adtb-sys`, which states its contract in its
 documentation and exposes safe types (`Frame`, `PageRef`,
 `AlignedBuf`) to the rest of the engine. Every other crate has
 `#![forbid(unsafe_code)]`.
@@ -75,13 +75,13 @@ The contract covers:
   use.
 
 Miri runs the whole engine over the simulated storage of §5.1, which is
-plain Rust, through the tests of `adtdb-sim`, so the pager, latches and page layouts are checked for
+plain Rust, through the tests of `adtb-sim`, so the pager, latches and page layouts are checked for
 undefined behaviour and data races. The real I/O backends, which Miri
 cannot execute, are tested natively under AddressSanitizer and
 ThreadSanitizer.
 
 ```sh
-$ cargo miri test -p adtdb-sim
+$ cargo miri test -p adtb-sim
 ```
 
 ### 2.3 Memory
@@ -154,7 +154,7 @@ Rulings: project/arch/deps/allowlist, project/arch/deps/escape/no-ambient, proje
 
 The reference interpreter is a naive evaluator of the kernel calculus
 of [semantics.md](semantics.md) over in-memory sets. It shares nothing
-with the engine except the typed kernel terms of `adtdb-lang`: no
+with the engine except the typed kernel terms of `adtb-lang`: no
 indexes, no plans, no pages. A database is a map from (relation
 variable, constructor id) to a set of rows, so two relation variables
 of one type stay apart. A sum is the union of its constructor

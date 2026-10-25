@@ -48,7 +48,7 @@ in
           --port ${toString quandaryPort} \
           --bind 0.0.0.0
       '';
-      proxy.hostname = "adtdb-qdry.localhost";
+      proxy.hostname = "adtb-qdry.localhost";
       ready = {
         http.get = {
           port = quandaryPort;

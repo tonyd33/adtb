@@ -1,6 +1,6 @@
 # Syntax
 
-This part defines the lexical structure of adtdb source text and the
+This part defines the lexical structure of adtb source text and the
 grammar of every form a program writes: schema files, migration files,
 bundle files, declarations, expressions and queries, writes and
 transact blocks, schema operators and grants. It fixes what parses and

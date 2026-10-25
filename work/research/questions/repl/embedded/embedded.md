@@ -28,7 +28,7 @@ log, so no long-running read transaction is needed to stop
 checkpoints.
 
 ```
-let db = adtdb::open("app.db").archive_to("s3://b/app")?;
+let db = adtb::open("app.db").archive_to("s3://b/app")?;
 ```
 
 ## repl/embedded/embedded-replica
@@ -38,7 +38,7 @@ snapshot; writes go to the server. The application's registered
 bundles run on the replica, so the replica forwards their leases.
 
 ```
-let db = adtdb::replica("app.db", "adtdb://primary")?;
+let db = adtb::replica("app.db", "adtb://primary")?;
 db.sync()?;
 ```
 

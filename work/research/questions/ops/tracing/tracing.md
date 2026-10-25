@@ -20,9 +20,9 @@ parameterised. Registered queries are parameterised by construction.
 ## ops/tracing/query-span
 
 ```
-span "login_key"   db.system.name=adtdb  db.namespace=app
+span "login_key"   db.system.name=adtb  db.namespace=app
                    db.query.summary=login_key  db.query.text="from i in identities ..."
-                   adtdb.bundle=web-2.3  adtdb.arms_pruned=[Apple]
+                   adtb.bundle=web-2.3  adtb.arms_pruned=[Apple]
 ```
 
 ## ops/tracing/operator-spans

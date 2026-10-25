@@ -26,7 +26,7 @@ LUKS or a cloud volume key protects a stolen disk, not a copied file.
 ## security/encrypt/page
 
 ```
-let db = adtdb::open_with("app.db", Key::from_kms("kms://vault/adt-app"))?;
+let db = adtb::open_with("app.db", Key::from_kms("kms://vault/adt-app"))?;
 ```
 
 SQLCipher per page; Percona pg_tde per relation through a patched

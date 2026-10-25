@@ -22,7 +22,7 @@ layouts run under Miri with simulated I/O; only the real backend stays
 outside.
 
 ```
-cargo miri test -p adtdb --features sim
+cargo miri test -p adtb --features sim
 ```
 
 ## project/arch/unsafe/miri-io/sys-tests

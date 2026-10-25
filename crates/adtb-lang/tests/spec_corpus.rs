@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use adtdb_lang::parse::{Options, parse_example};
+use adtb_lang::parse::{Options, parse_example};
 
 struct Block {
     file: String,
@@ -84,7 +84,7 @@ fn every_spec_block_names_its_kind() {
 }
 
 fn normalized_decls(src: &str) -> Vec<(String, String)> {
-    use adtdb_lang::ast::{Decl, ExampleItem};
+    use adtb_lang::ast::{Decl, ExampleItem};
     let Ok(items) = parse_example(src, Options { elisions: true }).ok() else {
         return Vec::new();
     };

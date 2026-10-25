@@ -25,7 +25,7 @@ TigerBeetle is one source tree built by one toolchain. Modules give
 privacy; one compilation unit lets the optimizer inline across layers.
 
 ```
-adtdb/src/{lang,catalog,exec,txn,storage,sim}/  bin/{adtdb,adtdb-server}.rs
+adtb/src/{lang,catalog,exec,txn,storage,sim}/  bin/{adtb,adtb-server}.rs
 ```
 
 ## project/arch/crates/by-layer
@@ -34,7 +34,7 @@ DataFusion and arrow-rs publish many crates (unverified count).
 Compile-parallel, forced public APIs between layers.
 
 ```
-adtdb-lang  adtdb-catalog  adtdb-exec  adtdb-txn  adtdb-storage  adtdb-server  adtdb-sim
+adtb-lang  adtb-catalog  adtb-exec  adtb-txn  adtb-storage  adtb-server  adtb-sim
 ```
 
 ## project/arch/crates/by-boundary
@@ -42,9 +42,9 @@ adtdb-lang  adtdb-catalog  adtdb-exec  adtdb-txn  adtdb-storage  adtdb-server  a
 Split where a part has different dependencies or consumers:
 
 ```
-adtdb-lang       -- parser, types, exhaustiveness, desugaring; no I/O; used by codegen tools
-adtdb-reference  -- the oracle (project/oracle); depends on adtdb-lang only
-adtdb            -- engine core: catalog, exec, txn, storage, over an I/O trait
-adtdb-sim        -- simulated I/O, scheduler, fault injection; dev-dependency
-adtdb-server     -- wire protocol around adtdb
+adtb-lang       -- parser, types, exhaustiveness, desugaring; no I/O; used by codegen tools
+adtb-reference  -- the oracle (project/oracle); depends on adtb-lang only
+adtb            -- engine core: catalog, exec, txn, storage, over an I/O trait
+adtb-sim        -- simulated I/O, scheduler, fault injection; dev-dependency
+adtb-server     -- wire protocol around adtb
 ```

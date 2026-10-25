@@ -28,7 +28,7 @@ pg_tde providers: KMIP, Vault, OpenBao, and others.
 ## security/kek/host
 
 ```
-adtdb::open_with("app.db", Key::bytes(platform_keystore.get("adt")?))
+adtb::open_with("app.db", Key::bytes(platform_keystore.get("adt")?))
 ```
 
 Mobile keystores; the engine never sees where the key lives.

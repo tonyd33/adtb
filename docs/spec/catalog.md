@@ -1630,7 +1630,7 @@ relation sys::process_options : ProcessOption volatile
 ```
 
 ```rust
-let db = adtdb::open("app.adt", &schema::LOG, &[&queries::BUNDLE],
+let db = adtb::open("app.adt", &schema::LOG, &[&queries::BUNDLE],
                      OpenOptions { pool_bytes: Some(8 << 30), workers: Some(16), ..OpenOptions::default() })?;
 ```
 
@@ -1828,8 +1828,8 @@ Every numeric field of the `sys::` relations of §5 and §6 is also
 available outside the language:
 
 - A server exports them as OpenTelemetry metrics to the endpoint given
-  by the open settings, named `adtdb.` followed by the relation name and
-  field (`adtdb.heaps.dead_versions`), with the row's key fields as
+  by the open settings, named `adtb.` followed by the relation name and
+  field (`adtb.heaps.dead_versions`), with the row's key fields as
   attributes, printed by name (`relation`, `ctor`, `bundle`, `query`).
 - The in-process API returns the same values as a snapshot through a
   callback ([embedding.md](embedding.md#13-metrics)), for the host to
@@ -1844,10 +1844,10 @@ value.
 A server traces in OpenTelemetry form:
 
 - One span per execution. The span of a registered call is named by
-  the query's name; its attributes are `db.system.name` = `adtdb`,
+  the query's name; its attributes are `db.system.name` = `adtb`,
   `db.namespace` (the database), `db.query.summary` (the query name),
-  `db.query.text` (the registered text), `adtdb.bundle`, `adtdb.plan`
-  and `adtdb.arms_pruned`. The span of an ad hoc statement is named by
+  `db.query.text` (the registered text), `adtb.bundle`, `adtb.plan`
+  and `adtb.arms_pruned`. The span of an ad hoc statement is named by
   its fingerprint and does not record its text.
 - Child spans for planning or compilation, each pipeline, the commit
   check, the log flush, and each wait, named by the `WaitReason`
@@ -1859,8 +1859,8 @@ Which executions are traced is decided by the trace sampling open
 setting.
 
 ```text
-span "login_key"  db.system.name=adtdb  db.namespace=app
-                  db.query.summary=login_key  adtdb.bundle=web-2.4  adtdb.arms_pruned=Apple
+span "login_key"  db.system.name=adtb  db.namespace=app
+                  db.query.summary=login_key  adtb.bundle=web-2.4  adtb.arms_pruned=Apple
   span "plan"
   span "pipeline 1"
   span "LogFlush"

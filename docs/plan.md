@@ -39,7 +39,7 @@ without touching the spec.
 | Toolchain | Rust 1.98, edition 2024, pinned in `rust-toolchain.toml` |
 | Parser | Hand-written lexer and recursive-descent parser with error recovery; no parser generator |
 | Kernel terms | An arena of typed nodes with interned names, shared by the reference interpreter and the planner |
-| Batches | Own Arrow-layout buffers in `adtdb` (dense unions, the three special shapes of engine.md §8.2); the `arrow` crate only at the IPC boundary, and only if it passes the allowlist |
+| Batches | Own Arrow-layout buffers in `adtb` (dense unions, the three special shapes of engine.md §8.2); the `arrow` crate only at the IPC boundary, and only if it passes the allowlist |
 | Decimal | Own `i128` scaled arithmetic for `Decimal k` up to 38 digits |
 | Text | `unicode-normalization` for NFC, `unicode-segmentation` for graphemes |
 | Hashing | `blake3` for version hashes and the ledger; `crc32c` for page and block checksums |
@@ -52,9 +52,9 @@ without touching the spec.
 ### 0. Workspace
 
 - Cargo workspace with the six crates of implementation.md §1;
-  `src/main.rs` goes, `adtdb` becomes a library.
+  `src/main.rs` goes, `adtb` becomes a library.
 - `rust-toolchain.toml`, `clippy.toml` with the disallowed methods,
-  `#![forbid(unsafe_code)]` in every crate except `adtdb-sys`,
+  `#![forbid(unsafe_code)]` in every crate except `adtb-sys`,
   `deny.toml`.
 - Dev shell gains `cargo-deny` and `cargo-nextest`. Miri and
   `cargo-fuzz` need a nightly toolchain beside the pinned stable one;
@@ -66,7 +66,7 @@ without touching the spec.
 
 Exit: the check command passes on an empty workspace.
 
-### 1. Front end (`adtdb-lang`)
+### 1. Front end (`adtb-lang`)
 
 Covers syntax.md, typing.md, prelude.md (signatures), model.md (static
 rules), semantics.md §2, §3 and §10.
@@ -102,7 +102,7 @@ Covers semantics.md §4 to §8 for a single schema version, queries.md,
 writes.md, constraints.md (naive checking), prelude.md (functions),
 interop.md §1 (textual values).
 
-- `adtdb-reference`: the naive evaluator of implementation.md §3 over
+- `adtb-reference`: the naive evaluator of implementation.md §3 over
   `BTreeMap<(RelVarId, CtorId), BTreeSet<Row>>`, with change sets,
   delete actions, upsert, retag, faults, `try`, `fix`, grouping,
   aggregates, ordering and top-n.
@@ -122,7 +122,7 @@ holds over the spec corpus and over type-directed generated terms.
 Covers implementation.md §2.4, §5.1, §5.5.
 
 - `Io` trait, worker event loop, the three backends (`io_uring` and
-  the blocking pool in `adtdb-sys`, the simulator in `adtdb-sim`).
+  the blocking pool in `adtb-sys`, the simulator in `adtb-sim`).
 - Simulated clock, randomness, network and deterministic scheduler.
 - `SimStorage` with every fault of engine.md §2.6.
 - Loom tests for the page state word.
@@ -136,7 +136,7 @@ Covers engine.md §2 to §4.
 
 - File header on pages 0 and 1, page format, checksums, page kinds.
 - vmcache buffer pool: reserved virtual range, frames, eviction,
-  optimistic reads through `adtdb-sys`.
+  optimistic reads through `adtb-sys`.
 - Redo-only log with batch framing, segments in `app.adt-log/`,
   full-page images on the first change after a checkpoint, checkpoints,
   recovery.
@@ -246,7 +246,7 @@ with the release.
 Covers wire.md, security.md §2, §3, §5 to §8, catalog.md (the server
 parts).
 
-- `adtdb-server`: transports, framing, handshake and binding, calls,
+- `adtb-server`: transports, framing, handshake and binding, calls,
   transactions, ad hoc text, appends, admission, feeds, pushes,
   idempotency, compression, protocol versions.
 - Roles, authentication sources, grants, peer mappings, audit with

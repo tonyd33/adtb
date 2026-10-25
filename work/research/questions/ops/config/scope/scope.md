@@ -35,7 +35,7 @@ Pool size, worker count, I/O path: properties of the host and
 process.
 
 ```rust
-let db = adtdb::open("app.db", Options { pool: 8 << 30, workers: 16 })?;
+let db = adtb::open("app.db", Options { pool: 8 << 30, workers: 16 })?;
 ```
 
 ## ops/config/scope/session

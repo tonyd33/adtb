@@ -496,7 +496,7 @@ into it, and opens the file with them. The open sequence is normative
 in [embedding.md](embedding.md#2-opening-a-database):
 
 ```text
-let db = adtdb::open("app.adt", &schema::LOG, &[&queries::BUNDLE], OpenOptions::default())?;
+let db = adtb::open("app.adt", &schema::LOG, &[&queries::BUNDLE], OpenOptions::default())?;
 ```
 
 After recovery, after refusing a file whose log and the shipped

@@ -40,7 +40,7 @@ driver.
 ## surface/wire/embedded
 
 ```rust
-let db = adtdb::open("app.db")?;
+let db = adtb::open("app.db")?;
 for row in db.run(queries::login_key, u)? {
     match row { LoginKey::ByEmail { email } => ..., LoginKey::ByGoogle { gid } => ... }
 }

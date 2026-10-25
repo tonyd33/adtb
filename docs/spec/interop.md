@@ -565,7 +565,7 @@ Exports state the schema version their constructor names are written
 at:
 
 - Parquet and Arrow IPC writers record the version line of §1.2 in the
-  file's key-value metadata under the key `adtdb.text`.
+  file's key-value metadata under the key `adtb.text`.
 - An NDJSON export's first line is a header object:
   `{"adt": {"edition": "2026-10", "pins": 42, "hash": "c7f2..."}}`.
 - A CSV export writes nothing beyond the header row of column names.

@@ -10,11 +10,11 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-adtdb = { path = "crates/adtdb" }
-adtdb-lang = { path = "crates/adtdb-lang" }
-adtdb-reference = { path = "crates/adtdb-reference" }
-adtdb-sim = { path = "crates/adtdb-sim" }
-adtdb-sys = { path = "crates/adtdb-sys" }
+adtb = { path = "crates/adtb" }
+adtb-lang = { path = "crates/adtb-lang" }
+adtb-reference = { path = "crates/adtb-reference" }
+adtb-sim = { path = "crates/adtb-sim" }
+adtb-sys = { path = "crates/adtb-sys" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

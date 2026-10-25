@@ -146,7 +146,7 @@ served at that version by version translation
 ([evolution.md](evolution.md#7-version-translation)).
 
 ```rust
-let db = adtdb::open("app.adt", &schema::LOG, &[&queries::BUNDLE], OpenOptions::default())?;
+let db = adtb::open("app.adt", &schema::LOG, &[&queries::BUNDLE], OpenOptions::default())?;
 ```
 
 Explicit retirement (`retire bundle web-2.3`) is permanent, as on a
@@ -169,8 +169,8 @@ pub enum OpenError {
     FormatTooNew { written_by: String },
     Corrupt { detail: String },
     Diverged { version: u64 },
-    MigrationRefused { version: u64, reason: adtdb::Error },
-    RegistrationRefused { bundle: String, reason: adtdb::Error },
+    MigrationRefused { version: u64, reason: adtb::Error },
+    RegistrationRefused { bundle: String, reason: adtb::Error },
     HostFnMissing { name: String },
     HostFnMismatch { name: String },
     DowngradeRefused { cause: String },
@@ -192,7 +192,7 @@ upgrade stays unfinalized and a downgrade stays possible
 
 ```rust
 impl Database {
-    pub fn finalize_upgrade(&self) -> Result<(), adtdb::Error>;
+    pub fn finalize_upgrade(&self) -> Result<(), adtb::Error>;
 }
 ```
 
@@ -216,7 +216,7 @@ from the log.
 
 ```rust
 impl Database {
-    pub fn close(self) -> Result<(), adtdb::Error>;
+    pub fn close(self) -> Result<(), adtb::Error>;
 }
 ```
 
@@ -355,7 +355,7 @@ own error type, `B::Error`, generated from the edition the bundle
 names, with the variants `Retry`, `Rejected` and `Fatal`, each holding
 its reason enum, so a program holding bundles of two editions matches
 each bundle's errors as its edition declares them. Operations not tied
-to a bundle (open, ad hoc text, loads) return `adtdb::Error`, the sum
+to a bundle (open, ad hoc text, loads) return `adtb::Error`, the sum
 of the newest edition the engine implements. Errors this part names, such as `Cancelled` or `SchemaMismatch`,
 are reasons. In process there is no lost
 acknowledgement: a call that returns an error has not committed, and
@@ -438,7 +438,7 @@ impl<B: BundleDef> Bundle<B> {
 }
 
 impl Database {
-    pub fn begin(&self, opts: &TxnOptions) -> Result<AdHocTransaction, adtdb::Error>;
+    pub fn begin(&self, opts: &TxnOptions) -> Result<AdHocTransaction, adtb::Error>;
 }
 
 pub struct TxnCallOptions {
@@ -453,7 +453,7 @@ pub struct Pending<T> { pub value: T }
 
 impl<B: BundleDef> Transaction<B> {
     pub fn call<C: Callable<Bundle = B>>(&mut self, c: C, args: C::Args, opts: &TxnCallOptions) -> Result<C::InTxn, B::Error>;
-    pub fn query_text(&mut self, text: &str, params: &[(&str, Value)], opts: &TxnCallOptions) -> Result<Vec<DynRows>, adtdb::Error>;
+    pub fn query_text(&mut self, text: &str, params: &[(&str, Value)], opts: &TxnCallOptions) -> Result<Vec<DynRows>, adtb::Error>;
     pub fn commit(self) -> Result<Position, B::Error>;
     pub fn rollback(self) -> Result<(), B::Error>;
 }
@@ -524,10 +524,10 @@ their type, since no code was generated for them.
 
 ```rust
 impl Database {
-    pub fn query_text(&self, text: &str, params: &[(&str, Value)], opts: &CallOptions) -> Result<Vec<DynRows>, adtdb::Error>;
+    pub fn query_text(&self, text: &str, params: &[(&str, Value)], opts: &CallOptions) -> Result<Vec<DynRows>, adtb::Error>;
 }
 
-pub struct DynRows { /* Iterator<Item = Result<Value, adtdb::Error>> */ }
+pub struct DynRows { /* Iterator<Item = Result<Value, adtb::Error>> */ }
 impl DynRows {
     pub fn ty(&self) -> &Type;
 }
@@ -663,16 +663,16 @@ serialization error, and is not retried by the engine.
 
 ```rust
 impl Database {
-    pub fn load(&self, opts: &LoadOptions) -> Result<Load, adtdb::Error>;
+    pub fn load(&self, opts: &LoadOptions) -> Result<Load, adtb::Error>;
 }
 
 impl Load {
-    pub fn appender<R: CtorRelation>(&mut self, r: R) -> Result<Appender<'_>, adtdb::Error>;
-    pub fn commit(self) -> Result<LoadReport, adtdb::Error>;
+    pub fn appender<R: CtorRelation>(&mut self, r: R) -> Result<Appender<'_>, adtb::Error>;
+    pub fn commit(self) -> Result<LoadReport, adtb::Error>;
 }
 
 impl Appender<'_> {
-    pub fn push(&mut self, batch: &arrow::record_batch::RecordBatch) -> Result<(), adtdb::Error>;
+    pub fn push(&mut self, batch: &arrow::record_batch::RecordBatch) -> Result<(), adtb::Error>;
 }
 
 pub struct LoadOptions { pub durability: Durability, pub cancel: Option<CancelToken> }
@@ -716,7 +716,7 @@ fns.register("slugify", "1.0", Determinism::Deterministic, |args: &[ArrayRef]| -
     let t = args[0].as_string::<i32>();
     Ok(Arc::new(t.iter().map(|s| s.map(slug::slugify)).collect::<StringArray>()))
 });
-let db = adtdb::open("app.adt", &schema::LOG, &[&queries::BUNDLE],
+let db = adtb::open("app.adt", &schema::LOG, &[&queries::BUNDLE],
                      OpenOptions { host_fns: fns, ..OpenOptions::default() })?;
 
 impl HostFns {
@@ -804,11 +804,11 @@ from an archive to any commit position or schema version it covers
 ([engine.md](engine.md#99-backups-and-point-in-time-restore)).
 
 ```rust
-let db = adtdb::open("app.adt", &schema::LOG, &[&queries::BUNDLE],
+let db = adtb::open("app.adt", &schema::LOG, &[&queries::BUNDLE],
                      OpenOptions { archive: Some(ArchiveTarget::url("s3://b/app")?), ..OpenOptions::default() })?;
 
 pub fn restore(archive: &ArchiveTarget, path: impl AsRef<Path>, to: RestorePoint, options: OpenOptions)
-    -> Result<(), adtdb::Error>;
+    -> Result<(), adtb::Error>;
 
 pub enum RestorePoint { Latest, Position(Position), Version(u64) }
 ```
@@ -852,14 +852,14 @@ same operations as an opened file, with these differences:
   had when `sync` was called.
 
 ```rust
-let db = adtdb::replica("app.adt", "adt://primary.internal:7433/app", &[&queries::BUNDLE], ReplicaOptions::default())?;
+let db = adtb::replica("app.adt", "adt://primary.internal:7433/app", &[&queries::BUNDLE], ReplicaOptions::default())?;
 db.sync()?;
 
 pub fn replica(path: impl AsRef<Path>, primary: &str, bundles: &[&dyn AnyBundleDef], options: ReplicaOptions)
     -> Result<Database, OpenError>;
 
 impl Database {
-    pub fn sync(&self) -> Result<Position, adtdb::Error>;
+    pub fn sync(&self) -> Result<Position, adtb::Error>;
 }
 ```
 

@@ -25,7 +25,7 @@ SQLite, DuckDB, LMDB. One process writes; the schema and registered
 queries are known to whoever opens the file.
 
 ```
-let db = adtdb::open("app.db")?;
+let db = adtb::open("app.db")?;
 db.transaction(|t| t.run(queries::add_google, (u, g)))?;
 ```
 

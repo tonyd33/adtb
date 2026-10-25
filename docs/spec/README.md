@@ -1,8 +1,8 @@
-# adtdb specification
+# adtb specification
 
 Edition: draft, 2026-10.
 
-adtdb is a database whose data model has sum types at both the value
+adtb is a database whose data model has sum types at both the value
 level and the relation level, with a query language of its own. This
 directory is its specification: one file per part, each owning the
 topics listed below. A part that needs another part's topic links to

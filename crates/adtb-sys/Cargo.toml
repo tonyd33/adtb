@@ -1,5 +1,5 @@
 [package]
-name = "adtdb"
+name = "adtb-sys"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,8 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-adtdb-lang.workspace = true
-adtdb-sys.workspace = true
 
 [lints]
 workspace = true

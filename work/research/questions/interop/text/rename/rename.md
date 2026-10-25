@@ -19,7 +19,7 @@ Text uses names, so `Facebook { ... }` in a dump taken before
 ## interop/text/rename/versioned
 
 ```
--- adtdb text, schema version 42
+-- adtb text, schema version 42
 Facebook { fbid: "f-1" }
 ```
 

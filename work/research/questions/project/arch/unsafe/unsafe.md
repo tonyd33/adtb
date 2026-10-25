@@ -25,7 +25,7 @@ wraps syscalls. The engine forbids unsafe and inherits what they do.
 ## project/arch/unsafe/confined
 
 ```
-adtdb::sys::{mem, uring, page}   // every unsafe block lives here
+adtb::sys::{mem, uring, page}   // every unsafe block lives here
 #![deny(unsafe_code)]            // in every other module, allowed in sys only
 ```
 

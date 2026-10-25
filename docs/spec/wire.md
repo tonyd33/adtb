@@ -1,6 +1,6 @@
 # Server protocol
 
-This part specifies the protocol a client uses to reach an adtdb server:
+This part specifies the protocol a client uses to reach an adtb server:
 transports and TLS, the frame layout, the handshake that authenticates
 the client and binds it to one bundle, the encoding of arguments and
 results, calls, interactive transactions, flow control, cancellation,
