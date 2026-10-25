@@ -831,6 +831,12 @@ confirmation:
 type Vehicle { id: Key vehicles } = Car { wheels: I32 } | Boat { sail_area: F64 }
 relation vehicles : Vehicle key id generate sequence
 
+-- source: employees(id, name), products(id, name)
+type Employee = { id: Key employees, name: Text }
+type Product = { id: Key products, name: Text }
+relation employees : Employee key id generate sequence
+relation products : Product key id generate sequence
+
 -- source: pictures(id, imageable_type, imageable_id)
 type Picture { id: Key pictures } = OfEmployee { owner: Key employees }
                                   | OfProduct  { owner: Key products }
@@ -1041,7 +1047,8 @@ An aggregate is declared by a state type, its initial value, a step
 that adds one input, a merge that combines two states, and a finish
 ([syntax.md](syntax.md#59-user-defined-aggregates)). A bundle declares
 one directly; a schema adds one with `define` in a migration, as for a
-schema function.
+schema function. It is called like the built-in aggregates, over
+bindings ([queries.md](queries.md#10-aggregates)):
 
 ```adt
 aggregate mean (x: F64) -> F64 =
@@ -1049,12 +1056,7 @@ aggregate mean (x: F64) -> F64 =
   step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
   merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
   finish st -> st.s / st.n
-```
 
-It is called like the built-in aggregates, over bindings
-([queries.md](queries.md#10-aggregates)):
-
-```adt
 type Sale = { id: Key sales, region: Text, total: F64 }
 relation sales : Sale key id generate sequence
 
@@ -1145,21 +1147,18 @@ sets.
 
 ### 11.4 Vectors
 
-An embedding is a newtype over `Bytes` whose domain fixes its length:
+An embedding is a newtype over `Bytes` whose domain fixes its length.
+Distance functions are ordinary functions over such values. Search is
+exact, by a scan:
 
 ```adt
 type Emb768 = new Bytes where bytes_len(self) == 3072
 type Chunk { id: Key chunks, embedding: Emb768 } = Para { text: Text } | Code { source: Text }
 relation chunks : Chunk key id generate sequence
 fn cosine (a: Emb768, b: Emb768) -> F64 = wasm "vectors.wasm" export "cosine"
-```
 
-Distance functions are ordinary functions over such values. Search is
-exact, by a scan:
-
-```adt
 query nearest (q: Emb768) -> Set Chunk =
-  top 10 by cosine(c.embedding, q) desc (from c in chunks.(Para | Code) select c)
+  top 10 by (cosine(c.embedding, q) desc, key c) (from c in chunks.(Para | Code) select c)
 ```
 
 There is no approximate nearest-neighbour index. Approximate search
@@ -1174,6 +1173,7 @@ keys of a derived index. JSON is a format only (§2.5).
 ```adt
 fn geohash (lat: F64, lon: F64, precision: I32) -> Text =
   wasm "geo.wasm" export "geohash"
+type Point = { x: F64, y: F64 }
 type Store = { id: Key stores, name: Text, location: Point }
 relation stores : Store
   key id generate sequence

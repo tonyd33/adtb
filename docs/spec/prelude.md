@@ -312,7 +312,12 @@ returning `Option`.
 | `value (k: Key r.S)` | the key's value: the key field's value, or for a composite key the record of its fields | none |
 
 ```adt
+-- given u: Key users, t: Key teams
 type Cents = new I64
+type Team = { id: Key teams, name: Text }
+type Membership = { user: Key users, team: Key teams, role: Text }
+relation teams : Team key id generate sequence
+relation memberships : Membership key (user, team)
 unwrap(Cents(250))                      -- 250 : I64
 value(memberships.key(user: u, team: t))  -- { user: u, team: t }
 ```

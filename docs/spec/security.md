@@ -10,7 +10,8 @@ that carry authentication are in [wire.md](wire.md#3-connection-lifecycle);
 bundles, registration and the ad hoc role are in
 [applications.md](applications.md).
 
-Examples extend the running schema with invoices:
+Examples extend the running schema with invoices and with the
+`Principal` of §1.1:
 
 ```adt
 type Invoice { id: Key invoices, owner: Key users, total: Decimal 2 }

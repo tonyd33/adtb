@@ -8,14 +8,20 @@ use adtb_lang::visit::each_expr;
 
 use crate::Block;
 
-/// The block that declares the schema at version 10.
-const VERSION_10: (&str, &str) = ("README.md", "module auth");
+/// The block that declares the schema at version 10, where the history starts.
+const VERSION_10: (&str, &str) = ("README.md", "set OAuth of identities = Google\n");
 
-/// The constraint migration 0011 gives an arm, absent from the block of version 10.
-const LOGIN_PRESENT: (&str, &str) = ("evolution.md", "constraint login_present");
+/// The block that declares the running schema, at version 12.
+const VERSION_12: (&str, &str) = ("README.md", "set OAuth of identities = Google | Apple");
 
-/// The migrations from version 10 to version 12 that change a declaration.
-const MIGRATIONS: &[(&str, &str)] = &[("evolution.md", "-- 0011, from version 10")];
+/// The block of evolution.md that declares version 10.
+const EVOLUTION_10: (&str, &str) = ("evolution.md", "constraint login_present =");
+
+/// The migrations from version 10 to version 12.
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("evolution.md", "-- 0011, from version 10"),
+    ("evolution.md", "-- 0012, continuing"),
+];
 
 /// The blocks each part extends version 12 with, in order.
 const EXTENSIONS: &[(&str, &[(&str, &str)])] = &[
@@ -35,12 +41,32 @@ const EXTENSIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("applications.md", "type Session { id: Key sessions }"),
             ("derived.md", "module billing\ntype Invoice"),
+            ("derived.md", "-- 0030, from version 29"),
         ],
     ),
+    (
+        "evolution.md",
+        &[("evolution.md", "type Badge { name: Text }")],
+    ),
+    ("model.md", &[("model.md", "role: Text }\ntype Visit")]),
     ("queries.md", &[("queries.md", "type Post = {")]),
     (
         "security.md",
-        &[("security.md", "type Invoice { id: Key invoices, owner")],
+        &[
+            ("security.md", "type Invoice { id: Key invoices, owner"),
+            (
+                "security.md",
+                "type Principal = EndUser { user: Key users }",
+            ),
+        ],
+    ),
+    (
+        "syntax.md",
+        &[
+            ("queries.md", "type Post = {"),
+            ("derived.md", "module billing\ntype Invoice"),
+            ("derived.md", "-- 0030, from version 29"),
+        ],
     ),
     ("writes.md", &[("writes.md", "fn rehash (h: Bytes)")]),
 ];
@@ -235,7 +261,7 @@ fn append(e: &mut Entry, text: &str) {
 }
 
 /// Applies a migration operator to the declarations it changes.
-fn apply(schema: &mut [Entry], module: &str, b: &Block, op: &Operator) {
+fn apply(schema: &mut Vec<Entry>, module: &str, b: &Block, op: &Operator) {
     match &op.kind {
         OperatorKind::AddConstructor {
             path,
@@ -308,30 +334,63 @@ fn apply(schema: &mut [Entry], module: &str, b: &Block, op: &Operator) {
                 &format!("\n  {kind} ({fields}){scope}"),
             );
         }
+        OperatorKind::DefineFn(f) => push(schema, module, b, &Decl::Fn(f.clone())),
         OperatorKind::Enable(_) => {}
         other => panic!("the running schema's history applies {other:?}"),
     }
 }
 
-/// The schema at version 12, after migrations 0011 and 0012.
+/// The running schema, at version 12.
 pub fn version_12(blocks: &[Block]) -> Vec<Entry> {
     let mut schema = Vec::new();
+    declare(&mut schema, find(blocks, VERSION_12));
+    schema
+}
+
+/// The schema at version 10, as README.md and evolution.md declare it.
+pub fn version_10(blocks: &[Block]) -> (Vec<Entry>, Vec<Entry>) {
+    let mut readme = Vec::new();
+    declare(&mut readme, find(blocks, VERSION_10));
+    let mut evolution = Vec::new();
+    declare(&mut evolution, find(blocks, EVOLUTION_10));
+    (readme, evolution)
+}
+
+/// The schema at version 10 after migrations 0011 and 0012.
+pub fn folded_12(blocks: &[Block]) -> Vec<Entry> {
+    let mut schema = Vec::new();
     declare(&mut schema, find(blocks, VERSION_10));
-    let b = find(blocks, LOGIN_PRESENT);
-    let d = items(b)
-        .into_iter()
-        .find_map(|i| match i {
-            ExampleItem::Decl(d @ Decl::Constraint(_)) if decl_key(&d).1 == "login_present" => {
-                Some(d)
-            }
-            _ => None,
-        })
-        .expect("declared");
-    push(&mut schema, "auth", b, &d);
     for &m in MIGRATIONS {
         declare(&mut schema, find(blocks, m));
     }
     schema
+}
+
+/// The declarations of `a` that `b` lacks or spells otherwise, and those of `b` that `a` lacks.
+pub fn differences(a: &[Entry], b: &[Entry]) -> Vec<String> {
+    let mut out = Vec::new();
+    for x in a {
+        match b.iter().find(|y| y.module == x.module && y.key == x.key) {
+            None => out.push(format!(
+                "{}:{}: only on the left: {} `{}`",
+                x.file, x.line, x.key.0, x.key.1
+            )),
+            Some(y) if !y.spelled(&x.text) => out.push(format!(
+                "{}:{} and {}:{}: {} `{}` differs",
+                x.file, x.line, y.file, y.line, x.key.0, x.key.1
+            )),
+            Some(_) => {}
+        }
+    }
+    for y in b {
+        if !a.iter().any(|x| x.module == y.module && x.key == y.key) {
+            out.push(format!(
+                "{}:{}: only on the right: {} `{}`",
+                y.file, y.line, y.key.0, y.key.1
+            ));
+        }
+    }
+    out
 }
 
 /// The running schema of each part that extends version 12, by file name.

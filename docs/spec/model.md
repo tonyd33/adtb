@@ -11,8 +11,21 @@ are listed in [prelude.md](prelude.md). What queries over them mean is
 
 Examples start from version 12 of the running schema, after migration
 0011 adds `Apple { sub: Text }` joining `OAuth` and 0012 enables it,
-unless a section says otherwise. Each section's examples are an
-independent history.
+unless a section says otherwise, extended for this part with teams,
+their members, memberships and visits:
+
+```adt
+type Team       = { id: Key teams, name: Text, lead: Key members }
+type Member     = { id: Key members, team: Key teams }
+type Membership = { user: Key users, team: Key teams, role: Text }
+type Visit      = { id: Key visits, identity: Key identities, at: Instant }
+relation teams       : Team key id generate sequence
+relation members     : Member key id generate sequence
+relation memberships : Membership key (user, team)
+relation visits      : Visit key id generate sequence
+```
+
+Each section's examples are an independent history.
 
 ## 1. Values and types
 
@@ -56,6 +69,7 @@ type Address = { street: Text, city: Text }
 type Provider = Google | Apple
 type Parcel = { id: Key parcels, ship: Address, bill: Address }
 type Handle = { provider: Provider, subject: Text }
+relation parcels : Parcel key id generate sequence
 ```
 
 A function type is not a value type. A `fn` may take and return
@@ -483,6 +497,7 @@ with the edition. An optional field is an `Option`, matched like any
 sum:
 
 ```adt
+type Email = new Text where matches(self, "^[^@]+@[^@]+$")
 type Profile = { id: Key profiles, email: Email, phone: Option Text }
 relation profiles : Profile key id generate sequence
 from p in profiles select match p.phone | None -> "-" | Some s -> s.value
@@ -589,9 +604,9 @@ references to it stay valid across a retag
 
 A key field may have any type. A key field that identifies its row by
 a value of no other meaning has type `Key r` for its own relation `r`,
-as `id` does in the running schema:
+as `id` does in this excerpt of the running schema:
 
-```adt
+```adt fragment
 relation users : User key id generate sequence
 relation identities : Identity
   key id generate uuidv7

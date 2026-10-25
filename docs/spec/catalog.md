@@ -158,9 +158,8 @@ transaction containing it is refused at registration; ad hoc text
 containing it is refused with `Rejected { reason: Invalid { ... } }`.
 
 ```adt fragment
--- with:
---   type AuditCount = { id: Key audit_counts, rows: I64 }
---   relation audit_counts : AuditCount key id generate sequence
+type AuditCount = { id: Key audit_counts, rows: I64 }
+relation audit_counts : AuditCount key id generate sequence
 insert audit_counts from (from h in sys::ctor_stats select { rows: h.live_rows })
 -- refused: a volatile source in a write
 ```
@@ -1556,9 +1555,8 @@ A registered query or transaction may declare its own statement
 limit, which replaces the file and call values for its calls:
 
 ```adt
--- with:
---   type Order = { id: Key orders, month: Date, region: Text, total: Decimal 2 }
---   relation orders : Order key id generate sequence
+type Order = { id: Key orders, month: Date, region: Text, total: Decimal 2 }
+relation orders : Order key id generate sequence
 query report (m: Date) limit 30s -> Set ({ region: Text, total: Decimal 2 }) =
   from o in orders where o.month == m
   group o by o.region into g

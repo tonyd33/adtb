@@ -94,12 +94,49 @@ Rulings: project/concurrency/app-threads, project/nongoals/distributed, project/
   fn display_name (i: Identity) -> Text = match i
     | EmailPass e -> e.email
     | Google g    -> g.gid
+  constraint login_present =
+    from i in identities
+    where match i
+      | EmailPass e -> scalar_len(e.email) == 0
+      | Google g    -> scalar_len(g.gid) == 0
+    select i
   ```
 
-  This is the schema at version 10. The canonical history continues
-  with migration 0011, which adds `Apple { sub: Text }` joining
-  `OAuth` with its `display_name` arm, and 0012, which enables it. Each part states the version
-  its examples start from; examples in different sections are
+  This is the schema at version 10, where the history starts. Migration
+  0011 ([evolution.md §4.2](evolution.md#42-add-a-constructor)) adds
+  `Apple { sub: Text }` joining `OAuth`, with its `display_name` and
+  `login_present` arms and a unique `sub`, and 0012 enables it. The
+  result, version 12, is the running schema:
+
+  ```adt
+  module auth
+  type User = { id: Key users, name: Text }
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation users : User key id generate sequence
+  relation identities : Identity
+    key id generate uuidv7
+    unique (email) in EmailPass
+    unique (gid) in Google
+    unique (sub) in Apple
+  set OAuth of identities = Google | Apple
+  fn display_name (i: Identity) -> Text = match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+  constraint login_present =
+    from i in identities
+    where match i
+      | EmailPass e -> scalar_len(e.email) == 0
+      | Google g    -> scalar_len(g.gid) == 0
+      | Apple a     -> scalar_len(a.sub) == 0
+    select i
+  ```
+
+  Every part's examples use version 12 unless the part states an
+  extension or another version; examples in different sections are
   independent histories unless a section says otherwise. A part may
   extend the schema locally under new names, never by reusing a name
   above with another shape.

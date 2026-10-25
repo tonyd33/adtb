@@ -142,6 +142,7 @@ one exception:
 | `Key f` | not allowed: no reference type names a stored view |
 
 ```adt
+module billing
 constraint over_limit = from r in open_by_user() where r.open > 5 select r
 ```
 
@@ -406,6 +407,9 @@ later operators. A registered query that reads the past names that
 version as a bundle pins its own:
 
 ```adt
+-- bundles/reports.adb
+bundle reports-1.0 pins 32 (8d1f...) edition "2026-10"
+import billing
 query paid_then (c: Position) -> Set Invoice =
   at commit c pins 29 (3b7e...) { from i in invoices.Paid select i }
 ```

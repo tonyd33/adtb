@@ -629,6 +629,8 @@ is the prelude sum of faults ([prelude.md](prelude.md#25-fault)).
 ([queries.md](queries.md#154-try)).
 
 ```adt
+type Raw = { id: Key raws, n: I64 }
+relation raws : Raw key id generate sequence
 from r in raws select try i32(r.n)       -- : Set (Result I32 Fault)
 ```
 

@@ -406,6 +406,22 @@ fn running_schemas_check() {
 }
 
 #[test]
+fn running_schema_is_its_history() {
+    let blocks = blocks();
+    let (readme, evolution) = running::version_10(&blocks);
+    let mut failures = running::differences(&readme, &evolution);
+    failures.extend(running::differences(
+        &running::folded_12(&blocks),
+        &running::version_12(&blocks),
+    ));
+    assert!(
+        failures.is_empty(),
+        "the history disagrees with the running schema:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
 fn spec_examples_check() {
     let blocks = blocks();
     let base = running::version_12(&blocks);

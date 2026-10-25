@@ -19,7 +19,8 @@ as readers.
 
 Examples in each section are independent histories unless the section
 says otherwise, and each states the version it starts from. Unless a
-section says otherwise, it starts from version `10 (a91c...)`, whose
+section says otherwise, it starts from version `10 (a91c...)`, the
+start of the history in [README.md](README.md#conventions), whose
 schema is:
 
 ```adt fragment
@@ -43,7 +44,11 @@ constraint login_present =
     | EmailPass e -> scalar_len(e.email) == 0
     | Google g    -> scalar_len(g.gid) == 0
   select i
+```
 
+This part extends it with badges:
+
+```adt
 type Badge { name: Text } = Plain | Color { rgb: I32 }
 relation post_badges : Badge key name
 relation user_badges : Badge key name
@@ -481,6 +486,9 @@ that stores a value of it in a field is refused. `enable` makes it writable (§4
 -- 0012, continuing §4.2
 module auth
 enable identities.Apple
+```
+
+```adt fragment
 -- 0019, later in the same history
 module auth
 deprecate identities.Apple

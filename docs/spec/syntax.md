@@ -27,10 +27,9 @@ always quoted. Nonterminals written in capitals (`LOWER`, `UPPER`,
 `INT`, `TEXT`, ...) are tokens defined in §2.
 
 Examples extend the running schema of the [index](README.md#conventions),
-which is the schema at version 10. An example that names `Apple` reads
-the schema at version 12, after `0011 add constructor Identity.Apple {
-sub: Text } joins identities.OAuth arm display_name: Apple a -> a.sub`
-and `0012 enable identities.Apple`.
+the schema at version 12, after migration 0011 of
+[evolution.md](evolution.md#42-add-a-constructor) adds `Apple { sub:
+Text }` joining `OAuth` and migration 0012 enables it.
 Migration examples state the version they start from.
 
 Rulings: none
@@ -500,11 +499,16 @@ ctor_scope      = UPPER | "(" UPPER { "|" UPPER } ")"
 
 ```adt
 relation users : User key id generate sequence
-relation identities : Identity
+
+type Channel { id: Key channels, user: Key users }
+  = Mail  { address: Text }
+  | Phone { number: Text }
+  | Pager { number: Text }
+relation channels : Channel
   key id generate uuidv7
-  unique (email) in EmailPass
-  unique (gid) in Google
-  index (user) in (Google | Apple)
+  unique (address) in Mail
+  unique (number) in Phone
+  index (user) in (Phone | Pager)
 
 type Login { id: Key logins, user: Key users on delete cascade }
   = Active  { identity: Key identities on delete retag Revoked {} }
@@ -669,6 +673,7 @@ store_clause = "key" key_fields
 ```
 
 ```adt
+module billing
 store open_by_user
   key user
   index (open)
@@ -1069,9 +1074,9 @@ operator, its inverse and what it refuses is in
 [evolution.md §4](evolution.md#4-operators).
 
 The examples of each subsection are independent histories. Each starts
-at version 10, the running schema; an example that names `Apple` other
-than to add it starts at version 12 (§1). Migration numbers in one
-subsection follow on from that starting version.
+at version 12, the running schema (§1), unless it states another
+version. Migration numbers in one subsection follow on from that
+starting version.
 
 ```ebnf
 operator = module_op | type_op | relation_op | ctor_op | field_op
@@ -1095,11 +1100,11 @@ relation_op = "add" relation_decl | "drop" "relation" QLOWER
 after the verb:
 
 ```adt fragment
--- 0011
+-- 0013
 add type Device = { id: Key devices, owner: Key users on delete restrict, label: Text }
 add relation devices : Device key id generate sequence
 add set Hosted of identities = EmailPass | Google
--- 0012
+-- 0014
 rename type Device to Gadget
 rename relation devices to gadgets
 rename set Hosted of identities to Managed
