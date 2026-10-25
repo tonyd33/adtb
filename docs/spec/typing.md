@@ -586,7 +586,9 @@ a key that is not a reference field of a row (a parameter or a key
 built by `r.key(...)`), in a bundle declaring `hide new constructors`
 any path through a reference (it faults `NoSuchRow` at a hidden row),
 a `match` on a key that is not a reference field of a row (it faults
-`NoSuchRow` when the key names no row of its constructor set),
+`NoSuchRow` when the key names no row of its constructor set), an `at`
+block (rejected with `HistoryUnavailable` when its position is not
+retained, [derived.md §6.2](derived.md#62-naming-a-past-state)),
 or a call of a function whose body is partial. Hiding is not
 transitive: a row of a constructor the bundle knows is visible even
 when it references a hidden row
@@ -594,14 +596,16 @@ when it references a hidden row
 ([semantics.md §5.10](semantics.md#510-fixpoints)) is partial even when
 its fixpoint happens to be finite. Every other
 expression is total. A checked
-operator and `add_period(..., Reject)` are total; they return `Option`.
+operator is total; it returns `Option`. `add_period` is partial with
+either overflow rule: it faults with `ArithmeticOverflow` when the
+result leaves its type's range ([prelude.md §6.3](prelude.md#63-calendar-arithmetic)).
 
 What a fault does, and how evaluation order decides whether one is
 reached, is in [queries.md](queries.md#15-faults). Evaluation is call
 by value: every argument is evaluated before the body. A registered
 query's result type does not mention faults.
 
-Rulings: types/fault/abort, types/int-overflow/trap, spec/tiers/three-tiers
+Rulings: types/fault/abort, types/int-overflow/trap, spec/tiers/three-tiers, spec/totality/add-period/partial, spec/totality/at-block/partial
 
 ### 10.2 Guards order evaluation
 

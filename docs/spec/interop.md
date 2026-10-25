@@ -22,7 +22,8 @@ state unless the section states another version.
 ### 1.1 One syntax
 
 The textual syntax of a value is its literal syntax in the query
-language ([syntax.md](syntax.md#25-literals)). The same syntax is used
+language ([syntax.md](syntax.md#25-literals)), and for a value with no
+literal, its form in §1.3. The same syntax is used
 in queries, dumps, CSV cells, test fixtures, error details, statistics
 (`sys::field_values`) and the REPL. Every value of every type has a
 canonical printed form, and an implementation must satisfy, for every
@@ -44,11 +45,10 @@ those of [syntax.md](syntax.md#25-literals):
   flat formats of §2 a key is written as its key value.
 - A `Decimal` prints exactly as many fractional digits as its type's
   scale. A float prints the shortest decimal that reads back to the
-  same value; NaN and the infinities print in the forms syntax.md
-  gives them. `-0.0` never occurs as a value
+  same value; NaN and the infinities print in the forms of §1.3. `-0.0` never occurs as a value
   ([model.md](model.md#34-floats)).
 - `Text` prints in NFC with the escapes of syntax.md.
-- Time values print at microsecond precision.
+- Time values, `Period` and `Bytes` print in the forms of §1.3.
 - A `Set T` value prints as `[v1, v2, ...]`, each element once, in
   ascending order by `T`'s order ([model.md](model.md#10-order)), or by
   the canonical key bytes of the elements when `T` is not ordered. The
@@ -98,6 +98,40 @@ Single values shown to a caller (error details, REPL output) are
 printed at the caller's version and carry no header.
 
 Rulings: interop/text/literal, interop/text/rename/versioned
+
+### 1.3 Values with no literal
+
+These values have no literal in the query language. Their textual
+forms are:
+
+| Value | Form | Example |
+| --- | --- | --- |
+| `F32`, `F64` NaN and infinities | `NaN`, `inf`, `-inf` | `inf` |
+| `Instant` | ISO 8601 date and time in UTC, `Z` suffix | `2026-10-25T09:30:00.000000Z` |
+| `Date` | ISO 8601 calendar date | `2026-10-25` |
+| `Time` | ISO 8601 time of day | `09:30:00.000000` |
+| `DateTime` | ISO 8601 date and time, no offset | `2026-10-25T09:30:00.000000` |
+| `ZonedDateTime` | its `DateTime`, then the zone name in brackets | `2026-10-25T09:30:00.000000[Europe/Paris]` |
+| `Period` | `P{m}M{d}D`, its month and day counts as signed integers | `P1M0D`, `P0M-15D` |
+| `Bytes` | `0x`, then two hex digits per byte | `0x`, `0x00ff` |
+
+- A time prints with exactly six fractional digits of a second. A
+  reader also accepts fewer, or none with no `.`.
+- A year outside `0000` to `9999` prints with a sign and at least five
+  digits, the expanded form of ISO 8601.
+- `Bytes` print lowercase hex; a reader accepts either case. The empty
+  value is `0x`.
+
+In query source each form is the argument of a `T.parse` call (§1.1),
+which returns `Option T` ([syntax.md](syntax.md#25-literals)):
+
+```adt fragment
+Instant.parse("2026-10-25T09:30:00.000000Z")   -- Some { value: ... } : Option Instant
+Period.parse("P1M0D")
+Bytes.parse("0x00ff")
+```
+
+Rulings: spec/textual-forms/interop, spec/bytes-form/hex
 
 ## 2. External formats
 

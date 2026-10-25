@@ -101,6 +101,10 @@ relations, constructor sets and schema functions. It must not read:
 Such a constraint is refused when declared. A constraint whose query
 fails to type-check is refused.
 
+`q` may be partial ([typing.md §10.1](typing.md#101-total-and-partial-expressions)),
+and so may the expression of a check (§2.2). A fault while checking
+either fails the statement (§7.2).
+
 ### 1.3 Constraints are schema objects
 
 A constraint is added by the operator `add constraint` and removed by
@@ -110,7 +114,7 @@ among the constraints of the schema. Every constraint, whatever the
 form it was written in, is a denial query; the forms of §2 are notation
 for it.
 
-Rulings: constraint/form/empty, constraint/assertion, constraint/evolve/icmo
+Rulings: constraint/form/empty, constraint/assertion, constraint/evolve/icmo, spec/constraint-faults/accepted
 
 ## 2. Common kinds
 
@@ -476,7 +480,7 @@ Within an interactive transaction, a failed call leaves the
 transaction open, with the effects of its earlier calls; the reads the
 failed call made remain part of the transaction for serializability.
 
-Rulings: constraint/enforce/delta, constraint/form/empty, spec/writes/violation-name/canonical-least, spec/writes/unique-name/fields-or-id
+Rulings: constraint/enforce/delta, constraint/form/empty, spec/writes/violation-name/canonical-least, spec/writes/unique-name/fields-or-id, spec/constraint-faults/accepted
 
 ## 8. Concurrent transactions
 

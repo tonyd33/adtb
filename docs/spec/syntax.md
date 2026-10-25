@@ -163,9 +163,11 @@ hex      = digit | "a" ... "f" | "A" ... "F"
   [interop.md](interop.md#11-one-syntax).
 - A `DURATION` is a value of type `Duration`; `d` is 86400 seconds.
   Calendar periods have no literal form.
-- Literal forms of the other base types (time, bytes, decimals of a
-  stated scale) are written as calls on the textual value syntax of
-  [interop.md](interop.md#1-textual-value-syntax).
+- A value with no literal (NaN and the infinities, time values,
+  `Period`, `Bytes`) is written as a `T.parse` call on its textual
+  form ([interop.md §1.3](interop.md#13-values-with-no-literal)),
+  which returns `Option T`: `F64.parse("inf")`,
+  `Date.parse("2026-10-25")`, `Bytes.parse("0x00ff")`.
 
 Single quotes are not a token.
 
@@ -217,7 +219,7 @@ starts the argument list of a call: `active()`, `scalar_len(t)`,
 gives `top` its operand. This is the only place whitespace is
 significant.
 
-Rulings: syntax/strings/double, syntax/equality/double, syntax/params/names
+Rulings: syntax/strings/double, syntax/equality/double, syntax/params/names, spec/textual-forms/interop
 
 ### 2.9 Canonical token form
 

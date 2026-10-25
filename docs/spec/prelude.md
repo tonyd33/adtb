@@ -132,7 +132,7 @@ Its type and constructor ids are listed in
 | `UnknownZone` | a zone name the database's zone rules do not define |
 | `InvalidText` | text that does not satisfy what the function requires of it |
 | `InvalidSpan` | a span whose start is after its end |
-| `NegativeCount` | `top n` with `n < 0` |
+| `NegativeCount` | `top n` or `take n` with `n < 0` |
 | `NoSuchRow` | following a key by a path when the key names no row of its constructor set |
 | `FunctionFailed` | a Wasm function that traps or exhausts its fuel or memory, or a host function that returns an error or panics |
 
@@ -363,7 +363,7 @@ linear in the length of `t`.
 when negative; for a `Decimal s`, the digits with exactly `s`
 fractional digits; for a float, the shortest decimal that reads back
 as the same value, or `NaN`, `inf`, `-inf`; for a time value, the form
-of [interop.md](interop.md#1-textual-value-syntax). A collation name
+of [interop.md §1.3](interop.md#13-values-with-no-literal). A collation name
 `c` carries its version, `"de-u-ks-level2@icu-74"`; the collations an
 engine ships are listed in [catalog.md](catalog.md).
 
@@ -373,14 +373,15 @@ where ends_with(lower(i.email), "@example.com") and scalar_len(i.email) <= 254
 select { id: key i, label: "user " ++ text(scalar_len(i.email)) }
 ```
 
-Rulings: types/text-length/explicit, types/text-eq/nfc, types/collation/sortkey-fn, types/collation/version/versioned-name
+Rulings: types/text-length/explicit, types/text-eq/nfc, types/collation/sortkey-fn, types/collation/version/versioned-name, spec/textual-forms/interop
 
 ## 5. Bytes
 
 `Bytes` has `++`, `bytes_len` and comparison by unsigned byte order
-(§4). `utf8` and `bytes` convert between `Bytes` and `Text`.
+(§4). `utf8` and `bytes` convert between `Bytes` and `Text`. Its
+textual form is in [interop.md §1.3](interop.md#13-values-with-no-literal).
 
-Rulings: model/bytes
+Rulings: model/bytes, spec/bytes-form/hex
 
 ## 6. Time
 

@@ -46,8 +46,8 @@ v ⇐ o ; k(v)  =  k(v)   if o = v ∈ X
 ```
 
 The operands of one expression, within one binding, are sequenced left
-to right; the members of a family indexed by the bindings of a set are
-gathered:
+to right; the members of a family indexed by the bindings of a set, or
+by the fields of one record or constructor value, are gathered:
 
 ```text
 seq (o₁, …, oₙ)       =  (v₁, …, vₙ)    if every o_i = v_i
@@ -59,6 +59,7 @@ gather (o_i)_{i ∈ I}  =  (v_i)_{i ∈ I}  if every o_i = v_i
 Within a binding the first abort reached is the outcome. When several
 bindings abort, the outcome is any one of their aborts, so a `try` over
 several faulting bindings returns `Err` of the fault of any one of them.
+Likewise when several fields of one record or constructor value abort.
 
 ### 1.2 Kernel and surface
 
@@ -72,12 +73,13 @@ a kernel term of type `T`.
 Every equation in this part reads as a program over finite sets. An
 implementation conforms
 when, for every program and every state, its outcome is one the
-equations allow. The equations fix the outcome except in five places,
+equations allow. The equations fix the outcome except in six places,
 each stated where it arises:
 
 | Freedom | Section | Conformance compares |
 | --- | --- | --- |
 | Which abort is reported when several bindings abort, and which fault a `try` over them returns | §1.1 | that both outcomes are aborts; under `try`, that the fault is one some binding raises |
+| Which abort is reported when several fields of one record or constructor value abort | §5.1 | that both outcomes are aborts; under `try`, that the fault is one some field raises |
 | The values of generated keys and generated clock fields | §4.3 | results up to a bijection on generated values |
 | The fold order of an aggregate whose operator is not associative and commutative | §5.7 | results within a bound that grows with input size |
 | The step at which a statement exceeds its limits, an unbounded fixpoint included | §5.10 | that both are rejected for a limit |
@@ -88,7 +90,7 @@ values `x_i` agree when they differ by at most `n * eps * sum(|x_i|)`,
 with `eps` the machine epsilon of the float type. Every other value is
 compared exactly.
 
-Rulings: project/semantics/denotational, project/semantics/kernel/core, project/semantics/covers/queries, project/semantics/covers/writes, project/semantics/covers/constraints, project/semantics/covers/isolation, project/semantics/covers/evolution, project/oracle/float/tolerance, spec/tiers/three-tiers
+Rulings: project/semantics/denotational, project/semantics/kernel/core, project/semantics/covers/queries, project/semantics/covers/writes, project/semantics/covers/constraints, project/semantics/covers/isolation, project/semantics/covers/evolution, project/oracle/float/tolerance, spec/tiers/three-tiers, spec/field-faults/any
 
 ## 2. Kernel syntax
 
@@ -376,7 +378,8 @@ pattern compilation of §10.2 produce such a `case`.
 `e` is total when it contains none of:
 
 - a partial primitive ([typing.md §10.1](typing.md#101-total-and-partial-expressions),
-  [prelude.md](prelude.md));
+  [prelude.md](prelude.md)), `add_period` with either overflow rule
+  included;
 - an aggregate whose combining operator or final map is partial on its
   type (`sum` over an integer type);
 - `top` whose count is not a nonnegative literal;
@@ -384,13 +387,16 @@ pattern compilation of §10.2 produce such a `case`.
 - a `deref` of a key that is not a reference field's value;
 - any `deref`, and every path through a reference, in a bundle
   declaring `hide new constructors` (§9.6);
+- an `at` block ([derived.md §6.2](derived.md#62-naming-a-past-state)),
+  which is rejected with `HistoryUnavailable` when its position is not
+  retained;
 - an application of a function whose body is not total.
 
 `try e` is total whatever `e` is. A total expression terminates and
 denotes a value in every environment that its type admits; it never
 faults. Limits (§1.1) are outside totality.
 
-Rulings: lang/binder/ctor-row, lang/patterns/or-binder/ctor-set, model/ref-subtyping/ctor-set-subsumption, query/compile-time, lang/wildcard/scalars-only, lang/empty-agg/nonempty, types/join/lub-exact-fields, types/sub-records/exact, types/eq-types/all-first-order, lang/collection/set-agg/over-binders, lang/recursion/negation/stratified, types/fault-forms/checked, spec/fix/typing/least
+Rulings: lang/binder/ctor-row, lang/patterns/or-binder/ctor-set, model/ref-subtyping/ctor-set-subsumption, query/compile-time, lang/wildcard/scalars-only, lang/empty-agg/nonempty, types/join/lub-exact-fields, types/sub-records/exact, types/eq-types/all-first-order, lang/collection/set-agg/over-binders, lang/recursion/negation/stratified, types/fault-forms/checked, spec/fix/typing/least, spec/totality/add-period/partial, spec/totality/at-block/partial
 
 ## 4. Values and states
 
@@ -482,8 +488,8 @@ Rulings: model/sets, model/nominal, model/one-ctor-sum, model/record-is-ctor, su
 ⟦x⟧ ρ                    = ρ(x)
 ⟦c⟧ ρ                    = c
 ⟦op(e₁,…,eₙ)⟧ ρ          = (v₁,…,vₙ) ⇐ seq(⟦e_i⟧ ρ) ; op(v₁,…,vₙ)
-⟦{ l_i: e_i }⟧ ρ         = (v_i) ⇐ seq(⟦e_i⟧ ρ) ; { l_i: v_i }
-⟦C { l_i: e_i }⟧ ρ       = (v_i) ⇐ seq(⟦e_i⟧ ρ) ; C⟨v_i⟩
+⟦{ l_i: e_i }⟧ ρ         = (v_i) ⇐ gather(⟦e_i⟧ ρ)_i ; { l_i: v_i }
+⟦C { l_i: e_i }⟧ ρ       = (v_i) ⇐ gather(⟦e_i⟧ ρ)_i ; C⟨v_i⟩
 ⟦e.l⟧ ρ                  = v ⇐ ⟦e⟧ ρ ; field l of v
 ⟦key e⟧ ρ                = v ⇐ ⟦e⟧ ρ ; key_r(v)
 ⟦keyof r e⟧ ρ            = v ⇐ ⟦e⟧ ρ ; the key value of r whose key fields are v
@@ -495,8 +501,10 @@ Rulings: model/sets, model/nominal, model/one-ctor-sum, model/record-is-ctor, su
                          = ⊗x       if ⟦e⟧ ρ = ⊗x
 ```
 
-The operands of `op`, a record and a constructor value are evaluated
-left to right, each before the operation. A primitive `op` is a
+The operands of `op` are evaluated left to right, each before the
+operation. Every field of a record or constructor value is evaluated
+before the value is built; when several fields abort, the outcome is
+the abort of any one of them. A primitive `op` is a
 function `V^n → O(V)` that [prelude.md](prelude.md) defines; a partial
 one returns `↯f` outside its domain (overflow, division by zero,
 conversion out of range). A checked variant is total and returns
@@ -523,8 +531,9 @@ selects:
 `for x in e₁ do e₂` (§5.4) evaluates `e₂` only at the elements of `e₁`.
 These are the only places where a subterm's evaluation depends on
 another's value; every other form evaluates all its operands, left to
-right. An implementation may evaluate a subterm where these equations
-do not evaluate it, or earlier, only when the subterm is total (§3.4).
+right, and the fields of one value in no fixed order (§5.1). An
+implementation may evaluate a subterm where these equations do not
+evaluate it, or earlier, only when the subterm is total (§3.4).
 It may reorder, share, hoist and push down total subterms freely.
 Partial subterms keep their order relative to each other and stay
 under the guards that dominate them.
@@ -676,7 +685,8 @@ Ordering is not a kernel form. `order by k̄`, `take n` and `after c`
 apply only to the final result of a statement and denote a sequence:
 
 ```text
-present(A, k̄, n, c) = the first n elements of { v ∈ A | c ≺ v }, listed by ≺
+present(A, k̄, n, c) = ↯NegativeCount if n < 0,
+                      else the first n elements of { v ∈ A | c ≺ v }, listed by ≺
 ```
 
 `take` without `after` omits the filter; `order by` alone lists every
@@ -702,15 +712,31 @@ the chain reaches it. When it is infinite the chain never ends, and the
 statement is rejected with `StatementLimit` when it exceeds its limits
 ([catalog.md §8.3](catalog.md#83-limits-and-deadlines)).
 
-A `fix` is bounded when no body applies a constructing primitive, an
-aggregate or `fresh` to a value derived from a relation of its own
-stratum, and no body places an element of such a relation inside a
-constructed record or constructor value. A constructing primitive is
-one whose result may be a value that is none of its arguments:
-arithmetic, text and byte building, conversions, time arithmetic.
-Comparisons, `==`, `!=`, boolean operations and other primitives
-returning `Bool` or one of their arguments are not constructing, so a
-reachability `fix` that compares keys is bounded. Every value a bounded `fix`
+A `fix` is bounded when no constructed value derived from a relation
+of its own stratum can become an element of one of its relations. A
+value is constructed by a constructing primitive, an aggregate or
+`fresh` applied to a value derived from such a relation, or by a record
+or constructor value holding one. It counts only where it can become
+an element of a relation of the stratum: a constructed value used only
+in a condition, a comparison or an aggregate key does not count. A
+constructing primitive is one whose result may be a value that is
+neither one of its arguments nor a component of one: arithmetic, text
+and byte building, conversions, time arithmetic. Comparisons, `==`,
+`!=`, boolean operations and other primitives returning `Bool` are not
+constructing, nor are the projections returning one of their arguments
+or a component of one (`start`, `end`, `unwrap`, `value`). So a
+reachability `fix` that compares keys is bounded, and so is one that
+compares records built from its elements:
+
+```adt fragment
+-- given me: Key users
+fix a = (from u in users select key u)
+      union (from x in a where { k: x } != { k: me } select x)
+in a
+```
+
+A backlink over an `Option` reference is bounded for the same reason:
+the `Some` it builds is only compared. Every value a bounded `fix`
 adds is built from finitely many values present before it runs, so its
 least fixpoint is finite and it is total. A `fix` that is not bounded
 is partial (§3.4).
@@ -721,6 +747,7 @@ conditions, are defined by:
 
 - `e_i` itself is positive;
 - if `e' ∪ e''` is positive, so are both operands;
+- if `e' ▷ S` is positive, so is `e'`;
 - if `for y in e' do e''` is positive, so are `e'` and `e''`;
 - if `if c then e' else e''` or a `case` is positive, so are its
   branches; its scrutinee is not positive, and its condition `c` is a
@@ -777,7 +804,7 @@ result contains no λ and no application; a `let` remains only where its
 bound expression is partial. Each step preserves the denotation of
 §5.3, aborts included.
 
-Rulings: query/union-all, query/ctor-relations, query/construct, model/dup-arms/dedupe, lang/collection/sets, lang/collection/set-agg/over-binders, lang/empty-agg/nonempty, query/agg-scope/whole, lang/group/into, lang/group/ctor-key/tag-type, lang/nested-order/top-n, lang/order/result-only, lang/keyset, lang/recursion/fix, lang/recursion/negation/stratified, lang/abstraction/higher-order, lang/abstraction/ho-recursion/first-order-recursion, lang/outer/nested, lang/results/nested, types/fault/abort, types/fault/reorder/ordered-guards, types/fault-forms/checked, types/fault-forms/try, types/int-overflow/trap, project/oracle/float/tolerance, derived/transition/change-visible, spec/tiers/three-tiers
+Rulings: query/union-all, query/ctor-relations, query/construct, model/dup-arms/dedupe, lang/collection/sets, lang/collection/set-agg/over-binders, lang/empty-agg/nonempty, query/agg-scope/whole, lang/group/into, lang/group/ctor-key/tag-type, lang/nested-order/top-n, lang/order/result-only, lang/keyset, lang/recursion/fix, lang/recursion/negation/stratified, lang/abstraction/higher-order, lang/abstraction/ho-recursion/first-order-recursion, lang/outer/nested, lang/results/nested, types/fault/abort, types/fault/reorder/ordered-guards, types/fault-forms/checked, types/fault-forms/try, types/int-overflow/trap, project/oracle/float/tolerance, derived/transition/change-visible, spec/tiers/three-tiers, spec/field-faults/any, spec/take-negative/fault, spec/fix/restriction/positive, spec/fix/bounded/element-flow, spec/fix/projection/not-constructing
 
 ## 6. Writes
 

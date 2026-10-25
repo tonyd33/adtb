@@ -158,7 +158,11 @@ from l in sign_ins().Remote select l.provider
 There is no separate narrowing operator on single values; a value's
 constructor is examined by `match`.
 
-Rulings: query/ctor-relations, model/one-ctor-sum, model/sets, lang/binder/ctor-row, model/sum-results, surface/ctor-set/named, surface/ctor-set/list
+No form takes the one element out of a set. A row of the snapshot is
+reached through its key: by a path (§7.2) or by `match` on the key
+(§5.2).
+
+Rulings: query/ctor-relations, model/one-ctor-sum, model/sets, lang/binder/ctor-row, model/sum-results, surface/ctor-set/named, surface/ctor-set/list, spec/only/none
 
 ## 3. Comprehensions
 
@@ -773,8 +777,9 @@ equal values; they range over the rows the values come from instead.
 The rule is syntactic, applied after normalisation: a generator whose
 source normalises to a comprehension is refused unless its `select` is
 exactly the binder of a generator over a relation variable, a
-constructor relation, a constructor set, a backlink or another such
-key-preserving comprehension. A `Set T` parameter is accepted:
+constructor relation, a constructor set, a backlink, a `Set T`
+parameter, a group's rows or another such key-preserving
+comprehension. A `Set T` parameter is accepted:
 
 ```adt fragment
 sum(o.total for o in orders)                                        -- each order counts
@@ -828,7 +833,7 @@ count(x for x in (from i in identities
                   select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub))
 ```
 
-Rulings: syntax/aggregate/comprehension, lang/collection/set-agg/over-binders, lang/empty-agg/nonempty, query/agg-scope/whole
+Rulings: syntax/aggregate/comprehension, lang/collection/set-agg/over-binders, lang/empty-agg/nonempty, query/agg-scope/whole, spec/key-preserving/params-and-groups
 
 ## 11. Recursion
 
@@ -886,6 +891,7 @@ positions are:
 
 - the body `qi` itself;
 - both operands of a positive `union`;
+- the operand of a positive constructor selection, `q.C` or `q.(C | D)`;
 - the generator sources and the `select` of a positive comprehension;
 - the arms of a positive `match` and the branches of a positive `if`
   (not the scrutinee or condition, except that a `where` condition of
@@ -923,7 +929,7 @@ binder and no unapplied function. A function whose body holds a `fix`
 may take function parameters only when every call supplies them so
 that inlining removes them; otherwise the call is refused.
 
-Rulings: lang/recursion/fix, lang/recursion/negation/stratified, lang/abstraction/ho-recursion/first-order-recursion
+Rulings: lang/recursion/fix, lang/recursion/negation/stratified, lang/abstraction/ho-recursion/first-order-recursion, spec/fix/restriction/positive
 
 ## 12. Functions and views
 
@@ -1115,7 +1121,8 @@ query page (cursor: Option (Key users)) -> Set User =
   from u in users select u order by u.id take 50 after cursor
 ```
 
-`take n` delivers the first `n` elements of the ordered result.
+`take n` delivers the first `n` elements of the ordered result. A
+negative `n` faults with `NegativeCount`, as for `top`.
 `after c`, for one ordering key of type `K`, takes `c : Option K`. For
 a list of keys of types `K1 ... Kn`, `c` is an `Option` of an
 anonymous record with `n` fields. Its fields correspond to the
@@ -1138,7 +1145,7 @@ A client pages by
 passing the ordering value of the last element it received. There is
 no offset form.
 
-Rulings: lang/order/result-only, lang/nested-order/top-n, lang/keyset, lang/sum-order/declared, spec/top/operand/comprehension, spec/after/cursor-fields/name-order, spec/tiers/three-tiers
+Rulings: lang/order/result-only, lang/nested-order/top-n, lang/keyset, lang/sum-order/declared, spec/top/operand/comprehension, spec/after/cursor-fields/name-order, spec/tiers/three-tiers, spec/take-negative/fault
 
 ## 15. Faults
 
@@ -1146,7 +1153,7 @@ Rulings: lang/order/result-only, lang/nested-order/top-n, lang/keyset, lang/sum-
 
 A fault is an operation applied outside its domain: integer or decimal
 overflow, division or remainder by zero, a conversion of a value out
-of range of the target type, a negative `top` count, and the other
+of range of the target type, a negative `top` or `take` count, and the other
 faulting cases the prelude lists with each operation
 ([prelude.md](prelude.md)). Each fault is a constructor of the prelude
 sum `Fault` (`DivisionByZero`, `ArithmeticOverflow`, `OutOfRange`,
@@ -1177,7 +1184,8 @@ reaches an expression only where its guards hold:
 | comprehension | clauses in the order written: a `where`, a generator's source or the `select` is evaluated for a binding only when every earlier `where` held for it |
 | aggregate | its `where` before its value expression, per binding |
 | call | every argument before the body, left to right, whether or not the body uses it |
-| other operators, records, constructors | every operand, left to right |
+| other operators | every operand, left to right |
+| records, constructors | every field, in no fixed order |
 
 ```adt
 from o in orders where o.qty > 0 and o.total / o.qty > 10 select o   -- never divides by zero
@@ -1194,7 +1202,9 @@ expression the program evaluates. Pushing `o.qty > 0` into a scan is
 free; evaluating the division before that test is not allowed.
 
 Within one binding, the fault reported is the first one reached in the
-order above.
+order above. When several fields of one record or constructor value
+fault, it is the fault of any one of them
+([semantics.md §1.1](semantics.md#11-metanotation)).
 
 When several bindings fault, the statement reports any one of their
 faults ([semantics.md §1.1](semantics.md#11-metanotation)).
@@ -1239,7 +1249,7 @@ value.
 from r in raws select { line: key r, n: try i32(r.n) }
 ```
 
-Rulings: types/fault/abort, types/fault/reorder/ordered-guards, types/fault-forms/checked, types/fault-forms/try, types/int-overflow/trap
+Rulings: types/fault/abort, types/fault/reorder/ordered-guards, types/fault-forms/checked, types/fault-forms/try, types/int-overflow/trap, spec/field-faults/any
 
 ## 16. Ad hoc statements
 

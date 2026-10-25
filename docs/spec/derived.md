@@ -386,7 +386,10 @@ when the position is outside the retention window or later than the
 reader's snapshot.
 
 An `at` block is an expression of set type, usable anywhere a set is,
-including beside reads of the current state in one query. It reads
+including beside reads of the current state in one query. It is
+partial ([typing.md §10.1](typing.md#101-total-and-partial-expressions)):
+it is evaluated only where its guards hold, as a faulting expression
+is. It reads
 only past state and writes nothing. No read-write transaction can make
 a safe snapshot unsafe, so a past read never takes part in a
 serialization conflict
@@ -430,7 +433,7 @@ Retained versions do not change the cost of reading current state:
 a read of the current state costs the same however long the retention
 window is.
 
-Rulings: derived/time-travel/window, derived/time-travel/basis/both, derived/time-travel/past-schema/as-written, derived/time-travel/retention/history-heap, spec/tiers/three-tiers
+Rulings: derived/time-travel/window, derived/time-travel/basis/both, derived/time-travel/past-schema/as-written, derived/time-travel/retention/history-heap, spec/tiers/three-tiers, spec/totality/at-block/partial
 
 ## 7. Valid time
 
