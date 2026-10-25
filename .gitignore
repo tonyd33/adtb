@@ -34,3 +34,6 @@ devenv.local.yaml
 
 # Generated editor config
 /.nvim.lua
+
+# Project instructions are tracked despite the global ignore
+!/CLAUDE.md
