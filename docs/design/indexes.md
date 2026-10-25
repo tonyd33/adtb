@@ -40,14 +40,16 @@ key index of identities:
 The constructor id is encoded as an order-preserving, prefix-free
 varint, `ovarint`, not LEB128: an id below 240 is one byte, the id; a
 larger id is the byte `239 + n` followed by the id as `n` big-endian
-bytes, `n` from 1 to 4 the fewest that hold it. The whole entry is one
-byte string compared with `memcmp`:
+bytes, `n` from 1 to 4 the fewest that hold it. A decoder refuses every
+other form. The whole entry is one byte string compared with `memcmp`:
 
 ```text
 entry bytes = encode(key) ++ ovarint(ctor) ++ be48(page) ++ be16(slot)
 ```
 
-The TID format is that of [mvcc.md §2](mvcc.md#2-tids).
+The TID format is that of [mvcc.md §2](mvcc.md#2-tids). The key's
+encoding is prefix-free, so `encode(k) ++ ovarint(c)` is a prefix of
+exactly the entries of key `k` and constructor `c`.
 
 Rulings: btree/entry-order/after-key, btree/ctor-width/uvarint
 
@@ -63,17 +65,38 @@ on:
 | Type | Encoding |
 | --- | --- |
 | `I8` to `I64` | Big-endian two's complement of the type's width, sign bit inverted |
-| `F32`, `F64` | The canonical value (no -0.0; one NaN) as big-endian IEEE bits; if the sign bit is set every bit is inverted, otherwise only the sign bit; NaN sorts above every other value |
-| `Decimal` | The scaled integer coefficient, encoded as a signed integer of its storage width |
-| `Instant`, `Date`, `Time`, `DateTime`, `Duration` | Their integer representation, encoded as the signed integer of its width |
+| `F32`, `F64` | The canonical value (no -0.0; one NaN, the quiet NaN `7FC00000` or `7FF8000000000000` with the sign clear) as big-endian IEEE bits; if the sign bit is set every bit is inverted, otherwise only the sign bit; NaN sorts above every other value |
+| `Decimal s` | The coefficient `n` of `n / 10^s` as a 128-bit integer, encoded as `I8` to `I64` are; the scale is in the type and is not encoded |
+| `Instant`, `Duration` | Microseconds as an `I64` |
+| `Date` | Days since 1970-01-01 as an `I32` |
+| `Time` | Microseconds since midnight as an `I64` |
+| `DateTime` | Microseconds since 1970-01-01T00:00:00 civil as an `I64` |
 | `ZonedDateTime` | The `DateTime` encoding, then the zone name as `Text`; the type has no order, so the encoding serves equality and uniqueness only |
 | `Period` | The month count, then the day count, each as an `I32`; equality and uniqueness only, as for `ZonedDateTime` |
-| `Text` | NFC UTF-8 bytes, each `00` written `00 FF`, terminated by `00`; the order is code point order |
+| `Text` | NFC UTF-8 bytes, each `00` written `00 FF`, terminated by `00 01`; the order is code point order |
 | `Bytes`, `SortKey` | As `Text`, without normalization |
 | `Key r` | The encoding of the target's key |
 | newtype | The encoding of its representation |
 | record | Its fields' encodings concatenated in field order |
-| sum value | The constructor's order key, escaped and terminated as `Text`, then its payload as a record |
+| sum value | The constructor's order key, then `00`, then the header fields and the constructor's fields in order, as a record |
+
+Every encoding is prefix-free: no value's encoding is a proper prefix
+of another's of the same type. A `00` inside a variable-length value is
+always followed by `FF` and its terminator `00` by `01`, so a decoder
+knows where the value ends whatever follows. A terminator of `00` alone
+is not prefix-free in a composite key: `("a", 32767 : I16)` would encode
+as `61 00 FF FF` and sort above `("a\0", -32768 : I16)`, `61 00 FF 00 00 ...`.
+
+A descending component of a key, as in an order key list with `desc`,
+is the ascending encoding with every byte inverted. Inverting a
+prefix-free encoding reverses its order and keeps it prefix-free.
+
+A decoder refuses every byte string the encoding does not produce: a
+truncated value, an escape other than `00 FF` or `00 01`, text that is
+not UTF-8, a float that is not canonical, a decimal of more than 38
+digits, a `Time` outside a day, a `Date` whose midnight is not an
+`Instant`, an order key the sum does not have, and trailing bytes. A
+decoder does not check that text is in NFC.
 
 A collated order is an expression index over a collation function's
 sort key
@@ -96,6 +119,11 @@ Invariants:
 - A constructor inserted between two others gets a string between
   theirs, so no stored key changes.
 - Reordering rewrites only the keys holding the moved constructor.
+- An order key is a nonempty byte string that holds no `00` byte and
+  does not end in `01`. Between any two such strings, and below and
+  above any one, lies another, so insertion never runs out of room. A
+  key without `00` needs no escaping, and its terminator `00` sorts it
+  below every longer key it prefixes.
 
 ```adt
 type Status ordered = Draft | Sent { at: Instant } | Paid { at: Instant }
@@ -118,6 +146,9 @@ with `==` for every type, sums and records included. A hash that is
 persisted (partitioning, hash indexes) uses a fixed function, versioned
 with the file format; a hash used only in memory may be seeded per
 process.
+
+The persisted function is XXH64 with seed 0 over the key bytes. A
+32-bit hash is the high 32 bits of that value.
 
 Rulings: types/hash/key-bytes
 
