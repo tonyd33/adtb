@@ -989,3 +989,405 @@ fn threads_finish_and_every_acknowledged_write_stays() {
         );
     }
 }
+
+fn reacquire(second: impl FnOnce(&Pager<SimRuntime>, Pid)) {
+    let mut sim = Sim::new(21, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let pid = client.world.lock().unwrap().pages[0];
+    with_pager(&mut sim, |p| {
+        let held = p.read(pid).unwrap();
+        second(p, pid);
+        drop(held);
+    });
+}
+
+#[test]
+#[should_panic(expected = "is already latched by this thread")]
+fn changing_a_page_while_holding_its_shared_latch_panics() {
+    reacquire(|p, pid| {
+        p.update(&[pid], |_| {}).unwrap();
+    });
+}
+
+#[test]
+#[should_panic(expected = "is already latched by this thread")]
+fn reading_a_page_while_holding_its_exclusive_latch_panics() {
+    let mut sim = Sim::new(22, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let pid = client.world.lock().unwrap().pages[0];
+    with_pager(&mut sim, |p| {
+        let held = p.exclusive(pid).unwrap();
+        drop(p.read(pid));
+        drop(held);
+    });
+}
+
+#[test]
+#[should_panic(expected = "is already latched by this thread")]
+fn an_optimistic_read_of_a_page_held_exclusive_panics() {
+    let mut sim = Sim::new(23, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let pid = client.world.lock().unwrap().pages[0];
+    with_pager(&mut sim, |p| {
+        let held = p.exclusive(pid).unwrap();
+        let _ = p.optimistic(pid);
+        drop(held);
+    });
+}
+
+#[test]
+fn the_panic_names_the_page() {
+    let mut sim = Sim::new(24, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let pid = client.world.lock().unwrap().pages[0];
+    let caught = panic::catch_unwind(AssertUnwindSafe(|| {
+        with_pager(&mut sim, |p| {
+            let held = p.read(pid).unwrap();
+            drop(p.exclusive(pid));
+            drop(held);
+        })
+    }));
+    let payload = caught.expect_err("asking again for a held latch returned");
+    let msg = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        format!("page {} is already latched by this thread", pid.0),
+        msg
+    );
+}
+
+#[test]
+fn releasing_a_latch_lets_the_thread_take_it_again() {
+    reacquire(|_, _| {});
+    let mut sim = Sim::new(25, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let pid = client.world.lock().unwrap().pages[0];
+    with_pager(&mut sim, |p| {
+        drop(p.read(pid).unwrap());
+        p.update(&[pid], |_| {}).unwrap();
+        drop(p.exclusive(pid).unwrap());
+        assert!(p.optimistic(pid).unwrap().validate());
+    });
+}
+
+/// Returns the pages the allocation bitmap of group 0 marks allocated.
+fn allocated(p: &Pager<SimRuntime>) -> BTreeSet<Pid> {
+    let map = p.read(Pid(2)).unwrap().to_vec();
+    (0..(PAGE - HEADER_LEN) * 8)
+        .filter(|&i| map[HEADER_LEN + i / 8] >> (i % 8) & 1 == 1)
+        .map(|i| Pid(i as u64))
+        .filter(|&pid| pid != Pid(2))
+        .collect()
+}
+
+/// Returns the pages the link page `index` names, one per nonzero slot.
+fn linked(p: &Pager<SimRuntime>, index: Pid) -> BTreeSet<Pid> {
+    let page = p.read(index).unwrap().to_vec();
+    (0..SLOTS)
+        .map(|s| {
+            u64::from_le_bytes(
+                page[HEADER_LEN + s * 8..HEADER_LEN + s * 8 + 8]
+                    .try_into()
+                    .unwrap(),
+            )
+        })
+        .filter(|&v| v != 0)
+        .map(Pid)
+        .collect()
+}
+
+#[test]
+fn a_crash_never_separates_an_allocation_from_its_link() {
+    silence_fatal_panics();
+    let mut leaks_possible_before = 0;
+    for seed in 0..10 {
+        let mut sim = Sim::new(seed, Config::default());
+        let client = Client::new();
+        setup(&mut sim, &client, PLAIN);
+        let index = client.world.lock().unwrap().pages[0];
+        let before = with_pager(&mut sim, |p| allocated(p));
+        for round in 0..4u64 {
+            sim.set_faults(Faults {
+                torn_p: 0.5,
+                ..quiet()
+            });
+            sim.crash_at(
+                sim.now()
+                    + Duration::from_micros(20_000 + (seed * 7919 + round * 104_729) % 80_000),
+            );
+            run_process(&mut sim, |rt| {
+                let Ok((p, _)) = Pager::open(rt, &options(PLAIN)) else {
+                    return;
+                };
+                let used = linked(&p, index).len();
+                for slot in used..SLOTS {
+                    let mut new = p.reserve();
+                    let pid = new.page(1, PageKind::HeapSlotted, 9).unwrap();
+                    p.update_with(new, &[index, pid], |pages| {
+                        let at = HEADER_LEN + slot * 8;
+                        pages[0][at..at + 8].copy_from_slice(&pid.0.to_le_bytes());
+                        pages[1][HEADER_LEN] = 0xab;
+                    })
+                    .unwrap();
+                    if slot % 7 == 0 {
+                        p.flush_log();
+                    }
+                    leaks_possible_before += 1;
+                }
+            });
+            sim.set_faults(quiet());
+            with_pager(&mut sim, |p| {
+                let fresh: BTreeSet<Pid> = allocated(p).difference(&before).copied().collect();
+                let links = linked(p, index);
+                assert_eq!(
+                    fresh, links,
+                    "seed {seed} round {round}: allocations and links differ"
+                );
+                for &pid in &links {
+                    let page = p.read(pid).unwrap();
+                    assert_eq!(PageKind::HeapSlotted as u16, adtb::storage::kind(&page));
+                    assert_eq!(9, adtb::storage::owner(&page));
+                    assert_eq!(0xab, page[HEADER_LEN]);
+                    assert!(page[HEADER_LEN + 1..].iter().all(|&b| b == 0));
+                }
+            });
+        }
+    }
+    assert!(
+        leaks_possible_before > 50,
+        "{leaks_possible_before} allocations"
+    );
+}
+
+#[test]
+fn a_dropped_reservation_gives_its_pages_back() {
+    let mut sim = Sim::new(31, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    with_pager(&mut sim, |p| {
+        let mut a = p.reserve();
+        let x = a.page(1, PageKind::HeapSlotted, 1).unwrap();
+        let mut b = p.reserve();
+        let y = b.page(1, PageKind::HeapSlotted, 1).unwrap();
+        assert_ne!(x, y, "two reservations hold one page");
+        assert!(
+            !allocated(p).contains(&x),
+            "a reservation marks nothing allocated"
+        );
+        drop(a);
+        assert_eq!(Ok(x), p.allocate(1, PageKind::HeapSlotted, 1));
+        drop(b);
+        assert_eq!(Ok(y), p.allocate(1, PageKind::HeapSlotted, 1));
+    });
+}
+
+#[test]
+fn guards_allocate_and_link_in_one_batch() {
+    let mut sim = Sim::new(32, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let index = client.world.lock().unwrap().pages[1];
+    let (pid, lsns) = with_pager(&mut sim, |p| {
+        let mut new = p.reserve();
+        let pid = new.page(3, PageKind::IndexLeaf, 4).unwrap();
+        assert_eq!(
+            PageKind::IndexLeaf as u16,
+            adtb::storage::kind(&new.image(pid))
+        );
+        let mut parent = p.exclusive(index).unwrap();
+        let mut child = p.exclusive(pid).unwrap();
+        let before = p.durable();
+        p.update_all_with(new, &mut [&mut parent, &mut child], |pages| {
+            pages[0][HEADER_LEN..HEADER_LEN + 8].copy_from_slice(&pid.0.to_le_bytes());
+            pages[1][HEADER_LEN] = 1;
+        })
+        .unwrap();
+        drop((parent, child));
+        assert_eq!(before, p.durable(), "nothing is flushed until asked");
+        p.flush_log();
+        (pid, allocated(p))
+    });
+    assert!(lsns.contains(&pid));
+    with_pager(&mut sim, |p| {
+        assert_eq!(BTreeSet::from([pid]), linked(p, index));
+        assert_eq!(3, adtb::storage::format(&p.read(pid).unwrap()));
+    });
+}
+
+#[test]
+#[should_panic(expected = "is not among the pages changed")]
+fn an_update_must_change_every_page_it_allocates() {
+    let mut sim = Sim::new(33, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let index = client.world.lock().unwrap().pages[1];
+    with_pager(&mut sim, |p| {
+        let mut new = p.reserve();
+        new.page(1, PageKind::HeapSlotted, 1).unwrap();
+        let _ = p.update_with(new, &[index], |_| {});
+    });
+}
+
+#[test]
+fn a_damaged_bitmap_fails_a_reservation() {
+    let mut sim = Sim::new(34, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let mut sim = flip(&mut sim, NAME, 2 * PAGE + 500);
+    let got = with_pager(&mut sim, |p| p.reserve().page(1, PageKind::HeapSlotted, 7));
+    assert_eq!(
+        Pid(2),
+        got.expect_err("reserved through a damaged bitmap").pid
+    );
+}
+
+#[test]
+fn a_lost_write_is_caught_when_the_page_is_read_back() {
+    let mut sim = Sim::new(41, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let pages = client.world.lock().unwrap().pages.clone();
+    let victim = pages[0];
+    let outcome = sim.run(|rt| {
+        let (p, _) = Pager::open(rt.clone(), &options(PLAIN)).unwrap();
+        for &pid in &pages {
+            p.update(&[pid], |v| v[0][HEADER_LEN] ^= 1).unwrap();
+        }
+        p.flush_pages(usize::MAX);
+        p.update(&[victim], |v| v[0][HEADER_LEN + 1] = 7).unwrap();
+        p.flush_log();
+        rt.set_faults(Faults {
+            lost_write_p: 1.0,
+            ..quiet()
+        });
+        p.flush_pages(usize::MAX);
+        rt.set_faults(quiet());
+        for _ in 0..3 {
+            for &pid in &pages[1..] {
+                drop(p.read(pid).unwrap());
+            }
+        }
+        let back = p.read(victim).map(|_| ()).map_err(|e| e.damage);
+        assert!(
+            matches!(back, Err(Damage::Stale { .. })),
+            "a lost write read back as {back:?}"
+        );
+    });
+    assert_eq!(Outcome::Finished, outcome);
+}
+
+#[test]
+fn a_crash_never_separates_freeing_from_unlinking() {
+    silence_fatal_panics();
+    let mut freed = 0;
+    for seed in 0..10 {
+        let mut sim = Sim::new(seed + 50, Config::default());
+        let client = Client::new();
+        setup(&mut sim, &client, PLAIN);
+        let index = client.world.lock().unwrap().pages[0];
+        let before = with_pager(&mut sim, |p| allocated(p));
+        for round in 0..4u64 {
+            sim.set_faults(Faults {
+                torn_p: 0.5,
+                ..quiet()
+            });
+            sim.crash_at(
+                sim.now()
+                    + Duration::from_micros(20_000 + (seed * 7919 + round * 104_729) % 80_000),
+            );
+            run_process(&mut sim, |rt| {
+                let Ok((p, _)) = Pager::open(rt.clone(), &options(PLAIN)) else {
+                    return;
+                };
+                for _ in 0..400 {
+                    let page = p.read(index).unwrap().to_vec();
+                    let at = |s: usize| HEADER_LEN + s * 8;
+                    let pid_at =
+                        |s: usize| u64::from_le_bytes(page[at(s)..at(s) + 8].try_into().unwrap());
+                    let s = (rt.next_u64() % 40) as usize;
+                    let pid = pid_at(s);
+                    if pid == 0 {
+                        let mut new = p.reserve();
+                        let fresh = new.page(1, PageKind::HeapSlotted, 9).unwrap();
+                        p.update_with(new, &[index, fresh], |v| {
+                            v[0][at(s)..at(s) + 8].copy_from_slice(&fresh.0.to_le_bytes());
+                        })
+                        .unwrap();
+                    } else {
+                        let mut new = p.reserve();
+                        new.free(Pid(pid));
+                        p.update_with(new, &[index], |v| v[0][at(s)..at(s) + 8].fill(0))
+                            .unwrap();
+                        freed += 1;
+                    }
+                    if rt.next_u64().is_multiple_of(5) {
+                        p.flush_log();
+                    }
+                }
+            });
+            sim.set_faults(quiet());
+            with_pager(&mut sim, |p| {
+                let fresh: BTreeSet<Pid> = allocated(p).difference(&before).copied().collect();
+                assert_eq!(
+                    fresh,
+                    linked(p, index),
+                    "seed {seed} round {round}: allocations and links differ"
+                );
+            });
+        }
+    }
+    assert!(freed > 50, "{freed} frees");
+}
+
+#[test]
+#[should_panic(expected = "is not allocated")]
+fn freeing_a_free_page_panics() {
+    let mut sim = Sim::new(35, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    with_pager(&mut sim, |p| {
+        let pid = p.allocate(1, PageKind::HeapSlotted, 1).unwrap();
+        p.free(pid).unwrap();
+        let mut new = p.reserve();
+        new.free(pid);
+        let _ = p.update_with(new, &[], |_| {});
+    });
+}
+
+#[test]
+fn a_reservation_dropped_unused_frees_nothing() {
+    let mut sim = Sim::new(36, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let pid = client.world.lock().unwrap().pages[2];
+    with_pager(&mut sim, |p| {
+        let mut new = p.reserve();
+        new.free(pid);
+        drop(new);
+        assert!(allocated(p).contains(&pid));
+    });
+}
+
+#[test]
+#[should_panic(expected = "every frame of the pool")]
+fn latching_every_frame_from_one_thread_panics() {
+    let mut sim = Sim::new(37, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    let pages = client.world.lock().unwrap().pages.clone();
+    with_pager(&mut sim, |p| {
+        let held: Vec<_> = pages[..PLAIN.frames]
+            .iter()
+            .map(|&pid| p.exclusive(pid).unwrap())
+            .collect();
+        drop(p.read(pages[PLAIN.frames]));
+        drop(held);
+    });
+}

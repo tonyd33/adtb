@@ -404,8 +404,9 @@ impl BTree {
             let sep = items[s].key.clone();
             let (left, upper) = items.split_at(s);
             if pid == self.root {
-                let a = pager.allocate(FORMAT, kind_of(level), self.owner)?;
-                let b = pager.allocate(FORMAT, kind_of(level), self.owner)?;
+                let mut new = pager.reserve();
+                let a = new.page(FORMAT, kind_of(level), self.owner)?;
+                let b = new.page(FORMAT, kind_of(level), self.owner)?;
                 let root = [
                     Item {
                         key: Vec::new(),
@@ -420,24 +421,25 @@ impl BTree {
                 let mut gb = pager.exclusive(b)?;
                 let mut pages: Vec<&mut PageExclusive<'p, R>> = vec![&mut g, &mut ga, &mut gb];
                 pages.extend(below.as_mut());
-                pager.update_all(&mut pages, |p| {
+                pager.update_all_with(new, &mut pages, |p| {
                     node::build(p[1], level, left, Some(&sep), Some(b));
                     node::build(p[2], level, upper, None, None);
                     node::build(p[0], level + 1, &root, None, None);
                     complete(p, 3);
-                });
+                })?;
                 return Ok(true);
             }
-            let q = pager.allocate(FORMAT, kind_of(level), self.owner)?;
+            let mut new = pager.reserve();
+            let q = new.page(FORMAT, kind_of(level), self.owner)?;
             let mut gq = pager.exclusive(q)?;
             let mut pages: Vec<&mut PageExclusive<'p, R>> = vec![&mut g, &mut gq];
             pages.extend(below.as_mut());
-            pager.update_all(&mut pages, |p| {
+            pager.update_all_with(new, &mut pages, |p| {
                 node::build(p[0], level, left, Some(&sep), Some(q));
                 node::build(p[1], level, upper, high.as_deref(), right);
                 node::set_incomplete(p[1], true);
                 complete(p, 2);
-            });
+            })?;
             drop((below, gq, g));
             first = false;
             let from = stack.pop().unwrap_or(self.root);

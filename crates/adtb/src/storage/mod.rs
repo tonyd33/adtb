@@ -2,6 +2,7 @@ mod alloc;
 mod block;
 mod crc;
 mod driver;
+mod evicted;
 mod header;
 mod log;
 mod page;
@@ -13,6 +14,7 @@ mod verify;
 #[cfg(test)]
 mod tests;
 
+pub use alloc::Reservation;
 pub use block::{LogFinding, LogProblem};
 pub use crc::{Crc32c, crc32c};
 pub use page::{

@@ -303,3 +303,47 @@ fn an_unreadable_segment_stops_recovery() {
     let s = scan(&img, Lsn(0), Mode::Recovery);
     assert_eq!(Some(LogProblem::Unreadable), s.fatal.map(|f| f.problem));
 }
+
+mod evicted {
+    use super::super::evicted::EvictedLsns;
+    use super::super::{Lsn, Pid};
+
+    #[test]
+    fn remembers_what_it_was_told() {
+        let mut t = EvictedLsns::new(8);
+        t.insert(Pid(5), Lsn(40));
+        t.insert(Pid(6), Lsn(41));
+        assert_eq!(Some(Lsn(40)), t.get(Pid(5)));
+        assert_eq!(Some(Lsn(41)), t.get(Pid(6)));
+        assert_eq!(None, t.get(Pid(7)));
+        t.insert(Pid(5), Lsn(90));
+        assert_eq!(Some(Lsn(90)), t.get(Pid(5)));
+    }
+
+    #[test]
+    fn never_grows_past_its_capacity() {
+        let mut t = EvictedLsns::new(10);
+        let capacity = t.capacity();
+        assert!(capacity >= 10);
+        for n in 0..100_000 {
+            t.insert(Pid(n), Lsn(n + 1));
+        }
+        assert_eq!(capacity, t.capacity());
+        assert!(t.len() <= capacity);
+    }
+
+    #[test]
+    fn a_page_it_dropped_is_never_reported_with_another_page_lsn() {
+        let mut t = EvictedLsns::new(4);
+        for n in 0..64 {
+            t.insert(Pid(n), Lsn(1000 + n));
+        }
+        for n in 0..64 {
+            if let Some(l) = t.get(Pid(n)) {
+                assert_eq!(Lsn(1000 + n), l);
+            }
+        }
+        let kept = (0..64).filter(|&n| t.get(Pid(n)).is_some()).count();
+        assert_eq!(t.capacity(), kept, "the newest pages fill every slot");
+    }
+}

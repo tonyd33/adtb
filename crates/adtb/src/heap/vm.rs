@@ -146,8 +146,9 @@ impl Vm {
     fn extend<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
         let size = pager.page_size();
         while pid.0 >= reach(size, level(&pager.read(self.root)?)) {
-            let moved = pager.allocate(1, PageKind::VisibilityMap, self.owner)?;
-            pager.update(&[self.root, moved], |p| {
+            let mut new = pager.reserve();
+            let moved = new.page(1, PageKind::VisibilityMap, self.owner)?;
+            pager.update_with(new, &[self.root, moved], |p| {
                 let (root, copy) = p.split_at_mut(1);
                 copy[0][CONTENTS..].copy_from_slice(&root[0][CONTENTS..]);
                 let l = level(root[0]);
@@ -167,8 +168,9 @@ impl Vm {
             at = match child(&node, i) {
                 Some(c) => c,
                 None => {
-                    let c = pager.allocate(1, PageKind::VisibilityMap, self.owner)?;
-                    pager.update(&[c, at], |p| {
+                    let mut new = pager.reserve();
+                    let c = new.page(1, PageKind::VisibilityMap, self.owner)?;
+                    pager.update_with(new, &[c, at], |p| {
                         set_level(p[0], l - 1);
                         set_child(p[1], i, c);
                     })?;

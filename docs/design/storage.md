@@ -165,6 +165,12 @@ pager.read(pid) -> Result<PageShared, PageError>     // a shared latch, read as 
 pager.update(&[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, PageError>
 pager.change(&[(pid, vec![Edit { offset, bytes }]), ...]) -> Result<Lsn, PageError>
 pager.allocate(format, kind, owner) -> Result<Pid, PageError>
+pager.reserve() -> Reservation
+reservation.page(format, kind, owner) -> Result<Pid, PageError>
+reservation.image(pid) -> Vec<u8>                  // the page as allocation formats it
+reservation.free(pid)                              // freed by the same update
+pager.update_with(reservation, &[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, PageError>
+pager.update_all_with(reservation, &mut [&mut Exclusive], |pages| ...) -> Result<Lsn, PageError>
 pager.free(pid) -> Result<Lsn, PageError>
 pager.allocated() -> Result<Vec<Pid>, PageError>
 pager.commit(xid, &[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, PageError>
@@ -184,9 +190,16 @@ Preconditions:
 - `update`, `change`, `commit` and `abort` name each page once, and
   never pages 0 or 1.
 - The pages latched at once, by every thread together, are fewer than
-  the pool's frames.
+  the pool's frames. An update that allocates also latches one bitmap
+  page per allocation bitmap group it allocates from.
+- A thread asks for no latch on a page it holds a guard on, through any
+  call: a call that would latch that page again waits forever. In
+  debug builds and under the simulator the call panics instead, naming
+  the page. An optimistic read beside a shared latch of the same
+  thread is allowed.
 - They write no byte below offset 12 and none past the page's end.
-- `free` names an allocated page that nothing refers to any more.
+- `free` and `reservation.free` name an allocated page that nothing
+  refers to once the update is applied.
 
 Postconditions:
 
@@ -206,12 +219,22 @@ Postconditions:
   (§5.3), so after a crash all of them are replayed or none.
 - A change is durable once `durable()` is past the LSN it returned,
   which `flush_log` ensures for everything logged before it.
-- `allocate` returns a page that was free, with the given format, kind
-  and owner, flags zero and zero contents, marked in the allocation
-  bitmap by the same call. An allocation is not undone when the
-  transaction that made it aborts. It fails, allocating nothing, when
-  an allocation bitmap page it reads is damaged; a free page found
-  damaged is marked allocated and never handed out.
+- `reservation.page` holds a free page that no other reservation or
+  allocation gets, and marks nothing; it fails when an allocation
+  bitmap page it reads is damaged, and a free page found damaged is
+  refused and skipped. Dropping a reservation unused gives its pages
+  back, with nothing logged.
+- `update_with` and `update_all_with` take a reservation whose every
+  page is among the pages they change. In the batch that holds the
+  change, each reserved page is marked in the allocation bitmap and
+  formatted with its format, kind and owner, flags zero and contents
+  zero, before the closure sees it. Each page the reservation frees is
+  cleared in the allocation bitmap in the same batch; its contents stay
+  until it is allocated again. A crash keeps the allocation or the
+  freeing and the change that links or unlinks it, or neither.
+- `allocate` is a reservation of one page allocated by an update that
+  changes nothing else, and `free` one freed the same way. An
+  allocation is not undone when the transaction that made it aborts.
 - `allocated` returns, in order, every page the allocation bitmap marks
   allocated, leaving out pages 0 and 1 and the bitmap pages. It fails
   when an allocation bitmap page is damaged.
@@ -308,7 +331,7 @@ operating error and never handed out as data.
 | Bit rot, latent sector error | Checksum (or tag) mismatch on read |
 | Misdirected write | The page id seeds the checksum; a page read from the wrong place fails it |
 | Torn write | Checksum mismatch; repaired from a full-page image in the log (§5.2) |
-| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); a page read back after the pool dropped it, older than it was then |
+| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); a page read back after the pool dropped it, older than it was then, while the pool's bounded table of dropped pages still holds it (§10.3) |
 
 A page that fails verification on read quarantines the heap or index
 holding it (§8).
@@ -667,10 +690,11 @@ comes back; any latch or optimistic read clears the mark.
 The pool reserves the range for `max_pages` page ids when it opens.
 The dirty page table, the set of pages changed since their last
 write, and the set written since the last data force sit beside the
-page memory under one lock. The pager remembers the LSN of each page
-it evicted, to catch a lost write when the page is read back; one
-entry per page touched does not bound memory, and a bounded table is
-still to come. `flush_log` is a lock held across the write and force,
+page memory under one lock. The pager remembers the LSN a page had
+when it was evicted, to catch a lost write when the page is read back,
+in a direct-mapped table of four slots per frame: a later eviction of
+a page sharing the slot replaces the entry, and the page it displaced
+is no longer checked until it is evicted again. `flush_log` is a lock held across the write and force,
 so a caller that waits for it finds its records durable already;
 group commit (§10.1) has no leader yet. Pages in flight for a read are
 held exclusive; writes go out under a shared latch. Recovery reads

@@ -679,7 +679,7 @@ struct World {
 
 fn crash_options() -> Options {
     Options {
-        pool_frames: 4,
+        pool_frames: 5,
         ..options()
     }
 }
@@ -913,7 +913,7 @@ const SPLIT_ENTRIES: u32 = 200;
 
 fn split_options() -> Options {
     Options {
-        pool_frames: 4,
+        pool_frames: 5,
         ..options()
     }
 }

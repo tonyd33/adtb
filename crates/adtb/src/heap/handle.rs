@@ -611,7 +611,7 @@ impl Heap {
     /// holds, the page's all-visible bit is set if every version left is judged all-visible and
     /// no dead slot is left. The directory entry takes the page's free space when the page is in
     /// the newest format or pruning freed space on it. A page left empty leaves the directory and
-    /// is freed by a later pager call.
+    /// is freed in the same pager update.
     ///
     /// Panics if `pid` is not a page of this heap, or if a slot in `cleaned` still leads to a
     /// version `judge` keeps.
@@ -647,8 +647,9 @@ impl Heap {
                 self.vm(&stage, pager)?.put(&mut stage, pager, pid, false)?;
             }
             self.space.vacate(&mut stage, pager, position)?;
-            stage.commit(pager)?;
-            pager.free(pid)?;
+            let mut gone = pager.reserve();
+            gone.free(pid);
+            stage.commit_with(pager, gone)?;
             if self.hint == Some(pid) {
                 self.hint = None;
             }

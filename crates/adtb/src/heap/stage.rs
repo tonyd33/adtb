@@ -1,5 +1,5 @@
 use crate::runtime::Runtime;
-use crate::storage::{self, FIRST_EDITABLE, PageError, Pager, Pid};
+use crate::storage::{self, FIRST_EDITABLE, PageError, Pager, Pid, Reservation};
 
 /// Copies of pages being changed together, written back by one pager update.
 #[derive(Debug, Default)]
@@ -46,11 +46,22 @@ impl Stage {
 
     /// Write every staged page back in one pager update, so a crash keeps all of them or none.
     pub fn commit<R: Runtime>(self, pager: &Pager<R>) -> Result<(), PageError> {
+        let new = pager.reserve();
+        self.commit_with(pager, new)
+    }
+
+    /// Write every staged page back as [`Stage::commit`] does, allocating the pages of `new` in
+    /// the same update.
+    pub fn commit_with<R: Runtime>(
+        self,
+        pager: &Pager<R>,
+        new: Reservation<'_, R>,
+    ) -> Result<(), PageError> {
         if self.pages.is_empty() {
             return Ok(());
         }
         let pids: Vec<Pid> = self.pages.iter().map(|(p, _)| *p).collect();
-        pager.update(&pids, |views| {
+        pager.update_with(new, &pids, |views| {
             for (view, (pid, bytes)) in views.iter_mut().zip(&self.pages) {
                 assert_eq!(
                     storage::lsn(view),

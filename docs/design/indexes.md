@@ -262,8 +262,8 @@ Invariants:
 - Latches are taken top-down and left to right. A thread holding a
   latch on a page takes latches only on its right siblings, on pages
   of lower levels, and on pages it has just allocated.
-- A tree operation holds at most four latches at once, besides those
-  `allocate` takes for itself.
+- A tree operation holds at most four latches at once, besides the
+  allocation bitmap page an allocating update latches for itself.
 
 Postconditions:
 

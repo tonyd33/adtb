@@ -20,6 +20,60 @@ const STORED_FLIP: u64 = EVICTED << VERSION_BITS;
 
 const ALIGN: usize = 4096;
 
+/// The latches the calling thread holds, by page memory and page, kept in debug builds and when
+/// the simulator's tests enable `latch-checks`.
+#[cfg(any(debug_assertions, feature = "latch-checks"))]
+mod held {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static HELD: RefCell<Vec<(usize, u64, bool)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Panic if the calling thread already holds a latch on `pid`, exclusive only if
+    /// `exclusive_only`.
+    pub(super) fn refuse(mem: usize, pid: u64, exclusive_only: bool) {
+        let held = HELD
+            .try_with(|h| {
+                h.borrow()
+                    .iter()
+                    .any(|&(m, p, x)| m == mem && p == pid && (x || !exclusive_only))
+            })
+            .unwrap_or(false);
+        if held {
+            panic!("page {pid} is already latched by this thread");
+        }
+    }
+
+    pub(super) fn take(mem: usize, pid: u64, exclusive: bool) {
+        let _ = HELD.try_with(|h| h.borrow_mut().push((mem, pid, exclusive)));
+    }
+
+    pub(super) fn count(mem: usize) -> usize {
+        HELD.try_with(|h| h.borrow().iter().filter(|&&(m, ..)| m == mem).count())
+            .unwrap_or(0)
+    }
+
+    pub(super) fn release(mem: usize, pid: u64) {
+        let _ = HELD.try_with(|h| {
+            let mut h = h.borrow_mut();
+            if let Some(i) = h.iter().position(|&(m, p, _)| m == mem && p == pid) {
+                h.swap_remove(i);
+            }
+        });
+    }
+}
+
+#[cfg(not(any(debug_assertions, feature = "latch-checks")))]
+mod held {
+    pub(super) fn refuse(_: usize, _: u64, _: bool) {}
+    pub(super) fn take(_: usize, _: u64, _: bool) {}
+    pub(super) fn release(_: usize, _: u64) {}
+    pub(super) fn count(_: usize) -> usize {
+        0
+    }
+}
+
 fn word(tag: u64, version: u64) -> u64 {
     (tag << VERSION_BITS) | (version & VERSION_MASK)
 }
@@ -268,10 +322,20 @@ impl PageMemory {
         (state, version(s))
     }
 
+    /// Returns the number of latches the calling thread holds here, in debug builds; 0 otherwise.
+    pub fn latched_here(&self) -> usize {
+        held::count(self.id())
+    }
+
+    fn id(&self) -> usize {
+        self as *const PageMemory as usize
+    }
+
     fn exclusive_from(&self, pid: u64, s: u64) -> Option<Exclusive<'_>> {
         self.swap_state(pid, s, word(EXCLUSIVE, version(s)))
             .then(|| {
                 fence(Ordering::Release);
+                held::take(self.id(), pid, true);
                 Exclusive {
                     mem: self,
                     pid,
@@ -285,7 +349,10 @@ impl PageMemory {
     /// Take the exclusive latch on `pid`, waiting through `threads` while another holds a latch.
     ///
     /// An evicted page is latched too; [`Exclusive::resident`] then says it must be filled.
+    ///
+    /// Panics, in debug builds, if the calling thread holds a latch on `pid` already.
     pub fn lock_exclusive(&self, pid: u64, threads: &impl Threads) -> Exclusive<'_> {
+        held::refuse(self.id(), pid, false);
         loop {
             let s = self.load(pid, Ordering::Acquire);
             if matches!(tag(s), UNLOCKED | MARKED | EVICTED)
@@ -308,7 +375,10 @@ impl PageMemory {
 
     /// Take a shared latch on `pid`, waiting through `threads` while it is exclusive or its
     /// count is full. Returns `None` if the page is evicted.
+    ///
+    /// Panics, in debug builds, if the calling thread holds a latch on `pid` already.
     pub fn lock_shared(&self, pid: u64, threads: &impl Threads) -> Option<Shared<'_>> {
+        held::refuse(self.id(), pid, false);
         loop {
             let s = self.load(pid, Ordering::Acquire);
             let next = match tag(s) {
@@ -321,13 +391,17 @@ impl PageMemory {
                 }
             };
             if self.swap_state(pid, s, word(next, version(s))) {
+                held::take(self.id(), pid, false);
                 return Some(Shared { mem: self, pid });
             }
         }
     }
 
     /// Start an optimistic read of `pid`. Returns `None` while it is exclusive or evicted.
+    ///
+    /// Panics, in debug builds, if the calling thread holds the exclusive latch on `pid`.
     pub fn optimistic(&self, pid: u64) -> Option<Optimistic<'_>> {
+        held::refuse(self.id(), pid, true);
         let s = self.load(pid, Ordering::Acquire);
         match tag(s) {
             EXCLUSIVE | EVICTED => None,
@@ -414,6 +488,7 @@ impl Exclusive<'_> {
         self.mem.data.release(self.pid as usize * size, size);
         self.mem
             .store_state(self.pid, word(EVICTED, self.version + 1));
+        held::release(self.mem.id(), self.pid);
         self.done = true;
     }
 }
@@ -425,6 +500,8 @@ impl<'a> Exclusive<'a> {
     pub fn share(mut self) -> Shared<'a> {
         assert!(self.resident, "a shared latch needs a resident page");
         self.mem.store_state(self.pid, word(1, self.version + 1));
+        held::release(self.mem.id(), self.pid);
+        held::take(self.mem.id(), self.pid, false);
         self.done = true;
         Shared {
             mem: self.mem,
@@ -448,6 +525,7 @@ impl Drop for Exclusive<'_> {
         }
         let tag = if self.resident { UNLOCKED } else { EVICTED };
         self.mem.store_state(self.pid, word(tag, self.version + 1));
+        held::release(self.mem.id(), self.pid);
     }
 }
 
@@ -488,6 +566,7 @@ impl Drop for Shared<'_> {
             );
             let next = if n == 1 { UNLOCKED } else { n - 1 };
             if self.mem.swap_state(self.pid, s, word(next, version(s))) {
+                held::release(self.mem.id(), self.pid);
                 return;
             }
         }
@@ -616,11 +695,16 @@ mod tests {
         let m = memory();
         m.lock_exclusive(1, &Alone).write(0, &[7]);
         let a = m.lock_shared(1, &Alone).unwrap();
-        let b = m.lock_shared(1, &Alone).unwrap();
-        assert_eq!(PageState::Shared(2), m.state(1).0);
-        assert!(m.try_lock_exclusive(1).is_none());
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let b = m.lock_shared(1, &Alone).unwrap();
+                assert_eq!(PageState::Shared(2), m.state(1).0);
+                assert!(m.try_lock_exclusive(1).is_none());
+                drop(b);
+            });
+        });
+        assert_eq!(PageState::Shared(1), m.state(1).0);
         drop(a);
-        drop(b);
         assert_eq!(PageState::Unlocked, m.state(1).0);
         assert!(m.try_lock_exclusive(1).is_some());
     }
@@ -679,6 +763,50 @@ mod tests {
         assert_eq!(PageState::Shared(1), m.state(6).0);
         assert_eq!(3, s[0]);
         assert!(m.optimistic(6).is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "page 2 is already latched by this thread")]
+    fn a_second_shared_latch_on_one_thread_panics() {
+        let m = memory();
+        m.lock_exclusive(2, &Alone).write(0, &[1]);
+        let _a = m.lock_shared(2, &Alone).unwrap();
+        m.lock_shared(2, &Alone);
+    }
+
+    #[test]
+    #[should_panic(expected = "page 2 is already latched by this thread")]
+    fn an_exclusive_latch_over_a_shared_one_panics() {
+        let m = memory();
+        m.lock_exclusive(2, &Alone).write(0, &[1]);
+        let _a = m.lock_shared(2, &Alone).unwrap();
+        m.lock_exclusive(2, &Alone);
+    }
+
+    #[test]
+    #[should_panic(expected = "page 2 is already latched by this thread")]
+    fn an_optimistic_read_under_an_exclusive_latch_panics() {
+        let m = memory();
+        let _g = m.lock_exclusive(2, &Alone);
+        m.optimistic(2);
+    }
+
+    #[test]
+    fn released_latches_are_forgotten() {
+        let m = memory();
+        let mut g = m.lock_exclusive(2, &Alone);
+        g.write(0, &[1]);
+        let s = g.share();
+        assert!(
+            m.optimistic(2).is_some(),
+            "an optimistic read beside a shared latch is fine"
+        );
+        drop(s);
+        m.try_lock_exclusive(2).unwrap().evict();
+        drop(m.lock_exclusive(2, &Alone));
+        let other = memory();
+        let _held = m.lock_exclusive(3, &Alone);
+        drop(other.lock_exclusive(3, &Alone));
     }
 
     #[test]

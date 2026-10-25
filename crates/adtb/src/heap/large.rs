@@ -167,10 +167,11 @@ impl LargeStore {
             } else {
                 self.space.set_category(&mut stage, pager, position, cat)?;
             }
-            stage.commit(pager)?;
+            let mut gone = pager.reserve();
             if empty {
-                pager.free(pid)?;
+                gone.free(pid);
             }
+            stage.commit_with(pager, gone)?;
         }
         Ok(freed)
     }

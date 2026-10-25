@@ -6,6 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Detect a thread asking for a latch it holds, outside debug builds too.
+latch-checks = []
+
 [dependencies]
 
 [lints]

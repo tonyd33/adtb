@@ -10,6 +10,7 @@ use crate::runtime::{AlignedBuf, FileId, IoError, Runtime, ThreadId};
 use super::alloc::diff;
 use super::block::LogFinding;
 use super::driver::Driver;
+use super::evicted::EvictedLsns;
 use super::header::{self, FileHeader, REGION};
 use super::log::Log;
 use super::page::{self, FIRST_EDITABLE, Verdict, valid_page_size};
@@ -76,7 +77,7 @@ pub enum OpenError {
 }
 
 /// What the pool knows of its pages beyond their memory and state words.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Meta {
     /// The dirty page table: each page's `rec_lsn`.
     pub(crate) dirty: BTreeMap<Pid, Lsn>,
@@ -84,8 +85,8 @@ pub(crate) struct Meta {
     pub(crate) changed: BTreeSet<Pid>,
     /// Pages written since the last force of the data file.
     pub(crate) written: BTreeSet<Pid>,
-    /// The LSN of every page the pool dropped, checked when it is read back.
-    pub(crate) evicted: BTreeMap<Pid, Lsn>,
+    /// The LSN of pages the pool dropped, checked when they are read back.
+    pub(crate) evicted: EvictedLsns,
     pub(crate) damaged: BTreeMap<Pid, Damage>,
     /// Resident pages and pages being read in, in clock order.
     resident: Vec<Pid>,
@@ -116,8 +117,8 @@ pub struct Pager<R: Runtime> {
     header: Lock<(FileHeader, u64)>,
     pub(crate) log: Lock<Log>,
     pub(crate) meta: Lock<Meta>,
-    /// No bitmap group below this one has a free page; held across an allocation.
-    pub(crate) alloc_group: Lock<u64>,
+    /// Held across a search for a free page and across marking pages allocated.
+    pub(crate) alloc: Lock<super::alloc::AllocState>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Pager<R> {
@@ -128,6 +129,9 @@ impl<R: Runtime> std::fmt::Debug for Pager<R> {
             .finish_non_exhaustive()
     }
 }
+
+/// Slots of the evicted-page LSN table per pool frame.
+const EVICTED_PER_FRAME: usize = 4;
 
 fn parent(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(dir, _)| dir)
@@ -192,7 +196,11 @@ impl<R: Runtime> Deref for PageExclusive<'_, R> {
     }
 }
 
-impl<R: Runtime> PageExclusive<'_, R> {
+impl<'a, R: Runtime> PageExclusive<'a, R> {
+    pub(crate) fn inner(&mut self) -> &mut pages::Exclusive<'a> {
+        &mut self.g
+    }
+
     pub fn pid(&self) -> Pid {
         Pid(self.g.pid())
     }
@@ -272,8 +280,16 @@ impl<R: Runtime> Pager<R> {
             drivers: Lock::new(BTreeMap::new()),
             header: Lock::new((header, copy)),
             log: Lock::new(log),
-            meta: Lock::new(Meta::default()),
-            alloc_group: Lock::new(0),
+            meta: Lock::new(Meta {
+                dirty: BTreeMap::new(),
+                changed: BTreeSet::new(),
+                written: BTreeSet::new(),
+                evicted: EvictedLsns::new(EVICTED_PER_FRAME * o.pool_frames),
+                damaged: BTreeMap::new(),
+                resident: Vec::new(),
+                hand: 0,
+            }),
+            alloc: Lock::new(Default::default()),
             rt,
         }
     }
@@ -440,9 +456,9 @@ impl<R: Runtime> Pager<R> {
                 let found = page::lsn(buf);
                 self.meta()
                     .evicted
-                    .get(&pid)
-                    .filter(|&&expected| found < expected)
-                    .map(|&expected| Damage::Stale { expected, found })
+                    .get(pid)
+                    .filter(|&expected| found < expected)
+                    .map(|expected| Damage::Stale { expected, found })
             }
         };
         if let Some(damage) = damage {
@@ -517,7 +533,14 @@ impl<R: Runtime> Pager<R> {
             };
             match victim {
                 Some(g) => self.evict(g),
-                None => self.rt.yield_now(),
+                None => {
+                    let held = self.mem.latched_here();
+                    assert!(
+                        held < self.pool_frames,
+                        "this thread latches {held} pages, every frame of the pool"
+                    );
+                    self.rt.yield_now();
+                }
             }
         }
     }
@@ -669,10 +692,10 @@ impl<R: Runtime> Pager<R> {
 
     /// Run `f` with exclusive latches on `pids`, taken in page order, passing them in the order
     /// given.
-    fn with_latched<T>(
-        &self,
+    pub(crate) fn with_latched<'s, T>(
+        &'s self,
         pids: &[Pid],
-        f: impl FnOnce(&Self, &mut [&mut pages::Exclusive<'_>]) -> T,
+        f: impl FnOnce(&'s Self, &mut [&mut pages::Exclusive<'s>]) -> T,
     ) -> Result<T, PageError> {
         let distinct: BTreeSet<Pid> = pids.iter().copied().collect();
         assert_eq!(
@@ -684,13 +707,13 @@ impl<R: Runtime> Pager<R> {
             pids.len() <= self.pool_frames,
             "a change needs more frames than the pool has"
         );
-        let mut held: BTreeMap<Pid, pages::Exclusive<'_>> = BTreeMap::new();
+        let mut held: BTreeMap<Pid, pages::Exclusive<'s>> = BTreeMap::new();
         for &pid in &distinct {
             held.insert(pid, self.exclusive(pid)?.g);
         }
-        let mut ordered: Vec<pages::Exclusive<'_>> =
+        let mut ordered: Vec<pages::Exclusive<'s>> =
             pids.iter().map(|p| held.remove(p).unwrap()).collect();
-        let mut refs: Vec<&mut pages::Exclusive<'_>> = ordered.iter_mut().collect();
+        let mut refs: Vec<&mut pages::Exclusive<'s>> = ordered.iter_mut().collect();
         Ok(f(self, &mut refs))
     }
 

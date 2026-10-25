@@ -133,8 +133,9 @@ impl Space {
             fanout >= 2 && fanout <= max_fanout(pager.page_size()),
             "directory fanout {fanout} is out of range"
         );
-        let root = pager.allocate(1, PageKind::FreeSpaceMap, owner)?;
-        pager.update(&[root], |p| {
+        let mut new = pager.reserve();
+        let root = new.page(1, PageKind::FreeSpaceMap, owner)?;
+        pager.update_with(new, &[root], |p| {
             p[0][VM..VM + 8].copy_from_slice(&vm.map_or(0, |v| v.0).to_le_bytes());
             init(p[0], 0, u64::from(fanout));
         })?;
@@ -302,13 +303,15 @@ impl Space {
         arrangement: Arrangement,
         format: u16,
     ) -> Result<Pid, PageError> {
-        let page = pager.allocate(format, arrangement.kind(), self.owner)?;
+        let mut new = pager.reserve();
+        let page = new.page(format, arrangement.kind(), self.owner)?;
         let mut stage = Stage::new();
+        stage.put(page, new.image(page));
         let fresh = stage.page(pager, page)?;
         arrangement.init(fresh, position);
         let cat = category(page::free(fresh), pager.page_size());
         self.write_entry(&mut stage, pager, position, Some(page), cat)?;
-        stage.commit(pager)?;
+        stage.commit_with(pager, new)?;
         Ok(page)
     }
 
@@ -415,17 +418,21 @@ impl Space {
             }
             l
         };
-        let page = pager.allocate(format, arrangement.kind(), self.owner)?;
+        let mut new = pager.reserve();
+        let page = new.page(format, arrangement.kind(), self.owner)?;
         let moved = if split {
-            Some(pager.allocate(1, PageKind::FreeSpaceMap, self.owner)?)
+            Some(new.page(1, PageKind::FreeSpaceMap, self.owner)?)
         } else {
             None
         };
         let mut chain = Vec::new();
         for _ in 0..fresh {
-            chain.push(pager.allocate(1, PageKind::FreeSpaceMap, self.owner)?);
+            chain.push(new.page(1, PageKind::FreeSpaceMap, self.owner)?);
         }
         let mut stage = Stage::new();
+        for &pid in [page].iter().chain(&moved).chain(&chain) {
+            stage.put(pid, new.image(pid));
+        }
         let mut height = height;
         if let Some(moved) = moved {
             let old = stage.read(pager, self.root)?;
@@ -461,7 +468,7 @@ impl Space {
             position32,
             category(free, pager.page_size()),
         )?;
-        stage.commit(pager)?;
+        stage.commit_with(pager, new)?;
         Ok(page)
     }
 }

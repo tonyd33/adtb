@@ -182,9 +182,10 @@ pub struct CommitLog {
 impl CommitLog {
     /// Allocate an empty commit log. Ids from [`Xid::FIRST`] are unreserved.
     pub fn create<R: Runtime>(pager: &Pager<R>) -> Result<CommitLog, PageError> {
-        let root_pid = pager.allocate(PAGE_FORMAT, PageKind::CommitLog, 0)?;
+        let mut new = pager.reserve();
+        let root_pid = new.page(PAGE_FORMAT, PageKind::CommitLog, 0)?;
         let dir = Directory {
-            pid: pager.allocate(PAGE_FORMAT, PageKind::CommitLog, 0)?,
+            pid: new.page(PAGE_FORMAT, PageKind::CommitLog, 0)?,
             next: None,
             entries: Vec::new(),
         };
@@ -194,7 +195,7 @@ impl CommitLog {
             bound: Xid::FIRST,
             first_directory: dir.pid,
         };
-        pager.update(&[root_pid, dir.pid], |p| {
+        pager.update_with(new, &[root_pid, dir.pid], |p| {
             root.write(p[0]);
             dir.write(p[1]);
         })?;
@@ -333,16 +334,17 @@ impl CommitLog {
         );
         let (first, _) = locate(from, self.per_page);
         let (last, _) = locate(Xid(upto.0 - 1), self.per_page);
+        let mut new = pager.reserve();
         let mut fresh = Vec::new();
         for n in first..=last {
             if !self.pages.contains_key(&n) {
-                fresh.push((n, pager.allocate(PAGE_FORMAT, PageKind::CommitLog, 0)?));
+                fresh.push((n, new.page(PAGE_FORMAT, PageKind::CommitLog, 0)?));
             }
         }
         let mut tail = vec![self.directories.last().expect("a last directory").clone()];
         for entry in &fresh {
             if tail.last().unwrap().entries.len() == self.directory_capacity {
-                let pid = pager.allocate(PAGE_FORMAT, PageKind::CommitLog, 0)?;
+                let pid = new.page(PAGE_FORMAT, PageKind::CommitLog, 0)?;
                 tail.last_mut().unwrap().next = Some(pid);
                 tail.push(Directory {
                     pid,
@@ -359,8 +361,9 @@ impl CommitLog {
         };
         let pids: Vec<Pid> = std::iter::once(self.root_pid)
             .chain(tail.iter().map(|d| d.pid))
+            .chain(fresh.iter().map(|(_, pid)| *pid))
             .collect();
-        pager.update(&pids, |p| {
+        pager.update_with(new, &pids, |p| {
             root.write(p[0]);
             for (d, page) in tail.iter().zip(p[1..].iter_mut()) {
                 d.write(page);
@@ -462,18 +465,21 @@ impl CommitLog {
             first_directory: dir.pid,
             ..self.root
         };
-        pager.update(&[self.root_pid, dir.pid], |p| {
+        let mut gone = pager.reserve();
+        for &pid in gone_dirs
+            .iter()
+            .chain(self.pages.range(..keep).map(|(_, p)| p))
+        {
+            gone.free(pid);
+        }
+        pager.update_with(gone, &[self.root_pid, dir.pid], |p| {
             root.write(p[0]);
             dir.write(p[1]);
         })?;
         self.root = root;
         self.directories.drain(..first);
         self.directories[0] = dir;
-        let rest = self.pages.split_off(&keep);
-        let gone_pages = std::mem::replace(&mut self.pages, rest);
-        for pid in gone_dirs.into_iter().chain(gone_pages.into_values()) {
-            pager.free(pid)?;
-        }
+        self.pages = self.pages.split_off(&keep);
         Ok(())
     }
 }
