@@ -11,7 +11,7 @@ use adtb::runtime::{
     Threads, Ticket,
 };
 
-use crate::disk::{Ctx, Disk, Faults, Geometry, InFlight, Ino};
+use crate::disk::{Ctx, Disk, Faults, Geometry, InFlight, Ino, Recording};
 use crate::rng::Rng;
 
 const WALL_ORIGIN: Duration = Duration::from_secs(1_767_225_600);
@@ -131,6 +131,26 @@ impl std::fmt::Debug for Sim {
 }
 
 impl Sim {
+    /// Returns a simulation whose device holds `files`, every byte forced.
+    pub fn with_files(seed: u64, config: Config, files: BTreeMap<String, Vec<u8>>) -> Self {
+        let sim = Sim::new(seed, config);
+        lock(&sim.shared.state).disk = Disk::from_files(files);
+        sim
+    }
+
+    /// Record every write, name change and force from now on, taking everything before as forced.
+    pub fn record(&mut self) {
+        lock(&self.shared.state).disk.record();
+    }
+
+    pub fn recording(&self) -> Recording {
+        lock(&self.shared.state)
+            .disk
+            .recording()
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub fn new(seed: u64, config: Config) -> Self {
         assert!(
             config.sector > 0 && (AlignedBuf::ALIGN as u64).is_multiple_of(config.sector),
@@ -265,6 +285,7 @@ fn settle(shared: &Shared, me: usize, result: thread::Result<()>) {
         }
         Err(payload) if payload.is::<Halt>() => {}
         Err(payload) => {
+            st.crash();
             st.phase = Phase::Panicked(payload);
             shared.turn.notify_all();
         }
@@ -512,6 +533,16 @@ impl SimRuntime {
             Ok(st) => st,
             Err(Halt) => panic::resume_unwind(Box::new(Halt)),
         }
+    }
+}
+
+impl SimRuntime {
+    /// Returns the number of events recorded so far, or 0 when the simulation is not recording.
+    pub fn recorded(&self) -> usize {
+        lock(&self.shared.state)
+            .disk
+            .recording()
+            .map_or(0, |r| r.len())
     }
 }
 

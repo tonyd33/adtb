@@ -32,7 +32,7 @@ Invariants:
 [runtime.md §1](runtime.md#1-time-threads-and-randomness) and
 [§2](runtime.md#2-io-interface) as its module `runtime`.
 
-TODO: what each of `Frame` and `PageRef` represents, and its methods, are undecided.
+TODO: what each of `Frame` and `PageRef` represents, and its methods, are undecided. Until the vmcache pool exists the pager holds each frame in an `AlignedBuf`, and no consumer sees either type: pages reach heaps and indexes only as [storage.md §2.3](storage.md#23-page-access) states.
 
 Rulings: project/arch/unsafe/confined
 

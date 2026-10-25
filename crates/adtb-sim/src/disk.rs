@@ -92,6 +92,42 @@ pub(crate) struct Disk {
     durable_names: BTreeMap<String, Ino>,
     pending_names: Vec<(u64, NameOp)>,
     seq: u64,
+    recording: Option<Recording>,
+}
+
+#[derive(Clone, Debug)]
+enum Event {
+    Write {
+        ino: Ino,
+        offset: u64,
+        data: Vec<u8>,
+        seq: u64,
+    },
+    Create {
+        path: String,
+        ino: Ino,
+        seq: u64,
+    },
+    Remove {
+        path: String,
+        seq: u64,
+    },
+    Sync {
+        ino: Ino,
+        upto: u64,
+    },
+    SyncDir {
+        dir: String,
+        upto: u64,
+    },
+}
+
+/// The stream of writes, name changes and forces that reached the device, from a durable base.
+#[derive(Clone, Debug, Default)]
+pub struct Recording {
+    base_inodes: Vec<Vec<u8>>,
+    base_names: BTreeMap<String, Ino>,
+    events: Vec<Event>,
 }
 
 pub(crate) struct Ctx<'a> {
@@ -115,6 +151,47 @@ fn put(bytes: &mut Vec<u8>, offset: u64, data: &[u8]) {
 }
 
 impl Disk {
+    pub(crate) fn from_files(files: BTreeMap<String, Vec<u8>>) -> Disk {
+        let mut disk = Disk::default();
+        for (path, bytes) in files {
+            disk.names.insert(path, disk.inodes.len());
+            disk.inodes.push(Inode {
+                visible: bytes.clone(),
+                durable: bytes,
+                ..Inode::default()
+            });
+        }
+        disk.durable_names = disk.names.clone();
+        disk
+    }
+
+    /// Start recording, taking every write and name change so far as forced.
+    pub(crate) fn record(&mut self) {
+        self.recording = Some(Recording {
+            base_inodes: self.inodes.iter().map(|i| i.visible.clone()).collect(),
+            base_names: self.names.clone(),
+            events: Vec::new(),
+        });
+    }
+
+    pub(crate) fn recording(&self) -> Option<&Recording> {
+        self.recording.as_ref()
+    }
+
+    fn note(&mut self, event: Event) {
+        if let Some(r) = &mut self.recording {
+            r.events.push(event);
+        }
+    }
+
+    fn path_of(&self, ino: Ino) -> String {
+        self.names
+            .iter()
+            .chain(&self.durable_names)
+            .find(|(_, i)| **i == ino)
+            .map_or_else(String::new, |(p, _)| p.clone())
+    }
+
     /// Returns the sequence number the next completed write or name change gets.
     pub(crate) fn seq(&self) -> u64 {
         self.seq
@@ -139,6 +216,11 @@ impl Disk {
         self.names.insert(path.to_owned(), ino);
         self.pending_names
             .push((self.seq, NameOp::Create(path.to_owned(), ino)));
+        self.note(Event::Create {
+            path: path.to_owned(),
+            ino,
+            seq: self.seq,
+        });
         self.seq += 1;
         Ok((ino, 0))
     }
@@ -149,6 +231,10 @@ impl Disk {
         }
         self.pending_names
             .push((self.seq, NameOp::Remove(path.to_owned())));
+        self.note(Event::Remove {
+            path: path.to_owned(),
+            seq: self.seq,
+        });
         self.seq += 1;
         Ok(())
     }
@@ -180,6 +266,7 @@ impl Disk {
             "read at {offset} of {} bytes is not sector aligned",
             buf.len()
         );
+        let path = self.path_of(ino);
         let inode = &mut self.inodes[ino];
         let len = inode.visible.len() as u64;
         let end = (offset + buf.len() as u64).min(len);
@@ -191,7 +278,7 @@ impl Disk {
             let last = (end - 1) / sector;
             let s = cx.rng.between(first, last);
             inode.bad.insert(s);
-            let _ = writeln!(cx.trace, "fault latent ino {ino} sector {s}");
+            let _ = writeln!(cx.trace, "fault latent ino {ino} {path:?} sector {s}");
         }
         if inode
             .bad
@@ -209,7 +296,10 @@ impl Disk {
             if let Some(b) = inode.durable.get_mut(at) {
                 *b ^= bit;
             }
-            let _ = writeln!(cx.trace, "fault corrupt ino {ino} byte {at} bit {bit:#04x}");
+            let _ = writeln!(
+                cx.trace,
+                "fault corrupt ino {ino} {path:?} byte {at} bit {bit:#04x}"
+            );
         }
         let n = (end - offset) as usize;
         buf[..n].copy_from_slice(&inode.visible[offset as usize..end as usize]);
@@ -229,6 +319,7 @@ impl Disk {
             "write at {offset} of {} bytes is not sector aligned",
             data.len()
         );
+        let path = self.path_of(ino);
         if cx.rng.chance(cx.faults.fail_p) {
             let mut landed = Vec::new();
             for (i, chunk) in data.chunks(sector as usize).enumerate() {
@@ -240,18 +331,21 @@ impl Disk {
             }
             let _ = writeln!(
                 cx.trace,
-                "fault fail write ino {ino} @{offset} landed sectors {landed:?}"
+                "fault fail write ino {ino} {path:?} @{offset} landed sectors {landed:?}"
             );
             return Err(IoError::Failed);
         }
         if cx.rng.chance(cx.faults.lost_write_p) {
-            let _ = writeln!(cx.trace, "fault lost write ino {ino} @{offset}");
+            let _ = writeln!(cx.trace, "fault lost write ino {ino} {path:?} @{offset}");
             return Ok(());
         }
         let mut target = offset;
         if cx.rng.chance(cx.faults.misdirect_p) {
             target = self.misdirect(ino, offset, data.len() as u64, sector, cx.rng);
-            let _ = writeln!(cx.trace, "fault misdirect ino {ino} @{offset} to @{target}");
+            let _ = writeln!(
+                cx.trace,
+                "fault misdirect ino {ino} {path:?} @{offset} to @{target}"
+            );
         }
         self.apply(ino, target, data, sector);
         Ok(())
@@ -283,6 +377,12 @@ impl Disk {
             offset,
             data: data.to_vec(),
         });
+        self.note(Event::Write {
+            ino,
+            offset,
+            data: data.to_vec(),
+            seq: self.seq,
+        });
         self.seq += 1;
     }
 
@@ -296,7 +396,8 @@ impl Disk {
 
     pub(crate) fn sync(&mut self, ino: Ino, upto: u64, cx: Ctx<'_>) -> Result<(), IoError> {
         if cx.rng.chance(cx.faults.fail_p) {
-            let _ = writeln!(cx.trace, "fault fail sync ino {ino}");
+            let path = self.path_of(ino);
+            let _ = writeln!(cx.trace, "fault fail sync ino {ino} {path:?}");
             return Err(IoError::Failed);
         }
         let inode = &mut self.inodes[ino];
@@ -305,6 +406,7 @@ impl Disk {
         for w in forced {
             put(&mut inode.durable, w.offset, &w.data);
         }
+        self.note(Event::Sync { ino, upto });
         Ok(())
     }
 
@@ -321,6 +423,10 @@ impl Disk {
         for (_, op) in forced {
             apply_name(&mut self.durable_names, op);
         }
+        self.note(Event::SyncDir {
+            dir: dir.to_owned(),
+            upto,
+        });
         Ok(())
     }
 
@@ -396,5 +502,104 @@ fn apply_name(names: &mut BTreeMap<String, Ino>, op: NameOp) {
         NameOp::Remove(path) => {
             names.remove(&path);
         }
+    }
+}
+
+impl Recording {
+    /// Returns the number of events recorded.
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    /// Returns each prefix length of the recording that ends with a completed force.
+    pub fn flushes(&self) -> Vec<usize> {
+        self.events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, Event::Sync { .. } | Event::SyncDir { .. }))
+            .map(|(i, _)| i + 1)
+            .collect()
+    }
+
+    /// Returns disk images a crash after the first `at` events may leave: the forced writes and
+    /// name changes, plus each subset of the rest, or `max` random subsets when there are more.
+    pub fn images(&self, at: usize, max: usize, seed: u64) -> Vec<BTreeMap<String, Vec<u8>>> {
+        let events = &self.events[..at];
+        let forced = |i: usize| -> bool {
+            let later = &events[i..];
+            match &events[i] {
+                Event::Write { ino, seq, .. } => later.iter().any(|e| {
+                    matches!(e, Event::Sync { ino: j, upto } if j == ino && upto > seq)
+                }),
+                Event::Create { path, seq, .. } | Event::Remove { path, seq } => {
+                    later.iter().any(|e| {
+                        matches!(e, Event::SyncDir { dir, upto } if dir == parent(path) && upto > seq)
+                    })
+                }
+                Event::Sync { .. } | Event::SyncDir { .. } => false,
+            }
+        };
+        let open: Vec<usize> = (0..at)
+            .filter(|&i| !matches!(events[i], Event::Sync { .. } | Event::SyncDir { .. }))
+            .filter(|&i| !forced(i))
+            .collect();
+        let mut subsets: Vec<Vec<bool>> = Vec::new();
+        if open.len() < 63 && (1u64 << open.len()) <= max as u64 {
+            for mask in 0..(1u64 << open.len()) {
+                subsets.push((0..open.len()).map(|b| mask >> b & 1 == 1).collect());
+            }
+        } else {
+            let mut rng = Rng::new(seed);
+            subsets.push(vec![false; open.len()]);
+            subsets.push(vec![true; open.len()]);
+            while subsets.len() < max {
+                subsets.push((0..open.len()).map(|_| rng.coin()).collect());
+            }
+        }
+        subsets
+            .into_iter()
+            .map(|chosen| {
+                let mut keep = vec![true; at];
+                for (k, &i) in open.iter().enumerate() {
+                    keep[i] = chosen[k];
+                }
+                self.image(events, &keep)
+            })
+            .collect()
+    }
+
+    fn image(&self, events: &[Event], keep: &[bool]) -> BTreeMap<String, Vec<u8>> {
+        let mut inodes = self.base_inodes.clone();
+        let mut names = self.base_names.clone();
+        for (e, &k) in events.iter().zip(keep) {
+            if !k {
+                continue;
+            }
+            match e {
+                Event::Write {
+                    ino, offset, data, ..
+                } => {
+                    if inodes.len() <= *ino {
+                        inodes.resize(*ino + 1, Vec::new());
+                    }
+                    put(&mut inodes[*ino], *offset, data);
+                }
+                Event::Create { path, ino, .. } => {
+                    names.insert(path.clone(), *ino);
+                }
+                Event::Remove { path, .. } => {
+                    names.remove(path);
+                }
+                Event::Sync { .. } | Event::SyncDir { .. } => {}
+            }
+        }
+        names
+            .into_iter()
+            .map(|(path, ino)| (path, inodes.get(ino).cloned().unwrap_or_default()))
+            .collect()
     }
 }

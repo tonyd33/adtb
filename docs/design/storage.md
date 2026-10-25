@@ -29,8 +29,11 @@ frees its pages once its heap is dropped
 ([mvcc.md §10.4](mvcc.md#104-removing-a-constructor)).
 
 Free pages are tracked by an allocation bitmap of one bit per page,
-held in bitmap pages of the file and in memory while the database is
-open. Freed pages are reused for later allocations.
+held in bitmap pages of the file. Freed pages are reused for later
+allocations. Each bitmap page covers a group of `(page size - 24) * 8`
+consecutive page ids; group `g` has its bitmap page at
+`max(g * group size, 2)`, inside the group it covers, and its own bit
+is set. Page 2 is therefore the first bitmap page.
 
 ### 1.2 File header
 
@@ -53,7 +56,36 @@ the page size (§1.1), the commit log truncation bound
 whether page writes are atomic on the device (§5.2), and the current
 primary epoch ([replication.md §6](replication.md#6-epochs-and-fencing)).
 
-TODO: the byte layout of a header copy is undecided.
+A header copy occupies the first 4096 bytes of its page; copy 1
+starts at the page size, so a reader that cannot read copy 0 finds
+copy 1 by trying each allowed page size and keeping the copy whose
+page size field names its own offset. The rest of both pages is
+unused.
+
+```text
+offset  size  field
+0       8     magic "adtbfile"
+8       4     crc32c over the 4096 bytes with this field zeroed, seeded with the copy number (0 or 1)
+12      4     layout version of the copy, 1
+16      8     sequence number
+24      16    file id
+40      4     page size
+44      4     log block size
+48      8     log segment size
+56      2     lowest page format present
+58      2     highest page format present
+60      2     format upgrade finalization state
+62      2     flags: bit 0 page writes are atomic on the device
+64      8     LSN of the last checkpoint record
+72      8     page id of the catalog root, 0 before the catalog exists
+80      8     commit log truncation bound
+88      4     current primary epoch
+92      4     encryption scheme, 0 for a plaintext file
+96            encryption parameters; zero in a plaintext file
+```
+
+A seed here, and for page checksums, is fed to the CRC-32C first as
+eight little-endian bytes.
 
 Rulings: layout/files/single-file, buffer/cache/vm-reserve/global-pid, layout/alloc/bitmap, layout/header/version
 
@@ -68,13 +100,28 @@ offset  size  field
 0       8     lsn       LSN of the last log record applied to the page
 8       4     checksum  CRC-32C over the page with this field zeroed, seeded with the page id
 12      2     format    format version of the page's contents
-14      2     kind      heap fixed-slot, heap slotted, index leaf, index inner, hash bucket,
-                        free space map, visibility map, allocation bitmap, commit log, catalog
+14      2     kind      page kind, below
 16      4     owner     heap id of a heap page, index id of an index page, 0 otherwise
-20      2     flags     all-visible (heap), half-dead (index), ...
-22      2     reserved
+20      2     flags     defined by the kind: all-visible (heap), half-dead (index), ...
+22      2     reserved, zero
 24            kind-specific contents
 ```
+
+| Kind | Value |
+| --- | --- |
+| heap fixed-slot | 1 |
+| heap slotted | 2 |
+| index leaf | 3 |
+| index inner | 4 |
+| hash bucket | 5 |
+| free space map | 6 |
+| visibility map | 7 |
+| allocation bitmap | 8 |
+| commit log | 9 |
+| catalog | 10 |
+
+A page whose bytes are all zero was never written: it reads as zeros
+with LSN 0, and verifies.
 
 An encrypted page replaces the checksum by an authentication tag and
 adds a nonce and a data key version (§4.1).
@@ -83,7 +130,9 @@ The kind-specific contents start at offset 24 in every plaintext page.
 A heap or index layout may rely on that offset and on the page LSN,
 the checksum and the format version being where the table puts them.
 
-TODO: the offsets of `kind`, `owner` and `flags` are undecided; only the LSN, the 32-bit checksum and the per-page format version are fixed by rulings.
+The pager owns bytes 0 to 11, the LSN and the checksum; the layout
+that owns the page kind owns bytes 12 to the end, including format,
+kind, owner and flags.
 
 ### 2.2 Format versions
 
@@ -102,6 +151,74 @@ Postconditions for a layout that owns a page kind:
   can be retired once no page of its format remains.
 
 Rulings: layout/checksum/in-page-32, layout/endian/little, layout/format-version/read-old, layout/heap-format/page-version
+
+### 2.3 Page access
+
+Heaps, indexes and every other page layout reach pages only through
+the pager, `adtb::storage::Pager`. The pager is one value owned by one thread; every
+operation takes it by `&mut`.
+
+TODO: concurrent access (the page state word of [sys.md §3](sys.md#3-page-state-word), shared and exclusive latches, optimistic reads) is undecided.
+
+TODO: an unlogged change of a clean frame, for kill bits (§5.2), is undecided.
+
+```text
+pager.read(pid) -> Result<&[u8], PageError>
+pager.update(&[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, PageError>
+pager.change(&[(pid, vec![Edit { offset, bytes }]), ...]) -> Result<Lsn, PageError>
+pager.allocate(format, kind, owner) -> Result<Pid, PageError>
+pager.free(pid) -> Result<Lsn, PageError>
+pager.commit(xid) / pager.abort(xid) / pager.reserve_xids(next) -> Lsn
+pager.flush_log()
+pager.durable() -> Lsn
+PageError { pid, damage: Checksum | Unreadable | Stale { expected, found } }
+```
+
+A page is pinned, resident and unchanged by anyone else for the
+duration of the call that names it. `read` returns the whole page,
+header included; the slice lives until the next call on the pager, and
+a caller that needs a page past that copies it. There is no release
+call.
+
+Preconditions:
+
+- `update` and `change` name each page once, at most as many pages as
+  the pool has frames, and never pages 0 or 1.
+- They write no byte below offset 12 and none past the page's end.
+- `free` names an allocated page that nothing refers to any more.
+
+Postconditions:
+
+- `read`, `update` and `change` hand out no page that fails
+  verification (§3); they fail with `PageError` instead, and the page
+  is refused from then on. The caller quarantines the heap or index it
+  maps the page to (§8).
+- `update` and `change` change every page they name or, failing, none.
+  `update` gives its closure a copy of every page and logs the bytes
+  the closure changed; `change` applies the edits as given. Each page
+  changed gets one log record and its LSN; the call returns the last.
+- The records of one call are contiguous in the log and in one batch
+  (§5.3), so after a crash all of them are replayed or none.
+- A change is durable once `durable()` is past the LSN it returned,
+  which `flush_log` ensures for everything logged before it.
+- `allocate` returns a page that was free, with the given format, kind
+  and owner, flags zero and zero contents, marked in the allocation
+  bitmap by the same call. An allocation is not undone when the
+  transaction that made it aborts. It fails, allocating nothing, when
+  an allocation bitmap page it reads is damaged; a free page found
+  damaged is marked allocated and never handed out.
+- A failed write or force, including one that grows the file, crashes
+  the process ([README.md §4](README.md#4-errors)); no call returns it.
+- Write-ahead, full-page images and checkpoints (§5.2, §6) are the
+  pager's: a layout never writes a page to the file, forces anything
+  but the log, or logs a page record itself.
+
+```text
+let pid = pager.allocate(1, PageKind::HeapSlotted, heap_id)?;
+pager.update(&[pid], |p| slotted::insert(p[0], &row))?;
+pager.commit(xid);
+pager.flush_log();          // now acknowledge the commit
+```
 
 ## 3. Corruption detection
 
