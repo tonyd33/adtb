@@ -173,7 +173,8 @@ impl Batch {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogProblem {
-    /// A block neither zero nor valid where it lies.
+    /// A block neither zero nor valid where it lies. Past the end of the log recovery cannot
+    /// tell it from a torn block of the discarded batch, and only `verify` reports it.
     Damaged,
     /// A valid block of an older batch past the end of the log.
     Stale,
@@ -313,6 +314,7 @@ pub fn scan(img: &LogImage, from: Lsn, mode: Mode) -> Scan {
                 }),
                 Slot::Bytes(b) => match read_block(at, b) {
                     BlockState::Zero => {}
+                    BlockState::Invalid if mode == Mode::Recovery => {}
                     BlockState::Invalid => out.findings.push(LogFinding {
                         lsn: at,
                         problem: LogProblem::Damaged,

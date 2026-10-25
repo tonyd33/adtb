@@ -155,10 +155,10 @@ Rulings: layout/checksum/in-page-32, layout/endian/little, layout/format-version
 ### 2.3 Page access
 
 Heaps, indexes and every other page layout reach pages only through
-the pager, `adtb::storage::Pager`. The pager is one value owned by one thread; every
-operation takes it by `&mut`.
+the pager, `adtb::storage::Pager`. The pager is one value owned by one
+thread; every operation takes it by `&mut`.
 
-TODO: concurrent access (the page state word of [sys.md §3](sys.md#3-page-state-word), shared and exclusive latches, optimistic reads) is undecided.
+Concurrent access is §2.4.
 
 TODO: an unlogged change of a clean frame, for kill bits (§5.2), is undecided.
 
@@ -220,6 +220,76 @@ pager.commit(xid);
 pager.flush_log();          // now acknowledge the commit
 ```
 
+### 2.4 Latches
+
+TODO: this section is stated and not implemented; the pager of §2.3 is.
+
+The concurrent pager is shared by every thread of the engine and taken
+by `&self`. A consumer reaches a page through one of three guards,
+each over the page state word of [sys.md §3](sys.md#3-page-state-word):
+
+```text
+pager.shared(pid)     -> Result<Shared, PageError>      // count 1..252
+pager.exclusive(pid)  -> Result<Exclusive, PageError>   // 253
+pager.optimistic(pid) -> Result<Optimistic, PageError>  // version, no latch
+optimistic.read(|page: PageCopy| ...) -> T          // copies through atomic loads
+optimistic.validate() -> bool
+optimistic.upgrade() -> Option<Exclusive>           // only if the version is unchanged
+exclusive.update(|page: &mut [u8]| ...) -> Lsn      // diffed and logged as in §2.3
+exclusive.change(edits) -> Lsn
+pager.change_all(&mut [&mut Exclusive], ...) -> Lsn // several pages in one batch
+```
+
+Invariants:
+
+- A page under a shared or exclusive latch is resident and is not
+  evicted or written by the pager until the latch is released.
+- Only an exclusive latch changes a page. Releasing it after a change
+  increments the version; so does eviction.
+- The record of a change is appended while its page's exclusive latch
+  is held, so the LSN order of one page's records is the order of its
+  changes.
+- The pager holds a page exclusive while it reads it in or writes it
+  out ([sys.md §3](sys.md#3-page-state-word)), and takes no latch on a
+  consumer's behalf except by try-lock: eviction skips a latched page.
+
+Preconditions:
+
+- A consumer that holds latches on several pages acquires them in an
+  order it defines for its structure, so no cycle of waits forms; a
+  B-link tree takes them top-down and left to right. The pager adds no
+  order of its own.
+- A waiting latch spins only through `yield_now` or `park`
+  ([runtime.md §1](runtime.md#1-time-threads-and-randomness)).
+- What an optimistic read copied is not trusted until `validate`
+  returns true: every length or offset it reads is bounds-checked
+  before use ([sys.md §2](sys.md#2-unsafe-invariants)), and a failed
+  validation restarts the read.
+
+Postconditions:
+
+- An optimistic read that validates saw the page as one exclusive
+  holder left it, with no change between the version read and the
+  validation.
+- `upgrade` succeeds only when no exclusive latch was taken on the page
+  since the optimistic guard was made.
+- The postconditions of §2.3 hold for each guard's calls: verification
+  before a page is handed out, all-or-nothing multi-page changes in one
+  batch, durability once `durable()` passes the returned LSN.
+
+```text
+// optimistic lock coupling, one level of a B-link descent
+loop {
+  let node = pager.optimistic(pid)?;
+  let child = node.read(|p| blink::child_for(p, &key));
+  if !node.validate() { continue; }
+  pid = child?;
+  break;
+}
+```
+
+Rulings: buffer/cache/vmcache, btree/latch/racy/atomic-reads, btree/structure/blink
+
 ## 3. Corruption detection
 
 Every page read from the file is verified before the pager hands it
@@ -231,10 +301,17 @@ operating error and never handed out as data.
 | Bit rot, latent sector error | Checksum (or tag) mismatch on read |
 | Misdirected write | The page id seeds the checksum; a page read from the wrong place fails it |
 | Torn write | Checksum mismatch; repaired from a full-page image in the log (§5.2) |
-| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)) |
+| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); a page read back after the pool dropped it, older than it was then |
 
 A page that fails verification on read quarantines the heap or index
 holding it (§8).
+
+Outside what the engine detects: a device that drops a forced write of
+the last batch of the log before a crash, or damages a block of that
+batch, leaves the log ending at the batch before. Its commits were
+acknowledged and are lost without a report, since recovery cannot tell
+the batch from one that was never forced (§7). Earlier in the log the
+same damage is a gap and stops recovery.
 
 Rulings: buffer/faults/corrupt-detect, buffer/faults/stale-page/lsn-check
 
@@ -318,7 +395,7 @@ describes a change to one page, or a transaction or system event:
 | Record | Contents |
 | --- | --- |
 | page change | page id, the page's LSN before the change, the change |
-| full-page image | page id, the whole page |
+| full-page image | page id, the page's LSN before the change, the whole page after it |
 | commit | xid, wall-clock time of commit; the record's position is the commit position |
 | abort | xid |
 | xid allocation | the next xid reserved ([mvcc.md §4](mvcc.md#4-transaction-ids-the-commit-log-and-snapshots)) |
@@ -387,6 +464,11 @@ log block
   36       records; a record may continue into the next block
 ```
 
+A record never continues past the last block of its batch. A segment's
+name is the LSN of its first byte as sixteen lowercase hexadecimal
+digits; its size, recorded in the file header, is a multiple of the
+block size, so a block never spans two segments.
+
 Log segments are preallocated and zero-filled before use, so a write
 inside a segment changes no file size, and the force at commit is
 `fdatasync`. Creating or recycling a segment file is followed by an
@@ -435,9 +517,18 @@ record naming page `p`:
 | `p.lsn < record.prev_lsn` | Lost write: quarantine the page's heap or index (§8) |
 
 Replay verifies a page when it first reads it. A page that fails
-verification is not corruption if the next record replay applies to
-it is a full-page image; otherwise it quarantines the page's heap or
-index (§8).
+verification is not corruption if a full-page image of it follows in
+the replayed log: replay skips the page's records until that image and
+installs it. A page with no such image quarantines its heap or index
+(§8).
+
+Each page record names the page's LSN before it. Replay reads the log
+from the start of the batch holding the redo LSN, and a record whose
+previous LSN is not the LSN of the record before it for the same page
+marks a page that was changed from a stale copy: a lost write, which
+quarantines the page's heap or index. `verify` checks the same chain
+over the whole retained log, and that each page's LSN is that of its
+last record there.
 
 The end of the log is found by batch. A batch is accepted when all of
 its blocks are present, each verifies, and they agree: the same
@@ -448,10 +539,24 @@ stops at the first batch that is not accepted. That batch and every
 block after it are discarded: none of their commits was acknowledged
 (§5.3). Before the first new write, the log tail after the last
 accepted batch is zeroed and forced, so blocks of a discarded batch can
-never be read as a continuation later. A block that fails verification
-followed by an accepted batch with a higher sequence number is
-corruption of the log, since an earlier batch is forced before a later
-one is written, and stops recovery.
+never be read as a continuation later. A later segment holding none
+of the accepted log is removed.
+
+Past the last accepted batch, with sequence number `n`:
+
+| Block | Meaning |
+| --- | --- |
+| Zero | Never written |
+| Valid, sequence `n + 1` | Part of the discarded batch |
+| Valid, sequence `n` or lower | A stale block: reported as log damage |
+| Neither zero nor valid where it lies | A torn block of the discarded batch, or damage; not reported |
+| Valid, sequence `n + 2` or higher | Batch `n + 1` was forced, so the log is corrupt; recovery stops |
+
+An unreadable log block in the range recovery reads also stops it.
+
+Recovery ends with a checkpoint: it writes and forces every page it
+replayed, then logs a checkpoint with an empty dirty page table and
+points the file header at it.
 
 Recovery reads both log and pages with direct I/O, so it reads what
 is on the device and not a stale kernel cache.
@@ -549,6 +654,19 @@ references may name one page. The page state word and the pinning of
 pages in flight are in [sys.md §3](sys.md#3-page-state-word).
 
 TODO: the replacement policy is undecided; the marked state of the page state word supports a clock with a one-bit reference count.
+
+The pager of §2.3 keeps frames in a map from page id to an owned
+buffer, evicts the least recently used unpinned frame, and remembers
+the LSN of each page it dropped to catch a lost write when the page is
+read back. Moving it to this design needs: the reserved range and the
+`Frame` and `PageRef` types of [sys.md](sys.md), the state word per
+page with exclusive hold across read-in and write-out, the dirty page
+table and `rec_lsn` beside the frames rather than in them, and the
+dropped-page LSNs kept in a bounded table or in the state word's
+neighbourhood, since one entry per page touched does not bound
+memory. Group commit (§10.1) replaces the single caller of
+`flush_log`. Recovery reads whole segments into memory, and `verify`
+reads the whole retained log; both stream once segments are large.
 
 Rulings: buffer/cache/vmcache, buffer/cache/vm-reserve/global-pid
 

@@ -17,10 +17,23 @@ const PAGES: usize = 12;
 const NAME: &str = "app.adt";
 const FATAL: &str = "fatal I/O error";
 
-fn options(atomic: bool) -> Options {
+/// How the database is laid out on the simulated device.
+#[derive(Clone, Copy, Debug)]
+struct Layout {
+    atomic: bool,
+    log_block: u32,
+}
+
+const PLAIN: Layout = Layout {
+    atomic: false,
+    log_block: 512,
+};
+
+fn options(layout: Layout) -> Options {
+    let Layout { atomic, log_block } = layout;
     Options {
         page_size: PAGE as u32,
-        log_block: 512,
+        log_block,
         segment_size: 64 * 1024,
         pool_frames: 5,
         atomic_page_writes: atomic,
@@ -108,10 +121,10 @@ fn run_process<F: FnOnce(SimRuntime)>(sim: &mut Sim, body: F) -> Outcome {
     }
 }
 
-fn setup(sim: &mut Sim, client: &Client, atomic: bool) {
+fn setup(sim: &mut Sim, client: &Client, layout: Layout) {
     let world = client.world.clone();
     let outcome = sim.run(move |rt| {
-        let mut pager = Pager::create(rt, &options(atomic)).expect("create");
+        let mut pager = Pager::create(rt, &options(layout)).expect("create");
         let mut pages = Vec::new();
         for _ in 0..PAGES {
             pages.push(
@@ -127,8 +140,8 @@ fn setup(sim: &mut Sim, client: &Client, atomic: bool) {
 }
 
 /// Open the database and run random transactions, flushes and checkpoints for `steps` steps.
-fn workload(rt: SimRuntime, client: &Client, atomic: bool, steps: usize) {
-    let Ok((mut pager, _)) = Pager::open(rt.clone(), &options(atomic)) else {
+fn workload(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
+    let Ok((mut pager, _)) = Pager::open(rt.clone(), &options(layout)) else {
         return;
     };
     let pages = client.world.lock().unwrap().pages.clone();
@@ -228,9 +241,9 @@ impl Recovered for Report {
     }
 }
 
-fn inspect(rt: SimRuntime, pages: &[Pid], atomic: bool) -> Report {
-    let mut pager = match Pager::open(rt, &options(atomic)) {
-        Ok((p, _)) => p,
+fn inspect(rt: SimRuntime, pages: &[Pid], layout: Layout) -> Report {
+    let (mut pager, recovery) = match Pager::open(rt, &options(layout)) {
+        Ok(opened) => opened,
         Err(e) => {
             return Report {
                 open: Some(e),
@@ -239,9 +252,13 @@ fn inspect(rt: SimRuntime, pages: &[Pid], atomic: bool) -> Report {
         }
     };
     let v = pager.verify();
+    let mut findings = v.findings;
+    findings.extend(recovery.log.into_iter().map(Finding::Log));
+    findings.sort();
+    findings.dedup();
     let mut report = Report {
         open: None,
-        findings: v.findings,
+        findings,
         commits: v.commits.into_iter().collect(),
         pages: BTreeMap::new(),
     };
@@ -377,7 +394,7 @@ struct Tally {
 fn crash_loop(
     seed: u64,
     faults: Faults,
-    atomic: bool,
+    layout: Layout,
     damage_allowed: bool,
     rounds: usize,
 ) -> Tally {
@@ -386,12 +403,12 @@ fn crash_loop(
         seed,
         Config {
             faults: quiet(),
-            atomic_unit: if atomic { PAGE as u64 } else { 512 },
+            atomic_unit: if layout.atomic { PAGE as u64 } else { 512 },
             ..Config::default()
         },
     );
     let client = Client::new();
-    setup(&mut sim, &client, atomic);
+    setup(&mut sim, &client, layout);
     let mut tally = Tally::default();
     for round in 0..rounds {
         sim.set_faults(faults.clone());
@@ -399,13 +416,13 @@ fn crash_loop(
             + Duration::from_micros(500 + (seed * 7919 + round as u64 * 104_729) % 60_000);
         sim.crash_at(at);
         let c = client.clone();
-        if run_process(&mut sim, |rt| workload(rt, &c, atomic, 400)) == Outcome::Crashed {
+        if run_process(&mut sim, |rt| workload(rt, &c, layout, 400)) == Outcome::Crashed {
             tally.crashes += 1;
         }
         sim.set_faults(quiet());
         let pages = client.world.lock().unwrap().pages.clone();
         let mut report = Report::default();
-        let outcome = sim.run(|rt| report = inspect(rt, &pages, atomic));
+        let outcome = sim.run(|rt| report = inspect(rt, &pages, layout));
         assert_eq!(Outcome::Finished, outcome);
         let world = client.world.lock().unwrap();
         let problems = judge(
@@ -438,10 +455,15 @@ fn crash_loop(
     tally
 }
 
-fn seeds(range: std::ops::Range<u64>, faults: Faults, atomic: bool, damage_allowed: bool) -> Tally {
+fn seeds(
+    range: std::ops::Range<u64>,
+    faults: Faults,
+    layout: Layout,
+    damage_allowed: bool,
+) -> Tally {
     let mut total = Tally::default();
     for seed in range {
-        let t = crash_loop(seed, faults.clone(), atomic, damage_allowed, 4);
+        let t = crash_loop(seed, faults.clone(), layout, damage_allowed, 4);
         total.crashes += t.crashes;
         total.acked += t.acked;
         total.findings += t.findings;
@@ -459,7 +481,25 @@ fn crashes_with_torn_writes_lose_nothing_and_find_nothing() {
             torn_p: 0.5,
             ..quiet()
         },
+        PLAIN,
         false,
+    );
+    assert!(t.crashes > 20, "{t:?}");
+    assert!(t.acked > 200, "{t:?}");
+}
+
+#[test]
+fn torn_log_blocks_lose_no_acknowledged_commit() {
+    let t = seeds(
+        600..612,
+        Faults {
+            torn_p: 1.0,
+            ..quiet()
+        },
+        Layout {
+            atomic: false,
+            log_block: 2048,
+        },
         false,
     );
     assert!(t.crashes > 20, "{t:?}");
@@ -474,7 +514,10 @@ fn atomic_page_writes_need_no_images() {
             torn_p: 0.5,
             ..quiet()
         },
-        true,
+        Layout {
+            atomic: true,
+            log_block: 512,
+        },
         false,
     );
     assert!(t.crashes > 10, "{t:?}");
@@ -490,7 +533,7 @@ fn bit_rot_and_latent_errors_are_reported_never_returned() {
             latent_p: 0.002,
             ..quiet()
         },
-        false,
+        PLAIN,
         true,
     );
     assert!(t.findings > 0, "no seed corrupted anything: {t:?}");
@@ -506,7 +549,7 @@ fn misdirected_and_lost_writes_are_reported_never_returned() {
             lost_write_p: 0.004,
             ..quiet()
         },
-        false,
+        PLAIN,
         true,
     );
     assert!(t.findings > 0, "no seed lost a write: {t:?}");
@@ -521,7 +564,7 @@ fn failed_writes_and_forces_crash_and_recover() {
             fail_p: 0.004,
             ..quiet()
         },
-        false,
+        PLAIN,
         false,
     );
     assert!(t.crashes > 20, "{t:?}");
@@ -540,7 +583,7 @@ fn every_fault_at_once() {
             fail_p: 0.002,
             ..quiet()
         },
-        false,
+        PLAIN,
         true,
     );
 }
@@ -550,10 +593,10 @@ fn a_seed_replays_exactly() {
     let run = |seed| {
         let mut sim = Sim::new(seed, Config::default());
         let client = Client::new();
-        setup(&mut sim, &client, false);
+        setup(&mut sim, &client, PLAIN);
         sim.crash_at(sim.now() + Duration::from_millis(20));
         let c = client.clone();
-        run_process(&mut sim, |rt| workload(rt, &c, false, 200));
+        run_process(&mut sim, |rt| workload(rt, &c, PLAIN, 200));
         (sim.trace(), sim.files())
     };
     assert_eq!(run(9), run(9));
@@ -562,7 +605,7 @@ fn a_seed_replays_exactly() {
 fn with_pager<T>(sim: &mut Sim, body: impl FnOnce(&mut Pager<SimRuntime>) -> T) -> T {
     let mut out = None;
     let outcome = sim.run(|rt| {
-        let (mut p, _) = Pager::open(rt, &options(false)).expect("open");
+        let (mut p, _) = Pager::open(rt, &options(PLAIN)).expect("open");
         out = Some(body(&mut p));
     });
     assert_eq!(Outcome::Finished, outcome);
@@ -581,7 +624,7 @@ fn flip(sim: &mut Sim, path: &str, at: usize) -> Sim {
 fn a_rotted_page_is_refused_and_reported() {
     let mut sim = Sim::new(1, Config::default());
     let client = Client::new();
-    setup(&mut sim, &client, false);
+    setup(&mut sim, &client, PLAIN);
     let pid = client.world.lock().unwrap().pages[3];
     let mut sim = flip(&mut sim, NAME, pid.0 as usize * PAGE + 1000);
     let (read, findings) = with_pager(&mut sim, |p| {
@@ -599,7 +642,7 @@ fn a_rotted_page_is_refused_and_reported() {
 fn a_damaged_bitmap_fails_allocation() {
     let mut sim = Sim::new(2, Config::default());
     let client = Client::new();
-    setup(&mut sim, &client, false);
+    setup(&mut sim, &client, PLAIN);
     let mut sim = flip(&mut sim, NAME, 2 * PAGE + 500);
     let got = with_pager(&mut sim, |p| p.allocate(1, PageKind::HeapSlotted, 7));
     assert_eq!(
@@ -612,7 +655,7 @@ fn a_damaged_bitmap_fails_allocation() {
 fn allocation_skips_a_damaged_free_page() {
     let mut sim = Sim::new(3, Config::default());
     let client = Client::new();
-    setup(&mut sim, &client, false);
+    setup(&mut sim, &client, PLAIN);
     let next = Pid(3 + PAGES as u64);
     let mut files = sim.files();
     let data = files.get_mut(NAME).unwrap();
@@ -640,7 +683,7 @@ fn allocations_survive_crashes_and_never_repeat() {
         silence_fatal_panics();
         let client = Client::new();
         sim.set_faults(quiet());
-        setup(&mut sim, &client, false);
+        setup(&mut sim, &client, PLAIN);
         let durable: Arc<Mutex<BTreeSet<Pid>>> = Arc::default();
         for round in 0..4u64 {
             sim.set_faults(Faults {
@@ -651,7 +694,7 @@ fn allocations_survive_crashes_and_never_repeat() {
             sim.crash_at(sim.now() + Duration::from_micros(300 + (seed * 31 + round * 977) % 9000));
             let d = durable.clone();
             run_process(&mut sim, |rt| {
-                let Ok((mut p, _)) = Pager::open(rt, &options(false)) else {
+                let Ok((mut p, _)) = Pager::open(rt, &options(PLAIN)) else {
                     return;
                 };
                 loop {
@@ -692,10 +735,10 @@ fn crash_replay_at_every_flush_boundary() {
         },
     );
     let client = Client::new();
-    setup(&mut sim, &client, false);
+    setup(&mut sim, &client, PLAIN);
     sim.record();
     let c = client.clone();
-    assert_eq!(Outcome::Finished, sim.run(|rt| workload(rt, &c, false, 60)));
+    assert_eq!(Outcome::Finished, sim.run(|rt| workload(rt, &c, PLAIN, 60)));
     let recording = sim.recording();
     let world = client.world.lock().unwrap();
     let mut images = 0;
@@ -717,7 +760,7 @@ fn crash_replay_at_every_flush_boundary() {
             let mut report = Report::default();
             assert_eq!(
                 Outcome::Finished,
-                replay.run(|rt| report = inspect(rt, &world.pages, false))
+                replay.run(|rt| report = inspect(rt, &world.pages, PLAIN))
             );
             let problems = judge(&report, &ledger, &world, "", false);
             assert!(problems.is_empty(), "flush boundary {at}: {problems:#?}");

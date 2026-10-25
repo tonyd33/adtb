@@ -218,14 +218,24 @@ fn a_partly_written_last_batch_ends_the_log_quietly() {
 }
 
 #[test]
-fn a_damaged_block_past_the_end_is_reported() {
+fn a_torn_block_past_the_end_ends_the_log_quietly() {
     let (mut img, starts) = image(&[3, 9]);
     let second_block = starts[1].0 as usize + BLOCK;
     seg(&mut img)[second_block + 50] ^= 4;
     let s = scan(&img, Lsn(0), Mode::Recovery);
     assert_eq!(starts[1], s.end);
-    assert_eq!(LogProblem::Damaged, s.findings[0].problem);
+    assert!(s.findings.is_empty(), "{:?}", s.findings);
     assert!(s.fatal.is_none());
+}
+
+#[test]
+fn verify_reports_a_damaged_block_past_the_end() {
+    let (mut img, starts) = image(&[3, 9]);
+    let second_block = starts[1].0 as usize + BLOCK;
+    seg(&mut img)[second_block + 50] ^= 4;
+    let s = scan(&img, Lsn(0), Mode::Verify);
+    assert_eq!(starts[1], s.end);
+    assert_eq!(LogProblem::Damaged, s.findings[0].problem);
 }
 
 #[test]

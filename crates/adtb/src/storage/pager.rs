@@ -16,7 +16,7 @@ pub struct Options {
     /// The data file's path; the log's segments live in the directory `{name}-log`.
     pub name: String,
     pub page_size: u32,
-    /// The device's logical block size, which it writes atomically; the log's block size.
+    /// The device's logical block size, and the log's block size.
     pub log_block: u32,
     pub segment_size: u64,
     pub pool_frames: usize,
