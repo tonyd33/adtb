@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 402
 summary: "no buffer pool: no reserved virtual range, frames, eviction or optimistic reads"
+branch: pager
 depends-on:
   - page-buffer-contract
 tags:

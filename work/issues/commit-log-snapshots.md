@@ -20,3 +20,9 @@ header to a snapshot, and the watermark that bounds vacuum.
 
 Prerequisite: `page-buffer-contract.md`, against which the commit log
 is paged.
+
+## 2026-10-25: from the pager
+
+`adtb::storage::Recovered::committed` reads commit records from the
+log. Once the commit log exists, recovery should report commits from it
+and drop that field.
