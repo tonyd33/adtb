@@ -1,0 +1,4 @@
+---
+title: Integer and decimal semantics in languages and databases
+---
+Rust RFC 560: overflow is a program error, checked in debug, wrapping/checked/saturating methods explicit (https://rust-lang.github.io/rfcs/0560-integer-overflow.html). OCaml: int wraps modulo 2^63, Division_by_zero raised. Haskell 2010: fixed-width overflow undefined; Integer unbounded. Pony: default x / 0 = 0 and wrap; partial operators error (https://tutorial.ponylang.io/expressions/arithmetic.html). Postgres: integer overflow errors; numeric(p, s) rounds excess scale, errors on excess integer digits (https://www.postgresql.org/docs/current/datatype-numeric.html). SQL Server derives result precision and scale per operator, capped at 38 (https://learn.microsoft.com/en-us/sql/t-sql/data-types/precision-scale-and-length-transact-sql).

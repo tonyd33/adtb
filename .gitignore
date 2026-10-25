@@ -1,0 +1,33 @@
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+
+
+# Added by cargo
+
+/target
+
+# Design space and knowledge base are tracked; other work/ files are not
+!/work/
+/work/*
+!/work/research/
+!/work/kb/
+/work/research/.quandary/
