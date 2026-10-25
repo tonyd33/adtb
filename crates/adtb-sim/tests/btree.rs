@@ -14,7 +14,7 @@ use adtb::runtime::{
     Clock, Completion, Entropy, Instant, Io, Op, Runtime, ThreadId, Threads, Ticket,
 };
 use adtb::storage::{Options, Pager, Pid};
-use adtb_sim::{Config, Faults, Outcome, Sim, SimIo, SimRuntime};
+use adtb_sim::{Config, Faults, Outcome, Recording, Sim, SimIo, SimRuntime};
 
 const PAGE: usize = 4096;
 const OWNER: u32 = 41;
@@ -673,11 +673,13 @@ struct World {
     ops: Vec<(bool, Vec<u8>)>,
     /// Every operation before this one is durable.
     durable: usize,
+    /// The recorded events before and after each operation of the last run.
+    spans: Vec<(usize, usize)>,
 }
 
 fn crash_options() -> Options {
     Options {
-        pool_frames: 8,
+        pool_frames: 4,
         ..options()
     }
 }
@@ -699,11 +701,13 @@ fn crash_workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
             inserts[below(&rt, inserts.len())].clone()
         };
         world.lock().unwrap().ops.push((insert, e.clone()));
+        let start = rt.recorded();
         if insert {
             tree.insert(&mut pager, &e).expect("insert");
         } else {
             tree.delete(&mut pager, &e).expect("delete");
         }
+        world.lock().unwrap().spans.push((start, rt.recorded()));
         match below(&rt, 30) {
             0..=2 => {
                 pager.flush_log();
@@ -730,19 +734,77 @@ fn apply(model: &mut BTreeSet<Vec<u8>>, op: &(bool, Vec<u8>)) {
     }
 }
 
-/// Returns the crashes of `rounds` crashed runs, and the splits repaired
-/// after them.
-fn crash_loop(seed: u64, rounds: usize) -> (usize, usize) {
-    let mut sim = Sim::new(
-        seed,
-        Config {
-            faults: Faults {
-                torn_p: 0.5,
-                ..Faults::default()
-            },
-            ..Config::default()
-        },
+/// Returns the number of splits incomplete in the forced state after the
+/// first `at` events of `recording`.
+fn incomplete_at(recording: &Recording, at: usize, root: Pid, seed: u64) -> usize {
+    let files = recording.images(at, 1, seed).swap_remove(0);
+    let mut sim = Sim::with_files(seed, Config::default(), files);
+    let mut n = 0;
+    assert_eq!(
+        Outcome::Finished,
+        sim.run(|rt| {
+            let (mut pager, _) = Pager::open(rt, &crash_options()).expect("reopen");
+            n = BTree::open(root, OWNER).repair(&mut pager).expect("repair");
+        })
     );
+    n
+}
+
+fn crash_config() -> Config {
+    Config {
+        faults: Faults {
+            torn_p: 0.5,
+            ..Faults::default()
+        },
+        ..Config::default()
+    }
+}
+
+/// Run the workload to its end, recording it, and replace `sim` by the forced
+/// state at the last log force inside an operation. When `seek` is set, take
+/// the last such force that leaves a split incomplete, if there is one.
+fn crash_at_a_flush(sim: &mut Sim, world: &Arc<Mutex<World>>, seed: u64, seek: bool) {
+    let durable = {
+        let mut w = world.lock().unwrap();
+        w.spans.clear();
+        w.durable
+    };
+    sim.record();
+    let w = world.clone();
+    assert_eq!(
+        Outcome::Finished,
+        sim.run(move |rt| crash_workload(rt, &w, 600))
+    );
+    let recording = sim.recording();
+    let flushes = recording.flushes();
+    let mut w = world.lock().unwrap();
+    let root = w.root.unwrap();
+    let inside: Vec<usize> = flushes
+        .iter()
+        .rev()
+        .copied()
+        .filter(|&f| w.spans.iter().any(|&(s, e)| s < f && f < e))
+        .collect();
+    let at = inside
+        .iter()
+        .find(|&&f| seek && incomplete_at(&recording, f, root, seed) > 0)
+        .or(inside.first())
+        .or(flushes.last())
+        .copied()
+        .expect("the workload forces the log");
+    let files = recording.images(at, 1, seed).swap_remove(0);
+    *sim = Sim::with_files(seed, crash_config(), files);
+    w.durable = durable;
+}
+
+/// Returns the crashes of `rounds` runs crashed at a time, and the splits
+/// repaired after them and after as many runs cut at a log force inside an
+/// operation.
+///
+/// Unless `seen` is set, each cut seeks a force that leaves a split
+/// incomplete, until one is repaired.
+fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
+    let mut sim = Sim::new(seed, crash_config());
     let world = Arc::new(Mutex::new(World::default()));
     let w = world.clone();
     let outcome = sim.run(move |rt| {
@@ -754,14 +816,19 @@ fn crash_loop(seed: u64, rounds: usize) -> (usize, usize) {
     assert_eq!(Outcome::Finished, outcome);
     let mut crashes = 0;
     let repaired = Arc::new(Mutex::new(0));
-    for round in 0..rounds {
+    for round in 0..2 * rounds {
         let finished = repaired.clone();
-        let at = sim.now()
-            + Duration::from_micros(2_000 + (seed * 7919 + round as u64 * 104_729) % 200_000);
-        sim.crash_at(at);
-        let w = world.clone();
-        if sim.run(move |rt| crash_workload(rt, &w, 600)) == Outcome::Crashed {
-            crashes += 1;
+        if round % 2 == 0 {
+            let at = sim.now()
+                + Duration::from_micros(2_000 + (seed * 7919 + round as u64 * 104_729) % 200_000);
+            sim.crash_at(at);
+            let w = world.clone();
+            if sim.run(move |rt| crash_workload(rt, &w, 600)) == Outcome::Crashed {
+                crashes += 1;
+            }
+        } else {
+            let seek = !seen && *repaired.lock().unwrap() == 0;
+            crash_at_a_flush(&mut sim, &world, seed * 1000 + round as u64, seek);
         }
         let root = world.lock().unwrap().root.unwrap();
         let found = Arc::new(Mutex::new(None));
@@ -819,7 +886,7 @@ fn a_crashed_tree_recovers_a_prefix_of_its_operations() {
     let mut crashes = 0;
     let mut repaired = 0;
     for seed in 0..6 {
-        let (c, r) = crash_loop(seed, 6);
+        let (c, r) = crash_loop(seed, 6, repaired > 0);
         crashes += c;
         repaired += r;
     }
