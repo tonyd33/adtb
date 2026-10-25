@@ -186,7 +186,9 @@ rechecked against the version in the heap the entry names. A hash
 index can enforce uniqueness, has no ordered scan and serves no sum
 scan merge.
 
-TODO: whether a hash index is chosen by the engine or declared by the schema is undecided.
+The schema declares no hash index; the engine chooses one from the
+uses of a constructor-set index and may change its choice by a rebuild
+(§7).
 
 Rulings: btree/hash/eq-unique
 
