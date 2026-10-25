@@ -7,7 +7,9 @@ use std::path::Path;
 use adtb_lang::ast::{
     AdhocItem, BundleItem, Decl, ExampleItem, Import, OperatorKind, QueryDecl, TxnDecl,
 };
-use adtb_lang::check::{Checker, Context, check_adhoc, check_query, check_schema, check_txn};
+use adtb_lang::check::{
+    Checker, Context, Program, check_adhoc, check_query, check_schema, check_txn,
+};
 use adtb_lang::parse::{Options, parse_example, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Schema, build};
@@ -272,13 +274,13 @@ impl Files {
     }
 }
 
-fn schema_of(entries: &[Entry]) -> Result<Schema, Vec<String>> {
+fn schema_of(entries: &[Entry]) -> Result<(Schema, Program), Vec<String>> {
     let fs = files(entries)?;
     let render =
         |ds: Vec<FileDiag>| -> Vec<String> { ds.iter().map(|d| fs.render(entries, d)).collect() };
     let schema = build(&fs.files).map_err(render)?;
-    check_schema(&schema).map_err(render)?;
-    Ok(schema)
+    let program = check_schema(&schema).map_err(render)?;
+    Ok((schema, program))
 }
 
 fn at(b: &Block, span: Span, msg: &str) -> String {
@@ -348,7 +350,7 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
             ExampleItem::Adhoc(a) => adhoc.push(a),
         }
     }
-    let schema = match schema_of(&entries) {
+    let (schema, program) = match schema_of(&entries) {
         Ok(s) => s,
         Err(mut es) => {
             errs.append(&mut es);
@@ -360,12 +362,12 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
         .module_named(&reads)
         .expect("the bundle reads a module");
     for q in &queries {
-        if let Err(d) = check_query(&schema, module, q) {
+        if let Err(d) = check_query(&schema, &program, module, q) {
             errs.push(at(b, d.span, &d.message));
         }
     }
     for t in &txns {
-        if let Err(d) = check_txn(&schema, module, t) {
+        if let Err(d) = check_txn(&schema, &program, module, t) {
             errs.push(at(b, d.span, &d.message));
         }
     }
@@ -386,7 +388,7 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
         }
     }
     if !adhoc.is_empty()
-        && let Err(ds) = check_adhoc(&schema, &adhoc, &params)
+        && let Err(ds) = check_adhoc(&schema, &program, &adhoc, &params)
     {
         errs.extend(ds.iter().map(|d| at(b, d.span, &d.message)));
     }

@@ -62,7 +62,8 @@ fn run(params: &[(&str, &str)], text: &str) -> Result<(Schema, Adhoc), Vec<Strin
         );
     }
     let items = parsed.ok().expect("parsed");
-    match check_adhoc(&s, &items, &tys) {
+    let program = check_schema(&s).expect("the schema checks");
+    match check_adhoc(&s, &program, &items, &tys) {
         Ok(a) => Ok((s, a)),
         Err(ds) => Err(ds.into_iter().map(|d| d.message).collect()),
     }
@@ -100,7 +101,8 @@ fn txn(text: &str) -> Result<(Schema, Txn), String> {
         panic!("{text}\nis not a txn");
     };
     let module = s.module_named("auth").expect("module auth");
-    match check_txn(&s, module, &t) {
+    let program = check_schema(&s).expect("the schema checks");
+    match check_txn(&s, &program, module, &t) {
         Ok(t) => Ok((s, t)),
         Err(d) => Err(d.message),
     }

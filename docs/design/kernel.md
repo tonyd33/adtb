@@ -15,9 +15,12 @@ terms and share nothing else.
 
 | Entry point | Returns |
 | --- | --- |
-| `check_schema(schema)` | `Program`: one arena holding the term of every function, constraint, check, newtype domain and retag delete action (§4.6) of the schema |
-| `check_adhoc(schema, items, params)` | `Adhoc`: an arena with one term per statement, and the variable of each ad hoc parameter |
-| `check_query(schema, module, q)` | `Query`: an arena with the term of one registered query |
+| `check_schema(schema)` | `Program`: one arena holding the term of every function, constraint, check, newtype domain, default, computed field, index field and retag delete action (§4.6) of the schema |
+| `check_adhoc(schema, program, items, params)` | `Adhoc`: an arena with one term per statement, and the variable of each ad hoc parameter |
+| `check_query(schema, program, module, q)` | `Query`: an arena with the term of one registered query |
+| `check_txn(schema, program, module, t)` | `Txn`: an arena with the term of one registered transaction |
+
+`program` is the result of `check_schema(schema)`.
 
 A term is a `Tm`, an index into its arena's `nodes`; each node has a
 `kind` and a `ty`. A `Call` names a function by `FnId`, and the
@@ -47,23 +50,14 @@ Postconditions on every term `adtb-lang` returns:
 - Every `Top`, and every `Present` with a `take` or an `after`, orders
   by keys injective on its source.
 
-Not guaranteed:
-
-- A term the checker returns is not normalised
-  ([../spec/semantics.md §5.11](../spec/semantics.md#511-normalisation)).
-  Calls of schema functions remain `Call` nodes, lambdas and
-  applications remain, and a `let` remains whatever its bound
-  expression.
-- Totality is not marked on nodes.
-- Stratification and boundedness of a `fix`
-  ([../spec/semantics.md §5.10](../spec/semantics.md#510-fixpoints))
-  are not checked.
-
-`adtb-lang` owns normalisation. It provides the planner normalised
-terms: no λ and no application, and a `let` only where its bound
-expression is partial. The checker's terms above are its input.
-
-TODO: the normalisation entry point, its output arena, and which of the guarantees above it adds are undecided.
+A term the checker returns is not normalised
+([../spec/semantics.md §5.11](../spec/semantics.md#511-normalisation)):
+calls of schema functions remain `Call` nodes, lambdas and applications
+remain, and a `let` remains whatever its bound expression. Totality is
+not marked on nodes. The checker normalises every body it checks and
+refuses one whose normal form breaks a rule of §7, so the normal form
+of every term it returns exists and keeps those rules. §7 states the
+normal forms a consumer receives.
 
 ## 2. Variables and sharing
 
@@ -190,7 +184,7 @@ from. Each form below is stated against that desugaring.
 | --- | --- | --- | --- |
 | `Insert(r, e)` | `e : Set T`, `T` a row type of `r` | `{ ins(r, v) \| v ∈ e }` | `insert r {fill_r(...)}`, `insert r (for ξ in q do {fill_r(ξ)})` |
 | `Delete(r, e)` | `e : Set T`, `T` a row type of `r` | `{ del(r, v) \| v ∈ e ∩ D(r) }` | `delete r (for x in R do if p then {x} else {})`; `delete x` is `Delete(r, {x})`, `delete x where p` is `Delete(r, if p then {x} else {})` |
-| `Replace(r, e, f)` | `e : Set T` of rows of `r`; `f = Lam(x, n)`, `f : T -> T_r` | for each `v ∈ e`: `KeyChanged` if `key_r(f v) ≠ key_r(v)`; nothing if `f v = v` or `v ∉ D(r)`; `rep(r, v, f v)` otherwise | `for x in R do if p then replace r x e° else skip`, with `e` the filtered rows and `f` the completed new value `e°` |
+| `Replace(r, e, f)` | `e : Set T` of rows of `r`; `f = Lam(x, n)`, `f : T -> T_r`; this `Lam` remains in a normal form (§7) | for each `v ∈ e`: `KeyChanged` if `key_r(f v) ≠ key_r(v)`; nothing if `f v = v` or `v ∉ D(r)`; `rep(r, v, f v)` otherwise | `for x in R do if p then replace r x e° else skip`, with `e` the filtered rows and `f` the completed new value `e°` |
 | `Upsert { rel, rows, on, old, new, otherwise, single }` | `rows : Set T`, filled; `on` is `Key` or `Unique(i)`, `i` an index of `rel` with `unique`; `old : T_rel` restricted to the constructor set of `on` (every constructor for `Key`); `new : T`; `otherwise : Change` | for each `n ∈ rows`, `O` = the rows `o` of `rel.S` in `D` whose `on` values equal `n`'s: `ins(rel, n)` if `O` is empty, else the effects of `otherwise` with `old ↦ o`, `new ↦ n`, for each `o ∈ O` | the `let! ξ_V … for new in ξ_V do … if empty(ξ_O) then insert … else for old in ξ_O do w` of §10.3 |
 | `Rejects { into, insert }` | `insert` is an `Insert` or `Upsert` whose rows are `For(x, Rel(r₀, S), body)`; `into` holds `RejectedRow` | evaluates `body` per record `p` of the source: rows of records that compute are the inner form's rows; a record whose computation reaches `Reject(m)` or does not convert contributes `ins(into, { load: ℓ, line, source, raw, reason: m })` instead; `ℓ` is one fresh value per statement | `insert r (for x in e₀ do e) rejects into j` (§6.7) |
 | `Par(ws)` | each `w : Change` | the union of the effects of every `w`; order chooses neither the change set nor which abort is the outcome | `w₁ ∥ … ∥ wₙ` |
@@ -312,7 +306,88 @@ A term names declarations by id; a consumer reads them from the
 - Prelude types are found with `Schema::prelude_type`; their
   constructors are in the prelude's declaration order.
 
-## 7. Code generators
+## 7. Normal forms
+
+`adtb-lang` normalises every body it checks. A consumer receives normal
+forms and does not normalise them again.
+
+```text
+fn norm::program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error>
+fn norm::adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Error>
+fn norm::query(schema: &Schema, p: &Program, q: &Query) -> Result<NormalQuery, Error>
+fn norm::txn(schema: &Schema, p: &Program, t: &Txn) -> Result<NormalQuery, Error>
+```
+
+Preconditions: `p` is the result of `check_schema(schema)`; `a`, `q` and
+`t` are the results of `check_adhoc`, `check_query` and `check_txn`
+against `schema` and `p`.
+
+Each result is a new arena. `NormalProgram` holds the normal form of
+every constraint, check, newtype domain, default, computed field, index
+field and retag value of the schema, and of every function whose
+parameters and result are first-order, over that function's parameter
+variables. A function that takes or returns a function has no normal
+form of its own, and neither has a Wasm or host function. A computed
+field is a body over its `self` variable; an index field and a retag
+value are each a body over the row's variable. `NormalQuery` is a
+registered query's or transaction's body over its parameter variables;
+one with no parameters has one variable of type `()`. `Error` is never
+returned for a body the checker accepted.
+
+Postconditions on a normal form, beyond those of §1:
+
+- It contains no `Lam` and no `App`, except that the third operand of
+  a `Replace` is a `Lam` over the old row (§4.2) whose body is a
+  normal form.
+- A `Call` remains only of a Wasm or host function. Every schema
+  function is inlined, a generic one at the type arguments its call
+  solved, and no type in the arena mentions a type parameter of an
+  inlined function.
+- A `Let` remains only where its bound expression is partial, and no
+  rewrite of
+  [../spec/semantics.md §5.11](../spec/semantics.md#511-normalisation)
+  applies anywhere in it.
+- Every node has the type of the node it came from, or a subtype of it.
+- A node shared by several parents in the checked term is one node in
+  the normal form wherever its free variables have the same values.
+- Every `fix` is stratified
+  ([../spec/semantics.md §5.10](../spec/semantics.md#510-fixpoints)).
+- Every `sum` and `avg` ranges over bindings, never over values a
+  `select` may have merged
+  ([../spec/queries.md §10.1](../spec/queries.md#101-aggregates-range-over-bindings)).
+
+### 7.1 Totality
+
+```text
+fn Totality::new(schema: &Schema, hiding: bool) -> Totality
+fn Totality::total(&mut self, terms: &Terms, t: Tm) -> bool
+```
+
+`total` returns whether `t` cannot abort, by
+[../spec/semantics.md §3.4](../spec/semantics.md#34-totality). `hiding`
+is set for a bundle declaring `hide new constructors`; every `Deref` is
+then partial.
+
+Precondition: every term one `Totality` sees belongs to one arena, and
+no term changes after the first question about it.
+
+Postcondition: a term classified total never faults, never fails and
+terminates. A consumer may evaluate it early, more than once or not at
+all, and may move it past a guard. A partial term keeps its order
+relative to other partial terms and stays under every guard that
+dominated it.
+
+Partial, besides the primitive faults of
+[../spec/prelude.md](../spec/prelude.md): integer and decimal `sum`, a
+user-defined aggregate, `top` whose count is not a nonnegative literal,
+an unbounded `fix`, a `Deref` of a key that is not a reference field's
+value, a Wasm or host `Call`, `At`, `Fail`, `Reject` and `Replace`.
+`Try` is total whatever its operand. A `fix` is bounded when no
+constructing operation over a value of its own stratum can produce an
+element of one of its relations; an operation whose result is used only
+in a condition, a comparison or an aggregate key does not count.
+
+## 8. Code generators
 
 Code generation tools for host languages depend on `adtb-lang` alone.
 They compute type, constructor and relation variable ids and call

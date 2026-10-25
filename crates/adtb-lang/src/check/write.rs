@@ -1576,14 +1576,21 @@ pub struct Txn {
     pub term: Tm,
 }
 
-/// Type checks a registered transaction of a bundle that reads `module`.
-pub fn check_txn(schema: &Schema, module: ModuleId, t: &ast::TxnDecl) -> Result<Txn, Diag> {
+/// Type checks a registered transaction of a bundle that reads `module`, against `program`, the checked `schema`.
+pub fn check_txn(
+    schema: &Schema,
+    program: &Program,
+    module: ModuleId,
+    t: &ast::TxnDecl,
+) -> Result<Txn, Diag> {
     let mut c = Checker::new(schema, Visible::module(module), Context::Function);
     let term = c.txn(t)?;
-    Ok(Txn {
+    let txn = Txn {
         terms: c.terms,
         term,
-    })
+    };
+    crate::analysis::txn_diag(schema, program, &txn, t.span)?;
+    Ok(txn)
 }
 
 impl Checker<'_> {

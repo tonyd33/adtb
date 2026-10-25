@@ -213,7 +213,7 @@ Covers evolution.md, applications.md, embedding.md in full except §12,
 semantics.md §9, security.md §1 and §4 (principals and definer rights
 in process), interop.md §9 (host functions),
 [design/schema-change.md](design/schema-change.md) and
-[design/kernel.md §2](design/kernel.md#2-code-generators).
+[design/kernel.md §8](design/kernel.md#8-code-generators).
 
 - Operator log, version hashes, every schema operator with its data
   map, inverse and declared loss; revert.

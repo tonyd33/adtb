@@ -121,7 +121,8 @@ fn adhoc(params: &[(&str, &str)], text: &str) -> Result<(Schema, Adhoc), Vec<Str
         );
     }
     let items = parsed.ok().expect("parsed");
-    match check_adhoc(&s, &items, &tys) {
+    let program = check_schema(&s).expect("the schema checks");
+    match check_adhoc(&s, &program, &items, &tys) {
         Ok(a) => Ok((s, a)),
         Err(ds) => Err(ds.into_iter().map(|d| d.message).collect()),
     }
@@ -161,7 +162,8 @@ fn query(extra: &str, text: &str) -> Result<(), String> {
         panic!("{text}\nis not a query");
     };
     let module = s.module_named("auth").expect("module auth");
-    check_query(&s, module, &q)
+    let program = check_schema(&s).expect("the schema checks");
+    check_query(&s, &program, module, &q)
         .map(|_| ())
         .map_err(|d| d.message)
 }

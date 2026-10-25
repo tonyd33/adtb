@@ -583,7 +583,8 @@ fn an_unbounded_fix_reaches_the_statement_limit() {
     let items = adtb_lang::parse::parse_adhoc(text, adtb_lang::parse::Options::default())
         .ok()
         .unwrap();
-    let adhoc = adtb_lang::check::check_adhoc(&f.schema, &items, &Default::default()).unwrap();
+    let adhoc =
+        adtb_lang::check::check_adhoc(&f.schema, &f.program, &items, &Default::default()).unwrap();
     let got = f
         .interp()
         .with_fix_limit(50)
@@ -641,7 +642,8 @@ fn caller_is_the_given_principal() {
     let items = adtb_lang::parse::parse_adhoc("caller", adtb_lang::parse::Options::default())
         .ok()
         .unwrap();
-    let adhoc = adtb_lang::check::check_adhoc(&f.schema, &items, &Default::default()).unwrap();
+    let adhoc =
+        adtb_lang::check::check_adhoc(&f.schema, &f.program, &items, &Default::default()).unwrap();
     let anon = Value::Ctor(2, Vec::new());
     assert_eq!(
         Ok(anon.clone()),

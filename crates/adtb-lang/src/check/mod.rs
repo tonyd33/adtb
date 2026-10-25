@@ -46,6 +46,12 @@ pub struct Program {
     pub domains: BTreeMap<TypeId, (Var, Tm)>,
     /// Each relation's `on delete retag` new value, a `Lam` over the referrer's row.
     pub retags: BTreeMap<RelId, Tm>,
+    /// Each default expression, keyed by relation and position among its defaults.
+    pub defaults: BTreeMap<(RelId, usize), Tm>,
+    /// Each computed field's expression over its `self` variable, keyed by relation and position.
+    pub computed: BTreeMap<(RelId, usize), (Var, Tm)>,
+    /// Each index field, a `Lam` over the row, keyed by relation, index position and field position.
+    pub index_fields: BTreeMap<(RelId, usize, usize), Tm>,
 }
 
 /// What a body may refer to besides its locals.
@@ -334,6 +340,9 @@ pub fn check_schema(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
         checks: Vec::new(),
         domains: BTreeMap::new(),
         retags: BTreeMap::new(),
+        defaults: BTreeMap::new(),
+        computed: BTreeMap::new(),
+        index_fields: BTreeMap::new(),
     };
     let mut diags = Vec::new();
     let mut fn_rows = vec![None; schema.functions.len()];
@@ -439,20 +448,23 @@ pub fn check_schema(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
             continue;
         }
         let rel = RelId(i as u32);
-        for d in &r.defaults {
-            if let DefaultValue::Expr(e) = &d.value {
-                run(
+        for (j, d) in r.defaults.iter().enumerate() {
+            if let DefaultValue::Expr(e) = &d.value
+                && let Some(tm) = run(
                     r.module,
                     Context::Schema,
                     r.file,
                     &mut terms,
                     &fn_rows,
                     &mut |c| c.default_clause(rel, d.ctor, &d.field, e),
-                );
+                )
+            {
+                program.defaults.insert((rel, j), tm);
             }
         }
-        for comp in &r.computed {
-            run(
+        for (j, comp) in r.computed.iter().enumerate() {
+            let mut var = None;
+            if let Some(tm) = run(
                 r.module,
                 Context::Schema,
                 r.file,
@@ -460,26 +472,33 @@ pub fn check_schema(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
                 &fn_rows,
                 &mut |c| {
                     c.scope.push();
-                    c.bind("self", r.elem.clone(), Some(rel));
+                    var = Some(c.bind("self", r.elem.clone(), Some(rel)));
                     Ok(c.check(&comp.expr, &comp.ty)?.tm)
                 },
-            );
+            ) {
+                program.computed.insert((rel, j), (var.expect("bound"), tm));
+            }
         }
-        for ix in &r.indexes {
-            for e in &ix.fields {
-                run(
+        for (j, ix) in r.indexes.iter().enumerate() {
+            for (k, e) in ix.fields.iter().enumerate() {
+                if let Some(tm) = run(
                     r.module,
                     Context::Schema,
                     r.file,
                     &mut terms,
                     &fn_rows,
                     &mut |c| c.index_field(rel, ix.scope.clone(), e),
-                );
+                ) {
+                    program.index_fields.insert((rel, j, k), tm);
+                }
             }
         }
     }
     program.retags = write::delete_actions(schema, &mut terms, &mut diags);
     program.terms = terms;
+    if diags.is_empty() {
+        diags = crate::analysis::schema_diags(schema, &program);
+    }
     if diags.is_empty() {
         Ok(program)
     } else {
@@ -495,9 +514,10 @@ pub struct Adhoc {
     pub params: BTreeMap<String, Var>,
 }
 
-/// Type checks ad hoc text, its free names typed by `params`.
+/// Type checks ad hoc text, its free names typed by `params`, against `program`, the checked `schema`.
 pub fn check_adhoc(
     schema: &Schema,
+    program: &Program,
     items: &[ast::AdhocItem],
     params: &BTreeMap<String, Ty>,
 ) -> Result<Adhoc, Vec<Diag>> {
@@ -523,11 +543,25 @@ pub fn check_adhoc(
     if !diags.is_empty() {
         return Err(diags);
     }
-    Ok(Adhoc {
+    let adhoc = Adhoc {
         params: c.params.iter().map(|(n, (v, _))| (n.clone(), *v)).collect(),
         terms: c.terms,
         items: out,
-    })
+    };
+    let spans: Vec<Span> = items
+        .iter()
+        .filter_map(|i| match i {
+            ast::AdhocItem::Expr(e) => Some(e.span),
+            ast::AdhocItem::Write(w) => Some(w.span),
+            ast::AdhocItem::Transact(b) => Some(b.span),
+            _ => None,
+        })
+        .collect();
+    let diags = crate::analysis::adhoc_diags(schema, program, &adhoc, &spans);
+    if !diags.is_empty() {
+        return Err(diags);
+    }
+    Ok(adhoc)
 }
 
 /// A checked registered query: its term, a `Lam` over its parameters.
@@ -537,14 +571,21 @@ pub struct Query {
     pub term: Tm,
 }
 
-/// Type checks a registered query of a bundle that reads `module`.
-pub fn check_query(schema: &Schema, module: ModuleId, q: &ast::QueryDecl) -> Result<Query, Diag> {
+/// Type checks a registered query of a bundle that reads `module`, against `program`, the checked `schema`.
+pub fn check_query(
+    schema: &Schema,
+    program: &Program,
+    module: ModuleId,
+    q: &ast::QueryDecl,
+) -> Result<Query, Diag> {
     let mut c = Checker::new(schema, Visible::module(module), Context::Function);
     let term = c.query(q)?;
-    Ok(Query {
+    let query = Query {
         terms: c.terms,
         term,
-    })
+    };
+    crate::analysis::query_diag(schema, program, &query, q.span)?;
+    Ok(query)
 }
 
 impl Checker<'_> {

@@ -85,7 +85,7 @@ impl Fixture {
             .iter()
             .map(|(n, t, _)| (n.to_string(), self.ty(t)))
             .collect();
-        let adhoc = check_adhoc(&self.schema, &items, &tys)
+        let adhoc = check_adhoc(&self.schema, &self.program, &items, &tys)
             .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
         let [item] = adhoc.items.as_slice() else {
             panic!("`{text}` holds one statement")
@@ -116,7 +116,7 @@ impl Fixture {
             panic!("`{decl}` is one query")
         };
         let module = self.schema.module_named("app").expect("the module");
-        let query = check_query(&self.schema, module, q)
+        let query = check_query(&self.schema, &self.program, module, q)
             .unwrap_or_else(|d| panic!("`{decl}` does not check: {}", d.message));
         self.interp().apply(&query.terms, query.term, args)
     }
