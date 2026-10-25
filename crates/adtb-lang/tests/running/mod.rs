@@ -42,6 +42,7 @@ const EXTENSIONS: &[(&str, &[(&str, &str)])] = &[
             ("applications.md", "type Session { id: Key sessions }"),
             ("derived.md", "module billing\ntype Invoice"),
             ("derived.md", "-- 0030, from version 29"),
+            ("derived.md", "add type Payment"),
         ],
     ),
     (
@@ -66,9 +67,16 @@ const EXTENSIONS: &[(&str, &[(&str, &str)])] = &[
             ("queries.md", "type Post = {"),
             ("derived.md", "module billing\ntype Invoice"),
             ("derived.md", "-- 0030, from version 29"),
+            ("syntax.md", "type Import { id: Key imports }"),
         ],
     ),
-    ("writes.md", &[("writes.md", "fn rehash (h: Bytes)")]),
+    (
+        "writes.md",
+        &[
+            ("writes.md", "fn rehash (h: Bytes)"),
+            ("writes.md", "add unique (lower(email))"),
+        ],
+    ),
 ];
 
 /// One declaration of a schema, as source text.
@@ -334,6 +342,8 @@ fn apply(schema: &mut Vec<Entry>, module: &str, b: &Block, op: &Operator) {
                 &format!("\n  {kind} ({fields}){scope}"),
             );
         }
+        OperatorKind::AddType(t) => push(schema, module, b, &Decl::Type(t.clone())),
+        OperatorKind::AddRelation(r) => push(schema, module, b, &Decl::Relation(r.clone())),
         OperatorKind::DefineFn(f) => push(schema, module, b, &Decl::Fn(f.clone())),
         OperatorKind::Enable(_) => {}
         other => panic!("the running schema's history applies {other:?}"),

@@ -18,7 +18,9 @@ branch may retag.
 The binding of an upsert is the row with `old`'s key among the else
 branch's effects, or `old` when the branch leaves it unchanged; defined
 from the change set, not the syntax of the branch. Its type is the join
-of the target row type and the types of the branch's new values.
+of the types of every value the binding can denote: the inserted row's,
+each new value's the branch can write for `old`'s key, and `old`'s
+whenever some path through the branch leaves `old` in place.
 
 ## spec/writes/upsert-binding/syntax
 

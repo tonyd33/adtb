@@ -3,7 +3,7 @@ title: "What update x and delete x may name"
 pick: one
 options:
   snapshot-row:
-    title: "x bound to a snapshot row: a query generator, an upsert's old, or a match binder over one; a let of a write is refused"
+    title: "x bound to a snapshot row: a generator, an upsert's old, a let of a row read from the snapshot, or a match binder over one; never a row a write produced"
   any-binding:
     title: "Any name bound to a row, a let of a write included"
 ---
@@ -19,10 +19,13 @@ transact
 
 ## spec/writes/bound-row/snapshot-row
 
-`update x` and `delete x` require `x` bound to a row of the snapshot:
-by a generator of a query, by an upsert's `old`, or by a binder of a
-match over such a row. A name bound by `let` from a write is refused by
-the type checker.
+`update x` and `delete x` require `x` bound to a row of a relation
+read from the statement's snapshot: by a generator of a query, by an
+upsert's `old`, by a `let` bound to a row-valued expression over the
+snapshot (such as one that follows a key to the row it names), or by a
+binder of a match over such a row. A row a write produced is not a
+snapshot row: a name bound by `let` from a write is refused by the type
+checker.
 
 ## spec/writes/bound-row/any-binding
 

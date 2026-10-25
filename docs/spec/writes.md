@@ -226,9 +226,10 @@ transact
 `key (insert users { name: n })` is the key of the row a nested single
 row insert would insert, and is itself a write: the insert is part of
 the statement's change set. It is allowed only where it is evaluated
-once per statement: under a comprehension, in an `update ... in`, in an
-upsert's else branch, or in the scope of a match arm's binder, it is a
-type error.
+exactly once per statement. Under a comprehension, in an `update ...
+in`, in an upsert's else branch, in the scope of a match arm's binder,
+or in a conditional position (a branch of an `if`, the right operand of
+`and` or `or`, an arm of a match), it is a type error.
 
 ### 2.3 Defaults and generated keys
 
@@ -355,10 +356,16 @@ a comprehension over one relation variable with filters and joins whose
 `select` is the binder itself). `x` is bound to each row of `R` in the
 pre-state that satisfies `p`; `where p` may be omitted. `e` is the new
 whole value of the row and may read `x`. The second form updates the
-one row `x` already names. That `x` must be bound to a row of the
-snapshot: by a generator of a query, by an upsert's `old` (§6), or by a
-binder of a match over such a row. A name bound by `let` to the rows of
-a write is not such a row, and `update x` on it is a type error.
+one row `x` already names. That `x` must be a snapshot row: a row of a
+relation read from the statement's snapshot, bound by a generator of a
+query, by an upsert's `old` (§6), by a `let` of a row-valued expression
+over the snapshot (such as one that follows a key to the row it names),
+or by a binder of a match over such a row. A row a write produced is
+not a snapshot row: a name bound by `let` to the rows of a write is
+not one, and `update x` on it is a type error.
+
+`update x where p set e`, with `x` a snapshot row and no `in`, means
+`if p then update x set e else skip`.
 
 ```adt fragment
 transact
@@ -432,7 +439,7 @@ set Google { g with id: k }   -- type error
 the new value is computed from the old one in the same write, without a
 separate read.
 
-Rulings: write/update/ctor-binder, write/update/match-set, write/nested/replace, write/nested/rebuild, write/retag/old/in-scope, write/bulk/from-query, spec/writes/bound-row/snapshot-row, spec/writes/new-key/ctor-expr
+Rulings: write/update/ctor-binder, write/update/match-set, write/nested/replace, write/nested/rebuild, write/retag/old/in-scope, write/bulk/from-query, spec/writes/bound-row/snapshot-row, spec/writes/new-key/ctor-expr, spec/writes/where-alone/conditional
 
 ## 4. Retag
 
@@ -533,8 +540,10 @@ delete x
 
 `R` is as for update (§3.1). Every row of `R` in the pre-state that
 satisfies `p` is in the deleted set of its constructor relation. The
-second form deletes the one row `x` names, which must be bound to a
-row of the snapshot as for `update x` (§3.1). Bound by `let`, a delete
+second form deletes the one row `x` names, which must be a snapshot
+row as for `update x` (§3.1); a row a write produced is not one.
+`delete x where p`, with no `in`, means `if p then delete x else skip`.
+Bound by `let`, a delete
 binds the set of rows it names, as they were in the pre-state, and not
 the rows its delete actions derive.
 
@@ -548,7 +557,7 @@ delete s in (from s in logins.Active, i in identities.Google
 A delete also derives the delete actions of §7 on every row that
 references a deleted row.
 
-Rulings: write/bulk/from-query, write/primitive/delta, spec/writes/bound-row/snapshot-row, spec/writes/let-write/four-forms
+Rulings: write/bulk/from-query, write/primitive/delta, spec/writes/bound-row/snapshot-row, spec/writes/let-write/four-forms, spec/writes/where-alone/conditional
 
 ## 6. Upsert
 
@@ -576,11 +585,17 @@ The insert's target constructor set must be a subset of the
 constructor set `K` ranges over; otherwise the upsert is a type error.
 For a unique over expressions, `K` is written as the unique is
 declared, and two rows conflict when the unique's expressions evaluate
-to equal values on them:
+to equal values on them. With the unique
+
+```adt
+-- from version 12
+add unique (lower(email)) in identities.EmailPass
+```
+
+an upsert on it is:
 
 ```adt
 -- given u: Key users, e: Text, h: Bytes
--- with add unique (lower(email)) in identities.EmailPass
 insert identities.EmailPass { user: u, email: e, hash: h }
 unless conflict on (lower(email)) in EmailPass
 else update old set old
@@ -642,13 +657,17 @@ is inserted, it binds the inserted row. When it conflicts, it binds the
 row with `old`'s key among the else branch's effects when the branch
 replaces `old`, and `old` itself when the branch leaves it in place. The
 binding is read off the change set, whatever form the branch is
-written in. Its type is the join of the target's row type and the
-types of the new values the branch writes, so a branch that retags
-binds a row of the joined constructor set. When the else branch fails
-with `fail`, the statement is rejected and nothing is bound. A `let`
-on a single-row upsert whose else branch can delete the row, because
-any arm of it is a delete, is a type error, since the binding must be
-exactly one row. This makes a get-or-create:
+written in. Its type is the join of the types of every value the
+binding can denote: the inserted row, each new value the branch can
+write with `old`'s key, and `old` whenever some path through the branch
+leaves `old` in place. A branch that retags on every path binds a row
+of the joined constructor set of the inserted row and the new values.
+When the else branch fails with `fail`, the statement is rejected and
+nothing is bound. A `let` on a single-row upsert whose else branch can
+delete the row is a type error, since the binding must be exactly one
+row. The branch can delete the row when any arm of it deletes `old`,
+or deletes from a relation whose `cascade` actions, followed through
+every relation they delete from, reach `old`'s relation. This makes a get-or-create:
 
 ```adt
 -- given u: Key users, x: Text
@@ -665,7 +684,7 @@ binding, as above, of each conflicting row.
 The else branch is required. An upsert that should leave a conflicting
 row unchanged says so with `else update old set old`.
 
-Rulings: write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, engine/wait-inserter, spec/writes/upsert-scope/subset, spec/writes/upsert-binding/change-set, spec/writes/violation-name/canonical-least, spec/writes/insert-existing/violation
+Rulings: write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, engine/wait-inserter, spec/writes/upsert-scope/subset, spec/writes/upsert-binding/change-set, spec/writes/violation-name/canonical-least, spec/writes/insert-existing/violation, spec/writes/upsert-delete/through-actions
 
 ## 7. Delete actions
 
@@ -697,7 +716,8 @@ is `restrict`.
 `retag C { ... }` is admitted only when `C` is a constructor of the
 referrer's sum that lacks the reference field; on a header field it is
 a schema error. The payload may omit the key and header fields, which carry over. It is a record of literals giving every field
-of `C` that has no default or generated value; the others are filled
+of `C` that has no default or generated value, where a literal is a
+scalar literal or a nullary constructor such as `None`; the others are filled
 as for a retag (§4.1). The referrer keeps its key and header fields.
 With the `logins` relation of the preamble, deleting an identity
 retags each `Active` login referencing it to `Revoked`, with `at`
@@ -753,7 +773,7 @@ transact
   delete x in users where key x == u
 ```
 
-Rulings: write/delete-action/restrict, write/delete-action/cascade, write/delete-action/retag-referrer, derived/rules/none, constraint/timing/multi-assign, spec/writes/action-compose/one-value, spec/writes/action-reach/pre-state, spec/writes/action-identical/identical-only, spec/writes/action-own-writes/statement-wins
+Rulings: write/delete-action/restrict, write/delete-action/cascade, write/delete-action/retag-referrer, derived/rules/none, constraint/timing/multi-assign, spec/writes/action-compose/one-value, spec/writes/action-reach/pre-state, spec/writes/action-identical/identical-only, spec/writes/action-own-writes/statement-wins, spec/writes/retag-literal/nullary
 
 ## 8. Bulk writes
 

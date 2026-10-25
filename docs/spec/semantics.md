@@ -1528,11 +1528,15 @@ matched (§5.2).
 | `insert r.C { l: e, … }` | `insert r {fill_r(C { l: ⟦⟦e⟧⟧, … })}` |
 | `insert r from q`, `insert r.C from q` | `insert r (for ξ in ⟦⟦q⟧⟧ do {fill_r(ξ)})` |
 | `let x = insert …` in a block | `let! x = (the row or set inserted) in …`, the write `insert r {x}` or `insert r x` joining the block |
-| `key (insert r.C { … })` | as `let!` of the row, then `key` of it; only where it is evaluated once per statement ([writes.md §2.2](writes.md#22-what-an-insert-returns)) |
+| `key (insert r.C { … })` | as `let!` of the row, then `key` of it; only where it is evaluated exactly once per statement, under no binder and in no conditional position ([writes.md §2.2](writes.md#22-what-an-insert-returns)) |
 | `update x in R where p set e` | `for x in ⟦⟦R⟧⟧ do if ⟦⟦p⟧⟧ then replace r x ⟦⟦e⟧⟧° else skip` |
 | `update x in R where p set match x \| …` | as above, `⟦⟦e⟧⟧` the `case` tree of §10.2 |
 | `update o set e` in an upsert branch | `replace r o ⟦⟦e⟧⟧°` |
+| `update x set e`, `x` a snapshot row | `replace r x ⟦⟦e⟧⟧°` |
+| `update x where p set e` | `if ⟦⟦p⟧⟧ then replace r x ⟦⟦e⟧⟧° else skip` |
 | `delete x in R where p` | `delete r (for x in ⟦⟦R⟧⟧ do if ⟦⟦p⟧⟧ then {x} else {})` |
+| `delete x`, `x` a snapshot row | `delete r {x}` |
+| `delete x where p` | `if ⟦⟦p⟧⟧ then delete r {x} else skip` |
 | `match e \| C x -> w \| …` over writes | write-level `case` of §10.2 |
 | `skip` | `skip` |
 | `(w₁, w₂, …)` | `⟦⟦w₁⟧⟧ ∥ ⟦⟦w₂⟧⟧ ∥ …`, one change set |
@@ -1570,8 +1574,14 @@ In the else branch `new` is the proposed row, with fills applied,
 beside `old`. Bound by `let x`, a single-row upsert binds one row: `new`
 when it is inserted; otherwise the row with `old`'s key among the
 effects `E_w` of `⟦⟦w⟧⟧` when the branch replaces `old`, and `old` when
-the branch leaves it in place. A `let` on a single-row upsert whose
-else branch can delete `old` is a type error. The source form binds
+the branch leaves it in place. The binding's type is the join of the
+types of every value it can denote: `new`, each value `v'` the branch
+can write with `old`'s key, and `old` whenever some path through `w`
+leaves `old` in place. A `let` on a single-row upsert whose else branch
+can delete `old` is a type error; the branch can delete `old` when an
+arm deletes it or deletes from a relation whose `cascade` actions,
+followed through every relation they delete from, reach `old`'s
+relation. The source form binds
 the set of the rows it inserted together with the binding, as above,
 of each conflicting row. The binding is a `let!` after `ξ_V`, beside the write above:
 
@@ -1633,4 +1643,4 @@ The conflict test reads the snapshot
 | `add constructor … arm q: C x -> e` | the new `case` arm `C x → ⟦⟦e⟧⟧` in each named query |
 | `revert n fill T.C.f = e …` | the inverses of migration `n`'s operators, in reverse order; an inverse that adds field `T.C.f` takes `e` as its fill (§9.4) |
 
-Rulings: query/construct, lang/nav/paths, lang/nav/backlinks, lang/nav/joins, lang/nav/backlink-card/collection-typed, lang/nav/path-option/option-typed, lang/patterns/guards, lang/patterns/guard-cover/ignore-guarded, lang/patterns/literals, lang/patterns/nested, lang/patterns/or-patterns, lang/patterns/or-binder/ctor-set, lang/patterns/record, lang/wildcard/verbosity/adhoc-wildcard, lang/wildcard/verbosity/set-patterns, lang/nullary-fn, lang/params/declared, lang/registered/named, lang/abstraction/higher-order, syntax/aggregate/comprehension, write/insert/ctor, write/insert/value, write/update/ctor-binder, write/update/match-set, write/nested/replace, write/nested/rebuild, write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, write/transact/block, write/transact/registered-txn, surface/constraint/check, surface/constraint/denial, derived/defaults/on-relation, derived/materialize/storage-choice, derived/computed/virtual, model/prelude-bool, surface/query-scoped, evolution/split-routing/match-route, constraint/scope/new-ctor/arm-in-add, spec/lambda/params/curried, spec/top/operand/comprehension, spec/writes/upsert-binding/change-set, spec/writes/nested-insert/once, spec/evolution/migration-statement/one-statement, spec/evolution/revert-fill/per-field
+Rulings: query/construct, lang/nav/paths, lang/nav/backlinks, lang/nav/joins, lang/nav/backlink-card/collection-typed, lang/nav/path-option/option-typed, lang/patterns/guards, lang/patterns/guard-cover/ignore-guarded, lang/patterns/literals, lang/patterns/nested, lang/patterns/or-patterns, lang/patterns/or-binder/ctor-set, lang/patterns/record, lang/wildcard/verbosity/adhoc-wildcard, lang/wildcard/verbosity/set-patterns, lang/nullary-fn, lang/params/declared, lang/registered/named, lang/abstraction/higher-order, syntax/aggregate/comprehension, write/insert/ctor, write/insert/value, write/update/ctor-binder, write/update/match-set, write/nested/replace, write/nested/rebuild, write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, write/transact/block, write/transact/registered-txn, surface/constraint/check, surface/constraint/denial, derived/defaults/on-relation, derived/materialize/storage-choice, derived/computed/virtual, model/prelude-bool, surface/query-scoped, evolution/split-routing/match-route, constraint/scope/new-ctor/arm-in-add, spec/lambda/params/curried, spec/top/operand/comprehension, spec/writes/upsert-binding/change-set, spec/writes/nested-insert/once, spec/evolution/migration-statement/one-statement, spec/evolution/revert-fill/per-field, spec/writes/bound-row/snapshot-row, spec/writes/where-alone/conditional, spec/writes/upsert-delete/through-actions

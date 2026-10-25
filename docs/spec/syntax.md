@@ -1018,23 +1018,44 @@ transact retry 5 durability quorum
   return key i
 ```
 
-The examples use `Import`, `logins` and `lookup` as
-[writes.md](writes.md#1-change-sets) declares them.
+The examples extend the running schema with `logins`, `imports` and
+`lookup` as [writes.md](writes.md#1-change-sets) declares them:
+
+```adt
+type Login { id: Key logins, user: Key users on delete cascade }
+  = Active  { identity: Key identities on delete retag Revoked {} }
+  | Revoked { at: Instant }
+relation logins : Login
+  key id generate sequence
+  default Revoked.at = generate clock
+
+type Import { id: Key imports } = Email { user: Key users, addr: Text, h: Bytes }
+                                | Oauth { user: Key users, sub: Text }
+relation imports : Import key id generate sequence
+
+fn lookup (email: Text) -> Text = lower(email)
+```
 
 - An `item` is one `let` or one write of a block. "Statement" means a
   whole statement: a block, or one write or query sent alone.
 - A write is written inside a `transact` block, a `txn` body, a
   `script` operator, or as ad hoc text (§3.1). Inside a block a write
   may also be an operand, always parenthesised: `key (insert users {
-  name: n })`, only where it is evaluated once per statement
+  name: n })`, only where it is evaluated exactly once per statement:
+  under no binder, and not in a branch of an `if`, the right operand of
+  `and` or `or`, or an arm of a match
   ([writes.md §2.2](writes.md#22-what-an-insert-returns)).
 - `skip` is the empty write. `(w1, w2, ...)` combines writes into one
   change set and is allowed wherever one write is, a match arm or an
   `if` branch included. `if c then w1 else w2` is a write.
 - `update x set e` and `delete x` without `in` act on the row already
-  bound to `x`, which must be a row of the snapshot: bound by a query
-  generator, as `old`, or by a match binder over such a row. A name
-  bound by `let` to a write is refused.
+  bound to `x`, which must be a snapshot row, a row of a relation read
+  from the statement's snapshot: bound by a query generator, as `old`,
+  by a `let` of a row-valued expression over the snapshot, or by a
+  match binder over such a row. A row a write produced is not one, so a
+  name bound by `let` to a write is refused. With `where p` and no
+  `in`, `update x where p set e` is `if p then update x set e else
+  skip`, and `delete x where p` is `if p then delete x else skip`.
 - `let x = w` takes an insert, an upsert, an update or a delete; over
   any other write it is a type error.
 - `update ... set e` gives the new whole value of each row. There is no
@@ -1065,7 +1086,7 @@ The meaning of change sets, insert, update, retag, delete and upsert is
 in [writes.md](writes.md); of the block in
 [transactions.md](transactions.md).
 
-Rulings: write/transact/block, write/surface/txdata, write/insert/ctor, write/insert/value, write/insert/returns/rows, write/update/ctor-binder, write/update/match-set, write/retag/assign, write/nested/replace, write/nested/rebuild, write/bulk/from-query, write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, write/unit/multi, interop/load/errors/reject-input, spec/writes/bound-row/snapshot-row, spec/writes/let-write/four-forms, spec/writes/nested-insert/once, spec/writes/upsert-binding/change-set, spec/writes/rejects/per-row, spec/writes/rejects-source/one-source, spec/txn/durability/strongest
+Rulings: write/transact/block, write/surface/txdata, write/insert/ctor, write/insert/value, write/insert/returns/rows, write/update/ctor-binder, write/update/match-set, write/retag/assign, write/nested/replace, write/nested/rebuild, write/bulk/from-query, write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, write/unit/multi, interop/load/errors/reject-input, spec/writes/bound-row/snapshot-row, spec/writes/let-write/four-forms, spec/writes/nested-insert/once, spec/writes/upsert-binding/change-set, spec/writes/rejects/per-row, spec/writes/rejects-source/one-source, spec/txn/durability/strongest, spec/writes/where-alone/conditional
 
 ## 8. Schema operators
 
@@ -1239,7 +1260,7 @@ default_op = "add" "default" QLOWER [ "." UPPER ] "." LOWER "=" ( generated | ex
 
 ```adt
 -- from version 12
-add unique (sub) in identities.Apple
+add unique (user) in identities.Google
 -- with:
 --   type Price = { sku: Text, during: Span Instant, amount: I64 }
 --   relation prices : Price key (sku)
