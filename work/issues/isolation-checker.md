@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 630
 summary: "no checker finds G0, G1 or G2 cycles in a run's history"
+branch: adtb-iso
 tags:
   - engine
   - test

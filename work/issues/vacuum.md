@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 520
 summary: "no vacuum: dead versions are never pruned, index entries never cleaned, and no visibility map exists"
+branch: adtb-vacuum
 depends-on:
   - slotted-heap
   - blink-tree
