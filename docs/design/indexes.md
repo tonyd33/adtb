@@ -19,6 +19,10 @@ over `{Google, Apple}`.
 Invariant: a sum's key is always covered by a constructor-set index
 over every constructor of the sum, its key index.
 
+Invariant: an index's root page is fixed when the index is created and
+never changes while the index exists, so the catalog names an index by
+its root page id.
+
 Rulings: index/ctor-set
 
 ## 2. Entries
@@ -97,7 +101,8 @@ A decoder refuses every byte string the encoding does not produce: a
 truncated value, an escape other than `00 FF` or `00 01`, text that is
 not UTF-8, a float that is not canonical, a decimal of more than 38
 digits, a `Time` outside a day, a `Date` whose midnight is not an
-`Instant`, an order key the sum does not have, and trailing bytes. A
+`Instant`, an order key the sum does not have, a constructor index an
+anonymous sum does not have, and trailing bytes. A
 decoder does not check that text is in NFC.
 
 A collated order is an expression index over a collation function's
@@ -264,6 +269,13 @@ all; a retag's old entry beside its new one is such a duplicate. Kill
 bits are not logged as records; setting one on a clean frame dirties
 it, and so logs a full-page image first
 ([storage.md §5.2](storage.md#52-full-page-images)).
+
+A root that splits moves its two halves to new pages and becomes their
+parent, so the root page never moves. Any other split is logged one
+level at a time: the page and its new right sibling in one change, then
+the separator in the parent. A crash between the two leaves the new
+page without a downlink; descents still reach it through its left
+sibling's right link.
 
 Underfull pages are never merged. An empty page is unlinked from its
 parent, then from its siblings, and recycled once no snapshot older

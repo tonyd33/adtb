@@ -26,6 +26,47 @@ pub enum KeyType {
     Scalar(Scalar),
     Record(Vec<KeyType>),
     Sum(SumType),
+    AnonRecord(AnonRecordType),
+    AnonSum(AnonSumType),
+}
+
+/// The fields of an anonymous record, in name order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnonRecordType {
+    fields: Vec<(String, KeyType)>,
+}
+
+/// The constructors of an anonymous sum, in name order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnonSumType {
+    ctors: Vec<(String, AnonRecordType)>,
+}
+
+impl AnonRecordType {
+    /// Returns `None` when two fields share a name.
+    pub fn new(fields: Vec<(String, KeyType)>) -> Option<AnonRecordType> {
+        sorted_by_name(fields).map(|fields| AnonRecordType { fields })
+    }
+
+    pub fn fields(&self) -> &[(String, KeyType)] {
+        &self.fields
+    }
+}
+
+impl AnonSumType {
+    /// Returns `None` when two constructors share a name.
+    pub fn new(ctors: Vec<(String, AnonRecordType)>) -> Option<AnonSumType> {
+        sorted_by_name(ctors).map(|ctors| AnonSumType { ctors })
+    }
+
+    pub fn ctors(&self) -> &[(String, AnonRecordType)] {
+        &self.ctors
+    }
+}
+
+fn sorted_by_name<T>(mut named: Vec<(String, T)>) -> Option<Vec<(String, T)>> {
+    named.sort_by(|a, b| a.0.cmp(&b.0));
+    named.windows(2).all(|w| w[0].0 != w[1].0).then_some(named)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,6 +118,54 @@ impl OrderKey {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    /// Returns a key above `lo` and below `hi`, a missing bound being no
+    /// bound.
+    ///
+    /// Panics unless `lo` is below `hi`.
+    pub fn between(lo: Option<&OrderKey>, hi: Option<&OrderKey>) -> OrderKey {
+        let lo = lo.map_or(&[][..], OrderKey::as_bytes);
+        let mut hi = hi.map(OrderKey::as_bytes);
+        if let Some(h) = hi {
+            assert!(lo < h, "order key {lo:x?} is not below {h:x?}");
+        }
+        let mut out = Vec::new();
+        for i in 0.. {
+            let a = lo.get(i).map_or(0, |&b| u16::from(b));
+            let b = hi.map_or(0x100, |h| u16::from(h[i]));
+            if b - a >= 2 {
+                match (a + b) / 2 {
+                    1 => out.extend([0x01, 0x80]),
+                    mid => out.push(mid as u8),
+                }
+                break;
+            }
+            out.push(a.max(1) as u8);
+            if b == a + 1 && a != 0 {
+                hi = None;
+            }
+        }
+        OrderKey(out)
+    }
+
+    /// Returns `n` increasing keys, each splitting the room left by the
+    /// others.
+    pub fn spread(n: usize) -> Vec<OrderKey> {
+        let mut out = Vec::with_capacity(n);
+        spread_into(None, None, n, &mut out);
+        out
+    }
+}
+
+fn spread_into(lo: Option<&OrderKey>, hi: Option<&OrderKey>, n: usize, out: &mut Vec<OrderKey>) {
+    if n == 0 {
+        return;
+    }
+    let mid = OrderKey::between(lo, hi);
+    let below = (n - 1) / 2;
+    spread_into(lo, Some(&mid), below, out);
+    out.push(mid.clone());
+    spread_into(Some(&mid), hi, n - 1 - below, out);
 }
 
 /// An `F32` with `-0.0` replaced by `0.0` and every NaN by one NaN.
@@ -144,7 +233,10 @@ impl Eq for F64 {}
 /// - A `Time` counts microseconds since midnight, below 86 400 000 000.
 /// - `Instant`, `DateTime` and `Duration` count microseconds; `DateTime`
 ///   from 1970-01-01T00:00:00 civil.
-/// - A `Sum`'s `ctor` indexes its sum's constructors in declaration order.
+/// - A `Sum`'s `ctor` indexes its sum's constructors in declaration order, or
+///   an anonymous sum's in name order.
+/// - The `Record` of an anonymous record, and the fields of an anonymous
+///   sum's constructor, are in name order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Value {
     I8(i8),

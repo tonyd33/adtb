@@ -129,7 +129,7 @@ fn gen_order_keys(rng: &mut Rng, n: usize) -> Vec<OrderKey> {
 }
 
 fn gen_type(rng: &mut Rng, depth: usize, ordered: bool) -> KeyType {
-    let kind = if depth == 0 { 0 } else { rng.below(6) };
+    let kind = if depth == 0 { 0 } else { rng.below(8) };
     match kind {
         0..=3 => {
             if !ordered && rng.chance(5) {
@@ -143,6 +143,15 @@ fn gen_type(rng: &mut Rng, depth: usize, ordered: bool) -> KeyType {
                 .map(|_| gen_type(rng, depth - 1, ordered))
                 .collect(),
         ),
+        6 => KeyType::AnonRecord(gen_anon_record(rng, depth - 1, ordered)),
+        7 => {
+            let n = 1 + rng.below(4);
+            let ctors = gen_names(rng, n)
+                .into_iter()
+                .map(|name| (name, gen_anon_record(rng, depth - 1, ordered)))
+                .collect();
+            KeyType::AnonSum(AnonSumType::new(ctors).unwrap())
+        }
         _ => {
             let n = 1 + rng.below(4);
             let ctors = gen_order_keys(rng, n)
@@ -157,6 +166,26 @@ fn gen_type(rng: &mut Rng, depth: usize, ordered: bool) -> KeyType {
             KeyType::Sum(SumType::new(ctors).unwrap())
         }
     }
+}
+
+const NAMES: [&str; 5] = ["a", "b", "ab", "z", "\u{e9}"];
+
+fn gen_names(rng: &mut Rng, n: usize) -> Vec<String> {
+    let mut names: Vec<String> = NAMES.iter().map(|n| n.to_string()).collect();
+    while names.len() > n {
+        names.remove(rng.below(names.len()));
+    }
+    names.reverse();
+    names
+}
+
+fn gen_anon_record(rng: &mut Rng, depth: usize, ordered: bool) -> AnonRecordType {
+    let n = rng.below(3);
+    let fields = gen_names(rng, n)
+        .into_iter()
+        .map(|name| (name, gen_type(rng, depth, ordered)))
+        .collect();
+    AnonRecordType::new(fields).unwrap()
 }
 
 fn gen_schema(rng: &mut Rng, ordered: bool) -> KeySchema {
@@ -278,6 +307,24 @@ fn gen_value(rng: &mut Rng, ty: &KeyType) -> Value {
     match ty {
         KeyType::Scalar(s) => gen_scalar(rng, *s),
         KeyType::Record(tys) => Value::Record(tys.iter().map(|t| gen_value(rng, t)).collect()),
+        KeyType::AnonRecord(rec) => Value::Record(
+            rec.fields()
+                .iter()
+                .map(|(_, t)| gen_value(rng, t))
+                .collect(),
+        ),
+        KeyType::AnonSum(sum) => {
+            let ctor = rng.below(sum.ctors().len());
+            Value::Sum {
+                ctor: ctor as u32,
+                fields: sum.ctors()[ctor]
+                    .1
+                    .fields()
+                    .iter()
+                    .map(|(_, t)| gen_value(rng, t))
+                    .collect(),
+            }
+        }
         KeyType::Sum(sum) => {
             let ctor = rng.below(sum.ctors().len());
             Value::Sum {
@@ -989,4 +1036,200 @@ fn equal_values_hash_equally() {
     let hash = |x: f64| hash64(&schema.encode(&[Value::F64(F64::new(x))]));
     assert_eq!(hash(-0.0), hash(0.0));
     assert_eq!(hash(f64::NAN), hash(f64::from_bits(0xFFF0_0000_0000_0001)));
+}
+
+fn anon(fields: Vec<(&str, KeyType)>) -> AnonRecordType {
+    AnonRecordType::new(
+        fields
+            .into_iter()
+            .map(|(n, t)| (n.to_string(), t))
+            .collect(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn anonymous_records_encode_fields_in_name_order() {
+    let ty = anon(vec![("y", scalar(Scalar::I8)), ("x", scalar(Scalar::Text))]);
+    let names: Vec<&str> = ty.fields().iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["x", "y"]);
+    let respelled = anon(vec![("x", scalar(Scalar::Text)), ("y", scalar(Scalar::I8))]);
+    assert_eq!(ty, respelled);
+    let schema = asc(vec![KeyType::AnonRecord(ty)]);
+    let v = Value::Record(vec![Value::Text("x".into()), Value::I8(1)]);
+    assert_eq!(
+        schema.encode(std::slice::from_ref(&v)),
+        [0x78, 0x00, 0x01, 0x81]
+    );
+    assert_eq!(
+        AnonRecordType::new(vec![
+            ("x".into(), scalar(Scalar::I8)),
+            ("x".into(), scalar(Scalar::I16)),
+        ]),
+        None
+    );
+}
+
+#[test]
+fn anonymous_sums_encode_the_name_order_index_then_fields() {
+    let ctors = |order: [usize; 3]| {
+        let all = [
+            ("Some", anon(vec![("v", scalar(Scalar::I8))])),
+            ("None", anon(vec![])),
+            (
+                "Many",
+                anon(vec![("n", scalar(Scalar::I16)), ("m", scalar(Scalar::I8))]),
+            ),
+        ];
+        let ctors = order
+            .iter()
+            .map(|&i| (all[i].0.to_string(), all[i].1.clone()))
+            .collect();
+        AnonSumType::new(ctors).unwrap()
+    };
+    let ty = ctors([0, 1, 2]);
+    assert_eq!(ty, ctors([2, 0, 1]));
+    let names: Vec<&str> = ty.ctors().iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["Many", "None", "Some"]);
+    let schema = asc(vec![KeyType::AnonSum(ty)]);
+    let many = Value::Sum {
+        ctor: 0,
+        fields: vec![Value::I8(-1), Value::I16(2)],
+    };
+    assert_eq!(
+        schema.encode(std::slice::from_ref(&many)),
+        [0x00, 0x7F, 0x80, 0x02]
+    );
+    let some = Value::Sum {
+        ctor: 2,
+        fields: vec![Value::I8(0)],
+    };
+    assert_eq!(schema.encode(std::slice::from_ref(&some)), [0x02, 0x80]);
+    assert_eq!(schema.decode(&[0x02, 0x80]), Ok(vec![some]));
+    assert_eq!(schema.decode(&[0x03]), Err(DecodeError::UnknownConstructor));
+    assert_eq!(schema.decode(&[0xF0, 0x01]), Err(DecodeError::BadVarint));
+    let duplicate = vec![
+        ("A".to_string(), anon(vec![])),
+        ("A".to_string(), anon(vec![])),
+    ];
+    assert_eq!(AnonSumType::new(duplicate), None);
+}
+
+#[test]
+fn descending_anonymous_sums_invert_the_index() {
+    let ty =
+        AnonSumType::new(vec![("A".into(), anon(vec![])), ("B".into(), anon(vec![]))]).unwrap();
+    let schema = KeySchema::new(vec![(KeyType::AnonSum(ty), Dir::Desc)]);
+    let b = Value::Sum {
+        ctor: 1,
+        fields: vec![],
+    };
+    assert_eq!(schema.encode(std::slice::from_ref(&b)), [0xFE]);
+    assert_eq!(schema.decode(&[0xFE]), Ok(vec![b]));
+}
+
+fn gen_valid_order_key(rng: &mut Rng) -> OrderKey {
+    loop {
+        let len = 1 + rng.below(4);
+        let bytes: Vec<u8> = (0..len)
+            .map(|_| rng.pick(&[0x00, 0x01, 0x02, 0x03, 0x7F, 0x80, 0xFE, 0xFF]))
+            .collect();
+        if let Some(k) = OrderKey::new(bytes) {
+            return k;
+        }
+    }
+}
+
+fn assert_valid(k: &OrderKey) {
+    assert_eq!(OrderKey::new(k.as_bytes().to_vec()).as_ref(), Some(k));
+}
+
+#[test]
+fn order_keys_fit_between_below_and_above_any_others() {
+    let mut rng = Rng(5);
+    for _ in 0..20000 {
+        let a = gen_valid_order_key(&mut rng);
+        let b = gen_valid_order_key(&mut rng);
+        let below = OrderKey::between(None, Some(&a));
+        assert_valid(&below);
+        assert!(below < a, "{below:x?} {a:x?}");
+        let above = OrderKey::between(Some(&a), None);
+        assert_valid(&above);
+        assert!(above > a, "{above:x?} {a:x?}");
+        if a == b {
+            continue;
+        }
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        let mid = OrderKey::between(Some(&lo), Some(&hi));
+        assert_valid(&mid);
+        assert!(lo < mid && mid < hi, "{lo:x?} {mid:x?} {hi:x?}");
+    }
+}
+
+#[test]
+fn order_keys_between_neighbours_never_run_out() {
+    let mut rng = Rng(6);
+    let mut keys = OrderKey::spread(3);
+    for _ in 0..3000 {
+        let i = rng.below(keys.len() + 1);
+        let lo = i.checked_sub(1).map(|j| &keys[j]);
+        let k = OrderKey::between(lo, keys.get(i));
+        assert_valid(&k);
+        keys.insert(i, k);
+    }
+    assert!(keys.windows(2).all(|w| w[0] < w[1]));
+    let mut tight = [order_key(&[0x80]), order_key(&[0x80, 0x02])];
+    for _ in 0..200 {
+        let k = OrderKey::between(Some(&tight[0]), Some(&tight[1]));
+        assert_valid(&k);
+        tight[1] = k;
+    }
+    assert!(tight[0] < tight[1]);
+}
+
+#[test]
+fn spread_order_keys_split_the_room_evenly() {
+    assert_eq!(
+        OrderKey::spread(3),
+        [order_key(&[0x40]), order_key(&[0x80]), order_key(&[0xC0])]
+    );
+    assert_eq!(OrderKey::spread(1), [order_key(&[0x80])]);
+    assert_eq!(OrderKey::spread(0), []);
+    for n in [2, 7, 255, 256, 1000] {
+        let keys = OrderKey::spread(n);
+        assert_eq!(keys.len(), n);
+        keys.iter().for_each(assert_valid);
+        assert!(keys.windows(2).all(|w| w[0] < w[1]), "{n}");
+    }
+}
+
+#[test]
+fn order_keys_encode_in_key_order_with_their_terminator() {
+    let mut rng = Rng(7);
+    for _ in 0..5000 {
+        let a = gen_valid_order_key(&mut rng);
+        let b = gen_valid_order_key(&mut rng);
+        let enc = |k: &OrderKey| [k.as_bytes(), &[0x00]].concat();
+        assert_eq!(enc(&a).cmp(&enc(&b)), a.cmp(&b), "{a:x?} {b:x?}");
+    }
+}
+
+#[test]
+fn inserting_and_moving_a_constructor_keeps_the_other_keys() {
+    let keys = OrderKey::spread(4);
+    let ctor = |k: &OrderKey| CtorType {
+        order_key: k.clone(),
+        fields: vec![],
+    };
+    let added = OrderKey::between(Some(&keys[1]), Some(&keys[2]));
+    let mut with_added: Vec<CtorType> = keys.iter().map(ctor).collect();
+    with_added.insert(2, ctor(&added));
+    assert!(SumType::new(with_added).is_some());
+
+    let moved = OrderKey::between(None, Some(&keys[0]));
+    let mut reordered = vec![ctor(&moved)];
+    reordered.extend([&keys[0], &keys[1], &keys[2]].map(ctor));
+    let sum = SumType::new(reordered).unwrap();
+    let unchanged: Vec<&OrderKey> = sum.ctors()[1..].iter().map(|c| &c.order_key).collect();
+    assert_eq!(unchanged, [&keys[0], &keys[1], &keys[2]]);
 }

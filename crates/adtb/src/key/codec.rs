@@ -1,4 +1,5 @@
-use super::value::{F32, F64, KeyType, Scalar, SumType, Value};
+use super::ovarint;
+use super::value::{AnonSumType, F32, F64, KeyType, Scalar, SumType, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {
@@ -23,6 +24,7 @@ pub enum DecodeError {
     DateOutOfRange,
     TimeOutOfRange,
     UnknownOrderKey,
+    UnknownConstructor,
     BadVarint,
 }
 
@@ -138,6 +140,17 @@ fn encode_value(w: &mut Writer, ty: &KeyType, v: &Value) {
             w.byte(0x00);
             encode_fields(w, &c.fields, fields);
         }
+        (KeyType::AnonRecord(rec), Value::Record(vs)) => encode_named(w, rec.fields(), vs),
+        (KeyType::AnonSum(sum), Value::Sum { ctor, fields }) => {
+            let (_, rec) = usize::try_from(*ctor)
+                .ok()
+                .and_then(|i| sum.ctors().get(i))
+                .unwrap_or_else(|| mismatch(ty, v));
+            let mut tag = Vec::new();
+            ovarint::encode(*ctor, &mut tag);
+            w.bytes(&tag);
+            encode_named(w, rec.fields(), fields);
+        }
         _ => mismatch(ty, v),
     }
 }
@@ -145,6 +158,13 @@ fn encode_value(w: &mut Writer, ty: &KeyType, v: &Value) {
 fn encode_fields(w: &mut Writer, tys: &[KeyType], vs: &[Value]) {
     assert_eq!(tys.len(), vs.len(), "value has the wrong number of fields");
     for (ty, v) in tys.iter().zip(vs) {
+        encode_value(w, ty, v);
+    }
+}
+
+fn encode_named(w: &mut Writer, tys: &[(String, KeyType)], vs: &[Value]) {
+    assert_eq!(tys.len(), vs.len(), "value has the wrong number of fields");
+    for ((_, ty), v) in tys.iter().zip(vs) {
         encode_value(w, ty, v);
     }
 }
@@ -295,7 +315,23 @@ fn decode_value(r: &mut Reader, ty: &KeyType) -> Result<Value, DecodeError> {
         KeyType::Scalar(s) => decode_scalar(r, *s),
         KeyType::Record(tys) => Ok(Value::Record(decode_fields(r, tys)?)),
         KeyType::Sum(sum) => decode_sum(r, sum),
+        KeyType::AnonRecord(rec) => Ok(Value::Record(decode_named(r, rec.fields())?)),
+        KeyType::AnonSum(sum) => decode_anon_sum(r, sum),
     }
+}
+
+fn decode_named(r: &mut Reader, tys: &[(String, KeyType)]) -> Result<Vec<Value>, DecodeError> {
+    tys.iter().map(|(_, ty)| decode_value(r, ty)).collect()
+}
+
+fn decode_anon_sum(r: &mut Reader, sum: &AnonSumType) -> Result<Value, DecodeError> {
+    let ctor = ovarint::decode(r)?;
+    let (_, rec) = usize::try_from(ctor)
+        .ok()
+        .and_then(|i| sum.ctors().get(i))
+        .ok_or(DecodeError::UnknownConstructor)?;
+    let fields = decode_named(r, rec.fields())?;
+    Ok(Value::Sum { ctor, fields })
 }
 
 fn decode_fields(r: &mut Reader, tys: &[KeyType]) -> Result<Vec<Value>, DecodeError> {
