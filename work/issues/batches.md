@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 710
 summary: "no batch type: no Arrow-layout buffers, dense unions or the special shapes"
-branch: adtb-batches
+closed: 2026-10-25
 tags:
   - engine
 ---
@@ -16,3 +16,7 @@ tags:
 Implement `docs/design/execution.md` §2: own Arrow-layout buffers in
 `adtb`, dense unions for sums, and the three special shapes. No
 prerequisites.
+
+## 2026-10-25: resolved
+
+Landed as `feat(batch): add Arrow-layout batches with dense unions and the special sum shapes`. The layout contract is `docs/design/execution.md` §2.
