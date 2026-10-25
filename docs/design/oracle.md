@@ -8,14 +8,15 @@ runner.
 ## 1. Evaluation contract
 
 ```text
-Interpreter::new(schema, program, db)      // plus with_caller, with_change, with_fix_limit
+Interpreter::new(schema, program, db)      // plus with_caller, with_change, with_fix_limit, with_closed
   .eval(terms, t, params) -> Result<Value, Abort>
 ```
 
 Preconditions: `program` is `check_schema(schema)`; `t` is a typed
 kernel term of `terms`, an arena `adtb-lang` returned for `schema`
-([kernel.md](kernel.md)); `params` binds each free variable of `t` to a
-value of its type; `db` is a database as defined below.
+([kernel.md](kernel.md)), holding no write, block or `fresh`; `params`
+binds each free variable of `t` to a value of its type; `db` is a
+database as defined below.
 
 Postconditions:
 
@@ -29,13 +30,80 @@ Postconditions:
 - `Err(Abort::Limit)`: a `fix` took more steps than its limit; the
   statement is rejected with `StatementLimit`.
 - `Err(Abort::NotYet(form))`: the term holds a form the interpreter
-  does not evaluate yet: a write, `at`, a Wasm or host function, a
+  does not evaluate yet: `at`, a Wasm or host function, a
   user-defined aggregate, or a prelude function that needs Unicode,
   regular expression, collation or zone tables.
 
 `caller` denotes the value given by `with_caller`. In a constraint
 body, `inserted`, `deleted` and `prior` read the transition given by
 `with_change`, and the empty change without one.
+
+### 1.1 Statements
+
+```text
+Interpreter::new(schema, program, db)
+  .run(terms, t, params, &mut supply) -> Result<Outcome, Abort>
+  .run_call(terms, t, args, &mut supply) -> Result<Outcome, Abort>
+Outcome { result: Value, change: Change, db: Database }
+```
+
+`run` evaluates one statement against the snapshot `db` by
+[../spec/semantics.md §6.6](../spec/semantics.md#66-statements): `t` is
+a `Transact`, a write (a term of type `Change`, an item of ad hoc
+text), or a query, whose outcome changes nothing. `run_call` does the
+same for a registered transaction, a `Lam` chain over its parameters
+(kernel.md §4.3), applied to `args` in order, or to `()` when it has
+none. `run` also accepts a normal form (kernel.md §7), a registered
+transaction's with `params` binding its parameter variables.
+
+Preconditions: those of `eval`, except that `t` may hold writes, blocks
+and `fresh`; `db` is valid (every constraint of the schema holds in
+it).
+
+Postconditions:
+
+- `Ok(o)`: the statement succeeds. `o.result` is the block's result,
+  `()` for a write. `o.change.prior` is `db`, and `o.change.inserted` and
+  `o.change.deleted` are the normalised change set `Δ*`, with every
+  delete action derived. `o.db` is `apply(db, Δ*)`, which holds no empty
+  constructor relation.
+- `Err(Abort::Reject(r))`: the statement is rejected with the
+  `RejectReason` constructor `r` names: `UserError` for `fail`,
+  `KeyChanged`, `BadInput`, `NotOpen`, `KeyViolation` with the key in the
+  textual syntax, or `Violated` with the constraint's canonical name and
+  every row its query returns. Of several violations, the least name is
+  reported. Relation names are unqualified, constraint names qualified
+  by module.
+- `Err(Abort::Fault(f))`: a write, a delete action's fill or a
+  constraint faulted. A fault in a constraint is the outcome whatever
+  else the statement violates.
+- On every `Err`, nothing is applied.
+
+Constraint checking is naive: every key, unique, reference, domain,
+check and declared constraint of the schema is evaluated over the
+whole transition at every statement boundary.
+
+`with_closed` gives the constructors not open for writes, each by its
+sum and constructor index with its stage, `Declared` or `Deprecated`.
+Stages are deployment state the schema does not carry.
+
+`supply` is the context's supply of generated values, kept by the
+caller across statements:
+
+- `supply.clock` is the instant every `generate clock` fill of the next
+  statement takes;
+- a `sequence` or `uuidv7` value differs from every value `supply` has
+  drawn for the relation, in statements that failed included, and from
+  every key of the relation in the snapshot of every statement `supply`
+  has served;
+- each statement that inserts into a rejects relation draws one `load`
+  value, greater than every `load` it drew before and every `load` in
+  that relation.
+
+Within one run, a write term is evaluated as often as the term
+structure says, and each evaluation of a `fresh` draws a new value
+(kernel.md §4.1). A node shared by several parents is evaluated once
+per parent.
 
 The interpreter shares nothing with the engine except the typed kernel
 terms of `adtb-lang`: no indexes, no plans, no pages.

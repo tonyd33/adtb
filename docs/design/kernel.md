@@ -22,6 +22,16 @@ terms and share nothing else.
 
 `program` is the result of `check_schema(schema)`.
 
+Postconditions on a `Program`:
+
+- `constraints[i]` is the denial query of `schema.constraints[i]`, and
+  `checks[i]` that of `schema.checks[i]`: the rows each returns are the
+  violations.
+- `domains[N]` is the predicate of newtype `N` over its `self`
+  variable, at `N`'s base type.
+- `index_fields[(r, i, k)]` is a `Lam` over a row of `r` in the scope of
+  `r`'s `i`-th index, whose value is that index's `k`-th field.
+
 A term is a `Tm`, an index into its arena's `nodes`; each node has a
 `kind` and a `ty`. A `Call` names a function by `FnId`, and the
 function's term is `Program.functions[f]`, in the `Program` arena,

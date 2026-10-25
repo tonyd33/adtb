@@ -5,11 +5,12 @@ use std::rc::Rc;
 use adtb_lang::check::Program;
 use adtb_lang::kernel::{Agg, Const, Kind, Terms, Tm, Transition, Var};
 use adtb_lang::schema::{Schema, TypeDefKind};
-use adtb_lang::types::{Base, CtorSet, FnId, RelId, Ty};
+use adtb_lang::types::{Base, CtorSet, FnId, RelId, Ty, TypeId};
 
 use crate::big::Big;
 use crate::num::{digits38, in_range};
 use crate::prim;
+use crate::stmt::{Rejection, Stage, Stmt};
 use crate::value::{Value, canon32, canon64};
 
 /// A database: the rows of each constructor relation, by relation variable and constructor index.
@@ -55,6 +56,8 @@ pub enum Abort {
     Fault(Fault),
     /// The statement exceeded its limits, rejected with `StatementLimit`.
     Limit,
+    /// The statement is rejected for this reason.
+    Reject(Rejection),
     /// A form the interpreter does not evaluate yet.
     NotYet(String),
 }
@@ -73,7 +76,7 @@ pub(crate) fn not_yet<T>(what: &str) -> R<T> {
 
 /// The transition a constraint body reads: the state before the statement and the rows it
 /// inserted and deleted. The interpreter's database is the state after.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Change {
     pub prior: Database,
     pub inserted: Database,
@@ -81,13 +84,13 @@ pub struct Change {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Arena {
+pub(crate) enum Arena {
     Program,
     Query,
 }
 
 #[derive(Clone, Debug, Default)]
-struct Env(Option<Rc<Frame>>);
+pub(crate) struct Env(Option<Rc<Frame>>);
 
 #[derive(Debug)]
 struct Frame {
@@ -97,7 +100,7 @@ struct Frame {
 }
 
 impl Env {
-    fn bind(&self, var: Var, value: Value) -> Env {
+    pub(crate) fn bind(&self, var: Var, value: Value) -> Env {
         Env(Some(Rc::new(Frame {
             var,
             value,
@@ -119,9 +122,9 @@ impl Env {
 
 /// Where a term lives: its arena, and the type arguments its type parameters stand for.
 #[derive(Clone, Debug)]
-struct Here {
-    arena: Arena,
-    targs: Rc<[Ty]>,
+pub(crate) struct Here {
+    pub(crate) arena: Arena,
+    pub(crate) targs: Rc<[Ty]>,
 }
 
 #[derive(Debug)]
@@ -136,11 +139,12 @@ pub struct Closure {
 #[derive(Debug)]
 pub struct Interpreter<'a> {
     pub(crate) schema: &'a Schema,
-    program: &'a Program,
-    db: &'a Database,
+    pub(crate) program: &'a Program,
+    pub(crate) db: &'a Database,
     caller: Option<Value>,
     change: Option<&'a Change>,
-    fix_limit: usize,
+    pub(crate) fix_limit: usize,
+    pub(crate) closed: BTreeMap<(TypeId, u32), Stage>,
 }
 
 impl<'a> Interpreter<'a> {
@@ -152,6 +156,7 @@ impl<'a> Interpreter<'a> {
             caller: None,
             change: None,
             fix_limit: 10_000,
+            closed: BTreeMap::new(),
         }
     }
 
@@ -168,6 +173,12 @@ impl<'a> Interpreter<'a> {
         self
     }
 
+    /// Sets the constructors not open for writes, each with its stage.
+    pub fn with_closed(mut self, closed: BTreeMap<(TypeId, u32), Stage>) -> Self {
+        self.closed = closed;
+        self
+    }
+
     /// Sets how many steps a `fix` may take before the statement is rejected for its limit.
     pub fn with_fix_limit(mut self, steps: usize) -> Self {
         self.fix_limit = steps;
@@ -179,6 +190,7 @@ impl<'a> Interpreter<'a> {
         let run = Run {
             it: self,
             query: terms,
+            stmt: None,
         };
         let env = params
             .iter()
@@ -192,6 +204,7 @@ impl<'a> Interpreter<'a> {
         let run = Run {
             it: self,
             query: terms,
+            stmt: None,
         };
         let f = run.eval(&run.here(Arena::Query), t, &Env::default())?;
         run.apply_all(f, args)
@@ -201,6 +214,7 @@ impl<'a> Interpreter<'a> {
         let run = Run {
             it: self,
             query: &self.program.terms,
+            stmt: None,
         };
         run.call(f, Rc::from(Vec::new()), args)
     }
@@ -256,7 +270,7 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn rows(&self, db: &Database, rel: RelId, set: &Option<CtorSet>) -> BTreeSet<Value> {
+    pub(crate) fn rows(&self, db: &Database, rel: RelId, set: &Option<CtorSet>) -> BTreeSet<Value> {
         let mut out = BTreeSet::new();
         for c in self.ctors(rel, set) {
             if let Some(rs) = db.get(&(rel, c)) {
@@ -280,9 +294,10 @@ impl<'a> Interpreter<'a> {
     }
 }
 
-struct Run<'r, 'a> {
-    it: &'r Interpreter<'a>,
-    query: &'r Terms,
+pub(crate) struct Run<'r, 'a> {
+    pub(crate) it: &'r Interpreter<'a>,
+    pub(crate) query: &'r Terms,
+    pub(crate) stmt: Option<&'r Stmt>,
 }
 
 fn int(v: &Value) -> i64 {
@@ -292,16 +307,28 @@ fn int(v: &Value) -> i64 {
     }
 }
 
-fn bool_of(v: &Value) -> bool {
+pub(crate) fn bool_of(v: &Value) -> bool {
     v.as_bool()
         .unwrap_or_else(|| panic!("expected a Bool, found {v:?}"))
 }
 
-fn into_set(v: Value) -> BTreeSet<Value> {
+pub(crate) fn into_set(v: Value) -> BTreeSet<Value> {
     match v {
         Value::Set(s) => s,
         other => panic!("expected a set, found {other:?}"),
     }
+}
+
+/// Returns the variable and body of the arm of a `Case` that the scrutinee's value takes.
+pub(crate) fn case_arm(arms: &[(u32, Var, Tm)], v: &Value) -> (Var, Tm) {
+    let c = v
+        .tag()
+        .unwrap_or_else(|| panic!("a case scrutinee is a constructor value: {v:?}"));
+    let (_, x, body) = arms
+        .iter()
+        .find(|(d, _, _)| *d == c)
+        .unwrap_or_else(|| panic!("a case names constructor {c} of its scrutinee"));
+    (*x, *body)
 }
 
 /// Compares two lists of ordering values, each key ascending unless its flag says descending.
@@ -317,21 +344,21 @@ fn cmp_keys(a: &[Value], b: &[Value], desc: &[bool]) -> Ordering {
 }
 
 impl Run<'_, '_> {
-    fn here(&self, arena: Arena) -> Here {
+    pub(crate) fn here(&self, arena: Arena) -> Here {
         Here {
             arena,
             targs: Rc::from(Vec::new()),
         }
     }
 
-    fn terms(&self, a: Arena) -> &Terms {
+    pub(crate) fn terms(&self, a: Arena) -> &Terms {
         match a {
             Arena::Program => &self.it.program.terms,
             Arena::Query => self.query,
         }
     }
 
-    fn ty(&self, h: &Here, t: Tm) -> Ty {
+    pub(crate) fn ty(&self, h: &Here, t: Tm) -> Ty {
         let ty = self.terms(h.arena).ty(t);
         if h.targs.is_empty() {
             ty.clone()
@@ -340,7 +367,7 @@ impl Run<'_, '_> {
         }
     }
 
-    fn set(&self, h: &Here, t: Tm, env: &Env) -> R<BTreeSet<Value>> {
+    pub(crate) fn set(&self, h: &Here, t: Tm, env: &Env) -> R<BTreeSet<Value>> {
         Ok(into_set(self.eval(h, t, env)?))
     }
 
@@ -348,7 +375,7 @@ impl Run<'_, '_> {
         ts.iter().map(|t| self.eval(h, *t, env)).collect()
     }
 
-    fn apply(&self, f: Value, arg: Value) -> R<Value> {
+    pub(crate) fn apply(&self, f: Value, arg: Value) -> R<Value> {
         let Value::Fn(c) = f else {
             panic!("applied a value that is not a function: {f:?}")
         };
@@ -377,7 +404,7 @@ impl Run<'_, '_> {
         self.apply_all(g, args)
     }
 
-    fn eval(&self, h: &Here, t: Tm, env: &Env) -> R<Value> {
+    pub(crate) fn eval(&self, h: &Here, t: Tm, env: &Env) -> R<Value> {
         let terms = self.terms(h.arena);
         let it = self.it;
         match terms.kind(t) {
@@ -424,14 +451,8 @@ impl Run<'_, '_> {
             }
             Kind::Case { scrutinee, arms } => {
                 let v = self.eval(h, *scrutinee, env)?;
-                let c = v
-                    .tag()
-                    .unwrap_or_else(|| panic!("a case scrutinee is a constructor value: {v:?}"));
-                let (_, x, body) = arms
-                    .iter()
-                    .find(|(d, _, _)| *d == c)
-                    .unwrap_or_else(|| panic!("a case names constructor {c} of its scrutinee"));
-                self.eval(h, *body, &env.bind(*x, v))
+                let (x, body) = case_arm(arms, &v);
+                self.eval(h, body, &env.bind(x, v))
             }
             Kind::If(c, a, b) => {
                 if bool_of(&self.eval(h, *c, env)?) {
@@ -641,10 +662,27 @@ impl Run<'_, '_> {
             }
             Kind::At { .. } => not_yet("`at` reads history, and this database value has none"),
             Kind::Unreachable => panic!("evaluation reached a position exhaustiveness excludes"),
-            Kind::Fresh(..)
-            | Kind::Only(_)
-            | Kind::Reject(_)
-            | Kind::Skip
+            Kind::Fresh(g, r) => {
+                let stmt = self
+                    .stmt
+                    .expect("`fresh` occurs only in the fills of a statement's writes");
+                Ok(stmt.draw(*g, *r, &self.ty(h, t)))
+            }
+            Kind::Only(x) => {
+                let mut s = self.set(h, *x, env)?.into_iter();
+                Ok(s.next().expect("`only` takes a set of one element"))
+            }
+            Kind::Reject(m) => {
+                let Value::Text(detail) = self.eval(h, *m, env)? else {
+                    panic!("`reject` takes a Text")
+                };
+                Err(Abort::Reject(Rejection::BadInput {
+                    source: String::new(),
+                    line: 0,
+                    detail,
+                }))
+            }
+            Kind::Skip
             | Kind::Insert(..)
             | Kind::Delete(..)
             | Kind::Replace(..)
@@ -654,7 +692,9 @@ impl Run<'_, '_> {
             | Kind::Fail(_)
             | Kind::LetBang(..)
             | Kind::Block(..)
-            | Kind::Transact(..) => not_yet("writes"),
+            | Kind::Transact(..) => {
+                panic!("a write or block is evaluated by `Interpreter::run`, never as a query")
+            }
         }
     }
 
