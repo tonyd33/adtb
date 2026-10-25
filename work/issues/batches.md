@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 710
 summary: "no batch type: no Arrow-layout buffers, dense unions or the special shapes"
+branch: adtb-batches
 tags:
   - engine
 ---

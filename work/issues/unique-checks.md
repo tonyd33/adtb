@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 615
 summary: unique index inserts do not check the latest committed state as mvcc.md §7 requires
+branch: adtb-ssi
 depends-on:
   - blink-tree
   - slotted-heap

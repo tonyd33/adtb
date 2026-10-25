@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 406
 summary: "the pager keeps the LSN of every page it ever evicted, in a table that never shrinks"
+branch: pager
 depends-on:
   - vmcache
 tags:

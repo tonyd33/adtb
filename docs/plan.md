@@ -43,7 +43,7 @@ without touching the spec.
 | Kernel terms | An arena of typed nodes with interned names, shared by the reference interpreter and the planner |
 | Batches | Own Arrow-layout buffers in `adtb` (dense unions, the three special shapes of [design/execution.md §2](design/execution.md#2-batches)); the `arrow` crate only at the IPC boundary, and only if it passes the allowlist |
 | Decimal | Own `i128` scaled arithmetic for `Decimal k` up to 38 digits |
-| Text | `unicode-normalization` for NFC, `unicode-segmentation` for graphemes |
+| Text | `unicode-normalization` for NFC; ICU4X (`icu_segmenter`, `icu_casemap`, `icu_collator`) for graphemes, case folding and collation; `regex` for `matches`; `jiff` for time zones |
 | Hashing | `blake3` for version hashes and the ledger; `crc32c` for page and block checksums |
 | Encryption | `chacha20poly1305` (XChaCha20-Poly1305), milestone 12 |
 | Allowlist | `cargo-deny` with a justification per entry in `deny.toml` |

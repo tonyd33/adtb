@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 405
-summary: "a page allocated by one pager call and linked by the next leaks if a crash falls between them"
+summary: a page allocated by one pager call and linked by the next leaks if a crash falls between them
+branch: pager
 depends-on:
   - pager-and-log
 tags:

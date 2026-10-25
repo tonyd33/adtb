@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 407
 summary: "a page guard held across a later pager call on the same page waits forever, with no diagnosis"
+branch: pager
 depends-on:
   - vmcache
 tags:

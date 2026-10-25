@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 610
 summary: "no SSI: no SIREAD locks, rw-antidependency tracking, safe snapshots or serialization failures"
+branch: adtb-ssi
 depends-on:
   - commit-log-snapshots
   - slotted-heap
