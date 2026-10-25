@@ -56,10 +56,13 @@ without touching the spec.
 - `rust-toolchain.toml`, `clippy.toml` with the disallowed methods,
   `#![forbid(unsafe_code)]` in every crate except `adtdb-sys`,
   `deny.toml`.
-- Dev shell gains `cargo-deny`, `cargo-nextest`, Miri (nightly
-  component) and `cargo-fuzz`.
-- One check command (`devenv test` or a `just check`) running build,
-  clippy with warnings denied, tests, and `cargo deny check`.
+- Dev shell gains `cargo-deny` and `cargo-nextest`. Miri and
+  `cargo-fuzz` need a nightly toolchain beside the pinned stable one;
+  they join the shell at milestones 3 and 1, when their first tests
+  exist.
+- One check command, `check` in the dev shell (also `devenv test`),
+  running build, clippy with warnings denied, `cargo fmt --check`,
+  tests, and `cargo deny check`.
 
 Exit: the check command passes on an empty workspace.
 

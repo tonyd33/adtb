@@ -1,0 +1,23 @@
+# Each dependency gets an entry in [bans].allow with a justification
+# comment. Once the list is non-empty, cargo deny check refuses any
+# crate missing from it.
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+allow = ["MIT"]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+allow-wildcard-paths = true
+allow = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

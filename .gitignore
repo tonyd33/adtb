@@ -31,3 +31,6 @@ devenv.local.yaml
 !/work/research/
 !/work/kb/
 /work/research/.quandary/
+
+# Generated editor config
+/.nvim.lua

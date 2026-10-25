@@ -1,0 +1,5 @@
+disallowed-methods = [
+  { path = "std::time::Instant::now", reason = "time comes from the engine's clock interface" },
+  { path = "std::time::SystemTime::now", reason = "time comes from the engine's clock interface" },
+  { path = "std::thread::spawn", reason = "threads come from the engine's scheduler interface" },
+]
