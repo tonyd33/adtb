@@ -1,16 +1,20 @@
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use adtb::btree::{BTree, Error, Index, SumKey, tag_prefix};
+use adtb::btree::{BTree, Cursor, Error, Index, SumKey, tag_prefix};
 use adtb::key::{
     CtorId, CtorType, Dir, Entry, KeySchema, KeyType, OrderKey, Scalar, SumType, Tid, Value,
 };
-use adtb::runtime::Entropy;
+use adtb::runtime::{
+    Clock, Completion, Entropy, Instant, Io, Op, Runtime, ThreadId, Threads, Ticket,
+};
 use adtb::storage::{Options, Pager, Pid};
-use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Faults, Outcome, Sim, SimIo, SimRuntime};
 
 const PAGE: usize = 4096;
 const OWNER: u32 = 41;
@@ -94,12 +98,109 @@ fn scan(
     .expect("scan")
 }
 
+/// A runtime that counts the page reads its I/O queues submit.
+#[derive(Clone)]
+struct Counted {
+    rt: SimRuntime,
+    reads: Arc<AtomicUsize>,
+}
+
+struct CountedIo {
+    io: SimIo,
+    reads: Arc<AtomicUsize>,
+}
+
+impl Clock for Counted {
+    fn now(&self) -> Instant {
+        self.rt.now()
+    }
+
+    fn wall(&self) -> SystemTime {
+        self.rt.wall()
+    }
+}
+
+impl Threads for Counted {
+    fn spawn<F>(&self, name: &str, body: F) -> ThreadId
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.rt.spawn(name, body)
+    }
+
+    fn current(&self) -> ThreadId {
+        self.rt.current()
+    }
+
+    fn park(&self) {
+        self.rt.park();
+    }
+
+    fn unpark(&self, thread: ThreadId) {
+        self.rt.unpark(thread);
+    }
+
+    fn yield_now(&self) {
+        self.rt.yield_now();
+    }
+
+    fn join(&self, thread: ThreadId) {
+        self.rt.join(thread);
+    }
+}
+
+impl Entropy for Counted {
+    fn next_u64(&self) -> u64 {
+        self.rt.next_u64()
+    }
+}
+
+impl Runtime for Counted {
+    type Io = CountedIo;
+
+    fn io(&self) -> CountedIo {
+        CountedIo {
+            io: self.rt.io(),
+            reads: self.reads.clone(),
+        }
+    }
+}
+
+impl Io for CountedIo {
+    fn submit(&mut self, op: Op) -> Ticket {
+        if matches!(op, Op::Read { .. }) {
+            self.reads.fetch_add(1, Relaxed);
+        }
+        self.io.submit(op)
+    }
+
+    fn poll(&mut self) -> Option<Completion> {
+        self.io.poll()
+    }
+}
+
+const WINDOW: usize = 2000;
+
+/// Run a random workload of `ops` operations against a `BTreeSet` model.
+///
+/// Every window of operations must average at most one page read per level,
+/// with the pool far smaller than the tree.
 fn model_run(seed: u64, ops: usize, expected_height: u16) {
-    with_pager(seed, |rt, pager| {
+    let mut sim = Sim::new(seed, Config::default());
+    let outcome = sim.run(|rt| {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counted = Counted {
+            rt: rt.clone(),
+            reads: reads.clone(),
+        };
+        let pager = &mut Pager::create(counted, &options()).expect("create");
+        let rt = &rt;
         let tree = BTree::create(pager, OWNER).expect("create tree");
         let max = BTree::max_entry_len(PAGE);
         let mut model: BTreeSet<Vec<u8>> = BTreeSet::new();
+        let mut window_reads = 0;
         for op in 0..ops {
+            let before = reads.load(Relaxed);
             match below(rt, 20) {
                 0..=11 => {
                     let e = gen_entry(rt, max);
@@ -121,34 +222,28 @@ fn model_run(seed: u64, ops: usize, expected_height: u16) {
                 }
                 16 | 17 => {
                     let (lo, hi) = (gen_bound(rt, max), gen_bound(rt, max));
-                    if !valid_range(&lo, &hi) {
-                        continue;
+                    if valid_range(&lo, &hi) {
+                        let expected: Vec<Vec<u8>> = model
+                            .range((lo.clone(), hi.clone()))
+                            .take(SCAN)
+                            .cloned()
+                            .collect();
+                        let cursor = tree.range(
+                            lo.as_ref().map(Vec::as_slice),
+                            hi.as_ref().map(Vec::as_slice),
+                        );
+                        assert_eq!(first_scan(pager, cursor), expected, "{lo:x?} {hi:x?}");
                     }
-                    let expected: Vec<Vec<u8>> = model
-                        .range((lo.clone(), hi.clone()))
-                        .take(SCAN)
-                        .cloned()
-                        .collect();
-                    let mut cursor = tree.range(
-                        lo.as_ref().map(Vec::as_slice),
-                        hi.as_ref().map(Vec::as_slice),
-                    );
-                    let mut found = Vec::new();
-                    while found.len() < SCAN
-                        && let Some(e) = cursor.next(pager).expect("scan")
-                    {
-                        found.push(e);
-                    }
-                    assert_eq!(found, expected, "{lo:x?} {hi:x?}");
                 }
                 18 => {
                     let p = gen_entry(rt, 6);
                     let expected: Vec<Vec<u8>> = model
                         .range(p.clone()..)
                         .take_while(|e| e.starts_with(&p))
+                        .take(SCAN)
                         .cloned()
                         .collect();
-                    let found = tree.prefix(&p).collect(pager).expect("prefix");
+                    let found = first_scan(pager, tree.prefix(&p));
                     assert_eq!(found, expected, "prefix {p:x?}");
                 }
                 _ => {
@@ -156,7 +251,14 @@ fn model_run(seed: u64, ops: usize, expected_height: u16) {
                     assert_eq!(tree.contains(pager, &e), Ok(model.contains(&e)));
                 }
             }
-            if op % 2000 == 0 {
+            window_reads += reads.load(Relaxed) - before;
+            if (op + 1) % WINDOW == 0 {
+                let height = usize::from(tree.height(pager).unwrap());
+                assert!(
+                    window_reads <= (height + 1) * WINDOW,
+                    "{window_reads} page reads in the {WINDOW} operations to {op}, height {height}"
+                );
+                window_reads = 0;
                 let all: Vec<Vec<u8>> = model.iter().cloned().collect();
                 assert_eq!(tree.verify(pager).expect("verify"), all, "op {op}");
             }
@@ -170,6 +272,18 @@ fn model_run(seed: u64, ops: usize, expected_height: u16) {
             model.len()
         );
     });
+    assert_eq!(Outcome::Finished, outcome);
+}
+
+/// Returns the first `SCAN` entries of `cursor`.
+fn first_scan<R: Runtime>(pager: &mut Pager<R>, mut cursor: Cursor) -> Vec<Vec<u8>> {
+    let mut found = Vec::new();
+    while found.len() < SCAN
+        && let Some(e) = cursor.next(pager).expect("scan")
+    {
+        found.push(e);
+    }
+    found
 }
 
 #[test]
@@ -616,7 +730,9 @@ fn apply(model: &mut BTreeSet<Vec<u8>>, op: &(bool, Vec<u8>)) {
     }
 }
 
-fn crash_loop(seed: u64, rounds: usize) -> usize {
+/// Returns the crashes of `rounds` crashed runs, and the splits repaired
+/// after them.
+fn crash_loop(seed: u64, rounds: usize) -> (usize, usize) {
     let mut sim = Sim::new(
         seed,
         Config {
@@ -637,7 +753,9 @@ fn crash_loop(seed: u64, rounds: usize) -> usize {
     });
     assert_eq!(Outcome::Finished, outcome);
     let mut crashes = 0;
+    let repaired = Arc::new(Mutex::new(0));
     for round in 0..rounds {
+        let finished = repaired.clone();
         let at = sim.now()
             + Duration::from_micros(2_000 + (seed * 7919 + round as u64 * 104_729) % 200_000);
         sim.crash_at(at);
@@ -650,7 +768,15 @@ fn crash_loop(seed: u64, rounds: usize) -> usize {
         let f = found.clone();
         let outcome = sim.run(move |rt| {
             let (mut pager, _) = Pager::open(rt, &crash_options()).expect("reopen");
-            *f.lock().unwrap() = Some(BTree::open(root, OWNER).verify(&mut pager));
+            let tree = BTree::open(root, OWNER);
+            let recovered = tree.verify(&mut pager);
+            if recovered.is_ok() {
+                *finished.lock().unwrap() += tree.repair(&mut pager).expect("repair");
+                assert_eq!(tree.repair(&mut pager), Ok(0), "seed {seed} round {round}");
+                assert_eq!(tree.verify(&mut pager), recovered);
+                pager.flush_log();
+            }
+            *f.lock().unwrap() = Some(recovered);
         });
         assert_eq!(Outcome::Finished, outcome);
         let entries = found
@@ -685,14 +811,124 @@ fn crash_loop(seed: u64, rounds: usize) -> usize {
         w.ops.truncate(kept);
         w.durable = kept;
     }
-    crashes
+    (crashes, *repaired.lock().unwrap())
 }
 
 #[test]
 fn a_crashed_tree_recovers_a_prefix_of_its_operations() {
     let mut crashes = 0;
+    let mut repaired = 0;
     for seed in 0..6 {
-        crashes += crash_loop(seed, 6);
+        let (c, r) = crash_loop(seed, 6);
+        crashes += c;
+        repaired += r;
     }
     assert!(crashes >= 10, "only {crashes} crashes");
+    assert!(repaired >= 1, "no crash left a split incomplete");
+}
+
+fn split_entry(i: u32) -> Vec<u8> {
+    let mut e = i.to_be_bytes().to_vec();
+    e.resize(400, 0x5A);
+    e
+}
+
+const SPLIT_ENTRIES: u32 = 200;
+
+fn split_options() -> Options {
+    Options {
+        pool_frames: 4,
+        ..options()
+    }
+}
+
+/// Returns what `body` makes of the tree a crash leaves in `files`.
+///
+/// The recovered tree must verify and hold only inserted entries; once
+/// `body` has inserted them all, no split may be left to repair.
+fn recover_and(
+    files: BTreeMap<String, Vec<u8>>,
+    root: Pid,
+    at: usize,
+    body: impl FnOnce(&BTree, &mut Pager<SimRuntime>) -> usize + Send,
+) -> usize {
+    let mut replay = Sim::with_files(at as u64, Config::default(), files);
+    let mut found = 0;
+    let outcome = replay.run(|rt| {
+        let (mut pager, _) = Pager::open(rt, &split_options()).expect("reopen");
+        let tree = BTree::open(root, OWNER);
+        let entries = tree.verify(&mut pager).expect("verify the recovered tree");
+        let all: Vec<Vec<u8>> = (0..SPLIT_ENTRIES).map(split_entry).collect();
+        assert!(
+            entries.iter().all(|e| all.contains(e)),
+            "flush boundary {at}"
+        );
+        found = body(&tree, &mut pager);
+        assert_eq!(tree.repair(&mut pager), Ok(0), "flush boundary {at}");
+        assert_eq!(
+            tree.verify(&mut pager).as_ref(),
+            Ok(&all),
+            "flush boundary {at}"
+        );
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    found
+}
+
+fn insert_all(tree: &BTree, pager: &mut Pager<SimRuntime>) {
+    for i in 0..SPLIT_ENTRIES {
+        tree.insert(pager, &split_entry(i)).expect("insert");
+    }
+}
+
+fn repair_and_insert(tree: &BTree, pager: &mut Pager<SimRuntime>) -> usize {
+    let n = tree.repair(pager).expect("repair");
+    insert_all(tree, pager);
+    n
+}
+
+/// Records scattered inserts through a pool of four frames, so that a split
+/// and its parent's update often fall in different log batches.
+fn record_splits() -> (Sim, Pid) {
+    let mut sim = Sim::new(31, Config::default());
+    let mut root = Pid(0);
+    let outcome = sim.run(|rt| {
+        let mut pager = Pager::create(rt, &split_options()).expect("create");
+        root = BTree::create(&mut pager, OWNER)
+            .expect("create tree")
+            .root();
+        pager.flush_log();
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    sim.record();
+    let outcome = sim.run(|rt| {
+        let (mut pager, _) = Pager::open(rt, &split_options()).expect("open");
+        let tree = BTree::open(root, OWNER);
+        for i in 0..SPLIT_ENTRIES {
+            let e = split_entry(i * 97 % SPLIT_ENTRIES);
+            assert_eq!(tree.insert(&mut pager, &e), Ok(true));
+        }
+        pager.flush_log();
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    (sim, root)
+}
+
+#[test]
+fn a_repair_pass_or_an_insert_finishes_every_split_a_crash_leaves_incomplete() {
+    let (sim, root) = record_splits();
+    let recording = sim.recording();
+    let mut incomplete = 0;
+    for at in recording.flushes() {
+        let files = recording.images(at, 1, at as u64).swap_remove(0);
+        let found = recover_and(files.clone(), root, at, repair_and_insert);
+        if found > 0 {
+            incomplete += found;
+            recover_and(files, root, at, |tree, pager| {
+                insert_all(tree, pager);
+                0
+            });
+        }
+    }
+    assert!(incomplete >= 5, "{incomplete} incomplete splits");
 }

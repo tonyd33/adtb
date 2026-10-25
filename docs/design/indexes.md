@@ -277,6 +277,26 @@ the separator in the parent. A crash between the two leaves the new
 page without a downlink; descents still reach it through its left
 sibling's right link.
 
+Invariants:
+
+- A page carries the incomplete-split flag exactly when its downlink is
+  not in its parent. The split that creates a page below the root sets
+  the flag in the same change; the change that adds the page's downlink
+  to its parent clears it.
+- The pages a root split creates carry downlinks from the change that
+  creates them, and never carry the flag.
+
+Postconditions:
+
+- An insert whose descent reaches a flagged page by a right link first
+  adds that page's downlink, the left sibling's high key as separator,
+  to the parent level, then descends again.
+- A repair pass walks each level below the root by its right links and
+  finishes each flagged page it meets. After recovery and one repair
+  pass, every page but the root has its downlink.
+- `verify` refuses a page that lacks a downlink without carrying the
+  flag, or carries the flag and has one.
+
 Underfull pages are never merged. An empty page is unlinked from its
 parent, then from its siblings, and recycled once no snapshot older
 than its deletion remains. The rightmost page of a level is never

@@ -153,3 +153,19 @@ fn prefix_ends_just_past_the_prefix() {
     assert_eq!(prefix_end(&[0xFF]), Bound::Unbounded);
     assert_eq!(prefix_end(&[]), Bound::Unbounded);
 }
+
+#[test]
+fn the_incomplete_mark_survives_rebuilds_and_keeps_other_flags() {
+    let mut p = vec![0; PAGE];
+    p[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(&header_edit(FORMAT, PageKind::IndexLeaf, 9, 1));
+    assert!(!Node::new(&p).unwrap().incomplete());
+    node::set_incomplete(&mut p, true);
+    assert!(Node::new(&p).unwrap().incomplete());
+    node::build(&mut p, 0, &[leaf(b"a")], Some(b"b"), Some(Pid(4)));
+    assert!(Node::new(&p).unwrap().incomplete());
+    assert_eq!(crate::storage::flags(&p) & 1, 1);
+    node::set_incomplete(&mut p, false);
+    assert!(!Node::new(&p).unwrap().incomplete());
+    assert_eq!(crate::storage::flags(&p), 1);
+    assert_eq!(keys(&p), [b"a".to_vec()]);
+}

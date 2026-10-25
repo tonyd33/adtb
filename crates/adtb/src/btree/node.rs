@@ -11,6 +11,8 @@ const USED: usize = 36;
 const HIGH: usize = 38;
 const SLOTS: usize = 40;
 
+const INCOMPLETE_SPLIT: u16 = 1 << 1;
+
 const SLOT: usize = 2;
 const LEN: usize = 2;
 const CHILD: usize = 8;
@@ -27,7 +29,8 @@ pub struct Malformed;
 /// one 2-byte cell offset per slot in key order. A cell is a 2-byte key
 /// length and the key, followed in an inner page by the child's page id.
 /// Every field is little-endian. A page of zero contents is an empty leaf
-/// with no right sibling.
+/// with no right sibling. Bit 1 of the header's flags marks a page whose
+/// downlink is not yet in its parent.
 #[derive(Clone, Copy, Debug)]
 pub struct Node<'a> {
     page: &'a [u8],
@@ -95,6 +98,11 @@ impl<'a> Node<'a> {
 
     pub fn owner(&self) -> u32 {
         owner(self.page)
+    }
+
+    /// Returns whether the page's downlink is not yet in its parent.
+    pub fn incomplete(&self) -> bool {
+        flags(self.page) & INCOMPLETE_SPLIT != 0
     }
 
     pub fn right(&self) -> Option<Pid> {
@@ -261,6 +269,17 @@ pub fn build(page: &mut [u8], level: u16, items: &[Item], high: Option<&[u8]>, r
         SLOTS + items.len() * SLOT <= page.len() - usize::from(u16_at(page, USED)),
         "items overflow the page"
     );
+}
+
+/// Mark `page` as lacking its downlink in its parent, or clear the mark.
+///
+/// Panics if the page is not a node.
+pub fn set_incomplete(page: &mut [u8], incomplete: bool) {
+    let level = Node::new(page).expect("a marked page is a node").level();
+    let rest = flags(page) & !INCOMPLETE_SPLIT;
+    let mark = if incomplete { INCOMPLETE_SPLIT } else { 0 };
+    let header = header_edit(FORMAT, kind_of(level), owner(page), rest | mark);
+    page[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(&header);
 }
 
 /// Insert `item` at slot `i`, compacting the cell area first if its free

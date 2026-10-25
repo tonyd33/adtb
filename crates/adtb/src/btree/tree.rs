@@ -37,9 +37,27 @@ impl From<PageError> for Error {
 }
 
 enum Step {
-    Right(Pid),
+    Right(Pid, Vec<u8>),
     Down(Pid),
     Here,
+}
+
+/// The page at a level whose range holds a key, and the page passed at each
+/// level above it, root first.
+pub(super) struct Descent {
+    pub(super) pid: Pid,
+    pub(super) stack: Vec<Pid>,
+    /// The first page passed by a right link whose downlink is not in its
+    /// parent.
+    pub(super) incomplete: Option<Split>,
+}
+
+/// A page whose downlink is not in its parent, its low key, and the page
+/// passed at each level above it on the way to it.
+pub(super) struct Split {
+    pub(super) pid: Pid,
+    pub(super) low: Vec<u8>,
+    pub(super) stack: Vec<Pid>,
 }
 
 enum Plan {
@@ -67,6 +85,13 @@ pub(super) fn visit<R: Runtime, T>(
         .filter(|n| n.owner() == owner)
         .ok_or(Error::Malformed(pid))?;
     f(&node).map_err(|Malformed| Error::Malformed(pid))
+}
+
+/// Clear the mark of the child page at `at` in `pages`, if there is one.
+fn complete(pages: &mut [&mut [u8]], at: usize) {
+    if let Some(child) = pages.get_mut(at) {
+        node::set_incomplete(child, false);
+    }
 }
 
 /// Returns the slot that splits `items` into two halves of about equal bytes,
@@ -112,59 +137,84 @@ impl BTree {
         node::capacity(page_size) / 5 - node::item_cost(0, 1)
     }
 
-    /// Returns the page at `level` whose range holds `key`, and the page
-    /// passed at each level above it, root first.
-    fn descend<R: Runtime>(
+    /// Returns the descent to the page at `level` whose range holds `key`.
+    pub(super) fn descend<R: Runtime>(
         &self,
         pager: &mut Pager<R>,
         key: &[u8],
         level: u16,
-    ) -> Result<(Pid, Vec<Pid>), Error> {
+    ) -> Result<Descent, Error> {
         let mut pid = self.root;
         let mut stack = Vec::new();
+        let mut low: Option<Vec<u8>> = None;
+        let mut incomplete = None;
         loop {
-            let step = visit(pager, self.owner, pid, |n| {
-                if n.beyond(key)? {
-                    return n.right().map(Step::Right).ok_or(Malformed);
-                }
-                match n.level().cmp(&level) {
-                    Ordering::Equal => Ok(Step::Here),
-                    Ordering::Greater => n.child_for(key).map(Step::Down),
-                    Ordering::Less => Err(Malformed),
-                }
+            let (step, marked) = visit(pager, self.owner, pid, |n| {
+                let step = if n.beyond(key)? {
+                    let high = n.high()?.ok_or(Malformed)?.to_vec();
+                    Step::Right(n.right().ok_or(Malformed)?, high)
+                } else {
+                    match n.level().cmp(&level) {
+                        Ordering::Equal => Step::Here,
+                        Ordering::Greater => Step::Down(n.child_for(key)?),
+                        Ordering::Less => return Err(Malformed),
+                    }
+                };
+                Ok((step, n.incomplete()))
             })?;
+            if marked
+                && incomplete.is_none()
+                && let Some(low) = &low
+            {
+                incomplete = Some(Split {
+                    pid,
+                    low: low.clone(),
+                    stack: stack.clone(),
+                });
+            }
             match step {
-                Step::Right(p) => pid = p,
+                Step::Right(p, high) => {
+                    pid = p;
+                    low = Some(high);
+                }
                 Step::Down(c) => {
                     stack.push(pid);
                     pid = c;
+                    low = None;
                 }
-                Step::Here => return Ok((pid, stack)),
+                Step::Here => {
+                    return Ok(Descent {
+                        pid,
+                        stack,
+                        incomplete,
+                    });
+                }
             }
         }
     }
 
-    /// Returns the leaf that holds `entry` and its slot there, if it is in the
-    /// tree.
+    /// Returns the descent to the leaf whose range holds `entry`, and its slot
+    /// there if it is in the tree.
     fn find<R: Runtime>(
         &self,
         pager: &mut Pager<R>,
         entry: &[u8],
-    ) -> Result<(Pid, Vec<Pid>, Option<usize>), Error> {
-        let (leaf, stack) = self.descend(pager, entry, 0)?;
-        let slot = visit(pager, self.owner, leaf, |n| {
+    ) -> Result<(Descent, Option<usize>), Error> {
+        let descent = self.descend(pager, entry, 0)?;
+        let slot = visit(pager, self.owner, descent.pid, |n| {
             let i = n.search(entry, true)?;
             Ok((i < n.count() && n.key(i)? == entry).then_some(i))
         })?;
-        Ok((leaf, stack, slot))
+        Ok((descent, slot))
     }
 
     pub fn contains<R: Runtime>(&self, pager: &mut Pager<R>, entry: &[u8]) -> Result<bool, Error> {
-        Ok(self.find(pager, entry)?.2.is_some())
+        Ok(self.find(pager, entry)?.1.is_some())
     }
 
-    /// Insert `entry`. Returns false, changing nothing, if it is already in
-    /// the tree.
+    /// Insert `entry`, first finishing each split whose page the descent
+    /// reaches by a right link without a downlink. Returns false, changing no
+    /// entry, if it is already in the tree.
     pub fn insert<R: Runtime>(&self, pager: &mut Pager<R>, entry: &[u8]) -> Result<bool, Error> {
         let max = BTree::max_entry_len(pager.page_size());
         if entry.len() > max {
@@ -173,30 +223,57 @@ impl BTree {
                 max,
             });
         }
-        let (leaf, stack, slot) = self.find(pager, entry)?;
-        if slot.is_some() {
-            return Ok(false);
+        loop {
+            let (descent, slot) = self.find(pager, entry)?;
+            if let Some(split) = descent.incomplete {
+                self.finish(pager, split)?;
+                continue;
+            }
+            if slot.is_some() {
+                return Ok(false);
+            }
+            let item = Item {
+                key: entry.to_vec(),
+                child: None,
+            };
+            self.put(pager, descent.pid, descent.stack, item)?;
+            return Ok(true);
         }
+    }
+
+    /// Insert the downlink of `split`'s page into its parent's level.
+    pub(super) fn finish<R: Runtime>(
+        &self,
+        pager: &mut Pager<R>,
+        split: Split,
+    ) -> Result<(), Error> {
+        let mut stack = split.stack;
+        let parent = stack
+            .pop()
+            .expect("a page reached by a right link is below the root");
         let item = Item {
-            key: entry.to_vec(),
-            child: None,
+            key: split.low,
+            child: Some(split.pid),
         };
-        self.put(pager, leaf, stack, item)?;
-        Ok(true)
+        self.put(pager, parent, stack, item)
     }
 
     /// Delete `entry`. Returns false if it was not in the tree.
     pub fn delete<R: Runtime>(&self, pager: &mut Pager<R>, entry: &[u8]) -> Result<bool, Error> {
-        let (leaf, _, slot) = self.find(pager, entry)?;
+        let (descent, slot) = self.find(pager, entry)?;
         let Some(i) = slot else {
             return Ok(false);
         };
-        pager.update(&[leaf], |p| node::remove(p[0], i))?;
+        pager.update(&[descent.pid], |p| node::remove(p[0], i))?;
         Ok(true)
     }
 
     /// Insert `item` into the level of page `pid`, splitting pages up the
     /// levels of `stack` as they fill.
+    ///
+    /// Each change that adds a downlink clears the mark of the page it names,
+    /// and each page a split adds below the root is marked until its own
+    /// downlink is added.
     fn put<R: Runtime>(
         &self,
         pager: &mut Pager<R>,
@@ -222,13 +299,18 @@ impl BTree {
                     right: n.right(),
                 })
             })?;
+            let below = item.child;
             let (level, items, high, right) = match plan {
                 Plan::Right(p) => {
                     pid = p;
                     continue;
                 }
                 Plan::Fits(i) => {
-                    pager.update(&[pid], |p| node::insert(p[0], i, &item))?;
+                    let pages: Vec<Pid> = [pid].into_iter().chain(below).collect();
+                    pager.update(&pages, |p| {
+                        node::insert(p[0], i, &item);
+                        complete(p, 1);
+                    })?;
                     return Ok(());
                 }
                 Plan::Split {
@@ -254,17 +336,22 @@ impl BTree {
                         child: Some(b),
                     },
                 ];
-                pager.update(&[pid, a, b], |p| {
+                let pages: Vec<Pid> = [pid, a, b].into_iter().chain(below).collect();
+                pager.update(&pages, |p| {
                     node::build(p[1], level, left, Some(&sep), Some(b));
                     node::build(p[2], level, upper, None, None);
                     node::build(p[0], level + 1, &root, None, None);
+                    complete(p, 3);
                 })?;
                 return Ok(());
             }
             let q = pager.allocate(FORMAT, kind_of(level), self.owner)?;
-            pager.update(&[pid, q], |p| {
+            let pages: Vec<Pid> = [pid, q].into_iter().chain(below).collect();
+            pager.update(&pages, |p| {
                 node::build(p[0], level, left, Some(&sep), Some(q));
                 node::build(p[1], level, upper, high.as_deref(), right);
+                node::set_incomplete(p[1], true);
+                complete(p, 2);
             })?;
             pid = stack
                 .pop()
@@ -344,7 +431,7 @@ impl Cursor {
                     Bound::Included(x) | Bound::Excluded(x) => x.as_slice(),
                     Bound::Unbounded => &[],
                 };
-                self.tree.descend(pager, from, 0)?.0
+                self.tree.descend(pager, from, 0)?.pid
             };
             let (entries, right) = visit(pager, self.tree.owner, pid, |n| {
                 let start = match &self.after {

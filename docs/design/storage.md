@@ -101,7 +101,7 @@ offset  size  field
 12      2     format    format version of the page's contents
 14      2     kind      page kind, below
 16      4     owner     heap id of a heap page, index id of an index page, 0 otherwise
-20      2     flags     defined by the kind: all-visible (heap), half-dead (index), ...
+20      2     flags     defined by the kind: all-visible (heap), half-dead and incomplete split (index), ...
 22      2     reserved, zero
 24            kind-specific contents
 ```
