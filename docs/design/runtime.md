@@ -16,6 +16,47 @@ Precondition on every dependency of `adtb`: it takes no ambient time,
 threads or randomness. Pure libraries (checksums, hashing, decimal
 arithmetic) meet it; runtimes do not.
 
+The interfaces, with the I/O interface of §2, are defined in
+`adtb-sys` as the module `runtime`, so that the backends `adtb-sys`
+holds implement them, and `adtb` re-exports the module as
+`adtb::runtime`. The engine is generic over one `Runtime`, a cloneable
+handle that every thread of the engine shares:
+
+```text
+trait Clock   { fn now(&self) -> Instant; fn wall(&self) -> SystemTime; }
+trait Threads { fn spawn(&self, name, body) -> ThreadId; fn current(&self) -> ThreadId;
+                fn park(&self); fn unpark(&self, ThreadId); fn yield_now(&self);
+                fn join(&self, ThreadId); }
+trait Entropy { fn next_u64(&self) -> u64; fn fill(&self, &mut [u8]); }
+trait Runtime: Clock + Threads + Entropy + Clone + Send + Sync { type Io: Io; fn io(&self) -> Self::Io; }
+```
+
+Postconditions every runtime must meet:
+
+- `now` never goes backwards within one process. An `Instant` is a
+  count of nanoseconds from an origin the runtime picks, and means
+  nothing in another process; it is never written to the file.
+- `wall` may jump in either direction.
+- `park` blocks the calling thread until its wake token is set, then
+  clears the token. `unpark` sets a thread's token. A token set before
+  the `park` is not lost; `park` may also return spuriously.
+- `join` returns once the thread has returned from its body.
+- A panic in any thread crashes the process
+  ([README.md §4](README.md#4-errors)).
+
+Preconditions on the engine:
+
+- A thread that waits on memory another thread writes, a spin on a
+  latch among them, calls `yield_now` or `park` on every iteration.
+  The simulator switches threads only inside calls to these
+  interfaces, so a wait that never calls them never ends there.
+- No destructor blocks on these interfaces. A crash stops every thread
+  wherever it is; the simulator unwinds them and runs destructors, and
+  a destructor that waits for a completion cannot be answered.
+
+Timers are ops of the I/O interface (§2), so a timer completes on the
+same queue as the I/O a worker waits for.
+
 Rulings: project/arch/deps/escape/no-ambient
 
 ## 2. I/O interface
@@ -52,11 +93,51 @@ On macOS direct I/O is `F_NOCACHE` and the device flush is
 `F_FULLFSYNC`; on Windows both come from unbuffered, write-through
 handles.
 
+`Runtime::io` returns a new, empty queue; each worker owns one. An op
+is one of:
+
+```text
+enum Op {
+  Open     { path, create }          // -> Opened { file, len }
+  Read     { file, offset, buf }     // -> Read(n); n < buf.len() past the end of the file
+  Write    { file, offset, buf }     // -> Written; the whole buffer
+  Allocate { file, len }             // -> Allocated; the file is at least len bytes, new bytes zero
+  Sync     { file }                  // -> Synced; fdatasync
+  SyncDir  { dir }                   // -> Synced; fsync of the directory
+  List     { dir }                   // -> Listed(paths), in no particular order
+  Remove   { path }                  // -> Removed
+  Timer    { at }                    // -> Fired, once now() >= at
+}
+struct Completion { ticket, buf: Option<AlignedBuf>, result: Result<Done, IoError> }
+enum IoError { NotFound, Failed }
+```
+
+Paths are relative to the database directory, separated by `/`. A
+`FileId` names a file opened by this process and stays valid after the
+file is removed.
+
+Preconditions:
+
+- The offset and length of a `Read` or `Write` are multiples of the
+  device's logical block size, and its buffer is an `AlignedBuf`
+  ([sys.md §1](sys.md#1-safe-types)).
+
 Postconditions every backend must meet:
 
+- Every op submitted completes exactly once. Completions arrive in any
+  order relative to submission.
+- The completion of an op unparks the thread that submitted it (§1),
+  so a worker with nothing to run polls its queue and parks.
 - A write error is reported in the completion of that write.
 - A buffer handed to the backend stays owned by it until its
-  completion is polled ([sys.md §2](sys.md#2-unsafe-invariants)).
+  completion is polled ([sys.md §2](sys.md#2-unsafe-invariants)); the
+  completion returns it.
+- `Sync` forces every write to the file that completed before the
+  `Sync` was submitted; `SyncDir` forces every creation and removal in
+  the directory that completed before it was submitted. Nothing else
+  is forced by them.
+
+TODO: closing a file, file sizes other than at `Open`, and renames are undecided.
 
 Rulings: project/arch/runtime/own-loop, buffer/io-path/direct, buffer/async/uring-fallback, buffer/platform/linux-first
 
@@ -67,6 +148,18 @@ produce any of it: crash stop, torn writes of any write larger than the
 device's atomic unit, bit rot, latent sector errors, misdirected writes
 and lost writes. [storage.md §3](storage.md#3-corruption-detection)
 states how each is detected.
+
+What each fault leaves behind:
+
+| Fault | Effect |
+| --- | --- |
+| Crash stop | Every thread stops. Any subset of the writes not covered by a completed `Sync`, including writes still in flight, is on the device afterwards; any prefix of the creations and removals not covered by a completed `SyncDir` is. |
+| Torn write | At a crash, an unforced write larger than the atomic unit is on the device in any subset of its atomic units. |
+| Bit rot | A stored bit flips; every later read sees it. |
+| Latent sector error | Reads of a sector fail with `Failed` until the sector is written again. |
+| Misdirected write | The write completes, and its data lands at another offset of the same file; the target keeps its old contents. |
+| Lost write | The write completes and never reaches the device, forced or not. |
+| Failed write or force | The op completes with `Failed`; a failed write may have changed any of its blocks. |
 
 ## 4. Errors
 
@@ -85,18 +178,38 @@ The simulated storage is an in-memory disk that injects every fault of
 §3:
 
 ```text
-SimStorage {
-  seed,
-  fault: { torn_p, corrupt_p, misdirect_p, lost_write_p,
-           lose_unsynced: true, delay_completions: true },
-}
+Sim::new(seed, Config {
+  faults: { torn_p, corrupt_p, misdirect_p, lost_write_p, latent_p, fail_p,
+            lose_unsynced: true, delay_completions: true },
+  sector, atomic_unit, latency, jitter,
+})
+sim.crash_at(t); sim.run(|rt| ...) -> Finished | Crashed
 ```
+
+The storage outlives a run, so the run after a crash is a restart of
+the process over what the crash left. Each `_p` is the chance of the
+fault of §3 per op that can suffer it; `lose_unsynced` off models a
+device whose cache survives power loss, `delay_completions` off
+completes ops in submission order.
+
+Postconditions of the simulator:
+
+- A seed and a configuration determine every schedule decision,
+  completion order, fault, clock value and random draw, so the same
+  seed replays a run byte for byte, trace and files alike.
+- A run fails when any thread panics, or when every live thread is
+  blocked with no completion or timer pending.
 
 After each run, and after each simulated crash and recovery, the
 simulator checks that every acknowledged commit is present, that no
 unacknowledged state is reported as committed, and that `verify`
 finds no structural, cross or logical violation
 ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)).
+The client records each commit in a ledger outside the process as
+submitted, then acknowledged or aborted. A commit still in doubt at a
+crash may be present or absent; one aborted, or never submitted, is
+reported as committed only by a bug. The reopened database supplies
+the commits it reports and the findings of `verify`.
 
 Rulings: buffer/test/dst, buffer/test/dst-threads/sim-scheduler
 
@@ -177,5 +290,22 @@ fn olc_reader_sees_consistent_or_restarts() {
   loom::model(|| { /* a writer thread and a reader thread on one page */ });
 }
 ```
+
+### 6.6 The scheduler
+
+Each simulated thread is a host thread, and one baton passes between
+them: only the thread holding it runs. Every call into the interfaces
+of §1 and §2 except the clock and entropy is a switch point, where the
+scheduler advances the clock by a random step, delivers the completions
+due, and hands the baton to a random runnable thread. When no thread is
+runnable the clock jumps to the next completion. A crash makes every
+thread unwind from its switch point.
+
+Miri runs these tests as they are, since they are plain threads,
+mutexes and the one allocation of `AlignedBuf`; it needs the nightly
+toolchain in the dev shell. Loom models the page state word in
+`adtb-sys`, not the simulator, and needs `loom` allowlisted as a
+dev-dependency. The `io_uring` backend needs `io-uring` or `libc`, and
+real entropy needs `getrandom` or `libc`.
 
 Rulings: buffer/test/fault-fs, buffer/test/crash-replay, project/testing/isolation-check, project/testing/elle/row-per-element, project/testing/where/in-sim, project/testing/where/real-process, project/testing/memory-model/loom, project/testing/memory-model/miri

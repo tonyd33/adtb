@@ -12,7 +12,27 @@ The safe types are `Frame`, `PageRef` and `AlignedBuf`.
 `adtb-sys` states its contract in its documentation; this file states
 what `adtb` may rely on.
 
-TODO: what each of `Frame`, `PageRef` and `AlignedBuf` represents, and its methods, are undecided.
+`AlignedBuf` is an owned, zero-initialised byte buffer for direct I/O,
+read and written as a `[u8]`:
+
+```text
+AlignedBuf::zeroed(len) -> AlignedBuf     // panics if len is 0
+AlignedBuf::from_slice(&[u8]) -> AlignedBuf
+AlignedBuf::ALIGN = 4096
+```
+
+Invariants:
+
+- Its address is a multiple of `AlignedBuf::ALIGN`, which every
+  supported device's logical block size divides.
+- Its length is fixed when it is allocated and is never zero.
+- It is `Send` and `Sync`, so an op may carry it to another thread.
+
+`adtb-sys` also defines the runtime interfaces of
+[runtime.md §1](runtime.md#1-time-threads-and-randomness) and
+[§2](runtime.md#2-io-interface) as its module `runtime`.
+
+TODO: what each of `Frame` and `PageRef` represents, and its methods, are undecided.
 
 Rulings: project/arch/unsafe/confined
 
