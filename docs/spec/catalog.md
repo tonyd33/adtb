@@ -1,0 +1,1744 @@
+# Catalog and operations
+
+This part defines the relations the engine provides about itself: the
+catalog of schema objects, the volatile statistics and activity
+relations, and their types. It defines the prelude error sums, plan
+inspection, resource control, the operational commands and the command
+line tool, configuration, integrity verification and maintenance, the
+compatibility promises across engine releases, and telemetry export.
+How catalog sums change across engine releases is defined in
+[evolution.md](evolution.md#10-engine-releases); who may read the
+catalog is defined in [security.md](security.md#7-catalog-visibility).
+
+Examples use the running schema of [README.md](README.md#conventions)
+at version 12, after migration 0011 of
+[evolution.md](evolution.md#42-add-a-constructor) adds the constructor
+`Apple { sub: Text }` to `Identity` and joins it to `identities.OAuth`,
+and migration 0012 enables `identities.Apple`. Each section's examples are an
+independent history starting from that state unless the section states
+another version.
+
+## 1. System relations
+
+### 1.1 Two modules
+
+The engine provides two modules of relations.
+
+- `catalog::` holds the schema and the engine's other transactional
+  metadata. Its relations are relation variables in the sense of
+  [model.md](model.md#6-relation-variables): every read is part of the
+  reading transaction's serializable history, and a transaction sees
+  the catalog of its snapshot.
+- `sys::` holds statistics, activity and process state. Every relation
+  in it is volatile (§1.3).
+
+Both are queried with the query language, by the same comprehensions,
+matches and aggregates as user relations. No other interface to this
+information is normative: the command line tool (§9.4), the telemetry
+export (§13) and the in-process metrics callback present the same
+facts.
+
+A program must not insert into, update or delete from a relation of
+either module. Catalog relations change only through schema operators
+([evolution.md](evolution.md#4-operators)), registration and other
+deployment state ([applications.md](applications.md#41-registration)),
+role and grant statements ([security.md](security.md#3-grants)), and
+the commands of §9, including `set setting` (§10.2). A write naming a
+system relation is refused with `Rejected { reason: Denied {..} }`.
+
+A bundle that reads `catalog::` or `sys::` relations pins a catalog
+version in its header beside its schema version, and is served at that
+catalog version ([evolution.md](evolution.md#10-engine-releases)).
+
+```
+from c in catalog::constructors, s in catalog::ctor_states
+where c.sum.name == "Identity" and s.ctor == key c
+  and s.relation.name == "identities" and s.stage == Enabled
+select { name: c.name, id: key c }
+```
+
+### 1.2 Identity of catalog objects
+
+Every catalog relation whose key is one field has a key field typed
+`Key catalog::r` for its own relation, filled by the engine. The key
+value of a row of `catalog::types`, `catalog::constructors` or
+`catalog::relations` is the object's id. Types, constructors and
+relation variables share one id space, and ids are a deterministic
+function of the operator log: `add type T = A | B` takes the next
+three ids for `T`, `A` and `B` in that order, a record type takes one
+id for the type and one for its constructor, and `add constructor` and
+`add relation` each take the next id, so every tool replaying the log
+computes the same ids. Ids below 1024 are those of the fixed table of
+§4.6; the log's ids start at 1024. A constructor's id is its wire tag
+and its stored tag. An id belongs to the declared constructor of a
+type and is shared by every instantiation of a parametric sum. Key values of every catalog
+relation are never reused.
+
+A catalog row naming a constructor, relation, index, constraint,
+function or bundle is never deleted. Removing or dropping the object
+records that in the row (a constructor, its fields, named sets and the
+other objects get `dropped: Some { value: v }` with
+the schema version `v` that dropped them). A key held in a `sys::` row or in a stored plan
+therefore always resolves.
+
+### 1.3 Volatile relations
+
+A volatile relation is a relation kind outside serializable history.
+Only the engine declares volatile relations; a user declaration with
+the `volatile` suffix is refused.
+
+```
+relation sys::heaps : HeapStats volatile
+  key (relation, ctor)
+```
+
+A read of a volatile relation:
+
+- returns the state at some moment during the read, not the state at
+  the reading transaction's snapshot;
+- may return different rows when repeated in one transaction, and rows
+  of two volatile relations read in one query need not describe one
+  moment;
+- records no read dependency, takes no lock and never causes a
+  serialization failure.
+
+An expression is volatile if it reads a volatile relation or calls a
+function whose body is volatile. A volatile expression must not occur:
+
+- in a constraint, a row check, a stored view, a default, a generated
+  or computed field, an index expression or a delete action;
+- in a feed's constructor list ([interop.md](interop.md#52-change-streams));
+- in any part of a write: its target, its predicate, the values it
+  writes, or a value or condition the write depends on, including a
+  `let` binding in a `transact` block whose value reaches a write.
+
+A program that breaks this rule is ill-typed. A registered query or
+transaction containing it is refused at registration; ad hoc text
+containing it is refused with `Rejected { reason: Invalid { ... } }`.
+
+```
+-- with:
+--   type AuditHeap = { id: Key audit_heaps, rows: I64 }
+--   relation audit_heaps : AuditHeap key id generate sequence
+insert audit_heaps from (from h in sys::heaps select { rows: h.live_rows })
+-- refused: a volatile source in a write
+```
+
+A registered query may read volatile relations and return their rows;
+its results carry no isolation guarantee for those rows. A `transact`
+block may read a volatile relation and return what it read, provided
+no write depends on it.
+
+Some volatile relations are kept in the database file (§5.4, §11.1).
+They are written by the engine outside user transactions and are
+still volatile: being kept says how long rows last, not how they are
+read.
+
+### 1.4 Visibility
+
+Reading any `sys::` relation, `catalog::plans` or the plan of
+another principal's query requires the `monitor` privilege (§9.3).
+`monitor` shows counts, timings and plan shapes. A column whose
+values reveal keys or field values of a constructor relation also
+needs read on that constructor relation's rows and fields
+([security.md](security.md#3-grants)). These columns are:
+
+| Relation | Columns |
+| --- | --- |
+| `sys::field_values` | `value` |
+| `sys::conflicts` | `keys` |
+| `sys::verify_findings` | `witness` of `Violation` |
+| `catalog::plans`, explain results | probe bounds and literal parameter values in `text` and `document` |
+| `catalog::audit` | `changes` of `Commit`, which needs read on every row it covers ([security.md](security.md#8-audit)) |
+
+Rows are never silently omitted. A query that reads such a column
+without the read it needs is refused with `Rejected { reason: Denied
+{..} }`; a query that reads only the other columns is not. For a
+registered query running under definer rights, the bundle owner's
+privileges decide.
+
+Rulings: engine/catalog-relations, ops/expose/relations, ops/expose/volatile/volatile-kind, ops/conflicts/leak/admin-only, project/spec/normative/catalog
+
+## 2. Catalog relations
+
+### 2.1 Types and constructors
+
+```
+module catalog
+
+type TypeDef { id: Key types, module: Text, name: Text, params: I32,
+               dropped: Option Key migrations }
+  = SumType { ordered: Bool }
+  | Newtype { over: Text }
+relation types : TypeDef key id
+
+type Constructor = { id: Key constructors, sum: Key types, name: Text, position: I32,
+                     dropped: Option Key migrations }
+relation constructors : Constructor key id
+
+type CtorStage = Declared | Enabled | Deprecated
+type CtorState = { relation: Key relations, ctor: Key constructors, stage: CtorStage }
+relation ctor_states : CtorState key (relation, ctor)
+
+type Field { id: Key fields, name: Text, field_type: Text, position: I32,
+             dropped: Option Key migrations }
+  = Header  { sum: Key types }
+  | Payload { ctor: Key constructors }
+relation fields : Field key id
+```
+
+`field_type` is the field's type printed in the notation of
+[syntax.md](syntax.md#4-types). `position` is the declaration order; a
+record is a `SumType` with one constructor. A constructor's
+`dropped` is set by `remove constructor`; its name may then be reused
+by a later constructor, which gets a new id.
+
+Write state is per relation variable: `ctor_states` has a row for each
+relation variable and each constructor of its type, with the stage of
+[evolution.md](evolution.md#43-enable-and-deprecate): `Declared` after
+`add constructor`, `Enabled` after `enable`, `Deprecated` after
+`deprecate`. Constructors created by `add type`, and the products of
+split, merge, nest and unnest whose sources were all enabled, start
+`Enabled`.
+
+### 2.2 Relation variables, named sets and indexes
+
+```
+type RelKind = Base | Stored | Catalog | Volatile
+type Relation = { id: Key relations, module: Text, name: Text, sum: Key types,
+                  kind: RelKind, dropped: Option Key migrations }
+relation relations : Relation key id
+
+type NamedSet = { id: Key named_sets, relation: Key relations, name: Text,
+                  dropped: Option Key migrations }
+relation named_sets : NamedSet key id
+type SetMember = { set: Key named_sets, ctor: Key constructors }
+relation set_members : SetMember key (set, ctor)
+
+type IndexKind = PrimaryKey | Unique | Plain | Interval
+type Index = { id: Key indexes, relation: Key relations, kind: IndexKind, clause: Text,
+               dropped: Option Key migrations }
+relation indexes : Index key id
+type IndexCtor = { index: Key indexes, ctor: Key constructors }
+relation index_ctors : IndexCtor key (index, ctor)
+```
+
+`Stored` is a stored view ([derived.md](derived.md#2-stored-views)).
+An index's `clause` is its declaration clause as written, for example
+`index (user) in (Google | Apple)`; `index_ctors` holds the
+constructor set it ranges over.
+
+### 2.3 Constraints, functions and extensions
+
+```
+type Constraint = { id: Key constraints, module: Text, name: Text, text: Text,
+                    dropped: Option Key migrations }
+relation constraints : Constraint key id
+
+type Function { id: Key functions, module: Text, name: Text, signature: Text,
+                deterministic: Bool, hash: Bytes, dropped: Option Key migrations }
+  = Language  { body: Text }
+  | Wasm      { code: Key wasm_modules, export: Text }
+  | Host      { symbol: Text, version: Text }
+  | Aggregate { body: Text }
+relation functions : Function key id
+
+type WasmModule = { hash: Key wasm_modules, bytes: Bytes }
+relation wasm_modules : WasmModule key hash
+
+type Extension = { id: Key extensions, name: Text, version: Text, hash: Bytes, module: Text }
+relation extensions : Extension key id
+```
+
+Every hash in the catalog is BLAKE3-256. A function's `hash` is the
+content hash that is part of its identity
+([interop.md](interop.md#95-function-identity)); a Wasm module is keyed
+by the hash of its bytes.
+
+### 2.4 Versions, bundles and registered calls
+
+```
+type Migration = { version: Key migrations, hash: Bytes, text: Text, applied: Instant }
+relation migrations : Migration key version
+
+type Priority ordered = AdHoc | Background | Regular
+type BundleState = Active | Superseded { at: Instant } | Retired { at: Instant }
+type Bundle = { id: Key bundles, name: Text, family: Text, owner: Text,
+                pins: Key migrations, hash: Bytes, edition: Text, catalog: Option I64,
+                hides_new: Bool, lease: Option Duration, renewed: Instant,
+                priority: Priority, memory_share: Option F64, workers: Option I32,
+                state: BundleState }
+relation bundles : Bundle key id
+
+type Registered { id: Key registered, bundle: Key bundles, name: Text, ordinal: I32,
+                  signature: Text, text: Text, limit: Option Duration }
+  = Query {}
+  | Txn {}
+  | ImportedFn {}
+relation registered : Registered key id
+
+type Feed = { id: Key feeds, bundle: Key bundles, name: Text, ordinal: I32,
+              relation: Key relations, set: Text }
+relation feeds : Feed key id
+type FeedMember = { feed: Key feeds, relation: Key relations, ctor: Key constructors }
+relation feed_members : FeedMember key (feed, relation, ctor)
+```
+
+`migrations` is the operator log of
+[evolution.md](evolution.md#1-the-operator-log), one row per migration;
+`hash` is the version's hash, the BLAKE3-256 hash of the log prefix
+up to and including this migration, and `text` the migration as
+written.
+The log holds only migrations; bundles, their registration, leases,
+supersession and retirement are deployment state in
+`catalog::bundles`, not log entries. A bundle's name is
+`FAMILY-VERSION`, `VERSION` being the digits and dots after the last
+hyphen, and `family` is the part before it (`web` for `web-2.4`).
+`owner` is the registering role; `catalog` is the catalog version the
+bundle pins, if it reads system relations; `hides_new` is set by the
+header clause `hide new constructors`
+([evolution.md](evolution.md#8-readers-first)); `renewed` is the last lease renewal
+([applications.md](applications.md#42-leases)). A `Superseded` bundle,
+marked so when an embedded open registers its successor, is not a
+live reader and may be registered again with identical content; a
+`Retired` one is retired for good.
+
+`ordinal` is the call's position in declaration order in the bundle
+file, from 1, so code generation computes it from the file
+([wire.md](wire.md#51-call)); queries, transactions, imported
+functions and feeds of one bundle share one ordinal sequence. `limit`
+is the declared limit of §8.3. A row of `feeds` is a feed the bundle
+declares, with `set` its constructor set as written and its
+constructor relations at the pinned version in `feed_members`
+([interop.md](interop.md#52-change-streams)).
+
+### 2.5 Plans
+
+```
+type PlanState = Current | Pinned | Reverted | Superseded
+type Plan = { id: Key plans, query: Key registered, release: Text, created: Instant,
+              state: PlanState, memory_grant: I64, text: Text, document: Text }
+relation plans : Plan key id
+```
+
+Plans are defined in §7.
+
+### 2.6 Other catalog relations
+
+| Relation | Defined in |
+| --- | --- |
+| `catalog::settings` | §10.2 |
+| `catalog::tz_releases`, `catalog::zones` | §3.1 |
+| roles, grants | [security.md](security.md#7-catalog-visibility) |
+| `catalog::credentials` | [security.md](security.md#21-roles) |
+| `catalog::audit` | [security.md](security.md#82-the-audit-relation) |
+
+Rulings: engine/catalog-relations, project/spec/normative/catalog
+
+## 3. Zone rules and collations
+
+The rules for time-zone conversion and for collation are given in
+[model.md](model.md#36-time) and [model.md](model.md#35-text). This section
+states only where their data lives.
+
+### 3.1 Zone rules
+
+Time-zone rules are catalog data:
+
+```
+type TzRelease = { id: Key tz_releases, release: Text, adopted: Key migrations }
+relation tz_releases : TzRelease
+  key id
+  unique (release)
+type Zone = { release: Key tz_releases, name: Text, rules: Bytes }
+relation zones : Zone key (release, name)
+```
+
+The release most recently adopted is in force. Every conversion
+between `Instant` and civil or zoned time uses it, for every bundle
+whatever version it pins. A stored `ZonedDateTime` keeps its civil
+time and zone; its `Instant` is computed with the release in force.
+
+Adopting a release is a schema operator. The migration's canonical
+text holds the BLAKE3-256 hash of the release's data, so the version
+hash covers it, and the log and dumps carry the data itself. From
+version 17:
+
+```
+-- 0018
+adopt tzdb "2026b" from "tzdata-2026b.tzif"
+```
+
+The operator must report every stored `ZonedDateTime` whose `Instant`
+changes under the new release. Indexes, stored views and constraints
+whose expressions convert through zone rules are rebuilt or rechecked
+as part of the operator, as for a redefined function
+([interop.md](interop.md#95-function-identity)). The inverse operator
+restores the previous release.
+
+### 3.2 Collations
+
+`Text` orders by code point. A collation is a function from `Text` to
+an ordered sort key, named by a string that includes its version,
+such as `"de-u-ks-level2@icu-74"`. The engine never changes the tables
+behind a collation name. An engine release must support every
+collation name any earlier release supported; it may add names.
+
+```
+type Person = { id: Key people, name: Text }
+relation people : Person
+  key id generate sequence
+  index (collate(name, "de@icu-74"))
+```
+
+The names a binary supports are listed in the volatile relation
+`sys::collations`, one row per name:
+
+```
+type Collation = { id: Key collations, name: Text }
+relation sys::collations : Collation volatile
+  key id
+  unique (name)
+```
+
+Moving an index,
+constraint or function from one collation name to another is a schema
+change (dropping and adding the index, or redefining the function),
+which rebuilds what depends on it.
+
+Rulings: types/tzdb/catalog, types/collation/sortkey-fn, types/collation/version/versioned-name
+
+## 4. Error sums
+
+### 4.1 The error sum
+
+Every failure the engine reports to a caller, through the server
+protocol or the in-process API, is a value of the prelude sum
+`Error`. Its constructors stand for what the caller does; the reason
+inside each says why.
+
+```
+type Error = Retry    { reason: RetryReason }
+           | Rejected { reason: RejectReason }
+           | Fatal    { reason: FatalReason }
+```
+
+| Constructor | Meaning for the caller |
+| --- | --- |
+| `Retry` | Nothing was applied. Running the same call or transaction again may succeed. |
+| `Rejected` | Nothing was applied. The same request fails again until something outside it changes: report it, fix it, or redeploy. |
+| `Fatal` | The connection or the part of the database the request needs cannot serve it. An operator or the driver must act. |
+
+Values carry no references, so reasons name catalog objects by
+qualified name in `Text` fields (`identities.Google`,
+`web-2.4::login_key`).
+
+### 4.2 Reasons
+
+```
+type TxnId = new I64
+type Report = new Bytes
+type Position = { epoch: I64, lsn: I64 }
+
+type RetryReason = Serialization      { txn: TxnId, on: Text }
+                 | SafePointTimeout   { waited: Duration }
+                 | Overloaded         { retry_after: Duration }
+                 | StreamIdle         { limit: Duration }
+                 | FileChanged        { path: Text }
+                 | Fenced
+
+type RejectReason = Violated             { constraint: Text, report: Report, redacted: I64 }
+                  | KeyViolation         { relation: Text, key: Text }
+                  | KeyChanged           { relation: Text }
+                  | NotOpen              { relation: Text, stage: Text }
+                  | UserError            { message: Text }
+                  | Faulted              { fault: Fault }
+                  | Denied               { detail: Text }
+                  | Invalid              { detail: Text }
+                  | SchemaRefused        { operator: Text, detail: Text }
+                  | Untranslatable       { query: Text, detail: Text }
+                  | BadInput             { source: Text, line: I64, detail: Text }
+                  | SchemaMismatch       { detail: Text }
+                  | Cancelled
+                  | Terminated
+                  | DeadlineExceeded
+                  | StatementLimit       { limit: Duration }
+                  | TransactionExpired   { limit: Duration, idle: Bool }
+                  | TransactionBusy
+                  | UnknownQuery
+                  | UnknownTransaction
+                  | UnknownBundle        { bundle: Text }
+                  | VersionMismatch      { bundle: Text, version: I64 }
+                  | Retired              { bundle: Text }
+                  | BundleExpired        { bundle: Text, query: Text }
+                  | BundleStale          { bundle: Text, ctor: Text }
+                  | BundleSuperseded     { bundle: Text }
+                  | DowngradeRefused     { cause: Text }
+                  | TooOld               { oldest: Position }
+                  | HistoryUnavailable   { oldest: Position }
+                  | PositionNotOnHistory { position: Position }
+                  | WrongVersion         { version: I64 }
+                  | ReadOnlyReplica      { primary: Text }
+                  | RequestExpired
+                  | RequestReused
+                  | AuthFailed
+                  | UnsupportedProtocol  { min: Text, max: Text }
+                  | UnknownDatabase      { database: Text }
+
+type FatalReason = Malformed       { detail: Text }
+                 | Quarantined     { what: Text }
+                 | MissingFunction { function: Text }
+                 | Storage         { detail: Text }
+```
+
+`Fault` is the prelude sum of faults ([prelude.md](prelude.md)). A
+`TxnId` is a random positive 63-bit integer. `Position` values fit the
+wire's 32-bit epoch and 64-bit log position.
+
+| Reason | When | Defined in |
+| --- | --- | --- |
+| `Serialization` | the transaction lost a serialization conflict, or conflicted with, waited on, or collided on a key with a row committed after its snapshot; `txn` is the caller's aborted transaction, which names the conflict's row in `sys::conflicts`, and `on` the constructor relation of the caller's own read or write on the conflicting edge | [transactions.md](transactions.md#61-serialization-failures), §6.4 |
+| `SafePointTimeout` | a replica read given a position waited the `ReplicaWait` setting without the replica reaching a safe point at or after it | [transactions.md](transactions.md), [engine.md](engine.md#9-replication) |
+| `Overloaded` | a connection, stream or admission queue bound was reached | [wire.md](wire.md#8-admission-and-overload), §8.1 |
+| `StreamIdle` | a result stream was given no credit for longer than the limit; never sent after the call's commit | [wire.md](wire.md#55-credit) |
+| `FileChanged` | a file read twice in one transaction changed between the reads | [interop.md](interop.md#33-file-integrity) |
+| `Fenced` | a commit reached a primary fenced by a promotion | [engine.md](engine.md#9-replication) |
+| `Violated` | the change set violated a constraint; `constraint` is the violated constraint whose qualified name sorts first, `report` its result rows (below) | [constraints.md](constraints.md#7-checking-and-violation-reports) |
+| `KeyViolation` | two different rows with one key are inserted in one change set, an appended batch included; reported at the statement boundary; `key` is the key in the textual syntax | [writes.md](writes.md#14-combining-writes), [wire.md](wire.md#73-append) |
+| `KeyChanged` | an update gave a row another key | [writes.md](writes.md#3-update) |
+| `NotOpen` | an insert or retag into a constructor relation in a stage that refuses writes | [evolution.md](evolution.md#43-enable-and-deprecate) |
+| `UserError` | a write evaluated `fail e`; `message` is the value of `e` | [writes.md](writes.md#62-meaning) |
+| `Faulted` | the statement aborted on a fault | [queries.md](queries.md#15-faults) |
+| `Denied` | the principal lacks a privilege, or a query reads a column the role may not see | [security.md](security.md#3-grants), §1.4 |
+| `Invalid` | ad hoc text failed to parse or type-check, a command does not apply, or an argument is outside its parameter's domain | [typing.md](typing.md) |
+| `SchemaRefused` | a schema operator was refused | [evolution.md](evolution.md#32-checks-at-apply) |
+| `Untranslatable` | a versioned document (interop §1.2) is read through a lossy step of translation | [interop.md](interop.md#12-versioned-documents), [evolution.md](evolution.md#71-serving-a-pinned-version) |
+| `BadInput` | a row of an external source did not convert or route, with no rejects relation | [interop.md](interop.md#45-rejects) |
+| `SchemaMismatch` | an appended Arrow batch does not have the constructor's schema | [embedding.md](embedding.md#9-bulk-append) |
+| `Cancelled` | the call was cancelled | §8.4 |
+| `Terminated` | the call's session was terminated | §8.4 |
+| `DeadlineExceeded` | the call's deadline passed | §8.3 |
+| `StatementLimit` | the statement ran past its statement limit or its declared limit | §8.3 |
+| `TransactionExpired` | an interactive transaction passed its transaction limit, or its idle limit when `idle`; rerunning it unchanged hits the same limit | [transactions.md](transactions.md#54-time-limit), §8.3 |
+| `TransactionBusy` | the interactive transaction is in use from another connection | [wire.md](wire.md#62-interactive-transactions) |
+| `UnknownQuery`, `UnknownTransaction`, `UnknownBundle`, `VersionMismatch` | the request names a call, transaction or bundle the binding does not have | [wire.md](wire.md#34-binding-and-ready) |
+| `Retired` | the bundle is retired; bound connections are refused too | [applications.md](applications.md#43-retirement) |
+| `BundleExpired` | an expired bundle binding again has a query with no translation to the current version | [evolution.md](evolution.md#73-expired-bundles) |
+| `BundleStale` | a bundle registering at a version before an enabled constructor it would read | [applications.md](applications.md#41-registration) |
+| `DowngradeRefused` | an embedded open with an older bundle whose reads include a constructor enabled since, or whose host function was redefined since; `cause` names it, and nothing is changed | [embedding.md](embedding.md) |
+| `BundleSuperseded` | a binding names a bundle an embedded open superseded and that has not been registered again | [applications.md](applications.md#8-embedded-databases) |
+| `TooOld` | a feed position is older than retention; `oldest` is the oldest position kept | [wire.md](wire.md#9-feeds) |
+| `HistoryUnavailable` | a time-travel read names a commit outside the retention window or after the reader's snapshot, or a feed position is before the feed's registration | [derived.md](derived.md#6-reading-the-past), [wire.md](wire.md#9-feeds) |
+| `PositionNotOnHistory` | a position names an epoch or log position not on this database's history | [transactions.md](transactions.md) |
+| `WrongVersion` | a time-travel read at a pinned version names a commit whose relevant types differ from those at the pinned version | [derived.md](derived.md#6-reading-the-past) |
+| `ReadOnlyReplica` | a write call reached a replica that does not forward writes; `primary` names the primary | [engine.md](engine.md#9-replication) |
+| `RequestExpired` | a request id with no record, and not running, is strictly below the client's low-water mark (§6.6); the request is not run | [wire.md](wire.md#65-idempotent-writes) |
+| `RequestReused` | a request id already recorded is sent with a different call or arguments | [wire.md](wire.md#65-idempotent-writes) |
+| `AuthFailed` | authentication failed | [wire.md](wire.md#33-authentication) |
+| `UnsupportedProtocol` | client and server share no protocol version; `min` and `max` are the server's range | [wire.md](wire.md#131-negotiation) |
+| `UnknownDatabase` | a Hello names a database the process does not serve | [wire.md](wire.md#32-hello) |
+| `Malformed` | a message violates the server protocol | [wire.md](wire.md#113-malformed-messages) |
+| `Quarantined` | the call needs a quarantined heap or index; `what` names it | §11.2 |
+| `MissingFunction` | the call needs a host function the program did not supply | [embedding.md](embedding.md#10-host-functions) |
+| `Storage` | an I/O failure or full storage | [engine.md](engine.md#2-file-and-pages) |
+
+`report` in `Violated` is a ResultType descriptor of the constraint's
+result type followed by a Rows body ([wire.md](wire.md#52-replies)).
+It holds the violation rows the caller may read; the others are left
+out and counted in `redacted` ([security.md](security.md#6-leaks)).
+For a registered call the bundle owner's grants decide, and for an ad
+hoc call the caller's own.
+
+The server never reruns a transaction that ended with
+`TransactionExpired`, `StatementLimit` or `DeadlineExceeded`.
+
+### 4.3 Matching errors
+
+`Error` and its reason sums are closed sums, matched exhaustively like
+any sum. A client that only decides what to do matches the three
+constructors:
+
+```
+fn rerun () -> Text = "rerun"
+fn report (r: RejectReason) -> Text = "report"
+fn alert (r: FatalReason) -> Text = "alert"
+match e
+  | Retry _    -> rerun()
+  | Rejected r -> report(r.reason)
+  | Fatal f    -> alert(f.reason)
+```
+
+Code generation gives each host language a type for `Error` as for
+any sum, one per bundle, from the bundle's edition
+([embedding.md](embedding.md#43-errors)); the server protocol encodes
+errors by constructor id like any sum value
+([wire.md](wire.md#4-value-encoding)).
+
+### 4.4 Editions
+
+`Error`, its reason sums, `Notice` (§4.5) and the other prelude sums
+are versioned with the edition of the spec; catalog and `sys` sums
+evolve through the catalog log instead
+([evolution.md](evolution.md#10-engine-releases)). A bundle names its edition
+([applications.md](applications.md#3-bundles)), and every error and
+notice sent to a call or connection of that bundle is a value of these
+sums as that edition declares them. A connection's `Ready` names the
+edition it is served ([wire.md](wire.md#34-binding-and-ready)): the
+bound bundle's, or for an ad hoc connection the edition its `Hello`
+requested, else the newest the server implements. Every error and
+notice value is length-prefixed on the wire, so a client can skip a
+reason it does not know.
+
+An edition that adds a constructor to one of these sums must state,
+for each added constructor, the constructor of the previous edition
+that stands for it. The engine must send a bundle the image of the
+value under these mappings, applied edition by edition down to the
+bundle's edition. A new constructor of `Error` itself is added only
+for a new caller action; a new cause is a new reason.
+
+### 4.5 Notices
+
+The engine tells a bound client of events that concern it by values of
+the prelude sum `Notice`, delivered as pushes
+([wire.md](wire.md#10-pushes)) or through the in-process notice channel
+([embedding.md](embedding.md#45-notices)):
+
+```
+type Notice = LeaseExpiring      { bundle: Text, at: Instant }
+            | ShuttingDown       { at: Instant }
+            | ConstructorEnabled { relation: Text, ctor: Text }
+            | BundleRetired      { bundle: Text }
+            | BlockingMigration  { bundle: Text, version: I64 }
+            | UpgradeRequired    { bundle: Text }
+```
+
+| Notice | Meaning |
+| --- | --- |
+| `LeaseExpiring` | the bundle's lease ends at `at` unless renewed ([applications.md](applications.md#42-leases)) |
+| `ShuttingDown` | the server stops accepting calls at `at` |
+| `ConstructorEnabled` | a constructor of a relation the bundle reads was enabled ([evolution.md](evolution.md#43-enable-and-deprecate)) |
+| `BundleRetired` | the bundle has been retired; every later call on the connection is refused with `Retired` |
+| `BlockingMigration` | the bundle blocks a pending `enable` at schema version `version`; the migration waits until the bundle is retired, superseded or expired, which needs every client of it to stop calling (see `sys::sessions`) |
+| `UpgradeRequired` | an operator asks the bundle's clients to upgrade to a newer bundle of its family |
+
+### 4.6 Constructor ids of engine-defined sums
+
+Ids below 1024 are fixed by the spec, so code generation and every
+engine agree without reading a log; the operator log assigns ids from
+1024 (§1.2). The prelude's ids are fixed per edition, and the ids of
+the `catalog` and `sys` modules per catalog version. A type takes one
+id and each of its constructors one more; a record or newtype has one
+constructor. A constructor that a later edition or catalog version
+adds takes the next id not used in any earlier one, so no id ever
+changes meaning. A constructor of `Tag T` has the id of the
+constructor of `T` it names. A stored value-level tag is the
+constructor id.
+
+Edition 2026-10, catalog version 1:
+
+Prelude:
+
+| Id | Type | Constructors |
+| --- | --- | --- |
+| 0 | `Bool` | 1 `False`, 2 `True` |
+| 3 | `Option` | 4 `None`, 5 `Some` |
+| 6 | `Result` | 7 `Ok`, 8 `Err` |
+| 9 | `Tag` | none of its own: see above |
+| 10 | `Rounding` | 11 `HalfEven`, 12 `HalfUp`, 13 `HalfDown`, 14 `Up`, 15 `Down`, 16 `Ceiling`, 17 `Floor` |
+| 18 | `Overflow` | 19 `Clamp`, 20 `Reject` |
+| 21 | `Fault` | 22 `DivisionByZero`, 23 `ArithmeticOverflow`, 24 `OutOfRange`, 25 `NotFinite`, 26 `NoSuchDate`, 27 `UnknownZone`, 28 `InvalidText`, 29 `InvalidSpan`, 30 `NegativeCount`, 31 `NoSuchRow`, 32 `FunctionFailed` |
+| 33 | `Uuid` | 34 (one constructor) |
+| 35 | `Span` | 36 (one constructor) |
+| 37 | `Principal` | 38 `EndUser`, 39 `Service`, 40 `Anonymous` |
+| 41 | `Origin` | 42 `Registered`, 43 `Function`, 44 `AdHoc` |
+| 45 | `Outcome` | 46 `Succeeded`, 47 `Failed` |
+| 48 | `Error` | 49 `Retry`, 50 `Rejected`, 51 `Fatal` |
+| 52 | `TxnId` | 53 (one constructor) |
+| 54 | `Report` | 55 (one constructor) |
+| 56 | `Position` | 57 (one constructor) |
+| 58 | `RetryReason` | 59 `Serialization`, 60 `SafePointTimeout`, 61 `Overloaded`, 62 `StreamIdle`, 63 `FileChanged`, 64 `Fenced` |
+| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase` |
+| 103 | `FatalReason` | 104 `Malformed`, 105 `Quarantined`, 106 `MissingFunction`, 107 `Storage` |
+| 108 | `Notice` | 109 `LeaseExpiring`, 110 `ShuttingDown`, 111 `ConstructorEnabled`, 112 `BundleRetired`, 113 `BlockingMigration`, 114 `UpgradeRequired` |
+| 115 | `RejectedRow` | 116 (one constructor) |
+
+Module `catalog`, types:
+
+| Id | Type | Constructors |
+| --- | --- | --- |
+| 117 | `TypeDef` | 118 `SumType`, 119 `Newtype` |
+| 120 | `Constructor` | 121 (one constructor) |
+| 122 | `CtorStage` | 123 `Declared`, 124 `Enabled`, 125 `Deprecated` |
+| 126 | `CtorState` | 127 (one constructor) |
+| 128 | `Field` | 129 `Header`, 130 `Payload` |
+| 131 | `RelKind` | 132 `Base`, 133 `Stored`, 134 `Catalog`, 135 `Volatile` |
+| 136 | `Relation` | 137 (one constructor) |
+| 138 | `NamedSet` | 139 (one constructor) |
+| 140 | `SetMember` | 141 (one constructor) |
+| 142 | `IndexKind` | 143 `PrimaryKey`, 144 `Unique`, 145 `Plain`, 146 `Interval` |
+| 147 | `Index` | 148 (one constructor) |
+| 149 | `IndexCtor` | 150 (one constructor) |
+| 151 | `Constraint` | 152 (one constructor) |
+| 153 | `Function` | 154 `Language`, 155 `Wasm`, 156 `Host`, 157 `Aggregate` |
+| 158 | `WasmModule` | 159 (one constructor) |
+| 160 | `Extension` | 161 (one constructor) |
+| 162 | `Migration` | 163 (one constructor) |
+| 164 | `Priority` | 165 `AdHoc`, 166 `Background`, 167 `Regular` |
+| 168 | `BundleState` | 169 `Active`, 170 `Superseded`, 171 `Retired` |
+| 172 | `Bundle` | 173 (one constructor) |
+| 174 | `Registered` | 175 `Query`, 176 `Txn`, 177 `ImportedFn` |
+| 178 | `Feed` | 179 (one constructor) |
+| 180 | `FeedMember` | 181 (one constructor) |
+| 182 | `PlanState` | 183 `Current`, 184 `Pinned`, 185 `Reverted`, 186 `Superseded` |
+| 187 | `Plan` | 188 (one constructor) |
+| 189 | `TzRelease` | 190 (one constructor) |
+| 191 | `Zone` | 192 (one constructor) |
+| 193 | `Setting` | 194 `StatementLimit`, 195 `TransactionLimit`, 196 `IdleLimit`, 197 `StreamIdleLimit`, 198 `RequestWindow`, 199 `SafePointDelay`, 200 `ReplicaWait`, 201 `DefaultLease`, 202 `FeedRetention`, 203 `StatsWindow`, 204 `StatsRetention`, 205 `WaitSampling`, 206 `ConflictLog`, 207 `VacuumBudget`, 208 `ScrubInterval` |
+| 209 | `AuditEvent` | 210 `Login`, 211 `Grant`, 212 `Register`, 213 `Retire`, 214 `SchemaOp`, 215 `Call`, 216 `Denied`, 217 `Commit`, 218 `Truncate` |
+
+Module `catalog`, relation variables:
+
+| Id | Relation variable |
+| --- | --- |
+| 219 | `catalog::types` |
+| 220 | `catalog::constructors` |
+| 221 | `catalog::ctor_states` |
+| 222 | `catalog::fields` |
+| 223 | `catalog::relations` |
+| 224 | `catalog::named_sets` |
+| 225 | `catalog::set_members` |
+| 226 | `catalog::indexes` |
+| 227 | `catalog::index_ctors` |
+| 228 | `catalog::constraints` |
+| 229 | `catalog::functions` |
+| 230 | `catalog::wasm_modules` |
+| 231 | `catalog::extensions` |
+| 232 | `catalog::migrations` |
+| 233 | `catalog::bundles` |
+| 234 | `catalog::registered` |
+| 235 | `catalog::feeds` |
+| 236 | `catalog::feed_members` |
+| 237 | `catalog::plans` |
+| 238 | `catalog::tz_releases` |
+| 239 | `catalog::zones` |
+| 240 | `catalog::settings` |
+| 241 | `catalog::audit` |
+| 242 | `catalog::credentials` |
+
+Module `sys`, types:
+
+| Id | Type | Constructors |
+| --- | --- | --- |
+| 243 | `Collation` | 244 (one constructor) |
+| 245 | `HeapStats` | 246 (one constructor) |
+| 247 | `FieldStats` | 248 (one constructor) |
+| 249 | `FieldValue` | 250 (one constructor) |
+| 251 | `Fingerprint` | 252 (one constructor) |
+| 253 | `QueryStats` | 254 (one constructor) |
+| 255 | `QueryCtorStats` | 256 (one constructor) |
+| 257 | `QueryWindow` | 258 (one constructor) |
+| 259 | `SessionState` | 260 `Idle`, 261 `Busy`, 262 `InTransaction` |
+| 263 | `Session` | 264 (one constructor) |
+| 265 | `WaitReason` | 266 `PageRead`, 267 `FileRead`, 268 `LogFlush`, 269 `Latch`, 270 `SafeSnapshot`, 271 `Inserter`, 272 `Admission` |
+| 273 | `CallState` | 274 `Queued`, 275 `Running`, 276 `Waiting` |
+| 277 | `Call` | 278 (one constructor) |
+| 279 | `WaitSample` | 280 (one constructor) |
+| 281 | `WaitTotal` | 282 (one constructor) |
+| 283 | `Horizon` | 284 (one constructor) |
+| 285 | `Conflict` | 286 (one constructor) |
+| 287 | `VacuumPhase` | 288 `ScanHeaps`, 289 `IndexPass`, 290 `Truncate` |
+| 291 | `Vacuum` | 292 (one constructor) |
+| 293 | `JobKind` | 294 `Reindex`, 295 `Compact`, 296 `SchemaStage`, 297 `Verify` |
+| 298 | `Job` | 299 (one constructor) |
+| 300 | `PendingDrop` | 301 (one constructor) |
+| 302 | `RequestMark` | 303 (one constructor) |
+| 304 | `ProcessOption` | 305 (one constructor) |
+| 306 | `PageId` | 307 (one constructor) |
+| 308 | `Tid` | 309 (one constructor) |
+| 310 | `RunId` | 311 (one constructor) |
+| 312 | `Finding` | 313 `Checksum`, 314 `StalePage`, 315 `Order`, 316 `Orphan`, 317 `Missing`, 318 `Violation` |
+| 319 | `Format` | 320 (one constructor) |
+
+Module `sys`, relation variables:
+
+| Id | Relation variable |
+| --- | --- |
+| 321 | `sys::collations` |
+| 322 | `sys::heaps` |
+| 323 | `sys::field_stats` |
+| 324 | `sys::field_values` |
+| 325 | `sys::query_stats` |
+| 326 | `sys::query_ctor_stats` |
+| 327 | `sys::query_windows` |
+| 328 | `sys::sessions` |
+| 329 | `sys::calls` |
+| 330 | `sys::wait_samples` |
+| 331 | `sys::wait_totals` |
+| 332 | `sys::horizons` |
+| 333 | `sys::conflicts` |
+| 334 | `sys::vacuums` |
+| 335 | `sys::jobs` |
+| 336 | `sys::pending_drops` |
+| 337 | `sys::request_marks` |
+| 338 | `sys::process_options` |
+| 339 | `sys::verify_findings` |
+| 340 | `sys::format` |
+
+
+`Person` and the other types of examples are not engine types and
+have no fixed id. Ids from 341 to 1023 are unassigned.
+
+Rulings: project/spec/errors/closed-sum, project/spec/errors/new-kind/coarse, project/spec/errors/new-kind/pinned
+
+## 5. Statistics
+
+### 5.1 Heap statistics
+
+Statistics are kept per constructor heap: one heap is the rows of one
+constructor of one relation variable. A number for a relation or a
+constructor set is the sum of its heaps' numbers, except distinct
+counts, which do not add (§5.2).
+
+```
+module sys
+
+type HeapStats = { relation: Key catalog::relations, ctor: Key catalog::constructors,
+                   live_rows: I64, dead_versions: I64, pages: I64,
+                   last_vacuum: Option Instant, serialization_failures: I64,
+                   quarantined: Bool }
+relation heaps : HeapStats volatile key (relation, ctor)
+```
+
+```
+from h in sys::heaps
+where h.relation.name == "identities"
+select { ctor: h.ctor.name, rows: h.live_rows, dead: h.dead_versions, pages: h.pages }
+```
+
+`live_rows` is an estimate maintained as writes commit; it is exact
+only when no transaction is in progress on the heap.
+
+### 5.2 Planner statistics
+
+The planner's statistics are gathered online from each heap's writes:
+a reservoir sample of rows and a mergeable distinct-count sketch per
+field. The estimate for a constructor set is computed by merging the
+sketches of its heaps. The visible part:
+
+```
+type FieldStats = { relation: Key catalog::relations, ctor: Key catalog::constructors,
+                    field: Key catalog::fields, distinct: F64, sampled: I64,
+                    updated: Instant }
+relation field_stats : FieldStats volatile key (relation, ctor, field)
+
+type FieldValue = { relation: Key catalog::relations, ctor: Key catalog::constructors,
+                    field: Key catalog::fields, value: Text, frequency: F64 }
+relation field_values : FieldValue volatile key (relation, ctor, field, value)
+```
+
+`distinct` is the sketch's estimate for the heap; `field_values` holds
+the most frequent values in the sample, printed in the textual syntax
+([interop.md](interop.md#1-textual-value-syntax)), with their estimated
+frequency. Which values and how many are implementation-defined.
+
+### 5.3 Query statistics
+
+Execution statistics are keyed by the query's identity:
+
+- a registered query or transaction by its catalog row, which names
+  its bundle, and by the plan that ran;
+- an ad hoc statement by a fingerprint of its type-checked form with
+  literal parameters abstracted, so two texts differing only in
+  constants share a row.
+
+Every call has a fingerprint; registered calls also have `query`.
+
+```
+type Fingerprint = new Bytes
+
+type QueryStats = { query: Option Key catalog::registered, fingerprint: Fingerprint,
+                    plan: Option Key catalog::plans,
+                    calls: I64, rows: I64, total: Duration, mean: Duration,
+                    pages_read: I64, serialization_failures: I64, retries: I64 }
+relation query_stats : QueryStats volatile key (query, fingerprint, plan)
+
+type QueryCtorStats = { query: Option Key catalog::registered, fingerprint: Fingerprint,
+                        plan: Option Key catalog::plans,
+                        relation: Key catalog::relations, ctor: Key catalog::constructors,
+                        rows_read: I64, pruned: I64 }
+relation query_ctor_stats : QueryCtorStats volatile key (query, fingerprint, plan, relation, ctor)
+```
+
+A replan starts a new row, so a plan regression shows as two rows of
+one query. `pruned` counts calls in which the constructor's arm was
+pruned at compile time or at start ([queries.md](queries.md#5-match)).
+
+### 5.4 Windowed history
+
+Query statistics are also aggregated into time windows kept in the
+database file for a retention period:
+
+```
+type QueryWindow = { query: Option Key catalog::registered, fingerprint: Fingerprint,
+                     plan: Option Key catalog::plans, start: Instant, length: Duration,
+                     calls: I64, rows: I64, mean: Duration, p99: Duration,
+                     serialization_failures: I64 }
+relation query_windows : QueryWindow volatile key (query, fingerprint, plan, start)
+```
+
+The window length and retention are the file settings `StatsWindow`
+and `StatsRetention` (§10.2). A window is written when it closes; a
+crash may lose the window open at the time. Windows older than the
+retention are deleted by the engine. Rows survive restart, compaction
+and replica promotion, and are not part of a dump.
+
+```
+query login_history (since: Instant) -> Set ({ start: Instant, plan: Option Key catalog::plans, p99: Duration }) =
+  from w in sys::query_windows, q in catalog::registered
+  where w.query == Some { value: key q } and q.name == "login_key" and w.start > since
+  select { start: w.start, plan: w.plan, p99: w.p99 }
+```
+
+Rulings: exec/stats/per-ctor, exec/stats-form/sketch, ops/query-stats/by-name, ops/stats-history/windowed, ops/expose/relations
+
+## 6. Activity
+
+### 6.1 Sessions and calls
+
+```
+type SessionState = Idle | Busy | InTransaction { txn: TxnId }
+type Session = { id: Key sessions, principal: Text, bundle: Option Key catalog::bundles,
+                 started: Instant, state: SessionState }
+relation sessions : Session volatile key id
+
+type WaitReason = PageRead     { heap: Text }
+                | FileRead     { path: Text }
+                | LogFlush
+                | Latch        { what: Text }
+                | SafeSnapshot
+                | Inserter     { index: Text }
+                | Admission
+type CallState = Queued { since: Instant } | Running | Waiting { on: WaitReason }
+type Call = { id: Key calls, session: Key sessions, query: Option Key catalog::registered,
+              fingerprint: Fingerprint, started: Instant, state: CallState,
+              priority: catalog::Priority, grant: I64, deadline: Option Instant }
+relation calls : Call volatile key id
+```
+
+`WaitReason` is a closed sum. Its constructors:
+
+| Constructor | The call waits for |
+| --- | --- |
+| `PageRead` | a page of the named heap (`identities.Google`) or index to be read |
+| `FileRead` | an external file ([interop.md](interop.md#3-file-scans)) |
+| `LogFlush` | the log to be flushed at commit |
+| `Latch` | a short-term latch inside the engine; `what` is implementation-defined |
+| `SafeSnapshot` | a safe snapshot for a declared read-only transaction ([transactions.md](transactions.md#64-read-only-transactions)) |
+| `Inserter` | a concurrent transaction inserting the same key into the named index to finish |
+| `Admission` | admission (§8.1); the call's state is then `Queued` |
+
+### 6.2 Sampled and cumulative waits
+
+The state of every call is sampled at the interval of the
+`WaitSampling` setting into a bounded history, and the time spent in
+each wait reason is accumulated, both overall and per query:
+
+```
+type WaitSample = { at: Instant, call: Key calls, session: Key sessions,
+                    query: Option Key catalog::registered, fingerprint: Fingerprint,
+                    on: WaitReason }
+relation wait_samples : WaitSample volatile key (at, call)
+
+type WaitTotal = { reason: WaitReason, query: Option Key catalog::registered,
+                   fingerprint: Option Fingerprint, count: I64, time: Duration }
+relation wait_totals : WaitTotal volatile key (reason, query, fingerprint)
+```
+
+Samples older than the setting's `keep` are deleted. The row of
+`wait_totals` with `fingerprint == None` is the total over every call.
+
+### 6.3 Snapshot horizons
+
+Dead versions in a heap can be removed only once no snapshot can see
+them. For each heap, the engine names the holder of the oldest
+snapshot that keeps its dead versions:
+
+```
+type Horizon = { relation: Key catalog::relations, ctor: Key catalog::constructors,
+                 txn: TxnId, session: Key sessions, query: Option Key catalog::registered,
+                 since: Instant }
+relation horizons : Horizon volatile key (relation, ctor)
+```
+
+The engine never ends the holder on its own account; ending it is an
+operator's `terminate` (§8.4) or a limit (§8.3).
+
+### 6.4 Conflicts
+
+Every serialization failure is logged in a bounded relation:
+
+```
+type Conflict = { aborted: TxnId, at: Instant, aborted_query: Option Key catalog::registered,
+                  other: TxnId, other_query: Option Key catalog::registered,
+                  relation: Key catalog::relations, ctor: Key catalog::constructors,
+                  keys: Text, detail: Text }
+relation conflicts : Conflict volatile key (aborted, at)
+```
+
+`relation` and `ctor` name the constructor relation of the
+conflicting dependency, `keys` its key range in the textual syntax
+(widened to a page or the whole heap where the engine's locks were),
+and `detail` the dependency structure in implementation-defined text.
+The log holds at most the `ConflictLog` setting's `rows`; older rows
+are dropped first. Serialization failures are also counted per query
+(`sys::query_stats`) and per heap (`sys::heaps`).
+
+The error returned to the aborted call carries only its own
+transaction and its own side (§4.2). The other transaction, its query
+and the keys are readable only here, under §1.4.
+
+```
+query conflicts_by_ctor (since: Instant) -> Set ({ ctor: Text, n: I64 }) =
+  from c in sys::conflicts
+  where c.at > since
+  group c by c.ctor into g
+  select { ctor: g.key.name, n: count(x for x in g) }
+```
+
+### 6.5 Vacuum and jobs
+
+```
+type VacuumPhase = ScanHeaps { heap: Text } | IndexPass { done: F64 } | Truncate
+type Vacuum = { id: Key vacuums, relation: Key catalog::relations, phase: VacuumPhase,
+                heaps_done: I32, heaps_total: I32, dead_versions: I64, started: Instant }
+relation vacuums : Vacuum volatile
+  key id
+  unique (relation)
+
+type JobKind = Reindex | Compact | SchemaStage | Verify
+type Job = { id: Key jobs, kind: JobKind, target: Text, phase: Text, done: F64, started: Instant }
+relation jobs : Job volatile key id
+```
+
+Vacuum runs per relation variable: one pass over the dead versions of
+every constructor heap, then one pass over each index
+([engine.md](engine.md#93-vacuum-feedback)). `sys::vacuums` has a row per running
+vacuum. `sys::jobs` has a row per running long operation of §11 and
+per staged schema job ([evolution.md](evolution.md#34-staged-changes));
+`done` is the fraction complete.
+
+### 6.6 Pending drops and request marks
+
+A dropped constraint, and a removed constructor's restrictions, stay in
+force while a live bundle pinned before the drop still relies on them
+([constraints.md](constraints.md), [evolution.md](evolution.md#83-dropping-a-constraint)).
+Each such pair is a row of `sys::pending_drops`, and the report of the
+migration that drops the object names the same rows:
+
+```
+type PendingDrop = { object: Text, dropped: Key catalog::migrations,
+                     blocking: Key catalog::bundles }
+relation pending_drops : PendingDrop volatile key (object, blocking)
+```
+
+The server deduplicates writes by request id per client
+([wire.md](wire.md#65-idempotent-writes)). For each client it keeps the
+recorded replies of committed requests within the `RequestWindow`
+setting and a low-water mark below which ids are no longer recorded:
+
+```
+type RequestMark = { id: Key request_marks, client: Text, low: I64, recorded: I64 }
+relation request_marks : RequestMark volatile
+  key id
+  unique (client)
+```
+
+`low` is the client's low-water mark and `recorded` the number of
+replies kept for it.
+
+Rulings: ops/waits/activity, ops/waits/sampled, ops/waits/cumulative, ops/limits/watermark/report, ops/conflicts/log, ops/conflicts/counters, ops/conflicts/leak/admin-only, ops/vacuum/progress
+
+## 7. Plans
+
+### 7.1 The plan of a statement
+
+A plan shows, for every `match` and every read of a sum, one arm per
+constructor with its estimate, the constructors pruned and when (at
+compile time from types, or at start from parameters), and each
+union-index probe with the constructors its entries are routed to.
+
+`explain` returns the plan of a query or write without running it.
+Estimates come from the heap statistics of §5. With the running schema
+extended by `index (user)` on `identities`:
+
+```
+explain from i in identities
+        where i.user == users.key(3)
+        select match i
+          | EmailPass e -> e.email
+          | Google g    -> g.gid
+          | Apple a     -> a.sub
+```
+
+The result is one row `{ text: Text, document: Text }`. The `text`
+form is for people and is not normative; for the query above it might
+read:
+
+```
+Probe identities (user)
+  Route by constructor
+    EmailPass  est 0.4  -> Project email
+    Google     est 0.5  -> Project gid
+    Apple      est 0.1  -> Project sub
+```
+
+### 7.2 Explain analyze
+
+`explain analyze` runs the statement and adds to every plan node its
+actual rows, loops, time and pages read. For a write, it computes the
+change set and checks every constraint on it, then discards the change
+set: nothing is applied, and no effect of the write is visible to any
+transaction. Its result adds the size of the change set per
+constructor relation:
+
+```
+explain analyze update g in identities.Google where g.gid == from_gid set Google { g with gid: to_gid }
+-- { text: ..., document: ..., change: { identities.Google: -1 +1 }, constraints: checked }
+```
+
+`explain analyze` requires the privileges the statement itself
+requires. The estimates and actual counts of a node are shown only
+under §1.4.
+
+### 7.3 Stored plans
+
+Registered queries and transactions are planned at registration, and
+their plans are stored in `catalog::plans`. The row whose `state` is
+`Current` or `Pinned` is the plan every call runs; reading it shows
+what calls run, not a fresh plan.
+
+```
+from p in catalog::plans
+where p.query.name == "login_key" and p.query.bundle.name == "web-2.4"
+  and (p.state == Current or p.state == Pinned)
+select p.text
+```
+
+`explain` and `explain analyze` also take a registered call with its
+arguments. The statement is checked and planned at the bundle's pinned
+version, with its stored plan, exactly as a call of it runs:
+
+```
+explain analyze web-2.4::login_key(users.key(3))
+```
+
+A plan is replanned on schema change and when statistics drift
+([engine.md](engine.md#86-plans)). Each replan adds a row and marks
+the previous one `Superseded`.
+
+### 7.4 The plan document
+
+`document` is a JSON text whose shape is versioned for tools:
+
+- The top-level object has a member `"format"` naming the document
+  version, a member `"release"` naming the engine release, and a
+  member `"root"` holding the root node.
+- Each node is an object with a member `"kind"` naming its operator,
+  `"estimate"` its estimated rows, and `"children"` an array of nodes.
+- A routing node has an array `"arms"` of objects, each with members
+  `"ctor"` (the constructor id), `"name"` and `"child"`.
+- Every read of a sum has an array `"pruned"` of objects with members
+  `"ctor"`, `"name"` and `"stage"`, whose value is `"compile"` or
+  `"start"`.
+- Under `explain analyze`, each node has a member `"actual"` with
+  members `"rows"`, `"loops"`, `"time_us"` and `"pages"`.
+
+Operator kinds and their other members change between engine
+releases. A tool must ignore kinds and members it does not know. The
+`format` changes only when a member listed above changes meaning.
+
+### 7.5 Pinning
+
+An operator may pin a stored plan:
+
+```
+pin plan catalog::plans.key(8812)
+unpin plan catalog::plans.key(8812)
+```
+
+A pinned plan is kept across restarts and statistics replans. A schema
+change that leaves every heap and index the plan names in place, and
+every constructor set it reads unchanged, keeps it pinned. Any other
+schema change unpins it, replans, and records the reason in the
+command result of the schema change and in the new plan's row.
+
+A query of a newly registered bundle whose checked form equals that
+of the same-named query of an earlier bundle of its family (§2.4)
+inherits that query's current plan, and its pin if it had one, instead
+of being planned afresh. Exactly one plan row of each registered query
+is `Current` or `Pinned` at any time.
+
+### 7.6 Reverting a regression
+
+After a replan, whether caused by statistics, a schema change or a new
+engine release, the engine compares the new plan's measured cost over
+the windows of §5.4 with the previous plan's, when the previous plan
+can still run. If the new
+plan is worse by more than an implementation-defined margin, the engine
+makes the previous plan current again and marks the new one
+`Reverted`. A reverted plan is not chosen again until the next schema
+change or a further statistics drift.
+
+### 7.7 Plans across engine releases
+
+Every stored plan records the engine release that made it. An engine
+opening a file whose plans were made by another release must replan
+every registered query and transaction before serving calls, against
+the same schema and statistics. A pinned plan the new release cannot
+reproduce is unpinned; the open reports it, and the new plan's row
+records it.
+
+Rulings: ops/explain/plan, ops/explain/analyze, ops/explain/stored, ops/explain/form/document, ops/plan-stability/pin, ops/plan-stability/last-good, ops/plan-release/stamp-replan
+
+## 8. Resource control
+
+### 8.1 Admission
+
+Each call has a memory grant: the memory its plan needs, estimated at
+registration for registered calls and at compile time for ad hoc ones,
+and capped at the per-query bound of the `query_memory` open setting.
+A call runs only when its grant fits: the sum of the grants of running
+calls must never exceed the query memory budget.
+
+Calls that do not fit wait in one queue ordered by priority, highest
+first, then by the start of the call's transaction, oldest first. When
+grants are released, the head of the queue runs if its grant fits.
+Priorities are the values of `Priority`: registered calls run at their
+bundle's priority, ad hoc calls at `AdHoc`, the lowest. A call or a
+`Begin` may state a lower priority for itself, never a higher one
+([wire.md](wire.md#51-call)). The server bounds
+the queue and answers a call that finds it full with `Retry { reason:
+Overloaded {..} }` ([wire.md](wire.md#8-admission-and-overload)).
+
+A running call that needs more memory than its grant spills first to
+pages of the pool within the grant, then, when the pool has none to
+spare, to spill files in the spill directory, encrypted as
+[security.md](security.md#91-what-is-encrypted) states. A grant never
+grows while its call runs.
+
+### 8.2 Bundle quotas
+
+A bundle may declare its priority and a budget in its header:
+
+```
+bundle batch-1.2 pins 9 (5d0e...) edition "2026-10" priority background budget { memory: 0.25, workers: 2 }
+```
+
+- `priority` is `background` or `regular` (the default).
+- `memory` is the largest fraction of the query memory budget the
+  grants of the bundle's running calls may hold together; a call that
+  would exceed it waits in the queue.
+- `workers` is the largest number of morsel workers the bundle's calls
+  may occupy at once.
+
+### 8.3 Limits and deadlines
+
+| Limit | Bounds | On expiry | Error |
+| --- | --- | --- | --- |
+| statement | one query or write execution | the statement fails; an interactive transaction may continue or roll back | `Rejected { reason: StatementLimit {..} }` |
+| transaction | an interactive transaction from begin to commit | the transaction aborts | `Rejected { reason: TransactionExpired {..} }` |
+| idle | an interactive transaction with no call running | the transaction aborts; the session continues | `Rejected { reason: TransactionExpired { idle: true, .. } }` |
+| deadline | one call, as an absolute instant sent by the caller | the call fails; a registered transaction aborts | `Rejected { reason: DeadlineExceeded }` |
+
+A registered transaction is one call: it is bounded by the statement
+limit and its deadline, not by the transaction limit. The statement,
+transaction and idle limits are set per file by the settings of §10.2.
+A call or a `Begin` may carry its own statement limit and deadline
+(§10.4); the server reports the transaction and idle limits in force
+when the connection is ready ([wire.md](wire.md#34-binding-and-ready)).
+A registered query or transaction may declare its own statement
+limit, which replaces the file and call values for its calls:
+
+```
+-- with:
+--   type Order = { id: Key orders, month: Date, region: Text, total: Decimal 2 }
+--   relation orders : Order key id generate sequence
+query report (m: Date) limit 30s -> Set ({ region: Text, total: Decimal 2 }) =
+  from o in orders where o.month == m
+  group o by o.region into g
+  select { region: g.key, total: sum(x.total for x in g) }
+```
+
+The declared limit is part of the registered signature and changes only
+with the bundle. A deadline applies in addition to every limit; the
+call stops at whichever comes first. Deadlines travel with each call
+([wire.md](wire.md#5-calls)).
+
+### 8.4 Cancel and terminate
+
+- `cancel call c` stops the call `c` at its next morsel boundary. The
+  call fails with `Rejected { reason: Cancelled }`. An interactive
+  transaction the call belongs to stays open and may continue or roll
+  back; a registered transaction, which is one call, aborts.
+- `terminate session s` aborts every open transaction of the session,
+  fails each of its running calls with `Rejected { reason: Terminated
+  }`, and ends the session.
+- In process, a call may be given a cancellation token; cancelling the
+  token from another thread has the effect of `cancel call`
+  ([embedding.md](embedding.md#7-cancellation)). Over the server, a call
+  is cancelled in band ([wire.md](wire.md#57-cancel)).
+
+A session may always cancel its own calls. Cancelling or terminating
+another session's needs the `cancel` capability.
+
+Rulings: ops/admission/queue, ops/admission/grant, ops/quota/priority, ops/quota/budget, ops/limits/statement, ops/limits/transaction, ops/limits/idle, ops/limits/deadline, ops/limits/declared, ops/cancel/cancel, ops/cancel/terminate, ops/cancel/token
+
+## 9. Operational commands
+
+### 9.1 Commands
+
+Operations that are effects rather than data are commands: statements
+beside queries and writes. A command is checked like any statement and
+returns a relation describing what it did. A command is not a write:
+it does not belong to a transaction, an abort does not undo it, and it
+must not appear inside a `transact` block, a registered query or
+transaction, a function or a constraint.
+
+| Command | Effect | Capability |
+| --- | --- | --- |
+| `explain q`, `explain analyze s` | §7.1, §7.2 | as for the statement |
+| `explain [analyze] B::q(args)` | §7.3 | `call` on the query, and `monitor` |
+| `pin plan p`, `unpin plan p` | §7.5 | `maintain` |
+| `cancel call c` | §8.4 | own calls, or `cancel` |
+| `terminate session s` | §8.4 | `cancel` |
+| `vacuum r` | §11.5 | `maintain` |
+| `verify`, `verify r` | §11.1 | `maintain` |
+| `reindex r`, `reindex r index (f) in S` | §11.4 | `maintain` |
+| `compact` | §11.3 | `maintain` |
+| `finalize upgrade` | §12.2 | `maintain` |
+| `set setting S = v` | §10.2 | `configure` |
+| `retire bundle B` | [applications.md](applications.md#43-retirement) | the bundle's owner or the schema owner |
+| `export (q) to "path"` | [interop.md](interop.md#51-export) | `write_files`, through a server |
+| `register bundle "file"` | [applications.md](applications.md#41-registration) | as registration requires |
+| `apply migrations "file" ...` | [evolution.md](evolution.md#23-applying-a-migration-set) | `schema` |
+| `print schema` | [applications.md](applications.md#9-the-printed-schema) | none beyond reading the catalog |
+| `archive audit through n to "path"` | [security.md](security.md#8-audit) | `maintain` and `write_files` |
+| `rotate key kek "uri"`, `rotate key dek` | [security.md](security.md#94-rotation) | `configure` |
+| `destroy key dek n` | [security.md](security.md#94-rotation) | `configure` |
+| `dump to "path" [encrypt key]` | [interop.md](interop.md#6-dump-and-restore) | `maintain` and `read` on every relation dumped, and `write_files` through a server; the security section only with `schema` |
+| `restore from "source" to "path" [before version n \| at instant t \| at position p]` | [interop.md](interop.md#6-dump-and-restore) | in process or on a closed file only |
+| `backup to "target" [incremental]` | [interop.md](interop.md#71-backup) | `maintain` |
+
+Every command is available as an ad hoc statement over the server
+protocol and as a call of the in-process API; the command line tool
+(§9.4) wraps them. `restore` writes a new file, so it never runs
+against a database being served.
+
+`retire bundle` is a command, never an operator in a migration.
+
+### 9.2 Results
+
+Each command returns a set of records:
+
+| Command | Result rows |
+| --- | --- |
+| `explain`, `explain analyze` | §7.1, §7.2 |
+| `pin plan`, `unpin plan` | the plan's row of `catalog::plans` |
+| `cancel call`, `terminate session` | `{ call: Key sys::calls }` for each call stopped |
+| `vacuum` | `{ ctor: Key catalog::constructors, removed: I64, freed_pages: I64 }` per heap |
+| `verify` | the rows of `sys::verify_findings` it wrote |
+| `reindex`, `compact` | `{ job: Key sys::jobs }`, returned when the job starts |
+| `finalize upgrade` | the row of `sys::format` |
+| `set setting` | the new row of `catalog::settings` |
+| `retire bundle` | the bundle's row of `catalog::bundles` |
+| `export` | `{ path: Text, rows: I64 }` |
+| `register bundle` | the bundle's row of `catalog::bundles` |
+| `apply migrations` | one row per migration applied, of `catalog::migrations`, with the migration report |
+| `print schema` | `{ text: Text }` |
+| `archive audit` | `{ through: I64, digest: Bytes }` |
+| `rotate key`, `destroy key` | `{ version: I64 }` |
+| `dump`, `backup` | the manifest, as one `{ manifest: Text }` row |
+| `restore` | the manifest of the restored file |
+
+### 9.3 Capabilities
+
+Operations need these privileges of the one privilege list of
+[security.md](security.md#3-grants), granted to roles independently:
+
+| Privilege | Allows |
+| --- | --- |
+| `monitor` | reading `sys::` relations and plans, within §1.4 |
+| `cancel` | cancelling and terminating other sessions' calls |
+| `maintain` | `vacuum`, `verify`, `reindex`, `compact`, plan pinning, `finalize upgrade` |
+| `configure` | `set setting` |
+| `read_files` | reading files through a server, within `file_roots` ([interop.md](interop.md#3-file-scans)) |
+| `write_files` | `export` through a server, within `export_roots` ([interop.md](interop.md#51-export)) |
+
+```
+grant monitor, cancel to oncall
+grant maintain to dba
+```
+
+A caller of the in-process API holds every privilege. Commands are
+issued as ad hoc statements, so a principal issuing one over the server
+also needs `adhoc` ([applications.md](applications.md#7-the-ad-hoc-role)).
+
+### 9.4 The command line tool
+
+One tool, `adt`, works on a closed database file and on a running
+server. Given a file, it opens it as the one process that owns it, and
+fails if another process does. Given a server address, it connects as
+a client and issues commands and statements.
+
+```
+$ adt repl app.adt
+$ adt repl adt://db.internal:7000 --role dba
+$ adt verify app.adt
+$ adt compact app.adt --into app.compact.adt
+$ adt explain app.adt 'web-2.4::login_key(users.key(3))'
+$ adt upgrade app.adt --finalize
+$ adt serve app.adt --pool 8GiB
+$ adt register app.adt bundles/web.adb
+$ adt migrate app.adt migrations/0013
+$ adt dump app.adt app.dump
+```
+
+Every command of §9.1 is available through the tool. Operations that
+need the file closed, such as an offline compaction (§11.3) or a
+restore ([interop.md](interop.md#6-dump-and-restore)), are available
+only on a file.
+
+Rulings: ops/admin/in-language, ops/admin/actions/commands, ops/admin/cli, ops/admin/role/capabilities
+
+## 10. Configuration
+
+### 10.1 Fixed behaviour, derived sizes
+
+Engine behaviour is fixed: there is no setting that changes what a
+program means. Settings exist only for resource sizes, retention
+periods and limits. Every resource size has a default derived from the
+host (memory size and core count) when the file is opened; an override
+replaces the derived value. Each setting belongs to one of four scopes,
+by what it must agree with:
+
+| Scope | Agrees with | Set | Changes | Shown in |
+| --- | --- | --- | --- | --- |
+| format | the data | when the file is created | only by compaction into a new file | `sys::format` |
+| file | every process opening the file | `catalog::settings` | by `set setting` | `catalog::settings` |
+| open | the host and process | when the file is opened | only by reopening | `sys::process_options` |
+| call | the caller | per call or `Begin` | per call | the call's row in `sys::calls` |
+
+### 10.2 File settings
+
+File settings are a catalog relation, read by queries and changed by
+the `set setting` command, which needs `configure`. A change is
+atomic and logged; settings move with the file to another host
+and reach replicas through the log.
+
+```
+type Setting { id: Key settings }
+  = StatementLimit   { limit: Option Duration }
+  | TransactionLimit { limit: Option Duration }
+  | IdleLimit        { limit: Option Duration }
+  | StreamIdleLimit  { limit: Duration }
+  | RequestWindow    { keep: Duration }
+  | SafePointDelay   { delay: Duration }
+  | ReplicaWait      { wait: Duration }
+  | DefaultLease     { lease: Duration }
+  | FeedRetention    { keep: Duration }
+  | StatsWindow      { length: Duration }
+  | StatsRetention   { keep: Duration }
+  | WaitSampling     { every: Duration, keep: Duration }
+  | ConflictLog      { rows: I64 }
+  | VacuumBudget     { io: F64, cpu: F64 }
+  | ScrubInterval    { every: Option Duration }
+relation catalog::settings : Setting key id
+```
+
+`catalog::settings` holds exactly one row of each constructor. `set
+setting` replaces the row of the named constructor with the given
+payload:
+
+```
+set setting StatementLimit = { limit: Some { value: 5s } }
+set setting VacuumBudget = { io: 0.2, cpu: 0.5 }
+```
+
+A limit of `None` is no limit. A new value applies to calls that start
+after the `set setting` command completes. The listener principal
+mappings of [security.md](security.md#22-sources) (certificate and
+peer rules) are file settings too, kept with the listener's name and
+changed by `set setting`; listener addresses stay open settings.
+
+| Setting | Governs | Default |
+| --- | --- | --- |
+| `StatementLimit` | each query or write execution (§8.3) | `None` |
+| `TransactionLimit` | an interactive transaction from begin to commit (§8.3) | `Some { value: 5s }` |
+| `IdleLimit` | an interactive transaction with no call running (§8.3) | `None` |
+| `StreamIdleLimit` | a result stream left without credit ([wire.md](wire.md#55-credit)) | `30s` |
+| `RequestWindow` | how long request ids are remembered for deduplication ([wire.md](wire.md#65-idempotent-writes)) | `24h` |
+| `SafePointDelay` | the longest a forced safe point may delay the start of new read-write transactions ([transactions.md](transactions.md)) | `100ms` |
+| `ReplicaWait` | the longest a replica read given a position waits for a safe point before `Retry { reason: SafePointTimeout {..} }` | `5s` |
+| `DefaultLease` | the lease of a bundle whose header states none ([applications.md](applications.md#42-leases)) | `30d` |
+| `FeedRetention` | how long the log is kept for change streams ([interop.md](interop.md#52-change-streams)) | `7d` |
+| `StatsWindow` | the length of a query statistics window (§5.4) | `1min` |
+| `StatsRetention` | how long windows are kept (§5.4) | `30d` |
+| `WaitSampling` | the sampling interval and retention of wait samples (§6.2) | `every: 1s`, `keep` equal to `StatsRetention` |
+| `ConflictLog` | rows kept in `sys::conflicts` (§6.4) | `10000` |
+| `VacuumBudget` | the fractions of device bandwidth and of CPU that vacuum may use (§11.5) | `io: 0.1`, `cpu: 1.0` |
+| `ScrubInterval` | the period of the background scrub (§11.1) | `Some { value: 7d }` |
+
+### 10.3 Open settings
+
+Open settings are given when the file is opened, through the
+in-process API or the tool's options, and are fixed for the life of
+the process. They include the page pool size (by default 25% of the
+host's memory), the number of morsel workers (by default one per
+core), the query memory budget and per-query bound (`query_memory`),
+the I/O path, the log archive destination, `file_roots` (the
+directories a server may read files from, empty by default;
+[interop.md](interop.md#3-file-scans)), `export_roots` (the directories
+a server may export into, empty by default;
+[interop.md](interop.md#51-export)), the telemetry endpoint and trace
+sampling (§13). They are shown read-only in a volatile relation,
+with whether each value was derived or given:
+
+```
+type ProcessOption = { id: Key process_options, name: Text, value: Text, derived: Bool }
+relation sys::process_options : ProcessOption volatile
+  key id
+  unique (name)
+```
+
+```rust
+let db = adtdb::open("app.adt", &schema::LOG, &[&queries::BUNDLE],
+                     OpenOptions { pool_bytes: Some(8 << 30), workers: Some(16), ..OpenOptions::default() })?;
+```
+
+### 10.4 Format and session settings
+
+Format settings are fixed when the file is created and recorded in its
+header: the page size (by default 4 KiB) and the checksum or
+encryption algorithm. They
+change only by compacting into a new file (§11.3) that states new
+values. `sys::format` shows them (§12.2).
+
+Per-call settings are the statement limit, the deadline and the
+priority. A call or a `Begin` may carry each of them
+([wire.md](wire.md#5-calls), [embedding.md](embedding.md#4-calls)); a
+statement limit there overrides the file setting for that call or
+transaction, and a priority may only be lower than the bundle's class
+(§8.1). The transaction and idle limits are file settings only; the
+server reports them when a connection is ready.
+
+Rulings: ops/config/derived, ops/config/home/relation, ops/config/home/process/split, ops/config/scope/format, ops/config/scope/file, ops/config/scope/open, ops/config/scope/session
+
+## 11. Integrity and maintenance
+
+### 11.1 Verification
+
+`verify` checks the whole database; `verify r` checks the heaps and
+indexes of relation variable `r` and every constraint that reads it.
+It runs at a snapshot while the database serves calls, and checks:
+
+1. Structure: every page checksum, and the invariants of every B-link
+   tree (key order within and across pages, sibling links, parent
+   bounds).
+2. Cross-reference: every live version has its entry in every index
+   covering its constructor, and every index entry routes to an
+   existing version in the heap of the constructor it names. A
+   constructor outside an index's constructor set, or a removed
+   constructor, has no entries in it.
+3. Logic: every admitted constraint, run once as its denial query over
+   the whole database; every nonempty result is a finding.
+
+A background scrub reads every page of the file over each
+`ScrubInterval`, so a latent checksum failure is found before a call
+needs the page. Scrub findings go to the same relation.
+
+```
+type PageId = new I64
+type Tid = new I64
+type RunId = new I64
+
+type Finding { id: Key verify_findings, run: RunId, at: Instant }
+  = Checksum  { page: PageId }
+  | StalePage { page: PageId }
+  | Order     { index: Key catalog::indexes, page: PageId }
+  | Orphan    { index: Key catalog::indexes, ctor: Key catalog::constructors, tid: Tid }
+  | Missing   { relation: Key catalog::relations, ctor: Key catalog::constructors,
+                tid: Tid, index: Key catalog::indexes }
+  | Violation { constraint: Key catalog::constraints, witness: Text }
+relation sys::verify_findings : Finding volatile key id
+```
+
+`PageId` and `Tid` locate storage and have no meaning beyond it
+([engine.md](engine.md#2-file-and-pages)). `witness` is the first violating row
+in the textual syntax. Findings are kept in the file until a later
+`verify` over the same scope replaces them.
+
+### 11.2 Quarantine
+
+A corrupted page, detected by checksum or by its log position on any
+read, quarantines what holds it:
+
+- a page of a constructor heap quarantines that heap;
+- a page of an index quarantines the index, and with it every plan
+  that uses the index.
+
+A call fails with `Fatal { reason: Quarantined {..} }` if and
+only if it would read a quarantined heap or index after constructors
+are pruned at compile time and at start. Every other call continues.
+A write is refused in the same way where its constraint or reference
+checks must read a quarantined heap or index. A `match` over a sum
+reads every heap whose arm is not pruned, so it fails while any of
+those heaps is quarantined.
+
+A quarantined index is restored by `reindex` (§11.4). A quarantined
+heap is restored when its page is repaired from a replica or a backup
+([engine.md](engine.md#103-corruption-scope)); `sys::heaps.quarantined` shows
+the state.
+
+### 11.3 Compaction
+
+Freed pages are reused, and the file shrinks only by compaction, which
+writes every live version into a new file:
+
+- Offline, with the file closed, through the tool:
+  `$ adt compact app.adt --into app.compact.adt`. This is also the way to
+  change a format setting: `--page-size 16KiB`.
+- Online, by the `compact` command, while the database serves calls:
+  the engine copies every heap at a snapshot, builds every index from
+  sorted runs, applies the log written since the snapshot, and switches
+  to the new file at a moment when no call is between statements.
+
+Either way the new file holds the same relations, catalog, constructor
+ids, key values and schema version, and needs free space equal to the
+live data. Online compaction runs as a job in `sys::jobs`.
+
+### 11.4 Reindex
+
+`reindex r` rebuilds every index of relation variable `r`; `reindex r
+index (user) in (Google | Apple)` rebuilds the one index with that
+declaration clause. A union index is rebuilt whole, over every
+constructor of its set.
+
+- `online`, the default: the new index is built from sorted runs of
+  each heap while writes continue, catches up with the writes made
+  meanwhile, and replaces the old one, as a staged job.
+- `offline`: writes to every constructor in the index's set wait until
+  the rebuild ends.
+
+```
+reindex identities index (user) in (Google | Apple) online
+```
+
+### 11.5 Vacuum
+
+Background vacuum runs per relation variable when its dead versions
+justify it ([engine.md](engine.md#93-vacuum-feedback)). An operator may start
+one at once with `vacuum r`. All vacuum work, background or started,
+runs within the `VacuumBudget` setting. Progress is in `sys::vacuums`
+(§6.5).
+
+Rulings: ops/check/structural, ops/check/cross, ops/check/logical, ops/check/scrub, ops/halt-scope/heap, ops/compact/offline-copy, ops/compact/online-copy, ops/reindex/online, ops/reindex/offline, ops/vacuum/trigger, ops/vacuum/throttle
+
+## 12. Releases and compatibility
+
+### 12.1 Promises
+
+An engine release makes four promises:
+
+1. File: it reads and writes every database file any earlier release
+   wrote, subject to §12.2.
+2. Protocol: a client and a server interoperate when their supported
+   protocol version ranges overlap; the client offers its minimum and
+   maximum and the server picks one or refuses with `Rejected {
+   reason: UnsupportedProtocol {..} }` ([wire.md](wire.md#131-negotiation)).
+   Each release states the range it supports.
+3. Editions: it compiles every edition of the language, and each
+   bundle is checked under the edition it names. A breaking change to
+   the language is a new edition.
+4. Catalog: the types of system relations change only through catalog
+   operators in the catalog log, which bundles pin by its version and
+   which apply readers-first
+   ([evolution.md](evolution.md#10-engine-releases)). A registered
+   query over the catalog or a `sys::` relation keeps compiling and
+   running across releases.
+
+### 12.2 Upgrades and downgrade
+
+A new release opening a file written by an older one writes only
+formats the previous release reads, until an operator finalizes the
+upgrade:
+
+```
+$ adt upgrade app.adt --finalize
+finalize upgrade
+```
+
+Until then the file can be reopened by the previous release, so trying
+a release is reversible; features that need a newer format are
+unavailable, and the release's catalog operators are not applied: the
+catalog keeps the version the previous release wrote. Finalizing
+applies the release's catalog operators to the catalog log, records
+the new format in the file header, and cannot be undone. Nothing is
+appended to the schema log by an upgrade or by an open. In process,
+`Database::finalize_upgrade()` does the same
+([embedding.md](embedding.md)).
+
+```
+type Format = { id: Key format, file: Text, page_size: I64, format: I64, readable_by: Text,
+                finalized: Bool, release: Text }
+relation sys::format : Format volatile key id
+```
+
+Rulings: ops/promise/file, ops/promise/protocol, ops/promise/editions, ops/promise/catalog, ops/protocol/negotiate, ops/catalog-release/catalog-smo, ops/downgrade/finalize
+
+## 13. Telemetry
+
+### 13.1 Metrics
+
+Every numeric field of the `sys::` relations of §5 and §6 is also
+available outside the language:
+
+- A server exports them as OpenTelemetry metrics to the endpoint given
+  by the open settings, named `adtdb.` followed by the relation name and
+  field (`adtdb.heaps.dead_versions`), with the row's key fields as
+  attributes, printed by name (`relation`, `ctor`, `bundle`, `query`).
+- The in-process API returns the same values as a snapshot through a
+  callback ([embedding.md](embedding.md#13-metrics)), for the host to
+  forward.
+
+The visibility rule of §1.4 does not apply to these exports: whoever
+configures the endpoint or holds the in-process handle sees every
+value.
+
+### 13.2 Traces
+
+A server traces in OpenTelemetry form:
+
+- One span per execution. The span of a registered call is named by
+  the query's name; its attributes are `db.system.name` = `adtdb`,
+  `db.namespace` (the database), `db.query.summary` (the query name),
+  `db.query.text` (the registered text), `adtdb.bundle`, `adtdb.plan`
+  and `adtdb.arms_pruned`. The span of an ad hoc statement is named by
+  its fingerprint and does not record its text.
+- Child spans for planning or compilation, each pipeline, the commit
+  check, the log flush, and each wait, named by the `WaitReason`
+  constructor.
+- A caller's W3C Trace Context sent with a call
+  ([wire.md](wire.md#5-calls)) is the parent of the call's span.
+
+Which executions are traced is decided by the trace sampling open
+setting.
+
+```
+span "login_key"  db.system.name=adtdb  db.namespace=app
+                  db.query.summary=login_key  adtdb.bundle=web-2.4  adtdb.arms_pruned=Apple
+  span "plan"
+  span "pipeline 1"
+  span "LogFlush"
+```
+
+Rulings: ops/expose/otel, ops/expose/callback, ops/tracing/query-span, ops/tracing/operator-spans, ops/tracing/propagate
