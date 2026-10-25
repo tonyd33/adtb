@@ -5,6 +5,8 @@ kind: feature
 priority: 600
 summary: "milestone 6 (transactions) has not exited: no commit log, snapshots, SSI, commit path or isolation checker"
 depends-on:
+  - clog-damaged-page
+  - xid-exhaustion
   - milestone-5-heaps-indexes
   - commit-log-snapshots
   - ssi

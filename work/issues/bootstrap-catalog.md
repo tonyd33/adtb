@@ -25,3 +25,8 @@ stored as heaps with their fixed ids, catalog relations, error sums.
 Prerequisites: `slotted-heap.md`, `blink-tree.md`,
 `commit-log-snapshots.md`, `id-assignment-gaps.md`,
 `schema-catalog-ids.md`.
+
+## 2026-10-25: commit log root
+
+The catalog bootstrap records the page id of the commit log's root
+(`docs/design/mvcc.md` §4.2). Until then, callers keep it themselves.

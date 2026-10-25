@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 601
 summary: "no transaction ids, commit log, snapshots, visibility rule or watermark"
-branch: adtb-clog
+closed: 2026-10-25
 depends-on:
   - page-buffer-contract
 tags:
@@ -27,3 +27,7 @@ is paged.
 `adtb::storage::Recovered::committed` reads commit records from the
 log. Once the commit log exists, recovery should report commits from it
 and drop that field.
+
+## 2026-10-25: resolved
+
+Landed as `feat(mvcc): add xids, the commit log, snapshots, visibility and the watermark`. Recovery rebuilds the commit log by page replay alone. The pager gets atomic `commit` and `abort` with page changes, and loses the header truncation bound, under `pager-and-log.md`.
