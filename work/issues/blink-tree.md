@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 503
 summary: "no index: no B-link tree, latch protocol or constructor-set index over it"
+branch: adtb-blink
 depends-on:
   - page-buffer-contract
   - key-encoding

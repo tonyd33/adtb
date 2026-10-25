@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 185
 summary: "anonymous sums joined by fix binders, upsert rows and update match arms are not renumbered into the joined sum"
+branch: adtb-lang2
 tags:
   - lang
 ---

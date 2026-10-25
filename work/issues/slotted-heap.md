@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 501
 summary: "no heap: no slotted pages, version header, TIDs, version chains or retag across heaps"
+branch: adtb-heap
 depends-on:
   - page-buffer-contract
 tags:

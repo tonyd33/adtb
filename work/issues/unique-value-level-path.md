@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 93
 summary: "the checker refuses unique (status.Paid.ref) with \".C selects constructors of a set\", though constraints.md §2.1 admits it"
+branch: adtb-lang2
 tags:
   - lang
 ---

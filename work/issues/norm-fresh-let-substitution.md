@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 90
 summary: "norm treats Fresh as total and substitutes a let whose row draws a key, so the row and key u get different keys"
+branch: adtb-lang2
 tags:
   - lang
 ---

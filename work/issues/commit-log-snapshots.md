@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 601
 summary: "no transaction ids, commit log, snapshots, visibility rule or watermark"
+branch: adtb-clog
 depends-on:
   - page-buffer-contract
 tags:

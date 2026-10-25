@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 502
 summary: "no order-preserving key encoding, ovarint constructor ids or union index entries"
+branch: adtb-blink
 depends-on:
   - hash-anonymous-types
 tags:
