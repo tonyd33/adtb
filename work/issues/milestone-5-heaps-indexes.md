@@ -5,6 +5,9 @@ kind: feature
 priority: 500
 summary: "milestone 5 (heaps and indexes) has not exited: no heaps, key encoding, B-link trees, vacuum or verify"
 depends-on:
+  - blink-incomplete-split
+  - blink-superlinear
+  - blink-space-reuse
   - milestone-4-pager-log
   - slotted-heap
   - hash-anonymous-types

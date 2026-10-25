@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 502
 summary: "no order-preserving key encoding, ovarint constructor ids or union index entries"
-branch: adtb-blink
+closed: 2026-10-25
 depends-on:
   - hash-anonymous-types
 tags:
@@ -31,3 +31,7 @@ encoding`, already has §2 to §5 for scalars, records, declared sums,
 `ovarint`, entries and hashing. What remains is the anonymous sum
 encoding ruled in §3, and the order key allocation of §4 if `adtb::key`
 does not have it.
+
+## 2026-10-25: resolved
+
+Landed in `feat(btree): add B-link tree indexes, order keys and anonymous key types`: anonymous record and sum key types, and order key allocation (`OrderKey::between`, `OrderKey::spread`).
