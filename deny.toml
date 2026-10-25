@@ -9,13 +9,12 @@ all-features = true
 yanked = "deny"
 
 [licenses]
-allow = ["MIT"]
+allow = [
+    "MIT",
+    # The licence of the Unicode data tables and of the ICU4X crates.
+    "Unicode-3.0",
+]
 confidence-threshold = 0.9
-
-# The Unicode data tables unicode-normalization embeds.
-[[licenses.exceptions]]
-crate = "unicode-normalization"
-allow = ["Unicode-3.0"]
 
 [bans]
 multiple-versions = "deny"
@@ -27,6 +26,60 @@ allow = [
     "unicode-normalization",
     # Inline buffers unicode-normalization requires.
     "tinyvec",
+    # Extended grapheme clusters for grapheme_len.
+    "icu_segmenter",
+    "icu_segmenter_data",
+    # Full case mapping and folding for lower, upper and fold.
+    "icu_casemap",
+    "icu_casemap_data",
+    # UTS #10 sort keys for collate.
+    "icu_collator",
+    "icu_collator_data",
+    # The ICU4X core the three ICU4X crates above share: locales, locale fallback, data
+    # providers, normalization and property tables, and their zero-copy containers.
+    "icu_collections",
+    "icu_locale_core",
+    "icu_locale_fallback",
+    "icu_locale_fallback_data",
+    "icu_normalizer",
+    "icu_normalizer_data",
+    "icu_properties",
+    "icu_properties_data",
+    "icu_provider",
+    "litemap",
+    "potential_utf",
+    "stable_deref_trait",
+    "tinystr",
+    "utf16_iter",
+    "utf8_iter",
+    "write16",
+    "writeable",
+    "yoke",
+    "yoke-derive",
+    "zerofrom",
+    "zerofrom-derive",
+    "zerotrie",
+    "zerovec",
+    "zerovec-derive",
+    "smallvec",
+    # Build-time derive macros of the ICU4X crates.
+    "displaydoc",
+    "proc-macro2",
+    "quote",
+    "syn",
+    "synstructure",
+    "unicode-ident",
+    # RE2-syntax regular expressions for matches, in linear time.
+    "regex",
+    "regex-automata",
+    "regex-syntax",
+    # Zone rules for zoned, in_zone and to_instant, with the bundled time zone database.
+    "jiff",
+    "jiff-core",
+    "jiff-tzdb",
+    # Atomics jiff uses on targets without native ones.
+    "portable-atomic",
+    "portable-atomic-util",
 ]
 
 [sources]

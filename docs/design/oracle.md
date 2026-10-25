@@ -30,9 +30,8 @@ Postconditions:
 - `Err(Abort::Limit)`: a `fix` took more steps than its limit; the
   statement is rejected with `StatementLimit`.
 - `Err(Abort::NotYet(form))`: the term holds a form the interpreter
-  does not evaluate yet: `at`, a Wasm or host function, a
-  user-defined aggregate, or a prelude function that needs Unicode,
-  regular expression, collation or zone tables.
+  does not evaluate yet: `at`, a Wasm or host function, or a
+  user-defined aggregate.
 
 `caller` denotes the value given by `with_caller`. In a constraint
 body, `inserted`, `deleted` and `prior` read the transition given by
@@ -109,6 +108,37 @@ The interpreter shares nothing with the engine except the typed kernel
 terms of `adtb-lang`: no indexes, no plans, no pages.
 It answers what any generated query over any generated database should
 return.
+
+### 1.2 Textual syntax
+
+```text
+textual::print(schema, v, ty) -> String
+textual::parse(schema, text, ty) -> Result<Value, ParseError>
+textual::read_document(schema, text) -> Result<Document, ParseError>
+textual::print_document(schema, doc) -> String
+Document { header: Option<Header>, relation: RelId, rows: BTreeSet<Value> }
+Header { edition: String, version: u64, hash: String }
+```
+
+These read and print the textual syntax of
+[../spec/interop.md §1](../spec/interop.md#1-textual-value-syntax)
+over the values of §2, at the reader's version of `schema`.
+
+Preconditions: `ty` is a type of `schema` with no type parameter,
+function or `Change` in it; for `print`, `v` is a value of `ty`; for
+`print_document`, every row is a row of `doc.relation`.
+
+Postconditions:
+
+- `parse(schema, &print(schema, &v, &ty), &ty) == Ok(v)` for every
+  value `v` of `ty`, and equal values print identically.
+- `parse` returns `Ok(v)` only for a value `v` of `ty`; text that is
+  not the textual syntax of a value of `ty` gives a `ParseError`
+  holding the byte offset where reading stopped.
+- `read_document` of `print_document(doc)` is `Ok(doc)`. A document's
+  header is returned as written: names are read at the reader's
+  version, and translating a document written at another version is
+  the caller's.
 
 ## 2. The database map
 

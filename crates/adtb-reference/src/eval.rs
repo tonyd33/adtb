@@ -249,11 +249,7 @@ impl<'a> Interpreter<'a> {
 
     /// Returns whether key field `f` of `rel` is a `Key` of `rel` itself.
     pub(crate) fn self_key(&self, rel: RelId, f: &str) -> bool {
-        let r = self.schema.relation(rel);
-        matches!(
-            self.schema.ty(r.elem_def).field(0, f).map(|d| &d.ty),
-            Some(Ty::Key { rel: own, .. }) if *own == rel
-        )
+        crate::textual::self_key(self.schema, rel, f)
     }
 
     fn ctors(&self, rel: RelId, set: &Option<CtorSet>) -> CtorSet {

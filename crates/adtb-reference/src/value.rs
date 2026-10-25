@@ -25,6 +25,7 @@ pub enum Value {
     Time(i64),
     /// Microseconds since 1970-01-01T00:00:00, no zone.
     DateTime(i64),
+    /// The civil date-time, as in `DateTime`, and the zone name.
     Zoned(i64, String),
     Duration(i64),
     Period {

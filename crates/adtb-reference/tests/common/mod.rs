@@ -84,7 +84,8 @@ impl Fixture {
         }
     }
 
-    fn ty(&self, text: &str) -> Ty {
+    /// Returns the type `text` names in the fixture's schema.
+    pub fn ty(&self, text: &str) -> Ty {
         let parsed = parse_type(text, Options::default())
             .ok()
             .unwrap_or_else(|_| panic!("`{text}` is not a type"));

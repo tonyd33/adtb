@@ -4,8 +4,8 @@ use adtb_lang::schema::{OnDelete, TypeDefKind};
 use adtb_lang::types::{CtorSet, RelId, Ty, TypeId};
 
 use crate::eval::{Abort, Arena, Change, Database, Env, Interpreter, R, Run, bool_of, into_set};
-use crate::print::print;
 use crate::stmt::{Eff, Effects, Outcome, Rejection};
+use crate::textual::print;
 use crate::value::Value;
 
 /// A direct reference field of a constructor: its name, whether it is a header field, its target
@@ -443,13 +443,13 @@ impl Run<'_, '_> {
                 Rejection::KeyViolation {
                     relation: it.schema.relation(r).name.clone(),
                     key: print(
-                        it,
+                        it.schema,
                         &key,
                         &Ty::Key {
                             rel: r,
                             ctors: None,
                         },
-                    )?,
+                    ),
                 }
             }
             Constraint::Other => Rejection::Violated {

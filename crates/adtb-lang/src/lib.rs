@@ -4,6 +4,7 @@
 pub mod analysis;
 pub mod ast;
 pub mod check;
+pub mod collation;
 pub mod kernel;
 pub mod lex;
 pub mod norm;

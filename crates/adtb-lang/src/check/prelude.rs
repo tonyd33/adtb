@@ -496,7 +496,13 @@ impl Checker<'_> {
                     unreachable!()
                 };
                 let x = self.base_arg(a, Base::Text)?;
-                self.constant_text(b)?;
+                let re = self.constant_text(b)?;
+                if let Err(e) = regex_syntax::Parser::new().parse(&re) {
+                    return Err(diag(
+                        b.span,
+                        format!("`{re}` is not a regular expression: {e}"),
+                    ));
+                }
                 let y = self.base_arg(b, Base::Text)?;
                 let bt = self.bool_ty();
                 Ok(self.prim(Prim::Matches, vec![x, y], bt))
@@ -519,12 +525,7 @@ impl Checker<'_> {
                 };
                 let x = self.base_arg(a, Base::Text)?;
                 let c = self.constant_text(b)?;
-                if !c.contains('@') {
-                    return Err(diag(
-                        b.span,
-                        format!("collation `{c}` names no version; write it as `name@version`"),
-                    ));
-                }
+                crate::collation::parse(&c).map_err(|m| diag(b.span, m))?;
                 let y = self.base_arg(b, Base::Text)?;
                 Ok(self.prim(Prim::Collate, vec![x, y], Ty::Base(Base::SortKey)))
             }

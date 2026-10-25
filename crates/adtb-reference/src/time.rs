@@ -64,7 +64,7 @@ pub fn show_date(days: i64) -> String {
     if (0..=9999).contains(&y) {
         format!("{y:04}-{m:02}-{d:02}")
     } else {
-        format!("{y:+05}-{m:02}-{d:02}")
+        format!("{y:+06}-{m:02}-{d:02}")
     }
 }
 

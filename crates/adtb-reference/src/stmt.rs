@@ -7,7 +7,7 @@ use adtb_lang::types::{RelId, Ty};
 
 use crate::eval::bool_of;
 use crate::eval::{Abort, Arena, Change, Database, Env, Here, Interpreter, R, Run, case_arm};
-use crate::print::print;
+use crate::textual::print;
 use crate::value::Value;
 
 /// A constructor of the prelude sum `RejectReason` that a statement can be rejected with.
@@ -466,7 +466,7 @@ impl Run<'_, '_> {
                         js.push(Rejected {
                             line,
                             source: source.clone(),
-                            raw: print(it, &p, &ty)?,
+                            raw: print(it.schema, &p, &ty),
                             reason: detail,
                         });
                     }

@@ -2233,6 +2233,45 @@ fn text_and_booleans() {
     );
 }
 
+#[test]
+fn matches_takes_a_valid_constant_pattern() {
+    accepts(r#"fn f (t: Text) -> Bool = matches(t, "^[^@]+@[^@]+$")"#);
+    accepts(r#"fn f (t: Text) -> Bool = matches(t, "(?i)\\p{L}+")"#);
+    refuses(
+        r#"fn f (t: Text, p: Text) -> Bool = matches(t, p)"#,
+        "this argument is a constant",
+    );
+    refuses(
+        r#"fn f (t: Text) -> Bool = matches(t, "(a")"#,
+        "is not a regular expression",
+    );
+    refuses(
+        r#"fn f (t: Text) -> Bool = matches(t, "(a)\\1")"#,
+        "is not a regular expression",
+    );
+    refuses(
+        r#"fn f (t: Text) -> Bool = matches(t, "a(?=b)")"#,
+        "is not a regular expression",
+    );
+}
+
+#[test]
+fn collate_takes_a_known_versioned_name() {
+    accepts(r#"fn f (t: Text) -> SortKey = collate(t, "de-u-ks-level2@cldr-49")"#);
+    refuses(
+        r#"fn f (t: Text) -> SortKey = collate(t, "de")"#,
+        "names no version",
+    );
+    refuses(
+        r#"fn f (t: Text) -> SortKey = collate(t, "de@icu-1")"#,
+        "names version `icu-1`",
+    );
+    refuses(
+        r#"fn f (t: Text) -> SortKey = collate(t, "de-u-zz-yes@cldr-49")"#,
+        "is not a collation this database supports",
+    );
+}
+
 // Prelude overloads
 
 #[test]

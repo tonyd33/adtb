@@ -1,15 +1,15 @@
 use adtb_lang::kernel::Prim;
-use adtb_lang::schema::TypeDefKind;
 use adtb_lang::types::{Base, Ty};
 
 use crate::big::Big;
-use crate::eval::{Abort, Fault, Interpreter, R, not_yet};
+use crate::eval::{Abort, Fault, Interpreter, R};
 use crate::num::{
     Rounding, dec_add, dec_div, dec_mul, dec_rescale, dec_round, digits38, float_scaled, in_range,
 };
-use crate::print;
+use crate::textual;
 use crate::time::{MICROS_PER_DAY, add_period, date_in_range};
 use crate::value::{Value, canon32, canon64};
+use crate::{unicode, zone};
 
 fn fault<T>(f: Fault) -> R<T> {
     Err(Abort::Fault(f))
@@ -141,7 +141,14 @@ fn arith(p: Prim, a: &Value, b: &Value, ty: &Ty) -> R<Value> {
             Ok(Duration(i64_or(x.checked_sub(*y))?))
         }
         (Date(x), Date(y)) => Ok(Duration(i64_or((x - y).checked_mul(MICROS_PER_DAY))?)),
-        (Zoned(..), _) => not_yet("zone rules"),
+        (Zoned(c, z), Duration(d)) => {
+            let i = zone::to_instant(*c, z)?;
+            let moved = i64_or(match p {
+                Prim::Add => i.checked_add(*d),
+                _ => i.checked_sub(*d),
+            })?;
+            Ok(Zoned(zone::in_zone(moved, z)?, z.clone()))
+        }
         _ => panic!("{p:?} on {a:?} and {b:?}"),
     }
 }
@@ -228,7 +235,7 @@ fn span_of(v: &Value) -> (&Value, &Value) {
     )
 }
 
-fn parse_uuid(t: &str) -> Option<Vec<u8>> {
+pub(crate) fn parse_uuid(t: &str) -> Option<Vec<u8>> {
     let groups: Vec<&str> = t.split('-').collect();
     if groups.iter().map(|g| g.len()).collect::<Vec<_>>() != [8, 4, 4, 4, 12] {
         return None;
@@ -265,7 +272,7 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         Prim::Gt => Ok(Value::bool(v[0] > v[1])),
         Prim::Ge => Ok(Value::bool(v[0] >= v[1])),
         Prim::Concat => match (&v[0], &v[1]) {
-            (Text(a), Text(b)) => Ok(Text(format!("{a}{b}"))),
+            (Text(a), Text(b)) => Ok(Text(unicode::nfc(&format!("{a}{b}")))),
             (Bytes(a), Bytes(b)) => Ok(Bytes([a.as_slice(), b].concat())),
             _ => panic!("`++` on {:?}", v),
         },
@@ -306,27 +313,32 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         Prim::ParseUuid => parse_uuid(text(&v[0]))
             .map(Bytes)
             .ok_or(Abort::Fault(Fault::InvalidText)),
-        Prim::ToText => print::to_text(it, &v[0], &tys[0]).map(Text),
-        Prim::Print => print::print(it, &v[0], &tys[0]).map(Text),
-        Prim::Parse => not_yet("`T.parse`"),
+        Prim::ToText => Ok(Text(textual::to_text(it.schema, &v[0], &tys[0]))),
+        Prim::Print => Ok(Text(textual::print(it.schema, &v[0], &tys[0]))),
+        Prim::Parse => Ok(
+            match textual::parse(it.schema, text(&v[0]), option_arg(ty)) {
+                Ok(x) => Value::some(x),
+                Err(_) => Value::none(),
+            },
+        ),
         Prim::BytesLen => match &v[0] {
             Text(t) => Ok(Int(t.len() as i64)),
             Bytes(b) => Ok(Int(b.len() as i64)),
             other => panic!("`bytes_len` of {other:?}"),
         },
         Prim::ScalarLen => Ok(Int(text(&v[0]).chars().count() as i64)),
-        Prim::GraphemeLen => not_yet("`grapheme_len`, which needs Unicode segmentation tables"),
+        Prim::GraphemeLen => Ok(Int(unicode::grapheme_len(text(&v[0])) as i64)),
         Prim::StartsWith => Ok(Value::bool(text(&v[0]).starts_with(text(&v[1])))),
         Prim::EndsWith => Ok(Value::bool(text(&v[0]).ends_with(text(&v[1])))),
         Prim::Contains => Ok(Value::bool(text(&v[0]).contains(text(&v[1])))),
-        Prim::Matches => not_yet("`matches`, which needs a regular expression engine"),
-        Prim::Lower => Ok(Text(text(&v[0]).to_lowercase())),
-        Prim::Upper => Ok(Text(text(&v[0]).to_uppercase())),
-        Prim::Fold => not_yet("`fold`, which needs Unicode case folding tables"),
-        Prim::Collate => not_yet("`collate`, which needs collation tables"),
+        Prim::Matches => Ok(Value::bool(unicode::matches(text(&v[0]), text(&v[1])))),
+        Prim::Lower => Ok(Text(unicode::lower(text(&v[0])))),
+        Prim::Upper => Ok(Text(unicode::upper(text(&v[0])))),
+        Prim::Fold => Ok(Text(unicode::fold(text(&v[0])))),
+        Prim::Collate => Ok(SortKey(unicode::collate(text(&v[0]), text(&v[1])))),
         Prim::Utf8 => match &v[0] {
             Bytes(b) => Ok(match String::from_utf8(b.clone()) {
-                Ok(t) => Value::some(Text(t)),
+                Ok(t) => Value::some(Text(unicode::nfc(&t))),
                 Err(_) => Value::none(),
             }),
             other => panic!("`utf8` of {other:?}"),
@@ -394,7 +406,19 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
                         None => None,
                     }
                 }
-                Zoned(..) => return not_yet("zone rules"),
+                Zoned(c, z) => {
+                    let (d, rest) = (c.div_euclid(MICROS_PER_DAY), c.rem_euclid(MICROS_PER_DAY));
+                    match shifted(d)? {
+                        Some(nd) => {
+                            let civil = i64_or(
+                                nd.checked_mul(MICROS_PER_DAY)
+                                    .and_then(|x| x.checked_add(rest)),
+                            )?;
+                            zone::resolve(civil, z, !reject)?.map(|(c, _)| Zoned(c, z.clone()))
+                        }
+                        None => None,
+                    }
+                }
                 other => panic!("`add_period` on {other:?}"),
             };
             Ok(match (reject, out) {
@@ -404,7 +428,31 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
                 (false, None) => panic!("`Clamp` always reaches a date"),
             })
         }
-        Prim::Zoned | Prim::InZone | Prim::ToInstant => not_yet("zone rules"),
+        Prim::Zoned => {
+            let DateTime(c) = v[0] else {
+                panic!("`zoned` of a date and time")
+            };
+            let z = text(&v[1]);
+            let reject = v[2].tag() == Some(1);
+            let r = zone::resolve(c, z, !reject)?.map(|(c, _)| Zoned(c, z.to_string()));
+            Ok(match (reject, r) {
+                (true, Some(x)) => Value::some(x),
+                (true, None) => Value::none(),
+                (false, Some(x)) => x,
+                (false, None) => panic!("`Clamp` always resolves a civil time"),
+            })
+        }
+        Prim::InZone => {
+            let Instant(i) = v[0] else {
+                panic!("`in_zone` of an instant")
+            };
+            let z = text(&v[1]);
+            Ok(Zoned(zone::in_zone(i, z)?, z.to_string()))
+        }
+        Prim::ToInstant => match &v[0] {
+            Zoned(c, z) => Ok(Instant(zone::to_instant(*c, z)?)),
+            other => panic!("`to_instant` of {other:?}"),
+        },
         Prim::Span => {
             if v[0] > v[1] {
                 return fault(Fault::InvalidSpan);
@@ -430,12 +478,4 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
             }
         }
     }
-}
-
-/// Returns whether `ty` is a newtype over `Text`.
-pub fn text_newtype(it: &Interpreter, ty: &Ty) -> bool {
-    matches!(ty, Ty::Data { def, .. } if matches!(
-        &it.schema.ty(*def).kind,
-        TypeDefKind::Newtype { base: Ty::Base(Base::Text), .. }
-    ))
 }

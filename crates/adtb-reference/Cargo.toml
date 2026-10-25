@@ -8,6 +8,13 @@ publish.workspace = true
 
 [dependencies]
 adtb-lang.workspace = true
+icu_casemap = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
+icu_collator = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
+icu_locale_core = { version = "2.4.0", default-features = false }
+icu_segmenter = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
+jiff = { version = "0.2.38", default-features = false, features = ["std", "tzdb-bundle-always"] }
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode"] }
+unicode-normalization = { version = "0.1.26", default-features = false }
 
 [lints]
 workspace = true

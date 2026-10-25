@@ -5,10 +5,12 @@ mod boundary;
 mod eval;
 mod num;
 mod prim;
-mod print;
 mod stmt;
+pub mod textual;
 mod time;
+mod unicode;
 mod value;
+mod zone;
 
 pub use eval::{Abort, Change, Closure, Database, Fault, Interpreter, R};
 pub use stmt::{Outcome, Rejection, Stage, Supply};
