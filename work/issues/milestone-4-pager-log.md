@@ -5,6 +5,8 @@ kind: feature
 priority: 400
 summary: "milestone 4 (pager and log) has not exited: no page contract, buffer pool, log, recovery or crash replay"
 depends-on:
+  - pager-evicted-lsn-bound
+  - pager-self-deadlock
   - pager-allocate-in-change
   - quarantine-marks-persisted
   - recovery-streams-segments

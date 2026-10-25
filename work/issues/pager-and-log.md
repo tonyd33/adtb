@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 400
 summary: "the engine has no pager, page format, write-ahead log or recovery"
-branch: pager
+closed: 2026-10-25
 depends-on:
   - page-buffer-contract
 ---
@@ -29,3 +29,7 @@ is finished: `page-buffer-contract.md` (the interface heaps, trees and
 the commit log build against), `vmcache.md` and
 `crash-replay-harness.md`. This ticket keeps the file header, page
 format, checksums, the log, checkpoints and recovery.
+
+## 2026-10-25: resolved
+
+Exit criteria met in `feat(storage): page header, allocation and page access interface` and the commits after it: random page-write workloads under crashes and every injected fault lose no acknowledged write and report every detectable corruption, and crash replay passes at every flush boundary. Encryption is milestone 12. Group commit with a leader is `commit-path.md`. Remaining pager work is in `pager-allocate-in-change.md`, `pager-evicted-lsn-bound.md`, `pager-self-deadlock.md`, `quarantine-marks-persisted.md` and `recovery-streams-segments.md`.

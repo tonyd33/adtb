@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 402
 summary: "no buffer pool: no reserved virtual range, frames, eviction or optimistic reads"
-branch: pager
+closed: 2026-10-25
 depends-on:
   - page-buffer-contract
 tags:
@@ -22,3 +22,7 @@ range, frames, the page state word, eviction, optimistic reads. Settle
 word belong to `loom-and-miri.md`.
 
 Prerequisite: the contract of `page-buffer-contract.md`.
+
+## 2026-10-25: resolved
+
+Landed as `feat(storage): share the pager across threads over a vmcache pool`: `adtb_sys::pages` (state word, three guards), a `&self` pager with clock replacement, and `commit_all`. Tested under the simulator scheduler; loom is not added.

@@ -23,3 +23,9 @@ tags:
 Deleted cells also stay as garbage until an insert compacts the page.
 Kill bits need the unlogged change still undecided in
 `docs/design/storage.md` §2.3.
+
+## 2026-10-25: leaf merges
+
+Leaves are never merged, so scans can walk near-empty leaves. A
+`put` that passes a split by a right link while carrying a separator up
+leaves it for the next insert or repair to finish.
