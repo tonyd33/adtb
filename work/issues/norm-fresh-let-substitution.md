@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 90
 summary: "norm treats Fresh as total and substitutes a let whose row draws a key, so the row and key u get different keys"
-branch: adtb-lang2
+closed: 2026-10-25
 tags:
   - lang
 ---
@@ -31,3 +31,7 @@ cargo test -p adtb-reference a_registered_transaction_runs_as_one_statement
 
 Expected: each passes; `norm` keeps a `Let` whose bound term contains
 `Fresh` and substitutes it nowhere.
+
+## 2026-10-25: resolved
+
+Fixed in `fix(lang): keep key draws unduplicated and index through value-level constructors`. Normalisation never duplicates or drops a term containing `Fresh`, and kernel.md §7 and §7.1 say so.
