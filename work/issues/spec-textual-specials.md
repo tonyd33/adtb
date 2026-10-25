@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 289
 summary: "the textual forms of NaN, the infinities, time values, Bytes and Period are undefined, and syntax.md and interop.md point at each other for them"
-branch: default
+closed: 2026-10-25
 tags:
   - spec
 ---
@@ -23,3 +23,7 @@ Ruling: interop §1 owns these forms. NaN is `NaN`; the infinities are
 `inf` and `-inf`; times are ISO 8601; periods are `P{m}M{d}D`. `Bytes`
 needs a stated form, still to be proposed. syntax.md writes them as
 `T.parse("...")` calls.
+
+## 2026-10-25: resolved
+
+In the spec with `docs: record impl4 rulings`.

@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 190
 summary: "seven rulings on totality, positivity, boundedness and key preservation from the normalisation work are not yet in the design space or the spec"
-branch: default
+closed: 2026-10-25
 tags:
   - spec
 ---
@@ -35,3 +35,7 @@ through the design space as a question, then into the spec text.
 7. Partial constraint and check bodies are accepted. A fault while
    checking fails the statement. `docs/spec/constraints.md` states this
    explicitly.
+
+## 2026-10-25: resolved
+
+In the spec with `docs: record impl4 rulings`.

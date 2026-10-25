@@ -159,7 +159,7 @@ caller's, before reading a type that may hold one.
 A `Record` or `Ctor` evaluates its fields in the order the node lists
 them, which is name order.
 
-TODO: whether record and constructor fields are evaluated in their written order, as [../spec/semantics.md §5.1](../spec/semantics.md#51-scalar-forms) has it, is undecided.
+Fields of a record or constructor are evaluated in no stated order: which of several faulting fields is reported is a freedom of [../spec/semantics.md §5.1](../spec/semantics.md#51-scalar-forms), so a consumer may evaluate them in name order.
 
 ## 4. Writes and blocks
 
