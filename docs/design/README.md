@@ -55,7 +55,7 @@ different dependencies, consumers or stability promises:
 | --- | --- | --- |
 | `adtb-lang` | Lexer, parser, type checker, exhaustiveness, desugaring to the kernel; no I/O | standard library |
 | `adtb-reference` | The reference interpreter ([oracle.md](oracle.md)) | `adtb-lang` |
-| `adtb-sys` | Every `unsafe` block: page memory, direct I/O buffers, `io_uring`, atomic page reads ([sys.md](sys.md)) | `libc` and allowlisted system crates |
+| `adtb-sys` | Every `unsafe` block: page memory, direct I/O buffers, `io_uring`, atomic page reads ([sys.md](sys.md)); the runtime interfaces: I/O, clock, threads, entropy ([runtime.md](runtime.md)) | `libc` and allowlisted system crates |
 | `adtb` | Engine core: catalog, planner, executor, transactions, storage, over the I/O interface of [runtime.md](runtime.md) | `adtb-lang`, `adtb-sys` |
 | `adtb-sim` | Simulated storage, network, clock, randomness and scheduler, fault injection ([runtime.md §5](runtime.md#5-simulated-storage)), and the tests that run the engine over them; nothing depends on it | `adtb` |
 | `adtb-server` | The wire protocol of [../spec/wire.md](../spec/wire.md) around `adtb` ([server.md](server.md)) | `adtb` |

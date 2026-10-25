@@ -548,6 +548,10 @@ impl Threads for SimRuntime {
         let now = st.now;
         let _ = writeln!(st.trace, "t={now} spawn {id} {name:?}");
         let shared = self.shared.clone();
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "each simulated thread runs on a host thread"
+        )]
         let handle = thread::Builder::new()
             .name(format!("sim-{id}-{name}"))
             .spawn(move || thread_main(&shared, id, body))
