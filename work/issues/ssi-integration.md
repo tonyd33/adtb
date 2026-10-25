@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 625
 summary: "the transaction layer runs only behind one latch: the heap is not Send, the commit log takes &mut Pager, and SSI lacks a few pieces"
+branch: adtb-txn
 depends-on:
   - ssi
 tags:
