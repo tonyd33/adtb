@@ -609,20 +609,24 @@ restores the previous release.
 ### 3.2 Collations
 
 `Text` orders by code point. A collation is a function from `Text` to
-an ordered sort key, named by a string that includes its version,
-such as `"de-u-ks-level2@icu-74"`. The engine never changes the tables
-behind a collation name. An engine release must support every
+an ordered sort key, named by a BCP 47 locale and the CLDR release
+whose collation data it follows, such as `"de-u-ks-level2@cldr-49"`.
+The root collation is `und`. A well-formed locale with no tailoring of
+its own in that release collates as CLDR's fallback gives, in root
+order unless a parent locale is tailored. The engine never changes the
+tables behind a collation name. An engine release must support every
 collation name any earlier release supported; it may add names.
 
 ```adt
 type Person = { id: Key people, name: Text }
 relation people : Person
   key id generate sequence
-  index (collate(name, "de@icu-74"))
+  index (collate(name, "de@cldr-49"))
 ```
 
-The names a binary supports are listed in the volatile relation
-`sys::collations`, one row per name:
+The volatile relation `sys::collations` lists, one row per name, the
+root collation and every tailored locale of each CLDR release the
+binary supports:
 
 ```adt
 type Collation = { id: Key collations, name: Text }
@@ -631,12 +635,13 @@ relation sys::collations : Collation volatile
   unique (name)
 ```
 
-Moving an index,
+A well-formed locale the relation does not list is still a name, by
+fallback. Moving an index,
 constraint or function from one collation name to another is a schema
 change (dropping and adding the index, or redefining the function),
 which rebuilds what depends on it.
 
-Rulings: types/tzdb/catalog, types/collation/sortkey-fn, types/collation/version/versioned-name
+Rulings: types/tzdb/catalog, types/collation/sortkey-fn, types/collation/version/versioned-name, spec/collation-names/cldr, spec/collation-fallback/root
 
 ## 4. Error sums
 
@@ -1393,6 +1398,7 @@ transaction. Its result adds the size of the change set per
 constructor relation:
 
 ```adt
+-- given from_gid: Text, to_gid: Text
 explain analyze update g in identities.Google where g.gid == from_gid set Google { g with gid: to_gid }
 -- { text: ..., document: ..., change: { identities.Google: -1 +1 }, constraints: checked }
 ```

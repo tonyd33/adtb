@@ -337,9 +337,15 @@ change set.
 Any other fault aborts the statement (§1.5). A constraint violation
 aborts the whole statement, its rejected rows included. Without
 `rejects into`, a statement with a failing record fails with
-`Rejected { reason: BadInput {..} }`.
+`Rejected { reason: BadInput {..} }`. Its `source` and `line` name the
+failing record when the statement's source has the shape `rejects
+into` requires, a single generator over one source relation or
+external source. Otherwise, as for a `reject` reached by an insert
+from any other query, `source` is `""` and `line` is `0`. A file
+record that does not convert names its file and row in either case
+([interop.md §3.1](interop.md#31-reading-files-as-relations)).
 
-Rulings: write/insert/ctor, write/insert/value, write/insert/returns/rows, derived/defaults/on-relation, types/keygen/sequence, types/keygen/uuidv7, types/keygen/promise/distinct, types/keygen/import/advance, types/keygen/leak/live, spec/writes/nested-insert/once, spec/writes/sequence-distinct/issued-and-held, spec/writes/rejects/per-row, spec/writes/rejects-source/one-source, spec/evolution/deprecated-value/same-path
+Rulings: write/insert/ctor, write/insert/value, write/insert/returns/rows, derived/defaults/on-relation, types/keygen/sequence, types/keygen/uuidv7, types/keygen/promise/distinct, types/keygen/import/advance, types/keygen/leak/live, spec/writes/nested-insert/once, spec/writes/sequence-distinct/issued-and-held, spec/writes/rejects/per-row, spec/writes/rejects-source/one-source, spec/evolution/deprecated-value/same-path, spec/bad-input-source/empty
 
 ## 3. Update
 

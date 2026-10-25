@@ -140,6 +140,15 @@ Postconditions:
   version, and translating a document written at another version is
   the caller's.
 
+### 1.3 Deviations
+
+- `matches` takes its Unicode classes (`\p{..}`, `\w`, `\d`, case
+  folding under `i`) from the tables of `regex-syntax`, and every other
+  text function from the ICU4X data. The two need not follow one
+  Unicode version, so where they differ `matches` does not follow the
+  database's recorded version
+  ([../spec/model.md §3.5](../spec/model.md#35-text)).
+
 ## 2. The database map
 
 A database is a map from (relation variable, constructor index) to a

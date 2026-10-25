@@ -342,7 +342,7 @@ Rulings: types/int-overflow/trap, types/fault-forms/checked, types/decimal/scale
 | `lower (t: Text) -> Text` | Unicode full default lowercase mapping, normalized to NFC | none |
 | `upper (t: Text) -> Text` | Unicode full default uppercase mapping, normalized to NFC | none |
 | `fold (t: Text) -> Text` | Unicode full case folding, normalized to NFC | none |
-| `collate (t: Text, c: constant Text) -> SortKey` | the UTS #10 sort key of `t` under collation `c` | none; an unknown or unversioned `c` is a compile error |
+| `collate (t: Text, c: constant Text) -> SortKey` | the UTS #10 sort key of `t` under collation `c` | none; a malformed `c`, or one naming a CLDR version the database does not support, is a compile error |
 | `text (x) -> Text` | the textual form of a number, a time value, a `Uuid` (§2.7) or a newtype over `Text` | none |
 | `utf8 (b: Bytes) -> Option Text` | `b` decoded and normalized to NFC; `None` when `b` is not UTF-8 | none |
 | `bytes (t: Text) -> Bytes` | the UTF-8 encoding of `t` | none |
@@ -353,19 +353,33 @@ functions depends on a locale.
 `matches` uses the RE2 regular expression syntax, without
 backreferences or lookaround. It matches over Unicode scalar values;
 `.` and character classes match scalar values, and Unicode classes
-(`\p{L}`) follow the recorded Unicode version. A match may occur
-anywhere unless the pattern is anchored with `^` (start of text) or `$`
-(end of text). The pattern is case-sensitive unless it begins with
-`(?i)`, which compares by simple case folding. Matching takes time
+(`\p{L}`) follow the recorded Unicode version
+([model.md §3.5](model.md#35-text)). A match may occur anywhere unless
+the pattern is anchored with `^` (start of text) or `$` (end of text).
+`.` matches every scalar value but a line feed. Matching takes time
 linear in the length of `t`.
+
+A pattern sets flags anywhere in it, as RE2 does: `(?flags)` sets
+them for the rest of the enclosing group, `(?flags:re)` for `re`
+alone, and flags after a `-` are cleared. The flags are:
+
+| Flag | Meaning |
+| --- | --- |
+| `i` | letters compare by simple case folding |
+| `m` | `^` and `$` also match after and before a line feed |
+| `s` | `.` also matches a line feed |
+| `U` | `x*`, `x+`, `x?` and `x{n,m}` are lazy, and their `?` forms greedy |
+
+Any other flag, `x` and `R` among them, is a compile error.
 
 `text(x)` gives, for an integer, its decimal digits with a leading `-`
 when negative; for a `Decimal s`, the digits with exactly `s`
 fractional digits; for a float, the shortest decimal that reads back
 as the same value, or `NaN`, `inf`, `-inf`; for a time value, the form
 of [interop.md §1.3](interop.md#13-values-with-no-literal). A collation name
-`c` carries its version, `"de-u-ks-level2@icu-74"`; the collations an
-engine ships are listed in [catalog.md](catalog.md).
+`c` is a locale and the CLDR release it follows,
+`"de-u-ks-level2@cldr-49"`; how names resolve and which an engine
+lists is in [catalog.md §3.2](catalog.md#32-collations).
 
 ```adt
 from i in identities.EmailPass
@@ -373,7 +387,7 @@ where ends_with(lower(i.email), "@example.com") and scalar_len(i.email) <= 254
 select { id: key i, label: "user " ++ text(scalar_len(i.email)) }
 ```
 
-Rulings: types/text-length/explicit, types/text-eq/nfc, types/collation/sortkey-fn, types/collation/version/versioned-name, spec/textual-forms/interop
+Rulings: types/text-length/explicit, types/text-eq/nfc, types/collation/sortkey-fn, types/collation/version/versioned-name, spec/textual-forms/interop, spec/collation-names/cldr, spec/regex-flags/re2, spec/unicode-version/one
 
 ## 5. Bytes
 
@@ -442,15 +456,24 @@ add_period(d, months(1), Reject)    -- 2021-01-31 gives None
 
 | Function | Result | Faults |
 | --- | --- | --- |
-| `zoned (dt: DateTime, zone: Text, o: constant Overflow)` | `ZonedDateTime` for `Clamp`, `Option ZonedDateTime` for `Reject` | `UnknownZone` |
-| `in_zone (i: Instant, zone: Text) -> ZonedDateTime` | the civil time of `i` in `zone` | `UnknownZone` |
-| `to_instant (z: ZonedDateTime) -> Instant` | the instant `z` names | none |
+| `zoned (dt: DateTime, zone: Text, o: constant Overflow)` | `ZonedDateTime` for `Clamp`, `Option ZonedDateTime` for `Reject` | `UnknownZone`, `ArithmeticOverflow` |
+| `in_zone (i: Instant, zone: Text) -> ZonedDateTime` | the civil time of `i` in `zone` | `UnknownZone`, `ArithmeticOverflow` |
+| `to_instant (z: ZonedDateTime) -> Instant` | the instant `z` names | `ArithmeticOverflow` |
+
+A zone name matches a zone of the tz database release in force by
+exact spelling, and a `ZonedDateTime` keeps the name as written: a
+link name stays a link name. `"europe/lisbon"` faults with
+`UnknownZone`. `zoned`, `in_zone` and `to_instant` fault with
+`ArithmeticOverflow` when the instant or civil time they give or name
+leaves its type's range.
 
 A civil time inside a gap of the zone's rules (a spring-forward
 transition) does not exist: `Clamp` moves it forward by the length of
 the gap, and `Reject` gives `None`. A civil time inside an overlap (a
 fall-back transition) names two instants, and `zoned` and `to_instant`
-use the earlier one. `to_instant` of a stored value whose civil time
+use the earlier one. So `to_instant(in_zone(i, z))` is `i`, except
+for an `i` in the later half of an overlap, where it is the earlier
+instant of the same civil time. `to_instant` of a stored value whose civil time
 falls in a gap under the zone rules now in force resolves as `Clamp`
 does. The zone rules in force are the current ones for every caller
 ([model.md](model.md#36-time)).
@@ -461,7 +484,7 @@ in_zone(i, "Europe/Lisbon")
 zoned(dt, "America/New_York", Reject)
 ```
 
-Rulings: types/durations/split, types/calendar-overflow/explicit, types/zoned/zoned, types/tzdb/catalog, types/time-scale/smeared
+Rulings: types/durations/split, types/calendar-overflow/explicit, types/zoned/zoned, types/tzdb/catalog, types/time-scale/smeared, spec/zone-names/exact, spec/zone-edges/overflow, spec/zone-overlap/earlier, spec/zoned-edges/overflow
 
 ## 7. Aggregates
 

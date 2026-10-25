@@ -112,10 +112,11 @@ holding `schema`; over a server the role also needs `adhoc`. Grants
 are of two kinds (§3.2): relation grants on the schema's relation
 variables and `grant call fn` are operators in migrations, and the
 others are ad hoc statements.
-`alter role R password p` takes the password as a parameter `p`, so
-the secret never appears in statement text:
+`alter role R password p` takes the password as a parameter `p` of
+type `Text`, so the secret never appears in statement text:
 
 ```adt
+-- given p: Text
 create role web
 alter role web password p
 drop role web
@@ -183,7 +184,7 @@ The listener addresses and the sources each listener accepts are
 open-time settings of the server process
 ([catalog.md](catalog.md#10-configuration)).
 
-Rulings: net/authn/scram, net/authn/mtls, net/authn/peer, net/tls/direct
+Rulings: net/authn/scram, net/authn/mtls, net/authn/peer, net/tls/direct, spec/password-param/text
 
 ## 3. Grants
 
@@ -451,6 +452,7 @@ directly runs with the schema owner's relation grants, and with
 as a registered query does.
 
 ```adt
+-- 0013
 grant call fn display_name to web
 ```
 
@@ -466,6 +468,7 @@ neither imply nor are implied by it. An update that keeps the
 constructor needs `update` on that constructor.
 
 ```adt
+-- 0013
 grant retag invoices.Draft -> invoices.Sent to web_owner
 grant retag invoices.(Draft | Sent) -> invoices.Void to billing_owner
 ```
@@ -762,11 +765,13 @@ those were wrapped under and every listed DEK version.
 A logical dump ([interop.md](interop.md#6-dump-and-restore)) is
 plaintext, whether or not the database is encrypted, unless it is
 written with `--encrypt KEY` (`dump to "path" encrypt key`), which
-seals it under that key. A dump needs `maintain` and `read` on every
+seals it under a key derived from the passphrase `key`, a `Text`, by
+Argon2id with a salt and parameters the dump's manifest records. A
+restore of it needs the same passphrase. A dump needs `maintain` and `read` on every
 relation it dumps; its security section (roles, verifiers, deployment
 grants, peer mappings) is written only for a holder of `schema`.
 
-Rulings: security/encrypt/page, security/integrity/aead, security/nonce/random, security/keys/wrapped, security/kek/passphrase, security/kek/kms, security/kek/host, security/backup-crypt/as-stored
+Rulings: security/encrypt/page, security/integrity/aead, security/nonce/random, security/keys/wrapped, security/kek/passphrase, security/kek/kms, security/kek/host, security/backup-crypt/as-stored, spec/dump-key/passphrase
 
 ## 10. Tenancy
 

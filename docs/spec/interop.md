@@ -47,8 +47,18 @@ those of [syntax.md](syntax.md#25-literals):
   scale. A float prints the shortest decimal that reads back to the
   same value; NaN and the infinities print in the forms of §1.3. `-0.0` never occurs as a value
   ([model.md](model.md#34-floats)).
-- `Text` prints in NFC with the escapes of syntax.md.
-- Time values, `Period` and `Bytes` print in the forms of §1.3.
+- A `Duration` prints as a `DURATION` literal in the largest of the
+  units `d`, `h`, `min`, `s`, `ms` and `us` that divides it exactly,
+  with a leading `-` when negative: `90s`, `2h`, `1500ms`, `-90s`. Zero
+  prints as `0s`.
+- `Text` prints in NFC between double quotes, with the escapes of
+  syntax.md: `"` and `\` are escaped, a line feed, carriage return and
+  tab print as `\n`, `\r` and `\t`, every other control character
+  (general category Cc) prints as `\u{..}` in lowercase hex, and
+  every other character prints as itself. A reader accepts a control
+  character written as itself or escaped.
+- Time values, `Period`, `Bytes`, `SortKey` and `Span` print in the
+  forms of §1.3.
 - A `Set T` value prints as `[v1, v2, ...]`, each element once, in
   ascending order by `T`'s order ([model.md](model.md#10-order)), or by
   the canonical key bytes of the elements when `T` is not ordered. The
@@ -97,7 +107,7 @@ reader's version.
 Single values shown to a caller (error details, REPL output) are
 printed at the caller's version and carry no header.
 
-Rulings: interop/text/literal, interop/text/rename/versioned
+Rulings: interop/text/literal, interop/text/rename/versioned, spec/text-escapes/unicode-escape, spec/duration-form/largest-unit
 
 ### 1.3 Values with no literal
 
@@ -114,13 +124,17 @@ forms are:
 | `ZonedDateTime` | its `DateTime`, then the zone name in brackets | `2026-10-25T09:30:00.000000[Europe/Paris]` |
 | `Period` | `P{m}M{d}D`, its month and day counts as signed integers | `P1M0D`, `P0M-15D` |
 | `Bytes` | `0x`, then two hex digits per byte | `0x`, `0x00ff` |
+| `SortKey` | as `Bytes` | `0x2b4f01` |
+| `Span a` | `span(s, e)`, its start and end in the forms of `a` | `span(3, 7)` |
 
 - A time prints with exactly six fractional digits of a second. A
   reader also accepts fewer, or none with no `.`.
 - A year outside `0000` to `9999` prints with a sign and at least five
   digits, the expanded form of ISO 8601.
-- `Bytes` print lowercase hex; a reader accepts either case. The empty
-  value is `0x`.
+- `Bytes` and `SortKey` print lowercase hex; a reader accepts either
+  case. The empty value is `0x`.
+- A reader of a `Span` refuses a start after its end, as `span` does
+  ([prelude.md §2.8](prelude.md#28-span)).
 
 In query source each form is the argument of a `T.parse` call (§1.1),
 which returns `Option T` ([syntax.md](syntax.md#25-literals)):
@@ -131,7 +145,7 @@ Period.parse("P1M0D")
 Bytes.parse("0x00ff")
 ```
 
-Rulings: spec/textual-forms/interop, spec/bytes-form/hex
+Rulings: spec/textual-forms/interop, spec/bytes-form/hex, spec/textual-forms/sortkey/hex, spec/textual-forms/span/call
 
 ## 2. External formats
 
@@ -437,7 +451,11 @@ temp relation NAME : T [ key ... ]
 
 declares a relation, outside the log, of any named type or an
 anonymous record type, with no constraint but its key; without a `key`
-clause its whole row is its key. It belongs to the interactive
+clause its whole row is its key. No type names a temp relation, so its
+key fields are plain values and its key clause has no `generate`. Its
+name must not be a relation variable of a module the text reads, nor
+the name of a temp relation its transaction has already declared. It
+belongs to the interactive
 transaction (by its `TxnId`) or the one ad hoc text that declares it,
 and is gone when that transaction or text ends. A session holds no
 temp relation. A persistent staging relation is declared by a
@@ -447,18 +465,14 @@ The statements below run as one ad hoc text or in one interactive
 transaction:
 
 ```adt
-type IdentityText = { user: I64, kind: Text, email: Option Text, hash: Option Bytes,
-                      gid: Option Text, sub: Option Text }
-type IdentityStage = { line: Key identity_stage, user: I64, kind: Text,
+type IdentityStage = { line: I64, user: I64, kind: Text,
                        email: Option Text, hash: Option Bytes,
                        gid: Option Text, sub: Option Text }
-temp relation identity_stage : IdentityStage key line generate sequence
+temp relation identity_stage : IdentityStage key line
 temp relation identity_rejects : RejectedRow key (load, line)
 
 insert identity_stage from (
-  from t in read_csv("identities.csv", IdentityText)
-  select IdentityStage { user: t.user, kind: t.kind, email: t.email, hash: t.hash,
-                         gid: t.gid, sub: t.sub })
+  from t in read_csv("identities.csv", IdentityStage) select t)
 update s in identity_stage where s.kind == "gogle" set IdentityStage { s with kind: "Google" }
 
 insert identities from (
@@ -479,6 +493,7 @@ insert identities from (
 rejects into identity_rejects
 ```
 
+The file numbers its own lines in a `line` column, the staging key.
 `(Tag Identity).parse` returns `None` for text naming no constructor,
 and that arm rejects the row. The final insert generates each row's
 `id`, since `identities` generates its keys. A remote client fills
@@ -498,7 +513,7 @@ temp relation identity_dupes : IdentityDupe key line
 insert identity_dupes from (
   from s in identity_stage, i in identities.EmailPass
   where s.email == Some { value: i.email }
-  select IdentityDupe { line: value(key s), user: s.user, kind: s.kind,
+  select IdentityDupe { line: s.line, user: s.user, kind: s.kind,
                         email: s.email, hash: s.hash, gid: s.gid, sub: s.sub })
 delete s in identity_stage
 where exists i in identities.EmailPass where s.email == Some { value: i.email }
@@ -531,8 +546,8 @@ relation identity_rejects : RejectedRow key (load, line)
 The key holds no key of the relation itself, so one type serves every
 rejects relation. `load` is an id the engine generates for each
 inserting statement, so a rerun of a load never collides with an
-earlier one; every reject of one statement has the same `load`. `source` is the file path, or the name of the relation
-the rows were read from. `line` is the row's number, from 1, in the
+earlier one; every reject of one statement has the same `load`. `source` is the file path, or the unqualified name of the
+relation the rows were read from. `line` is the row's number, from 1, in the
 order the source is read: records of a CSV or NDJSON file, rows of a
 Parquet or Arrow IPC file, or the order of a source relation's key. `raw` is the record as the file held it, in the file's
 own text where it has one and in the textual syntax otherwise.
@@ -545,7 +560,8 @@ the whole statement with `Rejected { reason: Violated {..} }`, or
 `KeyViolation` for a collision on the relation's key, and no rejects
 are kept. An insert with no `rejects into` clause fails, when any
 record is rejected, with `Rejected { reason: BadInput {..} }`, which
-carries the `source`, `line` and reason of one rejected record.
+carries the `source`, `line` and reason of one rejected record
+([writes.md §2.5](writes.md#25-rejected-rows)).
 
 ### 4.6 Durability of a load
 
@@ -555,7 +571,7 @@ one copy of the data the load stores.
 A load into a relation a feed names also writes the logical change
 records the feed reads (§5.2).
 
-Rulings: interop/load/source, interop/load/append-api, interop/load/shape/per-ctor, interop/load/shape/tag-match, interop/load/shape/union-column, interop/load/shape/tagged-text, interop/load/shape/unrouted/tag-parse, interop/load/unit/staged, interop/load/check/set-at-a-time, interop/load/errors/reject-input, interop/load/wal/page-images, spec/writes/sequence-distinct/issued-and-held
+Rulings: interop/load/source, interop/load/append-api, interop/load/shape/per-ctor, interop/load/shape/tag-match, interop/load/shape/union-column, interop/load/shape/tagged-text, interop/load/shape/unrouted/tag-parse, interop/load/unit/staged, interop/load/check/set-at-a-time, interop/load/errors/reject-input, interop/load/wal/page-images, spec/writes/sequence-distinct/issued-and-held, spec/temp-relations/names/distinct, spec/temp-relations/generated-key/none, spec/rejected-source/unqualified, spec/bad-input-source/empty, spec/temp-relations/redeclare/refused
 
 ## 5. Export and change streams
 
@@ -699,8 +715,11 @@ dormant grant ([security.md](security.md#21-roles)). The text form of
 
 A dump is written in plaintext unless it is written with `--encrypt
 KEY` (`dump to "path" encrypt key` as a command), which encrypts every
-entry but the manifest's version fields under that key; a restore of
-an encrypted dump needs the key.
+entry but the manifest's version fields under a key derived from the
+`Text` passphrase `key` ([security.md §9.5](security.md#95-backups-and-dumps)); a restore of
+an encrypted dump needs the passphrase. A restore with the wrong
+passphrase fails as a restore of a damaged dump does: authenticated
+encryption cannot tell a wrong key from damaged ciphertext.
 
 Not dumped, and lost by a dump and restore:
 
@@ -756,7 +775,7 @@ query finds a violation, the restore fails with the violation reports
 and the file is not usable. No reader ever sees a state the
 constraints have not checked.
 
-Rulings: interop/dump/logical, interop/dump/schema/op-log, interop/dump/data/arrow-ipc, interop/dump/data/text-rows, interop/dump/roundtrip/same-ids, interop/dump/scope/bundles, interop/dump/scope/extensions, interop/dump/restore/offline-validate
+Rulings: interop/dump/logical, interop/dump/schema/op-log, interop/dump/data/arrow-ipc, interop/dump/data/text-rows, interop/dump/roundtrip/same-ids, interop/dump/scope/bundles, interop/dump/scope/extensions, interop/dump/restore/offline-validate, spec/dump-key/passphrase, spec/dump-wrong-key/as-damaged
 
 ## 7. Backup and point-in-time restore
 

@@ -163,6 +163,9 @@ hex      = digit | "a" ... "f" | "A" ... "F"
   [interop.md](interop.md#11-one-syntax).
 - A `DURATION` is a value of type `Duration`; `d` is 86400 seconds.
   Calendar periods have no literal form.
+- A `Decimal s` value is written as a numeric literal, which takes its
+  scale from its context
+  ([typing.md §8](typing.md#8-literals-and-numeric-types)).
 - A value with no literal (NaN and the infinities, time values,
   `Period`, `Bytes`) is written as a `T.parse` call on its textual
   form ([interop.md §1.3](interop.md#13-values-with-no-literal)),
@@ -297,7 +300,10 @@ temp_decl      = "temp" "relation" LOWER ":" app_type [ "key" key_fields [ gener
   transaction ends; declared in ad hoc text sent alone, it lives until
   that text ends. A session holds none. `T` is a named type or an
   anonymous record type; the relation has no constraint but its key.
-  Without a `key` clause its whole row is its key. Loads append to it and ad hoc inserts route its rows
+  Without a `key` clause its whole row is its key. Its key clause has
+  no `generate`, since no type names a temp relation, and its name must
+  not be a relation variable of a module the text reads. A second
+  declaration of one temp relation name in one transaction is refused. Loads append to it and ad hoc inserts route its rows
   ([interop.md](interop.md#4-loading)).
 
 In examples, `0011 add ...` is shorthand for a migration file `0011`
@@ -358,7 +364,7 @@ root namespace, not to the module whose migration declares it: it
 resolves as `Principal` from every module and every bundle
 ([security.md](security.md#11-the-principal-sum)).
 
-Rulings: syntax/module/header, surface/namespace/modules, surface/source/op-log, surface/migration/handwritten, surface/version/counter, spec/adhoc/names/every-module
+Rulings: syntax/module/header, surface/namespace/modules, surface/source/op-log, surface/migration/handwritten, surface/version/counter, spec/adhoc/names/every-module, spec/temp-relations/names/distinct, spec/temp-relations/generated-key/none, spec/temp-relations/redeclare/refused
 
 ## 4. Types
 
@@ -1439,16 +1445,25 @@ peer_stmt = "map" "peer" TEXT "on" LOWER "to" LOWER
           | "unmap" "peer" INT "on" LOWER
 ```
 
+Grant operators, in a migration:
+
 ```adt
+-- 0013
 grant read identities.(EmailPass | Google) to support
 grant read identities.(EmailPass | Google) (user) to support
 grant read identities.EmailPass (user, email) to support
-grant update invoices.Draft (total) to web_owner
-grant retag invoices.Draft -> invoices.Sent to clerk
+grant update billing::invoices.Open (amount) to web_owner
+grant retag billing::invoices.Open -> billing::invoices.Paid to clerk
+grant call fn display_name to support
+```
+
+Ad hoc statements:
+
+```adt
+-- given p: Text
 grant call web-2.4::login_key to support
 grant call web-2.4 to web
 grant call web::login_key to app
-grant call fn display_name to support
 grant monitor, cancel to oncall
 
 create role web
@@ -1459,7 +1474,7 @@ map peer "deploy" on unix to web
 unmap peer 2 on unix
 ```
 
-The examples use `invoices` as [security.md](security.md) declares it.
+The examples use `billing::invoices` as [derived.md](derived.md) declares it.
 
 - The privileges are exactly the sixteen listed. A field list names
   only header fields or fields every constructor of the set declares;
@@ -1494,12 +1509,12 @@ The examples use `invoices` as [security.md](security.md) declares it.
   peer n on L` removes the rule with ordinal `n`. The rules are rows of
   `catalog::peer_mappings`, keyed by listener and ordinal
   ([security.md](security.md#22-sources)).
-- In `alter role R password p`, `p` is a parameter of the call, never
-  written in the text.
+- In `alter role R password p`, `p` is a `Text` parameter of the
+  call, never written in the text.
 
 Meaning in [security.md](security.md#3-grants).
 
-Rulings: syntax/ctor-set/paren, security/grain/ctor-set, security/fields/field-list, security/transition/transition, security/rights/definer
+Rulings: syntax/ctor-set/paren, security/grain/ctor-set, security/fields/field-list, security/transition/transition, security/rights/definer, spec/password-param/text
 
 ## 11. The prelude
 
@@ -1557,6 +1572,7 @@ query_ref = BUNDLE_NAME "::" LOWER
 ```
 
 ```adt
+-- given u: Key users, k: Text
 explain from i in identities where i.user == u select i
 explain analyze web-2.4::login_key(users.key(3))
 retire bundle web-2.3
@@ -1587,7 +1603,8 @@ backup to "s3://backups/app" incremental
   [applications.md §4.1](applications.md#41-registration); `apply
   migrations` applies migration files in order and needs `schema`;
   `print schema` returns the folded schema as a schema file.
-- `dump` writes plaintext unless `encrypt` gives a key, a parameter.
+- `dump` writes plaintext unless `encrypt` gives a key: a `Text`
+  passphrase, a parameter.
   It needs `maintain` and `read` on every relation it dumps, and writes
   the security section only for a holder of `schema`.
   `restore` writes a new database file; it never replaces an open one.
@@ -1601,4 +1618,4 @@ The commands' effects and privileges are in
 [catalog.md](catalog.md#9-operational-commands) and
 [interop.md](interop.md#51-export).
 
-Rulings: none
+Rulings: spec/dump-key/passphrase

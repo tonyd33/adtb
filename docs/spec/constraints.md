@@ -433,6 +433,7 @@ the schema generates has a canonical name:
 | `constraint c` or `check c` declared in module `m` | `m::c` |
 | the key of relation variable `m::r` | `m::r.key` |
 | `unique (p1, ..., pn) in S` of `m::r`, each `pi` a field path | `m::r.unique(p1, ..., pn) in S` |
+| `unique (p1, ..., pn)` of `m::r` with no `in` | `m::r.unique(p1, ..., pn)` |
 | a unique of `m::r` with an expression among its fields | `m::r.unique#n`, `n` the unique's catalog id |
 | the reference held in key or header field `f` of `m::r` | `m::r.f` |
 | the reference held in field `f` of constructor `C` of `m::r` | `m::r.C.f` |
@@ -441,18 +442,23 @@ the schema generates has a canonical name:
 In a field unique's name, each `pi` is its field path as declared
 (`login.Google.gid`), and `S` is its constructor set written `C` for one
 constructor and `(C | D | ...)` for several, the constructors in the
-code-point order of their names. A record type's fields are fields of
+code-point order of their names. A named set is written as its
+constructors at the version the name is read at. A unique whose `in`
+names every constructor of the sum has the scope of one with no `in`,
+and its name. Names are canonical: one constraint has one name however
+its declaration is written. A record type's fields are fields of
 its one constructor, named after the type. Names are ordered by the
 code-point order of their text.
 
 ```text
 auth::has_identity
 auth::identities.key
-auth::identities.unique(provider, sub) in OAuth
+auth::identities.unique(provider, sub) in (Apple | Google)
 auth::identities.unique#1207
 auth::logins.user
 auth::logins.Active.identity
 auth::resets.Reset.identity
+auth::users.unique(name)
 ```
 
 ### 7.2 Which violation is reported
@@ -480,7 +486,7 @@ Within an interactive transaction, a failed call leaves the
 transaction open, with the effects of its earlier calls; the reads the
 failed call made remain part of the transaction for serializability.
 
-Rulings: constraint/enforce/delta, constraint/form/empty, spec/writes/violation-name/canonical-least, spec/writes/unique-name/fields-or-id, spec/constraint-faults/accepted
+Rulings: constraint/enforce/delta, constraint/form/empty, spec/writes/violation-name/canonical-least, spec/writes/unique-name/fields-or-id, spec/constraint-faults/accepted, spec/unique-names/unscoped/bare, spec/unique-names/named-set/ctors, spec/unique-names/every-ctor/unscoped
 
 ## 8. Concurrent transactions
 

@@ -348,8 +348,9 @@ never `Text`.
 canonical equivalence. The order of `Text` is code-point order. Neither
 depends on locale.
 
-The database records the Unicode version its normalization,
-case-mapping and segmentation tables follow. Moving to a new Unicode
+The database records one Unicode version, and every text function
+follows it: normalization, case mapping, segmentation and the
+character classes of `matches`. Moving to a new Unicode
 version is a schema operator that renormalizes stored text and
 rebuilds what depends on it ([evolution.md](evolution.md)).
 
@@ -357,7 +358,7 @@ Text has no unqualified length: byte, scalar and grapheme counts are
 separate functions. Locale order and insensitive comparison are
 functions too, never properties of `Text`, a field or `==`:
 `collate(t, c)` maps text to a `SortKey` under a collation `c` whose
-name includes its version, and `fold(t)` is case folding
+name includes its CLDR version, and `fold(t)` is case folding
 ([prelude.md](prelude.md#4-text)). A versioned collation never
 changes, so a stored `SortKey` and an index over `collate(...)` keep
 their order. Moving a schema to a new collation version is a schema
@@ -368,13 +369,13 @@ compares and orders by its bytes; its encoding on the wire is in
 ```adt
 type Person = { id: Key people, name: Text }
 relation people : Person key id generate sequence
-from p in people select p order by collate(p.name, "de@icu-74")
+from p in people select p order by collate(p.name, "de@cldr-49")
 ```
 
 An index over `collate(f, c)` or `fold(f)` is an index on an
 expression ([constraints.md](constraints.md)).
 
-Rulings: types/text-eq/nfc, types/text-eq/unassigned/pin-unicode, types/text-length/explicit, types/collation/sortkey-fn, types/collation/version/versioned-name
+Rulings: types/text-eq/nfc, types/text-eq/unassigned/pin-unicode, types/text-length/explicit, types/collation/sortkey-fn, types/collation/version/versioned-name, spec/collation-names/cldr, spec/unicode-version/one
 
 ### 3.6 Time
 

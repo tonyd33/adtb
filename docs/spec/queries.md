@@ -779,7 +779,7 @@ source normalises to a comprehension is refused unless its `select` is
 exactly the binder of a generator over a relation variable, a
 constructor relation, a constructor set, a backlink, a `Set T`
 parameter, a group's rows or another such key-preserving
-comprehension. A `Set T` parameter is accepted:
+comprehension:
 
 ```adt fragment
 sum(o.total for o in orders)                                        -- each order counts

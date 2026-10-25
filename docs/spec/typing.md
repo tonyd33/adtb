@@ -589,6 +589,9 @@ a `match` on a key that is not a reference field of a row (it faults
 `NoSuchRow` when the key names no row of its constructor set), an `at`
 block (rejected with `HistoryUnavailable` when its position is not
 retained, [derived.md §6.2](derived.md#62-naming-a-past-state)),
+a `top` or `take` whose count is not an `INT` literal (`-3` is
+negation applied to `3`, so `top -3` is partial and faults with
+`NegativeCount`),
 or a call of a function whose body is partial. Hiding is not
 transitive: a row of a constructor the bundle knows is visible even
 when it references a hidden row
@@ -605,7 +608,7 @@ reached, is in [queries.md](queries.md#15-faults). Evaluation is call
 by value: every argument is evaluated before the body. A registered
 query's result type does not mention faults.
 
-Rulings: types/fault/abort, types/int-overflow/trap, spec/tiers/three-tiers, spec/totality/add-period/partial, spec/totality/at-block/partial
+Rulings: types/fault/abort, types/int-overflow/trap, spec/tiers/three-tiers, spec/totality/add-period/partial, spec/totality/at-block/partial, spec/totality/top-take/non-literal
 
 ### 10.2 Guards order evaluation
 
