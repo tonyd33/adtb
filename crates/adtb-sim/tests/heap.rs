@@ -3,8 +3,9 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
-use adtb::heap::{Error, FieldType, Flags, Heap, LargeStore, Link, Updated, walk};
-use adtb::key::{Scalar, Tid, Value};
+use adtb::batch::{Batch, BatchBuilder, Column, Schema};
+use adtb::heap::{CtorType, Error, FieldType, Flags, Heap, LargeStore, Link, Updated, walk};
+use adtb::key::{CtorId, Scalar, Tid, Value};
 use adtb::runtime::Entropy;
 use adtb::storage::{self, Options, PageKind, Pager, Pid};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
@@ -619,6 +620,70 @@ fn a_reopened_heap_finds_room_through_its_directory() {
         let t = reopened.insert(&mut db.pager, 2, &small).unwrap();
         assert_eq!(pages, reopened.pages(&mut db.pager).unwrap().len());
         assert_eq!(small, reopened.read(&mut db.pager, t).unwrap().unwrap().row);
+    });
+}
+
+#[test]
+fn a_heap_scan_builds_a_batch_that_reads_back_its_rows() {
+    let mut sim = Sim::new(8, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut db, _) = Db::create(rt, 4);
+        let ctor = |id, fields| CtorType {
+            id: CtorId(id),
+            fields,
+        };
+        let row_type = vec![
+            scalar(Scalar::I64),
+            FieldType::Sum(vec![ctor(1, vec![]), ctor(2, vec![scalar(Scalar::Text)])]),
+            FieldType::Sum(vec![
+                ctor(1040, vec![scalar(Scalar::I32)]),
+                ctor(1041, vec![scalar(Scalar::Text), scalar(Scalar::I64)]),
+                ctor(1042, vec![]),
+            ]),
+        ];
+        let large = db.heaps[EMAIL].large();
+        let mut heap = Heap::create(&mut db.pager, 20, row_type.clone(), large).unwrap();
+        let rows: Vec<Vec<Value>> = (0..300i64)
+            .map(|k| {
+                let note = match k % 3 {
+                    0 => Value::Sum {
+                        ctor: 0,
+                        fields: vec![],
+                    },
+                    _ => Value::Sum {
+                        ctor: 1,
+                        fields: vec![Value::Text(format!("n{k}"))],
+                    },
+                };
+                let detail = match k % 4 {
+                    0 => Value::Sum {
+                        ctor: 0,
+                        fields: vec![Value::I32(k as i32)],
+                    },
+                    1 => Value::Sum {
+                        ctor: 1,
+                        fields: vec![Value::Text("t".repeat((k % 7) as usize)), Value::I64(-k)],
+                    },
+                    _ => Value::Sum {
+                        ctor: 2,
+                        fields: vec![],
+                    },
+                };
+                vec![Value::I64(k), note, detail]
+            })
+            .collect();
+        for r in &rows {
+            heap.insert(&mut db.pager, 1, r).unwrap();
+        }
+        let mut b = BatchBuilder::new(Schema::of_heap(&row_type));
+        heap.scan(&mut db.pager, |v| b.push_row(&v.row)).unwrap();
+        let batch: Batch = b.finish();
+        assert_eq!(rows.len(), batch.len());
+        let mut read: Vec<Vec<Value>> = (0..batch.len()).map(|i| batch.row(i)).collect();
+        read.sort_by_key(|r| key_of(r));
+        assert_eq!(rows, read);
+        assert!(matches!(batch.columns()[1], Column::Nullable { .. }));
+        assert!(matches!(batch.columns()[2], Column::Union { .. }));
     });
 }
 

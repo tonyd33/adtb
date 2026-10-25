@@ -21,23 +21,47 @@ Rulings: exec/flow/push
 
 ## 2. Batches
 
-Batches between operators are Arrow record batches. This is the
-engine's internal format; the wire's Arrow format
+Batches between operators are Arrow record batches, held in the
+engine's own buffers (`adtb::batch`). This is the engine's internal
+format; the wire's Arrow format
 ([../spec/wire.md §5.4](../spec/wire.md#54-arrow-format)) is a separate
 contract.
 
-A batch from a constructor heap has that constructor's schema and no
-validity bitmaps, since no field is NULL.
+A batch from a constructor heap has that constructor's schema, one
+column per field in declaration order, and no validity bitmaps other
+than those of the `Option` layout below, since no field is NULL.
+
+| Type | Column |
+| --- | --- |
+| `I8`, `I16`, `I32`, `I64`, `F32`, `F64` | Fixed width of the same size |
+| `Decimal s` | Fixed width, the coefficient as a 16-byte `i128` |
+| `Instant`, `Time`, `DateTime`, `Duration` | Fixed width `i64` microseconds |
+| `Date` | Fixed width `i32` days |
+| `Text`, `Bytes`, `SortKey` | Variable-length binary, `i32` offsets |
+| `ZonedDateTime` | Struct of the `i64` local time and the zone as `Text` |
+| `Period` | Struct of the `i32` months and the `i32` days |
+| A record | Struct of its fields in declaration order |
+| A newtype | Its representation's column |
+| `Key r.S` and a reference | The column of `r`'s key type |
+| `Set T` in a nested result | List of `T`, `i32` offsets |
+| A sum | By its shape, below |
 
 A value-level sum field is an Arrow dense union: an `i8` type-id
-buffer, an `i32` offsets buffer, and one compact child per constructor.
-Three shapes are special-cased:
+buffer, an `i32` offsets buffer, and one compact child per constructor,
+the child a struct of the constructor's fields. Three shapes are
+special-cased, chosen in this order:
 
 | Sum shape | Batch layout |
 | --- | --- |
-| `Option T` (a nullary constructor and one other) | `T` with a validity bitmap; a cleared bit is the nullary constructor |
-| Only nullary constructors | The tag vector alone |
-| One constructor | Its payload, with no tag |
+| One constructor | Its payload, a struct of its fields, with no tag |
+| No constructor has fields | The tag vector alone: each row's constructor position, as `u8` up to 256 constructors, `u16` up to 65 536, `u32` past that |
+| `Option T`: two constructors, one nullary, and the other's present column takes a validity bitmap | The present column with a validity bitmap; a cleared bit is the nullary constructor |
+
+The present column of `Option T` is the other constructor's one
+field's column when it has one field, else the struct of its fields.
+It takes a validity bitmap unless it is a dense union or itself has
+one; `Option (Option T)` and `Option` of a sum laid out as a union are
+dense unions.
 
 These are engine layouts only; the language still sees constructors.
 Type ids in a batch are positions in the batch schema, which maps each
@@ -46,9 +70,27 @@ structs.
 
 A union holds at most 127 constructors. A sum with more is a union of
 unions: the outer union's children are unions of up to 127
-constructors each, nested as deep as needed. The batch schema's type
-map still names each leaf constructor by its stable id
+constructors each, nested as deep as needed. With `n` constructors and
+`g` the least power of 127 with `127 g >= n`, child `j` of the outer
+union covers positions `j g` up to `(j + 1) g`, laid out by the same
+rule, and a type id at each level is the child's index. The batch
+schema's type map still names each leaf constructor by its stable id
 ([../spec/wire.md](../spec/wire.md)).
+
+Every buffer of a batch satisfies Arrow's layout, so a consumer may
+hand it to an Arrow implementation or write it as an IPC body without
+copying:
+
+- Its first byte's address is a multiple of 64.
+- Its length padded to the next multiple of 64 is allocated, and the
+  padding bytes are zero.
+- Values are little-endian. Offsets of a binary or list column are
+  `len + 1` values from 0, never decreasing. A dense union's offsets
+  are `len` values numbering each child's rows in turn from 0.
+- A validity bitmap holds one bit per row, least significant bit
+  first; a row whose bit is cleared still has a slot in the present
+  column, holding an unspecified value.
+- Every child of a struct has the struct's length.
 
 Rulings: exec/batch/arrow, exec/value-sum/dense, exec/value-sum/special/option-validity, exec/value-sum/special/enum-tag, exec/value-sum/special/one-ctor
 
