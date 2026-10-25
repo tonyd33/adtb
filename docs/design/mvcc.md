@@ -23,10 +23,43 @@ Invariants:
   sum is the disjoint union of its heaps' scans, and an ordered scan of
   the sum merges ordered scans of each heap on the fly.
 
-Each heap has a directory naming its pages, recorded in the catalog,
-and a free space map and visibility map of its own.
+Each heap has a directory naming its pages, which is also its free
+space map, and a visibility map of its own. The catalog records the
+heap id and the page id of the directory's root.
 
-TODO: the structure of a heap's page directory (a page list or a tree) is undecided.
+The directory is a tree of free space map pages owned by the heap
+([storage.md §2.1](storage.md#21-page-header)). Each entry names a page
+and holds a free space category: the page's free bytes times 256 over
+the page size, at most 255. A directory page at level 0 lists heap
+pages; one at level `l` lists directory pages at level `l - 1`. Pages
+are numbered by position, in the order they were added, and each heap
+page records its own position.
+
+Invariants:
+
+- The root's page id never changes. A full root moves its entries to a
+  new directory page and lists that page alone, one level up.
+- Every directory page but the last at its level is full, so the path
+  to position `p` is the digits of `p` in base `fanout`, from the root.
+  `fanout`, the entries a directory page holds, is fixed when the heap
+  is created.
+- An entry with category `c` names a page with at least `c` times the
+  page size over 256 bytes free. A level-0 entry of a page in the
+  heap's newest row format has exactly its page's category; an inner
+  entry has the greatest category of its child.
+- A heap page stays in the directory, at its position, until the heap
+  is dropped.
+
+Postconditions:
+
+- A scan of the heap reads its pages in position order and each page's
+  versions in slot order.
+- Each pager update a heap operation makes
+  ([storage.md §2.3](storage.md#23-page-access)) names at most `h + 4`
+  pages, `h` being the level of the directory's root. The heap and
+  directory pages of one insert, update, delete or retag change in one
+  update; pages it allocates, and the chunks of its out-of-line values,
+  are written by earlier calls.
 
 Rulings: storage/table-per-ctor, storage/sum-scan/merge-append, encoding/native-cost/union-index, engine/in-heap, layout/fill/fsm
 
@@ -39,6 +72,10 @@ from one heap's version may name a page of another heap of the sum.
 
 A TID stays valid while the version it names is retained: in-page
 compaction moves tuples without changing their TID.
+
+In a version header a TID is one little-endian `u64`, the page id in
+the upper 48 bits and the slot in the lower 16. Zero names no version,
+since page 0 is a file header copy.
 
 Rulings: mvcc/version-tid
 
@@ -63,6 +100,12 @@ and is logged as one.
 | retagged-in | This version was inserted by a retag |
 | hot-updated | The successor is a heap-only version on this page |
 | heap-only | No index entry names this version |
+
+The heap gives `xmin`, `xmax` and `next` to its callers as the raw
+values stored, and decides no visibility. A writer that sets a
+version's `next` sets its moved and hot-updated flags for that
+successor, clearing any an aborted writer left; a delete sets `xmax`
+and clears `next` and both flags.
 
 There is no attribute count, header length or null bitmap: the heap's
 schema and the page's format version fix the body layout, and no field
@@ -200,6 +243,18 @@ of §3: a moved version is invisible to newer snapshots by its `xmax`,
 like any superseded version. A deleter that aborted leaves the version
 visible until vacuum clears its `xmax`.
 
+The heap walks a chain from a TID through each `next`, across heaps,
+and returns the first version a caller's predicate accepts, with its
+TID, the heap id of its page, its header and flags; or none, when the
+chain ends first. A redirect line pointer
+([§12.1](#121-page-arrangement)) is followed to the slot it names; a
+slot holding no version ends the chain.
+
+An update names the key fields of every index whose constructor set
+contains the heap's constructor. The heap decides whether the update is
+heap-only and reports it; the caller inserts index entries for the new
+version exactly when it is not.
+
 Rulings: mvcc/o2n, mvcc/version-tid, mvcc/hot/per-heap
 
 ## 6. Retag
@@ -231,6 +286,8 @@ the writing transaction `T`:
 Postconditions:
 
 - A retag is never heap-only.
+- Each out-of-line value the new row shares with the old version keeps
+  its pointer ([§12.5](#125-large-values)).
 - Snapshots older than `T` find the old version through the old entry;
   newer snapshots find the new one.
 - A uniqueness probe that finds the old entry skips it because its
@@ -501,15 +558,23 @@ Non-binding.
 The heap's schema picks the page arrangement. A constructor whose
 fields all have fixed width (including value-level sums stored at
 maximum payload, §12.3) has fixed-slot pages; any other constructor has
-slotted pages.
+slotted pages. A page keeps its arrangement when it is converted to a
+newer row format (§12.4), except that a fixed-slot page converted to a
+format with variable-width fields becomes slotted.
+
+Both arrangements start with the page's position in its heap's
+directory (§1).
 
 Fixed-slot page:
 
 ```text
 page header (24 B)
+u32 position
+u16 width w                      24 + body width, padded to 8
+u16 n                            the most slots of width w the page holds
 u64 used_slots[ceil(n / 64)]     bit i set: slot i holds a version
 u16 slot_flags[n]                the version flags of slot i (§3)
-slot[0] slot[1] ... slot[n-1]    slot i at a fixed offset, width w = 24 + body width
+slot[0] slot[1] ... slot[n-1]    from the next multiple of 8, slot i at a fixed offset
 ```
 
 A TID's slot number is the array index. Freeing a slot clears its bit
@@ -519,30 +584,78 @@ Slotted page:
 
 ```text
 page header (24 B)
+u32 position
+u32 upper                        offset of the lowest tuple byte
 u16 slot_count
+6 B reserved
 line pointer[0] ... line pointer[slot_count-1]   8 B each: u16 offset, u16 length, u8 state, u8 reserved, u16 flags
 free space
-tuples, packed from the end of the page
+tuples, packed from the end of the page, each at a multiple of 8
 ```
 
 Offsets and lengths are 16 bits, which covers every page size up to
-64 KiB; a tuple is at most a page minus its header. Line pointer states
-are unused, normal, dead (pruned, still named by
-index entries) and redirect (names the next live version of a
-heap-only chain on the page). Tuples move during in-page compaction
-without changing their TID. The line pointer's `flags` are the version
-flags of §3.
+64 KiB; a tuple is at most a page minus 48 bytes, rounded down to 8.
+Line pointer states are unused (0), normal (1), dead (2: pruned, still
+named by index entries) and redirect (3: its offset names the slot of
+the next live version of a heap-only chain on the page). Tuples move
+during in-page compaction without changing their TID. The line
+pointer's `flags` are the version flags of §3.
+
+A page's free space for the directory is, in a fixed-slot page, its
+free slots times `w`; in a slotted page, the bytes no line pointer or
+tuple takes, less one line pointer.
+
+Directory page (§1), of kind free space map and owned by the heap:
+
+```text
+page header (24 B)
+u16 level
+u16 count
+u16 capacity                     the directory's fanout, the same on each of its pages
+u16 reserved
+u64 entry[count]                 page id in bits 0 to 47, free space category in bits 48 to 55
+```
 
 Rulings: layout/slots/by-schema
 
 ### 12.2 Row body
 
+A heap reads and writes a row as `Vec<adtb::key::Value>`: the
+constructor's fields in declaration order, the sum's header fields
+first. Consumers rely on this row type:
+
+- A field of a declared record type is a `Value::Record` of its fields
+  in declaration order.
+- A field of a sum type is a `Value::Sum { ctor, fields }`, `ctor`
+  indexing the sum's constructors in declaration order, as the heap's
+  row type (`heap::FieldType::Sum`) lists them with their constructor
+  ids. A one-constructor sum's value is `ctor` 0.
+- A newtype is its representation and a reference its target's key.
+- Every row a heap returns is in the heap's newest row format.
+
 Fields are placed by the engine, not in declaration order: fixed-width
-fields are ordered by decreasing alignment to remove padding, then a
-table of `u16` end offsets for the variable-width fields, then the
-variable-width bytes. The catalog records, per heap format version,
-each field id's offset, so a rename or a move of a field changes no
-stored byte.
+fields are ordered by decreasing alignment to remove padding, ties in
+declaration order, then,
+when the row has variable-width fields, a table of `u16` end offsets
+for them from the next even offset, then a bitmap with one bit per
+variable-width field, set when it is out of line (§12.5), then the
+variable-width bytes. End offsets count from the start of the body.
+The catalog records, per heap format version, each field id's offset,
+so a rename or a move of a field changes no stored byte.
+
+| Base type | Fixed part |
+| --- | --- |
+| `I8`, `I16`, `I32`, `I64` | little-endian, aligned to its width |
+| `F32`, `F64` | the bits of the canonical value, aligned to its width |
+| `Decimal s` | the coefficient as an `i128`, 16 B, aligned to 16 |
+| `Instant`, `Time`, `DateTime`, `Duration` | `i64` microseconds |
+| `Date` | `i32` days |
+| `Period` | `i32` months, then `i32` days, aligned to 4 |
+| `Text`, `Bytes`, `SortKey`, `ZonedDateTime` | variable width |
+
+A record field whose fields all have fixed width is placed in the
+fixed part by the same rule, padded to its alignment; any other record
+field is variable width.
 
 ```adt
 type Order = { paid: Bool, id: I64, qty: I16, total: Decimal 2 }
@@ -553,7 +666,13 @@ body:  0 total (16)  16 id (8)  24 qty (2)  26 paid (1)     27 B, padded to 32
 ```
 
 For a variable field `j`, the bytes are `[end[j-1], end[j])`, with
-`end[-1]` the start of the variable area.
+`end[-1]` the start of the variable area. A `Text`, `Bytes` or
+`SortKey` field is its bytes. Any other variable-width field is its
+value in the nested encoding: fields in declaration order, fixed-width
+base types as in the fixed part, `Text`, `Bytes`, `SortKey` and the
+zone of a `ZonedDateTime` (after its `i64` local time) prefixed by
+their length as an unsigned LEB128 varint, and a sum as its tag (none
+for one constructor), then its constructor's fields.
 
 Rulings: layout/field-order/packed, layout/var-fields/offset-table
 
@@ -563,8 +682,10 @@ A field whose type is a sum is stored in the layout its shape allows:
 
 | Shape | Layout |
 | --- | --- |
-| Every constructor fixed width and the largest payload within an engine constant | tag, then a payload area the size of the largest constructor's payload |
+| Every constructor fixed width and the largest payload within 64 bytes | tag, then a payload area the size of the largest constructor's payload, at the next multiple of the payloads' alignment; the whole padded to the larger of the tag width and that alignment |
 | Otherwise | tag in the fixed part; the payload as a variable-width field |
+
+A payload is its constructor's fields placed as a record's are.
 
 The stored tag is the constructor id, the same number the wire
 carries. Where the tag lies in the variable-width part of a row it is
@@ -593,11 +714,18 @@ Rulings: layout/vsum/by-shape, layout/vsum-tag/varint, layout/vsum/widen/rewrite
 
 Each page holds rows of one format version. A schema operator that
 changes a constructor's fields or widens a value-level sum gives the
-heap a new format version, and pages are converted lazily as they are
-written. Reads decode a page by its own version; the first write to a
-page converts every row on it to the newest version. A converted page
-that no longer fits its rows moves the overflow rows to other pages as
-updates, with new TIDs and new index entries.
+heap a new format version, with a function that makes a row of the new
+format from a row of the one before. Pages are converted lazily. Reads
+decode a page by its own version and pass the row through each newer
+format's function.
+
+A change to a version's header or flags leaves the page's format as it
+is. An insert into a page of an older format first converts every
+version on it to the newest format, each in its own slot. A page whose
+converted versions would not fit keeps its rows and format and gets
+category 0 in the directory, so it takes no insert until vacuum frees
+space on it. No conversion moves a row: TIDs and index entries are
+unchanged.
 
 Per-constructor row heaps are the only storage format; analytic speed
 comes from execution.
@@ -612,6 +740,19 @@ holds a fixed-size pointer to it. A retag (§6) moves the row
 between heaps and keeps its pointers, so no out-of-line value is
 copied. Vacuum of the sum frees chunks no live or retained version
 references.
+
+While a version exceeds a quarter of a page, its largest inline
+variable-width field goes out of line. A field of an update's or a
+retag's new row equal to a value the old version points at keeps that
+pointer, whatever its size. A row still longer than the largest
+version a page holds is refused.
+
+The pointer is 16 bytes: `u64` length, `u64` TID of the first chunk.
+The store's pages are slotted heap pages owned by the store's id,
+taken from the heap id space, with a directory of their own built as a
+heap's (§1). Each tuple is one chunk: `u64` TID of the next chunk, zero
+for the last, then the bytes. Chunks are written last first, each in
+its own pager update, before the version that points at them.
 
 Rulings: layout/large/toast, layout/large/retag/per-sum
 
