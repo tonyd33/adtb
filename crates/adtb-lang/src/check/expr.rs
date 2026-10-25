@@ -2283,19 +2283,13 @@ impl Checker<'_> {
         &mut self,
         count: &Expr,
         keys: &[ast::OrderKey],
-        body: &Expr,
+        c: &ast::Comprehension,
         elem: Option<&Ty>,
         span: Span,
     ) -> R<Out> {
         let n = self.check(count, &Ty::Base(Base::I64))?;
-        let ExprKind::Comprehension(c) = &body.kind else {
-            return Err(diag(
-                body.span,
-                "the operand of `top` is a comprehension, so that its keys can name its elements",
-            ));
-        };
         if c.order.is_some() {
-            return Err(diag(body.span, "`order by` is not allowed inside `top`"));
+            return Err(diag(span, "`order by` is not allowed inside `top`"));
         }
         let b = self.comprehension_body(c, elem)?;
         let (x, ks) = match self.keys_over(&b, keys) {

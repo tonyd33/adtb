@@ -331,7 +331,12 @@ impl Parser<'_> {
                 self.expect_kw(Kw::By)?;
                 let keys = self.order_keys()?;
                 self.expect(Tok::LParen, "`(` and the operand of `top`")?;
-                let body = self.expr()?;
+                if !self.at_kw(Kw::From) {
+                    return Err(self.error_here(
+                        "expected the operand of `top`, a comprehension starting with `from`",
+                    ));
+                }
+                let body = self.comprehension()?;
                 self.expect(Tok::RParen, "`)`")?;
                 Ok(self.mk(
                     ExprKind::Top {

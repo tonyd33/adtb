@@ -55,7 +55,7 @@ pub fn each_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a Expr)) {
         ExprKind::Top { count, keys, body } => {
             each_expr(count, f);
             keys.iter().for_each(|k| each_expr(&k.expr, f));
-            each_expr(body, f);
+            comprehension(body, f);
         }
         ExprKind::If(c, a, b) => {
             each_expr(c, f);

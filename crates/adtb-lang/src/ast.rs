@@ -184,7 +184,7 @@ pub enum ExprKind {
     Top {
         count: Box<Expr>,
         keys: Vec<OrderKey>,
-        body: Box<Expr>,
+        body: Box<Comprehension>,
     },
     If(Box<Expr>, Box<Expr>, Box<Expr>),
     At {
@@ -605,6 +605,12 @@ pub enum CtorTarget {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CtorPlace {
+    Before(Ident),
+    After(Ident),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OperatorKind {
     AddModule(Ident),
     DropModule(Ident),
@@ -620,6 +626,7 @@ pub enum OperatorKind {
     AddConstructor {
         path: CtorPath,
         record: Option<Vec<FieldType>>,
+        place: Option<CtorPlace>,
         joins: Vec<RelationRef>,
         arms: Vec<ArmClause>,
     },
@@ -713,7 +720,10 @@ pub enum OperatorKind {
     Enable(CtorTarget),
     Disable(CtorTarget),
     Deprecate(CtorTarget),
-    Revert(String),
+    Revert {
+        migration: String,
+        fills: Vec<(FieldPath, Fill)>,
+    },
     Script(Write),
     Install {
         name: Ident,

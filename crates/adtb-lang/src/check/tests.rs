@@ -1780,9 +1780,17 @@ fn top_is_a_set_at_any_depth() {
         "fn f (u: User) -> Set Post = top 3 by p.created_at (from p in posts where p.author == key u select p)",
         "`top` needs a determinate order",
     );
-    refuses(
-        "fn f (xs: Set Post) -> Set Post = top 3 by 1 (xs)",
-        "the operand of `top` is a comprehension",
+    let parsed = parse_schema(
+        &source("fn f (xs: Set Post) -> Set Post = top 3 by 1 (xs)"),
+        Options::default(),
+    );
+    assert!(
+        parsed
+            .diags
+            .iter()
+            .any(|d| d.message.contains("the operand of `top`, a comprehension")),
+        "{:?}",
+        parsed.diags
     );
     let (s, p) =
         program("fn f () -> Set Post = top 3 by key p (from p in posts select p)").unwrap();

@@ -724,19 +724,11 @@ impl<'a> Resolver<'a> {
             }
             ExprKind::Top { count, keys, body } => {
                 self.expr(count);
-                match &body.kind {
-                    ExprKind::Comprehension(c) => self.comprehension(c, |r| {
-                        for k in keys {
-                            r.expr(&k.expr);
-                        }
-                    }),
-                    _ => {
-                        self.expr(body);
-                        for k in keys {
-                            self.expr(&k.expr);
-                        }
+                self.comprehension(body, |r| {
+                    for k in keys {
+                        r.expr(&k.expr);
                     }
-                }
+                });
             }
             ExprKind::If(c, a, b) => {
                 self.expr(c);

@@ -492,3 +492,215 @@ Rejected { reason: KeyChanged {..} }"#,
     );
     assert_eq!(items.len(), 6);
 }
+
+fn operators(src: &str) -> Vec<OperatorKind> {
+    match parse_migration(&format!("module m\n{src}"), STRICT).ok() {
+        Ok(f) => f.operators.into_iter().map(|o| o.kind).collect(),
+        Err(d) => panic!("{src}: {:?}", d),
+    }
+}
+
+fn operator_err(src: &str) -> String {
+    match parse_migration(&format!("module m\n{src}"), STRICT).ok() {
+        Ok(f) => panic!("{src} parsed as {:?}", f.operators),
+        Err(d) => d[0].message.clone(),
+    }
+}
+
+#[test]
+fn add_constructor_places_before_or_after() {
+    let ops = operators(
+        "add constructor Identity.Apple { sub: Text } before Google
+add constructor Identity.Okta after EmailPass
+  joins identities.OAuth
+  arm display_name: Okta o -> o.sub
+add constructor Identity.Saml { idp: Text }",
+    );
+    let [
+        OperatorKind::AddConstructor {
+            record: Some(_),
+            place: Some(CtorPlace::Before(b)),
+            ..
+        },
+        OperatorKind::AddConstructor {
+            record: None,
+            place: Some(CtorPlace::After(a)),
+            joins,
+            arms,
+            ..
+        },
+        OperatorKind::AddConstructor { place: None, .. },
+    ] = ops.as_slice()
+    else {
+        panic!("{ops:?}")
+    };
+    assert_eq!(b.text, "Google");
+    assert_eq!(a.text, "EmailPass");
+    assert_eq!(joins.len(), 1);
+    assert_eq!(arms.len(), 1);
+}
+
+#[test]
+fn add_constructor_placement_follows_the_record_type() {
+    operator_err("add constructor Identity.Apple before Google { sub: Text }");
+}
+
+#[test]
+fn add_constructor_placement_names_one_constructor() {
+    operator_err("add constructor Identity.Apple before identities");
+    operator_err("add constructor Identity.Apple after (Google | EmailPass)");
+    operator_err("add constructor Identity.Apple before Google after EmailPass");
+}
+
+#[test]
+fn revert_takes_fills() {
+    let ops = operators(
+        r#"revert 0015
+revert 0015
+  fill Identity.EmailPass.hash = bytes("")
+revert 0021
+  fill Identity.EmailPass.hash = bytes(e.email)
+  fill Identity.verified = match
+    | EmailPass e -> false
+    | Google g    -> true
+enable identities.Apple"#,
+    );
+    let [
+        OperatorKind::Revert {
+            migration: m0,
+            fills: f0,
+        },
+        OperatorKind::Revert { fills: f1, .. },
+        OperatorKind::Revert { fills: f2, .. },
+        OperatorKind::Enable(_),
+    ] = ops.as_slice()
+    else {
+        panic!("{ops:?}")
+    };
+    assert_eq!(m0, "0015");
+    assert!(f0.is_empty());
+    assert_eq!(f1.len(), 1);
+    assert_eq!(f1[0].0.ctor.as_ref().unwrap().text, "EmailPass");
+    assert_eq!(f1[0].0.field.text, "hash");
+    assert!(matches!(f1[0].1, Fill::Expr(_)));
+    assert_eq!(f2.len(), 2);
+    assert!(f2[1].0.ctor.is_none());
+    assert!(matches!(&f2[1].1, Fill::Match(arms) if arms.len() == 2));
+}
+
+#[test]
+fn revert_fill_needs_a_field_path_and_a_value() {
+    operator_err("revert 0015 fill hash = bytes(\"\")");
+    operator_err("revert 0015 fill Identity.EmailPass.hash bytes(\"\")");
+    operator_err("revert 0015 fill Identity.EmailPass.hash =");
+}
+
+#[test]
+fn revert_fill_in_an_example() {
+    let items = example(
+        r#"-- 0016
+module auth
+revert 0015
+  fill Identity.EmailPass.hash = bytes("")"#,
+    );
+    assert!(matches!(
+        &items[1],
+        ExampleItem::Operator(Operator { kind: OperatorKind::Revert { fills, .. }, .. }) if fills.len() == 1
+    ));
+}
+
+#[test]
+fn a_lone_anonymous_constructor_with_a_record_is_a_sum() {
+    let t = parse_type("Set (Found { user: Key users })", STRICT)
+        .ok()
+        .unwrap();
+    let TypeKind::Named { args, .. } = &t.kind else {
+        unreachable!()
+    };
+    assert!(matches!(&args[0], TypeArg::Type(Type { kind: TypeKind::Sum(c), .. }) if c.len() == 1));
+    assert!(matches!(
+        parse_type("Found", STRICT).ok().unwrap().kind,
+        TypeKind::Named { .. }
+    ));
+}
+
+#[test]
+fn type_arguments_stop_at_clause_words_and_calls() {
+    let file = parse_schema(
+        "module m
+relation boxes : Box Text unique (label)
+relation cells : Cell Text index (lower(label))
+relation pins : Box (unique) key id",
+        STRICT,
+    )
+    .ok()
+    .unwrap();
+    let Decl::Relation(r) = &file.decls[0] else {
+        unreachable!()
+    };
+    assert!(matches!(&r.ty.kind, TypeKind::Named { args, .. } if args.len() == 1));
+    assert!(matches!(r.clauses[0], RelationClause::Unique(..)));
+    let Decl::Relation(r) = &file.decls[2] else {
+        unreachable!()
+    };
+    assert!(matches!(&r.ty.kind, TypeKind::Named { args, .. } if args.len() == 1));
+    let ops = operators("add field Box.size : Option I64 fill None");
+    assert!(
+        matches!(&ops[0], OperatorKind::AddField { ty: Type { kind: TypeKind::Named { args, .. }, .. }, .. } if args.len() == 1)
+    );
+}
+
+#[test]
+fn top_and_at_are_closed_forms() {
+    let e = expr("top 3 by key p (from p in posts select p) union recent");
+    assert!(matches!(binop(&e), BinOp::Union));
+    let e = expr("at commit p { from i in identities select i } union now");
+    assert!(matches!(binop(&e), BinOp::Union));
+}
+
+#[test]
+fn top_operand_is_a_comprehension() {
+    expr_err("top 3 by 1 (xs)");
+    expr_err("top 3 by 1 ((from p in posts select p))");
+}
+
+#[test]
+fn rejects_into_after_an_insert_from_a_query() {
+    let items = adhoc(
+        r#"insert identities.Google from (
+  from r in read_csv("google.csv", GoogleRow)
+  select Google { id: r.id, user: r.user, gid: r.gid })
+rejects into google_rejects"#,
+    );
+    assert!(matches!(
+        &items[0],
+        AdhocItem::Write(Write { kind: WriteKind::Insert { from: true, rejects: Some(r), .. }, .. })
+            if r.name.text == "google_rejects"
+    ));
+    let items = adhoc(
+        r#"insert identities.Google from (from r in staged select Google { user: r.user, gid: r.gid })
+unless conflict on (gid) in Google else skip
+rejects into auth::google_rejects"#,
+    );
+    assert!(matches!(
+        &items[0],
+        AdhocItem::Write(Write { kind: WriteKind::Insert { upsert: Some(_), rejects: Some(r), .. }, .. })
+            if r.module.is_some()
+    ));
+}
+
+#[test]
+fn let_and_options_that_typing_refuses_still_parse() {
+    let items = adhoc(
+        r#"transact read_only durability local
+  let s = skip
+  let w = (insert users { name: n }, skip)
+  let u = insert users { name: n }
+  update u set User { u with name: m }"#,
+    );
+    let [AdhocItem::Transact(b)] = items.as_slice() else {
+        panic!("{items:?}")
+    };
+    assert_eq!(b.options.len(), 2);
+    assert_eq!(b.items.len(), 4);
+}

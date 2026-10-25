@@ -269,13 +269,19 @@ impl Parser<'_> {
             "deprecate" => Ok(OperatorKind::Deprecate(self.ctor_target()?)),
             "revert" => {
                 let t = self.expect(Tok::Int, "a migration number")?;
-                let number = self.text_of(t).to_string();
-                if number.len() < 4 {
+                let migration = self.text_of(t).to_string();
+                if migration.len() < 4 {
                     return Err(
                         self.error_at(t.span, "a migration number has at least four digits")
                     );
                 }
-                Ok(OperatorKind::Revert(number))
+                let mut fills = Vec::new();
+                while self.eat_word("fill") {
+                    let path = self.field_path()?;
+                    self.expect(Tok::Eq, "`=`")?;
+                    fills.push((path, self.fill()?));
+                }
+                Ok(OperatorKind::Revert { migration, fills })
             }
             "script" => Ok(OperatorKind::Script(self.write_expr()?)),
             "install" => {
@@ -319,6 +325,13 @@ impl Parser<'_> {
                 } else {
                     None
                 };
+                let place = if self.eat_word("before") {
+                    Some(CtorPlace::Before(self.upper("a constructor name")?))
+                } else if self.eat_word("after") {
+                    Some(CtorPlace::After(self.upper("a constructor name")?))
+                } else {
+                    None
+                };
                 let mut joins = Vec::new();
                 let mut arms = Vec::new();
                 loop {
@@ -336,6 +349,7 @@ impl Parser<'_> {
                 Ok(OperatorKind::AddConstructor {
                     path,
                     record,
+                    place,
                     joins,
                     arms,
                 })
