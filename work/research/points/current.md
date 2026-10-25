@@ -280,7 +280,7 @@ accept:
   layout/large/retag/per-sum: {title: 'One out-of-line store per sum, so pointers survive a move', reason: 'the large-value store belongs to the sum, so a retag moves no out-of-line value'}
   layout/large/toast: {title: Chunks in a side relation behind an inline pointer, reason: large values out of line in a per-heap side store}
   layout/slots/by-schema: {title: Fixed slots for constructors with only fixed-width fields and slotted pages otherwise, reason: 'fixed slots for heaps whose constructor has only fixed-width fields, slotted pages otherwise'}
-  layout/succ/key-probe: {title: A moved flag and the successor found by probing the union index with the kept key, reason: same as key-relookup at the page level}
+  layout/succ/global-tid: {title: The successor link holds a file-global TID; a moved flag marks a cross-heap successor, reason: 'page ids are file-global, so next names a cross-heap successor with no probe; key relookup is ambiguous after an A to B to A retag in one transaction'}
   layout/tag-value/catalog-id: {title: The constructor's global catalog id, reason: 'constructor ids are deterministic in log order and shared by instantiations, so one id space serves wire, heaps and stored value tags (spec/ctor-ids)'}
   layout/torn/fpw: {title: Log a full page image on the first change after each checkpoint, reason: 'full-page images in the redo log, as Postgres'}
   layout/tuple-header/lean: {title: Fixed 24-byte header with 64-bit xids and no attribute count or header length, reason: no null bitmap or attribute count with one schema per heap and no NULL}
@@ -325,8 +325,7 @@ accept:
   mvcc/background: {title: Periodic background passes per sum, reason: 'per-sum background vacuum, plus opportunistic page pruning on access'}
   mvcc/ctor-tagged: {title: 'The lock carries the scanned constructor set, an insert conflicts only if its constructor is in it', reason: constructor membership is one more predicate conjunct of a range lock}
   mvcc/hot/per-heap: {title: An update is heap-only when no index whose constructor set contains this heap keys a changed field, reason: whether an update is heap-only is decided per heap from the indexes covering it}
-  mvcc/link/key-relookup: {title: A retag sets a moved marker and the waiter re-finds the row by its sum key, reason: 'the sum key is unique, so the next version is found by key without extra header bytes'}
-  mvcc/link/reinsert/in-flag: {title: The retag's new version carries a retagged-in flag the waiter requires, reason: marks a version superseded so a reinserted key is not mistaken for its successor}
+  mvcc/link/global-tid: {title: A retag stores the successor TID in next; page ids are file-global, reason: 'page ids are file-global, so next names a cross-heap successor with no probe; key relookup is ambiguous after an A to B to A retag in one transaction'}
   mvcc/long-reader/ctor-scoped: {title: A transaction whose constructor relations are known holds back only their heaps, reason: 'registered queries name the constructor relations they read, so a long reader pins only those heaps'}
   mvcc/next-key: {title: Lock the key ranges between the entries the scan saw, reason: next-key locking is precise for ranges on the union index}
   mvcc/o2n: {title: 'Oldest to newest, each version links forward to its successor', reason: as Postgres; a new version is appended and found by key}
@@ -575,18 +574,25 @@ accept:
   security/tenancy/file-each: {title: Each tenant is its own database file, reason: 'a database file per tenant isolates reads, keys, conflicts and resources with no policy machinery'}
   security/tenancy/fleet/fleet: {title: A tool applies the operator log to each tenant and pins bundles per tenant, reason: a tool applies the log to each tenant file and pins bundles per tenant}
   security/transition/transition: {title: Retag privileges name source and target constructor sets, reason: retag privileges name source and target constructor sets}
+  spec/adhoc-failure/ends-text: {title: The first failing item ends the text; nothing commits; later items do not run; the error names its ordinal; inside an interactive transaction none of the text applies and the transaction stays open, reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/adhoc-path/adhoc-write: {title: Ad hoc text may write for principals holding adhoc plus the write privileges, reason: loads and staging repairs need a path; constraints hold and every change set is audited}
   spec/agg-range/any-set: {title: Any set expression; sum and avg refuse a generator over a select-built set, reason: count distinct must be expressible; only sum and avg lose meaning when duplicates vanish}
+  spec/blocked-migration/refuse: {title: Refused at once with a report naming the blockers; BlockingMigration notices go to blocking sessions for BlockingNoticePeriod (24h), reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/bundle-families/family: {title: Bundle names are FAMILY-VERSION; call grants and plan pins carry within a family for equal signatures or checked forms, reason: a new release otherwise needs fresh grants and loses its plan pins}
+  spec/catalog-grants/deployment: {title: 'Deployment state, made by ad hoc statements', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/compression/per-call-off: {title: 'Per call, off by default', reason: compressing attacker and secret data in one TLS frame is a compression oracle}
   spec/conditional/if: {title: 'if c then a else b, sugar for a match on Bool', reason: if and else were reserved with no form}
   spec/ctor-ids/log-order: {title: Deterministically in log order; shared by instantiations; heaps keyed by relation and constructor; prelude ids fixed below 1024, reason: 'codegen must compute the same ids the database uses, and drivers must decode prelude sums'}
   spec/defaults-home/relation: {title: As relation clauses applied by inserts and retags into that relation, reason: construction stays pure and one type may serve several relation variables}
+  spec/disable/disable: {title: 'A `disable r.C` operator, enable''s inverse, refused while rows of r.C exist or a live bundle can write into it', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/dual-header/two-copies: {title: Two alternating copies on pages 0 and 1 with sequence and checksum, reason: 'a torn header would lose the checkpoint and, for encrypted files, every key'}
   spec/dump-scope/all: {title: 'Roles, grants, credential verifiers, settings, audit and code bytes besides schema and rows', reason: a restore must keep clients working and the version hash must cover code}
   spec/embedded-open/register-first: {title: 'Register, supersede earlier bundles, bind host functions, migrate, plan', reason: old bundles otherwise block shipped enables for a lease and downgrades break re-upgrades}
   spec/evaluation/by-value: {title: 'Call by value, left to right within a binding; inlining only of total arguments', reason: faults stay predictable and match the surface text}
+  spec/exact-sum/exact: {title: 'The exact total, checked once at the end', reason: maintainer rulings on the third spec review; reasons in each option body}
+  spec/family-owner/first-registrant: {title: The first registrant owns the family; only it or the schema owner registers into it; family call grants compare signatures by type ids, reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/fault-type/fault-sum: {title: 'A prelude Fault sum; try catches faults, not fail', reason: try needs a result type}
+  spec/fn-results/allowed: {title: 'Yes; function types never appear in a relation, field, set element, type argument, query result or registered-query parameter; all normalised away before planning', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/fpi/clean-to-dirty: {title: 'On each clean-to-dirty transition, skipped when page writes are atomic', reason: 'fuzzy checkpoints start redo before the checkpoint, so per-checkpoint images can miss a torn page'}
   spec/grant-carry/carry: {title: Rename and nest carry; split grants each new constructor the kept fields; merge requires equal source grants; remove drops, reason: schema changes must not silently revoke or widen access}
   spec/grant-kinds/split: {title: 'Relation, constructor-set and call fn grants are migration operators; roles, capabilities and bundle call grants are ad hoc statements; each refused in the other place', reason: access to data shapes travels with the schema and its hash; who may deploy and operate is deployment state}
@@ -595,20 +601,26 @@ accept:
   spec/inline-types/named-only: {title: Every sum or record used as a field type is a declared type, reason: nominal typing holds without exception and evolution has a name to act on}
   spec/key-field/declared: {title: The type declares the key fields; a self-key field is typed Key r and binds the type to r, reason: an added field cannot belong to a type that serves several relation variables}
   spec/key-values/constructor: {title: 'r.key(v) or r.key(f: v, g: w); no literal checks against Key r', reason: 'a key names its relation, so it cannot be mistaken for another relation''s key'}
+  spec/lease-expiry/logged: {title: 'Expiry computed from the last logged renewal on every node; the primary waits a further LeaseGrace (1h); an expired bundle is not live, and binds, calls and renewals are refused BundleExpired until re-registration', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/lease-renewal/calls: {title: 'On binding and on calls, written at most once per lease/8', reason: a long-lived connection must not count as dead while serving calls}
   spec/log-content/authored: {title: 'Only author-written migrations; retirement, leases and supersession are deployment state', reason: engine appends diverge the file from shipped migrations and fail the next open}
   spec/log-framing/batch-framing: {title: Blocks carry batch sequence and block count; incomplete batches discarded; the tail zeroed before new writes, reason: stale blocks of a discarded batch keep valid checksums and could be read as a continuation}
   spec/membership/pinned: {title: Membership at the pinned version; enabling C blocks on readers of the whole relation or of references admitting C, reason: old readers keep exhaustive matches and never dereference into an unknown constructor}
+  spec/mixed-versions/refuse: {title: Refused with MixedVersions; the transaction stays open, reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/newtype-syntax/call: {title: Email("a@b") and type Email = new Text where p, reason: juxtaposition had no production and is ambiguous with nullary constructors}
   spec/option-ref-delete/clear: {title: on delete clear sets an Option (Key) field to None, reason: the common case needed a hand-written update in every deleting statement}
   spec/order-keys/list: {title: 'A list of keys with directions: by (a desc, b)', reason: 'anonymous records stay unordered, and field order does not affect type equality'}
   spec/partiality/fault-or-diverge: {title: 'May fault or may not terminate; limits are rejections, never faults', reason: an unbounded fix must not move past a guard although no fault is raised}
+  spec/past-reads/safe-snapshot: {title: 'The greatest safe snapshot at or before p, listed in sys::safe_snapshots, typed at that snapshot''s schema version; p is a Position; no SIREAD locks', reason: maintainer rulings on the third spec review; reasons in each option body}
+  spec/peer-mappings/relation: {title: '`catalog::peer_mappings` keyed by (listener, ordinal), changed by `map peer` and `unmap peer` by `schema` holders; one relation for certificate subjects and OS users; `*` matches any run', reason: maintainer rulings on the third spec review; reasons in each option body}
+  spec/pending-relaxations/all: {title: '`drop constraint`, `drop unique`, `drop check` and a relaxing `rekey`; pending drops are carried and rechecked, and an operator leaving one without an image is refused', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/pinned-defs/own-version: {title: 'The definitions of its version; indexes, constraints and stored views use current code', reason: a pinned bundle's meaning does not change under it; an expression index is used only when code identity matches}
   spec/prelude/prelude-part: {title: 'A normative prelude part with every type and function, signatures and faults', reason: about a dozen functions were used and defined nowhere}
   spec/primary-reads/never: {title: Never; they run under SSI; positions carry the epoch, reason: reads must not wait for writes; read-your-writes must survive failover}
   spec/privileges/fifteen: {title: 'read, insert, update, delete, retag, call, adhoc, assert, schema, monitor, cancel, maintain, configure, read_files, write_files', reason: one list in syntax and security; the key field is granted with any read}
   spec/query-result/any: {title: Any type; a comprehension is a set, reason: a single aggregate result needs no host comprehension}
   spec/schema-fn-calls/import: {title: import fn NAME gives it a bundle ordinal, reason: calls stay ordinal-addressed and checked at registration}
+  spec/schema-principal/root-first: {title: 'In the root namespace, resolvable from every module and bundle, declared only in the first migration, with log ids; prelude ids 37-40 belong to the default', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/schema-siread/version-item: {title: Every statement reads the schema version item; a migration writes it, reason: a writer at n-1 could commit into a constructor version n deprecated without any conflict}
   spec/scripts-pinning/never: {title: 'Never; a script changes data, so translation across it is the identity', reason: blocking would stop every data-fix migration for a lease}
   spec/settings-change/command: {title: 'set setting X = v, needing configure', reason: 'settings are effects, not data a registered query writes'}
@@ -617,9 +629,14 @@ accept:
   spec/staged-failure/discard: {title: The pending migration is discarded and the log is unchanged, reason: a version commits only when its staged jobs complete}
   spec/stale-bundles/refuse: {title: Refuse binding an expired bundle with untranslatable queries and registering one pinned before an enabled constructor it reads, reason: otherwise one stale bundle wedges every later migration or reads rows it cannot type}
   spec/stragglers/hide: {title: 'A bundle may declare hide new constructors: rows of unknown constructors are invisible to it, and following a reference to one faults NoSuchRow', reason: 'one old phone calling forever would hold back a release, and retiring breaks every old client'}
-  spec/temp-relations/temp: {title: 'Session-scoped temp relations outside the log, keyed by their key or whole row', reason: a one-off load should not bump the schema version and recheck every bundle}
+  spec/supersede/command: {title: '`supersede bundle B by B2`, run by B''s owner or the schema owner, B2 live in the same family', reason: maintainer rulings on the third spec review; reasons in each option body}
+  spec/supersession-commit/before-migrations: {title: 'Durably and on its own, before the shipped migrations; undone only by re-registering; registrations stay atomic', reason: maintainer rulings on the third spec review; reasons in each option body}
+  spec/temp-relations/txn: {title: 'Temp relations scoped to one interactive transaction or one ad hoc text, outside the log', reason: sessions hold no state; every connection continuing the transaction sees them}
+  spec/try-faults/any: {title: Any one of the faults; a listed freedom; conformance accepts any fault some binding raises, reason: maintainer rulings on the third spec review; reasons in each option body}
+  spec/unique-violation/violated: {title: KeyViolation for the key only; any other unique reports Violated with that unique, reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/upsert-new/old-and-new: {title: Both old and the proposed row new; a single-row let binds exactly one row, reason: a bulk merge must read the incoming row}
   spec/uuid/uuid-newtype: {title: A prelude Uuid newtype over 16 bytes with uuid() and text(), reason: keys need a readable textual form}
+  spec/value-states/gated: {title: '`add constructor` on a value-level sum starts declared; `enable T.C` gates storing it in any field; refused while a live bundle pinned before reads a field whose type reaches T, hide new constructors included; storing a declared one is Rejected NotOpen', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/violation-report/one: {title: 'The violated constraint with the smallest name, its report as descriptor and rows, unreadable rows redacted with a count', reason: an error value is not a collection; one deterministic constraint suffices to act on}
   spec/write-forms/skip-seq-if: {title: 'skip, parenthesised write sequences and if writes', reason: conditional and multi-part writes otherwise need dummy generators}
   storage/sum-scan/merge-append: {title: Merge-append ordered scans of each heap, reason: a sum scan is the disjoint union it denotes}
@@ -721,7 +738,7 @@ accept:
   types/tzdb/catalog: {title: The rules are versioned catalog data; adopting a new release is an operation, reason: zone rules are versioned catalog data; adopting a release is an operator}
   types/variance/derived: {title: Variance inferred from where a parameter occurs in the declaration, reason: variance follows from where a parameter occurs}
   types/zoned/zoned: {title: A zoned date-time of civil time plus a named IANA zone, reason: civil time plus a named zone; offsets are a record}
-  union-index/drop-ctor/eager: {title: Scan the dropped heap and delete its entries one by one, reason: 'restrict leaves the heap empty, so eager deletion removes nothing'}
+  union-index/drop-ctor/after-vacuum: {title: 'Keep the removed heap as history until vacuum has cleared its entries, then drop it', reason: older snapshots and time travel still see the removed constructor's rows; vacuum clears entries in its batched pass}
   union-index/vacuum/batched: {title: 'Collect dead TIDs from every constructor heap, one index pass', reason: 'vacuum is per sum, one index pass'}
   write/bulk/from-query: {title: 'Insert, update and delete take a query as their source', reason: change sets are computed by queries}
   write/delete-action/cascade: {title: Delete the referrers, reason: 'refuse, propagate, or move the referrer to a constructor without the reference; no NULL'}
@@ -770,6 +787,7 @@ defeat:
   surface/read-only: {title: Ad hoc is read-only; fixes are migrations or registered transactions, reason: a registered bundle or migration per data fix makes loads and staging repairs impractical}
   surface/registration/on-change/retire: {title: The migration applies and failing queries are refused at call time, reason: 'a breaking change is refused; retiring a bundle is a separate explicit command, never an outcome of a migration'}
   types/float-eq/ieee: {title: 'IEEE comparison, with NaN unequal to itself', reason: '== is not reflexive, so sets and keys have no equivalence'}
+  union-index/drop-ctor/eager: {title: Scan the dropped heap and delete its entries one by one, reason: deleting entries at remove loses versions that older snapshots and the retention window still see}
   union-index/retag/forbid: {title: 'No in-place retag, constructor changes are delete plus insert', reason: a semantic restriction imposed by physical layout}
   union-index/retag/live: {title: Live with cross-partition update semantics, reason: retag is an ordinary update; the engine moves the row atomically like any update}
   write/bulk/for-each: {title: A loop over a query whose body is a single-row write, reason: a row-at-a-time loop contradicts the change-set denotation}

@@ -58,10 +58,11 @@ type Parcel = { id: Key parcels, ship: Address, bill: Address }
 type Handle = { provider: Provider, subject: Text }
 ```
 
-A function type is not a value type. Functions are parameters of
-higher-order functions only and are normalised away before a query is
-planned ([semantics.md](semantics.md)); no relation, field, result or
-type argument holds one.
+A function type is not a value type. A `fn` may take and return
+functions, and every function is normalised away before a query is
+planned ([semantics.md](semantics.md)). A function type never appears
+in a relation, a field, a set element, a type argument, a query result
+or a parameter of a registered query.
 
 Rulings: model/nominal, model/anon-results/anon-records, model/inline-records, surface/query-scoped, interop/scalar/newtype-only
 
@@ -90,7 +91,7 @@ Rulings: model/nominal, model/anon-results/anon-records, model/inline-records, s
   recursive structure is rows referencing rows:
 
   ```
-  type ExprNode { id: Key expr_nodes } = Num { n: I64 }
+  type ExprNode { id: Key expr_nodes } = Lit { n: I64 }
                                        | Add { l: Key expr_nodes, r: Key expr_nodes }
   relation expr_nodes : ExprNode key id generate sequence
   ```
@@ -402,7 +403,6 @@ or from a generated default of the relation it inserts into, such as
 ```
 type Task = { id: Key tasks, due: Instant }
 relation tasks : Task key id generate sequence
-relation tasks : Task key id generate sequence
 query due (now: Instant) -> Set ({ task: Key tasks }) =
   from t in tasks where t.due < now select { task: key t }
 ```
@@ -707,9 +707,11 @@ in two ways:
 - `key x` is defined for any row whose relation is statically known:
   a binder over a relation, a constructor set or a backlink; a
   binder over a key-preserving query (one that selects the binder
-  itself) or over a view returning rows of one relation; a `match`
-  arm on such a row; a row bound by `let` from a write; and a value
-  of a type with a self `Key r` field. Its type is `Key r.S` for the
+  itself) or over a view returning rows of one relation; a binder
+  over `inserted(R)`, `deleted(R)` or `prior(R)` in a transition
+  constraint ([constraints.md](constraints.md#61-reading-the-change));
+  a `match` arm on such a row; a row bound by `let` from a write; and
+  a value of a type with a self `Key r` field. Its type is `Key r.S` for the
   constructor set `x` belongs to. Elsewhere `key x` is refused.
 - `r.key(v)` builds the key of `r` from the value of its key field,
   and `r.key(f: v, g: w)` from the values of the fields of a composite

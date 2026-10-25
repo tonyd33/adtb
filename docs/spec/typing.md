@@ -29,7 +29,7 @@ checking uses these forms:
 | Constructor row type | `Identity.Google` | a value of `Identity` whose constructor is `Google` |
 | Constructor-set row type | `Identity.(Google \| Apple)`, `Identity.OAuth` | a value of `Identity` whose constructor is in the set |
 | Set type | `Set T` | a set of values of `T` |
-| Function type | `T -> U` | a function parameter of a higher-order function |
+| Function type | `T -> U` | a parameter or result of a `fn`, or a lambda |
 | Type variable | `a` | a type parameter of a declaration or a generic function |
 
 A named constructor set used at the type level, `Identity.OAuth`,
@@ -97,6 +97,16 @@ an expected type or synthesizes one:
 - A record literal, a constructor application, a numeric literal, a
   `match`, an `if`, and a function passed to a higher-order function are
   checked against the expected type when there is one.
+- A comprehension checked against `Set T` checks its `select`
+  expression against `T`, and a `union` checked against `Set T` checks
+  each operand against `Set T`. The source query of `insert r from (q)`
+  is checked against `Set` of the row type of the target `r`, `r.C` or
+  `r.S`.
+- In `at commit p { q }` the operand `p` is checked against
+  `Position`, and in `at instant t { q }` the operand `t` against
+  `Instant`. The block synthesizes the type of `q`, checked at the
+  schema version of the past state it reads
+  ([derived.md](derived.md#62-naming-a-past-state)).
 - Where a synthesized type meets an expected type, the synthesized
   type must be a subtype of the expected one (§3). This is the only
   place subsumption applies.
@@ -155,12 +165,9 @@ Rulings: lang/binder/ctor-row, model/ref-subtyping/ctor-set-subsumption, types/s
 The variance of each type parameter of a declared sum is derived from
 where it occurs in the declaration's fields:
 
-- A parameter that occurs only in covariant positions is covariant.
-  Field types are covariant positions, since values are immutable.
-- A parameter in the argument of a function type is in a
-  contravariant position; composing positions follows the usual
-  sign rule.
-- A parameter in both kinds of position is invariant.
+- A parameter that occurs in a field is covariant. Field types are
+  covariant positions, since values are immutable, and no field has a
+  function type.
 - A parameter that occurs in no field is covariant and contravariant:
   any two instantiations at it are related.
 
@@ -172,10 +179,8 @@ fn backups () -> Set (Option (Key identities)) =
   from f in fallbacks select f.backup    -- Option (Key identities.Google) <: Option (Key identities)
 ```
 
-Since stored types hold no functions, every parameter of a stored
-type is covariant or unused. A schema operator that changes a
-parameter's derived variance can break dependents; they are rechecked
-as for any schema change.
+A schema operator that changes a parameter's derived variance can
+break dependents; they are rechecked as for any schema change.
 
 Rulings: types/variance/derived
 
@@ -200,7 +205,7 @@ exists:
 | `T.S` and `T.S'` | `T.(S \| S')`, which is `T` when it is every constructor |
 | `Key r.S` and `Key r.S'` | `Key r.(S \| S')` |
 | `Set A` and `Set B` | `Set` of the join of `A` and `B` |
-| `F A1 ... An` and `F B1 ... Bn` | covariant parameters joined, invariant parameters equal |
+| `F A1 ... An` and `F B1 ... Bn` | each parameter that occurs in a field joined; one that occurs in no field taken from either |
 | Any other pair, anonymous records included | the type, when the two are equal |
 
 Anonymous records join only when their types are equal: the same
@@ -324,7 +329,9 @@ insert identities from (
 `key x` is defined for any row whose relation is statically known, as
 [model.md](model.md#81-reference-types) lists: a binder over a
 relation, a constructor set, a backlink, a key-preserving query or a
-view returning rows of one relation; a `match` arm on such a row; a
+view returning rows of one relation; a binder over `inserted(R)`,
+`deleted(R)` or `prior(R)` in a transition constraint; a `match` arm
+on such a row; a
 row bound by `let` from a write; a value of a type with a self `Key r`
 field. It has type `Key r.S`. Elsewhere it is refused.
 `r.key(v)` and `r.key(f: v, ...)` have type `Key r`
@@ -421,7 +428,6 @@ resolves against the scrutinee's type, never against other types in
 scope.
 
 ```
-set OAuth of identities = Google | Apple
 match i
   | EmailPass e -> e.email
   | OAuth o     -> display_name(o)            -- o : Identity.OAuth
@@ -452,7 +458,8 @@ after a schema change.
 - A `match` on a `Key r.S` matches the referenced row by its
   constructor: its arms name the constructors of `S`, and `| C x`
   binds `x : T.C`, the referenced row, as a `match` on the row does.
-  `_` is not a pattern for a `Key`.
+  `_` is not a pattern for a `Key`. A `match` on a key that is not a
+  reference field of a row is partial (§10.1).
 - A `match` on a scalar ends with an arm whose pattern is a binder or
   `_`, since literal patterns never cover a scalar type.
 - A guarded arm `| C x if p -> e` counts for nothing toward coverage.
@@ -507,6 +514,8 @@ terminate, a path through
 a key that is not a reference field of a row (a parameter or a key
 built by `r.key(...)`), in a bundle declaring `hide new constructors`
 any path through a reference (it faults `NoSuchRow` at a hidden row),
+a `match` on a key that is not a reference field of a row (it faults
+`NoSuchRow` when the key names no row of its constructor set),
 or a call of a function whose body is partial. Hiding is not
 transitive: a row of a constructor the bundle knows is visible even
 when it references a hidden row

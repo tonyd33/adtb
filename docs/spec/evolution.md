@@ -98,8 +98,8 @@ for review ([applications.md §9](applications.md#9-the-printed-schema)).
 The log holds only migrations written by their author. Changes to data
 shape, to definitions and to constructor write states are all
 operators in it. In particular `define fn`, `redefine fn`, `drop fn`,
-`add constraint`, `drop constraint`, `enable`, `deprecate` and `revert`
-are operators: each changes what a version means, and each produces a
+`add constraint`, `drop constraint`, `enable`, `disable`, `deprecate`
+and `revert` are operators: each changes what a version means, and each produces a
 version when its migration applies. A migration may mix them, so an
 `add constructor` and the redefinitions it requires land in one
 version and are rechecked together.
@@ -163,7 +163,9 @@ People are shown the hash truncated to its first 4 bytes in hex; the
 wire and every check carry all 32 bytes. Every place a version is
 stated for checking (a bundle header, a pinned past read, a migration
 set being applied) states both; the engine compares the hash, refuses
-a mismatch, and reports the position.
+a mismatch, and reports the position. Source text writes the hash as
+all 64 hex digits; a shorter hash is refused. Examples in this
+specification elide all but the first 4 bytes as `a91c...`.
 
 ### 2.2 Linear history
 
@@ -225,23 +227,29 @@ every failure, not only the first:
 | --- | --- |
 | Typing | an operator does not type against the schema produced by the operators before it in the migration |
 | Recheck of schema objects | a schema function, constraint, stored view, default or computed field no longer type checks or is no longer exhaustive at the new version |
-| Constraint carrying | a constraint touched by a structural operator has no image under it (§6.2) |
+| Constraint carrying | a constraint touched by a structural operator, including one whose drop is pending, has no image under it (§6.2, §6.4) |
 | Constraint validation | an added constraint has violating rows (§6.3) |
 | Admission | a constraint or stored view at the new version has no index-bounded incremental check ([constraints.md](constraints.md#5-admission), [derived.md §2.2](derived.md#22-admission)) |
 | Grants | a merge needs grants it does not state, or a bundle owner no longer holds the grants a live bundle uses (§6.5) |
 | Live bundles | a query or transaction of a live bundle cannot be served at its pinned version across the migration (§7.2) |
 | Readers-first | an `enable` has a reader that forbids it (§8.1) |
-| Lifecycle | a `remove` meets a constructor that is not deprecated or not empty (§4.4) |
+| Lifecycle | a `remove` meets a constructor that is not deprecated or not empty (§4.4); a `disable` meets one that has rows or a live writer, or a `deprecate` one that is not enabled (§4.3); a `drop field` meets a field of an old key whose drop is pending (§4.10) |
 | Code identity | a host function is redefined while a live bundle pins a version with a different code for it (§7.1) |
 | Privilege | the principal may not append the operators ([security.md](security.md#3-grants)) |
 
 A failure of a schema object always refuses the migration: schema
 objects exist only at the current version, so the migration must
 itself redefine or drop what it breaks. A failure of a live bundle
-refuses the migration until that bundle is retired, superseded or
-replaced, or its lease expires
+refuses the migration, and nothing waits: the report names each
+blocking bundle, and the migration applies only when presented again
+after the bundle is released (retired, superseded or expired) or with
+changed operators
 ([applications.md §6](applications.md#6-what-a-schema-change-does-to-bundles)).
-A migration never retires a bundle. No call of a live bundle fails
+For the setting `BlockingNoticePeriod` (24 hours by default) after
+the refusal, the engine sends the notice `BlockingMigration { bundle,
+version }` to every session bound to a blocking bundle
+([catalog.md](catalog.md#45-notices)). A migration never retires a
+bundle. No call of a live bundle fails
 with a type, exhaustiveness or translation error because of a
 migration; constraint violations of its translated writes are ordinary
 errors (§6.3).
@@ -256,6 +264,12 @@ version current at its snapshot. A transaction whose snapshot precedes
 the commit of version `n` runs at version `n - 1` to its end,
 including its writes. A transaction whose snapshot follows it runs at
 `n`. No transaction observes part of a migration.
+
+Ad hoc text runs at the current version and a registered call at its
+bundle's pinned version, so one transaction does not mix them: ad hoc
+text in a transaction that has made a registered call, and a registered
+call in one that has run ad hoc text, are refused with
+`Rejected { reason: MixedVersions }`.
 
 Every statement takes a SIREAD lock on the schema version it runs at,
 and the commit that produces version `n` writes it. A read-write
@@ -278,7 +292,9 @@ last, and runs as a staged job:
 3. the last state commits version `n`, together with the logical
    effect of every operator in the migration and its `script` writes,
    computed at that commit's snapshot; only then is the migration
-   appended to the log.
+   appended to the log. Every check of §3.2 runs again at this commit,
+   against its snapshot; a failure discards the pending migration as
+   below.
 
 Until version `n` commits, the current version stays `n - 1`, and no
 other migration applies. A write committed while the job runs that
@@ -320,10 +336,11 @@ with their inverses; §5 states what an inverse is.
 | `add relation r : T ...` | `drop relation r` | yes |
 | `drop relation r` | `add relation r : T ...` | yes; refused unless `r` is empty |
 | `add set S of r = ...`, `drop set S of r` | each other | yes |
-| `add constructor T.C { ... }` | `remove constructor T.C` | yes |
+| `add constructor T.C { ... }` | `remove constructor T.C`, removing the arms its `arm` clauses added | yes |
 | `remove constructor T.C` | `add constructor T.C { ... }` with a fresh id | yes (applies only to an empty constructor) |
-| `enable r.C` | `deprecate r.C` | yes |
-| `deprecate r.C` | `enable r.C` | yes |
+| `enable r.C`, `enable T.C` | `disable r.C`, `disable T.C` | yes |
+| `disable r.C`, `disable T.C` | `enable r.C`, `enable T.C` | yes; refused while any row of `r.C`, or any stored value of `T.C`, exists |
+| `deprecate r.C`, `deprecate T.C` | `enable r.C`, `enable T.C` | yes; applies only to an enabled constructor |
 | `rename constructor T.C to D` | `rename constructor T.D to C` | yes |
 | `rename type T to U` | `rename type U to T` | yes |
 | `rename relation r to s` | `rename relation s to r` | yes |
@@ -337,19 +354,19 @@ with their inverses; §5 states what an inverse is.
 | `drop field T.C.f` | `add field T.C.f: U fill e` | no: values of `f` are lost |
 | `move field T.C.f to T fill e` | `move field T.f to T.C` | yes for rows of `C` (§4.9) |
 | `move field T.f to T.(C \| D)` | `move field ... to T fill e` | no for the other constructors |
-| `add unique ...`, `drop unique ...` | each other | yes |
-| `rekey relation r key (...)` | `rekey` to the old key | yes |
+| `add unique ...`, `drop unique ...` | each other | yes; a drop is held pending (§6.4) |
+| `rekey relation r key (...)` | `rekey` to the old key | yes; a relaxing rekey is held pending (§6.4) |
 | `add index ...`, `drop index ...` | each other | yes |
 | `add default ...`, `drop default ...` | each other | yes |
 | `define fn`, `drop fn` | each other | yes |
 | `redefine fn f ...` | `redefine fn f` with the previous body | yes |
 | `define aggregate`, `drop aggregate` | each other | yes ([interop.md §10](interop.md#10-user-defined-aggregates)) |
 | `add constraint`, `add check` | `drop constraint`, `drop check` | yes |
-| `drop constraint`, `drop check` | `add constraint`, `add check` | yes, validated as an add (§6.3) |
+| `drop constraint`, `drop check` | `add constraint`, `add check` | yes, validated as an add (§6.3); held pending (§6.4) |
 | `store f`, `unstore f` | each other | yes ([derived.md §2](derived.md#2-stored-views)) |
 | `add computed`, `drop computed` | each other | yes ([derived.md §5](derived.md#5-computed-fields)) |
 | `redefine computed` | `redefine computed` with the previous expression | yes |
-| `grant ...`, `revoke ...` on relations, constructor sets and `call fn` | each other | yes ([security.md](security.md#3-grants)) |
+| `grant ...`, `revoke ...` on schema relations, constructor sets and `call fn` | each other | yes ([security.md](security.md#3-grants)) |
 | `adopt tzdb "r" from "file"` | `adopt tzdb` of the previous release | yes ([catalog.md §3.1](catalog.md#31-zone-rules)) |
 | `script ...` | none | no |
 | `revert n` | `revert` of the reverting migration | as its parts |
@@ -420,7 +437,8 @@ Clauses:
   refused and the definition must be redefined with `redefine fn` or
   by dropping and adding the constraint in the same migration. Arms
   are given only for schema objects; registered queries of bundles
-  keep their pinned version (§7).
+  keep their pinned version (§7). The inverse of an `arm` clause
+  removes the arm it added and restores any arm it replaced.
 
 A schema function, computed field or constraint that matches over the
 type and is neither given an arm nor redefined in the migration fails
@@ -430,7 +448,8 @@ relation, which is empty.
 
 The new constructor starts in the declared state: it is part of the
 type, queries at the new version must cover it, and every insert or
-retag into it is refused. `enable` makes it writable (§4.3, §8).
+retag into it is refused. On a sum used as a field type, every write
+that stores a value of it in a field is refused. `enable` makes it writable (§4.3, §8).
 
 ### 4.3 Enable and deprecate
 
@@ -447,9 +466,17 @@ A constructor relation is in one of three write states:
 
 | State | Reached by | Inserts and retags into it | Reads, updates within it, deletes, retags out of it |
 | --- | --- | --- | --- |
-| declared | `add constructor` | refused | allowed |
+| declared | `add constructor`; `disable` | refused | allowed |
 | enabled | `enable`; `add type` | allowed | allowed |
 | deprecated | `deprecate` | refused | allowed |
+
+`enable` moves a declared or deprecated constructor to enabled.
+`disable` moves an enabled constructor back to declared and is the
+inverse of `enable`; it is refused while any row of the constructor
+relation exists, while a live bundle at any version has a query or
+transaction that can write into it, or while a delete action in the
+schema retags into it. `deprecate` applies only to an enabled
+constructor.
 
 Constructors created by `add type` start enabled. Products of `split`,
 `merge`, `nest` and `unnest` start enabled when every source
@@ -458,9 +485,18 @@ merging or nesting a deprecated constructor is refused.
 
 The states are per relation variable, recorded in
 `catalog::ctor_states` keyed by relation variable and constructor
-([catalog.md](catalog.md#1-system-relations)): `enable
-post_badges.Emoji` leaves `user_badges.Emoji` declared. A refused insert or retag is a
-`Rejected` error naming the constructor relation and its state.
+([catalog.md](catalog.md#21-types-and-constructors)): `enable
+post_badges.Emoji` leaves `user_badges.Emoji` declared. A refused insert or retag is
+`Rejected { reason: NotOpen {..} }` naming the constructor relation and its state.
+
+A constructor of a sum used as a field type has the same three states,
+kept per type in `catalog::value_states`
+([catalog.md](catalog.md#21-types-and-constructors)); its operators name the type: `enable Provider.Okta`. Its state gates storing a value
+of it: an insert, update or retag that stores a value of a declared or
+deprecated constructor in any field, at any depth, is refused with
+`Rejected { reason: NotOpen {..} }` naming the constructor and its state. Reads, and writes
+that keep a stored value, are allowed in every state. `disable T.C` is
+refused while any stored field value holds `C`.
 
 `enable` is subject to readers-first (§8.1). `deprecate` is refused
 while a live bundle at any version has a query or transaction that can
@@ -488,11 +524,17 @@ before it:
    than the whole sum;
 4. no named set would become empty.
 
+For a constructor of a sum used as a field type, conditions 1 and 2
+read: the constructor is deprecated in its type by an earlier
+migration, and no stored field value holds it.
+
 The operator removes the constructor from every named set, drops every
 index and unique whose constructor set is exactly that constructor,
 narrows every other index and unique, drops grants on it (§6.5), and
 carries constraints (§6.2). Schema functions that name it fail the
-recheck unless redefined in the same migration.
+recheck unless redefined in the same migration; a `remove` that is the
+inverse of an `add constructor` also removes the arms that operator's
+`arm` clauses added.
 
 A populated constructor goes away in one of two ways, each step with
 its own inverse:
@@ -572,7 +614,9 @@ is refused (§3.2).
 The routing is invertible when each arm's pattern binds every field of
 the old constructor, or fixes it to a literal or a nullary constructor, and its result uses each
 bound variable exactly once as a whole field value with no other
-computation. The engine then derives the inverse merge. A split whose
+computation. A field access `g.f` on a constructor binder `g` counts
+as binding field `f` and carrying it whole. The engine then derives the
+inverse merge. A split whose
 routing is not invertible is a declared loss and has no inverse: it is
 refused while a live bundle pinned before it reads or writes the old
 constructor (§7.2), and a `revert` of it is refused.
@@ -623,7 +667,8 @@ to `Key identities.Social`. Grants follow §6.5.
 A merge is exact when its `by match` is invertible by the condition of
 §4.6: each arm binds every field of its source constructor or fixes it
 to a literal or a nullary constructor, and carries each bound variable
-whole into one field. Its inverse is then the split routed by the
+whole into one field, where `g.gid` of the binder `g` carries field
+`gid` whole. Its inverse is then the split routed by the
 discriminator. A merge whose `by match` computes or drops fields is a
 declared loss, with no inverse, under the rules of §5.2.
 
@@ -697,7 +742,8 @@ drop field Identity.EmailPass.hash
 `add unique (f) in r.C`, `drop unique (f) in r.C`, `add index (f) in
 r.S`, `drop index (f) in r.S`, and `interval index` likewise, change
 the relation variable's clauses. Adding a unique validates the data
-(§6.3) and runs as a staged change (§3.4). Indexes do not change what
+(§6.3) and runs as a staged change (§3.4). Dropping one is held pending
+like a dropped constraint (§6.4). Indexes do not change what
 any query returns.
 
 `unique` may range over deterministic expressions of the row's fields
@@ -730,7 +776,13 @@ unlisted is refused, and the report names each field. A field of `r`'s
 own type typed `Key r` that is not in the new key must be dropped in
 the same migration. The inverse is `rekey relation r key` with the old
 key, carrying the same fields; it is exact while the old key's fields
-remain.
+remain. A rekey is relaxing when the new key has a field outside
+the old key; the old key then stays enforced as a unique, held pending like
+a dropped constraint (§6.4). A `drop field` of a field of an old key
+held pending is refused while the old key is held. Migration 0051 is
+such a rekey, since `sku` and `during` lie outside the old key `id`:
+it is refused while any live bundle is pinned at version 50 or
+earlier, and applies once none is.
 
 ### 4.11 Definitions
 
@@ -767,6 +819,8 @@ change constraints without changing structure. §6 states their rules.
 
 Retiring a bundle is a command, not an operator, and never appears in
 a migration ([applications.md §4.3](applications.md#43-retirement)).
+So is `supersede bundle B by B2`
+([applications.md §4.4](applications.md#44-supersession)).
 
 ### 4.14 Scripts
 
@@ -833,19 +887,21 @@ order. It is undefined if the migration contains a `script`.
 ### 5.4 Revert
 
 ```
--- 0020, continuing §4.3: Apple is deprecated and empty at version 19
+-- 0032, continuing §4.5
 module auth
-revert 0011
+revert 0031
 ```
 
 `revert n` is an operator whose meaning is the inverse of migration
 `n`, computed against the schema at the version before `revert`. It
-appends a new migration; it does not remove `n` from the log. The
-inverse is checked like any migration (§3.2): reverting `0011`, which
-added `Apple`, requires `Apple` to be deprecated and empty, as any
-`remove` does. A revert is refused when the inverse of migration `n`
-is undefined, or when an operator applied after `n` depends on an
-object `n` created.
+appends a new migration; it does not remove `n` from the log. Here the
+inverse is the renames of `0031` reversed, last first, from `rename
+field Login.EmailPass.pw_hash to hash` to `rename constructor
+Identity.Meta to Facebook`. The inverse is checked like any migration
+(§3.2). A revert is refused when the inverse of migration `n` is
+undefined, or when an operator applied after `n` depends on an object
+`n` created: reverting `0011` at version 19 of §4.3 is refused, since
+`0012` and `0019` enable and deprecate the `Apple` it added.
 
 Rulings: evolution/smo, evolution/revert, evolution/merge-tag/discriminator, evolution/hoist/default
 
@@ -895,14 +951,21 @@ the constraint fails at call time as an ordinary constraint violation.
 
 ### 6.4 Dropping a constraint
 
-A `drop constraint` applies and produces its version, but the
-constraint stays enforced while any live bundle is pinned to a version
-that has it; until then the drop is pending. Every reader sees only
-data that satisfies every constraint of the version it reads. The
-pending drops and the bundles holding each are the system relation
-`sys::pending_drops` ([catalog.md](catalog.md#1-system-relations)),
-and every migration report names them. A drop takes effect when its
-last holding bundle is released (§8).
+A `drop constraint`, `drop check` or `drop unique`, or a relaxing
+`rekey` (§4.10), applies and produces its version, but the dropped
+constraint, check, unique or old key stays enforced while any live
+bundle is pinned to a version that has it; until then the drop is
+pending. Every reader sees only data that satisfies every constraint
+of the version it reads. The pending drops and the bundles holding
+each are the system relation `sys::pending_drops`
+([catalog.md](catalog.md#1-system-relations)), and every migration
+report names them. A drop takes effect when its last holding bundle is
+released (§8).
+
+Until its drop takes effect, a pending-dropped constraint is a schema
+object for carrying (§6.2) and recheck (§3.2): later structural
+operators rewrite it, and one that leaves it without an image is
+refused, naming it.
 
 ### 6.5 Grants
 
@@ -910,9 +973,13 @@ Relation and constructor-set grants (`read`, `insert`, `update`,
 `delete`, `retag`) and `grant call fn` are operators in the log: they
 are hashed, printed and restored by replay. Roles, passwords,
 capability grants and bundle call grants are deployment state, outside
-the log ([security.md](security.md#3-grants)). A grant with no field
-list covers the fields that exist when it is granted; a field added
-later needs a new grant.
+the log ([security.md](security.md#3-grants)), as are grants on
+`catalog::` and `sys::` relations, which are ad hoc statements and
+never log operators. A grant with no field list covers the fields that
+exist when it is granted, and a field added later to a constructor it
+covers needs a new grant. A grant on a whole relation variable with no
+field list also covers every field of each constructor the relation
+variable gains.
 
 Structural operators carry log grants; a field carried whole by a
 split's routing keeps its grants under its new name. A merge that
@@ -941,8 +1008,13 @@ Definitions under pinning:
 
 - A pinned bundle evaluates the schema functions, aggregates and
   computed fields of its version `v`.
-- Indexes, constraints and stored views always use the current
-  definitions.
+- Indexes and constraints always use the current definitions.
+- A stored view whose definition is unchanged since `v` is read from
+  its stored rows. One redefined since `v` is evaluated with its body
+  at `v`, over the translated data, and its stored rows are not read.
+- Names of the bundle's own functions resolve at `v`: a schema
+  definition added later under the same name is allowed and does not
+  change what the bundle calls.
 - The planner uses an expression index for a query only when the
   index's expression has the same code identity as the query's
   ([interop.md](interop.md#95-function-identity)).
@@ -962,15 +1034,15 @@ Definitions under pinning:
 | move field down | the header field on the constructors that keep it; refused at apply if it reads the field of the others |
 | rekey | references with the old key's values, mapped through the carried fields |
 | add set, drop set, set membership | each named set with its membership at `v` |
-| add constructor | the type without it; readers-first ensures it has no rows while the bundle reads the whole relation variable or follows a reference whose current type admits it (§8.1); a named or listed set it joins is read with its membership at `v` |
-| enable, deprecate | no change to reads; writes are checked against the current state |
+| add constructor | the type without it; readers-first ensures it has no rows while the bundle reads the whole relation variable or follows a reference whose current type admits it, and, for a sum used as a field type, that no field the bundle reads holds a value of it (§8.1); a named or listed set it joins is read with its membership at `v` |
+| enable, disable, deprecate | no change to reads; writes are checked against the current state |
 | remove | the constructor, with no rows |
 | define, redefine, drop fn, aggregate | the definitions of `v` |
 | add, drop, redefine computed | the computed fields of `v` |
 | install, uninstall | the definitions of `v`, under the host function rule above |
 | adopt tzdb | the current zone rules: every bundle converts with the release in force now; stored zoned values keep their civil time and zone |
 | add constraint | no change; its writes are checked against it (§6.3) |
-| drop constraint | the constraint, still enforced (§6.4) |
+| drop constraint, drop check, drop unique, relaxing rekey | the dropped constraint, check, unique or old key, still enforced (§6.4) |
 | grant, revoke | the current grants of the bundle's owner |
 | unique, index, default, store | no change to results |
 | script | no change: translation is the identity |
@@ -982,8 +1054,8 @@ transaction of every live bundle to the new version. If some query has
 no translation, the migration is refused, and the report names the
 bundle, the query and the operator. A query has no translation when:
 
-- it writes into a constructor that the migration removes or
-  deprecates;
+- it writes into a constructor that the migration removes, disables
+  or deprecates;
 - it reads a field that a lossy operator drops for the rows it reads;
 - it reads or writes a constructor that a split with non-invertible
   routing replaces;
@@ -996,16 +1068,28 @@ constraint added after `v` fails as a constraint violation (§6.3).
 ### 7.3 Expired bundles
 
 A bundle whose lease has expired does not hold back migrations: §7.2
-and §8 ignore it. When a client binds to it again, the engine
-translates every one of its queries and transactions to the current
-version. If any has no translation, or would read the whole relation
-variable of a constructor added after `v` and since enabled, or follow
-a reference whose current type admits such a constructor (§8.1), the
-binding is refused with `Rejected { reason: BundleExpired }`. It is
-refused likewise if any constraint of version `v` has been dropped
-since, so the bundle cannot read data its version excludes. Otherwise
-the binding renews the lease, and from then on the bundle holds back
-later migrations as any live bundle does
+and §8 ignore it. Binds and calls on it, and renewals of its lease,
+are refused with `Rejected { reason: BundleExpired {..} }` (§9). It is live
+again only once registered again
+([applications.md §4.1](applications.md#41-registration)), and that
+registration translates every one of its queries and transactions to
+the current version. The registration is refused with `BundleExpired`
+when:
+
+- any query or transaction has no translation;
+- the bundle reads the whole relation variable of a constructor added
+  after `v` and since enabled, or follows a reference whose current
+  type admits such a constructor (§8.1), unless it declares `hide new
+  constructors`;
+- the bundle reads a field whose type reaches a sum that has gained,
+  after `v`, a constructor since enabled (§8.1), whether or not it
+  declares `hide new constructors`;
+- a constraint, check, unique or key of version `v` has been dropped
+  since and the drop has taken effect, so the bundle could read data
+  its version excludes.
+
+Otherwise the registration starts a new lease, and from then on the
+bundle holds back later migrations as any live bundle does
 ([applications.md §4.2](applications.md#42-leases)).
 
 Rulings: surface/version-serving/translate, surface/version-serving/untranslatable/translate-at-apply, engine/pinned-version, surface/lease-policy/translate-stale
@@ -1016,25 +1100,37 @@ A writer never emits a value that a live reader cannot type. Readers
 are live bundles, their feeds and registered change consumers
 ([applications.md §3](applications.md#3-bundles)), each at its pinned
 version. A bundle is released when it is retired, superseded or
-expired; released bundles are not readers. Every wait in this part
-(a migration refused for a live bundle, a pending constraint drop, an
-`enable` held back) ends when the bundles causing it are released, the
-same condition that ends a revoke's wait
-([security.md](security.md#3-grants)).
+expired; released bundles are not readers. A migration refused for a
+reader, including an `enable` refused by readers-first, does not wait:
+it applies when presented again after the readers named in its report
+are released (§3.2). A revoke refused for a live bundle is handled the
+same way ([security.md](security.md#3-grants)). A pending drop (§6.4)
+takes effect, without being presented again, when the last bundle
+holding it is released.
 
 ### 8.1 Enabling a constructor
 
 `enable r.C` is refused while any reader is pinned at a version where
 `C` does not exist and either reads the whole relation variable `r`
-(one of its queries ranges over `r` or receives `r` in a feed) or
+(one of its queries ranges over `r`, or one of its feeds names `r`
+whole) or
 follows a reference whose current type admits `C`: `Key r`, or `Key
 r.S` where `S`'s current membership contains `C`. Dereferencing such a
 reference could reach a `C` row. Ranging over a named or listed
 constructor set of `r` does not block, since translation gives such a
 set its membership at the reader's version, which lacks `C`.
 
+`enable T.C`, for a sum `T` used as a field type, is refused while any
+reader is pinned at a version where `C` does not exist and reads a
+field whose type reaches `T`: the field's type is `T`, or a type whose
+fields, constructors or type arguments reach `T` (`Option T`, a record
+holding a `T`). Reading a whole row reads all its fields. A reader that
+reads no such field does not block. `hide new constructors` does not
+exempt a reader from this rule, since a value inside a row it can see
+is never hidden.
+
 A bundle whose header declares `hide new constructors` never blocks
-`enable`. Its reads of a whole relation variable, and references whose
+`enable r.C`. Its reads of a whole relation variable, and references whose
 type admits a constructor its version lacks, are translated to the
 constructors of its pinned version, so rows of newer constructors are
 invisible to it. Following a reference to a hidden row faults
@@ -1043,13 +1139,14 @@ partial in such a bundle. Rows of constructors its version knows are
 never hidden, including rows that reference hidden ones. A write of
 such a bundle that conflicts with a hidden row still fails by key.
 
-While an `enable` is held back, the engine sends each client of a
-blocking bundle the notice `BlockingMigration { bundle, version }`,
-and may send `UpgradeRequired { bundle }`
-([catalog.md](catalog.md#45-notices)). The refusal names each blocking
-bundle and states that the bundle stops blocking only when it is
-released (§8): expiry needs every client to stop calling it, and
-`sys::sessions` lists the sessions still bound to it.
+The refusal of an `enable` names each blocking bundle and states that
+the bundle stops blocking only when it is released (§8): expiry needs
+every client to stop calling it, and `sys::sessions` lists the
+sessions still bound to it. For `BlockingNoticePeriod` after the
+refusal the engine sends each session bound to a blocking bundle the
+notice `BlockingMigration { bundle, version }` (§3.2), and an operator
+may send `UpgradeRequired { bundle }`
+([catalog.md](catalog.md#45-notices)).
 
 The order for adding a constructor is therefore:
 
@@ -1070,7 +1167,7 @@ query logins_of (u: Key users) -> Set Text =
 ```
 
 ```
--- 0012: once no reader pinned at 10 or earlier reads identities whole
+-- 0012: applies once no reader pinned at 10 or earlier reads identities whole
 module auth
 enable identities.Apple
 ```
@@ -1097,10 +1194,14 @@ constraint are live (§6.4).
 ### 8.4 Embedded databases
 
 An embedded database applies these rules with the bundles registered
-on the file as readers. Opening the file registers the shipped bundle
+on the file as readers. Opening the file records the shipped bundles
 and supersedes the bundles of earlier opens before it migrates
 ([applications.md §8](applications.md#8-embedded-databases)), so they
-hold back nothing.
+hold back nothing. The supersession commits durably on its own, before
+the first migration; a later failure of the open does not undo it, and
+only registering a superseded bundle again makes it live. A shipped
+bundle recorded by the open is not a reader until the open registers
+it, after the migrations.
 
 Rulings: evolution/old-readers/readers-first, surface/registration/order/pinned, evolution/remove-rows/deprecate, constraint/evolve/drop-old/readers-first
 
@@ -1116,9 +1217,16 @@ A replica serves bundles bound to it at their pinned versions. Lease
 renewals made at a replica are forwarded to the primary, which is the
 only place leases are written and readers-first is decided. A
 forwarded renewal is idempotent and retried until the primary
-acknowledges it; the primary expires a lease only after the lease
-duration plus a grace of one eighth of it
-([applications.md §4.2](applications.md#42-leases)).
+acknowledges it. A lease's expiry is computed from the last renewal
+record in the log, on the primary and on every replica alike. From
+expiry a replica refuses binds and calls on the bundle with
+`Rejected { reason: BundleExpired {..} }`. The primary treats the lease as
+expired only once the further grace of the setting `LeaseGrace`
+(1 hour by default) has passed. From then binds, calls and renewals of
+the bundle are refused with `BundleExpired` on the primary as well; a
+renewal, made at the primary or forwarded, never extends an expired
+lease. The bundle is live again only once registered again
+(§7.3, [applications.md §4.2](applications.md#42-leases)).
 
 Rulings: repl/schema/in-log, repl/schema/forward-leases
 
@@ -1136,12 +1244,16 @@ operators. They apply only when the operator runs `finalize upgrade`
 ([catalog.md](catalog.md#122-upgrades-and-downgrade)), and are never
 appended at open; until then the database stays
 at its catalog version and the release produces only values of it. At
-finalize they follow §4 to §8 as user operators do. A constructor a
+finalize they follow §4 to §8 as user operators do. When readers-first
+or another check of §3.2 refuses a catalog operator, `finalize
+upgrade` is refused with a report naming the blockers; the upgrade
+stays unfinalized and a downgrade stays possible. A constructor a
 release adds to a catalog sum is declared, and the engine does not
 produce a value of it until it is enabled. The engine enables it
 itself once no live bundle pinned at an earlier catalog version reads
 its whole relation; until then the behaviour that would produce it
-stays off.
+stays off. Such an enable is deployment state, not a catalog operator,
+and does not change the catalog version.
 
 A bundle that reads catalog relations pins a catalog version in its
 header, beside its schema version:

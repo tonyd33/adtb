@@ -229,6 +229,11 @@ not depend on any version:
 | 9 | `Denied` |
 | 10 | `BundleSuperseded` |
 | 11 | `UnknownDatabase` |
+| 12 | `CatalogMismatch` |
+| 13 | `EditionLocked` |
+| 14 | `UnknownEdition` |
+
+A pre-Ready `Overloaded` carries no `retry_after`.
 
 After Ready an Error body is a value of the prelude sum `Error` (§11).
 
@@ -244,11 +249,11 @@ After Ready an Error body is a value of the prelude sum `Error` (§11).
 | `client_id` | 16 bytes | Client instance id for idempotent writes (§6.5); all zero for none |
 | `client_name` | `text` | Driver name and release, for monitoring |
 | `database` | `text` | Database served by the process; empty for the listener's default. A name the process does not serve is refused with `UnknownDatabase` |
-| `binding` | `u8` then fields | 0: no bundle (ad hoc session); 1: `text` bundle name, then `version` |
+| `binding` | `u8` then fields | 0: no bundle (ad hoc session); 1: `text` bundle name, then `version`, then `opt version` catalog version, present exactly when the bundle pins one |
 | `mechanism` | `text` | `SCRAM-SHA-256-PLUS`, `SCRAM-SHA-256`, `certificate` or `peer` |
 | `role` | `text` | Role to authenticate as |
 | `initial` | `bytes` | SCRAM client-first message; empty for the other mechanisms |
-| options | `list option` | Key 1 `edition` (`text`): for an ad hoc session, the edition whose `Error`, `Notice` and prelude sums the session receives; refused on a bound connection, whose edition is the bundle's |
+| options | `list option` | Key 1 `edition` (`text`): for an ad hoc session, the edition whose `Error`, `Notice` and prelude sums the session receives; refused with `EditionLocked` on a bound connection, whose edition is the bundle's, and with `UnknownEdition` when the server implements no such edition |
 
 ### 3.3 Authentication
 
@@ -273,21 +278,30 @@ the audit relation ([security.md](security.md#8-audit)).
 
 When `binding` is 1, the server checks after authentication that the
 bundle is registered in the database at exactly the given version
-(both position and hash), that it is not retired, and that the role
-holds the call grant on the bundle or on at least one of its queries.
-Failures are answered with Error `UnknownBundle`, `VersionMismatch`,
-`Retired`, `BundleSuperseded` or `Denied`. A bundle whose lease has expired binds and runs
-through version translation, unless any of its queries is
-untranslatable at the current version, in which case binding is
-refused with `BundleExpired` ([applications.md](applications.md#42-leases)).
-Every call on the connection is checked and encoded against the bundle
-at its pinned version.
+(both position and hash), that the catalog version given matches the
+one it pins (both position and hash), that it is not retired or
+superseded, that its lease has not expired (below), and
+that the role holds the call grant on the bundle, on at least one of
+its queries, or on a function it imports. Failures are answered with Error `UnknownBundle`,
+`VersionMismatch`, `CatalogMismatch`, `Retired`, `BundleSuperseded`,
+`BundleExpired` or `Denied`. Every call on the connection is checked
+and encoded against the bundle at its pinned version.
+
+Lease expiry is computed from the last renewal record in the log, on
+the primary and on a replica alike. From expiry a replica refuses
+binds and calls on the bundle with `BundleExpired`. The primary treats
+the lease as expired only after the further `LeaseGrace` setting, one
+hour by default. Binding to an expired bundle, calling it and renewing
+its lease, directly or forwarded, are then refused with
+`BundleExpired` on the primary too; the bundle is live again only once
+registered again ([applications.md §4.2](applications.md#42-leases)).
 
 Binding renews the bundle's lease, and so does every call on the
 connection. A server writes a renewal for a bundle at most once per
 eighth of the lease ([applications.md](applications.md#42-leases)).
 Once a bundle is retired, calls on connections already bound to it
-are refused with `Retired`.
+are refused with `Retired`; once it is superseded, with
+`BundleSuperseded`.
 
 When `binding` is 0, the connection is an ad hoc session: only
 CallText and Append (§7) and the transaction messages on transactions
@@ -327,7 +341,7 @@ transactions (§6.2).
 
 A session is a connection's authenticated role, its binding and its
 negotiated parameters. It holds no settings, no variables, no prepared
-statements and no transaction. Every call states all it needs in its
+statements, no temp relations and no transaction. Every call states all it needs in its
 own message; an interactive transaction is named by an id (§6.2) and
 may be continued on any connection with the same role and binding, one
 connection at a time.
@@ -392,9 +406,10 @@ one id for the type and one for its constructor, and `add relation r`
 takes one for `r`. Every database and every tool that replays one log,
 code generation included, computes the same ids. An id belongs to the
 declared constructor and is shared by every instantiation of a
-parametric sum. Prelude and catalog types (`Bool`, `Option`, `Result`,
-`Error` and its reason sums, `Notice`, `Outcome` and the others) have
-fixed ids below 1024, listed per edition as a fixed table in
+parametric sum. Prelude types (`Bool`, `Option`, `Result`, `Error` and its
+reason sums, `Notice`, `Outcome` and the others) and the types of the
+`catalog` and `sys` modules have fixed ids below 1024: prelude ids per
+edition, catalog ids per catalog version, listed in
 [catalog.md](catalog.md#4-error-sums); ids from the log start at
 1024. The tag of a constructor of a result sum anonymous to the query
 is its position in the query signature, counting from 1.
@@ -413,8 +428,9 @@ ByGoogle { gid: "g-123" } =>  02 05 67 2d 31 32 33
 
 The server encodes every result at the bound version. A client never
 receives a tag its pinned version lacks, because writers never produce
-a constructor a live reader cannot type
-([evolution.md](evolution.md#8-readers-first)); a client that receives
+a constructor a live reader cannot type: constructors of relations and
+of value-level sums alike start declared and are enabled readers-first
+([evolution.md](evolution.md#8-readers-first)). A client that receives
 one must close the connection as malformed.
 
 ### 4.4 Nested collections
@@ -476,13 +492,19 @@ txn sign_up (n: Text, g: Text) -> Key identities = ... -- ordinal 3
 | 11 | `compress` | empty | Compress this stream's result frames (§12) |
 
 An unknown ordinal is answered with Error `UnknownQuery`. A call the
-role holds no call grant for is answered with Error `Denied`; a call
-grant on the whole bundle covers its imported functions. `args`
-whose length differs from what the signature implies are answered with
-Error `Malformed` on the stream. `assert`, `durability`, `request` and
-`retry` are refused with Error `Malformed` when `txn` is present: the
-first two belong to Begin, a request number to Commit, and a call
+role holds no call grant for is answered with Error `Denied`. A call
+grant on the whole bundle covers its registered queries and
+transactions; a call of an imported function needs `grant call fn
+NAME` on that function. `args` whose length differs from what the
+signature implies are answered with Error `Malformed` on the stream.
+`assert`, `durability`, `after`, `request` and `retry` are refused
+with Error `Malformed` when `txn` is present: `assert`, `durability`
+and `after` belong to Begin, a request number to Commit, and a call
 inside an interactive transaction is never retried.
+
+An `assert` value is a value of the schema's `Principal` type, the
+one in the root namespace, encoded with its tags (§4.3); when the
+schema declares none it is the prelude's default `Principal`.
 
 Engine spans for the call are named by the query and joined to the
 `trace` context when one is given ([catalog.md](catalog.md#132-traces)).
@@ -584,9 +606,9 @@ AppendData bodies, by the same rules in the other direction (§7.3).
 | `attempts` | `uvarint` | Times the server ran the call (§6.4); 1 when not retried |
 | `commit` | `opt position` | The commit position, for a call that committed |
 | `snapshot` | `opt position` | The position of the snapshot a call that only read was evaluated at |
+| options | `list option` | Key 1 `incomplete` (empty): the call committed but its result rows were not all sent (§5.8) |
 
 Positions are shown in examples as `epoch/lsn`, as `3/7741`.
-| options | `list option` | Key 1 `incomplete` (empty): the call committed but its result rows were not all sent (§5.8) |
 
 ### 5.7 Cancel
 
@@ -595,7 +617,8 @@ cancellation at morsel boundaries, so a call stops within one morsel
 per worker. The server answers Error `Cancelled` on the stream unless
 the call finished first, in which case its own End or Error stands.
 Cancel on a stream whose final message the server already sent is
-ignored.
+ignored, and so is Cancel on a Begin, Commit or Rollback stream: each
+runs to its own reply.
 
 A cancelled call has no effect: a registered transaction cancelled
 before its commit applies nothing; one whose commit has completed when
@@ -642,7 +665,8 @@ positive integer below 2^63, sent as `u64`; the client names the
 transaction with it in the `txn` option of later calls and in Commit
 or Rollback, on any connection authenticated as the same role and
 bound to the same bundle (or, for an ad hoc session, also unbound). A
-call naming a transaction that does not exist, has ended, or belongs
+call naming a transaction that does not exist, has committed or been
+rolled back or aborted other than by its limits (below), or belongs
 to another role or binding is answered with Error
 `UnknownTransaction`, with no detail telling these apart.
 
@@ -669,8 +693,8 @@ any connection with the same role and binding.
 
 A transaction open longer than the interactive transaction time limit,
 or idle between requests longer than the idle limit, is aborted by the
-engine; later calls naming it, and its Commit, are answered with Error
-`TransactionExpired`. The limits are the `TransactionLimit` and
+engine; later calls naming it, and its Commit and Rollback, are
+answered with Error `TransactionExpired`. The limits are the `TransactionLimit` and
 `IdleLimit` file settings ([catalog.md](catalog.md#102-file-settings));
 `TransactionLimit` is 5 seconds by default, and Ready sends both
 (§3.4). Losing a connection does not end a
@@ -703,7 +727,8 @@ transaction id) aborts the transaction and is answered with End.
 
 A registered transaction called without `txn` has no effect outside
 the database, and no result of it reaches the client before commit
-(§5.2). When it fails with a serialization error the server reruns it
+(§5.2). The same holds for a CallText without `txn` that writes
+(§7.1). When either fails with a serialization error the server reruns it
 at a new snapshot before replying, up to the retry limit the
 transaction declares or, by default, the file setting
 ([transactions.md](transactions.md#55-retry)). End reports the number of
@@ -715,8 +740,8 @@ attempts. Only when every attempt fails does the client receive Error
 Request numbers are optional; a client needs them only to resend a
 write safely after losing its reply. A client that sends a nonzero
 `client_id` in Hello may attach a `request` number to a Call of a
-registered transaction outside an interactive transaction, to an
-Append, and to a Commit. Each new request's number must exceed every
+registered transaction, to a CallText that writes and to an Append,
+each outside an interactive transaction, and to a Commit. Each new request's number must exceed every
 earlier number of that client id; a resend reuses the number of the
 request it resends.
 
@@ -734,9 +759,11 @@ A request carrying a number is handled in this order:
    answers with the recorded rows and End; otherwise with Error
    `RequestReused`. Each record holds the hash of its request's call
    and arguments for this check.
-2. Otherwise, if a request with the same number is still running, the
-   resend waits for it and returns its outcome: its rows and End if it
-   commits, or its error if it fails, without running again.
+2. Otherwise, if a request with the same number is still running, a
+   resend for a different call or arguments is answered with Error
+   `RequestReused`; a resend for the same call and arguments waits for
+   it and returns its outcome: its rows and End if it commits, or its
+   error if it fails, without running again.
 3. Otherwise, if the number is strictly below the low-water mark, the
    request is answered with Error `RequestExpired` and not executed.
 4. Otherwise the request runs.
@@ -747,8 +774,10 @@ number runs again. The records are kept in a catalog relation and
 survive restart and failover
 ([transactions.md](transactions.md#9-idempotent-write-calls)).
 
-A `request` on a call that only reads, or with an all-zero
-`client_id`, is answered with Error `Malformed`.
+A `request` on a Call of a query that only reads, on a request with
+`txn` other than Commit, or with an all-zero `client_id`, is answered
+with Error `Malformed`. A `request` on a CallText that only reads is
+ignored.
 
 ### 6.6 Replicas
 
@@ -784,7 +813,20 @@ migrations`, `print schema`, `archive audit`, `rotate key`, `dump`,
 `restore` and `backup` ([catalog.md](catalog.md#9-operational-commands),
 [applications.md](applications.md#7-the-ad-hoc-role)). Several items
 in one text form one transaction, each item a statement; their
-results come back in order.
+results come back in order. The first item that fails, by a fault, a
+`fail`, a violation or a rejection, ends the text: later items do not
+run, nothing of the text is applied, and the Error names the failing
+item by its ordinal in the text, counting from 1.
+
+A CallText without `txn` that writes sends no result message until it
+has committed, and is rerun by the server on a serialization failure
+as a registered transaction is (§6.4); End reports its attempts. A
+CallText that only reads streams its results as they are produced.
+
+A CallText with `txn` naming a transaction that has made a call of a
+registered query or transaction, and a Call with `txn` naming a
+transaction that has run a CallText, are refused with Error
+`MixedVersions` and not executed; the transaction stays open.
 
 | Field | Encoding |
 | --- | --- |
@@ -792,7 +834,7 @@ results come back in order.
 | `format` | `u8`, as in Call |
 | `credit` | `u64` |
 | `params` | `list` of (`text` name, type descriptor (§7.2), value encoded as §4) |
-| options | `list option`, with keys 1 `txn`, 2 `request`, 3 `deadline`, 4 `trace`, 5 `assert`, 6 `durability`, 7 `after`, 8 `limit`, 9 `priority` and 11 `compress` as in Call |
+| options | `list option`, with keys 1 `txn`, 2 `request`, 3 `deadline`, 4 `trace`, 5 `assert`, 6 `durability`, 7 `after`, 8 `limit`, 9 `priority` and 11 `compress` as in Call, and refused with `txn` as in Call |
 
 A free name in the text is a parameter: `params` must supply it, with
 its type descriptor, and a free name with no supplied parameter is
@@ -833,39 +875,46 @@ the described type.
 
 An Append stream writes Arrow record batches into one constructor
 relation, into a staging relation of a load
-([interop.md](interop.md#4-loading)), or into a temp relation the
-session declared. The role needs `insert` on the target; a temp
-relation needs none.
+([interop.md](interop.md#4-loading)), or into a temp relation of the
+interactive transaction it names. The role needs `insert` on the
+target; a temp relation needs none.
 
 A temp relation, declared by ad hoc text `temp relation NAME : T` with
 `T` a named type or an anonymous record type, lives outside the log,
-belongs to its session, has no constraint but its key, and is gone
-when the session ends. One declared with no key is keyed by its whole
-row. A remote load that needs routing or rejects
-appends its rows, with text columns where parsing is needed, into a
-temp relation, then inserts from it with an ad hoc insert that routes
+has no constraint but its key, and belongs to the interactive
+transaction whose CallText declared it, or, without `txn`, to that one
+CallText. It is gone when its transaction or its CallText ends. One
+declared with no key is keyed by its whole row. A remote load that
+needs routing or rejects begins an interactive transaction, appends
+its rows, with text columns where parsing is needed, into a temp
+relation of it, then inserts from it with an ad hoc insert that routes
 the rows and sends failures `rejects into` a rejects relation
-([interop.md](interop.md#45-rejects)):
+([interop.md](interop.md#45-rejects)), and commits:
 
 ```
-temp relation raw : { kind: Text, user: I64, email: Text, gid: Text }
--- Append stream into raw, then:
-insert identities from (from x in raw select ...) rejects into identity_rejects
+-> 1 Begin                                                        <- 1 TxnOpened t
+-> 2 CallText { txn: t } temp relation raw : { kind: Text, user: I64, email: Text, gid: Text }
+-> 3 Append raw { txn: t } ... AppendEnd                         <- 3 End
+-> 4 CallText { txn: t } insert identities from (from x in raw select ...) rejects into identity_rejects
+-> 5 Commit t                                                     <- 5 End { commit: 3/7802 }
 ```
 
 | Field | Encoding | Meaning |
 | --- | --- | --- |
 | `relation` | `text` | Qualified name of the target relation variable |
-| `ctor` | `uvarint` | Constructor tag of the target constructor relation (§4.3) |
+| `ctor` | `uvarint` | Constructor tag of the target constructor relation (§4.3); 0 for a temp relation |
 | `credit` | `u64` | Initial credit the client grants for the server's replies |
-| options | `list option` | Keys 1 `txn`, 2 `request`, 6 `durability` as in Call |
+| options | `list option` | Keys 1 `txn`, 2 `request`, 6 `durability` as in Call, and refused with `txn` as in Call |
 
 The client then sends AppendData messages: the first holds an Arrow
 IPC Schema message, each later one a RecordBatch. The schema must be
 the constructor relation's row type as §5.4 maps it, nullable only for
 `Option` fields; a field filled by a key generator or a relation
 default may be left out. Any other schema is answered with Error
-`SchemaMismatch`. The server grants the client credit for AppendData
+`SchemaMismatch`. Text in a batch is normalized to NFC and floats are
+canonicalized, as an in-process appender does
+([embedding.md](embedding.md#9-bulk-append)); the refusal of §4.2
+applies to arguments, not to appended batches. The server grants the client credit for AppendData
 bodies with Credit messages on the stream, starting from the
 `max_frame` it sent in Ready; the client must not send AppendData
 beyond it.
@@ -877,7 +926,7 @@ ends with End carrying the row count and the commit position. With
 End carries no commit position. An Append fails with `SchemaMismatch`
 (the schema is not the target's), `Denied` (no `insert`),
 `KeyViolation` (two appended rows with one key), `Violated` (a
-constraint), `Serialization`, `Cancelled`, `DeadlineExceeded` or
+unique or another constraint), `Serialization`, `Cancelled`, `DeadlineExceeded` or
 `Overloaded`; on any of them nothing is inserted.
 
 Rulings: net/adhoc/principal, surface/adhoc/scoped, interop/load/append-api
@@ -1017,10 +1066,10 @@ type Notice = LeaseExpiring      { bundle: Text, at: Instant }
 | Notice | Meaning |
 | --- | --- |
 | `LeaseExpiring` | The bound bundle's lease ends at `at` unless a client renews it |
-| `ShuttingDown` | The server accepts no new streams on this connection and closes it at `at` |
-| `ConstructorEnabled` | Writes to constructor `ctor` of `relation` are enabled ([evolution.md](evolution.md#8-readers-first)) |
+| `ShuttingDown` | The server accepts calls on this connection until `at` and opens no new stream after it |
+| `ConstructorEnabled` | Writes to constructor `ctor` of `relation` are enabled, or, after `enable T.C`, storing values of `ctor` of the value-level sum named in `relation` ([evolution.md](evolution.md#8-readers-first)) |
 | `BundleRetired` | The bound bundle has been retired; new bindings to it, and calls on connections bound to it, are refused |
-| `BlockingMigration` | The bound bundle holds back a pending `enable` in the migration that produces `version` |
+| `BlockingMigration` | The bound bundle blocked a migration that would produce `version`, or a revoke issued at `version`, and it was refused; nothing waits. Sent to the bundle's sessions for the `BlockingNoticePeriod` setting, 24 hours by default, after the refusal ([evolution.md](evolution.md#8-readers-first)) |
 | `UpgradeRequired` | Clients of the bound bundle are asked to upgrade to a newer bundle |
 
 Field types are those catalog.md gives.
@@ -1058,9 +1107,9 @@ The reasons this part produces:
 | Constructor | Reason | When | Client action |
 | --- | --- | --- | --- |
 | `Retry` | `Serialization` | A transaction lost a serialization conflict and was not, or no longer, retried by the server | Rerun the transaction |
-| `Retry` | `Overloaded` | Connection, stream or queue bound reached (§8); carries `retry_after` | Retry after the delay |
+| `Retry` | `Overloaded` | Connection, stream or queue bound reached (§8); carries `retry_after` after Ready | Retry after the delay |
 | `Retry` | `StreamIdle` | No credit for longer than the limit before commit (§5.8) | Read faster or grant more credit |
-| `Rejected` | `TransactionExpired` | The interactive transaction passed its time or idle limit (§6.2) | Shorten the transaction |
+| `Rejected` | `TransactionExpired` | The interactive transaction was aborted at its time or idle limit (§6.2) | Shorten the transaction |
 | `Rejected` | `TransactionBusy` | The transaction is in use from another connection (§6.2) | Wait for the other connection's request |
 | `Rejected` | `Cancelled` | The client cancelled the call (§5.7) | None |
 | `Rejected` | `DeadlineExceeded` | The call's deadline passed | None |
@@ -1070,18 +1119,23 @@ The reasons this part produces:
 | `Rejected` | `Invalid` | Ad hoc text failed to parse or check; carries diagnostics | Fix the text |
 | `Rejected` | `SchemaMismatch` | An Append schema is not the target's row type (§7.3) | Fix the batches |
 | `Rejected` | `UnknownQuery` | No query, function or feed with that ordinal in the binding | Regenerate client code |
-| `Rejected` | `KeyViolation` | Two rows of one statement's change set have one key, or an appended batch repeats a key | Fix the input |
+| `Rejected` | `KeyViolation` | Two rows of one statement's change set have one key, or an appended batch repeats a key; a repeated unique is `Violated` | Fix the input |
 | `Rejected` | `UnknownTransaction` | The id names no live transaction of this role and binding | None |
 | `Rejected` | `UnknownBundle` | The bundle is not registered | Register or deploy it |
 | `Rejected` | `VersionMismatch` | The bundle is registered at another version or hash | Regenerate client code |
 | `Rejected` | `Retired` | The bundle is retired | Deploy a newer bundle |
-| `Rejected` | `BundleExpired` | The bundle's lease expired and one of its queries is untranslatable (§3.4) | Deploy a newer bundle |
-| `Rejected` | `BundleSuperseded` | The bundle was superseded by an embedded open and not registered again ([applications.md](applications.md#8-embedded-databases)) | Register the bundle again |
+| `Rejected` | `BundleExpired` | The bundle's lease has expired: a bind, call or renewal of it, on the primary or a replica (§3.4) | Register the bundle again, or deploy a newer one |
+| `Rejected` | `BundleSuperseded` | The bundle was superseded, by an embedded open or by `supersede bundle`, and not registered again ([applications.md](applications.md#8-embedded-databases)) | Register the bundle again |
+| `Rejected` | `CatalogMismatch` | Hello names a catalog version other than the one the bundle pins (§3.4) | Regenerate client code |
+| `Rejected` | `EditionLocked` | Hello asks for an edition on a bound connection (§3.2) | Drop the option |
+| `Rejected` | `UnknownEdition` | Hello asks for an edition the server does not implement (§3.2) | Ask for an edition the server implements |
+| `Rejected` | `MixedVersions` | A transaction mixes ad hoc text and registered calls (§7.1) | Split the transaction |
 | `Rejected` | `TooOld` | A feed position is past retention (§9.4); carries the oldest position kept as `oldest: Position { epoch, lsn }` | Resubscribe from a snapshot |
 | `Rejected` | `HistoryUnavailable` | A feed position precedes the feed's registration (§9.2); carries the oldest position kept as `oldest: Position { epoch, lsn }` | Subscribe from a snapshot |
 | `Rejected` | `PositionNotOnHistory` | A position is not on this database's history | Drop the position |
 | `Rejected` | `ReadOnlyReplica` | A write reached a replica (§6.6); names the primary | Send it to the primary |
 | `Retry` | `SafePointTimeout` | A replica read with `after` found no safe point covering it within `ReplicaWait` (§6.6) | Retry, or read on the primary |
+| `Retry` | `ReplayConflict` | A replica read was cancelled after log replay waited `ReplicaVacuumWait` to remove a row version its snapshot sees | Retry, or read on the primary |
 | `Rejected` | `RequestReused` | A request number was reused for a different call or arguments (§6.5) | Fix the client's numbering |
 | `Rejected` | `RequestExpired` | A request number with no record is strictly below the deduplication low-water mark (§6.5) | Check the outcome by a read |
 | `Rejected` | `UnknownDatabase` | Hello names a database the process does not serve | Fix the address |

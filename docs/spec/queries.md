@@ -12,9 +12,10 @@ limits, and faults. The grammar of every form is in
 in [semantics.md](semantics.md).
 
 Examples use the running schema of the [index](README.md#conventions)
-at version 12, after `0011 add constructor Identity.Apple { sub: Text }
-joins identities.OAuth` and `0012 enable identities.Apple`, extended
-for this part with:
+at version 12, after migration 0011
+([evolution.md §1.1](evolution.md#11-migrations)) adds `Apple { sub:
+Text }` joining `identities.OAuth`, with its `display_name` arm, and
+`0012 enable identities.Apple`, extended for this part with:
 
 ```
 type Post = { id: Key posts, author: Key users, created_at: Instant, title: Text }
@@ -114,6 +115,10 @@ known:
 - `x` is a binder over a relation variable, a constructor set, a
   backlink, a key-preserving query (one whose `select` is the binder
   itself), or a view that returns rows of one relation;
+- `x` is a binder over `inserted(R)`, `deleted(R)` or `prior(R)` in a
+  transition constraint
+  ([constraints.md](constraints.md#61-reading-the-change));
+- `x` is the binder of a `match` arm on such a row;
 - `x` is a row bound by a `let` from a write;
 - `x` is a value of a type with a self-identifying `Key r` field.
 
@@ -275,7 +280,10 @@ sum is.
 In a function, registered query or constraint, an anonymous
 constructor expression is typed by the expected type that names it; a
 constructor name with no expected type that declares it and no
-declaration in scope is refused.
+declaration in scope is refused. A comprehension checked against `Set
+T` checks its `select` against `T`, so the arms of `login_key` above
+are checked against the signature's result sum
+([typing.md](typing.md#22-the-algorithm)).
 
 An ad hoc statement has no signature: the type of its result, an
 anonymous result sum included, is inferred from the statement.
@@ -330,9 +338,13 @@ key, an aggregate, a function body or another arm.
 
 A scrutinee of type `Key r.S` is matched by the constructor of the row
 it references, dereferenced at the snapshot; `_` and a binder are not
-allowed as its top-level pattern, in ad hoc text included. The row
-exists because references are valid at every statement boundary
+allowed as its top-level pattern, in ad hoc text included. When the
+scrutinee is a reference field of a row, the row exists, because
+references are valid at every statement boundary
 ([constraints.md](constraints.md#21-keys-uniques-and-references)).
+Any other key, such as a parameter or `r.key(v)`, may name no row of
+`r.S`; the match then faults with `NoSuchRow` (§15), and it is partial
+([typing.md](typing.md#101-total-and-partial-expressions)).
 
 ### 5.3 Exhaustiveness
 
@@ -394,8 +406,10 @@ from i in identities select match i
 
 ### 5.6 A match over a relation is a union of arm queries
 
-Let `Q` be a query with a generator `x in r`, `r` of type `T` with
-constructors `C1 ... Cn`, and let every `match x` in `Q` be exhaustive.
+Let `Q` be a comprehension with no `group` and a generator `x in r`,
+`r` of type `T` with constructors `C1 ... Cn`, in which `x` occurs
+neither inside an aggregate nor inside the range of a `top`, and let
+every `match x` in `Q` be exhaustive.
 Then `Q` denotes the union over `k` of `Qk`, where `Qk` is `Q` with
 the generator replaced by `x in r.Ck` and each `match x` replaced by
 its arms that can match `Ck`, in their order. Each `Qk` reads only the
@@ -738,15 +752,19 @@ set counts its distinct values:
 authors ([semantics.md §5.7](semantics.md#57-aggregates),
 [prelude.md §7](prelude.md#7-aggregates)).
 
-Only `sum` and `avg` refuse a generator over a set built by `select`,
-since the projection has merged equal values; they range over the rows
-the values come from instead. The rule is syntactic, applied after
-normalisation: a generator whose source normalises to a `select`
-comprehension is refused, and a `Set T` parameter is accepted:
+Only `sum` and `avg` refuse a generator over a set built by a `select`
+that is not key-preserving, since such a projection may have merged
+equal values; they range over the rows the values come from instead.
+The rule is syntactic, applied after normalisation: a generator whose
+source normalises to a comprehension is refused unless its `select` is
+exactly the binder of a generator over a relation variable, a
+constructor relation, a constructor set, a backlink or another such
+key-preserving comprehension. A `Set T` parameter is accepted:
 
 ```
-sum(o.total for o in orders)                          -- each order counts
-sum(t for t in (from o in orders select o.total))     -- refused
+sum(o.total for o in orders)                                        -- each order counts
+sum(x.total for x in (from o in orders where o.qty > 1 select o))  -- accepted: selects the binder
+sum(t for t in (from o in orders select o.total))                   -- refused
 ```
 
 ### 10.2 The aggregates
@@ -759,7 +777,10 @@ sum(t for t in (from o in orders select o.total))     -- refused
 | `max(v for ...)` | an ordered type `T` | `T` | `Option T`; `None` when empty |
 | `avg(v for ...)` | `F32` or `F64` | the same type | `Option` of it; `None` when empty |
 
-Integer and decimal `sum` faults on overflow (§15). Averages of other
+Integer and decimal `sum` is the exact sum of the values, checked
+once against the range of `N` when every value has been added: it
+faults (§15) when the exact sum is out of range, whatever the order of
+addition. Averages of other
 numeric types are taken after an explicit conversion. User-defined
 aggregates are declared as in
 [interop.md](interop.md#10-user-defined-aggregates) and follow the same
@@ -924,7 +945,7 @@ result type; bodies are inferred and checked against the signature
 ([typing.md](typing.md#2-signatures-and-inference)). A function's parameters have
 named or row types, anonymous record types with exactly their fields,
 `Set` types, or function types; there is no record polymorphism over
-"any record with these fields".
+"any record with these fields". A `fn` may also return a function.
 
 ### 12.3 Higher-order functions are normalised away
 
@@ -943,8 +964,9 @@ of a lambda reduced. The result is a first-order query with no
 function values. A call is inlined by substituting its arguments only
 where they are total; a partial argument stays evaluated once at the
 call, before the body, so its fault is reached whether or not the body
-uses it. Function values never reach a result, a stored value,
-a parameter of a registered query, or `==`. An implementation must
+uses it. A function type never appears in a relation, a field, a set
+element, a type argument, a query result or a parameter of a
+registered query, and `==` never applies to a function. An implementation must
 normalise every accepted query this way; since functions are not
 recursive, normalisation terminates.
 
@@ -1092,8 +1114,8 @@ rejection, not a fault (§11.1). `fail` in a write is not a fault
 does not fault.
 
 When evaluation reaches a fault, the statement aborts with an error
-naming the fault; it returns no rows, and the transaction it belongs to
-cannot commit its effects ([transactions.md](transactions.md#6-aborts-retry-and-waiting)).
+naming the fault; it returns no rows, and the statement's effects are
+not applied ([transactions.md](transactions.md#6-aborts-retry-and-waiting)).
 A query's declared result type is unchanged by the operations in it
 that can fault: `o.total / o.qty` has the type of its operands.
 
@@ -1165,7 +1187,8 @@ select match checked_div(o.total, o.qty) | None -> 0 | Some { value: q } -> q
 for `e : T`: `Ok { value: v }` when `e` evaluates to `v`, and `Err {
 error: f }` when evaluating `e` reaches the fault `f`, the first in
 the order of §15.2; evaluation of `e` stops there and the enclosing
-expression continues. `Fault` is the prelude sum of fault kinds
+expression continues. When `e` faults in several bindings, `f` is the
+fault of any one of them, as for a statement (§15.2). `Fault` is the prelude sum of fault kinds
 ([prelude.md](prelude.md)). `try` catches faults only: a `fail`, a
 serialization failure or any other error that is not a fault is not a
 value.
@@ -1193,10 +1216,18 @@ grant ([security.md](security.md#3-grants)), outside any bundle.
   caller supplies for it; a free name the caller supplies no parameter
   for is an error.
 - Several items in one ad hoc text form one transaction. Each item is
-  a statement; their results are returned in order.
-- A session may declare `temp relation NAME : T`, a relation outside
-  the operator log that lasts for the session and has no constraint
-  but its key ([syntax.md §3.1](syntax.md#31-kinds-of-file)).
+  a statement; their results are returned in order. The first item
+  that fails (a fault, a `fail`, a constraint violation or a
+  rejection) ends the text: later items do not run, nothing commits,
+  and the error names that item's ordinal.
+- Ad hoc text is refused in a transaction that has made a registered
+  call, and a registered call is refused in a transaction that has run
+  ad hoc text, with `MixedVersions`.
+- Ad hoc text may declare `temp relation NAME : T`, a relation outside
+  the operator log that has no constraint but its key
+  ([syntax.md §3.1](syntax.md#31-kinds-of-file)). It lasts until the
+  end of the interactive transaction the text runs in, or, outside
+  one, until the end of that one text.
 - Text sent on a connection bound to a bundle is checked at the
   current version, not the bundle's pinned version, and its results
   are encoded at the current version, with their tags given by the

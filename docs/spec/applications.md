@@ -106,8 +106,10 @@ A schema function is also a schema-resident query. A bundle that lets
 its clients call one imports it with `import fn NAME`, which gives it
 an ordinal in the bundle like a declared query; it is called at the
 bundle's pinned version, with the definition of that version. A
-principal calling it directly needs `grant call fn NAME to R`, and it
-runs with the schema owner's rights, bound to the caller
+principal calling it, by the bundle's ordinal or directly, needs
+`grant call fn NAME to R`; a call grant on a bundle covers its
+registered queries and transactions only. A schema function called
+this way runs with the schema owner's rights, bound to the caller
 ([security.md](security.md#4-registered-queries-and-definer-rights)).
 
 ```
@@ -134,11 +136,11 @@ queries and transactions may call it; clients may not. It may be
 generic, with type parameters as a schema function has. It is checked
 with the bundle at the bundle's pinned version, and rechecked with the
 bundle on a schema change (§6). A bundle function whose name equals a
-schema function's name visible in the bundle is refused at
-registration. A migration that defines a schema function whose name
-equals a bundle function of a live bundle that imports its module is
-refused by the live-bundle check
-([evolution.md §3.2](evolution.md#32-checks-at-apply)).
+schema function's name visible in the bundle at its pinned version is
+refused at registration. A bundle's names resolve at its pinned
+version, so a migration may define a schema function with the name of
+a bundle function, and the bundle's uses of that name still denote its
+own function.
 
 ```
 bundle web-2.3 pins 12 (c41e...) edition "2026-10"
@@ -179,7 +181,7 @@ query sessions_of (u: Key users) -> Set Session.Active =
 | `catalog V (H)` | the catalog version, required to read catalog relations ([evolution.md §10](evolution.md#10-engine-releases)) |
 | `edition "E"` | the spec edition the bundle is written in, required |
 | `lease D` | the lease duration, a `Duration` (§4.2) |
-| `hide new constructors` | the bundle never blocks `enable`; rows of constructors its version lacks are invisible to it, and following a reference to one faults `NoSuchRow`; rows of known constructors are never hidden ([evolution.md §8.1](evolution.md#81-enabling-a-constructor)) |
+| `hide new constructors` | the bundle never blocks `enable r.C`, though it still blocks `enable T.C` for a field it reads; rows of constructors its version lacks are invisible to it, and following a reference to one faults `NoSuchRow`; rows of known constructors are never hidden ([evolution.md §8.1](evolution.md#81-enabling-a-constructor)) |
 
 The priority and resource clauses are in
 [catalog.md](catalog.md#83-limits-and-deadlines); the full header
@@ -196,16 +198,23 @@ dots after the last hyphen: `web-2.4` is version `2.4` of family
 order they appear in the file, from 1, so a code generator computes
 them from the file alone; bundle functions and module imports take
 none. The qualified name of a registered query is the bundle name and
-the query name: `web-2.4::login_key`. A call grant names a bundle or
-a family (`grant call web::login_key to app` covers every bundle of
-`web` whose `login_key` has the granted signature); call grants are deployment state, given by the bundle owner or
-the schema owner ([security.md](security.md#3-grants)).
+the query name: `web-2.4::login_key`.
+
+A family's owner is the role that registered its first bundle. Only
+that owner or the schema owner registers a bundle into the family. A
+call grant names a bundle or a family (`grant call web::login_key to
+app` covers every bundle of `web` whose `login_key` has the granted
+signature, parameter and result types compared by type id); call
+grants are deployment state, given by the bundle's or family's owner
+or the schema owner ([security.md](security.md#3-grants)).
 
 ### 3.2 Bundles are immutable
 
 A bundle name is registered once. Registering a bundle whose name is
-registered with identical content is a no-op, and makes a superseded
-bundle live again (§4.4); with different content it is refused. A
+registered with identical content is a no-op for a live bundle; for a
+superseded or expired one it runs checks 3 to 5 of §4.1 and, when they
+pass, makes the bundle live again with a new lease (§4.2, §4.4). With
+different content it is refused. A
 retired bundle's name is never registered again. A new client release
 is a new bundle with a new name.
 
@@ -253,14 +262,19 @@ Registration is refused, as a whole, when:
    transaction has no translation to the current version
    ([evolution.md §7.2](evolution.md#72-translation-is-decided-at-apply));
 4. the pinned version lacks a constructor that is enabled now, and the
-   bundle reads the whole relation variable holding it or follows a
-   reference whose current type admits it
+   bundle reads the whole relation variable holding it, follows a
+   reference whose current type admits it, or reads a field whose type
+   reaches the value-level sum holding it
    ([evolution.md §8.1](evolution.md#81-enabling-a-constructor)): the refusal is
-   `Rejected { reason: BundleStale }`, naming the constructor;
+   `Rejected { reason: BundleStale {..} }`, naming the constructor; a bundle
+   declaring `hide new constructors` is exempt from the relation and
+   reference cases, not from the field case;
 5. the registering principal lacks the privileges the bundle needs
    ([security.md](security.md#42-what-registering-requires));
 6. the name is taken by different content, or by a retired bundle
-   (§3.2).
+   (§3.2);
+7. the family has an owner (§3.1) and the registering principal is
+   neither that owner nor the schema owner.
 
 A bundle may pin a version at which a constructor is declared but not
 yet enabled. Its queries must cover that constructor, and registering
@@ -300,21 +314,27 @@ on one. A process writes a renewal for a bundle at most once per eighth
 of the lease duration. Renewals made at a replica are forwarded to the
 primary; a forwarded renewal is idempotent and retried until
 acknowledged ([evolution.md §9](evolution.md#9-replication-of-schema-changes)).
-The primary expires a lease only when the lease duration plus a grace
-of one eighth of it has passed since the last renewal it recorded.
+
+A lease expires when the lease duration has passed since the last
+renewal recorded in the log. The primary and every replica compute
+expiry from that record alike. From expiry a replica refuses binds and
+calls on the bundle with `Rejected { reason: BundleExpired {..} }`. The
+primary treats the lease as expired only once the further grace of the
+file setting `LeaseGrace` (1 hour by default) has passed. A renewal of
+an expired lease, made at the primary or forwarded to it, is refused
+with `BundleExpired`; no renewal extends an expired lease.
 
 A bundle whose header has no `lease` clause takes its lease duration
 from a database setting ([catalog.md](catalog.md#10-configuration)),
 30 days by default.
 
-An expired bundle is not retired. It stops holding back schema
-changes: readers-first and translation-at-apply ignore it. When a
-client binds to it again, the engine translates all its queries to the
-current version; if any has no translation, or the bundle would read
-the whole relation variable of a constructor enabled since its pinned
-version, or follow a reference whose current type admits one, the binding is refused with `Rejected { reason: BundleExpired }`
-([evolution.md §7.3](evolution.md#73-expired-bundles)). Otherwise the
-binding renews its lease and makes it live again.
+An expired bundle is not retired, and it is not live. It stops
+holding back schema changes: readers-first and translation-at-apply
+ignore it. Binds, calls and renewals of it are refused with
+`Rejected { reason: BundleExpired {..} }` on the primary and on every
+replica. The way back is registering it again (§3.2), which runs
+checks 3 to 5 of §4.1 ([evolution.md §7.3](evolution.md#73-expired-bundles))
+and, when they pass, makes it live with a new lease.
 
 ### 4.3 Retirement
 
@@ -343,10 +363,18 @@ owner may retire it
 ### 4.4 Supersession
 
 A bundle is superseded when a newer release of the same embedded
-application replaces it (§8). A superseded bundle is not retired and
-not a live reader: it holds back no schema change, and binding to it is
-refused with `Rejected { reason: BundleSuperseded }`. Registering it again
-with identical content makes it live again.
+application replaces it (§8), or by the command:
+
+```
+supersede bundle ios-4.2 by ios-4.3
+```
+
+`supersede bundle B by B2` is a deployment command, given by `B`'s
+owner or the schema owner; `B2` must be a live bundle of the same
+family as `B`. A superseded bundle is not retired and not a live
+reader: it holds back no schema change, and binding to it is refused
+with `Rejected { reason: BundleSuperseded {..} }`. Registering it again with
+identical content runs the checks of §3.2 and makes it live again.
 
 Rulings: surface/reader-tracking/dormant/lease, surface/reader-tracking/dormant/retire, surface/lease-policy/translate-stale, security/retire-priv/owner-or-admin, surface/registration/order/pinned
 
@@ -354,10 +382,13 @@ Rulings: surface/reader-tracking/dormant/lease, surface/reader-tracking/dormant/
 
 A connection is bound to one bundle, at the bundle's pinned version, by
 its handshake ([wire.md](wire.md#3-connection-lifecycle)). The handshake
-names the bundle and the version with its hash. The engine refuses the
-binding when the bundle is not registered, is retired or superseded,
-has expired and can no longer be served (§4.2), or pins a different
-version or hash than the handshake states.
+names the bundle and the version with its hash, and the catalog
+version when the bundle pins one. The engine refuses the binding when
+the bundle is not registered, is retired or superseded, has expired
+(§4.2), or pins a different version or
+hash than the handshake states; a catalog version that differs from
+the bundle's catalog pin is refused with
+`Rejected { reason: CatalogMismatch {..} }`.
 
 A bound connection:
 
@@ -375,7 +406,9 @@ A bound connection:
 - may also send ad hoc text when its principal holds `adhoc`; that text
   is checked at the current version, not the pinned one, and its
   results are encoded at the current version, their tags given by the
-  result's descriptor (§7).
+  result's descriptor (§7). Within one transaction, ad hoc text after
+  a registered call, or a registered call after ad hoc text, is refused
+  with `Rejected { reason: MixedVersions }`.
 
 A connection is bound once and serves one bundle for its lifetime. A
 client of two bundles opens two connections. An embedded database
@@ -395,18 +428,23 @@ query and operator:
 $ adt migrate 0014
 refused: bundle ios-4.2 pins 12 (c41e...): txn link_apple inserts identities.Apple
   (0014 deprecates identities.Apple)
-  retire bundle ios-4.2, or register a release without link_apple;
+  retire bundle ios-4.2, or supersede it by a release without link_apple
+  (supersede bundle ios-4.2 by ios-4.3);
   ios-4.2 expires only once every client stops calling it (see sys::sessions)
 ```
 
 `adt migrate` wraps the command `apply migrations`
 ([catalog.md](catalog.md#91-commands)).
 
-The migration then waits until the bundle is released (retired,
-superseded or expired), or the operators are changed. While a migration
-waits, clients of the blocking bundle receive `BlockingMigration`
-notices ([evolution.md §8.1](evolution.md#81-enabling-a-constructor)).
-A bundle declaring `hide new constructors` never blocks an `enable`;
+A refused migration does not wait: it applies only when presented
+again after the bundle is released (retired, superseded or expired),
+or with changed operators. For the file setting `BlockingNoticePeriod` (24 hours by
+default) after a refusal, the engine sends `BlockingMigration` notices
+to the sessions bound to each bundle the report names
+([evolution.md §8.1](evolution.md#81-enabling-a-constructor)). A
+migration with staged jobs reruns every check of
+[evolution.md §3.2](evolution.md#32-checks-at-apply) at its last staged
+commit; a failure there discards the pending migration. A bundle declaring `hide new constructors` never blocks an `enable r.C`;
 after one, its paths through references are partial and fault
 `NoSuchRow` when they reach a hidden row. A migration never applies with
 a live bundle left failing, and never retires one.
@@ -426,7 +464,10 @@ adt> from i in identities select match i | EmailPass e -> e.email | Google g -> 
 
 Ad hoc text may be a query, a write or a `transact` block. Several
 items in one text form one transaction, each item a statement, with
-results returned in order. Free names in the text are parameters,
+results returned in order. The first item that faults, fails, violates
+a constraint or is rejected ends the text: nothing of the text
+commits, later items do not run, and the error names the item's
+ordinal. Free names in the text are parameters,
 typed by the descriptors the caller supplies; a free name with no
 supplied parameter is an error. A write
 needs, besides `adhoc`, the write privileges each of its statements
@@ -458,8 +499,9 @@ in [embedding.md](embedding.md#2-opening-a-database):
 let db = adtdb::open("app.adt", &schema::LOG, &[&queries::BUNDLE], OpenOptions::default())?;
 ```
 
-After recovery, and after refusing a file whose log and the shipped
-migrations differ at some position both have (`Diverged`), opening:
+After recovery, after refusing a file whose log and the shipped
+migrations differ at some position both have (`Diverged`), and after
+refusing a downgrade, opening:
 
 1. records the given bundles in `catalog::bundles`, unchecked;
 2. marks every bundle recorded by an earlier open and not given now as
@@ -467,17 +509,21 @@ migrations differ at some position both have (`Diverged`), opening:
 3. binds the host functions the program supplies; one whose code
    identity differs from the catalog's fails open with
    `HostFnMismatch`, unless the shipped migrations contain the
-   `redefine fn` for it;
+   `redefine fn` for it and no staged job or index build of a migration
+   before that `redefine fn` reaches the function;
 4. applies the shipped migrations the file lacks, in order, each as in
    [evolution.md §3](evolution.md#3-applying-a-migration), running
    staged jobs to completion;
 5. checks and registers each given bundle at its pinned version
    (§4.1), and binds the handle.
 
-The deployment writes of an open are atomic: if any step fails, no
-bundle is recorded, superseded or registered. A downgrade, an open with
-an older bundle that would read a constructor enabled since its pin or
-whose host function was redefined since, fails with
+Steps 1 and 2 commit durably together, before step 4. A later failure
+does not undo them; a superseded bundle is live again only once
+registered again (§3.2). A bundle recorded in step 1 is not a reader
+until step 5 registers it. The registrations of step 5 are atomic: if
+any fails, none is made. A downgrade, an open with an older bundle that
+would read a constructor enabled since its pin or whose host function
+was redefined since, fails with
 `Rejected { reason: DowngradeRefused { cause } }` and changes nothing.
 
 Open never appends to the log anything the shipped migrations do not

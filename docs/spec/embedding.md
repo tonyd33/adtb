@@ -98,13 +98,18 @@ performs these steps in order, and returns only when all succeed:
 4. Compare the shipped log with the file's log migration by migration.
    One must be a prefix of the other; otherwise open fails with
    `Diverged` naming the first version where they differ. Open never
-   writes to the log anything the shipped log does not hold.
+   writes to the log anything the shipped log does not hold. Then
+   refuse a downgrade, as below.
 5. Record the given bundles, unchecked, as the bundles this open
-   serves.
+   serves. A recorded bundle is not a reader until step 9 registers
+   it.
 6. Mark every other bundle registered by an earlier open superseded.
    A superseded bundle is not a live reader and holds back no change;
    it is not retired, and registering it again with identical content
-   makes it live again.
+   runs the checks of
+   [applications.md §3.2](applications.md#32-bundles-are-immutable)
+   and makes it live again. Steps 5 and 6 commit durably together,
+   before step 8; a later failure of open does not undo them.
 7. Bind every host function the options supply (§10), before any
    staged job or plan can call one. A missing or mismatched one fails
    open as §10.2 states.
@@ -112,20 +117,22 @@ performs these steps in order, and returns only when all succeed:
    file's log ([evolution.md](evolution.md#1-the-operator-log)). Each
    applies as one schema change and commits before the next starts. A
    migration with staged jobs commits its version only when every
-   staged job has completed; open runs them to completion. A refused
-   migration, or one whose staged job fails, fails open with
-   `MigrationRefused`, leaving the file at the last migration that
-   committed and the log unchanged beyond it.
+   staged job has completed; open runs them to completion, and every
+   check of [evolution.md §3.2](evolution.md#32-checks-at-apply) reruns
+   at the last staged commit. A refused migration, one whose staged job
+   fails, or one that fails a check at its last staged commit, fails
+   open with `MigrationRefused`, leaving the file at the last migration
+   that committed and the log unchanged beyond it.
 9. Check and register every given bundle at its pin, renewing the lease
    of one already registered
    ([applications.md](applications.md#41-registration)), and plan its
    queries. A refused registration fails open with
    `RegistrationRefused`.
 
-Open's deployment writes, the recording, supersession and registration
-of bundles in `catalog::bundles`, are atomic: they take effect together
-when open succeeds, and an open that fails leaves them as they were.
-Migrations that committed before a failure stay applied.
+The registrations of step 9 are atomic: they take effect together when
+open succeeds, and an open that fails makes none. The recording and
+supersession of steps 5 and 6, and migrations that committed before a
+failure, stay applied.
 
 A downgrade, an open whose bundles pin an older version than the
 file's, fails with `DowngradeRefused` and changes nothing when an old
@@ -177,7 +184,11 @@ Open takes a slice of bundles of any editions; every generated
 `FormatTooNew` is returned by a release older than the one that last
 finalized the file's format ([catalog.md](catalog.md#122-upgrades-and-downgrade)).
 A new engine release keeps writing the old format until the program
-finalizes the upgrade, which needs no `maintain` check in process:
+finalizes the upgrade, which needs no `maintain` check in process. When
+readers-first refuses a catalog operator the upgrade applies,
+finalizing is refused with a report naming the blocking bundles; the
+upgrade stays unfinalized and a downgrade stays possible
+([catalog.md](catalog.md#122-upgrades-and-downgrade)).
 
 ```rust
 impl Database {
@@ -228,9 +239,11 @@ let app = db.bundle(&queries::BUNDLE)?;
 ```
 
 `bundle` fails with `UnknownBundle` for a bundle not registered,
-`Retired` for a retired one, `BundleExpired` for an expired one with an
-untranslatable query, and `VersionMismatch` when the registered bundle
-of that name pins another version. Obtaining a bundle handle and every
+`Retired` for a retired one, `BundleSuperseded` for a superseded one,
+`BundleExpired` for an expired one, which is live again only once
+registered again ([evolution.md §7.3](evolution.md#73-expired-bundles)), and
+`VersionMismatch` when the registered bundle of that name pins another
+version. Obtaining a bundle handle and every
 call on it renew the bundle's lease; the engine writes a renewal for a
 bundle at most once per eighth of the lease
 ([applications.md](applications.md#42-leases)). Once the bundle is
@@ -346,7 +359,8 @@ to a bundle (open, ad hoc text, loads) return `adtdb::Error`, the sum
 of the newest edition the engine implements. Errors this part names, such as `Cancelled` or `SchemaMismatch`,
 are reasons. In process there is no lost
 acknowledgement: a call that returns an error has not committed, and
-calls carry no request numbers.
+calls carry no request numbers. An embedded replica numbers the writes
+it forwards itself (§12.2), and the same holds there.
 
 ### 4.4 Feeds
 
@@ -410,8 +424,11 @@ retries an interactive transaction: a serialization failure is
 returned and the transaction is aborted.
 
 Calls inside a transaction take their own options, which hold only
-what the wire allows on a call with `txn`: no assertion, durability or
-retry, which belong to the transaction. A registered transaction
+what the wire allows on a call with `txn`: no assertion, durability,
+`after` or retry, which belong to the transaction. Ad hoc text after a
+registered call in one transaction, or a registered call after ad hoc
+text, is refused with `MixedVersions`
+([applications.md §5](applications.md#5-binding-a-connection)). A registered transaction
 called inside a transaction returns its result as `Pending<T>`, which
 has no commit position; the position is the one `commit` returns.
 
@@ -427,6 +444,7 @@ impl Database {
 pub struct TxnCallOptions {
     pub deadline: Option<std::time::SystemTime>,
     pub limit: Option<std::time::Duration>,
+    pub priority: Option<u8>,
     pub cancel: Option<CancelToken>,
     pub trace: Option<TraceContext>,
 }
@@ -435,7 +453,7 @@ pub struct Pending<T> { pub value: T }
 
 impl<B: BundleDef> Transaction<B> {
     pub fn call<C: Callable<Bundle = B>>(&mut self, c: C, args: C::Args, opts: &TxnCallOptions) -> Result<C::InTxn, B::Error>;
-    pub fn query_text(&mut self, text: &str, params: &[(&str, Value)], opts: &TxnCallOptions) -> Result<DynRows, adtdb::Error>;
+    pub fn query_text(&mut self, text: &str, params: &[(&str, Value)], opts: &TxnCallOptions) -> Result<Vec<DynRows>, adtdb::Error>;
     pub fn commit(self) -> Result<Position, B::Error>;
     pub fn rollback(self) -> Result<(), B::Error>;
 }
@@ -490,15 +508,23 @@ audit`, `rotate key`, `dump`, `restore` and `backup`
 ([applications.md](applications.md#7-the-ad-hoc-role),
 [catalog.md](catalog.md#91-commands)), checked against the current
 schema version. A free name in the text is a parameter that `params`
-must supply; several items in one text form one transaction, and
-their results come back in order. Constraints hold for ad hoc writes as for
-any other. Parameters are bound by name, so secrets such as a password
+must supply; several items in one text form one transaction.
+`query_text` returns one `DynRows` per item that yields a result, in
+item order. The first item that faults, fails, violates a constraint
+or is rejected ends the text: nothing of it commits, later items do
+not run, and the error names the item's ordinal. Text that writes
+returns no rows until it commits, and outside an interactive
+transaction the engine reruns it on serialization failure as the
+server does ([wire.md](wire.md#64-server-retry)); text that only reads
+streams its rows. A temp relation lives in the interactive transaction
+or the one text that declares it, and is gone at its end. Constraints
+hold for ad hoc writes as for any other. Parameters are bound by name, so secrets such as a password
 in `alter role web password p` never appear in the text. Results carry
 their type, since no code was generated for them.
 
 ```rust
 impl Database {
-    pub fn query_text(&self, text: &str, params: &[(&str, Value)], opts: &CallOptions) -> Result<DynRows, adtdb::Error>;
+    pub fn query_text(&self, text: &str, params: &[(&str, Value)], opts: &CallOptions) -> Result<Vec<DynRows>, adtdb::Error>;
 }
 
 pub struct DynRows { /* Iterator<Item = Result<Value, adtdb::Error>> */ }
@@ -617,7 +643,8 @@ by a key generator or a relation default may be left out, and is then
 filled as an insert fills it. A batch with any other schema is refused
 at push with `SchemaMismatch` and adds nothing. Text is normalized to
 NFC and floats canonicalized as construction does
-([model.md](model.md#1-values-and-types)).
+([model.md](model.md#1-values-and-types)), in process and on the wire
+alike.
 
 ### 9.2 Commit
 
@@ -655,9 +682,9 @@ pub struct LoadReport { pub rows: u64, pub position: Position }
 A load into one constructor relation has a wire form, an Append stream
 ([wire.md](wire.md#73-append)). A load that fills several relations as
 one change set has no single wire equivalent; over the server, the
-client appends into temp relations of its session and moves the rows
-with one ad hoc `transact` block that inserts from them
-([wire.md](wire.md#73-append)).
+client begins an interactive transaction, appends into temp relations
+declared in it, moves the rows with one ad hoc `transact` block that
+inserts from them, and commits ([wire.md](wire.md#73-append)).
 
 Rulings: interop/load/append-api
 
@@ -713,7 +740,10 @@ records it. Opening with a different version for a name the catalog
 already binds fails
 with `HostFnMismatch`, unless the shipped migrations contain a
 `redefine fn` for that function, which open applies in step 8; open
-never writes such an operator itself. A host function has one code at
+never writes such an operator itself. Open still fails with
+`HostFnMismatch`, naming the function, when a staged job or index
+build of a migration before that `redefine fn` reaches it; otherwise
+the supplied body is bound for the whole open. A host function has one code at
 a time: the `redefine fn` is refused while a live bundle pins a
 version whose code identity for the function differs
 ([evolution.md](evolution.md#7-version-translation)). Host functions
@@ -792,9 +822,16 @@ same operations as an opened file, with these differences:
 
 - Reads run locally, at the newest safe point the replica has applied.
 - Every registered transaction call, every interactive transaction that
-  is not read-only, and every load is forwarded to the primary over the
-  protocol and runs there; its result and commit position come back
-  from the primary.
+  is not read-only, every ad hoc text that writes and every load into
+  one relation is forwarded to the primary over the protocol and runs
+  there; its result and commit position come back from the primary.
+  Ad hoc writes forward as `CallText`, a load as an Append stream. A
+  load that fills several relations is refused with
+  `ReadOnlyReplica`.
+- The replica forwards writes under its own client id with request
+  numbers, and resends a write until it learns the outcome
+  ([wire.md](wire.md#65-idempotent-writes)), so a forwarded call that
+  returns an error has not committed.
 - After a forwarded commit, later calls on the handle read no snapshot
   older than that commit: the handle passes the position as `after`
   and the replica waits until it has applied it, for at most the file
@@ -804,8 +841,13 @@ same operations as an opened file, with these differences:
   applies no operators of its own. Lease renewals of the replica's
   bundles are forwarded to the primary; they are idempotent, and the
   replica retries them until the primary acknowledges, so a partition
-  delays a renewal but does not lose it. The primary expires a lease
-  only after the lease plus a grace of an eighth of the lease.
+  delays a renewal but does not lose it. The replica computes a lease's
+  expiry from the last renewal in the log it has applied, and from
+  expiry refuses binds and calls on the bundle with `BundleExpired`;
+  the primary treats the lease as expired only after the further grace
+  of the `LeaseGrace` setting
+  ([applications.md](applications.md#42-leases)). No renewal extends
+  an expired lease; the bundle must be registered again.
 - `sync` waits until the replica has applied every commit the primary
   had when `sync` was called.
 
@@ -813,7 +855,7 @@ same operations as an opened file, with these differences:
 let db = adtdb::replica("app.adt", "adt://primary.internal:7433/app", &[&queries::BUNDLE], ReplicaOptions::default())?;
 db.sync()?;
 
-pub fn replica(path: impl AsRef<Path>, primary: &str, bundles: &[&BundleDef], options: ReplicaOptions)
+pub fn replica(path: impl AsRef<Path>, primary: &str, bundles: &[&dyn AnyBundleDef], options: ReplicaOptions)
     -> Result<Database, OpenError>;
 
 impl Database {

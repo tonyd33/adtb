@@ -167,6 +167,11 @@ fields and the key fields, minus those the relation supplies by default
 (§2.3). A field that is neither given nor defaulted is a type error. A
 field given that `C` does not have is a type error.
 
+In the `from` form, `q` is checked against `Set` of the target's row
+type, or of the sum or constructor set when the target is one, so an
+anonymous record or constructor value in its `select` takes that type
+([typing.md](typing.md)).
+
 Inserting into the sum takes constructor values, so the constructor of
 each row is data computed by the query. A record without a constructor
 inserted into the relation variable of a sum with more than one
@@ -259,12 +264,17 @@ Rules for both:
 ### 2.4 Constructors not open for writes
 
 An insert or a retag into a constructor that is declared but not yet
-enabled, or that is deprecated, fails the statement. An update of an
+enabled, or that is deprecated, fails the statement with `Rejected {
+reason: NotOpen {..} }`. A constructor of a value-level sum is gated
+the same way: a write that stores a value of a constructor that is
+declared but not yet enabled, in any field at any depth of any row,
+fails with `Rejected { reason: NotOpen {..} }` naming that
+constructor. An update of an
 existing row that keeps its constructor is allowed, also in a
 deprecated constructor
 ([evolution.md](evolution.md#34-staged-changes)). Readers are upgraded
 to the version that declares a constructor before any writer may
-create its rows.
+create its rows or store its values.
 
 Rulings: write/insert/ctor, write/insert/value, write/insert/returns/rows, derived/defaults/on-relation, types/keygen/sequence, types/keygen/uuidv7, types/keygen/promise/distinct, types/keygen/import/advance, types/keygen/leak/live
 
@@ -332,7 +342,7 @@ does not exist.
 The new value of a row has the row's key. An update whose new value
 has another key value is a type error where the type checker can see
 that the key differs, and otherwise fails the statement with `Rejected
-{ KeyChanged }` ([catalog.md](catalog.md#4-error-sums)). Changing a row's identity is a
+{ reason: KeyChanged {..} }` ([catalog.md](catalog.md#4-error-sums)). Changing a row's identity is a
 delete and a separate insert of a new row.
 
 ### 3.4 The old row is in scope
@@ -475,7 +485,9 @@ row with the same value of `K`:
   failure ([transactions.md §6.1](transactions.md#61-serialization-failures));
 - if the only conflict is with a row another write of the same
   statement inserts, no `old` is bound, `w` is not evaluated, and the
-  statement fails with `KeyViolation`.
+  statement fails: with `KeyViolation` when `K` is the key, and with
+  `Violated` carrying the unique as its constraint when `K` is a unique
+  ([catalog.md](catalog.md#4-error-sums)).
 
 `old` has the row type of the constructor set `K` ranges over: the sum
 for `key`, `Identity.Google` for `(gid) in Google`. A `match old` names
@@ -487,7 +499,8 @@ statement with a user error carrying that text
 ([catalog.md](catalog.md#4-error-sums)).
 
 Two rows of one upsert's source with the same value of `K` conflict
-only with each other, so the statement fails with `KeyViolation`.
+only with each other, so the statement fails, with `KeyViolation` or
+`Violated` as above.
 
 A conflict test that meets a concurrent transaction still inserting the
 same value of `K` waits for it to end

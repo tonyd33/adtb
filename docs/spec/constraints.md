@@ -256,9 +256,11 @@ has arms for `EmailPass` and `Google` only, and `identities.OAuth` is
 
 ```
 -- 0011
+module auth
 add constructor Identity.Apple { sub: Text }
   joins identities.OAuth
   arm login_valid: Apple a -> scalar_len(a.sub) > 0
+  arm display_name: Apple a -> a.sub
 ```
 
 The new arm is checked against the new constructor relation, which is
@@ -393,6 +395,10 @@ constraint opened_fixed =
 
 The last reads `opened` on the sum because it is a header field.
 
+A binder over `inserted(R)`, `deleted(R)` or `prior(R)` ranges over
+rows of `R` and is statically known as a binder over `R` is, so `key o`
+applies to it ([semantics.md §3.2](semantics.md#32-rules)).
+
 ### 6.2 Checking
 
 A transition constraint is admitted and checked as any other (§5). In
@@ -417,7 +423,8 @@ state after it. When any constraint has a violation:
 - the statement fails and none of its change set is applied;
 - the error is `Violated` ([catalog.md](catalog.md#4-error-sums)) and
   carries one constraint: of the violated constraints, the one whose
-  name is smallest, with its report, the rows its query returns, sent
+  qualified name sorts first, with its report, the rows its query
+  returns, sent
   as a result descriptor followed by rows ([wire.md](wire.md));
 - the caller sees the report rows it may read and the others redacted
   ([security.md](security.md#3-grants)): a registered call by the
@@ -467,18 +474,23 @@ migration 0014:
 
 ```
 -- 0014
+module auth
 split constructor Identity.Social into Google { gid: Text } | Facebook { fid: Text }
   by match
     | Social { provider: Google, sub }   -> Google { gid: sub }
     | Social { provider: Facebook, sub } -> Facebook { fid: sub }
+  arm display_name: Google g -> g.gid
+  arm display_name: Facebook f -> f.fid
 -- check sub_present on identities.Social (scalar_len(sub) > 0)
 --   becomes check on identities.Google (scalar_len(gid) > 0)
 --   and check on identities.Facebook (scalar_len(fid) > 0)
 ```
 
-An operator that has no image for some constraint is refused, naming
-each such constraint. The schema change proceeds only after the
-constraint is rewritten or dropped by its own operator.
+A constraint whose drop is pending (§9.3) is still a schema object:
+structural operators carry it and it is rechecked as any other. An
+operator that has no image for some constraint, a pending one
+included, is refused, naming each such constraint. The schema change
+proceeds only after the constraint is rewritten or dropped by its own operator.
 
 ### 9.2 Adding a constraint
 
@@ -491,14 +503,17 @@ Starting from version 12:
 
 ```
 -- 0013
+module auth
 add constraint balanced = ...
 -- refused: Violated balanced, its report holds the 3 violating entries
 ```
 
 ### 9.3 Dropping a constraint
 
-A `drop constraint` takes effect only once no live bundle is pinned to
-a version that has the constraint
+A `drop constraint`, a `drop unique`, a `drop check` and a `rekey`
+that relaxes a key each take effect only once no live bundle is pinned
+to a version that has the constraint it removes, for a `rekey` the
+stricter key
 ([applications.md](applications.md#6-what-a-schema-change-does-to-bundles)). Until then the
 engine keeps checking it, so every reader sees only data that
 satisfies every constraint of the version it reads. The report of the
@@ -508,8 +523,8 @@ row of `sys::pending_drops`
 ([evolution.md §6.4](evolution.md#64-dropping-a-constraint),
 [catalog.md §6.6](catalog.md#66-pending-drops-and-request-marks)), so a write
 refused by a dropped constraint can be traced to the bundle that keeps
-it alive. The inverse of a drop is an add, validated against the data
-as in §9.2.
+it alive. The inverse of a drop is the matching add, and of a relaxing
+`rekey` the `rekey` back, validated against the data as in §9.2.
 
 A constraint is always checked with the current definitions of the
 schema functions it calls, whatever version the writing bundle is

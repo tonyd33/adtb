@@ -15,6 +15,8 @@ options:
   live:
     title: Live with rebuilding the index on drop
     excludes: [union-index/drop-ctor/eager, union-index/drop-ctor/lazy]
+  after-vacuum:
+    title: Keep the removed heap as history until vacuum has cleared its entries, then drop it
 ---
 Entries are ordered by key, not constructor, so a constructor's entries
 are not a contiguous range. Leading the key with the constructor would
@@ -34,3 +36,11 @@ not count orphans as conflicts.
 ## union-index/drop-ctor/live
 
 Mark the index unusable and rebuild, blocking writes to the sum.
+
+## union-index/drop-ctor/after-vacuum
+
+`remove r.C` leaves the heap in place as history. Vacuum removes its
+dead versions and their index entries in its batched pass; the heap
+is dropped once it holds no version any snapshot or the time-travel
+retention window can see. Older snapshots and `at commit` reads keep
+seeing the constructor's rows until then.

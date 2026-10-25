@@ -19,7 +19,7 @@ different dependencies, consumers or stability promises:
 | `adtdb-reference` | The reference interpreter (§3) | `adtdb-lang` |
 | `adtdb-sys` | Every `unsafe` block: page memory, direct I/O buffers, `io_uring`, atomic page reads (§2.2) | `libc` and allowlisted system crates |
 | `adtdb` | Engine core: catalog, planner, executor, transactions, storage, over the I/O interface of §2.4 | `adtdb-lang`, `adtdb-sys` |
-| `adtdb-sim` | Simulated storage, network, clock, randomness and scheduler, fault injection (§5.1); a dev-dependency | `adtdb` |
+| `adtdb-sim` | Simulated storage, network, clock, randomness and scheduler, fault injection (§5.1), and the tests that run the engine over them; nothing depends on it | `adtdb` |
 | `adtdb-server` | The wire protocol of [wire.md](wire.md) around `adtdb` | `adtdb` |
 
 Code generation tools for host languages depend on `adtdb-lang` alone.
@@ -75,13 +75,13 @@ The contract covers:
   use.
 
 Miri runs the whole engine over the simulated storage of §5.1, which is
-plain Rust, so the pager, latches and page layouts are checked for
+plain Rust, through the tests of `adtdb-sim`, so the pager, latches and page layouts are checked for
 undefined behaviour and data races. The real I/O backends, which Miri
 cannot execute, are tested natively under AddressSanitizer and
 ThreadSanitizer.
 
 ```
-$ cargo miri test -p adtdb --features sim
+$ cargo miri test -p adtdb-sim
 ```
 
 ### 2.3 Memory
@@ -378,7 +378,7 @@ the database through the server instead.
 
 ```rust
 let mut tx = app.begin(&TxnOptions::default())?;
-tx.call(queries::sign_up, (n, g), &CallOptions::default())?;
+tx.call(queries::sign_up, (n, g), &TxnCallOptions::default())?;
 tx.commit()?;   // may fail with a serialization failure; the caller retries
 ```
 

@@ -31,8 +31,8 @@ O(X) = X ⊎ { ↯f | f ∈ Fault } ⊎ { ⊗x | x ∈ RejectReason }
 `↯f` is the outcome of a computation that faulted with `f`, a
 constructor of the prelude sum `Fault`
 ([prelude.md §2.5](prelude.md#25-fault)). `⊗x` is the outcome of a
-statement rejected for reason `x`, a constructor of the catalog sum
-`RejectReason` ([catalog.md](catalog.md#4-error-sums)): `fail`, a key
+statement rejected for reason `x`, a constructor of the prelude sum
+`RejectReason` ([catalog.md §4.2](catalog.md#42-reasons)): `fail`, a key
 violation, a constraint violation, a statement exceeding its limits
 (`StatementLimit` and the other limit reasons of
 [catalog.md §8.3](catalog.md#83-limits-and-deadlines)). Both are aborts; `ω` ranges over
@@ -57,7 +57,8 @@ gather (o_i)_{i ∈ I}  =  (v_i)_{i ∈ I}  if every o_i = v_i
 ```
 
 Within a binding the first abort reached is the outcome. When several
-bindings abort, the outcome is any one of their aborts.
+bindings abort, the outcome is any one of their aborts, so a `try` over
+several faulting bindings returns `Err` of the fault of any one of them.
 
 ### 1.2 Kernel and surface
 
@@ -77,7 +78,7 @@ each stated where it arises:
 
 | Freedom | Section | Conformance compares |
 | --- | --- | --- |
-| Which abort is reported when several bindings abort | §1.1 | that both outcomes are aborts |
+| Which abort is reported when several bindings abort, and which fault a `try` over them returns | §1.1 | that both outcomes are aborts; under `try`, that the fault is one some binding raises |
 | The values of generated keys and generated clock fields | §4.3 | results up to a bijection on generated values |
 | The fold order of an aggregate whose operator is not associative and commutative | §5.7 | results within a bound that grows with input size |
 | The step at which a statement exceeds its limits, an unbounded fixpoint included | §5.10 | that both are rejected for a limit |
@@ -106,10 +107,17 @@ refs(Σ)         reference fields: a field f of a constructor C of T_r'
                 (clear only on Option (Key r.S))
 cons(Σ)         named constraints, each a closed kernel query (§7): the
                 constraints of Σ, the domains of its newtypes (§7.2),
-                and every dropped constraint whose drop is still pending
+                and every dropped constraint, unique or check, and every
+                key replaced by a relaxing rekey, whose drop is still
+                pending
 fns(Σ)          schema functions, each a closed kernel term (§5.11)
-stage(Σ)        for each constructor, its lifecycle stage
+stage(Σ)        for each constructor, of a relation-level or a
+                value-level sum, its lifecycle stage
 ```
+
+A pending drop is a constraint of `cons(Σ)` like any other: every
+later operator carries it and rechecks it (§9.2), and an operator that
+leaves one without an image is refused.
 
 A constructor set `S` of `r` is a nonempty subset of `ctors(T_r)`,
 written by listing or by a declared name; a declared name is replaced
@@ -133,7 +141,11 @@ A surface group binder of type `Group K T` is a kernel record
 used as a set it is the nonempty set of values of `T` the rows give
 (§10.1).
 
-`N τ̄ . ctors(N)` is `N τ̄`. A result sum anonymous to a query is a
+`N τ̄ . ctors(N)` is `N τ̄`. A function may take and return functions.
+No function type occurs in the element type of a relation, a field, a
+set element, a type argument, a query result or a parameter of a
+registered query; every function is normalised away before planning
+(§5.11). A result sum anonymous to a query is a
 declared sum local to that query's signature. `Bool` is the prelude
 sum `False | True`; `Option` and `Result` are prelude sums
 ([model.md §5.2](model.md#52-library-sums)). `Set⁺ τ` is a kernel type
@@ -167,6 +179,7 @@ e ::= x                               variable
     | top e by (e dir, …, e dir) (x in e)    dir ::= asc | desc
     | fix X₁ = e₁, …, Xₙ = eₙ in e      n ≥ 1, simultaneous
     | fresh g                         generated value, write positions only
+    | only e                          the element of a one-element set
 ```
 
 A boolean condition is an expression of type `Bool`. `and`, `or` and
@@ -207,8 +220,11 @@ A kernel term is well formed when, beyond typing (§3):
 - no schema function refers to itself, directly or through other
   functions; recursion is written only with `fix`;
 - `fresh g` occurs only in a fill `fill_r` (§10.3): of the rows of an
-  `insert`, of the new value of a `replace`, or of the new value a
-  delete action's `retag` derives (§6.4); never under a λ;
+  `insert`, of a `let!` binding whose rows an `insert` of the same
+  block consumes, of the new value of a `replace`, or of the new value
+  a delete action's `retag` derives (§6.4); never under a λ;
+- `only e` occurs only in the binding of a single-row upsert (§10.3),
+  where `e` has exactly one element;
 - `inserted`, `deleted` and `prior` occur only in the body of a
   constraint;
 - a `case` names each constructor of its scrutinee's constructor set
@@ -301,6 +317,10 @@ every X_j positive in every e_i
 Γ ⊢ e : τ
 ──────────────────────────────────────── (try)
 Γ ⊢ try e : Result τ Fault
+
+Γ ⊢ e : Set τ
+──────────────────────────────────────── (only)
+Γ ⊢ only e : τ
 ```
 
 `(k₁, …, k_j) injective on e₁` holds when the list is a key of the elements of `e₁`
@@ -327,7 +347,8 @@ The relation of a row is statically known for a binder over a relation
 variable, constructor relation, constructor set or backlink of `r`; for
 a binder over a key-preserving query of `r` (one whose element is the
 binder of such a generator itself, possibly through `top` or a
-restriction); for a binder over a view returning rows of one relation
+restriction); for a binder over `inserted`, `deleted` or `prior` of
+`r`; for a binder over a view returning rows of one relation
 `r`; for a row bound by `let` or `let!` from a write into `r`; and for a
 value of a type with a field of type `Key r` that names its own row.
 `key e` is refused for any other `e`.
@@ -345,8 +366,8 @@ pattern compilation of §10.2 produce such a `case`.
 
 - a partial primitive ([typing.md §10.1](typing.md#101-total-and-partial-expressions),
   [prelude.md](prelude.md));
-- an aggregate whose combining operator is partial on its type
-  (`sum` over an integer type);
+- an aggregate whose combining operator or final map is partial on its
+  type (`sum` over an integer type);
 - `top` whose count is not a nonnegative literal;
 - a `fix` that is not bounded (§5.10), which may not terminate;
 - a `deref` of a key that is not a reference field's value;
@@ -460,6 +481,7 @@ Rulings: model/sets, model/nominal, model/one-ctor-sum, model/record-is-ctor, su
                            or ↯NoSuchRow when there is none
 ⟦try e⟧ ρ                = Ok⟨v⟩    if ⟦e⟧ ρ = v
                          = Err⟨f⟩   if ⟦e⟧ ρ = ↯f
+                         = ⊗x       if ⟦e⟧ ρ = ⊗x
 ```
 
 The operands of `op`, a record and a constructor value are evaluated
@@ -519,6 +541,7 @@ outcome. Block bindings `let!` (§6.6) are evaluated the same way.
 ⟦empty e⟧ ρ            = A ⇐ ⟦e⟧ ρ ; True if A = ∅, False otherwise
 ⟦exists e⟧ ρ           = A ⇐ ⟦e⟧ ρ ; False if A = ∅, True otherwise
 ⟦e ▷ S⟧ ρ              = A ⇐ ⟦e⟧ ρ ; { v ∈ A | tag v ∈ S }
+⟦only e⟧ ρ             = A ⇐ ⟦e⟧ ρ ; v   where A = {v}
 ⟦r.S⟧ ρ σ              = ⟦r.S⟧ D
 ```
 
@@ -540,7 +563,10 @@ a disjoint union of arm queries, one per constructor relation:
 ```
 
 for every context `e` in which `x` occurs only as the scrutinee of
-such `case`s. Each arm reads only its constructor relation. When the
+such `case`s. The equation holds for comprehensions with no `group`
+in which `x` is not inside the range of an aggregate or of `top`: those
+range over bindings, and the union of arms merges equal values of two
+arms. Each arm reads only its constructor relation. When the
 arms project away the constructor, equal values from two arms are one
 element of the result. Aggregates in an arm range over whatever their
 own binder names; an aggregate over a whole match ranges over the
@@ -576,7 +602,8 @@ same form. Examples:
 | Aggregate | `M` | `⊕` | `ε` | `φ` |
 | --- | --- | --- | --- | --- |
 | `count` | `I64` | `+` | `0` | identity |
-| `sum` over `I64` | `I64` | `+`, faulting on overflow | `0` | identity |
+| `sum` over `I64` | the integers | exact `+` | `0` | the sum, or `↯ArithmeticOverflow` outside `I64` |
+| `sum` over `Decimal s` | the decimals of scale `s` | exact `+` | `0` | the sum, or `↯ArithmeticOverflow` beyond 38 digits |
 | `min`, `max` over ordered `T` | `T` | the lesser, the greater | none | identity |
 
 An aggregate ranges over bindings, not over projected values:
@@ -595,12 +622,15 @@ The range `e₁` may be any set expression, and its bindings are the
 elements of that set. A range built by `select` has already merged equal
 values, so `count(a for a in (from p in posts select p.author))` counts
 distinct authors. `sum` and `avg` refuse a generator whose source,
-after normalisation (§5.11), is a `select` comprehension; a parameter of
-type `Set T` is accepted
+after normalisation (§5.11), is a `select` comprehension that is not
+key-preserving: one whose select is not exactly the binder of a
+generator over a relation or a keyed set. A parameter of type `Set T`
+is accepted
 ([queries.md §10.1](queries.md#101-aggregates-range-over-bindings)).
 
 `B` is a multiset: two bindings with equal `e₂` contribute twice.
-`fold_⊕` combines the elements of `B` in some order, faulting as soon
+An integer or decimal `sum` is the exact sum, checked against its type once, by
+`φ`, so its outcome does not depend on the fold order. `fold_⊕` combines the elements of `B` in some order, faulting as soon
 as one `⊕` faults. When `⊕` is associative and commutative on `M` the
 order does not matter. When it is not (floating-point addition), any
 order is a conforming result. An aggregate over `Set⁺ τ` never sees an
@@ -896,14 +926,18 @@ run(s, σ) =
   E*  = the closure of E under the delete actions (§6.4) ;
   Δ*  = normalise(change set of E*) ;  D* = apply(D, Δ*) ;
   ⊗NotOpen         if some v ∈ Δ*⁺(r.C) with C not open for writes in stage(Σ)
-                   has no row of its key in D(r.C): an insert or a retag into C
+                   has no row of its key in D(r.C): an insert or a retag into C;
+                   or if some v ∈ Δ*⁺(r.C) holds in a field a value of a
+                   value-level constructor E not open for writes, and the row
+                   of its key in D(r), if any, holds no value of E in that field
   ⊗KeyViolation    if D*(r) holds two different rows with one key, for some r
   viol = { (c, R_c) | c ∈ cons(Σ), R_c ⇐ ⟦c⟧(D, Δ*, D*), R_c ≠ ∅ } ;
   ⊗Violated(c, R_c) if viol ≠ ∅, for the (c, R_c) ∈ viol whose c has the smallest name
   (res, Δ*, D*)    otherwise
 ```
 
-An update that keeps a row in a deprecated constructor is not refused.
+An update that keeps a row in a deprecated constructor, or keeps a
+field's value in a deprecated value-level constructor, is not refused.
 The rejection carries one violated constraint and its report rows; the
 caller sees the rows its grants allow
 ([constraints.md §7](constraints.md#7-checking-and-violation-reports)).
@@ -1017,8 +1051,9 @@ Rulings: constraint/form/empty, constraint/assertion, constraint/timing/multi-as
 A transaction is a sequence of statements `s₁ … s_m`. A transact block
 or a registered transaction is a transaction of one statement; an
 interactive transaction is one statement per call
-([transactions.md §2](transactions.md#2-statements)). A schema operator
-applies as a transaction too (§9.5). A history is the set of
+([transactions.md §2](transactions.md#2-statements)). A migration
+applies as a transaction too, each of its operators one statement
+(§9.3, §9.5). A history is the set of
 transactions the database has run, each committed or aborted, with the
 state each committed transaction installed. Only committed
 transactions change the state.
@@ -1058,7 +1093,8 @@ nodes and an edge `T → T'` when:
 Every history the database produces has an acyclic dependency graph
 over its committed transactions. Equivalently, there is a total order
 `T₁ < T₂ < … < T_n` of the committed transactions such that running
-each statement of each `T_i` by `run` (§6.6), in that order, from the
+each statement of each `T_i` by `run` (§6.6), or by the translated run
+of §9.6 for a statement at an older version, in that order, from the
 initial state, with the same supplies `γ`, gives every statement the
 outcome the database returned to it, and leaves the state the database
 holds. This is the only isolation level. A transaction that would make
@@ -1155,7 +1191,7 @@ parametric sum maps every instantiation by the same `φ`.
 
 | Operator | `φ` (`fwd`, row by row) | `bwd` | Loss |
 | --- | --- | --- | --- |
-| add constructor `T.C` | identity; `r.C` starts empty | hides rows of `C` | none |
+| add constructor `T.C` | identity; `r.C` starts empty; a value-level `C` starts declared, so no stored value holds it | hides rows of `C` | none |
 | remove constructor `T.C` | identity; requires `r.C` empty | `r.C` empty | none |
 | rename constructor `C` to `C'` | `C⟨…⟩ ↦ C'⟨…⟩` | `C'⟨…⟩ ↦ C⟨…⟩` | none |
 | split `C` into `C₁ \| … \| C_k` by a match | the routing match, per row | the inverse routing | none when the routing is invertible, else declared |
@@ -1165,11 +1201,11 @@ parametric sum maps every instantiation by the same `φ`.
 | drop a field | drop `f` | `f` from the fill the inverse states | the values of `f` |
 | move a field up to the header with fill `e` | constructors lacking `f` get `f = e(v)` | drop `f` where it was absent | none |
 | move a header field down to constructors `S` | `f` becomes a field of the constructors of `S` | the inverse | the values of `f` in the constructors outside `S` |
-| rekey `r` with `carry` fields | rows of `r` unchanged; every carried reference rewritten from the old key of its target to the new key | the converse | none while the old key's fields remain |
+| rekey `r` with `carry` fields | rows of `r` unchanged; every carried reference rewritten from the old key of its target to the new key; a relaxing rekey keeps the old key enforced as a unique while its drop is pending | the converse | none while the old key's fields remain |
 | add, drop or change a named set | identity | identity; a reader pinned earlier reads the set's membership at its version | none |
-| add or drop a unique, an index, a constraint, a computed field | identity; adding a unique or constraint requires the data to satisfy it | identity | none |
+| add or drop a unique, an index, a constraint, a check, a computed field | identity; adding a unique, constraint or check requires the data to satisfy it; a dropped unique, constraint or check stays enforced while its drop is pending | identity | none |
 | define, redefine or drop a function | identity | identity | none |
-| enable, deprecate | identity; changes `stage(Σ)` | identity | none |
+| enable, disable, deprecate | identity; changes `stage(Σ)` of `r.C`, or of a value-level `T.C` for every field; `disable r.C` requires `r.C` empty, and `disable T.C` that no stored value holds `C` | identity | none |
 | install an extension, adopt zone rules | identity on stored values; zoned values keep their civil time and zone | identity | none |
 | renormalise text to a new Unicode version | renormalise every text value | identity | values that become equal |
 | script | the script's change set | identity | not invertible |
@@ -1182,9 +1218,11 @@ may omit key and header fields, which carry over. A split re-scopes the uniques
 on `C` through its routing, and a reference typed `Key r.C` is retyped
 to `Key r.(C₁ | … | C_k)`. Removing a populated constructor is a merge
 into a surviving constructor followed by a remove; remove itself never
-deletes rows. The data map of an operator is applied as one transaction
-(§8.1) whose change set is `diff(D, fwd(D))`, and the constraints of
-`Σ'` are checked on its result. Retiring a bundle is a command, not an
+deletes rows. The data map of each operator of a migration is one
+statement of the migration's transaction (§9.5), with change set
+`diff(D, fwd(D))`, and the constraints of `Σ'` are checked on its
+result. `disable` is the inverse of `enable`, and `deprecate` applies
+only to an enabled constructor. Retiring a bundle is a command, not an
 operator, and changes no schema ([applications.md](applications.md)).
 
 A script changes data, not types: `Σ' = Σ`, and `fwd` is the state
@@ -1197,7 +1235,8 @@ pinned bundles. It satisfies none of L1 to L3 and has no inverse;
 ### 9.4 Undo
 
 `revert n` appends, in reverse order, the inverses of the operators of
-migration `n`. The log keeps both; versions are never reused. A revert
+migration `n`. The inverse of an `arm` clause of `add constructor`
+removes that arm from its query. The log keeps both; versions are never reused. A revert
 whose inverses are refused on the current state is refused.
 
 ### 9.5 The log as one history
@@ -1218,8 +1257,8 @@ P_{n←m}(D_m, D_n) = put_{op_m}(D_m, put_{op_{m-1}}(… , D_n))   composed like
 ```
 
 A query `q` registered at version `n` and called when the database is
-at version `m` means, with the schema functions, named-set memberships
-and types of `Σ_n`:
+at version `m` means, with the schema functions, view definitions,
+named-set memberships and types of `Σ_n`:
 
 ```
 ⟦q⟧^{n}(D_m) = ⟦q⟧_{Σ_n}(B_{n←m}(D_m))
@@ -1240,7 +1279,9 @@ D_m'' = P_{n←m}(D_m, D_n')
 
 Delete actions, constraints (with pending drops, §2.1), indexes and
 stored views are those of `Σ_m`: a translated write that violates a constraint added after `n`
-fails as an ordinary constraint violation. A named set is read with its
+fails as an ordinary constraint violation. A stored view redefined
+after `n` is read by evaluating its body at `Σ_n`, not from its stored
+rows. A named set is read with its
 membership at `n`: a reader pinned before constructor `C` joined
 `identities.OAuth` reads `identities.OAuth` as the constructors it had
 at `n`.
@@ -1263,7 +1304,15 @@ row that `B_{n←m}` hides. Reads of named or listed sets, translated to
 their membership at `n`, do not block enabling and never reach rows of
 `C`.
 
-A bundle declared `hide new constructors` never blocks enabling. For
+A constructor `C` of a value-level sum `T` is gated the same way:
+`enable T.C` gates storing a value of `C` in any field, and is refused
+while any live bundle pinned at a version without `C` reads a field whose
+type reaches `T`. No stored value holds `C` before it is enabled (§9.3),
+so while such a reader is live no field it reads holds `C`, and
+`B_{n←m}` needs no case for fields.
+
+A bundle declared `hide new constructors` never blocks enabling a
+constructor of a relation-level sum. For
 it, `B_{n←m}` hides the rows of every constructor added after `n`, and
 its whole-relation reads and references whose type admits such a
 constructor are translated to the constructors of `n`. Rows of
@@ -1381,7 +1430,9 @@ reached. A `match` on a scalar compiles to the same chain without the
 outer `case`, ending at its binder or `_` arm. A `match` on a
 scrutinee of type `Key r.S` matches the row the key references:
 `let ξ = deref r.S ⟦⟦e⟧⟧ in case ξ of { … }`; its top-level patterns are
-constructor patterns, never a binder or `_`. Patterns and guards are
+constructor patterns, never a binder or `_`. When the scrutinee is not a
+reference field's value it may name no row, and the match faults
+`NoSuchRow`: it is partial (§3.4). Patterns and guards are
 evaluated in arm order; a guard is evaluated only when its pattern
 matched (§5.2).
 
@@ -1429,11 +1480,36 @@ for new in ξ_V do
 ```
 
 In the else branch `new` is the proposed row, with fills applied,
-beside `old`. Bound by `let`, a single-row upsert binds one row: `new`
+beside `old`. Bound by `let x`, a single-row upsert binds one row: `new`
 when it is inserted; otherwise `v'` when the effects of `⟦⟦w⟧⟧` hold
 `rep(r, old, v')`, and `old` when they do not. The source form binds
 the set of the rows it inserted together with the rows its else branch
-wrote.
+wrote. In the kernel, the binding is a `let!` after `ξ_V`, beside the
+write above:
+
+```
+single row:  let! x = only (U (case W(⟦⟦w⟧⟧) of { None ξ → {old} ; Some ξ → {ξ.value} }))
+source form: let! x = U (case W(⟦⟦w⟧⟧) of { None ξ → {} ; Some ξ → {ξ.value} })
+
+U(e) = for new in ξ_V do
+         let ξ_O = for o in r.S do if o.f̄ == new.f̄ then {o} else {} in
+         if empty(ξ_O) then {new} else for old in ξ_O do e
+```
+
+`W(w)` is `Some` of the new value `w` gives the conflicting row, or
+`None` when it gives none:
+
+| Write `w` | `W(w)` |
+| --- | --- |
+| `replace r y e`, `y` the conflicting row or a `case` binder of it | `Some { value: e }` |
+| `if c then w₁ else w₂` | `if c then W(w₁) else W(w₂)` |
+| `case e of { C y → w_C }` | `case e of { C y → W(w_C) }` |
+| `let y = e in w'` | `let y = e in W(w')` |
+| `w₁ ∥ w₂` | `case W(w₁) of { None ξ → W(w₂) ; Some ξ → ξ }` |
+| any other write | `None {}` |
+
+In a valid snapshot `ξ_O` has at most one row, since `K` is a key or
+unique over `S`, so the single-row set has exactly one element.
 
 The conflict test reads the snapshot
 ([writes.md §6.2](writes.md#62-meaning)):
@@ -1446,9 +1522,10 @@ The conflict test reads the snapshot
   inserted if it aborts;
 - a source row whose only conflict is a row that another write of the
   same statement inserts binds no `old`, `w` is not evaluated, and the
-  two inserted rows share a value of `K`: the statement fails with
-  `KeyViolation` at its boundary (§6.6). Two rows of `ξ_V` with equal
-  `f̄` fail the same way.
+  two inserted rows share a value of `K`: the statement fails at its
+  boundary (§6.6), with `KeyViolation` when `K` is the key and with
+  `Violated` carrying the unique as its constraint when `K` is a unique
+  (§7.2). Two rows of `ξ_V` with equal `f̄` fail the same way.
 
 ### 10.4 Constraints and schema clauses
 

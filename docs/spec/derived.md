@@ -65,8 +65,8 @@ function with no parameters; `store` of a function with parameters is
 refused. `unstore f` is its inverse.
 
 Storing a view does not change what it denotes. Every read of `f()`
-returns the value of `f`'s body at the reader's snapshot, whether `f`
-is stored or not. Storing is a physical choice: the engine keeps the
+returns the value of `f`'s body at the reader's snapshot and schema
+version, whether `f` is stored or not. Storing is a physical choice: the engine keeps the
 result as a relation and reads it instead of evaluating the body. No
 statement refreshes a stored view and no reader can observe one out of
 date.
@@ -85,7 +85,7 @@ plan is refused, and the refusal names each missing index or each
 operator with no incremental form:
 
 ```
--- 0032
+-- 0032, from version 31, a separate history in which it is refused
 module billing
 define fn paid_by_user () -> Set ({ user: Key auth::users, paid: I64 }) =
   from u in auth::users
@@ -162,7 +162,9 @@ rechecks it like any schema function. Then:
   rebuild completes, reads of the view evaluate its body.
 
 A `redefine fn` of a stored view rebuilds it. The redefinition must be
-admitted (§2.2) or the migration is refused.
+admitted (§2.2) or the migration is refused. A bundle pinned to a
+version before the redefinition evaluates the body of its own version
+and never reads the stored rows.
 
 Rulings: derived/materialize/storage-choice, derived/admit/bounded, derived/freshness/in-txn, derived/freshness/hotspot/blind-delta, derived/ivm/delta-rules, derived/ivm/state/base-indexes, derived/mv-storage/heaps, derived/mv-integrity/keyed, derived/mv-integrity/indexed, derived/mv-integrity/constrained, derived/mv-evolve/translate, derived/mv-evolve/rebuild
 
@@ -181,7 +183,7 @@ written by the registered transaction that makes the change, in the
 same change set:
 
 ```
--- 0033, from version 32
+-- 0032, from version 31
 module billing
 add type Payment = { id: Key payments, invoice: Key invoices, at: Instant }
 add relation payments : Payment key id generate sequence
@@ -189,7 +191,7 @@ add relation payments : Payment key id generate sequence
 
 ```
 -- bundles/billing.adb
-bundle billing-1.0 pins 33 (8d1f...) edition "2026-10"
+bundle billing-1.0 pins 32 (8d1f...) edition "2026-10"
 import billing
 txn pay (k: Key invoices, now: Instant) -> Key payments =
   transact
@@ -270,7 +272,7 @@ its own fill for the existing rows, and may be followed by a default
 for later inserts:
 
 ```
--- 0033
+-- 0033, from version 32
 module auth
 add field Identity.EmailPass.verified: Bool fill false
 add default identities.EmailPass.verified = false
@@ -345,34 +347,44 @@ are reclaimed as usual.
 
 ### 6.2 Naming a past state
 
-A past state is named by a commit number. Commit numbers are `I64`
-values that increase in the serial order of commits. The engine records
-for each commit the wall time at which it committed, never decreasing
-along commit numbers; the recorded map is the system relation
-`sys::commit_times` ([catalog.md](catalog.md#1-system-relations)).
+A past state is named by a commit position, a value of the prelude
+type `Position = { epoch: I64, lsn: I64 }`
+([transactions.md](transactions.md#8-commit-positions-and-replica-reads)).
+The engine records for each commit the wall time at which it
+committed, never decreasing along positions; the recorded map is the
+system relation `sys::commit_times`
+([catalog.md](catalog.md#15-commit-times-and-safe-snapshots)).
 
 ```
-at commit 4120 { from i in invoices.Paid select i }
+at commit Position { epoch: 3, lsn: 4120 } { from i in invoices.Paid select i }
 at instant t { from i in invoices.Paid select i }
 from p in (at commit c { from i in invoices.Open select i }), q in invoices.Paid
 where key p == key q
 select { invoice: key q, paid: q.at }
 ```
 
-`at commit c { q }` evaluates `q` at the state just after commit `c`.
-`at instant t { q }` evaluates `q` at the latest commit whose recorded
-time is at or before `t`. The block is refused at run time with
-`Rejected { reason: HistoryUnavailable { oldest } }`, naming the oldest
-retained position, when the commit is outside the retention window or
-later than the reader's snapshot.
+`at commit p { q }` evaluates `q` at the latest safe snapshot at or
+before position `p`
+([transactions.md](transactions.md#64-read-only-transactions)).
+`at instant t { q }` evaluates `q` at the latest safe snapshot at or
+before the latest commit whose recorded time is at or before `t`. The
+snapshot read is a function of the position: the safe snapshots are
+listed in `sys::safe_snapshots`, keyed by position
+([catalog.md](catalog.md#15-commit-times-and-safe-snapshots)), and the block reads the
+greatest one at or before `p`. The block is refused at run time with `Rejected { reason:
+HistoryUnavailable { oldest } }`, naming the oldest retained position,
+when the position is outside the retention window or later than the
+reader's snapshot.
 
 An `at` block is an expression of set type, usable anywhere a set is,
 including beside reads of the current state in one query. It reads
-only past state and writes nothing. A past read takes no SIREAD locks
-and records no read dependency
+only past state and writes nothing. No read-write transaction can make
+a safe snapshot unsafe, so a past read takes no SIREAD locks and
+records no read dependency
 ([transactions.md](transactions.md#1-serializability)).
 
-The block's body is typed at the schema version of its commit (§6.3);
+The block's body is typed at the schema version of the safe snapshot
+it reads (§6.3);
 its result type must denote the same type at the enclosing query's
 version: base types, records and anonymous sums of such, and named
 types whose constructors, ids and fields are equal at both versions.
@@ -380,25 +392,25 @@ Any other result type is a type error.
 
 ### 6.3 The schema of the past
 
-A past read is typed against the schema version current at the commit
-it reads, not against today's schema, and is not translated through
+A past read is typed against the schema version current at the
+safe snapshot it reads, not against today's schema, and is not translated through
 later operators. A registered query that reads the past names that
 version as a bundle pins its own:
 
 ```
-query paid_then (c: I64) -> Set Invoice =
+query paid_then (c: Position) -> Set Invoice =
   at commit c pins 29 (3b7e...) { from i in invoices.Paid select i }
 ```
 
 The block is type checked at version `29` when the bundle is registered.
-A call may name any retained commit whose schema version gives every
-type the block reads (its relation variables, their constructors and
-fields, and the functions it calls) the same definition as version
-`29`; the block then reads that commit as if at `29`. A call whose
-commit lies under a version where some such type differs is refused
+A call may name any retained position whose schema version gives
+every type the block reads (its relation variables, their constructors
+and fields, and the functions it calls) the same definition as version
+`29`; the block then reads that position as if at `29`. A call whose
+position lies under a version where some such type differs is refused
 with `Rejected { reason: WrongVersion { version } }` naming that
-version. An ad hoc `at` block is
-typed at the version of the commit it names when it runs.
+version. An ad hoc `at` block is typed at the version of the position
+it names when it runs.
 
 ### 6.4 Retention does not slow current reads
 
@@ -440,8 +452,10 @@ type Department = { code: Text, during: Span Instant, name: Text }
 relation departments : Department
   key (code, during)
   interval index (code, during)
-type Assignment = { id: Key assignments, person: Key users, dept: Text, during: Span Instant }
-relation assignments : Assignment key id generate sequence
+type Assignment = { id: Key assignments, person: Key auth::users, dept: Text, during: Span Instant }
+relation assignments : Assignment
+  key id generate sequence
+  index (dept)
 constraint assignment_in_department =
   from a in assignments
   where not exists d in departments where d.code == a.dept and covers(d.during, a.during)

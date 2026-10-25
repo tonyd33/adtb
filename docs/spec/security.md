@@ -25,8 +25,8 @@ relation invoices : Invoice key id generate sequence
 ### 1.1 The Principal sum
 
 Every call runs on behalf of a principal, a value of the sum
-`Principal`. The schema declares it once, with exactly these three
-constructors:
+`Principal`. The schema declares it at most once, with exactly these
+three constructors:
 
 ```
 type Principal = EndUser { user: Key users }
@@ -36,9 +36,18 @@ type Principal = EndUser { user: Key users }
 
 `Service` and `Anonymous` have the shapes shown. The fields of
 `EndUser` are the schema's choice: they are what an application
-asserts about an end user (§1.3). A schema that declares no
-`Principal` has `type Principal = EndUser { name: Text } | Service {
-name: Text } | Anonymous`.
+asserts about an end user (§1.3).
+
+The schema's `Principal` belongs to the root namespace, not to the
+module whose migration declares it, and resolves as `Principal` from
+every module and every bundle. It may be declared only in the schema's
+first migration. It then takes ids from the operator log like any
+declared type and changes only by operators on it. A schema that never
+declares one has the default `type Principal = EndUser { name: Text }
+| Service { name: Text } | Anonymous`, whose ids are the fixed prelude
+ids 37 to 40 ([catalog.md](catalog.md#46-constructor-ids-of-engine-defined-sums)).
+Those ids are used only by the default. `caller` always has the type
+the schema's `Principal` names.
 
 Because `Principal` is a sum, every query that decides on the caller
 matches it exhaustively and decides the anonymous case explicitly. A
@@ -54,9 +63,10 @@ parameter: no client sets it, it appears in no generated signature,
 and no argument can supply or override it. Its value comes from the
 session as §1.3 states; a schema function sees the `caller` of the
 call that evaluates it. `caller` is not in scope in constraints,
-stored views, defaults or generated fields, and a schema function that
-reads `caller` may not be reached by an index, a constraint, a stored
-view, a default or a generated field.
+stored views, defaults, generated fields or computed fields, and a
+schema function that reads `caller` may not be reached by an index, a
+constraint, a stored view, a default, a generated field or a computed
+field.
 
 ```
 query my_invoices () -> Set Invoice =
@@ -98,8 +108,9 @@ role. The schema-owner role (§4.6) is created with the file. Roles are
 created, altered and dropped by ad hoc statements
 ([applications.md](applications.md#7-the-ad-hoc-role)) of a role
 holding `schema`; over a server the role also needs `adhoc`. Grants
-are of two kinds (§3.2): relation grants are operators in migrations,
-and the others are ad hoc statements.
+are of two kinds (§3.2): relation grants on the schema's relation
+variables and `grant call fn` are operators in migrations, and the
+others are ad hoc statements.
 `alter role R password p` takes the password as a parameter `p`, so
 the secret never appears in statement text:
 
@@ -109,14 +120,24 @@ alter role web password p
 drop role web
 ```
 
-A role's credentials are SCRAM verifiers, never plaintext, kept in
-`catalog::credentials`, on which no role holds a grant unless the
-schema owner grants it. Roles, credential verifiers and the grants
-that are deployment state (§3.2) are not part of the schema version's
-hash; a dump carries them in its security section, together with the
-audit relation and its ledger, and a restore reinstates them. Grants
-that are operators are restored by replaying the log
-([interop.md](interop.md#6-dump-and-restore)).
+Roles are rows of `catalog::roles`. A role's credentials are SCRAM
+verifiers, never plaintext, kept in `catalog::credentials`, on which
+no role holds a grant unless the schema owner grants it. Every grant,
+of either kind, is a row of `catalog::grants`
+([catalog.md](catalog.md#26-other-catalog-relations)). Roles,
+credential verifiers, peer mappings (§2.2) and the grants that are
+deployment state (§3.2) are not part of the schema version's hash; a dump carries them in its
+security section, together with the audit relation and its ledger, and
+a restore reinstates them. Grants that are operators are restored by
+replaying the log ([interop.md](interop.md#6-dump-and-restore)).
+
+A grant operator names its grantee by role name, and roles are not in
+the log. Applying a migration whose grant names a role that does not
+exist is refused. Replaying the log, as a restore does, keeps such a grant as a dormant row of `catalog::grants`, which
+allows nothing, and reports it; a restore lists every dormant grant in
+its report. `drop role R` is refused while any grant operator in the
+log names `R`, or `R` owns a bundle that is not retired or owns a
+family (§3.2).
 
 ### 2.2 Sources
 
@@ -126,11 +147,14 @@ accepts; they stack per listener.
 | Source | Transport | What proves the role |
 | --- | --- | --- |
 | Password | TCP, Unix socket | SCRAM-SHA-256 against the role's stored verifier; on TCP, with channel binding to the TLS session |
-| Certificate | TCP | The client certificate presented in the TLS handshake, mapped to a role by the listener's certificate mapping |
+| Certificate | TCP | The client certificate presented in the TLS handshake, mapped to a role by the listener's peer mapping |
 | Peer | Unix socket | The OS user of the peer process, mapped to a role by the listener's peer mapping |
 
-A mapping is a list of rules from a certificate subject or an OS user
-name to a role name; a credential matching no rule fails
+A listener's peer mapping is an ordered list of rules from a pattern
+to a role name. On a TCP listener a pattern matches the subject of the
+client certificate; on a Unix-socket listener it matches the OS user
+name of the peer process. Rules are tried in ordinal order and the
+first match names the role; a credential matching no rule fails
 authentication. A failure never reveals whether the role exists or
 which check failed. Every attempt, successful or not, is audited.
 
@@ -141,9 +165,21 @@ An embedding program opens the file directly and authenticates no one:
 its handle acts as the schema-owner role and holds every privilege
 ([embedding.md](embedding.md#22-identity-of-the-handle)).
 
-The certificate and peer mappings are file settings, moved and dumped
-with the file; the listener addresses and the sources each listener
-accepts are open-time settings of the server process
+Peer mappings are deployment state, rows of `catalog::peer_mappings`
+keyed by listener name and ordinal, moved and dumped with the file.
+A role holding `schema` changes them with two ad hoc statements:
+
+```
+map peer "CN=*.web.internal" on tls_main to web
+map peer "deploy" on local to deployer
+unmap peer 1 on tls_main
+```
+
+`map peer PATTERN on LISTENER to ROLE` appends a rule with the next
+ordinal of that listener; `unmap peer ORDINAL on LISTENER` removes
+one. A pattern is a text in which `*` matches any run of characters.
+The listener addresses and the sources each listener accepts are
+open-time settings of the server process
 ([catalog.md](catalog.md#10-configuration)).
 
 Rulings: net/authn/scram, net/authn/mtls, net/authn/peer, net/tls/direct
@@ -172,24 +208,28 @@ The privileges are `read`, `insert`, `update`, `delete`, `retag`,
 Grants are of two kinds:
 
 - Relation grants (`read`, `insert`, `update`, `delete`, `retag` on
-  constructor sets) and `grant call fn` are schema operators. They are
-  written in migrations, appended to the log by a role holding
-  `schema`, covered by the schema version's hash, printed with the
-  schema, and restored by replaying the log.
+  constructor sets of the schema's relation variables) and `grant call
+  fn` are schema operators. They are written in migrations, appended
+  to the log by a role holding `schema`, covered by the schema
+  version's hash, printed with the schema, and restored by replaying
+  the log.
 - Capability grants (`adhoc`, `assert`, `schema`, `monitor`, `cancel`,
-  `maintain`, `configure`, `read_files`, `write_files`) and call grants
-  on bundles are deployment state. They are ad hoc statements, not in
-  the log and not hashed, and a dump carries them in its security
-  section. Capability grants are given by a role holding `schema`; a
-  call grant on a bundle is given by the bundle's owner or by the
-  schema owner.
+  `maintain`, `configure`, `read_files`, `write_files`), call grants
+  on bundles, queries and families, and relation grants on `catalog::`
+  and `sys::` relations are deployment state. They are ad hoc
+  statements, not in the log and not hashed, and a dump carries them
+  in its security section. Capability grants and grants on system
+  relations are given by a role holding `schema`; a call grant on a
+  bundle or one of its queries is given by the bundle's owner or by
+  the schema owner, and a call grant on a family by the family's owner
+  or by the schema owner.
 
 An operator grant written as an ad hoc statement is refused, and so is
 a deployment grant written in a migration.
 
 | Grant | Kind | Example | Allows |
 | --- | --- | --- | --- |
-| `call` on a bundle | Deployment | `grant call web-2.4 to web` | Calling every query, transaction and imported function of the bundle |
+| `call` on a bundle | Deployment | `grant call web-2.4 to web` | Calling every registered query and transaction of the bundle |
 | `call` on one query | Deployment | `grant call web-2.4::login_key to support` | Calling that query |
 | `call` on a family | Deployment | `grant call web::login_key to app` | Calling that query in every bundle of the family `web` |
 | `call` on a schema function | Operator | `grant call fn display_name to web` | Calling the schema function directly (§4.7) |
@@ -200,21 +240,28 @@ a deployment grant written in a migration.
 | `retag` | Operator | `grant retag invoices.Draft -> invoices.Sent to web_owner` | Changing a row's constructor between the sets (§5) |
 | `adhoc` | Deployment | `grant adhoc to analyst` | Sending ad hoc text, queries and writes ([applications.md](applications.md#7-the-ad-hoc-role)) |
 | `assert` | Deployment | `grant assert to web` | Asserting an end-user principal (§1.3) |
-| `schema` | Deployment | `grant schema to deployer` | Appending migrations to the operator log, and role and capability statements (§2.1, §4.6) |
+| `schema` | Deployment | `grant schema to deployer` | Appending migrations to the operator log; role, peer mapping and capability statements; grants on system relations (§2.1, §2.2, §4.6, §7) |
 | `monitor`, `cancel`, `maintain` | Deployment | `grant monitor, cancel to oncall` | Operational commands ([catalog.md](catalog.md#9-operational-commands)) |
 | `configure` | Deployment | `grant configure to dba` | Changing file settings with `set setting` ([catalog.md](catalog.md#10-configuration)) |
-| `read_files`, `write_files` | Deployment | `grant read_files to loader` | Reading files within `file_roots`, and writing exports within `export_roots`, through a server ([interop.md](interop.md#3-file-scans)) |
+| `read_files`, `write_files` | Deployment | `grant read_files to loader` | Reading files within `file_roots`, and writing exports within `export_roots`, through a server; a registered query's file reads are checked against its bundle owner ([interop.md](interop.md#3-file-scans)) |
 
 A bundle name is `FAMILY-VERSION`, where `VERSION` is the digits and
 dots after the last hyphen: `web-2.4` is version `2.4` of the family
-`web`. A call grant that names a family covers every bundle of it,
+`web`. A family's owner is the role that registered its first bundle;
+only that role or the schema owner may register a bundle into the
+family. A call grant that names a family covers every bundle of it,
 registered then or later, for each granted query whose signature
 (parameter and result types) in the later bundle equals the one
-granted; a query whose signature changed needs a new grant.
+granted, compared by type and constructor ids; a query whose signature
+changed needs a new grant.
 
 Any grant may end in `with grant option`, which lets the grantee grant
-it on. `revoke` takes the same forms and is of the same kind as the
-grant it revokes. A relation grant names a relation variable and a
+it on. A grantee holding a relation grant with grant option extends it
+only through the bundles it registers, whose callers then act within
+it under definer rights (§4.1). It never appends grant operators on
+that account: only a role holding `schema` appends them. `revoke`
+takes the same forms and is of the same kind as the grant it revokes.
+A relation grant names a relation variable and a
 constructor set, written explicitly or by a named set; the relation
 variable alone means every constructor of it, including constructors
 added later. A grant on a named set covers a constructor that joins
@@ -226,7 +273,9 @@ explicit list covers exactly the listed constructors.
 
 A `read` or `update` grant may list fields after the constructor set.
 Without a list it covers every field the constructors have when the
-grant is applied; a field added later is covered only by a new grant. A listed field is either a
+grant is applied; a field added later is covered only by a new grant.
+A grant naming the relation variable alone, without a field list, also
+covers every field of each constructor it gains. A listed field is either a
 header field of the sum, named once for the whole set, or a field
 every constructor of the set declares. To list fields that only some
 constructors have, grant each constructor separately. `insert`,
@@ -273,12 +322,16 @@ Ad hoc text is checked against the role's grants each time it is
 checked against the schema. A bundle is checked against its owner's
 grants at registration and again whenever the schema or a grant
 changes. A revoke that would leave a live bundle reading or writing
-what its owner no longer holds is refused, naming each such bundle,
-until the bundle is released: retired, superseded or expired, the
-same release condition a migration waits on
-([evolution.md](evolution.md#32-checks-at-apply)). The same holds for
-a revoke that removes a grant option some live bundle's registration
-relied on.
+what its owner no longer holds is refused, and nothing waits: the
+refusal names each such bundle, and the revoke succeeds only when
+issued again after every one of them is retired, superseded or
+expired, the release condition of a refused migration
+([evolution.md](evolution.md#32-checks-at-apply)). After the refusal
+the engine sends the `BlockingMigration` notice to the sessions bound
+to each named bundle for the `BlockingNoticePeriod` setting
+([catalog.md](catalog.md#45-notices)). The same holds for a revoke
+that removes a grant option some live bundle's registration relied
+on.
 
 ### 3.6 Grants across schema changes
 
@@ -307,8 +360,9 @@ Every bundle has an owner, the role that registered it. A registered
 query or transaction runs with its bundle owner's relation grants: a
 caller needs only the `call` grant on the bundle or on the query, and
 the query reaches every row its text selects within the owner's
-grants. Registered queries are the only path by which an application
-role touches data.
+grants. A schema function evaluated inside a registered query or
+transaction runs with the same bundle owner's grants. Registered
+queries are the only path by which an application role touches data.
 
 ```
 grant call invoices::my_invoices to web
@@ -320,9 +374,10 @@ those the query selects for `caller`.
 ### 4.2 What registering requires
 
 The registering role must hold, with grant option, every relation
-grant the bundle uses: `read` on every constructor set and field its
-queries read, `insert`, `update` and `delete` on what its transactions
-write, and `retag` on every pair of constructor sets its updates can
+grant the bundle uses: `read` on every constructor set and field read
+by its queries or by any schema function they reach, directly or
+through other functions; `insert`, `update` and `delete` on what its
+transactions write; and `retag` on every pair of constructor sets its updates can
 move a row between (§5). Registration is refused otherwise, and the
 refusal lists every missing grant.
 
@@ -357,8 +412,12 @@ query invoice (k: Key invoices) -> Set Invoice =
 
 A live bundle is retired by the command `retire bundle web-2.3`,
 issued by its owner or by the schema owner. No other role may retire
-it, whatever other privileges it holds. Retirement is deployment state
-in `catalog::bundles`, not an operator in the log.
+it, whatever other privileges it holds. The same two roles may issue
+`supersede bundle web-2.3 by web-2.4`, which marks the bundle
+superseded by a live bundle of the same family
+([applications.md](applications.md#44-supersession)).
+Retirement and supersession are deployment state in
+`catalog::bundles`, not operators in the log.
 
 ### 4.5 Ad hoc rights
 
@@ -381,11 +440,11 @@ grant option; every other relation grant derives from it.
 A bundle that calls a schema function directly imports it with
 `import fn display_name`, which gives the function an ordinal in the
 bundle. A connection bound to that bundle may then call it when its
-role holds the call grant on the whole bundle, or `grant call fn
-NAME`. The function runs with the
-schema owner's relation grants, and with `caller` bound to the
-caller's principal (§1.2), so it authorizes rows as a registered query
-does.
+role holds `grant call fn NAME`; the call grant on the bundle covers
+its registered queries and transactions only. A function called
+directly runs with the schema owner's relation grants, and with
+`caller` bound to the caller's principal (§1.2), so it authorizes rows
+as a registered query does.
 
 ```
 grant call fn display_name to web
@@ -479,7 +538,9 @@ rows by role, and rows are never silently omitted. A query reading a
 column the role may not see is refused. An application reads the catalog only through registered
 queries, whose bundle owner must hold `read` on the catalog
 constructor sets they read. The ad hoc role is granted catalog
-constructor sets like any others:
+constructor sets like any others. A grant on a `catalog::` or `sys::`
+relation is deployment state, an ad hoc statement of a role holding
+`schema`, never an operator in a migration (§3.2):
 
 ```
 grant read catalog::constructors to analyst
@@ -496,7 +557,7 @@ The engine records:
 | Event | Recorded with |
 | --- | --- |
 | Authentication, successful or not | Role tried, source, listener, outcome |
-| Grants and revokes, role changes | Statement, by whom |
+| Grants and revokes, role changes, peer mapping changes | Statement, by whom |
 | Bundle registration and retirement | Bundle, version, owner, by whom |
 | Every schema operator appended to the log | Version produced, author |
 | Every call of a registered query, transaction or schema function, and every ad hoc call | Connection role, `caller`, bundle and query or the ad hoc text, arguments, outcome |
@@ -518,7 +579,7 @@ type AuditEvent { seq: Key catalog::audit, at: Instant, role: Text, principal: T
   | SchemaOp { version: I64 }
   | Call     { origin: Origin, args: Bytes, outcome: Outcome }
   | Denied   { origin: Origin }
-  | Commit   { position: I64, origin: Origin, changes: Bytes }
+  | Commit   { position: Position, origin: Origin, changes: Bytes }
   | Truncate { through: I64, digest: Bytes }
 type Origin = Registered { bundle: Text, query: I32 }
             | Function   { name: Text }
@@ -546,9 +607,12 @@ with `read` on every constructor set and field the change set covers
 `version` the schema version produced or pinned. `Truncate` records an
 archive and truncation through the sequence number `through`, with
 the digest that covers it. A bundle's queries are named by ordinal; the name is in the
-catalog row of the bundle at the recorded version. The engine writes audit records in its own system
-transaction, which commits whether or not the audited transaction
-does: a denied or aborted call is recorded. No role may insert,
+catalog row of the bundle at the recorded version. The audit rows of a
+transaction that commits, its `Commit` row included, are written
+inside that transaction's commit. The rows of a denied or failed call
+are written by the engine in its own system transaction, which commits
+although the call does not, so a denied or aborted call is recorded.
+No role may insert,
 update or delete rows of `catalog::audit`; it is read through grants like
 any relation, and matched exhaustively like any sum.
 
@@ -571,8 +635,8 @@ a chain of blocks:
 
 - Each committed transaction contributes an entry: the BLAKE3-256
   hash of the wire encoding ([wire.md](wire.md#4-value-encoding)) of
-  the audit rows its system transaction wrote, its `Commit` row, which
-  holds the commit position and the change set, included. BLAKE3-256
+  the audit rows its commit wrote, its `Commit` row, which holds the
+  commit position and the change set, included. BLAKE3-256
   is the function schema version hashes use.
 - A block closes after 1024 commits or 1 second, whichever comes
   first, and on clean shutdown. Its hash is the BLAKE3-256 of the previous
@@ -625,11 +689,10 @@ without the key. Each write of
 a page draws a fresh random 192-bit nonce from a cryptographic random
 source and stores it with the page, so a page rewritten without a new
 log position still never reuses a nonce under its key. The page
-number, the page's log position, its format and its kind stay in
-clear in the page header, as associated data. The associated data
-binds the file id, the page number, the page's log position and the
-data key version, so a page moved to another place or another file,
-or with its log position altered, fails its tag.
+header keeps the page number, the page's log position, its format, its
+kind and its DEK version in clear. A page's associated data is exactly
+those header fields and the file id, so a page moved to another place
+or another file, or with any of them altered, fails its tag.
 
 A page replaced by an older valid ciphertext of itself carries an
 older log position under a valid tag. It is detected only by the
@@ -700,7 +763,7 @@ plaintext, whether or not the database is encrypted, unless it is
 written with `--encrypt KEY` (`dump to "path" encrypt key`), which
 seals it under that key. A dump needs `maintain` and `read` on every
 relation it dumps; its security section (roles, verifiers, deployment
-grants) is written only for a holder of `schema`.
+grants, peer mappings) is written only for a holder of `schema`.
 
 Rulings: security/encrypt/page, security/encrypt/io-cost/staging, security/integrity/aead, security/nonce/random, security/keys/wrapped, security/kek/passphrase, security/kek/kms, security/kek/host, security/backup-crypt/as-stored
 
@@ -734,9 +797,10 @@ $ adt register --fleet tenants/ bundles/web.adb
 Each file is changed in its own transaction; a refusal in one leaves
 the others applied. Registration is deployment state in each file's
 `catalog::bundles`, not an entry in its log, so registering never makes
-tenant logs differ. A file already at the target version is skipped,
-and a file whose log differs from the migration's predecessor is
-refused, so the tool may be rerun until every file reports `ok`. Since
+tenant logs differ. A file whose version hash equals the target
+version's hash is skipped. A file whose log differs from the
+migration's predecessor is refused, and so is a file at the target
+version under another hash, so the tool may be rerun until every file reports `ok`. Since
 a version is identified by its position and the hash of its log
 prefix, one bundle pins every tenant whose log is identical up to that
 version.

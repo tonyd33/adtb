@@ -10,6 +10,8 @@ options:
     links:
       - {rel: prior-art, to: prior/mvcc-pg-heap}
       - {rel: prior-art, to: prior/mvcc-undo-engines}
+  global-tid:
+    title: A retag stores the successor TID in next; page ids are file-global
 ---
 Postgres `t_ctid` is a 6-byte `(block u32, offset u16)`; a row moved to
 another partition gets the magic `(InvalidBlockNumber, 0xfffd)` and no
@@ -48,3 +50,11 @@ update i in identities.EmailPass where i.id == 7 set Google { gid: g }
 -- waiter on (EmailPass, tid 9): xmax committed, next = moved
 -- probe identity_pk (7) -> (7, Google, tid 4), xmin = old xmax: follow
 ```
+
+## mvcc/link/global-tid
+
+The version header's `next` is a 64-bit TID whose page id is global to
+the file, so it names a successor in another constructor's heap
+without a constructor id. The waiter follows `next` directly. A
+delete and reinsert of the key is never mistaken for a successor, and
+two retags of one row in one transaction stay distinct.

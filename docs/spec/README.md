@@ -39,7 +39,7 @@ Normative:
 | File | Owns |
 | --- | --- |
 | [model.md](model.md) | Values, base types, records, sums, newtypes, type parameters, relation variables, keys, references, equality, order and hashing |
-| [prelude.md](prelude.md) | The prelude types (Bool, Option, Result, Tag, Uuid, Span, Rounding, Overflow, Fault, Principal) and every prelude function, with signatures and faults |
+| [prelude.md](prelude.md) | The prelude types (Bool, Option, Result, Tag, Uuid, Span, Rounding, Overflow, Fault, Principal, Position, TxnId, Report, Origin, Outcome, RejectedRow) and every prelude function, with signatures and faults |
 | [syntax.md](syntax.md) | Lexical structure and the grammar of declarations, queries, writes and operators |
 | [typing.md](typing.md) | Type checking, inference, subtyping, variance, generics, exhaustiveness |
 | [queries.md](queries.md) | Meaning of comprehensions, `match`, patterns, navigation, grouping, aggregates, recursion, ordering, nested results, faults |
@@ -89,14 +89,15 @@ Informative:
 
   This is the schema at version 10. The canonical history continues
   with migration 0011, which adds `Apple { sub: Text }` joining
-  `OAuth`, and 0012, which enables it. Each part states the version
+  `OAuth` with its `display_name` arm, and 0012, which enables it. Each part states the version
   its examples start from; examples in different sections are
   independent histories unless a section says otherwise. A part may
   extend the schema locally under new names, never by reusing a name
   above with another shape.
 - Every module reads the prelude without qualification: `Bool`,
   `Option`, `Result`, `Tag`, `Uuid`, `Span`, `Rounding`, `Overflow`,
-  `Fault`, `Principal`, the error sums, and the functions listed in
+  `Fault`, `Principal`, `Position`, `TxnId`, `Report`, `Origin`,
+  `Outcome`, `RejectedRow`, the error sums, and the functions listed in
   [prelude.md](prelude.md).
 - Design rationale is not part of the spec. It lives in the design
   space, and each section ends with a "Rulings" line naming the rulings

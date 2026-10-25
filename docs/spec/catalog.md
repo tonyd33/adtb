@@ -42,7 +42,7 @@ A program must not insert into, update or delete from a relation of
 either module. Catalog relations change only through schema operators
 ([evolution.md](evolution.md#4-operators)), registration and other
 deployment state ([applications.md](applications.md#41-registration)),
-role and grant statements ([security.md](security.md#3-grants)), and
+role, grant and peer mapping statements ([security.md](security.md#3-grants)), and
 the commands of §9, including `set setting` (§10.2). A write naming a
 system relation is refused with `Rejected { reason: Denied {..} }`.
 
@@ -157,6 +157,27 @@ without the read it needs is refused with `Rejected { reason: Denied
 registered query running under definer rights, the bundle owner's
 privileges decide.
 
+### 1.5 Commit times and safe snapshots
+
+Two `sys::` relations describe the retained history read by `at`
+blocks ([derived.md](derived.md#6-reading-the-past)):
+
+```
+type CommitTime = { position: Position, at: Instant }
+relation sys::commit_times : CommitTime volatile key position
+
+type SafeSnapshotMark = { position: Position }
+relation sys::safe_snapshots : SafeSnapshotMark volatile key position
+```
+
+A row of `commit_times` is one commit within the retention window and
+the wall time recorded for it; times never decrease along positions. A
+row of `safe_snapshots` is one safe snapshot within the window, named
+by the position it follows. `at commit p` reads the greatest row of
+`safe_snapshots` at or before `p`, and `at instant t` the greatest at
+or before the latest commit whose `at` is at or before `t`. Rows leave
+both relations as the window passes them.
+
 Rulings: engine/catalog-relations, ops/expose/relations, ops/expose/volatile/volatile-kind, ops/conflicts/leak/admin-only, project/spec/normative/catalog
 
 ## 2. Catalog relations
@@ -179,6 +200,8 @@ relation constructors : Constructor key id
 type CtorStage = Declared | Enabled | Deprecated
 type CtorState = { relation: Key relations, ctor: Key constructors, stage: CtorStage }
 relation ctor_states : CtorState key (relation, ctor)
+type ValueState = { ctor: Key constructors, stage: CtorStage }
+relation value_states : ValueState key ctor
 
 type Field { id: Key fields, name: Text, field_type: Text, position: I32,
              dropped: Option Key migrations }
@@ -196,10 +219,16 @@ by a later constructor, which gets a new id.
 Write state is per relation variable: `ctor_states` has a row for each
 relation variable and each constructor of its type, with the stage of
 [evolution.md](evolution.md#43-enable-and-deprecate): `Declared` after
-`add constructor`, `Enabled` after `enable`, `Deprecated` after
-`deprecate`. Constructors created by `add type`, and the products of
+`add constructor` or `disable`, `Enabled` after `enable`, `Deprecated`
+after `deprecate`. Constructors created by `add type`, and the products of
 split, merge, nest and unnest whose sources were all enabled, start
 `Enabled`.
+
+Each constructor of a sum used as a field type has one row of
+`value_states`, kept per type, with the same stages and the same
+operators naming the type (`enable T.C`, `disable T.C`, `deprecate
+T.C`). Its stage gates storing a value of the constructor in any
+field, at any depth.
 
 ### 2.2 Relation variables, named sets and indexes
 
@@ -294,14 +323,20 @@ supersession and retirement are deployment state in
 `catalog::bundles`, not log entries. A bundle's name is
 `FAMILY-VERSION`, `VERSION` being the digits and dots after the last
 hyphen, and `family` is the part before it (`web` for `web-2.4`).
-`owner` is the registering role; `catalog` is the catalog version the
+`owner` is the registering role, and the owner of a family is the
+owner of its first registered bundle; `catalog` is the catalog version the
 bundle pins, if it reads system relations; `hides_new` is set by the
 header clause `hide new constructors`
 ([evolution.md](evolution.md#8-readers-first)); `renewed` is the last lease renewal
-([applications.md](applications.md#42-leases)). A `Superseded` bundle,
-marked so when an embedded open registers its successor, is not a
-live reader and may be registered again with identical content; a
-`Retired` one is retired for good.
+([applications.md](applications.md#42-leases)). A bundle is marked
+`Superseded` when an embedded open registers its successor, which
+commits durably before the open's migrations, or by the command
+`supersede bundle` ([applications.md](applications.md#44-supersession)).
+A `Superseded` bundle is not a live reader. Registering it again with
+identical content runs checks 3 to 5 of
+[applications.md §4.1](applications.md#41-registration) and may be
+refused with `BundleStale` or `BundleExpired`; a `Retired` one is
+retired for good.
 
 `ordinal` is the call's position in declaration order in the bundle
 file, from 1, so code generation computes it from the file
@@ -329,9 +364,45 @@ Plans are defined in §7.
 | --- | --- |
 | `catalog::settings` | §10.2 |
 | `catalog::tz_releases`, `catalog::zones` | §3.1 |
-| roles, grants | [security.md](security.md#7-catalog-visibility) |
-| `catalog::credentials` | [security.md](security.md#21-roles) |
+| `catalog::roles`, `catalog::credentials`, `catalog::grants`, `catalog::peer_mappings` | below; [security.md](security.md#2-authentication) |
 | `catalog::audit` | [security.md](security.md#82-the-audit-relation) |
+
+Roles, their credentials, grants and peer mappings:
+
+```
+type Role = { id: Key roles, name: Text, created: Instant }
+relation roles : Role
+  key id
+  unique (name)
+
+type Credential = { id: Key credentials, role: Key roles, salt: Bytes, iterations: I32,
+                    stored_key: Bytes, server_key: Bytes }
+relation credentials : Credential
+  key id
+  unique (role)
+
+type GrantKind = Log | Deployment
+type RoleGrant = { id: Key grants, kind: GrantKind, privilege: Text, target: Option Text,
+                   grantee: Text, grantor: Text, grant_option: Bool, dormant: Bool }
+relation grants : RoleGrant key id
+
+type PeerMapping = { listener: Text, ordinal: I32, pattern: Text, role: Text }
+relation peer_mappings : PeerMapping key (listener, ordinal)
+```
+
+A row of `credentials` is a SCRAM-SHA-256 verifier
+([security.md](security.md#21-roles)). A row of `grants` is one
+privilege of one grant statement: `kind` is `Log` for a grant operator
+of the log and `Deployment` for a grant given by ad hoc statement
+([security.md](security.md#32-grant-forms)); `privilege` is the
+privilege's name; `target` is what it is granted on as written (a
+constructor set with its field list, a bundle, a query, a family or a
+function), `None` for a capability. `grantee` and `grantor` are role
+names. `dormant` marks a log grant whose grantee did not exist when
+the log was replayed; a dormant grant allows nothing. `revoke`
+deletes the row. A row of `peer_mappings` is one rule of a listener's
+peer mapping ([security.md](security.md#22-sources)), tried in
+`ordinal` order.
 
 Rulings: engine/catalog-relations, project/spec/normative/catalog
 
@@ -366,6 +437,7 @@ version 17:
 
 ```
 -- 0018
+module auth
 adopt tzdb "2026b" from "tzdata-2026b.tzif"
 ```
 
@@ -433,6 +505,12 @@ Values carry no references, so reasons name catalog objects by
 qualified name in `Text` fields (`identities.Google`,
 `web-2.4::login_key`).
 
+An embedded open that fails returns an `OpenError` of the in-process
+API instead ([embedding.md](embedding.md#21-open)), among them
+`HostFnMissing` and `HostFnMismatch` for a host function that is not
+supplied or does not match its declaration; a migration or
+registration refused inside the open carries its `Error`.
+
 ### 4.2 Reasons
 
 ```
@@ -446,11 +524,12 @@ type RetryReason = Serialization      { txn: TxnId, on: Text }
                  | StreamIdle         { limit: Duration }
                  | FileChanged        { path: Text }
                  | Fenced
+                 | ReplayConflict     { waited: Duration }
 
 type RejectReason = Violated             { constraint: Text, report: Report, redacted: I64 }
                   | KeyViolation         { relation: Text, key: Text }
                   | KeyChanged           { relation: Text }
-                  | NotOpen              { relation: Text, stage: Text }
+                  | NotOpen              { ctor: Text, stage: Text }
                   | UserError            { message: Text }
                   | Faulted              { fault: Fault }
                   | Denied               { detail: Text }
@@ -465,10 +544,12 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | StatementLimit       { limit: Duration }
                   | TransactionExpired   { limit: Duration, idle: Bool }
                   | TransactionBusy
+                  | MixedVersions
                   | UnknownQuery
                   | UnknownTransaction
                   | UnknownBundle        { bundle: Text }
                   | VersionMismatch      { bundle: Text, version: I64 }
+                  | CatalogMismatch      { bundle: Text, catalog: I64 }
                   | Retired              { bundle: Text }
                   | BundleExpired        { bundle: Text, query: Text }
                   | BundleStale          { bundle: Text, ctor: Text }
@@ -484,6 +565,8 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | AuthFailed
                   | UnsupportedProtocol  { min: Text, max: Text }
                   | UnknownDatabase      { database: Text }
+                  | EditionLocked
+                  | UnknownEdition       { edition: Text }
 
 type FatalReason = Malformed       { detail: Text }
                  | Quarantined     { what: Text }
@@ -503,10 +586,11 @@ wire's 32-bit epoch and 64-bit log position.
 | `StreamIdle` | a result stream was given no credit for longer than the limit; never sent after the call's commit | [wire.md](wire.md#55-credit) |
 | `FileChanged` | a file read twice in one transaction changed between the reads | [interop.md](interop.md#33-file-integrity) |
 | `Fenced` | a commit reached a primary fenced by a promotion | [engine.md](engine.md#9-replication) |
-| `Violated` | the change set violated a constraint; `constraint` is the violated constraint whose qualified name sorts first, `report` its result rows (below) | [constraints.md](constraints.md#7-checking-and-violation-reports) |
-| `KeyViolation` | two different rows with one key are inserted in one change set, an appended batch included; reported at the statement boundary; `key` is the key in the textual syntax | [writes.md](writes.md#14-combining-writes), [wire.md](wire.md#73-append) |
+| `ReplayConflict` | a replica read was cancelled because applying the log would remove a row version its snapshot sees, after the replay waited `waited`, the `ReplicaVacuumWait` setting | [transactions.md](transactions.md), [engine.md](engine.md#9-replication) |
+| `Violated` | the change set violated a constraint or a unique, including a duplicate under a unique; `constraint` is the violated constraint whose qualified name sorts first, `report` its result rows (below) | [constraints.md](constraints.md#7-checking-and-violation-reports) |
+| `KeyViolation` | two different rows with one value of the relation's key are inserted in one change set, an appended batch included; reported at the statement boundary; `key` is the key in the textual syntax. A duplicate under any unique is `Violated` with that unique's constraint | [writes.md](writes.md#14-combining-writes), [wire.md](wire.md#73-append) |
 | `KeyChanged` | an update gave a row another key | [writes.md](writes.md#3-update) |
-| `NotOpen` | an insert or retag into a constructor relation in a stage that refuses writes | [evolution.md](evolution.md#43-enable-and-deprecate) |
+| `NotOpen` | an insert or retag into a constructor relation in a stage that refuses writes, or a write storing in a field a value of a value-level constructor in such a stage; `ctor` names the constructor qualified by its relation (`identities.Apple`) or by its sum (`Provider.Okta`) | [evolution.md](evolution.md#43-enable-and-deprecate) |
 | `UserError` | a write evaluated `fail e`; `message` is the value of `e` | [writes.md](writes.md#62-meaning) |
 | `Faulted` | the statement aborted on a fault | [queries.md](queries.md#15-faults) |
 | `Denied` | the principal lacks a privilege, or a query reads a column the role may not see | [security.md](security.md#3-grants), §1.4 |
@@ -521,22 +605,26 @@ wire's 32-bit epoch and 64-bit log position.
 | `StatementLimit` | the statement ran past its statement limit or its declared limit | §8.3 |
 | `TransactionExpired` | an interactive transaction passed its transaction limit, or its idle limit when `idle`; rerunning it unchanged hits the same limit | [transactions.md](transactions.md#54-time-limit), §8.3 |
 | `TransactionBusy` | the interactive transaction is in use from another connection | [wire.md](wire.md#62-interactive-transactions) |
+| `MixedVersions` | a transaction that has made a registered call sends ad hoc text, or one that has run ad hoc text makes a registered call | [transactions.md](transactions.md), [applications.md](applications.md#7-the-ad-hoc-role) |
 | `UnknownQuery`, `UnknownTransaction`, `UnknownBundle`, `VersionMismatch` | the request names a call, transaction or bundle the binding does not have | [wire.md](wire.md#34-binding-and-ready) |
+| `CatalogMismatch` | a Hello binding names a catalog version other than the one the bundle pins; `catalog` is the pinned one | [wire.md](wire.md#32-hello) |
 | `Retired` | the bundle is retired; bound connections are refused too | [applications.md](applications.md#43-retirement) |
-| `BundleExpired` | an expired bundle binding again has a query with no translation to the current version | [evolution.md](evolution.md#73-expired-bundles) |
+| `BundleExpired` | a bind, call or lease renewal of an expired bundle, on the primary or a replica; or an expired or superseded bundle registered again fails the checks of a re-registration | [evolution.md](evolution.md#73-expired-bundles), [applications.md](applications.md#42-leases) |
 | `BundleStale` | a bundle registering at a version before an enabled constructor it would read | [applications.md](applications.md#41-registration) |
 | `DowngradeRefused` | an embedded open with an older bundle whose reads include a constructor enabled since, or whose host function was redefined since; `cause` names it, and nothing is changed | [embedding.md](embedding.md) |
-| `BundleSuperseded` | a binding names a bundle an embedded open superseded and that has not been registered again | [applications.md](applications.md#8-embedded-databases) |
+| `BundleSuperseded` | a binding names a bundle an embedded open or `supersede bundle` superseded and that has not been registered again | [applications.md](applications.md#8-embedded-databases) |
 | `TooOld` | a feed position is older than retention; `oldest` is the oldest position kept | [wire.md](wire.md#9-feeds) |
-| `HistoryUnavailable` | a time-travel read names a commit outside the retention window or after the reader's snapshot, or a feed position is before the feed's registration | [derived.md](derived.md#6-reading-the-past), [wire.md](wire.md#9-feeds) |
+| `HistoryUnavailable` | a time-travel read names a position outside the retention window or after the reader's snapshot, or a feed position is before the feed's registration | [derived.md](derived.md#6-reading-the-past), [wire.md](wire.md#9-feeds) |
 | `PositionNotOnHistory` | a position names an epoch or log position not on this database's history | [transactions.md](transactions.md) |
-| `WrongVersion` | a time-travel read at a pinned version names a commit whose relevant types differ from those at the pinned version | [derived.md](derived.md#6-reading-the-past) |
+| `WrongVersion` | a time-travel read at a pinned version names a position whose relevant types differ from those at the pinned version | [derived.md](derived.md#6-reading-the-past) |
 | `ReadOnlyReplica` | a write call reached a replica that does not forward writes; `primary` names the primary | [engine.md](engine.md#9-replication) |
 | `RequestExpired` | a request id with no record, and not running, is strictly below the client's low-water mark (§6.6); the request is not run | [wire.md](wire.md#65-idempotent-writes) |
 | `RequestReused` | a request id already recorded is sent with a different call or arguments | [wire.md](wire.md#65-idempotent-writes) |
 | `AuthFailed` | authentication failed | [wire.md](wire.md#33-authentication) |
 | `UnsupportedProtocol` | client and server share no protocol version; `min` and `max` are the server's range | [wire.md](wire.md#131-negotiation) |
 | `UnknownDatabase` | a Hello names a database the process does not serve | [wire.md](wire.md#32-hello) |
+| `EditionLocked` | a Hello asks for an edition on a bound connection, whose edition is its bundle's | [wire.md](wire.md#32-hello) |
+| `UnknownEdition` | a Hello asks for an edition the server does not implement | [wire.md](wire.md#32-hello) |
 | `Malformed` | a message violates the server protocol | [wire.md](wire.md#113-malformed-messages) |
 | `Quarantined` | the call needs a quarantined heap or index; `what` names it | §11.2 |
 | `MissingFunction` | the call needs a host function the program did not supply | [embedding.md](embedding.md#10-host-functions) |
@@ -585,7 +673,10 @@ notice sent to a call or connection of that bundle is a value of these
 sums as that edition declares them. A connection's `Ready` names the
 edition it is served ([wire.md](wire.md#34-binding-and-ready)): the
 bound bundle's, or for an ad hoc connection the edition its `Hello`
-requested, else the newest the server implements. Every error and
+requested, else the newest the server implements. A `Hello` that asks
+for an edition on a bound connection is refused with `EditionLocked`,
+and one that asks for an edition the server does not implement with
+`UnknownEdition`. Every error and
 notice value is length-prefixed on the wire, so a client can skip a
 reason it does not know.
 
@@ -615,10 +706,10 @@ type Notice = LeaseExpiring      { bundle: Text, at: Instant }
 | Notice | Meaning |
 | --- | --- |
 | `LeaseExpiring` | the bundle's lease ends at `at` unless renewed ([applications.md](applications.md#42-leases)) |
-| `ShuttingDown` | the server stops accepting calls at `at` |
-| `ConstructorEnabled` | a constructor of a relation the bundle reads was enabled ([evolution.md](evolution.md#43-enable-and-deprecate)) |
+| `ShuttingDown` | the server accepts calls until `at` and opens no new result stream after it |
+| `ConstructorEnabled` | a constructor of a relation the bundle reads was enabled, or a constructor of a value-level sum reached by a field it reads was enabled by `enable T.C`, with `relation` then the sum's qualified type name ([evolution.md](evolution.md#43-enable-and-deprecate)) |
 | `BundleRetired` | the bundle has been retired; every later call on the connection is refused with `Retired` |
-| `BlockingMigration` | the bundle blocks a pending `enable` at schema version `version`; the migration waits until the bundle is retired, superseded or expired, which needs every client of it to stop calling (see `sys::sessions`) |
+| `BlockingMigration` | the bundle blocked a migration that would produce schema version `version`, or a revoke issued at schema version `version`, and the migration or revoke was refused; nothing waits, and it succeeds when issued again after the bundle is retired, superseded or expired, which needs every client of it to stop calling (see `sys::sessions`). Sent to the bundle's sessions for the `BlockingNoticePeriod` setting after the refusal |
 | `UpgradeRequired` | an operator asks the bundle's clients to upgrade to a newer bundle of its family |
 
 ### 4.6 Constructor ids of engine-defined sums
@@ -649,15 +740,15 @@ Prelude:
 | 21 | `Fault` | 22 `DivisionByZero`, 23 `ArithmeticOverflow`, 24 `OutOfRange`, 25 `NotFinite`, 26 `NoSuchDate`, 27 `UnknownZone`, 28 `InvalidText`, 29 `InvalidSpan`, 30 `NegativeCount`, 31 `NoSuchRow`, 32 `FunctionFailed` |
 | 33 | `Uuid` | 34 (one constructor) |
 | 35 | `Span` | 36 (one constructor) |
-| 37 | `Principal` | 38 `EndUser`, 39 `Service`, 40 `Anonymous` |
+| 37 | `Principal`, the default only | 38 `EndUser`, 39 `Service`, 40 `Anonymous` |
 | 41 | `Origin` | 42 `Registered`, 43 `Function`, 44 `AdHoc` |
 | 45 | `Outcome` | 46 `Succeeded`, 47 `Failed` |
 | 48 | `Error` | 49 `Retry`, 50 `Rejected`, 51 `Fatal` |
 | 52 | `TxnId` | 53 (one constructor) |
 | 54 | `Report` | 55 (one constructor) |
 | 56 | `Position` | 57 (one constructor) |
-| 58 | `RetryReason` | 59 `Serialization`, 60 `SafePointTimeout`, 61 `Overloaded`, 62 `StreamIdle`, 63 `FileChanged`, 64 `Fenced` |
-| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase` |
+| 58 | `RetryReason` | 59 `Serialization`, 60 `SafePointTimeout`, 61 `Overloaded`, 62 `StreamIdle`, 63 `FileChanged`, 64 `Fenced`, 341 `ReplayConflict` |
+| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase`, 342 `CatalogMismatch`, 343 `EditionLocked`, 344 `UnknownEdition`, 345 `MixedVersions` |
 | 103 | `FatalReason` | 104 `Malformed`, 105 `Quarantined`, 106 `MissingFunction`, 107 `Storage` |
 | 108 | `Notice` | 109 `LeaseExpiring`, 110 `ShuttingDown`, 111 `ConstructorEnabled`, 112 `BundleRetired`, 113 `BlockingMigration`, 114 `UpgradeRequired` |
 | 115 | `RejectedRow` | 116 (one constructor) |
@@ -693,8 +784,14 @@ Module `catalog`, types:
 | 187 | `Plan` | 188 (one constructor) |
 | 189 | `TzRelease` | 190 (one constructor) |
 | 191 | `Zone` | 192 (one constructor) |
-| 193 | `Setting` | 194 `StatementLimit`, 195 `TransactionLimit`, 196 `IdleLimit`, 197 `StreamIdleLimit`, 198 `RequestWindow`, 199 `SafePointDelay`, 200 `ReplicaWait`, 201 `DefaultLease`, 202 `FeedRetention`, 203 `StatsWindow`, 204 `StatsRetention`, 205 `WaitSampling`, 206 `ConflictLog`, 207 `VacuumBudget`, 208 `ScrubInterval` |
+| 193 | `Setting` | 194 `StatementLimit`, 195 `TransactionLimit`, 196 `IdleLimit`, 197 `StreamIdleLimit`, 198 `RequestWindow`, 199 `SafePointDelay`, 200 `ReplicaWait`, 201 `DefaultLease`, 202 `FeedRetention`, 203 `StatsWindow`, 204 `StatsRetention`, 205 `WaitSampling`, 206 `ConflictLog`, 207 `VacuumBudget`, 208 `ScrubInterval`, 346 `LeaseGrace`, 347 `BlockingNoticePeriod`, 348 `ReplicaVacuumWait` |
 | 209 | `AuditEvent` | 210 `Login`, 211 `Grant`, 212 `Register`, 213 `Retire`, 214 `SchemaOp`, 215 `Call`, 216 `Denied`, 217 `Commit`, 218 `Truncate` |
+| 349 | `ValueState` | 350 (one constructor) |
+| 351 | `Role` | 352 (one constructor) |
+| 353 | `Credential` | 354 (one constructor) |
+| 355 | `GrantKind` | 356 `Log`, 357 `Deployment` |
+| 358 | `RoleGrant` | 359 (one constructor) |
+| 360 | `PeerMapping` | 361 (one constructor) |
 
 Module `catalog`, relation variables:
 
@@ -724,6 +821,10 @@ Module `catalog`, relation variables:
 | 240 | `catalog::settings` |
 | 241 | `catalog::audit` |
 | 242 | `catalog::credentials` |
+| 362 | `catalog::value_states` |
+| 363 | `catalog::roles` |
+| 364 | `catalog::grants` |
+| 365 | `catalog::peer_mappings` |
 
 Module `sys`, types:
 
@@ -758,6 +859,8 @@ Module `sys`, types:
 | 310 | `RunId` | 311 (one constructor) |
 | 312 | `Finding` | 313 `Checksum`, 314 `StalePage`, 315 `Order`, 316 `Orphan`, 317 `Missing`, 318 `Violation` |
 | 319 | `Format` | 320 (one constructor) |
+| 366 | `CommitTime` | 367 (one constructor) |
+| 368 | `SafeSnapshotMark` | 369 (one constructor) |
 
 Module `sys`, relation variables:
 
@@ -783,10 +886,15 @@ Module `sys`, relation variables:
 | 338 | `sys::process_options` |
 | 339 | `sys::verify_findings` |
 | 340 | `sys::format` |
+| 370 | `sys::commit_times` |
+| 371 | `sys::safe_snapshots` |
 
 
-`Person` and the other types of examples are not engine types and
-have no fixed id. Ids from 341 to 1023 are unassigned.
+Ids from 341 to 371 are listed in the rows of the types they belong
+to. `Person` and the other types of examples are not engine types and
+have no fixed id, nor has a `Principal` the schema declares
+([security.md](security.md#11-the-principal-sum)). Ids from 372 to 1023 are
+unassigned.
 
 Rulings: project/spec/errors/closed-sum, project/spec/errors/new-kind/coarse, project/spec/errors/new-kind/pinned
 
@@ -1029,11 +1137,13 @@ per staged schema job ([evolution.md](evolution.md#34-staged-changes));
 
 ### 6.6 Pending drops and request marks
 
-A dropped constraint, and a removed constructor's restrictions, stay in
-force while a live bundle pinned before the drop still relies on them
-([constraints.md](constraints.md), [evolution.md](evolution.md#83-dropping-a-constraint)).
-Each such pair is a row of `sys::pending_drops`, and the report of the
-migration that drops the object names the same rows:
+A dropped constraint, a dropped unique, a dropped check and the old
+key of a relaxing `rekey` stay in force while a live bundle pinned
+before the drop still relies on them
+([constraints.md](constraints.md), [evolution.md](evolution.md#64-dropping-a-constraint)).
+Each such pair of object and bundle is a row of `sys::pending_drops`,
+and the report of the migration that drops the object names the same
+rows:
 
 ```
 type PendingDrop = { object: Text, dropped: Key catalog::migrations,
@@ -1318,6 +1428,7 @@ transaction, a function or a constraint.
 | `finalize upgrade` | §12.2 | `maintain` |
 | `set setting S = v` | §10.2 | `configure` |
 | `retire bundle B` | [applications.md](applications.md#43-retirement) | the bundle's owner or the schema owner |
+| `supersede bundle B by B2` | [applications.md](applications.md#44-supersession) | `B`'s owner or the schema owner |
 | `export (q) to "path"` | [interop.md](interop.md#51-export) | `write_files`, through a server |
 | `register bundle "file"` | [applications.md](applications.md#41-registration) | as registration requires |
 | `apply migrations "file" ...` | [evolution.md](evolution.md#23-applying-a-migration-set) | `schema` |
@@ -1334,7 +1445,8 @@ protocol and as a call of the in-process API; the command line tool
 (§9.4) wraps them. `restore` writes a new file, so it never runs
 against a database being served.
 
-`retire bundle` is a command, never an operator in a migration.
+`retire bundle` and `supersede bundle` are commands, never operators
+in a migration.
 
 ### 9.2 Results
 
@@ -1350,7 +1462,7 @@ Each command returns a set of records:
 | `reindex`, `compact` | `{ job: Key sys::jobs }`, returned when the job starts |
 | `finalize upgrade` | the row of `sys::format` |
 | `set setting` | the new row of `catalog::settings` |
-| `retire bundle` | the bundle's row of `catalog::bundles` |
+| `retire bundle`, `supersede bundle` | the row of `catalog::bundles` of the bundle retired or superseded |
 | `export` | `{ path: Text, rows: I64 }` |
 | `register bundle` | the bundle's row of `catalog::bundles` |
 | `apply migrations` | one row per migration applied, of `catalog::migrations`, with the migration report |
@@ -1452,6 +1564,9 @@ type Setting { id: Key settings }
   | ConflictLog      { rows: I64 }
   | VacuumBudget     { io: F64, cpu: F64 }
   | ScrubInterval    { every: Option Duration }
+  | LeaseGrace       { grace: Duration }
+  | BlockingNoticePeriod { period: Duration }
+  | ReplicaVacuumWait    { wait: Duration }
 relation catalog::settings : Setting key id
 ```
 
@@ -1465,10 +1580,11 @@ set setting VacuumBudget = { io: 0.2, cpu: 0.5 }
 ```
 
 A limit of `None` is no limit. A new value applies to calls that start
-after the `set setting` command completes. The listener principal
-mappings of [security.md](security.md#22-sources) (certificate and
-peer rules) are file settings too, kept with the listener's name and
-changed by `set setting`; listener addresses stay open settings.
+after the `set setting` command completes. Listener peer mappings are
+not settings: they are rows of `catalog::peer_mappings` (§2.6),
+changed by `map peer` and `unmap peer`
+([security.md](security.md#22-sources)); listener addresses are open
+settings.
 
 | Setting | Governs | Default |
 | --- | --- | --- |
@@ -1480,6 +1596,9 @@ changed by `set setting`; listener addresses stay open settings.
 | `SafePointDelay` | the longest a forced safe point may delay the start of new read-write transactions ([transactions.md](transactions.md)) | `100ms` |
 | `ReplicaWait` | the longest a replica read given a position waits for a safe point before `Retry { reason: SafePointTimeout {..} }` | `5s` |
 | `DefaultLease` | the lease of a bundle whose header states none ([applications.md](applications.md#42-leases)) | `30d` |
+| `LeaseGrace` | how long after a lease's expiry, computed from its last renewal in the log, the primary still treats it as live, covering clock skew; a replica refuses the bundle from expiry ([applications.md](applications.md#42-leases)) | `1h` |
+| `BlockingNoticePeriod` | how long after a refused migration or revoke the engine sends `BlockingMigration` to the sessions of each blocking bundle (§4.5) | `24h` |
+| `ReplicaVacuumWait` | the longest a replica's log replay waits for a read whose snapshot sees a row version the replay would remove, before cancelling it with `Retry { reason: ReplayConflict {..} }` ([transactions.md](transactions.md)) | `30s` |
 | `FeedRetention` | how long the log is kept for change streams ([interop.md](interop.md#52-change-streams)) | `7d` |
 | `StatsWindow` | the length of a query statistics window (§5.4) | `1min` |
 | `StatsRetention` | how long windows are kept (§5.4) | `30d` |
@@ -1662,7 +1781,9 @@ An engine release makes four promises:
 4. Catalog: the types of system relations change only through catalog
    operators in the catalog log, which bundles pin by its version and
    which apply readers-first
-   ([evolution.md](evolution.md#10-engine-releases)). A registered
+   ([evolution.md](evolution.md#10-engine-releases)). The engine's own
+   enabling of catalog constructors it added is deployment state, not
+   a catalog version. A registered
    query over the catalog or a `sys::` relation keeps compiling and
    running across releases.
 
@@ -1682,7 +1803,11 @@ a release is reversible; features that need a newer format are
 unavailable, and the release's catalog operators are not applied: the
 catalog keeps the version the previous release wrote. Finalizing
 applies the release's catalog operators to the catalog log, records
-the new format in the file header, and cannot be undone. Nothing is
+the new format in the file header, and cannot be undone. When
+readers-first refuses one of those catalog operators, `finalize
+upgrade` is refused with a report naming the bundles that block it:
+nothing is applied, the upgrade stays unfinalized and the previous
+release can still open the file. Nothing is
 appended to the schema log by an upgrade or by an open. In process,
 `Database::finalize_upgrade()` does the same
 ([embedding.md](embedding.md)).

@@ -49,13 +49,15 @@ snapshot, so a schema change is a write like any other (§7.6).
 
 | Term | Meaning |
 | --- | --- |
-| constructor id | The number of a declared constructor of a type. Types, constructors and relation variables share one id space, assigned in operator log order: `add type T = A \| B` takes ids for `T`, `A`, `B` in that order, a record type takes its type id and one constructor id, `add constructor` takes one, `add relation r` takes one for `r`. The ids are a function of the log and are never reused. Every instantiation of a parametric sum shares its constructor ids. Prelude and catalog sums have fixed ids below 1024, listed per edition in a fixed table ([catalog.md](catalog.md)). |
+| constructor id | The number of a declared constructor of a type. Types, constructors and relation variables share one id space, assigned in operator log order: `add type T = A \| B` takes ids for `T`, `A`, `B` in that order, a record type takes its type id and one constructor id, `add constructor` takes one, `add relation r` takes one for `r`. The ids are a function of the log and are never reused. Every instantiation of a parametric sum shares its constructor ids. Engine-defined sums have fixed ids below 1024: the prelude's fixed per edition, those of the catalog modules per catalog version ([catalog.md §4.6](catalog.md#46-constructor-ids-of-engine-defined-sums)). |
 | heap | The pages holding every row version of one constructor relation, keyed by (relation variable, constructor id). Two relation variables of one type have separate heaps. |
+| heap id | The number of one heap, current or history (§7.5), assigned when the heap is created and never reused. |
 | TID | The address of a row version within its heap: a page id and a slot. |
 | constructor-set index | A B-link tree or hash index over the rows of a set of constructors of one relation variable. |
 | entry | An index element `(key, ctor, tid)`. |
 | xid | A 64-bit transaction id, never reused. |
 | LSN | A byte position in the redo log. |
+| commit position | A `Position { epoch, lsn }`: the primary epoch and the LSN of a transaction's commit record. |
 | sum | A relation variable with all its constructor heaps and indexes. |
 
 A sum's key is always covered by a constructor-set index over every
@@ -79,7 +81,8 @@ Every heap, index,
 free space map, visibility map, commit log page and catalog page is a
 set of pages in it. Page ids form one dense space over the whole file;
 the buffer pool (§4.1) and every TID use that space. Adding a
-constructor adds an empty heap; removing one frees its pages.
+constructor adds an empty heap; removing one frees its pages once its
+heap is dropped (§6.8).
 
 Free pages are tracked by an allocation bitmap of one bit per page,
 held in bitmap pages of the file and in memory while the database is
@@ -97,7 +100,7 @@ the copy that verifies and has the higher sequence number. A torn
 header write therefore leaves the other copy intact. Data pages start
 at page 2.
 
-The header holds a magic number, the lowest and
+The header holds a magic number, the file id, the lowest and
 highest page format versions present, the finalization state of a
 format upgrade ([catalog.md](catalog.md)), the location of the last
 checkpoint record (§3.4), the root of the catalog, the encryption
@@ -118,7 +121,7 @@ offset  size  field
 12      2     format    format version of the page's contents
 14      2     kind      heap fixed-slot, heap slotted, index leaf, index inner, hash bucket,
                         free space map, visibility map, allocation bitmap, commit log, catalog
-16      4     owner     constructor id of a heap page, index id of an index page, 0 otherwise
+16      4     owner     heap id of a heap page, index id of an index page, 0 otherwise
 20      2     flags     all-visible (heap), half-dead (index), ...
 22      2     reserved
 24            kind-specific contents
@@ -194,7 +197,7 @@ to one page, or a transaction or system event:
 | --- | --- |
 | page change | page id, the page's LSN before the change, the change |
 | full-page image | page id, the whole page |
-| commit | xid, commit number, wall-clock time of commit |
+| commit | xid, wall-clock time of commit; the record's position is the commit position |
 | abort | xid |
 | xid allocation | the next xid reserved |
 | schema operator | an operator of a migration, and the schema version the migration produces |
@@ -216,12 +219,14 @@ while the page was dirty. Recovery restores a torn page from that
 image.
 
 When the device and file system guarantee atomic writes of a whole
-page, no full-page images are logged at all: a page write either lands
-whole or not at all, so no page can be torn. The engine detects the
-guarantee when it opens the file (for example from the atomic write
-unit `statx` reports for direct I/O) and records it in the file header;
-a file opened where the guarantee does not hold logs images again from
-its next change of each clean frame.
+page, no full-page images are logged outside a backup: a page write
+either lands whole or not at all, so no page can be torn. The engine
+detects the guarantee when it opens the file (for example from the
+atomic write unit `statx` reports for direct I/O) and records it in the
+file header; a file opened where the guarantee does not hold logs
+images again from its next change of each clean frame. While a backup
+runs (§9.9), full-page images are logged whatever the device
+guarantees, since the backup's page copy can be torn.
 
 Xids are allocated from a counter whose reserved upper bound is logged
 before use, so the counter never goes back after a crash, even for
@@ -252,7 +257,7 @@ log block
   16  u32  number of blocks in the batch
   20  u32  index of this block within the batch, from 0
   24  u32  epoch of the primary that wrote it (§9.6)
-  28  u32  crc32c over bytes 32 to the end
+  28  u32  crc32c over the whole block with this field zeroed
   32  u16  bytes used
   34  u16  reserved
   36       records; a record may continue into the next block
@@ -369,7 +374,9 @@ filled page once as a full-page image, with no per-row records. The
 images are what a physical replica (§9.1) replays, so replicas receive
 the loaded rows. The load's change set is one transaction; its pages
 become visible only through its commit record
-([interop.md](interop.md#4-loading)).
+([interop.md](interop.md#4-loading)). A load into a constructor
+relation of a registered feed also writes logical change records of
+the loaded rows (§9.8).
 
 Rulings: engine/redo-mvcc, layout/torn/fpw, buffer/io-path/log-align/slot-pad, buffer/force/fdatasync, buffer/group-commit/leader, buffer/checkpoint/fuzzy, buffer/checkpoint/log-pin/flush-oldest, buffer/fsync-fail/panic-replay, interop/load/wal/page-images
 
@@ -534,7 +541,7 @@ Every version starts with a 24-byte header:
 ```
 0   u64  xmin    inserting transaction
 8   u64  xmax    deleting or superseding transaction, 0 when none
-16  u64  next    TID of the successor version in this heap
+16  u64  next    TID of the successor version, in this heap or, when moved, another heap of the sum
 24       body, at a fixed offset for every row of the heap
 ```
 
@@ -545,7 +552,7 @@ page change and is logged as one.
 
 | Flag | Meaning |
 | --- | --- |
-| moved | The successor is in another heap of the sum; `next` is unused (§5.10) |
+| moved | The successor is in another heap of the sum; `next` names it (§5.10) |
 | retagged-in | This version was inserted by a retag |
 | hot-updated | The successor is a heap-only version on this page |
 | heap-only | No index entry names this version |
@@ -604,7 +611,9 @@ rewritten lazily as their pages are written (§5.8).
 
 Transaction ids are 64 bits and never wrap, so versions are never
 frozen. The commit log holds 2 bits per xid (in progress, committed,
-aborted) in commit log pages of the file. A snapshot is:
+aborted) in commit log pages of the file. Commit positions are not in
+the commit log; for the time-travel window a separate map gives them
+(§7.5). A snapshot is:
 
 ```
 snapshot { xmin: u64, xmax: u64, in_progress: [u64] }
@@ -674,10 +683,10 @@ set match i
 
 the writing transaction `T`:
 
-1. Sets `xmax = T` and the moved flag on the old version in the
-   `EmailPass` heap.
-2. Inserts the new version in the `Google` heap with `xmin = T` and the
-   retagged-in flag.
+1. Inserts the new version in the `Google` heap at `tid'` with
+   `xmin = T` and the retagged-in flag.
+2. Sets `xmax = T`, the moved flag and `next = tid'` on the old version
+   in the `EmailPass` heap.
 3. Inserts an entry `(k, Google, tid')` into every index whose
    constructor set contains `Google`. The old entry `(k, EmailPass,
    tid)` stays in every index containing `EmailPass` until vacuum.
@@ -695,11 +704,10 @@ serialization failure; if `T` aborts, the waiter proceeds on the old
 version. A waiter never re-evaluates its statement on a successor.
 
 A walk of the chain to the newest version (vacuum, `verify`) follows
-the move by key: on finding the moved flag, it probes the key index
-with the old version's key and takes the version that has the
-retagged-in flag and `xmin` equal to the old version's `xmax`. A row
-deleted and reinserted under the same key lacks the flag and is not
-taken as the successor.
+`next` across heaps: page ids are global, so the successor's TID names
+its page in the other heap. A transaction that retags a row from `A`
+to `B` and back to `A` leaves each version's `next` naming exactly its
+own successor.
 
 Rulings: storage/table-per-ctor, storage/sum-scan/merge-append, encoding/native-cost/union-index, layout/slots/by-schema, layout/fill/fsm, layout/tuple-header/lean, layout/field-order/packed, layout/var-fields/offset-table, layout/vsum/by-shape, layout/vsum-tag/varint, layout/vsum/widen/rewrite, layout/heap-format/page-version, layout/large/toast, layout/large/retag/per-sum, engine/in-heap, mvcc/xid-clog, mvcc/xid-width/xid64, mvcc/status/clog-lookup, mvcc/o2n, mvcc/version-tid, mvcc/hot/per-heap, union-index/retag/move, engine/retag-chain/forward-pointer, engine/retag-snapshot/two-entries, mvcc/link/key-relookup, layout/succ/key-probe, mvcc/link/reinsert/in-flag
 
@@ -726,11 +734,13 @@ key index of identities:
 ```
 
 The constructor id is encoded as an order-preserving, prefix-free
-unsigned varint in which small ids take one byte. The whole entry is
-one byte string compared with `memcmp`:
+varint, `ovarint`, not LEB128: an id below 240 is one byte, the id; a
+larger id is the byte `239 + n` followed by the id as `n` big-endian
+bytes, `n` from 1 to 4 the fewest that hold it. The whole entry is one
+byte string compared with `memcmp`:
 
 ```
-entry bytes = encode(key) ++ uvarint(ctor) ++ be48(page) ++ be16(slot)
+entry bytes = encode(key) ++ ovarint(ctor) ++ be48(page) ++ be16(slot)
 ```
 
 ### 6.2 Key encoding
@@ -746,8 +756,10 @@ the value.
 | `F32`, `F64` | The canonical value (no -0.0; one NaN) as big-endian IEEE bits; if the sign bit is set every bit is inverted, otherwise only the sign bit; NaN sorts above every other value |
 | `Decimal` | The scaled integer coefficient, encoded as a signed integer of its storage width |
 | `Instant`, `Date`, `Time`, `DateTime`, `Duration` | Their integer representation, encoded as the signed integer of its width |
+| `ZonedDateTime` | The `DateTime` encoding, then the zone name as `Text`; the type has no order, so the encoding serves equality and uniqueness only |
+| `Period` | The month count, then the day count, each as an `I32`; equality and uniqueness only, as for `ZonedDateTime` |
 | `Text` | NFC UTF-8 bytes, each `00` written `00 FF`, terminated by `00`; the order is code point order |
-| `Bytes` | As `Text`, without normalization |
+| `Bytes`, `SortKey` | As `Text`, without normalization |
 | `Key r` | The encoding of the target's key |
 | newtype | The encoding of its representation |
 | record | Its fields' encodings concatenated in field order |
@@ -810,7 +822,7 @@ A leaf stores equal keys once followed by a sorted array of
 otherwise split.
 
 ```
-posting tuple:  key | n | (uvarint ctor, tid 8 B) * n
+posting tuple:  key | n | (ovarint ctor, tid 8 B) * n
 user 3: [(EmailPass,(12,3)), (EmailPass,(40,1)), (Google,(4,1))]
 ```
 
@@ -847,22 +859,30 @@ entry it fetches the version from the heap the entry's constructor id
 names and checks it against the latest committed state, not the
 inserter's snapshot:
 
+A conflict is reported as `KeyViolation` in the key index and as
+`Violated`, carrying the unique as its constraint, in the index of a
+unique.
+
 | Version found | Outcome |
 | --- | --- |
-| Live, committed, visible to the inserter's snapshot | `KeyViolation` |
+| Live, committed, visible to the inserter's snapshot | Conflict |
 | Live, committed after the inserter's snapshot | Serialization failure |
 | Inserted by a transaction in progress | Wait for it; serialization failure if it commits, proceed if it aborts |
+| Deleted by a transaction committed before the inserter's snapshot | Skipped |
+| Deleted by a transaction committed after the inserter's snapshot | Serialization failure |
+| Deleted by a transaction in progress, the version visible to the inserter's snapshot | Wait for it; serialization failure if it commits, conflict if it aborts |
 | Dead to every snapshot, or deleted by the inserter itself | Skipped |
-| Inserted by another write of the same statement | `KeyViolation`, reported at the statement boundary |
- A key may thus hold
-several entries, at most one of them for a live version. No other
-constructor's heap is locked.
+| Inserted by another write of the same statement | Conflict, reported at the statement boundary |
+
+A key may thus hold several entries, at most one of them for a live
+version. No other constructor's heap is locked.
 
 ### 6.7 Index-only scans
 
 Each heap has a visibility map with one all-visible bit per page, set
 by vacuum and cleared by any write to the page. An index-only scan
-reads `vm[ctor][page(tid)]` for each entry and fetches the version
+reads `vm[heap][page(tid)]` for each entry, `heap` the heap of the
+entry's constructor in the index's relation variable, and fetches the version
 only when the bit is clear. A query that needs only key fields and the
 constructor, such as a match whose arms read no other field, is
 answered from the index. A heap whose constructor is rarely written
@@ -895,9 +915,11 @@ with writes to every constructor of the index's set blocked. One
 constructor's entries are spread through the tree, so an index is
 always rebuilt whole.
 
-Removing a constructor applies only to an empty constructor, so its
-heap holds no entries to delete; the remove drops the heap and
-discards nothing from any index.
+Removing a constructor applies only to a constructor with no live
+row, but older snapshots, the time-travel window and index entries may
+still name its versions. The remove keeps the heap as history until
+vacuum has cleared its index entries and no snapshot or retention
+window covers its rows; then the heap is dropped and its pages freed.
 
 Rulings: index/ctor-set, btree/entry-order/after-key, btree/ctor-width/uvarint, btree/keyenc/memcmp, btree/keyenc/canon/canonicalize, btree/varlen/escape-term, btree/keyenc/lossy/code-point, btree/sum-key/tag-payload, btree/sum-tag/order-key, btree/sum-field/whole, btree/sum-field/by-tag, btree/sum-field/ctor-field, btree/sum-field/implied/arm-scoped, btree/structure/blink, btree/latch/olc, btree/latch/racy/atomic-reads, btree/posting/posting-pairs, btree/cleanup/kill-bit, btree/cleanup/bottom-up, btree/merge/empty-only, btree/hash/eq-unique, engine/wait-inserter, mvcc/vm-per-heap, btree/ios/vm-per-heap, btree/build/merge-runs, btree/ctor-rewrite/rewrite, interop/load/index-path/bulk-build, interop/load/index-path/sorted-merge, interop/load/index-path/retail, ops/reindex/online, ops/reindex/offline, union-index/drop-ctor/eager
 
@@ -935,9 +957,9 @@ its writes cover and records a rw-antidependency for each.
 
 | Lock | Taken by | Conflicts with |
 | --- | --- | --- |
-| Tuple `(ctor, tid)` | reading a version | an update, delete or retag of that version |
+| Tuple `(heap, tid)` | reading a version | an update, delete or retag of that version |
 | Index range `(index, lo, hi, ctors)` | an index scan or probe, over the gaps between the entries it saw | an insert of an entry in `[lo, hi]` whose constructor is in `ctors` |
-| Heap `(ctor)` | a sequential scan of a heap | any insert into that heap |
+| Heap `(heap)` | a sequential scan of a heap | any insert into that heap |
 | Schema version `(v)` | every statement, for the schema version it runs at | the commit of a migration producing a later version |
 
 Range locks are next-key ranges, not leaf pages. Each range lock
@@ -983,7 +1005,10 @@ constructors conflict with the old readers.
 Reclamation is bounded by one oldest-snapshot watermark, computed per
 heap. A transaction whose constructor relations are known (a
 registered query or transaction, whose plan names them) publishes its
-snapshot only to the heaps it can read; an interactive transaction,
+snapshot only to the heaps it can read: the heaps its plan reads, plus
+every heap read by the checks and delete actions of the relations it
+may write. The set is recomputed when the schema changes. An
+interactive transaction,
 whose reads are unknown, holds back every heap. A report over
 `invoices` does not hold back vacuum of `identities`. The watermark of
 a heap also includes the oldest snapshot replicas report for it (§9.3).
@@ -1016,7 +1041,7 @@ Vacuum runs in the background per sum, in phases:
    where every remaining version is visible to every snapshot, and
    clear `xmax` of versions whose deleter aborted.
 
-The dead set is a radix tree keyed by constructor id and page, each
+The dead set is a radix tree keyed by heap id and page, each
 leaf a bitmap of dead slots; a sum's heaps are disjoint subtrees. When
 the set reaches its memory budget, phases 2 and 3 run and phase 1
 resumes.
@@ -1032,12 +1057,18 @@ is moved by phase 3 into a history heap of its constructor instead of
 being freed, so current heaps and indexes do not hold history. Each
 history heap has a key index whose entries are `(key, commit position,
 tid)`, the commit position being that of the version's inserter. A
-read at a past commit number reads the current and history heaps of
-the constructors it reads, probing the history key index by key where
-the current read would probe the key index, and filters versions by
-the commit numbers of their writers; versions past the window are removed from history heaps.
-The commit log keeps the commit number of every xid within the window,
-and the commit records' wall-clock times map a time to a commit number.
+read `at commit p` ([derived.md](derived.md#6-reading-the-past)) reads
+at the latest safe snapshot marker at or before `p`, a function of `p`
+listed in `sys::safe_snapshots`
+([catalog.md](catalog.md#15-commit-times-and-safe-snapshots)), and takes no SIREAD
+locks. It reads the current and
+history heaps of the constructors it reads, probing the history key
+index by key where the current read would probe the key index, and
+counts a version's writer as committed when the writer's commit
+position is at or before the marker; versions past the window are
+removed from history heaps. For every xid committed within the window
+a commit position map beside the commit log gives its commit position,
+and the commit records' wall-clock times map a time to a position.
 
 Vacuum's progress, triggers and budget are exposed as described in
 [catalog.md](catalog.md#115-vacuum).
@@ -1051,7 +1082,8 @@ compatible with the last ([evolution.md](evolution.md#34-staged-changes)):
 
 | Object | States |
 | --- | --- |
-| constructor added by `add constructor` | declared (readers can type it, no writes) then writable, then deprecated, then removed when empty |
+| constructor added by `add constructor` | declared (readers can type it, no writes) then writable, then deprecated, then removed when empty; `disable` returns a writable constructor with no rows to declared |
+| constructor of a value-level sum added by `add constructor` | the same states; while declared, no field of any relation stores a value of it |
 | constructor created by `add type` | writable from the start |
 | product of split, merge, nest or unnest | writable when every source constructor is writable |
 | index | write-only, backfilled, readable |
@@ -1063,7 +1095,12 @@ a background job runs the rest and records its phase in the catalog.
 The migration's schema version commits only when every staged job of
 the migration completes; a failed job discards the pending migration,
 the operator log is unchanged, and no inverse operators are appended.
-A host function must be bound before any staged job or plan needs it
+Every check the migration's operators made when they applied reruns at
+the commit of its last staged job, and a failure discards the pending
+migration as a failed job does. A host function must be bound before
+any staged job or plan needs it; an embedded open is refused, naming
+the function, when a staged job or index build of a migration before
+the shipped redefine of a host function reaches that function
 ([embedding.md](embedding.md)). Registered queries pinned to an
 older schema version keep running through translation by the
 operators' inverses while the staged change rolls out
@@ -1083,7 +1120,9 @@ set-valued view keeps a derivation count per stored row and drops a
 row when its count reaches zero. Delta queries probe base relations
 through their indexes at the transaction's snapshot and keep no other
 state, so a view is admitted only when every join reached from a delta
-has an index.
+has an index. A bundle pinned before a view's redefinition reads the
+view by evaluating the body of its own version, not the stored rows
+([semantics.md §9.6](semantics.md#96-version-translation)).
 
 Count and sum maintenance writes are commutative increments merged at
 commit; the maintainer records no read, so two writers to one group do
@@ -1251,11 +1290,14 @@ A position not on the history the node serves is refused with
 
 ### 9.3 Vacuum feedback
 
-Each replica reports to the primary, per constructor heap, the oldest
-snapshot its readers hold; the primary folds these into each heap's
-watermark (§7.3). Replay of vacuum therefore never removes a version a
-replica reader can see, and replay never cancels a reader. A
-registered query on a replica holds back only the heaps it reads.
+Each replica reports to the primary, per heap, the older of the oldest
+snapshot its readers hold and the latest safe snapshot marker it has
+applied, so a replica with no readers still reports a bound. The
+primary folds these into each heap's watermark (§7.3). Replay that
+would remove a version a replica reader can see waits for that reader
+up to the setting `ReplicaVacuumWait`, then cancels the reader with
+`Retry { reason: ReplayConflict {..} }`. A registered query on a replica holds back only the heaps it
+reads.
 
 ### 9.4 Schema, leases and upgrades at replicas
 
@@ -1266,6 +1308,15 @@ catalog write; the replica forwards the renewal to the primary,
 retrying until it is acknowledged. Renewals are idempotent, so a
 renewal applied twice extends the lease once
 ([applications.md](applications.md#42-leases)).
+
+A lease's expiry is computed from the last renewal record in the log,
+on the primary and on replicas alike. A replica refuses binds and calls
+of the bundle with `Rejected { reason: BundleExpired {..} }` from its
+expiry. The primary treats the lease as expired only after the further
+setting `LeaseGrace` (default 1h), which covers clock skew between
+nodes, and from then refuses binds and calls of the bundle too. A
+renewal that arrives after expiry is refused with `BundleExpired`; the
+bundle must be registered again.
 
 Replicas upgrade to a new engine release before the primary; the primary writes a new format
 only after every replica reports the new release.
@@ -1289,8 +1340,8 @@ Promotion is manual. Promoting a replica first fences the old primary
 from its storage or network, then starts a new epoch: the file header
 and every log block the new primary writes carry it. A node that sees a
 log block or a peer with a higher epoch stops writing. A position from
-an old epoch past the fork point is refused with `Rejected {
-PositionNotOnHistory }`, and a commit reaching the fenced old primary
+an old epoch past the fork point is refused with `Rejected { reason:
+PositionNotOnHistory {..} }`, and a commit reaching the fenced old primary
 fails with `Fenced`. The old primary rejoins only after its pages are resynced to
 the new history.
 
@@ -1300,15 +1351,20 @@ The embedded library ships its log segments and periodic base copies
 to object storage, which is a continuous backup (§9.9). An application
 may also hold an embedded replica of a server primary: reads run
 locally at safe snapshots; every read-write transaction is forwarded
-to the primary and runs there. A write call at a server replica, which
+to the primary and runs there. The replica forwards each with a client
+id and request numbers and resends it until it learns the outcome, so
+a lost acknowledgement neither loses nor repeats a commit. Ad hoc
+writes forward as `CallText`, and a load into one relation forwards as
+`Append`; a load into several relations is refused at the replica with
+`Rejected { reason: ReadOnlyReplica {..} }`. A write call at a server replica, which
 does not forward, is refused with `Rejected { reason: ReadOnlyReplica { primary
 } }` ([wire.md](wire.md)).
 
 ### 9.8 Change streams
 
 External consumers are feeds, declared `feed NAME of r.S` in a bundle
-and registered with it, pinned to its schema version. Readers-first
-treats a feed as a read of its set `r.S`
+and registered with it, pinned to its schema version. Under
+readers-first a feed blocks `enable r.C` only when it names `r` whole
 ([evolution.md](evolution.md#8-readers-first)). A feed reads with
 the bundle's definer rights: the bundle's owner holds `read` on the
 set, and subscribing needs the `call` grant on the bundle or the feed
@@ -1319,7 +1375,7 @@ bounded; a consumer whose position falls behind it restarts from a
 fresh snapshot and the position after it ([wire.md](wire.md#9-feeds)).
 
 A transaction that writes a constructor relation of at least one
-registered feed writes logical change records to the redo log for
+registered feed, a bulk load included (§3.7), writes logical change records to the redo log for
 those relations: the inserted and deleted rows per constructor, ahead
 of its commit record. Relations of no registered feed get no logical
 records, so a feed's history starts at its registration: a subscription
@@ -1329,8 +1385,10 @@ records; the change stream is read from them.
 ### 9.9 Backups and point-in-time restore
 
 A backup is a page copy of the data file taken while writers run, plus
-the log from the copy's start to its end position; replay from the
-start repairs torn and inconsistent pages through full-page images. An
+the log from the redo LSN of a checkpoint taken at the copy's start to
+its end position. Full-page images are logged throughout, whatever the
+device guarantees (§3.1), so replay from that redo LSN repairs torn and
+inconsistent pages. An
 incremental backup copies only pages whose LSN exceeds the previous
 backup's start. Backups copy pages and log as stored, encrypted or not
 ([security.md](security.md#9-encryption-at-rest)).

@@ -29,7 +29,8 @@ always quoted. Nonterminals written in capitals (`LOWER`, `UPPER`,
 Examples extend the running schema of the [index](README.md#conventions),
 which is the schema at version 10. An example that names `Apple` reads
 the schema at version 12, after `0011 add constructor Identity.Apple {
-sub: Text } joins identities.OAuth` and `0012 enable identities.Apple`.
+sub: Text } joins identities.OAuth arm display_name: Apple a -> a.sub`
+and `0012 enable identities.Apple`.
 Migration examples state the version they start from.
 
 Rulings: none
@@ -97,8 +98,10 @@ top transact true try txn type union update where with
 ```
 
 The prelude type names `Set`, `Key`, `Group` and the bound names `Eq`,
-`Ord`, `Hash` and `Num` are reserved type names: no declaration may
-use them.
+`Ord`, `Hash` and `Num` are reserved type names: no type or type
+parameter may be declared with one of them. The reservation covers type
+and bound names only; a constructor or field may have one of these
+names.
 
 Contextual words are keywords only where the grammar names them and
 are identifiers elsewhere:
@@ -108,16 +111,17 @@ add adhoc adopt after aggregate alter analyze apply archive arm asc
 assert at audit backup before budget call cancel carry cascade catalog
 clear commit compact computed configure conflict constructor
 constructors create default deferrable define dek deprecate desc
-destroy deterministic drop dump durability edition enable encrypt explain
+destroy deterministic disable drop dump durability edition enable encrypt explain
 export feed field fill finalize finish generate grant hide host
 incremental index init install instant interval joins kek lease limit
-local maintain merge migrations monitor move nest new of offline on
-online option password pin pins plan position print priority quorum
+local maintain map merge migrations monitor move nest new of offline on
+online option password peer pin pins plan position print priority quorum
 read read_files read_only redefine register reindex reject rejects
 rekey remove rename restore restrict retag retire retry revert revoke
-role rotate script session setting split state step store sums take
-terminate text through to tzdb uninstall unique unless unnest unpin
-unstore upgrade vacuum verify version volatile wasm write_files
+role rotate script session setting split state step store sums
+supersede take terminate text through to tzdb uninstall unique unless
+unmap unnest unpin unstore upgrade vacuum verify version volatile wasm
+write_files
 ```
 
 In field position any word, reserved or not, is a field name. Field
@@ -172,11 +176,12 @@ Single quotes are not a token.
 BUNDLE_NAME = FAMILY "-" digit { digit | "." }
 FAMILY      = lower { lower | digit | "_" | "-" }
 version     = INT "(" HASH ")"
-HASH        = hex { hex }
+HASH        = hex { hex }        (* exactly 64 hex digits *)
 MIGRATION   = digit digit digit digit { digit }
 ```
 
 A `BUNDLE_NAME` is a token only after `bundle`, `retire bundle`,
+`supersede bundle`, the `by` of a `supersede bundle` command,
 `grant call` and `revoke call`, and as the first part of a qualified
 query name `web-2.4::login_key` (after `grant call`, `revoke call` and
 `explain`); `web-2.4` and `ios-4.2` are bundle names there. A bundle
@@ -184,7 +189,9 @@ name is its family, then a hyphen, then its version: the digits and
 dots after the last hyphen. `web` is the family of `web-2.4`. After
 `grant call` and `revoke call`, `FAMILY::q` names query `q` in every
 bundle of the family. A
-`HASH` is a token only inside the parentheses of a `version`. A
+`HASH` is a token only inside the parentheses of a `version`, and is
+written in full, 64 hex digits; an implementation must refuse a
+shorter one. Examples elide it as `c41e...`. A
 version is a position in the operator log shown with the hash of the
 log prefix up to that position ([evolution.md](evolution.md#2-versions)).
 A `MIGRATION` number names a migration file and the schema version it
@@ -225,7 +232,7 @@ module_header  = "module" LOWER
 bundle_item    = fn_decl | query_decl | txn_decl | feed_decl | aggregate_decl
 adhoc_text     = adhoc_item { adhoc_item }
 adhoc_item     = expr | write_expr | transact_block | command
-               | grant | revoke | role_stmt | temp_decl
+               | grant | revoke | role_stmt | peer_stmt | temp_decl
 temp_decl      = "temp" "relation" LOWER ":" app_type [ "key" key_fields [ generated ] ]
 ```
 
@@ -242,27 +249,37 @@ temp_decl      = "temp" "relation" LOWER ":" app_type [ "key" key_fields [ gener
 - Ad hoc text is what a principal holding the `adhoc` privilege sends
   outside any bundle: queries, writes, `transact` blocks, commands
   (§12), temp relation declarations, and, for holders of `schema`,
-  role statements and capability grants (§10). A write needs the write
+  role statements, peer mapping statements and capability grants
+  (§10). A write needs the write
   privileges it uses ([queries.md §16](queries.md#16-ad-hoc-statements)).
 - In ad hoc text a free lowercase name is a parameter, typed by the
   descriptor the caller supplies for it; a free name the caller supplies
   no parameter for is an error. Several items in one ad hoc text form
-  one transaction: each item is a statement, and their results are
-  returned in order.
-- `temp relation NAME : T` declares a relation that lives only for the
-  session, outside the operator log. `T` is a named type or an
+  one transaction: each item is a statement, the items run in order,
+  and their results are returned in order. The first item that
+  faults, fails, violates a constraint or is rejected ends the text:
+  nothing commits, later items do not run, and the error names that
+  item's ordinal, counted from 1
+  ([transactions.md](transactions.md)).
+- `temp relation NAME : T` declares a relation outside the operator
+  log. Declared inside an interactive transaction, it lives until that
+  transaction ends; declared in ad hoc text sent alone, it lives until
+  that text ends. A session holds none. `T` is a named type or an
   anonymous record type; the relation has no constraint but its key.
   Without a `key` clause its whole row is its key. Loads append to it and ad hoc inserts route its rows
   ([interop.md](interop.md#4-loading)).
 
 In examples, `0011 add ...` is shorthand for a migration file `0011`
 holding the one operator, and `-- 0011` before a block of operators
-marks the file they belong to.
+marks the file they belong to. Examples leave out the file's `module`
+header; the running schema's migrations are in module `auth`.
 
 ### 3.2 Item boundaries
 
-Every declaration, operator, bundle item, block item and ad hoc item starts with a
-keyword. An item ends where the next item's starting keyword appears
+Every declaration, operator and bundle item starts with a keyword. A
+block item or ad hoc item starts with a keyword or with `(`; an ad hoc
+query that starts with neither is the first item of its text or is
+parenthesised. An item ends where the next item's starting keyword appears
 at a point where the current item cannot continue. No separator is
 written between items.
 
@@ -298,6 +315,11 @@ names may then be used unqualified when no two imported modules
 declare the same name, and an implementation must refuse an ambiguous
 unqualified name.
 
+The schema's own `Principal`, when it declares one, belongs to the
+root namespace, not to the module whose migration declares it: it
+resolves as `Principal` from every module and every bundle
+([security.md](security.md#11-the-principal-sum)).
+
 Rulings: syntax/module/header, surface/namespace/modules, surface/source/op-log, surface/migration/handwritten, surface/version/counter
 
 ## 4. Types
@@ -323,8 +345,7 @@ ctor_sel    = UPPER | "(" UPPER { "|" UPPER } ")"
 - `Set T`, `Option T`, `Result T E` and `Decimal 2` are applications
   of named types to arguments. An `INT` argument is allowed only where
   the type's parameter is a number, as the scale of `Decimal`.
-- In a type declaration, the element type of `Set` and the type under
-  `new` are named types; `new` takes a base type or a named type
+- In a type declaration, the type under `new` is a base type
   ([model.md](model.md#4-newtypes)).
 - `Identity.Google` is the row type of one constructor and
   `Identity.(Google | Apple)` the row type of a constructor set.
@@ -355,7 +376,11 @@ ctor_sel    = UPPER | "(" UPPER { "|" UPPER } ")"
   type variable, a `Key` type, or an application of a named type: an
   implementation must refuse an anonymous record or anonymous sum as
   the type of a declared field.
-- `T -> U` is a function type. It is right associative.
+- `T -> U` is a function type. It is right associative. A function
+  type appears only in the signature of a `fn` and as the type of a
+  lambda: never as the type of a relation, a field or a set element,
+  as a type argument, in a query's result, or as a parameter of a
+  registered query ([typing.md](typing.md)).
 - `()` is the unit type, the result of a transaction that returns
   nothing.
 
@@ -545,8 +570,8 @@ query login_key (u: Key users) -> Set (ByEmail { email: Text } | ByGoogle { gid:
     | Google g    -> ByGoogle { gid: g.gid }
 ```
 
-A `query` appears only in a bundle file. Its parameters have no
-function types. Its result may be any type: `query n_users () -> I64 =
+A `query` appears only in a bundle file. Its parameters and its result
+have no function types (§4); its result may be any other type: `query n_users () -> I64 =
 count(u for u in users)`. `limit 30s` after the parameters declares the
 query's own statement limit
 ([catalog.md](catalog.md#83-limits-and-deadlines)); a `txn` takes the
@@ -853,7 +878,7 @@ top 3 by (p.created_at desc, key p) (from p in posts where p.author == key u sel
 
 if scalar_len(u.name) > 0 then u.name else "anonymous"
 
-at commit 4120 { from i in identities.Google select i }
+at commit p { from i in identities.Google select i }
 ```
 
 - In `fix`, a bound expression ends at a `,` that is not part of a
@@ -863,7 +888,8 @@ at commit 4120 { from i in identities.Google select i }
 - The parenthesised operand of `top` follows the keys after whitespace,
   so it is never read as call arguments (§2.8).
 - `if c then a else b` means `match c | True -> a | False -> b`.
-- `at commit c { q }` and `at instant t { q }` read a past state
+- `at commit p { q }`, with `p : Position`, and `at instant t { q }`
+  read a past state
   ([derived.md](derived.md#6-reading-the-past)).
 - `reject e`, with `e : Text`, is allowed only in the source query of
   an insert ([interop.md](interop.md#45-rejects)).
@@ -877,7 +903,7 @@ transact_block  = "transact" { transact_option } { item } [ "return" expr ]
 transact_option = "retry" INT
                 | "read_only" [ "deferrable" ]
                 | "durability" ( "local" | "quorum" )
-item            = "let" LOWER "=" expr
+item            = "let" LOWER "=" ( expr | write_expr )
                 | write_expr
 write_expr      = insert | update | delete | fail | "skip"
                 | write_seq | write_if | write_match
@@ -963,8 +989,10 @@ The examples use `Import`, `logins` and `lookup` as
   binds one row: the inserted row, or `old` as the branch wrote it.
   A conflicting row committed after the snapshot raises a
   serialization failure. A conflict only with a row another write of
-  the same statement inserts binds no `old`: the statement fails with a
-  key violation ([writes.md](writes.md#6-upsert)).
+  the same statement inserts binds no `old`: the statement fails with
+  `KeyViolation` when the conflict is on the key, and with `Violated`
+  naming the unique when it is on a unique such as `(gid) in Google`
+  ([writes.md](writes.md#6-upsert)).
 - `rejects into r` sends the rows the insert's source rejects to the
   relation `r` ([interop.md](interop.md#45-rejects)).
 
@@ -1170,9 +1198,11 @@ definition_op = "define" fn_decl | "redefine" fn_decl | "drop" "fn" QLOWER
               | "redefine" "computed" QLOWER "." LOWER ":" type "=" expr
               | "drop" "computed" QLOWER "." LOWER
               | "define" aggregate_decl | "drop" "aggregate" QLOWER
-lifecycle_op  = "enable" relation_ref
-              | "deprecate" relation_ref
+lifecycle_op  = "enable" ctor_target
+              | "disable" ctor_target
+              | "deprecate" ctor_target
               | "revert" MIGRATION
+ctor_target   = relation_ref | ctor_path
 script_op     = "script" write_expr
 extension_op  = "install" LOWER TEXT "from" TEXT | "uninstall" LOWER
               | "adopt" "tzdb" TEXT "from" TEXT
@@ -1204,16 +1234,30 @@ store google_users
   key id
 -- 0017
 revert 0016
+-- 0018
+add constructor Identity.Saml { idp: Text }
+  arm display_name: Saml s -> s.idp
+enable identities.Saml
+-- 0019
+disable identities.Saml
 ```
 
 - In a migration, `store` is written without `add`.
+- `enable r.C` opens constructor `C` of relation `r` to writes;
+  `enable T.C`, for a constructor of a value-level sum `T`, lets a
+  value of `C` be stored in any field: `enable Provider.Okta`.
+  `disable` is the inverse of `enable`: it returns an enabled
+  constructor to declared, and is refused while any row of `r.C`, or
+  any stored value of `T.C`, exists. `deprecate` applies only to an
+  enabled constructor
+  ([evolution.md](evolution.md#4-operators)).
 - A `script` holds one write ([writes.md](writes.md#1-change-sets)).
 - `install geo "1.2" from "geo-1.2.adtx"` adds an extension package;
   `uninstall geo` removes it ([interop.md §9.6](interop.md#96-extensions)).
 - `adopt tzdb` adopts a release of the zone rules
   ([catalog.md](catalog.md#31-zone-rules)).
-- `retire bundle` is a command (§12), never an operator: it is not
-  written in a migration.
+- `retire bundle` and `supersede bundle` are commands (§12), never
+  operators: they are not written in a migration.
 
 Rulings: syntax/operator/verb, evolution/smo, evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, derived/defaults/backfill/separate, derived/materialize/storage-choice, derived/computed/virtual, interop/ext-pkg/catalog-module, evolution/in-log, evolution/log-ops, evolution/revert, evolution/scripted, evolution/types, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add
 
@@ -1254,11 +1298,12 @@ bundle batch-1.2 pins 9 (5d0e...) edition "2026-10" priority background budget {
 - `lease 90d` gives the bundle's lease. `priority` and `budget` give
   its scheduling class and resource shares
   ([catalog.md](catalog.md#82-bundle-quotas)).
-- `hide new constructors` makes the bundle never block `enable`: its
+- `hide new constructors` makes the bundle never block `enable r.C`: its
   reads of a whole relation, and references whose type admits a
   constructor it does not know, are translated to its pinned
   constructors, so rows of newer constructors are invisible to it
-  ([applications.md](applications.md)).
+  ([applications.md](applications.md)). It still blocks `enable T.C`
+  when it reads a field whose type reaches `T`.
 - There is no owner clause: the bundle's owner is the role that
   registers it ([security.md](security.md#3-grants)).
 - `import auth` imports a module's names; `import fn display_name`
@@ -1294,6 +1339,8 @@ field_list = "(" LOWER { "," LOWER } ")"
 role_stmt = "create" "role" LOWER
           | "alter" "role" LOWER "password" prefix_e
           | "drop" "role" LOWER
+peer_stmt = "map" "peer" TEXT "on" LOWER "to" LOWER
+          | "unmap" "peer" INT "on" LOWER
 ```
 
 ```
@@ -1311,29 +1358,46 @@ grant monitor, cancel to oncall
 create role web
 alter role web password p
 drop role web
+
+map peer "deploy" on unix to web
+unmap peer 2 on unix
 ```
 
 The examples use `invoices` as [security.md](security.md) declares it.
 
-- The privileges are exactly the fifteen listed. A field list names
+- The privileges are exactly the sixteen listed. A field list names
   only header fields or fields every constructor of the set declares;
   a field of one constructor is granted per constructor. A read grant
   includes the key field without listing it.
 - `call` names one registered query or transaction of a bundle, or with
   no `::` every one of them. A family name (`web::login_key`) covers
   that query in every bundle of the family whose query of that name
-  has the same signature. `call fn` names a schema
-  function a role may call directly.
+  has the same signature, compared by type ids. A bundle call grant
+  covers only the bundle's registered queries and transactions;
+  `call fn` names a schema function a role may call directly, and a
+  direct call needs it.
 - Relation and constructor-set grants (`read`, `insert`, `update`,
   `delete`, `retag`) and `grant call fn` are operators: they are
-  written in a migration and are part of the log. Roles, passwords,
-  capability grants (`adhoc`, `assert`, `schema`, `monitor`, `cancel`,
+  written in a migration and are part of the log, except grants on
+  `catalog` and `sys` relations. Roles, passwords, peer mappings,
+  grants on `catalog` and `sys` relations, capability grants (`adhoc`, `assert`, `schema`, `monitor`, `cancel`,
   `maintain`, `configure`, `read_files`, `write_files`) and bundle call
   grants are deployment state: they are ad hoc statements for holders
   of `schema` ([evolution.md](evolution.md#4-operators)). Each kind is
   refused in the other place.
 - A grant with no field list covers the fields that exist when it is
-  granted; a field added later needs a new grant.
+  granted. A grant on a whole relation also covers the fields of the
+  constructors the relation gains later; any other field added later
+  needs a new grant.
+- `with grant option` on a relation grant lets the grantee extend the
+  privilege only through bundles it registers, which run with its
+  rights; it never lets the grantee write grant operators.
+- `map peer "pattern" on L to R` appends a rule, with the next
+  ordinal of listener `L`, mapping a peer that matches the pattern to
+  role `R`; in the pattern `*` matches any run of characters. `unmap
+  peer n on L` removes the rule with ordinal `n`. The rules are rows of
+  `catalog::peer_mappings`, keyed by listener and ordinal
+  ([security.md](security.md#22-sources)).
 - In `alter role R password p`, `p` is a parameter of the call, never
   written in the text.
 
@@ -1359,7 +1423,8 @@ The full prelude, its types and its functions, is listed in
 name (`count`, `scalar_len`, `covers`, `div`, `uuid`, ...) is reserved
 as a type or function name: an implementation must refuse a schema or
 bundle declaration of a type or function with one of these names,
-except a schema's own `Principal`
+except a schema's own `Principal`, which only the schema's first
+migration may declare
 ([prelude.md](prelude.md#26-error-audit-sums-and-principal)).
 
 Rulings: model/prelude-bool, model/user-params
@@ -1377,6 +1442,7 @@ command = "explain" [ "analyze" ] ( query_ref "(" [ call_args ] ")" | expr | wri
         | "compact"
         | "finalize" "upgrade"
         | "retire" "bundle" BUNDLE_NAME
+        | "supersede" "bundle" BUNDLE_NAME "by" BUNDLE_NAME
         | "set" "setting" UPPER "=" expr
         | "export" or_e "to" TEXT [ "sums" "text" ]
         | "register" "bundle" TEXT
@@ -1398,6 +1464,7 @@ query_ref = BUNDLE_NAME "::" LOWER
 explain from i in identities where i.user == u select i
 explain analyze web-2.4::login_key(users.key(3))
 retire bundle web-2.3
+supersede bundle ios-4.1 by ios-4.2
 set setting VacuumBudget = { io: 0.2, cpu: 0.5 }
 export (from i in identities.Google select i) to "google.parquet"
 cancel call sys::calls.key(812)
@@ -1417,6 +1484,9 @@ backup to "s3://backups/app" incremental
 - `explain web-2.4::login_key(args)` explains a registered query at the
   bundle's pinned version, with the given arguments.
 - `set setting` changes a setting and needs `configure`.
+- `supersede bundle B by B2` marks bundle `B` superseded by `B2`,
+  which must be a live bundle of the same family. It is given by `B`'s
+  owner or the schema owner ([applications.md](applications.md#44-supersession)).
 - `register bundle` registers a bundle file under the rules of
   [applications.md §4.1](applications.md#41-registration); `apply
   migrations` applies migration files in order and needs `schema`;
@@ -1425,6 +1495,8 @@ backup to "s3://backups/app" incremental
   It needs `maintain` and `read` on every relation it dumps, and writes
   the security section only for a holder of `schema`.
   `restore` writes a new database file; it never replaces an open one.
+  In `restore ... at position p`, `p` is a `Position`, and in `at
+  instant t`, `t` is an `Instant`.
 - The CLI (`$ adt ...`) and the in-process API wrap these commands.
 - `export` needs `write_files`, and its path must lie within the
   export roots configured at open.

@@ -8,10 +8,11 @@ How calls are type checked is in [typing.md](typing.md). What a fault
 does is in [queries.md](queries.md#15-faults).
 
 The prelude is versioned with the edition. A schema must not declare a
-type or function whose name the prelude declares, nor one of the
-built-in type names `Set`, `Key`, `Group`, `Eq`, `Ord`, `Hash` and
-`Num`. The one exception is
-`Principal`, which a schema may declare (§2.6). Prelude constructors
+type or function whose name the prelude declares, nor a type or type
+parameter named by one of the built-in type and bound names `Set`,
+`Key`, `Group`, `Eq`, `Ord`, `Hash` and `Num`; a constructor or field
+may have one of these names. The one exception is `Principal`, which
+a schema may declare in its first migration (§2.6). Prelude constructors
 have fixed constructor ids, listed per edition in
 [catalog.md](catalog.md#4-error-sums).
 
@@ -157,20 +158,31 @@ type Origin = Registered { bundle: Text, query: I32 }
 type Outcome = Succeeded | Failed { error: Error }
 ```
 
-`Position`, a commit position on one history, is a prelude record
-defined in [catalog.md](catalog.md#42-reasons):
+`Position`, a commit position on one history, is a prelude record;
+`TxnId`, a transaction's id, and `Report`, the encoded result rows of a
+violated constraint, are prelude newtypes. All three are defined in
+[catalog.md](catalog.md#42-reasons):
 
 ```
 type Position = { epoch: I64, lsn: I64 }
+type TxnId = new I64
+type Report = new Bytes
 ```
 
 `RejectedRow`, the row type of a relation that receives an insert's
 rejects, is a prelude record defined in
 [interop.md](interop.md#45-rejects).
 
-`Principal` is the type of the caller. A schema that does not declare
-it has the prelude's
-`type Principal = EndUser { name: Text } | Service { name: Text } | Anonymous`
+`Principal` is the type of the caller; `caller` always has the type
+`Principal` names. A schema may declare its own `Principal`, only in
+its first migration. That declaration belongs to the root namespace,
+resolves as `Principal` from every module and every bundle, takes ids
+from the operator log and changes only by operators. A schema that
+never declares one has the prelude's default
+`type Principal = EndUser { name: Text } | Service { name: Text } | Anonymous`,
+whose type and constructor ids 37 to 40
+([catalog.md](catalog.md#46-constructor-ids-of-engine-defined-sums))
+are used only by the default
 ([security.md](security.md#11-the-principal-sum)).
 
 ### 2.7 Uuid
@@ -456,12 +468,22 @@ and user-defined aggregates are in
 | `min(e for ...)`, `max(e for ...)` | `a: Ord` | `a` | `Option a` |
 | `avg(e for ...)` | `Float` | the same type | `Option` of it |
 
-Integer and decimal `sum` faults with `ArithmeticOverflow`. An aggregate ranges
-over any set expression with set semantics, except `sum` and `avg`:
-they refuse a generator whose source, after normalisation, is a
-`select` comprehension, whose equal values have merged. The rule is
-syntactic: a generator over a `Set T` parameter is accepted. `count(a for a in (from p in posts select
-p.author))` counts distinct authors.
+Integer and decimal `sum` is the exact sum of its elements, checked
+against the result type once, at the end: it faults with
+`ArithmeticOverflow` only when that exact sum is out of range of the
+result type (for `Decimal s`, more than 38 digits), in whatever order
+the elements are added.
+
+An aggregate ranges over any set expression with set semantics, except
+that `sum` and `avg` refuse a generator whose source, after
+normalisation, is a comprehension whose `select` is not
+key-preserving. A `select` is key-preserving when it is exactly the
+binder of a generator over a relation or a keyed set: a relation
+variable, a constructor relation, a constructor set, a backlink or
+another key-preserving comprehension. The rule is syntactic: a
+generator over a `Set T` parameter is accepted.
+`count(a for a in (from p in posts select p.author))` counts distinct
+authors ([queries.md](queries.md#10-aggregates)).
 
 Rulings: lang/empty-agg/nonempty, lang/collection/set-agg/over-binders
 

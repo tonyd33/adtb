@@ -92,7 +92,7 @@ with `Rejected { reason: Untranslatable {..} }` naming the operator.
 Names are mapped through the log, never matched as text, so a name a
 split or remove freed and a later constructor reused is not confused
 with the old one. A document without a first line is read at the
-reader's current version.
+reader's version.
 
 Single values shown to a caller (error details, REPL output) are
 printed at the caller's version and carry no header.
@@ -245,7 +245,8 @@ Columns the type does not name are ignored. A column the type names
 that the file lacks is a conversion failure, except for a field of an
 `Option` type, which reads `None`. Constructor names, in tag columns,
 text cells and fields of a `Tag` type, are read at the file's version
-(§5.1) and translated to the current one. A path may contain
+(§5.1) and translated to the caller's version (the pinned version for
+a registered call). A path may contain
 glob patterns and names every file it matches, read as one relation;
 how paths resolve, and which URL schemes are supported, is
 implementation-defined.
@@ -267,7 +268,8 @@ query or a registered call fails with `Rejected { reason: BadInput
 of a load with a rejects relation (§4.5).
 
 Through a server, a file read needs the `read_files` privilege
-([catalog.md](catalog.md#93-capabilities)) and is confined to the
+([catalog.md](catalog.md#93-capabilities)), held by the caller for ad
+hoc text and by the bundle's owner for a registered call, and is confined to the
 directories listed in the open setting `file_roots`; a path outside
 them is refused with `Rejected { reason: Denied {..} }`. `file_roots`
 is empty by default, so a server reads no files until it is set. A
@@ -332,8 +334,10 @@ protocol ([wire.md](wire.md#73-append)), into one constructor
 relation, staging relation or temp relation (§4.3) per stream, which
 needs `insert` on it; a server never reads the client's files. A load
 spanning several relations, or one that needs routing or rejects,
-appends its text columns into a temp relation and then routes them with
-one ad hoc insert with `rejects into` (§4.3).
+begins an interactive transaction, declares a temp relation in it,
+appends its text columns into it with an `Append` stream naming that
+transaction, and then routes them with one ad hoc insert with
+`rejects into` in the same transaction (§4.3).
 
 ### 4.2 Routing rows onto constructors
 
@@ -352,7 +356,7 @@ names every constructor, so adding a constructor to the sum makes the
 load fail to check until it routes the new one. A tag naming no
 constructor at the file's version is a conversion failure and goes to
 the rejects relation. Text already in the database, such as a staging
-column, is parsed with `(Tag T).parse`, which reads at the current
+column, is parsed with `(Tag T).parse`, which reads at the caller's
 version.
 
 ```
@@ -389,18 +393,23 @@ a staging relation first, then moves them with one final insert as one
 change set. A staging relation holds plain values, not references, so
 nothing but its key is checked when rows land.
 
-In an ad hoc session the staging relation is usually a temp relation,
-which needs no migration:
+In ad hoc work the staging relation is usually a temp relation, which
+needs no migration:
 
 ```
 temp relation NAME : T [ key ... ]
 ```
 
-declares a relation for the rest of the session, outside the log, of
-any named type or an anonymous record type, with no constraint but its
-key; without a `key` clause its whole row is its key. It is gone when
-the session ends. A persistent staging relation
-is declared by a migration like any relation.
+declares a relation, outside the log, of any named type or an
+anonymous record type, with no constraint but its key; without a `key`
+clause its whole row is its key. It belongs to the interactive
+transaction (by its `TxnId`) or the one ad hoc text that declares it,
+and is gone when that transaction or text ends. A session holds no
+temp relation. A persistent staging relation is declared by a
+migration like any relation.
+
+The statements below run as one ad hoc text or in one interactive
+transaction:
 
 ```
 type IdentityText = { user: I64, kind: Text, email: Option Text, hash: Option Bytes,
@@ -438,7 +447,8 @@ rejects into identity_rejects
 `(Tag Identity).parse` returns `None` for text naming no constructor,
 and that arm rejects the row. The final insert generates each row's
 `id`, since `identities` generates its keys. A remote client fills
-`identity_stage` with an `Append` stream instead of `read_csv`.
+`identity_stage` with an `Append` stream naming the interactive
+transaction (`txn`) instead of `read_csv`.
 
 A constraint violation aborts the whole final insert (§4.5). To load
 the rows that do not collide and keep the others for review, remove
@@ -506,8 +516,9 @@ message.
 
 The rejects are inserted in the same change set as the load. Every
 other row is loaded. A constraint violation is not a reject: it aborts
-the whole statement with `Rejected { reason: Violated {..} }`, and no
-rejects are kept. An insert with no `rejects into` clause fails at the
+the whole statement with `Rejected { reason: Violated {..} }`, or
+`KeyViolation` for a collision on the relation's key, and no rejects
+are kept. An insert with no `rejects into` clause fails at the
 first reject with `Rejected { reason: BadInput {..} }`, which carries
 the same `source`, `line` and reason.
 
@@ -517,6 +528,8 @@ A committed load is recovered after a crash and reaches every replica,
 as any commit. The log written for a bulk load must not exceed about
 one copy of each page the load fills: filled pages are logged once as
 whole images, not row by row ([engine.md](engine.md#31-redo-only-logging)).
+A load into a relation a feed names also writes the logical change
+records the feed reads (§5.2).
 
 Rulings: interop/load/source, interop/load/append-api, interop/load/shape/per-ctor, interop/load/shape/tag-match, interop/load/shape/union-column, interop/load/shape/tagged-text, interop/load/shape/unrouted/tag-parse, interop/load/unit/staged, interop/load/check/set-at-a-time, interop/load/check/build-time, interop/load/index-path/bulk-build, interop/load/index-path/sorted-merge, interop/load/index-path/retail, interop/load/errors/reject-input, interop/load/wal/page-images
 
@@ -580,7 +593,7 @@ feed identity_changes of identities.(Google | Apple)
 
 The stream of a feed holds, in commit order, one event for each
 committed transaction that changed a constructor relation the feed
-names. An event carries the commit's log position and, for each named
+names. An event carries the commit's position and, for each named
 constructor relation it changed, the rows it deleted and the rows it
 inserted. Rows are encoded at the bundle's pinned version, translated
 as for any pinned reader. The protocol is defined in
@@ -591,11 +604,15 @@ into the new one, in the same event. A feed naming only one of the two
 sees only that half.
 
 Because the feed is part of a registered bundle, it is a reader of the
-schema like any other. Enabling a constructor in the feed's set, at the
-feed's pinned membership, is refused while the bundle is live, until it
-is retired, superseded or expired; a bundle whose header says `hide new
-constructors` never blocks it, and its feed does not carry rows of
-constructors it does not know ([evolution.md](evolution.md#8-readers-first)).
+schema like any other ([evolution.md](evolution.md#81-enabling-a-constructor)).
+A feed makes `enable r.C` refused only when it names `r` whole, as
+`feed f of r`, at a version where `C` does not exist, and only while
+its bundle is live, until it is retired, superseded or expired. A feed of
+named constructor relations, such as `identities.(Google | Apple)`,
+never carries a constructor it does not name and never blocks. A
+bundle whose header says `hide new constructors` never blocks
+`enable r.C`, and its feed does not carry rows of constructors its version
+lacks.
 Volatile relations cannot be named by a feed.
 
 ### 5.3 Retention
@@ -633,14 +650,14 @@ A dump reads the database at one snapshot. It is a directory holding:
 
 | Entry | Content |
 | --- | --- |
-| `manifest` | the edition, the engine release, the dump format, the schema version with its hash, the catalog version, the snapshot's log position, whether the dump is encrypted, and a BLAKE3-256 checksum of every other entry |
+| `manifest` | the edition, the engine release, the dump format, the schema version with its hash, the catalog version, the snapshot's position, whether the dump is encrypted, and a BLAKE3-256 checksum of every other entry |
 | `log` | the whole operator log, every migration in order, in its canonical text |
 | `blobs/` | every Wasm module, extension package and tzdata release the log names, each under its BLAKE3-256 hash |
 | `ids` | for every catalog object other than a constructor, the key the database assigned it |
 | `generators` | the next value of every key generator |
 | `bundles/` | every registered bundle with its deployment state: owner, pinned and catalog versions, edition, lease and state |
-| `security` | the deployment state of security: roles, credential verifiers (never plaintext secrets), capability grants (`adhoc`, `assert`, `schema`, `monitor`, `cancel`, `maintain`, `configure`, `read_files`, `write_files`) and bundle call grants |
-| `settings` | the rows of `catalog::settings`, listener principal mappings included |
+| `security` | the deployment state of security: the rows of `catalog::roles`, the credential verifiers of `catalog::credentials` (never plaintext secrets), the rows of `catalog::grants` of kind `Deployment` (capability grants `adhoc`, `assert`, `schema`, `monitor`, `cancel`, `maintain`, `configure`, `read_files`, `write_files`, bundle call grants, and grants on `catalog::` and `sys::` relations), and the peer mappings of `catalog::peer_mappings` |
+| `settings` | the rows of `catalog::settings` |
 | `requests` | the request marks and recorded replies of `sys::request_marks` |
 | `audit` | `catalog::audit` with its ledger |
 | `extensions` | each installed extension by name, version and content hash |
@@ -648,8 +665,13 @@ A dump reads the database at one snapshot. It is a directory holding:
 | `data/R.C.txt` | optionally, the same rows as a text document (§1.2) |
 
 Relation and constructor-set grants and `grant call fn` are log
-operators, so the `log` carries them and a restore reinstates them by
-replay. The text form is for review; a restore reads the Arrow form.
+operators, rows of `catalog::grants` of kind `Log`, so the `log`
+carries them and a restore reinstates them by replay. A restore writes
+the roles of `security` before it replays the log; a log grant naming
+a role the dump does not hold, as in a dump written without `security`,
+is kept dormant and allows nothing, and the restore reports every
+dormant grant ([security.md](security.md#21-roles)). The text form of
+`data/` is for review; a restore reads the Arrow form.
 
 A dump is written in plaintext unless it is written with `--encrypt
 KEY` (`dump to "path" encrypt key` as a command), which encrypts every
@@ -678,8 +700,9 @@ A restore reproduces the dumped database exactly as clients see it:
   resuming at its dumped next value;
 - every bundle registered at its pinned version, with its owner, lease
   and state;
-- the same roles, grants and credential verifiers, so every principal
-  authenticates and is authorised as before;
+- the same roles, grants, credential verifiers and peer mappings, so
+  every principal authenticates and is authorised as before, except
+  that a log grant whose role the dump lacks is dormant and reported;
 - the same file settings, and the audit relation with its ledger, whose
   head digest is unchanged;
 - every extension, Wasm module and tzdata release, from `blobs/`, each
@@ -738,7 +761,7 @@ $ adt restore s3://backups/app restored.adt
 either a dump (§6) or a backup; its manifest says which.
 
 Every backup carries a manifest stating the engine release, format,
-schema version, start and end log positions, the backup it is
+schema version, start and end positions, the backup it is
 incremental to, and a checksum of each part. A backup is proven only
 by a test restore that rebuilds the database and runs the full
 verification of [catalog.md](catalog.md#111-verification) on it; the
@@ -750,7 +773,8 @@ pages as they are stored ([security.md](security.md#95-backups-and-dumps)).
 With a continuous archive of the log, a restore replays a backup and
 the archived log up to a chosen point:
 
-- a log position, such as one returned by a commit;
+- a commit position `Position { epoch, lsn }`, such as one returned
+  by a commit, written `epoch/lsn` on the command line;
 - an instant, through the recorded map from commit positions to wall
   time;
 - a schema version: the state just before a given migration applied.
@@ -758,7 +782,7 @@ the archived log up to a chosen point:
 ```
 $ adt restore s3://backups/app restored.adt --before-version 12
 $ adt restore s3://backups/app restored.adt --to-time 2026-10-24T13:02:00Z
-$ adt restore s3://backups/app restored.adt --to-position 81234
+$ adt restore s3://backups/app restored.adt --to-position 3/81234
 ```
 
 The archive destination is an open setting
@@ -882,6 +906,7 @@ From version 18:
 
 ```
 -- 0019
+module auth
 define fn geohash (lat: F64, lon: F64, precision: I32) -> Text =
   wasm "geo.wasm" export "geohash"
 define fn slugify (t: Text) -> Text = host "slugify" version "1.0" deterministic
@@ -922,6 +947,9 @@ at a version other than the one the catalog records fails the open
 with `HostFnMismatch`, unless the migrations the open applies contain
 the `redefine fn` that moves the catalog to that version
 ([embedding.md](embedding.md#102-missing-and-mismatched-functions)).
+Such an open fails with `HostFnMismatch` naming the function when a
+staged job or index build of a migration before that `redefine fn`
+reaches the function; otherwise the open proceeds.
 The open never writes a redefinition on its own. An open by an older
 program, whose host function the database has since redefined, fails
 with `Rejected { reason: DowngradeRefused {..} }` and changes
@@ -976,6 +1004,9 @@ Which code runs:
 
 - A pinned bundle evaluates the definitions of the version it pins.
 - Indexes, constraints and stored views always use the current code.
+  A pinned bundle that reads a stored view redefined since its pin
+  evaluates the body of its own version, not the stored rows
+  ([derived.md](derived.md#26-schema-changes)).
 - The planner uses an expression index for a query only when the code
   identity of the query's expression equals the index's.
 - A host function has one code in a process. Redefining it is refused
@@ -986,6 +1017,7 @@ From version 19:
 
 ```
 -- 0020
+module auth
 redefine fn geohash (lat: F64, lon: F64, precision: I32) -> Text =
   wasm "geo-2.wasm" export "geohash"
 ```
@@ -1001,6 +1033,7 @@ version 20:
 
 ```
 -- 0021
+module auth
 install geo "1.2" from "geo-1.2.adtx"
 ```
 
@@ -1048,7 +1081,8 @@ Over a range that is a nonempty group the result has the declared
 type. Over a range that may be empty the result is an `Option` of it,
 `None` for an empty range, without calling `finish`.
 
-The state is a value of a declared type, so it holds no collection.
+The state is a value of a record or declared type, so it holds no
+collection.
 `step`, `merge` and `finish` are query-language expressions and may
 call Wasm functions; an aggregate is deterministic when every function
 it calls is.

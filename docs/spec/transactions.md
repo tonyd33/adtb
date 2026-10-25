@@ -82,8 +82,13 @@ of them.
 
 Several items in one ad hoc text form one transaction, each item one
 statement, and their results are returned in order
-([syntax.md](syntax.md)). The items of a `transact` block are not
-statements; the block is one.
+([syntax.md](syntax.md)). The first item that fails, by a fault, a
+user `fail`, a constraint violation or a rejection, ends the text: the
+effects of none of its items are applied, the later items do not run,
+and the error names the failing item's ordinal. Failing ad hoc text
+sent within an interactive transaction applies none of its items'
+effects, and the interactive transaction stays open. The items of a
+`transact` block are not statements; the block is one.
 
 Every statement of a transaction reads one snapshot of the database
 taken when the transaction began, together with the change sets of the
@@ -175,12 +180,15 @@ number of attempts ([wire.md](wire.md)). A `retry n` option on the
 block sets the limit for that transaction; otherwise the configured
 limit applies ([catalog.md](catalog.md#10-configuration)).
 
-A `transact` block submitted as a single call is rerun by the server
-in the same way. Such a call is an ad hoc call (`CallText` on the wire,
-[wire.md](wire.md)) by a principal holding `adhoc` and the write
-privileges its statements need, or an in-process call
-([embedding.md](embedding.md)). Constraints hold for it as for any
-statement.
+Ad hoc text that writes, a `transact` block or several items
+submitted as one call outside an interactive transaction, is rerun by
+the server in the same way: it sends no result rows until its
+transaction commits, and its reply reports the number of attempts. Ad
+hoc text that only reads streams its results as it computes them. Such
+a call is an ad hoc call (`CallText` on the wire, [wire.md](wire.md))
+by a principal holding `adhoc` and the write privileges its statements
+need, or an in-process call ([embedding.md](embedding.md)).
+Constraints hold for it as for any statement.
 
 A call carries an optional statement limit, deadline and priority
 within its bundle's class ([wire.md](wire.md)).
@@ -201,7 +209,8 @@ t.commit()
 ```
 
 The client begins a transaction, makes calls of registered queries and
-registered transactions within it, then commits or aborts it. The
+registered transactions within it, or calls of ad hoc text, then
+commits or aborts it. The
 transaction is named by an id the begin returns, and every call carries
 it; no other state is held for it on a connection
 ([wire.md](wire.md), [embedding.md](embedding.md)).
@@ -215,8 +224,15 @@ visible to other transactions only when the commit succeeds; an abort,
 or a failed commit, discards all of them.
 
 A call that fails, by a constraint violation, a fault or a user `fail`,
-has no effect; the transaction stays open with the effects of its
-earlier calls. A serialization failure aborts the whole transaction.
+fails its statement: the statement's effects are not applied, and the
+transaction stays open with the effects of its earlier calls. A
+serialization failure aborts the whole transaction.
+
+One interactive transaction makes registered calls or ad hoc text
+calls, never both. Ad hoc text in a transaction that has made a
+registered call, and a registered call in one that has run ad hoc
+text, are refused with `Rejected { reason: MixedVersions }`; the
+transaction stays open.
 
 A registered transaction called within an interactive transaction is
 one statement of it. Its `transact` block does not commit on its own:
@@ -389,6 +405,16 @@ covering `p`, the read fails with `Retry { reason: SafePointTimeout {..} }`, whi
 it may retry. Safe snapshots may fail to form while long read-write
 transactions run.
 
+A replica applies the log while its reads run. When applying it would
+remove a row version that a running read's snapshot sees, the replica
+waits for that read for at most the setting `ReplicaVacuumWait`, then
+cancels the read with `Retry { reason: ReplayConflict {..} }`, which it may retry.
+
+An embedded replica forwards writes to its primary
+([embedding.md](embedding.md#122-embedded-replicas)). A forwarded
+write carries a request id and is resent until the replica learns its
+outcome, so it is applied at most once (§9).
+
 The primary marks a safe snapshot at least as often as the setting
 `SafePointDelay` (default 100 ms) allows: when no safe snapshot has
 formed for that long, it delays the start of new read-write
@@ -401,9 +427,11 @@ Rulings: repl/session/bookmark
 ### 9.1 Request ids
 
 A call that can commit a write may carry a request id: a call of a
-registered transaction, a `transact` block submitted as one call, and
-the commit of an interactive transaction. A request id is needed only
-for idempotent retry. It is a client id together with a request
+registered transaction, ad hoc text that writes and an append of rows
+([interop.md](interop.md#4-loading)), each outside an interactive
+transaction, and the commit of an interactive transaction. A request
+id on ad hoc text that only reads is ignored. A request id is needed
+only for idempotent retry. It is a client id together with a request
 number; the numbers a client sends with one client id must increase.
 A request id is carried by the call that commits, never by the begin
 or the other calls of an interactive transaction.
@@ -416,10 +444,14 @@ committed outcomes are recorded: an error, including a constraint
 violation or a serialization failure, leaves no record. A later call
 with a request id is handled in this order:
 
-1. if a record of that request id exists, the call does not run again
-   and returns the recorded reply with its rows;
-2. otherwise, if a call with that request id is still running, it
-   waits for it and returns its outcome;
+1. if a record of that request id exists, the call does not run again:
+   when the record was made for the same call with the same arguments,
+   it returns the recorded reply with its rows, and otherwise it is
+   refused with `Rejected { reason: RequestReused }`;
+2. otherwise, if a call with that request id is still running, it is
+   refused with `Rejected { reason: RequestReused }` when that call is
+   another call or has other arguments, and otherwise it waits for it
+   and returns its outcome;
 3. otherwise, if its number is strictly below the client's low-water
    mark, it does not run and fails with `RequestExpired`; the
    low-water mark is one above the highest number of that client whose
@@ -439,8 +471,5 @@ request id returns the recorded rows.
 The retention window is configuration, and the recorded ids and
 low-water marks are a system relation
 ([catalog.md](catalog.md#1-system-relations)).
-
-A call reusing a recorded request id with a different call or different
-arguments is refused with `Rejected { reason: RequestReused }`.
 
 Rulings: net/unknown/idempotency, net/retry/server
