@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::kernel::{Conflict, Kind, Terms, Tm, Var};
+use adtb_lang::kernel::{Conflict, Kind, PathStep, Terms, Tm, Var};
 use adtb_lang::schema::Generator;
 use adtb_lang::types::{RelId, Ty};
 
@@ -562,10 +562,12 @@ impl Run<'_, '_> {
             }
             Conflict::Unique(i) => {
                 let scope = &it.schema.relation(rel).indexes[i as usize].scope;
-                let want = self.unique_values(rel, i as usize, n)?;
+                let Some(want) = self.unique_values(rel, i as usize, n)? else {
+                    return Ok(Vec::new());
+                };
                 let mut out = Vec::new();
                 for o in it.rows(it.db, rel, scope) {
-                    if self.unique_values(rel, i as usize, &o)? == want {
+                    if self.unique_values(rel, i as usize, &o)?.as_ref() == Some(&want) {
                         out.push(o);
                     }
                 }
@@ -574,18 +576,22 @@ impl Run<'_, '_> {
         }
     }
 
-    /// Returns the values of the fields of index `i` of `rel` on `row`.
-    pub(crate) fn unique_values(&self, rel: RelId, i: usize, row: &Value) -> R<Vec<Value>> {
+    /// Returns the values of the fields of index `i` of `rel` on `row`, or `None` when `row` holds
+    /// another constructor than a field's path names.
+    pub(crate) fn unique_values(&self, rel: RelId, i: usize, row: &Value) -> R<Option<Vec<Value>>> {
         let it = self.it;
         let n = it.schema.relation(rel).indexes[i].fields.len();
         let h = self.here(Arena::Program);
-        (0..n)
-            .map(|k| {
-                let lam = it.program.index_fields[&(rel, i, k)];
-                let f = self.eval(&h, lam, &Env::default())?;
-                self.apply(f, row.clone())
-            })
-            .collect()
+        let mut out = Vec::with_capacity(n);
+        for k in 0..n {
+            let field = &it.program.index_fields[&(rel, i, k)];
+            if !holds_path(row, &field.path) {
+                return Ok(None);
+            }
+            let f = self.eval(&h, field.value, &Env::default())?;
+            out.push(self.apply(f, row.clone())?);
+        }
+        Ok(Some(out))
     }
 
     /// Returns whether `v` is a row of `r` in the snapshot.
@@ -593,4 +599,23 @@ impl Run<'_, '_> {
         let c = v.tag().expect("a row is a constructor value");
         self.it.db.get(&(r, c)).is_some_and(|rows| rows.contains(v))
     }
+}
+
+/// Returns whether `v` holds every constructor `path` names.
+fn holds_path(v: &Value, path: &[PathStep]) -> bool {
+    let mut at = v;
+    for step in path {
+        match step {
+            PathStep::Field(f) => match at.field(f) {
+                Some(next) => at = next,
+                None => return false,
+            },
+            PathStep::Ctor(c) => {
+                if at.tag() != Some(*c) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }

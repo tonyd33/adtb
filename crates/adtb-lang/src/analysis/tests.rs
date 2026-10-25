@@ -181,7 +181,7 @@ fn reachable(terms: &Terms, root: Tm) -> Vec<Tm> {
     out
 }
 
-/// Asserts the postconditions of a normal form: no λ but a `Replace`'s row function, no application, no call of a schema function, and a `let` only over a partial bound expression.
+/// Asserts the postconditions of a normal form: no λ but a `Replace`'s row function, no application, no call of a schema function, and a `let` only over a bound expression that is partial or draws a fresh value.
 fn assert_normal(s: &Schema, terms: &Terms, root: Tm) {
     let mut tot = Totality::new(s, false);
     let all = reachable(terms, root);
@@ -201,8 +201,8 @@ fn assert_normal(s: &Schema, terms: &Terms, root: Tm) {
             Kind::App(..) => panic!("an application remains: {:?}", terms.node(t)),
             Kind::Call { .. } => panic!("a call remains: {:?}", terms.node(t)),
             Kind::Let(_, b, _) => assert!(
-                !tot.total(terms, *b),
-                "a `let` of a total expression remains: {:?}",
+                !tot.total(terms, *b) || fresh_draws(terms, *b) > 0,
+                "a `let` of a total expression that draws nothing remains: {:?}",
                 terms.node(*b)
             ),
             _ => {}
@@ -943,9 +943,11 @@ fn computed_fields_and_index_fields_are_normalised() {
     let (s, n) = normal(STORED);
     assert_eq!(1, n.computed.len());
     assert_eq!(1, n.index_fields.len());
-    for (_, t) in n.computed.values().chain(n.index_fields.values()) {
-        assert_normal(&s, &n.terms, *t);
-        assert!(matches!(n.terms.kind(*t), Kind::Prim(Prim::Add, _)));
+    let computed = n.computed.values().map(|(_, t)| *t);
+    let index_fields = n.index_fields.values().map(|(_, f)| f.value);
+    for t in computed.chain(index_fields) {
+        assert_normal(&s, &n.terms, t);
+        assert!(matches!(n.terms.kind(t), Kind::Prim(Prim::Add, _)));
     }
 }
 
@@ -981,4 +983,49 @@ fn an_unstratified_computed_field_is_refused() {
              in a))",
         "not positive",
     );
+}
+
+/// Returns the number of `Fresh` occurrences in `root` read as a tree, a shared node counting once per parent.
+fn fresh_draws(terms: &Terms, root: Tm) -> usize {
+    match terms.kind(root) {
+        Kind::Fresh(..) => 1,
+        _ => terms
+            .children(root)
+            .into_iter()
+            .map(|c| fresh_draws(terms, c))
+            .sum(),
+    }
+}
+
+#[test]
+fn a_let_bound_to_an_inserted_row_draws_its_key_once() {
+    let (s, n) = adhoc_normal(
+        "",
+        &[],
+        r#"transact
+             let u = insert users { name: "eve" }
+             insert follows { src: key u, dst: key u }
+             return key u"#,
+    );
+    assert_normal(&s, &n.terms, n.items[0]);
+    assert_eq!(1, fresh_draws(&n.terms, n.items[0]));
+    let lets = reachable(&n.terms, n.items[0])
+        .into_iter()
+        .filter(|t| {
+            matches!(n.terms.kind(*t), Kind::Let(_, b, _)
+                if fresh_draws(&n.terms, *b) == 1)
+        })
+        .count();
+    assert_eq!(1, lets, "the inserted row stays bound by one `let`");
+}
+
+#[test]
+fn a_nested_insert_draws_its_key_once() {
+    let (s, n) = adhoc_normal(
+        "",
+        &[],
+        r#"insert follows { src: key (insert users { name: "nest" }), dst: key (insert users { name: "other" }) }"#,
+    );
+    assert_normal(&s, &n.terms, n.items[0]);
+    assert_eq!(2, fresh_draws(&n.terms, n.items[0]));
 }

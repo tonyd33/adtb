@@ -1379,3 +1379,55 @@ fn a_write_inside_a_query_is_refused() {
         "a write appears only where a change set is expected",
     );
 }
+
+#[test]
+fn update_match_arms_join_declared_row_types() {
+    let (s, a) = ok(
+        &[("k", "Key identities")],
+        "transact
+           let r = update i in identities where i.id == k
+                   set match i
+                     | EmailPass e -> Google { gid: e.email }
+                     | Google g    -> Apple { sub: g.gid }
+                     | Apple a     -> a
+           return r",
+    );
+    assert_eq!(
+        "Set Identity.(Google | Apple)",
+        s.show_ty(a.terms.ty(a.items[0]))
+    );
+    assert!(anon_ctors(&a.terms, a.items[0]).is_empty());
+    no(
+        &[("k", "Key identities")],
+        "update i in identities where i.id == k
+         set match i
+           | EmailPass e -> Zed { n: 1 }
+           | Google g    -> Alpha
+           | Apple a     -> a",
+        "Zed",
+    );
+}
+
+#[test]
+fn upsert_rows_join_declared_row_types() {
+    let (s, a) = ok(
+        &[("u", "Key users"), ("g", "Text"), ("k", "Key identities")],
+        "transact
+           let r = insert identities.Google { id: k, user: u, gid: g }
+                   unless conflict on key
+                   else match old
+                     | Google o    -> update o set o
+                     | EmailPass e -> update e set Apple { sub: g }
+                     | Apple a     -> skip
+           return r",
+    );
+    assert_eq!("Identity", s.show_ty(a.terms.ty(a.items[0])));
+    assert!(anon_ctors(&a.terms, a.items[0]).is_empty());
+    no(
+        &[("u", "Key users"), ("g", "Text")],
+        "insert identities.Google { user: u, gid: g }
+         unless conflict on (gid) in Google
+         else update old set Zed { n: 1 }",
+        "Zed",
+    );
+}

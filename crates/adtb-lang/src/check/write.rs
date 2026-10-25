@@ -230,6 +230,9 @@ fn same_expr(a: &Expr, b: &Expr) -> bool {
         (ExprKind::Lit(x), ExprKind::Lit(y)) => x == y,
         (ExprKind::Name(x), ExprKind::Name(y)) => same_name(x, y),
         (ExprKind::Field(x, f), ExprKind::Field(y, g)) => f.text == g.text && same_expr(x, y),
+        (ExprKind::Select(x, ast::CtorSel::One(c)), ExprKind::Select(y, ast::CtorSel::One(d))) => {
+            c.text == d.text && same_expr(x, y)
+        }
         (ExprKind::Unary(o, x), ExprKind::Unary(p, y)) => o == p && same_expr(x, y),
         (ExprKind::Binary(o, x1, x2), ExprKind::Binary(p, y1, y2)) => {
             o == p && same_expr(x1, y1) && same_expr(x2, y2)

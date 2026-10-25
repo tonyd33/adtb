@@ -811,6 +811,10 @@ fn adhoc_anonymous_constructors_are_numbered_in_their_joined_sum() {
         set([zed(1), alpha.clone()]),
         f.value("[Zed { n: 1 }] union [Alpha]")
     );
+    assert_eq!(
+        set([zed(1), alpha.clone()]),
+        f.value("fix a = [Zed { n: 1 }] union (from x in a select Alpha) in a")
+    );
     assert_eq!(Value::Ctor(0, Vec::new()), f.value("Zed == Alpha"));
     let z = Value::Ctor(0, vec![("n".into(), Value::Int(3))]);
     assert_eq!(

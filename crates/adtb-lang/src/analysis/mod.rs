@@ -130,7 +130,7 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
     roots.extend(
         n.index_fields
             .iter()
-            .map(|(&(r, i, j), (_, t))| (Root::IndexField(r, i, j), *t)),
+            .map(|(&(r, i, j), (_, f))| (Root::IndexField(r, i, j), f.value)),
     );
     roots
         .into_iter()

@@ -29,8 +29,19 @@ Postconditions on a `Program`:
   violations.
 - `domains[N]` is the predicate of newtype `N` over its `self`
   variable, at `N`'s base type.
-- `index_fields[(r, i, k)]` is a `Lam` over a row of `r` in the scope of
-  `r`'s `i`-th index, whose value is that index's `k`-th field.
+- `index_fields[(r, i, k)]` is the `k`-th field of `r`'s `i`-th index:
+  `value`, a `Lam` over a row of `r` in the index's scope, and `path`.
+  For an element that is a path through a constructor of a value-level
+  sum, `unique (status.Paid.ref)`, `path` lists its steps, each a
+  field (`Field(l)`) or a constructor the value the steps before it
+  reach must hold (`Ctor(c)`, `c` indexing the sum's declaration order,
+  or name order for an anonymous sum); for any other element it is
+  empty. Only a row that holds every constructor of every field's
+  `path` takes part in the index: it has an entry, it is constrained
+  by a `unique`, and only it can conflict in an `Upsert` on one, as the
+  existing row or the proposed one. `value` is evaluated only at such a row,
+  and is a `Case` per constructor step whose other arms are
+  `Unreachable`.
 
 A term is a `Tm`, an index into its arena's `nodes`; each node has a
 `kind` and a `ty`. A `Call` names a function by `FnId`, and the
@@ -336,8 +347,9 @@ field and retag value of the schema, and of every function whose
 parameters and result are first-order, over that function's parameter
 variables. A function that takes or returns a function has no normal
 form of its own, and neither has a Wasm or host function. A computed
-field is a body over its `self` variable; an index field and a retag
-value are each a body over the row's variable. `NormalQuery` is a
+field is a body over its `self` variable; an index field's `value` and
+a retag value are each a body over the row's variable, and an index
+field keeps its `path`. `NormalQuery` is a
 registered query's or transaction's body over its parameter variables;
 one with no parameters has one variable of type `()`. `Error` is never
 returned for a body the checker accepted.
@@ -351,8 +363,11 @@ Postconditions on a normal form, beyond those of §1:
   function is inlined, a generic one at the type arguments its call
   solved, and no type in the arena mentions a type parameter of an
   inlined function.
-- A `Let` remains only where its bound expression is partial, and no
-  rewrite of
+- Normalisation never duplicates or drops a term that contains
+  `Fresh`. A `Let` whose bound expression contains `Fresh` is kept, and
+  its variable is substituted nowhere.
+- A `Let` remains only where its bound expression is partial or
+  contains `Fresh`, and no rewrite of
   [../spec/semantics.md §5.11](../spec/semantics.md#511-normalisation)
   applies anywhere in it.
 - Every node has the type of the node it came from, or a subtype of it.
@@ -381,7 +396,8 @@ no term changes after the first question about it.
 
 Postcondition: a term classified total never faults, never fails and
 terminates. A consumer may evaluate it early, more than once or not at
-all, and may move it past a guard. A partial term keeps its order
+all, and may move it past a guard, unless it contains `Fresh`, which
+is evaluated as often as §4.1 states. A partial term keeps its order
 relative to other partial terms and stays under every guard that
 dominated it.
 

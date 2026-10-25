@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::ast;
-use crate::kernel::{Kind, Terms, Tm, Var};
+use crate::kernel::{IndexField, Kind, PathStep, Terms, Tm, Var};
 use crate::resolve::{Scope, Visible};
 use crate::schema::{
     DefaultValue, PRELUDE, Schema, TypeDefKind, TypeMode, TypeName, TypeScope, ValueDef,
@@ -51,8 +51,8 @@ pub struct Program {
     pub defaults: BTreeMap<(RelId, usize), Tm>,
     /// Each computed field's expression over its `self` variable, keyed by relation and position.
     pub computed: BTreeMap<(RelId, usize), (Var, Tm)>,
-    /// Each index field, a `Lam` over the row, keyed by relation, index position and field position.
-    pub index_fields: BTreeMap<(RelId, usize, usize), Tm>,
+    /// Each index field, its value a `Lam` over the row, keyed by relation, index position and field position.
+    pub index_fields: BTreeMap<(RelId, usize, usize), IndexField>,
 }
 
 /// What a body may refer to besides its locals.
@@ -482,15 +482,22 @@ pub fn check_schema(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
         }
         for (j, ix) in r.indexes.iter().enumerate() {
             for (k, e) in ix.fields.iter().enumerate() {
-                if let Some(tm) = run(
+                let mut path = Vec::new();
+                if let Some(value) = run(
                     r.module,
                     Context::Schema,
                     r.file,
                     &mut terms,
                     &fn_rows,
-                    &mut |c| c.index_field(rel, ix.scope.clone(), e),
+                    &mut |c| {
+                        let f = c.index_field(rel, ix.scope.clone(), e)?;
+                        path = f.path;
+                        Ok(f.value)
+                    },
                 ) {
-                    program.index_fields.insert((rel, j, k), tm);
+                    program
+                        .index_fields
+                        .insert((rel, j, k), IndexField { value, path });
                 }
             }
         }
@@ -725,11 +732,130 @@ impl Checker<'_> {
         Ok(self.check(e, &fty)?.tm)
     }
 
-    /// An index field as a function of the row.
-    fn index_field(&mut self, rel: RelId, ctors: Option<CtorSet>, e: &ast::Expr) -> R<Tm> {
+    fn index_field(&mut self, rel: RelId, ctors: Option<CtorSet>, e: &ast::Expr) -> R<IndexField> {
         let source = self.rel_out(rel, ctors);
         let elem = self.elem_ty(&source.ty).expect("a relation is a set");
-        let (x, out) = self.in_row(&elem, rel, &mut |c| c.synth(e))?;
-        Ok(self.lams(vec![x], out.tm, out.ty))
+        let segs = ctor_path(e)
+            .filter(|(root, _)| self.fields_of(&elem).iter().any(|(n, _)| *n == root.text));
+        let Some((root, segs)) = segs else {
+            let (x, out) = self.in_row(&elem, rel, &mut |c| c.synth(e))?;
+            let value = self.lams(vec![x], out.tm, out.ty);
+            return Ok(IndexField {
+                value,
+                path: Vec::new(),
+            });
+        };
+        let mut path = Vec::new();
+        let x = self.fresh(elem.clone());
+        let xt = self.var_tm(x);
+        let row = Out {
+            tm: xt,
+            ty: elem,
+            rows: None,
+        };
+        let out = self.along(row, &[Seg::Field(root)], &mut path)?;
+        let out = self.along(out, &segs, &mut path)?;
+        let value = self.lams(vec![x], out.tm, out.ty);
+        Ok(IndexField { value, path })
     }
+
+    /// Follows `segs` from `o`, recording each step in `path`; a constructor step is a `case` whose other arms are unreachable.
+    fn along(&mut self, o: Out, segs: &[Seg], path: &mut Vec<PathStep>) -> R<Out> {
+        let Some((seg, rest)) = segs.split_first() else {
+            return Ok(o);
+        };
+        match seg {
+            Seg::Field(f) => {
+                let fty = self
+                    .fields_of(&o.ty)
+                    .into_iter()
+                    .find(|(n, _)| *n == f.text)
+                    .map(|(_, t)| t)
+                    .ok_or_else(|| {
+                        diag(
+                            f.span,
+                            format!("{} has no field `{}`", self.show(&o.ty), f.text),
+                        )
+                    })?;
+                path.push(PathStep::Field(f.text.clone()));
+                let next = self.out(Kind::Field(o.tm, f.text.clone()), fty);
+                self.along(next, rest, path)
+            }
+            Seg::Ctor(c) => {
+                let sig = ty::ctor_names(self.schema, &o.ty)
+                    .filter(|_| matches!(o.ty, Ty::Data { .. } | Ty::Sum { .. }))
+                    .ok_or_else(|| {
+                        diag(
+                            c.span,
+                            format!("{} has no constructors to select", self.show(&o.ty)),
+                        )
+                    })?;
+                let Some(&(want, _)) = sig.iter().find(|(_, n)| *n == c.text) else {
+                    return Err(diag(
+                        c.span,
+                        format!("`{}` is not a constructor of {}", c.text, self.show(&o.ty)),
+                    ));
+                };
+                path.push(PathStep::Ctor(want));
+                let row = ty::restrict(self.schema, &o.ty, vec![want]);
+                let y = self.fresh(row.clone());
+                let yt = self.var_tm(y);
+                let body = self.along(
+                    Out {
+                        tm: yt,
+                        ty: row,
+                        rows: None,
+                    },
+                    rest,
+                    path,
+                )?;
+                let mut arms = Vec::with_capacity(sig.len());
+                for (d, _) in sig {
+                    if d == want {
+                        arms.push((d, y, body.tm));
+                    } else {
+                        let z = self.fresh(ty::restrict(self.schema, &o.ty, vec![d]));
+                        let none = self.add(Kind::Unreachable, body.ty.clone());
+                        arms.push((d, z, none));
+                    }
+                }
+                Ok(self.out(
+                    Kind::Case {
+                        scrutinee: o.tm,
+                        arms,
+                    },
+                    body.ty,
+                ))
+            }
+        }
+    }
+}
+
+enum Seg<'e> {
+    Field(&'e ast::Ident),
+    Ctor(&'e ast::Ident),
+}
+
+/// Returns the root field and the steps after it of `e` when it is a path of fields that selects a constructor.
+fn ctor_path(e: &ast::Expr) -> Option<(&ast::Ident, Vec<Seg<'_>>)> {
+    let mut segs = Vec::new();
+    let mut at = e;
+    let root = loop {
+        match &at.kind {
+            ast::ExprKind::Field(x, f) => {
+                segs.push(Seg::Field(f));
+                at = x;
+            }
+            ast::ExprKind::Select(x, ast::CtorSel::One(c)) => {
+                segs.push(Seg::Ctor(c));
+                at = x;
+            }
+            ast::ExprKind::Name(q) if q.module.is_none() => break &q.name,
+            _ => return None,
+        }
+    };
+    segs.reverse();
+    segs.iter()
+        .any(|s| matches!(s, Seg::Ctor(_)))
+        .then_some((root, segs))
 }

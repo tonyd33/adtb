@@ -2553,3 +2553,108 @@ fn text_literals_elaborate_to_nfc() {
         &Kind::Const(Const::Text("caf\u{e9}".to_string()))
     );
 }
+
+const BILLS: &str = "
+type Bill = { id: Key bills, status: Status, ship: Shipment, note: Text }
+relation bills : Bill
+  key id generate sequence
+  unique (status.Paid.at)
+  index (ship.Shipped.via.Mail.tracking)
+  index (status.Paid)
+  unique (lower(note))
+";
+
+fn index_path(s: &Schema, p: &Program, i: usize) -> Vec<PathStep> {
+    let rel = RelId(
+        s.relations
+            .iter()
+            .position(|r| r.name == "bills")
+            .expect("bills") as u32,
+    );
+    p.index_fields[&(rel, i, 0)].path.clone()
+}
+
+#[test]
+fn an_index_field_through_a_value_level_constructor_names_its_path() {
+    let (s, p) = program(BILLS).unwrap_or_else(|e| panic!("refused: {e:?}"));
+    let field = |f: &str| PathStep::Field(f.into());
+    assert_eq!(
+        vec![field("status"), PathStep::Ctor(2), field("at")],
+        index_path(&s, &p, 0)
+    );
+    assert_eq!(
+        vec![
+            field("ship"),
+            PathStep::Ctor(1),
+            field("via"),
+            PathStep::Ctor(1),
+            field("tracking")
+        ],
+        index_path(&s, &p, 1)
+    );
+    assert_eq!(
+        vec![field("status"), PathStep::Ctor(2)],
+        index_path(&s, &p, 2)
+    );
+    assert!(index_path(&s, &p, 3).is_empty());
+}
+
+#[test]
+fn an_index_path_names_a_constructor_of_a_sum_field() {
+    refuses(
+        "type Bill = { id: Key bills, status: Status }
+         relation bills : Bill key id generate sequence unique (status.Void.at)",
+        "`Void` is not a constructor of Status",
+    );
+    refuses(
+        "type Bill = { id: Key bills, at: Instant }
+         relation bills : Bill key id generate sequence unique (at.Paid)",
+        "Instant has no constructors to select",
+    );
+    refuses(
+        "type Bill = { id: Key bills, status: Status }
+         relation bills : Bill key id generate sequence unique (status.Paid.ref)",
+        "ref",
+    );
+    refuses(
+        "type Bill = { id: Key bills, status: Status }
+         relation bills : Bill key id generate sequence unique (lower(status.Paid.at))",
+        "`.C` selects constructors of a set",
+    );
+}
+
+#[test]
+fn a_fix_binder_joins_anonymous_sums_across_its_union_operands() {
+    let sum = vec!["Alpha".to_string(), "Zed".to_string()];
+    let want = vec![
+        (sum.clone(), "Alpha".to_string(), Vec::new()),
+        (sum, "Zed".to_string(), vec!["n".to_string()]),
+    ];
+    for text in [
+        "fix a = [Zed { n: 1 }] union (from x in a select Alpha) in a",
+        "fix a = (from x in a select Zed { n: 1 }) union [Alpha] in a",
+        "fix a = [Zed { n: 1 }] union [Alpha] union (from x in a select x) in a",
+    ] {
+        let (s, a) = adhoc(&[], text).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+        assert_eq!(
+            "Set (Alpha | Zed { n: I64 })",
+            s.show_ty(a.terms.ty(a.items[0])),
+            "{text}"
+        );
+        assert_eq!(anon_ctors(&a.terms, a.items[0]), want, "{text}");
+    }
+}
+
+#[test]
+fn a_declared_type_never_holds_an_anonymous_sum() {
+    refuses(
+        "type Mark = { id: Key marks, v: Alpha | Zed { n: I64 } }
+         relation marks : Mark key id generate sequence",
+        "declare a sum type for it",
+    );
+    refuses(
+        "type Mark = { id: Key marks, v: Option (Alpha | Zed { n: I64 }) }
+         relation marks : Mark key id generate sequence",
+        "declare a sum type for it",
+    );
+}

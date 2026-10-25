@@ -245,6 +245,22 @@ pub struct TxnOptions {
     pub durability: Option<Durability>,
 }
 
+/// One field of an index.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IndexField {
+    /// The field's value at a row that holds every constructor `path` names.
+    pub value: Tm,
+    /// The steps of an element that is a path through a constructor of a value-level sum; empty for any other element.
+    pub path: Vec<PathStep>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PathStep {
+    Field(String),
+    /// The value the steps before it reach holds this constructor.
+    Ctor(u32),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
     pub kind: Kind,

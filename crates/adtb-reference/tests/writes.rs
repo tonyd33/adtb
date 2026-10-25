@@ -1226,3 +1226,27 @@ fn a_unique_over_a_value_level_path_constrains_only_rows_holding_the_constructor
     assert_eq!("app::invoices.unique(status.Paid.ref) in Invoice", name);
     assert_eq!(2, report.len());
 }
+
+#[test]
+fn an_upsert_on_a_value_level_path_meets_only_rows_holding_the_constructor() {
+    let mut f = Fixture::new(
+        "type Status = Draft | Paid { ref: Text }
+         type Invoice = { id: Key invoices, status: Status, n: I64 }
+         relation invoices : Invoice key id generate sequence unique (status.Paid.ref)",
+    );
+    f.ok(r#"insert invoices { status: Paid { ref: "r1" }, n: 1 }"#);
+    let upsert = |n: i64| {
+        format!(
+            r#"insert invoices {{ status: Paid {{ ref: "r1" }}, n: {n} }}
+               unless conflict on (status.Paid.ref)
+               else update old set Invoice {{ old with n: old.n + 10 }}"#
+        )
+    };
+    f.ok(&upsert(2));
+    assert_eq!(1, count(&f, "invoices"));
+    assert_eq!(int(11), f.one(r#"from i in invoices select i.n"#));
+    f.ok(r#"insert invoices { status: Draft, n: 5 }
+            unless conflict on (status.Paid.ref)
+            else update old set Invoice { old with n: 0 }"#);
+    assert_eq!(2, count(&f, "invoices"));
+}

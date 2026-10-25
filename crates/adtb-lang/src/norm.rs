@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::analysis::Totality;
 use crate::check::{Adhoc, Program, Query, Txn};
-use crate::kernel::{Kind, Node, Terms, Tm, Var};
+use crate::kernel::{IndexField, Kind, Node, Terms, Tm, Var};
 use crate::schema::Schema;
 use crate::types::*;
 
@@ -20,8 +20,8 @@ pub struct NormalProgram {
     pub retags: BTreeMap<RelId, (Var, Tm)>,
     pub defaults: BTreeMap<(RelId, usize), Tm>,
     pub computed: BTreeMap<(RelId, usize), (Var, Tm)>,
-    /// Each index field over the row.
-    pub index_fields: BTreeMap<(RelId, usize, usize), (Var, Tm)>,
+    /// Each index field, its value a body over the row's variable.
+    pub index_fields: BTreeMap<(RelId, usize, usize), (Var, IndexField)>,
 }
 
 /// The normal forms of the items of ad hoc text.
@@ -105,9 +105,10 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
         computed.insert((r, i), (x, at(Root::Computed(r, i), n.root(*t))?));
     }
     let mut index_fields = BTreeMap::new();
-    for (&(r, i, j), t) in &p.index_fields {
-        let f = at(Root::IndexField(r, i, j), n.row_function(*t))?;
-        index_fields.insert((r, i, j), f);
+    for (&(r, i, j), f) in &p.index_fields {
+        let (x, value) = at(Root::IndexField(r, i, j), n.row_function(f.value))?;
+        let path = f.path.clone();
+        index_fields.insert((r, i, j), (x, IndexField { value, path }));
     }
     Ok(NormalProgram {
         terms: n.out,
@@ -247,6 +248,7 @@ struct Normaliser<'a> {
     fns: &'a [Option<Tm>],
     out: Terms,
     tot: Totality<'a>,
+    draws: HashMap<Tm, bool>,
     free: HashMap<(usize, Var), Var>,
     fv: [HashMap<Tm, Rc<Vec<Var>>>; 2],
     memo: HashMap<MemoKey, Tm>,
@@ -259,6 +261,7 @@ impl<'a> Normaliser<'a> {
             fns,
             out: Terms::default(),
             tot: Totality::new(schema, false),
+            draws: HashMap::new(),
             free: HashMap::new(),
             fv: [HashMap::new(), HashMap::new()],
             memo: HashMap::new(),
@@ -270,8 +273,21 @@ impl<'a> Normaliser<'a> {
         terms.node(t)
     }
 
-    fn total(&mut self, t: Tm) -> bool {
-        self.tot.total(&self.out, t)
+    /// Returns whether `t` may be duplicated or dropped: it is total and draws no fresh value.
+    fn copyable(&mut self, t: Tm) -> bool {
+        self.tot.total(&self.out, t) && !self.draws(t)
+    }
+
+    fn draws(&mut self, t: Tm) -> bool {
+        if let Some(&d) = self.draws.get(&t) {
+            return d;
+        }
+        let d = match self.out.kind(t) {
+            Kind::Fresh(..) => true,
+            _ => self.out.children(t).into_iter().any(|c| self.draws(c)),
+        };
+        self.draws.insert(t, d);
+        d
     }
 
     fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
@@ -546,7 +562,7 @@ impl<'a> Normaliser<'a> {
                     let e = *e;
                     let others: Vec<Tm> =
                         fs.iter().filter(|(n, _)| n != l).map(|(_, t)| *t).collect();
-                    if others.into_iter().all(|o| self.total(o)) {
+                    if others.into_iter().all(|o| self.copyable(o)) {
                         return Ok(Val::Tm(e));
                     }
                 }
@@ -555,7 +571,7 @@ impl<'a> Normaliser<'a> {
             Kind::Case { scrutinee, arms } => {
                 let s = self.tm(*scrutinee, cx)?;
                 if let Some((c, fields)) = self.ctor_value(s)
-                    && fields.into_iter().all(|f| self.total(f))
+                    && fields.into_iter().all(|f| self.copyable(f))
                     && let Some((_, v, e)) = arms.iter().find(|(a, _, _)| *a == c)
                 {
                     let cx = cx.with(*v, Val::Tm(s));
@@ -911,10 +927,10 @@ impl<'a> Normaliser<'a> {
         matches!(self.out.ty(t), Ty::Data { def, .. } if *def == self.tot.schema().prelude_type("Bool"))
     }
 
-    /// Binds `var` to `bound` in `body`: substituting a total value, keeping a `let` for a partial one.
+    /// Binds `var` to `bound` in `body`: substituting a copyable value, keeping a `let` for any other.
     fn bind(&mut self, var: Var, bound: Val, body: Tm, cx: &Cx, ty: Ty) -> Result<Val, String> {
         match bound {
-            Val::Tm(b) if self.total(b) => {
+            Val::Tm(b) if self.copyable(b) => {
                 let cx = cx.with(var, Val::Tm(b));
                 self.norm(body, &cx)
             }
@@ -927,7 +943,7 @@ impl<'a> Normaliser<'a> {
                     v => Ok(Val::Let(x, b, Rc::new(v))),
                 }
             }
-            f if self.spine_total(&f) => {
+            f if self.spine_copyable(&f) => {
                 let cx = cx.with(var, f);
                 self.norm(body, &cx)
             }
@@ -955,16 +971,18 @@ impl<'a> Normaliser<'a> {
         Ok(self.add(Kind::Lam(x, body), ty))
     }
 
-    /// Returns whether choosing the function `v` evaluates only total terms.
-    fn spine_total(&mut self, v: &Val) -> bool {
+    /// Returns whether choosing the function `v` evaluates only copyable terms.
+    fn spine_copyable(&mut self, v: &Val) -> bool {
         match v {
-            Val::Tm(t) => self.total(*t),
+            Val::Tm(t) => self.copyable(*t),
             Val::Lam { .. } => true,
-            Val::If(c, a, b) => self.total(*c) && self.spine_total(a) && self.spine_total(b),
-            Val::Case(s, arms) => {
-                self.total(*s) && arms.iter().all(|(_, _, v)| self.spine_total(v))
+            Val::If(c, a, b) => {
+                self.copyable(*c) && self.spine_copyable(a) && self.spine_copyable(b)
             }
-            Val::Let(_, b, v) => self.total(*b) && self.spine_total(v),
+            Val::Case(s, arms) => {
+                self.copyable(*s) && arms.iter().all(|(_, _, v)| self.spine_copyable(v))
+            }
+            Val::Let(_, b, v) => self.copyable(*b) && self.spine_copyable(v),
             Val::Fix(..) => false,
         }
     }
@@ -1035,7 +1053,7 @@ impl<'a> Normaliser<'a> {
     fn for_over(&mut self, var: Var, s: Tm, body: Tm, cx: &Cx, ty: &Ty) -> Result<Tm, String> {
         match self.out.kind(s).clone() {
             Kind::EmptySet => Ok(self.add(Kind::EmptySet, ty.clone())),
-            Kind::Singleton(e) if self.total(e) => {
+            Kind::Singleton(e) if self.copyable(e) => {
                 let cx = cx.with(var, Val::Tm(e));
                 self.tm(body, &cx)
             }

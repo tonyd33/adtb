@@ -522,8 +522,9 @@ impl Interpreter<'_> {
                 }
                 let mut groups: BTreeMap<Vec<Value>, Vec<Value>> = BTreeMap::new();
                 for row in after.rows(db, rel, &ix.scope) {
-                    let vs = run.unique_values(rel, ix_at, &row)?;
-                    groups.entry(vs).or_default().push(row);
+                    if let Some(vs) = run.unique_values(rel, ix_at, &row)? {
+                        groups.entry(vs).or_default().push(row);
+                    }
                 }
                 let groups = groups
                     .into_iter()
@@ -643,6 +644,9 @@ fn path(e: &adtb_lang::ast::Expr) -> Option<String> {
     match &e.kind {
         ExprKind::Name(q) if q.module.is_none() => Some(q.name.text.clone()),
         ExprKind::Field(x, f) => Some(format!("{}.{}", path(x)?, f.text)),
+        ExprKind::Select(x, adtb_lang::ast::CtorSel::One(c)) => {
+            Some(format!("{}.{}", path(x)?, c.text))
+        }
         _ => None,
     }
 }
