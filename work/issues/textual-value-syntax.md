@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 240
-summary: "values cannot be parsed from or printed to the textual value syntax of interop.md §1"
-tags: [reference]
+summary: values cannot be parsed from or printed to the textual value syntax of interop.md §1
+branch: adtb-text
+tags:
+  - reference
 ---
 
 # Feature: textual value syntax
