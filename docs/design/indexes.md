@@ -79,6 +79,8 @@ on:
 | newtype | The encoding of its representation |
 | record | Its fields' encodings concatenated in field order |
 | sum value | The constructor's order key, then `00`, then the header fields and the constructor's fields in order, as a record |
+| anonymous record | Its fields' encodings concatenated in name order |
+| anonymous sum value | The constructor's index among the sum's constructors in name order as an `ovarint`, then its fields in name order, as a record |
 
 Every encoding is prefix-free: no value's encoding is a proper prefix
 of another's of the same type. A `00` inside a variable-length value is

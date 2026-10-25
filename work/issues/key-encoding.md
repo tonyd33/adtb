@@ -22,3 +22,11 @@ equals value order, and equal values hash equal.
 
 Prerequisite: `hash-anonymous-types.md`, the encoding of anonymous
 records and sums.
+
+## 2026-10-25: mostly done
+
+`adtb::key`, landed in `feat(engine): add order-preserving index key
+encoding`, already has §2 to §5 for scalars, records, declared sums,
+`ovarint`, entries and hashing. What remains is the anonymous sum
+encoding ruled in §3, and the order key allocation of §4 if `adtb::key`
+does not have it.
