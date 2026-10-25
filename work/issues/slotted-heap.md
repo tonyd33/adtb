@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 501
 summary: "no heap: no slotted pages, version header, TIDs, version chains or retag across heaps"
-branch: adtb-heap
+closed: 2026-10-25
 depends-on:
   - page-buffer-contract
 tags:
@@ -24,3 +24,7 @@ model under simulation.
 
 Prerequisite: `page-buffer-contract.md`. Visibility of a version is
 `commit-log-snapshots.md`.
+
+## 2026-10-25: resolved
+
+Landed as `feat(heap): add slotted and fixed-slot heaps, version chains, retag and large values`. The directory is a tree of free space map pages with a fixed root (mvcc.md §1). Rows are `Vec<adtb::key::Value>` described by the heap's own `FieldType` (§12.2).

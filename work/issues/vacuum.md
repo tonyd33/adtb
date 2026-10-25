@@ -22,3 +22,14 @@ is an input here; the horizon that computes it is the watermark of
 `commit-log-snapshots.md`.
 
 Prerequisites: `slotted-heap.md`, `blink-tree.md`.
+
+## 2026-10-25: from the heap
+
+Vacuum also has to:
+- reopen old-format pages that conversion left at free-space category
+  0 (mvcc.md §12.4);
+- remove empty pages from a heap's directory, which nothing does yet;
+- find out-of-line chunks written for a version that aborted or
+  crashed, which are garbage nothing refers to.
+
+The visibility map (§11) is not built.

@@ -21,3 +21,8 @@ calls leaves an allocated page that nothing refers to. Expected:
 and changes others in one batch, so the allocation and the link are
 replayed together or not at all. `verify-structural.md` still reports
 leaks, as a check.
+
+## 2026-10-25: the heap too
+
+The heap leaks a heap or directory page the same way: allocated and
+owned by the heap, but not listed in its directory.

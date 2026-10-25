@@ -5,6 +5,8 @@ kind: feature
 priority: 500
 summary: "milestone 5 (heaps and indexes) has not exited: no heaps, key encoding, B-link trees, vacuum or verify"
 depends-on:
+  - heap-row-contract
+  - heap-performance
   - blink-incomplete-split
   - blink-superlinear
   - blink-space-reuse

@@ -5,6 +5,7 @@ kind: feature
 priority: 200
 summary: "milestone 2 (reference interpreter and conformance runner) has not exited: no runner and no first suite"
 depends-on:
+  - spec-row-too-large
   - milestone-1-front-end
   - reference-interpreter-writes
   - conformance-runner
