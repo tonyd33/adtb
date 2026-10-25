@@ -20,6 +20,19 @@ conventional form (`feat: ...`, `docs: ...`).
 If `work/HANDOFF.md` exists, read it first: it records where the design
 work stands and the next steps.
 
+## Tickets
+
+Tracked work lives in `work/issues/` and is managed with `tix`; the
+format and priority scheme are in `work/issues/README.md`. Design
+decisions are not tickets: they go through the design space. Check
+`tix list --ready` before starting work, and run `tix check` after
+editing a ticket. `tix` is not on PATH yet
+(`work/issues/tix-in-devenv.md`); run it as:
+
+```
+nix run path:/home/tony/code/tql/work/tools/tix -- -C work/issues check
+```
+
 ## Knowledge base
 
 Facts about other databases, formats, languages and papers live in
