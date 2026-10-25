@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::ast::*;
 use crate::schema::{Schema, TypeDefKind, TypeName, ValueDef};
 use crate::span::{Diag, FileDiag, FileId, Span};
-use crate::types::{ModuleId, PRELUDE_FUNCTIONS, RelId};
+use crate::types::{FnId, ModuleId, PRELUDE_FUNCTIONS, RelId};
 
 #[cfg(test)]
 #[path = "resolve_tests.rs"]
@@ -142,6 +142,21 @@ struct Resolver<'a> {
     scope: Scope<()>,
     diags: Vec<Diag>,
     params: BTreeSet<String>,
+    functions: BTreeSet<FnId>,
+}
+
+/// Returns the functions the body of `f` names, called or passed as values.
+pub fn function_refs(schema: &Schema, f: FnId) -> BTreeSet<FnId> {
+    let def = schema.function(f);
+    let FnBody::Expr(body) = &def.body else {
+        return BTreeSet::new();
+    };
+    let mut r = Resolver::new(schema, Visible::module(def.module), Context::Function);
+    for (name, _) in &def.params {
+        r.scope.bind(name, ());
+    }
+    r.expr(body);
+    r.functions
 }
 
 /// Checks the names in every expression the schema declares.
@@ -320,6 +335,7 @@ impl<'a> Resolver<'a> {
             scope: Scope::default(),
             diags: Vec::new(),
             params: BTreeSet::new(),
+            functions: BTreeSet::new(),
         }
     }
 
@@ -344,7 +360,10 @@ impl<'a> Resolver<'a> {
             }
         }
         match lookup_value(self.schema, &self.vis, q) {
-            Ok(ValueDef::Relation(_) | ValueDef::Function(_)) => {}
+            Ok(ValueDef::Relation(_)) => {}
+            Ok(ValueDef::Function(f)) => {
+                self.functions.insert(f);
+            }
             Ok(ValueDef::Aggregate(_)) if as_call => {}
             Ok(_) => self.err(
                 q.span(),

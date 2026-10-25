@@ -182,21 +182,27 @@ pub enum Ty {
         ctors: Option<CtorSet>,
     },
     Set(Box<Ty>),
+    /// A nonempty set, the rows of a group; a subtype of `Set`.
+    NonEmpty(Box<Ty>),
     Group(Box<Ty>, Box<Ty>),
     Tag(Box<Ty>),
     /// Fields sorted by name.
     Record(Vec<(String, Ty)>),
-    /// Constructors in order of appearance, each with its fields sorted by name.
-    Sum(Vec<(String, Vec<(String, Ty)>)>),
+    /// An anonymous sum: constructors in written order, each with its fields sorted by name; `sel` restricts it to a constructor-set row type.
+    Sum {
+        ctors: Vec<(String, Vec<(String, Ty)>)>,
+        sel: Option<CtorSet>,
+    },
     Fn(Box<Ty>, Box<Ty>),
     Unit,
+    Change,
 }
 
 impl Ty {
     pub fn subst(&self, args: &[Ty]) -> Ty {
         match self {
             Ty::Param(i) => args.get(*i as usize).cloned().unwrap_or(Ty::Param(*i)),
-            Ty::Base(_) | Ty::Key { .. } | Ty::Unit => self.clone(),
+            Ty::Base(_) | Ty::Key { .. } | Ty::Unit | Ty::Change => self.clone(),
             Ty::Data {
                 def,
                 args: a,
@@ -207,13 +213,15 @@ impl Ty {
                 ctors: ctors.clone(),
             },
             Ty::Set(t) => Ty::Set(Box::new(t.subst(args))),
+            Ty::NonEmpty(t) => Ty::NonEmpty(Box::new(t.subst(args))),
             Ty::Group(k, t) => Ty::Group(Box::new(k.subst(args)), Box::new(t.subst(args))),
             Ty::Tag(t) => Ty::Tag(Box::new(t.subst(args))),
             Ty::Record(fs) => {
                 Ty::Record(fs.iter().map(|(n, t)| (n.clone(), t.subst(args))).collect())
             }
-            Ty::Sum(cs) => Ty::Sum(
-                cs.iter()
+            Ty::Sum { ctors, sel } => Ty::Sum {
+                ctors: ctors
+                    .iter()
                     .map(|(c, fs)| {
                         (
                             c.clone(),
@@ -221,7 +229,8 @@ impl Ty {
                         )
                     })
                     .collect(),
-            ),
+                sel: sel.clone(),
+            },
             Ty::Fn(a, b) => Ty::Fn(Box::new(a.subst(args)), Box::new(b.subst(args))),
         }
     }
@@ -229,12 +238,12 @@ impl Ty {
     pub fn mentions_fn(&self) -> bool {
         match self {
             Ty::Fn(..) => true,
-            Ty::Base(_) | Ty::Param(_) | Ty::Key { .. } | Ty::Unit => false,
+            Ty::Base(_) | Ty::Param(_) | Ty::Key { .. } | Ty::Unit | Ty::Change => false,
             Ty::Data { args, .. } => args.iter().any(Ty::mentions_fn),
-            Ty::Set(t) | Ty::Tag(t) => t.mentions_fn(),
+            Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => t.mentions_fn(),
             Ty::Group(k, t) => k.mentions_fn() || t.mentions_fn(),
             Ty::Record(fs) => fs.iter().any(|(_, t)| t.mentions_fn()),
-            Ty::Sum(cs) => cs
+            Ty::Sum { ctors, .. } => ctors
                 .iter()
                 .any(|(_, fs)| fs.iter().any(|(_, t)| t.mentions_fn())),
         }

@@ -403,14 +403,20 @@ impl Schema {
         (set.len() != self.ty(def).ctors().len()).then_some(set)
     }
 
+    /// Returns whether `ty` is ordered, taking every type parameter as ordered.
     pub fn is_ordered(&self, ty: &Ty) -> bool {
-        self.ordered_at(ty, &mut Vec::new())
+        self.is_ordered_with(ty, &|_| true)
     }
 
-    fn ordered_at(&self, ty: &Ty, seen: &mut Vec<TypeId>) -> bool {
+    /// Returns whether `ty` is ordered, where `param` says whether type parameter `i` is.
+    pub fn is_ordered_with(&self, ty: &Ty, param: &dyn Fn(u32) -> bool) -> bool {
+        self.ordered_at(ty, param, &mut Vec::new())
+    }
+
+    fn ordered_at(&self, ty: &Ty, param: &dyn Fn(u32) -> bool, seen: &mut Vec<TypeId>) -> bool {
         match ty {
             Ty::Base(b) => b.is_ordered(),
-            Ty::Param(_) => true,
+            Ty::Param(i) => param(*i),
             Ty::Data { def, args, .. } => {
                 if seen.contains(def) {
                     return false;
@@ -418,13 +424,13 @@ impl Schema {
                 let t = self.ty(*def);
                 seen.push(*def);
                 let ok = match &t.kind {
-                    TypeDefKind::Newtype { base, .. } => self.ordered_at(base, seen),
+                    TypeDefKind::Newtype { base, .. } => self.ordered_at(base, param, seen),
                     TypeDefKind::Sum { header, ctors, .. } => {
                         t.ordered
                             && header
                                 .iter()
                                 .chain(ctors.iter().flat_map(|c| c.fields.iter()))
-                                .all(|f| self.ordered_at(&f.ty.subst(args), seen))
+                                .all(|f| self.ordered_at(&f.ty.subst(args), param, seen))
                     }
                 };
                 seen.pop();
@@ -436,7 +442,7 @@ impl Schema {
                 r.key.iter().all(|k| match def.field(0, k) {
                     Some(f) => match &f.ty {
                         Ty::Key { rel: own, .. } if own == rel => true,
-                        fty => self.ordered_at(&fty.subst(r.elem_args()), seen),
+                        fty => self.ordered_at(&fty.subst(r.elem_args()), param, seen),
                     },
                     None => false,
                 })
@@ -445,9 +451,14 @@ impl Schema {
                 Ty::Data { def, .. } => self.ty(*def).ordered,
                 _ => false,
             },
-            Ty::Set(_) | Ty::Group(..) | Ty::Record(_) | Ty::Sum(_) | Ty::Fn(..) | Ty::Unit => {
-                false
-            }
+            Ty::Set(_)
+            | Ty::NonEmpty(_)
+            | Ty::Group(..)
+            | Ty::Record(_)
+            | Ty::Sum { .. }
+            | Ty::Fn(..)
+            | Ty::Unit
+            | Ty::Change => false,
         }
     }
 
@@ -460,8 +471,12 @@ impl Schema {
             let s = self.show_ty_with(t, params);
             let simple = match t {
                 Ty::Data { args, .. } => args.is_empty(),
-                Ty::Base(Base::Decimal(_)) | Ty::Key { .. } | Ty::Set(_) | Ty::Tag(_) => false,
-                Ty::Group(..) | Ty::Fn(..) | Ty::Sum(_) => false,
+                Ty::Base(Base::Decimal(_))
+                | Ty::Key { .. }
+                | Ty::Set(_)
+                | Ty::NonEmpty(_)
+                | Ty::Tag(_) => false,
+                Ty::Group(..) | Ty::Fn(..) | Ty::Sum { .. } => false,
                 _ => true,
             };
             if simple { s } else { format!("({s})") }
@@ -499,7 +514,7 @@ impl Schema {
                 let r = self.relation(*rel);
                 format!("Key {}{}", r.name, sel(r.elem_def, ctors))
             }
-            Ty::Set(t) => format!("Set {}", atom(t)),
+            Ty::Set(t) | Ty::NonEmpty(t) => format!("Set {}", atom(t)),
             Ty::Group(k, t) => format!("Group {} {}", atom(k), atom(t)),
             Ty::Tag(t) => format!("Tag {}", atom(t)),
             Ty::Record(fs) => {
@@ -509,8 +524,8 @@ impl Schema {
                     .collect();
                 format!("{{ {} }}", fs.join(", "))
             }
-            Ty::Sum(cs) => {
-                let cs: Vec<String> = cs
+            Ty::Sum { ctors, sel } => {
+                let cs: Vec<String> = ctors
                     .iter()
                     .map(|(c, fs)| {
                         if fs.is_empty() {
@@ -524,10 +539,23 @@ impl Schema {
                         }
                     })
                     .collect();
-                cs.join(" | ")
+                let whole = cs.join(" | ");
+                match sel {
+                    None => whole,
+                    Some(set) => {
+                        let names: Vec<&str> =
+                            set.iter().map(|&i| ctors[i as usize].0.as_str()).collect();
+                        if names.len() == 1 {
+                            format!("({whole}).{}", names[0])
+                        } else {
+                            format!("({whole}).({})", names.join(" | "))
+                        }
+                    }
+                }
             }
             Ty::Fn(a, b) => format!("{} -> {}", atom(a), self.show_ty_with(b, params)),
             Ty::Unit => "()".to_string(),
+            Ty::Change => "a write".to_string(),
         }
     }
 }
@@ -1519,7 +1547,7 @@ impl Builder<'_> {
                         reached(a, out);
                     }
                 }
-                Ty::Set(t) | Ty::Tag(t) => reached(t, out),
+                Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => reached(t, out),
                 _ => {}
             }
         }
@@ -1682,17 +1710,17 @@ impl Builder<'_> {
     }
 }
 
-fn has_param(ty: &Ty) -> bool {
+pub fn has_param(ty: &Ty) -> bool {
     match ty {
         Ty::Param(_) => true,
         Ty::Data { args, .. } => args.iter().any(has_param),
-        Ty::Set(t) | Ty::Tag(t) => has_param(t),
+        Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => has_param(t),
         Ty::Group(k, t) | Ty::Fn(k, t) => has_param(k) || has_param(t),
         Ty::Record(fs) => fs.iter().any(|(_, t)| has_param(t)),
-        Ty::Sum(cs) => cs
+        Ty::Sum { ctors, .. } => ctors
             .iter()
             .any(|(_, fs)| fs.iter().any(|(_, t)| has_param(t))),
-        Ty::Base(_) | Ty::Key { .. } | Ty::Unit => false,
+        Ty::Base(_) | Ty::Key { .. } | Ty::Unit | Ty::Change => false,
     }
 }
 
@@ -1700,13 +1728,13 @@ fn mentions_key(ty: &Ty) -> bool {
     match ty {
         Ty::Key { .. } => true,
         Ty::Data { args, .. } => args.iter().any(mentions_key),
-        Ty::Set(t) | Ty::Tag(t) => mentions_key(t),
+        Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => mentions_key(t),
         Ty::Group(k, t) | Ty::Fn(k, t) => mentions_key(k) || mentions_key(t),
         Ty::Record(fs) => fs.iter().any(|(_, t)| mentions_key(t)),
-        Ty::Sum(cs) => cs
+        Ty::Sum { ctors, .. } => ctors
             .iter()
             .any(|(_, fs)| fs.iter().any(|(_, t)| mentions_key(t))),
-        Ty::Base(_) | Ty::Param(_) | Ty::Unit => false,
+        Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change => false,
     }
 }
 
@@ -1804,7 +1832,10 @@ pub fn resolve_type(
                 fields.sort_by(|a, b| a.0.cmp(&b.0));
                 out.push((c.name.text.clone(), fields));
             }
-            Ok(Ty::Sum(out))
+            Ok(Ty::Sum {
+                ctors: out,
+                sel: None,
+            })
         }
         ast::TypeKind::Key(r) => {
             let rel = schema
@@ -1894,17 +1925,11 @@ pub fn resolve_type(
                     no_sel()?;
                     Ok(Ty::Set(Box::new(type_args(ordered_args)?.remove(0))))
                 }
-                TypeName::Group => {
-                    if field {
-                        return Err((t.span, "a field never holds a group".to_string()));
-                    }
-                    arity(2)?;
-                    no_sel()?;
-                    let mut a = type_args(ordered_args)?;
-                    let v = a.pop().unwrap();
-                    let k = a.pop().unwrap();
-                    Ok(Ty::Group(Box::new(k), Box::new(v)))
-                }
+                TypeName::Group => Err((
+                    t.span,
+                    "`Group K T` is the type of a group binder and is never written; a group passed on is a `Set T`"
+                        .to_string(),
+                )),
                 TypeName::Tag => {
                     arity(1)?;
                     no_sel()?;

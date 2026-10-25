@@ -723,6 +723,20 @@ impl Parser<'_> {
                     payload,
                 }
             }
+            Tok::Kw(kw @ (Kw::True | Kw::False)) => {
+                let t = self.bump();
+                PatternKind::Ctor {
+                    path: QName {
+                        module: None,
+                        name: Ident {
+                            text: if kw == Kw::True { "True" } else { "False" }.to_string(),
+                            span: t.span,
+                        },
+                    },
+                    ctor: None,
+                    payload: None,
+                }
+            }
             Tok::Minus | Tok::Int | Tok::Decimal | Tok::Float | Tok::Text => {
                 let neg = self.eat(Tok::Minus);
                 if neg && !matches!(self.tok().tok, Tok::Int | Tok::Decimal | Tok::Float) {
