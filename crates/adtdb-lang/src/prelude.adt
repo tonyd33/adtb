@@ -1,0 +1,98 @@
+module prelude
+
+type Bool ordered = False | True
+type Option a ordered = None | Some { value: a }
+type Result a e = Ok { value: a } | Err { error: e }
+type Rounding = HalfEven | HalfUp | HalfDown | Up | Down | Ceiling | Floor
+type Overflow = Clamp | Reject
+type Fault = DivisionByZero
+           | ArithmeticOverflow
+           | OutOfRange
+           | NotFinite
+           | NoSuchDate
+           | UnknownZone
+           | InvalidText
+           | InvalidSpan
+           | NegativeCount
+           | NoSuchRow
+           | FunctionFailed
+type Uuid = new Bytes where bytes_len(self) == 16
+type Span a ordered = { start: a, end: a }
+type Principal = EndUser { name: Text } | Service { name: Text } | Anonymous
+
+type TxnId = new I64
+type Report = new Bytes
+type Position = { epoch: I64, lsn: I64 }
+
+type Error = Retry    { reason: RetryReason }
+           | Rejected { reason: RejectReason }
+           | Fatal    { reason: FatalReason }
+
+type RetryReason = Serialization      { txn: TxnId, on: Text }
+                 | SafePointTimeout   { waited: Duration }
+                 | Overloaded         { retry_after: Duration }
+                 | StreamIdle         { limit: Duration }
+                 | FileChanged        { path: Text }
+                 | Fenced
+                 | ReplayConflict     { waited: Duration }
+
+type RejectReason = Violated             { constraint: Text, report: Report, redacted: I64 }
+                  | KeyViolation         { relation: Text, key: Text }
+                  | KeyChanged           { relation: Text }
+                  | NotOpen              { ctor: Text, stage: Text }
+                  | UserError            { message: Text }
+                  | Faulted              { fault: Fault }
+                  | Denied               { detail: Text }
+                  | Invalid              { detail: Text }
+                  | SchemaRefused        { operator: Text, detail: Text }
+                  | Untranslatable       { query: Text, detail: Text }
+                  | BadInput             { source: Text, line: I64, detail: Text }
+                  | SchemaMismatch       { detail: Text }
+                  | Cancelled
+                  | Terminated
+                  | DeadlineExceeded
+                  | StatementLimit       { limit: Duration }
+                  | TransactionExpired   { limit: Duration, idle: Bool }
+                  | TransactionBusy
+                  | MixedVersions
+                  | UnknownQuery
+                  | UnknownTransaction
+                  | UnknownBundle        { bundle: Text }
+                  | VersionMismatch      { bundle: Text, version: I64 }
+                  | CatalogMismatch      { bundle: Text, catalog: I64 }
+                  | Retired              { bundle: Text }
+                  | BundleExpired        { bundle: Text, query: Text }
+                  | BundleStale          { bundle: Text, ctor: Text }
+                  | BundleSuperseded     { bundle: Text }
+                  | DowngradeRefused     { cause: Text }
+                  | TooOld               { oldest: Position }
+                  | HistoryUnavailable   { oldest: Position }
+                  | PositionNotOnHistory { position: Position }
+                  | WrongVersion         { version: I64 }
+                  | ReadOnlyReplica      { primary: Text }
+                  | RequestExpired
+                  | RequestReused
+                  | AuthFailed
+                  | UnsupportedProtocol  { min: Text, max: Text }
+                  | UnknownDatabase      { database: Text }
+                  | EditionLocked
+                  | UnknownEdition       { edition: Text }
+
+type FatalReason = Malformed       { detail: Text }
+                 | Quarantined     { what: Text }
+                 | MissingFunction { function: Text }
+                 | Storage         { detail: Text }
+
+type Notice = LeaseExpiring      { bundle: Text, at: Instant }
+            | ShuttingDown       { at: Instant }
+            | ConstructorEnabled { relation: Text, ctor: Text }
+            | BundleRetired      { bundle: Text }
+            | BlockingMigration  { bundle: Text, version: I64 }
+            | UpgradeRequired    { bundle: Text }
+
+type Origin = Registered { bundle: Text, query: I32 }
+            | Function   { name: Text }
+            | AdHoc      { text: Bytes }
+type Outcome = Succeeded | Failed { error: Error }
+
+type RejectedRow = { load: I64, line: I64, source: Text, raw: Text, reason: Text }

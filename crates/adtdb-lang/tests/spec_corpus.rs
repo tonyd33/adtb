@@ -82,3 +82,56 @@ fn every_spec_block_names_its_kind() {
         bad.join("\n")
     );
 }
+
+fn normalized_decls(src: &str) -> Vec<(String, String)> {
+    use adtdb_lang::ast::{Decl, ExampleItem};
+    let Ok(items) = parse_example(src, Options { elisions: true }).ok() else {
+        return Vec::new();
+    };
+    items
+        .into_iter()
+        .filter_map(|i| match i {
+            ExampleItem::Decl(Decl::Type(t)) => {
+                let text = &src[t.span.range()];
+                let words: Vec<&str> = text
+                    .lines()
+                    .map(|l| l.split("--").next().unwrap())
+                    .flat_map(str::split_whitespace)
+                    .collect();
+                Some((t.name.text.clone(), words.join(" ")))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn prelude_source_matches_the_spec() {
+    let prelude = include_str!("../src/prelude.adt");
+    let ours = normalized_decls(prelude);
+    let spec: Vec<(String, String)> = blocks()
+        .iter()
+        .filter(|b| {
+            b.info == "adt" && matches!(b.file.as_str(), "prelude.md" | "catalog.md" | "interop.md")
+        })
+        .flat_map(|b| normalized_decls(&b.text))
+        .collect();
+    for (name, text) in &ours {
+        let found: Vec<&String> = spec
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, t)| t)
+            .collect();
+        if name == "Principal" {
+            continue;
+        }
+        assert!(
+            !found.is_empty(),
+            "prelude type `{name}` is declared nowhere in the spec"
+        );
+        assert!(
+            found.iter().all(|t| *t == text),
+            "prelude type `{name}` differs from the spec:\n ours: {text}\n spec: {found:?}"
+        );
+    }
+}

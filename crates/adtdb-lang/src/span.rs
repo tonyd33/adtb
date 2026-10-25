@@ -60,3 +60,17 @@ impl Diag {
         format!("{line}:{col}: {}", self.message)
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FileId(pub u32);
+
+impl FileId {
+    pub const PRELUDE: FileId = FileId(u32::MAX);
+}
+
+/// A diagnostic in one of several source files.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileDiag {
+    pub file: FileId,
+    pub diag: Diag,
+}

@@ -1,5 +1,3 @@
-#![allow(clippy::large_enum_variant)]
-
 use crate::span::Span;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
