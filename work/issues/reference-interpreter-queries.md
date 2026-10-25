@@ -1,11 +1,12 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 200
 summary: "adtb-reference has no evaluator for queries, and the kernel term it would read has no written contract"
-branch: interp
-tags: [reference]
+closed: 2026-10-25
+tags:
+  - reference
 ---
 
 # Feature: reference interpreter for queries
@@ -33,3 +34,7 @@ Its findings are filed as `front-end-decimal-literals.md`,
 `anon-sum-ctor-index.md`, `spec-field-eval-order.md`,
 `spec-take-negative.md`, `spec-textual-specials.md` and
 `reference-unicode-text.md`.
+
+## 2026-10-25: resolved
+
+Landed as `feat(reference): evaluate queries over a database value`. Writes and blocks return "not yet"; they continue in `reference-interpreter-writes`. Unicode and parsing primitives continue in `reference-unicode-text`.

@@ -1,11 +1,14 @@
 ---
 created-at: 2026-10-25
-status: open
+status: wontfix
 kind: feature
 priority: 180
-summary: "writes.md:590 fails spec_examples_check"
-depends-on: [check-migration-operators]
-tags: [spec]
+summary: writes.md:590 fails spec_examples_check
+closed: 2026-10-25
+depends-on:
+  - check-migration-operators
+tags:
+  - spec
 ---
 
 # Feature: writes.md:590 passes the spec example check
@@ -33,3 +36,7 @@ writes.md:590:
 Root cause: the block is a migration operator, which the checker
 refuses unchecked (`check-migration-operators.md`). Nothing in the
 example is wrong.
+
+## 2026-10-25: wontfix
+
+The example is correct; it fails only because migration operators are not checked. Covered by `check-migration-operators.md`.

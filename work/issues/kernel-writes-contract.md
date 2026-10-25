@@ -1,11 +1,14 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 210
-summary: "docs/design/kernel.md states no contract for the kernel forms of writes and transact blocks"
-depends-on: [reference-interpreter-queries]
-tags: [design]
+summary: docs/design/kernel.md states no contract for the kernel forms of writes and transact blocks
+closed: 2026-10-25
+depends-on:
+  - reference-interpreter-queries
+tags:
+  - design
 ---
 
 # Feature: kernel contract for writes and blocks
@@ -145,3 +148,7 @@ action, so one term per relation suffices. Which referrers it reaches,
 and how `clear` and `cascade` combine with it, is the interpreter's,
 by [../spec/semantics.md §6.4](../../docs/spec/semantics.md#64-delete-actions).
 ````
+
+## 2026-10-25: resolved
+
+Merged into `docs/design/kernel.md` as section 4, "Writes and blocks", in `feat(reference): evaluate queries over a database value`.
