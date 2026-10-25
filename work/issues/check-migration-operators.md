@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 170
 summary: "migration operators are not type checked, so 10 spec blocks fail"
-tags: [lang]
+branch: adtb-lang3
+tags:
+  - lang
 ---
 
 # Feature: check migration operators

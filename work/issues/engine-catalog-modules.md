@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 160
 summary: "the checker has no catalog:: or sys:: modules and refuses engine declarations, so 30 spec blocks fail"
-tags: [lang]
+branch: adtb-lang3
+tags:
+  - lang
 ---
 
 # Feature: engine catalog modules
