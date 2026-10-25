@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 98
 summary: "an anonymous sum numbers its constructors in written order, so one type spelled two ways can compare its values unequal"
-tags: [lang]
+branch: lang
+tags:
+  - lang
 ---
 
 # Anonymous sum constructor indices follow written order

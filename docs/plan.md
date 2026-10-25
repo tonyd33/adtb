@@ -306,9 +306,26 @@ track proceeds in order (1, 2 and 3, 4, 5, 6). Milestone 7 needs 2 and
 6. Milestones 8 to 13 are sequential, except that 12's derived
 features may start once 8 is done.
 
+The storage track is the critical path: milestones 4, 5, 6, then 7.
+The language track must finish before 7 but is shorter. The storage
+track is therefore staffed in parallel where its contracts allow. Once
+the page and buffer-pool interface of [design/storage.md](design/storage.md)
+and [design/sys.md](design/sys.md) is stated, the B-link tree and the
+slotted heap of 5 and the commit log and visibility of 6 are built
+against it while the pager of 4 is finished. Each milestone still
+exits in order.
+
+The goal of the first release is a real application on adtb, stress
+tested under simulated load. Work on the application starts when 7
+exits: the engine passes the single-version suite with the
+differential and partition tests. Milestone 8 is then proven on that
+application, whose first schema changes are the first real
+migrations. No application runs on the reference interpreter.
+
 ## Tracking
 
-Each milestone becomes a list of tasks when it starts, not before.
+Each milestone has a ticket in `work/issues/` that depends on its
+tasks; a task's ticket names the design sections it implements.
 Spec bugs found while implementing go through the spec process
 (design space first when they contradict a ruling) and are fixed in
 the spec, not worked around in code.

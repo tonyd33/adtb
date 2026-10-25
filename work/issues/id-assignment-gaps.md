@@ -2,9 +2,10 @@
 created-at: 2026-10-25
 status: open
 kind: feature
-priority: 185
+priority: 702
 summary: "the spec gives no catalog ids to several engine-defined and re-scoped objects, and three operators carry only their first id"
-tags: [spec]
+tags:
+  - spec
 ---
 
 # Feature: close the catalog id assignment gaps

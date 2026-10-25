@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 186
 summary: "the surface has no way to take the one row out of a set, though the kernel has Kind::Only"
-tags: [spec]
+branch: default
+tags:
+  - spec
 ---
 
 # Feature: surface only

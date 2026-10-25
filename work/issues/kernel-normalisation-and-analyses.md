@@ -1,11 +1,12 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 150
 summary: "adtb-lang does not normalise kernel terms, and stratification, boundedness and totality are not checked over the normal form"
-branch: analysis
-tags: [lang]
+closed: 2026-10-25
+tags:
+  - lang
 ---
 
 # Feature: kernel normalisation and the analyses over it
@@ -30,3 +31,7 @@ The first pass of normalisation and the analyses is done in workspace
 `analysis`. In progress: a rebase, and a change to the `Program`
 signature. The spec rulings it raised are in
 `spec-fix-and-totality-rulings.md`.
+
+## 2026-10-25: resolved
+
+Landed as `feat(lang): normalise kernel terms and check stratification, boundedness and totality`. The contract is `docs/design/kernel.md` §7.

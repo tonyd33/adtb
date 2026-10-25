@@ -55,3 +55,24 @@ tags: [design]
 
 Each is settled when its milestone starts, through the design space
 where it needs a ruling.
+
+## 2026-10-25: owners
+
+`grep -rn TODO docs/design/` now finds 18 lines: the two at
+`kernel.md:25` and `kernel.md:27` are gone, `kernel.md:141` and
+`kernel.md:143` are new, and some lines moved. Each is settled by the
+ticket of the milestone that needs it:
+
+- `storage.md:56`, `storage.md:86`, `sys.md:35`, `runtime.md:140`:
+  `page-buffer-contract.md`;
+- `storage.md:434`: `vmcache.md`;
+- `mvcc.md:29`: `slotted-heap.md`;
+- `indexes.md:187`: `blink-tree.md`; `indexes.md:269` stays deferred;
+- `mvcc.md:308`: `ssi.md`;
+- `execution.md:121`: `executor.md`; `execution.md:148` stays deferred;
+- `oracle.md:79`: `engine-differential-tests.md`;
+- `schema-change.md:75`: `bundles.md`;
+- `kernel.md:398`: `codegen.md`;
+- `kernel.md:141`: `spec-field-eval-order.md`;
+- `kernel.md:143`: `anon-sum-ctor-index.md`;
+- `server.md:12`, `server.md:39`: milestone 10, not yet ticketed.

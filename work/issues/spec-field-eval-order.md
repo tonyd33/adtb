@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
-priority: 187
+priority: 287
 summary: "semantics §5.1 evaluates fields as written but the kernel sorts them by name, so which fault is reported can differ"
-tags: [spec]
+branch: default
+tags:
+  - spec
 ---
 
 # Feature: fault choice among the fields of one value

@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 97
 summary: "the kernel types the source of min, max and avg over a group as Set, where semantics requires Set⁺"
-tags: [lang]
+branch: lang
+tags:
+  - lang
 ---
 
 # min, max and avg over a group get a possibly empty source

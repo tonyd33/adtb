@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 95
 summary: "decimal literals of another scale, integer literals against Decimal s, and div over decimals are refused though the spec accepts them"
-tags: [lang]
+branch: lang
+tags:
+  - lang
 ---
 
 # Decimal literals are refused against decimals of another scale

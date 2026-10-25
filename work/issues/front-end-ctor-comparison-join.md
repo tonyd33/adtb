@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 96
-summary: "comparing values of two constructors of one sum is refused instead of checking at their join"
-tags: [lang]
+summary: comparing values of two constructors of one sum is refused instead of checking at their join
+branch: lang
+tags:
+  - lang
 ---
 
 # Comparing values of two constructors of one sum is refused

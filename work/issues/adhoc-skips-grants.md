@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 99
 summary: "check_adhoc silently skips commands, grants, revokes, roles, peers and temp declarations, so they pass unchecked"
-tags: [lang]
+branch: lang
+tags:
+  - lang
 ---
 
 # Ad hoc commands, grants, roles, peers and temp declarations pass unchecked

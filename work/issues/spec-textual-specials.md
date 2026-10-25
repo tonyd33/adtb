@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
-priority: 189
+priority: 289
 summary: "the textual forms of NaN, the infinities, time values, Bytes and Period are undefined, and syntax.md and interop.md point at each other for them"
-tags: [spec]
+branch: default
+tags:
+  - spec
 ---
 
 # Feature: textual forms of special values

@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 190
 summary: "seven rulings on totality, positivity, boundedness and key preservation from the normalisation work are not yet in the design space or the spec"
-tags: [spec]
+branch: default
+tags:
+  - spec
 ---
 
 # Feature: spec rulings on fix, totality and boundedness
