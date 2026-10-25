@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 715
 summary: no planner turns a normalised kernel term into a physical plan
+branch: adtb-planner
 tags:
   - engine
 ---
