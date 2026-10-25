@@ -214,14 +214,15 @@ impl CommitLog {
     /// Postcondition: every id below [`CommitLog::reserved`] has resolved.
     pub fn open<R: Runtime>(pager: &mut Pager<R>, root: Pid) -> Result<CommitLog, PageError> {
         let page = pager.read(root)?;
-        check_role(root, page, ROOT_PAGE);
-        let state = Root::read(page);
+        check_role(root, &page, ROOT_PAGE);
+        let state = Root::read(&page);
+        drop(page);
         let mut directories = Vec::new();
         let mut at = Some(state.first_directory);
         while let Some(pid) = at {
             let page = pager.read(pid)?;
-            check_role(pid, page, DIRECTORY_PAGE);
-            let dir = Directory::read(pid, page);
+            check_role(pid, &page, DIRECTORY_PAGE);
+            let dir = Directory::read(pid, &page);
             at = dir.next;
             directories.push(dir);
         }
@@ -256,8 +257,9 @@ impl CommitLog {
             let page = pager.read(pid)?;
             let open: Vec<usize> = (lo - n * self.per_page..hi - n * self.per_page)
                 .map(|i| i as usize)
-                .filter(|&i| status_at(page, i) == Status::InProgress)
+                .filter(|&i| status_at(&page, i) == Status::InProgress)
                 .collect();
+            drop(page);
             if !open.is_empty() {
                 pager.update(&[pid], |p| {
                     for &i in &open {
@@ -385,38 +387,34 @@ impl CommitLog {
             return Ok(Status::Committed);
         }
         let (n, i) = locate(x, self.per_page);
-        Ok(status_at(pager.read(self.page(n))?, i))
+        Ok(status_at(&pager.read(self.page(n))?, i))
     }
 
-    /// Record that `x` committed, then log its commit record.
+    /// Record that `x` committed and log its commit record, in one batch.
     ///
     /// Returns the LSN of the commit record. Fails, recording nothing, if the status page is
     /// damaged.
     ///
     /// Panics if `x` is not reserved or has resolved.
     pub fn commit<R: Runtime>(&mut self, pager: &mut Pager<R>, x: Xid) -> Result<Lsn, PageError> {
-        self.resolve(pager, x, Status::Committed)?;
-        Ok(pager.commit(x.0))
+        let (pid, i) = self.slot(x);
+        pager.commit(x.0, &[pid], |p| set_status(p[0], i, Status::Committed))
     }
 
-    /// Record that `x` aborted, then log its abort record.
+    /// Record that `x` aborted and log its abort record, in one batch.
     pub fn abort<R: Runtime>(&mut self, pager: &mut Pager<R>, x: Xid) -> Result<Lsn, PageError> {
-        self.resolve(pager, x, Status::Aborted)?;
-        Ok(pager.abort(x.0))
+        let (pid, i) = self.slot(x);
+        pager.abort(x.0, &[pid], |p| set_status(p[0], i, Status::Aborted))
     }
 
-    fn resolve<R: Runtime>(
-        &mut self,
-        pager: &mut Pager<R>,
-        x: Xid,
-        status: Status,
-    ) -> Result<Lsn, PageError> {
+    /// Returns the status page holding `x` and its index there.
+    fn slot(&self, x: Xid) -> (Pid, usize) {
         assert!(
             self.root.bound <= x && x < self.root.reserved,
             "{x:?} is not a reserved id above the bound"
         );
         let (n, i) = locate(x, self.per_page);
-        pager.update(&[self.page(n)], |p| set_status(p[0], i, status))
+        (self.page(n), i)
     }
 
     /// Drop the status of every id below `bound`, which then counts as committed, and free the

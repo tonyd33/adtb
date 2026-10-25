@@ -326,7 +326,7 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
                 if let Op::Insert { key, .. } = op {
                     first.insert(key, live[&key].1);
                 }
-                db.pager.commit(xid);
+                db.pager.commit(xid, &[], |_| {}).unwrap();
                 if xid % 250 == 0 {
                     let (found, dupes) = current(&mut db, |_| true);
                     assert_eq!(Vec::<String>::new(), dupes);
@@ -467,7 +467,7 @@ fn an_aborted_successor_is_replaced_by_the_next_writer() {
         let t = db.heaps[EMAIL].insert(pager, 1, &row).unwrap();
         let (email, google) = pair(&mut db.heaps, EMAIL, GOOGLE);
         email.retag(pager, t, 2, google, &row).unwrap();
-        pager.abort(2);
+        pager.abort(2, &[], |_| {}).unwrap();
         let u = email.update(pager, t, 3, &row, &[0]).unwrap();
         let old = email.read(pager, t).unwrap().unwrap();
         assert_eq!((3, Some(u.tid)), (old.header.xmax, old.header.next));
@@ -647,7 +647,7 @@ fn an_old_format_page_is_read_as_it_is_and_converted_on_insert() {
         let page = Pid(old[0].page());
         assert_eq!(
             PageKind::HeapFixed as u16,
-            storage::kind(pager.read(page).unwrap())
+            storage::kind(&pager.read(page).unwrap())
         );
         let v = heap.add_format(
             counter_type(true),
@@ -660,11 +660,11 @@ fn an_old_format_page_is_read_as_it_is_and_converted_on_insert() {
         let upgraded = |k: i64| vec![Value::I64(k), Value::I32(-1), Value::Text("n/a".into())];
         assert_eq!(upgraded(3), heap.read(pager, old[3]).unwrap().unwrap().row);
         heap.delete(pager, old[4], 2).unwrap();
-        assert_eq!(1, storage::format(pager.read(page).unwrap()));
+        assert_eq!(1, storage::format(&pager.read(page).unwrap()));
         let fresh = vec![Value::I64(100), Value::I32(5), Value::Text("new".into())];
         let t = heap.insert(pager, 3, &fresh).unwrap();
         assert_eq!(page.0, t.page());
-        let p = pager.read(page).unwrap();
+        let p = &pager.read(page).unwrap().to_vec();
         assert_eq!(
             (2, PageKind::HeapSlotted as u16),
             (storage::format(p), storage::kind(p))
@@ -720,7 +720,7 @@ fn a_page_whose_rows_outgrow_it_keeps_its_format_and_takes_no_insert() {
                 .unwrap();
             assert_ne!(first.0, t.page());
         }
-        assert_eq!(1, storage::format(pager.read(first).unwrap()));
+        assert_eq!(1, storage::format(&pager.read(first).unwrap()));
         let v = heap.read(pager, old[7]).unwrap().unwrap();
         assert_eq!(Value::Text("z".repeat(60)), v.row[2]);
         let u = heap
@@ -733,7 +733,7 @@ fn a_page_whose_rows_outgrow_it_keeps_its_format_and_takes_no_insert() {
             )
             .unwrap();
         assert!(!u.heap_only);
-        assert_eq!(1, storage::format(pager.read(first).unwrap()));
+        assert_eq!(1, storage::format(&pager.read(first).unwrap()));
         assert!(heap.verify(pager).unwrap().is_empty());
     });
 }
@@ -815,7 +815,7 @@ fn workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
                     (op, xid)
                 };
                 perform(&mut db, &mut live, &op, xid).expect("perform");
-                db.pager.commit(xid);
+                db.pager.commit(xid, &[], |_| {}).unwrap();
                 unacked.push(xid);
             }
             15..=16 => {
@@ -887,7 +887,7 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
     );
     let mut roots = None;
     finished(&mut sim, |rt| {
-        let (mut db, r) = Db::create(rt, 3);
+        let (db, r) = Db::create(rt, 3);
         db.pager.checkpoint();
         roots = Some(r);
     });

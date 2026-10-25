@@ -54,7 +54,6 @@ fn header(seq: u64) -> FileHeader {
         atomic_page_writes: true,
         checkpoint: Lsn(1234),
         catalog_root: Pid(9),
-        clog_bound: 5,
         epoch: 3,
         encryption: 0,
     }

@@ -61,7 +61,7 @@ pub(super) fn visit<R: Runtime, T>(
     pid: Pid,
     f: impl FnOnce(&Node) -> Result<T, Malformed>,
 ) -> Result<T, Error> {
-    let page = pager.read(pid)?;
+    let page = &pager.read(pid)?.to_vec();
     let node = Node::new(page)
         .ok()
         .filter(|n| n.owner() == owner)

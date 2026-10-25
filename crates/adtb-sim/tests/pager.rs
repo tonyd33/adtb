@@ -3,7 +3,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
-use adtb::runtime::Entropy;
+use adtb::runtime::{Entropy, Threads};
 use adtb::storage::{Damage, Edit, Finding, HEADER_LEN, OpenError, Options, PageKind, Pager, Pid};
 use adtb_sim::{
     Config, Fate, Faults, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation,
@@ -13,7 +13,7 @@ use adtb_sim::{
 const PAGE: usize = 4096;
 const SLOT: usize = 16;
 const SLOTS: usize = (PAGE - HEADER_LEN) / SLOT;
-const PAGES: usize = 12;
+const PAGES: usize = 24;
 const NAME: &str = "app.adt";
 const FATAL: &str = "fatal I/O error";
 
@@ -22,20 +22,29 @@ const FATAL: &str = "fatal I/O error";
 struct Layout {
     atomic: bool,
     log_block: u32,
+    /// Worker threads sharing one pager; 0 runs the single-threaded workload.
+    threads: usize,
+    /// Pool frames; more than the pages every thread may latch at once.
+    frames: usize,
 }
 
 const PLAIN: Layout = Layout {
     atomic: false,
     log_block: 512,
+    threads: 0,
+    frames: 5,
 };
 
 fn options(layout: Layout) -> Options {
-    let Layout { atomic, log_block } = layout;
+    let Layout {
+        atomic, log_block, ..
+    } = layout;
     Options {
         page_size: PAGE as u32,
         log_block,
         segment_size: 64 * 1024,
-        pool_frames: 5,
+        pool_frames: layout.frames,
+        max_pages: 4096,
         atomic_page_writes: atomic,
         ..Options::new(NAME)
     }
@@ -124,7 +133,7 @@ fn run_process<F: FnOnce(SimRuntime)>(sim: &mut Sim, body: F) -> Outcome {
 fn setup(sim: &mut Sim, client: &Client, layout: Layout) {
     let world = client.world.clone();
     let outcome = sim.run(move |rt| {
-        let mut pager = Pager::create(rt, &options(layout)).expect("create");
+        let pager = Pager::create(rt, &options(layout)).expect("create");
         let mut pages = Vec::new();
         for _ in 0..PAGES {
             pages.push(
@@ -194,11 +203,17 @@ fn workload(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
                     w.submitted.insert(xid, rt.recorded());
                 }
                 client.ledger.submit(xid);
-                match pager.change(&changes) {
-                    Ok(_) => {
-                        pager.commit(xid);
-                        unacked.push(xid);
+                let pids: Vec<Pid> = changes.iter().map(|(p, _)| *p).collect();
+                let committed = pager.commit(xid, &pids, |pages| {
+                    for (page, (_, edits)) in pages.iter_mut().zip(&changes) {
+                        for e in edits {
+                            let at = e.offset as usize;
+                            page[at..at + e.bytes.len()].copy_from_slice(&e.bytes);
+                        }
                     }
+                });
+                match committed {
+                    Ok(_) => unacked.push(xid),
                     Err(_) => client.ledger.abort(xid),
                 }
                 if rt.next_u64().is_multiple_of(2) {
@@ -214,6 +229,123 @@ fn workload(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
         }
     }
     ack(&mut pager, &mut unacked);
+}
+
+/// Returns whether every slot of `page` holds a value some transaction could have written.
+fn plausible(pid: Pid, page: &[u8]) -> bool {
+    (0..SLOTS).all(|s| {
+        let at = HEADER_LEN + s * SLOT;
+        let xid = u64::from_le_bytes(page[at..at + 8].try_into().unwrap());
+        let v = u64::from_le_bytes(page[at + 8..at + 16].try_into().unwrap());
+        (xid == 0 && v == 0) || v == value(xid, pid, s)
+    })
+}
+
+/// One of several threads sharing `pager`: transactions under exclusive latches taken in page
+/// order, optimistic and shared reads, flushes and checkpoints.
+fn worker(pager: &Pager<SimRuntime>, rt: &SimRuntime, client: &Client, steps: usize) {
+    let pages = client.world.lock().unwrap().pages.clone();
+    let pick = || pages[(rt.next_u64() % pages.len() as u64) as usize];
+    let mut unacked: Vec<u64> = Vec::new();
+    let ack = |unacked: &mut Vec<u64>| {
+        pager.flush_log();
+        let stamp = rt.recorded();
+        let mut w = client.world.lock().unwrap();
+        for xid in unacked.drain(..) {
+            client.ledger.acknowledge(xid);
+            w.acked.insert(xid, stamp);
+        }
+    };
+    for _ in 0..steps {
+        match rt.next_u64() % 12 {
+            0..=6 => {
+                let n = 1 + (rt.next_u64() % 3) as usize;
+                let mut chosen = BTreeSet::new();
+                while chosen.len() < n {
+                    chosen.insert(pick());
+                }
+                let Ok(mut guards) = chosen
+                    .iter()
+                    .map(|&p| pager.exclusive(p))
+                    .collect::<Result<Vec<_>, _>>()
+                else {
+                    continue;
+                };
+                let mut writes = Vec::new();
+                for &pid in &chosen {
+                    let start = (rt.next_u64() % SLOTS as u64) as usize;
+                    let len = 1 + (rt.next_u64() % 6) as usize;
+                    writes.push((pid, (start..(start + len).min(SLOTS)).collect::<Vec<_>>()));
+                }
+                let xid = {
+                    let mut w = client.world.lock().unwrap();
+                    w.next_xid += 1;
+                    let xid = w.next_xid;
+                    w.writes.insert(xid, writes.clone());
+                    w.submitted.insert(xid, rt.recorded());
+                    xid
+                };
+                client.ledger.submit(xid);
+                let mut refs: Vec<_> = guards.iter_mut().collect();
+                pager.commit_all(xid, &mut refs, |copies| {
+                    for (page, (pid, slots)) in copies.iter_mut().zip(&writes) {
+                        for &s in slots {
+                            let at = HEADER_LEN + s * SLOT;
+                            page[at..at + 8].copy_from_slice(&xid.to_le_bytes());
+                            page[at + 8..at + 16]
+                                .copy_from_slice(&value(xid, *pid, s).to_le_bytes());
+                        }
+                    }
+                });
+                drop(guards);
+                unacked.push(xid);
+                if rt.next_u64().is_multiple_of(3) {
+                    ack(&mut unacked);
+                }
+            }
+            7 | 8 => {
+                let pid = pick();
+                while let Ok(o) = pager.optimistic(pid) {
+                    let ok = o.read(|p| plausible(pid, p));
+                    if o.validate() {
+                        assert!(ok, "a validated optimistic read of {pid:?} saw a torn page");
+                        break;
+                    }
+                    rt.yield_now();
+                }
+            }
+            9 => {
+                if let Ok(p) = pager.shared(pick()) {
+                    assert!(plausible(p.pid(), &p), "a shared latch saw a torn page");
+                }
+            }
+            10 => {
+                pager.flush_pages(2);
+            }
+            _ if rt.next_u64().is_multiple_of(4) => pager.checkpoint(),
+            _ => ack(&mut unacked),
+        }
+    }
+    ack(&mut unacked);
+}
+
+/// Open the database and run `layout.threads` workers over it for `steps` steps each.
+fn concurrent(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
+    let Ok((pager, _)) = Pager::open(rt.clone(), &options(layout)) else {
+        return;
+    };
+    let pager = Arc::new(pager);
+    let workers: Vec<_> = (0..layout.threads)
+        .map(|i| {
+            let (pager, rt2, client) = (pager.clone(), rt.clone(), client.clone());
+            rt.spawn(&format!("worker {i}"), move || {
+                worker(&pager, &rt2, &client, steps)
+            })
+        })
+        .collect();
+    for w in workers {
+        rt.join(w);
+    }
 }
 
 /// What a reopened database shows the checks.
@@ -242,7 +374,7 @@ impl Recovered for Report {
 }
 
 fn inspect(rt: SimRuntime, pages: &[Pid], layout: Layout) -> Report {
-    let (mut pager, recovery) = match Pager::open(rt, &options(layout)) {
+    let (pager, recovery) = match Pager::open(rt, &options(layout)) {
         Ok(opened) => opened,
         Err(e) => {
             return Report {
@@ -265,7 +397,7 @@ fn inspect(rt: SimRuntime, pages: &[Pid], layout: Layout) -> Report {
     for &pid in pages {
         report
             .pages
-            .insert(pid, pager.read(pid).ok().map(<[u8]>::to_vec));
+            .insert(pid, pager.read(pid).ok().map(|p| p.to_vec()));
     }
     report
 }
@@ -416,7 +548,14 @@ fn crash_loop(
             + Duration::from_micros(500 + (seed * 7919 + round as u64 * 104_729) % 60_000);
         sim.crash_at(at);
         let c = client.clone();
-        if run_process(&mut sim, |rt| workload(rt, &c, layout, 400)) == Outcome::Crashed {
+        let body = |rt: SimRuntime| {
+            if layout.threads == 0 {
+                workload(rt, &c, layout, 400);
+            } else {
+                concurrent(rt, &c, layout, 150);
+            }
+        };
+        if run_process(&mut sim, body) == Outcome::Crashed {
             tally.crashes += 1;
         }
         sim.set_faults(quiet());
@@ -499,6 +638,8 @@ fn torn_log_blocks_lose_no_acknowledged_commit() {
         Layout {
             atomic: false,
             log_block: 2048,
+            threads: 0,
+            frames: 5,
         },
         false,
     );
@@ -517,6 +658,8 @@ fn atomic_page_writes_need_no_images() {
         Layout {
             atomic: true,
             log_block: 512,
+            threads: 0,
+            frames: 5,
         },
         false,
     );
@@ -694,7 +837,7 @@ fn allocations_survive_crashes_and_never_repeat() {
             sim.crash_at(sim.now() + Duration::from_micros(300 + (seed * 31 + round * 977) % 9000));
             let d = durable.clone();
             run_process(&mut sim, |rt| {
-                let Ok((mut p, _)) = Pager::open(rt, &options(PLAIN)) else {
+                let Ok((p, _)) = Pager::open(rt, &options(PLAIN)) else {
                     return;
                 };
                 loop {
@@ -772,4 +915,77 @@ fn crash_replay_at_every_flush_boundary() {
         recording.flushes().len()
     );
     assert!(images > 100, "{images} images");
+}
+
+const THREADED: Layout = Layout {
+    atomic: false,
+    log_block: 512,
+    threads: 4,
+    frames: 14,
+};
+
+#[test]
+fn threads_sharing_a_pager_lose_nothing_across_crashes() {
+    let t = seeds(
+        700..710,
+        Faults {
+            torn_p: 0.5,
+            ..quiet()
+        },
+        THREADED,
+        false,
+    );
+    assert!(t.crashes > 10, "{t:?}");
+    assert!(t.acked > 100, "{t:?}");
+}
+
+#[test]
+fn threads_sharing_a_pager_under_every_fault() {
+    seeds(
+        800..808,
+        Faults {
+            torn_p: 0.3,
+            corrupt_p: 0.002,
+            latent_p: 0.001,
+            misdirect_p: 0.002,
+            lost_write_p: 0.002,
+            fail_p: 0.002,
+            ..quiet()
+        },
+        THREADED,
+        true,
+    );
+}
+
+#[test]
+fn threads_finish_and_every_acknowledged_write_stays() {
+    for seed in 900..904 {
+        let mut sim = Sim::new(seed, Config::default());
+        let client = Client::new();
+        setup(&mut sim, &client, THREADED);
+        let c = client.clone();
+        assert_eq!(
+            Outcome::Finished,
+            sim.run(|rt| concurrent(rt, &c, THREADED, 120))
+        );
+        let pages = client.world.lock().unwrap().pages.clone();
+        let mut report = Report::default();
+        assert_eq!(
+            Outcome::Finished,
+            sim.run(|rt| report = inspect(rt, &pages, THREADED))
+        );
+        let world = client.world.lock().unwrap();
+        let problems = judge(&report, &client.ledger, &world, "", false);
+        assert!(problems.is_empty(), "seed {seed}: {problems:#?}");
+        let acked = world
+            .writes
+            .keys()
+            .filter(|&&x| client.ledger.fate(x) == Some(Fate::Acknowledged))
+            .count();
+        assert_eq!(
+            world.writes.len(),
+            acked,
+            "every transaction ends acknowledged"
+        );
+    }
 }

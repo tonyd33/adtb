@@ -23,7 +23,6 @@ pub struct FileHeader {
     pub atomic_page_writes: bool,
     pub checkpoint: Lsn,
     pub catalog_root: Pid,
-    pub clog_bound: u64,
     pub epoch: u32,
     /// The encryption scheme; 0 is a plaintext file, the only one written so far.
     pub encryption: u32,
@@ -74,7 +73,7 @@ impl FileHeader {
         out.extend_from_slice(&flags.to_le_bytes());
         out.extend_from_slice(&self.checkpoint.0.to_le_bytes());
         out.extend_from_slice(&self.catalog_root.0.to_le_bytes());
-        out.extend_from_slice(&self.clog_bound.to_le_bytes());
+        out.extend_from_slice(&[0; 8]);
         out.extend_from_slice(&self.epoch.to_le_bytes());
         out.extend_from_slice(&self.encryption.to_le_bytes());
         out.resize(REGION, 0);
@@ -109,8 +108,10 @@ impl FileHeader {
             atomic_page_writes: c.u16() & ATOMIC_PAGE_WRITES != 0,
             checkpoint: Lsn(c.u64()),
             catalog_root: Pid(c.u64()),
-            clog_bound: c.u64(),
-            epoch: c.u32(),
+            epoch: {
+                c.take::<8>();
+                c.u32()
+            },
             encryption: c.u32(),
         };
         valid_page_size(header.page_size).then_some(header)

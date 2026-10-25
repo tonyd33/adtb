@@ -95,7 +95,7 @@ impl LargeStore {
         let mut out = Vec::with_capacity(pointer.len as usize);
         let mut at = Some(pointer.first);
         while let Some(tid) = at {
-            let page = pager.read(Pid(tid.page()))?;
+            let page = &pager.read(Pid(tid.page()))?.to_vec();
             let Slot::Normal { at: range, .. } = page::get(page, usize::from(tid.slot())) else {
                 panic!("chunk {tid:?} of a large value is missing");
             };

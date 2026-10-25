@@ -33,9 +33,12 @@ impl<R: Runtime> Pager<R> {
     /// A page is damaged when the file's copy fails verification and the pool holds no newer one,
     /// or when its LSN differs from that of the last record the log holds for it, or when a record
     /// of it does not continue from the one before.
-    pub fn verify(&mut self) -> Verification {
+    pub fn verify(&self) -> Verification {
         self.flush_log();
-        let img = self.log.load(&mut self.drv);
+        let img = {
+            let mut log = self.log();
+            self.io(|d| log.load(d))
+        };
         let s = img.first().map(|first| scan(&img, first, Mode::Verify));
         let mut findings: Vec<Finding> = Vec::new();
         let mut commits = Vec::new();
@@ -73,12 +76,13 @@ impl<R: Runtime> Pager<R> {
         let logged = last.keys().next_back().map_or(0, |p| p.0 + 1);
         for n in Pid::FIRST_DATA.0..file_pages.max(logged) {
             let pid = Pid(n);
-            if let Some(&damage) = self.damaged.get(&pid) {
+            let known = self.meta().damaged.get(&pid).copied();
+            if let Some(damage) = known {
                 findings.push(Finding::Page { pid, damage });
                 continue;
             }
             let disk = self.read_disk(pid);
-            let resident = self.frames.get(&pid).map(|f| page::lsn(&f.page));
+            let resident = self.mem.lock_shared(pid.0, &self.rt).map(|g| page::lsn(&g));
             let found = match (&disk, resident) {
                 (Err(d), _) => {
                     findings.push(Finding::Page { pid, damage: *d });
@@ -95,14 +99,12 @@ impl<R: Runtime> Pager<R> {
                 (Ok((buf, _)), None) => Some(page::lsn(buf)),
             };
             let Some(found) = found else {
-                self.damaged.insert(
-                    pid,
-                    if disk.is_err() {
-                        Damage::Unreadable
-                    } else {
-                        Damage::Checksum
-                    },
-                );
+                let damage = if disk.is_err() {
+                    Damage::Unreadable
+                } else {
+                    Damage::Checksum
+                };
+                self.damage(pid, damage);
                 continue;
             };
             let stale = match (broken.get(&pid), last.get(&pid)) {
@@ -125,9 +127,10 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the number of pages the data file spans now.
-    fn file_pages(&mut self) -> u64 {
-        let name = self.name.clone();
-        let len = self.drv.open(&name, false).map_or(0, |(_, len)| len);
+    fn file_pages(&self) -> u64 {
+        let len = self
+            .io(|d| d.open(&self.name, false))
+            .map_or(0, |(_, len)| len);
         len.div_ceil(self.page_size as u64)
     }
 }

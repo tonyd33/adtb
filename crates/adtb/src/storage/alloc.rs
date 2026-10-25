@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use crate::runtime::Runtime;
 
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
@@ -48,36 +46,6 @@ impl<R: Runtime> Pager<R> {
         Pid((g * self.bitmap_span()).max(Pid::FIRST_DATA.0))
     }
 
-    /// Modify `pids` together through `f`, which sees every page at once, and log what changed.
-    ///
-    /// Returns the LSN of the last record logged. Fails, calling nothing, if a page is damaged.
-    ///
-    /// Panics if `f` changes a page's LSN or checksum, or as [`Pager::change`] does.
-    pub fn update<F>(&mut self, pids: &[Pid], f: F) -> Result<Lsn, PageError>
-    where
-        F: FnOnce(&mut [&mut [u8]]),
-    {
-        let pinned: BTreeSet<Pid> = pids.iter().copied().collect();
-        assert_eq!(
-            pinned.len(),
-            pids.len(),
-            "a page appears twice in one update"
-        );
-        for &pid in pids {
-            self.fetch(pid, &pinned)?;
-        }
-        let mut copies: Vec<Vec<u8>> = pids.iter().map(|p| self.frames[p].page.to_vec()).collect();
-        let mut views: Vec<&mut [u8]> = copies.iter_mut().map(|c| c.as_mut_slice()).collect();
-        f(&mut views);
-        let changes: Vec<(Pid, Vec<Edit>)> = pids
-            .iter()
-            .zip(&copies)
-            .map(|(pid, new)| (*pid, diff(&self.frames[pid].page, new)))
-            .filter(|(_, edits)| !edits.is_empty())
-            .collect();
-        self.change(&changes)
-    }
-
     /// Allocate a free page, set its header to `format`, `kind` and `owner`, and zero its contents.
     ///
     /// Fails, allocating nothing, if an allocation bitmap page it reads is damaged. A free page
@@ -87,9 +55,10 @@ impl<R: Runtime> Pager<R> {
     ///
     /// - The page was free, and is now marked allocated in the same change that formats it.
     /// - Its records lie in one batch with the bitmap's, so a crash keeps both or neither.
-    pub fn allocate(&mut self, format: u16, kind: PageKind, owner: u32) -> Result<Pid, PageError> {
+    pub fn allocate(&self, format: u16, kind: PageKind, owner: u32) -> Result<Pid, PageError> {
         let span = self.bitmap_span();
-        let mut g = self.alloc_group;
+        let mut hint = self.alloc_group.lock(&self.rt);
+        let mut g = *hint;
         loop {
             let map = self.bitmap_page(g);
             let first = g * span;
@@ -102,7 +71,7 @@ impl<R: Runtime> Pager<R> {
                 g += 1;
                 continue;
             };
-            self.alloc_group = g;
+            *hint = g;
             let pid = Pid(pid);
             let mut format_bytes = page::header_edit(format, kind, owner, 0);
             format_bytes.resize(self.page_size - FIRST_EDITABLE, 0);
@@ -142,7 +111,7 @@ impl<R: Runtime> Pager<R> {
     /// Mark `pid` free. Its contents stay until it is allocated again.
     ///
     /// Preconditions: nothing refers to `pid`, and it is allocated.
-    pub fn free(&mut self, pid: Pid) -> Result<Lsn, PageError> {
+    pub fn free(&self, pid: Pid) -> Result<Lsn, PageError> {
         let span = self.bitmap_span();
         let g = pid.0 / span;
         let map = self.bitmap_page(g);
@@ -151,12 +120,13 @@ impl<R: Runtime> Pager<R> {
             "{pid:?} is not an allocatable page"
         );
         let i = (pid.0 - g * span) as usize;
+        let mut hint = self.alloc_group.lock(&self.rt);
         let lsn = self.update(&[map], |pages| {
             let byte = &mut pages[0][HEADER_LEN + i / 8];
             assert!(*byte >> (i % 8) & 1 == 1, "{pid:?} is not allocated");
             *byte &= !(1 << (i % 8));
         })?;
-        self.alloc_group = self.alloc_group.min(g);
+        *hint = (*hint).min(g);
         Ok(lsn)
     }
 }

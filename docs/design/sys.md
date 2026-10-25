@@ -32,7 +32,23 @@ Invariants:
 [runtime.md §1](runtime.md#1-time-threads-and-randomness) and
 [§2](runtime.md#2-io-interface) as its module `runtime`.
 
-TODO: what each of `Frame` and `PageRef` represents, and its methods, are undecided. Until the vmcache pool exists the pager holds each frame in an `AlignedBuf`, and no consumer sees either type: pages reach heaps and indexes only as [storage.md §2.3](storage.md#23-page-access) states.
+Page memory is `pages::PageMemory`, with three guards in place of
+`Frame` and `PageRef`:
+
+```text
+PageMemory::reserve(page_size, pages) -> PageMemory    // every page evicted
+mem.lock_exclusive(pid, threads) -> Exclusive          // waits; latches an evicted page too
+mem.try_lock_exclusive(pid) -> Option<Exclusive>       // resident and unlatched only
+mem.lock_shared(pid, threads) -> Option<Shared>        // None if evicted
+mem.optimistic(pid) -> Option<Optimistic>              // None if exclusive or evicted
+mem.mark(pid) -> bool                                  // the clock's mark; true if marked already
+exclusive.resident() / exclusive.write(offset, bytes) / exclusive.evict() / exclusive.share()
+optimistic.read(offset, out) / optimistic.validate() / optimistic.upgrade()
+```
+
+`Exclusive` and `Shared` read as `&[u8]`. Waiting calls
+`threads.yield_now`. Only `adtb`'s pager uses these types; consumers
+see pages as [storage.md §2.3](storage.md#23-page-access) states.
 
 Rulings: project/arch/unsafe/confined
 

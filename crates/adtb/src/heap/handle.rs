@@ -222,7 +222,7 @@ impl Heap {
         pager: &mut Pager<R>,
         tid: Tid,
     ) -> Result<Option<(u16, Flags, Vec<u8>)>, PageError> {
-        let page = pager.read(Pid(tid.page()))?;
+        let page = &pager.read(Pid(tid.page()))?.to_vec();
         assert_eq!(
             self.id,
             storage::owner(page),
@@ -474,7 +474,7 @@ impl Heap {
                 self.hint = Some(pid);
                 return Ok(t);
             }
-            let page = pager.read(pid)?;
+            let page = &pager.read(pid)?.to_vec();
             assert_ne!(
                 newest,
                 storage::format(page),
@@ -627,7 +627,7 @@ impl Heap {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
         for (position, (pid, cat)) in check.leaves.into_iter().enumerate() {
-            let page = pager.read(pid)?;
+            let page = &pager.read(pid)?.to_vec();
             if storage::owner(page) != self.id {
                 problems.push(format!("{pid:?} is not owned by heap {}", self.id));
                 continue;
@@ -663,7 +663,7 @@ pub fn walk<R: Runtime>(
 ) -> Result<Option<Link>, PageError> {
     let mut at = start;
     loop {
-        let page = pager.read(Pid(at.page()))?;
+        let page = &pager.read(Pid(at.page()))?.to_vec();
         match page::get(page, usize::from(at.slot())) {
             Slot::Normal { flags, at: range } => {
                 let link = Link {

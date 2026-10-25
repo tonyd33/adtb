@@ -51,8 +51,7 @@ highest page format versions present, the finalization state of a
 format upgrade ([../spec/catalog.md §12.2](../spec/catalog.md#122-upgrades-and-downgrade)),
 the location of the last checkpoint record (§6), the root of the
 catalog, the encryption parameters when the file is encrypted (§4),
-the page size (§1.1), the commit log truncation bound
-([mvcc.md §4](mvcc.md#4-transaction-ids-the-commit-log-and-snapshots)),
+the page size (§1.1),
 whether page writes are atomic on the device (§5.2), and the current
 primary epoch ([replication.md §6](replication.md#6-epochs-and-fencing)).
 
@@ -78,7 +77,7 @@ offset  size  field
 62      2     flags: bit 0 page writes are atomic on the device
 64      8     LSN of the last checkpoint record
 72      8     page id of the catalog root, 0 before the catalog exists
-80      8     commit log truncation bound
+80      8     reserved, zero
 88      4     current primary epoch
 92      4     encryption scheme, 0 for a plaintext file
 96            encryption parameters; zero in a plaintext file
@@ -155,35 +154,36 @@ Rulings: layout/checksum/in-page-32, layout/endian/little, layout/format-version
 ### 2.3 Page access
 
 Heaps, indexes and every other page layout reach pages only through
-the pager, `adtb::storage::Pager`. The pager is one value owned by one
-thread; every operation takes it by `&mut`.
-
-Concurrent access is §2.4.
+the pager, `adtb::storage::Pager`. Every operation takes the pager by
+`&self`, and any number of threads share it; the latches behind this
+section's calls are §2.4.
 
 TODO: an unlogged change of a clean frame, for kill bits (§5.2), is undecided.
 
 ```text
-pager.read(pid) -> Result<&[u8], PageError>
+pager.read(pid) -> Result<PageShared, PageError>     // a shared latch, read as &[u8]
 pager.update(&[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, PageError>
 pager.change(&[(pid, vec![Edit { offset, bytes }]), ...]) -> Result<Lsn, PageError>
 pager.allocate(format, kind, owner) -> Result<Pid, PageError>
 pager.free(pid) -> Result<Lsn, PageError>
-pager.commit(xid) / pager.abort(xid) / pager.reserve_xids(next) -> Lsn
+pager.commit(xid, &[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, PageError>
+pager.abort(xid, &[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, PageError>
+pager.reserve_xids(next) -> Lsn
 pager.flush_log()
 pager.durable() -> Lsn
 PageError { pid, damage: Checksum | Unreadable | Stale { expected, found } }
 ```
 
-A page is pinned, resident and unchanged by anyone else for the
+A page is latched, resident and unchanged by anyone else for the
 duration of the call that names it. `read` returns the whole page,
-header included; the slice lives until the next call on the pager, and
-a caller that needs a page past that copies it. There is no release
-call.
+header included, under a shared latch released when the guard drops.
 
 Preconditions:
 
-- `update` and `change` name each page once, at most as many pages as
-  the pool has frames, and never pages 0 or 1.
+- `update`, `change`, `commit` and `abort` name each page once, and
+  never pages 0 or 1.
+- The pages latched at once, by every thread together, are fewer than
+  the pool's frames.
 - They write no byte below offset 12 and none past the page's end.
 - `free` names an allocated page that nothing refers to any more.
 
@@ -197,6 +197,10 @@ Postconditions:
   `update` gives its closure a copy of every page and logs the bytes
   the closure changed; `change` applies the edits as given. Each page
   changed gets one log record and its LSN; the call returns the last.
+  They take their latches in page id order.
+- `commit` and `abort` change their pages as `update` does and log the
+  commit or abort record of `xid` after the page records; they return
+  the record's LSN.
 - The records of one call are contiguous in the log and in one batch
   (§5.3), so after a crash all of them are replayed or none.
 - A change is durable once `durable()` is past the LSN it returned,
@@ -216,28 +220,27 @@ Postconditions:
 ```text
 let pid = pager.allocate(1, PageKind::HeapSlotted, heap_id)?;
 pager.update(&[pid], |p| slotted::insert(p[0], &row))?;
-pager.commit(xid);
+pager.commit(xid, &[status_page], |p| set_status(p[0], i, Status::Committed))?;
 pager.flush_log();          // now acknowledge the commit
 ```
 
 ### 2.4 Latches
 
-TODO: this section is stated and not implemented; the pager of §2.3 is.
-
-The concurrent pager is shared by every thread of the engine and taken
-by `&self`. A consumer reaches a page through one of three guards,
-each over the page state word of [sys.md §3](sys.md#3-page-state-word):
+A consumer that holds a page across several steps reaches it through
+one of three guards, each over the page state word of
+[sys.md §3](sys.md#3-page-state-word):
 
 ```text
 pager.shared(pid)     -> Result<Shared, PageError>      // count 1..252
 pager.exclusive(pid)  -> Result<Exclusive, PageError>   // 253
 pager.optimistic(pid) -> Result<Optimistic, PageError>  // version, no latch
-optimistic.read(|page: PageCopy| ...) -> T          // copies through atomic loads
+optimistic.read(|page: &[u8]| ...) -> T             // a copy taken through atomic loads
 optimistic.validate() -> bool
 optimistic.upgrade() -> Option<Exclusive>           // only if the version is unchanged
 exclusive.update(|page: &mut [u8]| ...) -> Lsn      // diffed and logged as in §2.3
 exclusive.change(edits) -> Lsn
-pager.change_all(&mut [&mut Exclusive], ...) -> Lsn // several pages in one batch
+pager.update_all(&mut [&mut Exclusive], |pages| ...) -> Lsn // several pages in one batch
+pager.commit_all(xid, &mut [&mut Exclusive], |pages| ...) -> Lsn // and the commit record
 ```
 
 Invariants:
@@ -653,20 +656,22 @@ and heap directories all name pages by page id, so any number of
 references may name one page. The page state word and the pinning of
 pages in flight are in [sys.md §3](sys.md#3-page-state-word).
 
-TODO: the replacement policy is undecided; the marked state of the page state word supports a clock with a one-bit reference count.
+Replacement is a clock over the resident pages: the hand marks an
+unlatched page, and evicts it if it is still marked when the hand
+comes back; any latch or optimistic read clears the mark.
 
-The pager of §2.3 keeps frames in a map from page id to an owned
-buffer, evicts the least recently used unpinned frame, and remembers
-the LSN of each page it dropped to catch a lost write when the page is
-read back. Moving it to this design needs: the reserved range and the
-`Frame` and `PageRef` types of [sys.md](sys.md), the state word per
-page with exclusive hold across read-in and write-out, the dirty page
-table and `rec_lsn` beside the frames rather than in them, and the
-dropped-page LSNs kept in a bounded table or in the state word's
-neighbourhood, since one entry per page touched does not bound
-memory. Group commit (§10.1) replaces the single caller of
-`flush_log`. Recovery reads whole segments into memory, and `verify`
-reads the whole retained log; both stream once segments are large.
+The pool reserves the range for `max_pages` page ids when it opens.
+The dirty page table, the set of pages changed since their last
+write, and the set written since the last data force sit beside the
+page memory under one lock. The pager remembers the LSN of each page
+it evicted, to catch a lost write when the page is read back; one
+entry per page touched does not bound memory, and a bounded table is
+still to come. `flush_log` is a lock held across the write and force,
+so a caller that waits for it finds its records durable already;
+group commit (§10.1) has no leader yet. Pages in flight for a read are
+held exclusive; writes go out under a shared latch. Recovery reads
+whole segments into memory, and `verify` reads the whole retained log;
+both stream once segments are large.
 
 Rulings: buffer/cache/vmcache, buffer/cache/vm-reserve/global-pid
 

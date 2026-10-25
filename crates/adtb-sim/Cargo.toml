@@ -9,5 +9,8 @@ publish.workspace = true
 [dependencies]
 adtb.workspace = true
 
+[dev-dependencies]
+adtb-sys.workspace = true
+
 [lints]
 workspace = true

@@ -3,6 +3,7 @@ mod block;
 mod crc;
 mod driver;
 mod header;
+mod lock;
 mod log;
 mod page;
 mod pager;
@@ -19,7 +20,9 @@ pub use page::{
     FIRST_EDITABLE, HEADER_LEN, MAX_PAGE_SIZE, MIN_PAGE_SIZE, PageKind, flags, format, header_edit,
     kind, lsn, owner,
 };
-pub use pager::{Damage, OpenError, Options, PageError, Pager};
+pub use pager::{
+    Damage, OpenError, Options, PageError, PageExclusive, PageOptimistic, PageShared, Pager,
+};
 pub use record::Edit;
 pub use recovery::Recovery;
 pub use verify::{Finding, Verification};
