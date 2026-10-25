@@ -61,9 +61,22 @@ fn grant_targets_resolve() {
     adhoc_refuses(&[], "grant call fn users to web", "is not a function");
     adhoc_refuses(
         &[],
-        "grant read catalog::plans to oncall",
-        "no module `catalog`",
+        "grant read catalog::nosuch to oncall",
+        "module `catalog` declares no `nosuch`",
     );
+    adhoc_refuses(
+        &[],
+        "grant read nosuch::plans to oncall",
+        "no module `nosuch`",
+    );
+}
+
+#[test]
+fn grants_on_engine_relations_are_deployment_state() {
+    adhoc_accepts(&[], "grant read catalog::plans to oncall");
+    adhoc_accepts(&[], "grant read catalog::constructors to analyst");
+    adhoc_accepts(&[], "revoke read sys::sessions from analyst");
+    adhoc_accepts(&[], "grant read catalog::bundles.(Bundle) to analyst");
 }
 
 #[test]
@@ -228,16 +241,63 @@ fn commands_with_nothing_to_resolve_check() {
 }
 
 #[test]
-fn commands_over_the_catalog_are_refused_until_it_exists() {
-    for text in [
-        "pin plan p",
-        "unpin plan p",
+fn commands_over_the_catalog_take_its_keys() {
+    adhoc_accepts(&[], "pin plan catalog::plans.key(8812)");
+    adhoc_accepts(&[("p", "Key catalog::plans")], "unpin plan p");
+    adhoc_accepts(&[], "cancel call sys::calls.key(812)");
+    adhoc_accepts(&[("s", "Key sys::sessions")], "terminate session s");
+    adhoc_refuses(&[], "pin plan users.key(1)", "expected Key catalog::plans");
+    adhoc_refuses(
+        &[("c", "Key sys::sessions")],
         "cancel call c",
+        "expected Key sys::calls",
+    );
+    adhoc_refuses(
+        &[("s", "I64")],
         "terminate session s",
-        "set setting StatementLimit = { limit: None }",
-    ] {
-        adhoc_refuses(&[], text, "not checked yet");
-    }
+        "expected Key sys::sessions",
+    );
+}
+
+#[test]
+fn set_setting_takes_the_payload_of_its_constructor() {
+    adhoc_accepts(&[], "set setting StatementLimit = { limit: None }");
+    adhoc_accepts(
+        &[],
+        "set setting StatementLimit = { limit: Some { value: 5s } }",
+    );
+    adhoc_accepts(&[], "set setting VacuumBudget = { io: 0.2, cpu: 0.5 }");
+    adhoc_refuses(
+        &[],
+        "set setting Nope = { limit: None }",
+        "`Nope` is not a constructor of `catalog::Setting`",
+    );
+    adhoc_refuses(&[], "set setting VacuumBudget = { io: 0.2 }", "cpu");
+    adhoc_refuses(
+        &[],
+        "set setting ConflictLog = { rows: \"many\" }",
+        "expected I64",
+    );
+}
+
+#[test]
+fn engine_names_are_reached_only_qualified() {
+    adhoc_accepts(&[], "from c in catalog::constructors select c.name");
+    adhoc_accepts(&[], "from s in sys::sessions select s.principal");
+    adhoc_refuses(&[], "from c in constructors select c.name", "constructors");
+    adhoc_refuses(&[], "from w in wait_samples select w.at", "wait_samples");
+}
+
+#[test]
+fn engine_constructors_resolve_by_expected_type() {
+    adhoc_accepts(
+        &[],
+        "from s in catalog::ctor_states where s.stage == Enabled select s.ctor",
+    );
+    adhoc_accepts(
+        &[],
+        "from s in catalog::ctor_states where s.stage == catalog::CtorStage.Enabled select s.ctor",
+    );
 }
 
 #[test]

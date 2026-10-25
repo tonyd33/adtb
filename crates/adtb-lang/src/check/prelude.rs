@@ -690,10 +690,7 @@ impl Checker<'_> {
         let ctors = match sel {
             None => None,
             Some(s) => {
-                let set = self
-                    .schema
-                    .relation_sel(rel, s)
-                    .map_err(|m| diag(e.span, m))?;
+                let set = self.relation_sel(rel, s).map_err(|m| diag(e.span, m))?;
                 self.schema
                     .normalize_ctors(self.schema.relation(rel).elem_def, set)
             }

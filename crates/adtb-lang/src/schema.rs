@@ -7,6 +7,12 @@ use crate::types::*;
 
 const PRELUDE_SRC: &str = include_str!("prelude.adt");
 
+/// The engine's declarations of its `catalog` and `sys` modules.
+pub const ENGINE_SRC: &str = include_str!("catalog.adt");
+
+/// The modules the engine declares, which no user file may name.
+pub const ENGINE_MODULES: [&str; 2] = ["catalog", "sys"];
+
 #[cfg(test)]
 #[path = "schema_tests.rs"]
 mod tests;
@@ -14,6 +20,8 @@ mod tests;
 #[derive(Clone, Debug)]
 pub struct ModuleDef {
     pub name: String,
+    /// Whether the engine declares the module: the prelude, `catalog` or `sys`.
+    pub engine: bool,
     pub types: BTreeMap<String, TypeId>,
     pub values: BTreeMap<String, ValueDef>,
 }
@@ -495,11 +503,19 @@ impl Schema {
                 }
             }
         };
+        let qualifier = |m: ModuleId| {
+            if m != PRELUDE && self.module(m).engine {
+                format!("{}::", self.module(m).name)
+            } else {
+                String::new()
+            }
+        };
         match ty {
             Ty::Base(Base::Decimal(s)) => format!("Decimal {s}"),
             Ty::Base(b) => format!("{b:?}"),
             Ty::Data { def, args, ctors } => {
-                let mut s = format!("{}{}", self.ty(*def).name, sel(*def, ctors));
+                let t = self.ty(*def);
+                let mut s = format!("{}{}{}", qualifier(t.module), t.name, sel(*def, ctors));
                 for a in args {
                     s.push(' ');
                     s.push_str(&atom(a));
@@ -512,7 +528,12 @@ impl Schema {
                 .unwrap_or_else(|| format!("t{i}")),
             Ty::Key { rel, ctors } => {
                 let r = self.relation(*rel);
-                format!("Key {}{}", r.name, sel(r.elem_def, ctors))
+                format!(
+                    "Key {}{}{}",
+                    qualifier(r.module),
+                    r.name,
+                    sel(r.elem_def, ctors)
+                )
             }
             Ty::Set(t) | Ty::NonEmpty(t) => format!("Set {}", atom(t)),
             Ty::Group(k, t) => format!("Group {} {}", atom(k), atom(t)),
@@ -599,6 +620,7 @@ pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Schema, Vec<FileDiag
         .ok()
         .expect("the prelude parses");
     let mut all = vec![(FileId::PRELUDE, prelude)];
+    all.extend(engine_files().into_iter().map(|f| (FileId::ENGINE, f)));
     all.extend(files.iter().cloned());
     let mut b = Builder {
         schema: Schema {
@@ -627,6 +649,29 @@ pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Schema, Vec<FileDiag
     }
 }
 
+/// The module files of the engine's own declarations.
+fn engine_files() -> Vec<ast::SchemaFile> {
+    let items = parse::parse_example(ENGINE_SRC, Options::default())
+        .ok()
+        .expect("the engine's declarations parse");
+    let mut files: Vec<ast::SchemaFile> = Vec::new();
+    for item in items {
+        match item {
+            ast::ExampleItem::Module(m) => files.push(ast::SchemaFile {
+                module: m,
+                decls: Vec::new(),
+            }),
+            ast::ExampleItem::Decl(d) => files
+                .last_mut()
+                .expect("the engine's declarations start with a module")
+                .decls
+                .push(d),
+            _ => panic!("the engine's declarations hold only modules and declarations"),
+        }
+    }
+    files
+}
+
 impl Builder<'_> {
     fn err(&mut self, file: FileId, span: Span, msg: impl Into<String>) {
         self.diags.push(FileDiag {
@@ -641,6 +686,7 @@ impl Builder<'_> {
         }
         self.schema.modules.push(ModuleDef {
             name: name.to_string(),
+            engine: self.schema.modules.is_empty() || ENGINE_MODULES.contains(&name),
             types: BTreeMap::new(),
             values: BTreeMap::new(),
         });
@@ -659,9 +705,11 @@ impl Builder<'_> {
         for (file, sf) in files {
             let file = *file;
             let prelude = file == FileId::PRELUDE;
+            let engine = file.is_engine();
             let module = self.module_id(&sf.module.text);
-            if !prelude && module == PRELUDE {
-                self.err(file, sf.module.span, "no module may be named `prelude`");
+            if !engine && self.schema.module(module).engine {
+                let msg = format!("no module may be named `{}`", sf.module.text);
+                self.err(file, sf.module.span, msg);
             }
             for decl in &sf.decls {
                 match decl {
@@ -689,17 +737,22 @@ impl Builder<'_> {
                     }
                     ast::Decl::Relation(r) => {
                         let id = RelId(self.schema.relations.len() as u32);
-                        if r.name.module.is_some() && !prelude {
-                            self.err(
-                                file,
-                                r.name.span(),
-                                "a relation name is qualified only in the engine's own declarations",
-                            );
-                        }
-                        self.declare_value(file, module, &r.name.name, ValueDef::Relation(id));
+                        let home = match &r.name.module {
+                            Some(m) if engine => self.module_id(&m.text),
+                            Some(_) => {
+                                self.err(
+                                    file,
+                                    r.name.span(),
+                                    "a relation name is qualified only in the engine's own declarations",
+                                );
+                                module
+                            }
+                            None => module,
+                        };
+                        self.declare_value(file, home, &r.name.name, ValueDef::Relation(id));
                         self.schema.relations.push(RelationDef {
                             name: r.name.name.text.clone(),
-                            module,
+                            module: home,
                             elem: Ty::Unit,
                             elem_def: TypeId(u32::MAX),
                             key: Vec::new(),
@@ -1293,7 +1346,7 @@ impl Builder<'_> {
                 }
                 ast::RelationClause::Volatile => {
                     volatile = true;
-                    if file != FileId::PRELUDE {
+                    if !file.is_engine() {
                         self.err(
                             file,
                             r.name.span(),
@@ -1628,6 +1681,10 @@ impl Builder<'_> {
                 }
                 let mut inner = Vec::new();
                 collect_defs(&f.ty, &mut inner);
+                // The engine's declarations may hold references inside value-level sums.
+                if t.file.is_engine() {
+                    inner.clear();
+                }
                 for d in inner {
                     if has_refs[d.0 as usize] {
                         errs.push((

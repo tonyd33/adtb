@@ -5,11 +5,13 @@ use std::fs;
 use std::path::Path;
 
 use adtb_lang::ast::{
-    AdhocItem, BundleItem, Decl, ExampleItem, Import, OperatorKind, QueryDecl, TxnDecl,
+    AdhocItem, BundleItem, Decl, ExampleItem, Import, MigrationFile, Operator, OperatorKind,
+    QueryDecl, TxnDecl,
 };
 use adtb_lang::check::{
     Checker, Context, Program, check_adhoc, check_query, check_schema, check_txn,
 };
+use adtb_lang::evolve::{Source, SourceDecl};
 use adtb_lang::parse::{Options, parse_example, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Schema, build};
@@ -157,6 +159,94 @@ fn prelude_source_matches_the_spec() {
     }
 }
 
+#[test]
+fn engine_source_matches_the_spec() {
+    let spec: Vec<(String, String)> = blocks()
+        .iter()
+        .filter(|b| b.is_adt() && matches!(b.file.as_str(), "catalog.md" | "security.md"))
+        .flat_map(|b| {
+            let items = parse_example(&b.text, Options { elisions: true })
+                .ok()
+                .unwrap_or_default();
+            items
+                .into_iter()
+                .filter_map(|i| match i {
+                    ExampleItem::Decl(d) => Some((
+                        format!("{} {}", decl_key(&d).0, decl_key(&d).1),
+                        unqualified(&b.text[decl_span(&d).range()]),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let mut failures = Vec::new();
+    for e in prelude_entries().iter().filter(|e| e.file == "catalog.adt") {
+        let name = format!("{} {}", e.key.0, e.key.1);
+        let found: Vec<&String> = spec
+            .iter()
+            .filter(|(n, _)| *n == name)
+            .map(|(_, t)| t)
+            .collect();
+        if found.is_empty() {
+            failures.push(format!(
+                "{}::{name} is declared nowhere in the spec",
+                e.module
+            ));
+        } else if !found.iter().any(|t| e.spelled(t)) {
+            failures.push(format!("{}::{name} differs from the spec", e.module));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn engine_source_declares_every_fixed_id() {
+    let catalog = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec/catalog.md"),
+    )
+    .unwrap();
+    let mut module = None;
+    let mut wanted: Vec<(String, &str, String)> = Vec::new();
+    for line in catalog.lines() {
+        if let Some(rest) = line.strip_prefix("Module `") {
+            let (m, kind) = rest.split_once("`, ").expect("Module `m`, kind:");
+            module = Some((
+                m.to_string(),
+                if kind.starts_with("types") {
+                    "type"
+                } else {
+                    "relation"
+                },
+            ));
+            continue;
+        }
+        if line.starts_with('#') {
+            module = None;
+        }
+        let Some((m, kind)) = &module else { continue };
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        if cells.len() < 3 || !cells[1].chars().all(|c| c.is_ascii_digit()) || cells[1].is_empty() {
+            continue;
+        }
+        let name = cells[2].trim_matches('`');
+        let name = name.rsplit("::").next().unwrap().to_string();
+        wanted.push((m.clone(), kind, name));
+    }
+    assert!(!wanted.is_empty(), "no fixed ids found");
+    let entries = prelude_entries();
+    let missing: Vec<String> = wanted
+        .iter()
+        .filter(|(m, kind, name)| {
+            !entries
+                .iter()
+                .any(|e| e.module == *m && e.key.0 == *kind && e.key.1 == *name)
+        })
+        .map(|(m, kind, name)| format!("{kind} {m}::{name}"))
+        .collect();
+    assert!(missing.is_empty(), "not declared:\n{}", missing.join("\n"));
+}
+
 /// The ad hoc parameters a block's `-- given` header declares, as name and type text.
 fn given(b: &Block) -> Vec<(String, String)> {
     let Some(header) = b
@@ -191,19 +281,45 @@ fn given(b: &Block) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The declarations of the prelude and of the engine's `catalog` and `sys` modules.
 fn prelude_entries() -> Vec<Entry> {
-    let src = include_str!("../src/prelude.adt");
-    let file = parse_schema(src, Options::default()).ok().expect("parses");
-    file.decls
-        .iter()
-        .map(|d| Entry {
-            module: "prelude".to_string(),
-            key: decl_key(d),
-            text: src[decl_span(d).range()].to_string(),
-            file: "prelude.adt".to_string(),
-            line: 0,
-        })
-        .collect()
+    let mut out = Vec::new();
+    for (src, file) in [
+        (include_str!("../src/prelude.adt"), "prelude.adt"),
+        (adtb_lang::schema::ENGINE_SRC, "catalog.adt"),
+    ] {
+        let mut module = String::new();
+        for item in parse_example(src, Options::default()).ok().expect("parses") {
+            match item {
+                ExampleItem::Module(m) => module = m.text,
+                ExampleItem::Decl(d) => out.push(Entry {
+                    module: module.clone(),
+                    key: decl_key(&d),
+                    text: unqualified(&src[decl_span(&d).range()]),
+                    file: file.to_string(),
+                    line: 0,
+                }),
+                _ => panic!("{file} holds only modules and declarations"),
+            }
+        }
+    }
+    out
+}
+
+/// The text of a declaration with the module qualifier of a relation name removed.
+fn unqualified(text: &str) -> String {
+    let toks = running::tokens(text);
+    match toks.as_slice() {
+        ["relation", m, "::", ..] => {
+            let at = text.find(m).expect("the qualifier");
+            let rest = &text[at + m.len()..];
+            format!(
+                "relation {}",
+                rest.trim_start().trim_start_matches("::").trim_start()
+            )
+        }
+        _ => text.to_string(),
+    }
 }
 
 /// The schema files of `entries`, one per module, each with the entries it holds by offset.
@@ -287,6 +403,126 @@ fn at(b: &Block, span: Span, msg: &str) -> String {
     format!("{}:{}: {msg}", b.file, spec_line(b, span.start as usize))
 }
 
+/// Returns whether a comment line of the block names a migration by its number, as `-- 0013` does, so its
+/// grants and revokes are operators of that migration.
+fn names_a_migration(b: &Block) -> bool {
+    b.text.lines().any(|l| {
+        l.trim_start()
+            .strip_prefix("-- ")
+            .is_some_and(|rest| rest.len() >= 4 && rest[..4].chars().all(|c| c.is_ascii_digit()))
+    })
+}
+
+/// Returns whether an operator only adds a declaration `entries` already holds as written, as when a block
+/// shows a migration of the history its part folds in.
+fn already_applied(entries: &[Entry], module: &str, b: &Block, op: &OperatorKind) -> bool {
+    let d = match op {
+        OperatorKind::AddType(t) => Decl::Type(t.clone()),
+        OperatorKind::AddRelation(r) => Decl::Relation(r.clone()),
+        OperatorKind::AddSet(s) => Decl::Set(s.clone()),
+        OperatorKind::DefineFn(f) => Decl::Fn(f.clone()),
+        OperatorKind::AddConstraint(c) => Decl::Constraint(c.clone()),
+        OperatorKind::AddCheck(c) => Decl::Check(c.clone()),
+        OperatorKind::Store(s) => Decl::Store(s.clone()),
+        OperatorKind::DefineAggregate(a) => Decl::Aggregate(a.clone()),
+        _ => return false,
+    };
+    let key = decl_key(&d);
+    let text = &b.text[decl_span(&d).range()];
+    entries
+        .iter()
+        .any(|e| e.module == module && e.key == key && e.spelled(text))
+}
+
+/// The declarations a block's comment states as its context, indented under a comment line ending in
+/// `with` or `with:`.
+fn context(b: &Block) -> Vec<Entry> {
+    let header: Vec<&str> = b.text.lines().collect();
+    let Some(start) = header.iter().position(|l| {
+        let l = l.trim_end();
+        l.starts_with("--") && (l.ends_with(" with") || l.ends_with("with:"))
+    }) else {
+        return Vec::new();
+    };
+    let text: String = header[start + 1..]
+        .iter()
+        .map_while(|l| l.strip_prefix("--   "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let line = b.line + 2 + start;
+    let parsed = parse_example(&text, Options { elisions: true })
+        .ok()
+        .unwrap_or_else(|_| panic!("{}:{line}: the context does not parse", b.file));
+    parsed
+        .into_iter()
+        .filter_map(|i| match i {
+            ExampleItem::Decl(d) => Some(Entry {
+                module: "auth".to_string(),
+                key: decl_key(&d),
+                text: text[decl_span(&d).range()].to_string(),
+                file: b.file.clone(),
+                line: line + text[..decl_span(&d).start as usize].matches('\n').count(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The source of the declarations `entries`, declaration `i` holding entry `i`.
+fn source_of(entries: &[Entry]) -> Result<Source, Vec<String>> {
+    let decls = entries
+        .iter()
+        .map(|e| SourceDecl {
+            module: e.module.clone(),
+            text: e.text.clone(),
+        })
+        .collect();
+    Source::new(decls).map_err(|ds| {
+        let src = Source {
+            decls: entries
+                .iter()
+                .map(|e| SourceDecl {
+                    module: e.module.clone(),
+                    text: e.text.clone(),
+                })
+                .collect(),
+            ..Source::default()
+        };
+        ds.iter()
+            .map(|d| render_in(&src, entries, None, d))
+            .collect()
+    })
+}
+
+/// Renders a diagnostic in a file of `src`: at the spec line of its entry when the declaration is the entry's
+/// text unchanged, else at block `b` naming the declaration.
+fn render_in(src: &Source, entries: &[Entry], b: Option<&Block>, d: &FileDiag) -> String {
+    if d.file.0 as usize >= src.decls.len() {
+        return d.diag.message.clone();
+    }
+    let i = d.file.0 as usize;
+    let text = src.file_text(d.file);
+    let at = (d.diag.span.start as usize).min(text.len());
+    let line_in = text[..at].matches('\n').count();
+    match entries.get(i) {
+        Some(e) if e.text == src.decls[i].text && e.module == src.decls[i].module => {
+            format!(
+                "{}:{}: {}",
+                e.file,
+                e.line + line_in.saturating_sub(1),
+                d.diag.message
+            )
+        }
+        _ => {
+            let first = src.decls[i].text.lines().next().unwrap_or_default();
+            match b {
+                Some(b) => format!("{}:{}: in `{first}`: {}", b.file, b.line, d.diag.message),
+                None => format!("in `{first}`: {}", d.diag.message),
+            }
+        }
+    }
+}
+
 /// Type checks block `b` against the running schema `part`.
 fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<String>> {
     let items = parse_example(&b.text, Options { elisions: true })
@@ -297,46 +533,52 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
                 b.file, b.line, ds[0].message
             )]
         })?;
+    let in_migration = names_a_migration(b);
     let mut entries = part.to_vec();
+    for d in context(b) {
+        entries.retain(|e| !(e.module == d.module && e.key == d.key));
+        entries.push(d);
+    }
     let mut module = "auth".to_string();
     let mut reads = None;
     let mut adhoc = Vec::new();
     let mut queries: Vec<QueryDecl> = Vec::new();
     let mut txns: Vec<TxnDecl> = Vec::new();
+    let mut migrations: Vec<MigrationFile> = Vec::new();
     let mut errs = Vec::new();
     let declare = |entries: &mut Vec<Entry>, module: &str, d: Decl| {
         let key = decl_key(&d);
-        let text = &b.text[decl_span(&d).range()];
-        if !prelude.iter().any(|e| e.key == key && e.spelled(text)) {
+        let text = unqualified(&b.text[decl_span(&d).range()]);
+        if !prelude.iter().any(|e| e.key == key && e.spelled(&text)) {
             running::push(entries, module, b, &d);
         }
+    };
+    let ident = |m: &str| adtb_lang::ast::Ident {
+        text: m.to_string(),
+        span: Span::default(),
     };
     for item in items {
         match item {
             ExampleItem::Module(m) => module = m.text,
+            ExampleItem::Decl(Decl::Store(st)) if !migrations.is_empty() => {
+                let m = migrations.last_mut().expect("a migration");
+                m.operators.push(Operator {
+                    span: st.span,
+                    kind: OperatorKind::Store(st),
+                });
+            }
             ExampleItem::Decl(d) => declare(&mut entries, &module, d),
             ExampleItem::Operator(op) => match op.kind {
-                OperatorKind::AddModule(_) => {}
-                OperatorKind::Grant(g) => adhoc.push(AdhocItem::Grant(g)),
-                OperatorKind::Revoke(r) => adhoc.push(AdhocItem::Revoke(r)),
-                OperatorKind::AddType(t) => declare(&mut entries, &module, Decl::Type(t)),
-                OperatorKind::AddRelation(r) => declare(&mut entries, &module, Decl::Relation(r)),
-                OperatorKind::AddSet(s) => declare(&mut entries, &module, Decl::Set(s)),
-                OperatorKind::DefineFn(f) => declare(&mut entries, &module, Decl::Fn(f)),
-                OperatorKind::RedefineFn(f) => {
-                    let name = f.name.text.clone();
-                    entries.retain(|e| !(e.module == module && e.key == ("fn", name.clone())));
-                    declare(&mut entries, &module, Decl::Fn(f));
-                }
-                OperatorKind::AddConstraint(c) => {
-                    declare(&mut entries, &module, Decl::Constraint(c))
-                }
-                OperatorKind::AddCheck(c) => declare(&mut entries, &module, Decl::Check(c)),
-                OperatorKind::Store(s) => declare(&mut entries, &module, Decl::Store(s)),
-                OperatorKind::DefineAggregate(a) => {
-                    declare(&mut entries, &module, Decl::Aggregate(a))
-                }
-                _ => errs.push(at(b, op.span, "migration operators are not checked yet")),
+                OperatorKind::Grant(g) if !in_migration => adhoc.push(AdhocItem::Grant(g)),
+                OperatorKind::Revoke(r) if !in_migration => adhoc.push(AdhocItem::Revoke(r)),
+                _ if already_applied(&entries, &module, b, &op.kind) => {}
+                _ => match migrations.last_mut() {
+                    Some(m) if m.module.text == module => m.operators.push(op),
+                    _ => migrations.push(MigrationFile {
+                        module: ident(&module),
+                        operators: vec![op],
+                    }),
+                },
             },
             ExampleItem::BundleHeader(_) | ExampleItem::Import(Import::Fn(_)) => {}
             ExampleItem::Import(Import::Module(m)) => reads = Some(m.text),
@@ -350,10 +592,33 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
             ExampleItem::Adhoc(a) => adhoc.push(a),
         }
     }
-    let (schema, program) = match schema_of(&entries) {
+    let mut src = match source_of(&entries) {
         Ok(s) => s,
         Err(mut es) => {
             errs.append(&mut es);
+            return Err(errs);
+        }
+    };
+    for m in &migrations {
+        match src.migrate(m, &b.text) {
+            Ok(next) => src = next,
+            Err(refusal) => {
+                errs.extend(refusal.operators.iter().map(|d| at(b, d.span, &d.message)));
+                let result = refusal.result.as_deref().unwrap_or(&src);
+                errs.extend(
+                    refusal
+                        .recheck
+                        .iter()
+                        .map(|d| render_in(result, &entries, Some(b), d)),
+                );
+                return Err(errs);
+            }
+        }
+    }
+    let (schema, program) = match src.check() {
+        Ok(s) => s,
+        Err(ds) => {
+            errs.extend(ds.iter().map(|d| render_in(&src, &entries, Some(b), d)));
             return Err(errs);
         }
     };

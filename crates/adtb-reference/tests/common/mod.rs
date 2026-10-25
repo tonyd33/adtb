@@ -8,7 +8,7 @@ use adtb_lang::check::{
 };
 use adtb_lang::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
-use adtb_lang::schema::{Schema, build};
+use adtb_lang::schema::{Schema, ValueDef, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::{RelId, Ty, TypeId};
 use adtb_reference::{
@@ -54,13 +54,11 @@ impl Fixture {
     }
 
     pub fn rel(&self, name: &str) -> RelId {
-        let i = self
-            .schema
-            .relations
-            .iter()
-            .position(|r| r.name == name)
-            .unwrap_or_else(|| panic!("no relation `{name}`"));
-        RelId(i as u32)
+        let m = self.schema.module_named("app").expect("the module");
+        match self.schema.module(m).values.get(name) {
+            Some(&ValueDef::Relation(r)) => r,
+            _ => panic!("no relation `{name}`"),
+        }
     }
 
     pub fn interp(&self) -> Interpreter<'_> {

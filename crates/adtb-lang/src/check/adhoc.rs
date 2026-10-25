@@ -38,14 +38,23 @@ impl Checker<'_> {
                 ),
             )
         };
+        let schema_relation = |c: &Self, r: &RelationRef, what: &str| -> R<()> {
+            let span = c.relation_ref(r)?;
+            let rel = c.relation_named(&r.relation)?;
+            if c.schema.module(c.schema.relation(rel).module).engine {
+                Ok(())
+            } else {
+                Err(operator(span, what))
+            }
+        };
         match p {
-            Privilege::Read(r, _) => Err(operator(self.relation_ref(r)?, "read")),
-            Privilege::Insert(r) => Err(operator(self.relation_ref(r)?, "insert")),
-            Privilege::Update(r, _) => Err(operator(self.relation_ref(r)?, "update")),
-            Privilege::Delete(r) => Err(operator(self.relation_ref(r)?, "delete")),
+            Privilege::Read(r, _) => schema_relation(self, r, "read"),
+            Privilege::Insert(r) => schema_relation(self, r, "insert"),
+            Privilege::Update(r, _) => schema_relation(self, r, "update"),
+            Privilege::Delete(r) => schema_relation(self, r, "delete"),
             Privilege::Retag(from, to) => {
-                self.relation_ref(from)?;
-                Err(operator(self.relation_ref(to)?, "retag"))
+                schema_relation(self, from, "retag")?;
+                schema_relation(self, to, "retag")
             }
             Privilege::CallFn(f) => match self.lookup_value(f) {
                 Ok(ValueDef::Function(_)) => Err(diag(
@@ -66,9 +75,7 @@ impl Checker<'_> {
     fn relation_ref(&self, r: &RelationRef) -> R<Span> {
         let rel = self.relation_named(&r.relation)?;
         if let Some(sel) = &r.sel {
-            self.schema
-                .relation_sel(rel, sel)
-                .map_err(|e| diag(r.span, e))?;
+            self.relation_sel(rel, sel).map_err(|e| diag(r.span, e))?;
         }
         Ok(r.span)
     }
@@ -174,15 +181,38 @@ impl Checker<'_> {
         Ok(())
     }
 
-    fn command(&mut self, c: &Command, span: Span) -> R<()> {
-        let not_yet = |what: &str| {
-            diag(
-                span,
-                format!(
-                    "`{what}` is not checked yet: it names a catalog relation, and the catalog module does not exist yet"
-                ),
-            )
+    /// Returns the type of a key of the engine's relation `module::name`.
+    fn engine_key(&self, module: &str, name: &str) -> Ty {
+        let m = self.schema.module_named(module).expect("an engine module");
+        let Some(&ValueDef::Relation(rel)) = self.schema.module(m).values.get(name) else {
+            panic!("the engine declares `{module}::{name}`");
         };
+        Ty::Key { rel, ctors: None }
+    }
+
+    fn set_setting(&mut self, name: &ast::Ident, value: &ast::Expr) -> R<()> {
+        let m = self
+            .schema
+            .module_named("catalog")
+            .expect("the catalog module");
+        let def = self.schema.module(m).types["Setting"];
+        let setting = self.schema.ty(def);
+        let c = setting.ctor_index(&name.text).ok_or_else(|| {
+            diag(
+                name.span,
+                format!("`{}` is not a constructor of `catalog::Setting`", name.text),
+            )
+        })?;
+        let mut fields: Vec<(String, Ty)> = setting.ctors()[c as usize]
+            .fields
+            .iter()
+            .map(|f| (f.name.clone(), f.ty.clone()))
+            .collect();
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+        self.check(value, &Ty::Record(fields)).map(|_| ())
+    }
+
+    fn command(&mut self, c: &Command, span: Span) -> R<()> {
         match c {
             Command::Explain { target, .. } => match target {
                 ExplainTarget::Registered { .. } => Ok(()),
@@ -190,11 +220,19 @@ impl Checker<'_> {
                 ExplainTarget::Write(w) => self.write(w).map(|_| ()),
                 ExplainTarget::Transact(b) => self.transact(b, None).map(|_| ()),
             },
-            Command::PinPlan(_) => Err(not_yet("pin plan")),
-            Command::UnpinPlan(_) => Err(not_yet("unpin plan")),
-            Command::CancelCall(_) => Err(not_yet("cancel call")),
-            Command::TerminateSession(_) => Err(not_yet("terminate session")),
-            Command::SetSetting(..) => Err(not_yet("set setting")),
+            Command::PinPlan(e) | Command::UnpinPlan(e) => {
+                let plan = self.engine_key("catalog", "plans");
+                self.check(e, &plan).map(|_| ())
+            }
+            Command::CancelCall(e) => {
+                let call = self.engine_key("sys", "calls");
+                self.check(e, &call).map(|_| ())
+            }
+            Command::TerminateSession(e) => {
+                let session = self.engine_key("sys", "sessions");
+                self.check(e, &session).map(|_| ())
+            }
+            Command::SetSetting(name, value) => self.set_setting(name, value),
             Command::Vacuum(r) | Command::Verify(Some(r)) => self.relation_named(r).map(|_| ()),
             Command::Reindex {
                 relation, index, ..
@@ -205,10 +243,7 @@ impl Checker<'_> {
                         CtorScope::One(c) => CtorSel::One(c.clone()),
                         CtorScope::Many(cs) => CtorSel::Many(cs.clone()),
                     };
-                    let set = self
-                        .schema
-                        .relation_sel(rel, &sel)
-                        .map_err(|e| diag(span, e))?;
+                    let set = self.relation_sel(rel, &sel).map_err(|e| diag(span, e))?;
                     let ctx = std::mem::replace(&mut self.ctx, Context::Schema);
                     let r = fields
                         .iter()

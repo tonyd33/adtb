@@ -9,6 +9,7 @@ use crate::span::{Diag, FileDiag, FileId, Span};
 mod aggregate;
 mod fix;
 mod totality;
+mod volatile;
 
 #[cfg(test)]
 mod tests;
@@ -16,6 +17,7 @@ mod tests;
 pub use aggregate::ranges_over_bindings;
 pub use fix::{bounded, stratified};
 pub use totality::Totality;
+pub use volatile::{reads_volatile, write_depends_on_volatile};
 
 /// Applies every acceptance rule stated over the normal form to the terms reachable from `roots`.
 ///
@@ -134,9 +136,35 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
     );
     roots
         .into_iter()
-        .filter_map(|(root, t)| accept(&n.terms, &[t]).err().map(|m| site(root, m)))
+        .filter_map(|(root, t)| {
+            accept(&n.terms, &[t])
+                .and_then(|()| volatile_free(schema, &n.terms, root, t))
+                .err()
+                .map(|m| site(root, m))
+        })
         .collect()
 }
+
+/// Refuses a schema object that must not read a volatile relation but does.
+fn volatile_free(schema: &Schema, terms: &Terms, root: Root, t: Tm) -> Result<(), String> {
+    let what = match root {
+        Root::Function(f) if schema.function(f).stored.is_some() => "a stored view",
+        Root::Function(_) | Root::Domain(_) | Root::Item(_) | Root::Query => return Ok(()),
+        Root::Constraint(_) => "a constraint",
+        Root::Check(_) => "a row check",
+        Root::Retag(_) => "a delete action",
+        Root::Default(..) => "a default",
+        Root::Computed(..) => "a computed field",
+        Root::IndexField(..) => "an index expression",
+    };
+    if reads_volatile(schema, terms, t) {
+        Err(format!("{what} must not read a volatile relation"))
+    } else {
+        Ok(())
+    }
+}
+
+const VOLATILE_WRITE: &str = "a write must not depend on a volatile relation: not in its target, its predicate, its values, or a value or condition it depends on";
 
 /// Normalises checked ad hoc text and applies the acceptance rules over its items' normal forms, `spans` giving each item's span.
 pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span]) -> Vec<Diag> {
@@ -152,7 +180,18 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
     n.items
         .iter()
         .zip(spans)
-        .filter_map(|(t, span)| accept(&n.terms, &[*t]).err().map(|m| Diag::new(*span, m)))
+        .filter_map(|(t, span)| {
+            accept(&n.terms, &[*t])
+                .and_then(|()| {
+                    if write_depends_on_volatile(schema, &n.terms, *t) {
+                        Err(VOLATILE_WRITE.to_string())
+                    } else {
+                        Ok(())
+                    }
+                })
+                .err()
+                .map(|m| Diag::new(*span, m))
+        })
         .collect()
 }
 
@@ -165,5 +204,9 @@ pub(crate) fn query_diag(schema: &Schema, p: &Program, q: &Query, span: Span) ->
 /// Normalises a checked registered transaction and applies the acceptance rules over its normal form.
 pub(crate) fn txn_diag(schema: &Schema, p: &Program, t: &Txn, span: Span) -> Result<(), Diag> {
     let n = norm::txn(schema, p, t).map_err(|e| Diag::new(span, e.message))?;
-    accept(&n.terms, &[n.body]).map_err(|m| Diag::new(span, m))
+    accept(&n.terms, &[n.body]).map_err(|m| Diag::new(span, m))?;
+    if write_depends_on_volatile(schema, &n.terms, n.body) {
+        return Err(Diag::new(span, VOLATILE_WRITE));
+    }
+    Ok(())
 }

@@ -43,11 +43,16 @@ const EXTENSIONS: &[(&str, &[(&str, &str)])] = &[
             ("derived.md", "module billing\ntype Invoice"),
             ("derived.md", "-- 0030, from version 29"),
             ("derived.md", "add type Payment"),
+            ("derived.md", "type Shape { id: Key shapes }"),
         ],
     ),
     (
         "evolution.md",
         &[("evolution.md", "type Badge { name: Text }")],
+    ),
+    (
+        "interop.md",
+        &[("interop.md", "-- 0019\nmodule auth\ndefine fn geohash")],
     ),
     ("model.md", &[("model.md", "role: Text }\ntype Visit")]),
     ("queries.md", &[("queries.md", "type Post = {")]),

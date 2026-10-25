@@ -398,6 +398,9 @@ impl Checker<'_> {
                 if let Some(g) = &local.group {
                     return Ok(self.group_as_set(local.var, g));
                 }
+                if let Some((def, ctors, field)) = self.row_fields.get(&local.var).cloned() {
+                    self.note_field(q.name.span, def, ctors.as_deref(), &field, false);
+                }
                 let tm = self.var_tm(local.var);
                 return Ok(Out {
                     tm,
@@ -912,6 +915,9 @@ impl Checker<'_> {
             .into_iter()
             .find(|(n, _)| *n == f.text)
         {
+            if let Ty::Data { def, ctors, .. } = &o.ty {
+                self.note_field(f.span, *def, ctors.as_deref(), &f.text, false);
+            }
             return Ok(self.out(Kind::Field(o.tm, f.text.clone()), fty));
         }
         if let Some(rel) = o.rows
@@ -996,10 +1002,7 @@ impl Checker<'_> {
 
     fn select(&mut self, x: &Expr, sel: &ast::CtorSel, span: Span) -> R<Out> {
         if let Some(rel) = self.relation_name(x) {
-            let set = self
-                .schema
-                .relation_sel(rel, sel)
-                .map_err(|e| diag(span, e))?;
+            let set = self.relation_sel(rel, sel).map_err(|e| diag(span, e))?;
             let def = self.schema.relation(rel).elem_def;
             return Ok(self.rel_out(rel, self.schema.normalize_ctors(def, set)));
         }
@@ -1012,6 +1015,7 @@ impl Checker<'_> {
         };
         let set = match &elem {
             Ty::Data { def, ctors, .. } => {
+                self.note_sel(*def, o.rows, sel);
                 let s = self.schema.type_sel(*def, sel).map_err(|e| diag(span, e))?;
                 if let Some(have) = ctors
                     && let Some(c) = s.iter().find(|c| !have.contains(c))
@@ -1082,7 +1086,6 @@ impl Checker<'_> {
         let def = self.schema.ty(r.elem_def);
         let set: CtorSet = match &rref.sel {
             Some(sel) => self
-                .schema
                 .relation_sel(rel, sel)
                 .map_err(|e| diag(rref.span, e))?,
             None => (0..def.ctors().len() as u32).collect(),
@@ -1098,6 +1101,7 @@ impl Checker<'_> {
                 format!("no row of `{}` has a field `{}`", r.name, f.text),
             ));
         };
+        self.note_field(f.span, r.elem_def, Some(&with_field), &f.text, false);
         let fty = def
             .field(first, &f.text)
             .expect("filtered")
@@ -1473,6 +1477,7 @@ impl Checker<'_> {
             }
         };
         if let Target::Decl(def, _) = &target {
+            self.note(ctor.map_or(path.name.span, |c| c.span), Ref::Ctor(*def, c));
             let t = self.schema.ty(*def);
             if *def == self.schema.prelude_type("Span") {
                 return Err(diag(span, "a span is built only by `span(start, end)`"));
@@ -1638,6 +1643,7 @@ impl Checker<'_> {
                             format!("`{ctor_name}` has no field `{}`", name.text),
                         ));
                     }
+                    self.note_field(name.span, def, Some(&[c]), &name.text, e.span == name.span);
                     named.push((name.text.clone(), e));
                 }
                 if let Some(s) = site {
@@ -1712,6 +1718,12 @@ impl Checker<'_> {
             match &base {
                 Some(b) if same_ctor || *header => {
                     let ft = self.add(Kind::Field(b.tm, f.clone()), fty);
+                    given.push((f.clone(), ft));
+                }
+                None if *header && self.carry.is_some_and(|(_, d)| d == def) => {
+                    let (row, _) = self.carry.expect("a carried row");
+                    let rt = self.var_tm(row);
+                    let ft = self.add(Kind::Field(rt, f.clone()), fty);
                     given.push((f.clone(), ft));
                 }
                 _ => match site {

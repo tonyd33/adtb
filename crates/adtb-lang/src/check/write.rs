@@ -471,7 +471,6 @@ impl Checker<'_> {
         let ctors = match &target.sel {
             Some(sel) => {
                 let set = self
-                    .schema
                     .relation_sel(rel, sel)
                     .map_err(|e| diag(target.span, e))?;
                 self.schema.normalize_ctors(def, set)
@@ -790,10 +789,7 @@ impl Checker<'_> {
                             CtorScope::One(c) => ast::CtorSel::One(c.clone()),
                             CtorScope::Many(cs) => ast::CtorSel::Many(cs.clone()),
                         };
-                        let set = self
-                            .schema
-                            .relation_sel(p.rel, &sel)
-                            .map_err(|e| diag(span, e))?;
+                        let set = self.relation_sel(p.rel, &sel).map_err(|e| diag(span, e))?;
                         self.schema.normalize_ctors(def, set)
                     }
                 };

@@ -66,6 +66,12 @@ pub struct FileId(pub u32);
 
 impl FileId {
     pub const PRELUDE: FileId = FileId(u32::MAX);
+    pub const ENGINE: FileId = FileId(u32::MAX - 1);
+
+    /// Returns whether the file holds the engine's own declarations, the prelude's included.
+    pub fn is_engine(self) -> bool {
+        self == FileId::PRELUDE || self == FileId::ENGINE
+    }
 }
 
 /// A diagnostic in one of several source files.

@@ -63,7 +63,10 @@ impl Visible {
     /// Every user module, as ad hoc text sees them.
     pub fn all(schema: &Schema) -> Visible {
         Visible {
-            modules: (1..schema.modules.len() as u32).map(ModuleId).collect(),
+            modules: (0..schema.modules.len() as u32)
+                .map(ModuleId)
+                .filter(|&m| !schema.module(m).engine)
+                .collect(),
         }
     }
 
@@ -295,7 +298,7 @@ pub fn check_adhoc(schema: &Schema, items: &[AdhocItem]) -> Result<BTreeSet<Stri
     }
 }
 
-/// The fields every constructor of the set has, which a check or an index names bare.
+/// The fields every constructor of the set has, and the computed fields, which a check or an index names bare.
 fn row_fields(schema: &Schema, rel: RelId, ctors: Option<&[u32]>) -> Vec<String> {
     let def = schema.ty(schema.relation(rel).elem_def);
     let all: Vec<u32> = (0..def.ctors().len() as u32).collect();
@@ -313,6 +316,7 @@ fn row_fields(schema: &Schema, rel: RelId, ctors: Option<&[u32]>) -> Vec<String>
             }
         }
     }
+    names.extend(schema.relation(rel).computed.iter().map(|c| c.name.clone()));
     names
 }
 

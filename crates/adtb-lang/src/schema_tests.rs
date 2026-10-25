@@ -364,6 +364,95 @@ fn engine_only_relation_forms_are_refused() {
 }
 
 #[test]
+fn engine_only_relation_forms_name_both_refusals() {
+    let errs = errors(&[&module(
+        "type A = { k: I64 }\nrelation sys::a : A key k volatile",
+    )]);
+    assert!(
+        errs.iter()
+            .any(|e| e == "a relation name is qualified only in the engine's own declarations"),
+        "{errs:?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e == "`volatile` appears only in the engine's own declarations"),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn the_engine_declares_the_catalog_and_sys_modules() {
+    let s = build_src(&[]).unwrap();
+    for (module, relation, volatile) in [
+        ("catalog", "types", false),
+        ("catalog", "constructors", false),
+        ("catalog", "ctor_states", false),
+        ("catalog", "migration_ops", false),
+        ("catalog", "bundles", false),
+        ("catalog", "plans", false),
+        ("catalog", "settings", false),
+        ("catalog", "audit", false),
+        ("catalog", "grants", false),
+        ("sys", "ctor_stats", true),
+        ("sys", "commit_times", true),
+        ("sys", "sessions", true),
+        ("sys", "calls", true),
+        ("sys", "pending_drops", true),
+        ("sys", "verify_findings", true),
+        ("sys", "format", true),
+    ] {
+        let m = s.module_named(module).expect("an engine module");
+        assert!(s.module(m).engine);
+        let Some(&ValueDef::Relation(r)) = s.module(m).values.get(relation) else {
+            panic!("no relation `{module}::{relation}`");
+        };
+        assert_eq!(volatile, s.relation(r).volatile, "{module}::{relation}");
+        assert_eq!(m, s.relation(r).module, "{module}::{relation}");
+    }
+}
+
+#[test]
+fn every_sys_relation_is_volatile_and_no_catalog_relation_is() {
+    let s = build_src(&[]).unwrap();
+    for r in &s.relations {
+        let module = &s.module(r.module).name;
+        assert_eq!(module == "sys", r.volatile, "{module}::{}", r.name);
+    }
+}
+
+#[test]
+fn engine_modules_are_not_user_modules() {
+    let s = build_src(&[RUNNING]).unwrap();
+    let vis = crate::resolve::Visible::all(&s);
+    let names: Vec<&str> = vis
+        .modules
+        .iter()
+        .map(|&m| s.module(m).name.as_str())
+        .collect();
+    assert_eq!(vec!["auth"], names);
+}
+
+#[test]
+fn no_user_module_takes_an_engine_module_name() {
+    for name in ["prelude", "catalog", "sys"] {
+        assert_error(
+            &[&format!("module {name}\ntype A = {{ k: I64 }}")],
+            &format!("no module may be named `{name}`"),
+        );
+    }
+}
+
+#[test]
+fn catalog_relations_are_not_in_scope_unqualified() {
+    assert_error(
+        &[&module(
+            "type Note = { id: Key notes, about: Key constructors }\nrelation notes : Note key id generate sequence",
+        )],
+        "no `constructors` in scope",
+    );
+}
+
+#[test]
 fn function_signatures() {
     let s = build_src(&[&module(
         "fn latest [a: Ord] (xs: Set a) -> Option a = max(x for x in xs)\nfn having (p: I64 -> Bool) -> Set I64 = []",

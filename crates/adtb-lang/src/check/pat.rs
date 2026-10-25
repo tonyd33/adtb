@@ -169,6 +169,7 @@ impl Checker<'_> {
         span: Span,
     ) -> R<Matched> {
         let s = self.synth(scrutinee)?;
+        self.note(span, Ref::Match(s.ty.clone()));
         let (s, by_key) = match &s.ty {
             Ty::Key { rel, ctors } => {
                 let (rel, ctors) = (*rel, ctors.clone());
@@ -224,7 +225,9 @@ impl Checker<'_> {
             }
         }
         let wild = vec![Pat::wild(span)];
-        if let Some(w) = self.useful(&covered, &wild, std::slice::from_ref(&sty)) {
+        if self.coverage
+            && let Some(w) = self.useful(&covered, &wild, std::slice::from_ref(&sty))
+        {
             return Err(match (&w[0], is_sum) {
                 (Witness::Any, false) => diag(
                     span,
@@ -458,6 +461,16 @@ impl Checker<'_> {
                 }
                 let name = ctor.as_ref().unwrap_or(&path.name);
                 let set = self.pattern_ctor(ty, path, ctor.as_ref(), p.span)?;
+                let def = match ty {
+                    Ty::Data { def, .. } => Some(*def),
+                    _ => None,
+                };
+                if let Some(d) = def {
+                    match self.schema.ty(d).ctor_index(&name.text) {
+                        Some(i) => self.note(name.span, Ref::Ctor(d, i)),
+                        None => self.note_sel(d, rows, &ast::CtorSel::One(name.clone())),
+                    }
+                }
                 let row = ty::restrict(self.schema, ty, set.clone());
                 let cols: Vec<(String, Ty)> = if set.len() == 1 {
                     self.ctor_cols(ty, set[0])
@@ -497,6 +510,10 @@ impl Checker<'_> {
                                     f.field.span,
                                     format!("field `{}` is matched twice", f.field.text),
                                 ));
+                            }
+                            if let Some(d) = def {
+                                let pun = f.pattern.is_none();
+                                self.note_field(f.field.span, d, Some(&set), &f.field.text, pun);
                             }
                             let sub = match &f.pattern {
                                 None => {

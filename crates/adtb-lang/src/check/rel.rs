@@ -52,6 +52,7 @@ impl Checker<'_> {
             match &f.ty {
                 Ty::Key { rel: own, .. } if *own == rel => match r.generate {
                     Some(crate::schema::Generator::Sequence) => Ok(Ty::Base(Base::I64)),
+                    None if self.schema.module(r.module).engine => Ok(Ty::Base(Base::I64)),
                     Some(crate::schema::Generator::Uuidv7) => Ok(Ty::Data {
                         def: self.schema.prelude_type("Uuid"),
                         args: Vec::new(),

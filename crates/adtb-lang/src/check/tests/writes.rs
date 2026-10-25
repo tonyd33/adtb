@@ -1431,3 +1431,80 @@ fn upsert_rows_join_declared_row_types() {
         "Zed",
     );
 }
+
+const VOLATILE_WRITE: &str = "a write must not depend on a volatile relation";
+
+#[test]
+fn a_volatile_read_never_reaches_a_write() {
+    no(
+        &[],
+        "insert users from (from s in sys::sessions select { name: s.principal })",
+        VOLATILE_WRITE,
+    );
+    no(
+        &[],
+        "delete u in users where exists s in sys::sessions where s.principal == u.name",
+        VOLATILE_WRITE,
+    );
+    no(
+        &[],
+        "transact
+           let n = count(s for s in sys::sessions)
+           insert users { name: text(n) }",
+        VOLATILE_WRITE,
+    );
+    no(
+        &[],
+        "transact
+           let busy = exists s in sys::sessions where s.principal == \"x\"
+           if busy then insert users { name: \"x\" } else skip",
+        VOLATILE_WRITE,
+    );
+}
+
+#[test]
+fn a_volatile_read_may_be_returned() {
+    ok(&[], "from s in sys::sessions select s.principal");
+    ok(
+        &[],
+        "transact
+           let open = from s in sys::sessions select s.principal
+           insert users { name: \"x\" }
+           return open",
+    );
+}
+
+#[test]
+fn a_registered_transaction_keeps_volatile_reads_out_of_its_writes() {
+    txn_no(
+        "txn t () -> () =
+           transact
+             let n = count(s for s in sys::sessions)
+             insert users { name: text(n) }",
+        VOLATILE_WRITE,
+    );
+}
+
+#[test]
+fn schema_objects_never_read_a_volatile_relation() {
+    schema_no(
+        "constraint quiet = from s in sys::sessions where s.principal == \"\" select s",
+        "a constraint must not read a volatile relation",
+    );
+    schema_no(
+        "fn busy () -> Set Text = from s in sys::sessions select s.principal\nstore busy",
+        "a stored view must not read a volatile relation",
+    );
+    schema_no(
+        "type Tick = { id: Key ticks, n: I64 }\nrelation ticks : Tick key id generate sequence default n = count(s for s in sys::sessions)",
+        "a default must not read a volatile relation",
+    );
+    schema_no(
+        "type Tick = { id: Key ticks, n: I64 }\nrelation ticks : Tick key id generate sequence computed busy: I64 = count(s for s in sys::sessions)",
+        "a computed field must not read a volatile relation",
+    );
+    schema_no(
+        "fn sessions_now () -> I64 = count(s for s in sys::sessions)\nconstraint none = from u in users where sessions_now() > 100 select u",
+        "a constraint must not read a volatile relation",
+    );
+}

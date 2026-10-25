@@ -1,0 +1,361 @@
+module catalog
+
+type TypeDef { id: Key types, module: Text, name: Text, params: I32,
+               dropped: Option Key migrations }
+  = SumType { ordered: Bool }
+  | Newtype { over: Text }
+relation types : TypeDef key id
+
+type Constructor = { id: Key constructors, sum: Key types, name: Text, position: I32,
+                     dropped: Option Key migrations }
+relation constructors : Constructor key id
+
+type CtorStage = Declared | Enabled | Deprecated
+type CtorState = { relation: Key relations, ctor: Key constructors, stage: CtorStage }
+relation ctor_states : CtorState key (relation, ctor)
+type ValueState = { ctor: Key constructors, stage: CtorStage }
+relation value_states : ValueState key ctor
+
+type Field { id: Key fields, name: Text, field_type: Text, position: I32,
+             dropped: Option Key migrations }
+  = Header  { sum: Key types }
+  | Payload { ctor: Key constructors }
+relation fields : Field key id
+
+type RelKind = Base | Stored | Catalog | Volatile
+type Relation = { id: Key relations, module: Text, name: Text, sum: Key types,
+                  kind: RelKind, dropped: Option Key migrations }
+relation relations : Relation key id
+
+type NamedSet = { id: Key named_sets, relation: Key relations, name: Text,
+                  dropped: Option Key migrations }
+relation named_sets : NamedSet key id
+type SetMember = { set: Key named_sets, ctor: Key constructors }
+relation set_members : SetMember key (set, ctor)
+
+type IndexKind = PrimaryKey | Unique | Plain | Interval
+type Index = { id: Key indexes, relation: Key relations, kind: IndexKind, clause: Text,
+               dropped: Option Key migrations }
+relation indexes : Index key id
+type IndexCtor = { index: Key indexes, ctor: Key constructors }
+relation index_ctors : IndexCtor key (index, ctor)
+
+type Constraint = { id: Key constraints, module: Text, name: Text, text: Text,
+                    dropped: Option Key migrations }
+relation constraints : Constraint key id
+
+type Function { id: Key functions, module: Text, name: Text, signature: Text,
+                deterministic: Bool, hash: Bytes, dropped: Option Key migrations }
+  = Language  { body: Text }
+  | Wasm      { code: Key wasm_modules, export: Text }
+  | Host      { symbol: Text, version: Text }
+  | Aggregate { body: Text }
+relation functions : Function key id
+
+type WasmModule = { hash: Key wasm_modules, bytes: Bytes }
+relation wasm_modules : WasmModule key hash
+
+type Extension = { id: Key extensions, name: Text, version: Text, hash: Bytes, module: Text }
+relation extensions : Extension key id
+
+type Default = { id: Key defaults, relation: Key relations, field: Key fields, text: Text,
+                 dropped: Option Key migrations }
+relation defaults : Default key id
+
+type Computed = { id: Key computed, relation: Key relations, name: Text, field_type: Text,
+                  text: Text, dropped: Option Key migrations }
+relation computed : Computed key id
+
+type Migration = { version: Key migrations, hash: Bytes, text: Text, applied: Instant }
+relation migrations : Migration key version
+
+type CtorTarget = InRelation { relation: Key relations, ctor: Key constructors }
+                | OfType     { ctor: Key constructors }
+type Place = Last | Before { ctor: Key constructors } | After { ctor: Key constructors }
+
+type Operator
+  = AddModule         { module: Text }
+  | DropModule        { module: Text }
+  | Install           { module: Text, version: Text, package: Bytes }
+  | Uninstall         { module: Text }
+  | AddType           { sum: Key types, decl: Term }
+  | DropType          { sum: Key types }
+  | AddRelation       { relation: Key relations, decl: Term }
+  | DropRelation      { relation: Key relations }
+  | AddSet            { set: Key named_sets, relation: Key relations, name: Text }
+  | DropSet           { set: Key named_sets }
+  | AddConstructor    { ctor: Key constructors, sum: Key types, decl: Term, place: Place }
+  | RemoveConstructor { ctor: Key constructors }
+  | Enable            { target: CtorTarget }
+  | Disable           { target: CtorTarget }
+  | Deprecate         { target: CtorTarget }
+  | RenameConstructor { ctor: Key constructors, name: Text }
+  | RenameType        { sum: Key types, name: Text }
+  | RenameRelation    { relation: Key relations, name: Text }
+  | RenameSet         { set: Key named_sets, name: Text }
+  | RenameField       { field: Key fields, name: Text }
+  | Split             { ctor: Key constructors, decl: Term, routing: Term }
+  | Merge             { ctor: Key constructors, decl: Term, routing: Option Term }
+  | Nest              { ctor: Key constructors, decl: Term }
+  | Unnest            { ctor: Key constructors }
+  | AddField          { field: Key fields, decl: Term, fill: Term }
+  | DropField         { field: Key fields }
+  | MoveField         { field: Key fields, header: Bool, fill: Option Term }
+  | AddUnique         { index: Key indexes, relation: Key relations, fields: Term }
+  | DropUnique        { index: Key indexes }
+  | Rekey             { relation: Key relations, key: Key indexes, fields: Term }
+  | AddIndex          { index: Key indexes, relation: Key relations, interval: Bool, fields: Term }
+  | DropIndex         { index: Key indexes }
+  | AddDefault        { default: Key defaults, relation: Key relations, field: Key fields,
+                        value: Term }
+  | DropDefault       { default: Key defaults }
+  | DefineFn          { function: Key functions, decl: Term }
+  | RedefineFn        { function: Key functions, decl: Term }
+  | DropFn            { function: Key functions }
+  | DefineAggregate   { function: Key functions, decl: Term }
+  | DropAggregate     { function: Key functions }
+  | AddConstraint     { constraint: Key constraints, body: Term }
+  | DropConstraint    { constraint: Key constraints }
+  | AddCheck          { constraint: Key constraints, body: Term }
+  | DropCheck         { constraint: Key constraints }
+  | Store             { view: Key relations, function: Key functions, decl: Term }
+  | Unstore           { view: Key relations }
+  | AddComputed       { computed: Key computed, relation: Key relations, name: Text,
+                        decl: Term }
+  | RedefineComputed  { computed: Key computed, decl: Term }
+  | DropComputed      { computed: Key computed }
+  | Grant             { privilege: Text, target: Option Term, grantee: Text, grant_option: Bool }
+  | Revoke            { privilege: Text, target: Option Term, grantee: Text }
+  | AdoptTzdb         { release: Text, data: Bytes }
+  | Script            { write: Term }
+  | Revert            { migration: Key migrations }
+type Term = new Text
+type MigrationOp = { migration: Key migrations, ordinal: I32, op: Operator }
+relation migration_ops : MigrationOp key (migration, ordinal)
+
+type ArmTarget = OfFn         { function: Key functions }
+               | OfConstraint { constraint: Key constraints }
+               | OfComputed   { computed: Key computed }
+type ClauseBody = Joins       { set: Key named_sets }
+                | Member      { ctor: Key constructors }
+                | Arm         { target: ArmTarget, arm: Term }
+                | Replacement { index: Key indexes, kind: IndexKind, fields: Term }
+                | Carry       { field: Key fields }
+                | Fill        { field: Key fields, fill: Term }
+type OpClause = { migration: Key migrations, ordinal: I32, clause: I32, body: ClauseBody }
+relation migration_clauses : OpClause key (migration, ordinal, clause)
+
+type Priority ordered = AdHoc | Background | Regular
+type BundleState = Active | Superseded { at: Instant } | Retired { at: Instant }
+type Bundle = { id: Key bundles, name: Text, family: Text, owner: Text,
+                pins: Key migrations, hash: Bytes, edition: Text, catalog: Option I64,
+                hides_new: Bool, lease: Option Duration, renewed: Instant,
+                priority: Priority, memory_share: Option F64, workers: Option I32,
+                state: BundleState }
+relation bundles : Bundle key id
+
+type Registered { id: Key registered, bundle: Key bundles, name: Text, ordinal: I32,
+                  signature: Text, text: Text, limit: Option Duration }
+  = Query {}
+  | Txn {}
+  | ImportedFn {}
+relation registered : Registered key id
+
+type Feed = { id: Key feeds, bundle: Key bundles, name: Text, ordinal: I32,
+              relation: Key relations, set: Text }
+relation feeds : Feed key id
+type FeedMember = { feed: Key feeds, relation: Key relations, ctor: Key constructors }
+relation feed_members : FeedMember key (feed, relation, ctor)
+
+type PlanState = Current | Pinned | Reverted | Superseded
+type Plan = { id: Key plans, query: Key registered, release: Text, created: Instant,
+              state: PlanState, memory_grant: I64, text: Text, document: Text }
+relation plans : Plan key id
+
+type Role = { id: Key roles, name: Text, created: Instant }
+relation roles : Role
+  key id
+  unique (name)
+
+type Credential = { id: Key credentials, role: Key roles, salt: Bytes, iterations: I32,
+                    stored_key: Bytes, server_key: Bytes }
+relation credentials : Credential
+  key id
+  unique (role)
+
+type GrantKind = Log | Deployment
+type RoleGrant = { id: Key grants, kind: GrantKind, privilege: Text, target: Option Text,
+                   grantee: Text, grantor: Text, grant_option: Bool, dormant: Bool }
+relation grants : RoleGrant key id
+
+type PeerMapping = { listener: Text, ordinal: I32, pattern: Text, role: Text }
+relation peer_mappings : PeerMapping key (listener, ordinal)
+
+type TzRelease = { id: Key tz_releases, release: Text, adopted: Key migrations }
+relation tz_releases : TzRelease
+  key id
+  unique (release)
+type Zone = { release: Key tz_releases, name: Text, rules: Bytes }
+relation zones : Zone key (release, name)
+
+type Setting { id: Key settings }
+  = StatementLimit   { limit: Option Duration }
+  | TransactionLimit { limit: Option Duration }
+  | IdleLimit        { limit: Option Duration }
+  | StreamIdleLimit  { limit: Duration }
+  | RequestWindow    { keep: Duration }
+  | SafePointDelay   { delay: Duration }
+  | ReplicaWait      { wait: Duration }
+  | DefaultLease     { lease: Duration }
+  | FeedRetention    { keep: Duration }
+  | StatsWindow      { length: Duration }
+  | StatsRetention   { keep: Duration }
+  | WaitSampling     { every: Duration, keep: Duration }
+  | ConflictLog      { rows: I64 }
+  | VacuumBudget     { io: F64, cpu: F64 }
+  | ScrubInterval    { every: Option Duration }
+  | LeaseGrace       { grace: Duration }
+  | BlockingNoticePeriod { period: Duration }
+  | ReplicaVacuumWait    { wait: Duration }
+  | RetryLimit           { retries: I64 }
+relation catalog::settings : Setting key id
+
+type AuditEvent { seq: Key catalog::audit, at: Instant, role: Text, principal: Text }
+  = Login    { source: Text, outcome: Outcome }
+  | Grant    { statement: Text }
+  | Register { bundle: Text, version: I64 }
+  | Retire   { bundle: Text }
+  | SchemaOp { version: I64 }
+  | Call     { origin: Origin, args: Bytes, outcome: Outcome }
+  | Denied   { origin: Origin }
+  | Commit   { position: Position, origin: Origin, changes: Bytes }
+  | Truncate { through: I64, digest: Bytes }
+relation audit : AuditEvent key seq
+
+module sys
+
+type CommitTime = { position: Position, at: Instant }
+relation sys::commit_times : CommitTime volatile key position
+
+type SafeSnapshotMark = { position: Position }
+relation sys::safe_snapshots : SafeSnapshotMark volatile key position
+
+type Collation = { id: Key collations, name: Text }
+relation sys::collations : Collation volatile
+  key id
+  unique (name)
+
+type CtorStats = { relation: Key catalog::relations, ctor: Key catalog::constructors,
+                   live_rows: I64, dead_versions: I64, storage: Text,
+                   last_vacuum: Option Instant, serialization_failures: I64,
+                   quarantined: Bool }
+relation ctor_stats : CtorStats volatile key (relation, ctor)
+
+type FieldStats = { relation: Key catalog::relations, ctor: Key catalog::constructors,
+                    field: Key catalog::fields, distinct: F64, sampled: I64,
+                    updated: Instant }
+relation field_stats : FieldStats volatile key (relation, ctor, field)
+
+type FieldValue = { relation: Key catalog::relations, ctor: Key catalog::constructors,
+                    field: Key catalog::fields, value: Text, frequency: F64 }
+relation field_values : FieldValue volatile key (relation, ctor, field, value)
+
+type Fingerprint = new Bytes
+
+type QueryStats = { query: Option Key catalog::registered, fingerprint: Fingerprint,
+                    plan: Option Key catalog::plans,
+                    calls: I64, rows: I64, total: Duration, mean: Duration,
+                    storage: Text, serialization_failures: I64, retries: I64 }
+relation query_stats : QueryStats volatile key (query, fingerprint, plan)
+
+type QueryCtorStats = { query: Option Key catalog::registered, fingerprint: Fingerprint,
+                        plan: Option Key catalog::plans,
+                        relation: Key catalog::relations, ctor: Key catalog::constructors,
+                        rows_read: I64, pruned: I64 }
+relation query_ctor_stats : QueryCtorStats volatile key (query, fingerprint, plan, relation, ctor)
+
+type QueryWindow = { query: Option Key catalog::registered, fingerprint: Fingerprint,
+                     plan: Option Key catalog::plans, start: Instant, length: Duration,
+                     calls: I64, rows: I64, mean: Duration, p99: Duration,
+                     serialization_failures: I64 }
+relation query_windows : QueryWindow volatile key (query, fingerprint, plan, start)
+
+type SessionState = Idle | Busy | InTransaction { txn: TxnId }
+type Session = { id: Key sessions, principal: Text, bundle: Option Key catalog::bundles,
+                 started: Instant, state: SessionState }
+relation sessions : Session volatile key id
+
+type WaitReason = StorageRead  { what: Text }
+                | FileRead     { path: Text }
+                | LogFlush
+                | Internal     { what: Text }
+                | SafeSnapshot
+                | Inserter     { index: Text }
+                | Admission
+type CallState = Queued { since: Instant } | Running | Waiting { on: WaitReason }
+type Call = { id: Key calls, session: Key sessions, query: Option Key catalog::registered,
+              fingerprint: Fingerprint, started: Instant, state: CallState,
+              priority: catalog::Priority, grant: I64, deadline: Option Instant }
+relation calls : Call volatile key id
+
+type WaitSample = { at: Instant, call: Key calls, session: Key sessions,
+                    query: Option Key catalog::registered, fingerprint: Fingerprint,
+                    on: WaitReason }
+relation wait_samples : WaitSample volatile key (at, call)
+
+type WaitTotal = { reason: WaitReason, query: Option Key catalog::registered,
+                   fingerprint: Option Fingerprint, count: I64, time: Duration }
+relation wait_totals : WaitTotal volatile key (reason, query, fingerprint)
+
+type Horizon = { relation: Key catalog::relations, ctor: Key catalog::constructors,
+                 txn: TxnId, session: Key sessions, query: Option Key catalog::registered,
+                 since: Instant }
+relation horizons : Horizon volatile key (relation, ctor)
+
+type Conflict = { aborted: TxnId, at: Instant, aborted_query: Option Key catalog::registered,
+                  other: TxnId, other_query: Option Key catalog::registered,
+                  relation: Key catalog::relations, ctor: Key catalog::constructors,
+                  keys: Text, detail: Text }
+relation conflicts : Conflict volatile key (aborted, at)
+
+type Vacuum = { id: Key vacuums, relation: Key catalog::relations,
+                ctor: Key catalog::constructors, phase: Text, done: F64,
+                dead_versions: I64, started: Instant }
+relation vacuums : Vacuum volatile
+  key id
+  unique (relation, ctor)
+
+type JobKind = Reindex | Compact | SchemaStage | Verify
+type Job = { id: Key jobs, kind: JobKind, target: Text, phase: Text, done: F64, started: Instant }
+relation jobs : Job volatile key id
+
+type PendingDrop = { object: Text, dropped: Key catalog::migrations,
+                     blocking: Key catalog::bundles }
+relation pending_drops : PendingDrop volatile key (object, blocking)
+
+type RequestMark = { id: Key request_marks, client: Text, low: I64, recorded: I64 }
+relation request_marks : RequestMark volatile
+  key id
+  unique (client)
+
+type ProcessOption = { id: Key process_options, name: Text, value: Text, derived: Bool }
+relation sys::process_options : ProcessOption volatile
+  key id
+  unique (name)
+
+type RunId = new I64
+
+type Finding { id: Key verify_findings, run: RunId, at: Instant }
+  = Checksum  { where: Text }
+  | StalePage { where: Text }
+  | Order     { index: Key catalog::indexes, where: Text }
+  | Orphan    { index: Key catalog::indexes, ctor: Key catalog::constructors, where: Text }
+  | Missing   { relation: Key catalog::relations, ctor: Key catalog::constructors,
+                index: Key catalog::indexes, where: Text }
+  | Violation { constraint: Key catalog::constraints, witness: Text }
+relation sys::verify_findings : Finding volatile key id
+
+type Format = { id: Key format, file: Text, page_size: I64, format: I64, readable_by: Text,
+                finalized: Bool, release: Text }
+relation sys::format : Format volatile key id
+

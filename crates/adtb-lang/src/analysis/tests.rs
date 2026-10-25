@@ -941,10 +941,20 @@ relation discs : Disc
 #[test]
 fn computed_fields_and_index_fields_are_normalised() {
     let (s, n) = normal(STORED);
+    let discs = s
+        .relations
+        .iter()
+        .position(|r| r.name == "discs")
+        .expect("discs");
     assert_eq!(1, n.computed.len());
-    assert_eq!(1, n.index_fields.len());
+    let index_fields: Vec<_> = n
+        .index_fields
+        .iter()
+        .filter(|((rel, ..), _)| rel.0 as usize == discs)
+        .map(|(_, (_, f))| f.value)
+        .collect();
+    assert_eq!(1, index_fields.len());
     let computed = n.computed.values().map(|(_, t)| *t);
-    let index_fields = n.index_fields.values().map(|(_, f)| f.value);
     for t in computed.chain(index_fields) {
         assert_normal(&s, &n.terms, t);
         assert!(matches!(n.terms.kind(t), Kind::Prim(Prim::Add, _)));
