@@ -251,21 +251,88 @@ recovery runs on it; the checks of §5 must hold for every image.
 
 Histories of concurrent transactions are checked for Adya's phenomena.
 The promise is serializability, so any G0, G1 or G2 cycle in a history
-is a bug. The workload appends one row per element, so every read
-shows which appends are visible:
+is a bug. The checker is the crate `adtb-isolation`. It follows Elle's
+list-append workload: each key holds a list, transactions append
+elements unique per key and read whole lists, so every read shows
+which appends are visible and in which order they were installed. The
+workload stores one row per element at its position in the list:
 
 ```adt
-type Elem = { id: Key elems, k: I64, e: I64 }
+type Elem = { id: Key elems, k: I64, pos: I64, e: I64 }
 relation elems : Elem
   key id generate sequence
   unique (k, e)
+  unique (k, pos)
 
 txn append (k: I64, e: I64) -> Key elems =
   transact
-    let x = insert elems { k: k, e: e }
+    let n = count(x for x in elems where x.k == k)
+    let x = insert elems { k: k, pos: n, e: e }
     return key x
-query read_elems (k: I64) -> Set I64 = from x in elems where x.k == k select x.e
+query read_elems (k: I64) -> Set { pos: I64, e: I64 } =
+  from x in elems where x.k == k select { pos: x.pos, e: x.e }
 ```
+
+A client transaction runs a sequence of these appends and reads as one
+transaction. Two transactions appending to one key both write position
+`n`, so at most one of them commits.
+
+#### History format
+
+The test harness hands the checker a history: a sequence of
+`adtb_isolation::Txn` values, whose order carries no meaning.
+
+| Field | Meaning |
+| --- | --- |
+| `id` | the transaction's number, unique in the history |
+| `outcome` | `Committed` when the commit was acknowledged; `Aborted` when the database refused an operation or the commit, or the client aborted; `InDoubt` when the commit was submitted and no answer came |
+| `ops` | each `Append { key, elem }` and `Read { key, list }` that returned, in the order the transaction ran them |
+
+Preconditions, which the harness must establish:
+
+- No `(key, elem)` pair is appended twice in one history, counting
+  aborted and in-doubt transactions.
+- A read's `list` holds the key's elements ordered by `pos`, oldest
+  first, the transaction's own appends included.
+- A transaction's `ops` holds every operation that returned, and none
+  that failed.
+
+Postconditions of `check(history)`:
+
+- It returns `Malformed` when an id or an appended pair repeats, and
+  otherwise the anomalies found; an empty list means none was found.
+- An `InDoubt` transaction counts as committed exactly when a committed
+  transaction read one of its elements, directly or through another
+  in-doubt transaction that counts.
+- Every anomaly it reports holds in every execution that produces the
+  history's observations.
+- Each anomaly carries its evidence: a cycle as the list of edges, each
+  edge naming its two transactions, its key and the elements that
+  order them; a read anomaly names the reader, the writer, the key and
+  the element.
+
+| Anomaly | Evidence |
+| --- | --- |
+| G0 | one cycle of write dependencies per strongly connected component of them |
+| G1a | a committed read of an element an aborted transaction appended |
+| G1b | a committed read of a list ending in an element its writer followed with another append to the key |
+| G1c | one cycle of write and read dependencies per component of them that contains a read dependency |
+| G-single | one cycle with exactly one anti-dependency per component of all dependencies |
+| G2 | one cycle with more than one anti-dependency, for a component with an anti-dependency and no G-single cycle |
+| internal | a read contradicting the transaction's own earlier operations on the key |
+| garbage | a read of an element no transaction appended |
+| duplicate | a read holding one element twice |
+| incompatible order | two committed reads of one key, neither a prefix of the other |
+
+Every kind is a bug under serializability.
+
+The crate also holds scripted scenarios over a `Database` trait (begin,
+append, read, commit, abort): write skew, read skew, lost update,
+aborted read, intermediate read and circular information flow. No
+script appends to a key another open transaction has appended to, so
+an engine whose inserts wait on a conflicting writer never blocks one.
+A serializable database runs each scenario with no anomaly; for write
+skew that means one side aborts.
 
 Histories come from two places:
 

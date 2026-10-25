@@ -11,6 +11,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "adtb-isolation"
+version = "0.1.0"
+
+[[package]]
 name = "adtb-lang"
 version = "0.1.0"
 dependencies = [

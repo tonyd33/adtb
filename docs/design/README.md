@@ -58,6 +58,7 @@ different dependencies, consumers or stability promises:
 | `adtb-sys` | Every `unsafe` block: page memory, direct I/O buffers, `io_uring`, atomic page reads ([sys.md](sys.md)); the runtime interfaces: I/O, clock, threads, entropy ([runtime.md](runtime.md)) | `libc` and allowlisted system crates |
 | `adtb` | Engine core: catalog, planner, executor, transactions, storage, over the I/O interface of [runtime.md](runtime.md) | `adtb-lang`, `adtb-sys` |
 | `adtb-sim` | Simulated storage, network, clock, randomness and scheduler, fault injection ([runtime.md §5](runtime.md#5-simulated-storage)), and the tests that run the engine over them; nothing depends on it | `adtb` |
+| `adtb-isolation` | The isolation checker over list-append histories and the scripted anomaly scenarios ([runtime.md §6.4](runtime.md#64-isolation-checking)) | standard library |
 | `adtb-server` | The wire protocol of [../spec/wire.md](../spec/wire.md) around `adtb` ([server.md](server.md)) | `adtb` |
 
 Layers inside `adtb` (catalog, planner, transactions, storage) are
@@ -77,6 +78,7 @@ design files of their own.
 | Staged schema changes | evolution | catalog, planner | [schema-change.md](schema-change.md) |
 | Log stream and replicas | primary | replicas, embedded replicas, backups | [replication.md](replication.md) |
 | Calls over the wire | `adtb-server` | `adtb` | [server.md](server.md) |
+| Histories and anomalies | test harnesses | `adtb-isolation` | [runtime.md §6.4](runtime.md#64-isolation-checking) |
 | The test oracle | `adtb-reference` | test harness, conformance runner | [oracle.md](oracle.md) |
 
 Rulings: project/arch/crates/by-boundary
