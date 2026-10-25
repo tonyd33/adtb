@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 525
 summary: "the B-link model test slows faster than linearly: 12k operations take 4s, 30k take 81s"
+branch: adtb-blink2
 depends-on:
   - blink-tree
 tags:

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 520
 summary: "a crash between a B-link split and its parent update leaves a page with no downlink, and nothing repairs it"
+branch: adtb-blink2
 depends-on:
   - blink-tree
 tags:
