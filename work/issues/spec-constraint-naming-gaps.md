@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 290
 summary: "the spec does not say how a unique without a constructor scope is named, what BadInput reports for several sources, or what RejectedRow.source holds"
-branch: adtb-spec
+closed: 2026-10-25
 tags:
   - spec
 ---
@@ -22,3 +22,7 @@ through the design space before the spec changes:
 - `BadInput` source and line are defined only for one source relation;
   otherwise they are `""` and `0`, and the spec says so;
 - `RejectedRow.source` is the unqualified relation name.
+
+## 2026-10-25: resolved
+
+In the spec with `docs: record the spec2 rulings on text, zones, dumps, temp relations and constraint names`. Point `spec2`, for Tony to adopt.

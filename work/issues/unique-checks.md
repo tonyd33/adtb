@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 615
 summary: unique index inserts do not check the latest committed state as mvcc.md §7 requires
-branch: adtb-ssi
+closed: 2026-10-25
 depends-on:
   - blink-tree
   - slotted-heap
@@ -24,3 +24,7 @@ state.
 
 Prerequisites: `blink-tree.md`, `slotted-heap.md`,
 `commit-log-snapshots.md`.
+
+## 2026-10-25: resolved
+
+Landed as `feat(mvcc): add uniqueness checks and serializable snapshot isolation`. It passes every `adtb_isolation::SCENARIOS` and a 24-seed random model under the simulator. The follow-ups are in `ssi-integration.md`.

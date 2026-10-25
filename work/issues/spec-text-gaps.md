@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 291
 summary: "ten spec gaps in collation names, Unicode versions, regex flags, textual forms and zone edges"
-branch: adtb-spec
+closed: 2026-10-25
 tags:
   - spec
 ---
@@ -40,3 +40,7 @@ in `adtb-reference`. My rulings, one per gap:
 Point 3 means the reference needs a `regex-syntax` at the same Unicode
 version as ICU4X. Until then the reference deviates there; record that
 in `docs/design/oracle.md`.
+
+## 2026-10-25: resolved
+
+In the spec with `docs: record the spec2 rulings on text, zones, dumps, temp relations and constraint names`. Point `spec2`, for Tony to adopt.
