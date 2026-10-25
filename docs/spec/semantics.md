@@ -67,13 +67,12 @@ is a rewrite into it (§10). The rewrite is total on well-typed surface
 programs and preserves typing: a surface program of type `T` desugars to
 a kernel term of type `T`.
 
-### 1.3 Reference interpreter
+### 1.3 Conformance
 
-Every equation in this part reads as a program over finite sets, and
-the reference interpreter ([implementation.md](implementation.md))
-evaluates kernel terms by these equations. An implementation conforms
+Every equation in this part reads as a program over finite sets. An
+implementation conforms
 when, for every program and every state, its outcome is one the
-equations allow. The equations fix the outcome except in four places,
+equations allow. The equations fix the outcome except in five places,
 each stated where it arises:
 
 | Freedom | Section | Conformance compares |
@@ -82,8 +81,14 @@ each stated where it arises:
 | The values of generated keys and generated clock fields | §4.3 | results up to a bijection on generated values |
 | The fold order of an aggregate whose operator is not associative and commutative | §5.7 | results within a bound that grows with input size |
 | The step at which a statement exceeds its limits, an unbounded fixpoint included | §5.10 | that both are rejected for a limit |
+| Which abort is the outcome when several `let!` bindings, writes or the result of a block abort | §6.6 | that both outcomes are aborts |
 
-Rulings: project/semantics/denotational, project/semantics/kernel/core, project/semantics/covers/queries, project/semantics/covers/writes, project/semantics/covers/constraints, project/semantics/covers/isolation, project/semantics/covers/evolution, project/oracle/rust-reference, project/oracle/shared-front/typed-input, project/oracle/float/tolerance
+The bound for a float aggregate: two results of an aggregate over `n`
+values `x_i` agree when they differ by at most `n * eps * sum(|x_i|)`,
+with `eps` the machine epsilon of the float type. Every other value is
+compared exactly.
+
+Rulings: project/semantics/denotational, project/semantics/kernel/core, project/semantics/covers/queries, project/semantics/covers/writes, project/semantics/covers/constraints, project/semantics/covers/isolation, project/semantics/covers/evolution, project/oracle/float/tolerance, spec/tiers/three-tiers
 
 ## 2. Kernel syntax
 
@@ -144,12 +149,13 @@ used as a set it is the nonempty set of values of `T` the rows give
 `N τ̄ . ctors(N)` is `N τ̄`. A function may take and return functions.
 No function type occurs in the element type of a relation, a field, a
 set element, a type argument, a query result or a parameter of a
-registered query; every function is normalised away before planning
-(§5.11). A result sum anonymous to a query is a
-declared sum local to that query's signature. `Bool` is the prelude
+registered query; normalisation removes every function (§5.11). A result sum anonymous to a query is structural: two with the
+same constructors and fields, in any order, are one type
+([typing.md](typing.md)). `Bool` is the prelude
 sum `False | True`; `Option` and `Result` are prelude sums
 ([model.md §5.2](model.md#52-library-sums)). `Set⁺ τ` is a kernel type
-with no surface spelling; it types the rows of a group (§5.8).
+with no surface spelling; it types the rows of a group (§5.8). The
+surface unit type `()` is the kernel record type `{}`.
 
 ### 2.3 Expressions
 
@@ -198,6 +204,7 @@ w ::= skip
     | case e of { C₁ x₁ → w₁ ; … ; Cₙ xₙ → wₙ }
     | let x = e in w
     | fail e
+    | insert r (for x in e do e) rejects into j    e a relation or external source
 
 b ::= let! x = e in b                 block binding, evaluated once
     | (w, e)                          the block's writes and its result
@@ -222,7 +229,8 @@ A kernel term is well formed when, beyond typing (§3):
 - `fresh g` occurs only in a fill `fill_r` (§10.3): of the rows of an
   `insert`, of a `let!` binding whose rows an `insert` of the same
   block consumes, of the new value of a `replace`, or of the new value
-  a delete action's `retag` derives (§6.4); never under a λ;
+  a delete action's `retag` derives (§6.4); or as the `load` value of an
+  `insert … rejects into` (§6.7); never under a λ;
 - `only e` occurs only in the binding of a single-row upsert (§10.3),
   where `e` has exactly one element;
 - `inserted`, `deleted` and `prior` occur only in the body of a
@@ -230,7 +238,7 @@ A kernel term is well formed when, beyond typing (§3):
 - a `case` names each constructor of its scrutinee's constructor set
   exactly once.
 
-Rulings: project/semantics/kernel/core, query/ctor-relations, lang/family/comprehension, lang/recursion/fix, lang/abstraction/higher-order, lang/abstraction/ho-recursion/first-order-recursion, write/primitive/delta, write/surface/txdata, derived/transition/change-visible, types/fault-forms/try, lang/group/into, lang/nested-order/top-n, lang/group/ctor-key/tag-type, model/typed-key, model/user-params, model/prelude-bool
+Rulings: project/semantics/kernel/core, query/ctor-relations, lang/family/comprehension, lang/recursion/fix, lang/abstraction/higher-order, lang/abstraction/ho-recursion/first-order-recursion, write/primitive/delta, write/surface/txdata, derived/transition/change-visible, types/fault-forms/try, lang/group/into, lang/nested-order/top-n, lang/group/ctor-key/tag-type, model/typed-key, model/user-params, model/prelude-bool, spec/lambda/params/curried, spec/writes/rejects-source/one-source, spec/tiers/three-tiers
 
 ## 3. Typing
 
@@ -325,6 +333,9 @@ every X_j positive in every e_i
 
 `(k₁, …, k_j) injective on e₁` holds when the list is a key of the elements of `e₁`
 as [queries.md](queries.md#143-top-n) states; otherwise `top` is refused.
+In (fix), the `τ_i` are the least types under
+[typing.md §3](typing.md#3-subtyping) at which every `e_i` has type
+`Set τ_i`; a `fix` with no such types is a type error.
 `τ_α` and `ρ_α` are the argument and result types of aggregate `α`
 (§5.7). Element types of `Set` are first-order: no function type occurs
 in them.
@@ -379,7 +390,7 @@ pattern compilation of §10.2 produce such a `case`.
 denotes a value in every environment that its type admits; it never
 faults. Limits (§1.1) are outside totality.
 
-Rulings: lang/binder/ctor-row, lang/patterns/or-binder/ctor-set, model/ref-subtyping/ctor-set-subsumption, query/compile-time, lang/wildcard/scalars-only, lang/empty-agg/nonempty, types/join/lub-exact-fields, types/sub-records/exact, types/eq-types/all-first-order, lang/collection/set-agg/over-binders, lang/recursion/negation/stratified, types/fault-forms/checked
+Rulings: lang/binder/ctor-row, lang/patterns/or-binder/ctor-set, model/ref-subtyping/ctor-set-subsumption, query/compile-time, lang/wildcard/scalars-only, lang/empty-agg/nonempty, types/join/lub-exact-fields, types/sub-records/exact, types/eq-types/all-first-order, lang/collection/set-agg/over-binders, lang/recursion/negation/stratified, types/fault-forms/checked, spec/fix/typing/least
 
 ## 4. Values and states
 
@@ -422,8 +433,8 @@ is the union over every constructor of `T_r`. A state is valid when
 every constraint of `Σ` holds in it (§7). The valid states of `Σ` are
 `DB(Σ)`.
 
-Heaps, pages and indexes are representations of `D`; no program
-observes them.
+Heaps, pages and index structures are representations of `D`; no
+program observes them.
 
 ### 4.3 Statement context
 
@@ -439,9 +450,9 @@ instance of a `fresh g` (its occurrence together with the values of the
 variables bound around it) a value of the generator `g`, such that:
 
 - for a key generator of `r`, the values are pairwise distinct,
-  distinct from every key of `r` in the database's current state
-  (including rows the statement's version does not see, §9.6), and
-  distinct from every value already issued
+  distinct from every key any committed row of `r` has held (including
+  rows the statement's version does not see, §9.6), and distinct from
+  every value already issued
   ([writes.md §2.3](writes.md#23-defaults-and-generated-keys));
 - for the clock generator, the value is an `Instant`, the wall-clock
   time at which the statement applies, and every clock instance of one
@@ -459,7 +470,7 @@ implementations may choose different `γ`; their outcomes agree up to the
 renaming of generated values. Queries read no clock: the current time
 is a parameter or a generated field.
 
-Rulings: model/sets, model/nominal, model/one-ctor-sum, model/record-is-ctor, sum/closed, sum/disjoint-total, sum/relation, model/one-key, model/declared-key, model/no-collections, model/sum-header, model/set-of-type, lang/results/nested, types/eq/leibniz, engine/guarantees-only, engine/catalog-relations, types/now/param-only, types/id-type/key-type, types/keygen/promise/distinct
+Rulings: model/sets, model/nominal, model/one-ctor-sum, model/record-is-ctor, sum/closed, sum/disjoint-total, sum/relation, model/one-key, model/declared-key, model/no-collections, model/sum-header, model/set-of-type, lang/results/nested, types/eq/leibniz, engine/guarantees-only, engine/catalog-relations, types/now/param-only, types/id-type/key-type, types/keygen/promise/distinct, spec/tiers/three-tiers
 
 ## 5. Queries
 
@@ -571,10 +582,6 @@ arms project away the constructor, equal values from two arms are one
 element of the result. Aggregates in an arm range over whatever their
 own binder names; an aggregate over a whole match ranges over the
 match's result.
-
-Executing the union as one probe of a union index, routed by
-constructor, is an implementation of this equation
-([engine.md](engine.md)).
 
 ### 5.6 Constraint-only forms
 
@@ -693,9 +700,7 @@ componentwise order, so the chain `S̄₀ ⊆ S̄₁ ⊆ …` ascends and `S̄*`
 simultaneous least fixpoint of `F`. When the least fixpoint is finite
 the chain reaches it. When it is infinite the chain never ends, and the
 statement is rejected with `StatementLimit` when it exceeds its limits
-([catalog.md §8.3](catalog.md#83-limits-and-deadlines)). An implementation
-may compute `S̄*` by semi-naive iteration or any other method that
-yields the same sets.
+([catalog.md §8.3](catalog.md#83-limits-and-deadlines)).
 
 A `fix` is bounded when no body applies a constructing primitive, an
 aggregate or `fresh` to a value derived from a relation of its own
@@ -749,8 +754,8 @@ range over disjoint constructor relations.
 Functions are values of the kernel only while a term is being
 normalised. Every registered query, schema function, constraint and
 statement is a closed term whose free variables have first-order
-types. Before planning, it is normalised by these rules, where `e'`
-total means `e'` is total (§3.4):
+types. It denotes what its normal form denotes under these rules,
+where `e'` total means `e'` is total (§3.4):
 
 ```text
 (λ(x : τ). e) e'                       → e[x := e']           e' total
@@ -770,9 +775,9 @@ and schema functions are unfolded at their calls. Since no function is
 recursive and `fix` binds only sets, normalisation terminates. Its
 result contains no λ and no application; a `let` remains only where its
 bound expression is partial. Each step preserves the denotation of
-§5.3, aborts included. The planner sees only normalised terms.
+§5.3, aborts included.
 
-Rulings: query/union-all, query/ctor-relations, query/construct, query/native, model/dup-arms/dedupe, lang/collection/sets, lang/collection/set-agg/over-binders, lang/empty-agg/nonempty, query/agg-scope/whole, lang/group/into, lang/group/ctor-key/tag-type, lang/nested-order/top-n, lang/order/result-only, lang/keyset, lang/recursion/fix, lang/recursion/negation/stratified, lang/abstraction/higher-order, lang/abstraction/ho-recursion/first-order-recursion, lang/outer/nested, lang/results/nested, types/fault/abort, types/fault/reorder/ordered-guards, types/fault-forms/checked, types/fault-forms/try, types/int-overflow/trap, project/oracle/float/tolerance, derived/transition/change-visible
+Rulings: query/union-all, query/ctor-relations, query/construct, model/dup-arms/dedupe, lang/collection/sets, lang/collection/set-agg/over-binders, lang/empty-agg/nonempty, query/agg-scope/whole, lang/group/into, lang/group/ctor-key/tag-type, lang/nested-order/top-n, lang/order/result-only, lang/keyset, lang/recursion/fix, lang/recursion/negation/stratified, lang/abstraction/higher-order, lang/abstraction/ho-recursion/first-order-recursion, lang/outer/nested, lang/results/nested, types/fault/abort, types/fault/reorder/ordered-guards, types/fault-forms/checked, types/fault-forms/try, types/int-overflow/trap, project/oracle/float/tolerance, derived/transition/change-visible, spec/tiers/three-tiers
 
 ## 6. Writes
 
@@ -810,7 +815,7 @@ The key of an effect is `key_r(v)` (for `rep`, of either row; for
                                ⊗KeyChanged   if key_r(v) ≠ key_r(v')
                                ∅             if v = v' or v ∉ ⟦r⟧ D
                                { rep(r, v, v') } otherwise
-⟦w₁ ∥ w₂⟧ ρ                  = (E₁, E₂) ⇐ seq(⟦w₁⟧ ρ, ⟦w₂⟧ ρ) ; E₁ ∪ E₂
+⟦w₁ ∥ w₂⟧ ρ                  = (E₁, E₂) ⇐ gather(⟦w₁⟧ ρ, ⟦w₂⟧ ρ) ; E₁ ∪ E₂
 ⟦for x in e do w⟧ ρ          = A ⇐ ⟦e⟧ ρ ; (E_v) ⇐ gather(⟦w⟧ ρ[x ↦ v])_{v ∈ A} ; ⋃ E_v
 ⟦if e then w₁ else w₂⟧ ρ     as §5.2
 ⟦case e of { C x → w_C }⟧ ρ  as §5.2
@@ -820,7 +825,8 @@ The key of an effect is `key_r(v)` (for `rep`, of either row; for
 
 Every read in a write term reads the snapshot `D`; no write sees
 another write's effects except through a `let!` binding (§6.6). The
-order of `∥` operands has no effect on the change set. `fail` rejects
+order of `∥` operands has no effect on the change set, nor on which
+abort is the outcome when both operands abort. `fail` rejects
 the statement; it is not a fault, and `try` does not catch it. A
 `replace` whose new value has another constructor is a retag: the row keeps its key and header
 fields and moves between constructor relations.
@@ -849,51 +855,67 @@ both. Several writes may reach one key; after the union
   produces the inserted row;
 - two different rows in `Δ⁺` with one key, two updates of one row to
   different values included, fail the statement with `KeyViolation`,
-  reported at the statement boundary (§6.6).
+  reported at the statement boundary (§6.6);
+- an `ins(r, v)` whose key is the key of a row `u₀ ∈ D(r)` that no
+  `Δ⁻(r.C)` holds fails the statement with `KeyViolation` (§6.6), even
+  when `v = u₀`: an insert never replaces a row.
 
 ### 6.4 Delete actions
 
-For a set of effects `E`, let `Δ_E` be its change set (§6.3) and
-`D_E = apply(D, Δ_E)` (§6.5). A key `k` of `r` is gone in `E` when it is
-a key of a row of `D(r)` and of no row of `D_E(r)`. A reference value
-`u.f` names `k` when `f : Key r.S` and `u.f = k`, or
-`f : Option (Key r.S)` and `u.f = Some⟨k⟩`. The actions derive effects:
+For the written effects `W`, let `Δ_W` be their change set (§6.3) and
+`D_W = apply(D, Δ_W)` (§6.5). A reference value `u.f` names `(r, k)`
+when `f : Key r.S` and `u.f = k`, or `f : Option (Key r.S)` and
+`u.f = Some⟨k⟩`. The gone keys are the least set `G` such that:
 
 ```text
-A(E) = for every reference field f of a constructor C of T_r' into r,
-       every row u ∈ D_E(r'.C) whose u.f names a key gone in E, with
-       key_r'(u) not gone in E:
-         cascade        kill(r', key_r'(u))
-         retag D {…}    rep(r', u₀, fill_r'(D⟨key and header fields of u, payload⟩))
-         clear          rep(r', u₀, u with f = None)
-         restrict       nothing
-       where u₀ is the row of D(r') with u's key; retag and clear derive
-       nothing for a u with no such row
+(r, key_r(u₀)) ∈ G   for every u₀ ∈ D(r) such that D_W(r) has no row of key key_r(u₀)
+(r', key_r'(u₀)) ∈ G for every u₀ ∈ D(r') ∩ D_W(r') with a field f, action cascade, where u₀.f names a key in G
 ```
 
-The statement's effects are the least `E*` with `E ⊆ E*` and
-`A(E*) ⊆ E*`, reached by iterating `E_{i+1} = E_i ∪ A(E_i)` from the
-written effects. Each derived effect names a row of `D` or of the
-written effects, and each draws its fills from fixed instances of `γ`,
-so the iteration ends.
+Delete actions reach only rows of `D` that the written effects neither
+replace nor delete. For a row `u₀ ∈ D(r'.C) ∩ D_W(r'.C)` with
+`(r', key_r'(u₀)) ∉ G`, let `F(u₀)` be the reference fields of `C`,
+header fields included, where `u₀.f` names a key in `G`. Every such
+`u₀` with `F(u₀)` not empty takes one new value from every action in
+`F(u₀)`:
+
+```text
+new(u₀) = fill_r'(D⟨key and header fields of u₀, payload⟩) with g = None for every g ∈ F(u₀) with action clear that D has
+                                          if some f ∈ F(u₀) has action retag D {payload}
+        = u₀ with g = None for every g ∈ F(u₀) with action clear
+                                          otherwise, if some f ∈ F(u₀) has action clear
+        = none                            otherwise
+```
+
+All `retag` actions among a type's fields are one action, with one
+target and one payload
+([writes.md §7.1](writes.md#71-declaring-an-action)), so `D` and its
+payload are determined. The derived effects are
+
+```text
+A = { kill(r, k) | (r, k) ∈ G } ∪ { rep(r', u₀, new(u₀)) | u₀ as above, new(u₀) ≠ none }
+```
+
+and the statement's effects are `E* = W ∪ A`. `fill_r'` of a `retag`
+action's value fills the fields of `D` the payload omits, as an insert
+into `r'.D` does, drawing from `γ`.
 
 Consequences, matching [writes.md §7.2](writes.md#72-when-an-action-runs):
 
-- a row deleted explicitly or by `cascade` is deleted, even when a
-  `retag` or `clear` action also reaches it: `kill` removes every
-  inserted row of its key;
-- an explicit update and a `retag` or `clear` action that give one row
-  different new values leave two rows with its key, a `KeyViolation`;
-- a row inserted by the statement that references a gone key is reached
-  by `cascade` only; under `retag` or `clear` it remains and fails the
-  reference constraint;
+- a row whose key is in `G` is deleted, even when a `retag` or `clear`
+  action also reaches it: `kill` removes every inserted row of its key;
+- several `clear` fields of one row, and a `retag` with `clear` header
+  fields, give the row one new value;
+- a row the statement inserts, whose key has no row in `D`, is reached
+  by no action: if it references a gone key, its reference constraint
+  (§7.2) rejects the statement, whatever the action;
+- a row the statement replaces is reached by no action and is judged
+  by its new value: if that value references a gone key, its
+  reference constraint rejects the statement;
 - an update or a retag of the target never makes its key gone and fires
   no action;
 - `restrict` derives nothing; the reference constraint (§7.2) rejects
   the statement if a referrer of a gone key remains.
-
-`fill_r'` of a `retag` action's value fills the fields of `D` the payload
-omits, as an insert into `r'.D` does, drawing from `γ`.
 
 ### 6.5 Application
 
@@ -918,21 +940,31 @@ would insert is how a later write or the result refers to generated
 keys. The result `e` is evaluated in the snapshot; it sees pending rows
 only through such names.
 
+The sequencing above fixes the outcome only when one item of a block
+aborts. When more than one `let!` binding, write or result of a block
+would abort, the outcome is any one of those aborts, a freedom beside
+the one §1.1 states for the bindings of a set.
+
 The outcome of `transact b` in context `σ = (D, Σ, v, γ)`:
 
 ```text
 run(s, σ) =
   (E, res) ⇐ ⟦b⟧ ∅ σ ;
-  E*  = the closure of E under the delete actions (§6.4) ;
-  Δ*  = normalise(change set of E*) ;  D* = apply(D, Δ*) ;
+  E*  = E with the effects its delete actions derive (§6.4) ;
+  Δ   = change set of E* ;  Δ* = normalise(Δ) ;  D* = apply(D, Δ*) ;
   ⊗NotOpen         if some v ∈ Δ*⁺(r.C) with C not open for writes in stage(Σ)
                    has no row of its key in D(r.C): an insert or a retag into C;
-                   or if some v ∈ Δ*⁺(r.C) holds in a field a value of a
-                   value-level constructor E not open for writes, and the row
-                   of its key in D(r), if any, holds no value of E in that field
-  ⊗KeyViolation    if D*(r) holds two different rows with one key, for some r
-  viol = { (c, R_c) | c ∈ cons(Σ), R_c ⇐ ⟦c⟧(D, Δ*, D*), R_c ≠ ∅ } ;
-  ⊗Violated(c, R_c) if viol ≠ ∅, for the (c, R_c) ∈ viol whose c has the smallest name
+                   or if some v ∈ Δ*⁺(r.C) holds at a field path p a value w
+                   of a value-level constructor E not open for writes, and the
+                   row of its key in D(r), if any, does not hold a value equal
+                   to w at p
+  (R_c)_{c ∈ cons(Σ)} ⇐ gather(⟦c⟧(D, Δ*, D*))_{c ∈ cons(Σ)} ;
+  viol = { c ∈ cons(Σ) | R_c ≠ ∅ }
+       ∪ { the key of r | some ins(r, v) ∈ E* with key_r(v) = key_r(u₀),
+                          u₀ ∈ D(r), u₀ ∉ Δ⁻(r.C) for every C } ;
+  c₀   = the c ∈ viol with the least name ([constraints.md §7.1](constraints.md#71-constraint-names)) ;
+  ⊗KeyViolation    if viol ≠ ∅ and c₀ is the key of a relation variable
+  ⊗Violated(c₀, R_c₀) if viol ≠ ∅ otherwise
   (res, Δ*, D*)    otherwise
 ```
 
@@ -943,7 +975,8 @@ caller sees the rows its grants allow
 ([constraints.md §7](constraints.md#7-checking-and-violation-reports)).
 
 An abort anywhere in this computation is the statement's outcome, and
-no part of its change set is applied. The key and constraint tests are
+no part of its change set is applied. An abort while evaluating any
+constraint takes precedence over every violation. The key and constraint tests are
 made at the statement boundary, on `D*`. A statement that succeeds
 replaces `D` by `D*` for the statements after it in its transaction.
 `D` is the snapshot: a test that would meet a row committed by another
@@ -952,7 +985,33 @@ transaction with a serialization failure (§8.4). `NotOpen`,
 `KeyViolation`, `Violated`, `KeyChanged` and `UserError` are
 constructors of `RejectReason` ([catalog.md](catalog.md#4-error-sums)).
 
-Rulings: write/primitive/delta, write/surface/txdata, write/unit/multi, write/retag/assign, write/retag/old/in-scope, write/transact/block, write/insert/returns/rows, write/bulk/from-query, write/delete-action/cascade, write/delete-action/restrict, write/delete-action/retag-referrer, fk/retag/recheck, model/deferred-check, constraint/timing/multi-assign, types/keygen/promise/distinct
+### 6.7 Inserts with rejects
+
+`insert r (for x in e₀ do e) rejects into j` is given on the records
+of its one generator's source `e₀`, a source relation or an external
+source. `P` is the set of those records, each `p` with its position
+`n_p` in the source's stated order, from 1, its source name `s_p` and
+its text `t_p` ([interop.md §4.5](interop.md#45-rejects)). `conv(p)` is
+the set of rows `e[x := p]` computes, or `✗m` when `p` does not
+convert to the row type the source names, or its computation reaches
+`reject m`, `m` the error. `ℓ` is `fresh` (§2.5): one value per
+statement, distinct from every `load` value issued before, drawn from
+`γ`. With `q` for `for x in e₀ do e`:
+
+```text
+⟦insert r q rejects into j⟧ ρ σ =
+  (o_p)_{p ∈ P} ⇐ gather(conv(p))_{p ∈ P} ;
+    { ins(r, fill_r(v)) | p ∈ P, o_p a set of rows, v ∈ o_p }
+  ∪ { ins(j, { load: ℓ, line: n_p, source: s_p, raw: t_p, reason: m }) | p ∈ P, o_p = ✗m }
+
+⟦insert r q⟧ ρ σ = ⊗BadInput    if some o_p = ✗m, as above
+```
+
+Any other abort of `conv(p)` is the outcome of the write. Both sets of
+rows are effects of the one statement, so a constraint violation
+rejects the statement with its rejects.
+
+Rulings: write/primitive/delta, write/surface/txdata, write/unit/multi, write/retag/assign, write/retag/old/in-scope, write/transact/block, write/insert/returns/rows, write/bulk/from-query, write/delete-action/cascade, write/delete-action/restrict, write/delete-action/retag-referrer, fk/retag/recheck, model/deferred-check, constraint/timing/multi-assign, types/keygen/promise/distinct, spec/writes/insert-existing/violation, spec/writes/action-compose/one-value, spec/writes/action-reach/pre-state, spec/writes/abort-choice/any-abort, spec/writes/violation-name/canonical-least, spec/writes/rejects/per-row, spec/writes/rejects-source/one-source, spec/writes/action-identical/identical-only, spec/writes/action-own-writes/statement-wins, spec/evolution/deprecated-value/same-path
 
 ## 7. Constraints
 
@@ -985,6 +1044,11 @@ unique (f̄) in S of r:
   for x in r.S do for y in r.S do
     if x.f̄ == y.f̄ and key_r(x) != key_r(y) then {{ a: x, b: y }} else {}
 
+unique (f.C.g) in S of r, f a field of a sum type with constructor C:
+  for x in r.S do for y in r.S do
+    if tag(x.f) == C and tag(y.f) == C and x.f.g == y.f.g
+       and key_r(x) != key_r(y) then {{ a: x, b: y }} else {}
+
 reference field f : Key r.S of constructor C of T_r':
   for u in r'.C do
     if empty(for t in r.S do if key_r(t) == u.f then {t} else {}) then {u} else {}
@@ -1001,6 +1065,10 @@ domain of newtype N with predicate p, for every constructor C of every r:
   for x in r.C do
     if exists(for y in occ_N(x) do if p[self := y] then {} else {y}) then {x} else {}
 ```
+
+In a unique over a path into a value-level sum, only rows whose field
+holds the named constructor take part: `unique (status.Paid.ref)`
+constrains no row whose `status` is `Draft` or `Sent`.
 
 `occ_N(x)` is the set of values of `N` occurring in `x` at any depth,
 built from `x` by field access and `case` over its static type. A
@@ -1030,19 +1098,11 @@ is deferred to commit.
 ### 7.4 Incremental checks
 
 A constraint is admitted only with an index-bounded incremental check
-([constraints.md §5](constraints.md#5-admission)). An incremental check
-`δc` reads `Δ*`, probes of `D` and `D*`, and returns a set. It is
-correct when, for every valid `D` and every change set:
+([constraints.md §5](constraints.md#5-admission)). Admission decides
+which constraints a schema may hold; it never changes what a
+constraint means (§7.1).
 
-```text
-δc(D, Δ*, D*) = ⟦c⟧(D, Δ*, D*)
-```
-
-The implementation must use only correct checks. Constraints whose
-query reads no constructor relation that `Δ*` touches return the same
-set as in `D`, which is empty, and need not be evaluated.
-
-Rulings: constraint/form/empty, constraint/assertion, constraint/timing/multi-assign, constraint/enforce/delta, constraint/admit/bounded, derived/transition/change-visible, surface/constraint/check, surface/constraint/denial, constraint/scope/ctor-set, fk/to-sum, fk/to-ctor, fk/to-subset, fk/retag/recheck, sum/disjoint-total
+Rulings: constraint/form/empty, constraint/assertion, constraint/timing/multi-assign, constraint/enforce/delta, constraint/admit/bounded, derived/transition/change-visible, surface/constraint/check, surface/constraint/denial, constraint/scope/ctor-set, fk/to-sum, fk/to-ctor, fk/to-subset, fk/retag/recheck, sum/disjoint-total, btree/sum-field/ctor-field, spec/tiers/three-tiers
 
 ## 8. Isolation
 
@@ -1050,10 +1110,10 @@ Rulings: constraint/form/empty, constraint/assertion, constraint/timing/multi-as
 
 A transaction is a sequence of statements `s₁ … s_m`. A transact block
 or a registered transaction is a transaction of one statement; an
-interactive transaction is one statement per call
+interactive transaction is one statement per call of a registered
+query or transaction and one per item of a call of ad hoc text
 ([transactions.md §2](transactions.md#2-statements)). A migration
-applies as a transaction too, each of its operators one statement
-(§9.3, §9.5). A history is the set of
+applies as a transaction too, of one statement (§9.5). A history is the set of
 transactions the database has run, each committed or aborted, with the
 state each committed transaction installed. Only committed
 transactions change the state.
@@ -1066,40 +1126,14 @@ holds `k` in `Δ*⁺(r.C)` or `Δ*⁻(r.C)` writes `(r, k)` and installs a
 version of it: a row of some `r.C`, or its absence. A retag installs one
 version, in the new constructor relation.
 
-A statement reads constructor relations through predicates. Its
-denotation depends on `D(r.C)` only through sets `{ v ∈ D(r.C) | P(v) }`
-for predicates `P` the implementation tracks; a read of `r.S` is a
-predicate read of every `r.C` with `C ∈ S`. Constraint checks are reads
-of the statement that triggers them. The schema version is an item too:
+A statement reads the constructor relations its denotation depends
+on; a read of `r.S` is a read of every `r.C` with `C ∈ S`. Constraint
+checks are reads of the statement that triggers them. The schema version is an item too:
 every statement reads the version it runs at, and applying a migration
 writes it, so a writer at version `n - 1` is serialized against the
-migration that produces `n`. A write `T'` changes the matches
-of a predicate read of `r.C` by `T` when a version `T'` installs, or the
-one it replaces, is a row of `r.C` that satisfies `P`.
+migration that produces `n`.
 
-### 8.3 Dependency graph
-
-The dependency graph of a history has the committed transactions as
-nodes and an edge `T → T'` when:
-
-| Edge | Condition |
-| --- | --- |
-| write-write | `T'` installs the next version of an item after a version `T` installed |
-| write-read | `T'` reads a version `T` installed, directly or through a predicate |
-| read-write | `T'` installs the next version of an item, or changes the matches of a predicate, after the version or state `T` read |
-
-### 8.4 Guarantee
-
-Every history the database produces has an acyclic dependency graph
-over its committed transactions. Equivalently, there is a total order
-`T₁ < T₂ < … < T_n` of the committed transactions such that running
-each statement of each `T_i` by `run` (§6.6), or by the translated run
-of §9.6 for a statement at an older version, in that order, from the
-initial state, with the same supplies `γ`, gives every statement the
-outcome the database returned to it, and leaves the state the database
-holds. This is the only isolation level. A transaction that would make
-the graph cyclic does not commit; it fails with a serialization failure
-and may be retried ([transactions.md](transactions.md#55-retry)).
+### 8.3 Tests against later commits
 
 A statement is evaluated on its snapshot. When one of its tests meets
 the effect of a transaction that committed after the snapshot, the
@@ -1115,16 +1149,38 @@ violation and never by re-evaluating on the newer row
   commits, the waiter's transaction fails with a serialization failure,
   and when it aborts, the statement proceeds as if it had never run.
 
-Each case is a read-write edge whose cycle the guarantee forbids.
-Duplicate keys among a statement's own inserted rows are
-`KeyViolation` (§6.6).
+Duplicate keys among a statement's own inserted rows, and an insert of
+a key the snapshot holds, are `KeyViolation` (§6.6).
+
+### 8.4 Guarantee
+
+For every history the database produces there is a total order
+`T₁ < T₂ < … < T_n` of its committed transactions alone such that
+running each statement of each `T_i` by `run` (§6.6), or by the
+translated run of §9.6 for a statement at an older version, in that
+order, from the initial state, with the same supplies `γ`, gives every
+statement the outcome the database returned to it, and leaves the
+state the database holds. This is the guarantee, and the only isolation
+level. Aborted transactions take no part in it.
+
+A transaction whose commit would leave no such order does not commit;
+it fails with a serialization failure and may be retried
+([transactions.md](transactions.md#55-retry)). A transaction may also
+fail with one although such an order exists
+([transactions.md §6.1](transactions.md#61-serialization-failures)).
+
+The order extends real time on the primary: when `T`'s commit was
+acknowledged before `T'` began, `T < T'`. Reads on a replica keep the
+guarantee [replication.md §1.2](replication.md#12-reads-on-a-replica)
+states for them, which ties their snapshot to commit positions and not
+to real time.
 
 Two consequences: concurrent transactions cannot jointly violate a
 constraint that each satisfies alone, since each statement's check is a
 read; and a retag is ordered against every concurrent statement that
 references, reads or retags the same row.
 
-Rulings: engine/serializable-only, engine/ssi, engine/retag-fk/by-isolation, mvcc/ctor-tagged, constraint/concurrent/serial-checks, write/transact/interactive, write/transact/registered-txn, engine/transactional-ddl
+Rulings: engine/serializable-only, engine/ssi, engine/retag-fk/by-isolation, mvcc/ctor-tagged, constraint/concurrent/serial-checks, write/transact/interactive, write/transact/registered-txn, engine/transactional-ddl, spec/txn/isolation-statement/serial-order, spec/txn/real-time/primary, spec/txn/call-atomic/item-statements, spec/txn/may-abort/may, spec/writes/insert-existing/violation, spec/evolution/migration-statement/one-statement
 
 ## 9. Schema evolution
 
@@ -1141,23 +1197,31 @@ apply is refused.
 An operator `op : Σ → Σ'` denotes:
 
 ```text
-fwd_op : DB(Σ) ⇀ DB(Σ')                   the data map applied with the operator
-bwd_op : DB(Σ') → DB(Σ)                   the inverse map: Σ' state seen at Σ
-put_op : DB(Σ') × DB(Σ) ⇀ DB(Σ')          a Σ write carried into a Σ' state
-π_op   : DB(Σ) → DB(Σ)                    the declared loss; the identity unless declared
+fwd_op : St(Σ) ⇀ St(Σ')                   the data map applied with the operator
+bwd_op : St(Σ') → St(Σ)                   the inverse map: Σ' state seen at Σ
+put_op : St(Σ') × St(Σ) ⇀ St(Σ')          a Σ write carried into a Σ' state
+π_op   : St(Σ) → St(Σ)                    the declared loss; the identity unless declared
 ```
 
-`fwd_op` is partial: an operator whose preconditions fail on the
-current state is refused (removing a populated constructor, adding a
-constraint the data violates). The laws:
+`St(Σ)` is every state over `Σ` (§4.2), valid or not; `DB(Σ) ⊆ St(Σ)`
+is the valid ones. `bwd` yields a state of `Σ`, not necessarily a
+valid one: rows that violate a constraint of `Σ` dropped since map
+back unchanged. `fwd_op` is partial: an operator whose preconditions
+fail on the state it applies to is refused (removing a populated
+constructor). Every precondition is a predicate read (§8.2) of the
+migration's transaction. The laws:
 
 ```text
 (L1)  bwd(fwd(D)) = π(D)              for D ∈ dom fwd
 (L2)  bwd(put(D', D)) = D             where put(D', D) is defined
 (L3)  put(D', bwd(D')) = D'
 (L4)  π ∘ π = π
-(L5)  c ∈ cons(Σ) is carried to c' ∈ cons(Σ'), and D valid ⟹ fwd(D) valid
+(L5)  c ∈ cons(Σ) is carried to c' ∈ cons(Σ')
 ```
+
+`fwd` need not yield a valid state: the constraints of the final
+schema are checked once, on the state the whole migration produces
+(§9.5).
 
 An operator is lossless when `π` is the identity. A lossy operator
 states its loss with the operator, as the projection `π` of the
@@ -1179,10 +1243,13 @@ put(D', D)(r) = { φ(v) ⊕ v'_k | v ∈ D(r) } ∪ { v' ∈ D'(r) | v' not in t
                  v'_k the row of D'(r) with v's key, if any
 ```
 
-where `φ(v) ⊕ v'` keeps from `v'` the fields of `Σ'` that `φ⁻¹` drops.
-When `D'` has no row with `v`'s key (a row inserted at `Σ`), those
-fields take the operator's fill: the fill of an `add field`, the fill
-of a field moved up to the header.
+where `φ(v) ⊕ v'` keeps from `v'` the fields of `Σ'` that `φ⁻¹` drops,
+when `v'` has the constructor of `φ(v)`. When `D'` has no row with
+`v`'s key (a row inserted at `Σ`), or that row has another constructor,
+each such field takes the relation's default for it in that
+constructor at the current version (`Σ_m` of §9.6), and without one
+the operator's fill: the fill of
+an `add field`, the fill of a field moved up to the header.
 Rows of `D'` outside the image of `φ` (rows of a constructor added
 after `Σ`) are invisible at `Σ` and kept by `put`. An operator on a
 parametric sum maps every instantiation by the same `φ`.
@@ -1203,7 +1270,7 @@ parametric sum maps every instantiation by the same `φ`.
 | move a header field down to constructors `S` | `f` becomes a field of the constructors of `S` | the inverse | the values of `f` in the constructors outside `S` |
 | rekey `r` with `carry` fields | rows of `r` unchanged; every carried reference rewritten from the old key of its target to the new key; a relaxing rekey keeps the old key enforced as a unique while its drop is pending | the converse | none while the old key's fields remain |
 | add, drop or change a named set | identity | identity; a reader pinned earlier reads the set's membership at its version | none |
-| add or drop a unique, an index, a constraint, a check, a computed field | identity; adding a unique, constraint or check requires the data to satisfy it; a dropped unique, constraint or check stays enforced while its drop is pending | identity | none |
+| add or drop a unique, an index, a constraint, a check, a computed field | identity; adding a unique, constraint or check requires the migration's final state to satisfy it; a dropped unique, constraint or check stays enforced while its drop is pending | identity | none |
 | define, redefine or drop a function | identity | identity | none |
 | enable, disable, deprecate | identity; changes `stage(Σ)` of `r.C`, or of a value-level `T.C` for every field; `disable r.C` requires `r.C` empty, and `disable T.C` that no stored value holds `C` | identity | none |
 | install an extension, adopt zone rules | identity on stored values; zoned values keep their civil time and zone | identity | none |
@@ -1216,17 +1283,17 @@ every arm carries each field whole into the new value or fixes it to a
 literal or a nullary constructor. Routing arms and retag-action payloads
 may omit key and header fields, which carry over. A split re-scopes the uniques
 on `C` through its routing, and a reference typed `Key r.C` is retyped
-to `Key r.(C₁ | … | C_k)`. Removing a populated constructor is a merge
-into a surviving constructor followed by a remove; remove itself never
-deletes rows. The data map of each operator of a migration is one
-statement of the migration's transaction (§9.5), with change set
-`diff(D, fwd(D))`, and the constraints of `Σ'` are checked on its
-result. `disable` is the inverse of `enable`, and `deprecate` applies
-only to an enabled constructor. Retiring a bundle is a command, not an
+to `Key r.(C₁ | … | C_k)`. A populated constructor goes away by a merge
+that replaces it, or by a `deprecate`, a script that retags its rows
+out and a later remove; remove itself never deletes rows. Split and unnest products take their source's stage, per
+relation variable. The inverse of `enable` is `disable` when the
+constructor was declared and `deprecate` when it was deprecated, and
+`deprecate` applies only to an enabled constructor. Retiring a bundle is a command, not an
 operator, and changes no schema ([applications.md](applications.md)).
 
 A script changes data, not types: `Σ' = Σ`, and `fwd` is the state
-after its change set. Translation across a script is the identity, so
+after its change set, evaluated on the state the operators before it
+in the migration produce. Translation across a script is the identity, so
 a reader pinned before it reads the data the script wrote, through the
 maps of the other operators. A script is never refused or delayed for
 pinned bundles. It satisfies none of L1 to L3 and has no inverse;
@@ -1235,14 +1302,31 @@ pinned bundles. It satisfies none of L1 to L3 and has no inverse;
 ### 9.4 Undo
 
 `revert n` appends, in reverse order, the inverses of the operators of
-migration `n`. The inverse of an `arm` clause of `add constructor`
-removes that arm from its query. The log keeps both; versions are never reused. A revert
-whose inverses are refused on the current state is refused.
+migration `n`. Each inverse `op⁻¹` restores the state before `op`, up to the
+declared loss `π_op`. It
+names objects by id, is computed against `Σ` before `op`, and is
+resolved to current names when it applies. The inverse of an `arm`
+clause of `add constructor` removes that arm from its query. An
+inverse whose `fwd` needs values `D'` does not hold (the `add field`
+inverse of a `drop field`) takes them from a `fill T.C.f = e` clause of
+the revert, `e` read as an `add field` fill; without one the revert is
+refused. A migration `m` after `n`
+depends on `n` when an operator of `m` names an object id that `n`
+created, and `revert n` is refused while such an `m` is applied. The
+log keeps both; versions are never reused. A revert whose inverses are
+refused on the current state is refused.
 
 ### 9.5 The log as one history
 
-A migration is a transaction (§8.1): its operators apply together as
-one schema change, producing the version its number names. Operators
+A migration is one statement of its transaction (§8.1): its operators
+apply together as one schema change, producing the version its number
+names. Its data map is the composite `fwd_{op_l} ∘ … ∘ fwd_{op_k}` of
+its operators' maps in order, and its change set is
+`diff(D, fwd(D))`. The intermediate states need not be valid. Every
+constraint of the final schema is checked once, on the result, and an
+added constraint is validated there, not on the state after the
+operator that adds it. A staged migration is this statement,
+serialized at its final commit. Operators
 that change definitions (functions, constraints) and lifecycle stages
 are entries of the same log as operators that change data, and are
 versioned by it.
@@ -1252,7 +1336,7 @@ versioned by it.
 For versions `n ≤ m`, let
 
 ```text
-B_{n←m} = bwd_{op_{n+1}} ∘ … ∘ bwd_{op_m}     : DB(Σ_m) → DB(Σ_n)
+B_{n←m} = bwd_{op_{n+1}} ∘ … ∘ bwd_{op_m}     : St(Σ_m) → St(Σ_n)
 P_{n←m}(D_m, D_n) = put_{op_m}(D_m, put_{op_{m-1}}(… , D_n))   composed likewise
 ```
 
@@ -1263,10 +1347,6 @@ named-set memberships and types of `Σ_n`:
 ```text
 ⟦q⟧^{n}(D_m) = ⟦q⟧_{Σ_n}(B_{n←m}(D_m))
 ```
-
-An implementation translates `q` once into a query `q'` over `Σ_m`; the
-translation is correct when `⟦q'⟧_{Σ_m}(D_m) = ⟦q⟧^{n}(D_m)` for every
-valid `D_m`.
 
 A statement `s` at version `n` runs on `D_m` as:
 
@@ -1287,7 +1367,10 @@ membership at `n`: a reader pinned before constructor `C` joined
 at `n`.
 
 A registered query or transaction is translatable across an operator
-when `P` is defined on every state its writes can produce. Every live
+when `P` is defined on every state its writes can produce. The forms
+that make a query untranslatable, and what reading a field means, are
+listed in [evolution.md §7.2](evolution.md#72-translation-is-decided-at-apply);
+they decide this criterion. Every live
 registered query and transaction is translated when an operator
 applies, and an operator across which one is untranslatable is refused,
 naming it ([evolution.md](evolution.md#7-version-translation)). A write
@@ -1322,7 +1405,7 @@ faults `NoSuchRow`, and so does every path through such a reference:
 `deref` is partial in a bundle declaring `hide new constructors`. Its
 writes still meet hidden rows through key and unique tests.
 
-Rulings: evolution/smo, evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/merge-tag/discriminator, evolution/split-routing/match-route, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/revert, evolution/scripted, evolution/in-log, evolution/log-ops, evolution/old-readers/readers-first, model/param-evolution/live, constraint/evolve/carry, constraint/evolve/icmo, constraint/evolve/policy/check, constraint/evolve/unmapped/refuse, derived/defaults/backfill/separate, types/text-eq/unassigned/pin-unicode, surface/source/op-log, surface/version/counter, surface/version/history/linear, surface/version-serving/translate, surface/version-serving/untranslatable/translate-at-apply, engine/transactional-ddl, surface/registration/order/pinned
+Rulings: evolution/smo, evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/merge-tag/discriminator, evolution/split-routing/match-route, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/revert, evolution/scripted, evolution/in-log, evolution/log-ops, evolution/old-readers/readers-first, model/param-evolution/live, constraint/evolve/carry, constraint/evolve/icmo, constraint/evolve/policy/check, constraint/evolve/unmapped/refuse, derived/defaults/backfill/separate, types/text-eq/unassigned/pin-unicode, surface/source/op-log, surface/version/counter, surface/version/history/linear, surface/version-serving/translate, surface/version-serving/untranslatable/translate-at-apply, engine/transactional-ddl, surface/registration/order/pinned, spec/evolution/migration-statement/one-statement, spec/evolution/preconditions/predicate-read, spec/evolution/enable-inverse/prior-state, spec/evolution/revert-identity/by-id, spec/evolution/product-state/source-state, spec/evolution/translatable/semantic-via-triggers, spec/evolution/translated-fields/same-ctor, spec/evolution/bwd-validity/any-state, spec/evolution/staged-meaning/one-transaction, spec/evolution/deprecated-value/same-path, spec/evolution/product-position/first-source, spec/evolution/revert-fill/per-field, spec/tiers/three-tiers
 
 ## 10. Desugaring
 
@@ -1354,8 +1437,8 @@ in each table's first column.
 | after `into`: an aggregate generator `y in g` | `ξ in ζ.rows`, the aggregate's body under `let y = (let x₁ = ξ.x₁ in … ⟦⟦e⟧⟧)` |
 | after `into`: `g` anywhere else | `for ξ in ζ.rows do {let x₁ = ξ.x₁ in … ⟦⟦e⟧⟧}` |
 | `tag(e)` | `tag ⟦⟦e⟧⟧` |
-| `top n by k desc (q)` | `top n by (k desc) (x in ⟦⟦q⟧⟧)`, `x` the binder `k` is written over; a key without direction is `asc` |
-| `top n by (k₁ d₁, …, k_j d_j) (q)` | `top n by (k₁ d₁, …, k_j d_j) (x in ⟦⟦q⟧⟧)` |
+| `top n by k desc (q)` | `top n by (k desc) (x in ⟦⟦q⟧⟧)`, where `k` is a function of the selected value ([queries.md §14.1](queries.md#141-order-by)), read as a function of the element `x`; a key without direction is `asc` |
+| `top n by (k₁ d₁, …, k_j d_j) (q)` | `top n by (k₁ d₁, …, k_j d_j) (x in ⟦⟦q⟧⟧)`, each `k_i` read as a function of `x` as above |
 | `order by k`, `order by (k₁, k₂ desc, …)`, `take`, `after` on a final result | `present` (§5.9) over the kernel result |
 | `fix a = q₁, b = q₂, … in e` | `fix a = ⟦⟦q₁⟧⟧, b = ⟦⟦q₂⟧⟧, … in ⟦⟦e⟧⟧` |
 | `{ l: e, … }` | `{ l: ⟦⟦e⟧⟧, … }` |
@@ -1373,10 +1456,12 @@ in each table's first column.
 | backlink `x.<R.f`, `f : Option (Key t.S)` | `for ξ in ⟦⟦R⟧⟧ do if ξ.f == Some { value: κ } then {ξ} else {}` |
 | an optional reference `e.f : Option (Key r.S)` | no path; matched as an `Option` |
 | a nested result `{ l: from … }` | a record field whose value is the kernel comprehension |
-| `fn f (x̄: τ̄) -> τ = e`, call `f(ā)` | `(λ(x̄ : τ̄). ⟦⟦e⟧⟧) ⟦⟦ā⟧⟧`, unfolded by §5.11 |
+| `fn f (x₁: τ₁, …, xₙ: τₙ) -> τ = e` | `λ(x₁ : τ₁). … λ(xₙ : τₙ). ⟦⟦e⟧⟧` |
+| a call `f(a₁, …, aₙ)` | `(… (⟦⟦f⟧⟧ ⟦⟦a₁⟧⟧) … ⟦⟦aₙ⟧⟧)`, the arguments applied in order, unfolded by §5.11 |
 | `fn v () -> τ = e`, call `v()` | `(λ(ξ : {}). ⟦⟦e⟧⟧) {}` |
 | a lambda argument `fn x -> e` | `λ(x : τ). ⟦⟦e⟧⟧` |
-| `query q (x̄: τ̄) -> τ = e` | the closed term `λ(x̄ : τ̄). ⟦⟦e⟧⟧`, applied to the call's arguments |
+| a lambda `fn (x₁: τ₁, …, xₙ: τₙ) -> e` | `λ(x₁ : τ₁). … λ(xₙ : τₙ). ⟦⟦e⟧⟧` |
+| `query q (x₁: τ₁, …, xₙ: τₙ) -> τ = e` | the closed term `λ(x₁ : τ₁). … λ(xₙ : τₙ). ⟦⟦e⟧⟧`, applied to the call's arguments in order |
 | a virtual computed field `x.f` | the field's defining function applied to `x` ([derived.md](derived.md#5-computed-fields)) |
 | a view, stored or not | its defining query ([derived.md](derived.md#1-views)) |
 
@@ -1443,7 +1528,7 @@ matched (§5.2).
 | `insert r.C { l: e, … }` | `insert r {fill_r(C { l: ⟦⟦e⟧⟧, … })}` |
 | `insert r from q`, `insert r.C from q` | `insert r (for ξ in ⟦⟦q⟧⟧ do {fill_r(ξ)})` |
 | `let x = insert …` in a block | `let! x = (the row or set inserted) in …`, the write `insert r {x}` or `insert r x` joining the block |
-| `key (insert r.C { … })` | as `let!` of the row, then `key` of it |
+| `key (insert r.C { … })` | as `let!` of the row, then `key` of it; only where it is evaluated once per statement ([writes.md §2.2](writes.md#22-what-an-insert-returns)) |
 | `update x in R where p set e` | `for x in ⟦⟦R⟧⟧ do if ⟦⟦p⟧⟧ then replace r x ⟦⟦e⟧⟧° else skip` |
 | `update x in R where p set match x \| …` | as above, `⟦⟦e⟧⟧` the `case` tree of §10.2 |
 | `update o set e` in an upsert branch | `replace r o ⟦⟦e⟧⟧°` |
@@ -1456,7 +1541,7 @@ matched (§5.2).
 | `insert r.C v unless conflict on K else w` | below |
 | `transact` block with lets, writes and `return e` | `transact (let! x₁ = e₁ in … (w₁ ∥ … ∥ wₖ, ⟦⟦e⟧⟧))` |
 | `transact` without `return` | result the unit value `()`, the kernel's empty record `{}` |
-| `txn t (x̄: τ̄) -> τ = transact …` | `λ(x̄ : τ̄). transact …`, applied to the call's arguments |
+| `txn t (x₁: τ₁, …, xₙ: τₙ) -> τ = transact …` | `λ(x₁ : τ₁). … λ(xₙ : τₙ). transact …`, applied to the call's arguments in order |
 
 `fill_r(v)` is `v` with every field it omits taken from `r`'s fill
 clauses: a default expression, or `fresh g` for a generator `g`. A
@@ -1464,13 +1549,15 @@ field the insert gives is never filled. The filled values are part of
 the inserted rows before the change set is formed.
 
 `e°` completes a new value: the row's key, and its header fields where
-the surface leaves them out, are taken from the old row, and a retag
-fills the omitted own fields of the new constructor by `fill_r`
+the surface leaves them out, are taken from the old row, and the
+omitted own fields of the new value's constructor are filled by
+`fill_r`, whether or not the update retags
 ([writes.md §4.1](writes.md#41-retag-is-an-update-to-another-constructor)).
 
 An upsert on a key or unique `K` over constructor set `S` with fields
 `f̄` (the key fields for `on key`), with source `V` (a query, or `{v}` for one
-value):
+value); for a unique over expressions, `o.f̄` stands for the values of
+its expressions on `o`:
 
 ```text
 let! ξ_V = for ξ in ⟦⟦V⟧⟧ do {fill_r(ξ)} in
@@ -1481,32 +1568,28 @@ for new in ξ_V do
 
 In the else branch `new` is the proposed row, with fills applied,
 beside `old`. Bound by `let x`, a single-row upsert binds one row: `new`
-when it is inserted; otherwise `v'` when the effects of `⟦⟦w⟧⟧` hold
-`rep(r, old, v')`, and `old` when they do not. The source form binds
-the set of the rows it inserted together with the rows its else branch
-wrote. In the kernel, the binding is a `let!` after `ξ_V`, beside the
-write above:
+when it is inserted; otherwise the row with `old`'s key among the
+effects `E_w` of `⟦⟦w⟧⟧` when the branch replaces `old`, and `old` when
+the branch leaves it in place. A `let` on a single-row upsert whose
+else branch can delete `old` is a type error. The source form binds
+the set of the rows it inserted together with the binding, as above,
+of each conflicting row. The binding is a `let!` after `ξ_V`, beside the write above:
 
 ```text
-single row:  let! x = only (U (case W(⟦⟦w⟧⟧) of { None ξ → {old} ; Some ξ → {ξ.value} }))
-source form: let! x = U (case W(⟦⟦w⟧⟧) of { None ξ → {} ; Some ξ → {ξ.value} })
+single row:  let! x = only (U (B(E_w, {old})))
+source form: let! x = U (B(E_w, {old}))
 
 U(e) = for new in ξ_V do
          let ξ_O = for o in r.S do if o.f̄ == new.f̄ then {o} else {} in
          if empty(ξ_O) then {new} else for old in ξ_O do e
+
+B(E, d) = A   if A ≠ ∅,   d otherwise,
+  where A = { v' | rep(r, old, v') ∈ E or ins(r, v') ∈ E, key_r(v') = key_r(old) }
 ```
 
-`W(w)` is `Some` of the new value `w` gives the conflicting row, or
-`None` when it gives none:
-
-| Write `w` | `W(w)` |
-| --- | --- |
-| `replace r y e`, `y` the conflicting row or a `case` binder of it | `Some { value: e }` |
-| `if c then w₁ else w₂` | `if c then W(w₁) else W(w₂)` |
-| `case e of { C y → w_C }` | `case e of { C y → W(w_C) }` |
-| `let y = e in w'` | `let y = e in W(w')` |
-| `w₁ ∥ w₂` | `case W(w₁) of { None ξ → W(w₂) ; Some ξ → ξ }` |
-| any other write | `None {}` |
+`E_w` is read off the change set, whatever form the branch is written
+in; `A` has at most one element, since two rows with one key fail the
+statement with `KeyViolation` (§6.3).
 
 In a valid snapshot `ξ_O` has at most one row, since `K` is a key or
 unique over `S`, so the single-row set has exactly one element.
@@ -1544,10 +1627,10 @@ The conflict test reads the snapshot
 
 | Surface ([evolution.md](evolution.md)) | Kernel |
 | --- | --- |
-| a migration file `n` | the operators `op_k … op_l` of §9.3, applied as one transaction |
+| a migration file `n` | the operators `op_k … op_l` of §9.3, applied as one statement, the composite of their maps (§9.5) |
 | `split … by match \| arms` | `φ` = the `case` tree of §10.2 over the old row |
 | `merge … into C { discriminator: …, … }` | `φ(C_i⟨ḡ⟩) = C⟨discriminator: C_i, ḡ⟩` |
 | `add constructor … arm q: C x -> e` | the new `case` arm `C x → ⟦⟦e⟧⟧` in each named query |
-| `revert n` | the inverses of migration `n`'s operators, in reverse order |
+| `revert n fill T.C.f = e …` | the inverses of migration `n`'s operators, in reverse order; an inverse that adds field `T.C.f` takes `e` as its fill (§9.4) |
 
-Rulings: query/construct, lang/nav/paths, lang/nav/backlinks, lang/nav/joins, lang/nav/backlink-card/collection-typed, lang/nav/path-option/option-typed, lang/patterns/guards, lang/patterns/guard-cover/ignore-guarded, lang/patterns/literals, lang/patterns/nested, lang/patterns/or-patterns, lang/patterns/or-binder/ctor-set, lang/patterns/record, lang/wildcard/verbosity/adhoc-wildcard, lang/wildcard/verbosity/set-patterns, lang/nullary-fn, lang/params/declared, lang/registered/named, lang/abstraction/higher-order, syntax/aggregate/comprehension, write/insert/ctor, write/insert/value, write/update/ctor-binder, write/update/match-set, write/nested/replace, write/nested/rebuild, write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, write/transact/block, write/transact/registered-txn, surface/constraint/check, surface/constraint/denial, derived/defaults/on-relation, derived/materialize/storage-choice, derived/computed/virtual, model/prelude-bool, surface/query-scoped, evolution/split-routing/match-route, constraint/scope/new-ctor/arm-in-add
+Rulings: query/construct, lang/nav/paths, lang/nav/backlinks, lang/nav/joins, lang/nav/backlink-card/collection-typed, lang/nav/path-option/option-typed, lang/patterns/guards, lang/patterns/guard-cover/ignore-guarded, lang/patterns/literals, lang/patterns/nested, lang/patterns/or-patterns, lang/patterns/or-binder/ctor-set, lang/patterns/record, lang/wildcard/verbosity/adhoc-wildcard, lang/wildcard/verbosity/set-patterns, lang/nullary-fn, lang/params/declared, lang/registered/named, lang/abstraction/higher-order, syntax/aggregate/comprehension, write/insert/ctor, write/insert/value, write/update/ctor-binder, write/update/match-set, write/nested/replace, write/nested/rebuild, write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, write/transact/block, write/transact/registered-txn, surface/constraint/check, surface/constraint/denial, derived/defaults/on-relation, derived/materialize/storage-choice, derived/computed/virtual, model/prelude-bool, surface/query-scoped, evolution/split-routing/match-route, constraint/scope/new-ctor/arm-in-add, spec/lambda/params/curried, spec/top/operand/comprehension, spec/writes/upsert-binding/change-set, spec/writes/nested-insert/once, spec/evolution/migration-statement/one-statement, spec/evolution/revert-fill/per-field

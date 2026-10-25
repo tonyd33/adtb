@@ -3,8 +3,8 @@
 This part defines the values a database holds and the types that
 classify them: base types, records, sums, newtypes and type
 parameters; relation variables and the constructor relations and
-constructor sets they expose; keys and references; and the equality,
-order and hashing every value type has. How expressions over these
+constructor sets they expose; keys and references; and the equality
+and order of every value type. How expressions over these
 types are checked is [typing.md](typing.md). The functions over them
 are listed in [prelude.md](prelude.md). What queries over them mean is
 [queries.md](queries.md).
@@ -131,7 +131,7 @@ Rulings: sum/closed, sum/disjoint-total, surface/sum-decl/alternatives, sum/valu
 
 A record type is a sum with one constructor, named after the type:
 
-```adt
+```adt fragment
 type Point = { x: I64, y: I64 }
 -- means
 type Point = Point { x: I64, y: I64 }
@@ -435,7 +435,7 @@ newtype's name, and never faults: the domain is not checked by
 construction. `unwrap(e)` returns the underlying `Text`
 ([prelude.md](prelude.md#35-newtypes-and-keys)). A `Text` is not an `Email` and an `Email` is not a `Text`:
 
-```adt
+```adt fragment
 insert contacts { email: "a@b" }           -- refused: Text is not Email
 insert contacts { email: Email("a@b") }
 ```
@@ -465,9 +465,7 @@ has no free type parameters.
 
 Each instantiation of a parametric sum is the same declared sum. Its
 constructors are the declared constructors, whose constructor ids are
-shared by every instantiation. A relation variable stores one heap per
-constructor, keyed by the relation variable and the constructor id,
-whatever instantiation its element type is. A schema operator on a
+shared by every instantiation. A schema operator on a
 parametric sum reaches every instantiation of it, in every relation
 and every dependent query, which are rechecked as for any schema
 change ([evolution.md](evolution.md)).
@@ -475,7 +473,7 @@ change ([evolution.md](evolution.md)).
 A parameter's variance follows from where it occurs in the declaration
 ([typing.md](typing.md#4-variance)).
 
-Rulings: model/user-params, model/param-evolution/live
+Rulings: model/user-params, model/param-evolution/live, spec/tiers/three-tiers
 
 ### 5.2 Library sums
 
@@ -641,7 +639,8 @@ Rulings: model/composite, model/sum-valued-key, model/ref-in-key, model/record-k
 A relation may generate its key, and fill other fields from defaults.
 Generators and defaults are clauses of the relation variable; a type
 never carries one, so constructing a value is pure. An insert that
-does not supply a generated field gets the generator's next value:
+does not supply a generated field gets a value drawn from the
+generator:
 
 ```adt
 type Order = { id: Key orders, buyer: Key users }
@@ -667,15 +666,14 @@ transactions.
 
 A generated field is still a field the type declares: it is stored,
 compared and exported with the row, and an insert or a load may supply
-it. An explicitly supplied value for a `sequence` key advances the
-generator past it: after the change set commits, the generator's
-state is at least one more than the largest value supplied. The
-advance is not undone by a later abort.
+it. A generated `sequence` key differs from every value the generator
+has issued and from every key value that any committed row of the
+relation has held, supplied values included.
 
 `key id` names a field the element type declares; it never adds a
 field. Other defaults are in [derived.md](derived.md#4-defaults).
 
-Rulings: model/declared-key, types/id-type/key-type, types/keygen/sequence, types/keygen/uuidv7, types/keygen/promise/distinct, types/keygen/import/advance, types/keygen/leak/live, types/now/param-only
+Rulings: model/declared-key, types/id-type/key-type, types/keygen/sequence, types/keygen/uuidv7, types/keygen/promise/distinct, types/keygen/import/advance, types/keygen/leak/live, types/now/param-only, spec/writes/sequence-distinct/issued-and-held
 
 ## 8. References
 
@@ -857,25 +855,12 @@ Orders are:
 `to_instant(z)`. Anonymous records and anonymous sums have no order;
 a compound sort key is a list of keys
 ([queries.md](queries.md#14-ordering-top-n-and-pagination)).
-Reordering the constructors of an ordered sum changes query results
-and is a schema operator ([evolution.md](evolution.md)).
+Where a schema change places a new constructor in declaration order is
+stated in [evolution.md §4.2](evolution.md#42-add-a-constructor).
 
 ```adt
 type Stage ordered = Draft | Sent { at: Instant } | Paid { at: Instant, ref: Text }
 -- Draft < Sent { at: t1 } < Paid { at: t0, ref: "a" } for any t0, t1
 ```
 
-Indexes order every value, ordered or not, by an internal encoding
-that queries do not observe.
-
-Rulings: lang/sum-order/declared, model/enum-order/derived-order
-
-## 11. Hashing
-
-The hash of a value is a hash of its canonical key encoding, in which
-equal values have equal bytes. Hashing is therefore consistent with
-`==` for every type, sums and records included. A hash that is
-persisted (partitioning) uses a fixed function, versioned with the
-file format; a hash used only in memory may be seeded per process.
-
-Rulings: types/hash/key-bytes
+Rulings: lang/sum-order/declared, model/enum-order/derived-order, spec/evolution/ctor-order/placed, spec/tiers/three-tiers

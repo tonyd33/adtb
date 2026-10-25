@@ -41,7 +41,14 @@ variables of one type, so the name is unambiguous at the type level.
 `Identity.(EmailPass | Google | Apple)`, listing every constructor, is
 the type `Identity`.
 
-Rulings: lang/binder/ctor-row, lang/patterns/or-binder/ctor-set
+An anonymous result sum ([queries.md
+§4.3](queries.md#43-result-sums)) has row types exactly as a declared
+sum: for `T = ByEmail { email: Text } | ByGoogle { gid: Text }`,
+`T.ByEmail` and `T.(ByEmail | ByGoogle)` are row types, the latter
+`T` itself. Two anonymous sums with the same constructors in another
+order are one type.
+
+Rulings: lang/binder/ctor-row, lang/patterns/or-binder/ctor-set, spec/anon-sum/row-types/row-types
 
 ## 2. Signatures and inference
 
@@ -77,44 +84,87 @@ type error.
 
 Rulings: lang/inference/signatures, lang/params/declared, lang/option-params
 
-### 2.2 The algorithm
+### 2.2 Checked and synthesized forms
 
-Checking is bidirectional. Each expression is either checked against
-an expected type or synthesizes one:
+Checking is bidirectional, with two judgements:
 
-- A body is checked against its signature's result type.
-- A generator `x in e` synthesizes the type of `e` and fixes the type
-  of `x`: for a relation `r` of element type `T`, `x : T`; for a
-  constructor relation `r.C`, `x : T.C`; for a constructor set
-  `r.S`, `x : T.S`; for `e : Set U`, `x : U`.
-- `group e by k into g` binds `g : Group K T`, for `k : K` and
-  `e : T`. `g.key` has type `K`, and `g` is a nonempty `Set T`
-  wherever a set is expected ([queries.md](queries.md)).
-- Field access, `key x`, `r.key(...)`, navigation, application of a
-  declared or prelude function and operators synthesize. A prelude
-  name with several signatures resolves by its arguments' synthesized
-  types ([prelude.md](prelude.md#1-conventions)).
-- A record literal, a constructor application, a numeric literal, a
-  `match`, an `if`, and a function passed to a higher-order function are
-  checked against the expected type when there is one.
-- A comprehension checked against `Set T` checks its `select`
-  expression against `T`, and a `union` checked against `Set T` checks
-  each operand against `Set T`. The source query of `insert r from (q)`
-  is checked against `Set` of the row type of the target `r`, `r.C` or
-  `r.S`.
-- In `at commit p { q }` the operand `p` is checked against
-  `Position`, and in `at instant t { q }` the operand `t` against
-  `Instant`. The block synthesizes the type of `q`, checked at the
-  schema version of the past state it reads
-  ([derived.md](derived.md#62-naming-a-past-state)).
-- Where a synthesized type meets an expected type, the synthesized
-  type must be a subtype of the expected one (§3). This is the only
-  place subsumption applies.
+```text
+Γ ⊢ e ⇐ T     e checks against the expected type T
+Γ ⊢ e ⇒ T     e synthesizes the type T
+```
 
-Type arguments of a call to a generic function are solved from the
-local subtype constraints of that call, choosing the least result type
-that satisfies them. A type error is reported at the subterm where the
-synthesized type and the expectation disagree.
+A body checks against its signature's result type. The forms:
+
+```text
+Γ ⊢ e ⇒ S    S <: T
+──────────────────────────────────────── (sub)
+Γ ⊢ e ⇐ T
+
+r : T in Σ
+──────────────────────────────────────── (rel)
+Γ ⊢ r ⇒ Set T     Γ ⊢ r.C ⇒ Set T.C     Γ ⊢ r.S ⇒ Set T.S
+
+Γ ⊢ e ⇒ Set U
+──────────────────────────────────────── (gen)
+the generator x in e binds x : U
+
+Γ ⊢ e ⇒ T    Γ ⊢ k ⇒ K
+──────────────────────────────────────── (group)
+group e by k into g binds g : Group K T
+
+Γ, a : T, b : U ⊢ e ⇒ R
+──────────────────────────────────────── (lambda)
+Γ ⊢ fn (a: T, b: U) -> e ⇒ T -> U -> R
+
+Γ' ⊢ e ⇐ T    Γ' is Γ with the comprehension's binders
+──────────────────────────────────────── (comp)
+Γ ⊢ from … select e ⇐ Set T
+
+Γ ⊢ q₁ ⇐ Set T    Γ ⊢ q₂ ⇐ Set T
+──────────────────────────────────────── (union)
+Γ ⊢ q₁ union q₂ ⇐ Set T
+
+Γ ⊢ p ⇐ Position    Γ_p ⊢ q ⇒ T
+──────────────────────────────────────── (at)
+Γ ⊢ at commit p { q } ⇒ T
+```
+
+(sub) is the only place subsumption applies (§3). In (at), `Γ_p` is
+`Γ` with the schema of the version of the past state `q` reads
+([derived.md](derived.md#62-naming-a-past-state)); `at instant t { q }`
+is the same with `t ⇐ Instant`.
+
+In (group), `g.key ⇒ K`, and `g ⇒ Set T`, nonempty, wherever a set is
+expected ([queries.md](queries.md)). `Group K T` is only the type of a
+group binder and is never written in a signature; a group passed as an
+argument is passed as the nonempty set it denotes, at type `Set T`.
+
+The element types of the binders of `fix X₁ = e₁, …, Xₙ = eₙ` are the
+least types `T₁, …, Tₙ` under §3 such that, with each `Xⱼ : Set Tⱼ`,
+`eᵢ ⇐ Set Tᵢ` for every `i`. A `fix` with no such types is a type
+error.
+
+A call `f(x, y)` of a function value applies its arguments in order. A
+schema `fn` with parameters of types `T, U`, named without a call,
+synthesizes that curried type; a parameterless one synthesizes
+`() -> R` ([queries.md §12.3](queries.md#123-higher-order-functions-are-normalised-away)).
+
+Field access, `key x`, `r.key(...)`, navigation, application of a
+declared or prelude function and operators synthesize. A prelude name
+with several signatures resolves by its arguments' synthesized types
+([prelude.md](prelude.md#1-conventions)).
+
+A record literal, a constructor application, a numeric literal, a
+`match`, an `if`, and a function passed to a higher-order function
+check against the expected type when there is one. The source query
+of `insert r from (q)` checks against `Set` of the row type of the
+target `r`, `r.C` or `r.S`.
+
+A call of a generic function takes, among the instantiations of its
+type parameters under which every argument meets its parameter type,
+the one with the least result type under §3. A call with no such
+instantiation is refused, and so is a call whose instantiations have
+several minimal result types, incomparable under §3.
 
 ```adt
 fn oauth_owner (u: Key users) -> Set (Key identities) =
@@ -126,7 +176,7 @@ Here `i : Identity`; each arm synthesizes `Key identities.C`, the
 arms join to `Key identities` (§5), and the result checks against
 `Set (Key identities)`.
 
-Rulings: types/infer/bidir-local, lang/inference/signatures
+Rulings: types/infer/bidir-local, lang/inference/signatures, spec/group/binder-type/binder-only, spec/fix/typing/least, spec/lambda/params/curried, spec/tiers/three-tiers
 
 ## 3. Subtyping
 
@@ -151,14 +201,16 @@ Nothing else is a subtype of anything else. In particular:
   fewer) and no depth subtyping (`{ k: Key users.Admin }` is not a
   subtype of `{ k: Key users }`). Dropping a field is a written
   projection.
-- Anonymous sum types are equal or unrelated.
+- Two anonymous sum types with different constructors are unrelated.
+  Within one anonymous sum, row types are ordered by the first rule,
+  as for a declared sum.
 - References into different relation variables are unrelated, even
   when the relations have the same element type.
 
 Subsumption never changes a value's representation: a constructor row
 is a value of its sum, and a narrower key is a key value.
 
-Rulings: lang/binder/ctor-row, model/ref-subtyping/ctor-set-subsumption, types/sub-records/exact, types/num-mix/explicit
+Rulings: lang/binder/ctor-row, model/ref-subtyping/ctor-set-subsumption, types/sub-records/exact, types/num-mix/explicit, spec/anon-sum/row-types/row-types
 
 ## 4. Variance
 
@@ -192,8 +244,10 @@ The arms of a `match` or an `if`, the operands of `union`, and the two
 operands of `==`, `!=` and the order comparisons are combined at their
 join. When the `match`, `if` or `union` is checked against an expected type, each
 arm is checked against that type and no join is taken. When it
-synthesizes, its type is the join of its arms' types, and each arm is
-then checked against the join.
+synthesizes, its type is the least type `T`, under §3, such that every
+arm checks against `T`; for arms that each synthesize a type, `T` is
+their join. A form with no such `T` is refused. So
+`if c then None else Some { value: 1 }` has type `Option I64`.
 
 ### 5.2 The join
 
@@ -219,7 +273,7 @@ Values of two different sums have no join: there is no top type. Arms
 that are meant to stay apart are given constructors of a result sum
 ([model.md](model.md#64-results)).
 
-```adt
+```adt fragment
 from i in identities select match i
   | Google g    -> g          -- Identity.Google
   | Apple a     -> a          -- Identity.Apple
@@ -237,9 +291,11 @@ match i
 join; they compare at the join. `<`, `<=`, `>` and `>=` additionally
 require the join to be ordered ([model.md](model.md#10-order)). Two
 `Decimal` operands of different scales compare numerically
-([model.md](model.md#33-decimals)). A literal operand is checked
-against the type of the other operand; no literal checks against a
-`Key` type ([model.md](model.md#81-reference-types)).
+([model.md](model.md#33-decimals)). An operand that is a constructor
+application, a record literal or a literal takes its type from the
+other operand, so `p == None` is well typed for `p : Option T`; no
+literal has a `Key` type
+([model.md](model.md#81-reference-types)).
 
 ```adt
 type Visit = { id: Key visits, identity: Key identities }
@@ -249,7 +305,7 @@ where v.identity == key g                     -- at Key identities
 select v
 ```
 
-Rulings: types/join/lub-exact-fields, types/sub-records/exact
+Rulings: types/join/lub-exact-fields, types/sub-records/exact, spec/ctor/type-args/expected-then-fields, spec/join/no-expected/least
 
 ## 6. Records, constructors and fields
 
@@ -289,8 +345,12 @@ Rulings: lang/record-poly/nominal, model/nominal
   - The expression after `set` in an `update`, or an arm of a `match`
     directly after `set`, may omit the key fields and the header
     fields of the row's sum; they keep the row's values
-    ([writes.md](writes.md#4-retag)). When it retags the row, it may
-    also omit the fields the target constructor's defaults fill.
+    ([writes.md](writes.md#4-retag)). It may also omit the own fields
+    its constructor's defaults fill, whether or not it retags the row.
+- A generic constructor's type arguments are fixed by the expected
+  type or by its fields' types. A type argument fixed by neither is a
+  type error naming the parameter: `None` with no expected type, or
+  `Err { error: e }` alone, whose fields fix `e` and not `a`.
 - A record literal `{ f: e, ... }` checked against a declared record
   type, or against a constructor row type `T.C`, constructs that
   record or constructor. Otherwise it is an anonymous record whose
@@ -302,6 +362,7 @@ Rulings: lang/record-poly/nominal, model/nominal
   type and synthesizes `N`.
 
 ```adt
+-- given u: User, g: Text
 type Import { id: Key imports } = Email { user: Key users, addr: Text, h: Bytes }
                                 | Oauth { user: Key users, sub: Text }
 relation imports : Import key id generate sequence
@@ -312,6 +373,8 @@ insert identities from (
     | Email e -> EmailPass { user: e.user, email: e.addr, hash: e.h }
     | Oauth o -> Google { user: o.user, gid: o.sub })
 ```
+
+Rulings: spec/ctor/type-args/expected-then-fields
 
 ### 6.3 Field access
 
@@ -360,8 +423,6 @@ The capabilities are fixed by the engine; there are no user-declared
 classes. Every first-order type satisfies `Eq` and `Hash`, so those
 bounds hold at every instantiation by a value type. Type parameters range over value types. An instantiation
 whose type lacks a required capability is a type error at the call.
-Every call is instantiated and normalised before planning
-([semantics.md](semantics.md)).
 
 `Num` provides `+`, `-`, unary `-` and `sum`. For `Decimal a` and
 `Decimal b`, `+` and `-` take the larger scale. `*` and division are
@@ -372,7 +433,7 @@ variable is refused.
 `Span a` carries an implicit `Ord` bound on `a`
 ([prelude.md](prelude.md#28-span)).
 
-Rulings: types/generics/bounded, types/eq-types/all-first-order
+Rulings: types/generics/bounded, types/eq-types/all-first-order, spec/tiers/three-tiers
 
 ## 8. Literals and numeric types
 
@@ -423,11 +484,15 @@ In an or-pattern `| C x | D x -> e`, `x` has type `T.(C | D)`. A
 pattern that names a named constructor set, `| OAuth o -> e`, binds
 `o : T.OAuth` and covers every constructor of the set. Named sets are
 type-level ([§1](#1-type-forms)), so a named-set pattern matches any
-value of the sum, stored or not. A constructor named in a pattern
-resolves against the scrutinee's type, never against other types in
-scope.
+value of the sum, stored or not. A named set takes the payload forms a
+constructor takes, over the fields every member shares: `S _`, `S x`,
+`S { f: p, g }` where every member has fields `f` and `g`, and bare
+`S` only when every member is nullary. A constructor named in a
+pattern resolves against the scrutinee's type, never against other
+types in scope.
 
 ```adt
+-- given i: Identity
 match i
   | EmailPass e -> e.email
   | OAuth o     -> display_name(o)            -- o : Identity.OAuth
@@ -438,7 +503,7 @@ subpatterns; a field name alone binds that field. Nested patterns
 match value-level sum fields. The meaning of each pattern form is in
 [queries.md](queries.md#6-patterns).
 
-Rulings: lang/binder/ctor-row, lang/patterns/or-binder/ctor-set, lang/wildcard/verbosity/set-patterns
+Rulings: lang/binder/ctor-row, lang/patterns/or-binder/ctor-set, lang/wildcard/verbosity/set-patterns, spec/pattern/named-set/like-ctor
 
 ### 9.2 Exhaustiveness
 
@@ -465,10 +530,12 @@ after a schema change.
 - A guarded arm `| C x if p -> e` counts for nothing toward coverage.
   Every constructor also has an unguarded arm, whatever the guards
   say.
-- Coverage of nested and record patterns is decided by the standard
-  pattern-matrix algorithm over these rules.
+- A `match` with nested and record patterns is exhaustive when no
+  value of the scrutinee's type escapes every unguarded arm, with each
+  subpattern covering as these rules say.
 
 ```adt
+-- given i: Identity
 match i
   | Google g if g.gid == "corp" -> "staff"
   | Google _                    -> "guest"      -- required despite the guard
@@ -484,9 +551,12 @@ field and match-scoped constraint ([evolution.md](evolution.md)). A
 registered query of a bundle gets no arm: it keeps its pinned version.
 
 An arm that can never be reached, because earlier unguarded arms
-already cover its constructor, is refused.
+already cover its constructor, is refused. An alternative of an
+or-pattern that matches no value left unmatched by the earlier
+unguarded arms and the earlier alternatives of its own arm is refused
+likewise.
 
-Rulings: lang/wildcard/scalars-only, lang/patterns/guard-cover/ignore-guarded, lang/wildcard/verbosity/set-patterns, query/compile-time
+Rulings: lang/wildcard/scalars-only, lang/patterns/guard-cover/ignore-guarded, lang/wildcard/verbosity/set-patterns, query/compile-time, spec/pattern/redundant-alternative/refused, spec/tiers/three-tiers
 
 ### 9.3 Ad hoc queries
 
@@ -495,6 +565,7 @@ match a value of a sum and covers every constructor no other arm
 names. Ad hoc queries are never rechecked.
 
 ```adt
+-- given i: Identity
 match i | Google g -> g.gid | _ -> "other"     -- ad hoc only
 ```
 
@@ -506,10 +577,10 @@ Rulings: lang/wildcard/verbosity/adhoc-wildcard
 
 An expression is partial when it may fail to produce a value: it may
 fault, or it may not terminate. A statement that does not terminate
-ends by a limit rejection, not a fault. The checker classifies every
-expression as total or partial. It is partial when it contains an
+ends by a limit rejection, not a fault. Every expression is total or
+partial. It is partial when it contains an
 operation that can fault (each prelude function's faults are listed in
-[prelude.md](prelude.md)), a `fix` that is not bounded, which may not
+[prelude.md](prelude.md)), a `fix` that is not bounded ([semantics.md §5.10](semantics.md#510-fixpoints)), which may not
 terminate, a path through
 a key that is not a reference field of a row (a parameter or a key
 built by `r.key(...)`), in a bundle declaring `hide new constructors`
@@ -519,12 +590,9 @@ a `match` on a key that is not a reference field of a row (it faults
 or a call of a function whose body is partial. Hiding is not
 transitive: a row of a constructor the bundle knows is visible even
 when it references a hidden row
-([evolution.md §8.1](evolution.md#81-enabling-a-constructor)). A `fix` is bounded when no body applies a value-constructing
-operation (arithmetic, concatenation, an aggregate or a constructor)
-to a value of a relation it binds; comparisons and other primitives
-that build no new value do not count
-([semantics.md §5.10](semantics.md#510-fixpoints)); an unbounded `fix`
-is partial even when its fixpoint happens to be finite. Every other
+([evolution.md §8.1](evolution.md#81-enabling-a-constructor)). A `fix` that is not bounded
+([semantics.md §5.10](semantics.md#510-fixpoints)) is partial even when
+its fixpoint happens to be finite. Every other
 expression is total. A checked
 operator and `add_period(..., Reject)` are total; they return `Option`.
 
@@ -533,7 +601,7 @@ reached, is in [queries.md](queries.md#15-faults). Evaluation is call
 by value: every argument is evaluated before the body. A registered
 query's result type does not mention faults.
 
-Rulings: types/fault/abort, types/int-overflow/trap
+Rulings: types/fault/abort, types/int-overflow/trap, spec/tiers/three-tiers
 
 ### 10.2 Guards order evaluation
 
@@ -549,10 +617,9 @@ from r in raws where r.n != 0 and 1000 / r.n > 10 select r   -- never divides by
 
 An implementation may reorder, push down, hoist or share total
 expressions freely. It may move a partial expression only to a
-position that the same guards still dominate. Normalisation inlines a
-function call only where its arguments are total.
+position that the same guards still dominate.
 
-Rulings: types/fault/reorder/ordered-guards
+Rulings: types/fault/reorder/ordered-guards, spec/tiers/three-tiers
 
 ### 10.3 Handling a fault
 

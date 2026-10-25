@@ -57,10 +57,17 @@ A write may appear only where a change set is expected: as an item of
 a `transact` block, bound by `let` inside one, as an item of ad hoc
 text ([transactions.md §2](transactions.md#2-statements)), in a
 migration script ([evolution.md](evolution.md)), as the else branch of
-an upsert, as an arm of a write `match` or `if`, or parenthesised as
-the operand of `key` (`key (insert users { name: n })`, §2.2). A write
-used as an operand is parenthesised. A write expression inside a
-query, a predicate or a function body is a type error.
+an upsert, as an arm of a write `match` or `if`, as a component of a
+write sequence `(w1, w2, ...)`, or parenthesised as the operand of
+`key` (`key (insert users { name: n })`, §2.2). A write used as an
+operand is parenthesised. A write expression inside a query, a
+predicate or a function body is a type error.
+
+`let x = w` binds rows for four forms: an insert binds the rows it
+inserts (§2.2), an upsert its binding (§6.2), an update the new rows
+with fills applied (§3), and a delete the rows it names, not the rows
+its delete actions derive (§5). A `let` over `skip`, a write sequence,
+a write `if` or `match`, or `fail` is a type error.
 
 ### 1.2 What a change set is
 
@@ -122,7 +129,16 @@ Several writes may reach one key. After the union:
   `KeyViolation` ([catalog.md](catalog.md#4-error-sums)), reported at
   the statement boundary
   ([constraints.md §4](constraints.md#4-when-constraints-hold)). Two
-  updates of one row to different values are such a case.
+  updates of one row to different values are such a case;
+- an insert never replaces a row. An inserted row whose key is the key
+  of a pre-state row that the change set does not delete fails the
+  statement with `KeyViolation`, whatever its value, even when it
+  equals the pre-state row.
+
+```adt
+-- users holds { id: users.key(1), name: "a" }: KeyViolation
+insert users { id: users.key(1), name: "a" }
+```
 
 A new row whose key or unique value equals that of a row committed by
 another transaction after this transaction's snapshot fails the
@@ -136,7 +152,12 @@ failed conversion) aborts the statement as a fault in a query does
 ([queries.md](queries.md#15-faults)). No part of its change set is
 applied.
 
-Rulings: write/surface/txdata, write/primitive/delta, write/unit/multi, write/bulk/from-query
+When more than one binding, write or `fail` of one statement would
+abort, the statement's outcome is any one of those aborts; the written
+order of the items does not choose it
+([semantics.md §6.6](semantics.md#66-statements)).
+
+Rulings: write/surface/txdata, write/primitive/delta, write/unit/multi, write/bulk/from-query, spec/writes/insert-existing/violation, spec/writes/let-write/four-forms, spec/writes/abort-choice/any-abort
 
 ## 2. Insert
 
@@ -145,6 +166,7 @@ Rulings: write/surface/txdata, write/primitive/delta, write/unit/multi, write/bu
 An insert names its target and gives its rows.
 
 ```adt
+-- given n: Text, u: Key users, g: Text
 insert users { name: n }
 insert identities.Google { user: u, gid: g }
 insert identities.Google from (
@@ -194,6 +216,7 @@ and generated keys are filled in:
   which a `match` consumes.
 
 ```adt
+-- given n: Text, g: Text
 transact
   let u = insert users { name: n }
   let i = insert identities.Google { user: key u, gid: g }
@@ -202,7 +225,10 @@ transact
 
 `key (insert users { name: n })` is the key of the row a nested single
 row insert would insert, and is itself a write: the insert is part of
-the statement's change set.
+the statement's change set. It is allowed only where it is evaluated
+once per statement: under a comprehension, in an `update ... in`, in an
+upsert's else branch, or in the scope of a match arm's binder, it is a
+type error.
 
 ### 2.3 Defaults and generated keys
 
@@ -218,8 +244,8 @@ relation logins : Login
 A field with a default or a generated value may be omitted from an
 insert into that relation variable; the insert fills it. A field given
 explicitly overrides its default. Defaults are applied only by writes
-into the relation variable that declares them: an insert, and a retag
-(§4.1). A value constructed anywhere else, in a query or into another
+into the relation variable that declares them: an insert, and the new
+value of an update or a retag, for the own fields it omits (§4.1). A value constructed anywhere else, in a query or into another
 relation variable of the same type, gives every field. The value
 `generate clock` takes is defined in [model.md](model.md#73-generated-keys).
 
@@ -232,7 +258,7 @@ when it is not given:
 
 | Clause | Draws | Promise |
 | --- | --- | --- |
-| `key id generate sequence` | the next value of a per-relation counter | distinct only |
+| `key id generate sequence` | a 64-bit integer | distinct only |
 | `key id generate uuidv7` | a UUIDv7 as RFC 9562 defines it, with a 48-bit millisecond timestamp | distinct only |
 | `default f = generate clock` | an `Instant` for a non-key field, as [model.md](model.md#73-generated-keys) defines | the wall-clock time at which the statement applies, one value for every row of the statement |
 
@@ -256,10 +282,9 @@ Rules for both:
   generator hides either.
 - A generated field is an ordinary field: an insert may give it
   explicitly, as an import does (`insert users { id: users.key(42),
-  name: n }`). When a change set holding explicit
-  values of a `sequence` field commits, the counter advances past the
-  greatest of them, so no later generated value equals an explicit
-  committed one. The advance is not undone by any later abort.
+  name: n }`). A generated `sequence` key differs from every value the
+  generator has issued and from every key value that any committed row
+  of the relation has held, explicit ones included.
 
 ### 2.4 Constructors not open for writes
 
@@ -267,22 +292,59 @@ An insert or a retag into a constructor that is declared but not yet
 enabled, or that is deprecated, fails the statement with `Rejected {
 reason: NotOpen {..} }`. A constructor of a value-level sum is gated
 the same way: a write that stores a value of a constructor that is
-declared but not yet enabled, in any field at any depth of any row,
-fails with `Rejected { reason: NotOpen {..} }` naming that
-constructor. An update of an
+declared or deprecated, in any field at any depth of any row, fails
+with `Rejected { reason: NotOpen {..} }` naming that constructor,
+unless the pre-state row with the same key holds an equal value at
+the same field path. An update of an
 existing row that keeps its constructor is allowed, also in a
 deprecated constructor
 ([evolution.md](evolution.md#34-staged-changes)). Readers are upgraded
 to the version that declares a constructor before any writer may
 create its rows or store its values.
 
-Rulings: write/insert/ctor, write/insert/value, write/insert/returns/rows, derived/defaults/on-relation, types/keygen/sequence, types/keygen/uuidv7, types/keygen/promise/distinct, types/keygen/import/advance, types/keygen/leak/live
+### 2.5 Rejected rows
+
+An insert from a query may end with `rejects into j`, where `j` is a
+relation variable of the prelude type `RejectedRow`
+([interop.md §4.5](interop.md#45-rejects)). The source must be a
+comprehension with a single generator over a source relation or an
+external source, so that each row has one source record; any other
+source with `rejects into` is a type error:
+
+```adt
+type GoogleRow = { id: Key identities, user: Key users, gid: Text }
+relation google_rejects : RejectedRow key (load, line)
+
+insert identities.Google from (
+  from r in read_csv("google.csv", GoogleRow)
+  select Google { id: r.id, user: r.user, gid: r.gid })
+rejects into google_rejects
+```
+
+Each record of the source is converted on its own: read at the row
+type the source names, then computed by the query. A record fails when
+it does not convert to that row type or when its computation reaches
+`reject e`. Every row computed from a record that does not fail is
+inserted into the target. For every record that fails, one row is
+inserted into `j`, holding the record's position in the source's
+stated order as `line`, the source, the record as text, and the error
+as `reason`. `load` is one fresh value per statement, the same in every
+row the statement inserts into `j`, and distinct from every `load`
+value issued before. Both sets of rows belong to the statement's one
+change set.
+
+Any other fault aborts the statement (§1.5). A constraint violation
+aborts the whole statement, its rejected rows included. Without
+`rejects into`, a statement with a failing record fails with
+`Rejected { reason: BadInput {..} }`.
+
+Rulings: write/insert/ctor, write/insert/value, write/insert/returns/rows, derived/defaults/on-relation, types/keygen/sequence, types/keygen/uuidv7, types/keygen/promise/distinct, types/keygen/import/advance, types/keygen/leak/live, spec/writes/nested-insert/once, spec/writes/sequence-distinct/issued-and-held, spec/writes/rejects/per-row, spec/writes/rejects-source/one-source, spec/evolution/deprecated-value/same-path
 
 ## 3. Update
 
 ### 3.1 Forms
 
-```adt
+```adt fragment
 update x in R where p set e
 update x set e
 ```
@@ -293,10 +355,22 @@ a comprehension over one relation variable with filters and joins whose
 `select` is the binder itself). `x` is bound to each row of `R` in the
 pre-state that satisfies `p`; `where p` may be omitted. `e` is the new
 whole value of the row and may read `x`. The second form updates the
-one row `x` already names, bound by `let` or by an upsert's `old`
-(§6).
+one row `x` already names. That `x` must be bound to a row of the
+snapshot: by a generator of a query, by an upsert's `old` (§6), or by a
+binder of a match over such a row. A name bound by `let` to the rows of
+a write is not such a row, and `update x` on it is a type error.
+
+```adt fragment
+transact
+  let u = insert users { name: n }
+  update u set User { u with name: m }   -- type error
+```
+
+Bound by `let`, an update binds the set of its new rows, with fills
+applied (§4.1).
 
 ```adt
+-- given u: Key users, g2: Text
 update g in identities.Google where g.user == u set Google { g with gid: g2 }
 
 update i in identities where i.user == u
@@ -324,6 +398,7 @@ holding a value-level sum is replaced by a whole new value or rebuilt
 by a match over it:
 
 ```adt
+-- given k: Key customers
 type Address = US { zip: Text, street: Text } | Intl { country: Text, postcode: Text }
 type Customer = { id: Key customers, name: Text, address: Address }
 relation customers : Customer key id generate sequence
@@ -339,11 +414,17 @@ does not exist.
 
 ### 3.3 The key does not change
 
-The new value of a row has the row's key. An update whose new value
-has another key value is a type error where the type checker can see
-that the key differs, and otherwise fails the statement with `Rejected
-{ reason: KeyChanged {..} }` ([catalog.md](catalog.md#4-error-sums)). Changing a row's identity is a
+The new value of a row has the row's key. A new value written as a
+constructor expression may not give a key field; one that does is a
+type error. Every other new value whose key differs from the row's
+fails the statement with `Rejected { reason: KeyChanged {..} }`
+([catalog.md](catalog.md#4-error-sums)). Changing a row's identity is a
 delete and a separate insert of a new row.
+
+```adt fragment
+update g in identities.Google where g.user == u
+set Google { g with id: k }   -- type error
+```
 
 ### 3.4 The old row is in scope
 
@@ -351,7 +432,7 @@ delete and a separate insert of a new row.
 the new value is computed from the old one in the same write, without a
 separate read.
 
-Rulings: write/update/ctor-binder, write/update/match-set, write/nested/replace, write/nested/rebuild, write/retag/old/in-scope, write/bulk/from-query
+Rulings: write/update/ctor-binder, write/update/match-set, write/nested/replace, write/nested/rebuild, write/retag/old/in-scope, write/bulk/from-query, spec/writes/bound-row/snapshot-row, spec/writes/new-key/ctor-expr
 
 ## 4. Retag
 
@@ -361,6 +442,7 @@ There is no retag statement. An update whose new value is a constructor
 other than the row's current one retags the row:
 
 ```adt
+-- given k: Key identities
 update i in identities where i.id == k
 set match i
   | EmailPass e -> Google { gid: lookup(e.email) }
@@ -368,16 +450,31 @@ set match i
   | Apple a     -> a
 ```
 
-In the new value of an update, the key and the header fields of the sum
-may be omitted. A constructor application is the new value of an update
-when it is the expression after `set`, or an arm result of a `match`
-there; elsewhere every field must be given
-([typing.md](typing.md)). Omitted key and header fields keep the old
-row's values. `D { x with f: v, ... }` where `x` is a row of another constructor `C` copies only the
-key and the header fields of `x`, and every field of `D` must be given
-except those with a default or a generated value, which are filled as
-an insert into `r.D` fills them. No field of `C` is ever carried into
-`D`, whatever its name and type.
+The new value of an update is a value of its constructor `D`, the same
+whether the row was a `D` before or not. A constructor application is
+the new value of an update when it is the expression after `set`, or an
+arm result of a `match` there; elsewhere every field must be given
+([typing.md](typing.md)). In it:
+
+- the key and the header fields of the sum may be omitted, and keep
+  the old row's values;
+- an own field of `D` that is omitted takes the relation's default for
+  `D`, or its generated value, as an insert into `r.D` fills it;
+- an own field of `D` with no default or generated value must be given.
+  This is decided by the type checker.
+
+`D { x with f: v, ... }` copies every field `x` has: its key and header
+fields, and `D`'s own fields when `x` is a `D`. It fills only the
+fields `x` lacks, as above. An own field of `D` that some constructor
+of `x`'s type lacks and that has no default must be given. No field of
+another constructor `C` is ever carried into `D`, whatever its name and
+type.
+
+```adt
+-- given u: Key users
+-- at takes the relation's default whether s was Active or Revoked
+update s in logins where s.user == u set Revoked { }
+```
 
 ### 4.2 What a retag guarantees
 
@@ -407,6 +504,7 @@ reference of type `Key identities` is unaffected by any retag and a
 reference of type `Key identities.EmailPass` refuses one.
 
 ```adt
+-- given k: Key identities, g: Text
 -- refused while a reset references identity k
 update i in identities.EmailPass where i.id == k set Google { gid: g }
 ```
@@ -424,21 +522,24 @@ A retag is privileged by its source and target constructor sets, apart
 from the privileges to insert and delete
 ([security.md](security.md#3-grants)).
 
-Rulings: write/retag/assign, write/retag/old/in-scope, fk/retag/recheck, model/one-key, engine/retag-fk/by-isolation, repl/cdc/retag/ctor-pair, security/transition/transition
+Rulings: write/retag/assign, write/retag/old/in-scope, fk/retag/recheck, model/one-key, engine/retag-fk/by-isolation, repl/cdc/retag/ctor-pair, security/transition/transition, spec/writes/update-fill/value
 
 ## 5. Delete
 
-```adt
+```adt fragment
 delete x in R where p
 delete x
 ```
 
 `R` is as for update (§3.1). Every row of `R` in the pre-state that
 satisfies `p` is in the deleted set of its constructor relation. The
-second form deletes the one row `x` names. Bound by `let`, a delete
-binds the set of rows it deletes, as they were in the pre-state.
+second form deletes the one row `x` names, which must be bound to a
+row of the snapshot as for `update x` (§3.1). Bound by `let`, a delete
+binds the set of rows it names, as they were in the pre-state, and not
+the rows its delete actions derive.
 
 ```adt
+-- given u: Key users, g: Text
 delete s in logins.Revoked where s.user == u
 delete s in (from s in logins.Active, i in identities.Google
              where s.identity == key i and i.gid == g select s)
@@ -447,13 +548,14 @@ delete s in (from s in logins.Active, i in identities.Google
 A delete also derives the delete actions of §7 on every row that
 references a deleted row.
 
-Rulings: write/bulk/from-query, write/primitive/delta
+Rulings: write/bulk/from-query, write/primitive/delta, spec/writes/bound-row/snapshot-row, spec/writes/let-write/four-forms
 
 ## 6. Upsert
 
 ### 6.1 Form
 
 ```adt
+-- given u: Key users, g: Text, k: Key identities
 insert identities.Google { user: u, gid: g }
 unless conflict on (gid) in Google
 else update old set Google { old with user: u }
@@ -470,6 +572,19 @@ An upsert is an insert followed by `unless conflict on K else w`. `K`
 names one key or unique of the target relation variable: `key` for its
 key, or the fields and constructor set of a declared unique, `(gid) in
 Google`. A `K` that names no declared key or unique is a type error.
+The insert's target constructor set must be a subset of the
+constructor set `K` ranges over; otherwise the upsert is a type error.
+For a unique over expressions, `K` is written as the unique is
+declared, and two rows conflict when the unique's expressions evaluate
+to equal values on them:
+
+```adt
+-- given u: Key users, e: Text, h: Bytes
+-- with add unique (lower(email)) in identities.EmailPass
+insert identities.EmailPass { user: u, email: e, hash: h }
+unless conflict on (lower(email)) in EmailPass
+else update old set old
+```
 
 ### 6.2 Meaning
 
@@ -485,9 +600,11 @@ row with the same value of `K`:
   failure ([transactions.md §6.1](transactions.md#61-serialization-failures));
 - if the only conflict is with a row another write of the same
   statement inserts, no `old` is bound, `w` is not evaluated, and the
-  statement fails: with `KeyViolation` when `K` is the key, and with
-  `Violated` carrying the unique as its constraint when `K` is a unique
-  ([catalog.md](catalog.md#4-error-sums)).
+  statement fails, as two inserted rows with one key or one unique
+  value fail it: with `KeyViolation` when `K` is the key, and with
+  `Violated` naming the unique by its canonical name when `K` is a
+  unique. Among several violations of one statement the one reported
+  is chosen by name ([constraints.md §7](constraints.md#7-checking-and-violation-reports)).
 
 `old` has the row type of the constructor set `K` ranges over: the sum
 for `key`, `Identity.Google` for `(gid) in Google`. A `match old` names
@@ -520,15 +637,21 @@ unless conflict on (gid) in Google
 else update old set Google { old with user: new.user }
 ```
 
-Bound by `let`, a single-row upsert binds exactly one row: the inserted
-row, or `old` as the else branch leaves it (its new value when the
-branch updates it, its old value when it does not). When the else
-branch fails with `fail`, the statement is rejected and nothing is
-bound. A `let` on a single-row upsert whose else branch can delete the
-row, because any arm of it is a delete, is a type error, since the
-binding must be exactly one row. This makes a get-or-create:
+Bound by `let`, a single-row upsert binds exactly one row. When the row
+is inserted, it binds the inserted row. When it conflicts, it binds the
+row with `old`'s key among the else branch's effects when the branch
+replaces `old`, and `old` itself when the branch leaves it in place. The
+binding is read off the change set, whatever form the branch is
+written in. Its type is the join of the target's row type and the
+types of the new values the branch writes, so a branch that retags
+binds a row of the joined constructor set. When the else branch fails
+with `fail`, the statement is rejected and nothing is bound. A `let`
+on a single-row upsert whose else branch can delete the row, because
+any arm of it is a delete, is a type error, since the binding must be
+exactly one row. This makes a get-or-create:
 
 ```adt
+-- given u: Key users, x: Text
 transact
   let g = insert identities.Google { user: u, gid: x }
           unless conflict on (gid) in Google
@@ -537,12 +660,12 @@ transact
 ```
 
 The `from` form binds the set of rows it inserted together with the
-rows its else branch wrote.
+binding, as above, of each conflicting row.
 
 The else branch is required. An upsert that should leave a conflicting
 row unchanged says so with `else update old set old`.
 
-Rulings: write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, engine/wait-inserter
+Rulings: write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, engine/wait-inserter, spec/writes/upsert-scope/subset, spec/writes/upsert-binding/change-set, spec/writes/violation-name/canonical-least, spec/writes/insert-existing/violation
 
 ## 7. Delete actions
 
@@ -579,27 +702,44 @@ as for a retag (§4.1). The referrer keeps its key and header fields.
 With the `logins` relation of the preamble, deleting an identity
 retags each `Active` login referencing it to `Revoked`, with `at`
 generated by the relation's default. The payload does not read the
-referrer's old fields.
+referrer's old fields. Two `retag` actions on the fields of one type
+must be the same action, to the same constructor with the same
+payload; otherwise the type is a schema error when it is declared.
 
 ### 7.2 When an action runs
 
-A row is deleted by a change set when its key is in a deleted set and
-in no inserted set of its relation variable. Only deletion triggers an
-action: an update, and a retag of the target (§4.3), trigger none.
+Only deletion triggers an action: an update, and a retag of the target
+(§4.3), trigger none. The gone keys of a statement are the least set
+of keys that holds every key of a pre-state row that the statement's
+own writes leave without a row, and that is closed under `cascade`: a
+pre-state row that the statement neither replaces nor deletes, whose
+`cascade` field names a gone key, has a gone key itself.
 
-The actions are computed from the change set to a fixpoint: a row
-deleted by `cascade` triggers the actions on its own referrers, and a
-row retagged by `retag` drops the references its old constructor held.
-Each row is deleted at most once, so the computation ends. Delete
-actions are the only writes the engine derives; there are no triggers
-or rules.
+Delete actions reach only rows of the pre-state that the statement's
+own writes neither replace nor delete. Each such row whose key is not
+gone and whose reference fields name
+gone keys takes one new value from every action that reaches it, all at
+once:
 
-A `retag` or `clear` action applies only to a referrer that the change
-set does not delete: a row deleted explicitly or by `cascade` is deleted, even
-when a `retag` action also reaches it. The other writes an action
-derives combine with the statement's own writes as in §1.4, so an
-explicit update and a `retag` action that give one row different new
-values violate its key.
+- if a `retag D { ... }` action reaches it, it is retagged to `D` with
+  that payload, and every `clear` field that reaches it and that `D`
+  still has is set to `None`;
+- otherwise, every `clear` field that reaches it is set to `None`;
+- a `restrict` field changes nothing.
+
+A row deleted by `cascade` is deleted, whatever other action also
+reaches it. A row the statement inserts, whose key has no row in the
+pre-state, is reached by no action: if it references a gone key it
+violates its reference constraint, whatever the action of the field.
+A row the statement replaces is judged by its new value in the same
+way: if the new value references a gone key, it violates its reference
+constraint. So one statement may repoint a reference and delete its
+old target.
+Delete actions are the only writes the engine derives; there are no
+triggers or rules.
+
+The writes an action derives combine with the statement's own writes
+as in §1.4.
 
 `restrict` is checked once the change set is complete, at the end of
 the statement, like every constraint. A statement that deletes a user
@@ -607,12 +747,13 @@ and that user's badges together succeeds; one that deletes only the
 user fails, and the failure names the reference and the referrers.
 
 ```adt
+-- given u: Key users
 transact
   delete d in badges where d.owner == u
   delete x in users where key x == u
 ```
 
-Rulings: write/delete-action/restrict, write/delete-action/cascade, write/delete-action/retag-referrer, derived/rules/none, constraint/timing/multi-assign
+Rulings: write/delete-action/restrict, write/delete-action/cascade, write/delete-action/retag-referrer, derived/rules/none, constraint/timing/multi-assign, spec/writes/action-compose/one-value, spec/writes/action-reach/pre-state, spec/writes/action-identical/identical-only, spec/writes/action-own-writes/statement-wins
 
 ## 8. Bulk writes
 

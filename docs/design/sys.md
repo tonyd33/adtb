@@ -1,0 +1,69 @@
+# adtb-sys
+
+`adtb-sys` holds every `unsafe` block of the implementation: page
+memory, direct I/O buffers, `io_uring` and atomic page reads. It
+exposes safe types to `adtb`. Every other crate has
+`#![forbid(unsafe_code)]`.
+
+## 1. Safe types
+
+The safe types are `Frame`, `PageRef` and `AlignedBuf`.
+
+`adtb-sys` states its contract in its documentation; this file states
+what `adtb` may rely on.
+
+TODO: what each of `Frame`, `PageRef` and `AlignedBuf` represents, and its methods, are undecided.
+
+Rulings: project/arch/unsafe/confined
+
+## 2. Unsafe invariants
+
+`adtb-sys` guarantees, and `adtb` may rely on:
+
+- Page memory is reserved once and never unmapped while the database
+  is open, so a page address never dangles; eviction only releases the
+  physical memory behind it.
+- A buffer handed to the kernel for I/O stays pinned until its
+  completion is processed, whatever happens to the work that requested
+  it.
+- Optimistic reads of a page another thread may write go through atomic
+  loads into local copies; no reference to such a page is formed.
+- Every length or offset read optimistically is bounds-checked before
+  use.
+
+## 3. Page state word
+
+Each page has a 64-bit state word:
+
+```text
+state[p]
+  bits 56..63  0 unlocked | 1..252 shared count | 253 exclusive | 254 marked | 255 evicted
+  bits  0..55  version, incremented on every exclusive unlock and on eviction
+```
+
+Optimistic readers read the version, read the page, and revalidate the
+version. A reader may rely on an unchanged version and an unlocked word
+meaning no writer changed the page between the two reads.
+
+A page in flight for I/O is held exclusive until its completion is
+processed, so cancellation of the requesting work never frees memory
+the kernel writes into.
+
+Rulings: buffer/cache/vmcache
+
+## 4. Notes for the implementation
+
+Non-binding.
+
+Miri runs the whole engine over the simulated storage of
+[runtime.md §5](runtime.md#5-simulated-storage), which is plain Rust,
+through the tests of `adtb-sim`, so the pager, latches and page layouts
+are checked for undefined behaviour and data races. The real I/O
+backends, which Miri cannot execute, are tested natively under
+AddressSanitizer and ThreadSanitizer.
+
+```sh
+$ cargo miri test -p adtb-sim
+```
+
+Rulings: project/arch/unsafe/miri-io/sim-storage, project/arch/unsafe/miri-io/sys-tests

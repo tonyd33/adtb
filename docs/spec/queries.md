@@ -166,7 +166,7 @@ Rulings: query/ctor-relations, model/one-ctor-sum, model/sets, lang/binder/ctor-
 
 A comprehension
 
-```adt
+```adt fragment
 from x1 in e1, x2 in e2 where p select v
 ```
 
@@ -275,7 +275,12 @@ The constructors of an anonymous result sum are structural: their
 names and payload types are their identity within the query, and they
 have no catalog identity. A result sum is matched, ranged over by
 constructor (`q.C`) and checked for exhaustiveness exactly as a stored
-sum is.
+sum is. An anonymous result sum `T` has row types `T.C` and `T.(C |
+D)` as a declared sum does, with the same subtyping and joins
+([typing.md §3](typing.md#3-subtyping)): `q.C`, for `q` a set of `T`,
+has elements of `T.C`, and a binder in an arm `| C x` has type `T.C`.
+Two anonymous sums with the same constructors in another order are one
+type.
 
 In a function, registered query or constraint, an anonymous
 constructor expression is typed by the expected type that names it; a
@@ -283,32 +288,23 @@ constructor name with no expected type that declares it and no
 declaration in scope is refused. A comprehension checked against `Set
 T` checks its `select` against `T`, so the arms of `login_key` above
 are checked against the signature's result sum
-([typing.md](typing.md#22-the-algorithm)).
+([typing.md](typing.md#22-checked-and-synthesized-forms)).
 
 An ad hoc statement has no signature: the type of its result, an
 anonymous result sum included, is inferred from the statement.
 
 ### 4.4 Constructor tags on the wire
 
-A stored constructor is identified on the wire by its catalog
-constructor id, which is never reused. A constructor of a sum anonymous
-to a query is numbered by its position in the query's signature,
-counting from 1; `ByEmail` above is 1 and `ByGoogle` 2. In an ad hoc
-statement, whose result sum is inferred, the constructors are numbered
-by their first appearance in the statement text, counting from 1.
-Numbering follows the text; it does not change type equality, under
-which two anonymous sums with the same constructors in another order
-are one type ([model.md](model.md)). A changed
-signature is a new query ([applications.md](applications.md#1-registered-queries-and-transactions)).
-The encoding is in [wire.md](wire.md#43-records-and-sums).
+Tags on the wire, the numbering of an ad hoc statement's anonymous
+result sum included, are in [wire.md §4.3](wire.md#43-records-and-sums).
 
-Rulings: model/anon-results/anon-records, types/sub-records/exact, types/join/lub-exact-fields, model/sum-results, surface/query-scoped, surface/sum-encoding/stable-tag, lang/record-poly/nominal
+Rulings: model/anon-results/anon-records, types/sub-records/exact, types/join/lub-exact-fields, model/sum-results, surface/query-scoped, surface/sum-encoding/stable-tag, lang/record-poly/nominal, spec/anon-sum/row-types/row-types, spec/tiers/three-tiers
 
 ## 5. Match
 
 ### 5.1 Meaning
 
-```adt
+```adt fragment
 match e
   | p1 -> v1
   | p2 if g2 -> v2
@@ -382,6 +378,7 @@ In an ad hoc statement `_` and a binder may cover the remaining
 constructors of a sum.
 
 ```adt
+-- given i: Identity
 -- refused in a registered query; accepted ad hoc
 match i | Google g -> g.gid | _ -> "other"
 ```
@@ -417,6 +414,7 @@ constructor relation `r.Ck`. The arms range over disjoint inputs; equal
 outputs of different arms are one element of the result (§3.2).
 
 ```adt
+-- given u: Key users
 from i in identities where i.user == u
 select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
 ```
@@ -424,14 +422,11 @@ select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
 is
 
 ```adt
+-- given u: Key users
 (from e in identities.EmailPass where e.user == u select e.email)
 union (from g in identities.Google where g.user == u select g.gid)
 union (from a in identities.Apple where a.user == u select a.sub)
 ```
-
-An implementation evaluates such a match as one probe of the union
-index that routes each entry to its arm by constructor
-([engine.md](engine.md#61-constructor-set-indexes)); the value is the union above.
 
 ### 5.7 No null
 
@@ -440,7 +435,7 @@ Optionality is a constructor: a field that may be absent has a sum
 type such as the prelude's `Option T = None | Some { value: T }`, and
 is matched like any sum.
 
-Rulings: query/construct, query/compile-time, query/union-all, query/native, query/optional-sum/null-ctor, lang/wildcard/scalars-only, lang/wildcard/verbosity/adhoc-wildcard, lang/binder/ctor-row, evolution/breaks/recompile, model/user-params
+Rulings: query/construct, query/compile-time, query/union-all, query/native, query/optional-sum/null-ctor, lang/wildcard/scalars-only, lang/wildcard/verbosity/adhoc-wildcard, lang/binder/ctor-row, evolution/breaks/recompile, model/user-params, spec/tiers/three-tiers
 
 ## 6. Patterns
 
@@ -454,7 +449,10 @@ Rulings: query/construct, query/compile-time, query/union-all, query/native, que
 | `C _` | any value with constructor `C` | nothing |
 | `C x` | any value with constructor `C` | `x` to the value at type `T.C` |
 | `C { f: p, g }` | a value with constructor `C` whose field `f` matches `p` | the binders of `p`, and `g` to field `g` |
-| `S x`, `S` a named set | a row whose constructor is a member of `S` | `x` at the set's row type |
+| `S`, `S` a named set whose members are all nullary | a value whose constructor is a member of `S` | nothing |
+| `S _`, `S` a named set | a value whose constructor is a member of `S` | nothing |
+| `S x`, `S` a named set | a value whose constructor is a member of `S` | `x` at the set's row type |
+| `S { f: p, g }`, `S` a named set | a value whose constructor is a member of `S` and whose field `f` matches `p` | the binders of `p`, and `g` to field `g` |
 | literal | a scalar equal (`==`) to the literal | nothing |
 | `p1 \| p2` | a value either alternative matches | the names every alternative binds |
 
@@ -469,6 +467,7 @@ listed are not constrained. A record type's single constructor is
 matched the same way: `User { name }`.
 
 ```adt
+-- given i: Identity
 match i
   | EmailPass { email, hash: _ } -> email
   | Google { gid }               -> gid
@@ -481,6 +480,7 @@ A field pattern may itself be a constructor, record or literal
 pattern, to any depth:
 
 ```adt
+-- given s: Shipment
 type Via = Courier { name: Text } | Mail { tracking: Text }
 type Shipment = Pending | Shipped { via: Via }
 
@@ -490,8 +490,7 @@ match s
   | Pending                    -> "pending"
 ```
 
-Coverage over nested patterns is decided by the usual matrix algorithm
-for ML patterns: the match is exhaustive when no value of the
+A match with nested patterns is exhaustive when no value of the
 scrutinee's type escapes every unguarded arm, with the constructors of
 each discriminated sum position enumerated and every scalar position
 needing a final `_` or binder ([typing.md](typing.md#92-exhaustiveness)).
@@ -505,10 +504,20 @@ value of `T` whose constructor is a member, row or value alike; it
 covers every member, and its binder has type `T.S`. Constructor names
 in a pattern resolve against the scrutinee's type.
 
+A named set takes the payload forms a constructor takes, over the
+fields every member shares: `S _`, `S x`, `S { f: p, g }` where every
+member has fields `f` and `g`, and bare `S` only when every member is
+nullary.
+
 ```adt
+-- given i: Identity
 match i
   | EmailPass e -> e.email
   | OAuth o     -> display_name(o)
+
+match i
+  | EmailPass { user } -> user
+  | OAuth { user }     -> user               -- user is a field of every member
 ```
 
 A constructor added later joins or does not join the set as its `add`
@@ -539,6 +548,7 @@ guarded arm covers nothing, so every constructor has an unguarded arm
 as well.
 
 ```adt
+-- given i: Identity
 match i
   | Google g if g.gid == "root" -> "staff"
   | Google _                    -> "guest"
@@ -554,6 +564,7 @@ takes the type of the scrutinee, as any literal takes its expected
 type.
 
 ```adt
+-- given c: Text
 match c | "US" -> 0 | "CA" -> 1 | _ -> 2
 ```
 
@@ -562,9 +573,11 @@ match c | "US" -> 0 | "CA" -> 1 | _ -> 2
 An arm that can never be chosen is refused at compile time: an arm
 whose pattern matches no value left unmatched by the earlier unguarded
 arms. A guarded arm after an unguarded arm with the same or a wider
-pattern is refused likewise.
+pattern is refused likewise, as is an alternative of an or-pattern
+that matches no value left unmatched by the earlier unguarded arms and
+the earlier alternatives of its own arm.
 
-Rulings: lang/patterns/nested, lang/patterns/guards, lang/patterns/or-patterns, lang/patterns/literals, lang/patterns/record, lang/patterns/guard-cover/ignore-guarded, lang/patterns/or-binder/ctor-set, lang/wildcard/verbosity/set-patterns, surface/ctor-set/growth/declare
+Rulings: lang/patterns/nested, lang/patterns/guards, lang/patterns/or-patterns, lang/patterns/literals, lang/patterns/record, lang/patterns/guard-cover/ignore-guarded, lang/patterns/or-binder/ctor-set, lang/wildcard/verbosity/set-patterns, surface/ctor-set/growth/declare, spec/pattern/named-set/like-ctor, spec/pattern/redundant-alternative/refused, spec/tiers/three-tiers
 
 ## 7. Navigation
 
@@ -627,6 +640,7 @@ for a `Key` field, the rows with `f == key x`; for an `Option` field,
 the rows with `f == Some { value: key x }`.
 
 ```adt
+-- given u: User
 u.<identities.user
 -- is
 from i in identities where i.user == key u select i
@@ -673,11 +687,9 @@ select { name: r.name, seen: d.seen }
 
 Nested sets compare under `==` as sets. Stored relations hold no
 collection fields ([model.md](model.md#12-what-values-are-not)); nested
-sets exist only in query values. An implementation may evaluate a
-nested result as a fixed number of flat queries; the value is the
-nested one.
+sets exist only in query values.
 
-Rulings: lang/results/nested, lang/outer/nested, model/no-collections
+Rulings: lang/results/nested, lang/outer/nested, model/no-collections, spec/tiers/three-tiers
 
 ## 9. Grouping
 
@@ -697,7 +709,9 @@ select { user: g.key, n: count(x for x in g) }
 
 A group binder has type `Group K T` for a key of type `K` and elements
 of type `T`: `g.key : K`, and `g` is a nonempty `Set T` wherever a set
-is expected. A group is never empty. After `into`, the binders introduced before
+is expected. A group is never empty. `Group K T` is only the type of a
+group binder and is never written in a signature; a group passed as an
+argument is passed as the nonempty set it denotes, at type `Set T`. After `into`, the binders introduced before
 `group` are out of scope; parameters and enclosing binders remain.
 Clauses after `into` (`where`, `from`, `select`) see `g`; a `where`
 after `into` filters groups.
@@ -727,13 +741,14 @@ select { kind: g.key, n: count(x for x in g) }
 
 No aggregate is computed per arm of a `match` (§10.4).
 
-Rulings: lang/group/into, lang/group/ctor-key/tag-type, query/agg-scope/whole, lang/empty-agg/nonempty
+Rulings: lang/group/into, lang/group/ctor-key/tag-type, query/agg-scope/whole, lang/empty-agg/nonempty, spec/group/binder-type/binder-only
 
 ## 10. Aggregates
 
 ### 10.1 Aggregates range over bindings
 
 ```adt
+-- given u: User
 sum(o.total for o in orders where o.user == key u)
 ```
 
@@ -761,7 +776,7 @@ exactly the binder of a generator over a relation variable, a
 constructor relation, a constructor set, a backlink or another such
 key-preserving comprehension. A `Set T` parameter is accepted:
 
-```adt
+```adt fragment
 sum(o.total for o in orders)                                        -- each order counts
 sum(x.total for x in (from o in orders where o.qty > 1 select o))  -- accepted: selects the binder
 sum(t for t in (from o in orders select o.total))                   -- refused
@@ -822,6 +837,7 @@ Rulings: syntax/aggregate/comprehension, lang/collection/set-agg/over-binders, l
 For a parameter `me: Key users`:
 
 ```adt
+-- given me: Key users
 fix reach = (from f in follows where f.src == me select f.dst)
           union (from r in reach, f in follows where f.src == r select f.dst)
 in from u in users where exists r in reach where r == key u select u
@@ -837,6 +853,7 @@ equal to `q` with `x` bound to `X`.
 Mutual recursion binds its relations together:
 
 ```adt
+-- given me: Key users
 fix even = (from u in users where key u == me select key u)
            union (from o in odd, f in follows where f.src == o select f.dst),
     odd  = from v in even, f in follows where f.src == v select f.dst
@@ -852,15 +869,9 @@ Recursion is written only with `fix`. A function may not call itself,
 directly or through other functions; an implementation must refuse a
 cycle of calls among functions.
 
-A `fix` is bounded when no body applies a primitive operation, an
-aggregate or a generator of fresh values to a value derived from a
-relation of its own stratum, and no body places such a value inside a
-constructed record or constructor value. Comparisons and the other
-primitives that build no value are exempt. A bounded `fix` adds only
-values built from finitely many values present before it runs, so its
-least fixpoint is finite and it is total.
-
-A `fix` that is not bounded is partial (§15.2). One whose bodies keep
+A bounded `fix` ([semantics.md §5.10](semantics.md#510-fixpoints))
+has a finite least fixpoint and is total. A `fix` that is not bounded
+([semantics.md §5.10](semantics.md#510-fixpoints)) is partial (§15.2). One whose bodies keep
 building new values (`select r + 1`) has an infinite least fixpoint;
 its evaluation runs until it reaches a statement limit
 ([catalog.md](catalog.md#10-configuration)), and the statement is then
@@ -898,6 +909,7 @@ is not negation: its arms range over disjoint constructors. The check
 is made on the query after functions are inlined (§12.3).
 
 ```adt
+-- given me: Key users
 -- accepted: reach is complete before the outer query negates it
 fix reach = (from f in follows where f.src == me select f.dst)
           union (from r in reach, f in follows where f.src == r select f.dst)
@@ -959,18 +971,45 @@ fn having (p: Identity -> Bool) -> Set (Key users) =
 having(fn i -> match i | Google _ -> true | EmailPass _ -> false | Apple _ -> false)
 ```
 
-Before a query is planned, every call is inlined and every application
-of a lambda reduced. The result is a first-order query with no
-function values. A call is inlined by substituting its arguments only
-where they are total; a partial argument stays evaluated once at the
-call, before the body, so its fault is reached whether or not the body
-uses it. A function type never appears in a relation, a field, a set
-element, a type argument, a query result or a parameter of a
-registered query, and `==` never applies to a function. An implementation must
-normalise every accepted query this way; since functions are not
-recursive, normalisation terminates.
+A lambda with several parameters is curried: `fn (a: T, b: U) -> e`
+has type `T -> U -> R`, and a call `f(x, y)` of a function value
+applies its arguments in order: `x` to `f`, then `y` to the
+result. A schema `fn` with parameters of types `T, U`, named without a
+call, is a function value of that curried type; one with no parameters
+has type `() -> R` ([typing.md §2.2](typing.md#22-checked-and-synthesized-forms)).
 
-Rulings: lang/abstraction/higher-order, lang/nullary-fn, lang/defs-home/schema, lang/defs-home/bundle, lang/inference/signatures, types/infer/bidir-local, lang/record-poly/nominal, evolution/in-log
+A query means its normal form
+([semantics.md §5.11](semantics.md#511-normalisation)): every call
+inlined and every application of a lambda reduced, a first-order query
+with no function values. A call substitutes its arguments only where
+they are total; a partial argument is evaluated once at the call,
+before the body, so its fault is reached whether or not the body uses
+it. A function type never appears in a relation, a field, a set
+element, a type argument, a query result or a parameter of a
+registered query, and `==` never applies to a function. Functions are
+not recursive, so every accepted query has a normal form.
+
+Rulings: lang/abstraction/higher-order, lang/nullary-fn, lang/defs-home/schema, lang/defs-home/bundle, lang/inference/signatures, types/infer/bidir-local, lang/record-poly/nominal, evolution/in-log, spec/lambda/params/curried, spec/tiers/three-tiers
+
+### 12.4 The constructors a statement reads
+
+The constructors a statement reads are those of the constructor sets
+in the types of the relation expressions of its normal form (§12.3,
+[semantics.md §2](semantics.md#2-kernel-syntax)). The constructors it
+writes are those of the constructor sets of the relations its write
+terms name. The constructors of its result are those of the
+constructor sets in its result type. Parameter values and how the
+statement is planned change none of them.
+
+```adt
+-- given k: Key identities
+from i in identities where i.id == k select i   -- reads EmailPass, Google, Apple
+from g in identities.Google select g.gid         -- reads Google
+```
+
+A `match` over a sum reads every constructor of the scrutinee's type.
+
+Rulings: spec/reads/static/static-types
 
 ## 13. Parameters
 
@@ -1005,12 +1044,9 @@ query search (name: Option Text, after: Option Instant) -> Set Post =
   select p
 ```
 
-The value is the one the body denotes for the supplied values. An
-implementation may plan the query once per pattern of present and
-absent `Option` parameters, simplifying each match on a parameter to
-its taken arm; each plan must give the value the body denotes.
+The value is the one the body denotes for the supplied values.
 
-Rulings: lang/params/declared, syntax/params/names, lang/option-params, types/now/param-only
+Rulings: lang/params/declared, syntax/params/names, lang/option-params, types/now/param-only, spec/tiers/three-tiers
 
 ## 14. Ordering, top n and pagination
 
@@ -1030,10 +1066,10 @@ still `Set T`; the order is the order in which its elements are
 delivered ([wire.md](wire.md#52-replies)).
 
 Each ordering expression is evaluated per element of the result, in
-the scope of the `select`, and must be a function of the selected
-value: it reads only the selected value, or binders whose fields the
-selected value holds unchanged. An implementation must refuse an
-ordering expression it cannot show to be such a function. An ordering
+the scope of the `select`. It is accepted exactly when, written as a
+function of the selected value, it reads no generator variable except
+through that value: `u.name` is accepted when the `select` is `u` or
+holds `u.name` unchanged as a field, and refused otherwise. An ordering
 expression has a type with an order ([model.md](model.md#10-order)); a sum
 is ordered only when declared `ordered`. `asc` is the default
 direction. Elements equal on every ordering expression are delivered
@@ -1042,12 +1078,11 @@ in an unspecified order among themselves.
 ### 14.2 Determinate orders
 
 `order by` allows ties (§14.1). Only `take`, `after` and `top` need a
-determinate order. They require: distinct
-elements must have distinct ordering values. An implementation must
-refuse them unless it shows this, which it does when the selected
-value is a row and the ordering value includes the row's key, or a
-field covered by a key or unique of its constructor set, or when the
-selected value is a key and the ordering value includes it.
+determinate order, in which distinct elements have distinct ordering
+values. They are accepted exactly when the selected value is a row and
+the ordering value includes the row's key or a field covered by a key
+or unique of its constructor set, or when the selected value is a key
+and the ordering value includes it.
 
 A compound ordering is a parenthesised list of keys, each with its own
 direction: `order by (p.created_at desc, key p)`. Elements compare by
@@ -1064,7 +1099,9 @@ select { user: u,
 ```
 
 `top n by k (q)`, where `k` is one key or a list of keys, is the set of
-the first `n` elements of `q` ordered by `k`, or all of them when `q` has fewer. `k` is evaluated in the scope
+the first `n` elements of `q` ordered by `k`, or all of them when `q` has fewer. The operand `q` is a
+comprehension ([syntax.md §6.6](syntax.md#66-other-open-forms)), so `k`
+is written over its `select` scope: `k` is evaluated in the scope
 of `q`'s `select` under the rules of §14.1, and the order must be
 determinate (§14.2). `top` is a set and may appear at any depth. Its
 result has no order; an enclosing `order by` orders the final result.
@@ -1081,8 +1118,10 @@ query page (cursor: Option (Key users)) -> Set User =
 `take n` delivers the first `n` elements of the ordered result.
 `after c`, for one ordering key of type `K`, takes `c : Option K`. For
 a list of keys of types `K1 ... Kn`, `c` is an `Option` of an
-anonymous record with `n` fields whose types are `K1 ... Kn` in order;
-its field names are free and its fields are compared positionally.
+anonymous record with `n` fields. Its fields correspond to the
+ordering keys in the code-point order of their names: the field whose
+name is first has type `K1` and is compared with the first key, and so
+on. The names are otherwise free.
 With `None` the result starts at its first element; with `Some {
 value: v }` it holds only the elements whose ordering value comes
 strictly after `v` in the ordering's directions.
@@ -1092,11 +1131,14 @@ query feed_page (cursor: Option ({ at: Instant, id: Key posts })) -> Set Post =
   from p in posts select p order by (p.created_at desc, key p) take 20 after cursor
 ```
 
+`at` precedes `id` in code-point order, so `at` corresponds to
+`p.created_at` and `id` to `key p`.
+
 A client pages by
 passing the ordering value of the last element it received. There is
 no offset form.
 
-Rulings: lang/order/result-only, lang/nested-order/top-n, lang/keyset, lang/sum-order/declared
+Rulings: lang/order/result-only, lang/nested-order/top-n, lang/keyset, lang/sum-order/declared, spec/top/operand/comprehension, spec/after/cursor-fields/name-order, spec/tiers/three-tiers
 
 ## 15. Faults
 
@@ -1204,7 +1246,8 @@ Rulings: types/fault/abort, types/fault/reorder/ordered-guards, types/fault-form
 An ad hoc statement is query text run by a principal holding the ad hoc
 grant ([security.md](security.md#3-grants)), outside any bundle.
 
-- It is checked against the schema current when it runs, with every
+- It is checked against the schema version of its transaction's
+  snapshot, with every
   rule of this part, exhaustiveness included, except that `_` and a
   binder may cover the remaining constructors of a sum (§5.4).
 - It is not registered, not pinned to a version and never rechecked.
@@ -1212,6 +1255,11 @@ grant ([security.md](security.md#3-grants)), outside any bundle.
   `adhoc`, the write privileges the statement uses, and every
   constraint holds as for any write. Loads, staging repairs and
   one-off fixes run this way ([syntax.md §7](syntax.md#7-writes-and-transact-blocks)).
+- It belongs to no module. An unqualified name denotes the
+  declaration of that name in a user module, or in the prelude when no
+  user module declares it; a name declared in several user modules is
+  ambiguous, refused unqualified, and written qualified
+  ([syntax.md §3.4](syntax.md#34-modules)).
 - A free lowercase name is a parameter, typed by the descriptor the
   caller supplies for it; a free name the caller supplies no parameter
   for is an error.
@@ -1220,17 +1268,20 @@ grant ([security.md](security.md#3-grants)), outside any bundle.
   that fails (a fault, a `fail`, a constraint violation or a
   rejection) ends the text: later items do not run, nothing commits,
   and the error names that item's ordinal.
-- Ad hoc text is refused in a transaction that has made a registered
-  call, and a registered call is refused in a transaction that has run
-  ad hoc text, with `MixedVersions`.
+- Ad hoc text runs at the schema and catalog versions of its
+  transaction's snapshot. A call that would run at another schema or
+  catalog version than the transaction's earlier statements is refused
+  with `MixedVersions`: ad hoc text in a transaction that has made a
+  registered call, and a registered call in one that has run ad hoc
+  text ([transactions.md §2](transactions.md#2-statements)).
 - Ad hoc text may declare `temp relation NAME : T`, a relation outside
   the operator log that has no constraint but its key
   ([syntax.md §3.1](syntax.md#31-kinds-of-file)). It lasts until the
   end of the interactive transaction the text runs in, or, outside
   one, until the end of that one text.
 - Text sent on a connection bound to a bundle is checked at the
-  current version, not the bundle's pinned version, and its results
-  are encoded at the current version, with their tags given by the
+  schema version of its transaction's snapshot, not the bundle's
+  pinned version, and its results are encoded at that version, with their tags given by the
   result type descriptor.
 - Its results use the same encoding as a registered query's
   ([wire.md](wire.md#52-replies)).
@@ -1244,4 +1295,4 @@ adt> delete s in logins.Revoked where s.at < cutoff
 `logins` is the relation [writes.md](writes.md#1-change-sets)
 declares; `cutoff` is a parameter of the call.
 
-Rulings: surface/adhoc/scoped, lang/wildcard/verbosity/adhoc-wildcard, evolution/breaks/invisible/registered
+Rulings: surface/adhoc/scoped, lang/wildcard/verbosity/adhoc-wildcard, evolution/breaks/invisible/registered, spec/adhoc/names/every-module, spec/txn/one-version/one-pair

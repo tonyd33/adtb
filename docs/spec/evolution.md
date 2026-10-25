@@ -22,7 +22,7 @@ says otherwise, and each states the version it starts from. Unless a
 section says otherwise, it starts from version `10 (a91c...)`, whose
 schema is:
 
-```adt
+```adt fragment
 module auth
 type User = { id: Key users, name: Text }
 type Identity { id: Key identities, user: Key users }
@@ -63,7 +63,7 @@ Applying migration `n` to a database at version `n - 1` produces
 version `n`. A migration applies as one schema change: either every
 operator in it takes effect, or none does (§3).
 
-```adt
+```adt fragment
 -- 0011, from version 10
 module auth
 add constructor Identity.Apple { sub: Text }
@@ -147,17 +147,24 @@ hash of the log up to that position. It is written as the position
 followed by the hash: `10 (a91c...)`. The hash is BLAKE3-256, chained:
 
 ```text
-h(n) = BLAKE3(h(n - 1) ++ canonical(n))
+h(n) = BLAKE3(h(n - 1) ++ encoded(n))
 ```
 
-where `canonical(n)` is the text of migration `n` as printed by the
-schema printer's rules ([applications.md §9](applications.md#9-the-printed-schema)):
-whitespace normalised and every name qualified. Bytes an operator
-carries (Wasm modules and extension packages for `install`, zone rule
-data for `adopt tzdb`) are stored in the log; the canonical text holds
-the BLAKE3 hash of each, so the version hash covers them. `h(0)` is 32
-zero bytes. Two databases agree on a version's hash exactly when their
-logs agree up to it.
+where `encoded(n)` is the byte encoding of migration `n`'s resolved
+operators, its rows of `catalog::migration_ops` and
+`catalog::migration_clauses`
+([catalog.md §2.4](catalog.md#24-versions-bundles-and-registered-calls)),
+in the wire value encoding ([wire.md §4](wire.md#4-value-encoding)):
+the operator count as a `uvarint`, then for each operator in ordinal
+order its `Operator` value, the count of its clauses as a `uvarint`
+and each clause's `ClauseBody` value in clause order. A resolved operator
+names every object it touches by its id. The printed text of a
+migration is not hashed. Bytes an operator carries (Wasm modules and
+extension packages for `install`, zone rule data for `adopt tzdb`) are
+stored in the log; the operator's value holds the BLAKE3 hash of each,
+so the version hash covers them. `h(0)` is 32 zero bytes. Two
+databases agree on a version's hash exactly when their logs agree up
+to it.
 
 People are shown the hash truncated to its first 4 bytes in hex; the
 wire and every check carry all 32 bytes. Every place a version is
@@ -182,16 +189,19 @@ A deploy presents an ordered set of migration files with the command
 ([catalog.md](catalog.md#9-operational-commands)); the CLI and the
 embedding API wrap it. The engine:
 
-1. compares each file numbered at or below the current version with
+1. refuses the whole set, before any migration of it applies, when its
+   numbers have a gap, or when the first file numbered above the
+   current version is not numbered the current version plus one;
+2. compares each file numbered at or below the current version with
    the log, by hash, and refuses the whole set at the first mismatch,
    naming the number (the log has diverged);
-2. applies each remaining file in order, each as its own schema change
+3. applies each remaining file in order, each as its own schema change
    (§3);
-3. stops at the first refused migration; versions already produced
+4. stops at the first refused migration; versions already produced
    remain.
 
-A file numbered above the current version plus one with a gap before
-it is refused.
+While a staged migration is pending (§3.4), applying a migration is
+refused with `Rejected { reason: MigrationInProgress }`.
 
 ### 2.4 Versions are never reused
 
@@ -199,7 +209,7 @@ The log only grows. No operator removes a migration from the log or
 renumbers one. Undoing a migration appends its inverse as a new
 migration (§5.4).
 
-Rulings: surface/version/counter, surface/both, surface/version/history/linear, evolution/revert
+Rulings: surface/version/counter, surface/both, surface/version/history/linear, evolution/revert, spec/evolution/version-hash/value-encoding, spec/evolution/migration-gap/whole-set, spec/evolution/concurrent-apply/refuse, spec/evolution/operator-type/catalog-sum
 
 ## 3. Applying a migration
 
@@ -207,15 +217,27 @@ Rulings: surface/version/counter, surface/both, surface/version/history/linear, 
 
 A migration without staged operators applies in one transaction, the
 applying transaction. A migration with staged operators applies as the
-staged sequence of §3.4, whose last commit produces the version. Either
+staged migration of §3.4, whose final commit produces the version. Either
 way its operators and any data writes it makes (§4.14) take effect
 together or not at all. A migration that is refused or fails leaves the
 schema at the previous version, the log unchanged and the data as it
 was.
 
+A migration is one statement of the applying transaction. It denotes
+the composite of its operators' data maps, in order. A script's data
+map applies its change set, evaluated on the state the operators before
+it produce, at their schema (§4.14). Every constraint of the final
+schema holds after the migration, checked once, at its end; an added
+constraint is validated on that final state, so a script may repair
+data that a constraint added earlier in the same migration needs.
+
 The applying transaction is serializable like any other
 ([transactions.md](transactions.md#1-serializability)): data writes in
-it conflict with concurrent transactions by the ordinary rules.
+it conflict with concurrent transactions by the ordinary rules. Every
+precondition of an operator (that a constructor is empty, that a
+constraint is satisfied, that no stored value holds a constructor) is
+a predicate read of the applying transaction
+([semantics.md §8.2](semantics.md#82-items-reads-and-writes)).
 
 ### 3.2 Checks at apply
 
@@ -228,7 +250,7 @@ every failure, not only the first:
 | Typing | an operator does not type against the schema produced by the operators before it in the migration |
 | Recheck of schema objects | a schema function, constraint, stored view, default or computed field no longer type checks or is no longer exhaustive at the new version |
 | Constraint carrying | a constraint touched by a structural operator, including one whose drop is pending, has no image under it (§6.2, §6.4) |
-| Constraint validation | an added constraint has violating rows (§6.3) |
+| Constraint validation | an added constraint has violating rows in the migration's final state (§6.3) |
 | Admission | a constraint or stored view at the new version has no index-bounded incremental check ([constraints.md](constraints.md#5-admission), [derived.md §2.2](derived.md#22-admission)) |
 | Grants | a merge needs grants it does not state, or a bundle owner no longer holds the grants a live bundle uses (§6.5) |
 | Live bundles | a query or transaction of a live bundle cannot be served at its pinned version across the migration (§7.2) |
@@ -259,54 +281,54 @@ and the bundles holding it (§6.4).
 
 ### 3.3 Atomicity as observed
 
-Every transaction runs against exactly one schema version, the
-version current at its snapshot. A transaction whose snapshot precedes
+Every transaction runs against exactly one schema version: the
+version current at its snapshot, or the pinned version of the bundle
+whose calls it makes. A transaction whose snapshot precedes
 the commit of version `n` runs at version `n - 1` to its end,
 including its writes. A transaction whose snapshot follows it runs at
 `n`. No transaction observes part of a migration.
 
-Ad hoc text runs at the current version and a registered call at its
-bundle's pinned version, so one transaction does not mix them: ad hoc
-text in a transaction that has made a registered call, and a registered
-call in one that has run ad hoc text, are refused with
-`Rejected { reason: MixedVersions }`.
+Ad hoc text runs at the schema and catalog versions of the
+transaction's snapshot, and a registered call at its bundle's pinned
+version and pinned catalog version. Every statement of a transaction
+runs at one schema version and one catalog version, so a call that
+would run at another is refused with
+`Rejected { reason: MixedVersions }`: in particular ad hoc text in a
+transaction that has made a registered call, and a registered call in
+one that has run ad hoc text
+([transactions.md §2](transactions.md#2-statements)).
 
-Every statement takes a SIREAD lock on the schema version it runs at,
-and the commit that produces version `n` writes it. A read-write
-transaction at `n - 1` that commits after version `n` therefore
-serializes against the migration by the ordinary rules
+Every statement reads the schema version it runs at as an item, and
+the commit that produces version `n` writes it
+([semantics.md §8.2](semantics.md#82-items-reads-and-writes)). A
+read-write transaction at `n - 1` that commits after version `n` is
+therefore serialized against the migration by the ordinary rules
 ([transactions.md](transactions.md#1-serializability)).
 
 ### 3.4 Staged changes
 
-Some operators require physical work proportional to the data:
-building an index or unique, validating an added constraint or key,
-moving rows for a split or merge, rebuilding a stored view. Such an
-operator passes through intermediate states, each compatible with the
-last, and runs as a staged job:
+Some operators require work proportional to the data: building an
+index or unique, validating an added constraint or key, moving rows
+for a split or merge, rebuilding a stored view. A migration holding
+one is staged: it is pending from the moment it is presented until it
+commits version `n` or fails.
 
-1. the applying transaction commits the first state, which no query at
-   version `n - 1` can observe; the migration is then pending;
-2. the job commits each later state in order; each state is visible to
-   every running transaction before the next begins;
-3. the last state commits version `n`, together with the logical
-   effect of every operator in the migration and its `script` writes,
-   computed at that commit's snapshot; only then is the migration
-   appended to the log. Every check of §3.2 runs again at this commit,
-   against its snapshot; a failure discards the pending migration as
-   below.
+A staged migration is equivalent to one applying transaction
+serialized at its final commit, which commits version `n` and appends
+the migration to the log. Every check of §3.2 holds at that commit.
+Two things beyond that transaction are observable: while the migration
+is pending, its progress is a row of a system relation
+([catalog.md](catalog.md#1-system-relations)), and a failure has a
+report. Until version `n` commits, the current version stays `n - 1`
+and every other transaction runs at it. A write committed while the
+migration is pending that violates a constraint or unique of version
+`n` fails the migration.
 
-Until version `n` commits, the current version stays `n - 1`, and no
-other migration applies. A write committed while the job runs that
-would violate a constraint or unique of the pending version fails the
-job. The job's progress is a row of a system relation
-([catalog.md](catalog.md#1-system-relations)).
-
-If a staged job cannot complete (an index build finds a duplicate key
-for a new unique, a validation finds a violating row), the pending
-migration is discarded: the log is unchanged, the physical states the
-job committed are removed, and the report names the operator and the
-rows that caused the failure. No inverse is appended.
+A staged migration that cannot complete (a new unique finds a
+duplicate key, a validation finds a violating row) is discarded: the
+log, the schema and the data are as they were, and the report names
+the operator and the rows that caused the failure. No inverse is
+appended.
 
 ### 3.5 Pinned versions
 
@@ -314,11 +336,10 @@ A transaction runs at the schema version of its snapshot, and a
 connection bound to a bundle runs at the bundle's pinned version
 ([applications.md §5](applications.md#5-binding-a-connection)). When
 that version is older than the current version, its reads and writes
-are translated through the operators between the two (§7). Translation
-and staged states stack: a staged change rolls out while bundles
-pinned earlier keep being served.
+are translated through the operators between the two (§7). A staged
+migration runs while bundles pinned earlier keep being served.
 
-Rulings: engine/transactional-ddl, engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version, evolution/breaks/recompile, evolution/breaks/invisible/registered, surface/registration/on-change/refuse
+Rulings: engine/transactional-ddl, engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version, evolution/breaks/recompile, evolution/breaks/invisible/registered, surface/registration/on-change/refuse, spec/schema-siread/version-item, spec/evolution/migration-statement/one-statement, spec/evolution/preconditions/predicate-read, spec/evolution/staged-meaning/one-transaction, spec/txn/one-version/one-pair
 
 ## 4. Operators
 
@@ -338,7 +359,7 @@ with their inverses; §5 states what an inverse is.
 | `add set S of r = ...`, `drop set S of r` | each other | yes |
 | `add constructor T.C { ... }` | `remove constructor T.C`, removing the arms its `arm` clauses added | yes |
 | `remove constructor T.C` | `add constructor T.C { ... }` with a fresh id | yes (applies only to an empty constructor) |
-| `enable r.C`, `enable T.C` | `disable r.C`, `disable T.C` | yes |
+| `enable r.C`, `enable T.C` | `disable` of it from declared, `deprecate` of it from deprecated | yes |
 | `disable r.C`, `disable T.C` | `enable r.C`, `enable T.C` | yes; refused while any row of `r.C`, or any stored value of `T.C`, exists |
 | `deprecate r.C`, `deprecate T.C` | `enable r.C`, `enable T.C` | yes; applies only to an enabled constructor |
 | `rename constructor T.C to D` | `rename constructor T.D to C` | yes |
@@ -398,7 +419,7 @@ definition uses `T`.
 
 ### 4.2 Add a constructor
 
-```adt
+```adt fragment
 -- 0011, from version 10
 module auth
 add constructor Identity.Apple { sub: Text }
@@ -410,14 +431,12 @@ add unique (sub) in identities.Apple
 
 The operator adds constructor `Apple` to type `Identity` and an empty
 `Apple` constructor relation to every relation variable of
-`Identity`. Ids are a function of the log. Types, constructors and
-relation variables share one id space, and each operator that creates
-one takes the next id in log order: `add type T = A | B` takes `T`,
-`A`, `B` in that order, a record type takes its type id and one
-constructor id, and `add relation r` takes one id for `r`. Every tool
-that replays the log computes the same ids. Ids are never reused: a
-constructor removed and added again takes a new id. Its name may be
-reused: a constructor name freed by a split or a remove may name a new
+`Identity`. Ids are a function of the log, assigned as
+[catalog.md §1.2](catalog.md#12-identity-of-catalog-objects) states;
+the products of split, merge, nest and unnest, and a constructor
+re-added by an inverse, are new constructors. Ids are never reused: a constructor removed
+and added again takes a new id. Its name may be reused: a constructor
+name freed by a split or a remove may name a new
 constructor, and documents that name constructors map names through
 the log ([interop.md](interop.md)).
 
@@ -430,19 +449,24 @@ Clauses:
   (`identities.(EmailPass | Google)`) never gains it. An index or
   unique written without `in` ranges over every constructor and gains
   it.
-- `arm name: P -> e` gives the new constructor's arm of the one match
-  over the type in the schema function, computed field (`r.f`) or
-  match-scoped constraint `name`. The arm is added to that match. If
-  `name` holds no match over the type, or more than one, the clause is
-  refused and the definition must be redefined with `redefine fn` or
-  by dropping and adding the constraint in the same migration. Arms
-  are given only for schema objects; registered queries of bundles
-  keep their pinned version (§7). The inverse of an `arm` clause
+- `before C`, `after C` place the new constructor in the type's
+  declaration order, which is the order of an ordered sum
+  ([model.md §10](model.md#10-order)). Without either, the constructor
+  is appended last.
+- `arm name: P -> e` gives the new constructor's arm in the schema
+  function, computed field (`r.f`) or match-scoped constraint `name`.
+  Its target is the match in `name` whose scrutinee's constructor set
+  contains the new constructor at the new version. The clause is
+  refused unless exactly one match in `name` has such a scrutinee; the
+  definition must then be redefined with `redefine fn`, or the
+  constraint dropped and added, in the same migration. Arms are given
+  only for schema objects; registered queries of bundles keep their
+  pinned version (§7). The inverse of an `arm` clause
   removes the arm it added and restores any arm it replaced.
 
-A schema function, computed field or constraint that matches over the
-type and is neither given an arm nor redefined in the migration fails
-the recheck and refuses the migration (§3.2). An added arm of a
+A schema function, computed field or constraint with a match whose
+scrutinee's constructor set contains the new constructor, neither given
+an arm nor redefined in the migration, fails the recheck and refuses the migration (§3.2). An added arm of a
 match-scoped constraint is checked against the new constructor
 relation, which is empty.
 
@@ -453,7 +477,7 @@ that stores a value of it in a field is refused. `enable` makes it writable (§4
 
 ### 4.3 Enable and deprecate
 
-```adt
+```adt fragment
 -- 0012, continuing §4.2
 module auth
 enable identities.Apple
@@ -470,18 +494,20 @@ A constructor relation is in one of three write states:
 | enabled | `enable`; `add type` | allowed | allowed |
 | deprecated | `deprecate` | refused | allowed |
 
-`enable` moves a declared or deprecated constructor to enabled.
-`disable` moves an enabled constructor back to declared and is the
-inverse of `enable`; it is refused while any row of the constructor
+`enable` moves a declared or deprecated constructor to enabled; its
+inverse is `disable` when the constructor was declared and `deprecate`
+when it was deprecated. `disable` moves an enabled constructor back to
+declared; it is refused while any row of the constructor
 relation exists, while a live bundle at any version has a query or
 transaction that can write into it, or while a delete action in the
 schema retags into it. `deprecate` applies only to an enabled
 constructor.
 
-Constructors created by `add type` start enabled. Products of `split`,
-`merge`, `nest` and `unnest` start enabled when every source
-constructor is enabled, and declared when some source is declared;
-merging or nesting a deprecated constructor is refused.
+Constructors created by `add type` start enabled. Products of `split`
+and `unnest` take their source's state, per relation variable,
+deprecated included. Products of `merge` and `nest` start enabled when
+every source constructor is enabled, and declared when some source is
+declared; merging or nesting a deprecated constructor is refused.
 
 The states are per relation variable, recorded in
 `catalog::ctor_states` keyed by relation variable and constructor
@@ -491,12 +517,14 @@ post_badges.Emoji` leaves `user_badges.Emoji` declared. A refused insert or reta
 
 A constructor of a sum used as a field type has the same three states,
 kept per type in `catalog::value_states`
-([catalog.md](catalog.md#21-types-and-constructors)); its operators name the type: `enable Provider.Okta`. Its state gates storing a value
-of it: an insert, update or retag that stores a value of a declared or
-deprecated constructor in any field, at any depth, is refused with
-`Rejected { reason: NotOpen {..} }` naming the constructor and its state. Reads, and writes
-that keep a stored value, are allowed in every state. `disable T.C` is
-refused while any stored field value holds `C`.
+([catalog.md](catalog.md#21-types-and-constructors)); its operators
+name the type: `enable Provider.Okta`. Its state gates storing a value
+of it. An insert, update or retag that stores, in any field at any
+depth, a value of a declared or deprecated constructor is refused with
+`Rejected { reason: NotOpen {..} }` naming the constructor and its
+state, unless the row with the same key before the write holds an
+equal value at the same field path. Reads are allowed in every state.
+`disable T.C` is refused while any stored field value holds `C`.
 
 `enable` is subject to readers-first (§8.1). `deprecate` is refused
 while a live bundle at any version has a query or transaction that can
@@ -505,7 +533,7 @@ schema retags into it (§8.2).
 
 ### 4.4 Remove a constructor
 
-```adt
+```adt fragment
 -- 0020, continuing §4.3: Apple is deprecated and empty at version 19
 module auth
 remove constructor Identity.Apple
@@ -547,7 +575,7 @@ its own inverse:
 
 ### 4.5 Rename
 
-```adt
+```adt fragment
 -- 0031, from a version 30 at which Identity also has Facebook { fid: Text }
 module auth
 rename constructor Identity.Facebook to Meta
@@ -568,7 +596,7 @@ pinned before the rename keep the old name at their version (§7).
 
 ### 4.6 Split a constructor
 
-```adt
+```adt fragment
 -- 0041, from a version 40 at which
 --   type Provider = Google | Apple
 --   type Identity { id: Key identities, user: Key users }
@@ -587,7 +615,9 @@ split constructor Identity.OAuth into Google { gid: Text } | Apple { sub: Text }
 ```
 
 The operator replaces constructor `OAuth` by the listed constructors,
-which receive new ids and start in the write state of §4.3. The `match` after `by` has no
+which receive new ids (§4.2), take the source's position in the
+declaration order in listed order, and start in the write state of
+§4.3. The `match` after `by` has no
 scrutinee: it matches a row of the constructor being split. It is type
 checked and checked exhaustive like any match, so every row goes to
 exactly one new constructor; an arm whose result is not one of the new
@@ -637,7 +667,8 @@ merge constructor Identity.(Google | Apple) into Social
 ```
 
 The operator replaces the listed constructors by one new constructor
-with a new id. The new constructor has exactly one discriminator
+with a new id, which takes the position in the declaration order of
+the first source in that order. The new constructor has exactly one discriminator
 field: the field whose type is a declared nullary sum whose
 constructors are exactly the merged constructors' names (`Provider`).
 The merge fills it with each row's old constructor. A merge whose new
@@ -686,8 +717,10 @@ nest constructor Identity.(Google | Apple) into Social { login: OAuthLogin }
 
 `nest` replaces the listed constructors by one new constructor whose
 single field holds a value of an existing sum with constructors of the
-same names and fields. Each row becomes the new constructor holding its
-old value, under the same key. Uniques and indexes re-scope by path:
+same names and fields. The new constructor takes the position in the
+declaration order of the first nested constructor in that order. Each
+row becomes the new constructor holding its old value, under the same
+key. Uniques and indexes re-scope by path:
 `unique (gid) in Google` becomes `unique (login.Google.gid) in Social`.
 Matches over the outer type change shape and are rechecked: a nest
 takes `arm` clauses as a merge does (§4.7), one for every schema
@@ -698,7 +731,8 @@ constructors is refused.
 
 `unnest constructor Identity.Social` is the inverse: the value-level
 constructors of the field become relation-level constructors with new
-ids. An unnest takes `arm` clauses as a split does (§4.6), one per new
+ids, which take the source's position in the declaration order, in
+the order of the field's sum. An unnest takes `arm` clauses as a split does (§4.6), one per new
 constructor for every dependent whose match names the unnested
 constructor, and is refused at the recheck without them.
 
@@ -722,10 +756,10 @@ drop field Identity.EmailPass.hash
 - `add field T.C.f: U fill e` adds a field to a constructor (or to the
   header, `T.f`). `e` gives the value for every existing row; it may
   read the row being filled and nothing else. The fill is recorded with
-  the operator: it also fills the field for rows inserted through
-  translation from earlier versions (§7). The fill is not a default for
-  later inserts; defaults are separate
-  ([derived.md §4](derived.md#4-defaults)).
+  the operator: a write translated from an earlier version that lacks
+  the field takes the fill when the relation has no default for it
+  (§7.4). The fill is not a default for later inserts; defaults are
+  separate ([derived.md §4](derived.md#4-defaults)).
 - `drop field T.C.f` removes the field and its values. It is a declared
   loss: it is refused while a live bundle pinned before it reads the
   field, and its inverse is an `add field` whose fill the reverting
@@ -753,7 +787,7 @@ as well as fields: `add unique (lower(email)) in identities.EmailPass`
 `rekey relation r key (f, ...)` changes the key of relation variable
 `r`:
 
-```adt
+```adt fragment
 -- 0051, from a version 50 at which
 --   type Price = { id: Key prices, sku: Text, during: Span Instant, amount: Decimal 2 }
 --   relation prices : Price key id generate sequence
@@ -786,7 +820,7 @@ earlier, and applies once none is.
 
 ### 4.11 Definitions
 
-```adt
+```adt fragment
 -- 0010, from version 9
 module auth
 define fn display_name (i: Identity) -> Text = match i
@@ -844,11 +878,11 @@ script
 ```
 
 The write after `script` is any write of
-[writes.md](writes.md#1-change-sets): one change set computed from the
-snapshot of the commit that produces the version, at the schema
-produced by the operators before it in the migration. Its changes are
-checked against every constraint at the end of the migration, the
-migration's statement boundary. A script changes no schema object.
+[writes.md](writes.md#1-change-sets): one change set, evaluated on the
+state the operators before it in the migration produce, at the schema
+they produce (§3.1). Its changes are checked against every constraint
+of the final schema at the end of the migration, the migration's
+statement boundary. A script changes no schema object.
 Data fixes outside a migration are ad hoc writes or registered
 transactions ([applications.md §7](applications.md#7-the-ad-hoc-role)).
 
@@ -858,17 +892,21 @@ inverse: `revert` of a migration containing one is refused. A restore
 replays schema operators and skips scripts, since the restored data
 is the state after them ([interop.md](interop.md#6-dump-and-restore)).
 
-Rulings: evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/remove-rows/deprecate, evolution/log-ops, evolution/scripted, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, derived/defaults/backfill/separate
+Rulings: evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/remove-rows/deprecate, evolution/log-ops, evolution/scripted, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, derived/defaults/backfill/separate, spec/evolution/deprecated-value/same-path, spec/evolution/product-state/source-state, spec/evolution/new-ids/listed-order, spec/evolution/ctor-order/placed, spec/evolution/arm-target/scrutinee-set, spec/evolution/product-position/first-source
 
 ## 5. Inverses and revert
 
 ### 5.1 Inverse
 
 Every operator except `script` has an inverse computed from the
-operator and the schema before it (table in §4). An operator and its
-inverse applied in sequence leave the schema equal to the schema
-before them, up to constructor ids: a constructor re-added by an
-inverse has a new id.
+operator and the schema before it (table in §4). The inverse names
+objects by id: it is computed against the schema before the operator
+and resolved to the objects' current names when it applies. An
+operator and its inverse applied in sequence restore the prior state:
+the schema, the write states and, for an exact operator, the data,
+up to constructor ids. A constructor re-added by an inverse has a new
+id and takes the position in the declaration order it had before its
+removal.
 
 ### 5.2 Exact and lossy operators
 
@@ -886,24 +924,41 @@ order. It is undefined if the migration contains a `script`.
 
 ### 5.4 Revert
 
-```adt
+```adt fragment
 -- 0032, continuing §4.5
 module auth
 revert 0031
 ```
 
 `revert n` is an operator whose meaning is the inverse of migration
-`n`, computed against the schema at the version before `revert`. It
-appends a new migration; it does not remove `n` from the log. Here the
-inverse is the renames of `0031` reversed, last first, from `rename
-field Login.EmailPass.pw_hash to hash` to `rename constructor
-Identity.Meta to Facebook`. The inverse is checked like any migration
-(§3.2). A revert is refused when the inverse of migration `n` is
-undefined, or when an operator applied after `n` depends on an object
-`n` created: reverting `0011` at version 19 of §4.3 is refused, since
-`0012` and `0019` enable and deprecate the `Apple` it added.
+`n` (§5.1). It appends a new migration; it does not remove `n` from
+the log. Here the inverse is the renames of `0031` reversed, last
+first, from `rename field Login.EmailPass.pw_hash to hash` to `rename
+constructor Identity.Meta to Facebook`. The inverse is checked like
+any migration (§3.2).
 
-Rulings: evolution/smo, evolution/revert, evolution/merge-tag/discriminator, evolution/hoist/default
+An inverse that needs values the log does not hold (the `add field`
+inverse of a `drop field`) takes them from a `fill` clause of the
+revert, one per such inverse, written `fill T.C.f = e` with the
+field's current name. A revert's fill has the form and scope of an
+`add field` fill (§4.9): `e` gives the value for every existing row
+and may read the row being filled and nothing else.
+
+```adt fragment
+-- 0016, from a version 15 at which 0015 dropped Identity.EmailPass.hash
+module auth
+revert 0015
+  fill Identity.EmailPass.hash = bytes("")
+```
+
+A revert is refused when the inverse of migration `n` is undefined,
+when an inverse that needs a fill has none, or while a dependant of
+`n` is applied. A later migration depends on `n` when one of its
+operators names an object id that `n` created: reverting `0011` at
+version 19 of §4.3 is refused, since `0012` and `0019` enable and
+deprecate the `Apple` it added.
+
+Rulings: evolution/smo, evolution/revert, evolution/merge-tag/discriminator, evolution/hoist/default, spec/evolution/enable-inverse/prior-state, spec/evolution/revert-identity/by-id, spec/evolution/product-position/first-source, spec/evolution/revert-fill/per-field
 
 ## 6. Constraints and grants under evolution
 
@@ -938,8 +993,8 @@ rewrites the constraint first, in the same or an earlier migration.
 
 ### 6.3 Adding a constraint
 
-An added constraint, check or unique is validated against the existing
-data. The migration is refused while any row violates it; the report
+An added constraint, check or unique is validated against the state
+the migration produces (§3.1). The migration is refused while any row violates it; the report
 is the constraint's violation rows, as at a statement boundary. An
 added constraint must be admitted
 ([constraints.md](constraints.md#5-admission)). Validation that runs
@@ -991,7 +1046,7 @@ operators of a migration, the engine rechecks every live bundle
 against its owner's grants; a bundle whose owner no longer holds a
 grant it uses refuses the migration.
 
-Rulings: constraint/evolve/carry, constraint/evolve/icmo, constraint/evolve/unmapped/refuse, constraint/evolve/policy/check, constraint/evolve/drop-old/readers-first, constraint/scope/new-ctor/arm-in-add
+Rulings: constraint/evolve/carry, constraint/evolve/icmo, constraint/evolve/unmapped/refuse, constraint/evolve/policy/check, constraint/evolve/drop-old/readers-first, constraint/scope/new-ctor/arm-in-add, spec/evolution/migration-statement/one-statement
 
 ## 7. Version translation
 
@@ -1015,8 +1070,8 @@ Definitions under pinning:
 - Names of the bundle's own functions resolve at `v`: a schema
   definition added later under the same name is allowed and does not
   change what the bundle calls.
-- The planner uses an expression index for a query only when the
-  index's expression has the same code identity as the query's
+- An expression index never changes a pinned bundle's results: its
+  queries evaluate their expressions with the code of `v`
   ([interop.md](interop.md#95-function-identity)).
 - A host function has one code: a `redefine fn` that changes a host
   function's code identity is refused while a live bundle pins a
@@ -1028,9 +1083,9 @@ Definitions under pinning:
 | split | rows of the new constructors mapped back through the inverse merge |
 | merge | rows of the merged constructor split back by the discriminator |
 | nest, unnest | the old shape |
-| add field | rows without the field; its inserts are filled by the add's `fill` |
+| add field | rows without the field; its writes take the field as §7.4 states |
 | drop field | refused at apply if it reads the field (§7.2); otherwise unchanged |
-| move field up | the field on its old constructor; inserts of other constructors are filled |
+| move field up | the field on its old constructor; its writes of other constructors take the field as §7.4 states |
 | move field down | the header field on the constructors that keep it; refused at apply if it reads the field of the others |
 | rekey | references with the old key's values, mapped through the carried fields |
 | add set, drop set, set membership | each named set with its membership at `v` |
@@ -1052,7 +1107,10 @@ Definitions under pinning:
 When a migration applies, the engine translates every query and
 transaction of every live bundle to the new version. If some query has
 no translation, the migration is refused, and the report names the
-bundle, the query and the operator. A query has no translation when:
+bundle, the query and the operator. A query is translatable across an
+operator when its writes have an image on every state they can produce
+([semantics.md §9.6](semantics.md#96-version-translation)). That
+criterion is decided by these forms; a query has no translation when:
 
 - it writes into a constructor that the migration removes, disables
   or deprecates;
@@ -1060,6 +1118,11 @@ bundle, the query and the operator. A query has no translation when:
 - it reads or writes a constructor that a split with non-invertible
   routing replaces;
 - its translation across the operator does not type check.
+
+A query reads field `f` when `f` occurs in a field access or a
+pattern, or when a whole row having `f` is returned, compared or
+passed to a function. Copying a row through `with` into a write does
+not read its fields.
 
 A live bundle is never left with a query that fails at call time
 because of a schema change. A translated write that violates a
@@ -1092,7 +1155,30 @@ Otherwise the registration starts a new lease, and from then on the
 bundle holds back later migrations as any live bundle does
 ([applications.md §4.2](applications.md#42-leases)).
 
-Rulings: surface/version-serving/translate, surface/version-serving/untranslatable/translate-at-apply, engine/pinned-version, surface/lease-policy/translate-stale
+### 7.4 Fields a translated write lacks
+
+A write translated from version `v` states only the fields of `v`. A
+field it lacks, added or moved after `v`, takes its value in this
+order:
+
+1. when the write updates or retags an existing row whose constructor
+   is the constructor of the new value, the field's value in that row;
+2. otherwise, and for every insert, the relation's current default for
+   the field in that constructor
+   ([derived.md §4](derived.md#4-defaults));
+3. otherwise, the fill of the operator that added or moved the field.
+
+```adt fragment
+-- 0033, from version 32
+module auth
+add field Identity.EmailPass.verified: Bool fill false
+add default identities.EmailPass.verified = true
+-- a bundle pinned at 32 inserts EmailPass { ... }: verified is true
+-- it retags a Google row to EmailPass { ... }: verified is true
+-- it updates an EmailPass row: verified keeps the row's value
+```
+
+Rulings: surface/version-serving/translate, surface/version-serving/untranslatable/translate-at-apply, engine/pinned-version, surface/lease-policy/translate-stale, spec/evolution/translatable/semantic-via-triggers, spec/evolution/translated-fields/same-ctor
 
 ## 8. Readers first
 
@@ -1166,7 +1252,7 @@ query logins_of (u: Key users) -> Set Text =
     | Apple a     -> a.sub
 ```
 
-```adt
+```adt fragment
 -- 0012: applies once no reader pinned at 10 or earlier reads identities whole
 module auth
 enable identities.Apple
@@ -1207,28 +1293,18 @@ Rulings: evolution/old-readers/readers-first, surface/registration/order/pinned,
 
 ## 9. Replication of schema changes
 
-Migrations and stage transitions are records of the log that carries
-the data to replicas ([engine.md](engine.md#9-replication)), applied in
-log order with the data. A replica applies the operator that declares
-a constructor before any row of it, and a stage transition before any
-change that depends on it.
+A replica serves consistent safe snapshots
+([replication.md §1.2](replication.md#12-reads-on-a-replica)):
+each snapshot holds the schema version and the data of one point of
+the primary's history. A replica therefore never shows a row of a
+constructor before the constructor's declaration.
 
-A replica serves bundles bound to it at their pinned versions. Lease
-renewals made at a replica are forwarded to the primary, which is the
-only place leases are written and readers-first is decided. A
-forwarded renewal is idempotent and retried until the primary
-acknowledges it. A lease's expiry is computed from the last renewal
-record in the log, on the primary and on every replica alike. From
-expiry a replica refuses binds and calls on the bundle with
-`Rejected { reason: BundleExpired {..} }`. The primary treats the lease as
-expired only once the further grace of the setting `LeaseGrace`
-(1 hour by default) has passed. From then binds, calls and renewals of
-the bundle are refused with `BundleExpired` on the primary as well; a
-renewal, made at the primary or forwarded, never extends an expired
-lease. The bundle is live again only once registered again
-(§7.3, [applications.md §4.2](applications.md#42-leases)).
+A replica serves bundles bound to it at their pinned versions. The
+primary is the only place leases are written and readers-first is
+decided; how leases behave at a replica is in
+[applications.md §4.2](applications.md#42-leases).
 
-Rulings: repl/schema/in-log, repl/schema/forward-leases
+Rulings: repl/schema/in-log, repl/schema/forward-leases, spec/evolution/replica-schema/safe-snapshot
 
 ## 10. Engine releases
 
@@ -1258,7 +1334,7 @@ and does not change the catalog version.
 A bundle that reads catalog relations pins a catalog version in its
 header, beside its schema version:
 
-```adt
+```adt fragment
 bundle monitor-1.3 pins 9 (5d0e...) catalog 4 (e07b...) edition "2026-10"
 query call_states () -> Set ({ call: Key sys::calls, state: Text }) =
   from c in sys::calls

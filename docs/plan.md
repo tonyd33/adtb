@@ -1,8 +1,10 @@
 # Implementation plan
 
 How the reference implementation gets from the specification in
-[spec/](spec/README.md) to a first edition. The crate split, engineering
-rules and test methods are in [implementation.md](spec/implementation.md);
+[spec/](spec/README.md) to a first edition. The crate split and the
+contracts between subsystems are in [design/](design/README.md), the
+test methods in [design/oracle.md](design/oracle.md) and
+[design/runtime.md](design/runtime.md);
 this file orders the work. Each milestone ends at a state that can be
 tested on its own, and names the spec parts it covers.
 
@@ -39,19 +41,19 @@ without touching the spec.
 | Toolchain | Rust 1.98, edition 2024, pinned in `rust-toolchain.toml` |
 | Parser | Hand-written lexer and recursive-descent parser with error recovery; no parser generator |
 | Kernel terms | An arena of typed nodes with interned names, shared by the reference interpreter and the planner |
-| Batches | Own Arrow-layout buffers in `adtb` (dense unions, the three special shapes of engine.md §8.2); the `arrow` crate only at the IPC boundary, and only if it passes the allowlist |
+| Batches | Own Arrow-layout buffers in `adtb` (dense unions, the three special shapes of [design/execution.md §2](design/execution.md#2-batches)); the `arrow` crate only at the IPC boundary, and only if it passes the allowlist |
 | Decimal | Own `i128` scaled arithmetic for `Decimal k` up to 38 digits |
 | Text | `unicode-normalization` for NFC, `unicode-segmentation` for graphemes |
 | Hashing | `blake3` for version hashes and the ledger; `crc32c` for page and block checksums |
 | Encryption | `chacha20poly1305` (XChaCha20-Poly1305), milestone 12 |
 | Allowlist | `cargo-deny` with a justification per entry in `deny.toml` |
-| Pipelines | Bytecode interpreter only; the machine-code backend stays deferred (engine.md §8.1) |
+| Pipelines | Bytecode interpreter only; the machine-code backend stays deferred ([design/execution.md §7.1](design/execution.md#71-adaptive-compilation-and-morsels)) |
 
 ## Milestones
 
 ### 0. Workspace
 
-- Cargo workspace with the six crates of implementation.md §1;
+- Cargo workspace with the six crates of [design/README.md §3](design/README.md#3-crates-and-boundaries);
   `src/main.rs` goes, `adtb` becomes a library.
 - `rust-toolchain.toml`, `clippy.toml` with the disallowed methods,
   `#![forbid(unsafe_code)]` in every crate except `adtb-sys`,
@@ -89,7 +91,7 @@ Tests:
   classified (accepted, refused with a named reason, fragment) and run
   through the front end. Each failure is either a front-end bug or a
   spec bug fixed through the usual spec process.
-- Front-end fuzzing (implementation.md §4.5) from day one.
+- Front-end fuzzing ([design/oracle.md §5.6](design/oracle.md#56-front-end-fuzzing)) from day one.
 - Typing soundness is checked from milestone 2 on: a well-typed term
   never fails in the interpreter with a type error.
 
@@ -102,7 +104,7 @@ Covers semantics.md §4 to §8 for a single schema version, queries.md,
 writes.md, constraints.md (naive checking), prelude.md (functions),
 interop.md §1 (textual values).
 
-- `adtb-reference`: the naive evaluator of implementation.md §3 over
+- `adtb-reference`: the naive evaluator of [design/oracle.md](design/oracle.md) over
   `BTreeMap<(RelVarId, CtorId), BTreeSet<Row>>`, with change sets,
   delete actions, upsert, retag, faults, `try`, `fix`, grouping,
   aggregates, ordering and top-n.
@@ -110,7 +112,7 @@ interop.md §1 (textual values).
   statement boundary; admission is not the interpreter's concern.
 - Transactions are serial; the interpreter defines the outcome that
   any serializable engine must reproduce.
-- Conformance runner over the script format of implementation.md §7,
+- Conformance runner over the script format of [spec/conformance.md](spec/conformance.md),
   and the first suite: one script directory per spec part, starting
   with model, queries, writes and constraints.
 
@@ -119,12 +121,12 @@ holds over the spec corpus and over type-directed generated terms.
 
 ### 3. Simulation and I/O
 
-Covers implementation.md §2.4, §5.1, §5.5.
+Covers [design/runtime.md](design/runtime.md) §1, §2, §5 and §6.5, and [design/sys.md](design/sys.md).
 
 - `Io` trait, worker event loop, the three backends (`io_uring` and
   the blocking pool in `adtb-sys`, the simulator in `adtb-sim`).
 - Simulated clock, randomness, network and deterministic scheduler.
-- `SimStorage` with every fault of engine.md §2.6.
+- `SimStorage` with every fault of [design/runtime.md §3](design/runtime.md#3-faults-a-backend-may-produce).
 - Loom tests for the page state word.
 
 Exit: a seeded run replays byte for byte; Miri runs the simulator
@@ -132,7 +134,7 @@ tests clean.
 
 ### 4. Pager and log
 
-Covers engine.md §2 to §4.
+Covers [design/storage.md](design/storage.md).
 
 - File header on pages 0 and 1, page format, checksums, page kinds.
 - vmcache buffer pool: reserved virtual range, frames, eviction,
@@ -140,7 +142,7 @@ Covers engine.md §2 to §4.
 - Redo-only log with batch framing, segments in `app.adt-log/`,
   full-page images on the first change after a checkpoint, checkpoints,
   recovery.
-- Crash replay harness (implementation.md §5.3).
+- Crash replay harness ([design/runtime.md §6.3](design/runtime.md#63-crash-replay)).
 
 Exit: random page-write workloads under simulated crashes and every
 injected fault lose no acknowledged write and report every detectable
@@ -148,7 +150,8 @@ corruption; crash replay passes for every flush boundary.
 
 ### 5. Heaps and indexes
 
-Covers engine.md §5 and §6.
+Covers [design/mvcc.md](design/mvcc.md) §1 to §7 and §10 to §12, and
+[design/indexes.md](design/indexes.md).
 
 - Per-constructor slotted heaps, the 24-byte version header, the
   `next` TID and moved flag, heap ids.
@@ -164,13 +167,14 @@ clean after every crash.
 
 ### 6. Transactions
 
-Covers transactions.md, engine.md §7, semantics.md §8.
+Covers transactions.md, [design/mvcc.md](design/mvcc.md) §8 and §9,
+semantics.md §8.
 
 - 64-bit xids, commit log, snapshots, MVCC visibility.
 - SSI: SIREAD locks on heaps and next-key ranges, rw-antidependency
   tracking, safe snapshots, serialization failures at snapshot edges.
 - Commit path with group commit; durability level local.
-- Isolation checker (implementation.md §5.4) on the append workload.
+- Isolation checker ([design/runtime.md §6.4](design/runtime.md#64-isolation-checking)) on the append workload.
 
 Exit: no G0, G1 or G2 cycle over a fixed number of seeds per run;
 the write-skew tests abort one side.
@@ -179,7 +183,8 @@ the write-skew tests abort one side.
 
 The tracks meet. Covers model.md, queries.md, writes.md,
 constraints.md and transactions.md in the engine, catalog.md §1, §2
-and §4 (subset needed to bootstrap), engine.md §8, and embedding.md
+and §4 (subset needed to bootstrap), [design/execution.md](design/execution.md),
+[design/maintenance.md](design/maintenance.md) §1, §3 and §6, and embedding.md
 §1, §2 (no migrations), §5 and §6.
 
 - Bootstrap catalog and system relations with their fixed ids.
@@ -199,14 +204,16 @@ and §4 (subset needed to bootstrap), engine.md §8, and embedding.md
 
 Exit: the whole single-version suite passes on the engine; the
 differential, constructor-partition, predicate-partition and
-plan-toggle tests (implementation.md §4.1 to §4.4) pass over a fixed
+plan-toggle tests ([design/oracle.md](design/oracle.md#5-notes-for-the-implementation) §5.2 to §5.5) pass over a fixed
 number of seeds per run.
 
 ### 8. Evolution and bundles: embedded alpha
 
 Covers evolution.md, applications.md, embedding.md in full except §12,
 semantics.md §9, security.md §1 and §4 (principals and definer rights
-in process), interop.md §9 (host functions).
+in process), interop.md §9 (host functions),
+[design/schema-change.md](design/schema-change.md) and
+[design/kernel.md §2](design/kernel.md#2-code-generators).
 
 - Operator log, version hashes, every schema operator with its data
   map, inverse and declared loss; revert.
@@ -218,7 +225,7 @@ in process), interop.md §9 (host functions).
 - Embedded open steps, host functions, bulk append.
 - Rust code generation from a bundle file (typed calls).
 - Schema operator law tests and the schema walk generator
-  (implementation.md §4.6, §4.7).
+  ([design/oracle.md](design/oracle.md#4-generator-interface) §4, §5.7 and §5.8).
 
 Exit: an application can ship, evolve and reopen an embedded database
 through the in-process API alone; operator laws hold over generated
@@ -227,7 +234,8 @@ databases. This is the first release.
 ### 9. Operations: embedded beta
 
 Covers catalog.md §3, §5 to §13, interop.md §6 and §7 (dump, restore,
-backup), engine.md §10.
+backup), [design/storage.md](design/storage.md) §8 and §10.5,
+[design/indexes.md §7](design/indexes.md#7-building-and-rebuilding).
 
 - Statistics, plan pinning with last-good fallback, `explain`.
 - `verify` cross and logical checks, scrub, vacuum scheduling,
@@ -235,7 +243,7 @@ backup), engine.md §10.
 - Zone rules and collations in the catalog.
 - Dump, restore, online backup, point-in-time restore.
 - Fault-injecting file system tests on the real backends
-  (implementation.md §5.2).
+  ([design/runtime.md §6.2](design/runtime.md#62-fault-injection-under-the-real-engine)).
 - Benchmarks against SQLite on the embedded OLTP workloads.
 
 Exit: the suite and every test method pass; benchmarks are published
@@ -258,7 +266,8 @@ Exit: the parity tests between the in-process API and the wire pass
 
 ### 11. Replication
 
-Covers engine.md §9, evolution.md §9, embedding.md §12,
+Covers [spec/replication.md](spec/replication.md),
+[design/replication.md](design/replication.md), evolution.md §9, embedding.md §12,
 transactions.md §8.
 
 - Log shipping, replicas, safe snapshot markers, replica reads,
@@ -270,7 +279,8 @@ at quorum durability, and replica reads stay serializable.
 
 ### 12. Derived features and interop
 
-Covers derived.md, interop.md (the rest), security.md §9 to §11.
+Covers derived.md, interop.md (the rest), security.md §9 to §11
+and [design/maintenance.md](design/maintenance.md) §2, §4 and §5.
 
 - Views, stored views with in-transaction maintenance, computed
   fields, time travel with history heaps and `at commit`.

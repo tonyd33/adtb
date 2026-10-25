@@ -3,12 +3,10 @@
 This part defines how change sets are applied: the one isolation
 level, the statements a transaction is made of, `transact` blocks,
 registered and interactive transactions, aborts and retry, durability
-levels, commit positions for reading on replicas, and idempotent write
-calls. What a change set is belongs to [writes.md](writes.md); what
-must hold at each statement boundary belongs to
-[constraints.md](constraints.md). How the engine provides these
-guarantees is described in [engine.md](engine.md), which is
-informative.
+levels, commit positions, and idempotent write calls. What a change
+set is belongs to [writes.md](writes.md); what must hold at each
+statement boundary belongs to [constraints.md](constraints.md); reads
+and writes at replicas belong to [replication.md](replication.md).
 
 ## 1. Serializability
 
@@ -21,11 +19,14 @@ would have if it ran alone, in that order, against the state the
 transactions before it left. There is no other isolation level and no
 option that selects one.
 
-The serial order is not promised to agree with the order in which
-transactions began or committed. On the primary, a transaction that
-begins after another's commit was acknowledged reads a state that
-includes it. Across replicas, reading one's own writes is promised
-only through commit positions (§8).
+The serial order extends real time on the primary: when `T`'s commit
+was acknowledged before `T'` began, `T` precedes `T'`, so `T'` reads a
+state that includes `T`. Beyond that, the serial order is not promised
+to agree with the order in which transactions began or committed.
+Replica reads keep the guarantee of
+[replication.md §1.2](replication.md#12-reads-on-a-replica): across
+replicas, reading one's own writes is promised only through commit
+positions.
 
 A transaction that aborts has no effect. Results a transaction returns
 before it commits are promised to be consistent only if it commits
@@ -59,12 +60,12 @@ applied with the data writes of the same migration or not at all
 A read never waits for a write and a write never waits for a read.
 Reads on the primary run as soon as they are issued and never wait for
 a safe snapshot; only a `read_only deferrable` transaction (§6.4) and a
-read on a replica (§8) wait, once, before they start. A write may wait
+read on a replica ([replication.md](replication.md#12-reads-on-a-replica)) wait, once, before they start. A write may wait
 for another transaction writing the same row or inserting the same key
 (§6.3). Instead of waiting, a conflict between reads and writes aborts
 a transaction with a serialization failure (§6.1).
 
-Rulings: engine/serializable-only, engine/ssi, engine/retag-fk/by-isolation, mvcc/retag-phantom/as-insert, constraint/concurrent/serial-checks, engine/write-skew/by-isolation
+Rulings: engine/serializable-only, engine/ssi, engine/retag-fk/by-isolation, mvcc/retag-phantom/as-insert, constraint/concurrent/serial-checks, engine/write-skew/by-isolation, spec/txn/real-time/primary
 
 ## 2. Statements
 
@@ -77,7 +78,7 @@ of them.
 | --- | --- | --- |
 | `transact` block (§3) | one | the end of the block |
 | registered transaction (§4) | one | the end of its block |
-| interactive transaction (§5) | one per call | the client's commit |
+| interactive transaction (§5) | one per call, or one per item of a call of ad hoc text | the client's commit |
 | ad hoc text of several items | one per item | the end of the text |
 
 Several items in one ad hoc text form one transaction, each item one
@@ -85,9 +86,10 @@ statement, and their results are returned in order
 ([syntax.md](syntax.md)). The first item that fails, by a fault, a
 user `fail`, a constraint violation or a rejection, ends the text: the
 effects of none of its items are applied, the later items do not run,
-and the error names the failing item's ordinal. Failing ad hoc text
-sent within an interactive transaction applies none of its items'
-effects, and the interactive transaction stays open. The items of a
+and the error names the failing item's ordinal. Within an interactive
+transaction the same holds for one call: each item is a statement, and
+when one fails, the effects of every item of that call are undone and
+the interactive transaction stays open (§5.2). The items of a
 `transact` block are not statements; the block is one.
 
 Every statement of a transaction reads one snapshot of the database
@@ -102,6 +104,7 @@ Rulings: write/unit/multi, constraint/timing/multi-assign, write/surface/txdata
 ### 3.1 Form
 
 ```adt
+-- given n: Text, g: Text
 transact
   let u = insert users { name: n }
   let i = insert identities.Google { user: key u, gid: g }
@@ -110,9 +113,9 @@ transact
 
 A `transact` block is a sequence of items:
 
-- `let x = e`, where `e` is a query or a write expression; `x` names
-  the query's result or the rows the write would write
-  ([writes.md §2.2](writes.md#22-what-an-insert-returns));
+- `let x = e`, where `e` is a query, an insert, an upsert, an update or
+  a delete; `x` names the query's result or the rows the write binds
+  ([writes.md §1.1](writes.md#11-queries-are-pure));
 - a write expression, whose change set joins the block's;
 - at most one `return e`, last, whose value is the block's result.
 
@@ -128,9 +131,12 @@ generated key of the user the first line inserts, while a query over
 `users` in the block does not find that user.
 
 When the last item is computed, the block's change set is checked
-against every constraint and applied as one statement. If any
-constraint is violated, or any item faults, nothing is applied and the
-block fails with that error. The result reaches the caller only after
+against every constraint and applied as one statement. If any item
+aborts, nothing is applied and the block fails with one of those
+aborts ([writes.md §1.5](writes.md#15-faults)); otherwise, if any
+constraint is violated, nothing is applied and the block fails with
+the violation of
+[constraints.md §7](constraints.md#7-checking-and-violation-reports). The result reaches the caller only after
 the block's transaction commits.
 
 ### 3.3 Options
@@ -139,12 +145,15 @@ Options follow the keyword:
 
 | Option | Meaning |
 | --- | --- |
-| `retry n` | rerun the block up to `n` times on a serialization failure (§6.2) |
+| `retry n` | run the block at most `n + 1` times, the first attempt included, while attempts fail with a serialization failure (§6.2) |
 | `read_only` | the block may not write; a write in it is a type error |
 | `read_only deferrable` | as `read_only`, and the block waits for a safe snapshot and then never fails with a serialization failure (§6.4) |
 | `durability local`, `durability quorum` | the durability its commit acknowledgement promises (§7) |
 
+A block declaring both `read_only` and `durability` is a type error.
+
 ```adt
+-- given u: Key users, g: Text
 transact read_only deferrable
   return count(i for i in identities)
 
@@ -153,7 +162,7 @@ transact retry 5 durability quorum
   return key i
 ```
 
-Rulings: write/transact/block, write/insert/returns/rows, engine/retry/retry-block, engine/retry/safe-snapshot, repl/commit-ack/local, repl/commit-ack/quorum
+Rulings: write/transact/block, write/insert/returns/rows, engine/retry/retry-block, engine/retry/safe-snapshot, repl/commit-ack/local, repl/commit-ack/quorum, spec/txn/retry-count/n-plus-one, spec/txn/durability/strongest, spec/writes/let-write/four-forms, spec/writes/abort-choice/any-abort
 
 ## 4. Registered transactions
 
@@ -177,8 +186,9 @@ the beginning at a new snapshot, before replying, up to a limit. The
 client sees one reply: the result of the attempt that committed, or the
 serialization failure once the limit is reached. The reply reports the
 number of attempts ([wire.md](wire.md)). A `retry n` option on the
-block sets the limit for that transaction; otherwise the configured
-limit applies ([catalog.md](catalog.md#10-configuration)).
+block allows at most `n + 1` attempts for that transaction; otherwise
+the file setting `RetryLimit` applies
+([catalog.md](catalog.md#102-file-settings)).
 
 Ad hoc text that writes, a `transact` block or several items
 submitted as one call outside an interactive transaction, is rerun by
@@ -193,7 +203,7 @@ Constraints hold for it as for any statement.
 A call carries an optional statement limit, deadline and priority
 within its bundle's class ([wire.md](wire.md)).
 
-Rulings: write/transact/registered-txn, net/retry/server, engine/retry/retry-block
+Rulings: write/transact/registered-txn, net/retry/server, engine/retry/retry-block, spec/txn/retry-count/n-plus-one
 
 ## 5. Interactive transactions
 
@@ -217,28 +227,39 @@ it; no other state is held for it on a connection
 
 ### 5.2 Meaning
 
-Each call is one statement (§2). A call reads the transaction's
-snapshot together with the change sets of its earlier calls.
-Constraints hold after every call. The calls' change sets become
-visible to other transactions only when the commit succeeds; an abort,
-or a failed commit, discards all of them.
+A call of a registered query or transaction is one statement (§2). A
+call of ad hoc text is one statement per item. Each statement reads the
+transaction's snapshot together with the change sets of the earlier
+statements. Constraints hold after every statement. The change sets
+become visible to other transactions only when the commit succeeds; an
+abort, or a failed commit, discards all of them.
 
-A call that fails, by a constraint violation, a fault or a user `fail`,
-fails its statement: the statement's effects are not applied, and the
-transaction stays open with the effects of its earlier calls. A
-serialization failure aborts the whole transaction.
+A call is atomic. A call that fails, by a constraint violation, a fault
+or a user `fail` in any of its statements, applies none of its
+statements' effects, and the transaction stays open with the effects
+of its earlier calls. A serialization failure aborts the whole
+transaction.
 
-One interactive transaction makes registered calls or ad hoc text
-calls, never both. Ad hoc text in a transaction that has made a
-registered call, and a registered call in one that has run ad hoc
-text, are refused with `Rejected { reason: MixedVersions }`; the
-transaction stays open.
+Every statement of a transaction runs at one schema version and one
+catalog version: ad hoc text at the schema and catalog versions
+current at the transaction's snapshot, a registered call at its
+bundle's pinned version and pinned catalog version. A call that would run at another
+schema version or catalog version than the transaction's earlier
+statements is refused with `Rejected { reason: MixedVersions }`, and
+the transaction stays open. In particular, ad hoc text in a transaction
+that has made a registered call, and a registered call in one that has
+run ad hoc text, are refused.
 
-A registered transaction called within an interactive transaction is
-one statement of it. Its `transact` block does not commit on its own:
-its change set becomes visible with the interactive transaction's
-commit, and the server does not rerun it on a serialization failure,
-which aborts the interactive transaction (§5.5).
+A registered transaction or a `transact` block run within an
+interactive transaction is one statement of it, and never commits on
+its own: its change set becomes visible with the interactive
+transaction's commit, and the server does not rerun it on a
+serialization failure, which aborts the interactive transaction
+(§5.5). A block with `read_only deferrable` run within an interactive
+transaction is refused.
+
+The interactive transaction commits at the strongest durability level
+(§7) named by its begin, by its commit, or by any block run in it.
 
 Constraints are checked after every call, never deferred to the
 commit, so no call may leave a constraint violated for a later call to
@@ -278,18 +299,21 @@ a begin may carry a shorter statement limit, deadline and priority
 The engine does not rerun an interactive transaction. On a
 serialization failure the client reruns the whole sequence of calls,
 from the begin, as one retryable unit. Client libraries provide a form
-that takes the sequence as a function and reruns it up to a limit
-([embedding.md](embedding.md)).
+that takes the sequence as a function and reruns it up to a limit the
+caller gives ([embedding.md](embedding.md#52-retrying-a-closure)).
 
-Rulings: write/transact/interactive, net/interactive/time-limit, engine/retry/retry-block
+Rulings: write/transact/interactive, net/interactive/time-limit, engine/retry/retry-block, spec/txn/call-atomic/item-statements, spec/txn/one-version/one-pair, spec/txn/durability/strongest
 
 ## 6. Aborts, retry and waiting
 
 ### 6.1 Serialization failures
 
-A transaction whose commit would leave no serial order equivalent to
-the execution is aborted with a serialization failure. It may be
-detected at any read, write or commit. A serialization failure is
+A transaction may be aborted with a serialization failure at any
+read, write or commit. One whose commit would leave no serial order of
+the committed transactions (§1.1) is aborted; one may also be aborted
+although a serial order including it exists. A `read_only deferrable`
+transaction is the exception: it is never aborted with a serialization
+failure (§6.4). A serialization failure is
 always retryable: rerunning the same transaction at a new snapshot is
 correct, and the client is expected to do so. The error names only the
 caller's own transaction; the other transactions in the conflict are
@@ -302,9 +326,13 @@ retryable: rerunning against the same state gives the same error.
 ### 6.2 Retryable units
 
 A `transact` block has no effect outside the database, so rerunning it
-is always safe. A block with `retry n` is rerun up to `n` times on a
-serialization failure by whatever runs it: the server for a call
-(§4), the client library for a block run in process. A client library
+is always safe. A block with `retry n` is run at most `n + 1` times,
+the first attempt included, while its attempts fail with a
+serialization failure, by whatever runs it: the server for a call
+(§4), the client library for a block run in process. A block without
+the option is rerun up to the file setting `RetryLimit`
+([catalog.md](catalog.md#102-file-settings)), in process as on the
+server. A client library
 reruns only closures run in its own process. A sequence of
 calls in an interactive transaction is the client's retryable unit
 (§5.5).
@@ -339,9 +367,10 @@ A transaction declared `read_only` may not write. One declared
 concurrent read-write transaction can make inconsistent, then runs on
 it. It never fails with a serialization failure and never causes
 another transaction to fail with one. Read-only transactions on a
-replica always run this way (§8).
+replica always run this way
+([replication.md](replication.md#12-reads-on-a-replica)).
 
-Rulings: engine/retry/retry-block, engine/retry/safe-snapshot, engine/wait-inserter, engine/ssi
+Rulings: engine/retry/retry-block, engine/retry/safe-snapshot, engine/wait-inserter, engine/ssi, spec/txn/may-abort/may, spec/txn/retry-count/n-plus-one
 
 ## 7. Durability levels
 
@@ -360,13 +389,20 @@ A read-only transaction writes nothing and has no level. A database
 without replicas has a majority of one: `quorum` is then the same as
 `local`.
 
-A transaction that names no level commits at `local`.
+A commit whose write or flush to storage fails is never acknowledged:
+the engine stops and recovers instead of reporting an error
+([embedding.md §2.4](embedding.md#24-engine-failures)).
+
+A transaction that names no level commits at `local`. An interactive
+transaction commits at the strongest level named by its begin, its
+commit or any block run in it (§5.2).
 
 ### 7.2 The loss window
 
 Replicas follow the primary's log asynchronously at level `local`.
-When a replica is promoted, the promotion reports the log position it
-starts from. Every transaction committed on the old primary after that
+When a replica is promoted
+([replication.md §2](replication.md#2-failover)), the promotion
+reports the log position it starts from. Every transaction committed on the old primary after that
 position is lost: it is absent from the new primary's history, and the
 old primary is fenced so that it accepts no further commits. Its log
 past that position is a separate history, never merged.
@@ -378,9 +414,9 @@ of the nodes, which holds every commit acknowledged at `quorum`. A
 transaction acknowledged at `quorum` is therefore lost only when a
 majority of the nodes is lost.
 
-Rulings: repl/commit-ack/local, repl/commit-ack/quorum, repl/commit-ack/rpo/stated
+Rulings: repl/commit-ack/local, repl/commit-ack/quorum, repl/commit-ack/rpo/stated, spec/txn/durability/strongest, buffer/fsync-fail/panic-replay
 
-## 8. Commit positions and replica reads
+## 8. Commit positions
 
 Every acknowledged commit of a read-write transaction returns its
 commit position, a value of the prelude type `Position = { epoch: I64,
@@ -392,33 +428,11 @@ began. A position that is not on the history a node serves, because it
 names an epoch's tail lost at a promotion, is refused with `Rejected {
 reason: PositionNotOnHistory {..} }`.
 
-Replicas serve read-only transactions only, each run at a safe
-snapshot the primary has marked in its log (§6.4). A read-only
-transaction on a replica may carry a commit position `p`. It then waits
-until the replica has applied the log up to `p` and has a safe snapshot
-at or after `p`, and runs at that snapshot, so it sees every
-transaction committed at or before `p`. A client that passes the
-position of its own last commit reads its own writes on any replica.
-The wait lasts at most the setting `ReplicaWait` (default 5 s), or the
-call's deadline if that is sooner; when it ends without a safe snapshot
-covering `p`, the read fails with `Retry { reason: SafePointTimeout {..} }`, which
-it may retry. Safe snapshots may fail to form while long read-write
-transactions run.
-
-A replica applies the log while its reads run. When applying it would
-remove a row version that a running read's snapshot sees, the replica
-waits for that read for at most the setting `ReplicaVacuumWait`, then
-cancels the read with `Retry { reason: ReplayConflict {..} }`, which it may retry.
-
-An embedded replica forwards writes to its primary
-([embedding.md](embedding.md#122-embedded-replicas)). A forwarded
-write carries a request id and is resent until the replica learns its
-outcome, so it is applied at most once (§9).
-
-The primary marks a safe snapshot at least as often as the setting
-`SafePointDelay` (default 100 ms) allows: when no safe snapshot has
-formed for that long, it delays the start of new read-write
-transactions until one forms, by at most `SafePointDelay`.
+A read given a commit position reads a state that includes every
+transaction committed at or before it; on a replica it waits for that
+state ([replication.md §1.2](replication.md#12-reads-on-a-replica)).
+A client that passes the position of its own last commit reads its
+own writes on any node.
 
 Rulings: repl/session/bookmark
 
@@ -433,20 +447,23 @@ transaction, and the commit of an interactive transaction. A request
 id on ad hoc text that only reads is ignored. A request id is needed
 only for idempotent retry. It is a client id together with a request
 number; the numbers a client sends with one client id must increase.
-A request id is carried by the call that commits, never by the begin
+So a request whose number equals a recorded one is a resend and gets
+the recorded reply, and one whose number is below the client's
+low-water mark is refused with `RequestExpired` (§9.2). A request id is carried by the call that commits, never by the begin
 or the other calls of an interactive transaction.
 
 ### 9.2 Deduplication
 
-When a transaction carrying a request id commits, the engine records
-the id and the reply, with its result rows, in the same commit. Only
-committed outcomes are recorded: an error, including a constraint
-violation or a serialization failure, leaves no record. A later call
-with a request id is handled in this order:
+Requests are deduplicated by their request id. A call carrying a
+request id that has committed is never applied again: a resend of it
+returns the original reply, its result rows included. A call that
+ended with an error, a constraint violation or a serialization failure
+included, did not commit, and a resend of it runs again. A call with a
+request id is handled in this order:
 
-1. if a record of that request id exists, the call does not run again:
-   when the record was made for the same call with the same arguments,
-   it returns the recorded reply with its rows, and otherwise it is
+1. if a call with that request id has committed, the call does not run
+   again: when it is the same call with the same arguments, it returns
+   the committed call's reply with its rows, and otherwise it is
    refused with `Rejected { reason: RequestReused }`;
 2. otherwise, if a call with that request id is still running, it is
    refused with `Rejected { reason: RequestReused }` when that call is
@@ -455,21 +472,24 @@ with a request id is handled in this order:
 3. otherwise, if its number is strictly below the client's low-water
    mark, it does not run and fails with `RequestExpired`; the
    low-water mark is one above the highest number of that client whose
-   record has been purged at the end of the retention window;
+   committed reply is no longer returned, past the retention window;
 4. otherwise it runs, as a first attempt or as a new attempt after one
-   that ended without committing.
+   that ended without committing. A resent commit of an interactive
+   transaction that never committed and no longer exists fails with
+   `Rejected { reason: UnknownTransaction }`, which then means
+   definitely that the transaction did not commit.
 
 A client that loses its connection before a commit is acknowledged
 resends the call with the same request id; the write is then applied
-at most once, and the client learns its reply. Every attempt the server
-makes for one call (§4) carries the call's request id, and only the
-attempt that commits is recorded. Once a transaction has committed,
-its reply stream is never cancelled for idleness: a client that stops
+at most once, and the client learns its reply. The attempts the server
+makes for one call (§4) are one request: only the attempt that commits
+has a reply a resend returns. Once a transaction has committed, its
+reply stream is never cancelled for idleness: a client that stops
 reading loses the stream, the commit stands, and a resend with the
-request id returns the recorded rows.
+request id returns its rows.
 
-The retention window is configuration, and the recorded ids and
-low-water marks are a system relation
+The retention window is configuration, and the committed request ids
+and the low-water marks are readable in a system relation
 ([catalog.md](catalog.md#1-system-relations)).
 
-Rulings: net/unknown/idempotency, net/retry/server
+Rulings: net/unknown/idempotency, net/retry/server, spec/txn/resend/promise, spec/txn/resend-unknown/not-committed, spec/txn/request-order/increasing

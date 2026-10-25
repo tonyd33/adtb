@@ -295,7 +295,7 @@ query logins_of (u: Key users) -> Set Text =
     | Apple a     -> a.sub
 ```
 
-```adt
+```adt fragment
 -- 0012, once no live bundle pinned at 10 or earlier reads identities whole
 module auth
 enable identities.Apple
@@ -310,10 +310,8 @@ FILE` is the command of [catalog.md §9.1](catalog.md#91-commands);
 
 A bundle holds its pinned version by lease. The lease is renewed when a
 client binds a connection to the bundle (§5) and when it makes a call
-on one. A process writes a renewal for a bundle at most once per eighth
-of the lease duration. Renewals made at a replica are forwarded to the
-primary; a forwarded renewal is idempotent and retried until
-acknowledged ([evolution.md §9](evolution.md#9-replication-of-schema-changes)).
+on one. Renewals made at a replica are forwarded to the primary
+([replication.md §3](replication.md#3-schema-leases-and-upgrades-at-replicas)).
 
 A lease expires when the lease duration has passed since the last
 renewal recorded in the log. The primary and every replica compute
@@ -404,17 +402,19 @@ A bound connection:
   signature;
 - renews the bundle's lease at binding and on calls (§4.2);
 - may also send ad hoc text when its principal holds `adhoc`; that text
-  is checked at the current version, not the pinned one, and its
-  results are encoded at the current version, their tags given by the
-  result's descriptor (§7). Within one transaction, ad hoc text after
-  a registered call, or a registered call after ad hoc text, is refused
-  with `Rejected { reason: MixedVersions }`.
+  is checked at the schema and catalog versions of its transaction's
+  snapshot, not the pinned ones, and its results are encoded at that
+  schema version, their tags given by the result's descriptor (§7).
+  Every statement of a transaction runs at one schema version and one
+  catalog version: a call that would run at another, such as ad hoc
+  text after a registered call or a registered call after ad hoc text,
+  is refused with `Rejected { reason: MixedVersions }`.
 
 A connection is bound once and serves one bundle for its lifetime. A
 client of two bundles opens two connections. An embedded database
 binds its handle to the application's bundle at open (§8).
 
-Rulings: net/bind/connection
+Rulings: net/bind/connection, spec/txn/one-version/one-pair
 
 ## 6. What a schema change does to bundles
 
@@ -443,7 +443,7 @@ default) after a refusal, the engine sends `BlockingMigration` notices
 to the sessions bound to each bundle the report names
 ([evolution.md §8.1](evolution.md#81-enabling-a-constructor)). A
 migration with staged jobs reruns every check of
-[evolution.md §3.2](evolution.md#32-checks-at-apply) at its last staged
+[evolution.md §3.2](evolution.md#32-checks-at-apply) at its final
 commit; a failure there discards the pending migration. A bundle declaring `hide new constructors` never blocks an `enable r.C`;
 after one, its paths through references are partial and fault
 `NoSuchRow` when they reach a hidden row. A migration never applies with
@@ -559,10 +559,11 @@ authored schema.
 
 The same rules print a single migration in canonical form: whitespace
 normalised, every name qualified by its module, and carried bytes
-replaced by their BLAKE3 hash. That text is what the version hash
-covers ([evolution.md §2.1](evolution.md#21-position-and-hash)).
+replaced by their BLAKE3 hash. The printed form is for review; the
+version hash covers the encoding of the resolved operators, not this
+text ([evolution.md §2.1](evolution.md#21-position-and-hash)).
 
-Rulings: surface/generated
+Rulings: surface/generated, spec/evolution/version-hash/value-encoding
 
 ## 10. Modules
 
@@ -571,8 +572,10 @@ migration file starts with `module NAME`, one module per file; a bundle
 file starts with its bundle header instead (§3.1). Schema objects
 declared in a module file, by operators or declarations, belong to its
 module. Each module has one namespace for its schema-resident
-definitions. A name from another module is
-written qualified: `auth::identities`, `auth::Identity.Google`.
+definitions. Ad hoc text belongs to no module: an unqualified name in
+it resolves in every user module, then the prelude
+([queries.md §16](queries.md#16-ad-hoc-statements)). In a module or
+bundle file, a name from another module is written qualified: `auth::identities`, `auth::Identity.Google`.
 `import NAME` in a bundle file makes the names of module
 `NAME` usable unqualified; an unqualified name found in two imported
 modules is an error at that use. The engine's system and catalog

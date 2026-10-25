@@ -1,0 +1,466 @@
+# Storage
+
+The pager, the redo log and recovery provide the file, its pages and
+the log to the heaps and versions of [mvcc.md](mvcc.md), the indexes of
+[indexes.md](indexes.md), replication and backup
+([replication.md](replication.md)) and `verify`
+([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)).
+
+## 1. The file
+
+### 1.1 One page space
+
+A database is one data file plus its redo log as segment files in a
+sibling directory (§5.3). Every heap, index, free space map,
+visibility map, commit log page and catalog page is a set of pages in
+the data file.
+
+Invariants:
+
+- Page ids form one dense space over the whole file. The buffer pool
+  and every TID use that space, so a page id names one page whatever
+  heap or index holds it.
+- Every page of the file, data and index alike, has the page size
+  recorded in the file header. The page size is a power of two of at
+  most 64 KiB and is fixed when the file is created.
+
+Adding a constructor gives its heap an empty set of pages; removing one
+frees its pages once its heap is dropped
+([mvcc.md §10.4](mvcc.md#104-removing-a-constructor)).
+
+Free pages are tracked by an allocation bitmap of one bit per page,
+held in bitmap pages of the file and in memory while the database is
+open. Freed pages are reused for later allocations.
+
+### 1.2 File header
+
+The file header is kept as two alternating copies, on pages 0 and 1.
+Each copy carries a sequence number and a checksum over the copy (in an
+encrypted file, the header stays in clear and keeps its checksum). An
+update writes the copy not holding the highest valid sequence number,
+with that number plus one, and forces it; opening reads both and uses
+the copy that verifies and has the higher sequence number. A torn
+header write therefore leaves the other copy intact. Data pages start
+at page 2.
+
+The header holds a magic number, the file id, the lowest and
+highest page format versions present, the finalization state of a
+format upgrade ([../spec/catalog.md §12.2](../spec/catalog.md#122-upgrades-and-downgrade)),
+the location of the last checkpoint record (§6), the root of the
+catalog, the encryption parameters when the file is encrypted (§4),
+the page size (§1.1), the commit log truncation bound
+([mvcc.md §4](mvcc.md#4-transaction-ids-the-commit-log-and-snapshots)),
+whether page writes are atomic on the device (§5.2), and the current
+primary epoch ([replication.md §6](replication.md#6-epochs-and-fencing)).
+
+TODO: the byte layout of a header copy is undecided.
+
+Rulings: layout/files/single-file, buffer/cache/vm-reserve/global-pid, layout/alloc/bitmap, layout/header/version
+
+## 2. Pages
+
+### 2.1 Page header
+
+Every page starts with a header. A plaintext page has:
+
+```text
+offset  size  field
+0       8     lsn       LSN of the last log record applied to the page
+8       4     checksum  CRC-32C over the page with this field zeroed, seeded with the page id
+12      2     format    format version of the page's contents
+14      2     kind      heap fixed-slot, heap slotted, index leaf, index inner, hash bucket,
+                        free space map, visibility map, allocation bitmap, commit log, catalog
+16      4     owner     heap id of a heap page, index id of an index page, 0 otherwise
+20      2     flags     all-visible (heap), half-dead (index), ...
+22      2     reserved
+24            kind-specific contents
+```
+
+An encrypted page replaces the checksum by an authentication tag and
+adds a nonce and a data key version (§4.1).
+
+The kind-specific contents start at offset 24 in every plaintext page.
+A heap or index layout may rely on that offset and on the page LSN,
+the checksum and the format version being where the table puts them.
+
+TODO: the offsets of `kind`, `owner` and `flags` are undecided; only the LSN, the 32-bit checksum and the per-page format version are fixed by rulings.
+
+### 2.2 Format versions
+
+Rows and pages are little-endian. Index keys use their own
+order-preserving encoding
+([indexes.md §3](indexes.md#3-key-encoding)), independent of byte order.
+
+Each page states its own format version, so one heap may hold pages of
+several row formats at once while each page stays uniform.
+
+Postconditions for a layout that owns a page kind:
+
+- A page written in an old format is decoded by the old decoder and is
+  rewritten in the newest format only when it is next written.
+- The file header records the range of formats present, so a decoder
+  can be retired once no page of its format remains.
+
+Rulings: layout/checksum/in-page-32, layout/endian/little, layout/format-version/read-old, layout/heap-format/page-version
+
+## 3. Corruption detection
+
+Every page read from the file is verified before the pager hands it
+out. A page that fails verification is reported to the caller as an
+operating error and never handed out as data.
+
+| Fault | Detected by |
+| --- | --- |
+| Bit rot, latent sector error | Checksum (or tag) mismatch on read |
+| Misdirected write | The page id seeds the checksum; a page read from the wrong place fails it |
+| Torn write | Checksum mismatch; repaired from a full-page image in the log (§5.2) |
+| Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)) |
+
+A page that fails verification on read quarantines the heap or index
+holding it (§8).
+
+Rulings: buffer/faults/corrupt-detect, buffer/faults/stale-page/lsn-check
+
+## 4. Encryption sealing
+
+### 4.1 Pages
+
+When a database is encrypted, the pager encrypts every page as it is
+written and decrypts it as it is read. Every consumer of the pager sees
+plaintext pages only; ciphertext exists only in the file. The cipher is
+XChaCha20-Poly1305:
+
+```text
+encrypted page
+  0     u64  lsn                 in clear
+  8     u48  page number         in clear
+  14    u16  format              in clear
+  16    u16  kind                in clear
+  18    u16  reserved
+  20    u32  data key version    in clear
+  24    ...  ciphertext of the rest of the page
+  end-40     24-byte nonce
+  end-16     16-byte Poly1305 tag
+```
+
+- Each write draws a fresh random 192-bit nonce and stores it in the
+  page. The nonce does not depend on the LSN: a page whose frame is
+  already dirty may be written again with kill bits
+  ([indexes.md §8](indexes.md#8-notes-for-the-implementation)) set
+  since its last write and no new LSN. Kill bits set on a clean frame
+  log a full-page image first (§5.2).
+- The associated data binds the file id (from the file header), the
+  page number, the LSN and the data key version, with the other clear
+  fields. A page moved to another address or another file, or with its
+  LSN altered, fails the tag.
+- A page replaced by an older valid ciphertext of itself carries an
+  older LSN under a valid tag. Recovery detects it by the LSN check
+  against the log (§7); outside recovery, detecting such a rollback
+  is out of scope.
+- The tag replaces the CRC-32C checksum. A tag that fails is a
+  corrupt or forged page and is handled as any corruption (§3).
+
+Data keys are wrapped by a key-encryption key and named by version;
+rotating the data key makes new writes use the new version, and older
+pages move to it as they are rewritten. Key sources, rotation and the
+treatment of backups are in
+[../spec/security.md §9](../spec/security.md#9-encryption-at-rest).
+
+### 4.2 Log blocks
+
+In an encrypted database each log block is sealed as a page is:
+
+```text
+encrypted log block
+  0     u64  lsn                     in clear
+  8     u64  batch sequence number   in clear
+  16    u32  number of blocks        in clear
+  20    u32  block index             in clear
+  24    u32  epoch                   in clear
+  28    u32  data key version        in clear
+  32    ...  ciphertext of bytes used and records
+  end-40     24-byte nonce
+  end-16     16-byte Poly1305 tag
+```
+
+XChaCha20-Poly1305 with a fresh random 192-bit nonce per block write;
+the associated data is the file id and every clear field; the tag
+replaces the CRC-32C.
+
+Rulings: security/encrypt/page, security/nonce/random, security/integrity/aead
+
+## 5. The log
+
+### 5.1 Records
+
+The log is redo-only. Old row versions stay in their heaps
+([mvcc.md](mvcc.md)), so an aborted transaction's versions are invisible
+by the commit log and need no undo; vacuum removes them later. A record
+describes a change to one page, or a transaction or system event:
+
+| Record | Contents |
+| --- | --- |
+| page change | page id, the page's LSN before the change, the change |
+| full-page image | page id, the whole page |
+| commit | xid, wall-clock time of commit; the record's position is the commit position |
+| abort | xid |
+| xid allocation | the next xid reserved ([mvcc.md §4](mvcc.md#4-transaction-ids-the-commit-log-and-snapshots)) |
+| schema operator | an operator of a migration, and the schema version the migration produces ([schema-change.md §3](schema-change.md#3-log-records)) |
+| stage transition | an online schema state change ([schema-change.md §2](schema-change.md#2-staged-states)) |
+| safe snapshot marker | a snapshot no read-write transaction can make unsafe ([replication.md §2](replication.md#2-safe-snapshot-markers)) |
+| logical change | inserted and deleted rows of one constructor relation that has a registered consumer ([replication.md §7](replication.md#7-logical-change-records)) |
+| checkpoint | redo LSN and dirty page table (§6) |
+
+A retag, a split or any multi-page change is several page records in
+one transaction. A caller may rely on it being atomic: its versions
+become visible only through its commit record.
+
+### 5.2 Full-page images
+
+Invariant: the change that dirties a clean frame, the change that sets
+the frame's `rec_lsn` (§6), logs a full image of the page instead of a
+page change record. Every write of a page to the file therefore
+writes a state whose last full image lies at or after the page's
+`rec_lsn`, and so at or after the redo LSN of any checkpoint taken
+while the page was dirty. Recovery restores a torn page from that
+image.
+
+A consumer that dirties a page by a change it does not log as a
+record (kill bits, [indexes.md §8](indexes.md#8-notes-for-the-implementation))
+relies on this rule: on a clean frame the change logs a full-page
+image first.
+
+When the device and file system guarantee atomic writes of a whole
+page, no full-page images are logged outside a backup: a page write
+either lands whole or not at all, so no page can be torn. The engine
+detects the guarantee when it opens the file (for example from the
+atomic write unit `statx` reports for direct I/O) and records it in the
+file header; a file opened where the guarantee does not hold logs
+images again from its next change of each clean frame. While a backup
+runs ([replication.md §9](replication.md#9-backups)), full-page images
+are logged whatever the device guarantees, since the backup's page copy
+can be torn.
+
+### 5.3 Blocks and segments
+
+The log is a sequence of preallocated segment files in the database's
+log directory, named by the LSN of their first byte. The log is written
+with direct I/O in whole blocks of the device's logical block size.
+Each group commit (§10) is one batch of whole blocks, padded after its
+last record.
+
+Invariants:
+
+- A block that has been acknowledged is never written again.
+- Batches are numbered by a sequence that increases by one per batch.
+- The blocks of a batch are written and forced together, and the next
+  batch is written only after that force has completed.
+- A commit is acknowledged only after its whole batch is forced.
+
+```text
+log block
+  0   u64  lsn of the block's first byte
+  8   u64  batch sequence number
+  16  u32  number of blocks in the batch
+  20  u32  index of this block within the batch, from 0
+  24  u32  epoch of the primary that wrote it (replication.md §6)
+  28  u32  crc32c over the whole block with this field zeroed
+  32  u16  bytes used
+  34  u16  reserved
+  36       records; a record may continue into the next block
+```
+
+Log segments are preallocated and zero-filled before use, so a write
+inside a segment changes no file size, and the force at commit is
+`fdatasync`. Creating or recycling a segment file is followed by an
+`fsync` of the directory.
+
+Rulings: engine/redo-mvcc, layout/torn/fpw, buffer/io-path/log-align/slot-pad, buffer/force/fdatasync
+
+## 6. Write-ahead and checkpoints
+
+Invariants:
+
+- A dirty frame is written only after the log is durable to the
+  frame's page LSN.
+- A written frame is counted clean, and drops out of the dirty page
+  table, only after an `fdatasync` of the data file covers the write.
+
+Checkpoints are fuzzy and never stop writers. Each dirty frame records
+the LSN that first dirtied it (`rec_lsn`). A checkpoint record holds
+the dirty page table and the redo LSN, the minimum `rec_lsn` over it;
+the file header is updated to point at the record.
+
+```text
+checkpoint record
+  u64 redo_lsn = min(rec_lsn)
+  u32 n
+  (u64 page_id, u64 rec_lsn) * n
+```
+
+Log before the redo LSN is no longer needed for recovery. Its segments
+may be recycled only once replication, archiving and change consumers
+no longer need them ([replication.md §1](replication.md#1-the-log-stream)).
+
+Rulings: buffer/checkpoint/fuzzy
+
+## 7. Recovery
+
+Recovery reads the checkpoint record named by the file header and
+replays the log from its redo LSN to the end of the log. For each
+record naming page `p`:
+
+| Condition | Action |
+| --- | --- |
+| Full-page image | Install the image; the page LSN becomes the record's LSN |
+| `p.lsn >= record.lsn` | Skip; the change is already on the page |
+| `p.lsn == record.prev_lsn` | Apply the change; the page LSN becomes the record's LSN |
+| `p.lsn < record.prev_lsn` | Lost write: quarantine the page's heap or index (§8) |
+
+Replay verifies a page when it first reads it. A page that fails
+verification is not corruption if the next record replay applies to
+it is a full-page image; otherwise it quarantines the page's heap or
+index (§8).
+
+The end of the log is found by batch. A batch is accepted when all of
+its blocks are present, each verifies, and they agree: the same
+sequence number, block count and epoch, indexes 0 to count minus 1,
+and LSNs that continue one another and the previous batch. Its
+sequence number must be one more than the previous batch's. Replay
+stops at the first batch that is not accepted. That batch and every
+block after it are discarded: none of their commits was acknowledged
+(§5.3). Before the first new write, the log tail after the last
+accepted batch is zeroed and forced, so blocks of a discarded batch can
+never be read as a continuation later. A block that fails verification
+followed by an accepted batch with a higher sequence number is
+corruption of the log, since an earlier batch is forced before a later
+one is written, and stops recovery.
+
+Recovery reads both log and pages with direct I/O, so it reads what
+is on the device and not a stale kernel cache.
+
+Postcondition: after recovery the file holds every commit whose batch
+was accepted, and the log tail past it is zeroed. Schema operators and
+stage transitions are applied in log order with the data
+([schema-change.md §3](schema-change.md#3-log-records)). Logical change
+records are ignored ([replication.md §7](replication.md#7-logical-change-records)).
+
+Rulings: engine/redo-mvcc
+
+## 8. Quarantine
+
+A constructor heap is the unit a detected corruption stops. When a
+heap page fails verification, the heap is quarantined. An index page
+holds entries of several constructors, so a bad index page quarantines
+the whole index.
+
+Quarantine is a mark the storage layer sets on one heap or one index.
+The planner and the transactions layer rely on it as follows
+([execution.md §6](execution.md#6-quarantine)):
+
+- a call whose read set
+  ([../spec/queries.md §12.4](../spec/queries.md#124-the-constructors-a-statement-reads))
+  includes a quarantined heap fails, whether or not its plan prunes
+  that heap;
+- no plan uses a quarantined index;
+- a write is refused where a constraint or reference check must read
+  the quarantined heap, or where it changes a constructor relation a
+  quarantined index covers.
+
+The error a call receives is in
+[../spec/catalog.md §4](../spec/catalog.md#4-error-sums).
+
+```adt
+-- identities.Apple quarantined
+from i in identities.(EmailPass | Google) select i.id    -- runs
+from i in identities select i.id                         -- fails
+```
+
+A quarantined object is restored by reindexing (an index) or by
+restoring its pages from a replica or a backup plus log (a heap).
+
+Rulings: ops/halt-scope/heap, spec/reads/static/static-types, spec/quarantine/index/cost-only
+
+## 9. Bulk loads
+
+A load fills new heap and index pages in private memory and logs each
+filled page once as a full-page image, with no per-row records. The
+images are what a physical replica replays, so replicas receive
+the loaded rows. The load's change set is one transaction; its pages
+become visible only through its commit record
+([../spec/interop.md §4](../spec/interop.md#4-loading)). A load into a
+constructor relation of a registered feed also writes logical change
+records of the loaded rows
+([replication.md §7](replication.md#7-logical-change-records)).
+
+Rulings: interop/load/wal/page-images
+
+## 10. Notes for the implementation
+
+Non-binding.
+
+### 10.1 Group commit
+
+A committing transaction appends its commit record and waits until the
+log is durable past it. The first waiter becomes the leader: it writes
+and forces every block up to the latest appended record, then wakes
+every transaction whose commit record is now durable. Others wait for
+the next leader. Under the quorum durability level
+([replication.md §5](replication.md#5-commit-acknowledgement)) the
+leader also waits for replica acknowledgements of the batch, so one
+round trip serves the batch.
+
+Rulings: buffer/group-commit/leader
+
+### 10.2 Flushing
+
+Background flushing writes dirty frames continuously. When the log
+written since the redo LSN nears its configured bound, the flusher
+writes the frames with the oldest `rec_lsn` first, so a page dirtied
+over and over cannot pin the log.
+
+Rulings: buffer/checkpoint/log-pin/flush-oldest
+
+### 10.3 Page cache
+
+The buffer pool reserves anonymous virtual memory the size of the
+page-id space; page `p` lives at `base + p * page_size`. A miss reads the
+page into its own address; eviction writes it if dirty and releases
+the memory with `madvise(MADV_DONTNEED)`. Index entries, chain links
+and heap directories all name pages by page id, so any number of
+references may name one page. The page state word and the pinning of
+pages in flight are in [sys.md §3](sys.md#3-page-state-word).
+
+TODO: the replacement policy is undecided; the marked state of the page state word supports a clock with a one-bit reference count.
+
+Rulings: buffer/cache/vmcache, buffer/cache/vm-reserve/global-pid
+
+### 10.4 Encryption staging
+
+A write encrypts into a staging buffer that is then written; the
+frame stays plaintext, so optimistic readers never see ciphertext.
+A read decrypts in place in the frame before the frame is published.
+
+Rulings: security/encrypt/io-cost/staging
+
+### 10.5 Compaction
+
+The file shrinks only by compaction, which copies every live version
+into a new file:
+
+- Offline, with the database closed. This is also how a setting fixed
+  in the file format is changed, the page size among them.
+- Online, while serving: each heap is scanned at one snapshot into the
+  new file, indexes are built by merging sorted runs
+  ([indexes.md §7](indexes.md#7-building-and-rebuilding)), the log
+  written since the snapshot is applied, and the database switches to
+  the new file at a quiescent point. Both files exist for the
+  duration.
+
+```sh
+$ adt compact app.adt --into app.compact.adt
+```
+
+Compaction gives versions new TIDs and pages new ids.
+
+Rulings: ops/compact/offline-copy, ops/compact/online-copy, layout/files/shrink/reuse-only

@@ -62,20 +62,61 @@ select { name: c.name, id: key c }
 Every catalog relation whose key is one field has a key field typed
 `Key catalog::r` for its own relation, filled by the engine. The key
 value of a row of `catalog::types`, `catalog::constructors` or
-`catalog::relations` is the object's id. Types, constructors and
-relation variables share one id space, and ids are a deterministic
-function of the operator log: `add type T = A | B` takes the next
-three ids for `T`, `A` and `B` in that order, a record type takes one
-id for the type and one for its constructor, and `add constructor` and
-`add relation` each take the next id, so every tool replaying the log
-computes the same ids. Ids below 1024 are those of the fixed table of
-§4.6; the log's ids start at 1024. A constructor's id is its wire tag
-and its stored tag. An id belongs to the declared constructor of a
-type and is shared by every instantiation of a parametric sum. Key values of every catalog
+`catalog::relations` is the object's id.
+
+Every schema object has a catalog id, the key of its row: types,
+constructors, relation variables, fields, named sets, indexes and
+uniques, constraints and checks, functions and aggregates, defaults
+and computed fields. A stored view is a relation variable of kind
+`Stored` and has its id as one. Operators name every object by its
+catalog id (§2.4).
+
+Ids are a deterministic function of the migration log: the same log
+gives every object the same id, and every tool replaying the log
+computes the ids the database holds. Types, constructors and relation
+variables share one id space; every other kind of object has an id
+space of its own. In every space the log's ids start at 1024, and each
+created object takes the next id of its space. Objects are created in
+log order: by migration, then by operator in ordinal order, then
+within an operator in this order:
+
+| Operator | Objects created, in order |
+| --- | --- |
+| `add type` | the type, then its constructors in listed order (a record or newtype has one); the header fields in declared order, then each constructor's fields, constructors in listed order and fields in declared order |
+| `add relation` | the relation variable; then, for its clauses in written order, an index for the key and for each `unique` and `index`, a default for the key's `generate` and for each `default`, and a computed field for each `computed` |
+| `add set` | the named set |
+| `add constructor` | the constructor, then its fields in declared order |
+| `split`, `merge`, `nest`, `unnest` | the new constructors in listed order (for `unnest`, in the order of the field's sum), each followed by its fields in declared order; then an index for each `unique` and `index` clause of a split, in written order |
+| `add field` | the field |
+| `add unique`, `add index`, `add interval index` | the index |
+| `rekey` | an index for the new key |
+| `add default` | the default |
+| `define fn`, `define aggregate` | the function |
+| `add constraint`, `add check` | the constraint |
+| `store f` | the relation variable of the view, then an index for its key and for each `unique` and `index` clause, in written order |
+| `add computed` | the computed field |
+| `revert` | what each of its inverse operators creates, as that operator |
+
+```adt fragment
+-- 0101, from a version 100 of a separate history, before Apple,
+-- at which the next shared id is 1050 and the next field id 2010
+module auth
+add type Device = { id: Key devices, owner: Key users, label: Text }
+-- Device 1050, its constructor 1051; fields id 2010, owner 2011, label 2012
+add constructor Identity.Apple { sub: Text }
+-- Apple 1052; field sub 2013
+```
+
+Renaming, redefining, enabling, disabling or deprecating an object
+leaves its id unchanged. A constructor re-added by an inverse is a new
+constructor and takes a new id. Ids below 1024 are those of the fixed
+table of §4.6. A constructor's id is its wire tag and its stored tag.
+An id belongs to the declared constructor of a type and is shared by
+every instantiation of a parametric sum. Key values of every catalog
 relation are never reused.
 
 A catalog row naming a constructor, relation, index, constraint,
-function or bundle is never deleted. Removing or dropping the object
+function, default, computed field or bundle is never deleted. Removing or dropping the object
 records that in the row (a constructor, its fields, named sets and the
 other objects get `dropped: Some { value: v }` with
 the schema version `v` that dropped them). A key held in a `sys::` row or in a stored plan
@@ -88,7 +129,7 @@ Only the engine declares volatile relations; a user declaration with
 the `volatile` suffix is refused.
 
 ```adt
-relation sys::heaps : HeapStats volatile
+relation sys::ctor_stats : CtorStats volatile
   key (relation, ctor)
 ```
 
@@ -116,11 +157,11 @@ A program that breaks this rule is ill-typed. A registered query or
 transaction containing it is refused at registration; ad hoc text
 containing it is refused with `Rejected { reason: Invalid { ... } }`.
 
-```adt
+```adt fragment
 -- with:
---   type AuditHeap = { id: Key audit_heaps, rows: I64 }
---   relation audit_heaps : AuditHeap key id generate sequence
-insert audit_heaps from (from h in sys::heaps select { rows: h.live_rows })
+--   type AuditCount = { id: Key audit_counts, rows: I64 }
+--   relation audit_counts : AuditCount key id generate sequence
+insert audit_counts from (from h in sys::ctor_stats select { rows: h.live_rows })
 -- refused: a volatile source in a write
 ```
 
@@ -178,7 +219,7 @@ by the position it follows. `at commit p` reads the greatest row of
 or before the latest commit whose `at` is at or before `t`. Rows leave
 both relations as the window passes them.
 
-Rulings: engine/catalog-relations, ops/expose/relations, ops/expose/volatile/volatile-kind, ops/conflicts/leak/admin-only, project/spec/normative/catalog
+Rulings: engine/catalog-relations, ops/expose/relations, ops/expose/volatile/volatile-kind, ops/conflicts/leak/admin-only, project/spec/normative/catalog, spec/ctor-ids/log-order, spec/evolution/new-ids/listed-order, spec/evolution/object-ids/every-object
 
 ## 2. Catalog relations
 
@@ -220,9 +261,11 @@ Write state is per relation variable: `ctor_states` has a row for each
 relation variable and each constructor of its type, with the stage of
 [evolution.md](evolution.md#43-enable-and-deprecate): `Declared` after
 `add constructor` or `disable`, `Enabled` after `enable`, `Deprecated`
-after `deprecate`. Constructors created by `add type`, and the products of
-split, merge, nest and unnest whose sources were all enabled, start
-`Enabled`.
+after `deprecate`. Constructors created by `add type` start `Enabled`.
+The products of split and unnest take their source's stage; the
+product of a merge or nest is `Enabled` when every source is enabled
+and `Declared` when some source is declared
+([evolution.md §4.3](evolution.md#43-enable-and-deprecate)).
 
 Each constructor of a sum used as a field type has one row of
 `value_states`, kept per type, with the same stages and the same
@@ -277,7 +320,22 @@ relation wasm_modules : WasmModule key hash
 
 type Extension = { id: Key extensions, name: Text, version: Text, hash: Bytes, module: Text }
 relation extensions : Extension key id
+
+type Default = { id: Key defaults, relation: Key relations, field: Key fields, text: Text,
+                 dropped: Option Key migrations }
+relation defaults : Default key id
+
+type Computed = { id: Key computed, relation: Key relations, name: Text, field_type: Text,
+                  text: Text, dropped: Option Key migrations }
+relation computed : Computed key id
 ```
+
+A row of `defaults` is one default or generated value of a relation
+variable's field ([derived.md](derived.md#4-defaults)), and a row of
+`computed` one computed field
+([derived.md](derived.md#5-computed-fields)); `text` is the
+expression as written. A stored view is a row of `relations` of kind
+`Stored`, defined by a row of `functions`.
 
 Every hash in the catalog is BLAKE3-256. A function's `hash` is the
 content hash that is part of its identity
@@ -289,6 +347,82 @@ by the hash of its bytes.
 ```adt
 type Migration = { version: Key migrations, hash: Bytes, text: Text, applied: Instant }
 relation migrations : Migration key version
+
+type CtorTarget = InRelation { relation: Key relations, ctor: Key constructors }
+                | OfType     { ctor: Key constructors }
+type Place = Last | Before { ctor: Key constructors } | After { ctor: Key constructors }
+
+type Operator
+  = AddModule         { module: Text }
+  | DropModule        { module: Text }
+  | Install           { module: Text, version: Text, package: Bytes }
+  | Uninstall         { module: Text }
+  | AddType           { sum: Key types, decl: Term }
+  | DropType          { sum: Key types }
+  | AddRelation       { relation: Key relations, decl: Term }
+  | DropRelation      { relation: Key relations }
+  | AddSet            { set: Key named_sets, relation: Key relations, name: Text }
+  | DropSet           { set: Key named_sets }
+  | AddConstructor    { ctor: Key constructors, sum: Key types, decl: Term, place: Place }
+  | RemoveConstructor { ctor: Key constructors }
+  | Enable            { target: CtorTarget }
+  | Disable           { target: CtorTarget }
+  | Deprecate         { target: CtorTarget }
+  | RenameConstructor { ctor: Key constructors, name: Text }
+  | RenameType        { sum: Key types, name: Text }
+  | RenameRelation    { relation: Key relations, name: Text }
+  | RenameSet         { set: Key named_sets, name: Text }
+  | RenameField       { field: Key fields, name: Text }
+  | Split             { ctor: Key constructors, decl: Term, routing: Term }
+  | Merge             { ctor: Key constructors, decl: Term, routing: Option Term }
+  | Nest              { ctor: Key constructors, decl: Term }
+  | Unnest            { ctor: Key constructors }
+  | AddField          { field: Key fields, decl: Term, fill: Term }
+  | DropField         { field: Key fields }
+  | MoveField         { field: Key fields, header: Bool, fill: Option Term }
+  | AddUnique         { index: Key indexes, relation: Key relations, fields: Term }
+  | DropUnique        { index: Key indexes }
+  | Rekey             { relation: Key relations, key: Key indexes, fields: Term }
+  | AddIndex          { index: Key indexes, relation: Key relations, interval: Bool, fields: Term }
+  | DropIndex         { index: Key indexes }
+  | AddDefault        { default: Key defaults, relation: Key relations, field: Key fields,
+                        value: Term }
+  | DropDefault       { default: Key defaults }
+  | DefineFn          { function: Key functions, decl: Term }
+  | RedefineFn        { function: Key functions, decl: Term }
+  | DropFn            { function: Key functions }
+  | DefineAggregate   { function: Key functions, decl: Term }
+  | DropAggregate     { function: Key functions }
+  | AddConstraint     { constraint: Key constraints, body: Term }
+  | DropConstraint    { constraint: Key constraints }
+  | AddCheck          { constraint: Key constraints, body: Term }
+  | DropCheck         { constraint: Key constraints }
+  | Store             { view: Key relations, function: Key functions, decl: Term }
+  | Unstore           { view: Key relations }
+  | AddComputed       { computed: Key computed, relation: Key relations, name: Text,
+                        decl: Term }
+  | RedefineComputed  { computed: Key computed, decl: Term }
+  | DropComputed      { computed: Key computed }
+  | Grant             { privilege: Text, target: Option Term, grantee: Text, grant_option: Bool }
+  | Revoke            { privilege: Text, target: Option Term, grantee: Text }
+  | AdoptTzdb         { release: Text, data: Bytes }
+  | Script            { write: Term }
+  | Revert            { migration: Key migrations }
+type Term = new Text
+type MigrationOp = { migration: Key migrations, ordinal: I32, op: Operator }
+relation migration_ops : MigrationOp key (migration, ordinal)
+
+type ArmTarget = OfFn         { function: Key functions }
+               | OfConstraint { constraint: Key constraints }
+               | OfComputed   { computed: Key computed }
+type ClauseBody = Joins       { set: Key named_sets }
+                | Member      { ctor: Key constructors }
+                | Arm         { target: ArmTarget, arm: Term }
+                | Replacement { index: Key indexes, kind: IndexKind, fields: Term }
+                | Carry       { field: Key fields }
+                | Fill        { field: Key fields, fill: Term }
+type OpClause = { migration: Key migrations, ordinal: I32, clause: I32, body: ClauseBody }
+relation migration_clauses : OpClause key (migration, ordinal, clause)
 
 type Priority ordered = AdHoc | Background | Regular
 type BundleState = Active | Superseded { at: Instant } | Retired { at: Instant }
@@ -318,6 +452,31 @@ relation feed_members : FeedMember key (feed, relation, ctor)
 `hash` is the version's hash, the BLAKE3-256 hash of the log prefix
 up to and including this migration, and `text` the migration as
 written.
+
+`migration_ops` holds each migration's resolved operators, one row per
+operator, `ordinal` its position in the migration from 1. Each
+`Operator` constructor is one operator of
+[evolution.md §4](evolution.md#4-operators), and names every object it
+touches by its catalog id: the object it creates takes the id of
+§1.2. `Bytes` operands of `Install` and `AdoptTzdb` hold the BLAKE3-256
+hash of the package or release data, which the log stores beside it.
+`header` is set when a `move field` moves the field to the header. An
+operand written in the language (a declaration, a fill, a routing
+`match`, a key or index field list, a body, a write) is a `Term`: the
+canonical token form of the resolved operand
+([syntax.md §2.9](syntax.md#29-canonical-token-form)), with every Wasm
+module it names written as the module's hash. The `decl` of `Store` is
+the stored view's declaration, `store f` with its clauses, as a `Term`.
+
+The clauses an operator takes any number of are rows of
+`migration_clauses`, `clause` their position from 1: `Joins` for a
+`joins` set, `Member` for each constructor a merge or nest replaces, a
+named set lists, a moved field goes to or an index or unique ranges
+over, `Arm` for an `arm` clause, `Replacement` for the `unique` and
+`index` clauses of a split, `Carry` for a field after `carry`, and
+`Fill` for a revert's `fill`. The version hash
+([evolution.md §2.1](evolution.md#21-position-and-hash)) encodes these
+rows.
 The log holds only migrations; bundles, their registration, leases,
 supersession and retirement are deployment state in
 `catalog::bundles`, not log entries. A bundle's name is
@@ -404,7 +563,7 @@ deletes the row. A row of `peer_mappings` is one rule of a listener's
 peer mapping ([security.md](security.md#22-sources)), tried in
 `ordinal` order.
 
-Rulings: engine/catalog-relations, project/spec/normative/catalog
+Rulings: engine/catalog-relations, project/spec/normative/catalog, spec/evolution/product-state/source-state, spec/evolution/operator-type/catalog-sum, spec/evolution/version-hash/value-encoding, spec/evolution/term-encoding/canonical-tokens, spec/evolution/object-ids/every-object
 
 ## 3. Zone rules and collations
 
@@ -430,12 +589,12 @@ between `Instant` and civil or zoned time uses it, for every bundle
 whatever version it pins. A stored `ZonedDateTime` keeps its civil
 time and zone; its `Instant` is computed with the release in force.
 
-Adopting a release is a schema operator. The migration's canonical
-text holds the BLAKE3-256 hash of the release's data, so the version
-hash covers it, and the log and dumps carry the data itself. From
+Adopting a release is a schema operator. Its operator value holds the
+BLAKE3-256 hash of the release's data, so the version hash covers it,
+and the log and dumps carry the data itself. From
 version 17:
 
-```adt
+```adt fragment
 -- 0018
 module auth
 adopt tzdb "2026b" from "tzdata-2026b.tzif"
@@ -567,6 +726,7 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | UnknownDatabase      { database: Text }
                   | EditionLocked
                   | UnknownEdition       { edition: Text }
+                  | MigrationInProgress
 
 type FatalReason = Malformed       { detail: Text }
                  | Quarantined     { what: Text }
@@ -581,14 +741,14 @@ wire's 32-bit epoch and 64-bit log position.
 | Reason | When | Defined in |
 | --- | --- | --- |
 | `Serialization` | the transaction lost a serialization conflict, or conflicted with, waited on, or collided on a key with a row committed after its snapshot; `txn` is the caller's aborted transaction, which names the conflict's row in `sys::conflicts`, and `on` the constructor relation of the caller's own read or write on the conflicting edge | [transactions.md](transactions.md#61-serialization-failures), §6.4 |
-| `SafePointTimeout` | a replica read given a position waited the `ReplicaWait` setting without the replica reaching a safe point at or after it | [transactions.md](transactions.md), [engine.md](engine.md#9-replication) |
+| `SafePointTimeout` | a replica read given a position waited the `ReplicaWait` setting without the replica reaching a safe point at or after it | [replication.md](replication.md#12-reads-on-a-replica) |
 | `Overloaded` | a connection, stream or admission queue bound was reached | [wire.md](wire.md#8-admission-and-overload), §8.1 |
 | `StreamIdle` | a result stream was given no credit for longer than the limit; never sent after the call's commit | [wire.md](wire.md#55-credit) |
 | `FileChanged` | a file read twice in one transaction changed between the reads | [interop.md](interop.md#33-file-integrity) |
-| `Fenced` | a commit reached a primary fenced by a promotion | [engine.md](engine.md#9-replication) |
-| `ReplayConflict` | a replica read was cancelled because applying the log would remove a row version its snapshot sees, after the replay waited `waited`, the `ReplicaVacuumWait` setting | [transactions.md](transactions.md), [engine.md](engine.md#9-replication) |
+| `Fenced` | a commit reached a primary fenced by a promotion | [replication.md](replication.md#2-failover) |
+| `ReplayConflict` | a replica read was cancelled because applying the log would remove a row version its snapshot sees, after the replay waited `waited`, the `ReplicaVacuumWait` setting | [replication.md](replication.md#12-reads-on-a-replica) |
 | `Violated` | the change set violated a constraint or a unique, including a duplicate under a unique; `constraint` is the violated constraint whose qualified name sorts first, `report` its result rows (below) | [constraints.md](constraints.md#7-checking-and-violation-reports) |
-| `KeyViolation` | two different rows with one value of the relation's key are inserted in one change set, an appended batch included; reported at the statement boundary; `key` is the key in the textual syntax. A duplicate under any unique is `Violated` with that unique's constraint | [writes.md](writes.md#14-combining-writes), [wire.md](wire.md#73-append) |
+| `KeyViolation` | two different rows with one value of the relation's key are inserted in one change set, an appended batch included, or an insert gives a key that a pre-state row the change set does not delete holds, even with an equal value; reported at the statement boundary; `key` is the key in the textual syntax. A duplicate under any unique is `Violated` with that unique's constraint | [writes.md](writes.md#14-combining-writes), [wire.md](wire.md#73-append) |
 | `KeyChanged` | an update gave a row another key | [writes.md](writes.md#3-update) |
 | `NotOpen` | an insert or retag into a constructor relation in a stage that refuses writes, or a write storing in a field a value of a value-level constructor in such a stage; `ctor` names the constructor qualified by its relation (`identities.Apple`) or by its sum (`Provider.Okta`) | [evolution.md](evolution.md#43-enable-and-deprecate) |
 | `UserError` | a write evaluated `fail e`; `message` is the value of `e` | [writes.md](writes.md#62-meaning) |
@@ -605,7 +765,7 @@ wire's 32-bit epoch and 64-bit log position.
 | `StatementLimit` | the statement ran past its statement limit or its declared limit | §8.3 |
 | `TransactionExpired` | an interactive transaction passed its transaction limit, or its idle limit when `idle`; rerunning it unchanged hits the same limit | [transactions.md](transactions.md#54-time-limit), §8.3 |
 | `TransactionBusy` | the interactive transaction is in use from another connection | [wire.md](wire.md#62-interactive-transactions) |
-| `MixedVersions` | a transaction that has made a registered call sends ad hoc text, or one that has run ad hoc text makes a registered call | [transactions.md](transactions.md), [applications.md](applications.md#7-the-ad-hoc-role) |
+| `MixedVersions` | a call would run at another schema or catalog version than its transaction's earlier statements, as when a transaction that has made a registered call sends ad hoc text, or one that has run ad hoc text makes a registered call | [transactions.md](transactions.md#2-statements), [applications.md](applications.md#7-the-ad-hoc-role) |
 | `UnknownQuery`, `UnknownTransaction`, `UnknownBundle`, `VersionMismatch` | the request names a call, transaction or bundle the binding does not have | [wire.md](wire.md#34-binding-and-ready) |
 | `CatalogMismatch` | a Hello binding names a catalog version other than the one the bundle pins; `catalog` is the pinned one | [wire.md](wire.md#32-hello) |
 | `Retired` | the bundle is retired; bound connections are refused too | [applications.md](applications.md#43-retirement) |
@@ -615,9 +775,9 @@ wire's 32-bit epoch and 64-bit log position.
 | `BundleSuperseded` | a binding names a bundle an embedded open or `supersede bundle` superseded and that has not been registered again | [applications.md](applications.md#8-embedded-databases) |
 | `TooOld` | a feed position is older than retention; `oldest` is the oldest position kept | [wire.md](wire.md#9-feeds) |
 | `HistoryUnavailable` | a time-travel read names a position outside the retention window or after the reader's snapshot, or a feed position is before the feed's registration | [derived.md](derived.md#6-reading-the-past), [wire.md](wire.md#9-feeds) |
-| `PositionNotOnHistory` | a position names an epoch or log position not on this database's history | [transactions.md](transactions.md) |
+| `PositionNotOnHistory` | a position names an epoch or log position not on this database's history | [transactions.md](transactions.md#8-commit-positions), [replication.md](replication.md#2-failover) |
 | `WrongVersion` | a time-travel read at a pinned version names a position whose relevant types differ from those at the pinned version | [derived.md](derived.md#6-reading-the-past) |
-| `ReadOnlyReplica` | a write call reached a replica that does not forward writes; `primary` names the primary | [engine.md](engine.md#9-replication) |
+| `ReadOnlyReplica` | a write call reached a replica that does not forward writes, or a load into several relations reached an embedded replica; `primary` names the primary | [replication.md](replication.md#13-writes-at-a-replica) |
 | `RequestExpired` | a request id with no record, and not running, is strictly below the client's low-water mark (§6.6); the request is not run | [wire.md](wire.md#65-idempotent-writes) |
 | `RequestReused` | a request id already recorded is sent with a different call or arguments | [wire.md](wire.md#65-idempotent-writes) |
 | `AuthFailed` | authentication failed | [wire.md](wire.md#33-authentication) |
@@ -625,10 +785,11 @@ wire's 32-bit epoch and 64-bit log position.
 | `UnknownDatabase` | a Hello names a database the process does not serve | [wire.md](wire.md#32-hello) |
 | `EditionLocked` | a Hello asks for an edition on a bound connection, whose edition is its bundle's | [wire.md](wire.md#32-hello) |
 | `UnknownEdition` | a Hello asks for an edition the server does not implement | [wire.md](wire.md#32-hello) |
+| `MigrationInProgress` | a migration set was presented while a staged migration is pending | [evolution.md](evolution.md#23-applying-a-migration-set) |
 | `Malformed` | a message violates the server protocol | [wire.md](wire.md#113-malformed-messages) |
-| `Quarantined` | the call needs a quarantined heap or index; `what` names it | §11.2 |
+| `Quarantined` | the call reads a quarantined constructor relation, or writes a constructor relation a quarantined index covers; `what` names it | §11.2 |
 | `MissingFunction` | the call needs a host function the program did not supply | [embedding.md](embedding.md#10-host-functions) |
-| `Storage` | an I/O failure or full storage | [engine.md](engine.md#2-file-and-pages) |
+| `Storage` | an I/O failure or full storage | §11 |
 
 `report` in `Violated` is a ResultType descriptor of the constraint's
 result type followed by a Rows body ([wire.md](wire.md#52-replies)).
@@ -647,6 +808,7 @@ any sum. A client that only decides what to do matches the three
 constructors:
 
 ```adt
+-- given e: Error
 fn rerun () -> Text = "rerun"
 fn report (r: RejectReason) -> Text = "report"
 fn alert (r: FatalReason) -> Text = "alert"
@@ -748,7 +910,7 @@ Prelude:
 | 54 | `Report` | 55 (one constructor) |
 | 56 | `Position` | 57 (one constructor) |
 | 58 | `RetryReason` | 59 `Serialization`, 60 `SafePointTimeout`, 61 `Overloaded`, 62 `StreamIdle`, 63 `FileChanged`, 64 `Fenced`, 341 `ReplayConflict` |
-| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase`, 342 `CatalogMismatch`, 343 `EditionLocked`, 344 `UnknownEdition`, 345 `MixedVersions` |
+| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase`, 342 `CatalogMismatch`, 343 `EditionLocked`, 344 `UnknownEdition`, 345 `MixedVersions`, 372 `MigrationInProgress` |
 | 103 | `FatalReason` | 104 `Malformed`, 105 `Quarantined`, 106 `MissingFunction`, 107 `Storage` |
 | 108 | `Notice` | 109 `LeaseExpiring`, 110 `ShuttingDown`, 111 `ConstructorEnabled`, 112 `BundleRetired`, 113 `BlockingMigration`, 114 `UpgradeRequired` |
 | 115 | `RejectedRow` | 116 (one constructor) |
@@ -784,7 +946,7 @@ Module `catalog`, types:
 | 187 | `Plan` | 188 (one constructor) |
 | 189 | `TzRelease` | 190 (one constructor) |
 | 191 | `Zone` | 192 (one constructor) |
-| 193 | `Setting` | 194 `StatementLimit`, 195 `TransactionLimit`, 196 `IdleLimit`, 197 `StreamIdleLimit`, 198 `RequestWindow`, 199 `SafePointDelay`, 200 `ReplicaWait`, 201 `DefaultLease`, 202 `FeedRetention`, 203 `StatsWindow`, 204 `StatsRetention`, 205 `WaitSampling`, 206 `ConflictLog`, 207 `VacuumBudget`, 208 `ScrubInterval`, 346 `LeaseGrace`, 347 `BlockingNoticePeriod`, 348 `ReplicaVacuumWait` |
+| 193 | `Setting` | 194 `StatementLimit`, 195 `TransactionLimit`, 196 `IdleLimit`, 197 `StreamIdleLimit`, 198 `RequestWindow`, 199 `SafePointDelay`, 200 `ReplicaWait`, 201 `DefaultLease`, 202 `FeedRetention`, 203 `StatsWindow`, 204 `StatsRetention`, 205 `WaitSampling`, 206 `ConflictLog`, 207 `VacuumBudget`, 208 `ScrubInterval`, 346 `LeaseGrace`, 347 `BlockingNoticePeriod`, 348 `ReplicaVacuumWait`, 451 `RetryLimit` |
 | 209 | `AuditEvent` | 210 `Login`, 211 `Grant`, 212 `Register`, 213 `Retire`, 214 `SchemaOp`, 215 `Call`, 216 `Denied`, 217 `Commit`, 218 `Truncate` |
 | 349 | `ValueState` | 350 (one constructor) |
 | 351 | `Role` | 352 (one constructor) |
@@ -792,6 +954,16 @@ Module `catalog`, types:
 | 355 | `GrantKind` | 356 `Log`, 357 `Deployment` |
 | 358 | `RoleGrant` | 359 (one constructor) |
 | 360 | `PeerMapping` | 361 (one constructor) |
+| 373 | `CtorTarget` | 374 `InRelation`, 375 `OfType` |
+| 376 | `Place` | 377 `Last`, 378 `Before`, 379 `After` |
+| 380 | `Operator` | 381 `AddModule`, 382 `DropModule`, 383 `Install`, 384 `Uninstall`, 385 `AddType`, 386 `DropType`, 387 `AddRelation`, 388 `DropRelation`, 389 `AddSet`, 390 `DropSet`, 391 `AddConstructor`, 392 `RemoveConstructor`, 393 `Enable`, 394 `Disable`, 395 `Deprecate`, 396 `RenameConstructor`, 397 `RenameType`, 398 `RenameRelation`, 399 `RenameSet`, 400 `RenameField`, 401 `Split`, 402 `Merge`, 403 `Nest`, 404 `Unnest`, 405 `AddField`, 406 `DropField`, 407 `MoveField`, 408 `AddUnique`, 409 `DropUnique`, 410 `Rekey`, 411 `AddIndex`, 412 `DropIndex`, 413 `AddDefault`, 414 `DropDefault`, 415 `DefineFn`, 416 `RedefineFn`, 417 `DropFn`, 418 `DefineAggregate`, 419 `DropAggregate`, 420 `AddConstraint`, 421 `DropConstraint`, 422 `AddCheck`, 423 `DropCheck`, 424 `Store`, 425 `Unstore`, 426 `AddComputed`, 427 `RedefineComputed`, 428 `DropComputed`, 429 `Grant`, 430 `Revoke`, 431 `AdoptTzdb`, 432 `Script`, 433 `Revert` |
+| 434 | `MigrationOp` | 435 (one constructor) |
+| 436 | `ArmTarget` | 437 `OfFn`, 438 `OfConstraint`, 439 `OfComputed` |
+| 440 | `ClauseBody` | 441 `Joins`, 442 `Member`, 443 `Arm`, 444 `Replacement`, 445 `Carry`, 446 `Fill` |
+| 447 | `OpClause` | 448 (one constructor) |
+| 452 | `Default` | 453 (one constructor) |
+| 454 | `Computed` | 455 (one constructor) |
+| 458 | `Term` | 459 (one constructor) |
 
 Module `catalog`, relation variables:
 
@@ -825,13 +997,17 @@ Module `catalog`, relation variables:
 | 363 | `catalog::roles` |
 | 364 | `catalog::grants` |
 | 365 | `catalog::peer_mappings` |
+| 449 | `catalog::migration_ops` |
+| 450 | `catalog::migration_clauses` |
+| 456 | `catalog::defaults` |
+| 457 | `catalog::computed` |
 
 Module `sys`, types:
 
 | Id | Type | Constructors |
 | --- | --- | --- |
 | 243 | `Collation` | 244 (one constructor) |
-| 245 | `HeapStats` | 246 (one constructor) |
+| 245 | `CtorStats` | 246 (one constructor) |
 | 247 | `FieldStats` | 248 (one constructor) |
 | 249 | `FieldValue` | 250 (one constructor) |
 | 251 | `Fingerprint` | 252 (one constructor) |
@@ -840,22 +1016,19 @@ Module `sys`, types:
 | 257 | `QueryWindow` | 258 (one constructor) |
 | 259 | `SessionState` | 260 `Idle`, 261 `Busy`, 262 `InTransaction` |
 | 263 | `Session` | 264 (one constructor) |
-| 265 | `WaitReason` | 266 `PageRead`, 267 `FileRead`, 268 `LogFlush`, 269 `Latch`, 270 `SafeSnapshot`, 271 `Inserter`, 272 `Admission` |
+| 265 | `WaitReason` | 266 `StorageRead`, 267 `FileRead`, 268 `LogFlush`, 269 `Internal`, 270 `SafeSnapshot`, 271 `Inserter`, 272 `Admission` |
 | 273 | `CallState` | 274 `Queued`, 275 `Running`, 276 `Waiting` |
 | 277 | `Call` | 278 (one constructor) |
 | 279 | `WaitSample` | 280 (one constructor) |
 | 281 | `WaitTotal` | 282 (one constructor) |
 | 283 | `Horizon` | 284 (one constructor) |
 | 285 | `Conflict` | 286 (one constructor) |
-| 287 | `VacuumPhase` | 288 `ScanHeaps`, 289 `IndexPass`, 290 `Truncate` |
 | 291 | `Vacuum` | 292 (one constructor) |
 | 293 | `JobKind` | 294 `Reindex`, 295 `Compact`, 296 `SchemaStage`, 297 `Verify` |
 | 298 | `Job` | 299 (one constructor) |
 | 300 | `PendingDrop` | 301 (one constructor) |
 | 302 | `RequestMark` | 303 (one constructor) |
 | 304 | `ProcessOption` | 305 (one constructor) |
-| 306 | `PageId` | 307 (one constructor) |
-| 308 | `Tid` | 309 (one constructor) |
 | 310 | `RunId` | 311 (one constructor) |
 | 312 | `Finding` | 313 `Checksum`, 314 `StalePage`, 315 `Order`, 316 `Orphan`, 317 `Missing`, 318 `Violation` |
 | 319 | `Format` | 320 (one constructor) |
@@ -867,7 +1040,7 @@ Module `sys`, relation variables:
 | Id | Relation variable |
 | --- | --- |
 | 321 | `sys::collations` |
-| 322 | `sys::heaps` |
+| 322 | `sys::ctor_stats` |
 | 323 | `sys::field_stats` |
 | 324 | `sys::field_values` |
 | 325 | `sys::query_stats` |
@@ -890,48 +1063,50 @@ Module `sys`, relation variables:
 | 371 | `sys::safe_snapshots` |
 
 
-Ids from 341 to 371 are listed in the rows of the types they belong
+Ids from 341 to 459 are listed in the rows of the types they belong
 to. `Person` and the other types of examples are not engine types and
 have no fixed id, nor has a `Principal` the schema declares
-([security.md](security.md#11-the-principal-sum)). Ids from 372 to 1023 are
-unassigned.
+([security.md](security.md#11-the-principal-sum)). Ids 287 to 290, 306
+to 309 and from 460 to 1023 are unassigned.
 
-Rulings: project/spec/errors/closed-sum, project/spec/errors/new-kind/coarse, project/spec/errors/new-kind/pinned
+Rulings: project/spec/errors/closed-sum, project/spec/errors/new-kind/coarse, project/spec/errors/new-kind/pinned, spec/evolution/concurrent-apply/refuse
 
 ## 5. Statistics
 
-### 5.1 Heap statistics
+### 5.1 Constructor relation statistics
 
-Statistics are kept per constructor heap: one heap is the rows of one
-constructor of one relation variable. A number for a relation or a
-constructor set is the sum of its heaps' numbers, except distinct
-counts, which do not add (§5.2).
+Statistics are kept per constructor relation: the rows of one
+constructor of one relation variable. A number for a relation variable
+or a constructor set is the sum of its constructor relations' numbers,
+except distinct counts, which do not add (§5.2).
 
 ```adt
 module sys
 
-type HeapStats = { relation: Key catalog::relations, ctor: Key catalog::constructors,
-                   live_rows: I64, dead_versions: I64, pages: I64,
+type CtorStats = { relation: Key catalog::relations, ctor: Key catalog::constructors,
+                   live_rows: I64, dead_versions: I64, storage: Text,
                    last_vacuum: Option Instant, serialization_failures: I64,
                    quarantined: Bool }
-relation heaps : HeapStats volatile key (relation, ctor)
+relation ctor_stats : CtorStats volatile key (relation, ctor)
 ```
 
 ```adt
-from h in sys::heaps
+from h in sys::ctor_stats
 where h.relation.name == "identities"
-select { ctor: h.ctor.name, rows: h.live_rows, dead: h.dead_versions, pages: h.pages }
+select { ctor: h.ctor.name, rows: h.live_rows, dead: h.dead_versions }
 ```
 
 `live_rows` is an estimate maintained as writes commit; it is exact
-only when no transaction is in progress on the heap.
+only when no transaction is in progress on the constructor relation.
+`dead_versions` counts the row versions of the constructor relation
+that no snapshot can see and that vacuum has not yet removed.
+`storage` describes the space the constructor relation occupies, in
+implementation-defined text.
 
-### 5.2 Planner statistics
+### 5.2 Field statistics
 
-The planner's statistics are gathered online from each heap's writes:
-a reservoir sample of rows and a mergeable distinct-count sketch per
-field. The estimate for a constructor set is computed by merging the
-sketches of its heaps. The visible part:
+Statistics of field values are kept per constructor relation and
+gathered online from its writes. The visible part:
 
 ```adt
 type FieldStats = { relation: Key catalog::relations, ctor: Key catalog::constructors,
@@ -944,8 +1119,10 @@ type FieldValue = { relation: Key catalog::relations, ctor: Key catalog::constru
 relation field_values : FieldValue volatile key (relation, ctor, field, value)
 ```
 
-`distinct` is the sketch's estimate for the heap; `field_values` holds
-the most frequent values in the sample, printed in the textual syntax
+`distinct` is the estimated number of distinct values of the field in
+the constructor relation, and `sampled` the number of rows the
+estimate is drawn from; `field_values` holds the most frequent values,
+printed in the textual syntax
 ([interop.md](interop.md#1-textual-value-syntax)), with their estimated
 frequency. Which values and how many are implementation-defined.
 
@@ -967,7 +1144,7 @@ type Fingerprint = new Bytes
 type QueryStats = { query: Option Key catalog::registered, fingerprint: Fingerprint,
                     plan: Option Key catalog::plans,
                     calls: I64, rows: I64, total: Duration, mean: Duration,
-                    pages_read: I64, serialization_failures: I64, retries: I64 }
+                    storage: Text, serialization_failures: I64, retries: I64 }
 relation query_stats : QueryStats volatile key (query, fingerprint, plan)
 
 type QueryCtorStats = { query: Option Key catalog::registered, fingerprint: Fingerprint,
@@ -978,8 +1155,11 @@ relation query_ctor_stats : QueryCtorStats volatile key (query, fingerprint, pla
 ```
 
 A replan starts a new row, so a plan regression shows as two rows of
-one query. `pruned` counts calls in which the constructor's arm was
-pruned at compile time or at start ([queries.md](queries.md#5-match)).
+one query. `storage` describes the calls' reads of storage, in
+implementation-defined text. `pruned` counts calls that did not read
+the constructor relation although it is among the constructors the
+statement reads ([queries.md §12.4](queries.md#124-the-constructors-a-statement-reads)); which calls those are is
+implementation-defined.
 
 ### 5.4 Windowed history
 
@@ -1007,7 +1187,7 @@ query login_history (since: Instant) -> Set ({ start: Instant, plan: Option Key 
   select { start: w.start, plan: w.plan, p99: w.p99 }
 ```
 
-Rulings: exec/stats/per-ctor, exec/stats-form/sketch, ops/query-stats/by-name, ops/stats-history/windowed, ops/expose/relations
+Rulings: exec/stats/per-ctor, ops/query-stats/by-name, ops/stats-history/windowed, ops/expose/relations, spec/catalog/physical/per-ctor-relation, spec/reads/static/static-types
 
 ## 6. Activity
 
@@ -1019,10 +1199,10 @@ type Session = { id: Key sessions, principal: Text, bundle: Option Key catalog::
                  started: Instant, state: SessionState }
 relation sessions : Session volatile key id
 
-type WaitReason = PageRead     { heap: Text }
+type WaitReason = StorageRead  { what: Text }
                 | FileRead     { path: Text }
                 | LogFlush
-                | Latch        { what: Text }
+                | Internal     { what: Text }
                 | SafeSnapshot
                 | Inserter     { index: Text }
                 | Admission
@@ -1037,10 +1217,10 @@ relation calls : Call volatile key id
 
 | Constructor | The call waits for |
 | --- | --- |
-| `PageRead` | a page of the named heap (`identities.Google`) or index to be read |
+| `StorageRead` | data of the database file to be read; `what` is implementation-defined |
 | `FileRead` | an external file ([interop.md](interop.md#3-file-scans)) |
 | `LogFlush` | the log to be flushed at commit |
-| `Latch` | a short-term latch inside the engine; `what` is implementation-defined |
+| `Internal` | a short-term wait inside the engine; `what` is implementation-defined |
 | `SafeSnapshot` | a safe snapshot for a declared read-only transaction ([transactions.md](transactions.md#64-read-only-transactions)) |
 | `Inserter` | a concurrent transaction inserting the same key into the named index to finish |
 | `Admission` | admission (§8.1); the call's state is then `Queued` |
@@ -1067,9 +1247,9 @@ Samples older than the setting's `keep` are deleted. The row of
 
 ### 6.3 Snapshot horizons
 
-Dead versions in a heap can be removed only once no snapshot can see
-them. For each heap, the engine names the holder of the oldest
-snapshot that keeps its dead versions:
+A row version a constructor relation no longer holds is kept while
+some snapshot can see it. For each constructor relation, the engine
+names the holder of the oldest snapshot that keeps such versions:
 
 ```adt
 type Horizon = { relation: Key catalog::relations, ctor: Key catalog::constructors,
@@ -1095,11 +1275,11 @@ relation conflicts : Conflict volatile key (aborted, at)
 
 `relation` and `ctor` name the constructor relation of the
 conflicting dependency, `keys` its key range in the textual syntax
-(widened to a page or the whole heap where the engine's locks were),
+(a range may be wider than the keys the transactions read or wrote),
 and `detail` the dependency structure in implementation-defined text.
 The log holds at most the `ConflictLog` setting's `rows`; older rows
 are dropped first. Serialization failures are also counted per query
-(`sys::query_stats`) and per heap (`sys::heaps`).
+(`sys::query_stats`) and per constructor relation (`sys::ctor_stats`).
 
 The error returned to the aborted call carries only its own
 transaction and its own side (§4.2). The other transaction, its query
@@ -1116,23 +1296,24 @@ query conflicts_by_ctor (since: Instant) -> Set ({ ctor: Text, n: I64 }) =
 ### 6.5 Vacuum and jobs
 
 ```adt
-type VacuumPhase = ScanHeaps { heap: Text } | IndexPass { done: F64 } | Truncate
-type Vacuum = { id: Key vacuums, relation: Key catalog::relations, phase: VacuumPhase,
-                heaps_done: I32, heaps_total: I32, dead_versions: I64, started: Instant }
+type Vacuum = { id: Key vacuums, relation: Key catalog::relations,
+                ctor: Key catalog::constructors, phase: Text, done: F64,
+                dead_versions: I64, started: Instant }
 relation vacuums : Vacuum volatile
   key id
-  unique (relation)
+  unique (relation, ctor)
 
 type JobKind = Reindex | Compact | SchemaStage | Verify
 type Job = { id: Key jobs, kind: JobKind, target: Text, phase: Text, done: F64, started: Instant }
 relation jobs : Job volatile key id
 ```
 
-Vacuum runs per relation variable: one pass over the dead versions of
-every constructor heap, then one pass over each index
-([engine.md](engine.md#93-vacuum-feedback)). `sys::vacuums` has a row per running
-vacuum. `sys::jobs` has a row per running long operation of §11 and
-per staged schema job ([evolution.md](evolution.md#34-staged-changes));
+Vacuum runs per relation variable and removes the dead versions of
+its constructor relations (§11.5). `sys::vacuums` has a row per
+constructor relation of a running vacuum: `dead_versions` is the
+number it has left to remove, `phase` implementation-defined text.
+`sys::jobs` has a row per running long operation of §11 and per staged
+schema job ([evolution.md](evolution.md#34-staged-changes)). In both,
 `done` is the fraction complete.
 
 ### 6.6 Pending drops and request marks
@@ -1166,7 +1347,7 @@ relation request_marks : RequestMark volatile
 `low` is the client's low-water mark and `recorded` the number of
 replies kept for it.
 
-Rulings: ops/waits/activity, ops/waits/sampled, ops/waits/cumulative, ops/limits/watermark/report, ops/conflicts/log, ops/conflicts/counters, ops/conflicts/leak/admin-only, ops/vacuum/progress
+Rulings: ops/waits/activity, ops/waits/sampled, ops/waits/cumulative, ops/limits/watermark/report, ops/conflicts/log, ops/conflicts/counters, ops/conflicts/leak/admin-only, ops/vacuum/progress, spec/catalog/physical/per-ctor-relation
 
 ## 7. Plans
 
@@ -1178,7 +1359,7 @@ compile time from types, or at start from parameters), and each
 union-index probe with the constructors its entries are routed to.
 
 `explain` returns the plan of a query or write without running it.
-Estimates come from the heap statistics of §5. With the running schema
+Estimates come from the statistics of §5. With the running schema
 extended by `index (user)` on `identities`:
 
 ```adt
@@ -1205,7 +1386,8 @@ Probe identities (user)
 ### 7.2 Explain analyze
 
 `explain analyze` runs the statement and adds to every plan node its
-actual rows, loops, time and pages read. For a write, it computes the
+actual rows, loops and time, and its reads of storage in
+implementation-defined text. For a write, it computes the
 change set and checks every constraint on it, then discards the change
 set: nothing is applied, and no effect of the write is visible to any
 transaction. Its result adds the size of the change set per
@@ -1242,9 +1424,11 @@ version, with its stored plan, exactly as a call of it runs:
 explain analyze web-2.4::login_key(users.key(3))
 ```
 
-A plan is replanned on schema change and when statistics drift
-([engine.md](engine.md#86-plans)). Each replan adds a row and marks
-the previous one `Superseded`.
+A stored plan is replanned when a sum it reads changes version, and
+when the statistics of a constructor relation it reads drift past an
+implementation-defined threshold, as when a constructor grows from
+empty. Each replan adds a row and marks the previous one
+`Superseded`.
 
 ### 7.4 The plan document
 
@@ -1261,7 +1445,8 @@ the previous one `Superseded`.
   `"ctor"`, `"name"` and `"stage"`, whose value is `"compile"` or
   `"start"`.
 - Under `explain analyze`, each node has a member `"actual"` with
-  members `"rows"`, `"loops"`, `"time_us"` and `"pages"`.
+  members `"rows"`, `"loops"`, `"time_us"` and `"storage"`, the last
+  an implementation-defined string.
 
 Operator kinds and their other members change between engine
 releases. A tool must ignore kinds and members it does not know. The
@@ -1277,8 +1462,9 @@ unpin plan catalog::plans.key(8812)
 ```
 
 A pinned plan is kept across restarts and statistics replans. A schema
-change that leaves every heap and index the plan names in place, and
-every constructor set it reads unchanged, keeps it pinned. Any other
+change that leaves every constructor relation and index the plan reads
+in place, and every constructor set it reads unchanged, keeps it
+pinned. Any other
 schema change unpins it, replans, and records the reason in the
 command result of the schema change and in the new plan's row.
 
@@ -1308,7 +1494,7 @@ the same schema and statistics. A pinned plan the new release cannot
 reproduce is unpinned; the open reports it, and the new plan's row
 records it.
 
-Rulings: ops/explain/plan, ops/explain/analyze, ops/explain/stored, ops/explain/form/document, ops/plan-stability/pin, ops/plan-stability/last-good, ops/plan-release/stamp-replan
+Rulings: ops/explain/plan, ops/explain/analyze, ops/explain/stored, ops/explain/form/document, ops/plan-stability/pin, ops/plan-stability/last-good, ops/plan-release/stamp-replan, exec/replan/schema, exec/replan/stats
 
 ## 8. Resource control
 
@@ -1348,8 +1534,8 @@ bundle batch-1.2 pins 9 (5d0e...) edition "2026-10" priority background budget {
 - `memory` is the largest fraction of the query memory budget the
   grants of the bundle's running calls may hold together; a call that
   would exceed it waits in the queue.
-- `workers` is the largest number of morsel workers the bundle's calls
-  may occupy at once.
+- `workers` is the largest number of worker threads the bundle's
+  calls may occupy at once.
 
 ### 8.3 Limits and deadlines
 
@@ -1386,8 +1572,8 @@ call stops at whichever comes first. Deadlines travel with each call
 
 ### 8.4 Cancel and terminate
 
-- `cancel call c` stops the call `c` at its next morsel boundary. The
-  call fails with `Rejected { reason: Cancelled }`. An interactive
+- `cancel call c` stops the call `c` promptly, without letting it run
+  to the end of its statement. The call fails with `Rejected { reason: Cancelled }`. An interactive
   transaction the call belongs to stays open and may continue or roll
   back; a registered transaction, which is one call, aborts.
 - `terminate session s` aborts every open transaction of the session,
@@ -1457,7 +1643,7 @@ Each command returns a set of records:
 | `explain`, `explain analyze` | §7.1, §7.2 |
 | `pin plan`, `unpin plan` | the plan's row of `catalog::plans` |
 | `cancel call`, `terminate session` | `{ call: Key sys::calls }` for each call stopped |
-| `vacuum` | `{ ctor: Key catalog::constructors, removed: I64, freed_pages: I64 }` per heap |
+| `vacuum` | `{ ctor: Key catalog::constructors, removed: I64, freed: Text }` per constructor relation, `freed` describing the space freed in implementation-defined text |
 | `verify` | the rows of `sys::verify_findings` it wrote |
 | `reindex`, `compact` | `{ job: Key sys::jobs }`, returned when the job starts |
 | `finalize upgrade` | the row of `sys::format` |
@@ -1567,6 +1753,7 @@ type Setting { id: Key settings }
   | LeaseGrace       { grace: Duration }
   | BlockingNoticePeriod { period: Duration }
   | ReplicaVacuumWait    { wait: Duration }
+  | RetryLimit           { retries: I64 }
 relation catalog::settings : Setting key id
 ```
 
@@ -1593,12 +1780,13 @@ settings.
 | `IdleLimit` | an interactive transaction with no call running (§8.3) | `None` |
 | `StreamIdleLimit` | a result stream left without credit ([wire.md](wire.md#55-credit)) | `30s` |
 | `RequestWindow` | how long request ids are remembered for deduplication ([wire.md](wire.md#65-idempotent-writes)) | `24h` |
-| `SafePointDelay` | the longest a forced safe point may delay the start of new read-write transactions ([transactions.md](transactions.md)) | `100ms` |
+| `RetryLimit` | the most reruns of a registered transaction, of ad hoc text that writes and of a `transact` block run in process after a serialization failure, when the call or block states no `retry n`: at most `retries + 1` attempts ([transactions.md §6.2](transactions.md#62-retryable-units)) | `5` |
+| `SafePointDelay` | the bound in the promise that safe snapshots keep forming while read-write transactions run, and the most a read-write transaction may start later than it is issued for it ([replication.md](replication.md#12-reads-on-a-replica)) | `100ms` |
 | `ReplicaWait` | the longest a replica read given a position waits for a safe point before `Retry { reason: SafePointTimeout {..} }` | `5s` |
 | `DefaultLease` | the lease of a bundle whose header states none ([applications.md](applications.md#42-leases)) | `30d` |
 | `LeaseGrace` | how long after a lease's expiry, computed from its last renewal in the log, the primary still treats it as live, covering clock skew; a replica refuses the bundle from expiry ([applications.md](applications.md#42-leases)) | `1h` |
 | `BlockingNoticePeriod` | how long after a refused migration or revoke the engine sends `BlockingMigration` to the sessions of each blocking bundle (§4.5) | `24h` |
-| `ReplicaVacuumWait` | the longest a replica's log replay waits for a read whose snapshot sees a row version the replay would remove, before cancelling it with `Retry { reason: ReplayConflict {..} }` ([transactions.md](transactions.md)) | `30s` |
+| `ReplicaVacuumWait` | the longest a replica's log replay waits for a read whose snapshot sees a row version the replay would remove, before cancelling it with `Retry { reason: ReplayConflict {..} }` ([replication.md](replication.md#12-reads-on-a-replica)) | `30s` |
 | `FeedRetention` | how long the log is kept for change streams ([interop.md](interop.md#52-change-streams)) | `7d` |
 | `StatsWindow` | the length of a query statistics window (§5.4) | `1min` |
 | `StatsRetention` | how long windows are kept (§5.4) | `30d` |
@@ -1612,7 +1800,7 @@ settings.
 Open settings are given when the file is opened, through the
 in-process API or the tool's options, and are fixed for the life of
 the process. They include the page pool size (by default 25% of the
-host's memory), the number of morsel workers (by default one per
+host's memory), the number of worker threads (by default one per
 core), the query memory budget and per-query bound (`query_memory`),
 the I/O path, the log archive destination, `file_roots` (the
 directories a server may read files from, empty by default;
@@ -1637,8 +1825,9 @@ let db = adtb::open("app.adt", &schema::LOG, &[&queries::BUNDLE],
 ### 10.4 Format and session settings
 
 Format settings are fixed when the file is created and recorded in its
-header: the page size (by default 4 KiB) and the checksum or
-encryption algorithm. They
+header: the page size and the checksum or encryption algorithm. The
+page size is a power of two from 4 KiB to 64 KiB, 4 KiB by default;
+every page of the file has that size. They
 change only by compacting into a new file (§11.3) that states new
 values. `sys::format` shows them (§12.2).
 
@@ -1654,18 +1843,28 @@ Rulings: ops/config/derived, ops/config/home/relation, ops/config/home/process/s
 
 ## 11. Integrity and maintenance
 
+The engine promises crash safety and detection of corrupted pages of
+the data file. Its fault model is crash stop, torn writes of any write
+larger than the device's atomic unit, bit rot, latent sector errors,
+misdirected writes and lost writes. A page that fails its checksum or
+tag is never returned as data. A lost write is detected during
+recovery, and by `verify` and the background scrub, which compare each
+page's log position with the retained log; a lost write whose log has
+left the retained log, on a page not read by recovery, is not
+detected.
+
 ### 11.1 Verification
 
-`verify` checks the whole database; `verify r` checks the heaps and
-indexes of relation variable `r` and every constraint that reads it.
-It runs at a snapshot while the database serves calls, and checks:
+`verify` checks the whole database; `verify r` checks the constructor
+relations and indexes of relation variable `r` and every constraint
+that reads it. It runs at a snapshot while the database serves calls,
+and checks:
 
-1. Structure: every page checksum, and the invariants of every B-link
-   tree (key order within and across pages, sibling links, parent
-   bounds).
-2. Cross-reference: every live version has its entry in every index
-   covering its constructor, and every index entry routes to an
-   existing version in the heap of the constructor it names. A
+1. Structure: every page checksum, and the structural invariants of
+   every index, among them the order of its entries.
+2. Cross-reference: every live row version has its entry in every
+   index covering its constructor, and every index entry names an
+   existing row version of the constructor relation it names. A
    constructor outside an index's constructor set, or a removed
    constructor, has no entries in it.
 3. Logic: every admitted constraint, run once as its denial query over
@@ -1676,47 +1875,62 @@ A background scrub reads every page of the file over each
 needs the page. Scrub findings go to the same relation.
 
 ```adt
-type PageId = new I64
-type Tid = new I64
 type RunId = new I64
 
 type Finding { id: Key verify_findings, run: RunId, at: Instant }
-  = Checksum  { page: PageId }
-  | StalePage { page: PageId }
-  | Order     { index: Key catalog::indexes, page: PageId }
-  | Orphan    { index: Key catalog::indexes, ctor: Key catalog::constructors, tid: Tid }
+  = Checksum  { where: Text }
+  | StalePage { where: Text }
+  | Order     { index: Key catalog::indexes, where: Text }
+  | Orphan    { index: Key catalog::indexes, ctor: Key catalog::constructors, where: Text }
   | Missing   { relation: Key catalog::relations, ctor: Key catalog::constructors,
-                tid: Tid, index: Key catalog::indexes }
+                index: Key catalog::indexes, where: Text }
   | Violation { constraint: Key catalog::constraints, witness: Text }
 relation sys::verify_findings : Finding volatile key id
 ```
 
-`PageId` and `Tid` locate storage and have no meaning beyond it
-([engine.md](engine.md#2-file-and-pages)). `witness` is the first violating row
+`where` locates the finding in storage, in implementation-defined
+text. `StalePage` is a lost write. `witness` is the first violating row
 in the textual syntax. Findings are kept in the file until a later
 `verify` over the same scope replaces them.
 
 ### 11.2 Quarantine
 
 A corrupted page, detected by checksum or by its log position on any
-read, quarantines what holds it:
+read, quarantines what holds it: one constructor relation, or one
+index, which holds entries of every constructor of its set.
 
-- a page of a constructor heap quarantines that heap;
-- a page of an index quarantines the index, and with it every plan
-  that uses the index.
+A call fails with `Fatal { reason: Quarantined {..} }` exactly when
+the constructors it reads
+([queries.md §12.4](queries.md#124-the-constructors-a-statement-reads))
+include a quarantined constructor relation. Every other call
+continues. A write is refused in the same way where its constraint or
+reference checks must read a quarantined constructor relation:
 
-A call fails with `Fatal { reason: Quarantined {..} }` if and
-only if it would read a quarantined heap or index after constructors
-are pruned at compile time and at start. Every other call continues.
-A write is refused in the same way where its constraint or reference
-checks must read a quarantined heap or index. A `match` over a sum
-reads every heap whose arm is not pruned, so it fails while any of
-those heaps is quarantined.
+```adt
+-- identities.Apple quarantined
+from i in identities.(EmailPass | Google) select i.id    -- runs
+from i in identities select i.id                         -- fails
+```
+
+A quarantined index never fails a read: queries do not use it, so
+only their cost changes. A statement that writes a constructor
+relation the index covers
+([queries.md §12.4](queries.md#124-the-constructors-a-statement-reads))
+fails with `Fatal { reason: Quarantined {..} }`:
+
+```adt
+-- given u: Key users
+-- index (user) in identities.(Google | Apple) quarantined
+from i in identities.Google where i.user == u select i.gid   -- runs
+insert identities.Google { user: u, gid: "g-2" }             -- fails
+```
 
 A quarantined index is restored by `reindex` (§11.4). A quarantined
-heap is restored when its page is repaired from a replica or a backup
-([engine.md](engine.md#103-corruption-scope)); `sys::heaps.quarantined` shows
-the state.
+constructor relation is restored when an operator restores its pages
+from a replica, whose pages are identical to the primary's
+([replication.md](replication.md#11-physical-replicas)), or from a
+backup and the log ([interop.md](interop.md#7-backup-and-point-in-time-restore));
+`sys::ctor_stats.quarantined` shows the state.
 
 ### 11.3 Compaction
 
@@ -1727,13 +1941,16 @@ writes every live version into a new file:
   `$ adt compact app.adt --into app.compact.adt`. This is also the way to
   change a format setting: `--page-size 16KiB`.
 - Online, by the `compact` command, while the database serves calls:
-  the engine copies every heap at a snapshot, builds every index from
-  sorted runs, applies the log written since the snapshot, and switches
-  to the new file at a moment when no call is between statements.
+  the engine copies the database at a snapshot into the new file,
+  catches up with the commits made since, and switches to the new file
+  at a moment when no call is between statements. Both files exist
+  for the duration.
 
 Either way the new file holds the same relations, catalog, constructor
 ids, key values and schema version, and needs free space equal to the
-live data. Online compaction runs as a job in `sys::jobs`.
+live data. Online compaction runs as a job in `sys::jobs`. Physical
+replicas and incremental backups start from a new base after a
+compaction ([replication.md](replication.md#11-physical-replicas)).
 
 ### 11.4 Reindex
 
@@ -1742,9 +1959,9 @@ index (user) in (Google | Apple)` rebuilds the one index with that
 declaration clause. A union index is rebuilt whole, over every
 constructor of its set.
 
-- `online`, the default: the new index is built from sorted runs of
-  each heap while writes continue, catches up with the writes made
-  meanwhile, and replaces the old one, as a staged job.
+- `online`, the default: the new index is built while writes
+  continue, catches up with the writes made meanwhile, and replaces
+  the old one, as a staged job.
 - `offline`: writes to every constructor in the index's set wait until
   the rebuild ends.
 
@@ -1755,12 +1972,14 @@ reindex identities index (user) in (Google | Apple) online
 ### 11.5 Vacuum
 
 Background vacuum runs per relation variable when its dead versions
-justify it ([engine.md](engine.md#93-vacuum-feedback)). An operator may start
+justify it, by an implementation-defined measure. A dead version a
+snapshot on a replica can still see is not removed
+([replication.md](replication.md#12-reads-on-a-replica)). An operator may start
 one at once with `vacuum r`. All vacuum work, background or started,
 runs within the `VacuumBudget` setting. Progress is in `sys::vacuums`
 (§6.5).
 
-Rulings: ops/check/structural, ops/check/cross, ops/check/logical, ops/check/scrub, ops/halt-scope/heap, ops/compact/offline-copy, ops/compact/online-copy, ops/reindex/online, ops/reindex/offline, ops/vacuum/trigger, ops/vacuum/throttle
+Rulings: ops/check/structural, ops/check/cross, ops/check/logical, ops/check/scrub, ops/halt-scope/heap, ops/compact/offline-copy, ops/compact/online-copy, ops/reindex/online, ops/reindex/offline, ops/vacuum/trigger, ops/vacuum/throttle, buffer/faults/corrupt-detect, buffer/faults/stale-page/lsn-check, spec/catalog/physical/per-ctor-relation, spec/reads/static/static-types, spec/quarantine/index/cost-only
 
 ## 12. Releases and compatibility
 
@@ -1798,8 +2017,9 @@ $ adt upgrade app.adt --finalize
 finalize upgrade
 ```
 
-Until then the file can be reopened by the previous release, so trying
-a release is reversible; features that need a newer format are
+A release reads every format of the data file and the log that any
+earlier release wrote. Until then the file can be reopened by the
+previous release, so trying a release is reversible; features that need a newer format are
 unavailable, and the release's catalog operators are not applied: the
 catalog keeps the version the previous release wrote. Finalizing
 applies the release's catalog operators to the catalog log, records
@@ -1812,13 +2032,17 @@ appended to the schema log by an upgrade or by an open. In process,
 `Database::finalize_upgrade()` does the same
 ([embedding.md](embedding.md)).
 
+Replicas upgrade to a new release before the primary: a primary writes
+a new format only after every replica reports the new release
+([replication.md](replication.md#3-schema-leases-and-upgrades-at-replicas)).
+
 ```adt
 type Format = { id: Key format, file: Text, page_size: I64, format: I64, readable_by: Text,
                 finalized: Bool, release: Text }
 relation sys::format : Format volatile key id
 ```
 
-Rulings: ops/promise/file, ops/promise/protocol, ops/promise/editions, ops/promise/catalog, ops/protocol/negotiate, ops/catalog-release/catalog-smo, ops/downgrade/finalize
+Rulings: ops/promise/file, ops/promise/protocol, ops/promise/editions, ops/promise/catalog, ops/protocol/negotiate, ops/catalog-release/catalog-smo, ops/downgrade/finalize, repl/upgrade/replicas-first
 
 ## 13. Telemetry
 
@@ -1829,7 +2053,7 @@ available outside the language:
 
 - A server exports them as OpenTelemetry metrics to the endpoint given
   by the open settings, named `adtb.` followed by the relation name and
-  field (`adtb.heaps.dead_versions`), with the row's key fields as
+  field (`adtb.ctor_stats.dead_versions`), with the row's key fields as
   attributes, printed by name (`relation`, `ctor`, `bundle`, `query`).
 - The in-process API returns the same values as a snapshot through a
   callback ([embedding.md](embedding.md#13-metrics)), for the host to

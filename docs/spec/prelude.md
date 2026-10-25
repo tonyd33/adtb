@@ -242,15 +242,16 @@ Rulings: model/prelude-bool, model/user-params, lang/group/ctor-key/tag-type, ty
 
 | Operator | Signature | Faults |
 | --- | --- | --- |
-| `a + b`, `a - b` | `(Int, Int) -> Int`, one type | `ArithmeticOverflow` |
-| `a * b` | `(Int, Int) -> Int`, one type | `ArithmeticOverflow` |
-| `a / b` | `(Int, Int) -> Int`, truncating toward zero | `DivisionByZero`; `ArithmeticOverflow` for the minimum value divided by `-1` |
-| `a % b` | `(Int, Int) -> Int`, the sign of `a` | `DivisionByZero` |
+| `a + b`, `a - b` | `Int -> Int -> Int`, one type | `ArithmeticOverflow` |
+| `a * b` | `Int -> Int -> Int`, one type | `ArithmeticOverflow` |
+| `a / b` | `Int -> Int -> Int`, truncating toward zero | `DivisionByZero`; `ArithmeticOverflow` for the minimum value divided by `-1` |
+| `a % b` | `Int -> Int -> Int`, the sign of `a` | `DivisionByZero` |
 | `-a` | `Int -> Int` | `ArithmeticOverflow` for the minimum value |
-| `a + b`, `a - b` | `(Decimal s, Decimal t) -> Decimal (max(s, t))` | `ArithmeticOverflow` above 38 digits |
-| `a * b` | `(Decimal s, Decimal t) -> Decimal (s + t)`; refused when `s + t > 38` | `ArithmeticOverflow` above 38 digits |
+| `a + b`, `a - b` | `Decimal s -> Decimal t -> Decimal (max(s, t))` | `ArithmeticOverflow` above 38 digits |
+| `a * b` | `Decimal s -> Decimal t -> Decimal (s + t)`; refused when `s + t > 38` | `ArithmeticOverflow` above 38 digits |
 | `-a` | `Decimal s -> Decimal s` | none |
-| `a + b`, `a - b`, `a * b`, `a / b`, `-a` | `(Float, Float) -> Float`, one type | none; IEEE 754 results, canonicalized |
+| `a + b`, `a - b`, `a * b`, `a / b` | `Float -> Float -> Float`, one type | none; IEEE 754 results, canonicalized |
+| `-a` | `Float -> Float` | none |
 
 There is no `/` and no `%` on decimals. Comparison operators are in
 [typing.md](typing.md#53-comparisons).
@@ -392,19 +393,19 @@ A `DURATION` literal (`30s`, `5min`) is a `Duration`
 
 | Expression | Signature | Rule |
 | --- | --- | --- |
-| `a + b`, `a - b` | `(Duration, Duration) -> Duration` | exact |
+| `a + b`, `a - b` | `Duration -> Duration -> Duration` | exact |
 | `-d` | `Duration -> Duration` | exact |
-| `d * n` | `(Duration, I64) -> Duration` | exact |
-| `d / n` | `(Duration, I64) -> Duration` | truncating toward zero; faults `DivisionByZero` |
-| `p + q`, `p - q` | `(Period, Period) -> Period` | month and day counts separately |
+| `d * n` | `Duration -> I64 -> Duration` | exact |
+| `d / n` | `Duration -> I64 -> Duration` | truncating toward zero; faults `DivisionByZero` |
+| `p + q`, `p - q` | `Period -> Period -> Period` | month and day counts separately |
 | `-p` | `Period -> Period` | both counts negated |
-| `p * n` | `(Period, I64) -> Period` | both counts multiplied |
-| `i + d`, `i - d` | `(Instant, Duration) -> Instant` | exact |
-| `a - b` | `(Instant, Instant) -> Duration` | exact |
-| `dt + d`, `dt - d` | `(DateTime, Duration) -> DateTime` | civil, 86400-second days |
-| `a - b` | `(DateTime, DateTime) -> Duration` | civil |
-| `a - b` | `(Date, Date) -> Duration` | a whole number of days |
-| `z + d`, `z - d` | `(ZonedDateTime, Duration) -> ZonedDateTime` | exact on the instant, then shown in `z`'s zone |
+| `p * n` | `Period -> I64 -> Period` | both counts multiplied |
+| `i + d`, `i - d` | `Instant -> Duration -> Instant` | exact |
+| `a - b` | `Instant -> Instant -> Duration` | exact |
+| `dt + d`, `dt - d` | `DateTime -> Duration -> DateTime` | civil, 86400-second days |
+| `a - b` | `DateTime -> DateTime -> Duration` | civil |
+| `a - b` | `Date -> Date -> Duration` | a whole number of days |
+| `z + d`, `z - d` | `ZonedDateTime -> Duration -> ZonedDateTime` | exact on the instant, then shown in `z`'s zone |
 
 Every operation faults with `ArithmeticOverflow` when its result leaves its
 type's range. A `Period` does not add to an `Instant`, `Date` or
@@ -426,6 +427,7 @@ wall time that does not exist on the resulting day is resolved as in
 §6.4. Faults: `ArithmeticOverflow` when the result leaves the type's range.
 
 ```adt
+-- given d: Date
 add_period(d, months(1), Clamp)     -- 2021-01-31 gives 2021-02-28
 add_period(d, months(1), Reject)    -- 2021-01-31 gives None
 ```
@@ -448,6 +450,7 @@ does. The zone rules in force are the current ones for every caller
 ([model.md](model.md#36-time)).
 
 ```adt
+-- given i: Instant, dt: DateTime
 in_zone(i, "Europe/Lisbon")
 zoned(dt, "America/New_York", Reject)
 ```

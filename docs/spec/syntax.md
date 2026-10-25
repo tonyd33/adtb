@@ -220,6 +220,36 @@ significant.
 
 Rulings: syntax/strings/double, syntax/equality/double, syntax/params/names
 
+### 2.9 Canonical token form
+
+The canonical token form of a term is a `Text`: the tokens of the term
+after name resolution, each in its canonical spelling, joined by one
+space (U+0020). Comments and all other whitespace are dropped.
+
+| Token | Canonical spelling |
+| --- | --- |
+| Name of a type, constructor, named set, relation variable, function, query, transaction, constraint or check | qualified by its module: `auth::identities`, `auth::Identity`; a prelude name as written |
+| Any other identifier, keyword or punctuation | as written |
+| `INT` | its digits without leading zeros; `0` for zero |
+| `DECIMAL` | the integer part without leading zeros (`0` when it is zero), `.`, then the fractional digits as written |
+| `FLOAT` | the integer part without leading zeros, the fractional part as written, `e`, then the exponent without `+` and without leading zeros |
+| `DURATION` | its digits without leading zeros, then the unit |
+| `TEXT` | `"`, the literal's value in NFC with `"` written `\"`, `\` written `\\`, line feed `\n`, carriage return `\r` and tab `\t`, every other scalar value as itself, then `"` |
+
+```adt
+-- given u: Key users
+count(i for i in identities where i.user == u)   -- a term in module auth
+```
+
+```text
+count ( i for i in auth::identities where i . user == u )
+```
+
+The canonical token form of `0012` is `12`, of `007.50` is `7.50`,
+and of `"a\u{9}b"` is `"a\tb"`.
+
+Rulings: spec/evolution/term-encoding/canonical-tokens
+
 ## 3. Files
 
 ### 3.1 Kinds of file
@@ -285,12 +315,13 @@ written between items.
 
 ### 3.3 Open forms
 
-The forms `from`, `match`, `fix`, `fn` (lambda), `exists`, `top`,
-`if`, `at` and `reject` are open: their last part is an expression, and it extends as far to
-the right as the text allows. Text that should end an open form
+The forms `from`, `match`, `fix`, `fn` (lambda), `exists`,
+`if` and `reject` are open: their last part is an expression, and it extends as far to
+the right as the text allows. `top` and `at` are not open: `top` ends
+at its parenthesised operand and `at` at its closing `}`. Text that should end an open form
 earlier is parenthesised:
 
-```adt
+```adt fragment
 -- the inner match takes both arms
 match a | X -> match b | Y -> 1 | Z -> 2
 -- parentheses close it
@@ -315,18 +346,24 @@ names may then be used unqualified when no two imported modules
 declare the same name, and an implementation must refuse an ambiguous
 unqualified name.
 
+Ad hoc text belongs to no module. An unqualified name in it denotes
+the declaration of that name in a user module, or in the prelude when
+no user module declares it; a name declared in several user modules is
+ambiguous, refused unqualified, and written qualified
+([queries.md §16](queries.md#16-ad-hoc-statements)).
+
 The schema's own `Principal`, when it declares one, belongs to the
 root namespace, not to the module whose migration declares it: it
 resolves as `Principal` from every module and every bundle
 ([security.md](security.md#11-the-principal-sum)).
 
-Rulings: syntax/module/header, surface/namespace/modules, surface/source/op-log, surface/migration/handwritten, surface/version/counter
+Rulings: syntax/module/header, surface/namespace/modules, surface/source/op-log, surface/migration/handwritten, surface/version/counter, spec/adhoc/names/every-module
 
 ## 4. Types
 
 ```ebnf
 type        = sum_type [ "->" type ]
-sum_type    = app_type | anon_ctor "|" anon_ctor { "|" anon_ctor }
+sum_type    = app_type | anon_ctor { "|" anon_ctor }   (* a lone UPPER is an app_type *)
 anon_ctor   = UPPER [ record_type ]
 app_type    = type_atom { type_arg }
 type_arg    = type_atom | INT
@@ -345,6 +382,12 @@ ctor_sel    = UPPER | "(" UPPER { "|" UPPER } ")"
 - `Set T`, `Option T`, `Result T E` and `Decimal 2` are applications
   of named types to arguments. An `INT` argument is allowed only where
   the type's parameter is a number, as the scale of `Decimal`.
+- A type argument list stops before a contextual clause word of the
+  enclosing form (`on`, `volatile`, `unique`, `interval`, `index`,
+  `default`, `computed`, `fill`, `generate`) and before a name
+  immediately followed by `(` (§2.8). In `relation boxes : Box Text
+  unique (label)` the type is `Box Text`; a type argument with one of
+  these spellings is parenthesised.
 - In a type declaration, the type under `new` is a base type
   ([model.md](model.md#4-newtypes)).
 - `Identity.Google` is the row type of one constructor and
@@ -363,7 +406,9 @@ ctor_sel    = UPPER | "(" UPPER { "|" UPPER } ")"
   [writes.md](writes.md#7-delete-actions).
 - A record type used as a type argument is parenthesised: `Set ({
   email: Text })`, `Option ({ at: Instant })`. In a type position,
-  `C { ... }` is therefore always an anonymous constructor.
+  `C { ... }` is therefore always an anonymous constructor, and alone
+  it is a one-constructor anonymous sum: `Set (Found { user: Key users
+  })`.
 - A field type carries no default. Defaults and generated values are
   clauses of a relation variable (§5.2).
 - `A { ... } | B` in a type position is an anonymous sum and `{ f: T
@@ -384,7 +429,7 @@ ctor_sel    = UPPER | "(" UPPER { "|" UPPER } ")"
 - `()` is the unit type, the result of a transaction that returns
   nothing.
 
-Rulings: syntax/reference/key, syntax/record/colon, surface/ref/ref-type, surface/query-scoped
+Rulings: syntax/reference/key, syntax/record/colon, surface/ref/ref-type, surface/query-scoped, spec/type-args/stop/clause-words, spec/anon-sum/one-ctor/one-ctor
 
 ## 5. Declarations
 
@@ -657,7 +702,7 @@ From loosest to tightest:
 
 | Level | Forms | Associativity |
 | --- | --- | --- |
-| 1 | open forms: `from`, `match`, `fix`, `fn`, `exists`, `top`, `if`, `at`, `reject` | extend right |
+| 1 | open forms: `from`, `match`, `fix`, `fn`, `exists`, `if`, `reject` | extend right |
 | 2 | `union` | left |
 | 3 | `or` | left |
 | 4 | `and` | left |
@@ -756,7 +801,7 @@ record_expr = "{" [ field_init { "," field_init } ] "}"
 field_init  = LOWER ":" expr
 ```
 
-```adt
+```adt fragment
 Google { user: u, gid: g }
 Identity.Google { user: u, gid: g }
 None
@@ -789,6 +834,7 @@ literal_pat = [ "-" ] ( INT | DECIMAL | FLOAT ) | TEXT
 ```
 
 ```adt
+-- given i: Identity
 match i
   | EmailPass { email, hash: _ } -> email
   | Google g if g.gid == "root"  -> "root"
@@ -829,6 +875,7 @@ order_key     = add_e [ "asc" | "desc" ]
 ```
 
 ```adt
+-- given cursor: Option (Key users)
 from u in users, i in identities
 where i.user == key u
 select { name: u.name, login: display_name(i) }
@@ -859,13 +906,13 @@ fix_expr    = "fix" fix_bind { "," fix_bind } "in" expr
 fix_bind    = LOWER "=" expr
 lambda      = "fn" ( LOWER | params ) "->" expr
 exists_expr = "exists" generators [ "where" expr ]
-top_expr    = "top" add_e "by" order_keys "(" expr ")"
+top_expr    = "top" add_e "by" order_keys "(" comprehension ")"
 if_expr     = "if" expr "then" expr "else" expr
 at_expr     = "at" ( "commit" | "instant" ) add_e [ "pins" version ] "{" expr "}"
 reject_expr = "reject" expr
 ```
 
-```adt
+```adt fragment
 fix reach = (from f in follows where f.src == me select f.dst)
           union (from r in reach, f in follows where f.src == r select f.dst)
 in from u in reach select u
@@ -885,8 +932,10 @@ at commit p { from i in identities.Google select i }
   generator list, or at the keyword `in` that is not part of a
   generator. `fix a = q1, b = q2 in e` binds `a` and `b` together.
 - `not exists` is `not` applied to an `exists` form.
-- The parenthesised operand of `top` follows the keys after whitespace,
-  so it is never read as call arguments (§2.8).
+- The operand of `top` is a parenthesised comprehension, and its keys
+  are written over the comprehension's `select` scope
+  ([queries.md §14.3](queries.md#143-top-n)). It follows the keys after
+  whitespace, so it is never read as call arguments (§2.8).
 - `if c then a else b` means `match c | True -> a | False -> b`.
 - `at commit p { q }`, with `p : Position`, and `at instant t { q }`
   read a past state
@@ -894,7 +943,7 @@ at commit p { from i in identities.Google select i }
 - `reject e`, with `e : Text`, is allowed only in the source query of
   an insert ([interop.md](interop.md#45-rejects)).
 
-Rulings: syntax/aggregate/comprehension, syntax/ctor-set/paren, syntax/equality/double, syntax/record/colon, lang/family/comprehension, lang/nav/paths, lang/nav/backlinks, lang/patterns/guards, lang/patterns/or-patterns, lang/patterns/record, lang/patterns/literals, lang/patterns/nested, lang/recursion/fix, lang/nested-order/top-n, lang/order/result-only, lang/keyset, lang/group/into, lang/abstraction/higher-order
+Rulings: syntax/aggregate/comprehension, syntax/ctor-set/paren, syntax/equality/double, syntax/record/colon, lang/family/comprehension, lang/nav/paths, lang/nav/backlinks, lang/patterns/guards, lang/patterns/or-patterns, lang/patterns/record, lang/patterns/literals, lang/patterns/nested, lang/recursion/fix, lang/nested-order/top-n, lang/order/result-only, lang/keyset, lang/group/into, lang/abstraction/higher-order, spec/top/operand/comprehension
 
 ## 7. Writes and transact blocks
 
@@ -921,6 +970,7 @@ write_arm       = "|" pattern { "|" pattern } [ "if" expr ] "->" write_expr
 ```
 
 ```adt
+-- given n: Text, g: Text, u: Key users, k: Key identities, g2: Text
 transact
   let u = insert users { name: n }
   let i = insert identities.Google { user: key u, gid: g }
@@ -971,36 +1021,46 @@ The examples use `Import`, `logins` and `lookup` as
 - A write is written inside a `transact` block, a `txn` body, a
   `script` operator, or as ad hoc text (§3.1). Inside a block a write
   may also be an operand, always parenthesised: `key (insert users {
-  name: n })`.
+  name: n })`, only where it is evaluated once per statement
+  ([writes.md §2.2](writes.md#22-what-an-insert-returns)).
 - `skip` is the empty write. `(w1, w2, ...)` combines writes into one
   change set and is allowed wherever one write is, a match arm or an
   `if` branch included. `if c then w1 else w2` is a write.
 - `update x set e` and `delete x` without `in` act on the row already
-  bound to `x`, as `old` and the binders of an upsert's `else` arms.
+  bound to `x`, which must be a row of the snapshot: bound by a query
+  generator, as `old`, or by a match binder over such a row. A name
+  bound by `let` to a write is refused.
+- `let x = w` takes an insert, an upsert, an update or a delete; over
+  any other write it is a type error.
 - `update ... set e` gives the new whole value of each row. There is no
   partial-path assignment and no `retag` clause.
 - `fail e` takes `e : Text`. `fail` is reserved, so `transact fail
   "x"` is a block whose first item fails, never an option.
 - The options are listed in
-  [transactions.md](transactions.md#33-options).
+  [transactions.md](transactions.md#33-options). A block with both
+  `read_only` and `durability` is a type error.
 - `return` is the last thing in a block.
 - In an upsert's `else`, `old` is the conflicting row of the snapshot
   and `new` the row the insert proposed. A `let` of a single-row upsert
-  binds one row: the inserted row, or `old` as the branch wrote it.
+  binds one row: the inserted row, or the row with `old`'s key that the
+  branch's change set inserts, or else `old`.
   A conflicting row committed after the snapshot raises a
   serialization failure. A conflict only with a row another write of
   the same statement inserts binds no `old`: the statement fails with
   `KeyViolation` when the conflict is on the key, and with `Violated`
   naming the unique when it is on a unique such as `(gid) in Google`
   ([writes.md](writes.md#6-upsert)).
-- `rejects into r` sends the rows the insert's source rejects to the
-  relation `r` ([interop.md](interop.md#45-rejects)).
+- `rejects into r` sends the records the insert's source rejects to the
+  relation `r`; the source is a comprehension with one generator over a
+  source relation or an external source
+  ([writes.md §2.5](writes.md#25-rejected-rows),
+  [interop.md](interop.md#45-rejects)).
 
 The meaning of change sets, insert, update, retag, delete and upsert is
 in [writes.md](writes.md); of the block in
 [transactions.md](transactions.md).
 
-Rulings: write/transact/block, write/surface/txdata, write/insert/ctor, write/insert/value, write/insert/returns/rows, write/update/ctor-binder, write/update/match-set, write/retag/assign, write/nested/replace, write/nested/rebuild, write/bulk/from-query, write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, write/unit/multi, interop/load/errors/reject-input
+Rulings: write/transact/block, write/surface/txdata, write/insert/ctor, write/insert/value, write/insert/returns/rows, write/update/ctor-binder, write/update/match-set, write/retag/assign, write/nested/replace, write/nested/rebuild, write/bulk/from-query, write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, write/unit/multi, interop/load/errors/reject-input, spec/writes/bound-row/snapshot-row, spec/writes/let-write/four-forms, spec/writes/nested-insert/once, spec/writes/upsert-binding/change-set, spec/writes/rejects/per-row, spec/writes/rejects-source/one-source, spec/txn/durability/strongest
 
 ## 8. Schema operators
 
@@ -1034,7 +1094,7 @@ relation_op = "add" relation_decl | "drop" "relation" QLOWER
 `add type`, `add relation` and `add set` are the declaration of §5
 after the verb:
 
-```adt
+```adt fragment
 -- 0011
 add type Device = { id: Key devices, owner: Key users on delete restrict, label: Text }
 add relation devices : Device key id generate sequence
@@ -1048,7 +1108,8 @@ rename set Hosted of identities to Managed
 ### 8.2 Constructors
 
 ```ebnf
-ctor_op    = "add" "constructor" ctor_path [ record_type ] { add_clause }
+ctor_op    = "add" "constructor" ctor_path [ record_type ] [ ( "before" | "after" ) UPPER ]
+             { add_clause }
            | "remove" "constructor" ctor_path
            | "rename" "constructor" ctor_path "to" UPPER
            | "split" "constructor" ctor_path "into" ctor_def { "|" ctor_def } "by" "match" arms
@@ -1066,7 +1127,7 @@ add_clause = "joins" relation_ref { "," relation_ref }
 arm_clause = "arm" QLOWER [ "." LOWER ] ":" pattern "->" expr
 ```
 
-```adt
+```adt fragment
 -- from version 10
 -- 0011
 add constructor Identity.Apple { sub: Text }
@@ -1105,6 +1166,9 @@ unnest constructor Identity.Social
 ```
 
 - Operators act on a type, named by `Type.Constructor`.
+- `before C` or `after C` places the new constructor in the type's
+  declaration order; without either it goes last
+  ([evolution.md §4.2](evolution.md#42-add-a-constructor)).
 - `joins` names a named set of a relation variable the new
   constructor joins. `arm name: P -> e` gives the new constructor's arm
   of the match in the schema function, match-scoped constraint or
@@ -1201,14 +1265,14 @@ definition_op = "define" fn_decl | "redefine" fn_decl | "drop" "fn" QLOWER
 lifecycle_op  = "enable" ctor_target
               | "disable" ctor_target
               | "deprecate" ctor_target
-              | "revert" MIGRATION
+              | "revert" MIGRATION { "fill" field_path "=" fill }
 ctor_target   = relation_ref | ctor_path
 script_op     = "script" write_expr
 extension_op  = "install" LOWER TEXT "from" TEXT | "uninstall" LOWER
               | "adopt" "tzdb" TEXT "from" TEXT
 ```
 
-```adt
+```adt fragment
 -- from version 10
 -- 0011
 add constructor Identity.Apple { sub: Text }
@@ -1246,11 +1310,15 @@ disable identities.Saml
 - `enable r.C` opens constructor `C` of relation `r` to writes;
   `enable T.C`, for a constructor of a value-level sum `T`, lets a
   value of `C` be stored in any field: `enable Provider.Okta`.
-  `disable` is the inverse of `enable`: it returns an enabled
-  constructor to declared, and is refused while any row of `r.C`, or
-  any stored value of `T.C`, exists. `deprecate` applies only to an
+  `disable` returns an enabled constructor to declared, and is refused
+  while any row of `r.C`, or any stored value of `T.C`, exists. The
+  inverse of `enable` is `disable` when the constructor was declared
+  and `deprecate` when it was deprecated. `deprecate` applies only to an
   enabled constructor
   ([evolution.md](evolution.md#4-operators)).
+- `revert n` takes one `fill T.C.f = e` per inverse that adds a field
+  the log holds no values for; `e` is read as an `add field` fill is
+  ([evolution.md §5.4](evolution.md#54-revert)).
 - A `script` holds one write ([writes.md](writes.md#1-change-sets)).
 - `install geo "1.2" from "geo-1.2.adtx"` adds an extension package;
   `uninstall geo` removes it ([interop.md §9.6](interop.md#96-extensions)).
@@ -1259,7 +1327,7 @@ disable identities.Saml
 - `retire bundle` and `supersede bundle` are commands (§12), never
   operators: they are not written in a migration.
 
-Rulings: syntax/operator/verb, evolution/smo, evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, derived/defaults/backfill/separate, derived/materialize/storage-choice, derived/computed/virtual, interop/ext-pkg/catalog-module, evolution/in-log, evolution/log-ops, evolution/revert, evolution/scripted, evolution/types, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add
+Rulings: syntax/operator/verb, evolution/smo, evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, derived/defaults/backfill/separate, derived/materialize/storage-choice, derived/computed/virtual, interop/ext-pkg/catalog-module, evolution/in-log, evolution/log-ops, evolution/revert, evolution/scripted, evolution/types, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, spec/evolution/ctor-order/placed, spec/evolution/enable-inverse/prior-state, spec/evolution/revert-fill/per-field
 
 ## 9. Bundle files
 

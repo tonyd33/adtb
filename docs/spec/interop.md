@@ -318,9 +318,10 @@ insert identities.Google from (
   select Google { id: r.id, user: r.user, gid: r.gid })
 ```
 
-A load may give values for generated key fields. A `sequence`
-generator then advances past the largest value given; a `uuidv7`
-generator is unaffected ([model.md](model.md#73-generated-keys)).
+A load may give values for generated key fields. A value the
+generator later draws still differs from every value it has issued and
+from every key any committed row of the relation has held, the loaded
+rows included ([model.md](model.md#73-generated-keys)).
 
 The in-process API also takes a stream of Arrow record batches into
 one constructor relation, each batch in the Arrow mapping of that
@@ -475,28 +476,18 @@ way, by a self-join of the staging relation.
 ### 4.4 Checking a large change set
 
 A load's change set is checked by the rules of
-[constraints.md](constraints.md#62-checking). An implementation must check
-it at a cost independent of how the rows arrived:
-
-- each constraint's delta query runs once over the whole change set,
-  as one planned query (a reference check is one anti-join of the
-  inserted rows against the target's key index), never once per row;
-- a uniqueness into an index built for the load is checked while the
-  index is built from sorted runs, and equal adjacent keys are its
-  violations.
-
-Either way a violation is reported as the constraint's violation
-report ([constraints.md](constraints.md#7-checking-and-violation-reports)).
-
-How index entries are written (built after the heaps are filled, merged
-in key order into a populated index, or inserted row by row) is chosen
-per load by the planner and is not observable.
+[constraints.md](constraints.md#62-checking), at a cost independent of
+how the rows arrived. A violation is
+reported as the constraint's violation report
+([constraints.md](constraints.md#7-checking-and-violation-reports)).
 
 ### 4.5 Rejects
 
 Rows that fail to convert to the row type (§3.1) or that reach
 `reject` go to the rejects relation named by the insert's `rejects
-into` clause, a relation of the prelude type `RejectedRow`:
+into` clause, a relation of the prelude type `RejectedRow`. Each
+record's conversion is tried on its own, as
+[writes.md §2.5](writes.md#25-rejected-rows) defines:
 
 ```adt
 type RejectedRow = { load: I64, line: I64, source: Text, raw: Text, reason: Text }
@@ -506,7 +497,7 @@ relation identity_rejects : RejectedRow key (load, line)
 The key holds no key of the relation itself, so one type serves every
 rejects relation. `load` is an id the engine generates for each
 inserting statement, so a rerun of a load never collides with an
-earlier one. `source` is the file path, or the name of the relation
+earlier one; every reject of one statement has the same `load`. `source` is the file path, or the name of the relation
 the rows were read from. `line` is the row's number, from 1, in the
 order the source is read: records of a CSV or NDJSON file, rows of a
 Parquet or Arrow IPC file, or the order of a source relation's key. `raw` is the record as the file held it, in the file's
@@ -518,20 +509,19 @@ The rejects are inserted in the same change set as the load. Every
 other row is loaded. A constraint violation is not a reject: it aborts
 the whole statement with `Rejected { reason: Violated {..} }`, or
 `KeyViolation` for a collision on the relation's key, and no rejects
-are kept. An insert with no `rejects into` clause fails at the
-first reject with `Rejected { reason: BadInput {..} }`, which carries
-the same `source`, `line` and reason.
+are kept. An insert with no `rejects into` clause fails, when any
+record is rejected, with `Rejected { reason: BadInput {..} }`, which
+carries the `source`, `line` and reason of one rejected record.
 
 ### 4.6 Durability of a load
 
 A committed load is recovered after a crash and reaches every replica,
 as any commit. The log written for a bulk load must not exceed about
-one copy of each page the load fills: filled pages are logged once as
-whole images, not row by row ([engine.md](engine.md#31-redo-only-logging)).
+one copy of the data the load stores.
 A load into a relation a feed names also writes the logical change
 records the feed reads (§5.2).
 
-Rulings: interop/load/source, interop/load/append-api, interop/load/shape/per-ctor, interop/load/shape/tag-match, interop/load/shape/union-column, interop/load/shape/tagged-text, interop/load/shape/unrouted/tag-parse, interop/load/unit/staged, interop/load/check/set-at-a-time, interop/load/check/build-time, interop/load/index-path/bulk-build, interop/load/index-path/sorted-merge, interop/load/index-path/retail, interop/load/errors/reject-input, interop/load/wal/page-images
+Rulings: interop/load/source, interop/load/append-api, interop/load/shape/per-ctor, interop/load/shape/tag-match, interop/load/shape/union-column, interop/load/shape/tagged-text, interop/load/shape/unrouted/tag-parse, interop/load/unit/staged, interop/load/check/set-at-a-time, interop/load/errors/reject-input, interop/load/wal/page-images, spec/writes/sequence-distinct/issued-and-held
 
 ## 5. Export and change streams
 
@@ -576,7 +566,7 @@ names at that version and translates them as for a text document
 read at the reader's version. A CSV file whose names are stale is read
 by giving its version to the reader:
 
-```adt
+```adt fragment
 read_csv("contacts-old.csv", Contact) pins 41 (b3e0...)
 ```
 
@@ -736,8 +726,7 @@ Rulings: interop/dump/logical, interop/dump/schema/op-log, interop/dump/data/arr
 
 ## 7. Backup and point-in-time restore
 
-This section states what an operator can rely on. How pages and the log
-are copied is in [engine.md](engine.md#99-backups-and-point-in-time-restore).
+This section states what an operator can rely on.
 
 ### 7.1 Backup
 
@@ -914,9 +903,9 @@ define fn slugify (t: Text) -> Text = host "slugify" version "1.0" deterministic
 
 The signature is declared in the schema and checked like any function
 signature. A Wasm module's bytes are read when the migration is
-authored and stored in `catalog::wasm_modules`. The migration's
-canonical text holds their BLAKE3-256 hash, so the version hash covers
-them, and the log, dumps and replicas carry the bytes.
+authored and stored in `catalog::wasm_modules`. The `define fn`
+operator's value holds their BLAKE3-256 hash, so the version hash
+covers them, and the log, dumps and replicas carry the bytes.
 
 ### 9.2 WebAssembly functions
 
@@ -939,7 +928,7 @@ Only deterministic functions may appear in a key, an index
 expression, a constraint, a row check, a stored view, a default or a
 computed field. A nondeterministic host function may appear only in
 queries and in the values of writes; each call in the query's meaning
-is evaluated once, and the planner must not merge or repeat its calls.
+is evaluated exactly once.
 
 An embedded open binds host functions before it applies the shipped
 migrations ([embedding.md](embedding.md)). A host function registered
@@ -1007,8 +996,10 @@ Which code runs:
   A pinned bundle that reads a stored view redefined since its pin
   evaluates the body of its own version, not the stored rows
   ([derived.md](derived.md#26-schema-changes)).
-- The planner uses an expression index for a query only when the code
-  identity of the query's expression equals the index's.
+- An expression index never changes a query's result: the query's
+  expression is evaluated with the code of the query's version, even
+  where an index over the same expression holds values computed with
+  other code.
 - A host function has one code in a process. Redefining it is refused
   while a live bundle pins a version at which it has another code
   identity.
@@ -1027,11 +1018,12 @@ redefine fn geohash (lat: F64, lon: F64, precision: I32) -> Text =
 An extension is a module of definitions (types, functions,
 aggregates) together with the Wasm code they use, packaged as one
 file. Installing it is a schema operator, so its definitions and code
-become catalog rows. The migration's canonical text holds the
-package's BLAKE3-256 hash, and the log and dumps carry its bytes. From
+become catalog rows. Its operator value holds the package's
+BLAKE3-256 hash, so the version hash covers it, and the log and dumps
+carry its bytes. From
 version 20:
 
-```adt
+```adt fragment
 -- 0021
 module auth
 install geo "1.2" from "geo-1.2.adtx"
@@ -1108,8 +1100,18 @@ type Cidr = new Bytes
 
 Index kinds are fixed: the keys, uniques, indexes and interval indexes
 of [model.md](model.md#7-keys) and [constraints.md](constraints.md#21-keys-uniques-and-references),
-all ordered trees over a constructor set. New index kinds cannot be
-added.
+each declared over a constructor set. New index kinds cannot be added.
+What each form lets a query do:
+
+| Form | Lets a query |
+| --- | --- |
+| key, unique | find the rows holding given values of its fields |
+| index | find the rows holding given values of its fields or of a leading part of them, and the rows within a range of its fields in their order |
+| interval index | find the rows whose interval field overlaps a given span, among those holding given values of its leading fields |
+
+These are the indexes that bound a constraint's or a stored view's
+incremental check ([constraints.md §5](constraints.md#5-admission)).
+The structure behind a form is not observable.
 
 Special indexes are derived: an index over an expression of the row
 ([derived.md](derived.md#52-expression-indexes)). When the expression's
@@ -1137,8 +1139,8 @@ where exists w in words(d.body) where w.term == "sum"
 select d
 ```
 
-The planner uses the index for a predicate over the indexed
-expression. Phrase search and ranking are queries over the same term
+A predicate over the indexed expression finds its rows through the
+index, as for any index. Phrase search and ranking are queries over the same term
 sets.
 
 ### 11.4 Vectors
@@ -1178,4 +1180,4 @@ relation stores : Store
   index (geohash(location.y, location.x, 7))
 ```
 
-Rulings: interop/scalar/newtype-only, interop/index-am/fixed, interop/index-am/derived, interop/fts/derived, interop/vector/dim-type/newtype-bytes, interop/vector/scan-only, interop/spatial/out
+Rulings: interop/scalar/newtype-only, interop/index-am/fixed, spec/index/kinds/declared-capabilities, interop/index-am/derived, interop/fts/derived, interop/vector/dim-type/newtype-bytes, interop/vector/scan-only, interop/spatial/out

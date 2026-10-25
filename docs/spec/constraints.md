@@ -67,7 +67,7 @@ add index (user) in identities
 
 ### 1.1 Form
 
-```adt
+```adt fragment
 constraint name = q
 ```
 
@@ -125,6 +125,12 @@ two rows of `r.S` agree on the fields. A reference field of type `Key
 r.S` holds when every value it holds is the key of a row of `r.S`.
 Both are declared where [model.md](model.md#7-keys) says and are checked
 at the same boundaries as every other constraint (§4).
+
+A unique over a path into a value-level sum field,
+`unique (status.Paid.ref)`, ranges only over the rows whose `status`
+holds `Paid`: no two of them agree on `ref`, and a row whose `status`
+holds another constructor is not constrained by it
+([semantics.md §7.2](semantics.md#72-structural-constraints)).
 
 ### 2.2 Row checks
 
@@ -217,7 +223,7 @@ constraint balanced =
 `Option` ([queries.md](queries.md#10-aggregates)). Admission of
 aggregates is in §5.2.
 
-Rulings: constraint/row-check, constraint/domain, constraint/refine/write-only, constraint/fd, constraint/exclusion, constraint/inclusion, constraint/at-least-one, constraint/cardinality, constraint/assertion, constraint/overlap/range-index, constraint/overlap/equality-prefix
+Rulings: constraint/row-check, constraint/domain, constraint/refine/write-only, constraint/fd, constraint/exclusion, constraint/inclusion, constraint/at-least-one, constraint/cardinality, constraint/assertion, constraint/overlap/range-index, constraint/overlap/equality-prefix, btree/sum-field/ctor-field, spec/tiers/three-tiers
 
 ## 3. Scope
 
@@ -254,7 +260,7 @@ history starting at version 10, before `Apple` exists, `login_valid`
 has arms for `EmailPass` and `Google` only, and `identities.OAuth` is
 `Google`; migration 0011 adds `Apple` with its arm:
 
-```adt
+```adt fragment
 -- 0011
 module auth
 add constructor Identity.Apple { sub: Text }
@@ -288,6 +294,7 @@ declaration that defers one. Rows that must exist together, including
 reference cycles, are created in one statement:
 
 ```adt
+-- given n: Text, g: Text
 transact
   let u = insert users { name: n }
   let i = insert identities.Google { user: key u, gid: g }
@@ -310,8 +317,8 @@ Rulings: constraint/timing/multi-assign, model/deferred-check, write/unit/multi
 
 ### 5.1 The bound
 
-A constraint is admitted only when the engine can check it with an
-index-bounded incremental check: for every relation the query reads,
+A constraint is admitted only when it has an index-bounded
+incremental check: for every relation the query reads,
 a check over the rows a change set inserts or deletes in that relation,
 in which every other relation the query reaches is read only through
 index probes on the fields that connect them. The cost of checking a
@@ -342,10 +349,9 @@ Within the bound, a constraint may use:
   covered by indexes;
 - the transition relations of §6;
 - `count`, `sum`, `min` and `max` of a field over the rows that share a
-  group key, where the group key is the leading fields of an index;
-  the engine maintains each such aggregate per group from each change
-  set, as an index is maintained. `min` and `max` also need an index on
-  the aggregated field within the group, for deletes;
+  group key, where the group key is the leading fields of an index.
+  `min` and `max` also need an index on the aggregated field within
+  the group;
 - comparisons and functions applied to these.
 
 Recursion (`fix`) is outside the bound. Other shapes are admitted when
@@ -356,10 +362,9 @@ the bound above holds for them and refused otherwise.
 An exclusion that compares a range field under `overlaps` is within the
 bound when the scope has an `interval index` whose leading fields are
 the fields the exclusion compares under `==`, followed by the range
-field. The check probes the index with each written row's equality
-fields and range.
+field.
 
-Rulings: constraint/admit/bounded, constraint/enforce/delta, constraint/aggregates/maintained, constraint/overlap/range-index, constraint/overlap/equality-prefix
+Rulings: constraint/admit/bounded, constraint/enforce/delta, constraint/aggregates/maintained, constraint/overlap/range-index, constraint/overlap/equality-prefix, spec/tiers/three-tiers
 
 ## 6. Transition constraints
 
@@ -410,34 +415,68 @@ Rulings: derived/transition/change-visible, write/primitive/delta
 
 ## 7. Checking and violation reports
 
-A statement's change set is checked before it is applied. For every
-admitted constraint that reads a relation the change set touches, the
-engine runs the constraint's incremental check against the change set
-and the states before and after it. Constraints reading no touched
-relation are not checked.
+A statement's change set is checked before it is applied, against
+every constraint of the schema.
+
+### 7.1 Constraint names
+
+Every constraint has one qualified name, a `Text` value. A constraint
+declared by name has its module's name and its own; every constraint
+the schema generates has a canonical name:
+
+| Constraint | Name |
+| --- | --- |
+| `constraint c` or `check c` declared in module `m` | `m::c` |
+| the key of relation variable `m::r` | `m::r.key` |
+| `unique (p1, ..., pn) in S` of `m::r`, each `pi` a field path | `m::r.unique(p1, ..., pn) in S` |
+| a unique of `m::r` with an expression among its fields | `m::r.unique#n`, `n` the unique's catalog id |
+| the reference held in key or header field `f` of `m::r` | `m::r.f` |
+| the reference held in field `f` of constructor `C` of `m::r` | `m::r.C.f` |
+| the domain of newtype `m::N` | `m::N.domain` |
+
+In a field unique's name, each `pi` is its field path as declared
+(`login.Google.gid`), and `S` is its constructor set written `C` for one
+constructor and `(C | D | ...)` for several, the constructors in the
+code-point order of their names. A record type's fields are fields of
+its one constructor, named after the type. Names are ordered by the
+code-point order of their text.
+
+```text
+auth::has_identity
+auth::identities.key
+auth::identities.unique(provider, sub) in OAuth
+auth::identities.unique#1207
+auth::logins.user
+auth::logins.Active.identity
+auth::resets.Reset.identity
+```
+
+### 7.2 Which violation is reported
 
 Because every constraint held before the statement, the violations
 after it are exactly the rows the constraint query returns in the
 state after it. When any constraint has a violation:
 
 - the statement fails and none of its change set is applied;
-- the error is `Violated` ([catalog.md](catalog.md#4-error-sums)) and
-  carries one constraint: of the violated constraints, the one whose
-  qualified name sorts first, with its report, the rows its query
-  returns, sent
-  as a result descriptor followed by rows ([wire.md](wire.md));
+- the error carries one constraint: of the violated constraints, the
+  one with the least name (§7.1), keys and uniques included. It is
+  `KeyViolation` when that constraint is a key, and otherwise
+  `Violated` ([catalog.md](catalog.md#4-error-sums)) with the name and
+  its report, the rows its query returns, sent as a result descriptor
+  followed by rows ([wire.md](wire.md));
 - the caller sees the report rows it may read and the others redacted
   ([security.md](security.md#3-grants)): a registered call by the
   rights its bundle grants, an ad hoc caller by its own grants.
 
 A fault while evaluating a check fails the statement as a fault does
-([queries.md](queries.md#15-faults)).
+([queries.md](queries.md#15-faults)), and takes precedence over every
+violation.
 
 Within an interactive transaction, a failed call leaves the
 transaction open, with the effects of its earlier calls; the reads the
 failed call made remain part of the transaction for serializability.
 
-Rulings: constraint/enforce/delta, constraint/form/empty
+Rulings: constraint/enforce/delta, constraint/form/empty, spec/writes/violation-name/canonical-least, spec/writes/unique-name/fields-or-id
 
 ## 8. Concurrent transactions
 
@@ -472,7 +511,7 @@ In a history in which `Identity` is `EmailPass | Social { provider:
 Provider, sub: Text }`, with `type Provider = Google | Facebook`, before
 migration 0014:
 
-```adt
+```adt fragment
 -- 0014
 module auth
 split constructor Identity.Social into Google { gid: Text } | Facebook { fid: Text }
@@ -494,14 +533,15 @@ proceeds only after the constraint is rewritten or dropped by its own operator.
 
 ### 9.2 Adding a constraint
 
-`add constraint` evaluates the constraint query against the existing
-data. While it returns any row the operator is refused, and the
-refusal carries the violation rows. The inverse of an admitted `add
+`add constraint` evaluates the constraint query against the state its
+migration produces, so a later `script` of the same migration may
+repair the data first. While it returns any row the migration is
+refused, and the refusal carries the violation rows. The inverse of an admitted `add
 constraint` is `drop constraint`.
 
 Starting from version 12:
 
-```adt
+```adt fragment
 -- 0013
 module auth
 add constraint balanced = ...
@@ -530,4 +570,4 @@ A constraint is always checked with the current definitions of the
 schema functions it calls, whatever version the writing bundle is
 pinned to.
 
-Rulings: constraint/evolve/carry, constraint/evolve/icmo, constraint/evolve/unmapped/refuse, constraint/evolve/policy/check, constraint/evolve/drop-old/readers-first, constraint/scope/new-ctor/arm-in-add
+Rulings: constraint/evolve/carry, constraint/evolve/icmo, constraint/evolve/unmapped/refuse, constraint/evolve/policy/check, constraint/evolve/drop-old/readers-first, constraint/scope/new-ctor/arm-in-add, spec/evolution/migration-statement/one-statement

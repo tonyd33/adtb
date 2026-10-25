@@ -296,7 +296,7 @@ existence of, or aggregates over a constructor relation the role is
 not granted is refused. A role granted part of a sum ranges over the
 part it holds, and its matches are exhaustive over that part:
 
-```adt
+```adt fragment
 grant read identities.EmailPass (user, email) to support
 grant read identities.Google (gid) to support
 
@@ -381,8 +381,11 @@ transactions write; and `retag` on every pair of constructor sets its updates ca
 move a row between (§5). Registration is refused otherwise, and the
 refusal lists every missing grant.
 
-```text
+```adt
 register bundle "bundles/web.adb"
+```
+
+```text
 refused: admin_dump reads identities.EmailPass (hash); web_owner lacks read with grant option
 ```
 
@@ -494,8 +497,9 @@ Rulings: security/transition/transition
 
 ### 6.1 Constraint violations
 
-A change set that violates constraints fails with `Violated`, which
-names one constraint: the violated constraint with the smallest name.
+A change set that violates constraints fails naming one constraint:
+the violated constraint with the smallest name, with `KeyViolation`
+when it is a key and `Violated` otherwise.
 Its report holds the rows of that constraint's denial query that the
 caller may read, and the number of rows redacted: rows that touch a
 constructor set or field the caller may not read are left out, and
@@ -667,18 +671,16 @@ Rulings: security/audit/auth, security/audit/ops, security/audit/calls, security
 
 A database file is created encrypted or not; the choice is a format
 setting ([catalog.md](catalog.md#10-configuration)). In an encrypted
-database the pager encrypts every page as it writes it and decrypts it
-as it reads it: heap, index, catalog, large-value, free-space and
-allocation pages alike. Pages are plaintext in the buffer pool and
-ciphertext on disk. The redo log is encrypted too, full-page images
-included. Only the file header, kept as two alternating copies on
-pages 0 and 1 and holding format settings and the wrapped data keys,
-is plaintext ([engine.md](engine.md#22-file-header)).
+database everything the engine writes to the data file and to its log
+is encrypted, except the file header and the fields of each page and
+log block that §9.2 keeps in clear. The file header holds in clear the
+format settings, the KEK source of §9.3 with what it records, and the
+DEKs, each wrapped by the KEK.
 
-Query memory beyond its budget spills first to pages of the buffer
-pool, which are encrypted as any page when written, and then to spill
-files in the spill directory, encrypted under a key generated per
-process and never stored.
+Query memory beyond its budget spills first to pages of the page
+pool, which are encrypted as any page of the file when written, and
+then to spill files in the spill directory, encrypted under a key
+generated per process and never stored.
 
 ### 9.2 Cipher and nonces
 
@@ -697,18 +699,13 @@ or another file, or with any of them altered, fails its tag.
 A page replaced by an older valid ciphertext of itself carries an
 older log position under a valid tag. It is detected only by the
 check of page log positions against the log during recovery
-([engine.md](engine.md#26-corruption-detection)); outside recovery,
+([catalog.md §11](catalog.md#11-integrity-and-maintenance)); outside recovery,
 detecting such a rollback is out of scope.
 
 The 16-byte authentication tag replaces the page checksum: a page
 whose tag fails is a corrupt or forged page and is handled as a
 detected corruption ([catalog.md](catalog.md#111-verification)). A database
 created without encryption keeps a 32-bit checksum per page instead.
-
-Writes encrypt into a staging buffer; the frame in the pool stays
-plaintext while the write is in flight, so concurrent optimistic
-readers never see ciphertext. A read decrypts into the frame before the
-frame is published to readers.
 
 ### 9.3 Key hierarchy
 
@@ -744,17 +741,20 @@ commands of [catalog.md](catalog.md#91-commands), available over the
 server and in process, and need the `configure` grant; `adt key`
 wraps them.
 
-```text
+```adt
 rotate key kek "kms://vault/adt-app/v3"
 rotate key dek
 destroy key dek 7
+```
+
+```text
 refused: backup 2026-10-01 uses dek 7
 ```
 
 ### 9.5 Backups and dumps
 
-Backups copy pages and log as stored, still encrypted
-([engine.md](engine.md#99-backups-and-point-in-time-restore)). A backup's manifest lists the DEK
+Backups copy the file and log as stored, still encrypted
+([interop.md §7](interop.md#7-backup-and-point-in-time-restore)). A backup's manifest lists the DEK
 versions it uses and their wrapped forms. Restoring requires the KEK
 those were wrapped under and every listed DEK version.
 
@@ -765,7 +765,7 @@ seals it under that key. A dump needs `maintain` and `read` on every
 relation it dumps; its security section (roles, verifiers, deployment
 grants, peer mappings) is written only for a holder of `schema`.
 
-Rulings: security/encrypt/page, security/encrypt/io-cost/staging, security/integrity/aead, security/nonce/random, security/keys/wrapped, security/kek/passphrase, security/kek/kms, security/kek/host, security/backup-crypt/as-stored
+Rulings: security/encrypt/page, security/integrity/aead, security/nonce/random, security/keys/wrapped, security/kek/passphrase, security/kek/kms, security/kek/host, security/backup-crypt/as-stored
 
 ## 10. Tenancy
 

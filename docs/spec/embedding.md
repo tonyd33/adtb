@@ -41,10 +41,15 @@ those every database replaying the same log assigns.
 
 ### 1.1 One process per file
 
-The engine is a library. A database is one data file plus its log
-directory beside it (`app.adt` and `app.adt-log/`,
-[engine.md](engine.md#21-one-file)), and one OS process at a time has
-it open. Opening takes an exclusive lock on the file
+The engine is a library. A database is one data file, whatever its
+schema, plus its log directory beside it, named after the file:
+
+```text
+app.adt        the data file
+app.adt-log/   the log segments
+```
+
+One OS process at a time has it open. Opening takes an exclusive lock on the file
 that the operating system releases when the process exits; while it
 is held, an open from any other process fails with `Locked`, carrying
 the owning process id when the platform reports it. There is no
@@ -67,12 +72,8 @@ object: a call needs only the handle.
 
 ### 1.3 Platforms
 
-Linux is the tuned platform: asynchronous I/O through `io_uring`
-where the kernel provides it and a blocking thread pool otherwise,
-direct I/O and `fdatasync` on the log. Other operating systems are
-supported through the same portable I/O layer with their own primitives
-(on macOS `F_NOCACHE` and `F_FULLFSYNC`; on Windows unbuffered,
-write-through handles), at lower speed. Every guarantee of this
+Linux is the tuned platform. macOS and Windows are supported at lower
+speed. Every guarantee of this
 specification holds on every supported platform: a platform on which
 the engine cannot bypass the OS page cache and force data to stable
 storage is not supported.
@@ -94,7 +95,8 @@ performs these steps in order, and returns only when all succeed:
 2. Obtain the key-encryption key from the options' key source, if the
    file is encrypted. A missing key fails with `KeyRequired`, a wrong
    one with `WrongKey`.
-3. Recover from the redo log ([engine.md](engine.md#35-recovery)).
+3. Recover: the file then reflects every commit acknowledged before
+   the last close or crash.
 4. Compare the shipped log with the file's log migration by migration.
    One must be a prefix of the other; otherwise open fails with
    `Diverged` naming the first version where they differ. Open never
@@ -119,8 +121,8 @@ performs these steps in order, and returns only when all succeed:
    migration with staged jobs commits its version only when every
    staged job has completed; open runs them to completion, and every
    check of [evolution.md §3.2](evolution.md#32-checks-at-apply) reruns
-   at the last staged commit. A refused migration, one whose staged job
-   fails, or one that fails a check at its last staged commit, fails
+   at its final commit. A refused migration, one whose staged job
+   fails, or one that fails a check at its final commit, fails
    open with `MigrationRefused`, leaving the file at the last migration
    that committed and the log unchanged beyond it.
 9. Check and register every given bundle at its pin, renewing the lease
@@ -220,7 +222,15 @@ impl Database {
 }
 ```
 
-Rulings: surface/open-applies, engine/embedded-server, ops/admin/role/capabilities
+### 2.4 Engine failures
+
+A failed write or flush of the data file or its log is not returned to
+the program as an error, and neither is a broken internal invariant of
+the engine. Either ends the process. Commits that were waiting on the
+failed flush were not acknowledged: their calls never returned. The
+next open recovers as step 3 of §2.1 states.
+
+Rulings: surface/open-applies, engine/embedded-server, ops/admin/role/capabilities, buffer/fsync-fail/panic-replay, project/arch/errors/fatal-split
 
 ## 3. Bundles
 
@@ -269,7 +279,7 @@ code generation emitted.
 | `durability` | Commit level of a registered transaction ([transactions.md](transactions.md#7-durability-levels)) |
 | `after` | Read no snapshot older than this commit position |
 | `trace` | The caller's trace context, joined by the engine's spans |
-| `retry` | For a registered transaction, the most attempts on serialization failure; by default the transaction's declared limit, else the file setting |
+| `retry` | For a registered transaction, the most reruns on serialization failure: `retry n` allows at most `n + 1` attempts; by default the transaction's declared limit, else the file setting `RetryLimit` |
 
 A query that only reads runs as a read-only transaction under
 serializable snapshot isolation, without waiting for a safe snapshot,
@@ -279,7 +289,11 @@ returns a stream of result elements as they are produced; dropping
 the stream cancels the call. A registered
 transaction runs its block, retries it on serialization failure as the
 server does ([wire.md](wire.md#64-server-retry)), commits, and returns
-its result with the commit position.
+its result with the commit position. A `retry n` option allows at most
+`n + 1` attempts; with none, the transaction's declared limit applies,
+else the file setting `RetryLimit`
+([catalog.md §10.2](catalog.md#102-file-settings)), in process as on
+the server ([transactions.md](transactions.md#62-retryable-units)).
 
 ```rust
 let mut rows = app.call(queries::login_key, (u,), &CallOptions::default())?;
@@ -405,7 +419,7 @@ impl<B: BundleDef> Bundle<B> {
 }
 ```
 
-Rulings: net/parity/mirror, surface/wire/embedded, net/results/arrow, net/feed/changes, net/feed/version/bundle, net/push/frames
+Rulings: net/parity/mirror, surface/wire/embedded, net/results/arrow, net/feed/changes, net/feed/version/bundle, net/push/frames, spec/txn/retry-count/n-plus-one
 
 ## 5. Transactions
 
@@ -417,6 +431,9 @@ principal, a durability level, a bookmark). Only a `deferrable`
 read-only transaction waits for a safe snapshot.
 Calls on the transaction run inside it one at a time; commit applies
 its change set and returns the commit position; rollback discards it.
+Commit may name a durability level; the transaction commits at the
+strongest level named by its begin, its commit or any block run in it
+([transactions.md §7.1](transactions.md#71-levels)).
 A transaction dropped without commit is rolled back. The interactive
 transaction time and idle limits apply as on the server
 ([wire.md](wire.md#62-interactive-transactions)), and the engine never
@@ -425,9 +442,10 @@ returned and the transaction is aborted.
 
 Calls inside a transaction take their own options, which hold only
 what the wire allows on a call with `txn`: no assertion, durability,
-`after` or retry, which belong to the transaction. Ad hoc text after a
-registered call in one transaction, or a registered call after ad hoc
-text, is refused with `MixedVersions`
+`after` or retry, which belong to the transaction. A call that would
+run at another schema or catalog version than the transaction's earlier
+statements, such as ad hoc text after a registered call or a registered
+call after ad hoc text, is refused with `MixedVersions`
 ([applications.md §5](applications.md#5-binding-a-connection)). A registered transaction
 called inside a transaction returns its result as `Pending<T>`, which
 has no commit position; the position is the one `commit` returns.
@@ -454,7 +472,7 @@ pub struct Pending<T> { pub value: T }
 impl<B: BundleDef> Transaction<B> {
     pub fn call<C: Callable<Bundle = B>>(&mut self, c: C, args: C::Args, opts: &TxnCallOptions) -> Result<C::InTxn, B::Error>;
     pub fn query_text(&mut self, text: &str, params: &[(&str, Value)], opts: &TxnCallOptions) -> Result<Vec<DynRows>, adtb::Error>;
-    pub fn commit(self) -> Result<Position, B::Error>;
+    pub fn commit(self, durability: Option<Durability>) -> Result<Position, B::Error>;
     pub fn rollback(self) -> Result<(), B::Error>;
 }
 
@@ -497,7 +515,7 @@ impl<B: BundleDef> Bundle<B> {
 }
 ```
 
-Rulings: net/parity/mirror
+Rulings: net/parity/mirror, spec/txn/one-version/one-pair, spec/txn/durability/strongest
 
 ## 6. Ad hoc text
 
@@ -506,8 +524,8 @@ The handle may run ad hoc text: queries, writes, `transact` blocks,
 `register bundle`, `apply migrations`, `print schema`, `archive
 audit`, `rotate key`, `dump`, `restore` and `backup`
 ([applications.md](applications.md#7-the-ad-hoc-role),
-[catalog.md](catalog.md#91-commands)), checked against the current
-schema version. A free name in the text is a parameter that `params`
+[catalog.md](catalog.md#91-commands)), checked against the schema
+version of its transaction's snapshot. A free name in the text is a parameter that `params`
 must supply; several items in one text form one transaction.
 `query_text` returns one `DynRows` per item that yields a result, in
 item order. The first item that faults, fails, violates a constraint
@@ -543,8 +561,8 @@ Rulings: surface/adhoc/scoped
 
 A cancellation token is created by the program, cloned freely and
 passed in the options of any number of calls. Cancelling it, from any
-thread, stops every call carrying it at its next morsel boundary; each
-returns `Cancelled`. A token once cancelled stays cancelled, and a call
+thread, stops every call carrying it promptly, without letting the call run
+to the end of its statement; each returns `Cancelled`. A token once cancelled stays cancelled, and a call
 started with a cancelled token returns `Cancelled` without running. A
 cancelled call has no effect; inside an interactive transaction the
 transaction stays open without the call's effects, as on the wire
@@ -801,7 +819,7 @@ the redo log continuously, and base copies periodically, to the
 target. The archive holds pages and log as stored, encrypted when the
 file is ([security.md](security.md#95-backups-and-dumps)). A database is restored
 from an archive to any commit position or schema version it covers
-([engine.md](engine.md#99-backups-and-point-in-time-restore)).
+([interop.md §7.2](interop.md#72-point-in-time-restore)).
 
 ```rust
 let db = adtb::open("app.adt", &schema::LOG, &[&queries::BUNDLE],
@@ -816,7 +834,7 @@ pub enum RestorePoint { Latest, Position(Position), Version(u64) }
 ### 12.2 Embedded replicas
 
 An embedded replica is a local file kept as a physical replica of a
-server primary ([engine.md](engine.md#9-replication)). The program opens
+server primary ([replication.md](replication.md)). The program opens
 it with the primary's address and its bundles; the handle offers the
 same operations as an opened file, with these differences:
 
@@ -839,15 +857,11 @@ same operations as an opened file, with these differences:
   `SafePointTimeout`.
 - Bundles must already be registered on the primary; the replica
   applies no operators of its own. Lease renewals of the replica's
-  bundles are forwarded to the primary; they are idempotent, and the
-  replica retries them until the primary acknowledges, so a partition
-  delays a renewal but does not lose it. The replica computes a lease's
-  expiry from the last renewal in the log it has applied, and from
-  expiry refuses binds and calls on the bundle with `BundleExpired`;
-  the primary treats the lease as expired only after the further grace
-  of the `LeaseGrace` setting
-  ([applications.md](applications.md#42-leases)). No renewal extends
-  an expired lease; the bundle must be registered again.
+  bundles are forwarded to the primary and retried until it
+  acknowledges, so a partition delays a renewal but does not lose it
+  ([replication.md §3](replication.md#3-schema-leases-and-upgrades-at-replicas));
+  leases expire as [applications.md §4.2](applications.md#42-leases)
+  states.
 - `sync` waits until the replica has applied every commit the primary
   had when `sync` was called.
 
@@ -874,7 +888,7 @@ Rulings: repl/embedded/ship-log, repl/embedded/embedded-replica, repl/embedded/l
 The handle exposes the engine's counters to the program, as a snapshot
 on demand and through a callback invoked at an interval set at open.
 The counters are those of the statistics relations
-([catalog.md](catalog.md#5-statistics)), per constructor heap.
+([catalog.md](catalog.md#5-statistics)), per constructor relation.
 
 ```rust
 impl Database {

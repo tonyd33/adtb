@@ -52,7 +52,7 @@ Rulings: lang/nullary-fn
 
 ### 2.1 Storing a view
 
-```adt
+```adt fragment
 -- 0031
 module billing
 store open_by_user
@@ -66,8 +66,8 @@ refused. `unstore f` is its inverse.
 
 Storing a view does not change what it denotes. Every read of `f()`
 returns the value of `f`'s body at the reader's snapshot and schema
-version, whether `f` is stored or not. Storing is a physical choice: the engine keeps the
-result as a relation and reads it instead of evaluating the body. No
+version, whether `f` is stored or not. Storing changes only the cost
+of reading `f()` and of writing the relations it reads. No
 statement refreshes a stored view and no reader can observe one out of
 date.
 
@@ -79,7 +79,7 @@ A view is stored only if its result has an index-bounded incremental
 maintenance plan: for each base relation it reads, the change in the
 view caused by a change set on that relation is computable by delta
 queries whose every join from the delta probes an index. This is the
-rule and the compiler that admit constraints
+rule that admits constraints
 ([constraints.md](constraints.md#5-admission)). A view with no such
 plan is refused, and the refusal names each missing index or each
 operator with no incremental form:
@@ -108,19 +108,13 @@ view consistent with the base relations at that snapshot; a
 transaction that reads a stored view and its base is serializable as
 if the view were evaluated.
 
-A stored view is maintained by delta queries over the change set that
-probe the base relations through their indexes at the transaction's
-snapshot. The engine keeps no maintenance state other than the stored
-relation itself and, for each stored row, the number of derivations
-that produce it; a row leaves the view when its last derivation goes.
-
 ### 2.4 Concurrent maintenance
 
 A change to a `count` or `sum` in a stored view is an increment that
-commutes with other increments and records no read. Two transactions
-whose writes only change the same aggregate row of a stored view do
-not conflict through the view: two concurrent inserts of open invoices
-for one user both commit. A transaction that reads the aggregate row
+commutes with other increments. Two transactions whose writes only
+change the same aggregate row of a stored view do not conflict through
+the view: two concurrent inserts of open invoices for one user do not
+conflict with each other through it. A transaction that reads the aggregate row
 conflicts with concurrent writers to it by the ordinary rules
 ([transactions.md](transactions.md#1-serializability)).
 
@@ -129,6 +123,11 @@ read: a transaction whose change set changes an aggregate row that some
 constraint reads records a read of that row, so two writers that
 together violate the constraint conflict
 ([constraints.md](constraints.md#4-when-constraints-hold)).
+
+A commit whose increments would take a stored `count` or integer `sum`
+outside its type fails with
+`Rejected { reason: Faulted { fault: ArithmeticOverflow } }` and
+applies nothing.
 
 ### 2.5 What a stored view carries
 
@@ -166,7 +165,7 @@ admitted (§2.2) or the migration is refused. A bundle pinned to a
 version before the redefinition evaluates the body of its own version
 and never reads the stored rows.
 
-Rulings: derived/materialize/storage-choice, derived/admit/bounded, derived/freshness/in-txn, derived/freshness/hotspot/blind-delta, derived/ivm/delta-rules, derived/ivm/state/base-indexes, derived/mv-storage/heaps, derived/mv-integrity/keyed, derived/mv-integrity/indexed, derived/mv-integrity/constrained, derived/mv-evolve/translate, derived/mv-evolve/rebuild
+Rulings: derived/materialize/storage-choice, derived/admit/bounded, derived/freshness/in-txn, derived/freshness/hotspot/blind-delta, derived/ivm/delta-rules, derived/ivm/state/base-indexes, derived/mv-storage/heaps, derived/mv-integrity/keyed, derived/mv-integrity/indexed, derived/mv-integrity/constrained, derived/mv-evolve/translate, derived/mv-evolve/rebuild, spec/tiers/three-tiers
 
 ## 3. No rules or triggers
 
@@ -230,8 +229,8 @@ relation counters : Counter
 The default expression `e` is a literal, a constructor of literals, or
 `generate g`; it reads no relation and no other field. The values the
 generators give are defined in [model.md](model.md#73-generated-keys):
-`sequence` gives distinct values, and an explicitly given key value
-advances it past that value; `uuidv7` gives distinct values and
+`sequence` gives values distinct from every value issued and every key
+any committed row of the relation has held; `uuidv7` gives distinct values and
 nothing more; `clock` gives the wall-clock time at which the statement
 applies, one value for every row of the statement.
 
@@ -245,8 +244,8 @@ written directly as:
   of a `match` that is that result) of the source query of `insert r
   from (...)`;
 - the new value of a row in `update ... set` or in an arm of `set
-  match`, when it retags the row into the constructor the default
-  names;
+  match`, for the own fields of its constructor it omits, whether or
+  not it retags the row;
 - the target value of an `on delete retag C { ... }` action that
   retags a row of the relation.
 
@@ -261,6 +260,7 @@ sessions by the action `on delete retag Revoked {}`, and
 explicit retag:
 
 ```adt
+-- given k: Key identities
 update a in sessions.Active where a.who == k set Revoked {}
 ```
 
@@ -271,17 +271,24 @@ that exist when it is added. Adding a field to a constructor states
 its own fill for the existing rows, and may be followed by a default
 for later inserts:
 
-```adt
+```adt fragment
 -- 0033, from version 32
 module auth
 add field Identity.EmailPass.verified: Bool fill false
 add default identities.EmailPass.verified = false
 ```
 
+A write translated from a bundle pinned before a field existed takes
+the field's value in the existing row when it updates or retags a row
+of the new value's constructor; otherwise the field's current default,
+and the fill of the operator that added the field only when the
+relation has no default for it
+([evolution.md §7.4](evolution.md#74-fields-a-translated-write-lacks)).
+
 `add default r.f = e`, `add default r.C.f = e` and `drop default r.f`
 are operators ([evolution.md §4](evolution.md#4-operators)).
 
-Rulings: derived/defaults/on-relation, derived/defaults/backfill/separate
+Rulings: derived/defaults/on-relation, derived/defaults/backfill/separate, spec/evolution/translated-fields/same-ctor
 
 ## 5. Computed fields
 
@@ -349,13 +356,14 @@ are reclaimed as usual.
 
 A past state is named by a commit position, a value of the prelude
 type `Position = { epoch: I64, lsn: I64 }`
-([transactions.md](transactions.md#8-commit-positions-and-replica-reads)).
+([transactions.md](transactions.md#8-commit-positions)).
 The engine records for each commit the wall time at which it
 committed, never decreasing along positions; the recorded map is the
 system relation `sys::commit_times`
 ([catalog.md](catalog.md#15-commit-times-and-safe-snapshots)).
 
 ```adt
+-- given t: Instant, c: Position
 at commit Position { epoch: 3, lsn: 4120 } { from i in invoices.Paid select i }
 at instant t { from i in invoices.Paid select i }
 from p in (at commit c { from i in invoices.Open select i }), q in invoices.Paid
@@ -379,8 +387,8 @@ reader's snapshot.
 An `at` block is an expression of set type, usable anywhere a set is,
 including beside reads of the current state in one query. It reads
 only past state and writes nothing. No read-write transaction can make
-a safe snapshot unsafe, so a past read takes no SIREAD locks and
-records no read dependency
+a safe snapshot unsafe, so a past read never takes part in a
+serialization conflict
 ([transactions.md](transactions.md#1-serializability)).
 
 The block's body is typed at the schema version of the safe snapshot
@@ -414,13 +422,11 @@ it names when it runs.
 
 ### 6.4 Retention does not slow current reads
 
-Retained versions must not change the cost of reading current state.
-An implementation moves retained versions out of the current heaps
-into a history store per constructor relation, so current scans and
-index probes do not visit them; a past read reads both
-([engine.md](engine.md#5-heaps-and-versions)).
+Retained versions do not change the cost of reading current state:
+a read of the current state costs the same however long the retention
+window is.
 
-Rulings: derived/time-travel/window, derived/time-travel/basis/both, derived/time-travel/past-schema/as-written, derived/time-travel/retention/history-heap
+Rulings: derived/time-travel/window, derived/time-travel/basis/both, derived/time-travel/past-schema/as-written, derived/time-travel/retention/history-heap, spec/tiers/three-tiers
 
 ## 7. Valid time
 
