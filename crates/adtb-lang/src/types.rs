@@ -188,7 +188,7 @@ pub enum Ty {
     Tag(Box<Ty>),
     /// Fields sorted by name.
     Record(Vec<(String, Ty)>),
-    /// An anonymous sum: constructors in written order, each with its fields sorted by name; `sel` restricts it to a constructor-set row type.
+    /// An anonymous sum: constructors sorted by name, each with its fields sorted by name; `sel` restricts it to a constructor-set row type.
     Sum {
         ctors: Vec<(String, Vec<(String, Ty)>)>,
         sel: Option<CtorSet>,

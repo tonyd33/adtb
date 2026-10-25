@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{Expr, ExprKind, Lit};
+use crate::ast::{BinOp, Expr, ExprKind, Lit};
 use crate::kernel::{Kind, Prim, Transition};
 
 impl Checker<'_> {
@@ -223,7 +223,12 @@ impl Checker<'_> {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
                 };
-                let (x, y) = self.operands(a, b, None)?;
+                let op = match name {
+                    "checked_add" => BinOp::Add,
+                    "checked_sub" => BinOp::Sub,
+                    _ => BinOp::Mul,
+                };
+                let (x, y) = self.operator_operands(op, a, b, None)?;
                 let ty = match (&x.ty, &y.ty) {
                     (s, t) if Self::is_integer(s) && s == t => s.clone(),
                     (Ty::Base(Base::Decimal(s)), Ty::Base(Base::Decimal(t))) => {
@@ -277,8 +282,8 @@ impl Checker<'_> {
                 let [a, b, u, r] = self.arity(name, es, 4, span)? else {
                     unreachable!()
                 };
-                let x = self.synth(a)?;
-                let y = self.synth(b)?;
+                let x = self.decimal_operand(a)?;
+                let y = self.decimal_operand(b)?;
                 if !(Self::is_decimal(&x.ty) && Self::is_decimal(&y.ty)) {
                     return Err(self.wrong(name, &[&x.ty, &y.ty], span));
                 }

@@ -10,6 +10,7 @@ use crate::schema::{
 use crate::span::{Diag, FileDiag, FileId, Span};
 use crate::types::*;
 
+mod adhoc;
 mod expr;
 mod pat;
 mod prelude;
@@ -528,15 +529,11 @@ pub fn check_adhoc(
     }
     let mut out = Vec::new();
     let mut diags = Vec::new();
+    let mut temps = Vec::new();
     for item in items {
-        let r = match item {
-            ast::AdhocItem::Expr(e) => c.statement(e).map(|o| o.tm),
-            ast::AdhocItem::Write(w) => c.write(w),
-            ast::AdhocItem::Transact(b) => c.transact(b, None).map(|o| o.tm),
-            _ => continue,
-        };
-        match r {
-            Ok(tm) => out.push(tm),
+        match c.adhoc_item(item, &mut temps) {
+            Ok(Some(tm)) => out.push(tm),
+            Ok(None) => {}
             Err(d) => diags.push(d),
         }
     }

@@ -1832,6 +1832,7 @@ pub fn resolve_type(
                 fields.sort_by(|a, b| a.0.cmp(&b.0));
                 out.push((c.name.text.clone(), fields));
             }
+            out.sort_by(|a, b| a.0.cmp(&b.0));
             Ok(Ty::Sum {
                 ctors: out,
                 sel: None,

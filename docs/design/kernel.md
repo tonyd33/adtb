@@ -16,7 +16,7 @@ terms and share nothing else.
 | Entry point | Returns |
 | --- | --- |
 | `check_schema(schema)` | `Program`: one arena holding the term of every function, constraint, check, newtype domain, default, computed field, index field and retag delete action (§4.6) of the schema |
-| `check_adhoc(schema, program, items, params)` | `Adhoc`: an arena with one term per statement, and the variable of each ad hoc parameter |
+| `check_adhoc(schema, program, items, params)` | `Adhoc`: an arena with one term per query, write and `transact` statement, in the order of the items, and the variable of each ad hoc parameter; commands, grants, revokes and role, peer and temp relation statements are checked and have no term |
 | `check_query(schema, program, module, q)` | `Query`: an arena with the term of one registered query |
 | `check_txn(schema, program, module, t)` | `Txn`: an arena with the term of one registered transaction |
 
@@ -96,7 +96,7 @@ that `Top` lists its count, then its source, then its keys.
 `τ` is the node's `ty`; `ty(e)` is a child's. Types are `types::Ty`:
 `Data { def, args, ctors }` is `N τ̄ . S` (`ctors: None` for every
 constructor), `Record` an anonymous record with fields sorted by name,
-`Sum` an anonymous sum with constructors in written order, `Set` and
+`Sum` an anonymous sum with constructors sorted by name, `Set` and
 `NonEmpty` are `Set` and `Set⁺`, `Key { rel, ctors }` is `Key r.S`,
 `Unit` is the empty record `{}`, `Change` a write (§4). `Ty::Group` never
 occurs on a node.
@@ -117,7 +117,7 @@ caller's, before reading a type that may hold one.
 | `Prim(p, args)` | as §5 states for `p` |
 | `Record(fs)` | `τ` is a `Record` with the same labels; fields sorted by name |
 | `Field(e, l)` | `ty(e)` is a record, or a row type every constructor of which has `l`; `τ` is `l`'s type |
-| `Ctor { ctor, fields }` | `τ` is a declared sum (`ctors` is `Some([ctor])`, or `None` when the sum has one constructor), an anonymous `Sum`, or `Tag T`; `ctor` indexes the declaration order, the written order, or `T`'s constructors; every field of the constructor, header fields included, is given once, sorted by name; a `Tag` constructor has none |
+| `Ctor { ctor, fields }` | `τ` is a declared sum (`ctors` is `Some([ctor])`, or `None` when the sum has one constructor), an anonymous `Sum`, or `Tag T`; `ctor` indexes the declaration order, the name order, or `T`'s constructors; every field of the constructor, header fields included, is given once, sorted by name; a `Tag` constructor has none |
 | `Case { scrutinee, arms }` | `ty(scrutinee)` is a sum or row type with constructor set `S`; one arm per constructor of `S`, ascending; each arm's body is a subtype of `τ` |
 | `If(c, a, b)` | `ty(c)` is `Bool`; `a` and `b` are subtypes of `τ` |
 | `Let(x, e, b)` | `τ = ty(b)` |
@@ -136,7 +136,7 @@ caller's, before reading a type that may hold one.
 | `EmptySet`, `Singleton(e)`, `Union(a, b)` | `τ` is a set type; elements are subtypes of its element type |
 | `For(x, src, b)` | `ty(src)` is a set of `ty(x)`; `τ = ty(b)`, a set |
 | `IsEmpty(e)`, `Exists(e)` | `ty(e)` is a set; `τ = Bool` |
-| `Agg { op, var, source, body }` | `ty(source)` is a set, `Set` even when the range is nonempty; `τ` is `I64` for `count` and `ty(body)` for `sum`; for `min`, `max` and `avg` it is `ty(body)` exactly when the range is nonempty (a single generator over a group, with no filter), else `Option ty(body)` |
+| `Agg { op, var, source, body }` | `ty(source)` is a set, `Set⁺` when the range is nonempty (a single generator over a group, with no filter); `τ` is `I64` for `count` and `ty(body)` for `sum`; for `min`, `max` and `avg` it is `ty(body)` exactly when the range is nonempty, else `Option ty(body)` |
 | `Group { var, source, by }` | `τ = Set { key: ty(by), rows: Set⁺ ty(var) }` |
 | `Top { count, keys, var, source }` | `ty(count) = I64`; each key is over `var`, ordered, `true` for `desc`; `τ = ty(source)` |
 | `Present { var, source, keys, take, after }` | the final result of an ad hoc statement or a registered query body, nested nowhere else; `take : I64`; `after : Option K` for one key of type `K`, or an `Option` of a record with one field per key, whose fields in name order match the keys in order; `τ = ty(source)`, delivered as a sequence |
@@ -149,8 +149,6 @@ A `Record` or `Ctor` evaluates its fields in the order the node lists
 them, which is name order.
 
 TODO: whether record and constructor fields are evaluated in their written order, as [../spec/semantics.md §5.1](../spec/semantics.md#51-scalar-forms) has it, is undecided.
-
-TODO: the constructor indices of an anonymous sum follow its written order, while two spellings in different orders are one type; how a consumer identifies their constructors is undecided.
 
 ## 4. Writes and blocks
 

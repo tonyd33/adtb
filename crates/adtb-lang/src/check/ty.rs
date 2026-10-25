@@ -211,6 +211,7 @@ pub fn join_adhoc(schema: &Schema, a: &Ty, b: &Ty) -> Option<Ty> {
                     None => out.push((c.clone(), fs.clone())),
                 }
             }
+            out.sort_by(|a, b| a.0.cmp(&b.0));
             let mut names = sum_selected(x, s1);
             names.extend(sum_selected(y, s2));
             let sel = sum_sel(&out, &names);

@@ -4,6 +4,7 @@ use crate::kernel::{Const, Prim};
 use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use crate::schema::build;
 
+mod adhoc;
 mod writes;
 
 const RUNNING: &str = r#"
@@ -338,6 +339,76 @@ fn anonymous_sums_are_equal_up_to_order() {
     );
 }
 
+#[test]
+fn anonymous_sum_constructors_are_numbered_in_name_order() {
+    let (s, p) = program(
+        "fn ba () -> B { b: Text } | A { a: I64 } = B { b: \"x\" }
+         fn ab () -> A { a: I64 } | B { b: Text } = B { b: \"x\" }",
+    )
+    .unwrap();
+    for name in ["ba", "ab"] {
+        let body = body_of(&s, &p, name);
+        assert!(
+            matches!(p.terms.kind(body), Kind::Ctor { ctor: 1, .. }),
+            "{name}: {:?}",
+            p.terms.kind(body)
+        );
+        let Ty::Sum { ctors, .. } = p.terms.ty(body) else {
+            panic!("{name}: an anonymous sum");
+        };
+        let names: Vec<&str> = ctors.iter().map(|(c, _)| c.as_str()).collect();
+        assert_eq!(names, ["A", "B"], "{name}");
+    }
+    let (s, a) = adhoc(
+        &[("i", "Identity")],
+        "match i | Google g -> Zed { n: 1 } | Apple a -> Alpha | EmailPass e -> Zed { n: 2 }",
+    )
+    .unwrap();
+    assert_eq!(s.show_ty(a.terms.ty(a.items[0])), "Alpha | Zed { n: I64 }");
+}
+
+/// Each anonymous constructor reachable from `t`: the constructors of its node's type, its name there, and the field names it is given.
+fn anon_ctors(terms: &crate::kernel::Terms, t: Tm) -> Vec<(Vec<String>, String, Vec<String>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![t];
+    while let Some(t) = stack.pop() {
+        if let (Kind::Ctor { ctor, fields }, Ty::Sum { ctors, .. }) = (terms.kind(t), terms.ty(t)) {
+            out.push((
+                ctors.iter().map(|(c, _)| c.clone()).collect(),
+                ctors[*ctor as usize].0.clone(),
+                fields.iter().map(|(f, _)| f.clone()).collect(),
+            ));
+        }
+        stack.extend(terms.children(t));
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[test]
+fn adhoc_anonymous_constructors_take_their_index_in_the_joined_sum() {
+    let sum = vec!["Alpha".to_string(), "Zed".to_string()];
+    let want = vec![
+        (sum.clone(), "Alpha".to_string(), Vec::new()),
+        (sum, "Zed".to_string(), vec!["n".to_string()]),
+    ];
+    for (params, text) in [
+        (
+            vec![("i", "Identity")],
+            "match i | Google g -> Zed { n: 1 } | Apple a -> Alpha | EmailPass e -> Zed { n: 2 }",
+        ),
+        (vec![], "[Zed { n: 1 }, Alpha]"),
+        (vec![], "[Zed { n: 1 }] union [Alpha]"),
+        (vec![("c", "Bool")], "if c then Zed { n: 1 } else Alpha"),
+        (vec![], "Alpha == Zed { n: 1 }"),
+        (vec![("z", "Zed { n: I64 }")], "if true then z else Alpha"),
+    ] {
+        let (_, a) = adhoc(&params, text).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+        assert_eq!(anon_ctors(&a.terms, a.items[0]), want, "{text}");
+    }
+}
+
 // Joins
 
 #[test]
@@ -441,6 +512,27 @@ fn comparisons_meet_at_the_join() {
     );
     refuses("fn f (s: Status) -> Bool = s < s", "has no order");
     accepts("fn f (a: Decimal 2, b: Decimal 3) -> Bool = a < b");
+}
+
+#[test]
+fn constructors_of_one_sum_compare_at_their_join() {
+    let stage = "type Stage ordered = Open | Billed { at: I64 } | Settled { at: I64, ref: Text }";
+    accepts(&format!(
+        "{stage}\nfn f () -> Bool = Billed {{ at: 100 }} < Settled {{ at: 0, ref: \"a\" }}"
+    ));
+    accepts(&format!(
+        "{stage}\nfn f () -> Bool = Open == Billed {{ at: 1 }}"
+    ));
+    accepts(&format!(
+        "{stage}\nfn f (s: Stage) -> Bool = match s
+           | Open -> true
+           | Billed x -> x < Settled {{ at: 0, ref: \"a\" }}
+           | Settled p -> Billed {{ at: 1 }} <= p"
+    ));
+    refuses(
+        &format!("{stage}\nfn f () -> Bool = Billed {{ at: 1 }} < Courier {{ name: \"a\" }}"),
+        "expected Stage, found Via.Courier",
+    );
 }
 
 #[test]
@@ -1650,6 +1742,50 @@ fn aggregates_over_a_group_are_nonempty() {
     );
 }
 
+/// The aggregates reachable from `t`, each with whether its source has the nonempty type.
+fn agg_sources(terms: &crate::kernel::Terms, t: Tm) -> Vec<(crate::kernel::Agg, bool)> {
+    let mut out = Vec::new();
+    let mut stack = vec![t];
+    while let Some(t) = stack.pop() {
+        if let Kind::Agg { op, source, .. } = terms.kind(t) {
+            out.push((*op, matches!(terms.ty(*source), Ty::NonEmpty(_))));
+        }
+        stack.extend(terms.children(t));
+    }
+    out.sort_by_key(|(_, nonempty)| *nonempty);
+    out
+}
+
+#[test]
+fn an_aggregate_over_a_group_has_a_nonempty_source() {
+    use crate::kernel::Agg;
+    for (op, value, want) in [
+        ("min", "x.total", Agg::Min),
+        ("max", "x.total", Agg::Max),
+        ("avg", "f64(x.total)", Agg::Avg),
+    ] {
+        let (s, p) = program(&format!(
+            "fn f () -> Set ({{ a: {t}, b: Option {t} }}) =
+               from o in orders group o by o.user into g
+               select {{ a: {op}({value} for x in g), b: {op}({value} for x in g where x.qty > 1) }}",
+            t = if op == "avg" { "F64" } else { "I64" },
+        ))
+        .unwrap();
+        let both = vec![(want, false), (want, true)];
+        assert_eq!(agg_sources(&p.terms, body_of(&s, &p, "f")), both, "{op}");
+        let n = crate::norm::program(&s, &p).expect("normalises");
+        let (_, body) = n.functions[s.functions.iter().position(|f| f.name == "f").unwrap()]
+            .clone()
+            .expect("a normal form");
+        assert_eq!(agg_sources(&n.terms, body), both, "{op} normalised");
+    }
+    let (s, p) = program("fn f () -> Option I64 = min(o.total for o in orders)").unwrap();
+    assert_eq!(
+        agg_sources(&p.terms, body_of(&s, &p, "f")),
+        vec![(Agg::Min, false)]
+    );
+}
+
 #[test]
 fn aggregate_types() {
     accepts("fn f (u: User) -> I64 = sum(o.total for o in orders where o.user == key u)");
@@ -2059,6 +2195,31 @@ fn arithmetic_has_one_numeric_type() {
     );
     accepts("fn f (a: Decimal 2, b: Decimal 3) -> Decimal 5 = a * b");
     accepts("fn f (a: Decimal 2, b: Decimal 3) -> Decimal 3 = a + b");
+}
+
+#[test]
+fn a_literal_against_a_decimal_keeps_its_own_scale() {
+    adhoc_accepts(&[], "1.0 == 1.00");
+    adhoc_accepts(&[], "1.5 > 1.49");
+    adhoc_accepts(&[], "1 < 1.5");
+    accepts("fn f (x: Decimal 1) -> Bool = x == 1.00");
+    accepts("fn f (x: Decimal 2) -> Bool = 1.125 < x");
+    accepts("fn f (x: Decimal 2) -> Bool = x >= 1");
+    accepts("fn f (x: Decimal 0) -> Decimal 0 = x + 1");
+    accepts("fn f (x: Decimal 2) -> Decimal 2 = 1 - x");
+    accepts("fn f (x: Decimal 2) -> Decimal 2 = x * 3");
+    accepts("fn f (x: Decimal 2) -> Decimal 3 = x * 1.5");
+    assert_eq!(adhoc_ty(&[], "1 + 1.5"), "Decimal 1");
+    assert_eq!(adhoc_ty(&[], "1.25 * 1.5"), "Decimal 3");
+    assert_eq!(adhoc_ty(&[], "div(2.0, 3, 4, HalfUp)"), "Decimal 4");
+    accepts("fn f (x: Decimal 2) -> Decimal 4 = div(1, x, 4, HalfUp)");
+    accepts("fn f (x: Decimal 2) -> Option (Decimal 2) = checked_mul(x, 3)");
+    accepts("fn f (x: Decimal 2) -> Option (Decimal 3) = checked_add(1.125, x)");
+    refuses(
+        "fn f (x: I64) -> Decimal 4 = div(x, 3, 4, HalfUp)",
+        "`div` does not take I64",
+    );
+    refuses("fn f (x: Decimal 2) -> Bool = x == 1e3", "does not check");
 }
 
 #[test]

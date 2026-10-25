@@ -910,7 +910,12 @@ impl Checker<'_> {
                 irs[i].body = Some(body);
             }
         }
-        Ok(joined.expect("a match has an arm"))
+        let joined = joined.expect("a match has an arm");
+        for ir in irs.iter_mut() {
+            let body = ir.body.take().expect("checked");
+            ir.body = Some(self.widen(body, &joined));
+        }
+        Ok(joined)
     }
 
     /// The error for arms of types `a` and `b` that have no join, naming the fields missing from either.

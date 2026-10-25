@@ -789,3 +789,33 @@ fn try_returns_the_fault_as_a_value() {
     ]);
     assert_eq!(want, got);
 }
+
+#[test]
+fn adhoc_anonymous_constructors_are_numbered_in_their_joined_sum() {
+    let f = fixture();
+    let zed = |n| Value::Ctor(1, vec![("n".into(), Value::Int(n))]);
+    let alpha = Value::Ctor(0, Vec::new());
+    let q = "match i | Google g -> Zed { n: 1 } | Apple a -> Alpha | EmailPass e -> Zed { n: 2 }";
+    let at = |n| {
+        f.eval_with(q, &[("i", "Identity", identity(&f, n))])
+            .unwrap()
+    };
+    assert_eq!(zed(2), at(1));
+    assert_eq!(zed(1), at(2));
+    assert_eq!(alpha, at(4));
+    assert_eq!(
+        set([zed(1), alpha.clone()]),
+        f.value("[Zed { n: 1 }, Alpha]")
+    );
+    assert_eq!(
+        set([zed(1), alpha.clone()]),
+        f.value("[Zed { n: 1 }] union [Alpha]")
+    );
+    assert_eq!(Value::Ctor(0, Vec::new()), f.value("Zed == Alpha"));
+    let z = Value::Ctor(0, vec![("n".into(), Value::Int(3))]);
+    assert_eq!(
+        zed(3),
+        f.eval_with("if true then z else Alpha", &[("z", "Zed { n: I64 }", z)])
+            .unwrap()
+    );
+}

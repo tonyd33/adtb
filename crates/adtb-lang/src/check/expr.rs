@@ -38,6 +38,42 @@ pub(super) fn wants_expected(e: &Expr) -> bool {
     }
 }
 
+fn every_ctor(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Data { def, args, .. } => Ty::Data {
+            def: *def,
+            args: args.clone(),
+            ctors: None,
+        },
+        Ty::Sum { ctors, .. } => Ty::Sum {
+            ctors: ctors.clone(),
+            sel: None,
+        },
+        t => t.clone(),
+    }
+}
+
+/// The fractional digits of a numeric literal, absent for a float literal.
+fn literal_scale(e: &Expr) -> Option<u8> {
+    match &e.kind {
+        ExprKind::Lit(Lit::Int(_)) => Some(0),
+        ExprKind::Lit(Lit::Decimal(t)) => t
+            .split_once('.')
+            .and_then(|(_, f)| u8::try_from(f.len()).ok()),
+        ExprKind::Unary(UnOp::Neg, x) => literal_scale(x),
+        _ => None,
+    }
+}
+
+fn literal_rank(e: &Expr) -> u8 {
+    match &e.kind {
+        ExprKind::Lit(Lit::Decimal(_)) => 1,
+        ExprKind::Lit(Lit::Float(_)) => 2,
+        ExprKind::Unary(UnOp::Neg, x) => literal_rank(x),
+        _ => 0,
+    }
+}
+
 const SCALES: [i128; 39] = {
     let mut t = [1i128; 39];
     let mut i = 1;
@@ -549,28 +585,36 @@ impl Checker<'_> {
         ))
     }
 
-    /// Checks two operands that must meet at one type, a literal or constructor taking the other's type.
+    /// Checks two operands that must meet at one type, a literal or constructor taking the other's type with every constructor of its sum.
     pub(super) fn operands(&mut self, a: &Expr, b: &Expr, expected: Option<&Ty>) -> R<(Out, Out)> {
         match (wants_expected(a), wants_expected(b)) {
             (true, false) => {
                 let y = self.synth(b)?;
-                let x = self.check(a, &y.ty)?;
+                let x = self.against(a, &y.ty)?;
                 Ok((x, y))
             }
             (false, true) => {
                 let x = self.synth(a)?;
-                let y = self.check(b, &x.ty)?;
+                let y = self.against(b, &x.ty)?;
                 Ok((x, y))
             }
             (true, true) => match expected {
                 Some(t) => Ok((self.check(a, t)?, self.check(b, t)?)),
                 None => {
                     let x = self.synth(a)?;
-                    let y = self.check(b, &x.ty)?;
+                    let y = self.against(b, &x.ty)?;
                     Ok((x, y))
                 }
             },
             (false, false) => Ok((self.synth(a)?, self.synth(b)?)),
+        }
+    }
+
+    /// Checks `e` against the whole sum of `other`; in ad hoc text, synthesizes it beside an anonymous sum, which the two operands join.
+    fn against(&mut self, e: &Expr, other: &Ty) -> R<Out> {
+        match other {
+            Ty::Sum { .. } if self.adhoc() => self.synth(e),
+            t => self.check(e, &every_ctor(t)),
         }
     }
 
@@ -618,12 +662,13 @@ impl Checker<'_> {
                     )
                 })?;
                 let rows = x.rows.filter(|r| y.rows == Some(*r));
+                let (x, y) = (self.widen(x, &j), self.widen(y, &j));
                 let mut o = self.out(Kind::Union(x.tm, y.tm), j);
                 o.rows = rows;
                 Ok(o)
             }
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                let (x, y) = self.operands(a, b, None)?;
+                let (x, y) = self.operator_operands(op, a, b, None)?;
                 let decimals = matches!(
                     (&x.ty, &y.ty),
                     (Ty::Base(Base::Decimal(_)), Ty::Base(Base::Decimal(_)))
@@ -646,6 +691,7 @@ impl Checker<'_> {
                 if j.mentions_fn() {
                     return Err(diag(span, "`==` never applies to a function"));
                 }
+                let (x, y) = (self.widen(x, &j), self.widen(y, &j));
                 let ordering = !matches!(op, BinOp::Eq | BinOp::Ne);
                 if ordering && !self.ordered(&j) {
                     return Err(diag(span, format!("{} has no order", self.show(&j))));
@@ -680,7 +726,7 @@ impl Checker<'_> {
                 }
             }
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
-                let (x, y) = self.arith_operands(op, a, b, expected)?;
+                let (x, y) = self.operator_operands(op, a, b, expected)?;
                 let ty = self.arith_result(op, &x.ty, &y.ty, span)?;
                 let prim = match op {
                     BinOp::Add => Prim::Add,
@@ -694,43 +740,59 @@ impl Checker<'_> {
         }
     }
 
-    /// Arithmetic operands: a literal checks against the other operand, except that against a decimal it keeps its own scale and against a time length it is an `I64` count.
-    fn arith_operands(
+    /// Operands of `op`: a literal checks against the other operand, except that against a decimal it keeps its own scale and against a time length it is an `I64` count.
+    pub(super) fn operator_operands(
         &mut self,
         op: BinOp,
         a: &Expr,
         b: &Expr,
         expected: Option<&Ty>,
     ) -> R<(Out, Out)> {
-        let lit_against = |other: &Ty| -> Option<Ty> {
-            match other {
-                Ty::Base(Base::Decimal(_)) => None,
-                Ty::Base(Base::Duration | Base::Period)
-                    if matches!(op, BinOp::Mul | BinOp::Div) =>
-                {
-                    Some(Ty::Base(Base::I64))
-                }
-                t => Some(t.clone()),
-            }
-        };
         match (is_literal(a), is_literal(b)) {
             (true, false) => {
                 let y = self.synth(b)?;
-                let t = lit_against(&y.ty);
-                let x = self.literal(a, t.as_ref())?;
+                let x = self.literal_operand(op, a, &y.ty)?;
                 Ok((x, y))
             }
             (false, true) => {
                 let x = self.synth(a)?;
-                let t = lit_against(&x.ty);
-                let y = self.literal(b, t.as_ref())?;
+                let y = self.literal_operand(op, b, &x.ty)?;
                 Ok((x, y))
             }
             (true, true) => {
-                let t = expected.filter(|t| self.is_num(t));
-                Ok((self.literal(a, t)?, self.literal(b, t)?))
+                if let Some(t) = expected.filter(|t| self.is_num(t)) {
+                    return Ok((self.literal(a, Some(t))?, self.literal(b, Some(t))?));
+                }
+                if literal_rank(b) > literal_rank(a) {
+                    let y = self.literal(b, None)?;
+                    let x = self.literal_operand(op, a, &y.ty)?;
+                    Ok((x, y))
+                } else {
+                    let x = self.literal(a, None)?;
+                    let y = self.literal_operand(op, b, &x.ty)?;
+                    Ok((x, y))
+                }
             }
-            (false, false) => Ok((self.synth(a)?, self.synth(b)?)),
+            (false, false) => self.operands(a, b, expected),
+        }
+    }
+
+    fn literal_operand(&mut self, op: BinOp, lit: &Expr, other: &Ty) -> R<Out> {
+        let t = match other {
+            Ty::Base(Base::Decimal(_)) => literal_scale(lit).map(|k| Ty::Base(Base::Decimal(k))),
+            Ty::Base(Base::Duration | Base::Period) if matches!(op, BinOp::Mul | BinOp::Div) => {
+                Some(Ty::Base(Base::I64))
+            }
+            t => Some(t.clone()),
+        };
+        self.literal(lit, t.as_ref().or(Some(other)))
+    }
+
+    /// An operand that must be a decimal, a literal taking its own scale.
+    pub(super) fn decimal_operand(&mut self, e: &Expr) -> R<Out> {
+        match literal_scale(e) {
+            Some(k) if is_literal(e) => self.literal(e, Some(&Ty::Base(Base::Decimal(k)))),
+            _ => self.synth(e),
         }
     }
 
@@ -1756,9 +1818,10 @@ impl Checker<'_> {
                 j
             }
         };
-        let set_ty = Ty::Set(Box::new(elem));
+        let set_ty = Ty::Set(Box::new(elem.clone()));
         let mut tm = self.add(Kind::EmptySet, set_ty.clone());
         for o in outs.into_iter().rev() {
+            let o = self.widen(o, &elem);
             let one = self.add(Kind::Singleton(o.tm), set_ty.clone());
             tm = self.add(Kind::Union(one, tm), set_ty.clone());
         }
@@ -1799,7 +1862,7 @@ impl Checker<'_> {
                         ),
                     )
                 })?;
-                (x, y, j)
+                (self.widen(x, &j), self.widen(y, &j), j)
             }
         };
         let rows = x.rows.filter(|r| y.rows == Some(*r));
@@ -2744,6 +2807,14 @@ impl Checker<'_> {
             };
             (v, source, false, Vec::new())
         } else {
+            let nonempty = gens.len() == 1 && filter.is_none();
+            let set_of = |t: Ty| {
+                if nonempty {
+                    Ty::NonEmpty(Box::new(t))
+                } else {
+                    Ty::Set(Box::new(t))
+                }
+            };
             let mut frames = Vec::new();
             let mut binders = Vec::new();
             for g in gens {
@@ -2757,8 +2828,7 @@ impl Checker<'_> {
                     binders.push(xi);
                     let xt = self.var_tm(xi);
                     let gv = self.group_value(&info, xt);
-                    let set_ty = Ty::Set(Box::new(info.value_ty.clone()));
-                    let one = self.add(Kind::Singleton(gv), set_ty);
+                    let one = self.add(Kind::Singleton(gv), set_of(info.value_ty.clone()));
                     let y = self.bind(&g.binder.text, info.value_ty.clone(), info.value_rows);
                     frames.push(Frame::For(y, one));
                     binders.push(y);
@@ -2775,11 +2845,11 @@ impl Checker<'_> {
                 frames.push(Frame::Where(pt.tm));
             }
             let (labels, rec, rec_ty) = self.binder_record(&binders);
-            let set_ty = Ty::Set(Box::new(rec_ty.clone()));
+            let set_ty = set_of(rec_ty.clone());
             let one = self.add(Kind::Singleton(rec), set_ty.clone());
             let source = self.assemble(frames, one, &set_ty);
             let xi = self.fresh(rec_ty);
-            (xi, source, gens.len() == 1 && filter.is_none(), labels)
+            (xi, source, nonempty, labels)
         };
         let v = self.synth(value)?;
         let ty = match op {
