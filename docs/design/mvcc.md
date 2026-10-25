@@ -74,25 +74,85 @@ Rulings: layout/tuple-header/lean
 
 ## 4. Transaction ids, the commit log and snapshots
 
+### 4.1 Transaction ids
+
 Transaction ids are 64 bits and never wrap, so versions are never
-frozen. Xids are allocated from a counter whose reserved upper bound is
-logged before use, so the counter never goes back after a crash, even
-for xids of transactions that abort. Constructor ids need no counter:
-they follow from the operator log.
+frozen. Ids are assigned in increasing order from 1; the value 0 is
+never an id and is what `xmax` holds when no transaction deleted the
+version. Constructor ids need no counter: they follow from the operator
+log.
+
+Ids are assigned from a reservation. Before the first id of a new
+reservation is assigned, the transactions layer logs an xid allocation
+record (`Pager::reserve_xids`) naming the first id past it, and forces
+the log.
+
+Postconditions:
+
+- An id is never assigned twice, across any number of crashes, whether
+  its transaction committed, aborted or was running at a crash.
+- Assigning ids never exhausts them: at one id per nanosecond the 64-bit
+  space lasts over 500 years. A process that spends the last id
+  crashes.
+
+### 4.2 The commit log
 
 The commit log holds 2 bits per xid (in progress, committed, aborted)
 in commit log pages of the file. Commit positions are not in the
 commit log; for the time-travel window a separate map gives them
-(§10.3). A snapshot is:
+(§10.3). The commit log is found by its root page, whose page id the
+catalog records.
+
+Invariants:
+
+- Every id below the reservation has a status; an id's status changes
+  once, from in progress to committed or aborted.
+- Readers never write commit log pages or heap pages to record a
+  status.
+
+A commit changes the commit log page to committed and then logs the
+commit record; an abort does the same with aborted and the abort
+record. A commit is durable, and may be acknowledged, once the log is
+durable past its commit record.
+
+Precondition on the pager: a page change and the commit or abort
+record logged by the next call on the pager lie in one batch
+([storage.md §5.3](storage.md#53-blocks-and-segments)), so a crash
+keeps both or neither.
+
+Recovery replays the commit log pages as any pages
+([storage.md §7](storage.md#7-recovery)); it does not read the commit
+and abort records. Opening the commit log after recovery then records
+as aborted every reserved id still in progress: the transactions
+running at the crash and the ids reserved but never assigned.
+
+Postconditions, after a crash and recovery:
+
+- An id reads as committed exactly when recovery accepted its commit
+  record, or it lies below the truncation bound. An acknowledged commit
+  therefore stays committed.
+- Every other id below the reservation reads as aborted. No id below the
+  reservation reads as in progress until new transactions start.
+
+### 4.3 Snapshots
+
+A snapshot is:
 
 ```text
 snapshot { xmin: u64, xmax: u64, in_progress: [u64] }
 ```
 
+`xmax` is the next id to be assigned when the snapshot is taken,
+`in_progress` the ids then running, in order, and `xmin` the oldest of
+them, or `xmax` when none runs. Every id below `xmin` had resolved when
+the snapshot was taken.
+
 Visibility rule: a version's writer `x` counts as committed for
 snapshot `s` when `x < s.xmax`, `x` is not in `s.in_progress`, and the
 commit log says committed. The in-progress test precedes the commit log
 lookup. Readers never write heap pages to cache a writer's status.
+
+### 4.4 Truncation
 
 The commit log is truncated from below.
 
@@ -106,8 +166,8 @@ Preconditions for dropping the commit log prefix below a bound `b`:
 
 Postcondition: every xid below `b` reads as committed, and no
 remaining version names an aborted xid below the bound. The bound is
-recorded in the file header
-([storage.md §1.2](storage.md#12-file-header)).
+recorded in the commit log's root page, in the same change that drops
+the prefix; the commit log pages that held only ids below it are freed.
 
 Rulings: mvcc/xid-clog, mvcc/xid-width/xid64, mvcc/status/clog-lookup
 
@@ -126,6 +186,19 @@ update adds no index entries; any other update inserts a new entry
 into every index whose set contains the constructor. Creating an index
 over a constructor set handles broken heap-only chains in those heaps
 only.
+
+A version whose header holds `xmin` and `xmax` is visible to a
+reader `r` at snapshot `s` when:
+
+- `xmin` is `r`, or counts as committed for `s` (§4.3); and
+- `xmax` is 0, or is neither `r` nor counts as committed for `s`.
+
+A version is visible to the transaction that wrote it whatever the
+command; which of its own versions a statement sees is decided by the
+command ids in the transaction's local state. Visibility reads no flag
+of §3: a moved version is invisible to newer snapshots by its `xmax`,
+like any superseded version. A deleter that aborted leaves the version
+visible until vacuum clears its `xmax`.
 
 Rulings: mvcc/o2n, mvcc/version-tid, mvcc/hot/per-heap
 
@@ -335,6 +408,18 @@ over `invoices` does not hold back vacuum of `identities`. The
 watermark of a heap also includes the oldest snapshot replicas report
 for it ([replication.md §4](replication.md#4-vacuum-feedback)).
 Versions kept for the time-travel window are handled by §10.3.
+
+The watermark `w(h)` of heap `h` is the least of the next id to be
+assigned, the `xmin` of every live snapshot published to `h`, and every
+id a replica last reported for `h`.
+
+Invariant: `w(h)` is never past the `xmin` of a live snapshot published
+to `h`, nor past a replica's report for `h`.
+
+Postcondition: a version of `h` whose `xmax` names a transaction that
+committed, with `xmax < w(h)`, is dead to every snapshot published to
+`h`, live or taken later; a version whose `xmin` names a transaction
+that aborted is dead to every snapshot.
 
 Rulings: mvcc/watermark, mvcc/long-reader/ctor-scoped
 
