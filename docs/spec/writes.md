@@ -13,7 +13,7 @@ constructor `Apple` and 0012 enables it, so `Identity` is `EmailPass |
 Google | Apple` and `identities.OAuth` is `Google | Apple`. Examples
 are independent of each other. They extend that schema with:
 
-```
+```adt
 type Login { id: Key logins, user: Key users on delete cascade }
   = Active  { identity: Key identities on delete retag Revoked {} }
   | Revoked { at: Instant }
@@ -144,7 +144,7 @@ Rulings: write/surface/txdata, write/primitive/delta, write/unit/multi, write/bu
 
 An insert names its target and gives its rows.
 
-```
+```adt
 insert users { name: n }
 insert identities.Google { user: u, gid: g }
 insert identities.Google from (
@@ -193,7 +193,7 @@ and generated keys are filled in:
   type, or of the sum when the target is the relation variable of a sum,
   which a `match` consumes.
 
-```
+```adt
 transact
   let u = insert users { name: n }
   let i = insert identities.Google { user: key u, gid: g }
@@ -209,7 +209,7 @@ the statement's change set.
 Defaults and generated values are clauses of the relation variable
 and are applied by inserts into it ([derived.md](derived.md#4-defaults)):
 
-```
+```adt
 relation logins : Login
   key id generate sequence
   default Revoked.at = generate clock
@@ -282,7 +282,7 @@ Rulings: write/insert/ctor, write/insert/value, write/insert/returns/rows, deriv
 
 ### 3.1 Forms
 
-```
+```adt
 update x in R where p set e
 update x set e
 ```
@@ -296,7 +296,7 @@ whole value of the row and may read `x`. The second form updates the
 one row `x` already names, bound by `let` or by an upsert's `old`
 (§6).
 
-```
+```adt
 update g in identities.Google where g.user == u set Google { g with gid: g2 }
 
 update i in identities where i.user == u
@@ -323,7 +323,7 @@ rest. `C { x with f: v }` builds the whole new value from `x`. A field
 holding a value-level sum is replaced by a whole new value or rebuilt
 by a match over it:
 
-```
+```adt
 type Address = US { zip: Text, street: Text } | Intl { country: Text, postcode: Text }
 type Customer = { id: Key customers, name: Text, address: Address }
 relation customers : Customer key id generate sequence
@@ -360,7 +360,7 @@ Rulings: write/update/ctor-binder, write/update/match-set, write/nested/replace,
 There is no retag statement. An update whose new value is a constructor
 other than the row's current one retags the row:
 
-```
+```adt
 update i in identities where i.id == k
 set match i
   | EmailPass e -> Google { gid: lookup(e.email) }
@@ -406,7 +406,7 @@ reference is checked against the constructor relation it names, so a
 reference of type `Key identities` is unaffected by any retag and a
 reference of type `Key identities.EmailPass` refuses one.
 
-```
+```adt
 -- refused while a reset references identity k
 update i in identities.EmailPass where i.id == k set Google { gid: g }
 ```
@@ -428,7 +428,7 @@ Rulings: write/retag/assign, write/retag/old/in-scope, fk/retag/recheck, model/o
 
 ## 5. Delete
 
-```
+```adt
 delete x in R where p
 delete x
 ```
@@ -438,7 +438,7 @@ satisfies `p` is in the deleted set of its constructor relation. The
 second form deletes the one row `x` names. Bound by `let`, a delete
 binds the set of rows it deletes, as they were in the pre-state.
 
-```
+```adt
 delete s in logins.Revoked where s.user == u
 delete s in (from s in logins.Active, i in identities.Google
              where s.identity == key i and i.gid == g select s)
@@ -453,7 +453,7 @@ Rulings: write/bulk/from-query, write/primitive/delta
 
 ### 6.1 Form
 
-```
+```adt
 insert identities.Google { user: u, gid: g }
 unless conflict on (gid) in Google
 else update old set Google { old with user: u }
@@ -513,7 +513,7 @@ In the else branch, `new` is bound beside `old` to the row the insert
 proposed, with defaults and generated values filled in, so a bulk
 upsert can read each incoming row:
 
-```
+```adt
 insert identities.Google from (
   from x in imports.Oauth select { user: x.user, gid: x.sub })
 unless conflict on (gid) in Google
@@ -528,7 +528,7 @@ bound. A `let` on a single-row upsert whose else branch can delete the
 row, because any arm of it is a delete, is a type error, since the
 binding must be exactly one row. This makes a get-or-create:
 
-```
+```adt
 transact
   let g = insert identities.Google { user: u, gid: x }
           unless conflict on (gid) in Google
@@ -551,7 +551,7 @@ Rulings: write/upsert/unless-conflict, write/upsert/cross-ctor/match-else, engin
 Each reference field states what deleting its target does to the row
 holding the reference:
 
-```
+```adt
 type Badge = { id: Key badges, owner: Key users on delete restrict, label: Text }
 type Reset = { id: Key resets, identity: Key identities.EmailPass on delete cascade, token: Bytes }
 type Login { id: Key logins, user: Key users on delete cascade }
@@ -606,7 +606,7 @@ the statement, like every constraint. A statement that deletes a user
 and that user's badges together succeeds; one that deletes only the
 user fails, and the failure names the reference and the referrers.
 
-```
+```adt
 transact
   delete d in badges where d.owner == u
   delete x in users where key x == u

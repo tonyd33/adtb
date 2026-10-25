@@ -18,7 +18,7 @@ Examples start from version `12 (c41e...)` of the history in
 [evolution.md](evolution.md#example-histories), at which `Apple` has
 been added (`0011`) and enabled (`0012`), with sessions:
 
-```
+```adt
 module auth
 type User = { id: Key users, name: Text }
 type Identity { id: Key identities, user: Key users }
@@ -50,7 +50,7 @@ type. A registered transaction is a `txn` declaration likewise. A
 client calls either by its ordinal in the bundle with arguments; it
 never sends query text, except as an ad hoc call (§7).
 
-```
+```adt
 query login_key (u: Key users) -> Set (ByEmail { email: Text } | ByGoogle { gid: Text } | ByApple { sub: Text }) =
   from i in identities where i.user == u
   select match i
@@ -112,7 +112,7 @@ registered queries and transactions only. A schema function called
 this way runs with the schema owner's rights, bound to the caller
 ([security.md](security.md#4-registered-queries-and-definer-rights)).
 
-```
+```adt
 -- 0013, from version 12
 module auth
 define fn logins (u: Key users) -> Set Text =
@@ -123,7 +123,7 @@ define fn logins (u: Key users) -> Set Text =
     | Apple a     -> a.sub
 ```
 
-```
+```adt
 bundle web-2.6 pins 13 (5b9a...) edition "2026-10"
 import auth
 import fn logins
@@ -142,7 +142,7 @@ version, so a migration may define a schema function with the name of
 a bundle function, and the bundle's uses of that name still denote its
 own function.
 
-```
+```adt
 bundle web-2.3 pins 12 (c41e...) edition "2026-10"
 import auth
 fn emails_of (u: Key users) -> Set Text =
@@ -163,7 +163,7 @@ the one schema version they are checked against. It is the unit of
 registration, of version pinning, of lease, of supersession and of
 retirement. A bundle file starts with its header:
 
-```
+```adt
 -- bundles/web.adb
 bundle web-2.4 pins 12 (c41e...) edition "2026-10" lease 90d
 import auth
@@ -242,7 +242,7 @@ schema log or changes a schema version.
 A bundle is registered at deploy, before the client release that uses
 it runs:
 
-```
+```sh
 $ adt register bundles/web.adb
 login_key    ok
 sessions_of  ok
@@ -280,11 +280,11 @@ A bundle may pin a version at which a constructor is declared but not
 yet enabled. Its queries must cover that constructor, and registering
 it is what lets the constructor be enabled:
 
-```
+```adt
 -- 0011 of evolution.md §1.1: Apple declared, write-disabled
 ```
 
-```
+```adt
 bundle web-2.5 pins 11 (c7d2...) edition "2026-10" lease 90d
 import auth
 query logins_of (u: Key users) -> Set Text =
@@ -295,7 +295,7 @@ query logins_of (u: Key users) -> Set Text =
     | Apple a     -> a.sub
 ```
 
-```
+```adt
 -- 0012, once no live bundle pinned at 10 or earlier reads identities whole
 module auth
 enable identities.Apple
@@ -338,7 +338,7 @@ and, when they pass, makes it live with a new lease.
 
 ### 4.3 Retirement
 
-```
+```sh
 $ adt retire bundle ios-4.2
 ```
 
@@ -365,7 +365,7 @@ owner may retire it
 A bundle is superseded when a newer release of the same embedded
 application replaces it (§8), or by the command:
 
-```
+```adt
 supersede bundle ios-4.2 by ios-4.3
 ```
 
@@ -424,7 +424,7 @@ new version; if any has no translation, or its translation fails to
 check, the migration is refused, and the report names each bundle,
 query and operator:
 
-```
+```sh
 $ adt migrate 0014
 refused: bundle ios-4.2 pins 12 (c41e...): txn link_apple inserts identities.Apple
   (0014 deprecates identities.Apple)
@@ -457,7 +457,7 @@ Query text sent by a client is accepted only from a principal holding
 the `adhoc` privilege ([security.md](security.md#45-ad-hoc-rights)).
 Application principals without it run only registered queries.
 
-```
+```sh
 $ adt repl --role analyst
 adt> from i in identities select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
 ```
@@ -495,7 +495,7 @@ An embedded application ships its migrations and its bundles compiled
 into it, and opens the file with them. The open sequence is normative
 in [embedding.md](embedding.md#2-opening-a-database):
 
-```
+```text
 let db = adtdb::open("app.adt", &schema::LOG, &[&queries::BUNDLE], OpenOptions::default())?;
 ```
 
@@ -539,7 +539,7 @@ Rulings: surface/open-applies
 
 The engine prints the folded schema at a version:
 
-```
+```sh
 $ adt schema print > schema.adt
 $ adt schema print --check schema.adt
 ```
@@ -580,7 +580,7 @@ relations are in the modules `sys` and `catalog` (`sys::sessions`,
 `catalog::constructors`). A bundle is a namespace for its declarations:
 `web-2.4::login_key`.
 
-```
+```adt
 module billing
 type Account { id: Key accounts } = Owned { who: Key auth::identities }
                                   | Shared { team: Text }

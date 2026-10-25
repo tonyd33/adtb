@@ -70,7 +70,7 @@ Informative:
 - Examples use the syntax of [syntax.md](syntax.md). A running schema
   of users and their sign-in identities is used throughout:
 
-  ```
+  ```adt
   module auth
   type User = { id: Key users, name: Text }
   type Identity { id: Key identities, user: Key users }

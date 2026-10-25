@@ -44,7 +44,7 @@ goes through the simulator's interfaces (§5.1), or a seed would not
 replay. Pure libraries (checksums, hashing, decimal arithmetic) pass;
 runtimes do not. The rule is checked by lints:
 
-```
+```toml
 # clippy.toml
 disallowed-methods = ["std::time::Instant::now", "std::time::SystemTime::now",
                       "std::thread::spawn", "rand::thread_rng"]
@@ -80,7 +80,7 @@ undefined behaviour and data races. The real I/O backends, which Miri
 cannot execute, are tested natively under AddressSanitizer and
 ThreadSanitizer.
 
-```
+```sh
 $ cargo miri test -p adtdb-sim
 ```
 
@@ -91,7 +91,7 @@ arenas allocated on demand within a per-query budget and freed whole
 when the query ends; an arena request past the budget fails with an
 operating error.
 
-```
+```text
 let arena = budget.arena(query_id, limit)?;
 let table: HashTable<'_, K, V> = HashTable::new_in(&arena);
 ```
@@ -102,7 +102,7 @@ The engine has no async runtime dependency. Each worker thread runs
 the engine's own event loop over one I/O interface, with three
 implementations: `io_uring`, a blocking thread pool, and the simulator.
 
-```
+```text
 trait Io {
   fn submit(&mut self, op: Op) -> Ticket;
   fn poll(&mut self) -> Option<Completion>;
@@ -126,7 +126,7 @@ Errors split in two:
   the database recovers from the log, as it does after a failed
   `fdatasync` ([engine.md §3.6](engine.md#36-write-and-flush-failures)).
 
-```
+```text
 fn read_page(&mut self, pid: Pid) -> Result<PageRef, IoError>   // the disk said no
 assert!(page.lsn() <= self.flushed_lsn);                        // the engine is wrong
 ```
@@ -137,7 +137,7 @@ Cheap assertions run in every build, release included. Expensive
 checks, such as verifying a whole B-link tree's order or a heap
 against its indexes, run in debug and simulation builds only.
 
-```
+```text
 assert!(slot < page.slot_count());
 check_expensive!(tree.verify_order());
 ```
@@ -161,7 +161,7 @@ of one type stay apart. A sum is the union of its constructor
 relations, a `match` the union of its arms, a change set the inserted
 and deleted relations per constructor.
 
-```
+```text
 fn eval(q: &Kernel, db: &BTreeMap<(RelVarId, CtorId), BTreeSet<Row>>) -> BTreeSet<Value>
 ```
 
@@ -194,7 +194,7 @@ A seed generates a schema, a database and a query; the engine's result
 must equal the reference interpreter's, as sets, with nested results
 compared as nested sets.
 
-```
+```text
 seed -> (schema S, database D, query q)
 assert engine(q, D) == reference(q, D)
 ```
@@ -204,7 +204,7 @@ assert engine(q, D) == reference(q, D)
 A sum is the disjoint union of its constructor relations, so a query
 over the sum equals the union of the same query over each constructor:
 
-```
+```adt
 from i in identities where p(i) select f(i)
   ==  (from i in identities.EmailPass where p(i) select f(i))
     union (from i in identities.Google where p(i) select f(i))
@@ -222,7 +222,7 @@ A query equals the union of its restrictions to `p` and to `not p`.
 There is no NULL and `Bool` has two constructors, so two partitions
 cover every row. Aggregates decompose the same way:
 
-```
+```adt
 count(x for x in g) == count(x for x in g where p) + count(x for x in g where not p)
 ```
 
@@ -232,7 +232,7 @@ Every query gives the same result with any subset of the planner's
 rewrites disabled: arm distribution of joins, constructor pruning,
 probe fusion, and compiled versus interpreted pipelines.
 
-```
+```text
 for flags in subsets(rewrites): assert run(q, D, flags) == run(q, D, none)
 ```
 
@@ -252,7 +252,7 @@ projection. For a query `q` pinned to version `v` and its translation
 The example starts from a version of a local schema in which `Login`
 has a constructor `Social`:
 
-```
+```adt
 type Provider = Google | Apple
 type Login { id: Key logins } = Password { hash: Bytes }
                               | Social   { provider: Provider, sub: Text }
@@ -294,7 +294,7 @@ SSI run multi-threaded under it; a seed replays a run exactly.
 The simulated storage is an in-memory disk that injects every fault of
 the engine's fault model ([engine.md §2.6](engine.md#26-corruption-detection)):
 
-```
+```text
 SimStorage {
   seed,
   fault: { torn_p, corrupt_p, misdirect_p, lost_write_p,
@@ -329,7 +329,7 @@ The promise is serializability, so any G0, G1 or G2 cycle in a history
 is a bug. The workload appends one row per element, so every read
 shows which appends are visible:
 
-```
+```adt
 type Elem = { id: Key elems, k: I64, e: I64 }
 relation elems : Elem
   key id generate sequence
@@ -359,7 +359,7 @@ page state word, optimistic lock coupling) under the C11 model; Miri
 runs the simulated engine and reports data races and undefined
 behaviour (§2.2).
 
-```
+```text
 #[cfg(loom)] #[test]
 fn olc_reader_sees_consistent_or_restarts() {
   loom::model(|| { /* a writer thread and a reader thread on one page */ });
@@ -406,7 +406,7 @@ corrects one of them ([README.md](README.md#conformance)).
 
 A test is a script of statements and queries with expected rows:
 
-```
+```text
 schema
   module test
   type Login { id: Key logins } = Password { email: Text } | Social { sub: Text }

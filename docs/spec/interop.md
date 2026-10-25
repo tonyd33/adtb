@@ -75,7 +75,7 @@ renamed. A text document stored outside the database therefore states
 the edition of the textual syntax and the schema version its names are
 written at, in a first line:
 
-```
+```text
 text 2026-10 pins 42 (c7f2...)
 data users
 User { id: users.key(3), name: "ann" }
@@ -159,19 +159,19 @@ must check that exactly the tagged constructor's members are present
 and every other constructor's are null; any other combination is a
 conversion failure.
 
-```
+```adt
 type Via = Email { addr: Text } | Phone { num: Text }
 type Contact = { name: Text, via: Via }
 ```
 
-```
+```text
 name,via.tag,via.Email.addr,via.Phone.num
 ann,Email,a@b.example,
 ```
 
 Text cell: one column `f` holding the value in the textual syntax.
 
-```
+```text
 name,via
 ann,"Email { addr: ""a@b.example"" }"
 ```
@@ -206,7 +206,7 @@ back at the sum's type (§3.1).
 | every other scalar | a string holding its textual syntax |
 | nested set | an array |
 
-```
+```text
 {"id": "3", "name": "ann"}
 {"Google": {"id": "0192f0c4-...", "user": "3", "gid": "g-123"}}
 "None"
@@ -230,7 +230,7 @@ Rulings: interop/formats/csv, interop/formats/ndjson, interop/formats/parquet, i
 
 Four relation sources read immutable files:
 
-```
+```text
 read_csv (path: Text, T) -> Set T
 read_ndjson (path: Text, T) -> Set T
 read_parquet (path: Text, T) -> Set T
@@ -251,7 +251,7 @@ glob patterns and names every file it matches, read as one relation;
 how paths resolve, and which URL schemes are supported, is
 implementation-defined.
 
-```
+```adt
 type LogRow = { at: Instant, user: Key users, bytes: I64 }
 
 from r in read_parquet("logs/2026-10-*.parquet", LogRow), u in users
@@ -310,7 +310,7 @@ A load is an ordinary write: an insert whose source query reads a file
 boundary like any change set ([writes.md](writes.md#1-change-sets)).
 There is no separate load command.
 
-```
+```adt
 type GoogleRow = { id: Key identities, user: Key users, gid: Text }
 
 insert identities.Google from (
@@ -359,7 +359,7 @@ the rejects relation. Text already in the database, such as a staging
 column, is parsed with `(Tag T).parse`, which reads at the caller's
 version.
 
-```
+```adt
 type IdentityRow = { id: Key identities, user: Key users, kind: Tag Identity,
                      email: Option Text, hash: Option Bytes,
                      gid: Option Text, sub: Option Text }
@@ -396,7 +396,7 @@ nothing but its key is checked when rows land.
 In ad hoc work the staging relation is usually a temp relation, which
 needs no migration:
 
-```
+```text
 temp relation NAME : T [ key ... ]
 ```
 
@@ -411,7 +411,7 @@ migration like any relation.
 The statements below run as one ad hoc text or in one interactive
 transaction:
 
-```
+```adt
 type IdentityText = { user: I64, kind: Text, email: Option Text, hash: Option Bytes,
                       gid: Option Text, sub: Option Text }
 type IdentityStage = { line: Key identity_stage, user: I64, kind: Text,
@@ -454,7 +454,7 @@ A constraint violation aborts the whole final insert (§4.5). To load
 the rows that do not collide and keep the others for review, remove
 the colliding rows from staging first, as ordinary ad hoc writes:
 
-```
+```adt
 type IdentityDupe = { line: I64, user: I64, kind: Text,
                       email: Option Text, hash: Option Bytes,
                       gid: Option Text, sub: Option Text }
@@ -498,7 +498,7 @@ Rows that fail to convert to the row type (§3.1) or that reach
 `reject` go to the rejects relation named by the insert's `rejects
 into` clause, a relation of the prelude type `RejectedRow`:
 
-```
+```adt
 type RejectedRow = { load: I64, line: I64, source: Text, raw: Text, reason: Text }
 relation identity_rejects : RejectedRow key (load, line)
 ```
@@ -545,7 +545,7 @@ the open setting `export_roots`, which is empty by default; a path
 outside them is refused with `Rejected { reason: Denied {..} }`. A
 caller of the in-process API writes any path the process can.
 
-```
+```adt
 type Via = Email { addr: Text } | Phone { num: Text }
 type Contact = { name: Text, via: Via }
 relation contacts : Contact key name
@@ -576,7 +576,7 @@ names at that version and translates them as for a text document
 read at the reader's version. A CSV file whose names are stale is read
 by giving its version to the reader:
 
-```
+```adt
 read_csv("contacts-old.csv", Contact) pins 41 (b3e0...)
 ```
 
@@ -586,7 +586,7 @@ A change stream delivers committed change sets to an external
 consumer. A consumer is registered like a bundle: a feed is declared
 in a bundle, which pins the schema version the stream is encoded at.
 
-```
+```adt
 bundle search-sync-1.0 pins 12 (c41e...) edition "2026-10"
 feed identity_changes of identities.(Google | Apple)
 ```
@@ -636,7 +636,7 @@ A dump is a logical copy of a database: it is independent of the page
 format and engine release, so it moves data between releases and can
 be reviewed. A physical copy is a backup (§7).
 
-```
+```sh
 $ adt dump app.adt app.dump
 $ adt restore app.dump new.adt
 ```
@@ -750,7 +750,7 @@ An incremental backup copies only the pages changed since a previous
 backup's start position, and is restored together with the chain of
 backups it builds on.
 
-```
+```sh
 $ adt backup app.adt s3://backups/app
 $ adt backup app.adt s3://backups/app --incremental
 $ adt restore s3://backups/app restored.adt
@@ -779,7 +779,7 @@ the archived log up to a chosen point:
   time;
 - a schema version: the state just before a given migration applied.
 
-```
+```sh
 $ adt restore s3://backups/app restored.adt --before-version 12
 $ adt restore s3://backups/app restored.adt --to-time 2026-10-24T13:02:00Z
 $ adt restore s3://backups/app restored.adt --to-position 3/81234
@@ -799,7 +799,7 @@ offline tool reads a SQL database's catalog and data and proposes a
 schema and a load in the notation of this spec. The user edits and
 confirms the proposal; the tool then runs the load.
 
-```
+```sh
 $ adt import-sql postgres://old/app --propose > migrations/0001
 $ adt import-sql postgres://old/app --load migrations/0001 app.adt
 ```
@@ -816,7 +816,7 @@ confirmation:
 - The user declares a sum: a table, its tag column, and each
   constructor's columns.
 
-  ```
+  ```sh
   $ adt import-sql postgres://old/app --propose --sum vehicles.type=Car:wheels,Boat:sail_area
   ```
 
@@ -837,7 +837,7 @@ confirmation:
 | several nullable references with an exactly-one check (an exclusive arc) | the same sum as a polymorphic reference |
 | a JSON column whose objects carry a type field | a value-level sum, one constructor per type value, with the fields found |
 
-```
+```adt
 -- source: vehicles(id, type, wheels NULL, sail_area NULL)
 type Vehicle { id: Key vehicles } = Car { wheels: I32 } | Boat { sail_area: F64 }
 relation vehicles : Vehicle key id generate sequence
@@ -855,7 +855,7 @@ values are equal. A SQL unique over a nullable column admits many
 NULLs, so the tool translates it into a uniqueness over the `Some`
 values only:
 
-```
+```adt
 type Member = { id: Key members, email: Option Text }
 relation members : Member
   key id generate sequence
@@ -869,7 +869,7 @@ constraint members_email_unique =
 The tool reports every source constraint whose meaning changes under
 the mapping, with what it proposes:
 
-```
+```text
 members.email UNIQUE, nullable   -> unique over Some values only (translated)
 orders.qty    CHECK (qty > 0)    -> passes on NULL in SQL; choose an Option match or a default
 ```
@@ -904,7 +904,7 @@ body in:
 
 From version 18:
 
-```
+```adt
 -- 0019
 module auth
 define fn geohash (lat: F64, lon: F64, precision: I32) -> Text =
@@ -1015,7 +1015,7 @@ Which code runs:
 
 From version 19:
 
-```
+```adt
 -- 0020
 module auth
 redefine fn geohash (lat: F64, lon: F64, precision: I32) -> Text =
@@ -1031,7 +1031,7 @@ become catalog rows. The migration's canonical text holds the
 package's BLAKE3-256 hash, and the log and dumps carry its bytes. From
 version 20:
 
-```
+```adt
 -- 0021
 module auth
 install geo "1.2" from "geo-1.2.adtx"
@@ -1051,7 +1051,7 @@ that adds one input, a merge that combines two states, and a finish
 one directly; a schema adds one with `define` in a migration, as for a
 schema function.
 
-```
+```adt
 aggregate mean (x: F64) -> F64 =
   state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
   step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
@@ -1062,7 +1062,7 @@ aggregate mean (x: F64) -> F64 =
 It is called like the built-in aggregates, over bindings
 ([queries.md](queries.md#10-aggregates)):
 
-```
+```adt
 type Sale = { id: Key sales, region: Text, total: F64 }
 relation sales : Sale key id generate sequence
 
@@ -1099,7 +1099,7 @@ the key encoding, order, equality and hashing of every type are
 derived from the base types. A point is a record; an address range is
 a newtype over `Bytes`.
 
-```
+```adt
 type Point = { x: F64, y: F64 }
 type Cidr = new Bytes
 ```
@@ -1122,7 +1122,7 @@ has the same transactional, logging and recovery behaviour.
 Full-text search is a derived index over a tokenizer: a function from
 text to the set of its terms, written in the query language or Wasm.
 
-```
+```adt
 type Doc { id: Key docs, title: Text } = Article { body: Text } | Note { body: Text }
                                        | Link { url: Text }
 relation docs : Doc
@@ -1145,7 +1145,7 @@ sets.
 
 An embedding is a newtype over `Bytes` whose domain fixes its length:
 
-```
+```adt
 type Emb768 = new Bytes where bytes_len(self) == 3072
 type Chunk { id: Key chunks, embedding: Emb768 } = Para { text: Text } | Code { source: Text }
 relation chunks : Chunk key id generate sequence
@@ -1155,7 +1155,7 @@ fn cosine (a: Emb768, b: Emb768) -> F64 = wasm "vectors.wasm" export "cosine"
 Distance functions are ordinary functions over such values. Search is
 exact, by a scan:
 
-```
+```adt
 query nearest (q: Emb768) -> Set Chunk =
   top 10 by cosine(c.embedding, q) desc (from c in chunks.(Para | Code) select c)
 ```
@@ -1169,7 +1169,7 @@ Spatial indexes are out of scope: spatial data is indexed by cells
 (geohash or S2 cell ids) computed by a function and used as ordinary
 keys of a derived index. JSON is a format only (§2.5).
 
-```
+```adt
 fn geohash (lat: F64, lon: F64, precision: I32) -> Text =
   wasm "geo.wasm" export "geohash"
 type Store = { id: Key stores, name: Text, location: Point }

@@ -12,7 +12,7 @@ bundles, registration and the ad hoc role are in
 
 Examples extend the running schema with invoices:
 
-```
+```adt
 type Invoice { id: Key invoices, owner: Key users, total: Decimal 2 }
   = Draft
   | Sent { at: Instant }
@@ -28,7 +28,7 @@ Every call runs on behalf of a principal, a value of the sum
 `Principal`. The schema declares it at most once, with exactly these
 three constructors:
 
-```
+```adt
 type Principal = EndUser { user: Key users }
                | Service { name: Text }
                | Anonymous
@@ -68,7 +68,7 @@ schema function that reads `caller` may not be reached by an index, a
 constraint, a stored view, a default, a generated field or a computed
 field.
 
-```
+```adt
 query my_invoices () -> Set Invoice =
   from v in invoices
   where match caller
@@ -114,7 +114,7 @@ others are ad hoc statements.
 `alter role R password p` takes the password as a parameter `p`, so
 the secret never appears in statement text:
 
-```
+```adt
 create role web
 alter role web password p
 drop role web
@@ -169,7 +169,7 @@ Peer mappings are deployment state, rows of `catalog::peer_mappings`
 keyed by listener name and ordinal, moved and dumped with the file.
 A role holding `schema` changes them with two ad hoc statements:
 
-```
+```adt
 map peer "CN=*.web.internal" on tls_main to web
 map peer "deploy" on local to deployer
 unmap peer 1 on tls_main
@@ -296,7 +296,7 @@ existence of, or aggregates over a constructor relation the role is
 not granted is refused. A role granted part of a sum ranges over the
 part it holds, and its matches are exhaustive over that part:
 
-```
+```adt
 grant read identities.EmailPass (user, email) to support
 grant read identities.Google (gid) to support
 
@@ -364,7 +364,7 @@ grants. A schema function evaluated inside a registered query or
 transaction runs with the same bundle owner's grants. Registered
 queries are the only path by which an application role touches data.
 
-```
+```adt
 grant call invoices::my_invoices to web
 ```
 
@@ -381,7 +381,7 @@ transactions write; and `retag` on every pair of constructor sets its updates ca
 move a row between (§5). Registration is refused otherwise, and the
 refusal lists every missing grant.
 
-```
+```text
 register bundle "bundles/web.adb"
 refused: admin_dump reads identities.EmailPass (hash); web_owner lacks read with grant option
 ```
@@ -397,7 +397,7 @@ holding its call grant. The principal a query authorizes against is
 key as a parameter and should return only the caller's rows must test
 `caller` itself:
 
-```
+```adt
 query invoice (k: Key invoices) -> Set Invoice =
   from v in invoices
   where v.id == k
@@ -446,7 +446,7 @@ directly runs with the schema owner's relation grants, and with
 `caller` bound to the caller's principal (§1.2), so it authorizes rows
 as a registered query does.
 
-```
+```adt
 grant call fn display_name to web
 ```
 
@@ -461,7 +461,7 @@ a row of a constructor in `S` with a row of a different constructor in
 neither imply nor are implied by it. An update that keeps the
 constructor needs `update` on that constructor.
 
-```
+```adt
 grant retag invoices.Draft -> invoices.Sent to web_owner
 grant retag invoices.(Draft | Sent) -> invoices.Void to billing_owner
 ```
@@ -472,7 +472,7 @@ sum, each arm of its `set match` names the constructor it reads and
 the constructor its result has, and every pair where they differ must
 be covered by a `retag` grant of the bundle owner. In
 
-```
+```adt
 txn send (k: Key invoices, t: Instant) -> Key invoices =
   transact
     update v in invoices where v.id == k
@@ -542,7 +542,7 @@ constructor sets like any others. A grant on a `catalog::` or `sys::`
 relation is deployment state, an ad hoc statement of a role holding
 `schema`, never an operator in a migration (§3.2):
 
-```
+```adt
 grant read catalog::constructors to analyst
 ```
 
@@ -570,7 +570,7 @@ Audit records are rows of the catalog relation `catalog::audit`,
 durable and serializable like any catalog relation, whose type is a
 sum of event kinds:
 
-```
+```adt
 type AuditEvent { seq: Key catalog::audit, at: Instant, role: Text, principal: Text }
   = Login    { source: Text, outcome: Outcome }
   | Grant    { statement: Text }
@@ -624,7 +624,7 @@ truncation are recorded as an audit event themselves. The command is
 available over the server and in process, and `adt audit archive`
 wraps it.
 
-```
+```adt
 archive audit through 991204 to "audit-2026-10.arrow"
 ```
 
@@ -650,7 +650,7 @@ push to a configured sink, to be kept outside the database. Verifying
 recomputes the chain from the file and its log archive and compares it
 with a digest kept elsewhere:
 
-```
+```sh
 $ adt ledger digest app.adt
 block 9912  position 3/1204411  3f9a...
 $ adt ledger verify app.adt --digest digests/2026-10.txt
@@ -744,7 +744,7 @@ commands of [catalog.md](catalog.md#91-commands), available over the
 server and in process, and need the `configure` grant; `adt key`
 wraps them.
 
-```
+```text
 rotate key kek "kms://vault/adt-app/v3"
 rotate key dek
 destroy key dek 7
@@ -786,7 +786,7 @@ A fleet is a directory of tenant files that share one schema history.
 In the example the tenants start at version 10. The fleet tool applies one migration to each file and registers one
 bundle in each:
 
-```
+```sh
 $ adt migrate --fleet tenants/ 0011
 acme   ok     at 11 (c7d2...)
 beta   ok     at 11 (c7d2...)

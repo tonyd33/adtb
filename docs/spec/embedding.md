@@ -15,7 +15,7 @@ Examples use the running schema and a bundle compiled into the
 program by code generation
 ([applications.md](applications.md#11-what-is-registered)):
 
-```
+```adt
 -- bundles/app.adb
 bundle app-1.3 pins 12 (c41e...) edition "2026-10"
 query login_key (u: Key users) -> Set Identity =
@@ -698,7 +698,7 @@ whether it is deterministic, and the embedding
 program supplies the body at open
 ([interop.md](interop.md#9-user-defined-functions)).
 
-```
+```adt
 -- 0018
 define fn slugify (t: Text) -> Text = host "slugify" version "1.0" deterministic
 ```

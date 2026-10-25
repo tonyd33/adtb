@@ -101,7 +101,7 @@ Rulings: write/unit/multi, constraint/timing/multi-assign, write/surface/txdata
 
 ### 3.1 Form
 
-```
+```adt
 transact
   let u = insert users { name: n }
   let i = insert identities.Google { user: key u, gid: g }
@@ -144,7 +144,7 @@ Options follow the keyword:
 | `read_only deferrable` | as `read_only`, and the block waits for a safe snapshot and then never fails with a serialization failure (§6.4) |
 | `durability local`, `durability quorum` | the durability its commit acknowledgement promises (§7) |
 
-```
+```adt
 transact read_only deferrable
   return count(i for i in identities)
 
@@ -157,7 +157,7 @@ Rulings: write/transact/block, write/insert/returns/rows, engine/retry/retry-blo
 
 ## 4. Registered transactions
 
-```
+```adt
 txn sign_up (n: Text, g: Text) -> Key identities =
   transact
     let u = insert users { name: n }
@@ -201,7 +201,7 @@ Rulings: write/transact/registered-txn, net/retry/server, engine/retry/retry-blo
 
 An interactive transaction spans several calls on the client's side:
 
-```
+```text
 let t = db.begin()
 let u = t.call(find_user, email)
 t.call(add_identity, key u, g)
@@ -245,7 +245,7 @@ commit, so no call may leave a constraint violated for a later call to
 repair. A change that passes through such a state is made by one call
 of a registered transaction:
 
-```
+```adt
 txn join (n: Text, g: Text) -> Key users =
   transact
     let u = insert users { name: n }

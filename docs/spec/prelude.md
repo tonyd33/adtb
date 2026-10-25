@@ -48,7 +48,7 @@ Rulings: none
 
 ### 2.1 Bool
 
-```
+```adt
 type Bool ordered = False | True
 ```
 
@@ -67,7 +67,7 @@ of a `match` do ([typing.md](typing.md#5-joins)).
 
 ### 2.2 Option and Result
 
-```
+```adt
 type Option a ordered = None | Some { value: a }
 type Result a e = Ok { value: a } | Err { error: e }
 ```
@@ -85,7 +85,7 @@ order. `tag(e)` gives the constructor of `e` as a `Tag T` value
 
 ### 2.4 Rounding and Overflow
 
-```
+```adt
 type Rounding = HalfEven | HalfUp | HalfDown | Up | Down | Ceiling | Floor
 type Overflow = Clamp | Reject
 ```
@@ -105,7 +105,7 @@ does not exist (§6.3, §6.4).
 
 ### 2.5 Fault
 
-```
+```adt
 type Fault = DivisionByZero
            | ArithmeticOverflow
            | OutOfRange
@@ -151,7 +151,7 @@ sums defined in [catalog.md](catalog.md#4-error-sums). `Origin` and
 `Outcome`, the types of what an audited event ran and how it ended,
 are prelude sums defined in [security.md](security.md#82-the-audit-relation):
 
-```
+```adt
 type Origin = Registered { bundle: Text, query: I32 }
             | Function   { name: Text }
             | AdHoc      { text: Bytes }
@@ -163,7 +163,7 @@ type Outcome = Succeeded | Failed { error: Error }
 violated constraint, are prelude newtypes. All three are defined in
 [catalog.md](catalog.md#42-reasons):
 
-```
+```adt
 type Position = { epoch: I64, lsn: I64 }
 type TxnId = new I64
 type Report = new Bytes
@@ -187,7 +187,7 @@ are used only by the default
 
 ### 2.7 Uuid
 
-```
+```adt
 type Uuid = new Bytes where bytes_len(self) == 16
 ```
 
@@ -199,13 +199,13 @@ type Uuid = new Bytes where bytes_len(self) == 16
 A `uuidv7` key is represented as a `Uuid`
 ([model.md](model.md#73-generated-keys)).
 
-```
+```adt
 identities.key(uuid("0190a4b2-7c3e-7d4f-9a21-5b6c7d8e9f01"))
 ```
 
 ### 2.8 Span
 
-```
+```adt
 type Span a ordered = { start: a, end: a }
 ```
 
@@ -226,7 +226,7 @@ order by `start`, then `end`.
 | `covers [a: Ord] (x: Span a, y: Span a) -> Bool` | `x.start <= y.start and y.end <= x.end` |
 | `covers [a: Ord] (x: Span a, t: a) -> Bool` | `x.start <= t and t < x.end` |
 
-```
+```adt
 type Booking = { id: Key bookings, room: Text, during: Span Instant }
 relation bookings : Booking key id generate sequence
 from a in bookings, b in bookings
@@ -266,7 +266,7 @@ Each checked form returns `None` exactly where its operator faults and
 | `checked_div`, `checked_rem` | `(a: Int, b: Int) -> Option Int` |
 | `checked_neg` | `(a: Int) -> Option Int` |
 
-```
+```adt
 type Raw = { id: Key raws, n: I64 }
 relation raws : Raw key id generate sequence
 from r in raws select match checked_div(1000, r.n) | None -> 0 | Some q -> q.value
@@ -281,7 +281,7 @@ from r in raws select match checked_div(1000, r.n) | None -> 0 | Some q -> q.val
 | `rescale (a: Decimal s, u: constant I64) -> Decimal u`, `u >= s` | `a` at scale `u`, exactly | `ArithmeticOverflow` above 38 digits |
 | `abs (a: N) -> N` | the absolute value | `ArithmeticOverflow` for the minimum integer value |
 
-```
+```adt
 type Quote = { id: Key quotes, price: Decimal 2, rate: Decimal 4 }
 relation quotes : Quote key id generate sequence
 from q in quotes select round(q.price * q.rate, 2, HalfEven)    -- : Set (Decimal 2)
@@ -310,7 +310,7 @@ returning `Option`.
 | `unwrap (x: N) -> B`, for a newtype `N` over `B` | the base value | none |
 | `value (k: Key r.S)` | the key's value: the key field's value, or for a composite key the record of its fields | none |
 
-```
+```adt
 type Cents = new I64
 unwrap(Cents(250))                      -- 250 : I64
 value(memberships.key(user: u, team: t))  -- { user: u, team: t }
@@ -361,7 +361,7 @@ of [interop.md](interop.md#1-textual-value-syntax). A collation name
 `c` carries its version, `"de-u-ks-level2@icu-74"`; the collations an
 engine ships are listed in [catalog.md](catalog.md).
 
-```
+```adt
 from i in identities.EmailPass
 where ends_with(lower(i.email), "@example.com") and scalar_len(i.email) <= 254
 select { id: key i, label: "user " ++ text(scalar_len(i.email)) }
@@ -425,7 +425,7 @@ month), `Clamp` moves to the last day of the month and `Reject` gives
 wall time that does not exist on the resulting day is resolved as in
 §6.4. Faults: `ArithmeticOverflow` when the result leaves the type's range.
 
-```
+```adt
 add_period(d, months(1), Clamp)     -- 2021-01-31 gives 2021-02-28
 add_period(d, months(1), Reject)    -- 2021-01-31 gives None
 ```
@@ -447,7 +447,7 @@ falls in a gap under the zone rules now in force resolves as `Clamp`
 does. The zone rules in force are the current ones for every caller
 ([model.md](model.md#36-time)).
 
-```
+```adt
 in_zone(i, "Europe/Lisbon")
 zoned(dt, "America/New_York", Reject)
 ```

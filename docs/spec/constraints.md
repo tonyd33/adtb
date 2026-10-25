@@ -16,7 +16,7 @@ so `Identity` is `EmailPass | Google | Apple` and `identities.OAuth` is
 `Google | Apple`. Examples are independent of each other. They extend
 that schema with:
 
-```
+```adt
 type Entry = { id: Key entries, posted: Instant }
 relation entries : Entry key id generate sequence
 type Line = { id: Key lines, entry: Key entries on delete cascade, amount: I64 }
@@ -57,7 +57,7 @@ relation assignments : Assignment key id generate sequence
 and with an index on the owner of every identity, added by this
 migration before the examples:
 
-```
+```adt
 -- 0013, from version 12
 module auth
 add index (user) in identities
@@ -67,7 +67,7 @@ add index (user) in identities
 
 ### 1.1 Form
 
-```
+```adt
 constraint name = q
 ```
 
@@ -77,7 +77,7 @@ when `q` returns the empty set in that state. The rows `q` returns in a
 state are that state's violations, and they are the violation report
 (§7).
 
-```
+```adt
 constraint has_identity =
   from u in users
   where not exists i in identities where i.user == key u
@@ -128,13 +128,13 @@ at the same boundaries as every other constraint (§4).
 
 ### 2.2 Row checks
 
-```
+```adt
 check email_length on identities.EmailPass (scalar_len(email) <= 254)
 ```
 
 is the constraint
 
-```
+```adt
 constraint email_length =
   from x in identities.EmailPass where not (scalar_len(x.email) <= 254) select x
 ```
@@ -148,7 +148,7 @@ scope. The row's fields are in scope by name and the row itself as
 A predicate on a newtype, written `type N = new T where e` with `self`
 naming the value, is a domain ([model.md](model.md#4-newtypes)):
 
-```
+```adt
 type Email = new Text where matches(self, "^[^@]+@[^@]+$")
 type Contact = { id: Key contacts, email: Email }
 relation contacts : Contact key id generate sequence
@@ -163,7 +163,7 @@ that needs it tests it.
 
 ### 2.4 Functional dependencies
 
-```
+```adt
 constraint zip_state =
   from a in places.US, b in places.US
   where a.zip == b.zip and a.state != b.state
@@ -172,7 +172,7 @@ constraint zip_state =
 
 ### 2.5 Exclusion
 
-```
+```adt
 constraint no_double_booking =
   from a in bookings.(Room | Desk), b in bookings.(Room | Desk)
   where a.resource == b.resource and overlaps(a.during, b.during) and key a != key b
@@ -187,7 +187,7 @@ fields and whose last field is the range (§5.3).
 
 ### 2.6 Inclusion and at-least-one
 
-```
+```adt
 constraint assigned_member =
   from a in assignments
   where not exists m in memberships where m.user == a.user and m.org == a.org
@@ -201,7 +201,7 @@ so a parent and its first child are created in one statement.
 
 ### 2.7 Cardinality and aggregates
 
-```
+```adt
 constraint identity_limit =
   from u in users
   where count(i for i in identities where i.user == key u) > 5
@@ -239,7 +239,7 @@ whether each is a `Room` or a `Desk`.
 A match-scoped check is exhaustive like any match: every constructor
 has an arm, `true` included.
 
-```
+```adt
 check login_valid on identities (match self
   | EmailPass e -> scalar_len(e.email) <= 254
   | Google g    -> scalar_len(g.gid) > 0
@@ -254,7 +254,7 @@ history starting at version 10, before `Apple` exists, `login_valid`
 has arms for `EmailPass` and `Google` only, and `identities.OAuth` is
 `Google`; migration 0011 adds `Apple` with its arm:
 
-```
+```adt
 -- 0011
 module auth
 add constructor Identity.Apple { sub: Text }
@@ -287,7 +287,7 @@ inside one. No constraint is deferred to commit and there is no
 declaration that defers one. Rows that must exist together, including
 reference cycles, are created in one statement:
 
-```
+```adt
 transact
   let u = insert users { name: n }
   let i = insert identities.Google { user: key u, gid: g }
@@ -324,7 +324,7 @@ the missing index or the operator that is outside the bound. Dropping
 an index that an admitted constraint's check needs is refused, naming
 the constraint.
 
-```
+```adt
 constraint has_identity =
   from u in users
   where not exists i in identities where i.user == key u
@@ -379,7 +379,7 @@ an update appears as its old row in `deleted` and its new row in
 `inserted`, with one key; an unchanged row appears in neither. A retag
 from `C` to `D` appears in `deleted(r.C)` and `inserted(r.D)`.
 
-```
+```adt
 constraint append_only = from e in deleted(events) select e
 
 constraint no_reopen =
@@ -472,7 +472,7 @@ In a history in which `Identity` is `EmailPass | Social { provider:
 Provider, sub: Text }`, with `type Provider = Google | Facebook`, before
 migration 0014:
 
-```
+```adt
 -- 0014
 module auth
 split constructor Identity.Social into Google { gid: Text } | Facebook { fid: Text }
@@ -501,7 +501,7 @@ constraint` is `drop constraint`.
 
 Starting from version 12:
 
-```
+```adt
 -- 0013
 module auth
 add constraint balanced = ...

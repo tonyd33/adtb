@@ -50,7 +50,7 @@ A bundle that reads `catalog::` or `sys::` relations pins a catalog
 version in its header beside its schema version, and is served at that
 catalog version ([evolution.md](evolution.md#10-engine-releases)).
 
-```
+```adt
 from c in catalog::constructors, s in catalog::ctor_states
 where c.sum.name == "Identity" and s.ctor == key c
   and s.relation.name == "identities" and s.stage == Enabled
@@ -87,7 +87,7 @@ A volatile relation is a relation kind outside serializable history.
 Only the engine declares volatile relations; a user declaration with
 the `volatile` suffix is refused.
 
-```
+```adt
 relation sys::heaps : HeapStats volatile
   key (relation, ctor)
 ```
@@ -116,7 +116,7 @@ A program that breaks this rule is ill-typed. A registered query or
 transaction containing it is refused at registration; ad hoc text
 containing it is refused with `Rejected { reason: Invalid { ... } }`.
 
-```
+```adt
 -- with:
 --   type AuditHeap = { id: Key audit_heaps, rows: I64 }
 --   relation audit_heaps : AuditHeap key id generate sequence
@@ -162,7 +162,7 @@ privileges decide.
 Two `sys::` relations describe the retained history read by `at`
 blocks ([derived.md](derived.md#6-reading-the-past)):
 
-```
+```adt
 type CommitTime = { position: Position, at: Instant }
 relation sys::commit_times : CommitTime volatile key position
 
@@ -184,7 +184,7 @@ Rulings: engine/catalog-relations, ops/expose/relations, ops/expose/volatile/vol
 
 ### 2.1 Types and constructors
 
-```
+```adt
 module catalog
 
 type TypeDef { id: Key types, module: Text, name: Text, params: I32,
@@ -232,7 +232,7 @@ field, at any depth.
 
 ### 2.2 Relation variables, named sets and indexes
 
-```
+```adt
 type RelKind = Base | Stored | Catalog | Volatile
 type Relation = { id: Key relations, module: Text, name: Text, sum: Key types,
                   kind: RelKind, dropped: Option Key migrations }
@@ -259,7 +259,7 @@ constructor set it ranges over.
 
 ### 2.3 Constraints, functions and extensions
 
-```
+```adt
 type Constraint = { id: Key constraints, module: Text, name: Text, text: Text,
                     dropped: Option Key migrations }
 relation constraints : Constraint key id
@@ -286,7 +286,7 @@ by the hash of its bytes.
 
 ### 2.4 Versions, bundles and registered calls
 
-```
+```adt
 type Migration = { version: Key migrations, hash: Bytes, text: Text, applied: Instant }
 relation migrations : Migration key version
 
@@ -349,7 +349,7 @@ constructor relations at the pinned version in `feed_members`
 
 ### 2.5 Plans
 
-```
+```adt
 type PlanState = Current | Pinned | Reverted | Superseded
 type Plan = { id: Key plans, query: Key registered, release: Text, created: Instant,
               state: PlanState, memory_grant: I64, text: Text, document: Text }
@@ -369,7 +369,7 @@ Plans are defined in §7.
 
 Roles, their credentials, grants and peer mappings:
 
-```
+```adt
 type Role = { id: Key roles, name: Text, created: Instant }
 relation roles : Role
   key id
@@ -416,7 +416,7 @@ states only where their data lives.
 
 Time-zone rules are catalog data:
 
-```
+```adt
 type TzRelease = { id: Key tz_releases, release: Text, adopted: Key migrations }
 relation tz_releases : TzRelease
   key id
@@ -435,7 +435,7 @@ text holds the BLAKE3-256 hash of the release's data, so the version
 hash covers it, and the log and dumps carry the data itself. From
 version 17:
 
-```
+```adt
 -- 0018
 module auth
 adopt tzdb "2026b" from "tzdata-2026b.tzif"
@@ -456,7 +456,7 @@ such as `"de-u-ks-level2@icu-74"`. The engine never changes the tables
 behind a collation name. An engine release must support every
 collation name any earlier release supported; it may add names.
 
-```
+```adt
 type Person = { id: Key people, name: Text }
 relation people : Person
   key id generate sequence
@@ -466,7 +466,7 @@ relation people : Person
 The names a binary supports are listed in the volatile relation
 `sys::collations`, one row per name:
 
-```
+```adt
 type Collation = { id: Key collations, name: Text }
 relation sys::collations : Collation volatile
   key id
@@ -489,7 +489,7 @@ protocol or the in-process API, is a value of the prelude sum
 `Error`. Its constructors stand for what the caller does; the reason
 inside each says why.
 
-```
+```adt
 type Error = Retry    { reason: RetryReason }
            | Rejected { reason: RejectReason }
            | Fatal    { reason: FatalReason }
@@ -513,7 +513,7 @@ registration refused inside the open carries its `Error`.
 
 ### 4.2 Reasons
 
-```
+```adt
 type TxnId = new I64
 type Report = new Bytes
 type Position = { epoch: I64, lsn: I64 }
@@ -646,7 +646,7 @@ The server never reruns a transaction that ended with
 any sum. A client that only decides what to do matches the three
 constructors:
 
-```
+```adt
 fn rerun () -> Text = "rerun"
 fn report (r: RejectReason) -> Text = "report"
 fn alert (r: FatalReason) -> Text = "alert"
@@ -694,7 +694,7 @@ the prelude sum `Notice`, delivered as pushes
 ([wire.md](wire.md#10-pushes)) or through the in-process notice channel
 ([embedding.md](embedding.md#45-notices)):
 
-```
+```adt
 type Notice = LeaseExpiring      { bundle: Text, at: Instant }
             | ShuttingDown       { at: Instant }
             | ConstructorEnabled { relation: Text, ctor: Text }
@@ -907,7 +907,7 @@ constructor of one relation variable. A number for a relation or a
 constructor set is the sum of its heaps' numbers, except distinct
 counts, which do not add (§5.2).
 
-```
+```adt
 module sys
 
 type HeapStats = { relation: Key catalog::relations, ctor: Key catalog::constructors,
@@ -917,7 +917,7 @@ type HeapStats = { relation: Key catalog::relations, ctor: Key catalog::construc
 relation heaps : HeapStats volatile key (relation, ctor)
 ```
 
-```
+```adt
 from h in sys::heaps
 where h.relation.name == "identities"
 select { ctor: h.ctor.name, rows: h.live_rows, dead: h.dead_versions, pages: h.pages }
@@ -933,7 +933,7 @@ a reservoir sample of rows and a mergeable distinct-count sketch per
 field. The estimate for a constructor set is computed by merging the
 sketches of its heaps. The visible part:
 
-```
+```adt
 type FieldStats = { relation: Key catalog::relations, ctor: Key catalog::constructors,
                     field: Key catalog::fields, distinct: F64, sampled: I64,
                     updated: Instant }
@@ -961,7 +961,7 @@ Execution statistics are keyed by the query's identity:
 
 Every call has a fingerprint; registered calls also have `query`.
 
-```
+```adt
 type Fingerprint = new Bytes
 
 type QueryStats = { query: Option Key catalog::registered, fingerprint: Fingerprint,
@@ -986,7 +986,7 @@ pruned at compile time or at start ([queries.md](queries.md#5-match)).
 Query statistics are also aggregated into time windows kept in the
 database file for a retention period:
 
-```
+```adt
 type QueryWindow = { query: Option Key catalog::registered, fingerprint: Fingerprint,
                      plan: Option Key catalog::plans, start: Instant, length: Duration,
                      calls: I64, rows: I64, mean: Duration, p99: Duration,
@@ -1000,7 +1000,7 @@ crash may lose the window open at the time. Windows older than the
 retention are deleted by the engine. Rows survive restart, compaction
 and replica promotion, and are not part of a dump.
 
-```
+```adt
 query login_history (since: Instant) -> Set ({ start: Instant, plan: Option Key catalog::plans, p99: Duration }) =
   from w in sys::query_windows, q in catalog::registered
   where w.query == Some { value: key q } and q.name == "login_key" and w.start > since
@@ -1013,7 +1013,7 @@ Rulings: exec/stats/per-ctor, exec/stats-form/sketch, ops/query-stats/by-name, o
 
 ### 6.1 Sessions and calls
 
-```
+```adt
 type SessionState = Idle | Busy | InTransaction { txn: TxnId }
 type Session = { id: Key sessions, principal: Text, bundle: Option Key catalog::bundles,
                  started: Instant, state: SessionState }
@@ -1051,7 +1051,7 @@ The state of every call is sampled at the interval of the
 `WaitSampling` setting into a bounded history, and the time spent in
 each wait reason is accumulated, both overall and per query:
 
-```
+```adt
 type WaitSample = { at: Instant, call: Key calls, session: Key sessions,
                     query: Option Key catalog::registered, fingerprint: Fingerprint,
                     on: WaitReason }
@@ -1071,7 +1071,7 @@ Dead versions in a heap can be removed only once no snapshot can see
 them. For each heap, the engine names the holder of the oldest
 snapshot that keeps its dead versions:
 
-```
+```adt
 type Horizon = { relation: Key catalog::relations, ctor: Key catalog::constructors,
                  txn: TxnId, session: Key sessions, query: Option Key catalog::registered,
                  since: Instant }
@@ -1085,7 +1085,7 @@ operator's `terminate` (§8.4) or a limit (§8.3).
 
 Every serialization failure is logged in a bounded relation:
 
-```
+```adt
 type Conflict = { aborted: TxnId, at: Instant, aborted_query: Option Key catalog::registered,
                   other: TxnId, other_query: Option Key catalog::registered,
                   relation: Key catalog::relations, ctor: Key catalog::constructors,
@@ -1105,7 +1105,7 @@ The error returned to the aborted call carries only its own
 transaction and its own side (§4.2). The other transaction, its query
 and the keys are readable only here, under §1.4.
 
-```
+```adt
 query conflicts_by_ctor (since: Instant) -> Set ({ ctor: Text, n: I64 }) =
   from c in sys::conflicts
   where c.at > since
@@ -1115,7 +1115,7 @@ query conflicts_by_ctor (since: Instant) -> Set ({ ctor: Text, n: I64 }) =
 
 ### 6.5 Vacuum and jobs
 
-```
+```adt
 type VacuumPhase = ScanHeaps { heap: Text } | IndexPass { done: F64 } | Truncate
 type Vacuum = { id: Key vacuums, relation: Key catalog::relations, phase: VacuumPhase,
                 heaps_done: I32, heaps_total: I32, dead_versions: I64, started: Instant }
@@ -1145,7 +1145,7 @@ Each such pair of object and bundle is a row of `sys::pending_drops`,
 and the report of the migration that drops the object names the same
 rows:
 
-```
+```adt
 type PendingDrop = { object: Text, dropped: Key catalog::migrations,
                      blocking: Key catalog::bundles }
 relation pending_drops : PendingDrop volatile key (object, blocking)
@@ -1156,7 +1156,7 @@ The server deduplicates writes by request id per client
 recorded replies of committed requests within the `RequestWindow`
 setting and a low-water mark below which ids are no longer recorded:
 
-```
+```adt
 type RequestMark = { id: Key request_marks, client: Text, low: I64, recorded: I64 }
 relation request_marks : RequestMark volatile
   key id
@@ -1181,7 +1181,7 @@ union-index probe with the constructors its entries are routed to.
 Estimates come from the heap statistics of §5. With the running schema
 extended by `index (user)` on `identities`:
 
-```
+```adt
 explain from i in identities
         where i.user == users.key(3)
         select match i
@@ -1194,7 +1194,7 @@ The result is one row `{ text: Text, document: Text }`. The `text`
 form is for people and is not normative; for the query above it might
 read:
 
-```
+```text
 Probe identities (user)
   Route by constructor
     EmailPass  est 0.4  -> Project email
@@ -1211,7 +1211,7 @@ set: nothing is applied, and no effect of the write is visible to any
 transaction. Its result adds the size of the change set per
 constructor relation:
 
-```
+```adt
 explain analyze update g in identities.Google where g.gid == from_gid set Google { g with gid: to_gid }
 -- { text: ..., document: ..., change: { identities.Google: -1 +1 }, constraints: checked }
 ```
@@ -1227,7 +1227,7 @@ their plans are stored in `catalog::plans`. The row whose `state` is
 `Current` or `Pinned` is the plan every call runs; reading it shows
 what calls run, not a fresh plan.
 
-```
+```adt
 from p in catalog::plans
 where p.query.name == "login_key" and p.query.bundle.name == "web-2.4"
   and (p.state == Current or p.state == Pinned)
@@ -1238,7 +1238,7 @@ select p.text
 arguments. The statement is checked and planned at the bundle's pinned
 version, with its stored plan, exactly as a call of it runs:
 
-```
+```adt
 explain analyze web-2.4::login_key(users.key(3))
 ```
 
@@ -1271,7 +1271,7 @@ releases. A tool must ignore kinds and members it does not know. The
 
 An operator may pin a stored plan:
 
-```
+```adt
 pin plan catalog::plans.key(8812)
 unpin plan catalog::plans.key(8812)
 ```
@@ -1340,7 +1340,7 @@ grows while its call runs.
 
 A bundle may declare its priority and a budget in its header:
 
-```
+```adt
 bundle batch-1.2 pins 9 (5d0e...) edition "2026-10" priority background budget { memory: 0.25, workers: 2 }
 ```
 
@@ -1369,7 +1369,7 @@ when the connection is ready ([wire.md](wire.md#34-binding-and-ready)).
 A registered query or transaction may declare its own statement
 limit, which replaces the file and call values for its calls:
 
-```
+```adt
 -- with:
 --   type Order = { id: Key orders, month: Date, region: Text, total: Decimal 2 }
 --   relation orders : Order key id generate sequence
@@ -1486,7 +1486,7 @@ Operations need these privileges of the one privilege list of
 | `read_files` | reading files through a server, within `file_roots` ([interop.md](interop.md#3-file-scans)) |
 | `write_files` | `export` through a server, within `export_roots` ([interop.md](interop.md#51-export)) |
 
-```
+```adt
 grant monitor, cancel to oncall
 grant maintain to dba
 ```
@@ -1502,7 +1502,7 @@ server. Given a file, it opens it as the one process that owns it, and
 fails if another process does. Given a server address, it connects as
 a client and issues commands and statements.
 
-```
+```sh
 $ adt repl app.adt
 $ adt repl adt://db.internal:7000 --role dba
 $ adt verify app.adt
@@ -1547,7 +1547,7 @@ the `set setting` command, which needs `configure`. A change is
 atomic and logged; settings move with the file to another host
 and reach replicas through the log.
 
-```
+```adt
 type Setting { id: Key settings }
   = StatementLimit   { limit: Option Duration }
   | TransactionLimit { limit: Option Duration }
@@ -1574,7 +1574,7 @@ relation catalog::settings : Setting key id
 setting` replaces the row of the named constructor with the given
 payload:
 
-```
+```adt
 set setting StatementLimit = { limit: Some { value: 5s } }
 set setting VacuumBudget = { io: 0.2, cpu: 0.5 }
 ```
@@ -1622,7 +1622,7 @@ a server may export into, empty by default;
 sampling (§13). They are shown read-only in a volatile relation,
 with whether each value was derived or given:
 
-```
+```adt
 type ProcessOption = { id: Key process_options, name: Text, value: Text, derived: Bool }
 relation sys::process_options : ProcessOption volatile
   key id
@@ -1675,7 +1675,7 @@ A background scrub reads every page of the file over each
 `ScrubInterval`, so a latent checksum failure is found before a call
 needs the page. Scrub findings go to the same relation.
 
-```
+```adt
 type PageId = new I64
 type Tid = new I64
 type RunId = new I64
@@ -1748,7 +1748,7 @@ constructor of its set.
 - `offline`: writes to every constructor in the index's set wait until
   the rebuild ends.
 
-```
+```adt
 reindex identities index (user) in (Google | Apple) online
 ```
 
@@ -1793,7 +1793,7 @@ A new release opening a file written by an older one writes only
 formats the previous release reads, until an operator finalizes the
 upgrade:
 
-```
+```sh
 $ adt upgrade app.adt --finalize
 finalize upgrade
 ```
@@ -1812,7 +1812,7 @@ appended to the schema log by an upgrade or by an open. In process,
 `Database::finalize_upgrade()` does the same
 ([embedding.md](embedding.md)).
 
-```
+```adt
 type Format = { id: Key format, file: Text, page_size: I64, format: I64, readable_by: Text,
                 finalized: Bool, release: Text }
 relation sys::format : Format volatile key id
@@ -1858,7 +1858,7 @@ A server traces in OpenTelemetry form:
 Which executions are traced is decided by the trace sampling open
 setting.
 
-```
+```text
 span "login_key"  db.system.name=adtdb  db.namespace=app
                   db.query.summary=login_key  adtdb.bundle=web-2.4  adtdb.arms_pruned=Apple
   span "plan"

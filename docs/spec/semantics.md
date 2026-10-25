@@ -17,7 +17,7 @@ edition that follows corrects the losing text. Full surface typing is in [typing
 
 ### 1.1 Metanotation
 
-```
+```text
 ∅, {a, b}, A ∪ B, A ∖ B, A ⊎ B      finite sets; ⊎ is union of disjoint sets
 ⦃a, a, b⦄                           finite multisets
 f[x ↦ v]                            f updated at x
@@ -40,7 +40,7 @@ them. Only `try` tells them apart: it catches faults and never
 rejections, limits included. Limits are not part of any equation: any
 statement may be rejected for a limit at any step. Outcomes compose strictly:
 
-```
+```text
 v ⇐ o ; k(v)  =  k(v)   if o = v ∈ X
               =  ω      if o = ω, an abort
 ```
@@ -49,7 +49,7 @@ The operands of one expression, within one binding, are sequenced left
 to right; the members of a family indexed by the bindings of a set are
 gathered:
 
-```
+```text
 seq (o₁, …, oₙ)       =  (v₁, …, vₙ)    if every o_i = v_i
                       =  o_j            for the least j with o_j an abort, otherwise
 gather (o_i)_{i ∈ I}  =  (v_i)_{i ∈ I}  if every o_i = v_i
@@ -92,7 +92,7 @@ Rulings: project/semantics/denotational, project/semantics/kernel/core, project/
 A schema `Σ` is the fold of the operator log up to a version (§9.5). It
 supplies:
 
-```
+```text
 types(Σ)        declared sums N, each with type parameters, a header
                 (fields common to every constructor), constructors
                 ctors(N) and, for each C, its fields
@@ -125,7 +125,7 @@ by its list before the kernel sees it. `r` alone stands for `r.ctors(T_r)`.
 
 ### 2.2 Types
 
-```
+```text
 τ ::= B                       base type (model.md §3)
     | N τ₁ … τₙ               declared sum, record or newtype, applied
     | N τ̄ . S                 row type of constructor set S ⊆ ctors(N)
@@ -153,7 +153,7 @@ with no surface spelling; it types the rows of a group (§5.8).
 
 ### 2.3 Expressions
 
-```
+```text
 e ::= x                               variable
     | c                               literal of a base type
     | op(e₁, …, eₙ)                   primitive operation (model.md)
@@ -187,7 +187,7 @@ A boolean condition is an expression of type `Bool`. `and`, `or` and
 
 ### 2.4 Writes and statements
 
-```
+```text
 w ::= skip
     | insert r e                      e : Set (T_r)
     | delete r e                      e : Set (T_r), rows of the snapshot
@@ -236,7 +236,7 @@ Rulings: project/semantics/kernel/core, query/ctor-relations, lang/family/compre
 
 ### 3.1 Judgements
 
-```
+```text
 Γ ⊢ e : τ          expression e has type τ under Γ
 Γ ⊢ w : Change     w is a write term
 Γ ⊢ s : τ          statement s returns τ
@@ -251,7 +251,7 @@ kernel addition: `Set⁺ τ <: Set τ`.
 
 ### 3.2 Rules
 
-```
+```text
 r ∈ rels(Σ)   S ⊆ ctors(T_r)
 ──────────────────────────────────────── (rel)
 Γ ⊢ r.S : Set (T_r . S)
@@ -331,7 +331,7 @@ in them.
 
 Write rules:
 
-```
+```text
 Γ ⊢ e : Set (T_r . S)                     ⟹  Γ ⊢ insert r e : Change
 Γ ⊢ e : Set (T_r . S)                     ⟹  Γ ⊢ delete r e : Change
 Γ ⊢ e₁ : T_r . S   Γ ⊢ e₂ : T_r . S'      ⟹  Γ ⊢ replace r e₁ e₂ : Change
@@ -387,7 +387,7 @@ Rulings: lang/binder/ctor-row, lang/patterns/or-binder/ctor-set, model/ref-subty
 
 The value domain `V` is the least set containing:
 
-```
+```text
 base values             as model.md §3 defines each base type
 C⟨h̄, ḡ⟩                 a constructor value: constructor C, header fields h̄,
                         own fields ḡ; records are one-constructor values
@@ -413,7 +413,7 @@ are relation variables like any other
 ([catalog.md](catalog.md#1-system-relations)). Sums are closed: `r` has no
 rows other than those of its constructor relations.
 
-```
+```text
 ⟦r.S⟧ D  =  ⊎_{C ∈ S} D(r.C)
 ```
 
@@ -429,7 +429,7 @@ observes them.
 
 Every statement is evaluated in a context
 
-```
+```text
 σ = (D, Σ, v, γ)
 ```
 
@@ -467,7 +467,7 @@ Rulings: model/sets, model/nominal, model/one-ctor-sum, model/record-is-ctor, su
 
 ### 5.1 Scalar forms
 
-```
+```text
 ⟦x⟧ ρ                    = ρ(x)
 ⟦c⟧ ρ                    = c
 ⟦op(e₁,…,eₙ)⟧ ρ          = (v₁,…,vₙ) ⇐ seq(⟦e_i⟧ ρ) ; op(v₁,…,vₙ)
@@ -503,7 +503,7 @@ of it faults with `NoSuchRow`.
 The guard forms evaluate their condition first and only the branch it
 selects:
 
-```
+```text
 ⟦if e₀ then e₁ else e₂⟧ ρ = b ⇐ ⟦e₀⟧ ρ ; ⟦e₁⟧ ρ if b = True, ⟦e₂⟧ ρ if b = False
 
 ⟦case e of { C x_C → e_C }⟧ ρ = v ⇐ ⟦e⟧ ρ ; ⟦e_{tag v}⟧ ρ[x_{tag v} ↦ v]
@@ -520,7 +520,7 @@ under the guards that dominate them.
 
 ### 5.3 Binding and functions
 
-```
+```text
 ⟦let x = e₁ in e₂⟧ ρ   = v ⇐ ⟦e₁⟧ ρ ; ⟦e₂⟧ ρ[x ↦ v]
 ⟦λ(x : τ). e⟧ ρ        = the function v ↦ ⟦e⟧ ρ[x ↦ v]
 ⟦e₁ e₂⟧ ρ              = (g, v) ⇐ seq(⟦e₁⟧ ρ, ⟦e₂⟧ ρ) ; g(v)
@@ -533,7 +533,7 @@ outcome. Block bindings `let!` (§6.6) are evaluated the same way.
 
 ### 5.4 Sets
 
-```
+```text
 ⟦{}⟧ ρ                 = ∅
 ⟦{e}⟧ ρ                = v ⇐ ⟦e⟧ ρ ; {v}
 ⟦e₁ ∪ e₂⟧ ρ            = (A, B) ⇐ seq(⟦e₁⟧ ρ, ⟦e₂⟧ ρ) ; A ∪ B
@@ -557,7 +557,7 @@ A relation variable is the disjoint union of its constructor relations
 (§5.2). Together these give the meaning of a `match` over a relation as
 a disjoint union of arm queries, one per constructor relation:
 
-```
+```text
 ⟦for x in r.S do e[case x of { C x_C → e_C }_{C ∈ S}]⟧ ρ
   =  ⟦ ∪_{C ∈ S} for x_C in r.C do e[e_C] ⟧ ρ
 ```
@@ -581,7 +581,7 @@ constructor, is an implementation of this equation
 In the body of a constraint, evaluated against a pre-state `D`, a
 normalised change set `Δ` and the post-state `D'` (§7.1):
 
-```
+```text
 ⟦r.S⟧           = ⊎_{C ∈ S} D'(r.C)
 ⟦inserted r.S⟧  = ⊎_{C ∈ S} Δ⁺(r.C)
 ⟦deleted r.S⟧   = ⊎_{C ∈ S} Δ⁻(r.C)
@@ -608,7 +608,7 @@ same form. Examples:
 
 An aggregate ranges over bindings, not over projected values:
 
-```
+```text
 ⟦agg α (x in e₁ . e₂)⟧ ρ =
   A ⇐ ⟦e₁⟧ ρ ;
   (m_v) ⇐ gather(⟦e₂⟧ ρ[x ↦ v])_{v ∈ A} ;
@@ -638,7 +638,7 @@ empty range and returns `ρ_α` directly.
 
 ### 5.8 Grouping
 
-```
+```text
 ⟦group (x in e₁) by e₂⟧ ρ =
   A ⇐ ⟦e₁⟧ ρ ;
   (k_v) ⇐ gather(⟦e₂⟧ ρ[x ↦ v])_{v ∈ A} ;
@@ -655,7 +655,7 @@ first `k_i` on which `u` and `v` differ puts `u` first: lower for `asc`,
 higher for `desc`, by the order of
 [model.md §10](model.md#10-order).
 
-```
+```text
 ⟦top n by k̄ (x in e₁)⟧ ρ =
   c ⇐ ⟦n⟧ ρ ; A ⇐ ⟦e₁⟧ ρ ; (k̄_v) ⇐ gather(seq(⟦k_i⟧ ρ[x ↦ v]))_{v ∈ A} ;
   ↯NegativeCount if c < 0, else { v ∈ A | #{ u ∈ A | u ≺ v } < c }
@@ -668,7 +668,7 @@ evaluation order. The result is a set; it carries no order.
 Ordering is not a kernel form. `order by k̄`, `take n` and `after c`
 apply only to the final result of a statement and denote a sequence:
 
-```
+```text
 present(A, k̄, n, c) = the first n elements of { v ∈ A | c ≺ v }, listed by ≺
 ```
 
@@ -679,7 +679,7 @@ equal on every key are listed in an unspecified order. `take` and
 
 ### 5.10 Fixpoints
 
-```
+```text
 ⟦fix X₁ = e₁, …, Xₙ = eₙ in e⟧ ρ = ⟦e⟧ ρ[X₁ ↦ S*₁, …, Xₙ ↦ S*ₙ]
   where F(S̄) = (⟦e₁⟧ ρ[X̄ ↦ S̄], …, ⟦eₙ⟧ ρ[X̄ ↦ S̄]),
         S̄₀ = (∅, …, ∅),  S̄_{i+1} ⇐ seq F(S̄_i),
@@ -752,7 +752,7 @@ statement is a closed term whose free variables have first-order
 types. Before planning, it is normalised by these rules, where `e'`
 total means `e'` is total (§3.4):
 
-```
+```text
 (λ(x : τ). e) e'                       → e[x := e']           e' total
 (λ(x : τ). e) e'                       → let x = e' in e      otherwise
 let x = e' in e                        → e[x := e']           e' total
@@ -780,7 +780,7 @@ Rulings: query/union-all, query/ctor-relations, query/construct, query/native, m
 
 A change set over `Σ` is a pair of families
 
-```
+```text
 Δ = (Δ⁺, Δ⁻),   Δ⁺(r.C), Δ⁻(r.C) ⊆ values with tag C, for every r.C
 ```
 
@@ -788,7 +788,7 @@ A change set over `Σ` is a pair of families
 deleted from it. A write term denotes a set of effects, from which its
 change set is read off:
 
-```
+```text
 Eff ::= ins(r, v)          insert row v into r
       | del(r, v)          delete row v of r
       | rep(r, v, v')      replace row v of r by v', key_r(v) = key_r(v')
@@ -802,7 +802,7 @@ The key of an effect is `key_r(v)` (for `rep`, of either row; for
 
 `⟦w⟧ ρ σ ∈ O(finite sets of Eff)`:
 
-```
+```text
 ⟦skip⟧ ρ                     = ∅
 ⟦insert r e⟧ ρ               = A ⇐ ⟦e⟧ ρ ; { ins(r, v) | v ∈ A }
 ⟦delete r e⟧ ρ               = A ⇐ ⟦e⟧ ρ ; { del(r, v) | v ∈ A ∩ ⟦r⟧ D }
@@ -829,7 +829,7 @@ fields and moves between constructor relations.
 
 The change set of a set of effects `E` is the union of its effects:
 
-```
+```text
 killed(E) = { (r, k) | kill(r, k) ∈ E }
 Δ⁺(r.C) = { v | ins(r, v) ∈ E or rep(r, _, v) ∈ E, tag v = C, (r, key_r v) ∉ killed(E) }
 Δ⁻(r.C) = { v | del(r, v) ∈ E or rep(r, v, _) ∈ E, tag v = C }
@@ -859,7 +859,7 @@ a key of a row of `D(r)` and of no row of `D_E(r)`. A reference value
 `u.f` names `k` when `f : Key r.S` and `u.f = k`, or
 `f : Option (Key r.S)` and `u.f = Some⟨k⟩`. The actions derive effects:
 
-```
+```text
 A(E) = for every reference field f of a constructor C of T_r' into r,
        every row u ∈ D_E(r'.C) whose u.f names a key gone in E, with
        key_r'(u) not gone in E:
@@ -897,7 +897,7 @@ omits, as an insert into `r'.D` does, drawing from `γ`.
 
 ### 6.5 Application
 
-```
+```text
 apply(D, Δ)(r.C) = (D(r.C) ∖ Δ⁻(r.C)) ∪ Δ⁺(r.C)     for every r.C at once
 ```
 
@@ -907,7 +907,7 @@ which some have been assigned and others not exists or is observable.
 
 ### 6.6 Statements
 
-```
+```text
 ⟦let! x = e in b⟧ ρ σ    = v ⇐ ⟦e⟧ ρ σ ; ⟦b⟧ ρ[x ↦ v] σ
 ⟦(w, e)⟧ ρ σ             = (E, v) ⇐ seq(⟦w⟧ ρ σ, ⟦e⟧ ρ σ) ; (E, v)
 ```
@@ -920,7 +920,7 @@ only through such names.
 
 The outcome of `transact b` in context `σ = (D, Σ, v, γ)`:
 
-```
+```text
 run(s, σ) =
   (E, res) ⇐ ⟦b⟧ ∅ σ ;
   E*  = the closure of E under the delete actions (§6.4) ;
@@ -962,7 +962,7 @@ A constraint `c` is a closed kernel query. It is evaluated on a
 transition `(D, Δ, D')` with `D' = apply(D, Δ)` (§5.6) and holds when
 it returns the empty set:
 
-```
+```text
 holds(c, D, Δ, D')  ⇔  ⟦c⟧(D, Δ, D') = ∅
 valid(D)            ⇔  ∀ c ∈ cons(Σ). holds(c, D, ∅, D)
 ```
@@ -976,7 +976,7 @@ while evaluating `c` is the statement's outcome.
 Keys, uniques and references are constraints in this form, generated
 from the schema:
 
-```
+```text
 key of r:
   for x in r do for y in r do
     if key_r(x) == key_r(y) and x != y then {{ a: x, b: y }} else {}
@@ -1019,7 +1019,7 @@ fires no delete action.
 
 Every constraint holds at every statement boundary:
 
-```
+```text
 D valid ∧ run(s, σ) = (res, Δ*, D*)  ⟹  D* valid
 ```
 
@@ -1034,7 +1034,7 @@ A constraint is admitted only with an index-bounded incremental check
 `δc` reads `Δ*`, probes of `D` and `D*`, and returns a set. It is
 correct when, for every valid `D` and every change set:
 
-```
+```text
 δc(D, Δ*, D*) = ⟦c⟧(D, Δ*, D*)
 ```
 
@@ -1140,7 +1140,7 @@ apply is refused.
 
 An operator `op : Σ → Σ'` denotes:
 
-```
+```text
 fwd_op : DB(Σ) ⇀ DB(Σ')                   the data map applied with the operator
 bwd_op : DB(Σ') → DB(Σ)                   the inverse map: Σ' state seen at Σ
 put_op : DB(Σ') × DB(Σ) ⇀ DB(Σ')          a Σ write carried into a Σ' state
@@ -1151,7 +1151,7 @@ put_op : DB(Σ') × DB(Σ) ⇀ DB(Σ')          a Σ write carried into a Σ' st
 current state is refused (removing a populated constructor, adding a
 constraint the data violates). The laws:
 
-```
+```text
 (L1)  bwd(fwd(D)) = π(D)              for D ∈ dom fwd
 (L2)  bwd(put(D', D)) = D             where put(D', D) is defined
 (L3)  put(D', bwd(D')) = D'
@@ -1172,7 +1172,7 @@ is total and whose `bwd` drops information is lossy.
 Operators that move data act row by row: there is a key-preserving map
 `φ_op` from rows of `r` at `Σ` to rows of `r` at `Σ'` with
 
-```
+```text
 fwd(D)(r) = { φ(v) | v ∈ D(r) }
 bwd(D')(r) = { φ⁻¹(v') | v' ∈ D'(r), v' in the image of φ }
 put(D', D)(r) = { φ(v) ⊕ v'_k | v ∈ D(r) } ∪ { v' ∈ D'(r) | v' not in the image of φ }
@@ -1251,7 +1251,7 @@ versioned by it.
 
 For versions `n ≤ m`, let
 
-```
+```text
 B_{n←m} = bwd_{op_{n+1}} ∘ … ∘ bwd_{op_m}     : DB(Σ_m) → DB(Σ_n)
 P_{n←m}(D_m, D_n) = put_{op_m}(D_m, put_{op_{m-1}}(… , D_n))   composed likewise
 ```
@@ -1260,7 +1260,7 @@ A query `q` registered at version `n` and called when the database is
 at version `m` means, with the schema functions, view definitions,
 named-set memberships and types of `Σ_n`:
 
-```
+```text
 ⟦q⟧^{n}(D_m) = ⟦q⟧_{Σ_n}(B_{n←m}(D_m))
 ```
 
@@ -1270,7 +1270,7 @@ valid `D_m`.
 
 A statement `s` at version `n` runs on `D_m` as:
 
-```
+```text
 D_n = B_{n←m}(D_m)
 (res, Δ_n, D_n') ⇐ run_{Σ_n}(s, (D_n, Σ_n, n, γ))       without the delete actions and checks of §6.6
 D_m'' = P_{n←m}(D_m, D_n')
@@ -1392,7 +1392,7 @@ valid state.
 
 A `match e | p₁ -> b₁ | … | pₘ -> bₘ` on a sum `T.S` compiles to
 
-```
+```text
 let ξ = ⟦⟦e⟧⟧ in case ξ of { C x_C → M_C }_{C ∈ S}
 ```
 
@@ -1402,7 +1402,7 @@ in their written order. An arm can match `C` when its pattern is
 `C`, or, in an ad hoc query only, `_` on the sum. For each such arm
 `p_i if g_i -> b_i` (with `g_i = true` when unguarded):
 
-```
+```text
 M_C = P(x_C, p_i, if ⟦⟦g_i⟧⟧ then ⟦⟦b_i⟧⟧ else M'_C, M'_C)
 ```
 
@@ -1472,7 +1472,7 @@ An upsert on a key or unique `K` over constructor set `S` with fields
 `f̄` (the key fields for `on key`), with source `V` (a query, or `{v}` for one
 value):
 
-```
+```text
 let! ξ_V = for ξ in ⟦⟦V⟧⟧ do {fill_r(ξ)} in
 for new in ξ_V do
   let ξ_O = for o in r.S do if o.f̄ == new.f̄ then {o} else {} in
@@ -1487,7 +1487,7 @@ the set of the rows it inserted together with the rows its else branch
 wrote. In the kernel, the binding is a `let!` after `ξ_V`, beside the
 write above:
 
-```
+```text
 single row:  let! x = only (U (case W(⟦⟦w⟧⟧) of { None ξ → {old} ; Some ξ → {ξ.value} }))
 source form: let! x = U (case W(⟦⟦w⟧⟧) of { None ξ → {} ; Some ξ → {ξ.value} })
 

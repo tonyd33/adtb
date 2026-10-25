@@ -51,7 +51,7 @@ The signature of every `query`, `fn` and `txn` is written in full:
 each parameter's name and type, and the result type after `->`.
 Bodies are inferred.
 
-```
+```adt
 type Status = Draft | Sent { at: Instant } | Paid { at: Instant }
 type Invoice = { id: Key invoices, status: Status, issued: Instant }
 relation invoices : Invoice key id generate sequence
@@ -116,7 +116,7 @@ local subtype constraints of that call, choosing the least result type
 that satisfies them. A type error is reported at the subterm where the
 synthesized type and the expectation disagree.
 
-```
+```adt
 fn oauth_owner (u: Key users) -> Set (Key identities) =
   from i in identities where i.user == u
   select match i | Google g -> key g | Apple a -> key a | EmailPass e -> key e
@@ -171,7 +171,7 @@ where it occurs in the declaration's fields:
 - A parameter that occurs in no field is covariant and contravariant:
   any two instantiations at it are related.
 
-```
+```adt
 type Option a ordered = None | Some { value: a }     -- prelude; a covariant
 type Fallback = { id: Key fallbacks, backup: Option (Key identities.Google) }
 relation fallbacks : Fallback key id generate sequence
@@ -219,7 +219,7 @@ Values of two different sums have no join: there is no top type. Arms
 that are meant to stay apart are given constructors of a result sum
 ([model.md](model.md#64-results)).
 
-```
+```adt
 from i in identities select match i
   | Google g    -> g          -- Identity.Google
   | Apple a     -> a          -- Identity.Apple
@@ -241,7 +241,7 @@ require the join to be ordered ([model.md](model.md#10-order)). Two
 against the type of the other operand; no literal checks against a
 `Key` type ([model.md](model.md#81-reference-types)).
 
-```
+```adt
 type Visit = { id: Key visits, identity: Key identities }
 relation visits : Visit key id generate sequence
 from v in visits, g in identities.Google
@@ -260,7 +260,7 @@ row types. There is no row polymorphism: no parameter type stands for
 any record that has a given field. Code shared between types goes
 through a sum and a `match`.
 
-```
+```adt
 fn email_of (e: Identity.EmailPass) -> Text = e.email
 ```
 
@@ -301,7 +301,7 @@ Rulings: lang/record-poly/nominal, model/nominal
 - `N(e)` for a newtype `N` is a call: it checks `e` against `N`'s base
   type and synthesizes `N`.
 
-```
+```adt
 type Import { id: Key imports } = Email { user: Key users, addr: Text, h: Bytes }
                                 | Oauth { user: Key users, sub: Text }
 relation imports : Import key id generate sequence
@@ -351,7 +351,7 @@ parameters, written in brackets after its name. A parameter may require any of f
 | `Ord` | `<`, `<=`, `>`, `>=`, `min`, `max`, `top ... by`, `order by` | the ordered types ([model.md](model.md#10-order)) |
 | `Num` | `+`, `-`, unary `-`, `sum`, integer literals | integer types, `Decimal s`, `F32`, `F64` |
 
-```
+```adt
 fn or_else [a] (p: Option a, d: a) -> a = match p | None -> d | Some s -> s.value
 fn latest [a: Ord] (xs: Set a) -> Option a = max(x for x in xs)
 ```
@@ -402,7 +402,7 @@ conversion between integer widths, between integers and decimals, or
 between either and a float type; conversions are written
 ([prelude.md](prelude.md#34-conversions)):
 
-```
+```adt
 type Sale = { id: Key sales, qty: I32, unit_cents: I64 }
 relation sales : Sale key id generate sequence
 from s in sales select i64(s.qty) * s.unit_cents
@@ -427,7 +427,7 @@ value of the sum, stored or not. A constructor named in a pattern
 resolves against the scrutinee's type, never against other types in
 scope.
 
-```
+```adt
 match i
   | EmailPass e -> e.email
   | OAuth o     -> display_name(o)            -- o : Identity.OAuth
@@ -468,7 +468,7 @@ after a schema change.
 - Coverage of nested and record patterns is decided by the standard
   pattern-matrix algorithm over these rules.
 
-```
+```adt
 match i
   | Google g if g.gid == "corp" -> "staff"
   | Google _                    -> "guest"      -- required despite the guard
@@ -494,7 +494,7 @@ In the ad hoc role ([applications.md](applications.md)), `_` may also
 match a value of a sum and covers every constructor no other arm
 names. Ad hoc queries are never rechecked.
 
-```
+```adt
 match i | Google g -> g.gid | _ -> "other"     -- ad hoc only
 ```
 
@@ -541,7 +541,7 @@ Rulings: types/fault/abort, types/int-overflow/trap
 `select` evaluate as written, left to right. A partial expression is
 evaluated only where every guard before it held:
 
-```
+```adt
 type Raw = { id: Key raws, n: I64 }
 relation raws : Raw key id generate sequence
 from r in raws where r.n != 0 and 1000 / r.n > 10 select r   -- never divides by zero
@@ -561,7 +561,7 @@ is the prelude sum of faults ([prelude.md](prelude.md#25-fault)).
 `try` catches faults only, never `fail`
 ([queries.md](queries.md#154-try)).
 
-```
+```adt
 from r in raws select try i32(r.n)       -- : Set (Result I32 Fault)
 ```
 

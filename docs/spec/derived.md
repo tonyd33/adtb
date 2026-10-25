@@ -12,7 +12,7 @@ version `12`, extended locally; migration examples are one history
 starting from a version `29` at which the invoices below exist, unless
 a section says otherwise:
 
-```
+```adt
 module billing
 type Invoice { id: Key invoices, user: Key auth::users, amount: Decimal 2 }
   = Open
@@ -28,7 +28,7 @@ relation invoices : Invoice
 A view is a schema function with no parameters. There is no separate
 view declaration.
 
-```
+```adt
 -- 0030, from version 29
 module billing
 define fn open_by_user () -> Set ({ user: Key auth::users, open: I64 }) =
@@ -52,7 +52,7 @@ Rulings: lang/nullary-fn
 
 ### 2.1 Storing a view
 
-```
+```adt
 -- 0031
 module billing
 store open_by_user
@@ -84,7 +84,7 @@ rule and the compiler that admit constraints
 plan is refused, and the refusal names each missing index or each
 operator with no incremental form:
 
-```
+```adt
 -- 0032, from version 31, a separate history in which it is refused
 module billing
 define fn paid_by_user () -> Set ({ user: Key auth::users, paid: I64 }) =
@@ -142,7 +142,7 @@ one exception:
 | constraints | a constraint may read the stored view; it reads the stored rows and their change, as for base relations |
 | `Key f` | not allowed: no reference type names a stored view |
 
-```
+```adt
 constraint over_limit = from r in open_by_user() where r.open > 5 select r
 ```
 
@@ -182,14 +182,14 @@ a denormalised copy that is not a function of current state) is
 written by the registered transaction that makes the change, in the
 same change set:
 
-```
+```adt
 -- 0032, from version 31
 module billing
 add type Payment = { id: Key payments, invoice: Key invoices, at: Instant }
 add relation payments : Payment key id generate sequence
 ```
 
-```
+```adt
 -- bundles/billing.adb
 bundle billing-1.0 pins 32 (8d1f...) edition "2026-10"
 import billing
@@ -210,7 +210,7 @@ A default is a clause of a relation variable, not of a type. It
 applies when a row enters that relation variable through a value that
 omits the field:
 
-```
+```adt
 relation sessions : Session
   key id generate uuidv7
   default Revoked.at = generate clock
@@ -260,7 +260,7 @@ sessions by the action `on delete retag Revoked {}`, and
 `Revoked.at` is filled by `generate clock`. The same holds for an
 explicit retag:
 
-```
+```adt
 update a in sessions.Active where a.who == k set Revoked {}
 ```
 
@@ -271,7 +271,7 @@ that exist when it is added. Adding a field to a constructor states
 its own fill for the existing rows, and may be followed by a default
 for later inserts:
 
-```
+```adt
 -- 0033, from version 32
 module auth
 add field Identity.EmailPass.verified: Bool fill false
@@ -290,7 +290,7 @@ Rulings: derived/defaults/on-relation, derived/defaults/backfill/separate
 A relation variable may declare a computed field: a field defined by
 an expression over the row, evaluated on read and never stored.
 
-```
+```adt
 type Shape { id: Key shapes } = Circle { r: F64 } | Rect { w: F64, h: F64 }
 relation shapes : Shape
   key id generate sequence
@@ -316,7 +316,7 @@ are operators; `redefine computed` replaces the expression.
 An index may range over an expression of the row, including a computed
 field, instead of a stored field:
 
-```
+```adt
 add index (area) in shapes
 add index (lower(email)) in identities.EmailPass
 ```
@@ -329,7 +329,7 @@ expression may use it.
 A unique may range over such expressions likewise; it is maintained as
 a derived index and checked as any unique:
 
-```
+```adt
 add unique (lower(email)) in identities.EmailPass
 ```
 
@@ -355,7 +355,7 @@ committed, never decreasing along positions; the recorded map is the
 system relation `sys::commit_times`
 ([catalog.md](catalog.md#15-commit-times-and-safe-snapshots)).
 
-```
+```adt
 at commit Position { epoch: 3, lsn: 4120 } { from i in invoices.Paid select i }
 at instant t { from i in invoices.Paid select i }
 from p in (at commit c { from i in invoices.Open select i }), q in invoices.Paid
@@ -397,7 +397,7 @@ safe snapshot it reads, not against today's schema, and is not translated throug
 later operators. A registered query that reads the past names that
 version as a bundle pins its own:
 
-```
+```adt
 query paid_then (c: Position) -> Set Invoice =
   at commit c pins 29 (3b7e...) { from i in invoices.Paid select i }
 ```
@@ -428,7 +428,7 @@ The model has one notion of time, the commit order. Valid time, the
 time a fact holds in the world, is a field of type `Span Instant` ([prelude.md](prelude.md)) with
 an exclusion constraint against overlap:
 
-```
+```adt
 type Price = { sku: Text, during: Span Instant, amount: Decimal 2 }
 relation prices : Price
   key (sku, during)
@@ -447,7 +447,7 @@ A reference is checked by key only. That a referencing row's period
 lies within its target's period is a constraint the user writes, and is
 admitted when it is index-bounded:
 
-```
+```adt
 type Department = { code: Text, during: Span Instant, name: Text }
 relation departments : Department
   key (code, during)
@@ -469,7 +469,7 @@ Rulings: derived/valid-time/pattern, derived/valid-time/temporal-fk/live
 The engine has no event store. An event log is an append-only relation
 of an event sum, with state as stored views over it:
 
-```
+```adt
 module orders
 type OrderEvent { order: Text } = Placed { at: Instant }
                                 | Shipped { at: Instant }

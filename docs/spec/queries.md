@@ -17,7 +17,7 @@ at version 12, after migration 0011
 Text }` joining `identities.OAuth`, with its `display_name` arm, and
 `0012 enable identities.Apple`, extended for this part with:
 
-```
+```adt
 type Post = { id: Key posts, author: Key users, created_at: Instant, title: Text }
 type Phone = { id: Key phones, owner: Key users on delete cascade, seen: Instant }
 type Follow = { src: Key users, dst: Key users }
@@ -144,7 +144,7 @@ When the element type of a set-valued expression `q` is a sum, `q.C`
 and `q.(C | D)` select its elements by constructor exactly as for a
 relation variable. This holds for sums a query builds (§4.3):
 
-```
+```adt
 fn sign_ins () -> Set (Local { id: Key identities, email: Text }
                      | Remote { id: Key identities, provider: Text }) =
   from i in identities select match i
@@ -166,7 +166,7 @@ Rulings: query/ctor-relations, model/one-ctor-sum, model/sets, lang/binder/ctor-
 
 A comprehension
 
-```
+```adt
 from x1 in e1, x2 in e2 where p select v
 ```
 
@@ -187,7 +187,7 @@ the binders introduced before it, together with parameters and the
 binders of enclosing expressions, so a generator may depend on an
 earlier one:
 
-```
+```adt
 from u in users, i in u.<identities.user
 select { name: u.name, id: key i }
 ```
@@ -200,7 +200,7 @@ the order written (§15.2).
 The value of a comprehension is a set: elements equal under `==` are
 one element. Projection is where equal values arise:
 
-```
+```adt
 from p in posts select p.author     -- each author once
 ```
 
@@ -249,7 +249,7 @@ when their types are equal. Values of different named types do not
 join, and an implementation must refuse them. Arms whose shapes differ
 are kept apart by building constructors of a result sum (§4.3).
 
-```
+```adt
 from i in identities select match i
   | Google g    -> g
   | Apple a     -> a
@@ -263,7 +263,7 @@ and the result is the disjoint union of the arms with each element
 keeping its constructor. A result sum is either a declared type or a
 sum anonymous to the query, written in the signature:
 
-```
+```adt
 query login_key (u: Key users) -> Set (ByEmail { email: Text } | ByGoogle { gid: Text }) =
   from i in identities.(EmailPass | Google) where i.user == u
   select match i
@@ -308,7 +308,7 @@ Rulings: model/anon-results/anon-records, types/sub-records/exact, types/join/lu
 
 ### 5.1 Meaning
 
-```
+```adt
 match e
   | p1 -> v1
   | p2 if g2 -> v2
@@ -381,7 +381,7 @@ covers.
 In an ad hoc statement `_` and a binder may cover the remaining
 constructors of a sum.
 
-```
+```adt
 -- refused in a registered query; accepted ad hoc
 match i | Google g -> g.gid | _ -> "other"
 ```
@@ -397,7 +397,7 @@ constructor's type:
 - over a value of a value-level sum `V`, `x` has type `V.C`, a subtype
   of `V`, with `C`'s fields and no key.
 
-```
+```adt
 from i in identities select match i
   | EmailPass e -> { owner: e.user, login: e.email }
   | Google g    -> { owner: g.user, login: g.gid }
@@ -416,14 +416,14 @@ its arms that can match `Ck`, in their order. Each `Qk` reads only the
 constructor relation `r.Ck`. The arms range over disjoint inputs; equal
 outputs of different arms are one element of the result (§3.2).
 
-```
+```adt
 from i in identities where i.user == u
 select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
 ```
 
 is
 
-```
+```adt
 (from e in identities.EmailPass where e.user == u select e.email)
 union (from g in identities.Google where g.user == u select g.gid)
 union (from a in identities.Apple where a.user == u select a.sub)
@@ -468,7 +468,7 @@ field name alone binds the field under its own name; fields not
 listed are not constrained. A record type's single constructor is
 matched the same way: `User { name }`.
 
-```
+```adt
 match i
   | EmailPass { email, hash: _ } -> email
   | Google { gid }               -> gid
@@ -480,7 +480,7 @@ match i
 A field pattern may itself be a constructor, record or literal
 pattern, to any depth:
 
-```
+```adt
 type Via = Courier { name: Text } | Mail { tracking: Text }
 type Shipment = Pending | Shipped { via: Via }
 
@@ -505,7 +505,7 @@ value of `T` whose constructor is a member, row or value alike; it
 covers every member, and its binder has type `T.S`. Constructor names
 in a pattern resolve against the scrutinee's type.
 
-```
+```adt
 match i
   | EmailPass e -> e.email
   | OAuth o     -> display_name(o)
@@ -522,7 +522,7 @@ Every alternative of an or-pattern binds the same names. A name bound
 to the whole value in each alternative has the row type of the
 constructor set of the alternatives:
 
-```
+```text
 | Google g | Apple g -> g.user        -- g : Identity.(Google | Apple)
 ```
 
@@ -538,7 +538,7 @@ with the next arm. Coverage is decided without evaluating guards: a
 guarded arm covers nothing, so every constructor has an unguarded arm
 as well.
 
-```
+```adt
 match i
   | Google g if g.gid == "root" -> "staff"
   | Google _                    -> "guest"
@@ -553,7 +553,7 @@ literals are compared after normalisation to NFC. A literal pattern
 takes the type of the scrutinee, as any literal takes its expected
 type.
 
-```
+```adt
 match c | "US" -> 0 | "CA" -> 1 | _ -> 2
 ```
 
@@ -573,7 +573,7 @@ Rulings: lang/patterns/nested, lang/patterns/guards, lang/patterns/or-patterns, 
 Related rows are reached by generators joined by predicates. A
 reference compares with the key of a row:
 
-```
+```adt
 from i in identities, u in users where i.user == key u select u.name
 ```
 
@@ -585,7 +585,7 @@ A field access on a reference follows it. For `k : Key r.S`, `k.f` is
 the field `f` of the one row `u` of `r.S` with `key u == k`; it is
 shorthand for that generator and predicate:
 
-```
+```adt
 from i in identities select i.user.name
 -- is
 from i in identities, u in users where key u == i.user select u.name
@@ -595,7 +595,7 @@ The fields reachable through `k` are those of the row type of `r.S`.
 A path through a reference to a sum lands on the sum, and its
 constructors' fields are reached by `match` (§5.2):
 
-```
+```adt
 from r in resets select match r.identity | EmailPass e -> e.email
 ```
 
@@ -610,7 +610,7 @@ faults when no user has key 3.
 A path stops at an `Option`. For `manager : Option (Key employees)`,
 `e.manager.name` is refused; the option is matched:
 
-```
+```adt
 from e in employees
 select match e.manager
   | None              -> "none"
@@ -626,7 +626,7 @@ backlink `x.<R.f` is the set of rows of `R` whose `f` references `x`:
 for a `Key` field, the rows with `f == key x`; for an `Option` field,
 the rows with `f == Some { value: key x }`.
 
-```
+```adt
 u.<identities.user
 -- is
 from i in identities where i.user == key u select i
@@ -636,7 +636,7 @@ A backlink is a set. It may be ranged over, aggregated, tested with
 `exists`, limited with `top`, or held as a nested field of a result.
 Used where a single value is expected it is a type error:
 
-```
+```adt
 from u in users
 select { name: u.name, n: count(i for i in u.<identities.user) }
 ```
@@ -652,7 +652,7 @@ Rulings: lang/nav/joins, lang/nav/paths, lang/nav/backlinks, lang/nav/backlink-c
 
 A record in a result may hold a set, to any depth:
 
-```
+```adt
 from u in users
 select { name: u.name,
          phones: from d in phones where d.owner == key u select d }
@@ -665,7 +665,7 @@ element holding both.
 
 A nested set is flattened by ranging over it:
 
-```
+```adt
 from r in (from u in users select { name: u.name, ds: u.<phones.owner }),
      d in r.ds
 select { name: r.name, seen: d.seen }
@@ -683,7 +683,7 @@ Rulings: lang/results/nested, lang/outer/nested, model/no-collections
 
 ### 9.1 Group into
 
-```
+```adt
 from i in identities group i by i.user into g
 select { user: g.key, n: count(x for x in g) }
 ```
@@ -720,7 +720,7 @@ on a tag is rechecked like any match.
 
 Per-constructor aggregates are a group by tag:
 
-```
+```adt
 from i in identities group i by tag(i) into g
 select { kind: g.key, n: count(x for x in g) }
 ```
@@ -733,7 +733,7 @@ Rulings: lang/group/into, lang/group/ctor-key/tag-type, query/agg-scope/whole, l
 
 ### 10.1 Aggregates range over bindings
 
-```
+```adt
 sum(o.total for o in orders where o.user == key u)
 ```
 
@@ -761,7 +761,7 @@ exactly the binder of a generator over a relation variable, a
 constructor relation, a constructor set, a backlink or another such
 key-preserving comprehension. A `Set T` parameter is accepted:
 
-```
+```adt
 sum(o.total for o in orders)                                        -- each order counts
 sum(x.total for x in (from o in orders where o.qty > 1 select o))  -- accepted: selects the binder
 sum(t for t in (from o in orders select o.total))                   -- refused
@@ -792,7 +792,7 @@ A range is nonempty when it is a single generator over a group with no
 `where`. Every other range may be empty, and `min`, `max` and `avg`
 over it return `Option`:
 
-```
+```adt
 from o in orders group o by o.user into g
 select { user: g.key, top: max(x.total for x in g) }          -- top : I64
 
@@ -808,7 +808,7 @@ arm is an ordinary expression with its own generators, which may
 mention the arm's binders; no aggregate ranges implicitly over the
 rows that reach an arm. An aggregate over a match's result wraps it:
 
-```
+```adt
 count(x for x in (from i in identities
                   select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub))
 ```
@@ -821,7 +821,7 @@ Rulings: syntax/aggregate/comprehension, lang/collection/set-agg/over-binders, l
 
 For a parameter `me: Key users`:
 
-```
+```adt
 fix reach = (from f in follows where f.src == me select f.dst)
           union (from r in reach, f in follows where f.src == r select f.dst)
 in from u in users where exists r in reach where r == key u select u
@@ -836,7 +836,7 @@ equal to `q` with `x` bound to `X`.
 
 Mutual recursion binds its relations together:
 
-```
+```adt
 fix even = (from u in users where key u == me select key u)
            union (from o in odd, f in follows where f.src == o select f.dst),
     odd  = from v in even, f in follows where f.src == v select f.dst
@@ -897,7 +897,7 @@ aggregated inside the bodies: it belongs to a lower stratum. A `match`
 is not negation: its arms range over disjoint constructors. The check
 is made on the query after functions are inlined (§12.3).
 
-```
+```adt
 -- accepted: reach is complete before the outer query negates it
 fix reach = (from f in follows where f.src == me select f.dst)
           union (from r in reach, f in follows where f.src == r select f.dst)
@@ -923,7 +923,7 @@ operators in the log and rechecked with every schema change, or in a
 bundle, registered and rechecked with it. A view is a function with no
 parameters, called with `()`:
 
-```
+```adt
 fn logins_of (u: Key users) -> Set Text =
   from i in identities where i.user == u select display_name(i)
 
@@ -952,7 +952,7 @@ named or row types, anonymous record types with exactly their fields,
 A function may take and return functions, and a lambda `fn x -> e`
 is a function value:
 
-```
+```adt
 fn having (p: Identity -> Bool) -> Set (Key users) =
   from i in identities where p(i) select i.user
 
@@ -981,7 +981,7 @@ to by name in the body. A caller supplies a value of the declared type
 for each; no parameter is ever absent or NULL. A parameter of a sum
 type is a sum value like any other:
 
-```
+```adt
 type Status = Draft | Sent { at: Instant } | Paid { at: Instant }
 type Invoice = { id: Key invoices, status: Status, issued: Instant }
 relation invoices : Invoice key id generate sequence
@@ -997,7 +997,7 @@ A registered query's parameters have no function types.
 A filter a caller may leave off is an `Option` parameter, matched in
 the body:
 
-```
+```adt
 query search (name: Option Text, after: Option Instant) -> Set Post =
   from p in posts
   where match name  | None -> true | Some { value: n } -> p.title == n
@@ -1019,7 +1019,7 @@ Rulings: lang/params/declared, syntax/params/names, lang/option-params, types/no
 A result is a set and has no order. `order by` presents the final
 result of a query in an order:
 
-```
+```adt
 from u in users select u order by u.name
 ```
 
@@ -1056,7 +1056,7 @@ have no order and are never an ordering key.
 
 ### 14.3 Top n
 
-```
+```adt
 from u in users
 select { user: u,
          latest: top 3 by (p.created_at desc, key p)
@@ -1073,7 +1073,7 @@ fault.
 
 ### 14.4 Take and keyset pagination
 
-```
+```adt
 query page (cursor: Option (Key users)) -> Set User =
   from u in users select u order by u.id take 50 after cursor
 ```
@@ -1087,7 +1087,7 @@ With `None` the result starts at its first element; with `Some {
 value: v }` it holds only the elements whose ordering value comes
 strictly after `v` in the ordering's directions.
 
-```
+```adt
 query feed_page (cursor: Option ({ at: Instant, id: Key posts })) -> Set Post =
   from p in posts select p order by (p.created_at desc, key p) take 20 after cursor
 ```
@@ -1137,7 +1137,7 @@ reaches an expression only where its guards hold:
 | call | every argument before the body, left to right, whether or not the body uses it |
 | other operators, records, constructors | every operand, left to right |
 
-```
+```adt
 from o in orders where o.qty > 0 and o.total / o.qty > 10 select o   -- never divides by zero
 ```
 
@@ -1176,7 +1176,7 @@ Their signatures are in [prelude.md §3.2](prelude.md#32-checked-arithmetic),
 and the checked conversions are listed with the conversions in
 [prelude.md §3.4](prelude.md#34-conversions).
 
-```
+```adt
 from o in orders
 select match checked_div(o.total, o.qty) | None -> 0 | Some { value: q } -> q
 ```
@@ -1193,7 +1193,7 @@ fault of any one of them, as for a statement (§15.2). `Fault` is the prelude su
 serialization failure or any other error that is not a fault is not a
 value.
 
-```
+```adt
 from r in raws select { line: key r, n: try i32(r.n) }
 ```
 
@@ -1235,7 +1235,7 @@ grant ([security.md](security.md#3-grants)), outside any bundle.
 - Its results use the same encoding as a registered query's
   ([wire.md](wire.md#52-replies)).
 
-```
+```sh
 $ adt repl --role analyst
 adt> from i in identities select match i | Google g -> g.gid | _ -> "other"
 adt> delete s in logins.Revoked where s.at < cutoff

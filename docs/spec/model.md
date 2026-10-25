@@ -51,7 +51,7 @@ equality. They are never the type of a field of a type
 declaration, nor a relation's element type: every sum or record used
 there is itself a declared `type`.
 
-```
+```adt
 type Address = { street: Text, city: Text }
 type Provider = Google | Apple
 type Parcel = { id: Key parcels, ship: Address, bill: Address }
@@ -74,7 +74,7 @@ Rulings: model/nominal, model/anon-results/anon-records, model/inline-records, s
   whose type is a set, list, bag or map. A many-valued fact is a
   relation whose rows reference their owner:
 
-  ```
+  ```adt
   type Doc = { id: Key docs, title: Text }
   relation docs : Doc key id generate sequence
   type DocTag = { doc: Key docs, tag: Text }
@@ -90,7 +90,7 @@ Rulings: model/nominal, model/anon-results/anon-records, model/inline-records, s
   refused. A reference names a relation variable, not a type, so
   recursive structure is rows referencing rows:
 
-  ```
+  ```adt
   type ExprNode { id: Key expr_nodes } = Lit { n: I64 }
                                        | Add { l: Key expr_nodes, r: Key expr_nodes }
   relation expr_nodes : ExprNode key id generate sequence
@@ -105,7 +105,7 @@ Rulings: model/no-collections, model/relation-recursion-only, model/user-params
 A sum is declared once, with every constructor listed as an
 alternative:
 
-```
+```adt
 type Identity { id: Key identities, user: Key users }
   = EmailPass { email: Text, hash: Bytes }
   | Google    { gid: Text }
@@ -131,7 +131,7 @@ Rulings: sum/closed, sum/disjoint-total, surface/sum-decl/alternatives, sum/valu
 
 A record type is a sum with one constructor, named after the type:
 
-```
+```adt
 type Point = { x: I64, y: I64 }
 -- means
 type Point = Point { x: I64, y: I64 }
@@ -149,7 +149,7 @@ Rulings: model/record-is-ctor, model/one-ctor-sum
 
 An enumeration is a sum whose constructors have no fields:
 
-```
+```adt
 type Severity ordered = Low | Medium | High
 ```
 
@@ -204,7 +204,7 @@ constructor. `Tag T` gains and loses constructors exactly when `T`
 does. `Tag T` is ordered (§10) exactly when `T` is. `Tag` is a prelude
 type constructor ([prelude.md](prelude.md#23-tag)).
 
-```
+```adt
 -- derived: Tag Identity = EmailPass | Google | Apple
 from i in identities group i by tag(i) into g
 select { tag: g.key, n: count(x for x in g) }
@@ -218,7 +218,7 @@ Overlap and partiality are relationships to a sum, not kinds of sum.
 An entity that holds several kinds of facet at once references a sum
 of facets; one facet per kind is a unique per constructor:
 
-```
+```adt
 type Factor { id: Key factors, user: Key users } = Password { hash: Bytes }
                                                  | Totp     { secret: Bytes }
 relation factors : Factor
@@ -229,7 +229,7 @@ relation factors : Factor
 
 An optional facet is a relation keyed by a reference to its owner:
 
-```
+```adt
 type Part = { id: Key parts, name: Text }
 relation parts : Part key id generate sequence
 type Manufactured = { part: Key parts, plant: Text }
@@ -313,7 +313,7 @@ refinements:
 - `==` is reflexive: NaN equals NaN. NaN is greater than every other
   float, including positive infinity (§10).
 
-```
+```adt
 type Metric = { id: Key metrics, v: F64 }
 relation metrics : Metric key id generate sequence
 from m in metrics where m.v > 100.0 select m    -- includes rows whose v is NaN
@@ -351,7 +351,7 @@ operator that rebuilds what depends on the old one. A `SortKey` value
 compares and orders by its bytes; its encoding on the wire is in
 [wire.md](wire.md).
 
-```
+```adt
 type Person = { id: Key people, name: Text }
 relation people : Person key id generate sequence
 from p in people select p order by collate(p.name, "de@icu-74")
@@ -400,7 +400,7 @@ it as a parameter. A write records the current time from a parameter
 or from a generated default of the relation it inserts into, such as
 `default Revoked.at = generate clock` ([derived.md](derived.md#4-defaults)).
 
-```
+```adt
 type Task = { id: Key tasks, due: Instant }
 relation tasks : Task key id generate sequence
 query due (now: Instant) -> Set ({ task: Key tasks }) =
@@ -423,7 +423,7 @@ Rulings: types/num-mix/explicit
 A newtype is a distinct nominal type over a base type, optionally with
 a domain: a predicate every value must satisfy.
 
-```
+```adt
 type Email = new Text where matches(self, "^[^@]+@[^@]+$")
 type Cents = new I64
 type Contact = { id: Key contacts, email: Email }
@@ -435,7 +435,7 @@ newtype's name, and never faults: the domain is not checked by
 construction. `unwrap(e)` returns the underlying `Text`
 ([prelude.md](prelude.md#35-newtypes-and-keys)). A `Text` is not an `Email` and an `Email` is not a `Text`:
 
-```
+```adt
 insert contacts { email: "a@b" }           -- refused: Text is not Email
 insert contacts { email: Email("a@b") }
 ```
@@ -455,7 +455,7 @@ Rulings: model/newtype, interop/scalar/newtype-only, constraint/domain
 A declared sum may take type parameters, written lowercase after its
 name:
 
-```
+```adt
 type These a b = This { value: a } | That { value: b } | Both { this: a, that: b }
 ```
 
@@ -484,7 +484,7 @@ Rulings: model/user-params, model/param-evolution/live
 with the edition. An optional field is an `Option`, matched like any
 sum:
 
-```
+```adt
 type Profile = { id: Key profiles, email: Email, phone: Option Text }
 relation profiles : Profile key id generate sequence
 from p in profiles select match p.phone | None -> "-" | Some s -> s.value
@@ -499,7 +499,7 @@ Rulings: model/user-params, lang/nav/path-option/option-typed
 A relation variable holds a set of values of a declared type. The type
 and the variable are declared apart:
 
-```
+```adt
 type Country = { code: Text, name: Text }
 relation countries         : Country key code
 relation retired_countries : Country key code
@@ -520,7 +520,7 @@ comprehension is a set too, deduplicated by `==` (§9). In particular a
 `match` whose arms project values that coincide yields each value
 once:
 
-```
+```adt
 from i in identities select match i
   | EmailPass e -> e.user
   | Google g    -> g.user
@@ -561,7 +561,7 @@ whose element type may be a sum. A result sum anonymous to a query is
 written in its signature, and its constructors are matched downstream
 like those of a stored sum, with the same exhaustiveness:
 
-```
+```adt
 fn sign_ins () -> Set (Local { id: Key identities, email: Text }
                      | Remote { id: Key identities, provider: Text }) =
   from i in identities select match i
@@ -593,7 +593,7 @@ A key field may have any type. A key field that identifies its row by
 a value of no other meaning has type `Key r` for its own relation `r`,
 as `id` does in the running schema:
 
-```
+```adt
 relation users : User key id generate sequence
 relation identities : Identity
   key id generate uuidv7
@@ -626,7 +626,7 @@ Any value type may form a key:
 | A reference | `relation order_lines : OrderLine key (order, n)` with `order: Key orders` |
 | A record-valued field | `key span` with `span: DateRange`, `type DateRange = { from: Date, to: Date }`, equal to the composite key of its fields |
 
-```
+```adt
 type Membership = { user: Key users, team: Key teams, role: Text }
 relation memberships : Membership key (user, team)
 ```
@@ -643,7 +643,7 @@ Generators and defaults are clauses of the relation variable; a type
 never carries one, so constructing a value is pure. An insert that
 does not supply a generated field gets the generator's next value:
 
-```
+```adt
 type Order = { id: Key orders, buyer: Key users }
 type Token = { id: Key tokens, secret: Bytes }
 relation orders : Order key id generate sequence
@@ -690,7 +690,7 @@ it may point at:
 | `Key r.C` | a row of constructor `C` of `r` |
 | `Key r.(C \| D)`, `Key r.S` | a row of any constructor of the set |
 
-```
+```adt
 type Visit      = { id: Key visits, identity: Key identities, at: Instant }
 type Recovery   = { id: Key recoveries, identity: Key identities.EmailPass, token: Bytes }
 type OAuthToken = { id: Key oauth_tokens, identity: Key identities.OAuth }
@@ -723,7 +723,7 @@ in two ways:
 
 No literal checks against a `Key` type.
 
-```
+```adt
 query visits_of (id: Uuid) -> Set ({ visit: Key visits }) =
   from v in visits where v.identity == identities.key(id) select { visit: key v }
 
@@ -737,7 +737,7 @@ query role_of (u: Key users, t: Key teams) -> Set ({ role: Text }) =
 `T`, and `Key r` is `Key r` over every constructor. Narrowing is a
 `match` on the referenced row, by its constructor:
 
-```
+```adt
 from v in visits
 select match v.identity | EmailPass e -> e.email | Google _ -> "-" | Apple _ -> "-"
 ```
@@ -761,7 +761,7 @@ value-level sum's constructor fields, not in a record-valued field. A
 sum of references is a relation-level sum whose constructors each
 hold one:
 
-```
+```adt
 type Doc = { id: Key docs, title: Text }
 relation docs : Doc key id generate sequence
 type Ownership { doc: Key docs } = Owned  { user: Key users }
@@ -781,7 +781,7 @@ self-references. References are checked at the end of the multiple
 assignment that applies a change set, so rows that reference each
 other are inserted in one change set:
 
-```
+```adt
 type Team   = { id: Key teams, name: Text, lead: Key members }
 type Member = { id: Key members, team: Key teams }
 relation teams   : Team key id generate sequence
@@ -860,7 +860,7 @@ a compound sort key is a list of keys
 Reordering the constructors of an ordered sum changes query results
 and is a schema operator ([evolution.md](evolution.md)).
 
-```
+```adt
 type Stage ordered = Draft | Sent { at: Instant } | Paid { at: Instant, ref: Text }
 -- Draft < Sent { at: t1 } < Paid { at: t0, ref: "a" } for any t0, t1
 ```

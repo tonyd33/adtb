@@ -56,7 +56,7 @@ whitespace.
 
 ### 2.3 Identifiers
 
-```
+```ebnf
 LOWER = lower { ident_char }
 UPPER = upper { ident_char }
 ident_char = lower | upper | digit | "_"
@@ -77,7 +77,7 @@ ASCII.
 
 A name from another module is qualified by its module:
 
-```
+```ebnf
 QLOWER = [ LOWER "::" ] LOWER
 QUPPER = [ LOWER "::" ] UPPER
 ```
@@ -90,7 +90,7 @@ QUPPER = [ LOWER "::" ] UPPER
 Reserved words cannot be used as identifiers except in field position
 (below):
 
-```
+```text
 and bundle by check constraint delete else exists fail false fix fn
 for from group if import in insert into key let match module not or
 order ordered query relation return schema select set skip temp then
@@ -106,7 +106,7 @@ names.
 Contextual words are keywords only where the grammar names them and
 are identifiers elsewhere:
 
-```
+```text
 add adhoc adopt after aggregate alter analyze apply archive arm asc
 assert at audit backup before budget call cancel carry cascade catalog
 clear commit compact computed configure conflict constructor
@@ -134,7 +134,7 @@ alone in the field list of a `key`, `unique` or `index` clause. `g.key` is the f
 
 ### 2.5 Literals
 
-```
+```ebnf
 INT      = digit { digit }
 DECIMAL  = digit { digit } "." digit { digit }
 FLOAT    = digit { digit } [ "." digit { digit } ] ( "e" | "E" ) [ "+" | "-" ] digit { digit }
@@ -172,7 +172,7 @@ Single quotes are not a token.
 
 ### 2.6 Bundle names, versions and hashes
 
-```
+```ebnf
 BUNDLE_NAME = FAMILY "-" digit { digit | "." }
 FAMILY      = lower { lower | digit | "_" | "-" }
 version     = INT "(" HASH ")"
@@ -199,7 +199,7 @@ produces.
 
 ### 2.7 Punctuation and operators
 
-```
+```text
 ==  !=  <  <=  >  >=  +  -  *  /  %  ++  =  :  ::  ,  .  .<  ->  |
 (  )  {  }  [  ]  _
 ```
@@ -224,7 +224,7 @@ Rulings: syntax/strings/double, syntax/equality/double, syntax/params/names
 
 ### 3.1 Kinds of file
 
-```
+```ebnf
 schema_file    = module_header { declaration }
 migration_file = module_header { operator }
 bundle_file    = bundle_header { import } { bundle_item }
@@ -290,7 +290,7 @@ The forms `from`, `match`, `fix`, `fn` (lambda), `exists`, `top`,
 the right as the text allows. Text that should end an open form
 earlier is parenthesised:
 
-```
+```adt
 -- the inner match takes both arms
 match a | X -> match b | Y -> 1 | Z -> 2
 -- parentheses close it
@@ -324,7 +324,7 @@ Rulings: syntax/module/header, surface/namespace/modules, surface/source/op-log,
 
 ## 4. Types
 
-```
+```ebnf
 type        = sum_type [ "->" type ]
 sum_type    = app_type | anon_ctor "|" anon_ctor { "|" anon_ctor }
 anon_ctor   = UPPER [ record_type ]
@@ -388,14 +388,14 @@ Rulings: syntax/reference/key, syntax/record/colon, surface/ref/ref-type, surfac
 
 ## 5. Declarations
 
-```
+```ebnf
 declaration = type_decl | relation_decl | set_decl | fn_decl
             | constraint_decl | check_decl | store_decl | aggregate_decl
 ```
 
 ### 5.1 Types
 
-```
+```ebnf
 type_decl = "type" UPPER { LOWER } [ "ordered" ] [ record_type ] "=" type_body
 type_body = "new" app_type [ "where" expr ]
           | record_type
@@ -403,7 +403,7 @@ type_body = "new" app_type [ "where" expr ]
 ctor_def  = UPPER [ record_type ]
 ```
 
-```
+```adt
 type User = { id: Key users, name: Text }
 type Email = new Text where matches(self, "^[^@]+@[^@]+$")
 type Status ordered = Draft | Sent { at: Instant } | Paid { at: Instant }
@@ -438,7 +438,7 @@ type These a b = This { value: a } | That { value: b } | Both { this: a, that: b
 
 ### 5.2 Relation variables
 
-```
+```ebnf
 relation_decl   = "relation" QLOWER ":" app_type { relation_clause }
 relation_clause = "key" key_fields [ generated ]
                 | "volatile"
@@ -453,7 +453,7 @@ index_fields    = "(" expr { "," expr } ")"
 ctor_scope      = UPPER | "(" UPPER { "|" UPPER } ")"
 ```
 
-```
+```adt
 relation users : User key id generate sequence
 relation identities : Identity
   key id generate uuidv7
@@ -509,11 +509,11 @@ generate sequence`.
 
 ### 5.3 Named constructor sets
 
-```
+```ebnf
 set_decl = "set" UPPER "of" LOWER "=" UPPER { "|" UPPER }
 ```
 
-```
+```adt
 set OAuth of identities = Google | Apple
 ```
 
@@ -526,7 +526,7 @@ different members; an implementation must refuse the second.
 
 ### 5.4 Functions
 
-```
+```ebnf
 fn_decl     = "fn" LOWER [ type_params ] params "->" type "=" fn_body
 type_params = "[" tparam { "," tparam } "]"
 tparam      = LOWER [ ":" UPPER { "+" UPPER } ]
@@ -537,7 +537,7 @@ fn_body     = expr
             | "host" TEXT "version" TEXT [ "deterministic" ]
 ```
 
-```
+```adt
 fn display_name (i: Identity) -> Text = match i
   | EmailPass e -> e.email
   | Google g    -> g.gid
@@ -556,11 +556,11 @@ fn latest [a: Ord] (xs: Set a) -> Option a = max(x for x in xs)
 
 ### 5.5 Registered queries
 
-```
+```ebnf
 query_decl = "query" LOWER params [ "limit" DURATION ] "->" type "=" expr
 ```
 
-```
+```adt
 query emails (u: Key users) -> Set ({ email: Text }) =
   from i in identities.EmailPass where i.user == u select { email: i.email }
 query login_key (u: Key users) -> Set (ByEmail { email: Text } | ByGoogle { gid: Text }) =
@@ -579,11 +579,11 @@ same clause.
 
 ### 5.6 Registered transactions
 
-```
+```ebnf
 txn_decl = "txn" LOWER params [ "limit" DURATION ] "->" type "=" transact_block
 ```
 
-```
+```adt
 txn sign_up (n: Text, g: Text) -> Key identities =
   transact
     let u = insert users { name: n }
@@ -596,12 +596,12 @@ A `txn` appears only in a bundle file. A transaction whose block has no
 
 ### 5.7 Constraints and checks
 
-```
+```ebnf
 constraint_decl = "constraint" LOWER "=" expr
 check_decl      = "check" LOWER "on" relation_ref "(" expr ")"
 ```
 
-```
+```adt
 constraint one_google =
   from u in users
   where count(g for g in identities.Google where g.user == key u) > 1
@@ -616,14 +616,14 @@ name and `self` is the row. Meaning, admission and timing are in
 
 ### 5.8 Stored views
 
-```
+```ebnf
 store_decl = "store" QLOWER { store_clause }
 store_clause = "key" key_fields
              | "unique" index_fields [ "in" ctor_scope ]
              | [ "interval" ] "index" index_fields [ "in" ctor_scope ]
 ```
 
-```
+```adt
 store open_by_user
   key user
   index (open)
@@ -636,7 +636,7 @@ derived.md defines.
 
 ### 5.9 User-defined aggregates
 
-```
+```ebnf
 aggregate_decl = "aggregate" LOWER params "->" type "="
                  "state" record_type "init" expr
                  "step" "(" LOWER "," LOWER ")" "->" expr
@@ -670,7 +670,7 @@ From loosest to tightest:
 
 Comparisons do not chain: `a < b < c` is refused.
 
-```
+```ebnf
 expr      = union_e
 union_e   = or_e { "union" or_e }
 or_e      = and_e { "or" and_e }
@@ -704,7 +704,7 @@ after it; parenthesise it there (§3.3).
 
 ### 6.2 Names, calls and relation references
 
-```
+```ebnf
 call         = ( QLOWER | QUPPER ) "(" [ call_args ] ")"
 call_args    = call_arg { "," call_arg } | expr "for" generators [ "where" expr ]
 call_arg     = expr | type          (* a type only where the parameter is a type *)
@@ -749,14 +749,14 @@ relation_ref = QLOWER [ "." ctor_sel ]
 
 ### 6.3 Constructors and records
 
-```
+```ebnf
 ctor_expr   = QUPPER [ "." UPPER ] [ record_expr ]
 record_expr = "{" [ field_init { "," field_init } ] "}"
             | "{" expr "with" field_init { "," field_init } "}"
 field_init  = LOWER ":" expr
 ```
 
-```
+```adt
 Google { user: u, gid: g }
 Identity.Google { user: u, gid: g }
 None
@@ -774,7 +774,7 @@ Google { g with gid: g2 }
 
 ### 6.4 Match and patterns
 
-```
+```ebnf
 match_expr = "match" or_e arms
 arms       = arm { arm }
 arm        = "|" pattern { "|" pattern } [ "if" expr ] "->" expr
@@ -788,7 +788,7 @@ field_pat  = LOWER [ ":" pattern ]
 literal_pat = [ "-" ] ( INT | DECIMAL | FLOAT ) | TEXT
 ```
 
-```
+```adt
 match i
   | EmailPass { email, hash: _ } -> email
   | Google g if g.gid == "root"  -> "root"
@@ -814,7 +814,7 @@ The rules of matching, coverage and binder types are in
 
 ### 6.5 Comprehensions
 
-```
+```ebnf
 comprehension = from_clause { from_clause | where_clause }
                 [ group_clause { from_clause | where_clause } ]
                 "select" expr [ order_clause ]
@@ -828,7 +828,7 @@ order_keys    = order_key | "(" order_key { "," order_key } ")"
 order_key     = add_e [ "asc" | "desc" ]
 ```
 
-```
+```adt
 from u in users, i in identities
 where i.user == key u
 select { name: u.name, login: display_name(i) }
@@ -854,7 +854,7 @@ single key that starts with a parenthesis is written inside one:
 
 ### 6.6 Other open forms
 
-```
+```ebnf
 fix_expr    = "fix" fix_bind { "," fix_bind } "in" expr
 fix_bind    = LOWER "=" expr
 lambda      = "fn" ( LOWER | params ) "->" expr
@@ -865,7 +865,7 @@ at_expr     = "at" ( "commit" | "instant" ) add_e [ "pins" version ] "{" expr "}
 reject_expr = "reject" expr
 ```
 
-```
+```adt
 fix reach = (from f in follows where f.src == me select f.dst)
           union (from r in reach, f in follows where f.src == r select f.dst)
 in from u in reach select u
@@ -898,7 +898,7 @@ Rulings: syntax/aggregate/comprehension, syntax/ctor-set/paren, syntax/equality/
 
 ## 7. Writes and transact blocks
 
-```
+```ebnf
 transact_block  = "transact" { transact_option } { item } [ "return" expr ]
 transact_option = "retry" INT
                 | "read_only" [ "deferrable" ]
@@ -920,7 +920,7 @@ write_match     = "match" or_e write_arm { write_arm }
 write_arm       = "|" pattern { "|" pattern } [ "if" expr ] "->" write_expr
 ```
 
-```
+```adt
 transact
   let u = insert users { name: n }
   let i = insert identities.Google { user: key u, gid: g }
@@ -1013,7 +1013,7 @@ at version 10, the running schema; an example that names `Apple` other
 than to add it starts at version 12 (§1). Migration numbers in one
 subsection follow on from that starting version.
 
-```
+```ebnf
 operator = module_op | type_op | relation_op | ctor_op | field_op
          | key_op | default_op | definition_op | lifecycle_op
          | script_op | extension_op | grant | revoke
@@ -1021,7 +1021,7 @@ operator = module_op | type_op | relation_op | ctor_op | field_op
 
 ### 8.1 Modules, types, relations and sets
 
-```
+```ebnf
 module_op   = "add" "module" LOWER | "drop" "module" LOWER
 type_op     = "add" type_decl | "drop" "type" QUPPER
             | "rename" "type" QUPPER "to" UPPER
@@ -1034,7 +1034,7 @@ relation_op = "add" relation_decl | "drop" "relation" QLOWER
 `add type`, `add relation` and `add set` are the declaration of §5
 after the verb:
 
-```
+```adt
 -- 0011
 add type Device = { id: Key devices, owner: Key users on delete restrict, label: Text }
 add relation devices : Device key id generate sequence
@@ -1047,7 +1047,7 @@ rename set Hosted of identities to Managed
 
 ### 8.2 Constructors
 
-```
+```ebnf
 ctor_op    = "add" "constructor" ctor_path [ record_type ] { add_clause }
            | "remove" "constructor" ctor_path
            | "rename" "constructor" ctor_path "to" UPPER
@@ -1066,7 +1066,7 @@ add_clause = "joins" relation_ref { "," relation_ref }
 arm_clause = "arm" QLOWER [ "." LOWER ] ":" pattern "->" expr
 ```
 
-```
+```adt
 -- from version 10
 -- 0011
 add constructor Identity.Apple { sub: Text }
@@ -1127,7 +1127,7 @@ unnest constructor Identity.Social
 
 ### 8.3 Fields
 
-```
+```ebnf
 field_op     = "add" "field" field_path ":" type "fill" fill
              | "drop" "field" field_path
              | "rename" "field" field_path "to" LOWER
@@ -1137,7 +1137,7 @@ field_target = QUPPER [ "." ctor_sel ]
 fill         = "match" arms | expr
 ```
 
-```
+```adt
 -- from version 12
 -- 0013
 add field Identity.EmailPass.verified: Bool fill false
@@ -1161,14 +1161,14 @@ for later inserts.
 
 ### 8.4 Keys, uniques, indexes and defaults
 
-```
+```ebnf
 key_op     = ( "add" | "drop" ) ( "unique" | [ "interval" ] "index" ) index_fields "in" relation_ref
            | "rekey" "relation" QLOWER "key" key_fields [ "carry" field_path { "," field_path } ]
 default_op = "add" "default" QLOWER [ "." UPPER ] "." LOWER "=" ( generated | expr )
            | "drop" "default" QLOWER [ "." UPPER ] "." LOWER
 ```
 
-```
+```adt
 -- from version 12
 add unique (sub) in identities.Apple
 -- with:
@@ -1189,7 +1189,7 @@ fields after `carry` are named by type, constructor and field.
 
 ### 8.5 Definitions, lifecycle, scripts and extensions
 
-```
+```ebnf
 definition_op = "define" fn_decl | "redefine" fn_decl | "drop" "fn" QLOWER
               | "add" constraint_decl | "drop" "constraint" QLOWER
               | "add" check_decl | "drop" "check" QLOWER
@@ -1208,7 +1208,7 @@ extension_op  = "install" LOWER TEXT "from" TEXT | "uninstall" LOWER
               | "adopt" "tzdb" TEXT "from" TEXT
 ```
 
-```
+```adt
 -- from version 10
 -- 0011
 add constructor Identity.Apple { sub: Text }
@@ -1263,7 +1263,7 @@ Rulings: syntax/operator/verb, evolution/smo, evolution/add, evolution/remove, e
 
 ## 9. Bundle files
 
-```
+```ebnf
 bundle_header = "bundle" BUNDLE_NAME "pins" version [ "catalog" version ]
                 "edition" TEXT { header_clause }
 header_clause = "lease" DURATION
@@ -1275,7 +1275,7 @@ import        = "import" LOWER
 feed_decl     = "feed" LOWER "of" relation_ref
 ```
 
-```
+```adt
 -- bundles/admin.adb
 bundle admin-1.0 pins 12 (c41e...) edition "2026-10" lease 90d
 import auth
@@ -1323,7 +1323,7 @@ Rulings: syntax/module/header, surface/registration/unit/bundle, surface/reader-
 
 ## 10. Grants and roles
 
-```
+```ebnf
 grant     = "grant" privilege { "," privilege } "to" LOWER [ "with" "grant" "option" ]
 revoke    = "revoke" privilege { "," privilege } "from" LOWER
 privilege = "read" relation_ref [ field_list ]
@@ -1343,7 +1343,7 @@ peer_stmt = "map" "peer" TEXT "on" LOWER "to" LOWER
           | "unmap" "peer" INT "on" LOWER
 ```
 
-```
+```adt
 grant read identities.(EmailPass | Google) to support
 grant read identities.(EmailPass | Google) (user) to support
 grant read identities.EmailPass (user, email) to support
@@ -1410,7 +1410,7 @@ Rulings: syntax/ctor-set/paren, security/grain/ctor-set, security/fields/field-l
 The prelude is a module every file reads without qualification. Its
 sums used by this part are:
 
-```
+```adt
 type Bool ordered = False | True
 type Option a ordered = None | Some { value: a }
 type Result a e = Ok { value: a } | Err { error: e }
@@ -1431,7 +1431,7 @@ Rulings: model/prelude-bool, model/user-params
 
 ## 12. Commands
 
-```
+```ebnf
 command = "explain" [ "analyze" ] ( query_ref "(" [ call_args ] ")" | expr | write_expr | transact_block )
         | "pin" "plan" prefix_e | "unpin" "plan" prefix_e
         | "cancel" "call" prefix_e
@@ -1460,7 +1460,7 @@ restore_point = "before" "version" INT
 query_ref = BUNDLE_NAME "::" LOWER
 ```
 
-```
+```adt
 explain from i in identities where i.user == u select i
 explain analyze web-2.4::login_key(users.key(3))
 retire bundle web-2.3

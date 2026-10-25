@@ -22,7 +22,7 @@ says otherwise, and each states the version it starts from. Unless a
 section says otherwise, it starts from version `10 (a91c...)`, whose
 schema is:
 
-```
+```adt
 module auth
 type User = { id: Key users, name: Text }
 type Identity { id: Key identities, user: Key users }
@@ -63,7 +63,7 @@ Applying migration `n` to a database at version `n - 1` produces
 version `n`. A migration applies as one schema change: either every
 operator in it takes effect, or none does (§3).
 
-```
+```adt
 -- 0011, from version 10
 module auth
 add constructor Identity.Apple { sub: Text }
@@ -146,7 +146,7 @@ A schema version is identified by its position in the log and by a
 hash of the log up to that position. It is written as the position
 followed by the hash: `10 (a91c...)`. The hash is BLAKE3-256, chained:
 
-```
+```text
 h(n) = BLAKE3(h(n - 1) ++ canonical(n))
 ```
 
@@ -383,7 +383,7 @@ it, and is refused while any definition outside `m` names it.
 `add type`, `add relation` and `add set` declare, with the declaration
 syntax of [syntax.md](syntax.md#5-declarations) after the verb:
 
-```
+```adt
 -- 0101, from a version 100 of a separate history with the same schema
 module auth
 add type Device = { id: Key devices, owner: Key users on delete restrict, label: Text }
@@ -398,7 +398,7 @@ definition uses `T`.
 
 ### 4.2 Add a constructor
 
-```
+```adt
 -- 0011, from version 10
 module auth
 add constructor Identity.Apple { sub: Text }
@@ -453,7 +453,7 @@ that stores a value of it in a field is refused. `enable` makes it writable (§4
 
 ### 4.3 Enable and deprecate
 
-```
+```adt
 -- 0012, continuing §4.2
 module auth
 enable identities.Apple
@@ -505,7 +505,7 @@ schema retags into it (§8.2).
 
 ### 4.4 Remove a constructor
 
-```
+```adt
 -- 0020, continuing §4.3: Apple is deprecated and empty at version 19
 module auth
 remove constructor Identity.Apple
@@ -547,7 +547,7 @@ its own inverse:
 
 ### 4.5 Rename
 
-```
+```adt
 -- 0031, from a version 30 at which Identity also has Facebook { fid: Text }
 module auth
 rename constructor Identity.Facebook to Meta
@@ -568,7 +568,7 @@ pinned before the rename keep the old name at their version (§7).
 
 ### 4.6 Split a constructor
 
-```
+```adt
 -- 0041, from a version 40 at which
 --   type Provider = Google | Apple
 --   type Identity { id: Key identities, user: Key users }
@@ -623,7 +623,7 @@ constructor (§7.2), and a `revert` of it is refused.
 
 ### 4.7 Merge constructors
 
-```
+```adt
 -- 0013, from version 12 (§4.3)
 module auth
 add type Provider = Google | Apple
@@ -674,7 +674,7 @@ declared loss, with no inverse, under the rules of §5.2.
 
 ### 4.8 Nest and unnest
 
-```
+```adt
 -- 0013, from version 12 (§4.3)
 module auth
 add type OAuthLogin = Google { gid: Text } | Apple { sub: Text }
@@ -704,7 +704,7 @@ constructor, and is refused at the recheck without them.
 
 ### 4.9 Fields
 
-```
+```adt
 -- 0013 to 0015, from version 12 (§4.3)
 -- 0013
 module auth
@@ -753,7 +753,7 @@ as well as fields: `add unique (lower(email)) in identities.EmailPass`
 `rekey relation r key (f, ...)` changes the key of relation variable
 `r`:
 
-```
+```adt
 -- 0051, from a version 50 at which
 --   type Price = { id: Key prices, sku: Text, during: Span Instant, amount: Decimal 2 }
 --   relation prices : Price key id generate sequence
@@ -786,7 +786,7 @@ earlier, and applies once none is.
 
 ### 4.11 Definitions
 
-```
+```adt
 -- 0010, from version 9
 module auth
 define fn display_name (i: Identity) -> Text = match i
@@ -827,7 +827,7 @@ So is `supersede bundle B by B2`
 A script is a write inside a migration, for transforms no operator
 expresses:
 
-```
+```adt
 -- 0013, from version 12 (§4.3), with
 --   type CorpDomain = { suffix: Text }
 --   relation corp_domains : CorpDomain key suffix
@@ -886,7 +886,7 @@ order. It is undefined if the migration contains a `script`.
 
 ### 5.4 Revert
 
-```
+```adt
 -- 0032, continuing §4.5
 module auth
 revert 0031
@@ -1150,11 +1150,11 @@ may send `UpgradeRequired { bundle }`
 
 The order for adding a constructor is therefore:
 
-```
+```adt
 -- 0011 of §1.1: Apple declared, write-disabled
 ```
 
-```
+```adt
 -- bundles/web.adb: registered with its Apple arm
 bundle web-2.5 pins 11 (c7d2...) edition "2026-10"
 import auth
@@ -1166,7 +1166,7 @@ query logins_of (u: Key users) -> Set Text =
     | Apple a     -> a.sub
 ```
 
-```
+```adt
 -- 0012: applies once no reader pinned at 10 or earlier reads identities whole
 module auth
 enable identities.Apple
@@ -1258,7 +1258,7 @@ and does not change the catalog version.
 A bundle that reads catalog relations pins a catalog version in its
 header, beside its schema version:
 
-```
+```adt
 bundle monitor-1.3 pins 9 (5d0e...) catalog 4 (e07b...) edition "2026-10"
 query call_states () -> Set ({ call: Key sys::calls, state: Text }) =
   from c in sys::calls

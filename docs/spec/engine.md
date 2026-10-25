@@ -16,7 +16,7 @@ it as one sum `Identity` with three constructor heaps,
 `identities.EmailPass`, `identities.Google` and `identities.Apple`, and
 three constructor-set indexes:
 
-```
+```adt
 relation identities : Identity
   key id generate uuidv7       -- index over {EmailPass, Google, Apple}
   unique (email) in EmailPass  -- index over {EmailPass}
@@ -72,7 +72,7 @@ Rulings: substrate/new-engine, encoding/native, engine/guarantees-only, engine/o
 A database is one data file, whatever its schema, plus its redo log
 (§3) as segment files in a sibling directory named after the file:
 
-```
+```text
 app.adt        the data file
 app.adt-log/   the log segments
 ```
@@ -114,7 +114,7 @@ atomic on the device (§3.1), and the current primary epoch (§9.6).
 
 Every page starts with a header. A plaintext page has:
 
-```
+```text
 offset  size  field
 0       8     lsn       LSN of the last log record applied to the page
 8       4     checksum  CRC-32C over the page with this field zeroed, seeded with the page id
@@ -250,7 +250,7 @@ sequence that increases by one per batch. The blocks of a batch are
 written and forced together, and the next batch is written only after
 that force has completed.
 
-```
+```text
 log block
   0   u64  lsn of the block's first byte
   8   u64  batch sequence number
@@ -265,7 +265,7 @@ log block
 
 In an encrypted database each log block is sealed as a page is (§4.4):
 
-```
+```text
 encrypted log block
   0     u64  lsn                     in clear
   8     u64  batch sequence number   in clear
@@ -307,7 +307,7 @@ LSN is no longer needed for recovery and its segments may be recycled
 once replication, archiving and change consumers no longer need them
 (§9).
 
-```
+```text
 checkpoint record
   u64 redo_lsn = min(rec_lsn)
   u32 n
@@ -393,7 +393,7 @@ references may name one page.
 
 Each page has a 64-bit state word:
 
-```
+```text
 state[p]
   bits 56..63  0 unlocked | 1..252 shared count | 253 exclusive | 254 marked | 255 evicted
   bits  0..55  version, incremented on every exclusive unlock and on eviction
@@ -438,7 +438,7 @@ When a database is encrypted, the pager encrypts every page as it is
 written and decrypts it as it is read; pages are plaintext in the
 pool and ciphertext in the file. The cipher is XChaCha20-Poly1305:
 
-```
+```text
 encrypted page
   0     u64  lsn                 in clear
   8     u48  page number         in clear
@@ -503,7 +503,7 @@ slotted pages.
 
 Fixed-slot page:
 
-```
+```text
 page header (24 B)
 u64 used_slots[ceil(n / 64)]     bit i set: slot i holds a version
 u16 slot_flags[n]                the version flags of slot i (§5.3)
@@ -515,7 +515,7 @@ and its flags; no compaction occurs in a fixed-slot page.
 
 Slotted page:
 
-```
+```text
 page header (24 B)
 u16 slot_count
 line pointer[0] ... line pointer[slot_count-1]   8 B each: u16 offset, u16 length, u8 state, u8 reserved, u16 flags
@@ -538,7 +538,7 @@ entry it is stored big-endian.
 
 Every version starts with a 24-byte header:
 
-```
+```text
 0   u64  xmin    inserting transaction
 8   u64  xmax    deleting or superseding transaction, 0 when none
 16  u64  next    TID of the successor version, in this heap or, when moved, another heap of the sum
@@ -572,7 +572,7 @@ variable-width bytes. The catalog records, per heap format version,
 each field id's offset, so a rename or a move of a field changes no
 stored byte.
 
-```
+```text
 type Order = { paid: Bool, id: I64, qty: I16, total: Decimal 2 }
 body:  0 total (16)  16 id (8)  24 qty (2)  26 paid (1)     27 B, padded to 32
 ```
@@ -598,7 +598,7 @@ constructor id of the type when the page format is created; an id
 outgrowing it gives the heap a new format version. Nullary constructors store only the tag.
 A one-constructor sum (a record) stores no tag.
 
-```
+```text
 type Status = Draft | Sent { at: Instant } | Paid { at: Instant }
 status field, fixed: u16 tag | pad 6 | i64 at       16 B; Draft leaves 8 B unused
 ```
@@ -615,7 +615,7 @@ aborted) in commit log pages of the file. Commit positions are not in
 the commit log; for the time-travel window a separate map gives them
 (§7.5). A snapshot is:
 
-```
+```text
 snapshot { xmin: u64, xmax: u64, in_progress: [u64] }
 ```
 
@@ -673,7 +673,7 @@ Retag keeps the row's key and moves the row atomically into another
 constructor's heap. For the update below on the `EmailPass` row with
 key `k`:
 
-```
+```adt
 update i in identities where i.id == k
 set match i
   | EmailPass e -> Google { user: e.user, gid: g }
@@ -728,7 +728,7 @@ key are adjacent, so a uniqueness probe reads one range; within a key,
 one constructor's entries are adjacent, so a probe for
 `Key identities.Google` seeks `(k, Google)`.
 
-```
+```text
 key index of identities:
   (7, EmailPass, (12,3))  (7, Google, (4,1))  (8, Google, (4,2))
 ```
@@ -739,7 +739,7 @@ larger id is the byte `239 + n` followed by the id as `n` big-endian
 bytes, `n` from 1 to 4 the fewest that hold it. The whole entry is one
 byte string compared with `memcmp`:
 
-```
+```text
 entry bytes = encode(key) ++ ovarint(ctor) ++ be48(page) ++ be16(slot)
 ```
 
@@ -773,7 +773,7 @@ holding the moved constructor. An index scan of an ordered sum field
 is therefore in the language's order. Optionality is a constructor, so
 where `None` sorts is its place in the declared order.
 
-```
+```text
 type Status ordered = Draft | Sent { at: Instant } | Paid { at: Instant }
 order keys: Draft 40, Sent 80, Paid C0
 Sent { at: t }  ->  80 00 | be64(t xor 2^63)
@@ -821,7 +821,7 @@ A leaf stores equal keys once followed by a sorted array of
 `(ctor, tid)` pairs. Deduplication runs lazily, when a leaf would
 otherwise split.
 
-```
+```text
 posting tuple:  key | n | (ovarint ctor, tid 8 B) * n
 user 3: [(EmailPass,(12,3)), (EmailPass,(40,1)), (Google,(4,1))]
 ```
@@ -968,7 +968,7 @@ constructor ids, so a query over `identities.(Google | Apple)` that
 scans the key index does not conflict with an `EmailPass` insert into
 the range:
 
-```
+```adt
 from i in identities.OAuth where i.user == u select i.id
 -- range lock on the index over user, ctors {Google, Apple}
 ```
@@ -1196,7 +1196,7 @@ the index, and each entry `(key, ctor, tid)` is routed by its
 constructor to a fetch from that heap and that arm. This is a physical
 operator; the meaning of the match is still the union of its arms.
 
-```
+```text
 from i in identities where i.id == k
 select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
 
@@ -1220,7 +1220,7 @@ union when the join key is a field every arm outputs. The optimizer
 chooses per query. When the join is distributed, the other side is
 built once into a hash table that every arm's pipeline probes.
 
-```
+```text
 from i in identities, u in users where i.user == key u
 select { name: u.name, login: match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub }
 
@@ -1402,7 +1402,7 @@ With a continuous log archive, a restore replays a base to a log
 position, to a wall-clock time through the commit time map, or to just
 before a schema operator:
 
-```
+```sh
 $ adt restore s3://b/app restored.adt --before-version 12
 $ adt restore s3://b/app restored.adt --to-time 2026-10-24T13:02:00Z
 ```
@@ -1424,7 +1424,7 @@ into a new file:
   the new file at a quiescent point. Both files exist for the
   duration.
 
-```
+```sh
 $ adt compact app.adt --into app.compact.adt
 ```
 
@@ -1446,7 +1446,7 @@ constructors, so a bad index page quarantines the whole index and
 every plan that uses it. The error a call receives is in
 [catalog.md](catalog.md#4-error-sums).
 
-```
+```adt
 -- identities.Apple quarantined
 from i in identities.(EmailPass | Google) select i.id    -- runs
 from i in identities select i.id                         -- fails
