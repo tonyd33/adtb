@@ -1,3 +1,4 @@
+use super::write::Site;
 use super::*;
 use crate::ast::{BinOp, CallArgs, Expr, ExprKind, Lit, RecordExpr, UnOp};
 use crate::kernel::{Agg, Const, Kind, Prim};
@@ -69,10 +70,15 @@ impl Checker<'_> {
                 self.literal(e, Some(expected))?
             }
             ExprKind::Unary(UnOp::Neg, x) if is_literal(x) => self.literal(e, Some(expected))?,
-            ExprKind::Record(r) => self.record(r, Some(expected), e.span)?,
-            ExprKind::Ctor { path, ctor, record } => {
-                self.ctor(path, ctor.as_ref(), record.as_ref(), Some(expected), e.span)?
-            }
+            ExprKind::Record(r) => self.record(r, Some(expected), e.span, None)?,
+            ExprKind::Ctor { path, ctor, record } => self.ctor(
+                path,
+                ctor.as_ref(),
+                record.as_ref(),
+                Some(expected),
+                e.span,
+                None,
+            )?,
             ExprKind::Match(Some(s), arms) => self.match_expr(s, arms, Some(expected), e.span)?,
             ExprKind::If(c, a, b) => self.if_expr(c, a, b, Some(expected))?,
             ExprKind::Lambda(ps, body) => self.lambda(ps, body, Some(expected), e.span)?,
@@ -95,6 +101,10 @@ impl Checker<'_> {
             ExprKind::Fix(binds, body) => self.fix(binds, body, Some(expected))?,
             ExprKind::Top { count, keys, body } => {
                 self.top(count, keys, body, self.elem_ty(expected).as_ref(), e.span)?
+            }
+            ExprKind::Reject(x) if self.reject_ok => {
+                let o = self.check(x, &Ty::Base(Base::Text))?;
+                self.out(Kind::Reject(o.tm), expected.clone())
             }
             _ => self.synth(e)?,
         };
@@ -132,9 +142,9 @@ impl Checker<'_> {
             ExprKind::Call { callee, args, .. } => self.call(callee, args, None, e.span),
             ExprKind::TypeCall { ty, func, args } => self.type_call(ty, func, args, e.span),
             ExprKind::Ctor { path, ctor, record } => {
-                self.ctor(path, ctor.as_ref(), record.as_ref(), None, e.span)
+                self.ctor(path, ctor.as_ref(), record.as_ref(), None, e.span, None)
             }
-            ExprKind::Record(r) => self.record(r, None, e.span),
+            ExprKind::Record(r) => self.record(r, None, e.span, None),
             ExprKind::Set(es) => self.set_literal(es, None, e.span),
             ExprKind::Unit => Ok(self.out(Kind::Record(Vec::new()), Ty::Unit)),
             ExprKind::Unary(op, x) => self.unary(*op, x, e),
@@ -160,6 +170,10 @@ impl Checker<'_> {
                 body,
                 ..
             } => self.at(*instant, point, body),
+            ExprKind::Reject(_) if self.reject_ok => Err(diag(
+                e.span,
+                "`reject` takes the type expected of it, and none is known here",
+            )),
             ExprKind::Reject(_) => Err(diag(
                 e.span,
                 "`reject` is allowed only in the source query of an insert",
@@ -490,7 +504,7 @@ impl Checker<'_> {
             }
             UnOp::Key => {
                 if let ExprKind::Write(w) = &x.kind {
-                    return Err(diag(w.span, "writes are not checked yet"));
+                    return self.nested_insert(w);
                 }
                 let o = self.synth(x)?;
                 self.key_of(o, x.span)
@@ -1179,7 +1193,13 @@ impl Checker<'_> {
         Ok(self.out(Kind::KeyOf(rel, value.tm), ty))
     }
 
-    fn record(&mut self, r: &RecordExpr, expected: Option<&Ty>, span: Span) -> R<Out> {
+    pub(super) fn record(
+        &mut self,
+        r: &RecordExpr,
+        expected: Option<&Ty>,
+        span: Span,
+        site: Option<&Site>,
+    ) -> R<Out> {
         if let Some(t @ Ty::Data { def, ctors, .. }) = expected
             && matches!(self.schema.ty(*def).kind, TypeDefKind::Sum { .. })
         {
@@ -1192,7 +1212,13 @@ impl Checker<'_> {
                 let Ty::Data { def, args, .. } = t else {
                     unreachable!()
                 };
-                return self.build_ctor(Target::Decl(*def, Some(args.clone())), c, Some(r), span);
+                return self.build_ctor(
+                    Target::Decl(*def, Some(args.clone())),
+                    c,
+                    Some(r),
+                    span,
+                    site,
+                );
             }
         }
         match r {
@@ -1269,13 +1295,14 @@ impl Checker<'_> {
     }
 
     /// Resolves a constructor expression against the expected type, else by its name in scope, then builds it.
-    fn ctor(
+    pub(super) fn ctor(
         &mut self,
         path: &ast::QName,
         ctor: Option<&ast::Ident>,
         record: Option<&RecordExpr>,
         expected: Option<&Ty>,
         span: Span,
+        site: Option<&Site>,
     ) -> R<Out> {
         let name = match ctor {
             Some(c) => &c.text,
@@ -1395,7 +1422,7 @@ impl Checker<'_> {
                 ));
             }
         }
-        self.build_ctor(target, c, record, span)
+        self.build_ctor(target, c, record, span, site)
     }
 
     fn anon_ctor(&mut self, name: &str, record: Option<&RecordExpr>, span: Span) -> R<Out> {
@@ -1484,12 +1511,13 @@ impl Checker<'_> {
     }
 
     /// Builds constructor `c` of `target` from `record`, giving every field.
-    fn build_ctor(
+    pub(super) fn build_ctor(
         &mut self,
         target: Target,
         c: u32,
         record: Option<&RecordExpr>,
         span: Span,
+        site: Option<&Site>,
     ) -> R<Out> {
         let (def, args) = match target {
             Target::Known(ty) => {
@@ -1508,6 +1536,7 @@ impl Checker<'_> {
             }
             Target::Decl(def, args) => (def, args),
         };
+        let site = site.filter(|s| self.schema.relation(s.rel).elem_def == def);
         let t = self.schema.ty(def).clone();
         let n = t.params.len();
         let raw: Vec<(String, Ty, bool)> = ty::ctor_fields(
@@ -1548,6 +1577,9 @@ impl Checker<'_> {
                         ));
                     }
                     named.push((name.text.clone(), e));
+                }
+                if let Some(s) = site {
+                    self.site_given(s, fs)?;
                 }
                 if let Some(RecordExpr::With(b, _, _)) = record {
                     let o = self.synth(b)?;
@@ -1614,17 +1646,32 @@ impl Checker<'_> {
             if given.iter().any(|(g, _)| g == f) {
                 continue;
             }
+            let fty = fty.subst(&args_out);
             match &base {
                 Some(b) if same_ctor || *header => {
-                    let ft = self.add(Kind::Field(b.tm, f.clone()), fty.subst(&args_out));
+                    let ft = self.add(Kind::Field(b.tm, f.clone()), fty);
                     given.push((f.clone(), ft));
                 }
-                _ => {
-                    return Err(diag(
-                        span,
-                        format!("field `{f}` of `{ctor_name}` is missing"),
-                    ));
-                }
+                _ => match site {
+                    Some(s) => match self.fill(s, c, f, *header, fty)? {
+                        Some(ft) => given.push((f.clone(), ft)),
+                        None => {
+                            return Err(diag(
+                                span,
+                                format!(
+                                    "field `{f}` of `{ctor_name}` is missing, and `{}` has no default for it",
+                                    self.schema.relation(s.rel).name
+                                ),
+                            ));
+                        }
+                    },
+                    None => {
+                        return Err(diag(
+                            span,
+                            format!("field `{f}` of `{ctor_name}` is missing"),
+                        ));
+                    }
+                },
             }
         }
         given.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1932,6 +1979,18 @@ impl Checker<'_> {
         c: &ast::Comprehension,
         elem: Option<&Ty>,
     ) -> R<Body> {
+        self.comprehension_body_with(c, &mut |this, e| match elem {
+            Some(t) => this.check(e, t),
+            None => this.synth(e),
+        })
+    }
+
+    /// Elaborates a comprehension's clauses, then its `select` by `select`, leaving the scope of the `select` open.
+    pub(super) fn comprehension_body_with(
+        &mut self,
+        c: &ast::Comprehension,
+        select: &mut dyn FnMut(&mut Self, &Expr) -> R<Out>,
+    ) -> R<Body> {
         self.scope.push();
         let mut frames = Vec::new();
         let mut binders = Vec::new();
@@ -1981,10 +2040,7 @@ impl Checker<'_> {
             binders = vec![zeta];
             self.clauses(after, &mut frames, &mut binders)?;
         }
-        let select = match elem {
-            Some(t) => self.check(&c.select, t)?,
-            None => self.synth(&c.select)?,
-        };
+        let select = select(self, &c.select)?;
         Ok(Body {
             frames,
             select,

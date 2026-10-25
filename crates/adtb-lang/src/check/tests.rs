@@ -4,6 +4,8 @@ use crate::kernel::{Const, Prim};
 use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use crate::schema::build;
 
+mod writes;
+
 const RUNNING: &str = r#"
 module auth
 type User = { id: Key users, name: Text }
@@ -2143,11 +2145,10 @@ fn constraints_are_set_queries() {
 }
 
 #[test]
-fn writes_are_not_checked_yet() {
-    adhoc_refuses(
+fn writes_are_checked() {
+    adhoc_accepts(
         &[("u", "Key users"), ("g", "Text")],
         "insert identities.Google { user: u, gid: g }",
-        "writes are not checked yet",
     );
 }
 

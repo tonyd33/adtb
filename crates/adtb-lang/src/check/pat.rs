@@ -92,12 +92,19 @@ struct Cont {
     f: Tm,
 }
 
-struct ArmIr {
+pub(super) struct ArmIr {
     pat: Pat,
     binds: BTreeMap<String, Var>,
-    locals: Vec<(String, Local)>,
-    guard: Option<Tm>,
-    body: Option<Out>,
+    pub(super) locals: Vec<(String, Local)>,
+    pub(super) guard: Option<Tm>,
+    pub(super) body: Option<Out>,
+}
+
+/// A `match` whose patterns and coverage are checked and whose arm bodies are not yet.
+pub(super) struct Matched {
+    pub(super) scrutinee: Out,
+    sty: Ty,
+    pub(super) arms: Vec<ArmIr>,
 }
 
 /// A binder a pattern introduces, before the alternatives of its arm are joined.
@@ -145,6 +152,22 @@ impl Checker<'_> {
         expected: Option<&Ty>,
         span: Span,
     ) -> R<Out> {
+        let heads: Vec<(&[Pattern], bool)> = arms
+            .iter()
+            .map(|a| (a.patterns.as_slice(), a.guard.is_some()))
+            .collect();
+        let mut m = self.match_patterns(scrutinee, &heads, span)?;
+        let ty = self.arm_bodies(arms, &mut m.arms, expected)?;
+        Ok(self.match_compile(m, ty))
+    }
+
+    /// Checks a match's scrutinee, the patterns of each arm given with whether it has a guard, and coverage.
+    pub(super) fn match_patterns(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[(&[Pattern], bool)],
+        span: Span,
+    ) -> R<Matched> {
         let s = self.synth(scrutinee)?;
         let (s, by_key) = match &s.ty {
             Ty::Key { rel, ctors } => {
@@ -171,15 +194,15 @@ impl Checker<'_> {
         let sty = s.ty.clone();
         let is_sum = self.signature(&sty).is_some();
         let mut irs = Vec::new();
-        for arm in arms {
-            irs.push(self.arm_patterns(arm, &sty, s.rows, is_sum, by_key)?);
+        for (patterns, _) in arms {
+            irs.push(self.arm_patterns(patterns, &sty, s.rows, is_sum, by_key)?);
         }
         if is_sum && !self.adhoc() {
             let rows: Vec<Vec<Pat>> = irs.iter().map(|a| vec![a.pat.clone()]).collect();
             self.wild_rule(&rows, std::slice::from_ref(&sty))?;
         }
         let mut covered: Vec<Vec<Pat>> = Vec::new();
-        for (arm, ir) in arms.iter().zip(&irs) {
+        for ((_, guarded), ir) in arms.iter().zip(&irs) {
             let alts = ir.pat.alts();
             let mut seen = covered.clone();
             for alt in &alts {
@@ -196,7 +219,7 @@ impl Checker<'_> {
                 }
                 seen.push(q);
             }
-            if arm.guard.is_none() {
+            if !guarded {
                 covered.push(vec![ir.pat.clone()]);
             }
         }
@@ -213,7 +236,20 @@ impl Checker<'_> {
                 (w, _) => diag(span, format!("match does not cover `{}`", w.show())),
             });
         }
-        let ty = self.arm_bodies(arms, &mut irs, expected)?;
+        Ok(Matched {
+            scrutinee: s,
+            sty,
+            arms: irs,
+        })
+    }
+
+    /// Compiles a match whose arm bodies are checked, at type `ty`, to a `case` tree.
+    pub(super) fn match_compile(&mut self, m: Matched, ty: Ty) -> Out {
+        let Matched {
+            scrutinee: s,
+            sty,
+            arms: irs,
+        } = m;
         let rows = {
             let mut rs = irs.iter().map(|a| a.body.as_ref().expect("checked").rows);
             let first = rs.next().flatten();
@@ -246,13 +282,13 @@ impl Checker<'_> {
         };
         let mut o = self.out(Kind::Let(xi, s.tm, body), ty);
         o.rows = rows;
-        Ok(o)
+        o
     }
 
     /// Elaborates an arm's alternatives and joins the types of the names they bind.
     fn arm_patterns(
         &mut self,
-        arm: &Arm,
+        patterns: &[Pattern],
         sty: &Ty,
         rows: Option<RelId>,
         is_sum: bool,
@@ -260,7 +296,7 @@ impl Checker<'_> {
     ) -> R<ArmIr> {
         let mut alts = Vec::new();
         let mut bound: Vec<Vec<Bound>> = Vec::new();
-        for p in &arm.patterns {
+        for p in patterns {
             let mut bs = Vec::new();
             alts.push(self.pattern(p, sty, rows, &mut bs)?);
             bound.push(bs);
@@ -282,7 +318,7 @@ impl Checker<'_> {
             }
         }
         let first: Vec<&str> = bound[0].iter().map(|b| b.name.as_str()).collect();
-        for (bs, p) in bound.iter().zip(&arm.patterns).skip(1) {
+        for (bs, p) in bound.iter().zip(patterns).skip(1) {
             let mut names: Vec<&str> = bs.iter().map(|b| b.name.as_str()).collect();
             let mut want = first.clone();
             names.sort();

@@ -190,14 +190,59 @@ pub enum Kind {
     /// A position exhaustiveness proves no evaluation reaches.
     Unreachable,
     Skip,
+    /// Insert every row of the set, whole rows with their fills explicit.
     Insert(RelId, Tm),
+    /// Delete every row of the set that is a row of the relation in the snapshot.
     Delete(RelId, Tm),
+    /// Replace each row of the set, a row of the relation in the snapshot, by the function's value on it; fail with `KeyChanged` when that value has another key, and leave the row alone when it is equal.
     Replace(RelId, Tm, Tm),
+    /// Insert each row of `rows` that no snapshot row matches on `on`; for each one that a snapshot row matches, evaluate the write `otherwise` instead, with `old` bound to the snapshot row and `new` to the proposed one.
+    Upsert {
+        rel: RelId,
+        rows: Tm,
+        on: Conflict,
+        old: Var,
+        new: Var,
+        otherwise: Tm,
+        /// Whether a binding of this upsert is one row rather than a set.
+        single: bool,
+    },
+    /// Evaluate `insert`, an `Insert` or `Upsert` whose rows are a `For` over one source relation, record by record; insert a row into `into` for each record whose computation reaches `Reject` or fails to convert, in place of its rows.
+    Rejects {
+        into: RelId,
+        insert: Tm,
+    },
+    /// Join the effects of every write; their order chooses nothing.
     Par(Vec<Tm>),
+    /// Reject the statement with the text as a user error.
     Fail(Tm),
+    /// Join the write's effects to the statement's and bind the variable to the rows it binds: a `Replace`'s new values, an `Upsert`'s binding, the rows a `Rejects` inserts into its target.
     LetBang(Var, Tm, Tm),
+    /// Join the write's effects to the statement's. Returns the second term's value.
     Block(Tm, Tm),
-    Transact(Tm),
+    /// Run the block as one statement against one snapshot, under the options. Returns the block's result.
+    Transact(Tm, TxnOptions),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Conflict {
+    Key,
+    /// The unique at this position of the relation's indexes.
+    Unique(u32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Durability {
+    Local,
+    Quorum,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TxnOptions {
+    pub retry: Option<u64>,
+    pub read_only: bool,
+    pub deferrable: bool,
+    pub durability: Option<Durability>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -280,8 +325,12 @@ impl Terms {
             | Kind::Insert(_, x)
             | Kind::Delete(_, x)
             | Kind::Fail(x)
-            | Kind::Transact(x)
+            | Kind::Transact(x, _)
+            | Kind::Rejects { insert: x, .. }
             | Kind::Lam(_, x) => vec![*x],
+            Kind::Upsert {
+                rows, otherwise, ..
+            } => vec![*rows, *otherwise],
             Kind::Case { scrutinee, arms } => std::iter::once(*scrutinee)
                 .chain(arms.iter().map(|(_, _, t)| *t))
                 .collect(),

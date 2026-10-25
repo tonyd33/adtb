@@ -4,8 +4,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use adtb_lang::ast::{AdhocItem, BundleItem, Decl, ExampleItem, Import, OperatorKind, QueryDecl};
-use adtb_lang::check::{Checker, Context, check_adhoc, check_query, check_schema};
+use adtb_lang::ast::{
+    AdhocItem, BundleItem, Decl, ExampleItem, Import, OperatorKind, QueryDecl, TxnDecl,
+};
+use adtb_lang::check::{Checker, Context, check_adhoc, check_query, check_schema, check_txn};
 use adtb_lang::parse::{Options, parse_example, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Schema, build};
@@ -298,6 +300,7 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
     let mut reads = None;
     let mut adhoc = Vec::new();
     let mut queries: Vec<QueryDecl> = Vec::new();
+    let mut txns: Vec<TxnDecl> = Vec::new();
     let mut errs = Vec::new();
     let declare = |entries: &mut Vec<Entry>, module: &str, d: Decl| {
         let key = decl_key(&d);
@@ -339,7 +342,7 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
                 BundleItem::Fn(f) => declare(&mut entries, &module, Decl::Fn(f)),
                 BundleItem::Aggregate(a) => declare(&mut entries, &module, Decl::Aggregate(a)),
                 BundleItem::Query(q) => queries.push(q),
-                BundleItem::Txn(t) => errs.push(at(b, t.span, "writes are not checked yet")),
+                BundleItem::Txn(t) => txns.push(t),
                 BundleItem::Feed(_) => {}
             },
             ExampleItem::Adhoc(a) => adhoc.push(a),
@@ -358,6 +361,11 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
         .expect("the bundle reads a module");
     for q in &queries {
         if let Err(d) = check_query(&schema, module, q) {
+            errs.push(at(b, d.span, &d.message));
+        }
+    }
+    for t in &txns {
+        if let Err(d) = check_txn(&schema, module, t) {
             errs.push(at(b, d.span, &d.message));
         }
     }

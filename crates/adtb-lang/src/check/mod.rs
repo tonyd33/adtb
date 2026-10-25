@@ -15,11 +15,13 @@ mod pat;
 mod prelude;
 mod rel;
 mod ty;
+mod write;
 
 #[cfg(test)]
 mod tests;
 
 pub use ty::{join, subtype};
+pub use write::{Txn, check_txn};
 
 type R<T> = Result<T, Diag>;
 
@@ -42,6 +44,8 @@ pub struct Program {
     pub checks: Vec<Tm>,
     /// Each newtype's domain predicate over its `self` variable.
     pub domains: BTreeMap<TypeId, (Var, Tm)>,
+    /// Each relation's `on delete retag` new value, a `Lam` over the referrer's row.
+    pub retags: BTreeMap<RelId, Tm>,
 }
 
 /// What a body may refer to besides its locals.
@@ -89,6 +93,17 @@ pub struct Checker<'a> {
     fn_rows: Vec<Option<RelId>>,
     /// Ad hoc parameters, typed by their descriptors.
     params: BTreeMap<String, (Var, Ty)>,
+    /// Whether `reject` may appear: in the source query of an insert.
+    reject_ok: bool,
+    /// Per enclosing write, the rows its nested `key (insert ...)` insert.
+    hoist: Vec<Vec<write::Nested>>,
+    /// Whether a nested `key (insert ...)` here is evaluated once per statement.
+    once: bool,
+    /// Variables bound to rows of the snapshot, which `update x` and `delete x` may name.
+    snapshot: BTreeSet<Var>,
+    /// Variables bound to rows a write proposes, which are never rows of the snapshot.
+    proposed: BTreeSet<Var>,
+    read_only: bool,
 }
 
 impl std::fmt::Debug for Checker<'_> {
@@ -112,6 +127,12 @@ impl<'a> Checker<'a> {
             tparams: Vec::new(),
             fn_rows: vec![None; schema.functions.len()],
             params: BTreeMap::new(),
+            reject_ok: false,
+            hoist: Vec::new(),
+            once: true,
+            snapshot: BTreeSet::new(),
+            proposed: BTreeSet::new(),
+            read_only: false,
         }
     }
 
@@ -312,6 +333,7 @@ pub fn check_schema(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
         constraints: Vec::new(),
         checks: Vec::new(),
         domains: BTreeMap::new(),
+        retags: BTreeMap::new(),
     };
     let mut diags = Vec::new();
     let mut fn_rows = vec![None; schema.functions.len()];
@@ -456,6 +478,7 @@ pub fn check_schema(schema: &Schema) -> Result<Program, Vec<FileDiag>> {
             }
         }
     }
+    program.retags = write::delete_actions(schema, &mut terms, &mut diags);
     program.terms = terms;
     if diags.is_empty() {
         Ok(program)
@@ -488,8 +511,8 @@ pub fn check_adhoc(
     for item in items {
         let r = match item {
             ast::AdhocItem::Expr(e) => c.statement(e).map(|o| o.tm),
-            ast::AdhocItem::Write(w) => Err(diag(w.span, "writes are not checked yet")),
-            ast::AdhocItem::Transact(b) => Err(diag(b.span, "writes are not checked yet")),
+            ast::AdhocItem::Write(w) => c.write(w),
+            ast::AdhocItem::Transact(b) => c.transact(b, None).map(|o| o.tm),
             _ => continue,
         };
         match r {
