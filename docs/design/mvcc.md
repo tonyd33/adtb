@@ -24,8 +24,9 @@ Invariants:
   the sum merges ordered scans of each heap on the fly.
 
 Each heap has a directory naming its pages, which is also its free
-space map, and a visibility map of its own. The catalog records the
-heap id and the page id of the directory's root.
+space map, and a visibility map of its own (§11). The catalog records
+the heap id and the page id of the directory's root; the root names the
+visibility map's root.
 
 The directory is a tree of free space map pages owned by the heap
 ([storage.md §2.1](storage.md#21-page-header)). Each entry names a page
@@ -47,16 +48,20 @@ Invariants:
   page size over 256 bytes free. A level-0 entry of a page in the
   heap's newest row format has exactly its page's category; an inner
   entry has the greatest category of its child.
-- A heap page stays in the directory, at its position, until the heap
-  is dropped.
+- A heap page stays in the directory, at its position, until vacuum
+  finds it empty (§10.1) or the heap is dropped. A removed page leaves
+  a hole at its position, which the next insert needing room fills
+  with a new page at that position.
 
 Postconditions:
 
 - A scan of the heap reads its pages in position order and each page's
   versions in slot order.
 - Each pager update a heap operation makes
-  ([storage.md §2.3](storage.md#23-page-access)) names at most `h + 4`
-  pages, `h` being the level of the directory's root. The heap and
+  ([storage.md §2.3](storage.md#23-page-access)) names at most `h + 6`
+  pages, `h` being the level of the directory's root: the heap and
+  directory pages, and a visibility map page for each heap page whose
+  all-visible bit it clears. The heap and
   directory pages of one insert, update, delete or retag change in one
   update; pages it allocates, and the chunks of its out-of-line values,
   are written by earlier calls.
@@ -247,8 +252,12 @@ The heap walks a chain from a TID through each `next`, across heaps,
 and returns the first version a caller's predicate accepts, with its
 TID, the heap id of its page, its header and flags; or none, when the
 chain ends first. A redirect line pointer
-([§12.1](#121-page-arrangement)) is followed to the slot it names; a
-slot holding no version ends the chain.
+([§12.1](#121-page-arrangement)) is followed to the slot it names. A
+slot holding no version ends the chain, as do a page that is not a heap
+page and a version whose `xmin` is not the `xmax` of the version before
+it: a version's `next` may name a successor vacuum freed, and whose
+slot or page was taken again, when the successor's heap has a later
+watermark than the version's (§9).
 
 An update names the key fields of every index whose constructor set
 contains the heap's constructor. The heap decides whether the update is
@@ -568,7 +577,32 @@ and with the commit log:
   inserter aborted, before it frees that version's slot.
 - It frees dead slots, updates the free space map, and sets all-visible
   bits where every remaining version is visible to every snapshot.
-- It clears `xmax` of versions whose deleter aborted.
+- It clears `xmax` of versions whose deleter aborted, with their `next`
+  and their moved and hot-updated flags.
+- It removes from the heap's directory every page it leaves empty, and
+  frees the page.
+- It frees every chunk of the sum's large-value store that no version
+  of the sum points at (§12.5), and removes the store's empty pages.
+
+A version is dead to every snapshot the watermark `w(h)` admits when
+its inserter aborted, or its deleter committed below `w(h)`. A version
+is visible to every snapshot, live or taken later, when its inserter
+committed below `w(h)` and it has no deleter; it stays so until it is
+next written, and every write to a heap page clears the page's
+all-visible bit in the same pager update.
+
+Postconditions of a vacuum of a sum begun when the oldest running
+transaction was `x`, or when none ran and `x` was the next id:
+
+- no index entry of the sum names a slot vacuum freed;
+- no version of the sum names an aborted transaction below `x`, in
+  `xmin` or in `xmax`, so the commit log may be truncated below `x`
+  once every other sum has been vacuumed as well (§4.4);
+- a live snapshot reads what it read before.
+
+Precondition: no write to the sum runs during the vacuum.
+
+TODO: a page vacuum removes is unlinked and freed by two pager calls, so a crash between them leaks it, as with the allocations of storage.md §2.3.
 
 Vacuum's progress, triggers and budget are exposed as described in
 [../spec/catalog.md §11.5](../spec/catalog.md#115-vacuum).
@@ -579,6 +613,13 @@ Between passes, any access holding a heap page exclusively prunes
 versions on it that are dead to every snapshot: heap-only versions are
 freed, and versions still named by index entries leave a dead slot for
 vacuum's index pass. Pruning is logged.
+
+A heap-only chain whose leading versions are dead keeps the slot index
+entries name as a redirect to its first live version and frees the
+others. A fixed-slot page holds no dead slot or redirect: it frees a
+chain only once every version of it is dead and its entries are gone,
+and keeps a chain with a live version whole. Pruning never sets an
+all-visible bit; a page it changes loses its bit.
 
 ### 10.3 History heaps and reads of the past
 
@@ -623,6 +664,18 @@ skip fetching a version when the all-visible bit of its page is set in
 the visibility map of the heap of the entry's constructor in the
 index's relation variable.
 
+Invariants:
+
+- A page's bit is set only while every version on it is visible to
+  every snapshot published to its heap, live or taken later, and no
+  slot on it is dead.
+- A page's bit is set exactly when the all-visible flag of its page
+  header is set ([storage.md §2.1](storage.md#21-page-header)); both
+  change in one pager update.
+- No bit is set for a page that is not a page of the heap.
+
+The map is keyed by page id, so a lookup reads no heap page.
+
 Rulings: mvcc/vm-per-heap, btree/ios/vm-per-heap
 
 ## 12. Notes for the implementation
@@ -653,8 +706,8 @@ u16 slot_flags[n]                the version flags of slot i (§3)
 slot[0] slot[1] ... slot[n-1]    from the next multiple of 8, slot i at a fixed offset
 ```
 
-A TID's slot number is the array index. Freeing a slot clears its bit
-and its flags; no compaction occurs in a fixed-slot page.
+A TID's slot number is the array index. Freeing a slot clears its bit,
+its flags and its bytes; no compaction occurs in a fixed-slot page.
 
 Slotted page:
 
@@ -675,7 +728,9 @@ Line pointer states are unused (0), normal (1), dead (2: pruned, still
 named by index entries) and redirect (3: its offset names the slot of
 the next live version of a heap-only chain on the page). Tuples move
 during in-page compaction without changing their TID. The line
-pointer's `flags` are the version flags of §3.
+pointer's `flags` are the version flags of §3. Emptying a slot drops
+the unused line pointers at the end of the page, so `slot_count` is
+one past the last slot in use.
 
 A page's free space for the directory is, in a fixed-slot page, its
 free slots times `w`; in a slotted page, the bytes no line pointer or
@@ -689,8 +744,15 @@ u16 level
 u16 count
 u16 capacity                     the directory's fanout, the same on each of its pages
 u16 reserved
+u64 vm                           the visibility map's root in the directory's root, 0 elsewhere
 u64 entry[count]                 page id in bits 0 to 47, free space category in bits 48 to 55
 ```
+
+A level-0 entry naming page id 0 is a hole: its page was removed. A
+hole has category 255, so a search for room finds it; filling it
+allocates a page at its position and names it in the entry. A
+large-value store's directory is built the same way, with no
+visibility map.
 
 Rulings: layout/slots/by-schema
 
@@ -850,6 +912,36 @@ The dead set is a radix tree keyed by heap id and page, each
 leaf a bitmap of dead slots; a sum's heaps are disjoint subtrees. When
 the set reaches its memory budget, phases 2 and 3 run and phase 1
 resumes.
+
+Phase 1 collects, per page, the slots index entries name whose chain
+on the page holds no live version: dead slots, versions not heap-only
+and redirects. Every page it reads is pruned in phase 3, whether or not
+it holds dead slots. Phase 3 judges each version again against the
+watermark, frees the collected slots and every dead heap-only version
+no remaining version or redirect names, and sets the page's bit when
+every version left is visible to every snapshot. A page left empty
+leaves the directory. After the last round a fourth phase marks every
+chunk the versions of the sum's heaps point at and frees the others in
+the large-value store.
+
+The visibility map is a radix tree of visibility map pages owned by the
+heap, its root page fixed:
+
+```text
+visibility map page
+  page header (24 B)
+  u16 level
+  6 B reserved
+  level 0: one bit per page id, span = (page size - 32) * 8 ids from a multiple of span
+  level l: u64 child[fanout], fanout = (page size - 32) / 8, 0 for none
+```
+
+A root at level `l` covers page ids below `span * fanout^l`; a page id
+past it grows the root as the directory's does, moving the root's
+contents to a new page that becomes its first child. A leaf and the
+inner pages above it are added when a bit under them is first set. The
+heap page header's flag bit 0 is the page's all-visible flag, so a
+writer touches the map only when it finds the flag set.
 
 Rulings: btree/dead-set/radix
 

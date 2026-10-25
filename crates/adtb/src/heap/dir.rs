@@ -7,9 +7,15 @@ use super::stage::Stage;
 const LEVEL: usize = CONTENTS;
 const COUNT: usize = CONTENTS + 2;
 const CAPACITY: usize = CONTENTS + 4;
-const ENTRIES: usize = CONTENTS + 8;
+const VM: usize = CONTENTS + 8;
+const ENTRIES: usize = CONTENTS + 16;
 const ENTRY: usize = 8;
 const PID_MASK: u64 = (1 << 48) - 1;
+
+/// A level-0 entry naming no page: its page was removed and its position awaits a new one.
+const HOLE: Pid = Pid(0);
+/// A hole's category: every search for room finds it.
+const HOLE_CATEGORY: u8 = 255;
 
 /// Returns the most entries a directory page of `page_size` bytes holds.
 pub fn max_fanout(page_size: usize) -> u16 {
@@ -47,9 +53,16 @@ fn push(node: &mut [u8], pid: Pid, category: u8) {
 }
 
 fn init(node: &mut [u8], level: u32, capacity: u64) {
+    let vm = u64_at(node, VM);
     node[CONTENTS..].fill(0);
     node[LEVEL..LEVEL + 2].copy_from_slice(&(level as u16).to_le_bytes());
     node[CAPACITY..CAPACITY + 2].copy_from_slice(&(capacity as u16).to_le_bytes());
+    node[VM..VM + 8].copy_from_slice(&vm.to_le_bytes());
+}
+
+fn vm_root(node: &[u8]) -> Option<Pid> {
+    let pid = u64_at(node, VM);
+    (pid != 0).then_some(Pid(pid))
 }
 
 fn max_category(node: &[u8]) -> u8 {
@@ -73,8 +86,8 @@ pub fn need_category(need: usize, page_size: usize) -> u16 {
 #[derive(Debug, Default)]
 pub struct Check {
     pub problems: Vec<String>,
-    /// Each page of the space with its entry's category, in position order.
-    pub leaves: Vec<(Pid, u8)>,
+    /// Each position of the space with its page and its entry's category, or `None` for a hole.
+    pub leaves: Vec<Option<(Pid, u8)>>,
 }
 
 #[derive(Clone, Copy)]
@@ -107,18 +120,23 @@ pub struct Space {
 }
 
 impl Space {
-    /// Create an empty space whose directory pages hold `fanout` entries each.
+    /// Create an empty space whose directory pages hold `fanout` entries each, and whose root
+    /// names the visibility map rooted at `vm`, if any.
     pub fn create<R: Runtime>(
         pager: &mut Pager<R>,
         owner: u32,
         fanout: u16,
+        vm: Option<Pid>,
     ) -> Result<Space, PageError> {
         assert!(
             fanout >= 2 && fanout <= max_fanout(pager.page_size()),
             "directory fanout {fanout} is out of range"
         );
         let root = pager.allocate(1, PageKind::FreeSpaceMap, owner)?;
-        pager.update(&[root], |p| init(p[0], 0, u64::from(fanout)))?;
+        pager.update(&[root], |p| {
+            p[0][VM..VM + 8].copy_from_slice(&vm.map_or(0, |v| v.0).to_le_bytes());
+            init(p[0], 0, u64::from(fanout));
+        })?;
         Ok(Space { owner, root })
     }
 
@@ -134,6 +152,15 @@ impl Space {
         self.root
     }
 
+    /// Returns the root of the visibility map the directory's root names.
+    pub fn vm<R: Runtime>(
+        &self,
+        stage: &Stage,
+        pager: &mut Pager<R>,
+    ) -> Result<Option<Pid>, PageError> {
+        Ok(vm_root(&stage.read(pager, self.root)?))
+    }
+
     /// Returns every page of the space, in position order.
     pub fn pages<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<Vec<Pid>, PageError> {
         let mut out = Vec::new();
@@ -142,7 +169,7 @@ impl Space {
             let node = &pager.read(pid)?.to_vec();
             let entries = (0..count(node)).map(|i| entry(node, i).0);
             if level(node) == 0 {
-                out.extend(entries);
+                out.extend(entries.filter(|&p| p != HOLE));
             } else {
                 let children: Vec<Pid> = entries.collect();
                 todo.extend(children.into_iter().rev());
@@ -151,7 +178,8 @@ impl Space {
         Ok(out)
     }
 
-    /// Returns what is wrong with the directory, and its level-0 entries in position order.
+    /// Returns what is wrong with the directory, and its level-0 entries in position order, a hole
+    /// as `None`.
     pub fn check<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<Check, PageError> {
         let mut found = Check::default();
         let root = pager.read(self.root)?.to_vec();
@@ -195,7 +223,12 @@ impl Space {
         for i in 0..n {
             let (child, cat) = entry(&node, i);
             if want.level == 0 {
-                found.leaves.push((child, cat));
+                found.leaves.push((child != HOLE).then_some((child, cat)));
+                if child == HOLE && cat != HOLE_CATEGORY {
+                    found
+                        .problems
+                        .push(format!("{pid:?} entry {i} is a hole of category {cat}"));
+                }
                 continue;
             }
             let below = Want {
@@ -214,23 +247,66 @@ impl Space {
     }
 
     /// Returns a page whose entry has category `need` or more, if there is one.
+    ///
+    /// A hole found first gets a new empty page in `arrangement` and row format `format`, written
+    /// with its entry in one update of its own.
+    ///
+    /// Precondition: `stage` holds no page of the directory.
     pub fn find<R: Runtime>(
         &self,
         stage: &Stage,
         pager: &mut Pager<R>,
         need: u16,
+        arrangement: Arrangement,
+        format: u16,
     ) -> Result<Option<Pid>, PageError> {
         let mut node = stage.read(pager, self.root)?;
+        let cap = capacity(&node);
+        let mut position = 0;
         loop {
             let Some(i) = (0..count(&node)).find(|&i| u16::from(entry(&node, i).1) >= need) else {
                 return Ok(None);
             };
+            position += i as u64 * cap.pow(level(&node));
             let child = entry(&node, i).0;
-            if level(&node) == 0 {
+            if level(&node) > 0 {
+                node = stage.read(pager, child)?;
+            } else if child == HOLE {
+                return self
+                    .fill(pager, position as u32, arrangement, format)
+                    .map(Some);
+            } else {
                 return Ok(Some(child));
             }
-            node = stage.read(pager, child)?;
         }
+    }
+
+    fn fill<R: Runtime>(
+        &self,
+        pager: &mut Pager<R>,
+        position: u32,
+        arrangement: Arrangement,
+        format: u16,
+    ) -> Result<Pid, PageError> {
+        let page = pager.allocate(format, arrangement.kind(), self.owner)?;
+        let mut stage = Stage::new();
+        let fresh = stage.page(pager, page)?;
+        arrangement.init(fresh, position);
+        let cat = category(page::free(fresh), pager.page_size());
+        self.write_entry(&mut stage, pager, position, Some(page), cat)?;
+        stage.commit(pager)?;
+        Ok(page)
+    }
+
+    /// Replace the entry at `position` by a hole, in `stage`. The page it named is no longer part
+    /// of the space.
+    pub fn vacate<R: Runtime>(
+        &self,
+        stage: &mut Stage,
+        pager: &mut Pager<R>,
+        position: u32,
+    ) -> Result<(), PageError> {
+        self.write_entry(stage, pager, position, Some(HOLE), HOLE_CATEGORY)
     }
 
     fn len<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<u64, PageError> {
@@ -253,6 +329,19 @@ impl Space {
         position: u32,
         category: u8,
     ) -> Result<(), PageError> {
+        self.write_entry(stage, pager, position, None, category)
+    }
+
+    /// Set the entry at `position` in `stage` to name `page`, or keep its page when `None`, with
+    /// `category`, and the categories above it.
+    fn write_entry<R: Runtime>(
+        &self,
+        stage: &mut Stage,
+        pager: &mut Pager<R>,
+        position: u32,
+        page: Option<Pid>,
+        category: u8,
+    ) -> Result<(), PageError> {
         let root = stage.read(pager, self.root)?;
         let cap = capacity(&root);
         let mut path = Vec::new();
@@ -269,7 +358,7 @@ impl Space {
         }
         let (leaf, i) = *path.last().unwrap();
         let node = stage.page(pager, leaf)?;
-        let (page, _) = entry(node, i);
+        let page = page.unwrap_or(entry(node, i).0);
         set_entry(node, i, page, category);
         for k in (0..path.len() - 1).rev() {
             let child_max = max_category(&stage.read(pager, path[k + 1].0)?);
@@ -328,6 +417,7 @@ impl Space {
             let old = stage.read(pager, self.root)?;
             let copy = stage.page(pager, moved)?;
             copy[CONTENTS..].copy_from_slice(&old[CONTENTS..]);
+            copy[VM..VM + 8].fill(0);
             let top = max_category(&old);
             let r = stage.page(pager, self.root)?;
             init(r, height + 1, cap);

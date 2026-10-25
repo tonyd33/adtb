@@ -184,6 +184,40 @@ pub fn put(page: &mut [u8], slot: usize, content: Content) -> bool {
     true
 }
 
+/// Empty slot `slot` of whatever it holds, leaving it `content`, and drop the line pointers of
+/// unused slots at the end of the page.
+pub fn release(page: &mut [u8], slot: usize, content: Option<Content>) {
+    let p = match content {
+        None => Pointer {
+            offset: 0,
+            len: 0,
+            state: UNUSED,
+            flags: 0,
+        },
+        Some(Content::Dead) => Pointer {
+            offset: 0,
+            len: 0,
+            state: DEAD,
+            flags: 0,
+        },
+        Some(Content::Redirect(to)) => Pointer {
+            offset: usize::from(to),
+            len: 0,
+            state: REDIRECT,
+            flags: 0,
+        },
+        Some(Content::Version(..)) => panic!("release leaves no version in a slot"),
+    };
+    set_pointer(page, slot, &p);
+    let mut n = count(page);
+    while n > 0 && pointer(page, n - 1).state == UNUSED {
+        n -= 1;
+        let at = POINTERS + POINTER * n;
+        page[at..at + POINTER].fill(0);
+    }
+    set_count(page, n);
+}
+
 /// Write `version` into the first unused slot. Returns the slot, or `None` if the page lacks the
 /// room.
 pub fn insert(page: &mut [u8], version: &[u8], flags: Flags) -> Option<usize> {

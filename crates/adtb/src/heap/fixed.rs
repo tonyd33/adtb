@@ -91,6 +91,15 @@ pub fn put(page: &mut [u8], slot: usize, version: &[u8], flags: Flags) -> bool {
     true
 }
 
+/// Free slot `slot`, clearing its bit, its flags and its bytes.
+pub fn release(page: &mut [u8], slot: usize) {
+    let (n, w) = (count(page), width(page));
+    let at = slots_at(n) + slot * w;
+    page[at..at + w].fill(0);
+    set_used(page, slot, false);
+    set_flags(page, slot, Flags::NONE);
+}
+
 /// Write `version` into the first free slot. Returns the slot, or `None` if no slot is free.
 pub fn insert(page: &mut [u8], version: &[u8], flags: Flags) -> Option<usize> {
     let slot = (0..count(page)).find(|&s| !used(page, s))?;

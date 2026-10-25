@@ -7,6 +7,8 @@ use super::{fixed, slotted};
 
 pub(super) const CONTENTS: usize = HEADER_LEN;
 const POSITION: usize = CONTENTS;
+const PAGE_FLAGS: usize = 20;
+const ALL_VISIBLE: u16 = 1;
 
 pub(super) fn align8(n: usize) -> usize {
     n.div_ceil(8) * 8
@@ -75,6 +77,14 @@ impl Arrangement {
     }
 }
 
+/// Returns whether `page` is a heap page of either arrangement.
+pub fn is_heap(page: &[u8]) -> bool {
+    matches!(
+        PageKind::from_u16(storage::kind(page)),
+        Some(PageKind::HeapFixed | PageKind::HeapSlotted)
+    )
+}
+
 /// Returns the arrangement of a heap page.
 ///
 /// Panics if `page` is not a heap page.
@@ -91,6 +101,26 @@ pub fn arrangement(page: &[u8]) -> Arrangement {
 /// Returns the page's index in its heap's directory.
 pub fn position(page: &[u8]) -> u32 {
     u32_at(page, POSITION)
+}
+
+/// Returns whether the page header's all-visible flag is set.
+pub fn all_visible(page: &[u8]) -> bool {
+    storage::flags(page) & ALL_VISIBLE != 0
+}
+
+pub fn set_all_visible(page: &mut [u8], on: bool) {
+    let flags = storage::flags(page);
+    let flags = if on {
+        flags | ALL_VISIBLE
+    } else {
+        flags & !ALL_VISIBLE
+    };
+    page[PAGE_FLAGS..PAGE_FLAGS + 2].copy_from_slice(&flags.to_le_bytes());
+}
+
+/// Returns whether no slot of the page holds anything.
+pub fn is_empty(page: &[u8]) -> bool {
+    (0..slot_count(page)).all(|s| get(page, s) == Slot::Unused)
 }
 
 pub fn slot_count(page: &[u8]) -> usize {
@@ -127,6 +157,30 @@ pub fn insert(page: &mut [u8], version: &[u8], flags: Flags) -> Option<usize> {
     match arrangement(page) {
         Arrangement::Fixed { .. } => fixed::insert(page, version, flags),
         Arrangement::Slotted => slotted::insert(page, version, flags),
+    }
+}
+
+/// Move a slotted page's tuples together at its end. A fixed-slot page is left as it is.
+pub fn compact(page: &mut [u8]) {
+    if arrangement(page) == Arrangement::Slotted {
+        slotted::compact(page);
+    }
+}
+
+/// Empty slot `slot`, leaving it unused, dead or a redirect as `content` says.
+///
+/// Panics if `content` is a version, or a dead slot or redirect on a fixed-slot page.
+pub fn release(page: &mut [u8], slot: usize, content: &Slot) {
+    match (arrangement(page), content) {
+        (Arrangement::Fixed { .. }, Slot::Unused) => fixed::release(page, slot),
+        (Arrangement::Slotted, Slot::Unused) => slotted::release(page, slot, None),
+        (Arrangement::Slotted, Slot::Dead) => {
+            slotted::release(page, slot, Some(slotted::Content::Dead))
+        }
+        (Arrangement::Slotted, Slot::Redirect(to)) => {
+            slotted::release(page, slot, Some(slotted::Content::Redirect(*to)))
+        }
+        (a, c) => panic!("a {a:?} page cannot release a slot to {c:?}"),
     }
 }
 

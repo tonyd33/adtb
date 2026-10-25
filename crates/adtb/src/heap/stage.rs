@@ -1,5 +1,5 @@
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager, Pid};
+use crate::storage::{self, FIRST_EDITABLE, PageError, Pager, Pid};
 
 /// Copies of pages being changed together, written back by one pager update.
 #[derive(Debug, Default)]
@@ -51,8 +51,13 @@ impl Stage {
         }
         let pids: Vec<Pid> = self.pages.iter().map(|(p, _)| *p).collect();
         pager.update(&pids, |views| {
-            for (view, (_, bytes)) in views.iter_mut().zip(&self.pages) {
-                view.copy_from_slice(bytes);
+            for (view, (pid, bytes)) in views.iter_mut().zip(&self.pages) {
+                assert_eq!(
+                    storage::lsn(view),
+                    storage::lsn(bytes),
+                    "{pid:?} changed while it was staged"
+                );
+                view[FIRST_EDITABLE..].copy_from_slice(&bytes[FIRST_EDITABLE..]);
             }
         })?;
         Ok(())

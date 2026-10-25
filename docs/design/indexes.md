@@ -297,6 +297,10 @@ Postconditions:
 - `verify` refuses a page that lacks a downlink without carrying the
   flag, or carries the flag and has one.
 
+Vacuum's index pass walks the leaves left to right by their right
+links and deletes, in one update per leaf, every entry whose
+`(ctor, tid)` is in its dead set; it changes no inner page.
+
 Underfull pages are never merged. An empty page is unlinked from its
 parent, then from its siblings, and recycled once no snapshot older
 than its deletion remains. The rightmost page of a level is never

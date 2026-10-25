@@ -268,6 +268,40 @@ impl BTree {
         Ok(true)
     }
 
+    /// Delete every entry `keep` refuses, walking the leaves left to right and changing each in
+    /// one update. Returns the number of entries deleted.
+    pub fn retain<R: Runtime>(
+        &self,
+        pager: &mut Pager<R>,
+        mut keep: impl FnMut(&[u8]) -> bool,
+    ) -> Result<usize, Error> {
+        let mut pid = self.descend(pager, &[], 0)?.pid;
+        let mut deleted = 0;
+        loop {
+            let (gone, right) = visit(pager, self.owner, pid, |n| {
+                let mut gone = Vec::new();
+                for i in 0..n.count() {
+                    if !keep(n.key(i)?) {
+                        gone.push(i);
+                    }
+                }
+                Ok((gone, n.right()))
+            })?;
+            if !gone.is_empty() {
+                pager.update(&[pid], |p| {
+                    for &i in gone.iter().rev() {
+                        node::remove(p[0], i);
+                    }
+                })?;
+                deleted += gone.len();
+            }
+            match right {
+                Some(r) => pid = r,
+                None => return Ok(deleted),
+            }
+        }
+    }
+
     /// Insert `item` into the level of page `pid`, splitting pages up the
     /// levels of `stack` as they fill.
     ///
