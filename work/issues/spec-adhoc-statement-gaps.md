@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 192
 summary: "spec examples now fail because ad hoc grants, roles and commands are checked; several examples and two rules need fixing"
+branch: adtb-spec
 tags:
   - spec
 ---

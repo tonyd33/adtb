@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 290
 summary: "the spec does not say how a unique without a constructor scope is named, what BadInput reports for several sources, or what RejectedRow.source holds"
+branch: adtb-spec
 tags:
   - spec
 ---

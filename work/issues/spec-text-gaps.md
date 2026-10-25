@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 291
 summary: "ten spec gaps in collation names, Unicode versions, regex flags, textual forms and zone edges"
+branch: adtb-spec
 tags:
   - spec
 ---
