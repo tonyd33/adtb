@@ -12,3 +12,6 @@ adtb-sys.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+adtb-reference.workspace = true

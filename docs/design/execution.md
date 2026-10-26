@@ -17,7 +17,203 @@ function in the query's meaning exactly once; the planner never merges
 or repeats such calls
 ([../spec/interop.md §9.3](../spec/interop.md#93-host-functions)).
 
+The planner is the module `adtb::plan`. This section states its input,
+the plan it returns and how a plan is evaluated, which is all an
+executor relies on.
+
 Rulings: exec/flow/push
+
+### 1.1 The planner's input
+
+```text
+fn plan::plan(schema: &Schema, catalog: &Catalog, terms: &Terms, root: Tm,
+              params: &[Var], options: Options) -> Result<Plan, plan::Error>
+```
+
+Preconditions:
+
+- `root` is a normal form in `terms` that `adtb_lang::norm` returned
+  for `schema` ([kernel.md §7](kernel.md#7-normal-forms)), and its free
+  variables are among `params`.
+- `catalog` describes every relation variable `root` reads, as a
+  `RelationDesc` per `RelId`:
+  - `heaps` maps every constructor of the relation's sum to its heap id;
+  - `key_index` is the id of the key index;
+  - `indexes` lists the indexes the planner may use, the key index
+    included. Each `IndexDesc` has its id, its constructor set, sorted,
+    its fields in key order, each a field every constructor of the set
+    has, whether it is `unique`, and whether it is `ordered`: a B-link
+    tree, which a probe may fix a proper prefix of. A hash index is not
+    ordered.
+  - Heap ids are distinct, and so are index ids.
+- An index whose key holds an expression or a path through a
+  value-level sum is not in `catalog`; the planner uses none (§5).
+
+`options.rewrites` turns each rewrite of §3, §4, §7.2 and §7.4 on or
+off. `options.hiding` is set for a bundle declaring `hide new
+constructors`, for which every dereference is partial.
+
+Postconditions:
+
+- On `Ok(p)`, every outcome of evaluating `p.root` (§1.3) with
+  `p.params` bound to the parameters' values is an outcome
+  [../spec/semantics.md](../spec/semantics.md) allows `root`, whatever
+  `options` holds.
+- `Err(UserCode(name))` when `root` calls the Wasm or host function, or
+  uses the user-defined aggregate, `name`: plans do not hold user code
+  yet (§5).
+- `Err(NotAQuery(_))` when `root` is or holds a write, a block, a read
+  of a statement's transition, or `at`.
+
+### 1.2 Plan structure
+
+| Type | Fields | Meaning |
+| --- | --- | --- |
+| `Plan` | `terms`, `params`, `root: Eval`, `reads: Reads` | The value of `root` with `params` bound |
+| `Reads` | `heaps`, `indexes` | Every heap and index the plan names (§4) |
+| `Eval` | below | The computation of one value in an environment |
+| `Query` | `builds`, `spine`, `sink` | Pipelines that push values into one sink |
+| `Spine` | below | The choices taken once per evaluation of a query that select its pipelines |
+| `Pipeline` | `source`, `chain` | Rows from the source, each passed through the chain |
+| `Chain` | `steps`, `end` | Steps applied to each row in turn, then the end that consumes it |
+| `Build` | `var`, `key`, `pipelines` | A hash table over the distinct values its pipelines emit |
+| `Fix`, `FixBind` | below | A simultaneous least fixpoint |
+
+An expression is a `Tm` of `Plan.terms`, an arena of
+[kernel.md](kernel.md) terms. Every expression a plan names is scalar:
+its forms are `Var`, `Const`, `Prim`, `Record`, `Field`, `Ctor`,
+`Case`, `If`, `Let`, `Caller`, `Key`, `KeyOf`, `Tag`, `Try`,
+`Singleton`, `EmptySet`, `Union`, `Restrict` and `Unreachable`, each
+with the meaning and typing invariants of kernel.md §3. A scalar
+expression reads nothing; every read of a plan is a `Scan`, an `Index`
+end, a `Lookup` or a `Build`. `Plan.terms` holds the terms the planner
+was given, so a variable of the input keeps its `Var`.
+
+An environment binds variables to values. `Plan.root` is evaluated in
+the environment binding each variable of `Plan.params` to its
+parameter's value.
+
+| `Eval` | Value |
+| --- | --- |
+| `Expr(t)` | The value of expression `t` |
+| `Let(x, a, b)` | `b`'s, with `x` bound to `a`'s |
+| `If(c, a, b)` | `a`'s when `c` is `True`, else `b`'s |
+| `Case(s, arms)` | The arm's for the constructor of `s`'s value, its variable bound to that value; one arm per constructor `s` may hold |
+| `Try(a)` | `Ok { value }` of `a`'s value, or `Err { error }` of the `Fault` it raises; any other abort passes through |
+| `Lookup { index, key, routes }` | The row whose `index` entry has the field values `key`, fetched from the heap its constructor routes to; fails with `NoSuchRow` when there is none or its constructor has no route. `index` is the relation's key index, and `key` one value per key field |
+| `Query(q)` | The value `q`'s sink forms (below) |
+| `Fix(f)` | As below |
+
+A query is evaluated in an environment:
+
+1. A `Top` sink's `count` is evaluated first.
+2. The spine is evaluated, which selects pipelines, each with the
+   environment it runs in.
+3. Every selected pipeline runs. A build is made before a selected
+   pipeline probes it, at most once per evaluation of the query, in the
+   query's environment; a build no selected pipeline probes is not made.
+4. The sink forms its value from the set of values the pipelines
+   emitted: duplicates are one value.
+
+| `Spine` | Pipelines selected |
+| --- | --- |
+| `Pipeline(p)` | `p`, in the spine's environment |
+| `Union(ss)` | Those of every `s`; none for `Union([])` |
+| `If(c, a, b)` | `a`'s when `c` is `True`, else `b`'s |
+| `Case(s, arms)` | The arm's for the constructor of `s`'s value, its variable bound to that value |
+| `Let(x, e, s)` | `s`'s, with `x` bound to `e`'s value |
+
+| `Source` | Rows |
+| --- | --- |
+| `Unit` | One row, binding nothing beyond the environment |
+| `Scan { heap, ctor, var }` | One per row of `heap`, whose constructor is `ctor`, binding `var` to it |
+
+| `Step` | Effect on each row |
+| --- | --- |
+| `Filter(c)` | Kept when `c` is `True`, dropped when `False` |
+| `Bind(x, e)` | `x` bound to `e`'s value |
+| `Unnest(x, s)` | Replaced by one row per element of the set `s`, binding `x` to it |
+| `Probe { build, key, var }` | Replaced by one row per element of the query's build `build` whose key values equal the values of `key`, binding `var` to it; an empty `key` matches every element |
+
+| `End` | Effect on each row |
+| --- | --- |
+| `Nothing` | Dropped |
+| `Emit(t)` | `t`'s value pushed into the query's sink |
+| `Fork(cs)` | Passed to every chain of `cs` |
+| `If(c, a, b)` | Passed to `a` when `c` is `True`, else to `b` |
+| `Case(s, arms)` | Passed to the arm for the constructor of `s`'s value, its variable bound to that value: the per-row routing of §3 |
+| `Index { index, key, var, routes }` | Probes `index` for the entries whose leading fields equal `key`'s values, one value per field of a prefix; each entry whose constructor has a route is fetched from the route's heap and the row, with `var` bound to it, passes to the route's chain; other entries are dropped |
+
+A `Build` is made by running its pipelines, which emit its elements;
+each element's key is the values of `key` with `var` bound to it.
+
+| `Sink` | Value formed from the set `S` of emitted values |
+| --- | --- |
+| `Set` | `S` |
+| `Exists`, `IsEmpty` | Whether `S` is nonempty, empty |
+| `Agg { op, var, body, ty, body_ty }` | The aggregate `op` of `body`'s values, one per element of `S` bound to `var`, at `ty`, by [../spec/semantics.md §5.7](../spec/semantics.md#57-aggregates); `body_ty` is `body`'s type, and `ty` is `Option body_ty` exactly when a `min`, `max` or `avg` may range over nothing |
+| `Group { var, by, rows, aggs }` | One record per distinct value of `by` over the elements of `S` bound to `var`: `key`, the value; `rows`, when `rows` is set, the elements with that key; and one field per `GroupAgg`, its `field` |
+| `Top { count, keys, var }` | The first `count` elements of `S` ordered by `keys`, each `(key, descending)` over `var`; fails with `NegativeCount`, after `S` and the keys are computed, when `count` is negative |
+| `Present { var, keys, take, after }` | The elements of `S` ordered by `keys` as a sequence, past the cursor `after` and at most `take` of them, as `Present` of kernel.md §3; `take` and then `after` are evaluated after the keys |
+
+A record of a `Group` lists its fields sorted by name. A `GroupAgg`
+computes `op` per group at `ty`, over the set of values of `element`,
+with `elem` bound to each, for each row of the group bound to `row`
+that passes every `filter` in turn; its `body`, with `elem` bound, is
+the aggregated value, of type `body_ty`.
+
+`Fix { binds, body }` binds each `FixBind.var` to a set and evaluates
+`body`. With any `step` absent, the sets start empty and each round
+evaluates every `body` of `binds` on the previous sets, until a round
+changes none, as
+[../spec/semantics.md §5.10](../spec/semantics.md#510-fixpoints)
+states. With every `step` present the evaluation is semi-naive: a
+first round evaluates every `body` on empty sets and makes each result
+both the set and its `delta`; each later round evaluates every `step`
+with the sets and the deltas bound, takes as the new delta the
+elements not already in the set and adds them, and the rounds stop
+when every delta is empty. A fixpoint that has not stopped within the
+statement's limits is rejected for its limit.
+
+### 1.3 Invariants and evaluation
+
+Invariants of every plan:
+
+- Every variable an expression mentions is bound where the expression
+  is evaluated: by `Plan.params`, a `Let`, `Case` or `Spine` binder, a
+  source, a step, a route, a sink's or a `GroupAgg`'s variable, or a
+  fixpoint's variable or delta.
+- `Filter`, `If` and every `End::If` condition is `Bool`; every `Case`
+  names each constructor its scrutinee may hold once.
+- A `Probe`'s `build` indexes the `builds` of the query whose spine
+  holds the pipeline. A build's pipelines have `Scan` sources, `Filter`
+  steps and an `Emit` or `Nothing` end, and its pipelines and `key`
+  mention only its scan variable and variables of its query's
+  environment.
+- A `Scan`'s `heap` is `ctor`'s heap in the catalog. An `Index` end's
+  routes name distinct constructors of the index's constructor set,
+  each with that constructor's heap; so do a `Lookup`'s.
+- `Plan.reads` holds every heap a `Scan`, route or `Lookup` names and
+  every index an `Index` end or `Lookup` names, including those of
+  builds and nested queries.
+
+Evaluation of a plan:
+
+- The executor evaluates every row of every selected pipeline and every
+  step of every chain a row reaches. No sink stops its pipelines early:
+  a query whose remaining rows could abort reports the abort.
+- Rows of one pipeline, the pipelines of one query and the elements of
+  a sink may be processed in any order, interleaved or in parallel. An
+  abort of any evaluation is the outcome of the query, and when several
+  abort, any one of them is
+  ([../spec/semantics.md §1.3](../spec/semantics.md#13-conformance)).
+- The steps of a chain are applied to a row in order, and an `Eval`'s
+  parts in the order its row of the table above states. The planner
+  keeps every partial term after the guards that dominated it in
+  `root` ([kernel.md §7.1](kernel.md#71-totality)).
+- Cardinalities and the order of an aggregate's fold are free: the
+  executor's choices are bound only by
+  [../spec/semantics.md §1.3](../spec/semantics.md#13-conformance).
 
 ## 2. Batches
 
@@ -121,6 +317,17 @@ IndexScan key index (id = k)
                      Apple:     Fetch(Apple heap)     -> arm 2 }
 ```
 
+In a plan (§1), a comprehension over a constructor relation has one
+pipeline per heap, each scanning its heap with its constructor fixed. A
+`case` over that pipeline's row, as a chain's end, a condition or a part
+of an expression, is replaced by its arm when the plan is built
+(rewrite `static_route`). Where the constructor varies per row, a chain
+ends in `End::Case`, whose arms an executor runs over selection
+vectors. A fused probe is one `End::Index` whose routes name every
+constructor the comprehension reads (rewrite `fuse_probe`); unfused,
+each constructor's pipeline probes the index on its own. Both are
+physical choices with the same outcomes.
+
 Rulings: query/native, exec/interleaved/sel-vectors, exec/probe/fuse
 
 ## 4. Pruning
@@ -136,6 +343,29 @@ after compile-time pruning. The watermark
 
 Plans are specialised per pattern of present `Option` parameters
 ([../spec/queries.md](../spec/queries.md)).
+
+In a plan (§1), with rewrite `prune` on:
+
+- a comprehension over a constructor relation has pipelines, routes and
+  build pipelines only for the constructors of its source's constructor
+  set;
+- a pipeline or route whose chain is `Nothing` with no step is left
+  out: one whose conditions reduce to `False` for its constructor, or
+  whose body emits nothing, reads no heap.
+
+A condition or a case scrutinee under a comprehension at the start of a
+query that does not depend on the comprehension's row, and that is
+total, is moved out of it into the query's spine (rewrite `unswitch`),
+so that the spine's `Case` or `If`, evaluated once before any pipeline
+runs, selects the pipelines of one arm. A `match` over an `Option`
+parameter in a `where` clause becomes a spine `Case` whose arms hold
+the pipelines of each pattern of the parameter: that is the
+specialisation per pattern. A partial condition is never moved past
+the conditions before it.
+
+`Plan.reads` is the postcondition above: the heaps and indexes of the
+plan's pipelines after compile-time pruning, every arm of a spine
+included.
 
 Rulings: exec/prune/compile, exec/prune/init
 
@@ -222,6 +452,54 @@ arm 1: Scan(Google)    -> Probe -> sink     -- or IndexNL on users' key index
 arm 2: Scan(Apple)     -> Probe -> sink
 ```
 
+The planner distributes every join. A comprehension over a constructor
+relation inside a pipeline is read in one of three ways:
+
+- an `Index` end on an index whose leading fields the conditions fix by
+  equality to values computed from the row (rewrite `index_join`);
+- a `Probe` of a build keyed by the conditions' equalities between an
+  expression over the inner row and one over the outer row (rewrite
+  `hash_join`);
+- a `Probe` of a build with no key, a nested loop, which is always
+  available.
+
+The conditions are a comprehension's `where` conjuncts in order. Only
+the longest prefix of them that is total and reads nothing may be
+reordered: those that mention the inner row and no variable bound in
+the query go into the build, those that do not mention the inner row
+run before the probe, and the equalities become keys. The first partial
+condition and every one after it run after the probe, in order. A
+condition that does not mention the row of a comprehension nested
+directly in another is moved to the outer one when it is total. The
+same rules choose an index for a comprehension at the start of a query
+(rewrite `index_scan`), whose key values may then mention anything but
+the row.
+
+The build of a join is keyed by the relation, its constructor set, the
+row variable, the key and the filters, so arms that share the joined
+subterm probe one build.
+
+Statistics (§7.3) do not exist yet. The planner uses a fixed cost
+model:
+
+| Quantity | Assumed |
+| --- | --- |
+| Rows of every heap | 1000 |
+| Rows of a probe of an index that is not unique, or whose key does not fix every field | 100 |
+| Rows of a unique probe fixing every field | 1 |
+| Rows of a set an `Unnest` ranges over | 10 |
+| Fraction of rows a condition keeps | 1/2 |
+| Cost of reading a row, and of one hash probe | 1 |
+| Cost of one index probe | 4 |
+
+A pipeline starts with one row per evaluation of its query. With `n`
+rows reaching a comprehension over `k` constructors, an index join
+costs `4 n`, or `104 n` when the probe is not unique; a hash join
+`1000 k + n`; and a nested loop `1000 k + n m`, `m` the build's rows
+after its filters. The cheapest is chosen. Hoisting a join above a
+union costs the same probes as distributing it with one shared build,
+so the fixed model never hoists.
+
 Rulings: exec/join/cost, exec/join/rebuild/shared-build
 
 ### 7.3 Statistics
@@ -242,6 +520,36 @@ the value is the nested one.
 A `fix` may be computed by semi-naive iteration, or by any other
 method that yields the sets of
 [../spec/semantics.md §5.10](../spec/semantics.md#510-fixpoints).
+
+The planner evaluates a nested result as a query per row of its
+enclosing pipeline (`Step::Bind` of an `Eval::Query`), whose
+comprehensions over constructor relations probe an index where their
+conditions allow. It does not yet flatten nested results.
+
+The planner gives a `fix` semi-naive steps (rewrite `semi_naive`) when
+every occurrence of its variables in its bodies is a generator source
+or a branch: under `union`, the source or body of a `for`, a `▷`, a
+branch of an `if` or `case` whose condition or scrutinee does not
+mention them, or the body of a `let` or inner `fix` whose bound terms do
+not. The step of a body `e` is `δ(e)`, where `δ(X) = ΔX`,
+`δ(e₁ ∪ e₂) = δ(e₁) ∪ δ(e₂)`,
+`δ(for x in s do b) = (for x in δ(s) do b) ∪ (for x in s do δ(b))`,
+`δ` passes through the other forms, and `δ(e) = {}` for an `e` that
+does not mention the variables. Every set read in a step holds the
+elements found so far, so a step yields every element the last round's
+deltas can derive and nothing outside the fixpoint. A `fix` with any
+other occurrence, such as one under `exists` in a positive condition, is
+iterated naively.
+
+The planner fuses a `count`, `min`, `max`, `avg` or `sum` over the
+rows of a `group` into the group's sink (`GroupAgg`, rewrite
+`group_agg`) when its range is a comprehension over the group's rows
+that selects one element per row holding the row, and its terms
+mention only variables bound outside the body of the comprehension
+over the groups. An aggregate that may abort is fused only when it is
+evaluated whenever the body is, it is the only one, and the body is
+otherwise total, so the fused plan aborts exactly when the body does.
+The group then keeps its rows only when the body still reads them.
 
 ### 7.5 Memory
 

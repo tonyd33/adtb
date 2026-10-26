@@ -5,6 +5,7 @@ pub mod btree;
 pub mod heap;
 pub mod key;
 pub mod mvcc;
+pub mod plan;
 pub mod storage;
 pub mod vacuum;
 
