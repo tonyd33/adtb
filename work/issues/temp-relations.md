@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 176
 summary: "temp relations are never declared, so later items cannot name them and 2 spec blocks fail"
-branch: adtb-lang4
+closed: 2026-10-25
 tags:
   - lang
 ---
@@ -31,3 +31,7 @@ interop.md:458:
 ```
 
 Expected: both blocks check.
+
+## 2026-10-25: resolved
+
+Landed as `feat(lang): assign catalog ids as ruled and check file scans, temp relations and user aggregates`. The corpus is down to 1 failing block. Gaps are in `spec-lang4-gaps.md`.

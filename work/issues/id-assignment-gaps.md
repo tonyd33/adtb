@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 702
 summary: "the spec gives no catalog ids to several engine-defined and re-scoped objects, and three operators carry only their first id"
-branch: adtb-lang4
+closed: 2026-10-25
 tags:
   - spec
 ---
@@ -49,3 +49,7 @@ Ruled in proposed point `ids1`:
 
 Write these into `docs/spec/catalog.md` §1.2 and §4.6 and make the
 checker follow them.
+
+## 2026-10-25: resolved
+
+Landed as `feat(lang): assign catalog ids as ruled and check file scans, temp relations and user aggregates`. The corpus is down to 1 failing block. Gaps are in `spec-lang4-gaps.md`.

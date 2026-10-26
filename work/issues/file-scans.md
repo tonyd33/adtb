@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 175
 summary: "read_parquet and read_csv are missing from the prelude, so 4 spec blocks fail"
-branch: adtb-lang4
+closed: 2026-10-25
 tags:
   - lang
 ---
@@ -35,3 +35,7 @@ writes.md:315:
 ```
 
 Expected: every block checks.
+
+## 2026-10-25: resolved
+
+Landed as `feat(lang): assign catalog ids as ruled and check file scans, temp relations and user aggregates`. The corpus is down to 1 failing block. Gaps are in `spec-lang4-gaps.md`.

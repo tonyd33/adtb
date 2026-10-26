@@ -5,6 +5,8 @@ kind: feature
 priority: 200
 summary: "milestone 2 (reference interpreter and conformance runner) has not exited: no runner and no first suite"
 depends-on:
+  - spec-lang4-gaps
+  - lang-reference-gaps
   - spec-memory-limit
   - spec-catalog-model-gaps
   - spec-dump-damaged-error
