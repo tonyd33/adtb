@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 293
 summary: "spec gaps from file scans, temp relations, aggregates and id assignment"
-branch: adtb-spec3
+closed: 2026-10-25
 tags:
   - spec
 ---
@@ -38,3 +38,7 @@ My rulings:
    key. Change the failing test
    `a_temp_relation_of_a_sum_without_a_key_is_keyed_by_its_whole_row` to
    expect the refusal, and state it in `interop.md` §4.3.
+
+## 2026-10-25: resolved
+
+In the spec with `docs: record the spec4 rulings and make every spec example check`. Point `spec4`, for Tony to adopt after `spec2`; its temp names ruling supersedes `spec2`'s.

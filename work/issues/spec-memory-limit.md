@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 298
 summary: no StatementLimit reason names a memory limit; the only one carries a Duration
-branch: adtb-spec3
+closed: 2026-10-25
 tags:
   - spec
 ---
@@ -23,3 +23,7 @@ My ruling: `StatementLimit` carries `limit: Limit`, with
 `Limit = Time { after: Duration } | Memory { bytes: I64 } |
 Rounds { rounds: I64 }`. The last is the fixpoint round limit. State
 it in catalog.md §4 and semantics.md §5.10, and update every example.
+
+## 2026-10-25: resolved
+
+In the spec with `docs: record the spec4 rulings and make every spec example check`. Point `spec4`, for Tony to adopt after `spec2`; its temp names ruling supersedes `spec2`'s.

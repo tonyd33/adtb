@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 542
 summary: "a parent's first child is never unlinked, dead-entry cleanup is not wired to heap visibility, and fence keys cost space"
-branch: adtb-blink5
+closed: 2026-10-25
 depends-on:
   - blink-space-reuse
 tags:
@@ -26,3 +26,7 @@ From page deletion and space reuse:
 - `FORMAT` stayed 1 although the node layout changed. Bump it before
   any database is persisted, and add a decoder test for the old layout
   if one is kept.
+
+## 2026-10-25: resolved
+
+Landed as `feat(btree): unlink first children, truncate leaf separators and bump the node format`. Truncation made test trees shorter and some height minimums were lowered; `blink-test-heights.md` restores them.
