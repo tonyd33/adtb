@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 503
 summary: "the B-link tree is single-threaded: no optimistic lock coupling over the latches"
+branch: adtb-olc
 depends-on:
   - vmcache
   - page-buffer-contract
