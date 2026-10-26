@@ -1,12 +1,12 @@
-use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::ops::Bound;
 
 use crate::key::DecodeError;
 use crate::runtime::Runtime;
-use crate::storage::{PageError, PageExclusive, Pager, Pid};
+use crate::storage::{PageError, PageExclusive, PageOptimistic, Pager, Pid};
 
-use super::node::{self, FORMAT, Item, Malformed, Node, kind_of};
+use super::leaf;
+use super::node::{self, Bounds, FORMAT, Item, Malformed, Node, kind_of};
 
 /// A B-link tree of byte strings ordered by `memcmp`, rooted at a page that
 /// never moves.
@@ -33,6 +33,32 @@ pub enum Error {
 impl From<PageError> for Error {
     fn from(e: PageError) -> Error {
         Error::Page(e)
+    }
+}
+
+/// What an inserter knows of a tree's entries, consulted when a leaf fills.
+pub trait Entries {
+    /// Returns whether `entry` may be deleted to make room.
+    fn dead(&mut self, entry: &[u8]) -> bool;
+
+    /// Returns the length of `entry`'s key, or `None` to keep the entry
+    /// whole. Entries sharing a key are kept once, followed by their
+    /// remainders.
+    ///
+    /// No key is a proper prefix of another.
+    fn key_len(&self, entry: &[u8]) -> Option<usize>;
+}
+
+/// Entries kept whole, none dead.
+struct Whole;
+
+impl Entries for Whole {
+    fn dead(&mut self, _: &[u8]) -> bool {
+        false
+    }
+
+    fn key_len(&self, _: &[u8]) -> Option<usize> {
+        None
     }
 }
 
@@ -72,34 +98,54 @@ fn node_of(page: &[u8], owner: u32) -> Result<Node<'_>, Malformed> {
         .ok_or(Malformed)
 }
 
+/// Returns what `f` makes of a validated read of node `pid`, and an
+/// optimistic guard taken no later than the read, whose validation shows the
+/// page unchanged since.
+///
+/// `f` sees a copy taken by an optimistic read; after a few failed
+/// validations it sees the page under a shared latch.
+fn observe<'p, R: Runtime, T>(
+    pager: &'p Pager<R>,
+    owner: u32,
+    pid: Pid,
+    f: impl Fn(&Node) -> Result<T, Malformed>,
+) -> Result<(Result<T, Malformed>, PageOptimistic<'p, R>), PageError> {
+    let apply = |page: &[u8]| node_of(page, owner).and_then(|n| f(&n));
+    for _ in 0..OPTIMISTIC_TRIES {
+        let read = pager.optimistic(pid)?;
+        let result = read.read(apply);
+        if read.validate() {
+            return Ok((result, read));
+        }
+    }
+    let page = pager.shared(pid)?;
+    let read = pager.optimistic(pid)?;
+    Ok((apply(&page), read))
+}
+
 /// Returns what `f` makes of node `pid`, refusing a page that is not a node
 /// of `owner`.
-///
-/// `f` sees a copy taken by an optimistic read, and its result is kept only
-/// once the read validates; after a few failed validations it sees the page
-/// under a shared latch.
 pub(super) fn visit<R: Runtime, T>(
     pager: &Pager<R>,
     owner: u32,
     pid: Pid,
     f: impl Fn(&Node) -> Result<T, Malformed>,
 ) -> Result<T, Error> {
-    let apply = |page: &[u8]| node_of(page, owner).and_then(|n| f(&n));
-    for _ in 0..OPTIMISTIC_TRIES {
-        let read = pager.optimistic(pid)?;
-        let result = read.read(apply);
-        if read.validate() {
-            return result.map_err(|Malformed| Error::Malformed(pid));
-        }
-    }
-    let page = pager.shared(pid)?;
-    apply(&page).map_err(|Malformed| Error::Malformed(pid))
+    observe(pager, owner, pid, f)?
+        .0
+        .map_err(|Malformed| Error::Malformed(pid))
 }
 
 /// Returns the node of a page under a latch, refusing a page that is not a
 /// node of `owner`.
 fn latched<'a>(page: &'a [u8], pid: Pid, owner: u32) -> Result<Node<'a>, Error> {
     node_of(page, owner).map_err(|Malformed| Error::Malformed(pid))
+}
+
+/// Returns whether `n` is a live page at `level` whose low key is at or below
+/// `key`.
+fn holds_from(n: &Node, key: &[u8], level: u16) -> Result<bool, Malformed> {
+    Ok(!n.deleted() && n.level() == level && n.above_low(key)?)
 }
 
 /// Clear the mark of the child page at `at` in `pages`, if there is one.
@@ -109,9 +155,14 @@ fn complete(pages: &mut [&mut [u8]], at: usize) {
     }
 }
 
-/// Returns the slot that splits `items` into two halves of about equal bytes,
-/// each holding at least one item.
-fn split_point(items: &[Item]) -> usize {
+/// Returns the slot that splits `items` into two halves, each holding at
+/// least one item: of about equal bytes, or, when the new item at slot `at`
+/// lands past every other on the rightmost page of its level, just before
+/// the item it follows.
+fn split_point(items: &[Item], at: usize, rightmost: bool) -> usize {
+    if rightmost && at == items.len() - 1 && at >= 2 {
+        return at - 1;
+    }
     let total: usize = items.iter().map(Item::cost).sum();
     let mut left = 0;
     let mut s = 0;
@@ -155,8 +206,11 @@ impl BTree {
     /// Returns the descent from page `from` to the page at `level` whose
     /// range holds `key`.
     ///
-    /// Each page is read on its own; a page that split since its parent was
-    /// read is passed by its right link.
+    /// Each page is read on its own and checked to be a live page of the
+    /// tree, at the level expected, whose low key is at or below `key`. A
+    /// page that fails the check while the page that led to it is unchanged
+    /// is malformed; otherwise the id that led to it was stale, and the
+    /// descent starts again from the root.
     pub(super) fn descend<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -164,100 +218,209 @@ impl BTree {
         key: &[u8],
         level: u16,
     ) -> Result<Descent, Error> {
-        let mut pid = from;
-        let mut stack = Vec::new();
-        let mut low: Option<Vec<u8>> = None;
-        let mut incomplete = None;
-        loop {
-            let (step, marked, at) = visit(pager, self.owner, pid, |n| {
-                let step = if n.beyond(key)? {
-                    let high = n.high()?.ok_or(Malformed)?.to_vec();
-                    Step::Right(n.right().ok_or(Malformed)?, high)
-                } else {
-                    match n.level().cmp(&level) {
-                        Ordering::Equal => Step::Here,
-                        Ordering::Greater => Step::Down(n.child_for(key)?),
-                        Ordering::Less => return Err(Malformed),
+        Ok(self.descend_to(pager, from, key, level, |_| Ok(()))?.0)
+    }
+
+    /// Returns the descent [`BTree::descend`] makes, and what `f` makes of
+    /// the page it ends at, from the same read.
+    fn descend_to<R: Runtime, T>(
+        &self,
+        pager: &Pager<R>,
+        from: Pid,
+        key: &[u8],
+        level: u16,
+        f: impl Fn(&Node) -> Result<T, Malformed>,
+    ) -> Result<(Descent, T), Error> {
+        let mut start = from;
+        'descent: loop {
+            let mut pid = start;
+            let mut expected: Option<u16> = None;
+            let mut stack = Vec::new();
+            let mut low: Option<Vec<u8>> = None;
+            let mut incomplete = None;
+            let mut came_from: Option<PageOptimistic<'_, R>> = None;
+            loop {
+                let read = observe(pager, self.owner, pid, |n| {
+                    let at = n.level();
+                    if n.deleted()
+                        || at < level
+                        || expected.is_some_and(|e| e != at)
+                        || !n.above_low(key)?
+                    {
+                        return Ok(None);
                     }
-                };
-                Ok((step, n.incomplete(), n.level()))
-            })?;
-            if marked
-                && incomplete.is_none()
-                && let Some(low) = &low
-            {
-                incomplete = Some(Split {
-                    pid,
-                    level: at,
-                    low: low.clone(),
-                    stack: stack.clone(),
+                    let mut found = None;
+                    let step = if n.beyond(key)? {
+                        let high = n.high()?.ok_or(Malformed)?.to_vec();
+                        Step::Right(n.right().ok_or(Malformed)?, high)
+                    } else if at == level {
+                        found = Some(f(n)?);
+                        Step::Here
+                    } else {
+                        Step::Down(n.child_for(key)?)
+                    };
+                    Ok(Some((step, n.incomplete(), at, found)))
                 });
-            }
-            match step {
-                Step::Right(p, high) => {
-                    pid = p;
-                    low = Some(high);
-                }
-                Step::Down(c) => {
-                    stack.push(pid);
-                    pid = c;
-                    low = None;
-                }
-                Step::Here => {
-                    return Ok(Descent {
+                let (step, marked, at, found, guard) = match read {
+                    Ok((Ok(Some((step, marked, at, found))), guard)) => {
+                        (step, marked, at, found, guard)
+                    }
+                    Ok((_, _)) | Err(_) if came_from.as_ref().is_some_and(|g| !g.validate()) => {
+                        start = self.root;
+                        continue 'descent;
+                    }
+                    Ok((_, _)) if came_from.is_none() && pid != self.root => {
+                        start = self.root;
+                        continue 'descent;
+                    }
+                    Ok((_, _)) => return Err(Error::Malformed(pid)),
+                    Err(e) => return Err(Error::Page(e)),
+                };
+                if marked
+                    && incomplete.is_none()
+                    && let Some(low) = &low
+                {
+                    incomplete = Some(Split {
                         pid,
-                        stack,
-                        incomplete,
+                        level: at,
+                        low: low.clone(),
+                        stack: stack.clone(),
                     });
+                }
+                came_from = Some(guard);
+                match step {
+                    Step::Right(p, high) => {
+                        pid = p;
+                        expected = Some(at);
+                        low = Some(high);
+                    }
+                    Step::Down(c) => {
+                        stack.push(pid);
+                        pid = c;
+                        expected = Some(at - 1);
+                        low = None;
+                    }
+                    Step::Here => {
+                        let descent = Descent {
+                            pid,
+                            stack,
+                            incomplete,
+                        };
+                        return Ok((
+                            descent,
+                            found.expect("the page a descent ends at is judged"),
+                        ));
+                    }
                 }
             }
         }
     }
 
     /// Returns the exclusive latch on the page at `level` whose range holds
-    /// `key`, found from page `from`, which is at or above that level.
-    ///
-    /// Latches are taken one at a time, moving right along the level.
+    /// `key`, found from page `from`, which is at or above that level, and
+    /// the first page passed by a right link without a downlink.
     fn latch<'p, R: Runtime>(
         &self,
         pager: &'p Pager<R>,
         from: Pid,
         key: &[u8],
         level: u16,
-    ) -> Result<PageExclusive<'p, R>, Error> {
-        let mut pid = self.descend(pager, from, key, level)?.pid;
+    ) -> Result<(PageExclusive<'p, R>, Option<Split>), Error> {
+        let descent = self.descend(pager, from, key, level)?;
+        let (g, passed) = self.claim(pager, descent.pid, key, level)?;
+        Ok((g, descent.incomplete.or(passed)))
+    }
+
+    /// Returns the exclusive latch on the page at `level` whose range holds
+    /// `key`, starting at page `pid`, and the first page passed by a right
+    /// link without a downlink.
+    ///
+    /// Latches are taken one at a time, moving right along the level; a page
+    /// found unlinked, or no longer at or left of `key`, sends the search
+    /// back to the root.
+    fn claim<'p, R: Runtime>(
+        &self,
+        pager: &'p Pager<R>,
+        mut pid: Pid,
+        key: &[u8],
+        level: u16,
+    ) -> Result<(PageExclusive<'p, R>, Option<Split>), Error> {
+        let mut passed = None;
+        let mut low: Option<Vec<u8>> = None;
         loop {
             let g = pager.exclusive(pid)?;
-            let n = latched(&g, pid, self.owner)?;
-            let next = if n.level() > level {
-                None
-            } else if n.level() < level {
-                return Err(Error::Malformed(pid));
-            } else if n.beyond(key).map_err(|Malformed| Error::Malformed(pid))? {
-                Some(n.right().ok_or(Error::Malformed(pid))?)
-            } else {
-                return Ok(g);
+            let next = match node_of(&g, self.owner) {
+                Ok(n) if holds_from(&n, key, level).unwrap_or(false) => {
+                    if n.incomplete()
+                        && passed.is_none()
+                        && let Some(low) = low.take()
+                    {
+                        passed = Some(Split {
+                            pid,
+                            level,
+                            low,
+                            stack: Vec::new(),
+                        });
+                    }
+                    match n.beyond(key) {
+                        Ok(false) => return Ok((g, passed)),
+                        Ok(true) => match (n.right(), n.high()) {
+                            (Some(r), Ok(Some(h))) => Some((r, h.to_vec())),
+                            _ => return Err(Error::Malformed(pid)),
+                        },
+                        Err(Malformed) => return Err(Error::Malformed(pid)),
+                    }
+                }
+                _ => None,
             };
             drop(g);
-            pid = match next {
-                Some(right) => right,
-                None => self.descend(pager, pid, key, level)?.pid,
-            };
+            match next {
+                Some((right, high)) => {
+                    pid = right;
+                    low = Some(high);
+                }
+                None => {
+                    pid = self.descend(pager, self.root, key, level)?.pid;
+                    low = None;
+                }
+            }
         }
     }
 
+    /// Returns what `f` makes of the leaf whose range holds `key`, read on
+    /// its own and checked to hold it.
+    fn at_leaf<R: Runtime, T>(
+        &self,
+        pager: &Pager<R>,
+        key: &[u8],
+        f: impl Fn(&Node) -> Result<T, Malformed>,
+    ) -> Result<T, Error> {
+        Ok(self.descend_to(pager, self.root, key, 0, f)?.1)
+    }
+
     pub fn contains<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
-        let leaf = self.descend(pager, self.root, entry, 0)?.pid;
-        visit(pager, self.owner, leaf, |n| {
-            let i = n.search(entry, true)?;
-            Ok(i < n.count() && n.key(i)? == entry)
-        })
+        self.at_leaf(pager, entry, |n| leaf::contains(n, entry))
     }
 
     /// Insert `entry`, first finishing each split whose page the descent
     /// reaches by a right link without a downlink. Returns false, changing no
     /// entry, if it is already in the tree.
     pub fn insert<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
+        self.insert_with(pager, entry, &mut Whole)
+    }
+
+    /// Insert `entry` as [`BTree::insert`] does. A leaf that would otherwise
+    /// split first loses every entry `entries` judges dead, and keeps each run
+    /// of entries sharing a key once, as a posting of their remainders; it
+    /// splits only if that leaves too little room.
+    ///
+    /// `entries` is consulted under the leaf's exclusive latch.
+    pub fn insert_with<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        entry: &[u8],
+        entries: &mut impl Entries,
+    ) -> Result<bool, Error> {
         let max = BTree::max_entry_len(pager.page_size());
         if entry.len() > max {
             return Err(Error::TooLong {
@@ -271,21 +434,74 @@ impl BTree {
                 self.finish(pager, split)?;
                 continue;
             }
-            let leaf = self.latch(pager, descent.pid, entry, 0)?;
-            let n = latched(&leaf, leaf.pid(), self.owner)?;
-            let i = n
-                .search(entry, true)
-                .map_err(|Malformed| Error::Malformed(leaf.pid()))?;
-            if i < n.count() && n.key(i).map_err(|Malformed| Error::Malformed(leaf.pid()))? == entry
-            {
+            let (leaf, passed) = self.claim(pager, descent.pid, entry, 0)?;
+            let pid = leaf.pid();
+            let n = latched(&leaf, pid, self.owner)?;
+            if leaf::contains(&n, entry).map_err(|Malformed| Error::Malformed(pid))? {
+                drop(leaf);
+                self.finish_all(pager, passed)?;
                 return Ok(false);
             }
-            let item = Item {
-                key: entry.to_vec(),
-                child: None,
-            };
-            return self.put(pager, leaf, 0, descent.stack, item);
+            self.add_to_leaf(pager, leaf, entry, entries, descent.stack)?;
+            self.finish_all(pager, passed)?;
+            return Ok(true);
         }
+    }
+
+    /// Add `entry`, which leaf `g` lacks and whose range holds it, cleaning
+    /// and packing the leaf if it is full, and splitting it up the levels of
+    /// `stack` if that is not enough.
+    fn add_to_leaf<'p, R: Runtime>(
+        &self,
+        pager: &'p Pager<R>,
+        mut g: PageExclusive<'p, R>,
+        entry: &[u8],
+        entries: &mut impl Entries,
+        mut stack: Vec<Pid>,
+    ) -> Result<(), Error> {
+        let mut done = false;
+        g.update(|p| done = leaf::insert(p, entry));
+        if done {
+            return Ok(());
+        }
+        let pid = g.pid();
+        let malformed = |Malformed| Error::Malformed(pid);
+        let cap = leaf::posting_cap(pager.page_size());
+        let items = latched(&g, pid, self.owner)?.items().map_err(malformed)?;
+        let (kept, _) = leaf::retain(&items, |e| !entries.dead(e));
+        let packed = leaf::dedup(&kept, &|e| entries.key_len(e), cap);
+        let packed = if node::fits(&g, &packed) {
+            packed
+        } else {
+            kept
+        };
+        if packed != items {
+            g.update(|p| {
+                node::rebuild(p, &packed);
+                done = leaf::insert(p, entry);
+            });
+            if done {
+                return Ok(());
+            }
+        }
+        let mut items = latched(&g, pid, self.owner)?.items().map_err(malformed)?;
+        let at = leaf::add(&mut items, entry, cap).index();
+        if let Some((sep, q)) = self.split_page(pager, &mut g, 0, &items, at, None)? {
+            drop(g);
+            let from = stack.pop().unwrap_or(self.root);
+            let (parent, passed) = self.latch(pager, from, &sep, 1)?;
+            self.put(pager, parent, 1, stack, Item::link(sep, q))?;
+            self.finish_all(pager, passed)?;
+        }
+        Ok(())
+    }
+
+    /// Finish `split`, if there is one.
+    fn finish_all<R: Runtime>(&self, pager: &Pager<R>, split: Option<Split>) -> Result<(), Error> {
+        if let Some(s) = split {
+            self.finish(pager, s)?;
+        }
+        Ok(())
     }
 
     /// Insert the downlink of `split`'s page into its parent's level. Returns
@@ -294,27 +510,42 @@ impl BTree {
         let mut stack = split.stack;
         let from = stack.pop().unwrap_or(self.root);
         let level = split.level + 1;
-        let parent = self.latch(pager, from, &split.low, level)?;
-        let item = Item {
-            key: split.low,
-            child: Some(split.pid),
-        };
-        self.put(pager, parent, level, stack, item)
+        let (parent, passed) = self.latch(pager, from, &split.low, level)?;
+        let added = self.put(
+            pager,
+            parent,
+            level,
+            stack,
+            Item::link(split.low, split.pid),
+        )?;
+        self.finish_all(pager, passed)?;
+        Ok(added)
     }
 
     /// Delete `entry`. Returns false if it was not in the tree.
+    ///
+    /// A leaf the delete empties is unlinked and freed when it has a left
+    /// sibling under the same parent and is not the rightmost of its level.
     pub fn delete<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
         let leaf = self.descend(pager, self.root, entry, 0)?.pid;
-        let mut g = self.latch(pager, leaf, entry, 0)?;
+        let (mut g, passed) = self.claim(pager, leaf, entry, 0)?;
         let pid = g.pid();
+        let malformed = |Malformed| Error::Malformed(pid);
         let n = latched(&g, pid, self.owner)?;
-        let i = n
-            .search(entry, true)
-            .map_err(|Malformed| Error::Malformed(pid))?;
-        if i >= n.count() || n.key(i).map_err(|Malformed| Error::Malformed(pid))? != entry {
+        let place = leaf::find(&n, entry).map_err(malformed)?;
+        if !place.found {
+            drop(g);
+            self.finish_all(pager, passed)?;
             return Ok(false);
         }
-        g.update(|p| node::remove(p, i));
+        let last = leaf::len(&n).map_err(malformed)? == 1;
+        let emptied = last.then(|| n.low().map(|l| l.map(<[u8]>::to_vec)));
+        g.update(|p| leaf::remove(p, place));
+        drop(g);
+        if let Some(Some(low)) = emptied.transpose().map_err(malformed)? {
+            self.unlink(pager, &low)?;
+        }
+        self.finish_all(pager, passed)?;
         Ok(true)
     }
 
@@ -322,47 +553,175 @@ impl BTree {
     /// one update. Returns the number of entries deleted.
     ///
     /// Each leaf is judged and changed under its exclusive latch, which is released before the
-    /// next leaf's is taken. An entry a concurrent writer inserts during the walk may be left
-    /// unjudged.
+    /// next leaf's is taken; a leaf left empty is unlinked as [`BTree::delete`] unlinks one. An
+    /// entry a concurrent writer inserts during the walk may be left unjudged.
     pub fn retain<R: Runtime>(
         &self,
         pager: &Pager<R>,
         mut keep: impl FnMut(&[u8]) -> bool,
     ) -> Result<usize, Error> {
-        let mut next = Some(self.descend(pager, self.root, &[], 0)?.pid);
+        let mut from: Vec<u8> = Vec::new();
         let mut deleted = 0;
-        while let Some(pid) = next {
-            let mut g = pager.exclusive(pid)?;
+        loop {
+            let leaf = self.descend(pager, self.root, &from, 0)?.pid;
+            let (mut g, _) = self.claim(pager, leaf, &from, 0)?;
+            let pid = g.pid();
+            let malformed = |Malformed| Error::Malformed(pid);
             let n = latched(&g, pid, self.owner)?;
-            let mut gone = Vec::new();
-            for i in 0..n.count() {
-                if !keep(n.key(i).map_err(|Malformed| Error::Malformed(pid))?) {
-                    gone.push(i);
-                }
+            let (kept, gone) = leaf::retain(&n.items().map_err(malformed)?, &mut keep);
+            let high = n.high().map_err(malformed)?.map(<[u8]>::to_vec);
+            let low = n.low().map_err(malformed)?.map(<[u8]>::to_vec);
+            let emptied = kept.is_empty();
+            if gone > 0 {
+                g.update(|p| node::rebuild(p, &kept));
+                deleted += gone;
             }
-            next = n.right();
-            if !gone.is_empty() {
-                g.update(|p| {
-                    for &i in gone.iter().rev() {
-                        node::remove(p, i);
-                    }
-                });
-                deleted += gone.len();
+            drop(g);
+            if emptied && let Some(low) = &low {
+                self.unlink(pager, low)?;
+            }
+            match high {
+                Some(h) => from = h,
+                None => return Ok(deleted),
             }
         }
-        Ok(deleted)
     }
 
-    /// Insert `item` into page `g` at `level`, which holds its key under an
-    /// exclusive latch, splitting pages up the levels of `stack` as they
-    /// fill. Returns false if the item is a downlink another thread added
-    /// first.
+    /// Unlink the empty leaf whose low key is `low` from its parent and its
+    /// siblings, and free it, in one change. Returns whether it did.
+    ///
+    /// The leaf's range goes to its left sibling, whose high key becomes the
+    /// leaf's, or, if the left sibling has no room for that key, to its right
+    /// sibling, whose low key and separator in the parent become the leaf's.
+    /// Latches the parent, then the left sibling, moving right to the page
+    /// whose right link names the leaf, then the leaf and its right sibling.
+    /// Does nothing if the leaf is no longer empty, has no left sibling under
+    /// the same parent, is the rightmost of its level or lacks its downlink,
+    /// or if neither sibling can take its range.
+    fn unlink<R: Runtime>(&self, pager: &Pager<R>, low: &[u8]) -> Result<bool, Error> {
+        if self.height(pager)? == 0 {
+            return Ok(false);
+        }
+        let (mut parent, passed) = self.latch(pager, self.root, low, 1)?;
+        let done = self.unlink_under(pager, &mut parent, low);
+        drop(parent);
+        self.finish_all(pager, passed)?;
+        done
+    }
+
+    fn unlink_under<'p, R: Runtime>(
+        &self,
+        pager: &'p Pager<R>,
+        parent: &mut PageExclusive<'p, R>,
+        low: &[u8],
+    ) -> Result<bool, Error> {
+        let ppid = parent.pid();
+        let pm = |Malformed| Error::Malformed(ppid);
+        let pn = latched(parent, ppid, self.owner)?;
+        let j = pn.search(low, true).map_err(pm)?;
+        if j == 0 || j >= pn.count() || pn.key(j).map_err(pm)? != low {
+            return Ok(false);
+        }
+        let lpid = pn.child(j).map_err(pm)?;
+        let next_link = if j + 1 < pn.count() {
+            Some((
+                pn.child(j + 1).map_err(pm)?,
+                pn.key(j + 1).map_err(pm)?.to_vec(),
+            ))
+        } else {
+            None
+        };
+        let mut left = pager.exclusive(pn.child(j - 1).map_err(pm)?)?;
+        loop {
+            let xpid = left.pid();
+            let xn = latched(&left, xpid, self.owner)?;
+            match xn.right() {
+                Some(r) if r == lpid => break,
+                Some(r) if xn.high().map_err(|Malformed| Error::Malformed(xpid))? < Some(low) => {
+                    left = pager.exclusive(r)?;
+                }
+                _ => return Err(Error::Malformed(xpid)),
+            }
+        }
+        let mut leaf = pager.exclusive(lpid)?;
+        let ln = latched(&leaf, lpid, self.owner)?;
+        let lf = node::fences(&ln).map_err(|Malformed| Error::Malformed(lpid))?;
+        let (Some(rpid), Some(lhigh)) = (lf.right, lf.high) else {
+            return Ok(false);
+        };
+        if ln.count() > 0 || ln.incomplete() {
+            return Ok(false);
+        }
+        let xpid = left.pid();
+        let xm = |Malformed| Error::Malformed(xpid);
+        let xn = latched(&left, xpid, self.owner)?;
+        let xf = node::fences(&xn).map_err(xm)?;
+        let shrinks = xf.high.as_ref().map_or(0, Vec::len);
+        let x_items = xn.items().map_err(xm)?;
+        let mut freed = pager.reserve();
+        freed.free(lpid);
+        if xn.room().map_err(xm)? + shrinks >= lhigh.len() {
+            pager.update_all_with(freed, &mut [parent, &mut left, &mut leaf], |p| {
+                node::remove(p[0], j);
+                let bounds = Bounds {
+                    high: Some(&lhigh),
+                    right: Some(rpid),
+                    ..xf.bounds()
+                };
+                node::build(p[1], 0, &x_items, bounds);
+                node::set_deleted(p[2]);
+            })?;
+            return Ok(true);
+        }
+        let Some((next, sep)) = next_link.filter(|(c, k)| *c == rpid && *k == lhigh) else {
+            return Ok(false);
+        };
+        let mut right = pager.exclusive(next)?;
+        let rn = latched(&right, next, self.owner)?;
+        let rm = |Malformed| Error::Malformed(next);
+        let grows = low.len().saturating_sub(sep.len());
+        if rn.incomplete() || rn.room().map_err(rm)? < grows {
+            return Ok(false);
+        }
+        let r_items = rn.items().map_err(rm)?;
+        let rf = node::fences(&rn).map_err(rm)?;
+        pager.update_all_with(
+            freed,
+            &mut [parent, &mut left, &mut leaf, &mut right],
+            |p| {
+                node::remove(p[0], j + 1);
+                let mut items = Node::new(p[0])
+                    .and_then(|n| n.items())
+                    .expect("a parent is a node");
+                items[j].child = Some(next);
+                node::rebuild(p[0], &items);
+                let x_bounds = Bounds {
+                    right: Some(next),
+                    ..xf.bounds()
+                };
+                node::build(p[1], 0, &x_items, x_bounds);
+                node::set_deleted(p[2]);
+                let r_bounds = Bounds {
+                    low: Some(low),
+                    ..rf.bounds()
+                };
+                node::build(p[3], 0, &r_items, r_bounds);
+            },
+        )?;
+        Ok(true)
+    }
+
+    /// Insert the downlink `item` into inner page `g` at `level`, which holds
+    /// its key under an exclusive latch, splitting pages up the levels of
+    /// `stack` as they fill. Returns false if another thread added the
+    /// downlink first.
     ///
     /// Each change that adds a downlink clears the mark of the page it names,
     /// under that page's latch, and is skipped if another thread cleared it
     /// first. Each page a split adds below the root is marked until its own
     /// downlink is added. A split releases its latches before latching the
-    /// parent level, so latches are taken top-down and left to right.
+    /// parent level, so latches are taken top-down and left to right. A page
+    /// without a downlink passed on the way to a parent is finished last.
     fn put<'p, R: Runtime>(
         &self,
         pager: &'p Pager<R>,
@@ -372,95 +731,137 @@ impl BTree {
         mut item: Item,
     ) -> Result<bool, Error> {
         let mut first = true;
-        loop {
-            let mut below = match item.child {
-                Some(c) => {
-                    let child = pager.exclusive(c)?;
-                    if !latched(&child, c, self.owner)?.incomplete() {
-                        return Ok(!first);
-                    }
-                    Some(child)
-                }
-                None => None,
-            };
+        let mut passed = Vec::new();
+        let added = loop {
+            let c = item.child.expect("a downlink names a child");
+            let mut child = pager.exclusive(c)?;
+            let cn = latched(&child, c, self.owner)?;
+            let same =
+                cn.low().map_err(|Malformed| Error::Malformed(c))? == Some(item.key.as_slice());
+            if !cn.incomplete() || cn.deleted() || cn.level() + 1 != level || !same {
+                break !first;
+            }
             let pid = g.pid();
             let malformed = |Malformed| Error::Malformed(pid);
             let n = latched(&g, pid, self.owner)?;
             let i = n.search(&item.key, true).map_err(malformed)?;
             if n.room().map_err(malformed)? >= item.cost() {
-                let mut pages: Vec<&mut PageExclusive<'p, R>> = vec![&mut g];
-                pages.extend(below.as_mut());
-                pager.update_all(&mut pages, |p| {
+                pager.update_all(&mut [&mut g, &mut child], |p| {
                     node::insert(p[0], i, &item);
                     complete(p, 1);
                 });
-                return Ok(true);
+                break true;
             }
             let mut items = n.items().map_err(malformed)?;
             items.insert(i, item.clone());
-            let high = n.high().map_err(malformed)?.map(<[u8]>::to_vec);
-            let right = n.right();
-            let s = split_point(&items);
-            let sep = items[s].key.clone();
-            let (left, upper) = items.split_at(s);
-            if pid == self.root {
-                let mut new = pager.reserve();
-                let a = new.page(FORMAT, kind_of(level), self.owner)?;
-                let b = new.page(FORMAT, kind_of(level), self.owner)?;
-                let root = [
-                    Item {
-                        key: Vec::new(),
-                        child: Some(a),
-                    },
-                    Item {
-                        key: sep.clone(),
-                        child: Some(b),
-                    },
-                ];
-                let mut ga = pager.exclusive(a)?;
-                let mut gb = pager.exclusive(b)?;
-                let mut pages: Vec<&mut PageExclusive<'p, R>> = vec![&mut g, &mut ga, &mut gb];
-                pages.extend(below.as_mut());
-                pager.update_all_with(new, &mut pages, |p| {
-                    node::build(p[1], level, left, Some(&sep), Some(b));
-                    node::build(p[2], level, upper, None, None);
-                    node::build(p[0], level + 1, &root, None, None);
-                    complete(p, 3);
-                })?;
-                return Ok(true);
-            }
-            let mut new = pager.reserve();
-            let q = new.page(FORMAT, kind_of(level), self.owner)?;
-            let mut gq = pager.exclusive(q)?;
-            let mut pages: Vec<&mut PageExclusive<'p, R>> = vec![&mut g, &mut gq];
-            pages.extend(below.as_mut());
-            pager.update_all_with(new, &mut pages, |p| {
-                node::build(p[0], level, left, Some(&sep), Some(q));
-                node::build(p[1], level, upper, high.as_deref(), right);
-                node::set_incomplete(p[1], true);
-                complete(p, 2);
-            })?;
-            drop((below, gq, g));
+            let Some((sep, q)) =
+                self.split_page(pager, &mut g, level, &items, i, Some(&mut child))?
+            else {
+                break true;
+            };
+            drop((child, g));
             first = false;
             let from = stack.pop().unwrap_or(self.root);
             level += 1;
-            g = self.latch(pager, from, &sep, level)?;
-            item = Item {
-                key: sep,
-                child: Some(q),
-            };
+            let (parent, skipped) = self.latch(pager, from, &sep, level)?;
+            passed.extend(skipped);
+            g = parent;
+            item = Item::link(sep, q);
+        };
+        drop(g);
+        for split in passed {
+            self.finish(pager, split)?;
         }
+        Ok(added)
+    }
+
+    /// Split page `g` at `level` to hold `items`, the item at `at` among
+    /// them new, clearing the mark of the downlink's child `below` in the same
+    /// change. Returns the separator and the new right page, which is marked
+    /// until its downlink is added, or `None` when `g` is the root, whose
+    /// halves move to two new pages under it.
+    fn split_page<'p, R: Runtime>(
+        &self,
+        pager: &'p Pager<R>,
+        g: &mut PageExclusive<'p, R>,
+        level: u16,
+        items: &[Item],
+        at: usize,
+        below: Option<&mut PageExclusive<'p, R>>,
+    ) -> Result<Option<(Vec<u8>, Pid)>, Error> {
+        let pid = g.pid();
+        let n = latched(g, pid, self.owner)?;
+        let f = node::fences(&n).map_err(|Malformed| Error::Malformed(pid))?;
+        let s = split_point(items, at, f.right.is_none());
+        let sep = items[s].first();
+        let (left, upper) = items.split_at(s);
+        if pid == self.root {
+            let mut new = pager.reserve();
+            let a = new.page(FORMAT, kind_of(level), self.owner)?;
+            let b = new.page(FORMAT, kind_of(level), self.owner)?;
+            let root = [Item::link(Vec::new(), a), Item::link(sep.clone(), b)];
+            let mut ga = pager.exclusive(a)?;
+            let mut gb = pager.exclusive(b)?;
+            let mut pages: Vec<&mut PageExclusive<'p, R>> = vec![g, &mut ga, &mut gb];
+            pages.extend(below);
+            pager.update_all_with(new, &mut pages, |p| {
+                let a_bounds = Bounds {
+                    low: None,
+                    high: Some(&sep),
+                    right: Some(b),
+                };
+                let b_bounds = Bounds {
+                    low: Some(&sep),
+                    high: None,
+                    right: None,
+                };
+                let root_bounds = Bounds {
+                    low: None,
+                    high: None,
+                    right: None,
+                };
+                node::build(p[1], level, left, a_bounds);
+                node::build(p[2], level, upper, b_bounds);
+                node::build(p[0], level + 1, &root, root_bounds);
+                complete(p, 3);
+            })?;
+            return Ok(None);
+        }
+        let mut new = pager.reserve();
+        let q = new.page(FORMAT, kind_of(level), self.owner)?;
+        let mut gq = pager.exclusive(q)?;
+        let mut pages: Vec<&mut PageExclusive<'p, R>> = vec![g, &mut gq];
+        pages.extend(below);
+        pager.update_all_with(new, &mut pages, |p| {
+            let left_bounds = Bounds {
+                high: Some(&sep),
+                right: Some(q),
+                ..f.bounds()
+            };
+            let upper_bounds = Bounds {
+                low: Some(&sep),
+                ..f.bounds()
+            };
+            node::build(p[0], level, left, left_bounds);
+            node::build(p[1], level, upper, upper_bounds);
+            node::set_incomplete(p[1], true);
+            complete(p, 2);
+        })?;
+        Ok(Some((sep, q)))
     }
 
     /// Returns a cursor over the entries between `lo` and `hi`.
     pub fn range(&self, lo: Bound<&[u8]>, hi: Bound<&[u8]>) -> Cursor {
+        let from = match lo {
+            Bound::Included(x) | Bound::Excluded(x) => x.to_vec(),
+            Bound::Unbounded => Vec::new(),
+        };
         Cursor {
             tree: *self,
-            next: None,
+            resume: Some(from),
             after: lo.map(<[u8]>::to_vec),
             hi: hi.map(<[u8]>::to_vec),
             buffered: VecDeque::new(),
-            started: false,
         }
     }
 
@@ -490,15 +891,18 @@ fn below(x: &[u8], hi: &Bound<Vec<u8>>) -> bool {
 }
 
 /// An ascending walk over a range of a tree's entries, one leaf at a time.
+///
+/// Between leaves it holds a key, the high key of the last leaf read, and
+/// never a page id.
 #[derive(Debug)]
 pub struct Cursor {
     tree: BTree,
-    next: Option<Pid>,
+    /// The key the next leaf is found by, or `None` past the last leaf.
+    resume: Option<Vec<u8>>,
     /// Entries at or below this bound have been returned or are out of range.
     after: Bound<Vec<u8>>,
     hi: Bound<Vec<u8>>,
     buffered: VecDeque<Vec<u8>>,
-    started: bool,
 }
 
 impl Cursor {
@@ -509,38 +913,30 @@ impl Cursor {
                 self.after = Bound::Excluded(e.clone());
                 return Ok(Some(e));
             }
-            let pid = if self.started {
-                match self.next {
-                    Some(p) => p,
-                    None => return Ok(None),
-                }
-            } else {
-                self.started = true;
-                let from = match &self.after {
-                    Bound::Included(x) | Bound::Excluded(x) => x.as_slice(),
-                    Bound::Unbounded => &[],
-                };
-                self.tree.descend(pager, self.tree.root, from, 0)?.pid
+            let Some(from) = self.resume.take() else {
+                return Ok(None);
             };
-            let (entries, right) = visit(pager, self.tree.owner, pid, |n| {
-                let start = match &self.after {
-                    Bound::Included(x) => n.search(x, true)?,
-                    Bound::Excluded(x) => n.search(x, false)?,
-                    Bound::Unbounded => 0,
-                };
+            let (entries, resume) = self.tree.at_leaf(pager, &from, |n| {
                 let mut entries = Vec::new();
-                for i in start..n.count() {
-                    let e = n.key(i)?;
-                    if !below(e, &self.hi) {
+                for e in leaf::entries(n)? {
+                    let past = match &self.after {
+                        Bound::Included(x) => e >= *x,
+                        Bound::Excluded(x) => e > *x,
+                        Bound::Unbounded => true,
+                    };
+                    if !past {
+                        continue;
+                    }
+                    if !below(&e, &self.hi) {
                         return Ok((entries, None));
                     }
-                    entries.push(e.to_vec());
+                    entries.push(e);
                 }
-                let past = n.high()?.is_some_and(|h| !below(h, &self.hi));
-                Ok((entries, if past { None } else { n.right() }))
+                let high = n.high()?.filter(|h| below(h, &self.hi));
+                Ok((entries, high.map(<[u8]>::to_vec)))
             })?;
             self.buffered = entries.into();
-            self.next = right;
+            self.resume = resume;
         }
     }
 

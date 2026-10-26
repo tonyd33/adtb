@@ -235,11 +235,14 @@ Non-binding.
 
 ### 8.1 B-link trees
 
-Ordered indexes are B+-trees with right-links and high keys (B-link
-trees). Every page but the rightmost of its level carries a high key;
-a descent whose key exceeds a page's high key moves right, so a split
-never holds a latch while it waits for one on the level above. Sequential keys append at the
-right edge.
+Ordered indexes are B+-trees with right-links and fence keys (B-link
+trees). Every page but the rightmost of its level carries a high key,
+and every page but the leftmost of its level a low key, its left
+sibling's high key. A descent whose key reaches a page's high key moves
+right, so a split never holds a latch while it waits for one on the
+level above. When a page that is the rightmost of its level splits for
+an item that goes after all of its others, its left half keeps all but
+its last item, so sequential keys fill the pages they leave behind.
 
 Latching is optimistic lock coupling over the pager's latches
 ([storage.md §2.4](storage.md#24-latches)). A descent reads each page
@@ -254,25 +257,37 @@ through atomic loads into local copies and bounds-check every length
 and offset read before use; no reference to a page another thread may
 write is formed.
 
+A page id read anywhere may be stale by the time it is followed: the
+page may have been unlinked and freed, and allocated again to any
+owner. A reader trusts a page it reaches only once a validated read
+shows it a live page of the tree, at the level it expects, whose low
+key is at or below the key sought; a page that fails while the page that
+led to it is unchanged is malformed, and otherwise the reader starts
+again from the root. A writer checks the same under the page's
+exclusive latch. Pages of the leaf level are the only ones unlinked.
+
 Invariants:
 
-- A page id a descent has read stays a page of the same tree, with the
-  same low key and, unless it is the root, whose level only grows, the
-  same level, for as long as the descent may follow it.
+- The low and high keys of the live pages of a level partition the key
+  space; each page's low key is its left sibling's high key.
 - Latches are taken top-down and left to right. A thread holding a
   latch on a page takes latches only on its right siblings, on pages
   of lower levels, and on pages it has just allocated.
 - A tree operation holds at most four latches at once, besides the
-  allocation bitmap page an allocating update latches for itself.
+  allocation bitmap page an allocating or freeing update latches for
+  itself.
 
 Postconditions:
 
 - An insert or delete descends optimistically, then takes the
   exclusive latch on the leaf and moves right, releasing each latch
-  before taking the next, until the leaf's range holds the key. It
-  decides whether the entry is present under that latch, so each
-  insert, delete and lookup takes effect at one instant between its
-  call and its return.
+  before taking the next, until the leaf's range holds the key; a page
+  found unlinked, or whose low key is above the key, sends it back to
+  the root. It decides whether the entry is present under that latch,
+  so each insert, delete and lookup takes effect at one instant between
+  its call and its return.
+- A scan holds a key between leaves, the high key of the last leaf it
+  read, and never a page id.
 - A pass that deletes entries by a predicate walks the leaves left to
   right, judging and changing each under its exclusive latch and
   releasing it before latching the next. Every entry present when the
@@ -288,11 +303,16 @@ Postconditions:
   once, under the same latches as any split.
 
 A leaf stores equal keys once followed by a sorted array of
-`(ctor, tid)` pairs. Deduplication runs lazily, when a leaf would
-otherwise split.
+`(ctor, tid)` pairs, a posting. Deduplication runs lazily, when a leaf
+would otherwise split: the leaf's runs of entries sharing a key are
+rewritten as postings, and the leaf splits only if that leaves too
+little room. Each remainder carries a one-byte length, and a posting
+grows to at most a fifth of a page, so a posting splits as any item
+does; an entry that lands inside a full posting cuts it in two around
+itself.
 
 ```text
-posting tuple:  key | n | (ovarint ctor, tid 8 B) * n
+posting:  key | n u16 | (len u8, ovarint ctor, tid 8 B) * n
 user 3: [(EmailPass,(12,3)), (EmailPass,(40,1)), (Google,(4,1))]
 ```
 
@@ -305,6 +325,15 @@ all; a retag's old entry beside its new one is such a duplicate. Kill
 bits are not logged as records; setting one on a clean frame dirties
 it, and so logs a full-page image first
 ([storage.md §5.2](storage.md#52-full-page-images)).
+
+TODO: kill bits wait on the unlogged change of storage.md §2.3; until
+then an inserter judges a full leaf's entries through the caller.
+
+Preconditions:
+
+- A caller that judges entries dead before a split holds no latch on a
+  heap page across the index call; it reads heap pages under shared
+  latches while the leaf's exclusive latch is held.
 
 A root that splits moves its two halves to new pages and becomes their
 parent, so the root page never moves. Any other split is logged one
@@ -335,14 +364,28 @@ Postconditions:
   so it judges the tree only while no writer runs; a repair pass may
   run beside writers.
 
-Vacuum's index pass walks the leaves left to right by their right
-links and deletes, in one update per leaf, every entry whose
-`(ctor, tid)` is in its dead set; it changes no inner page.
+Vacuum's index pass walks the leaves left to right, finding each by
+the high key of the one before, and deletes, in one update per leaf,
+every entry whose `(ctor, tid)` is in its dead set; a leaf it empties
+is unlinked as below.
 
-Underfull pages are never merged. An empty page is unlinked from its
-parent, then from its siblings, and recycled once no snapshot older
-than its deletion remains. The rightmost page of a level is never
-deleted.
+Underfull pages are never merged. A leaf that a delete or a predicate
+pass empties is unlinked and freed in one change, the freeing logged in
+the same batch as the unlink: its downlink leaves the parent, and its
+range goes to its left sibling, whose high key becomes the leaf's, or,
+when the left sibling has no room for that key, to its right sibling,
+whose low key and separator become the leaf's. The change latches the
+parent, then the left sibling, then the leaf and its right sibling. A
+leaf is left in place when it is the rightmost of its level, the first
+child of its parent, lacks its downlink, or neither sibling can take
+its range; inner pages are never unlinked, so height never shrinks.
+
+The page is freed at once rather than after every reader that may hold
+its id has finished, because no reader trusts an id it holds: the fence
+check above refuses a freed page, or one allocated again, and sends the
+reader back to the root. An epoch or snapshot horizon would add a
+registry that every descent writes to, which the fence keys make
+unnecessary.
 
 TODO: split point choice and key compression are deferred.
 

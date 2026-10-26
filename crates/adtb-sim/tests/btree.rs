@@ -673,7 +673,7 @@ struct World {
     ops: Vec<(bool, Vec<u8>)>,
     /// Every operation before this one is durable.
     durable: usize,
-    /// The recorded events before and after each operation of the last run.
+    /// The recorded events before and after each insert of the last run.
     spans: Vec<(usize, usize)>,
 }
 
@@ -707,7 +707,9 @@ fn crash_workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
         } else {
             tree.delete(&pager, &e).expect("delete");
         }
-        world.lock().unwrap().spans.push((start, rt.recorded()));
+        if insert {
+            world.lock().unwrap().spans.push((start, rt.recorded()));
+        }
         match below(&rt, 30) {
             0..=2 => {
                 pager.flush_log();
@@ -1011,4 +1013,68 @@ fn a_repair_pass_or_an_insert_finishes_every_split_a_crash_leaves_incomplete() {
         }
     }
     assert!(incomplete >= 5, "{incomplete} incomplete splits");
+}
+
+#[test]
+fn an_index_keeps_the_entries_of_one_key_as_postings() {
+    with_pager(24, |rt, pager| {
+        let ctors: BTreeSet<CtorId> = [CtorId(0), CtorId(1), CtorId(300)].into();
+        let index = Index::create(pager, OWNER, i64_schema(), ctors.clone()).unwrap();
+        let ctor_list: Vec<CtorId> = ctors.iter().copied().collect();
+        let mut model: BTreeSet<(i64, CtorId, Tid)> = BTreeSet::new();
+        let to_entry = |(k, c, t): &(i64, CtorId, Tid)| Entry {
+            key: vec![Value::I64(*k)],
+            ctor: *c,
+            tid: *t,
+        };
+        for step in 0..12_000 {
+            let key = [-7, 0, 1, 2, 9_000_000_000][below(rt, 5)];
+            let ctor = ctor_list[below(rt, ctor_list.len())];
+            let t = tid(below(rt, 1 << 30) as u64, below(rt, 400) as u16);
+            if below(rt, 10) < 3 && !model.is_empty() {
+                let probe = (key, ctor, t);
+                let victim = *model
+                    .range(probe..)
+                    .next()
+                    .unwrap_or(model.iter().next().unwrap());
+                assert_eq!(index.delete(pager, &to_entry(&victim)), Ok(true));
+                model.remove(&victim);
+            } else {
+                let e = (key, ctor, t);
+                assert_eq!(index.insert(pager, &to_entry(&e)), Ok(model.insert(e)));
+            }
+            if step % 3000 == 0 {
+                let all: Vec<Entry> = model.iter().map(to_entry).collect();
+                assert_eq!(
+                    index.range(pager, Bound::Unbounded, Bound::Unbounded),
+                    Ok(all)
+                );
+            }
+        }
+        let all: Vec<Entry> = model.iter().map(to_entry).collect();
+        assert_eq!(
+            index.range(pager, Bound::Unbounded, Bound::Unbounded),
+            Ok(all)
+        );
+        assert_eq!(index.tree().verify(pager).unwrap().len(), model.len());
+        for key in [-7, 0, 9_000_000_000, 5] {
+            let of_key: Vec<Entry> = model.iter().filter(|e| e.0 == key).map(to_entry).collect();
+            assert_eq!(index.probe(pager, &[Value::I64(key)]), Ok(of_key));
+        }
+        let plain = BTree::create(pager, OWNER + 1).unwrap();
+        let mut shuffled: Vec<_> = model.iter().collect();
+        for i in (1..shuffled.len()).rev() {
+            shuffled.swap(i, below(rt, i + 1));
+        }
+        for e in shuffled {
+            let bytes = i64_schema().encode_entry(&to_entry(e));
+            assert_eq!(plain.insert(pager, &bytes), Ok(true));
+        }
+        let pages = index.tree().pages(pager).unwrap().len();
+        let whole = plain.pages(pager).unwrap().len();
+        assert!(
+            pages * 3 < whole * 2,
+            "{pages} pages, {whole} without postings"
+        );
+    });
 }

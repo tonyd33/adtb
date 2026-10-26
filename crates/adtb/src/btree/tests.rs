@@ -1,5 +1,6 @@
 use std::ops::Bound;
 
+use super::leaf;
 use super::node::{self, Item, Malformed, Node};
 use super::tree::prefix_end;
 use super::{BTree, FORMAT};
@@ -14,10 +15,7 @@ fn blank(kind: PageKind) -> Vec<u8> {
 }
 
 fn leaf(key: &[u8]) -> Item {
-    Item {
-        key: key.to_vec(),
-        child: None,
-    }
+    Item::entry(key.to_vec())
 }
 
 fn keys(page: &[u8]) -> Vec<Vec<u8>> {
@@ -94,21 +92,23 @@ fn removed_cells_are_reclaimed_by_compaction() {
 fn build_writes_high_key_right_link_and_children() {
     let mut p = blank(PageKind::IndexLeaf);
     let items = [
-        Item {
-            key: vec![],
-            child: Some(Pid(10)),
-        },
-        Item {
-            key: b"k".to_vec(),
-            child: Some(Pid(11)),
-        },
+        Item::link(vec![], Pid(10)),
+        Item::link(b"k".to_vec(), Pid(11)),
     ];
-    node::build(&mut p, 1, &items, Some(b"q"), Some(Pid(12)));
+    let bounds = node::Bounds {
+        low: Some(b"a"),
+        high: Some(b"q"),
+        right: Some(Pid(12)),
+    };
+    node::build(&mut p, 1, &items, bounds);
     assert_eq!(crate::storage::kind(&p), PageKind::IndexInner as u16);
     assert_eq!(crate::storage::owner(&p), 9);
     let n = Node::new(&p).unwrap();
     assert_eq!(n.level(), 1);
     assert_eq!(n.high(), Ok(Some(&b"q"[..])));
+    assert_eq!(n.low(), Ok(Some(&b"a"[..])));
+    assert_eq!(n.above_low(b"a"), Ok(true));
+    assert_eq!(n.above_low(b""), Ok(false));
     assert_eq!(n.right(), Some(Pid(12)));
     assert_eq!(n.child_for(b"a"), Ok(Pid(10)));
     assert_eq!(n.child_for(b"k"), Ok(Pid(11)));
@@ -123,10 +123,10 @@ fn out_of_bounds_offsets_are_refused() {
     let mut p = blank(PageKind::IndexLeaf);
     node::insert(&mut p, 0, &leaf(b"abc"));
     let mut bad_slot = p.clone();
-    bad_slot[40..42].copy_from_slice(&30_u16.to_le_bytes());
+    bad_slot[42..44].copy_from_slice(&30_u16.to_le_bytes());
     assert_eq!(Node::new(&bad_slot).unwrap().key(0), Err(Malformed));
     let mut bad_len = p.clone();
-    let at = usize::from(u16::from_le_bytes([p[40], p[41]]));
+    let at = usize::from(u16::from_le_bytes([p[42], p[43]]));
     bad_len[at..at + 2].copy_from_slice(&900_u16.to_le_bytes());
     assert_eq!(Node::new(&bad_len).unwrap().key(0), Err(Malformed));
     let mut bad_count = p.clone();
@@ -137,12 +137,9 @@ fn out_of_bounds_offsets_are_refused() {
 #[test]
 fn the_largest_entries_still_split_into_two_pages() {
     let max = BTree::max_entry_len(PAGE);
-    let item = Item {
-        key: vec![0; max],
-        child: Some(Pid(1)),
-    };
-    let high = 2 + max;
-    assert!(node::capacity(PAGE) >= 3 * item.cost() + high);
+    let item = Item::link(vec![0; max], Pid(1));
+    let fence = 2 + max;
+    assert!(node::capacity(PAGE) >= 3 * item.cost() + 2 * fence);
     assert!(BTree::max_entry_len(65536) > 10_000);
 }
 
@@ -161,11 +158,162 @@ fn the_incomplete_mark_survives_rebuilds_and_keeps_other_flags() {
     assert!(!Node::new(&p).unwrap().incomplete());
     node::set_incomplete(&mut p, true);
     assert!(Node::new(&p).unwrap().incomplete());
-    node::build(&mut p, 0, &[leaf(b"a")], Some(b"b"), Some(Pid(4)));
+    let bounds = node::Bounds {
+        low: None,
+        high: Some(b"b"),
+        right: Some(Pid(4)),
+    };
+    node::build(&mut p, 0, &[leaf(b"a")], bounds);
     assert!(Node::new(&p).unwrap().incomplete());
     assert_eq!(crate::storage::flags(&p) & 1, 1);
     node::set_incomplete(&mut p, false);
     assert!(!Node::new(&p).unwrap().incomplete());
     assert_eq!(crate::storage::flags(&p), 1);
     assert_eq!(keys(&p), [b"a".to_vec()]);
+}
+
+fn posting(key: &[u8], rest: &[&[u8]]) -> Item {
+    Item {
+        key: key.to_vec(),
+        child: None,
+        rest: rest.iter().map(|r| r.to_vec()).collect(),
+    }
+}
+
+fn leaf_of(items: &[Item]) -> Vec<u8> {
+    let mut p = blank(PageKind::IndexLeaf);
+    let bounds = node::Bounds {
+        low: None,
+        high: None,
+        right: None,
+    };
+    node::build(&mut p, 0, items, bounds);
+    p
+}
+
+fn all(page: &[u8]) -> Vec<Vec<u8>> {
+    leaf::entries(&Node::new(page).unwrap()).unwrap()
+}
+
+fn strings(xs: &[&[u8]]) -> Vec<Vec<u8>> {
+    xs.iter().map(|x| x.to_vec()).collect()
+}
+
+#[test]
+fn a_posting_stands_for_its_key_followed_by_each_remainder() {
+    let p = leaf_of(&[leaf(b"a"), posting(b"k", &[b"1", b"3"]), leaf(b"z")]);
+    let n = Node::new(&p).unwrap();
+    assert_eq!(n.count(), 3);
+    assert_eq!(n.item(1), Ok(posting(b"k", &[b"1", b"3"])));
+    assert_eq!(leaf::len(&n), Ok(4));
+    assert_eq!(all(&p), strings(&[b"a", b"k1", b"k3", b"z"]));
+    let at = |x: &[u8]| leaf::find(&n, x).unwrap();
+    assert_eq!(
+        (at(b"k1").cell, at(b"k1").at, at(b"k1").found),
+        (1, 0, true)
+    );
+    assert_eq!(
+        (at(b"k3").cell, at(b"k3").at, at(b"k3").found),
+        (1, 1, true)
+    );
+    assert_eq!(
+        (at(b"k2").cell, at(b"k2").at, at(b"k2").found),
+        (1, 1, false)
+    );
+    assert_eq!((at(b"k").cell, at(b"k").at, at(b"k").found), (1, 0, false));
+    assert_eq!((at(b"k4").cell, at(b"k4").found), (2, false));
+    assert_eq!((at(b"zz").cell, at(b"zz").found), (3, false));
+    assert_eq!(leaf::contains(&n, b"k"), Ok(false));
+}
+
+#[test]
+fn an_entry_sharing_a_postings_key_joins_it() {
+    let mut p = leaf_of(&[posting(b"k", &[b"2", b"4"]), leaf(b"m")]);
+    for x in [&b"k3"[..], b"k1", b"k5", b"l"] {
+        assert!(leaf::insert(&mut p, x));
+    }
+    assert_eq!(
+        all(&p),
+        strings(&[b"k1", b"k2", b"k3", b"k4", b"k5", b"l", b"m"])
+    );
+    let n = Node::new(&p).unwrap();
+    assert_eq!(n.count(), 3);
+    assert_eq!(
+        n.item(0),
+        Ok(posting(b"k", &[b"1", b"2", b"3", b"4", b"5"]))
+    );
+}
+
+#[test]
+fn a_full_posting_is_cut_around_an_entry_inside_it() {
+    let rest: Vec<Vec<u8>> = (0..200_u8).map(|i| vec![i, 0]).collect();
+    let mut items = vec![Item {
+        key: b"k".to_vec(),
+        child: None,
+        rest: rest.clone(),
+    }];
+    let cap = items[0].cost();
+    let added = leaf::add(&mut items, &[b'k', 100, 1], cap);
+    assert_eq!(added, leaf::Added::Cut(1));
+    let entries: Vec<Vec<u8>> = items.iter().flat_map(Item::entries).collect();
+    let mut expected: Vec<Vec<u8>> = rest.iter().map(|r| [&b"k"[..], r].concat()).collect();
+    expected.insert(101, vec![b'k', 100, 1]);
+    assert_eq!(entries, expected);
+    assert!(items.iter().all(|it| it.cost() <= cap));
+}
+
+#[test]
+fn removing_a_postings_last_remainder_removes_its_cell() {
+    let mut p = leaf_of(&[posting(b"k", &[b"1", b"2"]), leaf(b"z")]);
+    let find = |p: &[u8], x: &[u8]| leaf::find(&Node::new(p).unwrap(), x).unwrap();
+    let at = find(&p, b"k2");
+    leaf::remove(&mut p, at);
+    assert_eq!(all(&p), strings(&[b"k1", b"z"]));
+    let at = find(&p, b"k1");
+    leaf::remove(&mut p, at);
+    assert_eq!(all(&p), strings(&[b"z"]));
+    assert_eq!(Node::new(&p).unwrap().count(), 1);
+}
+
+#[test]
+fn dedup_keeps_each_run_of_one_key_once_under_the_cap() {
+    let items: Vec<Item> = [&b"a1"[..], b"a2", b"a3", b"b1", b"c1", b"c2"]
+        .iter()
+        .map(|x| leaf(x))
+        .collect();
+    let packed = leaf::dedup(&items, &|_| Some(1), 1000);
+    assert_eq!(
+        packed,
+        [
+            posting(b"a", &[b"1", b"2", b"3"]),
+            leaf(b"b1"),
+            posting(b"c", &[b"1", b"2"])
+        ]
+    );
+    let small = posting(b"a", &[b"1", b"2"]).cost();
+    let capped = leaf::dedup(&items, &|_| Some(1), small);
+    assert!(capped.iter().all(|it| it.cost() <= small));
+    let entries: Vec<Vec<u8>> = capped.iter().flat_map(Item::entries).collect();
+    let flat: Vec<Vec<u8>> = items.iter().flat_map(Item::entries).collect();
+    assert_eq!(entries, flat);
+    assert_eq!(leaf::dedup(&items, &|_| None, 1000), items);
+}
+
+#[test]
+fn a_posting_with_no_remainders_or_in_an_inner_page_is_malformed() {
+    let p = leaf_of(&[posting(b"k", &[b"1"])]);
+    let at = usize::from(u16::from_le_bytes([p[42], p[43]]));
+    let mut empty = p.clone();
+    empty[at + 3..at + 5].copy_from_slice(&0_u16.to_le_bytes());
+    assert_eq!(Node::new(&empty).unwrap().rest(0), Err(Malformed));
+    let mut inner = blank(PageKind::IndexInner);
+    let bounds = node::Bounds {
+        low: None,
+        high: None,
+        right: None,
+    };
+    node::build(&mut inner, 1, &[Item::link(b"k".to_vec(), Pid(5))], bounds);
+    let at = usize::from(u16::from_le_bytes([inner[42], inner[43]]));
+    inner[at + 1] |= 0x80;
+    assert_eq!(Node::new(&inner).unwrap().child(0), Err(Malformed));
 }

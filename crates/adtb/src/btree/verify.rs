@@ -3,11 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::runtime::Runtime;
 use crate::storage::{Pager, Pid};
 
+use super::leaf;
 use super::node::{Item, Malformed};
 use super::tree::{BTree, Error, Split, visit};
 
 struct Page {
     incomplete: bool,
+    low: Option<Vec<u8>>,
     items: Vec<Item>,
     high: Option<Vec<u8>>,
     right: Option<Pid>,
@@ -29,14 +31,15 @@ impl BTree {
     /// Returns every entry in order, failing at the first page that breaks
     /// the tree's structure.
     ///
-    /// Each level is walked by its right links. A page lacks a downlink from
-    /// the level above exactly when it is marked incomplete; every downlink
-    /// must name a page of the level below, in order, whose low key is the
-    /// downlink's separator.
+    /// Each level is walked by its right links. Each page's low key is its
+    /// left sibling's high key, and no page reached is marked unlinked. A
+    /// page lacks a downlink from the level above exactly when it is marked
+    /// incomplete; every downlink must name a page of the level below, in
+    /// order, whose low key is the downlink's separator.
     pub fn verify<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Vec<u8>>, Error> {
         let mut seen = BTreeSet::new();
         let height = visit(pager, self.owner(), self.root(), |n| {
-            if n.right().is_some() || n.high()?.is_some() {
+            if n.right().is_some() || n.high()?.is_some() || n.low()?.is_some() {
                 return Err(Malformed);
             }
             Ok(n.level())
@@ -53,12 +56,20 @@ impl BTree {
                     return Err(Error::Malformed(pid));
                 }
                 let page = visit(pager, self.owner(), pid, |n| {
-                    if n.level() != level || n.high()?.is_some() != n.right().is_some() {
+                    if n.level() != level
+                        || n.deleted()
+                        || n.high()?.is_some() != n.right().is_some()
+                    {
                         return Err(Malformed);
                     }
                     Ok(Page {
                         incomplete: n.incomplete(),
-                        items: n.items()?,
+                        low: n.low()?.map(<[u8]>::to_vec),
+                        items: if n.is_leaf() {
+                            leaf::entries(n)?.into_iter().map(Item::entry).collect()
+                        } else {
+                            n.items()?
+                        },
                         high: n.high()?.map(<[u8]>::to_vec),
                         right: n.right(),
                     })
@@ -68,7 +79,7 @@ impl BTree {
                         .high
                         .as_deref()
                         .is_none_or(|h| low.as_deref().is_none_or(|l| h > l));
-                if !ordered {
+                if !ordered || page.low != low {
                     return Err(Error::Malformed(pid));
                 }
                 if level == 0 {
@@ -113,9 +124,25 @@ impl BTree {
             let mut next = Some(self.descend(pager, self.root(), &[], level)?.pid);
             let mut low: Option<Vec<u8>> = None;
             while let Some(pid) = next {
-                let (incomplete, high, right) = visit(pager, self.owner(), pid, |n| {
-                    Ok((n.incomplete(), n.high()?.map(<[u8]>::to_vec), n.right()))
+                let (live, incomplete, high, right) = visit(pager, self.owner(), pid, |n| {
+                    let live =
+                        !n.deleted() && n.level() == level && n.low()?.map(<[u8]>::to_vec) == low;
+                    Ok((
+                        live,
+                        n.incomplete(),
+                        n.high()?.map(<[u8]>::to_vec),
+                        n.right(),
+                    ))
                 })?;
+                if !live {
+                    let key = low.clone().unwrap_or_default();
+                    let found = self.descend(pager, self.root(), &key, level)?.pid;
+                    low = visit(pager, self.owner(), found, |n| {
+                        Ok(n.low()?.map(<[u8]>::to_vec))
+                    })?;
+                    next = Some(found);
+                    continue;
+                }
                 if incomplete {
                     let low = low.ok_or(Error::Malformed(pid))?;
                     let split = Split {

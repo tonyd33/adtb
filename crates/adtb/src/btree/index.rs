@@ -5,7 +5,26 @@ use crate::key::{CtorId, CtorType, Dir, Entry, KeySchema, KeyType, SumType, Valu
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager};
 
-use super::tree::{BTree, Cursor, Error, prefix_end};
+use super::tree::{BTree, Cursor, Entries, Error, prefix_end};
+
+/// The entries of an index, as its tree sees them.
+struct Encoded<'a, F> {
+    schema: &'a KeySchema,
+    dead: &'a mut F,
+}
+
+impl<F: FnMut(&Entry) -> bool> Entries for Encoded<'_, F> {
+    fn dead(&mut self, entry: &[u8]) -> bool {
+        self.schema
+            .decode_entry(entry)
+            .is_ok_and(|e| (self.dead)(&e))
+    }
+
+    fn key_len(&self, entry: &[u8]) -> Option<usize> {
+        let e = self.schema.decode_entry(entry).ok()?;
+        Some(self.schema.encode(&e.key).len())
+    }
+}
 
 /// An index over the rows of a set of constructors of one relation variable,
 /// holding entries `(key, ctor, tid)` in a B-link tree.
@@ -60,7 +79,31 @@ impl Index {
     ///
     /// Panics if its constructor is not in the index's set.
     pub fn insert<R: Runtime>(&self, pager: &Pager<R>, entry: &Entry) -> Result<bool, Error> {
-        self.tree.insert(pager, &self.encode(entry))
+        self.insert_with(pager, entry, |_| false)
+    }
+
+    /// Insert `entry` as [`Index::insert`] does, first deleting from a leaf
+    /// that would otherwise split every entry `dead` judges dead to every
+    /// snapshot. The entries of one key in a leaf that would otherwise split
+    /// are kept as a posting: the key once, then each constructor and TID.
+    ///
+    /// `dead` runs under the leaf's exclusive latch: it may read heap pages,
+    /// and takes no latch on a page of the index. An entry that does not
+    /// decode is kept.
+    ///
+    /// Panics if its constructor is not in the index's set.
+    pub fn insert_with<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        entry: &Entry,
+        mut dead: impl FnMut(&Entry) -> bool,
+    ) -> Result<bool, Error> {
+        let mut entries = Encoded {
+            schema: &self.schema,
+            dead: &mut dead,
+        };
+        self.tree
+            .insert_with(pager, &self.encode(entry), &mut entries)
     }
 
     /// Delete `entry`. Returns false if it was not in the index.
