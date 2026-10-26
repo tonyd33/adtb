@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 241
 summary: "the reference prints a Span as Span { start, end } and cannot read span(a, b), against interop.md §1.3"
+branch: adtb-ref2
 tags:
   - reference
 ---

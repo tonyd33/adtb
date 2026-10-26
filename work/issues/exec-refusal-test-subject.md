@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 723
 summary: "the executor's compile-time refusal test has no unsupported primitive left to refuse"
+branch: adtb-ref2
 tags:
   - test
   - engine
