@@ -117,6 +117,22 @@ enum LetKind {
     Bang(Tm),
 }
 
+/// An item of a block checked up to the items after it.
+enum Pending {
+    Write(Tm),
+    LetWrite {
+        v: Var,
+        kind: LetKind,
+        ty: Ty,
+        nested: Vec<Nested>,
+    },
+    LetExpr {
+        v: Var,
+        value: Tm,
+        nested: Vec<Nested>,
+    },
+}
+
 const ONCE: &str = "`key (insert ...)` is allowed only where it is evaluated once per statement: not under a comprehension, a lambda, a match arm, an `if` branch or the right operand of `and` or `or`, nor in an `update ... in`, a `delete ... in` or an upsert's else branch";
 
 /// Refuses a nested `key (insert ...)` anywhere in `e`.
@@ -1182,49 +1198,6 @@ impl Checker<'_> {
     }
 
     /// Checks `let name = w` in a block, then the items after it.
-    fn let_write(
-        &mut self,
-        name: &ast::Ident,
-        w: &Write,
-        rest: &[BlockItem],
-        b: &TransactBlock,
-        result: Option<&Ty>,
-    ) -> R<Out> {
-        let w = ungroup(w);
-        self.hoist.push(Vec::new());
-        let parts = self.let_parts(w);
-        let nested = self.hoist.pop().expect("pushed");
-        let (kind, ty, rel) = parts?;
-        self.scope.push();
-        let v = self.bind(&name.text, ty.clone(), Some(rel));
-        self.proposed.insert(v);
-        let k = self.items(rest, b, result);
-        self.scope.pop();
-        let k = k?;
-        let body = match kind {
-            LetKind::Insert { rel, value, single } => {
-                let vt = self.var_tm(v);
-                let rows = if single { self.singleton(vt, &ty) } else { vt };
-                let ins = self.change(Kind::Insert(rel, rows));
-                let blk = self.add(Kind::Block(ins, k.tm), k.ty.clone());
-                self.add(Kind::Let(v, value, blk), k.ty.clone())
-            }
-            LetKind::Delete { rel, rows } => {
-                let vt = self.var_tm(v);
-                let del = self.change(Kind::Delete(rel, vt));
-                let blk = self.add(Kind::Block(del, k.tm), k.ty.clone());
-                self.add(Kind::Let(v, rows, blk), k.ty.clone())
-            }
-            LetKind::Bang(write) => self.add(Kind::LetBang(v, write, k.tm), k.ty.clone()),
-        };
-        let tm = self.block_nested(nested, body, &k.ty);
-        Ok(Out {
-            tm,
-            ty: k.ty,
-            rows: k.rows,
-        })
-    }
-
     /// Checks a write bound by `let`: how it binds, the bound type and relation.
     fn let_parts(&mut self, w: &Write) -> R<(LetKind, Ty, RelId)> {
         match &w.kind {
@@ -1343,7 +1316,7 @@ impl Checker<'_> {
         }
         let read_only = std::mem::replace(&mut self.read_only, opts.read_only);
         self.scope.push();
-        let r = self.items(&b.items, b, result);
+        let r = self.items(b, result);
         self.scope.pop();
         self.read_only = read_only;
         let body = r?;
@@ -1362,71 +1335,143 @@ impl Checker<'_> {
         Ok(())
     }
 
-    /// Checks the items of a block from `items` on, then its `return`.
-    fn items(&mut self, items: &[BlockItem], b: &TransactBlock, result: Option<&Ty>) -> R<Out> {
-        let Some((first, rest)) = items.split_first() else {
-            let Some(e) = &b.ret else {
-                if let Some(t) = result
-                    && *t != Ty::Unit
-                {
-                    return Err(diag(
-                        b.span,
-                        format!(
-                            "the block returns nothing, and its result is {}",
-                            self.show(t)
-                        ),
-                    ));
-                }
-                return Ok(self.out(Kind::Record(Vec::new()), Ty::Unit));
-            };
-            self.hoist.push(Vec::new());
-            let r = self.write_expr(e, result, true);
-            let nested = self.hoist.pop().expect("pushed");
-            let o = r?;
-            if !nested.is_empty() {
-                self.no_writes(e.span)?;
-            }
-            let ty = result.cloned().unwrap_or_else(|| o.ty.clone());
-            let tm = self.block_nested(nested, o.tm, &ty);
-            return Ok(Out {
-                tm,
-                ty,
-                rows: o.rows,
-            });
-        };
-        match first {
-            BlockItem::Write(w) => {
-                self.no_writes(w.span)?;
-                let tm = self.write(w)?;
-                let k = self.items(rest, b, result)?;
-                let tm = self.add(Kind::Block(tm, k.tm), k.ty.clone());
-                Ok(Out { tm, ..k })
-            }
-            BlockItem::Let(name, LetValue::Write(w)) => {
-                self.no_writes(w.span)?;
-                self.let_write(name, w, rest, b, result)
-            }
-            BlockItem::Let(name, LetValue::Expr(e)) => {
-                self.hoist.push(Vec::new());
-                let r = self.write_expr(e, None, true);
-                let nested = self.hoist.pop().expect("pushed");
-                let o = r?;
-                if !nested.is_empty() {
-                    self.no_writes(e.span)?;
-                }
-                self.scope.push();
-                let v = self.bind(&name.text, o.ty.clone(), o.rows);
-                if self.snapshot_value(&o) {
-                    self.snapshot.insert(v);
-                }
-                let k = self.items(rest, b, result);
+    /// Checks the items of a block, then its `return`.
+    fn items(&mut self, b: &TransactBlock, result: Option<&Ty>) -> R<Out> {
+        let mut pending = Vec::with_capacity(b.items.len());
+        let r = self
+            .item_heads(b, &mut pending)
+            .and_then(|()| self.block_return(b, result));
+        for p in &pending {
+            if !matches!(p, Pending::Write(_)) {
                 self.scope.pop();
-                let k = k?;
-                let tm = self.add(Kind::Let(v, o.tm, k.tm), k.ty.clone());
-                let tm = self.block_nested(nested, tm, &k.ty);
-                Ok(Out { tm, ..k })
             }
         }
+        let mut k = r?;
+        for p in pending.into_iter().rev() {
+            k = self.item_tail(p, k);
+        }
+        Ok(k)
+    }
+
+    /// Checks each item of `b` up to the items after it, pushing what remains of it to `pending`.
+    ///
+    /// Postconditions:
+    /// - A scope is pushed for each `let` in `pending`, error or not.
+    fn item_heads(&mut self, b: &TransactBlock, pending: &mut Vec<Pending>) -> R<()> {
+        for item in &b.items {
+            match item {
+                BlockItem::Write(w) => {
+                    self.no_writes(w.span)?;
+                    let tm = self.write(w)?;
+                    pending.push(Pending::Write(tm));
+                }
+                BlockItem::Let(name, LetValue::Write(w)) => {
+                    self.no_writes(w.span)?;
+                    let w = ungroup(w);
+                    self.hoist.push(Vec::new());
+                    let parts = self.let_parts(w);
+                    let nested = self.hoist.pop().expect("pushed");
+                    let (kind, ty, rel) = parts?;
+                    self.scope.push();
+                    let v = self.bind(&name.text, ty.clone(), Some(rel));
+                    self.proposed.insert(v);
+                    pending.push(Pending::LetWrite {
+                        v,
+                        kind,
+                        ty,
+                        nested,
+                    });
+                }
+                BlockItem::Let(name, LetValue::Expr(e)) => {
+                    self.hoist.push(Vec::new());
+                    let r = self.write_expr(e, None, true);
+                    let nested = self.hoist.pop().expect("pushed");
+                    let o = r?;
+                    if !nested.is_empty() {
+                        self.no_writes(e.span)?;
+                    }
+                    self.scope.push();
+                    let v = self.bind(&name.text, o.ty.clone(), o.rows);
+                    if self.snapshot_value(&o) {
+                        self.snapshot.insert(v);
+                    }
+                    pending.push(Pending::LetExpr {
+                        v,
+                        value: o.tm,
+                        nested,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks the `return` of `b`, or its absence.
+    fn block_return(&mut self, b: &TransactBlock, result: Option<&Ty>) -> R<Out> {
+        let Some(e) = &b.ret else {
+            if let Some(t) = result
+                && *t != Ty::Unit
+            {
+                return Err(diag(
+                    b.span,
+                    format!(
+                        "the block returns nothing, and its result is {}",
+                        self.show(t)
+                    ),
+                ));
+            }
+            return Ok(self.out(Kind::Record(Vec::new()), Ty::Unit));
+        };
+        self.hoist.push(Vec::new());
+        let r = self.write_expr(e, result, true);
+        let nested = self.hoist.pop().expect("pushed");
+        let o = r?;
+        if !nested.is_empty() {
+            self.no_writes(e.span)?;
+        }
+        let ty = result.cloned().unwrap_or_else(|| o.ty.clone());
+        let tm = self.block_nested(nested, o.tm, &ty);
+        Ok(Out {
+            tm,
+            ty,
+            rows: o.rows,
+        })
+    }
+
+    /// Returns item `p` followed by the items after it, `k`.
+    fn item_tail(&mut self, p: Pending, k: Out) -> Out {
+        let tm = match p {
+            Pending::Write(tm) => self.add(Kind::Block(tm, k.tm), k.ty.clone()),
+            Pending::LetWrite {
+                v,
+                kind,
+                ty,
+                nested,
+            } => {
+                let body = match kind {
+                    LetKind::Insert { rel, value, single } => {
+                        let vt = self.var_tm(v);
+                        let rows = if single { self.singleton(vt, &ty) } else { vt };
+                        let ins = self.change(Kind::Insert(rel, rows));
+                        let blk = self.add(Kind::Block(ins, k.tm), k.ty.clone());
+                        self.add(Kind::Let(v, value, blk), k.ty.clone())
+                    }
+                    LetKind::Delete { rel, rows } => {
+                        let vt = self.var_tm(v);
+                        let del = self.change(Kind::Delete(rel, vt));
+                        let blk = self.add(Kind::Block(del, k.tm), k.ty.clone());
+                        self.add(Kind::Let(v, rows, blk), k.ty.clone())
+                    }
+                    LetKind::Bang(write) => self.add(Kind::LetBang(v, write, k.tm), k.ty.clone()),
+                };
+                self.block_nested(nested, body, &k.ty)
+            }
+            Pending::LetExpr { v, value, nested } => {
+                let tm = self.add(Kind::Let(v, value, k.tm), k.ty.clone());
+                self.block_nested(nested, tm, &k.ty)
+            }
+        };
+        Out { tm, ..k }
     }
 
     /// Each relation's `on delete retag` new value for a referrer, a `Lam` over the referrer's row.

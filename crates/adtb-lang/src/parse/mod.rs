@@ -28,7 +28,8 @@ pub(crate) struct Fail;
 pub(crate) type PResult<T> = Result<T, Fail>;
 
 /// The greatest height a parsed tree may reach, counting each operand, operator of a chain,
-/// postfix, pattern, type, write, generator and `where` clause on the path to a leaf.
+/// postfix, pattern, type, write, generator and `where` clause on the path to a leaf. A chain
+/// of `and`, `or` or `union` counts the height of the balanced tree it parses to.
 pub const MAX_DEPTH: u32 = 64;
 
 /// A production the parser tries and backtracks from.

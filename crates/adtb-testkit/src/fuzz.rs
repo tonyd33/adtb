@@ -506,9 +506,83 @@ impl Gen<'_> {
     }
 }
 
+impl Gen<'_> {
+    /// Returns a statement around one long flat list: a chain of `and`, `or` or `union`, the
+    /// items of a `transact`, the arms of a `match` or the elements of a set literal.
+    fn long(&mut self, rng: &mut Rng) -> String {
+        let n = 2 + rng.below(1500) as usize;
+        let x = self.fresh();
+        match rng.below(6) {
+            0 => {
+                let op = rng.pick(&["and", "or"]).to_string();
+                let terms: Vec<String> = self.with(&x, G::Row(0), |s| {
+                    (0..n).map(|_| s.expr(rng, &G::Bool, 1)).collect()
+                });
+                format!(
+                    "from {x} in items where {} select {x}",
+                    terms.join(&format!(" {op} "))
+                )
+            }
+            1 => {
+                let int_set = G::Set(Box::new(G::Int));
+                let sets: Vec<String> = (0..n).map(|_| self.expr(rng, &int_set, 1)).collect();
+                sets.join(" union ")
+            }
+            2 => {
+                let items: String = (0..n)
+                    .map(|i| {
+                        let name = self.expr(rng, &G::Text, 1);
+                        let insert =
+                            format!("insert items {{ name: {name}, n: {i}, status: Draft }}");
+                        if rng.below(2) == 0 {
+                            format!("  let {x}_{i} = {insert}\n")
+                        } else {
+                            format!("  {insert}\n")
+                        }
+                    })
+                    .collect();
+                format!("transact\n{items}")
+            }
+            3 => {
+                let arms: String = self.with(&x, G::Row(0), |s| {
+                    (0..n)
+                        .map(|i| format!(" | {i} -> {}", s.expr(rng, &G::Int, 1)))
+                        .collect()
+                });
+                format!("from {x} in items select match {x}.n{arms} | _ -> 0")
+            }
+            4 => {
+                let arms: String = (0..n)
+                    .map(|i| format!(" | {i} -> delete {x} in items where {x}.n == {i}"))
+                    .collect();
+                format!("transact\n  let n = count(y for y in items)\n  match n{arms} | _ -> skip")
+            }
+            _ => {
+                let elems: Vec<String> = (0..n).map(|_| self.expr(rng, &G::Int, 1)).collect();
+                format!("from {x} in [{}] select {x} + 1", elems.join(", "))
+            }
+        }
+    }
+}
+
 fn scalar(rng: &mut Rng) -> G {
     rng.pick(&[G::Int, G::Text, G::Bool, G::Status, G::OptInt])
         .clone()
+}
+
+/// Returns the well-typed ad hoc statement of `seed` around one long flat list.
+pub fn long_case(seed: u64) -> Case {
+    let world = World::fixed();
+    let mut g = Gen {
+        world: &world,
+        env: Vec::new(),
+        next: 0,
+    };
+    Case {
+        kind: Kind::Adhoc,
+        mutated: false,
+        text: g.long(&mut Rng::new(seed)),
+    }
 }
 
 /// Returns a well-typed ad hoc statement over [`SCHEMA`].
@@ -520,7 +594,8 @@ fn adhoc(rng: &mut Rng) -> String {
         next: 0,
     };
     let depth = 1 + rng.below(4) as u32;
-    match rng.below(10) {
+    match rng.below(12) {
+        10 | 11 => g.long(rng),
         0 => {
             let t = scalar(rng);
             g.expr(rng, &t, depth)

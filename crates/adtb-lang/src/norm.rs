@@ -223,6 +223,18 @@ struct Frame {
     next: Env,
 }
 
+impl Drop for Env {
+    fn drop(&mut self) {
+        let mut next = self.0.take();
+        while let Some(frame) = next {
+            next = match Rc::try_unwrap(frame) {
+                Ok(mut f) => f.next.0.take(),
+                Err(_) => None,
+            };
+        }
+    }
+}
+
 impl Env {
     fn get(&self, var: Var) -> Option<&Val> {
         let mut e = self;
@@ -273,6 +285,13 @@ enum Then {
     Apply(Val, Ty),
     /// Bind it to `var` in `body`; the result has type `ty`.
     Bind { var: Var, body: Tm, cx: Cx, ty: Ty },
+}
+
+/// A binder or a write of a [`Normaliser::spine`] already normalised, waiting for its body.
+enum Wrap {
+    Block(Tm, Ty),
+    LetBang(Var, Tm, Ty),
+    Let(Var, Tm, Ty),
 }
 
 type MemoKey = (usize, Tm, Vec<Ty>, Vec<Option<Tm>>);
@@ -400,13 +419,34 @@ impl<'a> Normaliser<'a> {
     }
 
     fn free_vars(&mut self, arena: usize, t: Tm) -> Rc<Vec<Var>> {
-        if let Some(fv) = self.fv[arena].get(&t) {
-            return fv.clone();
+        let mut stack = vec![t];
+        while let Some(&s) = stack.last() {
+            if self.fv[arena].contains_key(&s) {
+                stack.pop();
+                continue;
+            }
+            let open: Vec<Tm> = self.src[arena]
+                .children(s)
+                .into_iter()
+                .filter(|c| !self.fv[arena].contains_key(c))
+                .collect();
+            if open.is_empty() {
+                stack.pop();
+                let fv = self.own_free_vars(arena, s);
+                self.fv[arena].insert(s, fv);
+            } else {
+                stack.extend(open);
+            }
         }
+        self.fv[arena][&t].clone()
+    }
+
+    /// Returns the free variables of `t`, whose children's are known.
+    fn own_free_vars(&self, arena: usize, t: Tm) -> Rc<Vec<Var>> {
         let node = self.node(arena, t);
         let mut out: Vec<Var> = Vec::new();
-        let add = |n: &mut Self, s: Tm, bound: &[Var], out: &mut Vec<Var>| {
-            for v in n.free_vars(arena, s).iter() {
+        let add = |n: &Self, s: Tm, bound: &[Var], out: &mut Vec<Var>| {
+            for v in n.fv[arena][&s].iter() {
                 if !bound.contains(v) && !out.contains(v) {
                     out.push(*v);
                 }
@@ -485,9 +525,7 @@ impl<'a> Normaliser<'a> {
                 }
             }
         }
-        let fv = Rc::new(out);
-        self.fv[arena].insert(t, fv.clone());
-        fv
+        Rc::new(out)
     }
 
     /// Returns the memo key of `t` in `cx`, or `None` when a free variable of `t` is bound to a function.
@@ -555,11 +593,8 @@ impl<'a> Normaliser<'a> {
             | Kind::Skip => Ok(self.val(node.kind.clone(), ty)),
             Kind::Field(x, l) => self.field_step(*x, l, ty, cx),
             Kind::Case { scrutinee, arms } => self.case_step(*scrutinee, arms, ty, cx),
-            Kind::If(c, a, b) => self.if_step(*c, *a, *b, ty, cx),
-            Kind::Let(v, a, b) => {
-                let bound = self.norm(*a, cx)?;
-                self.bind(*v, bound, *b, cx, ty)
-            }
+            Kind::If(..) => self.if_step(t, cx),
+            Kind::Let(..) | Kind::LetBang(..) | Kind::Block(..) => self.spine(t, cx),
             Kind::Lam(v, b) => Ok(Val::Lam {
                 var: *v,
                 body: *b,
@@ -598,11 +633,6 @@ impl<'a> Normaliser<'a> {
             Kind::Fix(binds, body) => self.fix_step(binds, *body, ty, cx),
             Kind::Replace(r, rows, f) => self.replace_step(*r, *rows, *f, ty, cx),
             Kind::Upsert { .. } => self.upsert_step(&node.kind, ty, cx),
-            Kind::LetBang(v, a, b) => {
-                let a = self.tm(*a, cx)?;
-                let (x, b) = self.under(*v, *b, cx)?;
-                Ok(self.val(Kind::LetBang(x, a, b), ty))
-            }
             Kind::Prim(..)
             | Kind::Record(_)
             | Kind::Ctor { .. }
@@ -624,9 +654,80 @@ impl<'a> Normaliser<'a> {
             | Kind::Rejects { .. }
             | Kind::Par(_)
             | Kind::Fail(_)
-            | Kind::Block(..)
             | Kind::Transact(..) => self.congruent(&node.kind, ty, cx),
         }
+    }
+
+    /// Normalises a chain of `Let`, `LetBang` and `Block` through their bodies in a loop.
+    fn spine(&mut self, mut t: Tm, cx: &Cx) -> Result<Val, String> {
+        let mut cx = cx.clone();
+        let mut wraps = Vec::new();
+        let inner = loop {
+            let node = self.node(cx.arena, t);
+            let ty = node.ty.subst(&cx.targs);
+            match &node.kind {
+                Kind::Block(a, b) => {
+                    let a = self.tm(*a, &cx)?;
+                    wraps.push(Wrap::Block(a, ty));
+                    t = *b;
+                }
+                Kind::LetBang(v, a, b) => {
+                    let a = self.tm(*a, &cx)?;
+                    let x = self.fresh(*v, &cx);
+                    let xt = self.var_tm(x);
+                    cx = cx.with(*v, Val::Tm(xt));
+                    wraps.push(Wrap::LetBang(x, a, ty));
+                    t = *b;
+                }
+                Kind::Let(v, a, b) => {
+                    match self.norm(*a, &cx)? {
+                        Val::Tm(bound) if self.copyable(bound) => {
+                            cx = cx.with(*v, Val::Tm(bound));
+                        }
+                        Val::Tm(bound) => {
+                            let x = self.fresh(*v, &cx);
+                            let xt = self.var_tm(x);
+                            cx = cx.with(*v, Val::Tm(xt));
+                            wraps.push(Wrap::Let(x, bound, ty));
+                        }
+                        f if self.spine_copyable(&f) => cx = cx.with(*v, f),
+                        f => {
+                            let k = Then::Bind {
+                                var: *v,
+                                body: *b,
+                                cx: cx.clone(),
+                                ty,
+                            };
+                            break self.then(f, k)?;
+                        }
+                    }
+                    t = *b;
+                }
+                _ => break self.norm(t, &cx)?,
+            }
+        };
+        wraps
+            .into_iter()
+            .rev()
+            .try_fold(inner, |v, w| self.wrap(w, v))
+    }
+
+    /// Returns `body` under the binder or the write `w` stands for.
+    fn wrap(&mut self, w: Wrap, body: Val) -> Result<Val, String> {
+        Ok(match w {
+            Wrap::Block(a, ty) => {
+                let b = self.first_order(body)?;
+                self.val(Kind::Block(a, b), ty)
+            }
+            Wrap::LetBang(x, a, ty) => {
+                let b = self.first_order(body)?;
+                self.val(Kind::LetBang(x, a, b), ty)
+            }
+            Wrap::Let(x, bound, ty) => match body {
+                Val::Tm(r) => self.val(Kind::Let(x, bound, r), ty),
+                v => Val::Let(x, bound, Rc::new(v)),
+            },
+        })
     }
 
     fn val(&mut self, kind: Kind, ty: Ty) -> Val {
@@ -702,20 +803,32 @@ impl<'a> Normaliser<'a> {
         Ok(Val::Case(s, Rc::new(out)))
     }
 
-    fn if_step(&mut self, c: Tm, a: Tm, b: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {
-        let c = self.tm(c, cx)?;
-        if let Some((k, _)) = self.ctor_value(c)
-            && self.is_bool(c)
-        {
-            let branch = if k == 1 { a } else { b };
-            return self.norm(branch, cx);
-        }
-        let a = self.norm(a, cx)?;
-        let b = self.norm(b, cx)?;
-        match (a, b) {
-            (Val::Tm(a), Val::Tm(b)) => Ok(self.val(Kind::If(c, a, b), ty)),
-            (a, b) => Ok(Val::If(c, Rc::new(a), Rc::new(b))),
-        }
+    /// Normalises a chain of `If` through their else branches in a loop.
+    fn if_step(&mut self, mut t: Tm, cx: &Cx) -> Result<Val, String> {
+        let mut open = Vec::new();
+        let inner = loop {
+            let node = self.node(cx.arena, t);
+            let Kind::If(c, a, b) = &node.kind else {
+                break self.norm(t, cx)?;
+            };
+            let c = self.tm(*c, cx)?;
+            if let Some((k, _)) = self.ctor_value(c)
+                && self.is_bool(c)
+            {
+                t = if k == 1 { *a } else { *b };
+                continue;
+            }
+            let a = self.norm(*a, cx)?;
+            open.push((c, a, node.ty.subst(&cx.targs)));
+            t = *b;
+        };
+        Ok(open
+            .into_iter()
+            .rev()
+            .fold(inner, |b, (c, a, ty)| match (a, b) {
+                (Val::Tm(a), Val::Tm(b)) => self.val(Kind::If(c, a, b), ty),
+                (a, b) => Val::If(c, Rc::new(a), Rc::new(b)),
+            }))
     }
 
     fn app_step(&mut self, f: Tm, a: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {

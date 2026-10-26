@@ -366,6 +366,29 @@ resolves as `Principal` from every module and every bundle
 
 Rulings: syntax/module/header, surface/namespace/modules, surface/source/op-log, surface/migration/handwritten, surface/version/counter, spec/adhoc/names/every-module, spec/temp-relations/names/distinct, spec/temp-relations/generated-key/none, spec/temp-relations/redeclare/refused
 
+### 3.5 Nesting
+
+An implementation must accept text that nests 64 levels deep and must
+refuse text that nests deeper, as a syntax error. The depth of a point
+in the text is the number of enclosing parentheses, brackets, braces,
+operands, patterns, types, writes, generators and `where` clauses
+around it.
+
+- A chain of one of `and`, `or` and `union` counts as a balanced
+  binary tree of its operands, split in half at each level with the
+  first half taking the odd operand, and each operand sits as many
+  levels inside the chain as its leaf is deep in that tree. A chain of
+  `n` operands is at most `⌈log₂ n⌉` levels: `a or b or c or d` is two
+  levels over its operands, and a filter of 1000 alternatives is ten.
+- Every other operator chain counts one level per operator:
+  `a + b + c + d` is three levels over its operands, as is `x.f.g.h`.
+- The number of items in a list does not count: the elements of a set
+  literal, the fields of a record, the items of a `transact` block and
+  the arms of a `match` each sit one level inside their form however
+  many there are.
+
+Rulings: spec/nesting-limit/balanced
+
 ## 4. Types
 
 ```ebnf

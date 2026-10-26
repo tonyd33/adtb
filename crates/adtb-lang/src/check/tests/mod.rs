@@ -96,6 +96,18 @@ fn refuses(extra: &str, needle: &str) {
     }
 }
 
+/// Runs `f` on a thread with the 2 MiB stack a spawned thread gets by default.
+fn on_small_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn_scoped(s, f)
+            .expect("a test thread starts")
+            .join()
+            .unwrap_or_else(|p| std::panic::resume_unwind(p))
+    })
+}
+
 /// Checks ad hoc `text` against the running schema, its parameters given as `name: Type`.
 fn adhoc(params: &[(&str, &str)], text: &str) -> Result<(Schema, Adhoc), Vec<String>> {
     let s = schema("").expect("the running schema builds");

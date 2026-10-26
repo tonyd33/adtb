@@ -5,13 +5,9 @@ use crate::schema::Schema;
 
 /// Returns whether `t` reads a volatile relation.
 pub fn reads_volatile(schema: &Schema, terms: &Terms, t: Tm) -> bool {
-    match terms.kind(t) {
-        Kind::Rel(r, _) | Kind::Transition(_, r, _) if schema.relation(*r).volatile => true,
-        _ => terms
-            .children(t)
-            .into_iter()
-            .any(|c| reads_volatile(schema, terms, c)),
-    }
+    terms.any(t, |k| {
+        matches!(k, Kind::Rel(r, _) | Kind::Transition(_, r, _) if schema.relation(*r).volatile)
+    })
 }
 
 fn is_write(k: &Kind) -> bool {
@@ -27,17 +23,11 @@ fn is_write(k: &Kind) -> bool {
 }
 
 fn has_write(terms: &Terms, t: Tm) -> bool {
-    is_write(terms.kind(t)) || terms.children(t).into_iter().any(|c| has_write(terms, c))
+    terms.any(t, is_write)
 }
 
 fn mentions(terms: &Terms, t: Tm, vars: &BTreeSet<Var>) -> bool {
-    match terms.kind(t) {
-        Kind::Var(v) => vars.contains(v),
-        _ => terms
-            .children(t)
-            .into_iter()
-            .any(|c| mentions(terms, c, vars)),
-    }
+    terms.any(t, |k| matches!(k, Kind::Var(v) if vars.contains(v)))
 }
 
 /// Returns whether a write in `t` depends on a volatile read: its target, predicate or values read one, or a
@@ -46,47 +36,62 @@ fn mentions(terms: &Terms, t: Tm, vars: &BTreeSet<Var>) -> bool {
 /// Preconditions:
 /// - `t` is a normal form.
 pub fn write_depends_on_volatile(schema: &Schema, terms: &Terms, t: Tm) -> bool {
-    walk(schema, terms, t, &mut BTreeSet::new())
+    let mut tainted = BTreeSet::new();
+    let mut stack = vec![t];
+    while let Some(t) = stack.pop() {
+        match visit(schema, terms, t, &mut tainted) {
+            Visit::Depends => return true,
+            Visit::Into(cs) => stack.extend(cs.into_iter().rev()),
+        }
+    }
+    false
 }
 
-fn walk(schema: &Schema, terms: &Terms, t: Tm, tainted: &mut BTreeSet<Var>) -> bool {
+/// What [`visit`] found at one term.
+enum Visit {
+    Depends,
+    /// The terms to visit next, in order.
+    Into(Vec<Tm>),
+}
+
+/// Visits `t` before the terms under it, tainting the variables a volatile read reaches.
+fn visit(schema: &Schema, terms: &Terms, t: Tm, tainted: &mut BTreeSet<Var>) -> Visit {
     let dirty = |x: Tm, tainted: &BTreeSet<Var>| {
         reads_volatile(schema, terms, x) || mentions(terms, x, tainted)
     };
-    let kind = terms.kind(t).clone();
-    if is_write(&kind) {
-        return dirty(t, tainted);
+    let kind = terms.kind(t);
+    if is_write(kind) {
+        return if dirty(t, tainted) {
+            Visit::Depends
+        } else {
+            Visit::Into(Vec::new())
+        };
     }
     match kind {
         Kind::Let(x, e, body) | Kind::For(x, e, body) => {
-            if dirty(e, tainted) {
-                if has_write(terms, body) && matches!(terms.kind(t), Kind::For(..)) {
-                    return true;
+            if dirty(*e, tainted) {
+                if has_write(terms, *body) && matches!(kind, Kind::For(..)) {
+                    return Visit::Depends;
                 }
-                tainted.insert(x);
+                tainted.insert(*x);
             }
-            walk(schema, terms, e, tainted) || walk(schema, terms, body, tainted)
+            Visit::Into(vec![*e, *body])
         }
         Kind::If(c, a, b) => {
-            (dirty(c, tainted) && (has_write(terms, a) || has_write(terms, b)))
-                || walk(schema, terms, a, tainted)
-                || walk(schema, terms, b, tainted)
+            if dirty(*c, tainted) && (has_write(terms, *a) || has_write(terms, *b)) {
+                return Visit::Depends;
+            }
+            Visit::Into(vec![*a, *b])
         }
         Kind::Case { scrutinee, arms } => {
-            let by_volatile = dirty(scrutinee, tainted);
-            if by_volatile && arms.iter().any(|(_, _, b)| has_write(terms, *b)) {
-                return true;
-            }
-            arms.iter().any(|(_, v, b)| {
-                if by_volatile {
-                    tainted.insert(*v);
+            if dirty(*scrutinee, tainted) {
+                if arms.iter().any(|(_, _, b)| has_write(terms, *b)) {
+                    return Visit::Depends;
                 }
-                walk(schema, terms, *b, tainted)
-            })
+                tainted.extend(arms.iter().map(|(_, v, _)| *v));
+            }
+            Visit::Into(arms.iter().map(|(_, _, b)| *b).collect())
         }
-        _ => terms
-            .children(t)
-            .into_iter()
-            .any(|c| walk(schema, terms, c, tainted)),
+        _ => Visit::Into(terms.children(t)),
     }
 }

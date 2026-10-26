@@ -684,6 +684,7 @@ accept:
   spec/log-rows/unscoped-members/written-scope: {title: 'Only a written in r.C scope gives Member clauses; an unscoped one has none and ranges over every constructor, later ones included', reason: 'an unscoped index covers constructors added later, so listing today''s would misstate its range'}
   spec/membership/pinned: {title: Membership at the pinned version; enabling C blocks on readers of the whole relation or of references admitting C, reason: old readers keep exhaustive matches and never dereference into an unknown constructor}
   spec/mixed-versions/refuse: {title: Refused with MixedVersions; the transaction stays open, reason: maintainer rulings on the third spec review; reasons in each option body}
+  spec/nesting-limit/balanced: {title: '64 levels; and, or and union chains count by balanced tree height', reason: 'and, or and union are associative, so a balanced tree is the same query; generated filters stay well under the limit'}
   spec/newtype-syntax/call: {title: Email("a@b") and type Email = new Text where p, reason: juxtaposition had no production and is ambiguous with nullary constructors}
   spec/only/none: {title: No surface only; a row of the snapshot is reached by a path through its key or by match on the key, reason: 'no example needs it yet, and adding it later changes no program'}
   spec/option-ref-delete/clear: {title: on delete clear sets an Option (Key) field to None, reason: the common case needed a hand-written update in every deleting statement}

@@ -423,18 +423,18 @@ fn long_list(n: i64, row: impl Fn(i64) -> String) -> String {
     format!("[{}]", rows.join(", "))
 }
 
-fn normalises(text: &str) {
-    let (s, a) = adhoc(&[], text).unwrap_or_else(|e| panic!("does not check: {e:?}"));
+fn normalises(what: &str, text: &str) {
+    let (s, a) = adhoc(&[], text).unwrap_or_else(|e| panic!("{what} does not check: {e:?}"));
     let p = check_schema(&s).expect("the schema checks");
-    crate::norm::adhoc(&s, &p, &a).unwrap_or_else(|e| panic!("has no normal form: {e:?}"));
+    crate::norm::adhoc(&s, &p, &a).unwrap_or_else(|e| panic!("{what} has no normal form: {e:?}"));
 }
 
 #[test]
 fn a_long_list_literal_parses_checks_and_normalises() {
     let rows = long_list(10_000, |i| format!("Raw {{ id: raws.key({i}), n: {i} }}"));
-    normalises(&format!("insert raws from {rows}"));
+    normalises("rows", &format!("insert raws from {rows}"));
     let records = long_list(10_000, |i| format!("{{ n: {i}, m: {i} + 1 }}"));
-    normalises(&format!("from r in {records} select r.n"));
+    normalises("records", &format!("from r in {records} select r.n"));
 }
 
 /// Returns texts of every nesting form, each `n` levels deep.
@@ -446,7 +446,6 @@ fn nested_texts(n: usize) -> Vec<(&'static str, String)> {
         ),
         ("sets", format!("{}1{}", "[".repeat(n), "]".repeat(n))),
         ("a sum chain", vec!["1"; n].join(" + ")),
-        ("an or chain", vec!["true"; n].join(" or ")),
         ("negations", format!("{}true", "not ".repeat(n))),
         (
             "conditionals",
@@ -501,10 +500,154 @@ fn nesting_past_the_limit_is_refused() {
 fn nesting_within_the_limit_checks_and_normalises() {
     let n = crate::parse::MAX_DEPTH as usize - 2;
     for (form, text) in nested_texts(n) {
-        let (s, a) = adhoc(&[], &text).unwrap_or_else(|e| panic!("{form}: {e:?}"));
-        let p = check_schema(&s).expect("the schema checks");
-        crate::norm::adhoc(&s, &p, &a).unwrap_or_else(|e| panic!("{form}: {e:?}"));
+        normalises(form, &text);
     }
+}
+
+/// The associative operators, each with an operand of its type.
+const ASSOCIATIVE: [(&str, &str); 3] = [("and", "true"), ("or", "true"), ("union", "[1]")];
+
+/// Returns `n` copies of `operand` joined by `op`, inside `m` parentheses.
+fn chain_in_parens(op: &str, operand: &str, n: usize, m: usize) -> String {
+    format!(
+        "{}{}{}",
+        "(".repeat(m),
+        vec![operand; n].join(&format!(" {op} ")),
+        ")".repeat(m)
+    )
+}
+
+fn parses(text: &str) -> bool {
+    parse_adhoc(text, Options::default()).ok().is_ok()
+}
+
+#[test]
+fn associative_chains_count_the_height_of_a_balanced_tree() {
+    for (op, operand) in ASSOCIATIVE {
+        let limit = (0..)
+            .take_while(|&m| parses(&chain_in_parens(op, operand, 2, m)))
+            .last()
+            .unwrap_or_else(|| panic!("{op}: a pair parses"));
+        assert!(
+            limit > 50,
+            "{op}: a pair parses in only {limit} parentheses"
+        );
+        assert!(
+            parses(&chain_in_parens(op, operand, 1024, limit - 9)),
+            "{op}: 1024 terms are ten levels"
+        );
+        assert!(
+            !parses(&chain_in_parens(op, operand, 1024, limit - 8)),
+            "{op}: 1024 terms are more than nine levels"
+        );
+        assert!(
+            parses(&chain_in_parens(op, operand, 1025, limit - 10)),
+            "{op}: 1025 terms are eleven levels"
+        );
+        assert!(
+            !parses(&chain_in_parens(op, operand, 1025, limit - 9)),
+            "{op}: 1025 terms are more than ten levels"
+        );
+    }
+}
+
+#[test]
+fn a_chain_past_the_limit_names_the_limit() {
+    for (op, operand) in ASSOCIATIVE {
+        let text = chain_in_parens(op, operand, 1 << 10, 60);
+        let msg = match parse_adhoc(&text, Options::default()).ok() {
+            Ok(_) => panic!("{op}: 70 levels parse"),
+            Err(ds) => ds[0].message.clone(),
+        };
+        assert!(
+            msg.starts_with("the text nests more than 64 levels deep"),
+            "{op}: {msg}"
+        );
+    }
+}
+
+#[test]
+fn a_thousand_term_filter_checks_and_normalises() {
+    let terms = |op: &str, cmp: &str| {
+        (0..1000)
+            .map(|i| format!("r.n {cmp} {i}"))
+            .collect::<Vec<_>>()
+            .join(&format!(" {op} "))
+    };
+    let texts = [
+        (
+            "or",
+            format!("from r in raws where {} select r", terms("or", "==")),
+        ),
+        (
+            "and",
+            format!("from r in raws where {} select r", terms("and", "!=")),
+        ),
+        (
+            "union",
+            (0..1000)
+                .map(|i| format!("(from r in raws where r.n == {i} select r)"))
+                .collect::<Vec<_>>()
+                .join(" union "),
+        ),
+    ];
+    on_small_stack(|| {
+        for (op, text) in &texts {
+            normalises(op, text);
+        }
+    });
+}
+
+#[test]
+fn a_mixed_chain_keeps_precedence() {
+    let (_, a) = adhoc(&[], "true or false and false").expect("checks");
+    let (_, b) = adhoc(&[], "true or (false and false)").expect("checks");
+    assert_eq!(
+        format!("{:?}", a.terms.kind(a.items[0])),
+        format!("{:?}", b.terms.kind(b.items[0]))
+    );
+}
+
+#[test]
+fn ten_thousand_transact_items_check_and_normalise() {
+    let lets: String = (0..10_000)
+        .map(|i| format!("  let u{i} = insert users {{ name: \"{i}\" }}\n"))
+        .collect();
+    let inserts: String = (0..10_000)
+        .map(|i| format!("  insert users {{ name: \"{i}\" }}\n"))
+        .collect();
+    let texts = [
+        ("lets", format!("transact\n{lets}")),
+        ("inserts", format!("transact\n{inserts}")),
+    ];
+    on_small_stack(|| {
+        for (what, text) in &texts {
+            normalises(what, text);
+        }
+    });
+}
+
+#[test]
+fn two_thousand_match_arms_check_and_normalise() {
+    let arms: String = (0..2000).map(|i| format!(" | {i} -> {i}")).collect();
+    let write_arms: String = (0..2000)
+        .map(|i| format!(" | {i} -> insert users {{ name: \"{i}\" }}"))
+        .collect();
+    let texts = [
+        (
+            "a query match",
+            format!("from r in raws select match r.n{arms} | _ -> 0"),
+        ),
+        (
+            "a write match",
+            format!("transact let n = 1 match n{write_arms} | _ -> skip"),
+        ),
+    ];
+    on_small_stack(|| {
+        for (what, text) in &texts {
+            normalises(what, text);
+        }
+    });
 }
 
 #[test]

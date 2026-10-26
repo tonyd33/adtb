@@ -54,6 +54,9 @@ impl Parser<'_> {
 
     /// Parses an operand and every infix operator of level `min` or tighter that follows it.
     fn operators(&mut self, min: Level) -> PResult<Expr> {
+        if min <= Level::And {
+            return self.associative(min);
+        }
         self.chain(
             |p| {
                 if min <= Level::Not && p.at_kw(Kw::Not) {
@@ -73,6 +76,50 @@ impl Parser<'_> {
                 Ok(p.binary(op, lhs, rhs))
             },
         )
+    }
+
+    /// Parses a chain of the operator of `level`, which is `union`, `or` or `and`, as a
+    /// balanced tree of its operands in order.
+    ///
+    /// Postconditions:
+    /// - The chain's height is the height of that tree over its operands' heights, and the
+    ///   nesting depth is unchanged.
+    fn associative(&mut self, level: Level) -> PResult<Expr> {
+        let base = self.depth;
+        let outer = self.peak;
+        let mut op = None;
+        let mut parts = Vec::new();
+        loop {
+            self.peak = base;
+            let e = self.operators(level.operand())?;
+            parts.push((e, self.peak - base));
+            match self.infix() {
+                Some((o, l)) if l == level => {
+                    op = Some(o);
+                    self.bump();
+                }
+                _ => break,
+            }
+        }
+        let (e, height) = match op {
+            Some(op) => self.balanced(op, parts),
+            None => parts.pop().expect("a chain has an operand"),
+        };
+        self.reach(base + height)?;
+        self.peak = outer.max(base + height);
+        Ok(e)
+    }
+
+    /// Returns `parts` joined by `op` as a balanced tree, nesting to the left where it is
+    /// uneven, with its height.
+    fn balanced(&self, op: BinOp, mut parts: Vec<(Expr, u32)>) -> (Expr, u32) {
+        if parts.len() == 1 {
+            return parts.pop().expect("a balanced tree has a part");
+        }
+        let right = parts.split_off(parts.len().div_ceil(2));
+        let (l, lh) = self.balanced(op, parts);
+        let (r, rh) = self.balanced(op, right);
+        (self.binary(op, l, r), lh.max(rh) + 1)
     }
 
     fn not_e(&mut self) -> PResult<Expr> {

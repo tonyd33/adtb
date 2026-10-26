@@ -3,7 +3,7 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use adtb_testkit::fuzz::{Case, Front, Kind, Reached, case, spec_corpus};
+use adtb_testkit::fuzz::{Case, Front, Kind, Reached, case, long_case, spec_corpus};
 
 /// Cases per run unless `ADTB_FUZZ_CASES` says otherwise.
 const CASES: u64 = 3000;
@@ -99,5 +99,15 @@ fn most_drawn_programs_reach_the_normaliser() {
             "{kind:?}: {normalised} of {} unmutated cases normalise",
             rs.len()
         );
+    }
+}
+
+#[test]
+fn every_drawn_long_list_normalises() {
+    let front = Front::new();
+    for seed in FIRST_SEED..FIRST_SEED + 60 {
+        let c = long_case(seed);
+        let r = run(&front, seed, &c).unwrap_or_else(|why| panic!("seed {seed}: {why}"));
+        assert_eq!(r, Reached::Normalised, "seed {seed}:\n{}", c.text);
     }
 }

@@ -328,6 +328,20 @@ impl Terms {
     pub fn children(&self, t: Tm) -> Vec<Tm> {
         self.kind(t).children()
     }
+
+    /// Returns whether `p` holds of the kind of `t` or of any term under it, visiting terms in
+    /// evaluation order on a stack of its own.
+    pub fn any(&self, t: Tm, mut p: impl FnMut(&Kind) -> bool) -> bool {
+        let mut stack = vec![t];
+        while let Some(s) = stack.pop() {
+            let k = self.kind(s);
+            if p(k) {
+                return true;
+            }
+            stack.extend(k.children().into_iter().rev());
+        }
+        false
+    }
 }
 
 impl Kind {
