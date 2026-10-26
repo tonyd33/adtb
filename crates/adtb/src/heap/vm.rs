@@ -89,10 +89,10 @@ impl Vm {
     }
 
     /// Returns the leaf covering `pid`, if one exists, as `stage` holds the map.
-    fn leaf<R: Runtime>(
+    pub(super) fn leaf<'p, R: Runtime>(
         &self,
-        stage: &Stage,
-        pager: &Pager<R>,
+        stage: &Stage<'p, R>,
+        pager: &'p Pager<R>,
         pid: Pid,
     ) -> Result<Option<Pid>, PageError> {
         let size = pager.page_size();
@@ -121,20 +121,20 @@ impl Vm {
         Ok(bit(&pager.read(leaf)?, i))
     }
 
-    /// Set or clear the bit of `pid` in `stage`.
+    /// Set or clear the bit of `pid` in `stage`, latching its leaf.
     ///
-    /// Setting a bit first adds, each in an update of its own, the map pages its path lacks.
-    pub fn put<R: Runtime>(
+    /// Precondition: to set a bit, [`Vm::extend`] has added the path to `pid`.
+    ///
+    /// Panics if a bit to set has no leaf.
+    pub fn put<'p, R: Runtime>(
         &self,
-        stage: &mut Stage,
-        pager: &Pager<R>,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
         pid: Pid,
         on: bool,
     ) -> Result<(), PageError> {
-        if on {
-            self.extend(pager, pid)?;
-        }
         let Some(leaf) = self.leaf(stage, pager, pid)? else {
+            assert!(!on, "the visibility map has no leaf for {pid:?}");
             return Ok(());
         };
         let i = bit_index(pager.page_size(), pid);
@@ -142,41 +142,47 @@ impl Vm {
         Ok(())
     }
 
-    /// Add the map pages the path to `pid` lacks.
-    fn extend<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
+    /// Add the map pages the path to `pid` lacks, each under the latch of the page that links
+    /// it and in an update of its own.
+    pub fn extend<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
         let size = pager.page_size();
-        while pid.0 >= reach(size, level(&pager.read(self.root)?)) {
+        loop {
+            let mut stage = Stage::new();
+            let root = stage.page(pager, self.root)?;
+            let l = level(root);
+            if pid.0 < reach(size, l) {
+                break;
+            }
             let mut new = pager.reserve();
             let moved = new.page(1, PageKind::VisibilityMap, self.owner)?;
-            pager.update_with(new, &[self.root, moved], |p| {
-                let (root, copy) = p.split_at_mut(1);
-                copy[0][CONTENTS..].copy_from_slice(&root[0][CONTENTS..]);
-                let l = level(root[0]);
-                root[0][CONTENTS..].fill(0);
-                set_level(root[0], l + 1);
-                set_child(root[0], 0, moved);
-            })?;
+            let contents = root[CONTENTS..].to_vec();
+            root[CONTENTS..].fill(0);
+            set_level(root, l + 1);
+            set_child(root, 0, moved);
+            stage.put(pager, moved, new.image(moved))?;
+            stage.page(pager, moved)?[CONTENTS..].copy_from_slice(&contents);
+            stage.commit_with(pager, new)?;
         }
         let mut at = self.root;
         loop {
-            let node = pager.read(at)?.to_vec();
-            let l = level(&node);
+            let mut stage = Stage::new();
+            let node = stage.page(pager, at)?;
+            let l = level(node);
             if l == 0 {
                 return Ok(());
             }
             let i = child_index(size, l, pid);
-            at = match child(&node, i) {
-                Some(c) => c,
-                None => {
-                    let mut new = pager.reserve();
-                    let c = new.page(1, PageKind::VisibilityMap, self.owner)?;
-                    pager.update_with(new, &[c, at], |p| {
-                        set_level(p[0], l - 1);
-                        set_child(p[1], i, c);
-                    })?;
-                    c
-                }
-            };
+            if let Some(c) = child(node, i) {
+                at = c;
+                continue;
+            }
+            let mut new = pager.reserve();
+            let c = new.page(1, PageKind::VisibilityMap, self.owner)?;
+            set_child(node, i, c);
+            stage.put(pager, c, new.image(c))?;
+            set_level(stage.page(pager, c)?, l - 1);
+            stage.commit_with(pager, new)?;
+            at = c;
         }
     }
 

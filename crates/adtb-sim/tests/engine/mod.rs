@@ -378,7 +378,7 @@ impl Engine {
         loop {
             let by_pos = self.by_pos.lock(&self.rt);
             let by_elem = self.by_elem.lock(&self.rt);
-            let mut heap = self.elems.lock(&self.rt);
+            let heap = self.elems.lock(&self.rt);
             let n = self.scan(tx, k, &by_pos, &heap)?.len() as i64;
             let keys = [
                 (&*by_pos, vec![Value::I64(k), Value::I64(n)]),
@@ -449,7 +449,7 @@ impl Engine {
         let xid = tx.xid.expect("a read-only transaction writes");
         loop {
             let by_id = self.by_id.lock(&self.rt);
-            let mut heap = self.counters.lock(&self.rt);
+            let heap = self.counters.lock(&self.rt);
             self.ser.lock(&self.rt).check(tx.sid)?;
             let keys = [(&*by_id, vec![Value::I64(id)])];
             if let Some(x) = self.probe(tx, xid, &heap, &keys)? {
@@ -522,7 +522,7 @@ impl Engine {
         let xid = tx.xid.expect("a read-only transaction writes");
         loop {
             let by_id = self.by_id.lock(&self.rt);
-            let mut heap = self.counters.lock(&self.rt);
+            let heap = self.counters.lock(&self.rt);
             let (tid, xmax, n) = self
                 .find_counter(tx, id, &by_id, &heap)?
                 .expect("the counter exists");

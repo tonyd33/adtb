@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
 use crate::btree::{self, BTree, Index};
-use crate::heap::{Heap, LargeStore};
-use crate::key::CtorId;
-use crate::mvcc::CommitLog;
+use crate::heap::{Flags, Heap, LargeStore, header_at};
+use crate::key::{CtorId, Tid};
+use crate::mvcc::{CommitLog, Status, Xid};
 use crate::runtime::Runtime;
 use crate::storage::{self, Damage, LogFinding, PageError, PageKind, Pager, Pid};
 
@@ -46,6 +46,33 @@ pub enum Problem {
     Shared(String, String),
     /// A structure's own check refuses it.
     Structure(String),
+    /// The head of an out-of-line value in `slot` counts `count` versions and only `versions`
+    /// point at it.
+    Overcounted {
+        slot: u16,
+        count: u32,
+        versions: u32,
+    },
+}
+
+impl Problem {
+    /// Returns whether [`repair`] mends the problem.
+    pub fn repairable(&self) -> bool {
+        matches!(self, Problem::Leaked | Problem::Overcounted { .. })
+    }
+}
+
+/// How much [`verify_with`] checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Depth {
+    /// Check every page and the whole retained log as the pager does. Without it, only the pages
+    /// the structures read are verified, as every read verifies them.
+    pub log: bool,
+}
+
+impl Depth {
+    pub const FULL: Depth = Depth { log: true };
+    pub const STRUCTURE: Depth = Depth { log: false };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -81,11 +108,11 @@ impl Report {
             .collect()
     }
 
-    /// Returns the findings other than leaked pages.
-    pub fn besides_leaks(&self) -> Vec<&Finding> {
+    /// Returns the findings [`repair`] does not mend.
+    pub fn unrepairable(&self) -> Vec<&Finding> {
         self.findings
             .iter()
-            .filter(|f| f.problem != Problem::Leaked)
+            .filter(|f| !f.problem.repairable())
             .collect()
     }
 }
@@ -131,6 +158,19 @@ impl<R: Runtime> Walk<'_, R> {
     }
 
     fn commit_log(&mut self, clog: &CommitLog) {
+        if clog.bound() < clog.reserved() {
+            let per = clog.ids_per_page();
+            let first = clog.bound().0 / per;
+            let last = (clog.reserved().0 - 1) / per;
+            for n in first..=last {
+                if !clog.status_pages().contains_key(&n) {
+                    self.structure(
+                        clog.root(),
+                        format!("commit log: no status page holds ids from {}", n * per),
+                    );
+                }
+            }
+        }
         let mut pages = vec![clog.root()];
         pages.extend(clog.directory_pages());
         pages.extend(clog.status_pages().values().copied());
@@ -171,8 +211,107 @@ impl<R: Runtime> Walk<'_, R> {
         }
     }
 
-    fn large(&mut self, large: LargeStore) {
+    /// Check every version's `next` that is not hot-updated: a version with no deleter names no
+    /// successor, and one whose deleter is running names a version that deleter wrote.
+    fn chains(&mut self, heap: &Heap, clog: &CommitLog) {
+        let name = format!("heap {}", heap.id());
+        let versions = match heap.headers(self.pager) {
+            Ok(v) => v,
+            Err(e) => return self.damaged(e),
+        };
+        for (t, h, flags) in versions {
+            let pid = Pid(t.page());
+            let Some(next) = h.next else {
+                continue;
+            };
+            if flags.contains(Flags::HOT_UPDATED) {
+                continue;
+            }
+            if h.xmax == 0 {
+                self.structure(
+                    pid,
+                    format!(
+                        "{name}: slot {} names a successor and has no deleter",
+                        t.slot()
+                    ),
+                );
+                continue;
+            }
+            if Xid(h.xmax) >= clog.reserved() {
+                self.structure(
+                    pid,
+                    format!(
+                        "{name}: slot {} names unreserved deleter {}",
+                        t.slot(),
+                        h.xmax
+                    ),
+                );
+                continue;
+            }
+            match clog.status(self.pager, Xid(h.xmax)) {
+                Ok(Status::InProgress) => {}
+                Ok(_) => continue,
+                Err(e) => return self.damaged(e),
+            }
+            let found = match header_at(self.pager, next) {
+                Ok(successor) => successor.is_some_and(|s| s.xmin == h.xmax),
+                Err(e) => return self.damaged(e),
+            };
+            if !found {
+                self.structure(
+                    pid,
+                    format!(
+                        "{name}: slot {} is superseded by running {} and names no version of it",
+                        t.slot(),
+                        h.xmax
+                    ),
+                );
+            }
+        }
+    }
+
+    fn large(&mut self, large: LargeStore, heaps: &[&Heap]) {
         let name = format!("large-value store {}", large.id());
+        let mut versions = Some(BTreeMap::<Tid, u32>::new());
+        for heap in heaps {
+            match heap.out_of_line(self.pager) {
+                Ok(Some(pointers)) => {
+                    if let Some(v) = versions.as_mut() {
+                        for p in pointers {
+                            *v.entry(p.first).or_default() += 1;
+                        }
+                    }
+                }
+                Ok(None) => versions = None,
+                Err(e) => {
+                    self.damaged(e);
+                    versions = None;
+                }
+            }
+        }
+        let counted = match &versions {
+            Some(v) => Some(large.check_chunks(self.pager, v)),
+            None => None,
+        };
+        match counted.transpose() {
+            Ok(None) => {}
+            Ok(Some(found)) => {
+                for (pid, what) in found.problems {
+                    self.structure(pid, format!("{name}: {what}"));
+                }
+                for (t, count, refs) in found.overcounted {
+                    self.found(
+                        Pid(t.page()),
+                        Problem::Overcounted {
+                            slot: t.slot(),
+                            count,
+                            versions: refs,
+                        },
+                    );
+                }
+            }
+            Err(e) => self.damaged(e),
+        }
         match large.check(self.pager) {
             Ok(problems) => {
                 for (pid, what) in problems {
@@ -290,7 +429,14 @@ pub(crate) fn entries<R: Runtime>(
 ///
 /// Precondition: no write is in progress.
 pub fn verify<R: Runtime>(pager: &Pager<R>, inventory: &Inventory) -> Report {
-    let v = pager.verify();
+    verify_with(pager, inventory, Depth::FULL)
+}
+
+/// Check the file against `inventory` as [`verify`] does, to `depth`. A check without the log
+/// reports no `Unlogged` page and no log finding, and returns no commits.
+///
+/// Precondition: no write is in progress.
+pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: Depth) -> Report {
     let mut walk = Walk {
         pager,
         findings: Vec::new(),
@@ -298,27 +444,36 @@ pub fn verify<R: Runtime>(pager: &Pager<R>, inventory: &Inventory) -> Report {
         complete: true,
     };
     let mut log = Vec::new();
-    for f in v.findings {
-        match f {
-            storage::Finding::Page { pid, damage } => walk.found(pid, Problem::Damaged(damage)),
-            storage::Finding::Orphan(pid) => walk.found(pid, Problem::Unlogged),
-            storage::Finding::Log(l) => log.push(l),
+    let mut commits = Vec::new();
+    if depth.log {
+        let v = pager.verify();
+        commits = v.commits;
+        for f in v.findings {
+            match f {
+                storage::Finding::Page { pid, damage } => walk.found(pid, Problem::Damaged(damage)),
+                storage::Finding::Orphan(pid) => walk.found(pid, Problem::Unlogged),
+                storage::Finding::Log(l) => log.push(l),
+            }
         }
     }
     if let Some(clog) = inventory.commit_log {
         walk.commit_log(clog);
     }
-    let mut stores: Vec<LargeStore> = Vec::new();
+    let mut stores: Vec<(LargeStore, Vec<&Heap>)> = Vec::new();
     for sum in &inventory.sums {
         walk.sum(sum);
         for (_, heap) in &sum.heaps {
-            if !stores.contains(&heap.large()) {
-                stores.push(heap.large());
+            if let Some(clog) = inventory.commit_log {
+                walk.chains(heap, clog);
+            }
+            match stores.iter_mut().find(|(s, _)| *s == heap.large()) {
+                Some((_, hs)) => hs.push(heap),
+                None => stores.push((heap.large(), vec![heap])),
             }
         }
     }
-    for store in stores {
-        walk.large(store);
+    for (store, heaps) in stores {
+        walk.large(store, &heaps);
     }
     for (i, &tree) in inventory.trees.iter().enumerate() {
         walk.tree(&format!("tree {i}"), tree);
@@ -331,24 +486,50 @@ pub fn verify<R: Runtime>(pager: &Pager<R>, inventory: &Inventory) -> Report {
     Report {
         findings,
         log,
-        commits: v.commits,
+        commits,
         complete: walk.complete,
     }
 }
 
-/// Free every page `report` found leaked. Returns the number freed.
+/// Free every page `report` found leaked, and set every head it found overcounted to the
+/// number of versions that point at it. Returns the number of findings mended.
 ///
-/// Preconditions: `report` is complete and was made by [`verify`] with no write since.
+/// Preconditions: `report` is complete and was made by [`verify`] against `inventory` with no
+/// write since.
 ///
 /// Panics if `report` is not complete.
-pub fn repair<R: Runtime>(pager: &Pager<R>, report: &Report) -> Result<usize, PageError> {
+pub fn repair<R: Runtime>(
+    pager: &Pager<R>,
+    inventory: &Inventory,
+    report: &Report,
+) -> Result<usize, PageError> {
     assert!(
         report.complete,
         "a report that did not read every structure whole cannot name leaks"
     );
-    let leaked = report.leaked();
-    for &pid in &leaked {
-        pager.free(pid)?;
+    let stores: Vec<LargeStore> = inventory
+        .sums
+        .iter()
+        .flat_map(|s| s.heaps.iter().map(|(_, h)| h.large()))
+        .collect();
+    let mut mended = 0;
+    for f in &report.findings {
+        match f.problem {
+            Problem::Leaked => {
+                pager.free(f.pid)?;
+            }
+            Problem::Overcounted { slot, versions, .. } => {
+                let owner = storage::owner(&pager.read(f.pid)?);
+                let store = stores
+                    .iter()
+                    .find(|s| s.id() == owner)
+                    .expect("an overcounted head lies in a store of the inventory");
+                let head = Tid::new(f.pid.0, slot).expect("48-bit page id");
+                store.recount(pager, head, versions)?;
+            }
+            _ => continue,
+        }
+        mended += 1;
     }
-    Ok(leaked.len())
+    Ok(mended)
 }

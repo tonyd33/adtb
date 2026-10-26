@@ -61,10 +61,22 @@ Postconditions:
   ([storage.md §2.3](storage.md#23-page-access)) names at most `h + 6`
   pages, `h` being the level of the directory's root: the heap and
   directory pages, and a visibility map page for each heap page whose
-  all-visible bit it clears. The heap and
-  directory pages of one insert, update, delete or retag change in one
-  update; pages it allocates, and the chunks of its out-of-line values,
-  are written by earlier calls.
+  all-visible bit it clears, and the large-value store pages holding
+  the first chunks of the values the new version points at. The heap
+  and directory pages of one insert, update, delete or retag change in
+  one update; pages it allocates, and the chunks of its out-of-line
+  values, are written by earlier calls.
+- Any number of threads read and write one heap at once, and vacuum
+  runs beside them. Each page an operation changes is held under its
+  exclusive latch ([storage.md §2.4](storage.md#24-latches)) from the
+  read that decides the change to the update that makes it. A reader
+  decodes a version, out-of-line values included, under its page's
+  shared latch.
+- Latches are taken in one order: heap pages in page id order, then
+  large-value store pages in page id order, then directory pages with
+  the root first, then visibility map pages in page id order. Every
+  change to a directory latches its root first. No thread holds a
+  latch of a later class while it waits for one of an earlier class.
 
 Rulings: storage/table-per-ctor, storage/sum-scan/merge-append, encoding/native-cost/union-index, engine/in-heap, layout/fill/fsm
 
@@ -306,8 +318,15 @@ chain ends first. A redirect line pointer
 slot holding no version ends the chain, as do a page that is not a heap
 page and a version whose `xmin` is not the `xmax` of the version before
 it: a version's `next` may name a successor vacuum freed, and whose
-slot or page was taken again, when the successor's heap has a later
-watermark than the version's (§9).
+slot or page was taken again.
+
+A `next` that names no successor written by the version's deleter is
+allowed only when that deleter has resolved: it aborted and vacuum has
+not yet cleared it, or it committed and the successor is dead under its
+own heap's watermark while the version is not yet freed under its own,
+as a retag across heaps with different watermarks leaves. A version
+whose deleter is running always names a successor that deleter wrote,
+and a version with no deleter names none.
 
 An update names the key fields of every index whose constructor set
 contains the heap's constructor. The heap decides whether the update is
@@ -644,8 +663,10 @@ and with the commit log:
   and their moved and hot-updated flags.
 - It removes from the heap's directory every page it leaves empty, and
   frees the page.
-- It frees every chunk of the sum's large-value store that no version
-  of the sum points at (§12.5), and removes the store's empty pages.
+- It frees every out-of-line value of the sum's large-value store that
+  no version of the sum points at any more (§12.5), and removes the
+  store's empty pages. It reads only the store pages written or
+  released since the sweep that last settled them.
 
 A version is dead to every snapshot the watermark `w(h)` admits when
 its inserter aborted, or its deleter committed below `w(h)`. A version
@@ -663,9 +684,15 @@ transaction was `x`, or when none ran and `x` was the next id:
   once every other sum has been vacuumed as well (§4.4);
 - a live snapshot reads what it read before.
 
-Precondition: no write to the sum runs during the vacuum.
+Writers, readers and on-access pruning of the sum run beside a vacuum.
+Each heap is judged for the whole of one vacuum by the least of its
+watermark and the oldest transaction running when the vacuum first
+judges it: every transaction below that bound had resolved, so a
+version found dead stays dead from the scan that collects it to the
+prune that frees it, whatever snapshots are taken meanwhile.
 
-TODO: a page vacuum removes is unlinked and freed by two pager calls, so a crash between them leaks it, as with the allocations of storage.md §2.3.
+Precondition: no other vacuum runs of the sum, or of a sum sharing its
+large-value store.
 
 Vacuum's progress, triggers and budget are exposed as described in
 [../spec/catalog.md §11.5](../spec/catalog.md#115-vacuum).
@@ -675,7 +702,9 @@ Vacuum's progress, triggers and budget are exposed as described in
 Between passes, any access holding a heap page exclusively prunes
 versions on it that are dead to every snapshot: heap-only versions are
 freed, and versions still named by index entries leave a dead slot for
-vacuum's index pass. Pruning is logged.
+vacuum's index pass. Pruning is logged. A writer finding a page
+without room for a new version prunes it before looking further
+(`vacuum::insert`, `vacuum::update`).
 
 A heap-only chain whose leading versions are dead keeps the slot index
 entries name as a redirect to its first live version and frees the
@@ -940,9 +969,34 @@ version a page holds is refused.
 The pointer is 16 bytes: `u64` length, `u64` TID of the first chunk.
 The store's pages are slotted heap pages owned by the store's id,
 taken from the heap id space, with a directory of their own built as a
-heap's (§1). Each tuple is one chunk: `u64` TID of the next chunk, zero
-for the last, then the bytes. Chunks are written last first, each in
-its own pager update, before the version that points at them.
+heap's (§1). Each tuple is one chunk:
+
+```text
+0   u64  TID of the next chunk, 0 for the last
+8   u64  the transaction that wrote the chunk
+16  u32  count: in a head, the versions that point at the value
+20  u32  role: 0 head, 1 tail
+24       bytes
+```
+
+A value's first chunk is its head; every later chunk is a tail named
+by exactly one chunk's `next`. Chunks are written last first, each in
+its own pager update that also makes the chunk written before it a
+tail, before the version that points at them; each is written as a
+head of count 0 on a page its update marks touched. The update that
+writes a version counts it once more in the head of every value it
+points at, so a value shared by an update or a retag counts each
+version. Pruning a version counts it off afterwards, in an update of
+its own; a head left at count 0 marks its page touched.
+
+The directory's level-0 entries carry the touched mark in bit 56, and
+an inner entry carries it when any entry of its child does, so the
+sweep descends only into touched subtrees. The sweep frees each head of
+count 0 on a touched page whose writer has resolved, one chunk per
+update, making the next chunk a head of count 0 as it goes, and
+unmarks a page left with no head of count 0. A crash anywhere leaves a
+head of count 0 on a touched page, or a count too high: the latter
+`verify` reports and `repair` mends ([verify.md](verify.md)).
 
 Rulings: layout/large/toast, layout/large/retag/per-sum
 
@@ -972,9 +1026,12 @@ it holds dead slots. Phase 3 judges each version again against the
 watermark, frees the collected slots and every dead heap-only version
 no remaining version or redirect names, and sets the page's bit when
 every version left is visible to every snapshot. A page left empty
-leaves the directory. After the last round a fourth phase marks every
-chunk the versions of the sum's heaps point at and frees the others in
-the large-value store.
+leaves the directory, freed in the same update. After the last round a
+fourth phase sweeps the large-value store (§12.5).
+
+Progress is a row per heap of a running vacuum (`vacuum::Progress`):
+the phase, the fraction of the heap's pages scanned, and the dead
+versions collected and not yet removed.
 
 The visibility map is a radix tree of visibility map pages owned by the
 heap, its root page fixed:

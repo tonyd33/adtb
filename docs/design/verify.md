@@ -46,7 +46,12 @@ the catalog's pages are then one more structure.
 
 ## 2. Findings
 
-`verify(pager, inventory)` returns a report:
+`verify(pager, inventory)` returns a report, and
+`verify_with(pager, inventory, depth)` returns one to a depth:
+`Depth::FULL` is `verify`; `Depth::STRUCTURE` leaves out the pager's
+check of every page and of the whole retained log, so it reports no
+`Unlogged` page and no log finding, returns no commits, and verifies
+only the pages the structures read, as every read does.
 
 ```text
 Report {
@@ -65,6 +70,21 @@ Report {
 | `Shared(a, b)` | structures `a` and `b` both refer to the page |
 | `Unallocated` | a structure refers to the page, and the bitmap marks it free |
 | `Leaked` | the bitmap marks the page allocated, and nothing in the inventory refers to it |
+| `Overcounted { slot, count, versions }` | the head of an out-of-line value in `slot` counts `count` versions and only `versions` point at it |
+
+Besides each structure's own invariants, the checks cover:
+
+- every value of a large-value store
+  ([mvcc.md §12.5](mvcc.md#125-large-values)): its head counts at
+  least the versions that point at it, a head of count 0 lies on a
+  touched page, and every tail is named by exactly one chunk;
+- every version's `next` that is not a heap-only successor on its page
+  ([mvcc.md §5](mvcc.md#5-version-chains)): a version with no deleter
+  names no successor, and one whose deleter the commit log says is
+  running names a version that deleter wrote, when the inventory names
+  the commit log;
+- the commit log's status pages, which cover every id from its
+  truncation bound to its reservation.
 
 Postconditions:
 
@@ -80,16 +100,20 @@ Postconditions:
 
 ## 3. Repair
 
-`repair(pager, report)` frees every page the report found `Leaked`,
-and returns how many.
+`repair(pager, inventory, report)` frees every page the report found
+`Leaked`, sets every head it found `Overcounted` to the number of
+versions that point at it, and returns how many findings it mended.
 
-Preconditions: the report is complete and was made with no write
-since. `repair` panics on an incomplete report.
+Preconditions: the report is complete and was made against `inventory`
+with no write since. `repair` panics on an incomplete report.
 
-Postcondition: a `verify` right after reports no `Leaked` page.
+Postcondition: a `verify` right after reports no `Leaked` page and no
+`Overcounted` head.
 
-A crash between allocating a page and linking it, or between unlinking
-a page and freeing it, leaves such a leak
-([storage.md §2.3](storage.md#23-page-access)). After every crash and
-recovery, `verify` finds nothing but leaked pages, and after `repair`
-nothing at all.
+A crash between pruning a version and counting it off its values
+leaves a head counting too many versions
+([mvcc.md §12.5](mvcc.md#125-large-values)). After every crash and
+recovery, `verify` finds nothing that `repair` does not mend, and after
+`repair` nothing at all.
+
+TODO: verifying the log from a remembered position, so a caller that verifies often does not reread the whole retained log, needs the pager to offer it.

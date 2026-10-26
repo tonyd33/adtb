@@ -11,6 +11,7 @@ const VM: usize = CONTENTS + 8;
 const ENTRIES: usize = CONTENTS + 16;
 const ENTRY: usize = 8;
 const PID_MASK: u64 = (1 << 48) - 1;
+const TOUCHED: u64 = 1 << 56;
 
 /// A level-0 entry naming no page: its page was removed and its position awaits a new one.
 const HOLE: Pid = Pid(0);
@@ -39,8 +40,16 @@ fn entry(node: &[u8], i: usize) -> (Pid, u8) {
     (Pid(word & PID_MASK), (word >> 48) as u8)
 }
 
-fn set_entry(node: &mut [u8], i: usize, pid: Pid, category: u8) {
-    let word = pid.0 | u64::from(category) << 48;
+fn touched(node: &[u8], i: usize) -> bool {
+    u64_at(node, ENTRIES + ENTRY * i) & TOUCHED != 0
+}
+
+fn any_touched(node: &[u8]) -> bool {
+    (0..count(node)).any(|i| touched(node, i))
+}
+
+fn set_word(node: &mut [u8], i: usize, pid: Pid, category: u8, touched: bool) {
+    let word = pid.0 | u64::from(category) << 48 | if touched { TOUCHED } else { 0 };
     let at = ENTRIES + ENTRY * i;
     node[at..at + ENTRY].copy_from_slice(&word.to_le_bytes());
 }
@@ -48,7 +57,7 @@ fn set_entry(node: &mut [u8], i: usize, pid: Pid, category: u8) {
 fn push(node: &mut [u8], pid: Pid, category: u8) {
     let n = count(node);
     assert!((n as u64) < capacity(node), "directory node overflows");
-    set_entry(node, n, pid, category);
+    set_word(node, n, pid, category, false);
     node[COUNT..COUNT + 2].copy_from_slice(&(n as u16 + 1).to_le_bytes());
 }
 
@@ -155,10 +164,10 @@ impl Space {
     }
 
     /// Returns the root of the visibility map the directory's root names.
-    pub fn vm<R: Runtime>(
+    pub fn vm<'p, R: Runtime>(
         &self,
-        stage: &Stage,
-        pager: &Pager<R>,
+        stage: &Stage<'p, R>,
+        pager: &'p Pager<R>,
     ) -> Result<Option<Pid>, PageError> {
         Ok(vm_root(&stage.read(pager, self.root)?))
     }
@@ -267,142 +276,248 @@ impl Space {
     /// with its entry in one update of its own.
     ///
     /// Precondition: `stage` holds no page of the directory.
-    pub fn find<R: Runtime>(
+    pub fn find<'p, R: Runtime>(
         &self,
-        stage: &Stage,
-        pager: &Pager<R>,
+        stage: &Stage<'p, R>,
+        pager: &'p Pager<R>,
         need: u16,
         arrangement: Arrangement,
         format: u16,
     ) -> Result<Option<Pid>, PageError> {
-        let mut node = stage.read(pager, self.root)?;
-        let cap = capacity(&node);
-        let mut position = 0;
-        loop {
-            let Some(i) = (0..count(&node)).find(|&i| u16::from(entry(&node, i).1) >= need) else {
-                return Ok(None);
-            };
-            position += i as u64 * cap.pow(level(&node));
-            let child = entry(&node, i).0;
-            if level(&node) > 0 {
-                node = stage.read(pager, child)?;
-            } else if child == HOLE {
-                return self
-                    .fill(pager, position as u32, arrangement, format)
-                    .map(Some);
-            } else {
-                return Ok(Some(child));
+        'search: loop {
+            let mut node = stage.read(pager, self.root)?;
+            let cap = capacity(&node);
+            let mut position = 0;
+            loop {
+                let Some(i) = (0..count(&node)).find(|&i| u16::from(entry(&node, i).1) >= need)
+                else {
+                    return Ok(None);
+                };
+                position += i as u64 * cap.pow(level(&node));
+                let child = entry(&node, i).0;
+                if level(&node) > 0 {
+                    node = stage.read(pager, child)?;
+                } else if child == HOLE {
+                    match self.fill(pager, position as u32, arrangement, format)? {
+                        Some(pid) => return Ok(Some(pid)),
+                        None => continue 'search,
+                    }
+                } else {
+                    return Ok(Some(child));
+                }
             }
         }
     }
 
+    /// Returns whether the entry at `position` names `pid`, read without holding a latch across
+    /// pages.
+    pub fn names<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        position: u32,
+        pid: Pid,
+    ) -> Result<bool, PageError> {
+        let mut node = pager.read(self.root)?.to_vec();
+        let cap = capacity(&node);
+        for l in (0..=level(&node)).rev() {
+            let i = digit(u64::from(position), l, cap);
+            if level(&node) != l || i >= count(&node) {
+                return Ok(false);
+            }
+            let child = entry(&node, i).0;
+            if l == 0 {
+                return Ok(child == pid);
+            }
+            node = pager.read(child)?.to_vec();
+        }
+        Ok(false)
+    }
+
+    /// Latch the path to `position` in `stage`, the root first. Returns each node of the path
+    /// with the index of its entry on the path, the root first.
+    fn latch_path<'p, R: Runtime>(
+        &self,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
+        position: u32,
+    ) -> Result<Vec<(Pid, usize)>, PageError> {
+        let root = stage.page(pager, self.root)?;
+        let cap = capacity(root);
+        let top = level(root);
+        let mut path = Vec::new();
+        let mut pid = self.root;
+        for l in (0..=top).rev() {
+            let node = stage.page(pager, pid)?;
+            let i = digit(u64::from(position), l, cap);
+            assert!(
+                i < count(node),
+                "position {position} is past the directory's end"
+            );
+            path.push((pid, i));
+            pid = entry(node, i).0;
+        }
+        Ok(path)
+    }
+
+    /// Give the hole at `position` a new empty page. Returns `None`, changing nothing, if another
+    /// writer filled it first.
     fn fill<R: Runtime>(
         &self,
         pager: &Pager<R>,
         position: u32,
         arrangement: Arrangement,
         format: u16,
-    ) -> Result<Pid, PageError> {
+    ) -> Result<Option<Pid>, PageError> {
+        let mut stage = Stage::new();
+        let path = self.latch_path(&mut stage, pager, position)?;
+        let (leaf, i) = *path.last().unwrap();
+        if entry(&stage.read(pager, leaf)?, i).0 != HOLE {
+            return Ok(None);
+        }
         let mut new = pager.reserve();
         let page = new.page(format, arrangement.kind(), self.owner)?;
-        let mut stage = Stage::new();
-        stage.put(page, new.image(page));
+        stage.put(pager, page, new.image(page))?;
         let fresh = stage.page(pager, page)?;
         arrangement.init(fresh, position);
         let cat = category(page::free(fresh), pager.page_size());
-        self.write_entry(&mut stage, pager, position, Some(page), cat)?;
+        self.write_entry(&mut stage, pager, position, Some(page), Some(cat), None)?;
         stage.commit_with(pager, new)?;
-        Ok(page)
+        Ok(Some(page))
     }
 
     /// Replace the entry at `position` by a hole, in `stage`. The page it named is no longer part
     /// of the space.
-    pub fn vacate<R: Runtime>(
+    pub fn vacate<'p, R: Runtime>(
         &self,
-        stage: &mut Stage,
-        pager: &Pager<R>,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
         position: u32,
     ) -> Result<(), PageError> {
-        self.write_entry(stage, pager, position, Some(HOLE), HOLE_CATEGORY)
+        self.write_entry(
+            stage,
+            pager,
+            position,
+            Some(HOLE),
+            Some(HOLE_CATEGORY),
+            Some(false),
+        )
     }
 
-    fn len<R: Runtime>(&self, pager: &Pager<R>) -> Result<u64, PageError> {
-        let mut node = pager.read(self.root)?.to_vec();
+    /// Returns the number of positions, holes included.
+    fn len<'p, R: Runtime>(
+        &self,
+        stage: &Stage<'p, R>,
+        pager: &'p Pager<R>,
+    ) -> Result<u64, PageError> {
+        let mut node = stage.read(pager, self.root)?;
         let cap = capacity(&node);
         let mut total = 0;
         while level(&node) > 0 && count(&node) > 0 {
             let n = count(&node) as u64;
             total += (n - 1) * cap.pow(level(&node));
-            node = pager.read(entry(&node, count(&node) - 1).0)?.to_vec();
+            node = stage.read(pager, entry(&node, count(&node) - 1).0)?;
         }
         Ok(total + count(&node) as u64)
     }
 
     /// Set the category of the entry at `position` in `stage`, and the categories above it.
-    pub fn set_category<R: Runtime>(
+    pub fn set_category<'p, R: Runtime>(
         &self,
-        stage: &mut Stage,
-        pager: &Pager<R>,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
         position: u32,
         category: u8,
     ) -> Result<(), PageError> {
-        self.write_entry(stage, pager, position, None, category)
+        self.write_entry(stage, pager, position, None, Some(category), None)
     }
 
-    /// Set the entry at `position` in `stage` to name `page`, or keep its page when `None`, with
-    /// `category`, and the categories above it.
-    fn write_entry<R: Runtime>(
+    /// Mark or unmark the entry at `position` in `stage` as touched, and the entries above it.
+    pub fn touch<'p, R: Runtime>(
         &self,
-        stage: &mut Stage,
-        pager: &Pager<R>,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
+        position: u32,
+        on: bool,
+    ) -> Result<(), PageError> {
+        self.write_entry(stage, pager, position, None, None, Some(on))
+    }
+
+    /// Returns every page whose entry is touched, with its position, in position order.
+    pub fn touched<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(u32, Pid)>, PageError> {
+        let mut out = Vec::new();
+        let root = pager.read(self.root)?.to_vec();
+        let cap = capacity(&root);
+        let mut todo = vec![(self.root, 0u64)];
+        while let Some((pid, base)) = todo.pop() {
+            let node = pager.read(pid)?.to_vec();
+            let l = level(&node);
+            for i in (0..count(&node)).rev() {
+                if !touched(&node, i) {
+                    continue;
+                }
+                let at = base + i as u64 * cap.pow(l);
+                let (child, _) = entry(&node, i);
+                if l == 0 {
+                    out.push((at as u32, child));
+                } else {
+                    todo.push((child, at));
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// Set the entry at `position` in `stage` to name `page`, with `category` and marked
+    /// `touched`, each kept as it is when `None`, and the entries above it. The path is latched
+    /// the root first.
+    fn write_entry<'p, R: Runtime>(
+        &self,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
         position: u32,
         page: Option<Pid>,
-        category: u8,
+        category: Option<u8>,
+        mark: Option<bool>,
     ) -> Result<(), PageError> {
-        let root = stage.read(pager, self.root)?;
-        let cap = capacity(&root);
-        let mut path = Vec::new();
-        let mut pid = self.root;
-        for l in (0..=level(&root)).rev() {
-            let i = digit(u64::from(position), l, cap);
-            let node = stage.read(pager, pid)?;
-            assert!(
-                i < count(&node),
-                "position {position} is past the directory's end"
-            );
-            path.push((pid, i));
-            pid = entry(&node, i).0;
-        }
+        let path = self.latch_path(stage, pager, position)?;
         let (leaf, i) = *path.last().unwrap();
         let node = stage.page(pager, leaf)?;
-        let page = page.unwrap_or(entry(node, i).0);
-        set_entry(node, i, page, category);
+        let (old_page, old_cat) = entry(node, i);
+        let t = mark.unwrap_or(touched(node, i));
+        set_word(
+            node,
+            i,
+            page.unwrap_or(old_page),
+            category.unwrap_or(old_cat),
+            t,
+        );
         for k in (0..path.len() - 1).rev() {
-            let child_max = max_category(&stage.read(pager, path[k + 1].0)?);
+            let below = stage.read(pager, path[k + 1].0)?;
+            let (top, any) = (max_category(&below), any_touched(&below));
             let (parent, i) = path[k];
             let node = stage.page(pager, parent)?;
-            let (child, old) = entry(node, i);
-            if old != child_max {
-                set_entry(node, i, child, child_max);
-            }
+            let (child, _) = entry(node, i);
+            set_word(node, i, child, top, any);
         }
         Ok(())
     }
 
     /// Add a new page in `arrangement` and row format `format`, empty, at the next position.
     ///
-    /// Each page the directory needs is allocated first; the new page, its entry and the
-    /// directory pages it touches are then written in one update.
+    /// The new page, the directory pages it needs, its entry and the directory pages it touches
+    /// are written in one update, the root latched first.
     pub fn append<R: Runtime>(
         &self,
         pager: &Pager<R>,
         arrangement: Arrangement,
         format: u16,
     ) -> Result<Pid, PageError> {
-        let root = pager.read(self.root)?.to_vec();
+        let mut stage = Stage::new();
+        let root = stage.page(pager, self.root)?.clone();
         let cap = capacity(&root);
         let height = level(&root);
-        let position = self.len(pager)?;
+        let position = self.len(&stage, pager)?;
         let position32 = u32::try_from(position).expect("a space holds fewer than 2^32 pages");
         let split = position == cap.pow(height + 1);
         let fresh = if split {
@@ -411,9 +526,7 @@ impl Space {
             let mut node = root.clone();
             let mut l = height;
             while digit(position, l, cap) < count(&node) {
-                node = pager
-                    .read(entry(&node, digit(position, l, cap)).0)?
-                    .to_vec();
+                node = stage.read(pager, entry(&node, digit(position, l, cap)).0)?;
                 l -= 1;
             }
             l
@@ -429,9 +542,8 @@ impl Space {
         for _ in 0..fresh {
             chain.push(new.page(1, PageKind::FreeSpaceMap, self.owner)?);
         }
-        let mut stage = Stage::new();
         for &pid in [page].iter().chain(&moved).chain(&chain) {
-            stage.put(pid, new.image(pid));
+            stage.put(pager, pid, new.image(pid))?;
         }
         let mut height = height;
         if let Some(moved) = moved {
@@ -443,6 +555,7 @@ impl Space {
             let r = stage.page(pager, self.root)?;
             init(r, height + 1, cap);
             push(r, moved, top);
+            set_word(r, 0, moved, top, any_touched(&old));
             height += 1;
         }
         let mut pid = self.root;

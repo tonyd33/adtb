@@ -1,73 +1,81 @@
 use crate::runtime::Runtime;
-use crate::storage::{self, FIRST_EDITABLE, PageError, Pager, Pid, Reservation};
+use crate::storage::{FIRST_EDITABLE, PageError, PageExclusive, Pager, Pid, Reservation};
 
-/// Copies of pages being changed together, written back by one pager update.
-#[derive(Debug, Default)]
-pub(super) struct Stage {
-    pages: Vec<(Pid, Vec<u8>)>,
+/// Pages being changed together, each held under its exclusive latch from the moment it is
+/// staged, written back by one pager update.
+///
+/// Callers stage pages in the order their structure defines: heap pages in page id order, then
+/// large-value store pages in page id order, then directory pages with the root first, then
+/// visibility map pages in page id order.
+pub(super) struct Stage<'p, R: Runtime> {
+    pages: Vec<(PageExclusive<'p, R>, Vec<u8>)>,
 }
 
-impl Stage {
-    pub fn new() -> Stage {
-        Stage::default()
+impl<R: Runtime> std::fmt::Debug for Stage<'_, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pids: Vec<Pid> = self.pages.iter().map(|(g, _)| g.pid()).collect();
+        f.debug_struct("Stage").field("pages", &pids).finish()
+    }
+}
+
+impl<'p, R: Runtime> Stage<'p, R> {
+    pub fn new() -> Stage<'p, R> {
+        Stage { pages: Vec::new() }
     }
 
-    /// Returns a copy of `pid` as staged, or as the pager holds it when it is not staged.
-    pub fn read<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<Vec<u8>, PageError> {
-        match self.pages.iter().find(|(p, _)| *p == pid) {
-            Some((_, bytes)) => Ok(bytes.clone()),
+    fn find(&self, pid: Pid) -> Option<usize> {
+        self.pages.iter().position(|(g, _)| g.pid() == pid)
+    }
+
+    /// Returns a copy of `pid` as staged, or as the pager holds it when it is not staged. A page
+    /// not staged is read under a shared latch released before this returns.
+    pub fn read(&self, pager: &'p Pager<R>, pid: Pid) -> Result<Vec<u8>, PageError> {
+        match self.find(pid) {
+            Some(i) => Ok(self.pages[i].1.clone()),
             None => Ok(pager.read(pid)?.to_vec()),
         }
     }
 
-    /// Returns the staged copy of `pid`, staging it first if needed.
-    pub fn page<R: Runtime>(
-        &mut self,
-        pager: &Pager<R>,
-        pid: Pid,
-    ) -> Result<&mut Vec<u8>, PageError> {
-        let i = match self.pages.iter().position(|(p, _)| *p == pid) {
+    /// Returns the staged copy of `pid`, latching and staging it first if needed.
+    pub fn page(&mut self, pager: &'p Pager<R>, pid: Pid) -> Result<&mut Vec<u8>, PageError> {
+        let i = match self.find(pid) {
             Some(i) => i,
             None => {
-                let bytes = pager.read(pid)?.to_vec();
-                self.pages.push((pid, bytes));
+                let g = pager.exclusive(pid)?;
+                let bytes = g.to_vec();
+                self.pages.push((g, bytes));
                 self.pages.len() - 1
             }
         };
         Ok(&mut self.pages[i].1)
     }
 
-    pub fn put(&mut self, pid: Pid, bytes: Vec<u8>) {
-        match self.pages.iter_mut().find(|(p, _)| *p == pid) {
-            Some((_, b)) => *b = bytes,
-            None => self.pages.push((pid, bytes)),
-        }
+    /// Stage `bytes` as the new contents of `pid`, latching it first if needed.
+    pub fn put(&mut self, pager: &'p Pager<R>, pid: Pid, bytes: Vec<u8>) -> Result<(), PageError> {
+        *self.page(pager, pid)? = bytes;
+        Ok(())
     }
 
     /// Write every staged page back in one pager update, so a crash keeps all of them or none.
-    pub fn commit<R: Runtime>(self, pager: &Pager<R>) -> Result<(), PageError> {
-        let new = pager.reserve();
-        self.commit_with(pager, new)
+    pub fn commit(self, pager: &'p Pager<R>) -> Result<(), PageError> {
+        self.commit_with(pager, pager.reserve())
     }
 
-    /// Write every staged page back as [`Stage::commit`] does, allocating the pages of `new` in
-    /// the same update.
-    pub fn commit_with<R: Runtime>(
-        self,
-        pager: &Pager<R>,
+    /// Write every staged page back as [`Stage::commit`] does, allocating and freeing the pages of
+    /// `new` in the same update.
+    pub fn commit_with(
+        mut self,
+        pager: &'p Pager<R>,
         new: Reservation<'_, R>,
     ) -> Result<(), PageError> {
         if self.pages.is_empty() {
             return Ok(());
         }
-        let pids: Vec<Pid> = self.pages.iter().map(|(p, _)| *p).collect();
-        pager.update_with(new, &pids, |views| {
-            for (view, (pid, bytes)) in views.iter_mut().zip(&self.pages) {
-                assert_eq!(
-                    storage::lsn(view),
-                    storage::lsn(bytes),
-                    "{pid:?} changed while it was staged"
-                );
+        let copies: Vec<Vec<u8>> = self.pages.iter().map(|(_, b)| b.clone()).collect();
+        let mut guards: Vec<&mut PageExclusive<'p, R>> =
+            self.pages.iter_mut().map(|(g, _)| g).collect();
+        pager.update_all_with(new, &mut guards, |views| {
+            for (view, bytes) in views.iter_mut().zip(&copies) {
                 view[FIRST_EDITABLE..].copy_from_slice(&bytes[FIRST_EDITABLE..]);
             }
         })?;

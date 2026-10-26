@@ -14,8 +14,8 @@ mod vm;
 mod tests;
 
 pub use dir::max_fanout;
-pub use handle::{Error, Heap, Link, Pruned, Updated, Upgrade, Version, walk};
-pub use large::LargeStore;
+pub use handle::{Error, Heap, Judge, Link, Pruned, Updated, Upgrade, Version, header_at, walk};
+pub use large::{Chunk, ChunkCheck, LargeStore};
 pub use prune::Fate;
 pub use row::{CtorType, FIXED_SUM_PAYLOAD, FieldType, Layout, POINTER_LEN, Pointer, Stored};
 pub use version::{Flags, HEADER_LEN, Header, tid_bits, tid_from_bits};

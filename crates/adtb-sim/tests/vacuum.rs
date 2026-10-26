@@ -215,19 +215,19 @@ impl Db {
             heaps,
             indexes,
         } = self;
-        let mut sum = Sum {
+        let sum = Sum {
             heaps: heaps
-                .iter_mut()
+                .iter()
                 .enumerate()
                 .map(|(i, h)| (CtorId(i as u32), h))
                 .collect(),
             indexes: indexes.iter().collect(),
         };
-        vacuum::vacuum(pager, txns, &mut sum, budget).expect("vacuum")
+        vacuum::vacuum(pager, txns, &sum, budget, &vacuum::Progress::new()).expect("vacuum")
     }
 
     fn prune(&mut self, heap: usize, pid: Pid) {
-        vacuum::prune(&self.pager, &self.txns, &mut self.heaps[heap], pid).expect("prune");
+        vacuum::prune(&self.pager, &self.txns, &self.heaps[heap], pid).expect("prune");
     }
 
     /// Returns what the heaps, the store, the indexes and the routing between them report wrong.
@@ -255,7 +255,7 @@ impl Db {
         } = self;
         let sum = Sum {
             heaps: heaps
-                .iter_mut()
+                .iter()
                 .enumerate()
                 .map(|(i, h)| (CtorId(i as u32), h))
                 .collect(),
@@ -967,6 +967,62 @@ fn an_aborted_large_value_leaves_no_chunk_behind() {
         assert!(large.pages(&db.pager).unwrap().is_empty());
         assert!(db.heaps[EMAIL].pages(&db.pager).unwrap().is_empty());
         assert_eq!(Vec::<String>::new(), db.verify());
+    });
+}
+
+#[test]
+fn the_sweep_reads_only_pages_written_since_the_last() {
+    let mut sim = Sim::new(37, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut db, _) = Db::create(rt, 64);
+        let large = db.heaps[EMAIL].large();
+        let big = |n: u8| {
+            vec![
+                Value::I64(n.into()),
+                Value::Text("b".into()),
+                Value::Bytes(vec![n; 20_000]),
+            ]
+        };
+        let x = db.txns.begin(&db.pager).unwrap();
+        let kept = db.heaps[EMAIL].insert(&db.pager, x.0, &big(1)).unwrap();
+        db.index(EMAIL, &big(1), kept);
+        db.txns.commit(&db.pager, x).unwrap();
+        assert!(!large.touched(&db.pager).unwrap().is_empty());
+        let report = db.vacuum(usize::MAX);
+        assert_eq!(0, report.chunks, "{report:?}");
+        assert!(large.touched(&db.pager).unwrap().is_empty());
+        let x = db.txns.begin(&db.pager).unwrap();
+        db.heaps[EMAIL].delete(&db.pager, kept, x.0).unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
+        let x = db.txns.begin(&db.pager).unwrap();
+        let other = db.heaps[EMAIL].insert(&db.pager, x.0, &big(2)).unwrap();
+        db.index(EMAIL, &big(2), other);
+        let report = db.vacuum(usize::MAX);
+        assert!(report.chunks >= 20_000 / PAGE, "{report:?}");
+        assert!(large.touched(&db.pager).unwrap().is_empty());
+        db.txns.commit(&db.pager, x).unwrap();
+        assert_eq!(Vec::<String>::new(), db.verify());
+        assert_eq!(Vec::<String>::new(), db.verify_file());
+    });
+}
+
+#[test]
+fn a_value_no_version_points_at_waits_for_its_writer_then_goes() {
+    let mut sim = Sim::new(38, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut db, _) = Db::create(rt, 64);
+        let large = db.heaps[EMAIL].large();
+        let x = db.txns.begin(&db.pager).unwrap();
+        large.write(&db.pager, x.0, &vec![5; 30_000]).unwrap();
+        let report = db.vacuum(usize::MAX);
+        assert_eq!(0, report.chunks, "{report:?}");
+        assert!(!large.touched(&db.pager).unwrap().is_empty());
+        db.txns.abort(&db.pager, x).unwrap();
+        let report = db.vacuum(usize::MAX);
+        assert!(report.chunks >= 30_000 / PAGE, "{report:?}");
+        assert!(large.pages(&db.pager).unwrap().is_empty());
+        assert!(large.touched(&db.pager).unwrap().is_empty());
+        assert_eq!(Vec::<String>::new(), db.verify_file());
     });
 }
 

@@ -551,7 +551,7 @@ fn rows_too_large_for_a_page_are_refused() {
             Err(Error::TooLarge { .. })
         ));
         let many = vec![scalar(Scalar::Text); 400];
-        let mut heap = Heap::create(pager, 21, many, large).unwrap();
+        let heap = Heap::create(pager, 21, many, large).unwrap();
         let row = vec![Value::Text("y".repeat(30)); 400];
         assert!(matches!(
             heap.insert(pager, 1, &row),
@@ -596,7 +596,7 @@ fn the_directory_splits_and_its_root_stays() {
 fn a_reopened_heap_finds_room_through_its_directory() {
     let mut sim = Sim::new(7, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, roots) = Db::create(rt.clone(), 3);
+        let (db, roots) = Db::create(rt.clone(), 3);
         for key in 0..40 {
             let row = vec![
                 Value::I64(key),
@@ -606,7 +606,7 @@ fn a_reopened_heap_finds_room_through_its_directory() {
             db.heaps[EMAIL].insert(&db.pager, 1, &row).unwrap();
         }
         let pages = db.heaps[EMAIL].pages(&db.pager).unwrap().len();
-        let mut reopened = Heap::open(
+        let reopened = Heap::open(
             &db.pager,
             HEAP_IDS[EMAIL],
             roots.heaps[EMAIL],
@@ -644,7 +644,7 @@ fn a_heap_scan_builds_a_batch_that_reads_back_its_rows() {
             ]),
         ];
         let large = db.heaps[EMAIL].large();
-        let mut heap = Heap::create(&db.pager, 20, row_type.clone(), large).unwrap();
+        let heap = Heap::create(&db.pager, 20, row_type.clone(), large).unwrap();
         let rows: Vec<Vec<Value>> = (0..300i64)
             .map(|k| {
                 let note = match k % 3 {

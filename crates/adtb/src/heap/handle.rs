@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::key::{Tid, Value};
 use crate::runtime::Runtime;
@@ -77,6 +78,66 @@ pub struct Pruned {
     pub removed: bool,
 }
 
+/// Decides the fate of a version from its header, for pruning.
+pub type Judge<'a, R> = dyn FnMut(&Pager<R>, &Header) -> Result<Fate, PageError> + 'a;
+
+/// What converting a page to the newest format made of it.
+#[derive(Debug, Default)]
+struct Converted {
+    page: Vec<u8>,
+    /// Pointers the converted versions hold that they did not before.
+    gained: Vec<Pointer>,
+    /// Pointers the versions held before and no longer do.
+    dropped: Vec<Pointer>,
+}
+
+/// Returns `a` and `b` in the order their latches are taken, once each.
+fn latch_order(a: Pid, b: Pid) -> Vec<Pid> {
+    let mut out = vec![a.min(b), a.max(b)];
+    out.dedup();
+    out
+}
+
+/// Finish a change whose heap pages `stage` holds: count each pointer of `gains` once more,
+/// set the directory category of each page of `dirs` to its free space, and clear the
+/// all-visible bit of each page of `marks` that has it, latching store pages, then directory
+/// pages, then visibility map pages.
+fn finish<'p, R: Runtime>(
+    stage: &mut Stage<'p, R>,
+    pager: &'p Pager<R>,
+    large: LargeStore,
+    gains: &[Pointer],
+    dirs: &[(&Heap, Pid)],
+    marks: &[(&Heap, Pid)],
+) -> Result<(), PageError> {
+    let mut gains = gains.to_vec();
+    gains.sort_by_key(|p| p.first);
+    for p in gains {
+        large.retain(stage, pager, p)?;
+    }
+    for &(h, pid) in dirs {
+        let page = stage.read(pager, pid)?;
+        let cat = category(page::free(&page), h.page_size);
+        h.space
+            .set_category(stage, pager, page::position(&page), cat)?;
+    }
+    let mut leaves = Vec::new();
+    for &(h, pid) in marks {
+        let page = stage.page(pager, pid)?;
+        if !page::all_visible(page) {
+            continue;
+        }
+        page::set_all_visible(page, false);
+        let vm = h.vm(stage, pager)?;
+        leaves.push((vm.leaf(stage, pager, pid)?, vm, pid));
+    }
+    leaves.sort_by_key(|(leaf, _, _)| *leaf);
+    for (_, vm, pid) in leaves {
+        vm.put(stage, pager, pid, false)?;
+    }
+    Ok(())
+}
+
 /// The row versions of one constructor relation.
 pub struct Heap {
     id: u32,
@@ -84,8 +145,8 @@ pub struct Heap {
     space: Space,
     large: LargeStore,
     formats: Vec<Format>,
-    /// The page that took the last insert.
-    hint: Option<Pid>,
+    /// The page that took the last insert, 0 for none.
+    hint: AtomicU64,
 }
 
 impl std::fmt::Debug for Heap {
@@ -186,7 +247,7 @@ impl Heap {
                 arrangement,
                 upgrade: None,
             }],
-            hint: None,
+            hint: AtomicU64::new(0),
         }
     }
 
@@ -240,15 +301,15 @@ impl Heap {
         pager: &Pager<R>,
         tid: Tid,
     ) -> Result<Option<(u16, Flags, Vec<u8>)>, PageError> {
-        let page = &pager.read(Pid(tid.page()))?.to_vec();
+        let page = pager.read(Pid(tid.page()))?;
         assert_eq!(
             self.id,
-            storage::owner(page),
+            storage::owner(&page),
             "{tid:?} is not in heap {}",
             self.id
         );
-        Ok(match page::get(page, usize::from(tid.slot())) {
-            Slot::Normal { flags, at } => Some((storage::format(page), flags, page[at].to_vec())),
+        Ok(match page::get(&page, usize::from(tid.slot())) {
+            Slot::Normal { flags, at } => Some((storage::format(&page), flags, page[at].to_vec())),
             _ => None,
         })
     }
@@ -295,7 +356,24 @@ impl Heap {
             .collect()
     }
 
-    /// Returns the version at `tid`, if a version is there.
+    /// Returns the pointers the version at `tid` holds, if a version of this heap is there.
+    pub fn pointers_at<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        tid: Tid,
+    ) -> Result<Option<Vec<Pointer>>, PageError> {
+        let page = pager.read(Pid(tid.page()))?;
+        if !page::is_heap(&page) || storage::owner(&page) != self.id {
+            return Ok(None);
+        }
+        Ok(match page::get(&page, usize::from(tid.slot())) {
+            Slot::Normal { at, .. } => Some(self.pointers(storage::format(&page), &page[at])),
+            _ => None,
+        })
+    }
+
+    /// Returns the version at `tid`, if a version is there. Its out-of-line values are read
+    /// while its page is held under a shared latch.
     ///
     /// Panics if `tid` names a page of another heap.
     pub fn read<R: Runtime>(
@@ -303,54 +381,74 @@ impl Heap {
         pager: &Pager<R>,
         tid: Tid,
     ) -> Result<Option<Version>, PageError> {
-        let Some((format, flags, bytes)) = self.raw(pager, tid)? else {
+        let page = pager.read(Pid(tid.page()))?;
+        assert_eq!(
+            self.id,
+            storage::owner(&page),
+            "{tid:?} is not in heap {}",
+            self.id
+        );
+        let Slot::Normal { flags, at } = page::get(&page, usize::from(tid.slot())) else {
             return Ok(None);
         };
-        let (row, _) = self.decode(pager, format, &bytes)?;
+        let format = storage::format(&page);
+        let bytes = &page[at];
+        let (row, _) = self.decode(pager, format, bytes)?;
         Ok(Some(Version {
             tid,
-            header: Header::read(&bytes),
+            header: Header::read(bytes),
             flags,
             row: self.upgrade(format, row),
         }))
     }
 
-    /// Call `f` on every version of the heap, in directory order and then slot order.
+    /// Call `f` on every version of the heap, in directory order and then slot order. Each page's
+    /// versions are decoded while it is held under a shared latch, and `f` sees them after the
+    /// latch is released.
     pub fn scan<R: Runtime>(
         &self,
         pager: &Pager<R>,
         mut f: impl FnMut(Version),
     ) -> Result<(), PageError> {
         for pid in self.space.pages(pager)? {
-            let page = pager.read(pid)?.to_vec();
-            let format = storage::format(&page);
-            for slot in 0..page::slot_count(&page) {
-                let Slot::Normal { flags, at } = page::get(&page, slot) else {
+            let mut found = Vec::new();
+            {
+                let page = pager.read(pid)?;
+                if !page::is_heap(&page) || storage::owner(&page) != self.id {
                     continue;
-                };
-                let bytes = &page[at];
-                let (row, _) = self.decode(pager, format, bytes)?;
-                f(Version {
-                    tid: tid(pid, slot),
-                    header: Header::read(bytes),
-                    flags,
-                    row: self.upgrade(format, row),
-                });
+                }
+                let format = storage::format(&page);
+                for slot in 0..page::slot_count(&page) {
+                    let Slot::Normal { flags, at } = page::get(&page, slot) else {
+                        continue;
+                    };
+                    let bytes = &page[at];
+                    let (row, _) = self.decode(pager, format, bytes)?;
+                    found.push(Version {
+                        tid: tid(pid, slot),
+                        header: Header::read(bytes),
+                        flags,
+                        row: self.upgrade(format, row),
+                    });
+                }
             }
+            found.into_iter().for_each(&mut f);
         }
         Ok(())
     }
 
-    /// Returns the body of `row` in the newest format, its large values out of line.
+    /// Returns the body of `row` in the newest format, its large values out of line and written
+    /// by `xid`, and the pointers it holds.
     ///
     /// A variable-width field equal to a value one of `reuse` points at keeps that pointer. Others
     /// move out of line, largest first, while the version exceeds a quarter of a page.
     fn body<R: Runtime>(
         &self,
         pager: &Pager<R>,
+        xid: u64,
         row: &[Value],
         reuse: &[Pointer],
-    ) -> Result<Vec<u8>, Error> {
+    ) -> Result<(Vec<u8>, Vec<Pointer>), Error> {
         let f = self.current();
         let (fixed_part, vars) = f.layout.encode(row);
         let mut known: Vec<Option<Vec<u8>>> = vec![None; reuse.len()];
@@ -385,7 +483,7 @@ impl Heap {
             let Stored::Inline(bytes) = &stored[j] else {
                 unreachable!()
             };
-            stored[j] = Stored::Out(self.large.write(pager, bytes)?);
+            stored[j] = Stored::Out(self.large.write(pager, xid, bytes)?);
         }
         let len = HEADER_LEN + f.layout.body_len(&stored);
         let max = match f.arrangement {
@@ -395,12 +493,25 @@ impl Heap {
         if len > max {
             return Err(Error::TooLarge { len });
         }
-        Ok(f.layout.assemble(&fixed_part, &stored))
+        let held = stored
+            .iter()
+            .filter_map(|s| match s {
+                Stored::Out(p) => Some(*p),
+                Stored::Inline(_) => None,
+            })
+            .collect();
+        Ok((f.layout.assemble(&fixed_part, &stored), held))
     }
 
-    /// Returns `page` with every version on it in the newest format, at the same slots, or
-    /// `None` if they would not fit.
-    fn convert<R: Runtime>(&self, pager: &Pager<R>, page: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    /// Returns `page` with every version on it in the newest format, at the same slots, with the
+    /// pointers the versions gained and dropped, or `None` if they would not fit. Values that move
+    /// out of line are written by `xid`.
+    fn convert<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        xid: u64,
+        page: &[u8],
+    ) -> Result<Option<Converted>, Error> {
         let from = storage::format(page);
         let target = match page::arrangement(page) {
             Arrangement::Slotted => Arrangement::Slotted,
@@ -415,6 +526,7 @@ impl Heap {
         );
         out[storage::FIRST_EDITABLE..storage::HEADER_LEN].copy_from_slice(&header);
         target.init(&mut out, page::position(page));
+        let mut done = Converted::default();
         for slot in 0..page::slot_count(page) {
             let content = page::get(page, slot);
             let version = match &content {
@@ -422,8 +534,14 @@ impl Heap {
                     let old = &page[at.clone()];
                     let (row, pointers) = self.decode(pager, from, old)?;
                     let row = self.upgrade(from, row);
-                    match self.body(pager, &row, &pointers) {
-                        Ok(body) => version_bytes(Header::read(old), &body),
+                    match self.body(pager, xid, &row, &pointers) {
+                        Ok((body, held)) => {
+                            done.gained
+                                .extend(held.iter().filter(|p| !pointers.contains(p)));
+                            done.dropped
+                                .extend(pointers.iter().filter(|p| !held.contains(p)));
+                            version_bytes(Header::read(old), &body)
+                        }
                         Err(Error::TooLarge { .. }) => return Ok(None),
                         Err(e) => return Err(e),
                     }
@@ -434,84 +552,98 @@ impl Heap {
                 return Ok(None);
             }
         }
-        Ok(Some(out))
+        done.page = out;
+        Ok(Some(done))
     }
 
-    /// Insert `version` on page `pid` in `stage`, converting the page to the newest format first.
-    /// Returns its TID, or `None`, staging nothing, if the page cannot take it.
-    fn try_put<R: Runtime>(
+    /// Returns whether `page`, read under a latch as page `pid`, is a page of this heap that its
+    /// directory names.
+    fn ours<R: Runtime>(&self, pager: &Pager<R>, pid: Pid, page: &[u8]) -> Result<bool, PageError> {
+        if !page::is_heap(page) || storage::owner(page) != self.id {
+            return Ok(false);
+        }
+        self.space.names(pager, page::position(page), pid)
+    }
+
+    /// Insert `version` on page `pid`, which `stage` holds, converting the page to the newest
+    /// format first. Returns its TID and the pointers conversion changed, or `None`, changing
+    /// nothing, if the page cannot take it or is no longer a page of this heap.
+    fn try_put<'p, R: Runtime>(
         &self,
-        stage: &mut Stage,
-        pager: &Pager<R>,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
         pid: Pid,
         version: &[u8],
         flags: Flags,
-    ) -> Result<Option<Tid>, Error> {
+        xid: u64,
+    ) -> Result<Option<(Tid, Converted)>, Error> {
         let mut page = stage.read(pager, pid)?;
+        if !self.ours(pager, pid, &page)? {
+            return Ok(None);
+        }
+        let mut converted = Converted::default();
         if storage::format(&page) != self.newest() {
-            match self.convert(pager, &page)? {
-                Some(converted) => page = converted,
+            match self.convert(pager, xid, &page)? {
+                Some(c) => {
+                    page = c.page.clone();
+                    converted = c;
+                }
                 None => return Ok(None),
             }
         }
         let Some(slot) = page::insert(&mut page, version, flags) else {
             return Ok(None);
         };
-        let position = page::position(&page);
-        let cat = category(page::free(&page), self.page_size);
-        stage.put(pid, page);
-        self.unmark(stage, pager, pid)?;
-        self.space.set_category(stage, pager, position, cat)?;
-        Ok(Some(tid(pid, slot)))
+        stage.put(pager, pid, page)?;
+        Ok(Some((tid(pid, slot), converted)))
     }
 
-    /// Insert `version` on some page of the heap, in `stage`.
-    ///
-    /// Precondition: `stage` holds no page of the heap's directory.
-    fn place<R: Runtime>(
-        &mut self,
-        stage: &mut Stage,
-        pager: &Pager<R>,
-        version: &[u8],
-        flags: Flags,
-    ) -> Result<Tid, Error> {
-        if let Some(hint) = self.hint.take()
-            && let Some(t) = self.try_put(stage, pager, hint, version, flags)?
-        {
-            self.hint = Some(hint);
-            return Ok(t);
+    /// Correct the directory entry of `pid`, which could not take a version: an old-format page
+    /// gets category 0, any other page of the heap its actual category.
+    fn refused<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
+        if self.hint.load(Ordering::Relaxed) == pid.0 {
+            self.hint.store(0, Ordering::Relaxed);
+        }
+        let mut stage = Stage::new();
+        let page = stage.page(pager, pid)?.clone();
+        if !self.ours(pager, pid, &page)? {
+            return Ok(());
+        }
+        let cat = if storage::format(&page) == self.newest() {
+            category(page::free(&page), self.page_size)
+        } else {
+            0
+        };
+        self.space
+            .set_category(&mut stage, pager, page::position(&page), cat)?;
+        stage.commit(pager)
+    }
+
+    /// Returns a page that may take a version needing `need` bytes: the last page that took an
+    /// insert, a page whose entry promises the room, or a new page.
+    fn candidate<R: Runtime>(&self, pager: &Pager<R>, need: usize) -> Result<Pid, PageError> {
+        let hint = self.hint.load(Ordering::Relaxed);
+        if hint != 0 {
+            return Ok(Pid(hint));
         }
         let f = self.current();
-        let need = need_category(f.arrangement.need(version.len()), self.page_size);
+        let need = need_category(f.arrangement.need(need), self.page_size);
         let (arrangement, newest) = (f.arrangement, self.newest());
-        while let Some(pid) = self.space.find(stage, pager, need, arrangement, newest)? {
-            if let Some(t) = self.try_put(stage, pager, pid, version, flags)? {
-                self.hint = Some(pid);
-                return Ok(t);
-            }
-            let page = &pager.read(pid)?.to_vec();
-            assert_ne!(
-                newest,
-                storage::format(page),
-                "{pid:?} has less room than its directory entry says"
-            );
-            let position = page::position(page);
-            let mut full = Stage::new();
-            self.space.set_category(&mut full, pager, position, 0)?;
-            full.commit(pager)?;
+        match self
+            .space
+            .find(&Stage::new(), pager, need, arrangement, newest)?
+        {
+            Some(pid) => Ok(pid),
+            None => self.space.append(pager, arrangement, newest),
         }
-        let pid = self.space.append(pager, arrangement, newest)?;
-        self.hint = Some(pid);
-        let t = self.try_put(stage, pager, pid, version, flags)?;
-        Ok(t.expect("an empty page takes any version that fits a page"))
     }
 
-    /// Set `xmax` and `next` of the version at `at` in `stage`, and replace its successor flags
-    /// by `successor`.
-    fn supersede<R: Runtime>(
+    /// Set `xmax` and `next` of the version at `at`, whose page `stage` holds, and replace its
+    /// successor flags by `successor`.
+    fn supersede<'p, R: Runtime>(
         &self,
-        stage: &mut Stage,
-        pager: &Pager<R>,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
         at: Tid,
         xid: u64,
         next: Option<Tid>,
@@ -531,31 +663,62 @@ impl Heap {
             .without(Flags::HOT_UPDATED)
             .with(successor);
         page::set_flags(page, slot, flags);
-        self.unmark(stage, pager, Pid(at.page()))
+        Ok(())
     }
 
-    fn vm<R: Runtime>(&self, stage: &Stage, pager: &Pager<R>) -> Result<Vm, PageError> {
+    /// Returns the TID, header and flags of every version of the heap, in directory order and
+    /// then slot order.
+    pub fn headers<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+    ) -> Result<Vec<(Tid, Header, Flags)>, PageError> {
+        let mut out = Vec::new();
+        for pid in self.space.pages(pager)? {
+            let page = pager.read(pid)?;
+            if !page::is_heap(&page) || !page::check(&page).is_empty() {
+                continue;
+            }
+            for slot in 0..page::slot_count(&page) {
+                if let Slot::Normal { flags, at } = page::get(&page, slot) {
+                    out.push((tid(pid, slot), Header::read(&page[at]), flags));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns the pointer of every out-of-line value a version of the heap holds, or `None` if
+    /// a page of the heap has broken slots.
+    pub fn out_of_line<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+    ) -> Result<Option<Vec<Pointer>>, PageError> {
+        let mut out = Vec::new();
+        for pid in self.space.pages(pager)? {
+            let page = pager.read(pid)?;
+            if !page::is_heap(&page) || !page::check(&page).is_empty() {
+                return Ok(None);
+            }
+            let format = storage::format(&page);
+            for slot in 0..page::slot_count(&page) {
+                if let Slot::Normal { at, .. } = page::get(&page, slot) {
+                    out.extend(self.pointers(format, &page[at]));
+                }
+            }
+        }
+        Ok(Some(out))
+    }
+
+    fn vm<'p, R: Runtime>(
+        &self,
+        stage: &Stage<'p, R>,
+        pager: &'p Pager<R>,
+    ) -> Result<Vm, PageError> {
         let root = self.space.vm(stage, pager)?;
         Ok(Vm::open(
             root.expect("a heap's directory names its visibility map"),
             self.id,
         ))
-    }
-
-    /// Clear the all-visible flag of the staged page `pid` and its bit in the visibility map, in
-    /// `stage`.
-    fn unmark<R: Runtime>(
-        &self,
-        stage: &mut Stage,
-        pager: &Pager<R>,
-        pid: Pid,
-    ) -> Result<(), PageError> {
-        let page = stage.page(pager, pid)?;
-        if !page::all_visible(page) {
-            return Ok(());
-        }
-        page::set_all_visible(page, false);
-        self.vm(stage, pager)?.put(stage, pager, pid, false)
     }
 
     /// Returns whether the visibility map has the bit of page `pid` set: every version on it is
@@ -564,45 +727,34 @@ impl Heap {
         self.vm(&Stage::new(), pager)?.get(pager, pid)
     }
 
-    /// Returns the bytes of heap page `pid`.
-    ///
-    /// Panics if `pid` is not a page of this heap.
-    fn own_page<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<Vec<u8>, PageError> {
-        let page = pager.read(pid)?.to_vec();
-        assert_eq!(
-            self.id,
-            storage::owner(&page),
-            "{pid:?} is not in heap {}",
-            self.id
-        );
-        Ok(page)
-    }
-
     /// Returns whether `tid` names a slot of this heap holding a version, a dead mark or a
     /// redirect.
     pub fn holds<R: Runtime>(&self, pager: &Pager<R>, tid: Tid) -> Result<bool, PageError> {
-        let page = &pager.read(Pid(tid.page()))?.to_vec();
-        Ok(page::is_heap(page)
-            && storage::owner(page) == self.id
-            && page::get(page, usize::from(tid.slot())) != Slot::Unused)
+        let page = pager.read(Pid(tid.page()))?;
+        Ok(page::is_heap(&page)
+            && storage::owner(&page) == self.id
+            && page::get(&page, usize::from(tid.slot())) != Slot::Unused)
     }
 
     /// Returns the slots of page `pid` whose index entries must be deleted before pruning can
     /// free them: those named by index entries whose chain on the page holds no version `judge`
-    /// keeps.
+    /// keeps. A page no longer of this heap has none.
     pub fn dead_slots<R: Runtime>(
         &self,
         pager: &Pager<R>,
         pid: Pid,
         mut judge: impl FnMut(&Pager<R>, &Header) -> Result<Fate, PageError>,
     ) -> Result<Vec<u16>, PageError> {
-        let page = self.own_page(pager, pid)?;
+        let page = pager.read(pid)?.to_vec();
+        if !self.ours(pager, pid, &page)? {
+            return Ok(Vec::new());
+        }
         let fates = prune::judge(&page, |h| judge(pager, h))?;
         let plan = prune::plan(&page, pid.0, &fates, &|_| false);
         Ok(plan.dead.into_iter().map(|s| s as u16).collect())
     }
 
-    /// Prune page `pid`, judging each version by `judge`, in one update.
+    /// Prune page `pid` under its exclusive latch, judging each version by `judge`, in one update.
     ///
     /// Versions `judge` removes are freed when no index entry names them and left as dead slots
     /// otherwise; the slots in `cleaned`, whose index entries are gone, are freed. A chain of
@@ -611,23 +763,37 @@ impl Heap {
     /// holds, the page's all-visible bit is set if every version left is judged all-visible and
     /// no dead slot is left. The directory entry takes the page's free space when the page is in
     /// the newest format or pruning freed space on it. A page left empty leaves the directory and
-    /// is freed in the same pager update.
+    /// is freed in the same pager update. Each out-of-line value a freed version pointed at is
+    /// counted one version fewer afterwards. A page no longer of this heap is left alone.
     ///
-    /// Panics if `pid` is not a page of this heap, or if a slot in `cleaned` still leads to a
-    /// version `judge` keeps.
+    /// Panics if a slot in `cleaned` still leads to a version `judge` keeps.
     pub fn prune<R: Runtime>(
-        &mut self,
+        &self,
         pager: &Pager<R>,
         pid: Pid,
         mut judge: impl FnMut(&Pager<R>, &Header) -> Result<Fate, PageError>,
         cleaned: &[u16],
         mark: bool,
     ) -> Result<Pruned, PageError> {
-        let page = self.own_page(pager, pid)?;
+        if mark {
+            self.vm(&Stage::new(), pager)?.extend(pager, pid)?;
+        }
+        let mut stage = Stage::new();
+        let page = stage.page(pager, pid)?.clone();
+        if !self.ours(pager, pid, &page)? {
+            return Ok(Pruned::default());
+        }
         let fates = prune::judge(&page, |h| judge(pager, h))?;
         let plan = prune::plan(&page, pid.0, &fates, &|s| cleaned.contains(&(s as u16)));
         let mut out = page.clone();
         prune::apply(&mut out, &plan);
+        let format = storage::format(&page);
+        let mut released = Vec::new();
+        for (s, _) in &plan.release {
+            if let Slot::Normal { at, .. } = page::get(&page, *s) {
+                released.extend(self.pointers(format, &page[at]));
+            }
+        }
         let mut done = Pruned {
             freed: plan
                 .release
@@ -639,78 +805,128 @@ impl Heap {
         };
         let flagged = page::all_visible(&page);
         let position = page::position(&page);
-        let mut stage = Stage::new();
         if page::is_empty(&out) {
             page::set_all_visible(&mut out, false);
-            stage.put(pid, out);
+            stage.put(pager, pid, out)?;
+            self.space.vacate(&mut stage, pager, position)?;
             if flagged {
                 self.vm(&stage, pager)?.put(&mut stage, pager, pid, false)?;
             }
-            self.space.vacate(&mut stage, pager, position)?;
             let mut gone = pager.reserve();
             gone.free(pid);
             stage.commit_with(pager, gone)?;
-            if self.hint == Some(pid) {
-                self.hint = None;
-            }
+            let _ = self
+                .hint
+                .compare_exchange(pid.0, 0, Ordering::Relaxed, Ordering::Relaxed);
             done.removed = true;
-            return Ok(done);
-        }
-        let changed = out != page;
-        let visible = if mark {
-            plan.all_visible
         } else {
-            flagged && !changed
-        };
-        page::set_all_visible(&mut out, visible);
-        let roomier = page::free(&out) > page::free(&page);
-        let current = storage::format(&out) == self.newest();
-        let cat = category(page::free(&out), self.page_size);
-        if out != page {
-            stage.put(pid, out);
-        }
-        if visible != flagged {
-            self.vm(&stage, pager)?
-                .put(&mut stage, pager, pid, visible)?;
-        }
-        if roomier || current {
-            self.space.set_category(&mut stage, pager, position, cat)?;
-        }
-        stage.commit(pager)?;
-        done.all_visible = visible;
-        Ok(done)
-    }
-
-    /// Returns the pointer of every out-of-line value a version of the heap holds.
-    pub fn out_of_line<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pointer>, PageError> {
-        let mut out = Vec::new();
-        for pid in self.space.pages(pager)? {
-            let page = pager.read(pid)?.to_vec();
-            let format = storage::format(&page);
-            for slot in 0..page::slot_count(&page) {
-                if let Slot::Normal { at, .. } = page::get(&page, slot) {
-                    out.extend(self.pointers(format, &page[at]));
-                }
+            let changed = out != page;
+            let visible = if mark {
+                plan.all_visible
+            } else {
+                flagged && !changed
+            };
+            page::set_all_visible(&mut out, visible);
+            let roomier = page::free(&out) > page::free(&page);
+            let current = storage::format(&out) == self.newest();
+            let cat = category(page::free(&out), self.page_size);
+            stage.put(pager, pid, out)?;
+            if roomier || current {
+                self.space.set_category(&mut stage, pager, position, cat)?;
             }
+            if visible != flagged {
+                self.vm(&stage, pager)?
+                    .put(&mut stage, pager, pid, visible)?;
+            }
+            stage.commit(pager)?;
+            done.all_visible = visible;
         }
-        Ok(out)
+        for p in released {
+            self.large.release(pager, p)?;
+        }
+        Ok(done)
     }
 
     /// Insert `row` as a version written by `xid`. Returns its TID.
     ///
     /// Panics if `row` is not a row of the newest format.
     pub fn insert<R: Runtime>(
-        &mut self,
+        &self,
         pager: &Pager<R>,
         xid: u64,
         row: &[Value],
     ) -> Result<Tid, Error> {
-        let body = self.body(pager, row, &[])?;
+        self.insert_pruning(pager, xid, row, None)
+    }
+
+    /// Insert `row` as [`Heap::insert`] does, pruning by `judge` a page found without room
+    /// before looking further.
+    pub fn insert_pruning<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        xid: u64,
+        row: &[Value],
+        mut judge: Option<&mut Judge<'_, R>>,
+    ) -> Result<Tid, Error> {
+        let (body, held) = self.body(pager, xid, row, &[])?;
         let version = version_bytes(Header::new(xid), &body);
-        let mut stage = Stage::new();
-        let t = self.place(&mut stage, pager, &version, Flags::NONE)?;
-        stage.commit(pager)?;
-        Ok(t)
+        loop {
+            let pid = self.candidate(pager, version.len())?;
+            let mut stage = Stage::new();
+            stage.page(pager, pid)?;
+            if let Some((t, c)) =
+                self.try_put(&mut stage, pager, pid, &version, Flags::NONE, xid)?
+            {
+                let gains: Vec<Pointer> = held.iter().chain(&c.gained).copied().collect();
+                finish(
+                    &mut stage,
+                    pager,
+                    self.large,
+                    &gains,
+                    &[(self, pid)],
+                    &[(self, pid)],
+                )?;
+                stage.commit(pager)?;
+                self.hint.store(pid.0, Ordering::Relaxed);
+                self.release_all(pager, &c.dropped)?;
+                return Ok(t);
+            }
+            drop(stage);
+            if self.prune_full(pager, pid, judge.as_deref_mut())? {
+                continue;
+            }
+            self.refused(pager, pid)?;
+        }
+    }
+
+    /// Prune `pid` by `judge`, if there is one and the page is in the newest format. Returns
+    /// whether pruning freed a slot.
+    fn prune_full<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+        judge: Option<&mut Judge<'_, R>>,
+    ) -> Result<bool, PageError> {
+        let Some(judge) = judge else {
+            return Ok(false);
+        };
+        let page = pager.read(pid)?.to_vec();
+        if !self.ours(pager, pid, &page)? || storage::format(&page) != self.newest() {
+            return Ok(false);
+        }
+        let done = self.prune(pager, pid, |p, h| judge(p, h), &[], false)?;
+        Ok(done.freed > 0 && !done.removed)
+    }
+
+    fn release_all<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        dropped: &[Pointer],
+    ) -> Result<(), PageError> {
+        for &p in dropped {
+            self.large.release(pager, p)?;
+        }
+        Ok(())
     }
 
     /// Write `row` as the successor `xid` makes of the version at `at`, and point that version at
@@ -719,12 +935,26 @@ impl Heap {
     /// The successor is heap-only when it fits on the old version's page and no field listed in
     /// `indexed`, the key fields of every index over this heap's constructor, changes.
     pub fn update<R: Runtime>(
-        &mut self,
+        &self,
         pager: &Pager<R>,
         at: Tid,
         xid: u64,
         row: &[Value],
         indexed: &[usize],
+    ) -> Result<Updated, Error> {
+        self.update_pruning(pager, at, xid, row, indexed, None)
+    }
+
+    /// Update as [`Heap::update`] does, pruning by `judge` a page found without room before
+    /// looking further.
+    pub fn update_pruning<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        at: Tid,
+        xid: u64,
+        row: &[Value],
+        indexed: &[usize],
+        mut judge: Option<&mut Judge<'_, R>>,
     ) -> Result<Updated, Error> {
         let (format, _, old) = self
             .raw(pager, at)?
@@ -732,33 +962,78 @@ impl Heap {
         let (old_row, pointers) = self.decode(pager, format, &old)?;
         let old_row = self.upgrade(format, old_row);
         let keys_kept = indexed.iter().all(|&i| old_row[i] == row[i]);
-        let body = self.body(pager, row, &pointers)?;
+        let (body, held) = self.body(pager, xid, row, &pointers)?;
         let version = version_bytes(Header::new(xid), &body);
-        let mut stage = Stage::new();
-        let pid = Pid(at.page());
-        let hot = if keys_kept {
-            self.try_put(&mut stage, pager, pid, &version, Flags::HEAP_ONLY)?
-        } else {
-            None
-        };
-        let (tid, heap_only) = match hot {
-            Some(t) => (t, true),
-            None => (self.place(&mut stage, pager, &version, Flags::NONE)?, false),
-        };
-        let successor = if heap_only {
-            Flags::HOT_UPDATED
-        } else {
-            Flags::NONE
-        };
-        self.supersede(&mut stage, pager, at, xid, Some(tid), successor)?;
-        stage.commit(pager)?;
-        Ok(Updated { tid, heap_only })
+        let o = Pid(at.page());
+        let mut tries = 0;
+        while keys_kept && tries < 2 {
+            tries += 1;
+            let mut stage = Stage::new();
+            stage.page(pager, o)?;
+            if let Some((t, c)) =
+                self.try_put(&mut stage, pager, o, &version, Flags::HEAP_ONLY, xid)?
+            {
+                self.supersede(&mut stage, pager, at, xid, Some(t), Flags::HOT_UPDATED)?;
+                let gains: Vec<Pointer> = held.iter().chain(&c.gained).copied().collect();
+                finish(
+                    &mut stage,
+                    pager,
+                    self.large,
+                    &gains,
+                    &[(self, o)],
+                    &[(self, o)],
+                )?;
+                stage.commit(pager)?;
+                self.release_all(pager, &c.dropped)?;
+                return Ok(Updated {
+                    tid: t,
+                    heap_only: true,
+                });
+            }
+            drop(stage);
+            if !self.prune_full(pager, o, judge.as_deref_mut())? {
+                break;
+            }
+        }
+        loop {
+            let n = self.candidate(pager, version.len())?;
+            let mut stage = Stage::new();
+            for p in latch_order(o, n) {
+                stage.page(pager, p)?;
+            }
+            if let Some((t, c)) = self.try_put(&mut stage, pager, n, &version, Flags::NONE, xid)? {
+                self.supersede(&mut stage, pager, at, xid, Some(t), Flags::NONE)?;
+                let gains: Vec<Pointer> = held.iter().chain(&c.gained).copied().collect();
+                finish(
+                    &mut stage,
+                    pager,
+                    self.large,
+                    &gains,
+                    &[(self, n)],
+                    &[(self, o), (self, n)],
+                )?;
+                stage.commit(pager)?;
+                self.hint.store(n.0, Ordering::Relaxed);
+                self.release_all(pager, &c.dropped)?;
+                return Ok(Updated {
+                    tid: t,
+                    heap_only: false,
+                });
+            }
+            drop(stage);
+            if n != o && self.prune_full(pager, n, judge.as_deref_mut())? {
+                continue;
+            }
+            self.refused(pager, n)?;
+        }
     }
 
     /// Mark the version at `at` deleted by `xid`.
-    pub fn delete<R: Runtime>(&mut self, pager: &Pager<R>, at: Tid, xid: u64) -> Result<(), Error> {
+    pub fn delete<R: Runtime>(&self, pager: &Pager<R>, at: Tid, xid: u64) -> Result<(), Error> {
+        let o = Pid(at.page());
         let mut stage = Stage::new();
         self.supersede(&mut stage, pager, at, xid, None, Flags::NONE)?;
+        finish(&mut stage, pager, self.large, &[], &[], &[(self, o)])?;
         stage.commit(pager)?;
         Ok(())
     }
@@ -772,11 +1047,11 @@ impl Heap {
     ///
     /// Panics if `to` is this heap or belongs to another sum.
     pub fn retag<R: Runtime>(
-        &mut self,
+        &self,
         pager: &Pager<R>,
         at: Tid,
         xid: u64,
-        to: &mut Heap,
+        to: &Heap,
         row: &[Value],
     ) -> Result<Tid, Error> {
         assert_ne!(self.id, to.id, "a retag moves a row to another heap");
@@ -785,13 +1060,36 @@ impl Heap {
             .raw(pager, at)?
             .expect("retag of a slot with no version");
         let pointers = self.pointers(format, &old);
-        let body = to.body(pager, row, &pointers)?;
+        let (body, held) = to.body(pager, xid, row, &pointers)?;
         let version = version_bytes(Header::new(xid), &body);
-        let mut stage = Stage::new();
-        let tid = to.place(&mut stage, pager, &version, Flags::RETAGGED_IN)?;
-        self.supersede(&mut stage, pager, at, xid, Some(tid), Flags::MOVED)?;
-        stage.commit(pager)?;
-        Ok(tid)
+        let o = Pid(at.page());
+        loop {
+            let n = to.candidate(pager, version.len())?;
+            let mut stage = Stage::new();
+            for p in latch_order(o, n) {
+                stage.page(pager, p)?;
+            }
+            if let Some((t, c)) =
+                to.try_put(&mut stage, pager, n, &version, Flags::RETAGGED_IN, xid)?
+            {
+                self.supersede(&mut stage, pager, at, xid, Some(t), Flags::MOVED)?;
+                let gains: Vec<Pointer> = held.iter().chain(&c.gained).copied().collect();
+                finish(
+                    &mut stage,
+                    pager,
+                    self.large,
+                    &gains,
+                    &[(to, n)],
+                    &[(self, o), (to, n)],
+                )?;
+                stage.commit(pager)?;
+                to.hint.store(n.0, Ordering::Relaxed);
+                to.release_all(pager, &c.dropped)?;
+                return Ok(t);
+            }
+            drop(stage);
+            to.refused(pager, n)?;
+        }
     }
 
     /// Returns what is wrong with the heap's pages, directory and visibility map.
@@ -896,6 +1194,19 @@ impl Heap {
         out.extend(self.vm(&Stage::new(), pager)?.pages(pager)?);
         Ok(out)
     }
+}
+
+/// Returns the header of the version at `tid`, or `None` when its page is not a heap page or
+/// its slot holds no version.
+pub fn header_at<R: Runtime>(pager: &Pager<R>, tid: Tid) -> Result<Option<Header>, PageError> {
+    let page = pager.read(Pid(tid.page()))?;
+    if !page::is_heap(&page) || !page::check(&page).is_empty() {
+        return Ok(None);
+    }
+    Ok(match page::get(&page, usize::from(tid.slot())) {
+        Slot::Normal { at, .. } => Some(Header::read(&page[at])),
+        _ => None,
+    })
 }
 
 /// Follow the chain from the version at `start` through each `next`, across heaps, and return
