@@ -809,7 +809,7 @@ fn expected(want: &R<Value>) -> Result<Value, String> {
     match want {
         Ok(v) => Ok(v.clone()),
         Err(Abort::Fault(x)) => Err(format!("fault {}", x.name())),
-        Err(Abort::Limit) => Err("limit".into()),
+        Err(Abort::Limit(_)) => Err("limit".into()),
         Err(e) => Err(format!("{e:?}")),
     }
 }

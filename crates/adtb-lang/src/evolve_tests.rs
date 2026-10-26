@@ -2127,3 +2127,26 @@ move field Identity.EmailPass.email to Identity fill match
         field_id(&ids_of(&s), "Identity", Some("EmailPass"), "email")
     );
 }
+
+#[test]
+fn a_stored_view_of_a_declared_type_has_no_row_type_of_its_own() {
+    let s = applies(
+        &running(),
+        "module auth
+define fn named () -> Set User = from u in users select u
+store named
+  key id",
+    );
+    let schema = ids_of(&s);
+    let f = match schema
+        .module(schema.module_named("auth").unwrap())
+        .values
+        .get("named")
+    {
+        Some(&ValueDef::Function(f)) => f,
+        _ => panic!("no view"),
+    };
+    assert!(schema.ids.views.contains_key(&f));
+    assert_eq!(None, schema.ids.view_types.get(&f));
+    assert_eq!(None, schema.ids.view_ctors.get(&f));
+}

@@ -937,7 +937,7 @@ impl Checker<'_> {
         let [(_, input)] = def.params.as_slice() else {
             return Err(diag(
                 a.span,
-                "an aggregate of other than one parameter is not checked yet",
+                "an aggregate takes exactly one parameter; pass several values as one record",
             ));
         };
         let state = &def.state;

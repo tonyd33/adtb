@@ -356,6 +356,11 @@ transaction's snapshot does not hold.
   waiting transaction fails with a serialization failure. A write never
   re-evaluates its statement on the other transaction's new version.
 
+Writers that wait on each other in a cycle never all wait forever: one
+transaction of the cycle fails with a serialization failure (§6.1), and
+the others go on waiting or proceed. Which transaction of the cycle
+fails is not specified.
+
 A key violation (`KeyViolation`, [catalog.md](catalog.md#4-error-sums))
 is raised only against rows in the snapshot or among the statement's
 own inserted rows, and is reported at the statement boundary.
@@ -370,7 +375,7 @@ another transaction to fail with one. Read-only transactions on a
 replica always run this way
 ([replication.md](replication.md#12-reads-on-a-replica)).
 
-Rulings: engine/retry/retry-block, engine/retry/safe-snapshot, engine/wait-inserter, engine/ssi, spec/txn/may-abort/may, spec/txn/retry-count/n-plus-one
+Rulings: engine/retry/retry-block, engine/retry/safe-snapshot, engine/wait-inserter, engine/ssi, spec/txn/may-abort/may, spec/txn/retry-count/n-plus-one, spec/writer-wait-cycle/fail-one
 
 ## 7. Durability levels
 

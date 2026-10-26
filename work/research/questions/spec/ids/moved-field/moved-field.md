@@ -14,9 +14,9 @@ makes one field per listed constructor.
 
 ## spec/ids/moved-field/keeps
 
-A move up keeps the field's id. A move down keeps it for the first
-listed constructor, and each other listed constructor's field takes
-the next field id, in listed order. Grants and statistics on the field
+A move up keeps the field's id. A move down keeps it for one listed
+constructor, and each other listed constructor's field takes the next
+field id; which one keeps it is `spec/ids/move-down`. Grants and statistics on the field
 follow it.
 
 ## spec/ids/moved-field/new

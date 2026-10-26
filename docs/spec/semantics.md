@@ -710,7 +710,10 @@ componentwise order, so the chain `S̄₀ ⊆ S̄₁ ⊆ …` ascends and `S̄*`
 simultaneous least fixpoint of `F`. When the least fixpoint is finite
 the chain reaches it. When it is infinite the chain never ends, and the
 statement is rejected with `StatementLimit` when it exceeds its limits
-([catalog.md §8.3](catalog.md#83-limits-and-deadlines)).
+([catalog.md §8.3](catalog.md#83-limits-and-deadlines)). A chain longer
+than the engine's round limit is rejected with `StatementLimit { limit:
+Rounds { rounds } }`, `rounds` that limit; a chain that runs past the
+statement's time limit or memory grant first carries `Time` or `Memory`.
 
 A `fix` is bounded when no constructed value derived from a relation
 of its own stratum can become an element of one of its relations. A
@@ -804,7 +807,7 @@ result contains no λ and no application; a `let` remains only where its
 bound expression is partial. Each step preserves the denotation of
 §5.3, aborts included.
 
-Rulings: query/union-all, query/ctor-relations, query/construct, model/dup-arms/dedupe, lang/collection/sets, lang/collection/set-agg/over-binders, lang/empty-agg/nonempty, query/agg-scope/whole, lang/group/into, lang/group/ctor-key/tag-type, lang/nested-order/top-n, lang/order/result-only, lang/keyset, lang/recursion/fix, lang/recursion/negation/stratified, lang/abstraction/higher-order, lang/abstraction/ho-recursion/first-order-recursion, lang/outer/nested, lang/results/nested, types/fault/abort, types/fault/reorder/ordered-guards, types/fault-forms/checked, types/fault-forms/try, types/int-overflow/trap, project/oracle/float/tolerance, derived/transition/change-visible, spec/tiers/three-tiers, spec/field-faults/any, spec/take-negative/fault, spec/fix/restriction/positive, spec/fix/bounded/element-flow, spec/fix/projection/not-constructing
+Rulings: query/union-all, query/ctor-relations, query/construct, model/dup-arms/dedupe, lang/collection/sets, lang/collection/set-agg/over-binders, lang/empty-agg/nonempty, query/agg-scope/whole, lang/group/into, lang/group/ctor-key/tag-type, lang/nested-order/top-n, lang/order/result-only, lang/keyset, lang/recursion/fix, lang/recursion/negation/stratified, lang/abstraction/higher-order, lang/abstraction/ho-recursion/first-order-recursion, lang/outer/nested, lang/results/nested, types/fault/abort, types/fault/reorder/ordered-guards, types/fault-forms/checked, types/fault-forms/try, types/int-overflow/trap, project/oracle/float/tolerance, derived/transition/change-visible, spec/tiers/three-tiers, spec/field-faults/any, spec/take-negative/fault, spec/fix/restriction/positive, spec/fix/bounded/element-flow, spec/fix/projection/not-constructing, spec/limit-reason/limit-sum
 
 ## 6. Writes
 

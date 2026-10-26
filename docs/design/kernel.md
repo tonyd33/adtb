@@ -354,8 +354,10 @@ A term names declarations by id; a consumer reads them from the
   ([../spec/catalog.md §4.6](../spec/catalog.md#46-constructor-ids-of-engine-defined-sums)),
   each relation's key index in `CatalogIds::keys` and its uniques in
   `CatalogIds::indexes`.
-  A stored view's row type, its constructor and its fields have ids in
-  `view_types`, `view_ctors` and `view_fields`, by the view's function. A schema `schema::build`
+  A stored view whose element type is anonymous has its row type, its
+  constructor and its fields' ids in `view_types`, `view_ctors` and
+  `view_fields`, by the view's function; a view of a declared type has
+  none there. A schema `schema::build`
   returns numbers its user objects as one migration declaring its
   files' declarations in order would; one `Source::schema` returns
   carries the ids of its log ([schema-change.md §4](schema-change.md#4-the-schema-transition)).

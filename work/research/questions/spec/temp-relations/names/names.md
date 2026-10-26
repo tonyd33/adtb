@@ -7,6 +7,8 @@ options:
     title: "No: the name must not be a relation variable of the schema"
   shadow:
     title: "Yes: the temp relation shadows the schema relation in the text that declares it"
+  declared:
+    title: "No name a module the text reads declares: relation, function, type or constructor"
 ---
 Raised by the ad hoc statement checker. `temp relation NAME : T` names
 a relation outside the log, and nothing said what happens when `NAME`
@@ -30,3 +32,13 @@ Lets a script rename nothing, but a write meant for the staging copy
 goes to the real relation when a statement runs before the declaration,
 and a later migration adding a relation of that name silently changes
 what old scripts read.
+
+## spec/temp-relations/names/declared
+
+A temp relation may not take any name a module the text reads
+declares, a relation variable, function, type or constructor, so a
+name in ad hoc text never means two things:
+
+```adt fragment
+temp relation display_name : { a: I64 }   -- refused: display_name is a function of auth
+```

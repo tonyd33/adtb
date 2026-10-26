@@ -350,13 +350,26 @@ fn a_temp_relation_takes_a_name_no_relation_variable_has() {
     adhoc_refuses(
         &[],
         "temp relation users : { a: I64 }",
-        "a temp relation takes another name",
+        "a temp relation takes a name no module the text reads declares",
+    );
+    adhoc_refuses(
+        &[],
+        "temp relation display_name : { a: I64 }",
+        "module `auth` declares `display_name`",
     );
 }
 
 #[test]
-fn a_temp_relation_of_a_sum_without_a_key_is_keyed_by_its_whole_row() {
-    adhoc_accepts(&[], "temp relation ids : Identity\nfrom i in ids select i");
+fn a_temp_relation_of_a_sum_of_several_constructors_declares_its_key() {
+    adhoc_refuses(
+        &[],
+        "temp relation ids : Identity\nfrom i in ids select i",
+        "a temp relation of a sum of several constructors declares its key",
+    );
+    adhoc_accepts(
+        &[],
+        "temp relation ids : Identity key id\nfrom i in ids select i",
+    );
 }
 
 #[test]

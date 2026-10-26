@@ -102,6 +102,20 @@ impl Checker<'_> {
         }
     }
 
+    /// Returns a module the text reads that declares `name` as a relation, function, other value,
+    /// type or constructor.
+    fn declaring_module(&self, name: &str) -> Option<ModuleId> {
+        self.vis.modules.iter().copied().find(|&m| {
+            let def = self.schema.module(m);
+            def.values.contains_key(name)
+                || def.types.contains_key(name)
+                || def
+                    .types
+                    .values()
+                    .any(|&t| self.schema.ty(t).ctor_index(name).is_some())
+        })
+    }
+
     /// Returns the row type and key fields of a temp relation, `taken` holding the names of the
     /// temp relations declared before it.
     fn temp_decl(&self, t: &TempDecl, taken: &[String]) -> R<(Ty, Vec<String>)> {
@@ -111,15 +125,12 @@ impl Checker<'_> {
                 format!("temp relation `{}` is declared twice", t.name.text),
             ));
         }
-        let q = ast::QName {
-            module: None,
-            name: t.name.clone(),
-        };
-        if let Ok(ValueDef::Relation(_)) = self.lookup_value(&q) {
+        if let Some(m) = self.declaring_module(&t.name.text) {
             return Err(diag(
                 t.name.span,
                 format!(
-                    "`{}` is a relation variable the text reads; a temp relation takes another name",
+                    "module `{}` declares `{}`; a temp relation takes a name no module the text reads declares",
+                    self.schema.module(m).name,
                     t.name.text
                 ),
             ));
@@ -157,7 +168,7 @@ impl Checker<'_> {
             {
                 return Err(diag(
                     t.span,
-                    "a temp relation of a sum of several constructors keyed by its whole row is not checked yet",
+                    "a temp relation of a sum of several constructors declares its key",
                 ));
             }
             return Ok((ty, candidates));

@@ -5,7 +5,7 @@ use adtb_lang::check::Program;
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{Base, RelId, Ty};
-use adtb_reference::{Abort, Database, Fault, Interpreter, R, Value};
+use adtb_reference::{Abort, Database, Fault, Interpreter, Limit, R, Value};
 
 use crate::plan::*;
 
@@ -188,7 +188,9 @@ impl<'a> Interp<'a> {
             while deltas.iter().any(|d| !set(d.clone()).is_empty()) {
                 steps += 1;
                 if steps > self.fix_limit {
-                    return Err(Abort::Limit);
+                    return Err(Abort::Limit(Limit::Rounds {
+                        rounds: self.fix_limit as i64,
+                    }));
                 }
                 let inner = with(&cur, &deltas);
                 let mut next = Vec::new();
@@ -223,7 +225,9 @@ impl<'a> Interp<'a> {
             }
             steps += 1;
             if steps > self.fix_limit {
-                return Err(Abort::Limit);
+                return Err(Abort::Limit(Limit::Rounds {
+                    rounds: self.fix_limit as i64,
+                }));
             }
             cur = next;
         }

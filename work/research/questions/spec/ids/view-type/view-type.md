@@ -6,6 +6,8 @@ options:
     title: "store f creates a type for the view's element type, with one constructor, after the view's relation variable"
   result-type:
     title: "The relation's sum is the declared type the function returns; an anonymous record result gets no type and sum is optional"
+  anonymous-only:
+    title: "store f creates a one-constructor type, after the view's relation variable, only when the view's element type is anonymous; a view of a declared type is a relation of that type"
 ---
 Raised by `id-assignment-gaps`. `catalog::relations` has `sum: Key
 types`, and a stored view is a relation variable of kind `Stored`. A
@@ -24,3 +26,12 @@ row.
 `sum` names the declared sum the view returns, and becomes `Option
 Key types`, `None` for an anonymous record. No new objects, but
 readers of the catalog must handle views with no type.
+
+## spec/ids/view-type/anonymous-only
+
+When the view returns `Set` of an anonymous record, `store f` creates
+the relation variable, then a type with one constructor for the
+element type, then that constructor's fields in the order the result
+type writes them, then the indexes. A view returning `Set T` of a
+declared type `T` is a relation of `T`, and creates no type. `sum`
+always names a row.

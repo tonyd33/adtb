@@ -2909,10 +2909,7 @@ impl Checker<'_> {
                 let [(_, input)] = def.params.as_slice() else {
                     return Err(diag(
                         value.span,
-                        format!(
-                            "`{name}` takes {} parameters; an aggregate of other than one parameter is not checked yet",
-                            def.params.len()
-                        ),
+                        format!("`{name}` is refused: an aggregate takes exactly one parameter"),
                     ));
                 };
                 let input = input.clone();

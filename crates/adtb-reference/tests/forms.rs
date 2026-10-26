@@ -2,7 +2,7 @@
 
 mod common;
 
-use adtb_reference::{Abort, Change, Database, Fault, Value, days_from_civil};
+use adtb_reference::{Abort, Change, Database, Fault, Limit, Value, days_from_civil};
 use common::*;
 
 const SCHEMA: &str = r#"
@@ -589,7 +589,7 @@ fn an_unbounded_fix_reaches_the_statement_limit() {
         .interp()
         .with_fix_limit(50)
         .eval(&adhoc.terms, adhoc.items[0], &[]);
-    assert_eq!(Err(Abort::Limit), got);
+    assert_eq!(Err(Abort::Limit(Limit::Rounds { rounds: 50 })), got);
 }
 
 #[test]

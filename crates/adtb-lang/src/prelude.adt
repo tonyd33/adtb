@@ -51,7 +51,7 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | Cancelled
                   | Terminated
                   | DeadlineExceeded
-                  | StatementLimit       { limit: Duration }
+                  | StatementLimit       { limit: Limit }
                   | TransactionExpired   { limit: Duration, idle: Bool }
                   | TransactionBusy
                   | MixedVersions
@@ -78,6 +78,11 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | EditionLocked
                   | UnknownEdition       { edition: Text }
                   | MigrationInProgress
+                  | DumpDamaged          { offset: I64 }
+
+type Limit = Time   { after: Duration }
+           | Memory { bytes: I64 }
+           | Rounds { rounds: I64 }
 
 type FatalReason = Malformed       { detail: Text }
                  | Quarantined     { what: Text }

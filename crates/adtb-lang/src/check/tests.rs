@@ -2769,6 +2769,28 @@ fn user_defined_aggregate_parts_are_typed() {
 }
 
 #[test]
+fn a_user_defined_aggregate_takes_exactly_one_parameter() {
+    refuses(
+        r#"aggregate two (x: F64, w: F64) -> F64 =
+  state { s: F64 } init { s: 0.0 }
+  step (st, x) -> { s: st.s + x }
+  merge (a, b) -> { s: a.s + b.s }
+  finish st -> st.s"#,
+        "an aggregate takes exactly one parameter",
+    );
+    accepts(
+        r#"aggregate wmean (p: { x: F64, w: F64 }) -> F64 =
+  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
+  step (st, p) -> { s: st.s + p.x * p.w, n: st.n + p.w }
+  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
+  finish st -> st.s / st.n
+type Weighted = { id: Key weighted, x: F64, w: F64 }
+relation weighted : Weighted key id generate sequence
+fn wm () -> Option F64 = wmean({ x: r.x, w: r.w } for r in weighted)"#,
+    );
+}
+
+#[test]
 fn file_scans_occur_only_in_ad_hoc_text_and_load_sources() {
     refuses(
         "fn from_file () -> Set User = read_csv(\"u.csv\", User)",

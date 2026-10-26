@@ -40,7 +40,7 @@ pub struct CatalogIds {
     pub view_keys: BTreeMap<FnId, u64>,
     /// A stored view's uniques and indexes, by position among its clauses of those kinds.
     pub view_indexes: BTreeMap<(FnId, usize), u64>,
-    /// The type of each stored view's rows.
+    /// The type of each stored view's rows, for a view whose element type is anonymous.
     pub view_types: BTreeMap<FnId, u64>,
     /// The one constructor of each stored view's row type.
     pub view_ctors: BTreeMap<FnId, u64>,
@@ -336,18 +336,20 @@ pub fn objects(
                     };
                     let vn = &s.view.name.text;
                     push(Space::Shared, Slot::View(f), format!("relation {m}::{vn}"));
-                    push(Space::Shared, Slot::ViewType(f), format!("type {m}::{vn}"));
-                    push(
-                        Space::Shared,
-                        Slot::ViewCtor(f),
-                        format!("ctor {m}::{vn}.{vn}"),
-                    );
-                    for name in view_fields(files, m, vn) {
+                    if let Some(fields) = anonymous_row(files, m, vn) {
+                        push(Space::Shared, Slot::ViewType(f), format!("type {m}::{vn}"));
                         push(
-                            Space::Field,
-                            Slot::ViewField(f, name.clone()),
-                            format!("field {m}::{vn}.{vn}.{name}"),
+                            Space::Shared,
+                            Slot::ViewCtor(f),
+                            format!("ctor {m}::{vn}.{vn}"),
                         );
+                        for name in fields {
+                            push(
+                                Space::Field,
+                                Slot::ViewField(f, name.clone()),
+                                format!("field {m}::{vn}.{vn}.{name}"),
+                            );
+                        }
                     }
                     let name = format!("{m}::{vn}");
                     clause_objects(&mut push, *file, text, &s.clauses, &name, Owner::View(f));
@@ -358,9 +360,13 @@ pub fn objects(
     out
 }
 
-/// The fields of the rows of view `view` of module `module`, as its result type writes them; none
-/// when its rows are not records.
-fn view_fields(files: &[(FileId, ast::SchemaFile)], module: &str, view: &str) -> Vec<String> {
+/// The fields of the rows of view `view` of module `module`, as its result type writes them, when
+/// its element type is anonymous: none for an anonymous sum or `()`; `None` for a declared type.
+fn anonymous_row(
+    files: &[(FileId, ast::SchemaFile)],
+    module: &str,
+    view: &str,
+) -> Option<Vec<String>> {
     let result = files
         .iter()
         .filter(|(_, sf)| sf.module.text == module)
@@ -374,16 +380,15 @@ fn view_fields(files: &[(FileId, ast::SchemaFile)], module: &str, view: &str) ->
         ..
     }) = result
     else {
-        return Vec::new();
+        return None;
     };
-    match args.as_slice() {
-        [
-            ast::TypeArg::Type(ast::Type {
-                kind: ast::TypeKind::Record(fs),
-                ..
-            }),
-        ] => fs.iter().map(|f| f.name.text.clone()).collect(),
-        _ => Vec::new(),
+    let [ast::TypeArg::Type(elem)] = args.as_slice() else {
+        return None;
+    };
+    match &elem.kind {
+        ast::TypeKind::Record(fs) => Some(fs.iter().map(|f| f.name.text.clone()).collect()),
+        ast::TypeKind::Sum(_) | ast::TypeKind::Unit => Some(Vec::new()),
+        _ => None,
     }
 }
 
@@ -614,6 +619,7 @@ pub const TYPES: &[FixedType] = &[
             ("UnknownEdition", 344),
             ("MixedVersions", 345),
             ("MigrationInProgress", 372),
+            ("DumpDamaged", 460),
         ],
     ),
     (
@@ -641,6 +647,12 @@ pub const TYPES: &[FixedType] = &[
         ],
     ),
     ("prelude", "RejectedRow", 115, &[("RejectedRow", 116)]),
+    (
+        "prelude",
+        "Limit",
+        461,
+        &[("Time", 462), ("Memory", 463), ("Rounds", 464)],
+    ),
     (
         "catalog",
         "TypeDef",

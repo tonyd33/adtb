@@ -50,12 +50,28 @@ impl Fault {
     }
 }
 
+/// The limit a statement ran past, as the prelude's `Limit` names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    /// A time limit or deadline, in microseconds.
+    Time {
+        after: i64,
+    },
+    Memory {
+        bytes: i64,
+    },
+    /// The fixpoint round limit.
+    Rounds {
+        rounds: i64,
+    },
+}
+
 /// Why an evaluation produced no value.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Abort {
     Fault(Fault),
-    /// The statement exceeded its limits, rejected with `StatementLimit`.
-    Limit,
+    /// The statement ran past a limit, rejected with `StatementLimit`.
+    Limit(Limit),
     /// The statement is rejected for this reason.
     Reject(Rejection),
     /// A form the interpreter does not evaluate yet.
@@ -678,7 +694,9 @@ impl Run<'_, '_> {
                     }
                     steps += 1;
                     if steps > it.fix_limit {
-                        return Err(Abort::Limit);
+                        return Err(Abort::Limit(Limit::Rounds {
+                            rounds: it.fix_limit as i64,
+                        }));
                     }
                     cur = next;
                 }

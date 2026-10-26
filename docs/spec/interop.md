@@ -412,6 +412,7 @@ version.
 type IdentityRow = { id: Key identities, user: Key users, kind: Tag Identity,
                      email: Option Text, hash: Option Bytes,
                      gid: Option Text, sub: Option Text }
+temp relation identity_rejects : RejectedRow key (load, line)
 
 insert identities from (
   from r in read_csv("identities.csv", IdentityRow)
@@ -451,10 +452,13 @@ temp relation NAME : T [ key ... ]
 
 declares a relation, outside the log, of any named type or an
 anonymous record type, with no constraint but its key; without a `key`
-clause its whole row is its key. No type names a temp relation, so its
+clause its whole row is its key. A temp relation of a sum with several
+constructors declares its key, which every constructor has; one
+without a `key` clause is refused. No type names a temp relation, so its
 key fields are plain values and its key clause has no `generate`. Its
-name must not be a relation variable of a module the text reads, nor
-the name of a temp relation its transaction has already declared. It
+name must not be a name a module the text reads declares (a relation
+variable, function, type or constructor), nor the name of a temp
+relation its transaction has already declared. It
 belongs to the interactive
 transaction (by its `TxnId`) or the one ad hoc text that declares it,
 and is gone when that transaction or text ends. A session holds no
@@ -502,9 +506,15 @@ transaction (`txn`) instead of `read_csv`.
 
 A constraint violation aborts the whole final insert (§4.5). To load
 the rows that do not collide and keep the others for review, remove
-the colliding rows from staging first, as ordinary ad hoc writes:
+the colliding rows from staging first, as ordinary ad hoc writes. The
+text below runs on its own, so it declares the staging relation it
+reads as the text above does:
 
 ```adt
+type IdentityStage = { line: I64, user: I64, kind: Text,
+                       email: Option Text, hash: Option Bytes,
+                       gid: Option Text, sub: Option Text }
+temp relation identity_stage : IdentityStage key line
 type IdentityDupe = { line: I64, user: I64, kind: Text,
                       email: Option Text, hash: Option Bytes,
                       gid: Option Text, sub: Option Text }
@@ -571,7 +581,7 @@ one copy of the data the load stores.
 A load into a relation a feed names also writes the logical change
 records the feed reads (§5.2).
 
-Rulings: interop/load/source, interop/load/append-api, interop/load/shape/per-ctor, interop/load/shape/tag-match, interop/load/shape/union-column, interop/load/shape/tagged-text, interop/load/shape/unrouted/tag-parse, interop/load/unit/staged, interop/load/check/set-at-a-time, interop/load/errors/reject-input, interop/load/wal/page-images, spec/writes/sequence-distinct/issued-and-held, spec/temp-relations/names/distinct, spec/temp-relations/generated-key/none, spec/rejected-source/unqualified, spec/bad-input-source/empty, spec/temp-relations/redeclare/refused
+Rulings: interop/load/source, interop/load/append-api, interop/load/shape/per-ctor, interop/load/shape/tag-match, interop/load/shape/union-column, interop/load/shape/tagged-text, interop/load/shape/unrouted/tag-parse, interop/load/unit/staged, interop/load/check/set-at-a-time, interop/load/errors/reject-input, interop/load/wal/page-images, spec/writes/sequence-distinct/issued-and-held, spec/temp-relations/names/declared, spec/temp-relations/sum-key/declared, spec/temp-relations/generated-key/none, spec/rejected-source/unqualified, spec/bad-input-source/empty, spec/temp-relations/redeclare/refused, spec/examples/self-contained/in-block
 
 ## 5. Export and change streams
 
@@ -719,7 +729,11 @@ entry but the manifest's version fields under a key derived from the
 `Text` passphrase `key` ([security.md §9.5](security.md#95-backups-and-dumps)); a restore of
 an encrypted dump needs the passphrase. A restore with the wrong
 passphrase fails as a restore of a damaged dump does: authenticated
-encryption cannot tell a wrong key from damaged ciphertext.
+encryption cannot tell a wrong key from damaged ciphertext. A restore
+that cannot authenticate or decode a dump fails with `Rejected {
+reason: DumpDamaged { offset } }`, `offset` the byte offset in the dump
+of the first part that fails
+([catalog.md §4.2](catalog.md#42-reasons)).
 
 Not dumped, and lost by a dump and restore:
 
@@ -775,7 +789,7 @@ query finds a violation, the restore fails with the violation reports
 and the file is not usable. No reader ever sees a state the
 constraints have not checked.
 
-Rulings: interop/dump/logical, interop/dump/schema/op-log, interop/dump/data/arrow-ipc, interop/dump/data/text-rows, interop/dump/roundtrip/same-ids, interop/dump/scope/bundles, interop/dump/scope/extensions, interop/dump/restore/offline-validate, spec/dump-key/passphrase, spec/dump-wrong-key/as-damaged
+Rulings: interop/dump/logical, interop/dump/schema/op-log, interop/dump/data/arrow-ipc, interop/dump/data/text-rows, interop/dump/roundtrip/same-ids, interop/dump/scope/bundles, interop/dump/scope/extensions, interop/dump/restore/offline-validate, spec/dump-key/passphrase, spec/dump-wrong-key/as-damaged, spec/dump-damaged/offset
 
 ## 7. Backup and point-in-time restore
 
@@ -1117,6 +1131,11 @@ from o in sales group o by o.region into g
 select { region: g.key, mean: mean(x.total for x in g) }
 ```
 
+An aggregate takes exactly one parameter, its input; several values
+pass as one record, `wmean({ x: o.total, w: o.qty } for o in orders)`
+for an `aggregate wmean (p: { x: F64, w: F64 }) -> F64`. A declaration
+with another number of parameters is refused.
+
 The engine may split the input into any number of parts, fold each
 from `init` with `step` on any worker, and combine the partial states
 with `merge` in any order before one `finish`. The aggregate's author
@@ -1134,7 +1153,7 @@ collection.
 call Wasm functions; an aggregate is deterministic when every function
 it calls is.
 
-Rulings: interop/uda/fold-decl
+Rulings: interop/uda/fold-decl, spec/agg-params/one
 
 ## 11. Scalars, indexes and search
 

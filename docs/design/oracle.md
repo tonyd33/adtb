@@ -27,8 +27,9 @@ Postconditions:
 - `Err(Abort::Fault(f))`: the denotation is the fault `f`. Inside the
   term, `try` turns `f` into `Err` of the prelude `Fault` constructor
   named by `f`.
-- `Err(Abort::Limit)`: a `fix` took more steps than its limit; the
-  statement is rejected with `StatementLimit`.
+- `Err(Abort::Limit(Limit::Rounds { rounds }))`: a `fix` took more
+  steps than its limit of `rounds`; the statement is rejected with
+  `StatementLimit { limit: Rounds { rounds } }`.
 - `Err(Abort::NotYet(form))`: the term holds a form the interpreter
   does not evaluate yet: `at`, a Wasm or host function, or a file
   scan.

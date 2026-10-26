@@ -106,7 +106,7 @@ within an operator in this order:
 | `add default` | the default |
 | `define fn`, `define aggregate` | the function |
 | `add constraint`, `add check` | the constraint |
-| `store f` | the relation variable of the view, then a type for the view's element type and its one constructor, then that constructor's fields when the element type is a record, in the order the function's result type writes them; then an index for its key and for each `unique` and `index` clause, in written order |
+| `store f` | the relation variable of the view; then, when the view's element type is anonymous, a type for it with one constructor, then that constructor's fields when the element type is a record, in the order the function's result type writes them; then an index for its key and for each `unique` and `index` clause, in written order |
 | `install` | what each declaration of the package creates, as the `add` operator that declares it, in package order |
 | `add computed` | the computed field |
 | `revert` | what each of its inverse operators creates, as that operator |
@@ -130,7 +130,9 @@ leaves its id unchanged. A constructor re-added by an inverse is a new
 constructor and takes a new id. A unique or index that a split, merge,
 nest or unnest re-scopes, one whose clause names a constructor the
 operator replaces, is a new index with a new id, and the old index is
-dropped. A field that `move field` moves keeps its id: moved up, the
+dropped. An index with no `in` is not re-scoped and keeps its id. A
+stored view of a declared type `T` is a relation of `T`, and `store f`
+creates no type for it. A field that `move field` moves keeps its id: moved up, the
 header field has the id of the constructor's field; moved down, the
 field of the first listed constructor in declaration order has the
 header field's id, and the field of each other listed constructor is
@@ -147,7 +149,7 @@ other objects get `dropped: Some { value: v }` with
 the schema version `v` that dropped them). A key held in a `sys::` row or in a stored plan
 therefore always resolves.
 
-Rulings: spec/ids/operator-ids/implied, spec/ids/rescoped-index/new, spec/ids/moved-field/keeps, spec/ids/view-type/new-type, spec/ids/package/as-operators
+Rulings: spec/ids/operator-ids/implied, spec/ids/rescoped-index/new, spec/ids/rescope/named, spec/ids/moved-field/keeps, spec/ids/move-down/first-declared, spec/ids/view-type/anonymous-only, spec/ids/package/as-operators
 
 ### 1.3 Volatile relations
 
@@ -746,7 +748,7 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | Cancelled
                   | Terminated
                   | DeadlineExceeded
-                  | StatementLimit       { limit: Duration }
+                  | StatementLimit       { limit: Limit }
                   | TransactionExpired   { limit: Duration, idle: Bool }
                   | TransactionBusy
                   | MixedVersions
@@ -773,6 +775,11 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | EditionLocked
                   | UnknownEdition       { edition: Text }
                   | MigrationInProgress
+                  | DumpDamaged          { offset: I64 }
+
+type Limit = Time   { after: Duration }
+           | Memory { bytes: I64 }
+           | Rounds { rounds: I64 }
 
 type FatalReason = Malformed       { detail: Text }
                  | Quarantined     { what: Text }
@@ -808,7 +815,7 @@ wire's 32-bit epoch and 64-bit log position.
 | `Cancelled` | the call was cancelled | §8.4 |
 | `Terminated` | the call's session was terminated | §8.4 |
 | `DeadlineExceeded` | the call's deadline passed | §8.3 |
-| `StatementLimit` | the statement ran past its statement limit or its declared limit | §8.3 |
+| `StatementLimit` | the statement ran past a limit, which `limit` names: `Time` its statement limit or declared limit, after `after`, `Memory` a memory grant of `bytes` it could not stay within by spilling (§8.1), `Rounds` the fixpoint round limit ([semantics.md §5.10](semantics.md#510-fixpoints)) | §8.3 |
 | `TransactionExpired` | an interactive transaction passed its transaction limit, or its idle limit when `idle`; rerunning it unchanged hits the same limit | [transactions.md](transactions.md#54-time-limit), §8.3 |
 | `TransactionBusy` | the interactive transaction is in use from another connection | [wire.md](wire.md#62-interactive-transactions) |
 | `MixedVersions` | a call would run at another schema or catalog version than its transaction's earlier statements, as when a transaction that has made a registered call sends ad hoc text, or one that has run ad hoc text makes a registered call | [transactions.md](transactions.md#2-statements), [applications.md](applications.md#7-the-ad-hoc-role) |
@@ -832,6 +839,7 @@ wire's 32-bit epoch and 64-bit log position.
 | `EditionLocked` | a Hello asks for an edition on a bound connection, whose edition is its bundle's | [wire.md](wire.md#32-hello) |
 | `UnknownEdition` | a Hello asks for an edition the server does not implement | [wire.md](wire.md#32-hello) |
 | `MigrationInProgress` | a migration set was presented while a staged migration is pending | [evolution.md](evolution.md#23-applying-a-migration-set) |
+| `DumpDamaged` | a restore could not authenticate or decode the dump; `offset` is the byte offset of the first part that fails | [interop.md](interop.md#61-a-logical-dump) |
 | `Malformed` | a message violates the server protocol | [wire.md](wire.md#113-malformed-messages) |
 | `Quarantined` | the call reads a quarantined constructor relation, or writes a constructor relation a quarantined index covers; `what` names it | §11.2 |
 | `MissingFunction` | the call needs a host function the program did not supply | [embedding.md](embedding.md#10-host-functions) |
@@ -956,10 +964,11 @@ Prelude:
 | 54 | `Report` | 55 (one constructor) |
 | 56 | `Position` | 57 (one constructor) |
 | 58 | `RetryReason` | 59 `Serialization`, 60 `SafePointTimeout`, 61 `Overloaded`, 62 `StreamIdle`, 63 `FileChanged`, 64 `Fenced`, 341 `ReplayConflict` |
-| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase`, 342 `CatalogMismatch`, 343 `EditionLocked`, 344 `UnknownEdition`, 345 `MixedVersions`, 372 `MigrationInProgress` |
+| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase`, 342 `CatalogMismatch`, 343 `EditionLocked`, 344 `UnknownEdition`, 345 `MixedVersions`, 372 `MigrationInProgress`, 460 `DumpDamaged` |
 | 103 | `FatalReason` | 104 `Malformed`, 105 `Quarantined`, 106 `MissingFunction`, 107 `Storage` |
 | 108 | `Notice` | 109 `LeaseExpiring`, 110 `ShuttingDown`, 111 `ConstructorEnabled`, 112 `BundleRetired`, 113 `BlockingMigration`, 114 `UpgradeRequired` |
 | 115 | `RejectedRow` | 116 (one constructor) |
+| 461 | `Limit` | 462 `Time`, 463 `Memory`, 464 `Rounds` |
 
 Module `catalog`, types:
 
@@ -1109,28 +1118,29 @@ Module `sys`, relation variables:
 | 371 | `sys::safe_snapshots` |
 
 
-Ids from 341 to 459 are listed in the rows of the types they belong
+Ids from 341 to 464 are listed in the rows of the types they belong
 to. `Person` and the other types of examples are not engine types and
 have no fixed id, nor has a `Principal` the schema declares
 ([security.md](security.md#11-the-principal-sum)). Ids 287 to 290, 306
-to 309 and from 460 to 1023 are unassigned.
+to 309 and from 465 to 1023 are unassigned.
 
 Fields and indexes have fixed ids in their own spaces. In edition
 2026-10 and catalog version 1, the engine's fields take ids from 0:
 for each type of the tables above in id order, its header fields in
 declared order, then each constructor's fields, constructors in listed
-order and fields in declared order. The prelude's fields take ids 0
-to 85 (`Option.Some.value` 0, `Result.Ok.value` 1,
-`Result.Err.error` 2), and the fields of the `catalog` and `sys`
-modules continue to 551. The engine's indexes take ids from 0: for
+order and fields in declared order. They take ids 0 to 555:
+`Option.Some.value` 0, `Result.Ok.value` 1, `Result.Err.error` 2,
+`RejectReason.DumpDamaged.offset` 68, the fields of the `catalog` and
+`sys` modules from 87, and `Limit.Rounds.rounds` 555. The engine's indexes take ids from 0: for
 each relation variable of the tables above in id order, the index of
 its key, then an index for each `unique` clause in written order;
 they end at 60. A field or index that a later edition or catalog
 version adds takes the next id of its space not used in any earlier
 one. The engine declares no named sets, constraints, defaults or
-computed fields.
+computed fields. The prelude is not part of a schema: its functions
+and aggregates have no catalog id and no row of `catalog::functions`.
 
-Rulings: project/spec/errors/closed-sum, project/spec/errors/new-kind/coarse, project/spec/errors/new-kind/pinned, spec/evolution/concurrent-apply/refuse, spec/ids/engine-objects/fixed-table
+Rulings: project/spec/errors/closed-sum, project/spec/errors/new-kind/coarse, project/spec/errors/new-kind/pinned, spec/evolution/concurrent-apply/refuse, spec/ids/engine-objects/fixed-table, spec/ids/prelude-fns/none, spec/limit-reason/limit-sum, spec/dump-damaged/offset
 
 ## 5. Statistics
 
@@ -1582,7 +1592,10 @@ A running call that needs more memory than its grant spills first to
 pages of the pool within the grant, then, when the pool has none to
 spare, to spill files in the spill directory, encrypted as
 [security.md](security.md#91-what-is-encrypted) states. A grant never
-grows while its call runs.
+grows while its call runs. A call that can stay within its grant
+neither in the pool nor by spilling, as a hash build larger than the
+grant with no spill space to spare, is rejected with `StatementLimit {
+limit: Memory { bytes } }`, `bytes` its grant.
 
 ### 8.2 Bundle quotas
 
@@ -1603,7 +1616,7 @@ bundle batch-1.2 pins 9 (5d0e...) edition "2026-10" priority background budget {
 
 | Limit | Bounds | On expiry | Error |
 | --- | --- | --- | --- |
-| statement | one query or write execution | the statement fails; an interactive transaction may continue or roll back | `Rejected { reason: StatementLimit {..} }` |
+| statement | one query or write execution | the statement fails; an interactive transaction may continue or roll back | `Rejected { reason: StatementLimit { limit: Time {..} } }` |
 | transaction | an interactive transaction from begin to commit | the transaction aborts | `Rejected { reason: TransactionExpired {..} }` |
 | idle | an interactive transaction with no call running | the transaction aborts; the session continues | `Rejected { reason: TransactionExpired { idle: true, .. } }` |
 | deadline | one call, as an absolute instant sent by the caller | the call fails; a registered transaction aborts | `Rejected { reason: DeadlineExceeded }` |
@@ -1648,7 +1661,7 @@ call stops at whichever comes first. Deadlines travel with each call
 A session may always cancel its own calls. Cancelling or terminating
 another session's needs the `cancel` capability.
 
-Rulings: ops/admission/queue, ops/admission/grant, ops/quota/priority, ops/quota/budget, ops/limits/statement, ops/limits/transaction, ops/limits/idle, ops/limits/deadline, ops/limits/declared, ops/cancel/cancel, ops/cancel/terminate, ops/cancel/token
+Rulings: ops/admission/queue, ops/admission/grant, ops/quota/priority, ops/quota/budget, ops/limits/statement, ops/limits/transaction, ops/limits/idle, ops/limits/deadline, ops/limits/declared, spec/limit-reason/limit-sum, ops/cancel/cancel, ops/cancel/terminate, ops/cancel/token
 
 ## 9. Operational commands
 

@@ -625,16 +625,13 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
             assert!(s.ids.indexes[&(rel, k)] < 1024);
         }
     }
-    let prelude = s.module_named("prelude").unwrap();
-    let prelude_max = s
-        .ids
-        .fields
-        .iter()
-        .filter(|((t, _, _), _)| s.ty(*t).module == prelude)
-        .map(|(_, id)| *id)
-        .max();
-    assert_eq!(Some(85), prelude_max);
-    assert_eq!(Some(551), s.ids.fields.values().max().copied());
+    let reject = s.prelude_type("RejectReason");
+    let damaged = s.ty(reject).ctor_index("DumpDamaged").unwrap();
+    assert_eq!(Some(68), field(reject, Some(damaged), "offset"));
+    let limit = s.prelude_type("Limit");
+    let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
+    assert_eq!(Some(555), field(limit, Some(rounds), "rounds"));
+    assert_eq!(Some(555), s.ids.fields.values().max().copied());
     assert_eq!(
         Some(60),
         s.ids
@@ -644,4 +641,17 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
             .max()
             .copied()
     );
+}
+
+#[test]
+fn the_engine_fields_of_catalog_and_sys_start_after_the_prelude() {
+    let s = build_src(&[]).unwrap();
+    let catalog_min = s
+        .ids
+        .fields
+        .iter()
+        .filter(|((t, _, _), _)| s.module(s.ty(*t).module).name != "prelude")
+        .map(|(_, id)| *id)
+        .min();
+    assert_eq!(Some(87), catalog_min);
 }
