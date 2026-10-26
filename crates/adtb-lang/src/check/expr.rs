@@ -1679,13 +1679,13 @@ impl Checker<'_> {
             Ty::Data { ctors: None, .. } => t.ctors().len() == 1,
             _ => false,
         });
-        let (params, es): (Vec<Ty>, Vec<&Expr>) = raw
+        let (names, (params, es)): (Vec<String>, (Vec<Ty>, Vec<&Expr>)) = raw
             .iter()
             .filter_map(|(f, fty, _)| {
                 named
                     .iter()
                     .find(|(n, _)| n == f)
-                    .map(|(_, e)| (fty.clone(), *e))
+                    .map(|(_, e)| (f.clone(), (fty.clone(), *e)))
             })
             .unzip();
         let (tms, sol) = match &args {
@@ -1711,7 +1711,7 @@ impl Checker<'_> {
                 }
             }
         }
-        let mut given: Vec<(String, Tm)> = named.iter().map(|(n, _)| n.clone()).zip(tms).collect();
+        let mut given: Vec<(String, Tm)> = names.into_iter().zip(tms).collect();
         for (f, fty, header) in &raw {
             if given.iter().any(|(g, _)| g == f) {
                 continue;
@@ -2834,15 +2834,6 @@ impl Checker<'_> {
         let (var, source, nonempty, record_binders) = if single {
             let g = &gens[0];
             let (src, elem) = self.generator_source(&g.source)?;
-            if matches!(op, Agg::Sum | Agg::Avg) && src.rows.is_none() && self.merges_values(src.tm)
-            {
-                return Err(diag(
-                    g.source.span,
-                    format!(
-                        "`{name}` ranges over rows, not over values a `select` may have merged; range over the rows and aggregate the field"
-                    ),
-                ));
-            }
             let v = self.bind(&g.binder.text, elem.clone(), src.rows);
             let source = match filter {
                 None => src.tm,
@@ -2981,15 +2972,6 @@ impl Checker<'_> {
             },
             ty,
         ))
-    }
-
-    /// Returns whether a set term is built by a `select` that may merge equal values of distinct rows.
-    fn merges_values(&self, t: Tm) -> bool {
-        match self.terms.kind(t) {
-            Kind::For(..) | Kind::Union(..) | Kind::If(..) | Kind::Group { .. } => true,
-            Kind::Call { func, .. } => self.fn_rows[func.0 as usize].is_none(),
-            _ => false,
-        }
     }
 }
 

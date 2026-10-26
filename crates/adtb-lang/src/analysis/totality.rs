@@ -37,7 +37,7 @@ impl<'s> Totality<'s> {
             return r;
         }
         let r = match terms.kind(t) {
-            Kind::Try(_) => true,
+            Kind::Try(x) => !rejects(terms, *x),
             Kind::Lam(..) => true,
             k if self.partial_here(terms, t, k) => false,
             _ => terms.children(t).into_iter().all(|c| self.total(terms, c)),
@@ -98,6 +98,11 @@ impl<'s> Totality<'s> {
             | Overlaps | Covers | Parse | Print => false,
         }
     }
+}
+
+fn rejects(terms: &Terms, t: Tm) -> bool {
+    matches!(terms.kind(t), Kind::Reject(_))
+        || terms.children(t).into_iter().any(|c| rejects(terms, c))
 }
 
 fn is_float(t: &Ty) -> bool {

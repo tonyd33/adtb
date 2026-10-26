@@ -56,6 +56,8 @@ pub struct Program {
     pub index_fields: BTreeMap<(RelId, usize, usize), IndexField>,
     /// Each user-defined aggregate's parts, by position among `Schema::aggregates`.
     pub aggregates: Vec<Option<AggregateTerms>>,
+    /// The relation whose rows each function returns, for `key` over a view's rows.
+    pub fn_rows: Vec<Option<RelId>>,
 }
 
 /// The parts of a user-defined aggregate: `init` a state, `step` a `Lam` over the state and an
@@ -493,6 +495,7 @@ fn bodies(
         computed: BTreeMap::new(),
         index_fields: BTreeMap::new(),
         aggregates: vec![None; schema.aggregates.len()],
+        fn_rows: Vec::new(),
     };
     let mut diags = Vec::new();
     let mut fn_rows = vec![None; schema.functions.len()];
@@ -676,6 +679,7 @@ fn bodies(
     }
     program.retags = write::delete_actions(schema, &mut terms, &mut diags);
     program.terms = terms;
+    program.fn_rows = fn_rows;
     (program, diags)
 }
 
@@ -797,6 +801,7 @@ pub fn check_adhoc(
     let temps = adhoc::temp_relations(schema, items, &mut diags);
     let checked = temps.as_ref().map_or(schema, |(s, _)| s);
     let mut c = Checker::new(checked, Visible::all(checked), Context::Adhoc);
+    c.fn_rows.clone_from(&program.fn_rows);
     for (name, ty) in params {
         let v = c.terms.var(name, ty.clone());
         c.params.insert(name.clone(), (v, ty.clone()));

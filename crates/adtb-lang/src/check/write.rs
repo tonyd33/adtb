@@ -438,8 +438,12 @@ impl Checker<'_> {
             WriteKind::If(c, a, b) => {
                 let bt = self.bool_ty();
                 let c = self.write_expr(c, Some(&bt), true)?;
-                let (a, ea) = self.write_effect(a)?;
-                let (b, eb) = self.write_effect(b)?;
+                let saved = std::mem::replace(&mut self.once, false);
+                let r = self
+                    .write_effect(a)
+                    .and_then(|a| Ok((a, self.write_effect(b)?)));
+                self.once = saved;
+                let ((a, ea), (b, eb)) = r?;
                 Ok((self.change(Kind::If(c.tm, a, b)), ea.either(eb)))
             }
             WriteKind::Match(s, arms) => self.write_match(s, arms, w.span),
@@ -1046,19 +1050,16 @@ impl Checker<'_> {
                 let (rel, local) = self.snapshot_row(binder, "update")?;
                 let xt = self.var_tm(local.var);
                 let mut rows = self.singleton(xt, &local.ty);
+                if let Some(p) = filter {
+                    let bt = self.bool_ty();
+                    let p = self.write_expr(p, Some(&bt), true)?;
+                    let set_ty = self.terms.ty(rows).clone();
+                    let none = self.add(Kind::EmptySet, set_ty.clone());
+                    rows = self.add(Kind::If(p.tm, rows, none), set_ty);
+                }
                 self.scope.push();
                 let x = self.bind(&binder.text, local.ty.clone(), Some(rel));
                 self.snapshot.insert(x);
-                if let Some(p) = filter {
-                    let bt = self.bool_ty();
-                    let p = self.write_expr(p, Some(&bt), true);
-                    if p.is_err() {
-                        self.scope.pop();
-                    }
-                    let set_ty = self.terms.ty(rows).clone();
-                    let none = self.add(Kind::EmptySet, set_ty.clone());
-                    rows = self.add(Kind::If(p?.tm, rows, none), set_ty);
-                }
                 (rel, rows, local.ty, x)
             }
         };
@@ -1150,10 +1151,7 @@ impl Checker<'_> {
                 }
                 self.scope.bind(name, local.clone());
             }
-            let saved = self.once;
-            if !ir.locals.is_empty() {
-                self.once = false;
-            }
+            let saved = std::mem::replace(&mut self.once, false);
             let r = (|| -> R<(Option<Tm>, Tm, Effect)> {
                 let guard = match &arm.guard {
                     Some(g) => {

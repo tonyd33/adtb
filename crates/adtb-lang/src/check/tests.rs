@@ -153,6 +153,15 @@ fn adhoc_refuses(params: &[(&str, &str)], text: &str, needle: &str) {
     }
 }
 
+/// Checks ad hoc `text` against the running schema extended by `extra`.
+fn adhoc_over(extra: &str, text: &str) -> Result<Adhoc, Vec<String>> {
+    let s = schema(extra).expect("the schema builds");
+    let program = check_schema(&s).expect("the schema checks");
+    let items = parse_adhoc(text, Options::default()).ok().expect("parsed");
+    check_adhoc(&s, &program, &items, &BTreeMap::new())
+        .map_err(|ds| ds.into_iter().map(|d| d.message).collect())
+}
+
 /// Checks a registered query `text` against the running schema extended by `extra`.
 fn query(extra: &str, text: &str) -> Result<(), String> {
     let s = schema(extra).expect("the schema builds");
@@ -1821,6 +1830,48 @@ fn sum_refuses_a_projection() {
     );
     accepts("fn f (xs: Set I64) -> I64 = sum(x for x in xs)");
     accepts("fn f (u: User) -> I64 = sum(o.total for o in u.<orders.user)");
+}
+
+#[test]
+fn sum_ranges_over_a_set_literal_and_a_view_of_rows() {
+    accepts("fn f () -> I64 = sum(x for x in [1, 2, 2, 3])");
+    adhoc_accepts(&[], "sum(x for x in [1, 2, 2, 3])");
+    let big = "fn big () -> Set Order = from o in orders where o.total >= 100 select o";
+    accepts(&format!(
+        "{big}\nfn f () -> I64 = sum(x.total for x in big())"
+    ));
+    if let Err(errs) = adhoc_over(big, "sum(x.total for x in big())") {
+        panic!("refused: {errs:?}");
+    }
+}
+
+#[test]
+fn adhoc_text_takes_the_key_of_a_view_row() {
+    let view = "fn all_follows () -> Set Follow = from f in follows select f";
+    if let Err(errs) = adhoc_over(view, "from f in all_follows() select key f") {
+        panic!("refused: {errs:?}");
+    }
+}
+
+#[test]
+fn constructor_fields_pair_with_their_written_names() {
+    let (_, a) = adhoc(
+        &[],
+        "Order { qty: 2, total: 1, user: users.key(1), id: orders.key(1) }",
+    )
+    .unwrap_or_else(|e| panic!("refused: {e:?}"));
+    let Kind::Ctor { fields, .. } = a.terms.kind(a.items[0]) else {
+        panic!("a constructor, found {:?}", a.terms.kind(a.items[0]));
+    };
+    let int = |name: &str| {
+        let (_, t) = fields.iter().find(|(f, _)| f == name).expect("the field");
+        match a.terms.kind(*t) {
+            Kind::Const(Const::Int(n)) => *n,
+            k => panic!("an integer, found {k:?}"),
+        }
+    };
+    assert_eq!(1, int("total"));
+    assert_eq!(2, int("qty"));
 }
 
 #[test]

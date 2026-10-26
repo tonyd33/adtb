@@ -40,6 +40,7 @@ those of [syntax.md](syntax.md#25-literals):
   fields, `{ f: v, ... }` with every field, header fields first, each
   in declaration order. A record of an anonymous record type prints
   only the braces. A nullary constructor prints its name.
+- The unit value prints as `()`.
 - A key prints as the call that builds it ([model.md](model.md)):
   `users.key(3)`, or `r.key(f: v, g: w)` for a composite key. In the
   flat formats of §2 a key is written as its key value.
@@ -107,7 +108,7 @@ reader's version.
 Single values shown to a caller (error details, REPL output) are
 printed at the caller's version and carry no header.
 
-Rulings: interop/text/literal, interop/text/rename/versioned, spec/text-escapes/unicode-escape, spec/duration-form/largest-unit
+Rulings: interop/text/literal, interop/text/rename/versioned, spec/text-escapes/unicode-escape, spec/duration-form/largest-unit, spec/unit-print/parens
 
 ### 1.3 Values with no literal
 

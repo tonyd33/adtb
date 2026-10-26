@@ -532,6 +532,35 @@ fn update_x_where_p_updates_when_p_holds() {
 }
 
 #[test]
+fn update_x_where_p_reads_the_row_in_p() {
+    let (_, a) = ok(
+        &[],
+        "insert users { name: \"a\" } unless conflict on key else update old where old.name == \"a\" set old",
+    );
+    let Kind::Upsert { otherwise, .. } = a.terms.kind(a.items[0]) else {
+        panic!("an upsert");
+    };
+    let Kind::Replace(_, rows, f) = a.terms.kind(*otherwise) else {
+        panic!("a replace, found {:?}", a.terms.kind(*otherwise));
+    };
+    let Kind::If(p, ..) = a.terms.kind(*rows) else {
+        panic!("an if, found {:?}", a.terms.kind(*rows));
+    };
+    let Kind::Lam(x, _) = a.terms.kind(*f) else {
+        panic!("a lam, found {:?}", a.terms.kind(*f));
+    };
+    assert!(!mentions_var(&a.terms, *p, *x));
+}
+
+fn mentions_var(terms: &crate::kernel::Terms, t: Tm, v: crate::kernel::Var) -> bool {
+    matches!(terms.kind(t), Kind::Var(w) if *w == v)
+        || terms
+            .children(t)
+            .into_iter()
+            .any(|c| mentions_var(terms, c, v))
+}
+
+#[test]
 fn a_let_bound_to_a_match_over_a_key_is_a_snapshot_row() {
     ok(
         &[("k", "Key identities")],
@@ -940,13 +969,25 @@ fn a_nested_insert_is_evaluated_once_per_statement() {
 }
 
 #[test]
-fn a_nested_insert_under_an_arm_without_binders() {
-    ok(
+fn a_nested_insert_under_a_write_branch_is_refused() {
+    let once = "evaluated once per statement";
+    no(
         &[("s", "Status"), ("n", "Text"), ("g", "Text")],
         "match s
            | Draft  -> insert identities.Google { user: key (insert users { name: n }), gid: g }
            | Sent x -> skip
            | Paid p -> skip",
+        once,
+    );
+    no(
+        &[("c", "Bool"), ("n", "Text"), ("g", "Text")],
+        "if c then insert identities.Google { user: key (insert users { name: n }), gid: g } else skip",
+        once,
+    );
+    no(
+        &[("c", "Bool"), ("n", "Text"), ("g", "Text")],
+        "if c then skip else insert identities.Google { user: key (insert users { name: n }), gid: g }",
+        once,
     );
 }
 

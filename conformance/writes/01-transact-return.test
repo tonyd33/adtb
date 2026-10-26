@@ -26,7 +26,7 @@ query
   transact
     skip
 ----
-{}
+()
 error Invalid
   transact
     return 1

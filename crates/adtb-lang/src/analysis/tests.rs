@@ -715,6 +715,21 @@ fn faulting_primitives_are_partial_and_checked_forms_total() {
 }
 
 #[test]
+fn try_of_a_reject_is_partial() {
+    let (s, n) = adhoc_normal(
+        "",
+        &[],
+        "insert posts from (from u in users select { author: key u, title: print(try (lower(reject \"x\"))) })",
+    );
+    let tries: Vec<Tm> = reachable(&n.terms, n.items[0])
+        .into_iter()
+        .filter(|t| matches!(n.terms.kind(*t), Kind::Try(_)))
+        .collect();
+    assert_eq!(1, tries.len());
+    assert!(!Totality::new(&s, false).total(&n.terms, tries[0]));
+}
+
+#[test]
 fn widening_conversions_are_total_and_narrowing_ones_partial() {
     assert!(is_total(&[("x", "I32")], "i64(x)"));
     assert!(!is_total(&[("x", "I64")], "i32(x)"));
