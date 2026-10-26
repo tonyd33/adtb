@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 409
-summary: "nothing enforces that all threads together latch fewer pages than the pool has frames; running short stalls"
+summary: nothing enforces that all threads together latch fewer pages than the pool has frames; running short stalls
+branch: pager
 tags:
   - engine
 ---

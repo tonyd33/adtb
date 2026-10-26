@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 408
-summary: "the pager has no log record for the safe-snapshot marker SSI needs"
+summary: the pager has no log record for the safe-snapshot marker SSI needs
+branch: pager
 tags:
   - engine
 ---

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 620
 summary: "no commit path: commits are not made durable, grouped or given commit positions"
+branch: pager
 depends-on:
   - commit-log-snapshots
   - pager-and-log
