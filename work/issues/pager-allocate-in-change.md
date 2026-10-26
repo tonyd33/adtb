@@ -27,3 +27,9 @@ leaks, as a check.
 
 The heap leaks a heap or directory page the same way: allocated and
 owned by the heap, but not listed in its directory.
+
+## 2026-10-25: freeing too
+
+Vacuum unlinks an empty heap page, then frees it, in two calls, and
+allocates visibility map pages before linking them. The same one-batch
+call should free pages as well as allocate them.
