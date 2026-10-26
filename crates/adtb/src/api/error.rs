@@ -1,8 +1,9 @@
+use std::fmt;
 use std::time::Duration;
 
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::{Form, print};
-use adtb_lang::types::{RelId, Ty};
+use adtb_lang::types::{Base, RelId, Ty};
 
 use crate::exec::{Exceeded, Val};
 use crate::mvcc::Xid;
@@ -277,6 +278,254 @@ impl Error {
     }
 }
 
+/// Write constructor `name` with `fields` in the textual syntax of a sum value.
+fn ctor(f: &mut fmt::Formatter<'_>, name: &str, fields: &[(&str, &dyn fmt::Debug)]) -> fmt::Result {
+    let mut s = f.debug_struct(name);
+    for (field, value) in fields {
+        s.field(field, value);
+    }
+    s.finish()
+}
+
+struct Shown<T>(T);
+
+impl<T: fmt::Display> fmt::Debug for Shown<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+struct Txt<'a>(&'a str);
+
+impl fmt::Debug for Txt<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&print(&Val::Text(self.0.into()), &Form::Base(Base::Text)))
+    }
+}
+
+struct Dur(Duration);
+
+impl fmt::Debug for Dur {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let micros = i64::try_from(self.0.as_micros()).unwrap_or(i64::MAX);
+        f.write_str(&print(&Val::Duration(micros), &Form::Base(Base::Duration)))
+    }
+}
+
+struct Rows(usize);
+
+impl fmt::Debug for Rows {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} rows", self.0)
+    }
+}
+
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{{ epoch: {}, lsn: {} }}", self.epoch, self.lsn)
+    }
+}
+
+/// Writes the error as its value of the prelude sum `Error`, on one line.
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Retry { reason } => ctor(f, "Retry", &[("reason", &Shown(reason))]),
+            Error::Rejected { reason } => ctor(f, "Rejected", &[("reason", &Shown(reason))]),
+            Error::Fatal { reason } => ctor(f, "Fatal", &[("reason", &Shown(reason))]),
+        }
+    }
+}
+
+impl fmt::Display for RetryReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (name, fields): (&str, &[(&str, &dyn fmt::Debug)]) = match self {
+            RetryReason::Serialization { txn, on } => {
+                ("Serialization", &[("txn", txn), ("on", &Txt(on))])
+            }
+            RetryReason::SafePointTimeout { waited } => {
+                ("SafePointTimeout", &[("waited", &Dur(*waited))])
+            }
+            RetryReason::Overloaded { retry_after } => {
+                ("Overloaded", &[("retry_after", &Dur(*retry_after))])
+            }
+            RetryReason::StreamIdle { limit } => ("StreamIdle", &[("limit", &Dur(*limit))]),
+            RetryReason::FileChanged { path } => ("FileChanged", &[("path", &Txt(path))]),
+            RetryReason::Fenced => ("Fenced", &[]),
+            RetryReason::ReplayConflict { waited } => {
+                ("ReplayConflict", &[("waited", &Dur(*waited))])
+            }
+        };
+        ctor(f, name, fields)
+    }
+}
+
+impl fmt::Display for RejectReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use RejectReason as R;
+        let (name, fields): (&str, &[(&str, &dyn fmt::Debug)]) = match self {
+            R::Violated {
+                constraint,
+                report,
+                redacted,
+            } => (
+                "Violated",
+                &[
+                    ("constraint", &Txt(constraint)),
+                    ("report", &Rows(report.len())),
+                    ("redacted", redacted),
+                ],
+            ),
+            R::KeyViolation { relation, key } => (
+                "KeyViolation",
+                &[("relation", &Txt(relation)), ("key", &Txt(key))],
+            ),
+            R::KeyChanged { relation } => ("KeyChanged", &[("relation", &Txt(relation))]),
+            R::NotOpen { ctor, stage } => {
+                ("NotOpen", &[("ctor", &Txt(ctor)), ("stage", &Txt(stage))])
+            }
+            R::UserError { message } => ("UserError", &[("message", &Txt(message))]),
+            R::Faulted { fault } => ("Faulted", &[("fault", fault)]),
+            R::Denied { detail } => ("Denied", &[("detail", &Txt(detail))]),
+            R::Invalid { detail } => ("Invalid", &[("detail", &Txt(detail))]),
+            R::SchemaRefused { operator, detail } => (
+                "SchemaRefused",
+                &[("operator", &Txt(operator)), ("detail", &Txt(detail))],
+            ),
+            R::Untranslatable { query, detail } => (
+                "Untranslatable",
+                &[("query", &Txt(query)), ("detail", &Txt(detail))],
+            ),
+            R::BadInput {
+                source,
+                line,
+                detail,
+            } => (
+                "BadInput",
+                &[
+                    ("source", &Txt(source)),
+                    ("line", line),
+                    ("detail", &Txt(detail)),
+                ],
+            ),
+            R::SchemaMismatch { detail } => ("SchemaMismatch", &[("detail", &Txt(detail))]),
+            R::Cancelled => ("Cancelled", &[]),
+            R::Terminated => ("Terminated", &[]),
+            R::DeadlineExceeded => ("DeadlineExceeded", &[]),
+            R::StatementLimit { limit } => ("StatementLimit", &[("limit", &Shown(limit))]),
+            R::TransactionExpired { limit, idle } => (
+                "TransactionExpired",
+                &[("limit", &Dur(*limit)), ("idle", idle)],
+            ),
+            R::TransactionBusy => ("TransactionBusy", &[]),
+            R::MixedVersions => ("MixedVersions", &[]),
+            R::UnknownQuery => ("UnknownQuery", &[]),
+            R::UnknownTransaction => ("UnknownTransaction", &[]),
+            R::UnknownBundle { bundle } => ("UnknownBundle", &[("bundle", &Txt(bundle))]),
+            R::VersionMismatch { bundle, version } => (
+                "VersionMismatch",
+                &[("bundle", &Txt(bundle)), ("version", version)],
+            ),
+            R::CatalogMismatch { bundle, catalog } => (
+                "CatalogMismatch",
+                &[("bundle", &Txt(bundle)), ("catalog", catalog)],
+            ),
+            R::Retired { bundle } => ("Retired", &[("bundle", &Txt(bundle))]),
+            R::BundleExpired { bundle, query } => (
+                "BundleExpired",
+                &[("bundle", &Txt(bundle)), ("query", &Txt(query))],
+            ),
+            R::BundleStale { bundle, ctor } => (
+                "BundleStale",
+                &[("bundle", &Txt(bundle)), ("ctor", &Txt(ctor))],
+            ),
+            R::BundleSuperseded { bundle } => ("BundleSuperseded", &[("bundle", &Txt(bundle))]),
+            R::DowngradeRefused { cause } => ("DowngradeRefused", &[("cause", &Txt(cause))]),
+            R::TooOld { oldest } => ("TooOld", &[("oldest", &Shown(oldest))]),
+            R::HistoryUnavailable { oldest } => {
+                ("HistoryUnavailable", &[("oldest", &Shown(oldest))])
+            }
+            R::PositionNotOnHistory { position } => {
+                ("PositionNotOnHistory", &[("position", &Shown(position))])
+            }
+            R::WrongVersion { version } => ("WrongVersion", &[("version", version)]),
+            R::ReadOnlyReplica { primary } => ("ReadOnlyReplica", &[("primary", &Txt(primary))]),
+            R::RequestExpired => ("RequestExpired", &[]),
+            R::RequestReused => ("RequestReused", &[]),
+            R::AuthFailed => ("AuthFailed", &[]),
+            R::UnsupportedProtocol { min, max } => (
+                "UnsupportedProtocol",
+                &[("min", &Txt(min)), ("max", &Txt(max))],
+            ),
+            R::UnknownDatabase { database } => ("UnknownDatabase", &[("database", &Txt(database))]),
+            R::EditionLocked => ("EditionLocked", &[]),
+            R::UnknownEdition { edition } => ("UnknownEdition", &[("edition", &Txt(edition))]),
+            R::MigrationInProgress => ("MigrationInProgress", &[]),
+            R::DumpDamaged { offset } => ("DumpDamaged", &[("offset", offset)]),
+            R::Internal { what } => ("Internal", &[("what", &Txt(what))]),
+        };
+        ctor(f, name, fields)
+    }
+}
+
+impl fmt::Display for Limit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Limit::Time { after } => ctor(f, "Time", &[("after", &Dur(*after))]),
+            Limit::Memory { bytes } => ctor(f, "Memory", &[("bytes", bytes)]),
+            Limit::Rounds { rounds } => ctor(f, "Rounds", &[("rounds", rounds)]),
+        }
+    }
+}
+
+impl fmt::Display for FatalReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (name, fields): (&str, &[(&str, &dyn fmt::Debug)]) = match self {
+            FatalReason::Malformed { detail } => ("Malformed", &[("detail", &Txt(detail))]),
+            FatalReason::Quarantined { what } => ("Quarantined", &[("what", &Txt(what))]),
+            FatalReason::MissingFunction { function } => {
+                ("MissingFunction", &[("function", &Txt(function))])
+            }
+            FatalReason::Storage { detail } => ("Storage", &[("detail", &Txt(detail))]),
+        };
+        ctor(f, name, fields)
+    }
+}
+
+impl fmt::Display for OpenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OpenError::Locked { pid: Some(pid) } => {
+                write!(f, "the file is locked by process {pid}")
+            }
+            OpenError::Locked { pid: None } => f.write_str("the file is locked by another process"),
+            OpenError::AlreadyOpen => f.write_str("the file is already open in this process"),
+            OpenError::NotFound => f.write_str("the file does not exist"),
+            OpenError::KeyRequired => f.write_str("the file is encrypted and needs a key"),
+            OpenError::WrongKey => f.write_str("the key does not decrypt the file"),
+            OpenError::FormatTooNew { written_by } => {
+                write!(f, "the file was written by the newer {written_by}")
+            }
+            OpenError::Corrupt { detail } => write!(f, "the file is corrupt: {detail}"),
+            OpenError::Diverged { version } => {
+                write!(f, "the file's migration {version} differs from the log's")
+            }
+            OpenError::MigrationRefused { version, reason } => {
+                write!(f, "migration {version} is refused: {reason}")
+            }
+            OpenError::RegistrationRefused { bundle, reason } => {
+                write!(f, "bundle {bundle} is refused: {reason}")
+            }
+            OpenError::HostFnMissing { name } => write!(f, "host function {name} is not bound"),
+            OpenError::HostFnMismatch { name } => {
+                write!(f, "host function {name} is bound at another type")
+            }
+            OpenError::DowngradeRefused { cause } => write!(f, "downgrade refused: {cause}"),
+            OpenError::Io(e) => write!(f, "{e}"),
+        }
+    }
+}
+
 fn rejection(schema: &Schema, r: Rejection) -> RejectReason {
     match r {
         Rejection::Violated { constraint, report } => RejectReason::Violated {
@@ -349,6 +598,38 @@ mod tests {
                 }
             ),
             "{got:?}"
+        );
+    }
+
+    #[test]
+    fn an_error_displays_as_its_prelude_value_on_one_line() {
+        let refused = Error::rejected(RejectReason::SchemaRefused {
+            operator: String::new(),
+            detail: "no \"users\"\nno `ids`".into(),
+        });
+        assert_eq!(
+            r#"Rejected { reason: SchemaRefused { operator: "", detail: "no \"users\"\nno `ids`" } }"#,
+            refused.to_string()
+        );
+        let limit = Error::rejected(RejectReason::StatementLimit {
+            limit: Limit::Time {
+                after: Duration::from_millis(1500),
+            },
+        });
+        assert_eq!(
+            "Rejected { reason: StatementLimit { limit: Time { after: 1500ms } } }",
+            limit.to_string()
+        );
+        assert_eq!(
+            "Rejected { reason: Cancelled }",
+            Error::rejected(RejectReason::Cancelled).to_string()
+        );
+        let old = Error::rejected(RejectReason::TooOld {
+            oldest: Position { epoch: 1, lsn: 40 },
+        });
+        assert_eq!(
+            "Rejected { reason: TooOld { oldest: { epoch: 1, lsn: 40 } } }",
+            old.to_string()
         );
     }
 }

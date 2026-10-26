@@ -66,6 +66,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "adtb-shell"
+version = "0.1.0"
+dependencies = [
+ "adtb",
+ "adtb-lang",
+]
+
+[[package]]
 name = "adtb-sim"
 version = "0.1.0"
 dependencies = [
