@@ -399,13 +399,13 @@ impl CommitLog {
     /// damaged.
     ///
     /// Panics if `x` is not reserved or has resolved.
-    pub fn commit<R: Runtime>(&mut self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
+    pub fn commit<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
         let (pid, i) = self.slot(x);
         pager.commit(x.0, &[pid], |p| set_status(p[0], i, Status::Committed))
     }
 
     /// Record that `x` aborted and log its abort record, in one batch.
-    pub fn abort<R: Runtime>(&mut self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
+    pub fn abort<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
         let (pid, i) = self.slot(x);
         pager.abort(x.0, &[pid], |p| set_status(p[0], i, Status::Aborted))
     }

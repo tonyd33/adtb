@@ -198,6 +198,11 @@ the log is durable past its own commit record and past the commit
 record of every commit its snapshot reads; `Transactions::read_upto`
 gives the last of those for a snapshot.
 
+Any number of threads share the transactions layer's commit log.
+A status lookup waits for no commit or abort: only for a reservation
+of more ids or a truncation, which change the set of status pages, and
+for the latch of a status page another thread is changing.
+
 Precondition on the pager: a page change and the commit or abort
 record logged by the next call on the pager lie in one batch
 ([storage.md §5.3](storage.md#53-blocks-and-segments)), so a crash

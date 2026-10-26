@@ -1,4 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::RwLockReadGuard;
+
+use adtb_sys::lock::{Lock, RwLock};
 
 use crate::runtime::Runtime;
 use crate::storage::{Lsn, PageError, Pager, Pid};
@@ -13,11 +16,8 @@ pub(crate) fn extend(reserved: Xid) -> Option<Xid> {
     (reserved.0 < u64::MAX).then(|| Xid(reserved.0.saturating_add(RESERVATION)))
 }
 
-/// The transactions of one database: id assignment, the commit log, running transactions and
-/// the snapshots that hold back reclamation.
 #[derive(Debug)]
-pub struct Transactions {
-    clog: CommitLog,
+struct State {
     next: Xid,
     running: BTreeSet<Xid>,
     holds: Holds,
@@ -27,9 +27,22 @@ pub struct Transactions {
     reads: BTreeMap<SnapshotId, Option<Lsn>>,
 }
 
-impl Transactions {
-    pub fn create<R: Runtime>(pager: &Pager<R>) -> Result<Transactions, PageError> {
-        Ok(Transactions::over(CommitLog::create(pager)?))
+/// The transactions of one database: id assignment, the commit log, running transactions and
+/// the snapshots that hold back reclamation. Any number of threads share it.
+///
+/// A status lookup takes only a shared hold on the commit log, which a commit or abort also
+/// takes shared; a reservation of more ids and a truncation take it alone. Every other call
+/// takes the lock over running transactions and snapshots, then, if it needs it, the commit log.
+#[derive(Debug)]
+pub struct Transactions<R: Runtime> {
+    rt: R,
+    clog: RwLock<CommitLog>,
+    state: Lock<State>,
+}
+
+impl<R: Runtime> Transactions<R> {
+    pub fn create(rt: R, pager: &Pager<R>) -> Result<Transactions<R>, PageError> {
+        Ok(Transactions::over(rt, CommitLog::create(pager)?))
     }
 
     /// Open the commit log rooted at `root` in a recovered pager.
@@ -39,47 +52,53 @@ impl Transactions {
     /// - Every id assigned before the crash reads as committed exactly when its commit record was
     ///   recovered, and as aborted otherwise.
     /// - No id assigned before the crash is assigned again.
-    pub fn open<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<Transactions, PageError> {
-        Ok(Transactions::over(CommitLog::open(pager, root)?))
+    pub fn open(rt: R, pager: &Pager<R>, root: Pid) -> Result<Transactions<R>, PageError> {
+        Ok(Transactions::over(rt, CommitLog::open(pager, root)?))
     }
 
-    fn over(clog: CommitLog) -> Transactions {
-        Transactions {
+    fn over(rt: R, clog: CommitLog) -> Transactions<R> {
+        let state = State {
             next: clog.reserved(),
-            clog,
             running: BTreeSet::new(),
             holds: Holds::default(),
             last_commit: None,
             reads: BTreeMap::new(),
+        };
+        Transactions {
+            rt,
+            clog: RwLock::new(clog),
+            state: Lock::new(state),
         }
     }
 
-    pub fn commit_log(&self) -> &CommitLog {
-        &self.clog
+    /// Returns the commit log, held shared until the guard drops.
+    pub fn commit_log(&self) -> RwLockReadGuard<'_, CommitLog> {
+        self.clog.read(&self.rt)
     }
 
     /// Returns the id the next transaction gets.
     pub fn next(&self) -> Xid {
-        self.next
+        self.state.lock(&self.rt).next
     }
 
-    pub fn running(&self) -> &BTreeSet<Xid> {
-        &self.running
+    pub fn running(&self) -> BTreeSet<Xid> {
+        self.state.lock(&self.rt).running.clone()
     }
 
     /// Start a transaction, first reserving more ids and forcing the log when the reservation is
     /// spent.
     ///
     /// Panics once every 64-bit id is spent.
-    pub fn begin<R: Runtime>(&mut self, pager: &Pager<R>) -> Result<Xid, PageError> {
-        if self.next == self.clog.reserved() {
-            let upto = extend(self.next).expect("transaction ids are exhausted");
-            let resolved = self.running.first().copied().unwrap_or(self.next);
-            self.clog.reserve(pager, upto, resolved)?;
+    pub fn begin(&self, pager: &Pager<R>) -> Result<Xid, PageError> {
+        let mut st = self.state.lock(&self.rt);
+        if st.next == self.clog.read(&self.rt).reserved() {
+            let upto = extend(st.next).expect("transaction ids are exhausted");
+            let resolved = st.running.first().copied().unwrap_or(st.next);
+            self.clog.write(&self.rt).reserve(pager, upto, resolved)?;
         }
-        let x = self.next;
-        self.next = Xid(x.0 + 1);
-        self.running.insert(x);
+        let x = st.next;
+        st.next = Xid(x.0 + 1);
+        st.running.insert(x);
         Ok(x)
     }
 
@@ -89,11 +108,12 @@ impl Transactions {
     /// Fails, leaving `x` running, if its commit log page is damaged.
     ///
     /// Panics if `x` is not running.
-    pub fn commit<R: Runtime>(&mut self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
-        assert!(self.running.contains(&x), "{x:?} is not running");
-        let lsn = self.clog.commit(pager, x)?;
-        self.running.remove(&x);
-        self.last_commit = Some(lsn);
+    pub fn commit(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
+        let mut st = self.state.lock(&self.rt);
+        assert!(st.running.contains(&x), "{x:?} is not running");
+        let lsn = self.clog.read(&self.rt).commit(pager, x)?;
+        st.running.remove(&x);
+        st.last_commit = Some(lsn);
         Ok(lsn)
     }
 
@@ -102,33 +122,36 @@ impl Transactions {
     /// Fails, leaving `x` running, if its commit log page is damaged.
     ///
     /// Panics if `x` is not running.
-    pub fn abort<R: Runtime>(&mut self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
-        assert!(self.running.contains(&x), "{x:?} is not running");
-        let lsn = self.clog.abort(pager, x)?;
-        self.running.remove(&x);
+    pub fn abort(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
+        let mut st = self.state.lock(&self.rt);
+        assert!(st.running.contains(&x), "{x:?} is not running");
+        let lsn = self.clog.read(&self.rt).abort(pager, x)?;
+        st.running.remove(&x);
         Ok(lsn)
     }
 
-    /// Returns the commit log status of `x`, an id already assigned.
-    pub fn status<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Status, PageError> {
-        assert!(x < self.next, "{x:?} is not assigned");
-        self.clog.status(pager, x)
+    /// Returns the commit log status of `x`, an id already reserved.
+    pub fn status(&self, pager: &Pager<R>, x: Xid) -> Result<Status, PageError> {
+        self.clog.read(&self.rt).status(pager, x)
     }
 
     /// Take a snapshot of the transactions now committed and hold back the heaps of `scope` for
     /// it until it is released.
-    pub fn take(&mut self, scope: Scope) -> (SnapshotId, Snapshot) {
-        let in_progress: Vec<Xid> = self.running.iter().copied().collect();
-        let xmin = in_progress.first().copied().unwrap_or(self.next);
-        let snapshot = Snapshot::new(xmin, self.next, in_progress);
-        let id = self.holds.hold(xmin, scope);
-        self.reads.insert(id, self.last_commit);
+    pub fn take(&self, scope: Scope) -> (SnapshotId, Snapshot) {
+        let mut st = self.state.lock(&self.rt);
+        let in_progress: Vec<Xid> = st.running.iter().copied().collect();
+        let xmin = in_progress.first().copied().unwrap_or(st.next);
+        let snapshot = Snapshot::new(xmin, st.next, in_progress);
+        let id = st.holds.hold(xmin, scope);
+        let read = st.last_commit;
+        st.reads.insert(id, read);
         (id, snapshot)
     }
 
-    pub fn release(&mut self, id: SnapshotId) {
-        self.holds.release(id);
-        self.reads.remove(&id);
+    pub fn release(&self, id: SnapshotId) {
+        let mut st = self.state.lock(&self.rt);
+        st.holds.release(id);
+        st.reads.remove(&id);
     }
 
     /// Returns the LSN of the commit record of the latest commit snapshot `id` may read, or
@@ -139,6 +162,8 @@ impl Transactions {
     /// Panics if `id` is not held.
     pub fn read_upto(&self, id: SnapshotId) -> Option<Lsn> {
         *self
+            .state
+            .lock(&self.rt)
             .reads
             .get(&id)
             .unwrap_or_else(|| panic!("{id:?} is not held"))
@@ -146,7 +171,7 @@ impl Transactions {
 
     /// Returns whether the version whose header holds `xmin` and `xmax` is visible to `reader`
     /// at `snapshot`.
-    pub fn sees<R: Runtime>(
+    pub fn sees(
         &self,
         pager: &Pager<R>,
         snapshot: &Snapshot,
@@ -154,17 +179,20 @@ impl Transactions {
         xmin: u64,
         xmax: u64,
     ) -> Result<bool, PageError> {
-        snapshot.sees(reader, xmin, xmax, |x| self.clog.status(pager, x))
+        let clog = self.clog.read(&self.rt);
+        snapshot.sees(reader, xmin, xmax, |x| clog.status(pager, x))
     }
 
-    pub fn holds_mut(&mut self) -> &mut Holds {
-        &mut self.holds
+    /// Run `f` on the snapshots and replica reports that bound reclamation.
+    pub fn with_holds<T>(&self, f: impl FnOnce(&mut Holds) -> T) -> T {
+        f(&mut self.state.lock(&self.rt).holds)
     }
 
     /// Returns the watermark of `heap`: the oldest snapshot xmin any snapshot or replica holding
     /// `heap` has, or the next id when none holds it.
     pub fn watermark(&self, heap: u32) -> Xid {
-        self.holds.watermark(heap, self.next)
+        let st = self.state.lock(&self.rt);
+        st.holds.watermark(heap, st.next)
     }
 
     /// Truncate the commit log below `bound`.
@@ -172,12 +200,13 @@ impl Transactions {
     /// Preconditions: those of [`CommitLog::truncate`].
     ///
     /// Panics if a transaction below `bound` is running, or if `bound` is not assigned yet.
-    pub fn truncate<R: Runtime>(&mut self, pager: &Pager<R>, bound: Xid) -> Result<(), PageError> {
-        assert!(bound <= self.next, "{bound:?} is not assigned yet");
+    pub fn truncate(&self, pager: &Pager<R>, bound: Xid) -> Result<(), PageError> {
+        let st = self.state.lock(&self.rt);
+        assert!(bound <= st.next, "{bound:?} is not assigned yet");
         assert!(
-            self.running.first().is_none_or(|&r| r >= bound),
+            st.running.first().is_none_or(|&r| r >= bound),
             "a transaction below {bound:?} is running"
         );
-        self.clog.truncate(pager, bound)
+        self.clog.write(&self.rt).truncate(pager, bound)
     }
 }

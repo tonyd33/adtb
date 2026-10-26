@@ -487,8 +487,8 @@ fn locks_of_finished_transactions_are_released() {
 fn a_snapshot_reads_up_to_the_last_commit_before_it() {
     let mut sim = adtb_sim::Sim::new(9, adtb_sim::Config::default());
     sim.run(|rt| {
-        let pager = adtb::storage::Pager::create(rt, &engine::options()).unwrap();
-        let mut txns = adtb::mvcc::Transactions::create(&pager).unwrap();
+        let pager = adtb::storage::Pager::create(rt.clone(), &engine::options()).unwrap();
+        let txns = adtb::mvcc::Transactions::create(rt, &pager).unwrap();
         let (before, _) = txns.take(adtb::mvcc::Scope::Every);
         let x = txns.begin(&pager).unwrap();
         let (during, _) = txns.take(adtb::mvcc::Scope::Every);

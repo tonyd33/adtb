@@ -68,7 +68,7 @@ pub struct Report {
 
 /// Returns the fate of the version whose header is `h` in a heap whose watermark is `watermark`.
 pub fn judge<R: Runtime>(
-    txns: &Transactions,
+    txns: &Transactions<R>,
     pager: &Pager<R>,
     watermark: Xid,
     h: &Header,
@@ -96,7 +96,7 @@ pub fn judge<R: Runtime>(
 /// leaving its all-visible bit as it is unless the page changes.
 pub fn prune<R: Runtime>(
     pager: &Pager<R>,
-    txns: &Transactions,
+    txns: &Transactions<R>,
     heap: &mut Heap,
     pid: Pid,
 ) -> Result<Pruned, PageError> {
@@ -118,7 +118,7 @@ pub fn prune<R: Runtime>(
 /// Panics if the heaps do not share one large-value store.
 pub fn vacuum<R: Runtime>(
     pager: &Pager<R>,
-    txns: &Transactions,
+    txns: &Transactions<R>,
     sum: &mut Sum,
     budget: usize,
 ) -> Result<Report, Error> {
@@ -180,7 +180,7 @@ fn shared_store(sum: &Sum) -> LargeStore {
 /// TIDs, and empty `dead`.
 fn clean<R: Runtime>(
     pager: &Pager<R>,
-    txns: &Transactions,
+    txns: &Transactions<R>,
     sum: &mut Sum,
     dead: &mut DeadSet,
     report: &mut Report,

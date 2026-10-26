@@ -147,15 +147,15 @@ struct Roots {
 
 struct Db {
     pager: Pager<SimRuntime>,
-    txns: Transactions,
+    txns: Transactions<SimRuntime>,
     heaps: Vec<Heap>,
     indexes: Vec<Index>,
 }
 
 impl Db {
     fn create(rt: SimRuntime, fanout: u16) -> (Db, Roots) {
-        let pager = Pager::create(rt, &options()).expect("create");
-        let txns = Transactions::create(&pager).expect("commit log");
+        let pager = Pager::create(rt.clone(), &options()).expect("create");
+        let txns = Transactions::create(rt, &pager).expect("commit log");
         let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
         let heaps: Vec<Heap> = (0..3)
             .map(|h| {
@@ -188,8 +188,8 @@ impl Db {
     }
 
     fn open(rt: SimRuntime, roots: Roots) -> Option<Db> {
-        let (pager, _) = Pager::open(rt, &options()).ok()?;
-        let txns = Transactions::open(&pager, roots.clog).ok()?;
+        let (pager, _) = Pager::open(rt.clone(), &options()).ok()?;
+        let txns = Transactions::open(rt, &pager, roots.clog).ok()?;
         let large = LargeStore::open(LARGE_ID, roots.large);
         let heaps = (0..3)
             .map(|h| Heap::open(&pager, HEAP_IDS[h], roots.heaps[h], row_type(h), large).unwrap())
@@ -267,8 +267,9 @@ impl Db {
 
     /// Returns what the whole-file `verify` finds, freeing leaked pages first.
     fn verify_file(&mut self) -> Vec<String> {
+        let clog = self.txns.commit_log();
         let inventory = Inventory {
-            commit_log: Some(self.txns.commit_log()),
+            commit_log: Some(&clog),
             sums: vec![verify::Sum {
                 heaps: self
                     .heaps

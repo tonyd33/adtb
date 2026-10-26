@@ -2,8 +2,9 @@
 
 use std::convert::Infallible;
 use std::ops::Bound;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use adtb::btree::{BTree, Index, prefix_end};
 use adtb::heap::{FieldType, Heap, LargeStore, walk};
@@ -12,7 +13,7 @@ use adtb::mvcc::{
     Access, Limits, Probe, Safety, Scope, SerialId, SerializationFailure, Serializer, Snapshot,
     SnapshotId, Status, Transactions, Waits, Write, Xid, check_write, probe_unique, read_before,
 };
-use adtb::runtime::{ThreadId, Threads};
+use adtb::runtime::{Clock, Io, Op, Runtime, ThreadId, Threads};
 use adtb::storage::{Options, Pager, Pid};
 use adtb::verify::{Inventory, Sum};
 use adtb_isolation::{Aborted, Database};
@@ -99,8 +100,9 @@ pub struct Roots {
 /// The transactions layer over the workload `elems { id, k, pos, e }` with `unique (k, pos)`
 /// and `unique (k, e)`, and `counters { id, n }` keyed by `id`.
 ///
-/// Each structure has its own lock, taken in field order: the indexes, the heaps, the
-/// transactions, the serializer. No lock is held across a wait.
+/// Each index, heap and the serializer has its own lock, taken in that order; `Transactions`
+/// locks itself and takes no other. Taking a snapshot and recording a commit both run under the
+/// serializer's lock. No lock is held across a wait.
 pub struct Engine {
     pub rt: SimRuntime,
     pager: Pager<SimRuntime>,
@@ -110,10 +112,14 @@ pub struct Engine {
     by_id: Lock<Index>,
     elems: Lock<Heap>,
     counters: Lock<Heap>,
-    txns: Lock<Transactions>,
+    txns: Transactions<SimRuntime>,
     ser: Lock<Serializer>,
     waits: Waits<SimRuntime>,
     next_id: AtomicI64,
+    /// The interval of group commit, when a flusher forces the log and commits wait for it
+    /// instead of forcing it themselves.
+    group_commit: Option<Duration>,
+    stop_flusher: AtomicBool,
 }
 
 fn index(root: Pid, owner: u32, columns: usize, ctor: CtorId) -> Index {
@@ -130,7 +136,10 @@ impl Engine {
             .root();
         let tree = |owner| BTree::create(&pager, owner).unwrap().root();
         let (by_pos, by_elem, by_id) = (tree(ELEMS), tree(ELEMS), tree(COUNTERS));
-        let clog = Transactions::create(&pager).unwrap().commit_log().root();
+        let clog = Transactions::create(rt.clone(), &pager)
+            .unwrap()
+            .commit_log()
+            .root();
         pager.flush_log();
         let roots = Roots {
             large: large.root(),
@@ -151,7 +160,7 @@ impl Engine {
         let (pager, _) = Pager::open(rt.clone(), &options()).ok()?;
         let large = LargeStore::open(LARGE, roots.large);
         let heap = |id, root, fields| Heap::open(&pager, id, root, i64s(fields), large).unwrap();
-        let txns = Transactions::open(&pager, roots.clog).unwrap();
+        let txns = Transactions::open(rt.clone(), &pager, roots.clog).unwrap();
         pager.flush_log();
         Some(Engine {
             by_pos: Lock::new(index(roots.by_pos, ELEMS, 2, ELEM)),
@@ -159,7 +168,9 @@ impl Engine {
             by_id: Lock::new(index(roots.by_id, COUNTERS, 1, COUNTER)),
             elems: Lock::new(heap(ELEMS, roots.elems, 4)),
             counters: Lock::new(heap(COUNTERS, roots.counters, 2)),
-            txns: Lock::new(txns),
+            txns,
+            group_commit: None,
+            stop_flusher: AtomicBool::new(false),
             ser: Lock::new(Serializer::new(limits)),
             waits: Waits::new(rt.clone()),
             next_id: AtomicI64::new(1),
@@ -167,6 +178,43 @@ impl Engine {
             roots,
             rt,
         })
+    }
+
+    /// Force the log only from a flusher every `interval`, so a commit is visible for up to
+    /// that long before it is durable. [`Engine::flusher`] must run while transactions commit.
+    pub fn with_group_commit(mut self, interval: Duration) -> Engine {
+        self.group_commit = Some(interval);
+        self
+    }
+
+    /// Start the group commit flusher, if the engine has one, until [`Engine::stop`].
+    pub fn flusher(self: &Arc<Engine>) -> Option<ThreadId> {
+        let interval = self.group_commit?;
+        let e = self.clone();
+        Some(self.rt.spawn("flusher", move || {
+            while !e.stop_flusher.load(Ordering::Relaxed) {
+                e.sleep(interval);
+                e.pager.flush_log();
+            }
+        }))
+    }
+
+    /// Stop the flusher and wait for it.
+    pub fn stop(&self, flusher: Option<ThreadId>) {
+        self.stop_flusher.store(true, Ordering::Relaxed);
+        if let Some(t) = flusher {
+            self.rt.join(t);
+        }
+    }
+
+    fn sleep(&self, d: Duration) {
+        let mut io = self.rt.io();
+        io.submit(Op::Timer {
+            at: self.rt.now() + d,
+        });
+        while io.poll().is_none() {
+            self.rt.park();
+        }
     }
 
     pub fn roots(&self) -> Roots {
@@ -182,9 +230,9 @@ impl Engine {
         let by_id = self.by_id.lock(&self.rt);
         let elems = self.elems.lock(&self.rt);
         let counters = self.counters.lock(&self.rt);
-        let txns = self.txns.lock(&self.rt);
+        let clog = self.txns.commit_log();
         let inventory = Inventory {
-            commit_log: Some(txns.commit_log()),
+            commit_log: Some(&clog),
             sums: vec![
                 Sum {
                     heaps: vec![(ELEM, &*elems)],
@@ -201,7 +249,7 @@ impl Engine {
     }
 
     fn status(&self, x: Xid) -> Result<Status, Infallible> {
-        Ok(self.txns.lock(&self.rt).status(&self.pager, x).unwrap())
+        Ok(self.txns.status(&self.pager, x).unwrap())
     }
 
     fn sees(&self, tx: &Tx, xmin: u64, xmax: u64) -> bool {
@@ -220,13 +268,13 @@ impl Engine {
     pub fn begin(&self, kind: Kind) -> Tx {
         loop {
             let tx = {
-                let mut txns = self.txns.lock(&self.rt);
                 let xid = match kind {
-                    Kind::ReadWrite => Some(txns.begin(&self.pager).unwrap()),
+                    Kind::ReadWrite => Some(self.txns.begin(&self.pager).unwrap()),
                     Kind::ReadOnly | Kind::Deferrable => None,
                 };
-                let (hold, snapshot) = txns.take(Scope::Every);
-                let sid = self.ser.lock(&self.rt).begin(match (kind, xid) {
+                let mut ser = self.ser.lock(&self.rt);
+                let (hold, snapshot) = self.txns.take(Scope::Every);
+                let sid = ser.begin(match (kind, xid) {
                     (_, Some(x)) => Access::ReadWrite(x),
                     (Kind::Deferrable, None) => Access::Deferrable,
                     (_, None) => Access::ReadOnly,
@@ -487,28 +535,35 @@ impl Engine {
     /// Commit `tx`, acknowledging once the log is durable past every commit it may have read.
     pub fn commit(&self, tx: Tx) -> Result<(), Failure> {
         let durable_past = {
-            let mut txns = self.txns.lock(&self.rt);
             let mut ser = self.ser.lock(&self.rt);
             match ser.precommit(tx.sid) {
                 Err(f) => Err(f),
                 Ok(()) => {
-                    let own = tx.xid.map(|x| txns.commit(&self.pager, x).unwrap());
+                    let own = tx.xid.map(|x| self.txns.commit(&self.pager, x).unwrap());
                     ser.committed(tx.sid);
-                    let read = txns.read_upto(tx.hold);
-                    txns.release(tx.hold);
-                    Ok(own.max(read))
+                    let read = self.txns.read_upto(tx.hold);
+                    self.txns.release(tx.hold);
+                    Ok((own, read))
                 }
             }
         };
         let durable_past = match durable_past {
-            Ok(lsn) => lsn,
+            Ok((own, read)) => own.max(read),
             Err(f) => {
                 self.abort(tx);
                 return Err(f.into());
             }
         };
-        if durable_past.is_some_and(|lsn| self.pager.durable() <= lsn) {
-            self.pager.flush_log();
+        if let Some(lsn) = durable_past {
+            match self.group_commit {
+                None if self.pager.durable() <= lsn => self.pager.flush_log(),
+                None => {}
+                Some(interval) => {
+                    while self.pager.durable() <= lsn {
+                        self.sleep(interval / 4);
+                    }
+                }
+            }
         }
         if let Some(x) = tx.xid {
             self.waits.ended(x);
@@ -518,13 +573,12 @@ impl Engine {
 
     pub fn abort(&self, tx: Tx) {
         {
-            let mut txns = self.txns.lock(&self.rt);
             let mut ser = self.ser.lock(&self.rt);
             if let Some(x) = tx.xid {
-                txns.abort(&self.pager, x).unwrap();
+                self.txns.abort(&self.pager, x).unwrap();
             }
             ser.aborted(tx.sid);
-            txns.release(tx.hold);
+            self.txns.release(tx.hold);
         }
         if let Some(x) = tx.xid {
             self.waits.ended(x);

@@ -23,7 +23,7 @@ fn options() -> Options {
 
 struct Db {
     pager: Pager<SimRuntime>,
-    txns: Transactions,
+    txns: Transactions<SimRuntime>,
     heaps: Vec<Heap>,
     index: Index,
     tree: BTree,
@@ -31,8 +31,8 @@ struct Db {
 
 impl Db {
     fn create(rt: SimRuntime) -> Db {
-        let pager = Pager::create(rt, &options()).expect("create");
-        let txns = Transactions::create(&pager).unwrap();
+        let pager = Pager::create(rt.clone(), &options()).expect("create");
+        let txns = Transactions::create(rt, &pager).unwrap();
         let large = LargeStore::create(&pager, 9).unwrap();
         let slotted = vec![
             FieldType::Scalar(Scalar::I64),
@@ -81,8 +81,9 @@ impl Db {
     }
 
     fn verify_with(&mut self, pages: &[Pid]) -> Report {
+        let clog = self.txns.commit_log();
         let inventory = Inventory {
-            commit_log: Some(self.txns.commit_log()),
+            commit_log: Some(&clog),
             sums: vec![Sum {
                 heaps: vec![(CtorId(0), &self.heaps[0]), (CtorId(1), &self.heaps[1])],
                 indexes: vec![&self.index],

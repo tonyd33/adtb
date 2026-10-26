@@ -7,7 +7,7 @@ exposes safe types to `adtb`. Every other crate has
 
 ## 1. Safe types
 
-The safe types are `Frame`, `PageRef`, `AlignedBuf` and `Lock`.
+The safe types are `Frame`, `PageRef`, `AlignedBuf`, `Lock` and `RwLock`.
 
 `adtb-sys` states its contract in its documentation; this file states
 what `adtb` may rely on.
@@ -56,7 +56,12 @@ shared between threads sits behind:
 ```text
 Lock::new(value) -> Lock<T>
 lock.lock(threads) -> MutexGuard<T>     // waits through threads.yield_now
+RwLock::new(value) -> RwLock<T>
+rw.read(threads) -> RwLockReadGuard<T>  // shared with other readers
+rw.write(threads) -> RwLockWriteGuard<T>
 ```
+
+`lock::RwLock<T>` waits as `Lock` does and follows the same rules.
 
 Invariants:
 

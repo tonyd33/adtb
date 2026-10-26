@@ -100,6 +100,7 @@ fn client(e: &Engine, rt: &SimRuntime, b: &Mutex<Book>) {
 
 fn clients(e: &Arc<Engine>, b: &Arc<Mutex<Book>>) {
     let rt = &e.rt;
+    let flusher = e.flusher();
     let threads: Vec<_> = (0..CLIENTS)
         .map(|_| {
             let (e, b, rt2) = (e.clone(), b.clone(), rt.clone());
@@ -109,6 +110,7 @@ fn clients(e: &Arc<Engine>, b: &Arc<Mutex<Book>>) {
     for t in threads {
         rt.join(t);
     }
+    e.stop(flusher);
 }
 
 fn faults() -> Faults {
@@ -119,8 +121,19 @@ fn faults() -> Faults {
     }
 }
 
-fn open(rt: SimRuntime, roots: Roots) -> Arc<Engine> {
-    Arc::new(Engine::open(rt, roots, Limits::default()).expect("the database reopens"))
+fn open(rt: SimRuntime, roots: Roots, group_commit: Option<Duration>) -> Arc<Engine> {
+    let e = Engine::open(rt, roots, Limits::default()).expect("the database reopens");
+    Arc::new(match group_commit {
+        Some(interval) => e.with_group_commit(interval),
+        None => e,
+    })
+}
+
+/// Returns the group commit interval of `seed`: none for even seeds, whose commits force the
+/// log themselves, and up to two milliseconds for odd ones, so transactions read commits a
+/// crash may still lose.
+fn group_commit(seed: u64) -> Option<Duration> {
+    (!seed.is_multiple_of(2)).then(|| Duration::from_micros(100 + (seed * 2_654_435_761) % 1900))
 }
 
 /// Run the workload for one seed, crashing up to `CRASHES` processes, and return its history
@@ -138,16 +151,17 @@ fn history(seed: u64) -> (Vec<iso::Txn>, u64) {
     assert_eq!(Outcome::Finished, made);
     let roots = roots.unwrap();
     let b = Arc::new(Mutex::new(Book::default()));
+    let delay = group_commit(seed);
     let mut crashed = 0;
     for round in 0..CRASHES {
         let after = 500 + (seed * 7919 + round * 104_729) % 20_000;
         sim.crash_at(sim.now() + Duration::from_micros(after));
-        let outcome = sim.run(|rt| clients(&open(rt, roots), &b));
+        let outcome = sim.run(|rt| clients(&open(rt, roots, delay), &b));
         if outcome == Outcome::Crashed {
             crashed += 1;
         }
         let mut problems = Vec::new();
-        let checked = sim.run(|rt| problems = open(rt, roots).verify());
+        let checked = sim.run(|rt| problems = open(rt, roots, None).verify());
         assert_eq!(Outcome::Finished, checked);
         assert!(
             problems.is_empty(),
@@ -156,7 +170,7 @@ fn history(seed: u64) -> (Vec<iso::Txn>, u64) {
     }
     let mut last = Vec::new();
     let finished = sim.run(|rt| {
-        let e = open(rt, roots);
+        let e = open(rt, roots, delay);
         clients(&e, &b);
         let reader = e.begin(Kind::ReadOnly);
         for key in 0..KEYS {
@@ -193,4 +207,104 @@ fn no_seed_of_random_clients_with_crashes_shows_an_anomaly() {
 #[test]
 fn a_seed_replays_the_same_history() {
     assert_eq!(history(7), history(7));
+}
+
+/// Seeds of the targeted durability test.
+const DURABILITY_SEEDS: u64 = 16;
+
+/// Under a long group commit interval, a writer appends to key 1 and waits for its commit to
+/// become durable, readers read the commit while it is visible and not yet durable, and the
+/// process crashes before the flusher forces the log. A recovered process then appends to key 1
+/// again and reads it.
+fn unflushed_reads(seed: u64) -> Vec<iso::Txn> {
+    let mut sim = Sim::new(
+        seed,
+        Config {
+            faults: faults(),
+            ..Config::default()
+        },
+    );
+    let mut roots = None;
+    let made = sim.run(|rt| roots = Some(Engine::create(rt, Limits::default()).roots()));
+    assert_eq!(Outcome::Finished, made);
+    let roots = roots.unwrap();
+    let b = Arc::new(Mutex::new(Book::default()));
+    sim.crash_at(sim.now() + Duration::from_millis(100));
+    let crashed = sim.run(|rt| {
+        let e = open(rt, roots, Some(Duration::from_secs(1)));
+        let flusher = e.flusher();
+        let rt = &e.rt;
+        let (e2, b2) = (e.clone(), b.clone());
+        let writer = rt.spawn("writer", move || {
+            let id = book(&b2).begin();
+            let tx = e2.begin(Kind::ReadWrite);
+            let elem = book(&b2).elem();
+            e2.append(&tx, 1, elem).unwrap();
+            book(&b2).txn(id).ops.push(Op::Append { key: 1, elem });
+            book(&b2).txn(id).outcome = Ended::InDoubt;
+            e2.commit(tx).unwrap();
+            book(&b2).txn(id).outcome = Ended::Committed;
+        });
+        let readers: Vec<_> = (0..2)
+            .map(|_| {
+                let (e, b) = (e.clone(), b.clone());
+                rt.spawn("reader", move || {
+                    loop {
+                        let tx = e.begin(Kind::ReadOnly);
+                        let list = e.read(&tx, 1).unwrap();
+                        if list.is_empty() {
+                            e.commit(tx).unwrap();
+                            e.rt.yield_now();
+                            continue;
+                        }
+                        let id = book(&b).begin();
+                        book(&b).txn(id).ops.push(Op::Read { key: 1, list });
+                        book(&b).txn(id).outcome = Ended::InDoubt;
+                        e.commit(tx).unwrap();
+                        book(&b).txn(id).outcome = Ended::Committed;
+                        return;
+                    }
+                })
+            })
+            .collect();
+        for t in readers.into_iter().chain([writer]) {
+            rt.join(t);
+        }
+        e.stop(flusher);
+    });
+    assert_eq!(
+        Outcome::Crashed,
+        crashed,
+        "seed {seed}: the flusher forced the log"
+    );
+    let finished = sim.run(|rt| {
+        let e = open(rt, roots, None);
+        let id = book(&b).begin();
+        let tx = e.begin(Kind::ReadWrite);
+        let elem = book(&b).elem();
+        e.append(&tx, 1, elem).unwrap();
+        let list = e.read(&tx, 1).unwrap();
+        e.commit(tx).unwrap();
+        let mut b = book(&b);
+        let t = b.txn(id);
+        t.ops = vec![Op::Append { key: 1, elem }, Op::Read { key: 1, list }];
+        t.outcome = Ended::Committed;
+    });
+    assert_eq!(Outcome::Finished, finished);
+    std::mem::take(&mut book(&b).txns).into_values().collect()
+}
+
+#[test]
+fn a_reader_of_an_unflushed_commit_is_acknowledged_only_once_it_is_durable() {
+    for seed in 0..DURABILITY_SEEDS {
+        let txns = unflushed_reads(seed);
+        let read = txns.iter().any(|t| {
+            !t.ops.is_empty()
+                && t.ops
+                    .iter()
+                    .all(|op| matches!(op, Op::Read { list, .. } if !list.is_empty()))
+        });
+        assert!(read, "seed {seed}: no reader saw the unflushed commit");
+        assert_eq!(Ok(vec![]), iso::check(&txns), "seed {seed}");
+    }
 }

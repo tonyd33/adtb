@@ -81,8 +81,8 @@ fn below(rt: &SimRuntime, n: usize) -> usize {
 fn setup(sim: &mut Sim, heap_pages: usize) -> (Pid, Vec<Pid>) {
     let mut out = None;
     let outcome = sim.run(|rt| {
-        let pager = Pager::create(rt, &options()).expect("create");
-        let txns = Transactions::create(&pager).expect("commit log");
+        let pager = Pager::create(rt.clone(), &options()).expect("create");
+        let txns = Transactions::create(rt, &pager).expect("commit log");
         let pages = (0..heap_pages)
             .map(|_| {
                 pager
@@ -100,12 +100,12 @@ fn setup(sim: &mut Sim, heap_pages: usize) -> (Pid, Vec<Pid>) {
 fn with_open<T>(
     sim: &mut Sim,
     root: Pid,
-    body: impl FnOnce(&mut Pager<SimRuntime>, &mut Transactions) -> T,
+    body: impl FnOnce(&mut Pager<SimRuntime>, &mut Transactions<SimRuntime>) -> T,
 ) -> T {
     let mut out = None;
     let outcome = sim.run(|rt| {
-        let (mut pager, _) = Pager::open(rt, &options()).expect("open");
-        let mut txns = Transactions::open(&pager, root).expect("open the commit log");
+        let (mut pager, _) = Pager::open(rt.clone(), &options()).expect("open");
+        let mut txns = Transactions::open(rt, &pager, root).expect("open the commit log");
         out = Some(body(&mut pager, &mut txns));
     });
     assert_eq!(Outcome::Finished, outcome);
@@ -152,7 +152,7 @@ fn visibility_through_the_commit_log_matches_a_model() {
                     txns.begin(pager).expect("begin");
                 }
                 4..=7 if !txns.running().is_empty() => {
-                    let x = rt.pick(txns.running());
+                    let x = rt.pick(&txns.running());
                     if rt.below(3) == 0 {
                         txns.abort(pager, x).expect("abort");
                         model.ended.insert(x, (event, Status::Aborted));
@@ -162,7 +162,7 @@ fn visibility_through_the_commit_log_matches_a_model() {
                     }
                 }
                 8 if !txns.running().is_empty() => {
-                    let writer = rt.pick(txns.running());
+                    let writer = rt.pick(&txns.running());
                     if versions.is_empty() || rt.below(2) == 0 {
                         versions.push((writer.0, 0));
                     } else {
@@ -179,7 +179,7 @@ fn visibility_through_the_commit_log_matches_a_model() {
                         Scope::Heaps(BTreeSet::from([rt.below(4) as u32]))
                     };
                     let reader = (!txns.running().is_empty() && rt.below(2) == 0)
-                        .then(|| rt.pick(txns.running()));
+                        .then(|| rt.pick(&txns.running()));
                     let (id, snapshot) = txns.take(scope.clone());
                     held.push(Held {
                         id,
@@ -394,7 +394,7 @@ fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &M
     let Ok((pager, _)) = Pager::open(rt.clone(), &options()) else {
         return;
     };
-    let mut txns = Transactions::open(&pager, root).expect("open the commit log");
+    let txns = Transactions::open(rt.clone(), &pager, root).expect("open the commit log");
     let mut unacked: Vec<Xid> = Vec::new();
     for _ in 0..4000 {
         match below(&rt, 12) {
@@ -451,15 +451,16 @@ fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &M
 }
 
 fn inspect(rt: SimRuntime, root: Pid, pages: &[Pid], assigned: &[Xid]) -> Report {
-    let (pager, _) = Pager::open(rt, &options()).expect("open");
-    let txns = Transactions::open(&pager, root).expect("open the commit log");
+    let (pager, _) = Pager::open(rt.clone(), &options()).expect("open");
+    let txns = Transactions::open(rt, &pager, root).expect("open the commit log");
     let statuses = assigned
         .iter()
         .map(|&x| (x, txns.status(&pager, x).expect("status")))
         .collect();
     let v = pager.verify();
+    let clog = txns.commit_log();
     let inventory = Inventory {
-        commit_log: Some(txns.commit_log()),
+        commit_log: Some(&clog),
         pages: pages.to_vec(),
         ..Inventory::default()
     };
