@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 530
 summary: "verify does not exist, so a heap or tree corrupted by a crash goes unnoticed"
-branch: adtb-verify
+closed: 2026-10-25
 depends-on:
   - slotted-heap
   - blink-tree
@@ -32,3 +32,7 @@ update that links the new page (create and reserve), or between the
 root update and the frees (truncate). Heaps and indexes will have the
 same window. `verify` should report every allocated page that nothing
 refers to, and a repair should free it.
+
+## 2026-10-25: resolved
+
+Landed as `feat(verify): check every page, heap, tree and index entry and free leaked pages`. The verify contract is `docs/design/verify.md`; the row type is `mvcc.md` §1.1 and the history format `runtime.md` §6.

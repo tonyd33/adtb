@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 545
 summary: "the heap's row type, a contract its consumers rely on, is stated only in a non-binding note"
-branch: adtb-verify
+closed: 2026-10-25
 depends-on:
   - slotted-heap
 tags:
@@ -22,3 +22,7 @@ the declaration-order index, and that a heap always returns rows in its
 newest format. The executor and the write path will rely on this, but
 §12 is notes for the implementation. Move the contract into a binding
 section, and keep the byte layout in §12.2.
+
+## 2026-10-25: resolved
+
+Landed as `feat(verify): check every page, heap, tree and index entry and free leaked pages`. The verify contract is `docs/design/verify.md`; the row type is `mvcc.md` §1.1 and the history format `runtime.md` §6.
