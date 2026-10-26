@@ -1,0 +1,49 @@
+# A record pattern matches listed fields; a field name alone binds the field; unlisted fields are unconstrained.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities select match i
+    | EmailPass { email, hash: _ } -> email
+    | Google { gid }               -> gid
+    | Apple { sub }                -> sub
+----
+"a-bo"
+"ann@example.com"
+"g-ann"
+"root"
+query rowsort
+  from i in identities select match i
+    | EmailPass { email }    -> email
+    | Google { user, gid: g } -> g
+    | Apple { }              -> "apple"
+----
+"ann@example.com"
+"apple"
+"g-ann"
+"root"
+query rowsort
+  from i in identities select match i
+    | EmailPass { user } -> user
+    | Google { user }    -> user
+    | Apple { user }     -> user
+----
+users.key(1)
+users.key(2)
+# A record type's single constructor is matched the same way.
+query rowsort
+  from u in users select match u | User { name } -> name
+----
+"ann"
+"bo"
+"cy"
+query rowsort
+  from e in employees select match e | Employee { name, manager: None } -> name | Employee { manager: Some { value: m } } -> m.name
+----
+"boss"
+error Invalid
+  from i in identities select match i
+    | EmailPass { gid } -> gid
+    | Google { gid }    -> gid
+    | Apple { sub }     -> sub
+error Invalid
+  from u in users select match u | User { nick } -> nick

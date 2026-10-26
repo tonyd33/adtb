@@ -1,0 +1,102 @@
+# Group into partitions the bindings by the key and yields one binding per distinct key value.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Order = { id: Key orders, user: Key users, total: I64, qty: I64 }
+  relation users : User key id generate sequence
+  relation orders : Order key id generate sequence
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" },
+                     User { id: users.key(3), name: "cy" }]
+  insert orders from [Order { id: orders.key(1), user: users.key(1), total: 100, qty: 2 },
+                      Order { id: orders.key(2), user: users.key(1), total: 100, qty: 0 },
+                      Order { id: orders.key(3), user: users.key(2), total: 30, qty: 3 },
+                      Order { id: orders.key(4), user: users.key(1), total: 50, qty: 5 }]
+# One element per distinct key; a key no binding produces has no group.
+query rowsort
+  from o in orders group o by o.user into g
+  select { user: g.key, n: count(x for x in g) }
+----
+{ user: users.key(1), n: 3 }
+{ user: users.key(2), n: 1 }
+query
+  from o in orders group o by o.user into g select g.key
+----
+users.key(1)
+users.key(2)
+# The group's elements are the value of the grouped expression for each binding.
+query rowsort
+  from o in orders group o by o.user into g
+  select { user: g.key, ids: from x in g select x.id }
+----
+{ user: users.key(1), ids: [orders.key(1), orders.key(2), orders.key(4)] }
+{ user: users.key(2), ids: [orders.key(3)] }
+# The grouped expression need not be the binder.
+query rowsort
+  from o in orders group o.qty by o.user into g
+  select { user: g.key, qtys: from q in g select q }
+----
+{ user: users.key(1), qtys: [0, 2, 5] }
+{ user: users.key(2), qtys: [3] }
+# A group with no aggregate around it is the set of the grouped values: equal values merge.
+query rowsort
+  from o in orders group o.total by o.user into g
+  select { user: g.key, totals: g }
+----
+{ user: users.key(1), totals: [50, 100] }
+{ user: users.key(2), totals: [30] }
+# An aggregate over a group ranges over its bindings: equal grouped values each count.
+query rowsort
+  from o in orders group o.total by o.user into g
+  select { user: g.key, n: count(t for t in g), s: sum(t for t in g) }
+----
+{ user: users.key(1), n: 3, s: 250 }
+{ user: users.key(2), n: 1, s: 30 }
+# A where after into filters groups.
+query
+  from o in orders group o by o.user into g
+  where count(x for x in g) > 1
+  select g.key
+----
+users.key(1)
+# A where before group filters bindings before they are grouped.
+query rowsort
+  from o in orders where o.qty > 0 group o by o.user into g
+  select { user: g.key, n: count(x for x in g) }
+----
+{ user: users.key(1), n: 2 }
+{ user: users.key(2), n: 1 }
+# A from after into ranges over the group.
+query rowsort
+  from o in orders group o by o.user into g
+  from x in g where x.qty > 2
+  select { user: g.key, id: x.id }
+----
+{ user: users.key(1), id: orders.key(4) }
+{ user: users.key(2), id: orders.key(3) }
+# The key may be a record of several keys.
+query rowsort
+  from o in orders group o by { user: o.user, bulk: o.qty > 1 } into g
+  select { k: g.key, n: count(x for x in g) }
+----
+{ k: { user: users.key(1), bulk: true }, n: 2 }
+{ k: { user: users.key(1), bulk: false }, n: 1 }
+{ k: { user: users.key(2), bulk: true }, n: 1 }
+# The key may be any expression with equality.
+query rowsort
+  from o in orders group o by o.total > 60 into g
+  select { big: g.key, n: count(x for x in g) }
+----
+{ big: true, n: 2 }
+{ big: false, n: 2 }
+# Over an empty source there are no groups.
+query
+  from o in orders where o.qty > 100 group o by o.user into g select g.key
+----
+
+# Binders introduced before group are out of scope after into.
+error Invalid
+  from o in orders group o by o.user into g select o.total
+error Invalid
+  from u in users, o in orders where o.user == key u group o by o.user into g select u.name

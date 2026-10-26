@@ -1,0 +1,74 @@
+# A fix binds its relation to the least set equal to its body, reached over cycles in the data.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Follow = { src: Key users, dst: Key users }
+  relation users : User key id generate sequence
+  relation follows : Follow key (src, dst)
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" },
+                     User { id: users.key(3), name: "cy" },
+                     User { id: users.key(4), name: "di" }]
+  insert follows from [Follow { src: users.key(1), dst: users.key(2) },
+                       Follow { src: users.key(2), dst: users.key(3) },
+                       Follow { src: users.key(3), dst: users.key(2) }]
+# Reachability from ann; the cycle between bo and cy adds nothing once both are reached.
+query
+  fix reach = (from f in follows where f.src == users.key(1) select f.dst)
+            union (from r in reach, f in follows where f.src == r select f.dst)
+  in from u in users where exists r in reach where r == key u select u.name
+----
+"bo"
+"cy"
+# From bo the cycle leads back to bo.
+query
+  fix reach = (from f in follows where f.src == users.key(2) select f.dst)
+            union (from r in reach, f in follows where f.src == r select f.dst)
+  in reach
+----
+users.key(2)
+users.key(3)
+# From a user who follows nobody the least fixpoint is empty.
+query
+  fix reach = (from f in follows where f.src == users.key(4) select f.dst)
+            union (from r in reach, f in follows where f.src == r select f.dst)
+  in reach
+----
+
+# A body that only refers to itself has the empty set as its least fixpoint.
+query
+  fix x = from r in x, f in follows where f.src == r select f.dst in x
+----
+
+# A body that does not mention its binder is its own fixpoint.
+query
+  fix x = from f in follows select f.src in x
+----
+users.key(1)
+users.key(2)
+users.key(3)
+# The transitive closure as pairs.
+query rowsort
+  fix tc = (from f in follows select { a: f.src, b: f.dst })
+         union (from p in tc, f in follows where f.src == p.b select { a: p.a, b: f.dst })
+  in tc
+----
+{ a: users.key(1), b: users.key(2) }
+{ a: users.key(1), b: users.key(3) }
+{ a: users.key(2), b: users.key(3) }
+{ a: users.key(2), b: users.key(2) }
+{ a: users.key(3), b: users.key(2) }
+{ a: users.key(3), b: users.key(3) }
+# A fix is an expression and nests inside a query, using the enclosing binder.
+query rowsort
+  from u in users
+  select { name: u.name,
+           n: count(x for x in (fix reach = (from f in follows where f.src == key u select f.dst)
+                                          union (from r in reach, f in follows where f.src == r select f.dst)
+                                in reach)) }
+----
+{ name: "ann", n: 2 }
+{ name: "bo", n: 2 }
+{ name: "cy", n: 2 }
+{ name: "di", n: 0 }

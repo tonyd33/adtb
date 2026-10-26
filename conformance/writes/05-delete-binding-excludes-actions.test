@@ -1,0 +1,25 @@
+# A let on a delete binds the rows the delete names, not the rows its delete actions derive.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Badge = { id: Key badges, owner: Key users on delete cascade, label: Text }
+  relation badges : Badge key id generate sequence
+  type Copy = { id: Key copies, text: Text }
+  relation copies : Copy key id generate sequence
+run
+  insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
+  insert badges from ([{ id: badges.key(1), owner: users.key(1), label: "b1" },
+                       { id: badges.key(2), owner: users.key(1), label: "b2" }])
+run
+  transact
+    let d = delete u in users where key u == users.key(1)
+    insert copies { id: copies.key(1), text: print(count(x for x in d)) }
+query
+  from c in copies select c.text
+----
+"1"
+query
+  count(b for b in badges)
+----
+0

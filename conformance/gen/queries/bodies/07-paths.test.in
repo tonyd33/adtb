@@ -1,0 +1,69 @@
+# A field access on a reference follows it to the one row it names.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities select i.user.name
+----
+"ann"
+"bo"
+query rowsort
+  from i in identities, u in users where key u == i.user select u.name
+----
+"ann"
+"bo"
+query rowsort
+  from i in identities select { id: key i, name: i.user.name }
+----
+{ id: identities.key(1), name: "ann" }
+{ id: identities.key(2), name: "ann" }
+{ id: identities.key(3), name: "bo" }
+{ id: identities.key(4), name: "bo" }
+query rowsort
+  from f in follows select { s: f.src.name, d: f.dst.name }
+----
+{ s: "ann", d: "bo" }
+{ s: "bo", d: "cy" }
+{ s: "cy", d: "bo" }
+query rowsort
+  from r in resets select r.identity.user.name
+----
+"ann"
+# The fields reachable through a key are those of its constructor set's row type.
+query rowsort
+  from r in resets select r.identity.email
+----
+"ann@example.com"
+query rowsort
+  from r in resets select match r.identity | EmailPass e -> e.email
+----
+"ann@example.com"
+error Invalid
+  from i in identities, r in resets select i.id.email
+error Invalid
+  from r in resets select r.identity.gid
+# A built key follows to its row; one that names no row faults.
+query
+  users.key(1).name
+----
+"ann"
+query
+  identities.key(4).user.name
+----
+"bo"
+error Faulted
+  users.key(9).name
+error Faulted
+  from u in users select users.key(9).name
+# A path stops at an Option.
+error Invalid
+  from e in employees select e.manager.name
+query rowsort
+  from e in employees
+  select match e.manager
+    | None              -> "none"
+    | Some { value: m } -> m.name
+----
+"boss"
+"none"
+error Invalid
+  from s in sessions select s.owner.name

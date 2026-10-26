@@ -1,0 +1,38 @@
+# A parameter is declared with its type, always supplied, and a sum parameter is a sum value like any other.
+schema
+  module test
+  type Status = Draft | Sent { at: I64 } | Paid { at: I64 }
+  type Invoice = { id: Key invoices, status: Status, issued: I64 }
+  relation invoices : Invoice key id generate sequence
+  fn by_status (s: Status, since: I64) -> Set (Key invoices) =
+    from i in invoices where i.status == s and i.issued >= since select i.id
+run
+  insert invoices from [Invoice { id: invoices.key(1), status: Draft, issued: 10 },
+                        Invoice { id: invoices.key(2), status: Sent { at: 10 }, issued: 20 },
+                        Invoice { id: invoices.key(3), status: Draft, issued: 30 },
+                        Invoice { id: invoices.key(4), status: Sent { at: 15 }, issued: 40 }]
+query
+  by_status(Draft, 15)
+----
+invoices.key(3)
+query
+  by_status(Draft, 0)
+----
+invoices.key(1)
+invoices.key(3)
+# A sum value compares whole: constructor and fields.
+query
+  by_status(Sent { at: 10 }, 0)
+----
+invoices.key(2)
+query
+  by_status(Paid { at: 10 }, 0)
+----
+
+# An argument must have the declared type; no parameter is absent.
+error Invalid
+  by_status(Draft)
+error Invalid
+  by_status(Sent, 0)
+error Invalid
+  by_status(None, 0)

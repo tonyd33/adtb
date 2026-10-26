@@ -1,0 +1,30 @@
+# A query never changes the database, and a write is allowed only where a change set is expected.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Log = { id: Key logs, n: I64 }
+  relation logs : Log key id generate sequence
+run
+  insert users { id: users.key(1), name: "ann" }
+query
+  from u in users select u.name
+----
+"ann"
+query
+  count(u for u in users)
+----
+1
+error Invalid
+  from u in users select (insert users { id: users.key(2), name: "bo" })
+error Invalid
+  from u in users where (delete v in users where key v == users.key(1)) select u
+error Invalid
+  count(x for x in (insert users { id: users.key(2), name: "bo" }))
+error Invalid
+  transact
+    return (insert users { id: users.key(2), name: "bo" })
+query
+  from u in users select u
+----
+User { id: users.key(1), name: "ann" }

@@ -1,0 +1,31 @@
+# The items of a transact block are one statement, checked once at its end.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence index (user)
+  constraint has_identity =
+    from u in users
+    where not exists i in identities where i.user == key u
+    select u
+error Violated
+  insert users { id: users.key(1), name: "ann" }
+query
+  count(u for u in users)
+----
+0
+run
+  transact
+    insert users { id: users.key(1), name: "ann" }
+    insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g" }
+run
+  transact
+    insert identities.EmailPass { id: identities.key(2), user: users.key(1), email: "a@x" }
+    delete i in identities where key i == identities.key(1)
+query
+  from i in identities select value(key i)
+----
+2

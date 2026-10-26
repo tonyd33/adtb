@@ -1,0 +1,29 @@
+# A check over a constructor set, written as a list or a named set, is one check across the members, over fields every member has.
+schema
+  module test
+  type Channel { id: Key channels, user: Text }
+    = Mail  { address: Text }
+    | Phone { number: Text }
+    | Pager { number: Text }
+  relation channels : Channel key id generate sequence
+  set Dialled of channels = Phone | Pager
+  check number_long on channels.(Phone | Pager) (scalar_len(number) >= 3)
+  check dialled_user on channels.Dialled (user != "")
+run
+  insert channels.Mail { id: channels.key(1), user: "", address: "a" }
+  insert channels.Phone { id: channels.key(2), user: "u", number: "123" }
+  insert channels.Pager { id: channels.key(3), user: "u", number: "456" }
+error Violated
+  insert channels.Phone { id: channels.key(4), user: "u", number: "12" }
+error Violated
+  insert channels.Pager { id: channels.key(4), user: "u", number: "12" }
+error Violated
+  insert channels.Phone { id: channels.key(4), user: "", number: "789" }
+error Violated
+  insert channels.Pager { id: channels.key(4), user: "", number: "789" }
+error Violated
+  update c in channels.Mail set Pager { number: "999" }
+query
+  count(c for c in channels)
+----
+3

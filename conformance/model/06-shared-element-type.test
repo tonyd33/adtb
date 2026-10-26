@@ -1,0 +1,30 @@
+# A type may be the element type of several relation variables, each with its own rows, key values and Key type.
+schema
+  module test
+  type Country = { code: Text, name: Text }
+  relation countries : Country key code
+  relation retired_countries : Country key code
+run
+  insert countries { code: "PT", name: "Portugal" }
+  insert retired_countries { code: "PT", name: "Portuguese Empire" }
+  insert retired_countries { code: "YU", name: "Yugoslavia" }
+query
+  from c in countries select c
+----
+Country { code: "PT", name: "Portugal" }
+query
+  count(c for c in retired_countries)
+----
+2
+query
+  from c in countries, r in retired_countries where c.code == r.code select r.name
+----
+"Portuguese Empire"
+query
+  from c in countries select key c
+----
+countries.key("PT")
+error Invalid
+  countries.key("PT") == retired_countries.key("PT")
+error KeyViolation
+  insert countries { code: "PT", name: "again" }

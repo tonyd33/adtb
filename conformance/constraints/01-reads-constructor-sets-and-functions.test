@@ -1,0 +1,36 @@
+# A constraint query may read constructor relations, named constructor sets and schema functions.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  set OAuth of identities = Google | Apple
+  fn display_name (i: Identity) -> Text = match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+  constraint display_present = from i in identities where display_name(i) == "" select i
+  constraint oauth_not_admin = from i in identities.OAuth where i.user == "admin" select i
+  constraint email_lower = from e in identities.EmailPass where lower(e.email) != e.email select e
+run
+  insert identities.EmailPass { id: identities.key(1), user: "admin", email: "a@x" }
+  insert identities.Google { id: identities.key(2), user: "bo", gid: "g" }
+error Violated
+  insert identities.Google { id: identities.key(3), user: "admin", gid: "g3" }
+error Violated
+  insert identities.Apple { id: identities.key(3), user: "admin", sub: "s3" }
+error Violated
+  insert identities.Apple { id: identities.key(3), user: "cy", sub: "" }
+error Violated
+  insert identities.EmailPass { id: identities.key(3), user: "cy", email: "" }
+error Violated
+  insert identities.EmailPass { id: identities.key(3), user: "cy", email: "C@x" }
+error Violated
+  update g in identities.Google where g.user == "bo" set Google { g with user: "admin" }
+query
+  from i in identities select display_name(i)
+----
+"a@x"
+"g"

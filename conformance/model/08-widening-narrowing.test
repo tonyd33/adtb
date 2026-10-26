@@ -1,0 +1,58 @@
+# Key r.S widens to Key r.T when S is a subset of T; narrowing is a match on the referenced row's constructor.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  type Visit = { id: Key visits, identity: Key identities }
+  relation visits : Visit key id generate sequence
+  type Fallback = { id: Key fallbacks, backup: Option (Key identities.Google) }
+  relation fallbacks : Fallback key id generate sequence
+  fn backups () -> Set (Option (Key identities)) = from f in fallbacks select f.backup
+  fn pick (k: Key identities.(Google | Apple)) -> Key identities = k
+run
+  insert identities.EmailPass { id: identities.key(1), user: "ann", email: "a@x" }
+  insert identities.Google { id: identities.key(2), user: "ann", gid: "g" }
+  insert identities.Apple { id: identities.key(3), user: "bo", sub: "s" }
+  insert visits { id: visits.key(1), identity: identities.key(1) }
+  insert visits { id: visits.key(2), identity: identities.key(2) }
+  insert visits { id: visits.key(3), identity: identities.key(3) }
+  insert fallbacks from (from g in identities.Google select { id: fallbacks.key(1), backup: Some { value: key g } })
+  insert fallbacks { id: fallbacks.key(2), backup: None }
+query rowsort
+  from v in visits select match v.identity | EmailPass e -> e.email | Google _ -> "-" | Apple _ -> "-"
+----
+"a@x"
+"-"
+query
+  from v in visits, g in identities.Google where v.identity == key g select key v
+----
+visits.key(2)
+query
+  backups()
+----
+None
+Some { value: identities.key(2) }
+query
+  from a in identities.Apple select pick(key a)
+----
+identities.key(3)
+error Invalid
+  from e in identities.EmailPass select pick(key e)
+error Invalid
+  from v in visits select pick(v.identity)
+query
+  from i in identities select match i | EmailPass e -> key e | Google g -> key g | Apple a -> key a
+----
+identities.key(1)
+identities.key(2)
+identities.key(3)
+query
+  from v in visits select v.identity.user
+----
+"ann"
+"bo"
+error Invalid
+  from v in visits select v.identity.email

@@ -1,0 +1,45 @@
+# A retag drops the references held in fields of the old constructor, and a reference typed to a set holding both constructors still reaches the row.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  set OAuth of identities = Google | Apple
+  type Token = { id: Key tokens, identity: Key identities.OAuth }
+  relation tokens : Token key id generate sequence
+  type Login { id: Key logins }
+    = Active  { identity: Key identities on delete restrict }
+    | Revoked
+  relation logins : Login key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+  insert identities from ([Google { id: identities.key(1), user: users.key(1), gid: "g1" },
+                           Google { id: identities.key(2), user: users.key(1), gid: "g2" }])
+  insert tokens from (from g in identities.Google where key g == identities.key(1)
+                      select { id: tokens.key(1), identity: key g })
+  insert logins.Active { id: logins.key(1), identity: identities.key(2) }
+run
+  update i in identities.Google where key i == identities.key(1) set Apple { sub: "a1" }
+query
+  from t in tokens select match t.identity | Google g -> g.gid | Apple a -> a.sub
+----
+"a1"
+error Violated
+  update i in identities.Apple where key i == identities.key(1) set EmailPass { email: "e", hash: "h" }
+query
+  from i in identities.Apple select key i
+----
+identities.key(1)
+error Violated
+  delete i in identities where key i == identities.key(2)
+run
+  (update s in logins.Active set Revoked { },
+   delete i in identities where key i == identities.key(2))
+query
+  from s in logins select s
+----
+Revoked { id: logins.key(1) }

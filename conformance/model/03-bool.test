@@ -1,0 +1,34 @@
+# Bool is the ordered prelude sum False | True, matched like any sum; true and false spell its constructors.
+schema
+  module test
+  type Flag = { id: Key flags, on: Bool }
+  relation flags : Flag key id generate sequence
+run
+  insert flags { id: flags.key(1), on: true }
+  insert flags { id: flags.key(2), on: False }
+query
+  true == True
+----
+true
+query
+  False < True
+----
+true
+query
+  from f in flags select f.on
+----
+false
+true
+query
+  from f in flags select match f.on | True -> "on" | False -> "off"
+----
+"off"
+"on"
+error Invalid
+  from f in flags select match f.on | True -> "on"
+query
+  from f in flags where f.on select key f
+----
+flags.key(1)
+error Invalid
+  from f in flags where 1 select key f

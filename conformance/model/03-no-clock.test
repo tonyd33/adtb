@@ -1,0 +1,16 @@
+# No expression reads a clock: a query that needs the current time takes it as a parameter.
+schema
+  module test
+  type Task = { id: Key tasks, due: Instant }
+  relation tasks : Task key id generate sequence
+  fn due (now: Instant) -> Set ({ task: Key tasks }) = from t in tasks where t.due < now select { task: key t }
+error Invalid
+  now()
+error Invalid
+  current_time()
+error Invalid
+  due(now())
+query
+  match Instant.parse("2026-10-25T00:00:00Z") | Some s -> due(s.value) | None -> []
+----
+

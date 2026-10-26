@@ -1,0 +1,24 @@
+# A check scoped to one constructor constrains only that constructor's rows.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  check user_short on identities.Google (scalar_len(user) <= 3)
+run
+  insert identities.EmailPass { id: identities.key(1), user: "long user", email: "e" }
+  insert identities.Apple { id: identities.key(2), user: "long user", sub: "s" }
+  insert identities.Google { id: identities.key(3), user: "abc", gid: "g" }
+error Violated
+  insert identities.Google { id: identities.key(4), user: "abcd", gid: "g4" }
+error Violated
+  update i in identities.Apple set Google { gid: "a" }
+run
+  update i in identities.Apple set Google { user: "ok", gid: "a" }
+query
+  from g in identities.Google select g.user
+----
+"abc"
+"ok"

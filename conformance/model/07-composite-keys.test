@@ -1,0 +1,37 @@
+# A composite key identifies a row by several fields; its key is built with named fields and its value is their record.
+schema
+  module test
+  type Team = { id: Key teams, name: Text }
+  relation teams : Team key id generate sequence
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Membership = { user: Key users, team: Key teams, role: Text }
+  relation memberships : Membership key (user, team)
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert teams { id: teams.key(1), name: "core" }
+  insert teams { id: teams.key(2), name: "web" }
+  insert memberships { user: users.key(1), team: teams.key(1), role: "lead" }
+  insert memberships { user: users.key(1), team: teams.key(2), role: "dev" }
+query
+  from m in memberships where key m == memberships.key(user: users.key(1), team: teams.key(2)) select m.role
+----
+"dev"
+query
+  from m in memberships where m.team == teams.key(1) select key m
+----
+memberships.key(user: users.key(1), team: teams.key(1))
+query
+  value(memberships.key(user: users.key(1), team: teams.key(1)))
+----
+{ user: users.key(1), team: teams.key(1) }
+query
+  memberships.key(team: teams.key(1), user: users.key(1)) == memberships.key(user: users.key(1), team: teams.key(1))
+----
+true
+error KeyViolation
+  insert memberships { user: users.key(1), team: teams.key(1), role: "dev" }
+error Invalid
+  memberships.key(user: users.key(1))
+error Invalid
+  memberships.key(users.key(1))

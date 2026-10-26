@@ -1,0 +1,61 @@
+# Each aggregate's element and result types follow its row of the aggregate table.
+schema
+  module test
+  type Kind = Small | Large
+  type Stage ordered = Draft | Sent
+  type Order = { id: Key orders, total: I64, small: I32, price: F64, ratio: F32, note: Text, kind: Kind, stage: Stage }
+  relation orders : Order key id generate sequence
+run
+  insert orders from [Order { id: orders.key(1), total: 100, small: 1, price: 1.5, ratio: 0.5, note: "b", kind: Small, stage: Sent },
+                      Order { id: orders.key(2), total: 20, small: 2, price: 2.5, ratio: 1.5, note: "a", kind: Large, stage: Draft }]
+# count is I64 over any element type.
+query
+  count(o.kind for o in orders)
+----
+2
+# sum has the numeric type of its elements.
+query
+  sum(o.small for o in orders)
+----
+3
+query
+  sum(o.price for o in orders)
+----
+4.0
+error Invalid
+  sum(o.note for o in orders)
+# min and max take an ordered element type.
+query
+  max(o.note for o in orders)
+----
+Some { value: "b" }
+query
+  min(o.stage for o in orders)
+----
+Some { value: Draft }
+query
+  max(o.stage for o in orders)
+----
+Some { value: Sent }
+error Invalid
+  max(o.kind for o in orders)
+error Invalid
+  min({ t: o.total } for o in orders)
+# avg takes F32 or F64 and returns that type.
+query
+  avg(o.price for o in orders)
+----
+Some { value: 2.0 }
+query
+  avg(o.ratio for o in orders)
+----
+Some { value: 1.0 }
+error Invalid
+  avg(o.total for o in orders)
+error Invalid
+  avg(o.small for o in orders)
+# An average of an integer is taken after an explicit conversion.
+query
+  avg(f64(o.total) for o in orders)
+----
+Some { value: 60.0 }

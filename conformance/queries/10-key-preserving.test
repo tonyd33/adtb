@@ -1,0 +1,97 @@
+# Sum and avg refuse a generator over a select that is not key-preserving; every other source is accepted.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Order = { id: Key orders, user: Key users, total: I64, qty: I64 }
+  type Reading = { id: Key readings, v: F64 }
+  type Pay { id: Key pays, amount: I64 } = Card { last4: Text } | Cash
+  relation users : User key id generate sequence
+  relation orders : Order key id generate sequence
+  relation readings : Reading key id generate sequence
+  relation pays : Pay key id generate sequence
+  fn total (xs: Set I64) -> I64 = sum(x for x in xs)
+  fn big () -> Set Order = from o in orders where o.total >= 100 select o
+run
+  insert users from [User { id: users.key(1), name: "ann" }, User { id: users.key(2), name: "bo" }]
+  insert orders from [Order { id: orders.key(1), user: users.key(1), total: 100, qty: 2 },
+                      Order { id: orders.key(2), user: users.key(1), total: 100, qty: 0 },
+                      Order { id: orders.key(3), user: users.key(2), total: 30, qty: 3 }]
+  insert readings from [Reading { id: readings.key(1), v: 1.0 },
+                        Reading { id: readings.key(2), v: 1.0 },
+                        Reading { id: readings.key(3), v: 4.0 }]
+  insert pays from [Card { id: pays.key(1), amount: 5, last4: "1111" },
+                    Cash { id: pays.key(2), amount: 5 },
+                    Cash { id: pays.key(3), amount: 7 }]
+# A relation variable: each row counts.
+query
+  sum(o.total for o in orders)
+----
+230
+# A select of exactly the binder of a generator over a relation keeps every row.
+query
+  sum(x.total for x in (from o in orders where o.qty > 1 select o))
+----
+130
+query
+  sum(x.total for x in (from o in orders select o))
+----
+230
+# A comprehension selecting the binder of another key-preserving comprehension.
+query
+  sum(y.total for y in (from x in (from o in orders select o) where x.qty < 3 select x))
+----
+200
+# A view whose body selects its binder normalises to a key-preserving comprehension.
+query
+  sum(x.total for x in big())
+----
+200
+# A constructor relation and a constructor set.
+query
+  sum(c.amount for c in pays.Cash)
+----
+12
+query
+  sum(p.amount for p in pays.(Card | Cash))
+----
+17
+# A backlink.
+query rowsort
+  from u in users select { name: u.name, s: sum(o.total for o in u.<orders.user) }
+----
+{ name: "ann", s: 200 }
+{ name: "bo", s: 30 }
+# A group's rows.
+query rowsort
+  from o in orders group o by o.user into g select { user: g.key, s: sum(x.total for x in g) }
+----
+{ user: users.key(1), s: 200 }
+{ user: users.key(2), s: 30 }
+# A Set parameter of a function.
+query
+  total([1, 2, 3])
+----
+6
+# Avg over the rows counts equal values twice.
+query
+  avg(r.v for r in readings)
+----
+Some { value: 2.0 }
+# A select of a field is not key-preserving.
+error Invalid
+  sum(t for t in (from o in orders select o.total))
+error Invalid
+  avg(v for v in (from r in readings select r.v))
+error Invalid
+  sum(x.total for x in (from o in orders select { total: o.total }))
+error Invalid
+  sum(x for x in (from o in orders where o.qty > 0 select o.qty))
+# Count, min and max accept a projection and range over its distinct values.
+query
+  count(t for t in (from o in orders select o.total))
+----
+2
+query
+  max(t for t in (from o in orders select o.total))
+----
+Some { value: 100 }

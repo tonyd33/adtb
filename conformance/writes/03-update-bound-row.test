@@ -1,0 +1,66 @@
+# update x set e and delete x act on a snapshot row already bound; with where and no in they are conditional; a row a write produced is refused.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+run
+  insert users from (from k in [1, 2, 3] select { id: users.key(k), name: "u" ++ print(k) })
+  insert identities from ([EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1" },
+                           Google { id: identities.key(2), user: users.key(2), gid: "g2" }])
+run
+  match users.key(1)
+    | User u -> update u set User { u with name: "one" }
+run
+  match identities.key(1)
+    | EmailPass e -> update e set EmailPass { e with hash: "h1b" }
+    | Google g -> skip
+run
+  match users.key(3)
+    | User u -> update u set User { u with name: "three" }
+query
+  from u in users select u.name
+----
+"one"
+"three"
+"u2"
+query
+  from e in identities.EmailPass select e.hash
+----
+"h1b"
+run
+  insert identities.Google { id: identities.key(3), user: users.key(3), gid: "old" }
+  unless conflict on key
+  else match old
+    | Google o -> update o set Google { o with gid: "g2b" }
+    | EmailPass e -> skip
+query
+  from g in identities.Google select g
+----
+Google { id: identities.key(2), user: users.key(2), gid: "g2" }
+Google { id: identities.key(3), user: users.key(3), gid: "old" }
+error Invalid
+  transact
+    let u = insert users { id: users.key(9), name: "n" }
+    update u set User { u with name: "m" }
+error Invalid
+  transact
+    let u = insert users { id: users.key(9), name: "n" }
+    update u where true set User { u with name: "m" }
+error Invalid
+  transact
+    let u = insert users { id: users.key(9), name: "n" }
+    delete u
+error Invalid
+  transact
+    let s = update u in users where key u == users.key(1) set User { u with name: "x" }
+    update s set User { s with name: "y" }
+query
+  from u in users select u.name
+----
+"one"
+"three"
+"u2"

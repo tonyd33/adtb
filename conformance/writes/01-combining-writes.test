@@ -1,0 +1,63 @@
+# Writes reaching one key combine: repeated deletes are one, a delete and an insert are a replacement, two different rows with one key are refused.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Item { id: Key items } = Small { n: I64 } | Large { n: I64 }
+  relation items : Item key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+  insert users { id: users.key(2), name: "b" }
+  insert items from ([Small { id: items.key(1), n: 1 }, Small { id: items.key(2), n: 2 }])
+run
+  (delete u in users where key u == users.key(1),
+   delete u in users where u.name == "a")
+query
+  from u in users select u
+----
+User { id: users.key(2), name: "b" }
+run
+  (delete u in users where key u == users.key(2),
+   insert users { id: users.key(2), name: "b2" })
+query
+  from u in users select u
+----
+User { id: users.key(2), name: "b2" }
+run
+  (delete i in items where key i == items.key(1),
+   insert items from ([Large { id: items.key(1), n: 10 }]))
+query
+  from i in items.Large select i
+----
+Large { id: items.key(1), n: 10 }
+query
+  from i in items.Small select i
+----
+Small { id: items.key(2), n: 2 }
+run
+  (update u in users where key u == users.key(2) set User { u with name: "x" },
+   update u in users where key u == users.key(2) set User { u with name: "x" })
+query
+  from u in users select u
+----
+User { id: users.key(2), name: "x" }
+error KeyViolation
+  (insert users { id: users.key(9), name: "p" }, insert users { id: users.key(9), name: "q" })
+error KeyViolation
+  (update u in users where key u == users.key(2) set User { u with name: "y" },
+   update u in users where key u == users.key(2) set User { u with name: "z" })
+error KeyViolation
+  (delete u in users where key u == users.key(2),
+   insert users { id: users.key(2), name: "m" },
+   insert users { id: users.key(2), name: "n" })
+query
+  from u in users select u
+----
+User { id: users.key(2), name: "x" }
+run
+  (insert users { id: users.key(9), name: "p" }, insert users { id: users.key(9), name: "p" })
+query
+  from u in users select u
+----
+User { id: users.key(2), name: "x" }
+User { id: users.key(9), name: "p" }

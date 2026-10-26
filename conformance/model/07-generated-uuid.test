@@ -1,0 +1,29 @@
+# A uuidv7 key is a distinct Key value represented by a Uuid, built from text with uuid(t).
+schema
+  module test
+  type Token = { id: Key tokens, secret: Text }
+  relation tokens : Token key id generate uuidv7
+run
+  insert tokens { secret: "a" }
+  insert tokens { secret: "b" }
+  insert tokens { id: tokens.key(uuid("0190a4b2-7c3e-7d4f-9a21-5b6c7d8e9f01")), secret: "c" }
+query
+  count(k for k in (from t in tokens select key t))
+----
+3
+query
+  from t in tokens where key t == tokens.key(uuid("0190A4B2-7C3E-7D4F-9A21-5B6C7D8E9F01")) select t.secret
+----
+"c"
+query
+  from t in tokens where t.secret == "c" select text(value(key t))
+----
+"0190a4b2-7c3e-7d4f-9a21-5b6c7d8e9f01"
+query
+  from t in tokens where t.secret == "a" select bytes_len(unwrap(value(key t)))
+----
+16
+error Invalid
+  tokens.key(1)
+error Faulted
+  tokens.key(uuid("not a uuid"))

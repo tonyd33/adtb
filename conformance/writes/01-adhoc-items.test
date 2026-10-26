@@ -1,0 +1,30 @@
+# Several items of one ad hoc text are one transaction: each is a statement reading the effects of the items before it, and when one fails none of them is applied.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+  update u in users set User { u with name: u.name ++ "!" }
+  insert users from (from u in users select { id: users.key(2), name: u.name ++ "?" })
+query
+  from u in users select u.name
+----
+"a!"
+"a!?"
+error UserError
+  insert users { id: users.key(3), name: "c" }
+  fail "stop"
+query
+  from u in users select u.name
+----
+"a!"
+"a!?"
+error KeyViolation
+  delete u in users where key u == users.key(1)
+  insert users { id: users.key(2), name: "dup" }
+query
+  from u in users select u.name
+----
+"a!"
+"a!?"

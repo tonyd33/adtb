@@ -1,0 +1,42 @@
+# Ad hoc text belongs to no module: a name resolves to the one user module declaring it, else the prelude, and a free name with no parameter supplied is an error.
+schema
+  module a
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  fn shout (t: Text) -> Text = t ++ "!"
+  fn pick () -> I64 = 1
+  module b
+  fn pick () -> I64 = 2
+  fn twice (x: I64) -> I64 = x * 2
+run
+  insert users from [User { id: users.key(1), name: "ann" }]
+# A name declared in one user module resolves unqualified.
+query
+  from u in users select shout(u.name)
+----
+"ann!"
+query
+  twice(4)
+----
+8
+# A name declared in several user modules is ambiguous unqualified and resolves qualified.
+error Invalid
+  pick()
+query
+  a::pick()
+----
+1
+query
+  b::pick()
+----
+2
+# A name no user module declares resolves in the prelude.
+query
+  abs(-3)
+----
+3
+# A free lowercase name the caller supplies no parameter for is an error.
+error Invalid
+  from u in users where u.name == who select u
+error Invalid
+  nobody + 1

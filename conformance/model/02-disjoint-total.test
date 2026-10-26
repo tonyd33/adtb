@@ -1,0 +1,34 @@
+# A relation-level sum is disjoint and total: every row belongs to exactly one constructor relation.
+schema
+  module test
+  type Shape { id: Key shapes } = Circle { r: I64 } | Square { side: I64 } | Dot
+  relation shapes : Shape key id generate sequence
+run
+  insert shapes.Circle { id: shapes.key(1), r: 2 }
+  insert shapes.Circle { id: shapes.key(2), r: 3 }
+  insert shapes.Square { id: shapes.key(3), side: 2 }
+  insert shapes.Dot { id: shapes.key(4) }
+query
+  count(s for s in shapes)
+----
+4
+query
+  count(s for s in shapes.Circle) + count(s for s in shapes.Square) + count(s for s in shapes.Dot)
+----
+4
+query
+  from c in shapes.Circle, q in shapes.Square where key c == key q select key c
+----
+
+query
+  from s in shapes.Dot select s
+----
+Dot { id: shapes.key(4) }
+query rowsort
+  from s in shapes select match s | Circle c -> "circle" | Square q -> "square" | Dot d -> "dot"
+----
+"circle"
+"square"
+"dot"
+error Invalid
+  from s in shapes select match s | Circle c -> "circle" | Square q -> "square"

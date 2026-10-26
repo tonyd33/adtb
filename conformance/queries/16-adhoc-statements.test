@@ -1,0 +1,71 @@
+# Ad hoc text is checked with every rule, except that _ or a binder may cover a sum's remaining constructors; it may write, and its items form one transaction.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation users : User key id generate sequence
+  relation identities : Identity key id generate sequence
+  constraint named = from u in users where u.name == "" select u
+run
+  insert users from [User { id: users.key(1), name: "ann" }]
+  insert identities from [EmailPass { id: identities.key(1), user: users.key(1), email: "ann@x" },
+                          Google { id: identities.key(2), user: users.key(1), gid: "g-ann" },
+                          Apple { id: identities.key(3), user: users.key(1), sub: "a-ann" }]
+# A wildcard covers the remaining constructors.
+query rowsort
+  from i in identities select match i | Google g -> g.gid | _ -> "other"
+----
+"g-ann"
+"other"
+# So does a binder.
+query rowsort
+  from i in identities select match i | Google g -> g.gid | other -> other.user.name
+----
+"ann"
+"g-ann"
+# Without one, a match must name every constructor.
+error Invalid
+  from i in identities select match i | Google g -> g.gid | EmailPass e -> e.email
+# A wildcard over a sum still leaves no constructor unreachable by the rules of match.
+error Invalid
+  from i in identities select match i | Google g -> g.gid | _ -> "other" | Apple a -> a.sub
+# Ad hoc text may write, and every constraint holds as for any write.
+run
+  insert users { id: users.key(2), name: "bo" }
+query
+  from u in users select u.name
+----
+"ann"
+"bo"
+error Violated
+  insert users { id: users.key(3), name: "" }
+# Several items form one transaction; the first that fails ends the text and nothing commits.
+error Faulted
+  insert users { id: users.key(4), name: "cy" }
+  (1 / (count(v for v in users) - 3))
+query
+  from u in users select u.name
+----
+"ann"
+"bo"
+error Violated
+  insert users { id: users.key(5), name: "di" }
+  insert users { id: users.key(6), name: "" }
+query
+  from u in users select u.name
+----
+"ann"
+"bo"
+# The items see the effects of earlier items of the same text.
+run
+  insert users { id: users.key(7), name: "eve" }
+  update u in users where u.name == "eve" set User { u with name: "eva" }
+query
+  from u in users select u.name
+----
+"ann"
+"bo"
+"eva"

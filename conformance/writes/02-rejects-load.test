@@ -1,0 +1,33 @@
+# Every rejected row of one statement has the same load value.
+schema
+  module test
+  type Raw = { id: Key raws, n: I64 }
+  relation raws : Raw key id generate sequence
+  type Out = { id: Key outs, n: I64 }
+  relation outs : Out key id generate sequence
+  relation out_rejects : RejectedRow key (load, line)
+run
+  insert raws from (from k in [1, 2, 3, 4] select { id: raws.key(k), n: if k % 2 == 0 then -1 else k })
+run
+  insert outs from (
+    from r in raws select { id: outs.key(value(key r)), n: if r.n > 0 then r.n else reject "negative" })
+  rejects into out_rejects
+query
+  from j in out_rejects select j.line
+----
+2
+4
+query
+  count(l for l in (from j in out_rejects select j.load))
+----
+1
+run
+  transact
+    let x = insert outs from (
+      from r in raws select { id: outs.key(10 + value(key r)), n: if r.n > 0 then r.n else reject "neg" })
+      rejects into out_rejects
+    insert outs { id: outs.key(100), n: count(o for o in x) }
+query
+  from o in outs where key o == outs.key(100) select o.n
+----
+2

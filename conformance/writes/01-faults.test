@@ -1,0 +1,28 @@
+# A fault while computing a change set aborts the statement and applies no part of it.
+schema
+  module test
+  type Frac = { id: Key nums, n: I64, d: I64 }
+  relation nums : Frac key id generate sequence
+run
+  insert nums from ([{ id: nums.key(1), n: 10, d: 2 }, { id: nums.key(2), n: 10, d: 0 }])
+error Faulted
+  update x in nums set Frac { x with n: x.n / x.d }
+query
+  from x in nums select x.n
+----
+10
+error Faulted
+  (insert nums { id: nums.key(3), n: 1, d: 1 },
+   delete x in nums where x.n / x.d == 5)
+error Faulted
+  transact
+    insert nums { id: nums.key(3), n: 1, d: 1 }
+    let q = from x in nums select x.n / x.d
+    insert nums { id: nums.key(4), n: 1, d: 1 }
+error Faulted
+  insert nums from (from x in nums select { id: nums.key(10 + value(key x)), n: x.n / x.d, d: 1 })
+query
+  from x in nums select x
+----
+Frac { id: nums.key(1), n: 10, d: 2 }
+Frac { id: nums.key(2), n: 10, d: 0 }

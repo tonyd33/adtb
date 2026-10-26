@@ -1,0 +1,120 @@
+# Take delivers the first n elements of the ordered result, and after keeps only those strictly past its cursor.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Post = { id: Key posts, at: I64, title: Text }
+  relation users : User key id generate sequence
+  relation posts : Post key id generate sequence
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" },
+                     User { id: users.key(3), name: "cy" }]
+  insert posts from [Post { id: posts.key(1), at: 10, title: "p1" },
+                     Post { id: posts.key(2), at: 20, title: "p2" },
+                     Post { id: posts.key(3), at: 30, title: "p3" },
+                     Post { id: posts.key(4), at: 40, title: "p4" },
+                     Post { id: posts.key(5), at: 40, title: "p5" }]
+query
+  from u in users select u order by u.id take 2
+----
+User { id: users.key(1), name: "ann" }
+User { id: users.key(2), name: "bo" }
+query
+  from u in users select u order by u.id desc take 2
+----
+User { id: users.key(3), name: "cy" }
+User { id: users.key(2), name: "bo" }
+# Taking more than there are delivers all of them; taking 0 delivers none.
+query
+  from u in users select u order by u.id take 50
+----
+User { id: users.key(1), name: "ann" }
+User { id: users.key(2), name: "bo" }
+User { id: users.key(3), name: "cy" }
+query
+  from u in users select u order by u.id take 0
+----
+
+# A negative take faults.
+error Faulted
+  from u in users select u order by u.id take 0 - 1
+# After None starts at the first element.
+query
+  from u in users select u order by u.id take 50 after None
+----
+User { id: users.key(1), name: "ann" }
+User { id: users.key(2), name: "bo" }
+User { id: users.key(3), name: "cy" }
+# After Some keeps the elements strictly after the cursor value.
+query
+  from u in users select u order by u.id take 50 after Some { value: users.key(1) }
+----
+User { id: users.key(2), name: "bo" }
+User { id: users.key(3), name: "cy" }
+query
+  from u in users select u order by u.id take 1 after Some { value: users.key(1) }
+----
+User { id: users.key(2), name: "bo" }
+query
+  from u in users select u order by u.id desc take 50 after Some { value: users.key(2) }
+----
+User { id: users.key(1), name: "ann" }
+query
+  from u in users select u order by u.id take 50 after Some { value: users.key(3) }
+----
+
+# A selected key ordered by itself.
+query
+  from u in users select key u order by key u take 2 after Some { value: users.key(1) }
+----
+users.key(2)
+users.key(3)
+# A compound cursor is a record whose fields match the ordering keys by code-point order of their names.
+query
+  from p in posts select key p order by (key p desc) take 20 after None
+----
+posts.key(5)
+posts.key(4)
+posts.key(3)
+posts.key(2)
+posts.key(1)
+query
+  from p in posts select p order by (p.at desc, key p) take 2 after Some { value: { at: 40, id: posts.key(5) } }
+----
+Post { id: posts.key(3), at: 30, title: "p3" }
+Post { id: posts.key(2), at: 20, title: "p2" }
+# Ties on the first key are broken by the second, ascending here.
+query
+  from p in posts select p order by (p.at desc, key p) take 2
+----
+Post { id: posts.key(4), at: 40, title: "p4" }
+Post { id: posts.key(5), at: 40, title: "p5" }
+query
+  from p in posts select p order by (p.at desc, key p) take 20 after Some { value: { at: 40, id: posts.key(4) } }
+----
+Post { id: posts.key(5), at: 40, title: "p5" }
+Post { id: posts.key(3), at: 30, title: "p3" }
+Post { id: posts.key(2), at: 20, title: "p2" }
+Post { id: posts.key(1), at: 10, title: "p1" }
+# The names are otherwise free: a precedes b, so a is the first key whatever order they are written in.
+query
+  from p in posts select p order by (p.at desc, key p) take 20 after Some { value: { b: posts.key(4), a: 40 } }
+----
+Post { id: posts.key(5), at: 40, title: "p5" }
+Post { id: posts.key(3), at: 30, title: "p3" }
+Post { id: posts.key(2), at: 20, title: "p2" }
+Post { id: posts.key(1), at: 10, title: "p1" }
+query
+  from p in posts select p order by (key p, p.at) take 20 after Some { value: { a: posts.key(3), z: 30 } }
+----
+Post { id: posts.key(4), at: 40, title: "p4" }
+Post { id: posts.key(5), at: 40, title: "p5" }
+# The cursor fields have the types of the keys they correspond to.
+error Invalid
+  from p in posts select p order by (p.at desc, key p) take 20 after Some { value: { id: 40, at: posts.key(4) } }
+error Invalid
+  from p in posts select p order by (p.at desc, key p) take 20 after Some { value: { at: 40 } }
+error Invalid
+  from u in users select u order by u.id take 50 after Some { value: 1 }
+error Invalid
+  from u in users select u order by u.id take 50 after users.key(1)

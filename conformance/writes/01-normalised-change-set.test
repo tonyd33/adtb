@@ -1,0 +1,35 @@
+# A row an update leaves unchanged, or that is deleted and inserted back equal, is in neither set of the change set.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  constraint frozen_kept = from u in deleted(users) where u.name == "frozen" select u
+run
+  insert users { id: users.key(1), name: "frozen" }
+  insert users { id: users.key(2), name: "b" }
+run
+  update u in users set u
+run
+  update u in users where key u == users.key(1) set User { u with name: "frozen" }
+run
+  (delete u in users where key u == users.key(1),
+   insert users { id: users.key(1), name: "frozen" })
+run
+  update u in users where key u == users.key(2) set User { u with name: "c" }
+query
+  from u in users select u
+----
+User { id: users.key(1), name: "frozen" }
+User { id: users.key(2), name: "c" }
+error Violated
+  update u in users where key u == users.key(1) set User { u with name: "thawed" }
+error Violated
+  delete u in users where key u == users.key(1)
+error Violated
+  (delete u in users where key u == users.key(1),
+   insert users { id: users.key(1), name: "other" })
+query
+  from u in users select u
+----
+User { id: users.key(1), name: "frozen" }
+User { id: users.key(2), name: "c" }

@@ -1,0 +1,33 @@
+# A functional dependency is a denial query: two US places with one zip must agree on the state.
+schema
+  module test
+  type Place { id: Key places }
+    = US   { zip: Text, state: Text }
+    | Intl { country: Text, postcode: Text }
+  relation places : Place
+    key id generate sequence
+    index (zip) in US
+  constraint zip_state =
+    from a in places.US, b in places.US
+    where a.zip == b.zip and a.state != b.state
+    select { zip: a.zip }
+run
+  insert places.US { id: places.key(1), zip: "10001", state: "NY" }
+  insert places.US { id: places.key(2), zip: "10001", state: "NY" }
+  insert places.US { id: places.key(3), zip: "02139", state: "MA" }
+  insert places.Intl { id: places.key(4), country: "fr", postcode: "10001" }
+error Violated
+  insert places.US { id: places.key(5), zip: "10001", state: "NJ" }
+error Violated
+  update p in places.US where key p == places.key(3) set US { p with zip: "10001" }
+error Violated
+  update p in places.US where key p == places.key(1) set US { p with state: "NJ" }
+run
+  transact
+    update p in places.US where key p == places.key(1) set US { p with state: "NJ" }
+    update p in places.US where key p == places.key(2) set US { p with state: "NJ" }
+query
+  from p in places.US select { zip: p.zip, state: p.state }
+----
+{ state: "MA", zip: "02139" }
+{ state: "NJ", zip: "10001" }

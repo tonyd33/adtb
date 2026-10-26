@@ -1,0 +1,42 @@
+# A filter a caller may leave off is an Option parameter matched in the body.
+schema
+  module test
+  type Post = { id: Key posts, at: I64, title: Text }
+  relation posts : Post key id generate sequence
+  fn search (name: Option Text, after: Option I64) -> Set (Key posts) =
+    from p in posts
+    where match name  | None -> true | Some { value: n } -> p.title == n
+    where match after | None -> true | Some { value: t } -> p.at > t
+    select p.id
+run
+  insert posts from [Post { id: posts.key(1), at: 10, title: "hello" },
+                     Post { id: posts.key(2), at: 20, title: "again" },
+                     Post { id: posts.key(3), at: 30, title: "again" },
+                     Post { id: posts.key(4), at: 40, title: "fourth" }]
+query
+  search(None, None)
+----
+posts.key(1)
+posts.key(2)
+posts.key(3)
+posts.key(4)
+query
+  search(Some { value: "again" }, None)
+----
+posts.key(2)
+posts.key(3)
+query
+  search(None, Some { value: 25 })
+----
+posts.key(3)
+posts.key(4)
+query
+  search(Some { value: "again" }, Some { value: 25 })
+----
+posts.key(3)
+query
+  search(Some { value: "nothing" }, None)
+----
+
+error Invalid
+  search("again", None)

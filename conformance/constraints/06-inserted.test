@@ -1,0 +1,27 @@
+# inserted(R) holds the rows a statement inserts into R, a constructor set's members included, and no row it leaves unchanged.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  set OAuth of identities = Google | Apple
+  constraint oauth_closed = from i in inserted(identities.OAuth) where i.user == "frozen" select i
+run
+  insert identities.EmailPass { id: identities.key(1), user: "frozen", email: "e" }
+  insert identities.Google { id: identities.key(2), user: "u", gid: "g" }
+error Violated
+  insert identities.Google { id: identities.key(3), user: "frozen", gid: "g3" }
+error Violated
+  insert identities.Apple { id: identities.key(3), user: "frozen", sub: "s" }
+error Violated
+  update i in identities.EmailPass set Apple { sub: "s" }
+error Violated
+  update i in identities.Google set Google { i with user: "frozen" }
+run
+  update i in identities.EmailPass set EmailPass { i with email: "f" }
+query
+  from i in identities.EmailPass select i.email
+----
+"f"

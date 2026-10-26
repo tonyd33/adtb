@@ -1,0 +1,75 @@
+# A match tries its arms in order and takes the first whose pattern and guard hold; it is an expression anywhere.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities select match i
+    | Google g if g.gid == "root" -> "staff"
+    | Google _                    -> "guest"
+    | EmailPass _                 -> "mail"
+    | Apple _                     -> "fruit"
+----
+"fruit"
+"guest"
+"mail"
+"staff"
+query rowsort
+  from i in identities.Google select { gid: i.gid, who: match i
+    | Google g if g.gid == "root" -> "staff"
+    | Google g if g.gid == "root" or g.gid == "g-ann" -> "second"
+    | Google _ -> "guest" }
+----
+{ gid: "g-ann", who: "second" }
+{ gid: "root", who: "staff" }
+# match in where.
+query rowsort
+  from p in parcels where match p.state | Pending -> true | Shipped _ -> false select p.code
+----
+"p1"
+# match in an aggregate.
+query
+  count(p for p in parcels where match p.state | Pending -> false | Shipped _ -> true)
+----
+2
+query
+  sum((match p.state | Pending -> 0 | Shipped _ -> 10) for p in parcels)
+----
+20
+# match in another arm.
+query rowsort
+  from p in parcels select match p.state
+    | Pending -> "waiting"
+    | Shipped s -> match s.via
+      | Courier c -> c.name
+      | Mail m    -> m.tracking
+----
+"dhl"
+"t-3"
+"waiting"
+# match in a function body.
+query rowsort
+  from i in identities select display_name(i)
+----
+"a-bo"
+"ann@example.com"
+"g-ann"
+"root"
+# if c then a else b is a match on Bool.
+query rowsort
+  from u in users select if u.name == "ann" then 1 else 2
+----
+1
+2
+query rowsort
+  from u in users select match u.name == "bo" | True -> "yes" | False -> "no"
+----
+"no"
+"yes"
+query rowsort
+  from u in users select match u.name == "bo" | true -> "yes" | false -> "no"
+----
+"no"
+"yes"
+query
+  if 1 > 2 then "a" else "b"
+----
+"b"

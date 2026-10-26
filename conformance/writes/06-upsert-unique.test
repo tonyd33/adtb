@@ -1,0 +1,59 @@
+# An upsert on a unique inserts the row when nothing conflicts, and otherwise evaluates its else branch with old bound to the conflicting snapshot row.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+    unique (gid) in Google
+run
+  insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
+  insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g-ann" }
+run
+  insert identities.Google { id: identities.key(5), user: users.key(2), gid: "g-ann" }
+  unless conflict on (gid) in Google
+  else update old set Google { old with user: users.key(2) }
+query
+  from g in identities.Google select g
+----
+Google { id: identities.key(1), user: users.key(2), gid: "g-ann" }
+run
+  insert identities.Google { id: identities.key(6), user: users.key(2), gid: "fresh" }
+  unless conflict on (gid) in Google
+  else update old set Google { old with user: users.key(1) }
+query
+  from g in identities.Google select g
+----
+Google { id: identities.key(1), user: users.key(2), gid: "g-ann" }
+Google { id: identities.key(6), user: users.key(2), gid: "fresh" }
+run
+  insert identities.Google { id: identities.key(7), user: users.key(1), gid: "fresh" }
+  unless conflict on (gid) in Google
+  else update old set old
+query
+  from g in identities.Google select g
+----
+Google { id: identities.key(1), user: users.key(2), gid: "g-ann" }
+Google { id: identities.key(6), user: users.key(2), gid: "fresh" }
+run
+  insert identities.Google { id: identities.key(8), user: users.key(1), gid: "fresh" }
+  unless conflict on (gid) in Google
+  else delete old
+query
+  from g in identities.Google select key g
+----
+identities.key(1)
+run
+  insert identities.Google { id: identities.key(9), user: users.key(1), gid: "g-ann" }
+  unless conflict on (gid) in Google
+  else (update old set Google { old with gid: "renamed" }, insert users { id: users.key(3), name: "side" })
+query
+  from g in identities.Google select g.gid
+----
+"renamed"
+query
+  from u in users where key u == users.key(3) select u.name
+----
+"side"

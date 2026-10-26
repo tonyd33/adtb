@@ -1,0 +1,61 @@
+# Every scalar type has ==: equal numbers, equal sequences, the same point or civil value, and != is its negation.
+schema
+  module test
+  fn i32_of (x: I32) -> I32 = x
+  fn b (t: Text) -> Option Bytes = Bytes.parse(t)
+query
+  i32_of(5) == 5
+----
+true
+query
+  i32_of(5) != 5
+----
+false
+query
+  2.50 == 2.5
+----
+true
+query
+  2.50 != 2.51
+----
+true
+query
+  90s == 1min + 30s
+----
+true
+query
+  "abc" == "ab" ++ "c"
+----
+true
+query
+  b("0x0001") == b("0x01")
+----
+false
+query
+  Date.parse("2026-10-25") == Date.parse("2026-10-25")
+----
+true
+query
+  Instant.parse("2026-10-25T00:00:00Z") == Instant.parse("2026-10-25T00:00:00.000000Z")
+----
+true
+query
+  Time.parse("09:30:00") == Time.parse("09:30:00.000000")
+----
+true
+query
+  DateTime.parse("2026-10-25T09:30:00") == DateTime.parse("2026-10-25T09:30:01")
+----
+false
+query
+  Period.parse("P1M0D") == Period.parse("P1M0D")
+----
+true
+query
+  Period.parse("P0M7D") == Some { value: days(7) }
+----
+true
+query
+  Period.parse("P1M0D") == Period.parse("P0M30D")
+----
+false

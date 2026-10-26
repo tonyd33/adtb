@@ -1,0 +1,41 @@
+# A query result may be a set whose element type is a result sum, selected by constructor like a stored relation.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  fn sign_ins () -> Set (Local { id: Key identities, email: Text }
+                       | Remote { id: Key identities, provider: Text }) =
+    from i in identities select match i
+      | EmailPass e -> Local  { id: key e, email: e.email }
+      | Google g    -> Remote { id: key g, provider: "google" }
+      | Apple a     -> Remote { id: key a, provider: "apple" }
+run
+  insert identities.EmailPass { id: identities.key(1), user: "ann", email: "a@x" }
+  insert identities.Google { id: identities.key(2), user: "ann", gid: "g" }
+  insert identities.Apple { id: identities.key(3), user: "bo", sub: "s" }
+query rowsort
+  from l in sign_ins().Remote select l.provider
+----
+"google"
+"apple"
+query
+  from l in sign_ins().Local select l
+----
+Local { id: identities.key(1), email: "a@x" }
+query
+  count(l for l in sign_ins())
+----
+3
+query rowsort
+  from l in sign_ins() select match l | Local x -> x.email | Remote r -> r.provider
+----
+"a@x"
+"google"
+"apple"
+error Invalid
+  from l in sign_ins() select match l | Remote r -> r.provider
+error Invalid
+  from l in sign_ins().Remote select l.email

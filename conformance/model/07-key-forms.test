@@ -1,0 +1,52 @@
+# Any value type may form a key: a sum-valued field, a reference, or a record-valued field.
+schema
+  module test
+  type Provider = Google | Apple
+  type Handle = { provider: Provider, subject: Text }
+  relation handles : Handle key (provider, subject)
+  type Order = { id: Key orders, buyer: Text }
+  relation orders : Order key id generate sequence
+  type OrderLine = { order: Key orders, n: I64, qty: I64 }
+  relation order_lines : OrderLine key (order, n)
+  type Range = { lo: I64, hi: I64 }
+  type Slot = { span: Range, label: Text }
+  relation slots : Slot key span
+run
+  insert handles { provider: Google, subject: "x" }
+  insert handles { provider: Apple, subject: "x" }
+  insert orders { id: orders.key(1), buyer: "ann" }
+  insert orders { id: orders.key(2), buyer: "bo" }
+  insert order_lines { order: orders.key(1), n: 1, qty: 3 }
+  insert order_lines { order: orders.key(2), n: 1, qty: 4 }
+  insert slots { span: Range { lo: 1, hi: 2 }, label: "a" }
+  insert slots { span: Range { lo: 1, hi: 3 }, label: "b" }
+query
+  count(h for h in handles)
+----
+2
+error KeyViolation
+  insert handles { provider: Google, subject: "x" }
+query
+  from h in handles where key h == handles.key(provider: Apple, subject: "x") select h.subject
+----
+"x"
+query
+  count(l for l in order_lines)
+----
+2
+error KeyViolation
+  insert order_lines { order: orders.key(1), n: 1, qty: 9 }
+query
+  from l in order_lines where key l == order_lines.key(order: orders.key(2), n: 1) select l.qty
+----
+4
+error KeyViolation
+  insert slots { span: Range { lo: 1, hi: 2 }, label: "c" }
+query
+  from s in slots where key s == slots.key(Range { lo: 1, hi: 3 }) select s.label
+----
+"b"
+query
+  value(slots.key(Range { lo: 1, hi: 3 }))
+----
+Range { lo: 1, hi: 3 }

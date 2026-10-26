@@ -1,0 +1,48 @@
+# Anonymous records are structural with exact fields; stored types are nominal.
+@SCHEMA@
+@RUN@
+query rowsort
+  from u in users select { name: u.name, id: key u }
+----
+{ name: "ann", id: users.key(1) }
+{ name: "bo", id: users.key(2) }
+{ name: "cy", id: users.key(3) }
+query rowsort
+  from u in users select { name: u.name, inner: { id: key u, two: 2 } }
+----
+{ name: "ann", inner: { id: users.key(1), two: 2 } }
+{ name: "bo", inner: { id: users.key(2), two: 2 } }
+{ name: "cy", inner: { id: users.key(3), two: 2 } }
+# Records with the same fields and types are one type.
+query rowsort
+  (from u in users select { id: key u, name: u.name }) union (from u in users select { id: key u, name: "x" })
+----
+{ id: users.key(1), name: "ann" }
+{ id: users.key(1), name: "x" }
+{ id: users.key(2), name: "bo" }
+{ id: users.key(2), name: "x" }
+{ id: users.key(3), name: "cy" }
+{ id: users.key(3), name: "x" }
+# Equal anonymous records are one element.
+query rowsort
+  from i in identities select { owner: i.user }
+----
+{ owner: users.key(1) }
+{ owner: users.key(2) }
+# No width subtyping: a record with more fields is not one with fewer.
+error Invalid
+  (from u in users select { id: key u, name: u.name }) union (from u in users select { id: key u })
+error Invalid
+  (from u in users select { id: key u, name: u.name }) union (from u in users select { id: key u, name: value(key u) })
+# A stored type and an anonymous record with the same fields are different types.
+error Invalid
+  from u in users, r in (from v in users select { id: key v, name: v.name }) where u == r select u.name
+error Invalid
+  (from u in users select u) union (from r in (from v in users select { id: key v, name: v.name }) select r)
+# A record literal compared with a stored value takes its type from the other operand.
+query rowsort
+  from u in users where u == { id: key u, name: u.name } select u.name
+----
+"ann"
+"bo"
+"cy"

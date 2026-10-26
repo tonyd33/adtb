@@ -1,0 +1,44 @@
+# An enumeration is a sum of nullary constructors, matched exhaustively and ordered only when declared ordered.
+schema
+  module test
+  type Severity ordered = Low | Medium | High
+  type Flavor = Sweet | Sour
+  type Alert = { id: Key alerts, sev: Severity, flavor: Flavor }
+  relation alerts : Alert key id generate sequence
+run
+  insert alerts { id: alerts.key(1), sev: High, flavor: Sweet }
+  insert alerts { id: alerts.key(2), sev: Low, flavor: Sour }
+  insert alerts { id: alerts.key(3), sev: Medium, flavor: Sweet }
+query
+  from a in alerts select a.sev
+----
+Low
+Medium
+High
+query
+  from a in alerts select a order by a.sev desc
+----
+Alert { id: alerts.key(1), sev: High, flavor: Sweet }
+Alert { id: alerts.key(3), sev: Medium, flavor: Sweet }
+Alert { id: alerts.key(2), sev: Low, flavor: Sour }
+query
+  from a in alerts where a.sev > Low select a.sev
+----
+Medium
+High
+query
+  from a in alerts select match a.sev | Low -> 1 | Medium -> 2 | High -> 3
+----
+1
+2
+3
+error Invalid
+  from a in alerts select match a.sev | Low -> 1 | High -> 3
+query
+  from a in alerts where a.flavor == Sour select key a
+----
+alerts.key(2)
+error Invalid
+  from a in alerts where a.flavor < Sour select key a
+error Invalid
+  from a in alerts select a order by a.flavor

@@ -1,0 +1,51 @@
+# skip is the empty write; a sequence, a write if and a write match combine writes into one change set.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+run
+  skip
+query
+  from u in users select u
+----
+
+run
+  (insert users { id: users.key(1), name: "a" }, insert users { id: users.key(2), name: "b" })
+query
+  from u in users select u.name
+----
+"a"
+"b"
+run
+  if true then insert users { id: users.key(3), name: "c" } else insert users { id: users.key(4), name: "d" }
+run
+  if 1 > 2 then insert users { id: users.key(5), name: "e" } else skip
+query
+  from u in users select u.name
+----
+"a"
+"b"
+"c"
+run
+  match true
+    | True -> (insert users { id: users.key(6), name: "f" }, skip)
+    | False -> insert users { id: users.key(7), name: "g" }
+run
+  match users.key(1)
+    | User u -> update u set User { u with name: "a2" }
+query
+  from u in users select u.name
+----
+"a2"
+"b"
+"c"
+"f"
+run
+  transact
+    (insert users { id: users.key(8), name: "h" },
+     if true then skip else fail "no")
+    skip
+query
+  count(u for u in users)
+----
+5

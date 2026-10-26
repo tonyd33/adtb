@@ -1,0 +1,33 @@
+# Overlap is a reference to a sum of facets, with one facet per kind kept by a unique per constructor.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Factor { id: Key factors, user: Key users } = Password { hash: Bytes }
+                                                   | Totp     { secret: Bytes }
+  relation factors : Factor
+    key id generate sequence
+    unique (user) in Password
+    unique (user) in Totp
+  type Part = { id: Key parts, name: Text }
+  relation parts : Part key id generate sequence
+  type Manufactured = { part: Key parts, plant: Text }
+  relation manufactured : Manufactured key part
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert factors.Password { id: factors.key(1), user: users.key(1), hash: bytes("h") }
+  insert factors.Totp { id: factors.key(2), user: users.key(1), secret: bytes("s") }
+  insert parts { id: parts.key(1), name: "bolt" }
+  insert manufactured { part: parts.key(1), plant: "north" }
+query
+  count(f for f in factors where f.user == users.key(1))
+----
+2
+error Violated
+  insert factors.Password { id: factors.key(3), user: users.key(1), hash: bytes("h2") }
+error KeyViolation
+  insert manufactured { part: parts.key(1), plant: "south" }
+query
+  from m in manufactured select m.plant
+----
+"north"

@@ -1,0 +1,129 @@
+# A comprehension's value is v over every binding of its generators for which where holds, clauses applied in order.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation users : User key id generate sequence
+  relation identities : Identity
+    key id generate sequence
+    unique (email) in EmailPass
+    unique (gid) in Google
+    unique (sub) in Apple
+  set OAuth of identities = Google | Apple
+  fn display_name (i: Identity) -> Text = match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+  type Phone = { id: Key phones, owner: Key users on delete cascade, seen: I64 }
+  type Follow = { src: Key users, dst: Key users }
+  type Employee = { id: Key employees, name: Text, manager: Option (Key employees) }
+  type Reset = { id: Key resets, identity: Key identities.EmailPass on delete cascade }
+  type Session = { id: Key sessions, owner: Option (Key users) }
+  type Via = Courier { name: Text } | Mail { tracking: Text }
+  type Shipment = Pending | Shipped { via: Via }
+  type Parcel = { id: Key parcels, state: Shipment, code: Text }
+  relation phones : Phone key id generate sequence
+  relation follows : Follow key (src, dst)
+  relation employees : Employee key id generate sequence
+  relation resets : Reset key id generate sequence
+  relation sessions : Session key id generate sequence
+  relation parcels : Parcel key id generate sequence
+  fn uid (u: User) -> Key users = key u
+  fn all_follows () -> Set Follow = from f in follows select f
+  fn ids_of (u: Key users) -> Set Identity = from i in identities where i.user == u select i
+  fn names (s: Set User) -> Set Text = from u in s select u.name
+  fn sign_ins () -> Set (Local { id: Key identities, email: Text }
+                       | Remote { id: Key identities, provider: Text }) =
+    from i in identities select match i
+      | EmailPass e -> Local  { id: key e, email: e.email }
+      | Google g    -> Remote { id: key g, provider: "google" }
+      | Apple a     -> Remote { id: key a, provider: "apple" }
+run
+  transact
+    insert users { id: users.key(1), name: "ann" }
+    insert users { id: users.key(2), name: "bo" }
+    insert users { id: users.key(3), name: "cy" }
+    insert identities.EmailPass { id: identities.key(1), user: users.key(1), email: "ann@example.com", hash: bytes("h1") }
+    insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g-ann" }
+    insert identities.Google { id: identities.key(3), user: users.key(2), gid: "root" }
+    insert identities.Apple { id: identities.key(4), user: users.key(2), sub: "a-bo" }
+    insert phones { id: phones.key(1), owner: users.key(1), seen: 10 }
+    insert phones { id: phones.key(2), owner: users.key(1), seen: 20 }
+    insert follows { src: users.key(1), dst: users.key(2) }
+    insert follows { src: users.key(2), dst: users.key(3) }
+    insert follows { src: users.key(3), dst: users.key(2) }
+    insert employees { id: employees.key(1), name: "boss", manager: None }
+    insert employees { id: employees.key(2), name: "w", manager: Some { value: employees.key(1) } }
+    insert sessions { id: sessions.key(1), owner: Some { value: users.key(1) } }
+    insert sessions { id: sessions.key(2), owner: None }
+    insert parcels { id: parcels.key(1), state: Pending, code: "p1" }
+    insert parcels { id: parcels.key(2), state: Shipped { via: Courier { name: "dhl" } }, code: "p2" }
+    insert parcels { id: parcels.key(3), state: Shipped { via: Mail { tracking: "t-3" } }, code: "p3" }
+run
+  insert resets from (from e in identities.EmailPass select Reset { id: resets.key(1), identity: key e })
+query rowsort
+  from u in users, i in u.<identities.user select { name: u.name, id: key i }
+----
+{ name: "ann", id: identities.key(1) }
+{ name: "ann", id: identities.key(2) }
+{ name: "bo", id: identities.key(3) }
+{ name: "bo", id: identities.key(4) }
+# A comma in from is shorthand for a second from.
+query rowsort
+  from u in users from i in u.<identities.user select { name: u.name, id: key i }
+----
+{ name: "ann", id: identities.key(1) }
+{ name: "ann", id: identities.key(2) }
+{ name: "bo", id: identities.key(3) }
+{ name: "bo", id: identities.key(4) }
+# Two independent generators range over the product.
+query rowsort
+  from a in users, b in users where a.name < b.name select { a: a.name, b: b.name }
+----
+{ a: "ann", b: "bo" }
+{ a: "ann", b: "cy" }
+{ a: "bo", b: "cy" }
+query
+  count(x for x in (from a in users, b in identities select { a: key a, b: key b }))
+----
+12
+# A where clause may sit between generators and see the earlier binders.
+query rowsort
+  from u in users where u.name != "ann" from i in identities where i.user == key u select key i
+----
+identities.key(3)
+identities.key(4)
+# Several where clauses are a conjunction.
+query rowsort
+  from f in follows where f.src != users.key(1) where f.dst == users.key(2) select f.src
+----
+users.key(3)
+query rowsort
+  from u in users where false select u
+----
+
+query rowsort
+  from u in users where true select u.name
+----
+"ann"
+"bo"
+"cy"
+# A generator over an empty set leaves no binding.
+query rowsort
+  from u in users, d in u.<phones.owner where u.name == "bo" select d
+----
+
+# A generator may depend on the binders of an enclosing expression.
+query rowsort
+  from u in users select { name: u.name, n: count(f for f in (from f in follows where f.dst == key u select f)) }
+----
+{ name: "ann", n: 0 }
+{ name: "bo", n: 2 }
+{ name: "cy", n: 1 }
+error Invalid
+  from u in users select i
+error Invalid
+  from u in users where u.name select u

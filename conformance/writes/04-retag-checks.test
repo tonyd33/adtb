@@ -1,0 +1,44 @@
+# A retag is checked for the new constructor's uniques and outgoing references as an insert into it is, and runs no delete action.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+    | Linked    { gid: Text, via: Key users }
+  relation identities : Identity key id generate sequence
+    unique (gid) in Google
+  type Session = { id: Key sessions, identity: Key identities on delete cascade }
+  relation sessions : Session key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+  insert identities from ([EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h" },
+                           Google { id: identities.key(2), user: users.key(1), gid: "taken" }])
+  insert sessions { id: sessions.key(1), identity: identities.key(1) }
+error Violated
+  update i in identities.EmailPass set Google { gid: "taken" }
+error Violated
+  update i in identities.EmailPass set Linked { gid: "x", via: users.key(9) }
+query
+  from i in identities select i
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h" }
+Google { id: identities.key(2), user: users.key(1), gid: "taken" }
+run
+  update i in identities.EmailPass set Linked { gid: "x", via: users.key(1) }
+query
+  from s in sessions select s.identity
+----
+identities.key(1)
+run
+  update i in identities.Linked set Google { gid: "free" }
+query
+  from i in identities.Google select i.gid
+----
+"free"
+"taken"
+query
+  count(s for s in sessions)
+----
+1

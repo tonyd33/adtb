@@ -1,0 +1,32 @@
+# A constraint holds while its query returns nothing; a statement after which it returns a row fails and changes nothing.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  constraint no_empty_names = from u in users where u.name == "" select u
+run
+  insert users { id: users.key(1), name: "ann" }
+error Violated
+  insert users { id: users.key(2), name: "" }
+query
+  from u in users select u.name
+----
+"ann"
+error Violated
+  update u in users where u.name == "ann" set User { u with name: "" }
+query
+  from u in users select u.name
+----
+"ann"
+run
+  update u in users where u.name == "ann" set User { u with name: "bo" }
+query
+  from u in users select u.name
+----
+"bo"
+run
+  delete u in users where u.name == "bo"
+query
+  from u in users select u.name
+----
+

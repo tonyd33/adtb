@@ -1,0 +1,36 @@
+# An update keeps the row's key: a constructor expression giving a key field is a type error, and any other new value with another key is refused with KeyChanged.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+run
+  insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
+  insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g" }
+error Invalid
+  update u in users set User { u with id: users.key(5) }
+error Invalid
+  update g in identities.Google set Google { g with id: identities.key(5) }
+error Invalid
+  update u in users set User { id: users.key(5), name: "x" }
+error KeyChanged
+  match users.key(2)
+    | User v -> update u in users where key u == users.key(1) set v
+error KeyChanged
+  update u in (from u in users where key u == users.key(1) select u)
+  set match users.key(2) | User v -> v
+query
+  from u in users select u
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "u2" }
+run
+  match users.key(1)
+    | User v -> update u in users where key u == users.key(1) set User { v with name: "same key" }
+query
+  from u in users where key u == users.key(1) select u.name
+----
+"same key"

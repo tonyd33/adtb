@@ -1,0 +1,86 @@
+# The tag of a sum value is its constructor as a value of Tag T, and grouping by it groups by constructor.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation users : User key id generate sequence
+  relation identities : Identity key id generate sequence
+  type Stage ordered = Draft | Sent { at: I64 } | Paid { at: I64 }
+  type Kind = Small | Large
+  type Item = { id: Key items, stage: Stage, kind: Kind }
+  relation items : Item key id generate sequence
+run
+  insert users from [User { id: users.key(1), name: "ann" }, User { id: users.key(2), name: "bo" }]
+  insert identities from [EmailPass { id: identities.key(1), user: users.key(1), email: "ann@x" },
+                          Google { id: identities.key(2), user: users.key(1), gid: "g-ann" },
+                          Google { id: identities.key(3), user: users.key(2), gid: "g-bo" },
+                          Apple { id: identities.key(4), user: users.key(2), sub: "a-bo" }]
+  insert items from [Item { id: items.key(1), stage: Sent { at: 5 }, kind: Small },
+                     Item { id: items.key(2), stage: Draft, kind: Large },
+                     Item { id: items.key(3), stage: Sent { at: 9 }, kind: Small }]
+# Per-constructor counts are a group by tag.
+query rowsort
+  from i in identities group i by tag(i) into g
+  select { kind: g.key, n: count(x for x in g) }
+----
+{ kind: EmailPass, n: 1 }
+{ kind: Google, n: 2 }
+{ kind: Apple, n: 1 }
+# Tag T has the constructor names of T, in the same order.
+query
+  from i in identities select tag(i)
+----
+EmailPass
+Google
+Apple
+# The tag of a row of a constructor relation is that constructor.
+query
+  from g in identities.Google select tag(g)
+----
+Google
+query
+  from o in identities.(Google | Apple) select tag(o)
+----
+Google
+Apple
+# Tags compare equal exactly when the constructors are the same, whatever the fields.
+query rowsort
+  from a in identities, b in identities
+  where key a != key b and tag(a) == tag(b)
+  select { a: a.id, b: b.id }
+----
+{ a: identities.key(2), b: identities.key(3) }
+{ a: identities.key(3), b: identities.key(2) }
+query rowsort
+  from s in items group s by tag(s.stage) into g
+  select { stage: g.key, n: count(x for x in g) }
+----
+{ stage: Draft, n: 1 }
+{ stage: Sent, n: 2 }
+# A match on a tag names every constructor.
+query rowsort
+  from i in identities
+  select { id: i.id, n: match tag(i) | EmailPass -> 1 | Google -> 2 | Apple -> 3 }
+----
+{ id: identities.key(1), n: 1 }
+{ id: identities.key(2), n: 2 }
+{ id: identities.key(3), n: 2 }
+{ id: identities.key(4), n: 3 }
+error Invalid
+  from i in identities select match tag(i) | EmailPass -> 1 | Google -> 2
+# Tag T is ordered exactly when T is declared ordered.
+query
+  max(tag(s.stage) for s in items)
+----
+Some { value: Sent }
+query
+  min(tag(s.stage) for s in items)
+----
+Some { value: Draft }
+error Invalid
+  max(tag(s.kind) for s in items)
+error Invalid
+  max(tag(i) for i in identities)

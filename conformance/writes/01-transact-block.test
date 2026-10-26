@@ -1,0 +1,64 @@
+# A transact block is one statement: its items read one snapshot, see pending rows only through let names, and apply together.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Note = { id: Key notes, author: Key users, body: Text }
+  relation notes : Note key id generate sequence
+  type Tally = { id: Key tallies, n: I64 }
+  relation tallies : Tally key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+run
+  transact
+    let u = insert users { name: "fresh" }
+    insert notes { id: notes.key(1), author: key u, body: "one" }
+    insert notes { id: notes.key(2), author: key u, body: "two" }
+    let c = count(x for x in users)
+    insert tallies { id: tallies.key(1), n: c }
+query
+  from n in notes select n.author.name
+----
+"fresh"
+query
+  count(x for x in (from n in notes select n.author))
+----
+1
+query
+  from t in tallies select t.n
+----
+1
+query
+  count(x for x in users)
+----
+2
+run
+  transact
+    insert users { id: users.key(5), name: "e" }
+    let found = from x in users where key x == users.key(5) select x
+    insert tallies { id: tallies.key(2), n: count(x for x in found) }
+query
+  from t in tallies where key t == tallies.key(2) select t.n
+----
+0
+error Violated
+  transact
+    insert notes { id: notes.key(3), author: users.key(9), body: "dangling" }
+    insert users { id: users.key(6), name: "f" }
+query
+  from u in users where key u == users.key(6) select u
+----
+
+error UserError
+  transact
+    let u = insert users { id: users.key(7), name: "g" }
+    insert notes { id: notes.key(4), author: key u, body: "x" }
+    fail "stop"
+query
+  count(x for x in users)
+----
+3
+query
+  count(x for x in notes)
+----
+2

@@ -1,0 +1,33 @@
+# A sequence key differs from every key it issued and every key a committed row held, supplied values included.
+schema
+  module test
+  type Order = { id: Key orders, buyer: Text }
+  relation orders : Order key id generate sequence
+run
+  insert orders { id: orders.key(1), buyer: "s1" }
+  insert orders { id: orders.key(2), buyer: "s2" }
+  insert orders { id: orders.key(3), buyer: "s3" }
+run
+  delete o in orders where o.buyer == "s3"
+run
+  insert orders { buyer: "g1" }
+  insert orders { buyer: "g2" }
+run
+  insert orders { buyer: "g3" }
+  insert orders { buyer: "g4" }
+query
+  count(o for o in orders)
+----
+6
+query
+  count(o for o in orders where o.buyer == "g1" or o.buyer == "g2" or o.buyer == "g3" or o.buyer == "g4")
+----
+4
+query
+  count(o for o in orders where (o.id == orders.key(1) or o.id == orders.key(2) or o.id == orders.key(3)) and o.buyer != "s1" and o.buyer != "s2")
+----
+0
+query
+  count(k for k in (from o in orders select key o))
+----
+6

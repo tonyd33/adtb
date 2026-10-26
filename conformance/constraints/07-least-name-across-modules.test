@@ -1,0 +1,21 @@
+# A constraint's name is qualified by its module, and the module name orders it among the violated constraints.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  module alpha
+  constraint no_aa = from u in test::users where u.name == "aa" select u
+  module zeta
+  constraint no_zz = from u in test::users where u.name == "zz" select u
+run
+  insert test::users { id: test::users.key(1), name: "ann" }
+error Violated
+  insert test::users { id: test::users.key(2), name: "aa" }
+error Violated
+  insert test::users { id: test::users.key(2), name: "zz" }
+# alpha::no_aa sorts before test::users.key
+error Violated
+  insert test::users { id: test::users.key(1), name: "aa" }
+# test::users.key sorts before zeta::no_zz
+error KeyViolation
+  insert test::users { id: test::users.key(1), name: "zz" }

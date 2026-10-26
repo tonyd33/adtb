@@ -1,0 +1,44 @@
+# restrict, and a reference with no declared action, refuse a statement that leaves a referrer of a deleted row; deleting the referrers too succeeds.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Badge = { id: Key badges, owner: Key users on delete restrict, label: Text }
+  relation badges : Badge key id generate sequence
+  type Post = { id: Key posts, author: Key users, body: Text }
+  relation posts : Post key id generate sequence
+run
+  insert users from (from k in [1, 2, 3] select { id: users.key(k), name: "u" ++ print(k) })
+  insert badges from ([{ id: badges.key(1), owner: users.key(1), label: "b1" },
+                       { id: badges.key(2), owner: users.key(1), label: "b2" }])
+  insert posts { id: posts.key(1), author: users.key(2), body: "p" }
+error Violated
+  delete x in users where key x == users.key(1)
+error Violated
+  delete x in users where key x == users.key(2)
+error Violated
+  transact
+    delete d in badges where key d == badges.key(1)
+    delete x in users where key x == users.key(1)
+query
+  from u in users select key u
+----
+users.key(1)
+users.key(2)
+users.key(3)
+query
+  count(b for b in badges)
+----
+2
+run
+  delete x in users where key x == users.key(3)
+run
+  transact
+    delete d in badges where d.owner == users.key(1)
+    delete x in users where key x == users.key(1)
+run
+  (delete x in users where key x == users.key(2), delete p in posts where p.author == users.key(2))
+query
+  count(u for u in users)
+----
+0

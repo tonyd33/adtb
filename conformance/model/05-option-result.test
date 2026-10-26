@@ -1,0 +1,41 @@
+# Option and Result are prelude sums matched like any other; Option is ordered when its argument is and Result is not.
+schema
+  module test
+  type Profile = { id: Key profiles, phone: Option Text, n: Option I64 }
+  relation profiles : Profile key id generate sequence
+  fn ok (x: I64) -> Result I64 Text = Ok { value: x }
+  fn err (t: Text) -> Result I64 Text = Err { error: t }
+run
+  insert profiles { id: profiles.key(1), phone: None, n: Some { value: 5 } }
+  insert profiles { id: profiles.key(2), phone: Some { value: "555" }, n: None }
+  insert profiles { id: profiles.key(3), phone: Some { value: "111" }, n: Some { value: -1 } }
+query rowsort
+  from p in profiles select match p.phone | None -> "-" | Some s -> s.value
+----
+"-"
+"555"
+"111"
+query
+  from p in profiles select p.n
+----
+None
+Some { value: -1 }
+Some { value: 5 }
+query
+  from p in profiles select p order by p.phone
+----
+Profile { id: profiles.key(1), phone: None, n: Some { value: 5 } }
+Profile { id: profiles.key(3), phone: Some { value: "111" }, n: Some { value: -1 } }
+Profile { id: profiles.key(2), phone: Some { value: "555" }, n: None }
+query
+  ok(1) == ok(1)
+----
+true
+query
+  ok(1) == err("1")
+----
+false
+error Invalid
+  ok(1) < ok(2)
+error Invalid
+  from p in profiles select match p.n | Some s -> s.value

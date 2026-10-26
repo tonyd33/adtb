@@ -1,0 +1,28 @@
+# == is substitutive: values are canonical, so equal values are indistinguishable by any function and deduplicate to one.
+schema
+  module test
+  fn f (x: F64) -> F64 = x
+query
+  text(f(0.0) * f(-1.0)) == text(f(0.0))
+----
+true
+query
+  text(f(0.0) / f(0.0)) == text(f(-1.0) * (f(0.0) / f(0.0)))
+----
+true
+query
+  bytes("e\u{301}") == bytes("é")
+----
+true
+query
+  [text(f(0.0)), text(-f(0.0))]
+----
+"0.0"
+query
+  [bytes_len("e\u{301}"), bytes_len("é")]
+----
+2
+query
+  text(1.50) == text(1.5 + 0.00)
+----
+true

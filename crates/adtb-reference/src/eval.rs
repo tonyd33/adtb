@@ -11,6 +11,7 @@ use crate::big::Big;
 use crate::num::{digits38, in_range};
 use crate::prim;
 use crate::stmt::{Rejection, Stage, Stmt};
+use crate::unicode::Compiled;
 use crate::value::{Value, canon32, canon64};
 
 /// A database: the rows of each constructor relation, by relation variable and constructor index.
@@ -161,6 +162,7 @@ pub struct Interpreter<'a> {
     change: Option<&'a Change>,
     pub(crate) fix_limit: usize,
     pub(crate) closed: BTreeMap<(TypeId, u32), Stage>,
+    pub(crate) compiled: Rc<Compiled>,
 }
 
 impl<'a> Interpreter<'a> {
@@ -173,6 +175,7 @@ impl<'a> Interpreter<'a> {
             change: None,
             fix_limit: 10_000,
             closed: BTreeMap::new(),
+            compiled: Rc::default(),
         }
     }
 

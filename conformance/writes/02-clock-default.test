@@ -1,0 +1,22 @@
+# generate clock fills an omitted Instant field with one value for every row of the statement.
+schema
+  module test
+  type Event = { id: Key events, label: Text, at: Instant }
+  relation events : Event key id generate sequence default at = generate clock
+run
+  insert events from (from n in ["a", "b", "c"] select { label: n })
+  insert events { id: events.key(9), label: "d" }
+query
+  count(t for t in (from e in events where e.label != "d" select e.at))
+----
+1
+query
+  count(e for e in events)
+----
+4
+run
+  (insert events { id: events.key(20), label: "e" }, insert events { id: events.key(21), label: "f" })
+query
+  count(t for t in (from e in events where value(key e) >= 20 select e.at))
+----
+1

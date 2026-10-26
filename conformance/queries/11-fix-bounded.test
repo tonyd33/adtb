@@ -1,0 +1,37 @@
+# A fix that keeps building new values runs until a statement limit rejects it, and try does not catch the limit.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" }]
+# An infinite least fixpoint is rejected with StatementLimit.
+error StatementLimit
+  fix n = [1] union (from r in n select r + 1) in n
+error StatementLimit
+  fix n = [1] union (from r in n select r + 1) in count(x for x in n)
+# A limit is a rejection, not a fault: try does not catch it.
+error StatementLimit
+  try count(x for x in (fix n = [1] union (from r in n select r + 1) in n))
+# A fix that is not bounded but whose least fixpoint is finite reaches it.
+query
+  fix n = [1] union (from r in n where r < 5 select r + 1) in n
+----
+1
+2
+3
+4
+5
+# A constructed value used only in a condition does not make a fix unbounded.
+query
+  fix a = [1] union (from x in a where x + 1 < 5 select x) in a
+----
+1
+query
+  fix a = (from u in users select key u)
+        union (from x in a where { k: x } != { k: users.key(1) } select x)
+  in a
+----
+users.key(1)
+users.key(2)

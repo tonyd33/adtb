@@ -1,0 +1,36 @@
+# An integer sum is the exact sum, checked against its type once when every value has been added.
+schema
+  module test
+  type Big = { id: Key bigs, n: I64, m: I32, grp: I64 }
+  relation bigs : Big key id generate sequence
+run
+  insert bigs from [Big { id: bigs.key(1), n: 9223372036854775807, m: 2147483647, grp: 1 },
+                    Big { id: bigs.key(2), n: 1, m: 1, grp: 1 },
+                    Big { id: bigs.key(3), n: -1, m: -1, grp: 1 },
+                    Big { id: bigs.key(4), n: 1, m: 1, grp: 2 }]
+# The exact sum is in range, whatever the order of addition.
+query
+  sum(b.n for b in bigs where b.grp == 1)
+----
+9223372036854775807
+query
+  sum(b.m for b in bigs where b.grp == 1)
+----
+2147483647
+query
+  try sum(b.n for b in bigs where b.grp == 1)
+----
+Ok { value: 9223372036854775807 }
+# The exact sum out of range faults with ArithmeticOverflow.
+error Faulted
+  sum(b.n for b in bigs)
+error Faulted
+  sum(b.m for b in bigs)
+query
+  try sum(b.n for b in bigs)
+----
+Err { error: ArithmeticOverflow }
+query
+  try sum(b.m for b in bigs where b.n > 0)
+----
+Err { error: ArithmeticOverflow }

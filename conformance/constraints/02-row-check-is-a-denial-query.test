@@ -1,0 +1,26 @@
+# A row check means the denial query selecting the rows of its scope whose expression is not true; the two forms accept and refuse the same writes.
+schema
+  module test
+  type Pair = { id: Key pairs, lo: I64, hi: I64 }
+  relation pairs : Pair key id generate sequence
+  check lo_le_hi on pairs (lo <= hi)
+  type Twin = { id: Key twins, lo: I64, hi: I64 }
+  relation twins : Twin key id generate sequence
+  constraint twin_ordered = from x in twins where not (x.lo <= x.hi) select x
+run
+  insert pairs { id: pairs.key(1), lo: 1, hi: 1 }
+  insert twins { id: twins.key(1), lo: 1, hi: 1 }
+  insert pairs { id: pairs.key(2), lo: -3, hi: 4 }
+  insert twins { id: twins.key(2), lo: -3, hi: 4 }
+error Violated
+  insert pairs { id: pairs.key(3), lo: 2, hi: 1 }
+error Violated
+  insert twins { id: twins.key(3), lo: 2, hi: 1 }
+query
+  count(p for p in pairs)
+----
+2
+query
+  count(t for t in twins)
+----
+2

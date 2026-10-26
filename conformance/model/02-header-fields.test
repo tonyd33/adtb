@@ -1,0 +1,39 @@
+# Header fields belong to every constructor and are read without a match; constructor fields need the constructor.
+schema
+  module test
+  type Channel { id: Key channels, owner: Text }
+    = Mail  { address: Text }
+    | Phone { number: Text }
+    | Pager { number: Text }
+  relation channels : Channel key id generate sequence
+  type Twin { id: Key twins } = Left { n: I64 } | Right { n: I64 }
+  relation twins : Twin key id generate sequence
+run
+  insert channels.Mail { id: channels.key(1), owner: "ann", address: "a@x" }
+  insert channels.Phone { id: channels.key(2), owner: "bo", number: "1" }
+  insert channels.Pager { id: channels.key(3), owner: "bo", number: "2" }
+  insert twins.Left { id: twins.key(1), n: 5 }
+query
+  from c in channels select c.owner
+----
+"ann"
+"bo"
+query
+  from c in channels.Mail select { owner: c.owner, address: c.address }
+----
+{ owner: "ann", address: "a@x" }
+query
+  from c in channels.(Phone | Pager) select c.number
+----
+"1"
+"2"
+error Invalid
+  from c in channels select c.address
+error Invalid
+  from c in channels select c.number
+error Invalid
+  from t in twins select t.n
+query
+  from t in twins select match t | Left l -> l.n | Right r -> r.n
+----
+5

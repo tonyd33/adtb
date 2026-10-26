@@ -1,0 +1,26 @@
+# A newtype's domain is checked on every stored value of the newtype; constructing a value never checks it.
+schema
+  module test
+  type Email = new Text where matches(self, "^[^@]+@[^@]+$")
+  type Contact = { id: Key contacts, email: Email }
+  relation contacts : Contact key id generate sequence
+query
+  unwrap(Email("no at sign"))
+----
+"no at sign"
+query
+  from c in contacts where c.email == Email("bad") select c
+----
+
+run
+  insert contacts { id: contacts.key(1), email: Email("a@b") }
+error Violated
+  insert contacts { id: contacts.key(2), email: Email("ab") }
+error Violated
+  update c in contacts set Contact { c with email: Email("a@b@c") }
+error Invalid
+  insert contacts { id: contacts.key(2), email: "a@b" }
+query
+  from c in contacts select unwrap(c.email)
+----
+"a@b"

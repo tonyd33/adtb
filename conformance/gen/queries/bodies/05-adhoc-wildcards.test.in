@@ -1,0 +1,51 @@
+# In ad hoc text _ and a binder may cover the remaining constructors of a sum.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities select match i | Google g -> g.gid | _ -> "other"
+----
+"g-ann"
+"other"
+"root"
+query rowsort
+  from i in identities select match i | Google g -> g.gid | x -> display_name(x)
+----
+"a-bo"
+"ann@example.com"
+"g-ann"
+"root"
+query rowsort
+  from i in identities select match i | _ -> 1
+----
+1
+query rowsort
+  from p in parcels select match p.state | Shipped { via: Courier c } -> c.name | _ -> "none"
+----
+"dhl"
+"none"
+query rowsort
+  from p in parcels select match p.state | Pending -> "p" | Shipped { via: Mail m } -> m.tracking | Shipped _ -> "other"
+----
+"other"
+"p"
+"t-3"
+query rowsort
+  from e in employees select match e.manager | Some { value: m } -> m.name | _ -> "top"
+----
+"boss"
+"top"
+# A position no arm discriminates may be _ or a binder in any role.
+query rowsort
+  from p in parcels select match p.state | Pending -> 0 | Shipped { via: _ } -> 1
+----
+0
+1
+query rowsort
+  from p in parcels select match p.state | Pending -> "p" | Shipped { via: v } -> match v | Courier c -> c.name | Mail m -> m.tracking
+----
+"dhl"
+"p"
+"t-3"
+# A wildcard after every constructor is covered can never be chosen.
+error Invalid
+  from i in identities select match i | EmailPass _ -> 1 | Google _ -> 2 | Apple _ -> 3 | _ -> 4

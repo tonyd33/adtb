@@ -1,0 +1,32 @@
+# count and sum over an empty range give 0.
+schema
+  module test
+  type Entry = { id: Key entries, memo: Text }
+  relation entries : Entry key id generate sequence
+  type Line = { id: Key lines, entry: Key entries, amount: I64 }
+  relation lines : Line key id generate sequence index (entry)
+  constraint has_lines =
+    from e in entries
+    where count(l for l in lines where l.entry == key e) == 0 and e.memo == "needs lines"
+    select e
+  constraint nonzero =
+    from e in entries
+    where sum(l.amount for l in lines where l.entry == key e) == 0 and e.memo == "needs total"
+    select e
+run
+  insert entries { id: entries.key(1), memo: "free" }
+error Violated
+  insert entries { id: entries.key(2), memo: "needs lines" }
+error Violated
+  insert entries { id: entries.key(2), memo: "needs total" }
+run
+  transact
+    insert entries { id: entries.key(2), memo: "needs total" }
+    insert lines { id: lines.key(1), entry: entries.key(2), amount: 3 }
+error Violated
+  delete l in lines
+query
+  from e in entries select e.memo
+----
+"free"
+"needs total"

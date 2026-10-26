@@ -1,0 +1,27 @@
+# Constructor names are unique within a sum and may repeat across sums; an ambiguous bare name is qualified by its type.
+schema
+  module test
+  type Color = Red | Green
+  type Light = Red | Off
+  type Lamp = { id: Key lamps, light: Light }
+  relation lamps : Lamp key id generate sequence
+run
+  insert lamps { id: lamps.key(1), light: Red }
+query
+  from l in lamps select l.light
+----
+Red
+query
+  Color.Red == Color.Red
+----
+true
+query
+  from l in lamps where l.light == Light.Red select key l
+----
+lamps.key(1)
+error Invalid
+  Red
+error Invalid
+  Color.Red == Light.Red
+error Invalid
+  Color.Off

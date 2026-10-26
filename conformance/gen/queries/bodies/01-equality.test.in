@@ -1,0 +1,31 @@
+# Equal values are one element of a result, whichever of them is kept.
+@SCHEMA@
+@RUN@
+run
+  transact
+    insert users { id: users.key(4), name: "ann" }
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+"cy"
+query rowsort
+  from u in users select { name: u.name }
+----
+{ name: "ann" }
+{ name: "bo" }
+{ name: "cy" }
+query
+  count(n for n in (from u in users select u.name))
+----
+3
+query
+  count(u for u in users)
+----
+4
+query rowsort
+  from i in identities select i.user
+----
+users.key(1)
+users.key(2)

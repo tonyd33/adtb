@@ -1,0 +1,36 @@
+# Applying a change set assigns every constructor relation at once, so constraints see only the state after the whole statement.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Badge = { id: Key badges, owner: Key users, label: Text }
+  relation badges : Badge key id generate sequence
+run
+  (insert badges { id: badges.key(1), owner: users.key(1), label: "b1" },
+   insert users { id: users.key(1), name: "a" })
+query
+  from b in badges select b.owner.name
+----
+"a"
+run
+  transact
+    insert badges { id: badges.key(2), owner: users.key(2), label: "b2" }
+    insert users { id: users.key(2), name: "b" }
+query
+  from b in badges select b.label
+----
+"b1"
+"b2"
+run
+  (delete u in users where key u == users.key(2),
+   delete b in badges where b.owner == users.key(2))
+query
+  from u in users select u
+----
+User { id: users.key(1), name: "a" }
+error Violated
+  insert badges { id: badges.key(3), owner: users.key(3), label: "b3" }
+query
+  from b in badges select b.label
+----
+"b1"

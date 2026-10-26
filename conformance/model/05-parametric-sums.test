@@ -1,0 +1,41 @@
+# A parametric sum is instantiated with types in fields and element types; each instantiation is a distinct type of one sum.
+schema
+  module test
+  type These a b = This { value: a } | That { value: b } | Both { this: a, that: b }
+  type Pair = { id: Key pairs, t: These Text I64 }
+  relation pairs : Pair key id generate sequence
+  type Box a = { id: I64, item: a }
+  relation text_boxes : Box Text key id
+  relation int_boxes : Box I64 key id
+run
+  insert pairs { id: pairs.key(1), t: This { value: "x" } }
+  insert pairs { id: pairs.key(2), t: That { value: 2 } }
+  insert pairs { id: pairs.key(3), t: Both { this: "y", that: 3 } }
+  insert text_boxes { id: 1, item: "a" }
+  insert int_boxes { id: 1, item: 5 }
+query rowsort
+  from p in pairs select match p.t | This x -> x.value | That y -> text(y.value) | Both b -> b.this ++ text(b.that)
+----
+"x"
+"2"
+"y3"
+error Invalid
+  from p in pairs select match p.t | This x -> x.value | That y -> text(y.value)
+error Invalid
+  insert pairs { id: pairs.key(4), t: This { value: 4 } }
+query
+  from b in text_boxes select b.item
+----
+"a"
+query
+  from b in int_boxes select b.item + 1
+----
+6
+error Invalid
+  from a in text_boxes, b in int_boxes where a == b select a.id
+query
+  from a in text_boxes, b in int_boxes where a.id == b.id select a.id
+----
+1
+error Invalid
+  insert text_boxes { id: 2, item: 5 }

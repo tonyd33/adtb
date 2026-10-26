@@ -1,0 +1,27 @@
+# There is no null: optionality is a constructor matched like any sum.
+@SCHEMA@
+@RUN@
+query rowsort
+  from e in employees select match e.manager
+    | None              -> "none"
+    | Some { value: m } -> m.name
+----
+"boss"
+"none"
+query rowsort
+  from e in employees where e.manager == None select e.name
+----
+"boss"
+query rowsort
+  from e in employees, m in employees where e.manager == Some { value: key m } select { e: e.name, m: m.name }
+----
+{ e: "w", m: "boss" }
+query rowsort
+  from e in employees select e.manager
+----
+None
+Some { value: employees.key(1) }
+error Invalid
+  from e in employees select match e.manager | Some { value: m } -> m.name
+error Invalid
+  from e in employees, m in employees where e.manager == key m select e

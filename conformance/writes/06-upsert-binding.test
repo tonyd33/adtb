@@ -1,0 +1,102 @@
+# A let on a single-row upsert binds the inserted row, the row with old's key the branch writes, or old itself when the branch leaves it in place.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+    unique (gid) in Google
+  type Copy = { id: Key copies, text: Text }
+  relation copies : Copy key id generate sequence
+  type Badge = { id: Key badges, owner: Key users on delete cascade }
+  relation badges : Badge key id generate sequence
+run
+  insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
+  insert identities from ([Google { id: identities.key(1), user: users.key(1), gid: "g-ann" },
+                           EmailPass { id: identities.key(2), user: users.key(2), email: "e", hash: "h" }])
+run
+  transact
+    let g = insert identities.Google { id: identities.key(5), user: users.key(2), gid: "g-ann" }
+            unless conflict on (gid) in Google
+            else update old set old
+    insert copies { id: copies.key(1), text: print(value(key g)) }
+run
+  transact
+    let g = insert identities.Google { id: identities.key(6), user: users.key(2), gid: "g-new" }
+            unless conflict on (gid) in Google
+            else update old set old
+    insert copies { id: copies.key(2), text: print(value(key g)) }
+run
+  transact
+    let g = insert identities.Google { id: identities.key(1), user: users.key(2), gid: "g-ann" }
+            unless conflict on (gid) in Google
+            else update old set Google { old with user: users.key(2) }
+    insert copies { id: copies.key(3), text: g.user.name }
+run
+  transact
+    let b = insert identities.Google { id: identities.key(2), user: users.key(2), gid: "gg" }
+            unless conflict on key
+            else match old
+              | Google o    -> update o set o
+              | EmailPass e -> update e set Google { gid: "from-email" }
+    insert copies { id: copies.key(4), text: b.gid }
+query
+  from c in copies select c
+----
+Copy { id: copies.key(1), text: "1" }
+Copy { id: copies.key(2), text: "6" }
+Copy { id: copies.key(3), text: "u2" }
+Copy { id: copies.key(4), text: "from-email" }
+query
+  from i in identities select i
+----
+Google { id: identities.key(1), user: users.key(2), gid: "g-ann" }
+Google { id: identities.key(2), user: users.key(2), gid: "from-email" }
+Google { id: identities.key(6), user: users.key(2), gid: "g-new" }
+error Invalid
+  transact
+    let g = insert identities.Google { id: identities.key(7), user: users.key(1), gid: "g-ann" }
+            unless conflict on (gid) in Google
+            else delete old
+error Invalid
+  transact
+    let g = insert identities.Google { id: identities.key(7), user: users.key(1), gid: "g-ann" }
+            unless conflict on (gid) in Google
+            else if true then update old set old else delete old
+error Invalid
+  transact
+    let b = insert badges { id: badges.key(1), owner: users.key(1) }
+            unless conflict on key
+            else delete u in users where key u == old.owner
+error UserError
+  transact
+    let g = insert identities.Google { id: identities.key(7), user: users.key(1), gid: "g-ann" }
+            unless conflict on (gid) in Google
+            else fail "taken"
+    insert copies { id: copies.key(9), text: "never" }
+query
+  count(c for c in copies)
+----
+4
+error Invalid
+  transact
+    let b = insert identities.Google { id: identities.key(2), user: users.key(2), gid: "gg" }
+            unless conflict on key
+            else match old
+              | Google o    -> update o set o
+              | EmailPass e -> update e set Google { gid: "from-email" }
+    return match b | Google g -> g.gid | EmailPass e -> e.email
+run
+  transact
+    let s = insert identities.Google from (
+              from p in ["g-ann", "g-other"] select { id: identities.key(if p == "g-ann" then 20 else 21), user: users.key(1), gid: p })
+            unless conflict on (gid) in Google
+            else update old set old
+    insert copies from (from x in s select { id: copies.key(30 + value(key x)), text: x.gid })
+query
+  from c in copies where value(key c) > 30 select c
+----
+Copy { id: copies.key(31), text: "g-ann" }
+Copy { id: copies.key(51), text: "g-other" }

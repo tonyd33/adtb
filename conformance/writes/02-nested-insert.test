@@ -1,0 +1,53 @@
+# key (insert ...) is the key of the row a nested single-row insert adds to the statement, allowed only where it is evaluated once.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+run
+  insert identities.Google { user: key (insert users { name: "nest" }), gid: "g-n" }
+query
+  from g in identities.Google select g.user.name
+----
+"nest"
+query
+  count(u for u in users)
+----
+1
+run
+  transact
+    insert identities.Google { id: identities.key(7), user: key (insert users { id: users.key(7), name: "seven" }), gid: "g7" }
+query
+  from g in identities.Google where key g == identities.key(7) select g.user
+----
+users.key(7)
+error Invalid
+  if true then insert identities.Google { user: key (insert users { name: "a" }), gid: "ga" } else skip
+error Invalid
+  insert identities.Google from (
+    from u in users select { user: key (insert users { name: "b" }), gid: u.name })
+error Invalid
+  update g in identities.Google set Google { g with user: key (insert users { name: "c" }) }
+error Invalid
+  insert identities.Google { user: users.key(7), gid: "g8" }
+  unless conflict on key
+  else update old set Google { old with user: key (insert users { name: "d" }) }
+error Invalid
+  match true
+    | True -> insert identities.Google { user: key (insert users { name: "e" }), gid: "ge" }
+    | False -> skip
+error Invalid
+  if true and key (insert users { name: "f" }) == users.key(7) then skip else skip
+error Invalid
+  if false or key (insert users { name: "g" }) == users.key(7) then skip else skip
+error Invalid
+  match users.key(7)
+    | User u -> insert identities.Google { user: key (insert users { name: u.name }), gid: "gu" }
+query
+  from u in users select u.name
+----
+"nest"
+"seven"

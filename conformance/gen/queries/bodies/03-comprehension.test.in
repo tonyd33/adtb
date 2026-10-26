@@ -1,0 +1,66 @@
+# A comprehension's value is v over every binding of its generators for which where holds, clauses applied in order.
+@SCHEMA@
+@RUN@
+query rowsort
+  from u in users, i in u.<identities.user select { name: u.name, id: key i }
+----
+{ name: "ann", id: identities.key(1) }
+{ name: "ann", id: identities.key(2) }
+{ name: "bo", id: identities.key(3) }
+{ name: "bo", id: identities.key(4) }
+# A comma in from is shorthand for a second from.
+query rowsort
+  from u in users from i in u.<identities.user select { name: u.name, id: key i }
+----
+{ name: "ann", id: identities.key(1) }
+{ name: "ann", id: identities.key(2) }
+{ name: "bo", id: identities.key(3) }
+{ name: "bo", id: identities.key(4) }
+# Two independent generators range over the product.
+query rowsort
+  from a in users, b in users where a.name < b.name select { a: a.name, b: b.name }
+----
+{ a: "ann", b: "bo" }
+{ a: "ann", b: "cy" }
+{ a: "bo", b: "cy" }
+query
+  count(x for x in (from a in users, b in identities select { a: key a, b: key b }))
+----
+12
+# A where clause may sit between generators and see the earlier binders.
+query rowsort
+  from u in users where u.name != "ann" from i in identities where i.user == key u select key i
+----
+identities.key(3)
+identities.key(4)
+# Several where clauses are a conjunction.
+query rowsort
+  from f in follows where f.src != users.key(1) where f.dst == users.key(2) select f.src
+----
+users.key(3)
+query rowsort
+  from u in users where false select u
+----
+
+query rowsort
+  from u in users where true select u.name
+----
+"ann"
+"bo"
+"cy"
+# A generator over an empty set leaves no binding.
+query rowsort
+  from u in users, d in u.<phones.owner where u.name == "bo" select d
+----
+
+# A generator may depend on the binders of an enclosing expression.
+query rowsort
+  from u in users select { name: u.name, n: count(f for f in (from f in follows where f.dst == key u select f)) }
+----
+{ name: "ann", n: 0 }
+{ name: "bo", n: 2 }
+{ name: "cy", n: 1 }
+error Invalid
+  from u in users select i
+error Invalid
+  from u in users where u.name select u

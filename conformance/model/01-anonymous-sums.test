@@ -1,0 +1,30 @@
+# A result sum anonymous to a function is structural, its constructors are matched downstream with full exhaustiveness.
+schema
+  module test
+  type Login { id: Key logins } = Password { email: Text } | Social { sub: Text, provider: Text }
+  relation logins : Login key id generate sequence
+  fn shapes () -> Set (Local { email: Text } | Remote { provider: Text }) =
+    from l in logins select match l
+      | Password p -> Local { email: p.email }
+      | Social s -> Remote { provider: s.provider }
+  fn same () -> Set (Remote { provider: Text } | Local { email: Text }) = shapes()
+run
+  insert logins.Password { id: logins.key(1), email: "a@x" }
+  insert logins.Social { id: logins.key(2), sub: "s1", provider: "google" }
+  insert logins.Social { id: logins.key(3), sub: "s2", provider: "google" }
+query
+  from r in shapes().Remote select r.provider
+----
+"google"
+query rowsort
+  from s in same() select match s | Local l -> l.email | Remote r -> r.provider
+----
+"a@x"
+"google"
+error Invalid
+  from s in shapes() select match s | Local l -> l.email
+query rowsort
+  shapes()
+----
+Local { email: "a@x" }
+Remote { provider: "google" }

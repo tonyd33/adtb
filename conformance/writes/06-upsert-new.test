@@ -1,0 +1,27 @@
+# In an upsert's else branch new is the row the insert proposed, with fills applied, so a bulk upsert reads each incoming row.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users, note: Text }
+    = Google { gid: Text }
+  relation identities : Identity key id generate sequence
+    unique (gid) in Google
+    default note = "dflt"
+  type Import = { id: Key imports, user: Key users, sub: Text }
+  relation imports : Import key id generate sequence
+run
+  insert users from (from k in [1, 2, 3] select { id: users.key(k), name: "u" ++ print(k) })
+  insert identities.Google { id: identities.key(1), user: users.key(1), note: "orig", gid: "s-bo" }
+  insert imports from ([{ id: imports.key(1), user: users.key(2), sub: "s-bo" },
+                        { id: imports.key(2), user: users.key(3), sub: "s-cy" }])
+run
+  insert identities.Google from (
+    from x in imports select { id: identities.key(10 + value(key x)), user: x.user, gid: x.sub })
+  unless conflict on (gid) in Google
+  else update old set Google { old with user: new.user, note: new.note }
+query
+  from g in identities.Google select g
+----
+Google { id: identities.key(1), user: users.key(2), note: "dflt", gid: "s-bo" }
+Google { id: identities.key(12), user: users.key(3), note: "dflt", gid: "s-cy" }

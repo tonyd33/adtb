@@ -1,0 +1,52 @@
+# Text orders by code point, lexicographically; locale order is the separate SortKey of collate.
+schema
+  module test
+  type Person = { id: Key people, name: Text }
+  relation people : Person key id generate sequence
+run
+  insert people { id: people.key(1), name: "a" }
+  insert people { id: people.key(2), name: "B" }
+  insert people { id: people.key(3), name: "é" }
+  insert people { id: people.key(4), name: "ab" }
+query
+  from p in people select p.name
+----
+"B"
+"a"
+"ab"
+"é"
+query
+  "Z" < "a"
+----
+true
+query
+  "z" < "é"
+----
+true
+query
+  "a" < "ab"
+----
+true
+query
+  "" < "a"
+----
+true
+query
+  collate("a", "und@cldr-49") < collate("B", "und@cldr-49")
+----
+true
+query
+  collate("x", "und@cldr-49") == collate("x", "und@cldr-49")
+----
+true
+query
+  from p in people where p.name == "a" or p.name == "B" select p order by collate(p.name, "und@cldr-49")
+----
+Person { id: people.key(1), name: "a" }
+Person { id: people.key(2), name: "B" }
+error Invalid
+  collate("a", "und@cldr-49") == "a"
+error Invalid
+  length("abc")
+error Invalid
+  len("abc")

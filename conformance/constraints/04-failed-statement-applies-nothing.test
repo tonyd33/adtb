@@ -1,0 +1,25 @@
+# A statement that leaves any constraint violated fails and none of its change set is applied.
+schema
+  module test
+  type Item = { id: Key items, n: I64 }
+  relation items : Item key id generate sequence
+  type Log = { id: Key logs, text: Text }
+  relation logs : Log key id generate sequence
+  constraint small = from i in items where i.n > 10 select i
+run
+  insert items { id: items.key(1), n: 1 }
+  insert logs { id: logs.key(1), text: "first" }
+error Violated
+  transact
+    insert logs { id: logs.key(2), text: "second" }
+    update i in items set Item { i with n: 2 }
+    delete l in logs where key l == logs.key(1)
+    insert items { id: items.key(2), n: 11 }
+query
+  from l in logs select l.text
+----
+"first"
+query
+  from i in items select { id: key i, n: i.n }
+----
+{ id: items.key(1), n: 1 }

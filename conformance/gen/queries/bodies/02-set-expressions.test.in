@@ -1,0 +1,65 @@
+# Any Set-valued expression can be ranged over, and q.C selects a query-built sum by constructor.
+@SCHEMA@
+@RUN@
+query rowsort
+  from n in (from u in users select u.name) select n
+----
+"ann"
+"bo"
+"cy"
+query rowsort
+  from i in ids_of(users.key(1)) select key i
+----
+identities.key(1)
+identities.key(2)
+query rowsort
+  from u in users, i in u.<identities.user where u.name == "ann" select key i
+----
+identities.key(1)
+identities.key(2)
+query rowsort
+  from n in names(from u in users where u.name != "bo" select u) select n
+----
+"ann"
+"cy"
+query rowsort
+  from r in (from u in users select { name: u.name, ids: u.<identities.user }), i in r.ids select { name: r.name, id: key i }
+----
+{ name: "ann", id: identities.key(1) }
+{ name: "ann", id: identities.key(2) }
+{ name: "bo", id: identities.key(3) }
+{ name: "bo", id: identities.key(4) }
+query rowsort
+  from l in sign_ins().Remote select l.provider
+----
+"apple"
+"google"
+query rowsort
+  from l in sign_ins().Local select l.email
+----
+"ann@example.com"
+query rowsort
+  from l in sign_ins().(Local | Remote) select l.id
+----
+identities.key(1)
+identities.key(2)
+identities.key(3)
+identities.key(4)
+# Constructor selection on a set of value-level sum values.
+query rowsort
+  from s in (from p in parcels select p.state).Shipped select s.via
+----
+Courier { name: "dhl" }
+Mail { tracking: "t-3" }
+query rowsort
+  from s in (from p in parcels select p.state).Pending select s
+----
+Pending
+# A query-built sum selected by a constructor it does not have is refused.
+error Invalid
+  from l in sign_ins().Elsewhere select l
+# No form takes the one element out of a set.
+error Invalid
+  (from u in users where u.name == "ann" select u).name
+error Invalid
+  from i in identities where i.user == (from u in users where u.name == "ann" select key u) select i

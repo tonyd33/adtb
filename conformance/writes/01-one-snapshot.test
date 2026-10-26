@@ -1,0 +1,43 @@
+# Every write of a statement reads the statement's pre-state, whatever the order the writes are written in.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+  insert users { id: users.key(2), name: "b" }
+run
+  (insert users { id: users.key(3), name: "c" },
+   update u in users set User { u with name: u.name ++ "!" })
+query
+  from u in users select u.name
+----
+"a!"
+"b!"
+"c"
+run
+  (update u in users set User { u with name: u.name ++ "?" },
+   insert users { id: users.key(4), name: "d" })
+query
+  from u in users select u.name
+----
+"a!?"
+"b!?"
+"c?"
+"d"
+run
+  (delete u in users where u.name == "e",
+   insert users { id: users.key(5), name: "e" })
+query
+  from u in users where u.name == "e" select key u
+----
+users.key(5)
+run
+  transact
+    insert users { id: users.key(6), name: "f" }
+    insert users from (from u in users where u.name == "f" select { id: users.key(7), name: "g" })
+    delete u in users where key u == users.key(6)
+query
+  from u in users where u.name == "f" or u.name == "g" select u.name
+----
+"f"

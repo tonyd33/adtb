@@ -1,0 +1,47 @@
+# Each integer type holds the two's-complement range of its width; a literal outside it is refused.
+schema
+  module test
+  fn i8_of (x: I8) -> I8 = x
+  fn i16_of (x: I16) -> I16 = x
+  fn i32_of (x: I32) -> I32 = x
+  fn i64_of (x: I64) -> I64 = x
+query
+  i8_of(127)
+----
+127
+error Invalid
+  i8_of(128)
+query
+  i16_of(32767)
+----
+32767
+error Invalid
+  i16_of(32768)
+query
+  i32_of(2147483647)
+----
+2147483647
+error Invalid
+  i32_of(2147483648)
+query
+  i64_of(9223372036854775807)
+----
+9223372036854775807
+error Invalid
+  i64_of(9223372036854775808)
+query
+  9223372036854775807
+----
+9223372036854775807
+error Invalid
+  9223372036854775808
+query
+  -i8_of(127) - 1
+----
+-128
+query
+  i64_of(007)
+----
+7
+error Invalid
+  i8_of(1.5)

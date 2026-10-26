@@ -1,0 +1,38 @@
+# fail rejects the statement with a user error carrying its text; nothing of the statement is applied, and try does not catch it.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+error UserError
+  (insert users { id: users.key(2), name: "b" }, fail "no")
+error UserError
+  transact
+    insert users { id: users.key(2), name: "b" }
+    fail "no" ++ " way"
+error UserError
+  transact fail "x"
+error UserError
+  transact
+    let x = try(1)
+    fail "stop"
+    return x
+error UserError
+  if true then fail "yes" else skip
+error UserError
+  match users.key(1)
+    | User u -> (update u set User { u with name: "z" }, fail "no")
+error Invalid
+  fail 1
+query
+  from u in users select u
+----
+User { id: users.key(1), name: "a" }
+run
+  if false then fail "no" else insert users { id: users.key(2), name: "b" }
+query
+  from u in users select u.name
+----
+"a"
+"b"

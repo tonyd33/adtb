@@ -1,0 +1,62 @@
+# An ordered sum orders by constructor declaration order, then header fields, then the constructor's fields, left to right.
+schema
+  module test
+  type Stage ordered = Draft | Sent { at: I64 } | Paid { at: I64, ref: Text }
+  type H ordered { h: I64 } = A { x: I64, y: Text } | B
+  type Doc = { id: I64, stage: Stage }
+  relation docs : Doc key id
+query
+  Draft < Sent { at: 99 }
+----
+true
+query
+  Sent { at: 99 } < Paid { at: 0, ref: "a" }
+----
+true
+query
+  Sent { at: 1 } < Sent { at: 2 }
+----
+true
+query
+  Paid { at: 1, ref: "z" } < Paid { at: 2, ref: "a" }
+----
+true
+query
+  Paid { at: 1, ref: "a" } < Paid { at: 1, ref: "b" }
+----
+true
+query
+  A { h: 9, x: 9, y: "z" } < B { h: 0 }
+----
+true
+query
+  A { h: 1, x: 9, y: "z" } < A { h: 2, x: 0, y: "a" }
+----
+true
+query
+  A { h: 1, x: 1, y: "b" } > A { h: 1, x: 1, y: "a" }
+----
+true
+run
+  insert docs { id: 1, stage: Paid { at: 0, ref: "a" } }
+  insert docs { id: 2, stage: Draft }
+  insert docs { id: 3, stage: Sent { at: 5 } }
+  insert docs { id: 4, stage: Sent { at: 2 } }
+query
+  from d in docs select d.stage
+----
+Draft
+Sent { at: 2 }
+Sent { at: 5 }
+Paid { at: 0, ref: "a" }
+query
+  from d in docs select d order by d.stage desc
+----
+Doc { id: 1, stage: Paid { at: 0, ref: "a" } }
+Doc { id: 3, stage: Sent { at: 5 } }
+Doc { id: 4, stage: Sent { at: 2 } }
+Doc { id: 2, stage: Draft }
+query
+  min(d.stage for d in docs)
+----
+Some { value: Draft }

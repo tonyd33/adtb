@@ -1,0 +1,47 @@
+# A reference field holds only the key of an existing row of its constructor set, checked at the end of the statement.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence index (user)
+  type Reset = { id: Key resets, identity: Key identities.EmailPass }
+  relation resets : Reset key id generate sequence index (identity)
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert identities.EmailPass { id: identities.key(1), user: users.key(1), email: "a@x" }
+  insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g" }
+error Violated
+  insert identities.Google { id: identities.key(3), user: users.key(9), gid: "g9" }
+# the target and its referrer in one statement
+run
+  transact
+    insert users { id: users.key(2), name: "bo" }
+    insert identities.Google { id: identities.key(3), user: users.key(2), gid: "g2" }
+run
+  insert resets from (from e in identities.EmailPass select Reset { id: resets.key(1), identity: key e })
+# a key typed by the whole relation is not a key of its EmailPass rows
+error Invalid
+  insert resets { id: resets.key(2), identity: identities.key(1) }
+# deleting a target that a restrict reference still holds
+error Violated
+  delete u in users where key u == users.key(2)
+run
+  transact
+    delete i in identities where i.user == users.key(2)
+    delete u in users where key u == users.key(2)
+# repointing a referrer at a row that does not exist
+error Violated
+  update i in identities where key i == identities.key(2) set match i
+    | EmailPass e -> e
+    | Google g -> Google { g with user: users.key(7) }
+query
+  from u in users select u.name
+----
+"ann"
+query
+  from r in resets select value(key r)
+----
+1

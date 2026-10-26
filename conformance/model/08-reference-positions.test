@@ -1,0 +1,44 @@
+# A reference is a direct field of type Key r.S or Option (Key r.S); anonymous result records may hold references.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Team = { id: Key teams, name: Text }
+  relation teams : Team key id generate sequence
+  type Doc = { id: Key docs, title: Text }
+  relation docs : Doc key id generate sequence
+  type Ownership { doc: Key docs } = Owned  { user: Key users }
+                                   | Shared { team: Key teams }
+  relation ownerships : Ownership key doc
+  type Session = { id: Key sessions, owner: Option (Key users) }
+  relation sessions : Session key id generate sequence
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert teams { id: teams.key(1), name: "core" }
+  insert docs { id: docs.key(1), title: "a" }
+  insert docs { id: docs.key(2), title: "b" }
+  insert ownerships.Owned { doc: docs.key(1), user: users.key(1) }
+  insert ownerships.Shared { doc: docs.key(2), team: teams.key(1) }
+  insert sessions { id: sessions.key(1), owner: Some { value: users.key(1) } }
+  insert sessions { id: sessions.key(2), owner: None }
+query rowsort
+  from o in ownerships select match o | Owned w -> w.user.name | Shared s -> s.team.name
+----
+"ann"
+"core"
+query rowsort
+  from o in ownerships select { doc: o.doc, title: o.doc.title }
+----
+{ doc: docs.key(1), title: "a" }
+{ doc: docs.key(2), title: "b" }
+error Violated
+  insert ownerships.Owned { doc: docs.key(3), user: users.key(1) }
+error Violated
+  insert sessions { id: sessions.key(3), owner: Some { value: users.key(5) } }
+query
+  from s in sessions select match s.owner | None -> "-" | Some u -> u.value.name
+----
+"-"
+"ann"
+error KeyViolation
+  insert ownerships.Shared { doc: docs.key(1), team: teams.key(1) }

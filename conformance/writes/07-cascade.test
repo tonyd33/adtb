@@ -1,0 +1,45 @@
+# cascade deletes every referrer of a deleted row in the same change set, transitively, and a row deleted both explicitly and by cascade is deleted once.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Post = { id: Key posts, author: Key users on delete cascade, body: Text }
+  relation posts : Post key id generate sequence
+  type Comment = { id: Key comments, post: Key posts on delete cascade, body: Text }
+  relation comments : Comment key id generate sequence
+  type Like = { id: Key likes, comment: Key comments on delete restrict }
+  relation likes : Like key id generate sequence
+run
+  insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
+  insert posts from ([{ id: posts.key(1), author: users.key(1), body: "p1" },
+                      { id: posts.key(2), author: users.key(1), body: "p2" },
+                      { id: posts.key(3), author: users.key(2), body: "p3" }])
+  insert comments from ([{ id: comments.key(1), post: posts.key(1), body: "c1" },
+                         { id: comments.key(2), post: posts.key(3), body: "c3" }])
+  insert likes { id: likes.key(1), comment: comments.key(2) }
+run
+  (delete x in users where key x == users.key(1), delete p in posts where key p == posts.key(1))
+query
+  from p in posts select key p
+----
+posts.key(3)
+query
+  from c in comments select key c
+----
+comments.key(2)
+error Violated
+  delete x in users where key x == users.key(2)
+query
+  from p in posts select key p
+----
+posts.key(3)
+run
+  (delete l in likes, delete x in users where key x == users.key(2))
+query
+  count(p for p in posts)
+----
+0
+query
+  count(c for c in comments)
+----
+0

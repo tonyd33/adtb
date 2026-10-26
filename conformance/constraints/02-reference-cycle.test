@@ -1,0 +1,28 @@
+# Rows that reference each other are created in one statement.
+schema
+  module test
+  type Team   = { id: Key teams, name: Text, lead: Key members }
+  type Member = { id: Key members, team: Key teams }
+  relation teams   : Team key id generate sequence index (lead)
+  relation members : Member key id generate sequence index (team)
+error Violated
+  insert teams { id: teams.key(1), name: "core", lead: members.key(9) }
+run
+  transact
+    let t = insert teams { id: teams.key(1), name: "core", lead: members.key(9) }
+    let m = insert members { id: members.key(9), team: key t }
+    return key t
+query
+  from t in teams select { name: t.name, lead: t.lead }
+----
+{ lead: members.key(9), name: "core" }
+error Violated
+  delete m in members
+run
+  transact
+    delete m in members
+    delete t in teams
+query
+  count(t for t in teams)
+----
+0

@@ -1,0 +1,56 @@
+# r.C is the rows of one constructor, r.(C | D) the union of several, and r is the disjoint union of its constructor relations.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  set OAuth of identities = Google | Apple
+run
+  insert identities.EmailPass { id: identities.key(1), user: "ann", email: "a@x" }
+  insert identities.Google { id: identities.key(2), user: "ann", gid: "g" }
+  insert identities.Apple { id: identities.key(3), user: "bo", sub: "s" }
+  insert identities.Google { id: identities.key(4), user: "bo", gid: "h" }
+query
+  from i in identities.Google select key i
+----
+identities.key(2)
+identities.key(4)
+query
+  from i in identities.(Google | Apple) select key i
+----
+identities.key(2)
+identities.key(3)
+identities.key(4)
+query
+  from i in identities.OAuth select key i
+----
+identities.key(2)
+identities.key(3)
+identities.key(4)
+query
+  (from i in identities.(Apple | Google) select i) == (from i in identities.OAuth select i)
+----
+true
+query
+  ((from i in identities.EmailPass select i) union (from i in identities.OAuth select i)) == (from i in identities select i)
+----
+true
+query
+  from i in identities.OAuth select match i | Google g -> g.gid | Apple a -> a.sub
+----
+"g"
+"h"
+"s"
+query
+  from i in identities.OAuth select i.user
+----
+"ann"
+"bo"
+error Invalid
+  from i in identities.Github select key i
+error Invalid
+  from i in identities.(not EmailPass) select key i
+error Invalid
+  from i in identities.OAuth select match i | Google g -> g.gid | Apple a -> a.sub | EmailPass e -> e.email

@@ -1,0 +1,91 @@
+# Try evaluates its operand and gives Ok of its value or Err of the fault it reaches, and never faults.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Raw = { id: Key raws, n: I64, f: F64, t: Text }
+  relation users : User key id generate sequence
+  relation raws : Raw key id generate sequence
+run
+  insert users from [User { id: users.key(1), name: "ann" }]
+  insert raws from [Raw { id: raws.key(1), n: 5, f: 1.5, t: "x" },
+                    Raw { id: raws.key(2), n: 3000000000, f: 0.0, t: "y" },
+                    Raw { id: raws.key(3), n: 0, f: 2.0, t: "z" }]
+# Per row: the faulting row gives Err and the statement continues.
+query rowsort
+  from r in raws where r.n > 0 select { line: key r, n: try i32(r.n) }
+----
+{ line: raws.key(1), n: Ok { value: 5 } }
+{ line: raws.key(2), n: Err { error: OutOfRange } }
+# Each fault kind is a constructor of Fault.
+query
+  from r in raws where r.id == raws.key(3) select try (10 / r.n)
+----
+Err { error: DivisionByZero }
+query
+  from r in raws where r.id == raws.key(3) select try (10 % r.n)
+----
+Err { error: DivisionByZero }
+query
+  from r in raws where r.id == raws.key(2) select try (r.n * r.n * r.n)
+----
+Err { error: ArithmeticOverflow }
+query
+  from r in raws where r.id == raws.key(2) select try i64(r.f / r.f, Down)
+----
+Err { error: NotFinite }
+query
+  from r in raws where r.id == raws.key(2) select try i64(1.0 / r.f, Down)
+----
+Err { error: NotFinite }
+query
+  from r in raws where r.id == raws.key(1) select try uuid(r.t)
+----
+Err { error: InvalidText }
+query
+  from r in raws where r.id == raws.key(1) select try span(r.n, 1)
+----
+Err { error: InvalidSpan }
+query
+  from r in raws where r.id == raws.key(1) select try count(x for x in (top 0 - r.n by key u (from u in users select key u)))
+----
+Err { error: NegativeCount }
+query
+  from r in raws where r.id == raws.key(1) select try users.key(r.n).name
+----
+Err { error: NoSuchRow }
+query
+  from r in raws where r.id == raws.key(1) select try users.key(r.n - 4).name
+----
+Ok { value: "ann" }
+# Within one binding the fault reported is the first reached, left to right.
+query
+  from r in raws where r.id == raws.key(3) select try (10 / r.n + i64(i32(r.n + 3000000000)))
+----
+Err { error: DivisionByZero }
+query
+  from r in raws where r.id == raws.key(3) select try (i64(i32(r.n + 3000000000)) + 10 / r.n)
+----
+Err { error: OutOfRange }
+# Evaluation of the operand stops at the fault; the enclosing expression continues.
+query
+  from r in raws where r.id == raws.key(3) select { a: try (10 / r.n), b: r.n + 1 }
+----
+{ a: Err { error: DivisionByZero }, b: 1 }
+query
+  from r in raws where r.id == raws.key(3)
+  select match try (10 / r.n) | Ok { value: v } -> v | Err { error: e } -> -1
+----
+-1
+# Try over an operand that does not fault is Ok.
+query
+  try (1 + 2)
+----
+Ok { value: 3 }
+# Try over several bindings, one of which faults.
+query
+  try sum(10 / r.n for r in raws where r.n < 10)
+----
+Err { error: DivisionByZero }
+# Try has type Result T Fault.
+error Invalid
+  from r in raws select (try r.n) + 1

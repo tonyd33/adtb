@@ -1,0 +1,42 @@
+# The new value is a whole constructor value of the row's sum; a field holding a value-level sum is replaced whole or rebuilt by a match.
+schema
+  module test
+  type Address = US { zip: Text, street: Text } | Intl { country: Text, postcode: Text }
+  type Customer = { id: Key customers, name: Text, address: Address }
+  relation customers : Customer key id generate sequence
+run
+  insert customers from ([{ id: customers.key(1), name: "c", address: US { zip: "10001", street: "s" } },
+                          { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }])
+run
+  update c in customers
+  set Customer { c with address: match c.address
+                                   | US a   -> US { a with zip: "02139" }
+                                   | Intl i -> i }
+query
+  from c in customers select c
+----
+Customer { id: customers.key(1), name: "c", address: US { zip: "02139", street: "s" } }
+Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }
+run
+  update c in customers where c.id == customers.key(1) set Customer { c with address: Intl { country: "us", postcode: "x" } }
+query
+  from c in customers where c.id == customers.key(1) select c.address
+----
+Intl { country: "us", postcode: "x" }
+error Invalid
+  update c in customers set Customer { c with address.zip: "1" }
+error Invalid
+  update c in customers set { name: "z" }
+error Invalid
+  update c in customers set 1
+error Invalid
+  update c in customers set Customer { c with address: "x" }
+error Invalid
+  update c in customers set US { zip: "1", street: "2" }
+error Invalid
+  update c in (from c in customers select { name: c.name }) set Customer { c with name: "z" }
+query
+  from c in customers select c.name
+----
+"c"
+"d"

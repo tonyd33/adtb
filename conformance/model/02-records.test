@@ -1,0 +1,32 @@
+# A record type is a one-constructor sum whose constructor is named after the type.
+schema
+  module test
+  type Point = { id: Key points, x: I64, y: I64 }
+  relation points : Point key id generate sequence
+run
+  insert points { id: points.key(1), x: 1, y: 2 }
+  insert points.Point { id: points.key(2), x: 3, y: 4 }
+query
+  from p in points select p
+----
+Point { id: points.key(1), x: 1, y: 2 }
+Point { id: points.key(2), x: 3, y: 4 }
+query
+  from p in points.Point where p.x == 3 select p.y
+----
+4
+query
+  from p in points select match p | Point q -> q.x + q.y
+----
+3
+7
+query
+  Point { id: points.key(1), x: 1, y: 2 } == Point.Point { id: points.key(1), x: 1, y: 2 }
+----
+true
+query
+  from p in points where p == Point { id: points.key(1), x: 1, y: 2 } select p.y
+----
+2
+error Invalid
+  from p in points select match p | Other q -> q.x

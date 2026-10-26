@@ -1,0 +1,45 @@
+# An upsert must name a declared key or unique whose constructor set holds the insert's target, and must have an else branch.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+    unique (gid) in Google
+    unique (email) in EmailPass
+run
+  insert users { id: users.key(1), name: "a" }
+error Invalid
+  insert identities.Google { user: users.key(1), gid: "g" }
+  unless conflict on (user) in Google
+  else update old set old
+error Invalid
+  insert identities.EmailPass { user: users.key(1), email: "e", hash: "h" }
+  unless conflict on (gid) in Google
+  else update old set old
+error Invalid
+  insert identities.Google { user: users.key(1), gid: "g" }
+  unless conflict on (gid) in Apple
+  else update old set old
+error Invalid
+  insert identities.Google { user: users.key(1), gid: "g" }
+  unless conflict on (gid) in Google
+error Invalid
+  insert identities.Google { user: users.key(1), gid: "g" }
+  unless conflict on (gid) in Google
+  else update old set Google { old with gid: old.sub }
+error Invalid
+  insert users { id: users.key(1), name: "b" }
+  unless conflict on (name)
+  else update old set old
+error Invalid
+  insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g" }
+  unless conflict on key
+  else update old set EmailPass { old with email: "x" }
+query
+  count(i for i in identities)
+----
+0

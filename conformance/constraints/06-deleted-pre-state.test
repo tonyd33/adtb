@@ -1,0 +1,19 @@
+# deleted(R) holds a deleted or updated row as it was in the pre-state.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  constraint keep_kept = from o in deleted(users) where o.name == "keep" select o
+run
+  insert users { id: users.key(1), name: "keep" }
+  insert users { id: users.key(2), name: "x" }
+error Violated
+  update u in users where key u == users.key(1) set User { u with name: "y" }
+error Violated
+  delete u in users where key u == users.key(1)
+run
+  update u in users where key u == users.key(2) set User { u with name: "keep" }
+query
+  from u in users select u.name
+----
+"keep"

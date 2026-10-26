@@ -1,0 +1,50 @@
+# A block's options do not change its effect in one serial session; read_only refuses a write, and read_only with durability is refused.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+run
+  transact retry 3
+    insert users { id: users.key(1), name: "a" }
+run
+  transact durability quorum
+    insert users { id: users.key(2), name: "b" }
+run
+  transact durability local
+    insert users { id: users.key(3), name: "c" }
+run
+  transact retry 2 durability local
+    insert users { id: users.key(4), name: "d" }
+query
+  from u in users select u.name
+----
+"a"
+"b"
+"c"
+"d"
+query
+  transact read_only
+    return count(u for u in users)
+----
+4
+query
+  transact read_only deferrable
+    return count(u for u in users)
+----
+4
+error Invalid
+  transact read_only
+    insert users { id: users.key(5), name: "e" }
+error Invalid
+  transact read_only
+    let x = delete u in users where key u == users.key(1)
+error Invalid
+  transact read_only durability local
+    return 1
+error Invalid
+  transact durability quorum read_only
+    return 1
+query
+  count(u for u in users)
+----
+4

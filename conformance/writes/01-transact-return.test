@@ -1,0 +1,37 @@
+# A block returns the value of its last return, evaluated against the snapshot, and returns the unit value without one.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+query
+  transact
+    return 1 + 1
+----
+2
+query
+  transact
+    let x = from u in users select u.name
+    return x
+----
+"a"
+query
+  transact
+    let x = from u in users select u
+    return from u in x select key u
+----
+users.key(1)
+query
+  transact
+    skip
+----
+{}
+error Invalid
+  transact
+    return 1
+    return 2
+query
+  from u in users select u
+----
+User { id: users.key(1), name: "a" }

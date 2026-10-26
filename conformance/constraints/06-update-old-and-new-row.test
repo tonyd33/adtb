@@ -1,0 +1,34 @@
+# An update appears as its old row in deleted and its new row in inserted with one key; a header field read on the sum stays fixed.
+schema
+  module test
+  type Account { id: Key accounts, owner: Text, opened: I64 }
+    = Open
+    | Closed { closed: I64 }
+  relation accounts : Account key id generate sequence
+  constraint opened_fixed =
+    from o in deleted(accounts), n in inserted(accounts)
+    where key o == key n and o.opened != n.opened
+    select n
+run
+  insert accounts.Open { id: accounts.key(1), owner: "u", opened: 1 }
+run
+  update a in accounts set match a
+    | Open o -> Open { o with owner: "v" }
+    | Closed c -> c
+error Violated
+  update a in accounts set match a
+    | Open o -> Open { o with opened: 2 }
+    | Closed c -> c
+error Violated
+  update a in accounts.Open set Closed { opened: 3, closed: 4 }
+run
+  update a in accounts.Open set Closed { closed: 4 }
+# a delete and a new insert under another key is no update
+run
+  transact
+    delete a in accounts
+    insert accounts.Open { id: accounts.key(2), owner: "w", opened: 8 }
+query
+  from a in accounts select { id: key a, opened: a.opened, owner: a.owner }
+----
+{ id: accounts.key(2), opened: 8, owner: "w" }

@@ -1,0 +1,78 @@
+# Top n by key p is the set of the first n elements of its comprehension in a determinate order, at any depth.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Post = { id: Key posts, author: Key users, at: I64, title: Text }
+  relation users : User key id generate sequence
+  relation posts : Post key id generate sequence
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" },
+                     User { id: users.key(3), name: "cy" }]
+  insert posts from [Post { id: posts.key(1), author: users.key(1), at: 10, title: "a" },
+                     Post { id: posts.key(2), author: users.key(1), at: 20, title: "b" },
+                     Post { id: posts.key(3), author: users.key(2), at: 30, title: "c" },
+                     Post { id: posts.key(4), author: users.key(1), at: 40, title: "d" },
+                     Post { id: posts.key(5), author: users.key(1), at: 40, title: "e" }]
+# Per row of an enclosing query; fewer than n gives all, none gives the empty set.
+query rowsort
+  from u in users
+  select { user: u.name,
+           latest: from p in (top 3 by (p.at desc, key p)
+                                (from p in posts where p.author == key u select p))
+                   select p.id }
+----
+{ user: "ann", latest: [posts.key(2), posts.key(4), posts.key(5)] }
+{ user: "bo", latest: [posts.key(3)] }
+{ user: "cy", latest: [] }
+# Ties on the first key are broken by the next.
+query
+  from p in (top 1 by (p.at desc, key p) (from p in posts select p)) select p.id
+----
+posts.key(4)
+query
+  from p in (top 1 by (p.at desc, key p desc) (from p in posts select p)) select p.id
+----
+posts.key(5)
+query
+  top 2 by key p (from p in posts select key p)
+----
+posts.key(1)
+posts.key(2)
+query
+  top 2 by key p desc (from p in posts select key p)
+----
+posts.key(4)
+posts.key(5)
+# Top 0 is empty.
+query
+  top 0 by key p (from p in posts select key p)
+----
+
+# The count is evaluated in the enclosing scope.
+query rowsort
+  from u in users
+  select { user: u.name, n: count(x for x in (top count(p for p in posts where p.author == key u) by key p
+                                                 (from p in posts select key p))) }
+----
+{ user: "ann", n: 4 }
+{ user: "bo", n: 1 }
+{ user: "cy", n: 0 }
+# Top is a set: an enclosing order by orders the final result.
+query
+  from p in (top 3 by (p.at, key p) (from p in posts select p)) select p order by p.at desc
+----
+Post { id: posts.key(3), author: users.key(2), at: 30, title: "c" }
+Post { id: posts.key(2), author: users.key(1), at: 20, title: "b" }
+Post { id: posts.key(1), author: users.key(1), at: 10, title: "a" }
+# A negative count faults.
+error Faulted
+  top 0 - 1 by key p (from p in posts select key p)
+# The keys are written over the select scope of the operand and must be determinate.
+error Invalid
+  top 2 by p.at (from p in posts select p)
+error Invalid
+  top 2 by p.at (from p in posts select p.id)
+# The operand is a parenthesised comprehension.
+error Invalid
+  top 2 by key p (posts)

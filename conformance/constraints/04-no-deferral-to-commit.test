@@ -1,0 +1,27 @@
+# A statement that leaves a constraint violated fails even when a later statement would repair it; the repair belongs in the same statement.
+schema
+  module test
+  type Entry = { id: Key entries, memo: Text }
+  relation entries : Entry key id generate sequence
+  type Line = { id: Key lines, entry: Key entries, amount: I64 }
+  relation lines : Line key id generate sequence index (entry)
+  constraint balanced =
+    from e in entries
+    where sum(l.amount for l in lines where l.entry == key e) != 0
+    select e
+run
+  insert entries { id: entries.key(1), memo: "m" }
+error Violated
+  insert lines { id: lines.key(1), entry: entries.key(1), amount: 5 }
+query
+  count(l for l in lines)
+----
+0
+run
+  (insert lines { id: lines.key(1), entry: entries.key(1), amount: 5 },
+   insert lines { id: lines.key(2), entry: entries.key(1), amount: -5 })
+query
+  from l in lines select l.amount
+----
+-5
+5

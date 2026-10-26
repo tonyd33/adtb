@@ -1,0 +1,23 @@
+run
+  transact
+    insert users { id: users.key(1), name: "ann" }
+    insert users { id: users.key(2), name: "bo" }
+    insert users { id: users.key(3), name: "cy" }
+    insert identities.EmailPass { id: identities.key(1), user: users.key(1), email: "ann@example.com", hash: bytes("h1") }
+    insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g-ann" }
+    insert identities.Google { id: identities.key(3), user: users.key(2), gid: "root" }
+    insert identities.Apple { id: identities.key(4), user: users.key(2), sub: "a-bo" }
+    insert phones { id: phones.key(1), owner: users.key(1), seen: 10 }
+    insert phones { id: phones.key(2), owner: users.key(1), seen: 20 }
+    insert follows { src: users.key(1), dst: users.key(2) }
+    insert follows { src: users.key(2), dst: users.key(3) }
+    insert follows { src: users.key(3), dst: users.key(2) }
+    insert employees { id: employees.key(1), name: "boss", manager: None }
+    insert employees { id: employees.key(2), name: "w", manager: Some { value: employees.key(1) } }
+    insert sessions { id: sessions.key(1), owner: Some { value: users.key(1) } }
+    insert sessions { id: sessions.key(2), owner: None }
+    insert parcels { id: parcels.key(1), state: Pending, code: "p1" }
+    insert parcels { id: parcels.key(2), state: Shipped { via: Courier { name: "dhl" } }, code: "p2" }
+    insert parcels { id: parcels.key(3), state: Shipped { via: Mail { tracking: "t-3" } }, code: "p3" }
+run
+  insert resets from (from e in identities.EmailPass select Reset { id: resets.key(1), identity: key e })

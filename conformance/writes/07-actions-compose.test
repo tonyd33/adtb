@@ -1,0 +1,42 @@
+# A row reached by several actions takes one new value: a retag with the clear fields its new constructor keeps set to None, and a cascade deletes it whatever else reaches it.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity = { id: Key identities, gid: Text }
+  relation identities : Identity key id generate sequence
+  type Ticket { id: Key tickets, owner: Option (Key users) on delete clear }
+    = Open { identity: Key identities on delete retag Closed {} }
+    | Closed
+  relation tickets : Ticket key id generate sequence
+  type Login { id: Key logins, user: Key users on delete cascade }
+    = Active  { identity: Key identities on delete retag Revoked {} }
+    | Revoked
+  relation logins : Login key id generate sequence
+  type Card = { id: Key cards, holder: Option (Key users) on delete clear, backup: Key users on delete cascade }
+  relation cards : Card key id generate sequence
+run
+  insert users from (from k in [1, 2, 3] select { id: users.key(k), name: "u" ++ print(k) })
+  insert identities from (from k in [1, 2] select { id: identities.key(k), gid: "g" ++ print(k) })
+  insert tickets.Open { id: tickets.key(1), owner: Some { value: users.key(1) }, identity: identities.key(1) }
+  insert tickets.Open { id: tickets.key(2), owner: Some { value: users.key(2) }, identity: identities.key(1) }
+  insert logins.Active { id: logins.key(1), user: users.key(1), identity: identities.key(1) }
+  insert logins.Active { id: logins.key(2), user: users.key(2), identity: identities.key(1) }
+  insert cards { id: cards.key(1), holder: Some { value: users.key(3) }, backup: users.key(3) }
+run
+  (delete i in identities where key i == identities.key(1), delete x in users where key x == users.key(1))
+query
+  from t in tickets select t
+----
+Closed { id: tickets.key(1), owner: None }
+Closed { id: tickets.key(2), owner: Some { value: users.key(2) } }
+query
+  from s in logins select s
+----
+Revoked { id: logins.key(2), user: users.key(2) }
+run
+  delete x in users where key x == users.key(3)
+query
+  count(c for c in cards)
+----
+0

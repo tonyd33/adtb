@@ -1,0 +1,34 @@
+# prior(R) is R in the pre-state while unqualified names read the state after the change.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence index (name)
+  constraint name_not_reused =
+    from n in inserted(users), o in prior(users)
+    where o.name == n.name and key o != key n
+    select n
+  constraint name_kept =
+    from n in users, o in prior(users)
+    where key o == key n and o.name != n.name
+    select n
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert users { id: users.key(2), name: "bo" }
+error Violated
+  insert users { id: users.key(3), name: "ann" }
+error Violated
+  update u in users where key u == users.key(2) set User { u with name: "cy" }
+# a name freed and taken in one statement was held in the pre-state
+error Violated
+  transact
+    delete u in users where key u == users.key(1)
+    insert users { id: users.key(3), name: "ann" }
+run
+  transact
+    delete u in users where key u == users.key(1)
+    insert users { id: users.key(3), name: "dee" }
+query
+  from u in users select u.name
+----
+"bo"
+"dee"

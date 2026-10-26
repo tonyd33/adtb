@@ -1,0 +1,27 @@
+# A zoned date-time is its civil date-time and zone name: equal only when both are equal, and not ordered.
+schema
+  module test
+  fn dt (t: Text) -> Set DateTime = match DateTime.parse(t) | Some s -> [s.value] | None -> []
+  fn z (t: Text, zone: Text) -> Set ZonedDateTime = from d in dt(t) select zoned(d, zone, Clamp)
+query
+  from a in z("2026-07-01T12:00:00", "Europe/Lisbon"), b in z("2026-07-01T12:00:00", "Europe/Lisbon") select a == b
+----
+true
+query
+  from a in z("2026-07-01T12:00:00", "Europe/Lisbon"), b in z("2026-07-01T12:00:00", "Europe/London") select a == b
+----
+false
+query
+  from a in z("2026-07-01T12:00:00", "Europe/Lisbon"), b in z("2026-07-01T12:00:00", "Europe/London") select to_instant(a) == to_instant(b)
+----
+true
+query
+  from a in z("2026-07-01T12:00:00", "Europe/Lisbon") select a
+----
+2026-07-01T12:00:00.000000[Europe/Lisbon]
+error Invalid
+  from a in z("2026-07-01T12:00:00", "Europe/Lisbon"), b in z("2026-07-01T13:00:00", "Europe/Lisbon") select a < b
+query
+  from a in z("2026-07-01T12:00:00", "Europe/Lisbon"), b in z("2026-07-01T13:00:00", "Europe/Lisbon") select to_instant(a) < to_instant(b)
+----
+true

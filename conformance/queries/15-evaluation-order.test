@@ -1,0 +1,88 @@
+# An expression is evaluated only where its guards hold, so a guarded partial operand never faults.
+schema
+  module test
+  type Order = { id: Key orders, total: I64, qty: I64 }
+  type Pay { id: Key pays } = Card { n: I64 } | Cash { n: I64 }
+  relation orders : Order key id generate sequence
+  relation pays : Pay key id generate sequence
+  fn const (x: I64) -> I64 = 1
+  fn pick (b: Bool, x: I64) -> I64 = if b then x else 0
+run
+  insert orders from [Order { id: orders.key(1), total: 100, qty: 2 },
+                      Order { id: orders.key(2), total: 100, qty: 0 },
+                      Order { id: orders.key(3), total: 30, qty: 3 }]
+  insert pays from [Card { id: pays.key(1), n: 0 }, Cash { id: pays.key(2), n: 5 }]
+# and evaluates its right operand only when the left is true.
+query
+  from o in orders where o.qty > 0 and o.total / o.qty > 10 select o.id
+----
+orders.key(1)
+error Faulted
+  from o in orders where o.total / o.qty > 10 and o.qty > 0 select o.id
+# or evaluates its right operand only when the left is false.
+query
+  from o in orders where o.qty == 0 or o.total / o.qty > 20 select o.id
+----
+orders.key(1)
+orders.key(2)
+# A where, a generator's source or the select is evaluated only when every earlier where held.
+query
+  from o in orders where o.qty > 0 where o.total / o.qty > 10 select o.id
+----
+orders.key(1)
+query
+  from o in orders where o.qty > 0 select o.total / o.qty
+----
+10
+50
+query
+  from o in orders where o.qty > 0 from x in [o.total / o.qty] select x
+----
+10
+50
+error Faulted
+  from o in orders where o.total / o.qty > 10 where o.qty > 0 select o.id
+# An aggregate evaluates its where before its value, per binding.
+query
+  sum(o.total / o.qty for o in orders where o.qty > 0)
+----
+60
+# if evaluates only the branch its condition selects.
+query
+  from o in orders select if o.qty == 0 then 0 else o.total / o.qty
+----
+0
+10
+50
+# match evaluates an arm's expression only when the arm is chosen, and a guard only when its pattern matched.
+query
+  from p in pays select match p | Card c -> 0 | Cash c -> 10 / c.n
+----
+0
+2
+# A guard is evaluated when its pattern matched.
+error Faulted
+  from p in pays
+  select match p
+    | Card c if 10 / c.n > 1 -> 1
+    | Card _ -> 2
+    | Cash c -> 3
+# A guard is not evaluated when its pattern did not match.
+query
+  from p in pays
+  select match p
+    | Cash c if 10 / c.n > 1 -> 1
+    | Cash _ -> 2
+    | Card _ -> 3
+----
+1
+3
+# A call evaluates every argument before the body, whether or not the body uses it.
+error Faulted
+  from o in orders where o.id == orders.key(2) select const(o.total / o.qty)
+error Faulted
+  from o in orders where o.id == orders.key(2) select pick(false, o.total / o.qty)
+query
+  from o in orders where o.id == orders.key(1) select const(o.total / o.qty)
+----
+1

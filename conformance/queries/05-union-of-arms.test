@@ -1,0 +1,100 @@
+# A comprehension with a match on a relation binder is the union of one query per constructor.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation users : User key id generate sequence
+  relation identities : Identity
+    key id generate sequence
+    unique (email) in EmailPass
+    unique (gid) in Google
+    unique (sub) in Apple
+  set OAuth of identities = Google | Apple
+  fn display_name (i: Identity) -> Text = match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+  type Phone = { id: Key phones, owner: Key users on delete cascade, seen: I64 }
+  type Follow = { src: Key users, dst: Key users }
+  type Employee = { id: Key employees, name: Text, manager: Option (Key employees) }
+  type Reset = { id: Key resets, identity: Key identities.EmailPass on delete cascade }
+  type Session = { id: Key sessions, owner: Option (Key users) }
+  type Via = Courier { name: Text } | Mail { tracking: Text }
+  type Shipment = Pending | Shipped { via: Via }
+  type Parcel = { id: Key parcels, state: Shipment, code: Text }
+  relation phones : Phone key id generate sequence
+  relation follows : Follow key (src, dst)
+  relation employees : Employee key id generate sequence
+  relation resets : Reset key id generate sequence
+  relation sessions : Session key id generate sequence
+  relation parcels : Parcel key id generate sequence
+  fn uid (u: User) -> Key users = key u
+  fn all_follows () -> Set Follow = from f in follows select f
+  fn ids_of (u: Key users) -> Set Identity = from i in identities where i.user == u select i
+  fn names (s: Set User) -> Set Text = from u in s select u.name
+  fn sign_ins () -> Set (Local { id: Key identities, email: Text }
+                       | Remote { id: Key identities, provider: Text }) =
+    from i in identities select match i
+      | EmailPass e -> Local  { id: key e, email: e.email }
+      | Google g    -> Remote { id: key g, provider: "google" }
+      | Apple a     -> Remote { id: key a, provider: "apple" }
+run
+  transact
+    insert users { id: users.key(1), name: "ann" }
+    insert users { id: users.key(2), name: "bo" }
+    insert users { id: users.key(3), name: "cy" }
+    insert identities.EmailPass { id: identities.key(1), user: users.key(1), email: "ann@example.com", hash: bytes("h1") }
+    insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g-ann" }
+    insert identities.Google { id: identities.key(3), user: users.key(2), gid: "root" }
+    insert identities.Apple { id: identities.key(4), user: users.key(2), sub: "a-bo" }
+    insert phones { id: phones.key(1), owner: users.key(1), seen: 10 }
+    insert phones { id: phones.key(2), owner: users.key(1), seen: 20 }
+    insert follows { src: users.key(1), dst: users.key(2) }
+    insert follows { src: users.key(2), dst: users.key(3) }
+    insert follows { src: users.key(3), dst: users.key(2) }
+    insert employees { id: employees.key(1), name: "boss", manager: None }
+    insert employees { id: employees.key(2), name: "w", manager: Some { value: employees.key(1) } }
+    insert sessions { id: sessions.key(1), owner: Some { value: users.key(1) } }
+    insert sessions { id: sessions.key(2), owner: None }
+    insert parcels { id: parcels.key(1), state: Pending, code: "p1" }
+    insert parcels { id: parcels.key(2), state: Shipped { via: Courier { name: "dhl" } }, code: "p2" }
+    insert parcels { id: parcels.key(3), state: Shipped { via: Mail { tracking: "t-3" } }, code: "p3" }
+run
+  insert resets from (from e in identities.EmailPass select Reset { id: resets.key(1), identity: key e })
+run
+  insert identities.Apple { id: identities.key(5), user: users.key(1), sub: "g-ann" }
+query rowsort
+  from i in identities where i.user == users.key(1)
+  select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+----
+"ann@example.com"
+"g-ann"
+query rowsort
+  (from e in identities.EmailPass where e.user == users.key(1) select e.email)
+  union (from g in identities.Google where g.user == users.key(1) select g.gid)
+  union (from a in identities.Apple where a.user == users.key(1) select a.sub)
+----
+"ann@example.com"
+"g-ann"
+# Equal outputs of different arms are one element.
+query
+  count(x for x in (from i in identities where i.user == users.key(1) select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub))
+----
+2
+query rowsort
+  from i in identities, u in users where i.user == key u
+  select match i | EmailPass _ -> u.name | Google _ -> u.name | Apple _ -> u.name
+----
+"ann"
+"bo"
+# Two matches on the same binder each keep only the arms of that constructor.
+query rowsort
+  from i in identities
+  where match i | EmailPass _ -> true | Google g -> g.gid == "root" | Apple _ -> false
+  select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+----
+"ann@example.com"
+"root"

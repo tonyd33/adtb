@@ -1,0 +1,19 @@
+# Floating-point arithmetic follows IEEE 754 and does not fault.
+schema
+  module test
+  type Reading = { id: Key readings, x: F64, y: F64 }
+  relation readings : Reading key id generate sequence
+run
+  insert readings from [Reading { id: readings.key(1), x: 1.0, y: 0.0 },
+                        Reading { id: readings.key(2), x: -1.0, y: 0.0 },
+                        Reading { id: readings.key(3), x: 0.0, y: 0.0 }]
+query rowsort
+  from r in readings select { id: r.id, q: r.x / r.y }
+----
+{ id: readings.key(1), q: inf }
+{ id: readings.key(2), q: -inf }
+{ id: readings.key(3), q: NaN }
+query
+  from r in readings where r.id == readings.key(1) select try (r.x / r.y)
+----
+Ok { value: inf }

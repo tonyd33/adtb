@@ -1,0 +1,52 @@
+# A Key r value is built by r.key, read back by value, and compared with the key of a row.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities where i.user == users.key(2) select key i
+----
+identities.key(3)
+identities.key(4)
+query rowsort
+  from u in users select value(key u)
+----
+1
+2
+3
+query
+  value(users.key(7))
+----
+7
+query
+  users.key(2)
+----
+users.key(2)
+query rowsort
+  from f in follows where key f == follows.key(src: users.key(2), dst: users.key(3)) select f
+----
+Follow { src: users.key(2), dst: users.key(3) }
+query rowsort
+  from f in follows select key f
+----
+follows.key(src: users.key(1), dst: users.key(2))
+follows.key(src: users.key(2), dst: users.key(3))
+follows.key(src: users.key(3), dst: users.key(2))
+# Key r.S widens to Key r.
+query rowsort
+  from g in identities.Google, i in identities where key g == key i select i.id
+----
+identities.key(2)
+identities.key(3)
+query rowsort
+  from u in users where key u == users.key(3) select u.name
+----
+"cy"
+# No literal checks against a Key type.
+error Invalid
+  from i in identities where i.user == 1 select i
+error Invalid
+  from u in users where key u == 1 select u
+# Key r is distinct for every relation variable.
+error Invalid
+  from p in phones, u in users where p.id == key u select p
+error Invalid
+  from p in phones where p.owner == phones.key(1) select p

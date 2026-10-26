@@ -1,0 +1,55 @@
+# == on sums, records, anonymous records, keys and sets is structural: the same constructor with equal fields, the same elements.
+schema
+  module test
+  type Stage = Draft | Sent { at: I64 } | Paid { at: I64 }
+  type Point = { x: I64, y: I64 }
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+query
+  Sent { at: 1 } == Sent { at: 1 }
+----
+true
+query
+  Sent { at: 1 } == Sent { at: 2 }
+----
+false
+query
+  Sent { at: 1 } == Paid { at: 1 }
+----
+false
+query
+  Stage.Draft == Draft
+----
+true
+query
+  Point { x: 1, y: 2 } == Point { x: 1, y: 2 }
+----
+true
+query
+  { a: [1, 2], b: "x" } == { a: [2, 1], b: "x" }
+----
+true
+query
+  [1, 2] == [2, 1, 2]
+----
+true
+query
+  [1, 2] == [1, 2, 3]
+----
+false
+query
+  users.key(1) == users.key(1)
+----
+true
+query
+  users.key(1) != users.key(2)
+----
+true
+query
+  Some { value: users.key(1) } == Some { value: users.key(1) }
+----
+true
+query
+  Point { x: 1, y: 2 } == { x: 1, y: 2 }
+----
+true

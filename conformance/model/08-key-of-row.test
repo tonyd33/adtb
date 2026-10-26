@@ -1,0 +1,44 @@
+# key x is defined for a row whose relation is statically known, typed by its constructor set, and refused elsewhere.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+  fn googles () -> Set Identity.Google = from g in identities.Google select g
+  type Recovery = { id: Key recoveries, identity: Key identities.EmailPass }
+  relation recoveries : Recovery key id generate sequence
+run
+  insert identities.EmailPass { id: identities.key(1), user: "ann", email: "a@x" }
+  insert identities.Google { id: identities.key(2), user: "ann", gid: "g" }
+query
+  from i in identities select key i
+----
+identities.key(1)
+identities.key(2)
+query
+  from i in identities select match i | EmailPass e -> key e | Google g -> key g
+----
+identities.key(1)
+identities.key(2)
+query
+  from x in (from i in identities where i.user == "ann" select i) select key x
+----
+identities.key(1)
+identities.key(2)
+query
+  from g in googles() select key g
+----
+identities.key(2)
+error Invalid
+  from x in (from i in identities select { user: i.user }) select key x
+error Invalid
+  key { a: 1 }
+run
+  transact
+    let i = insert identities.EmailPass { id: identities.key(3), user: "cy", email: "c@x" }
+    insert recoveries { id: recoveries.key(1), identity: key i }
+query
+  from r in recoveries select r.identity
+----
+identities.key(3)

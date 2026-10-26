@@ -1,0 +1,34 @@
+# A cardinality constraint counts the rows that share a group key; a user may hold at most two identities.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence index (user)
+  constraint identity_limit =
+    from u in users
+    where count(i for i in identities where i.user == key u) > 2
+    select u
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert users { id: users.key(2), name: "bo" }
+  insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g1" }
+  insert identities.EmailPass { id: identities.key(2), user: users.key(1), email: "e1" }
+  insert identities.Google { id: identities.key(3), user: users.key(2), gid: "g3" }
+error Violated
+  insert identities.Google { id: identities.key(4), user: users.key(1), gid: "g4" }
+error Violated
+  update i in identities where key i == identities.key(3) set match i
+    | EmailPass e -> e
+    | Google g -> Google { g with user: users.key(1) }
+run
+  transact
+    delete i in identities where key i == identities.key(1)
+    insert identities.Google { id: identities.key(4), user: users.key(1), gid: "g4" }
+query
+  from i in identities where i.user == users.key(1) select value(key i)
+----
+2
+4

@@ -1,0 +1,41 @@
+# A generated key is filled when omitted, distinct within and across statements, and never a key a row of the relation has held, explicit ones included.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Token = { id: Key tokens, label: Text }
+  relation tokens : Token key id generate uuidv7
+run
+  insert users { id: users.key(1), name: "a" }
+  insert users { id: users.key(2), name: "b" }
+  insert users { id: users.key(42), name: "imported" }
+run
+  delete u in users where key u == users.key(42)
+run
+  insert users from (from n in ["c", "d", "e"] select { name: n })
+  insert users { name: "f" }
+  insert users from (from u in users select { name: u.name ++ "2" })
+query
+  count(u for u in users)
+----
+12
+query
+  count(k for k in (from u in users select key u))
+----
+12
+query
+  from u in users where key u == users.key(1) or key u == users.key(2) or key u == users.key(42) select u.name
+----
+"a"
+"b"
+run
+  insert tokens from (from n in ["x", "y"] select { label: n })
+  insert tokens { label: "z" }
+query
+  count(k for k in (from t in tokens select key t))
+----
+3
+error Invalid
+  insert users { id: 7, name: "lit" }
+error Invalid
+  from u in users where key u == 1 select u

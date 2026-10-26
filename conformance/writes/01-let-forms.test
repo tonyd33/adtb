@@ -1,0 +1,46 @@
+# let binds the rows of an insert, an upsert, an update or a delete, and refuses any other write.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Copy = { id: Key copies, name: Text }
+  relation copies : Copy key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+  insert users { id: users.key(2), name: "b" }
+error Invalid
+  transact
+    let x = skip
+error Invalid
+  transact
+    let x = (insert users { id: users.key(3), name: "c" }, skip)
+error Invalid
+  transact
+    let x = if true then insert users { id: users.key(3), name: "c" } else skip
+error Invalid
+  transact
+    let x = match true
+      | True -> insert users { id: users.key(3), name: "c" }
+      | False -> skip
+error Invalid
+  transact
+    let x = fail "no"
+query
+  from u in users select u.name
+----
+"a"
+"b"
+run
+  transact
+    let i = insert users { id: users.key(3), name: "c" }
+    let u = update u in users where key u == users.key(1) set User { u with name: "a2" }
+    let d = delete u in users where key u == users.key(2)
+    insert copies { id: copies.key(1), name: i.name }
+    insert copies from (from x in u select { id: copies.key(2), name: x.name })
+    insert copies from (from x in d select { id: copies.key(3), name: x.name })
+query
+  from c in copies select c
+----
+Copy { id: copies.key(1), name: "c" }
+Copy { id: copies.key(2), name: "a2" }
+Copy { id: copies.key(3), name: "b" }

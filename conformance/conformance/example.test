@@ -1,0 +1,14 @@
+# The example of the conformance part: a match must name every constructor.
+schema
+  module test
+  type Login { id: Key logins } = Password { email: Text } | Social { sub: Text }
+  relation logins : Login key id generate sequence
+run
+  transact
+    insert logins.Social { sub: "s1" }
+query rowsort
+  from l in logins select match l | Password p -> p.email | Social s -> s.sub
+----
+"s1"
+error Invalid
+  from l in logins select match l | Social s -> s.sub

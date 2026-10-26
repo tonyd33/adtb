@@ -1,0 +1,55 @@
+# An arm or alternative that can never be chosen is refused.
+@SCHEMA@
+@RUN@
+error Invalid
+  from i in identities select match i
+    | EmailPass _ -> 1
+    | Google _    -> 2
+    | Apple _     -> 3
+    | Google _    -> 4
+error Invalid
+  from u in users select match u.name | _ -> 1 | "ann" -> 2
+error Invalid
+  from u in users select match u.name | n -> 1 | _ -> 2
+error Invalid
+  from u in users select match u.name | "ann" -> 1 | "ann" -> 2 | _ -> 3
+# A guarded arm after an unguarded arm with the same or a wider pattern.
+error Invalid
+  from i in identities select match i
+    | Google _                    -> 1
+    | Google g if g.gid == "root" -> 2
+    | EmailPass _                 -> 3
+    | Apple _                     -> 4
+error Invalid
+  from u in users select match u.name | _ -> 1 | n if n == "ann" -> 2
+error Invalid
+  from i in identities select match i
+    | OAuth _                     -> 1
+    | Apple a if a.sub == "x"     -> 2
+    | EmailPass _                 -> 3
+# An or-pattern alternative covered by earlier arms or earlier alternatives.
+error Invalid
+  from i in identities select match i
+    | Google _ | Google _ -> 1
+    | EmailPass _         -> 3
+    | Apple _             -> 4
+error Invalid
+  from i in identities select match i
+    | Google _             -> 1
+    | Apple _ | Google _   -> 2
+    | EmailPass _          -> 3
+error Invalid
+  from u in users select match u.name | "ann" -> 1 | "bo" | "ann" -> 2 | _ -> 3
+# Nested coverage: a later arm wholly covered by earlier ones.
+error Invalid
+  from p in parcels select match p.state
+    | Shipped { via: Courier _ } -> 1
+    | Shipped { via: Mail _ }    -> 2
+    | Shipped _                  -> 3
+    | Pending                    -> 4
+# A guarded arm is not wider than a later arm, so the later arm stays reachable.
+query rowsort
+  from u in users select match u.name | n if n == "ann" -> 1 | "ann" -> 2 | _ -> 3
+----
+1
+3

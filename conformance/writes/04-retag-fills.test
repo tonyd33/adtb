@@ -1,0 +1,55 @@
+# The new value of a retag fills the own fields it omits from the relation's defaults, and carries no field of the old constructor.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Login { id: Key logins, user: Key users }
+    = Active  { device: Text }
+    | Revoked { reason: Text }
+  relation logins : Login key id generate sequence default Revoked.reason = "manual"
+  type Mark { id: Key tags, n: I64 } = A { label: Text } | B { label: Text } | C { label: Text }
+  relation tags : Mark key id generate sequence default C.label = "dflt"
+run
+  insert users { id: users.key(1), name: "a" }
+  insert logins.Active { id: logins.key(1), user: users.key(1), device: "phone" }
+  insert logins.Active { id: logins.key(2), user: users.key(1), device: "laptop" }
+  insert logins.Revoked { id: logins.key(3), user: users.key(1), reason: "old" }
+  insert tags.A { id: tags.key(1), n: 1, label: "a1" }
+run
+  update s in logins where s.user == users.key(1) and key s != logins.key(2) set Revoked { }
+query
+  from s in logins select s
+----
+Active { id: logins.key(2), user: users.key(1), device: "laptop" }
+Revoked { id: logins.key(1), user: users.key(1), reason: "manual" }
+Revoked { id: logins.key(3), user: users.key(1), reason: "manual" }
+run
+  update s in logins.Active set Revoked { reason: "lost" }
+query
+  from s in logins where key s == logins.key(2) select s
+----
+Revoked { id: logins.key(2), user: users.key(1), reason: "lost" }
+run
+  update s in logins where key s == logins.key(3) set Revoked { s with user: users.key(1) }
+query
+  from s in logins.Revoked where key s == logins.key(3) select s.reason
+----
+"manual"
+run
+  update s in logins where key s == logins.key(3) set Active { device: "tablet" }
+query
+  from s in logins where key s == logins.key(3) select s
+----
+Active { id: logins.key(3), user: users.key(1), device: "tablet" }
+error Invalid
+  update s in logins where key s == logins.key(3) set Active { }
+error Invalid
+  update t in tags.A set B { t with n: 2 }
+run
+  update t in tags.A set C { t with n: 3 }
+query
+  from t in tags select t
+----
+C { id: tags.key(1), n: 3, label: "dflt" }
+error Invalid
+  from s in logins select Revoked { }

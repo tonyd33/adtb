@@ -1,0 +1,37 @@
+# A comprehension with a match on a relation binder is the union of one query per constructor.
+@SCHEMA@
+@RUN@
+run
+  insert identities.Apple { id: identities.key(5), user: users.key(1), sub: "g-ann" }
+query rowsort
+  from i in identities where i.user == users.key(1)
+  select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+----
+"ann@example.com"
+"g-ann"
+query rowsort
+  (from e in identities.EmailPass where e.user == users.key(1) select e.email)
+  union (from g in identities.Google where g.user == users.key(1) select g.gid)
+  union (from a in identities.Apple where a.user == users.key(1) select a.sub)
+----
+"ann@example.com"
+"g-ann"
+# Equal outputs of different arms are one element.
+query
+  count(x for x in (from i in identities where i.user == users.key(1) select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub))
+----
+2
+query rowsort
+  from i in identities, u in users where i.user == key u
+  select match i | EmailPass _ -> u.name | Google _ -> u.name | Apple _ -> u.name
+----
+"ann"
+"bo"
+# Two matches on the same binder each keep only the arms of that constructor.
+query rowsort
+  from i in identities
+  where match i | EmailPass _ -> true | Google g -> g.gid == "root" | Apple _ -> false
+  select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+----
+"ann@example.com"
+"root"

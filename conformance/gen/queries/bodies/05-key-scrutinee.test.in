@@ -1,0 +1,44 @@
+# A Key r.S scrutinee is matched by the constructor of the row it references; a key that names no row faults.
+@SCHEMA@
+@RUN@
+# A reference to one constructor needs one arm.
+query rowsort
+  from r in resets select match r.identity | EmailPass e -> e.email
+----
+"ann@example.com"
+query rowsort
+  from r in resets select match r.identity | EmailPass e -> key e
+----
+identities.key(1)
+# A reference to the whole sum names every constructor.
+query rowsort
+  from i in identities, u in users where i.user == key u select match i.user | User x -> x.name
+----
+"ann"
+"bo"
+query
+  match identities.key(3) | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+----
+"root"
+query
+  match identities.key(4) | EmailPass e -> e.email | OAuth o -> display_name(o)
+----
+"a-bo"
+# A built key that names no row faults with NoSuchRow.
+error Faulted
+  match identities.key(99) | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+error Faulted
+  from u in users select match identities.key(99) | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+# _ and a binder are not top-level patterns for a key, ad hoc included.
+error Invalid
+  from r in resets select match r.identity | _ -> 1
+error Invalid
+  from r in resets select match r.identity | x -> 1
+error Invalid
+  match identities.key(3) | Google g -> g.gid | _ -> "other"
+# A key's arms name the constructors of its set only.
+error Invalid
+  from r in resets select match r.identity | EmailPass e -> e.email | Google g -> g.gid
+# A key to the whole sum must name every constructor.
+error Invalid
+  match identities.key(3) | EmailPass e -> e.email | Google g -> g.gid

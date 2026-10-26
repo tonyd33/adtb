@@ -1,0 +1,85 @@
+# Functions take and return functions; lambdas are curried and every query normalises to one with no function values.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation users : User key id generate sequence
+  relation identities : Identity key id generate sequence
+  fn having (p: Identity -> Bool) -> Set (Key users) =
+    from i in identities where p(i) select i.user
+  fn apply2 (f: I64 -> I64 -> I64, a: I64, b: I64) -> I64 = f(a, b)
+  fn minus (a: I64, b: I64) -> I64 = a - b
+  fn adder (n: I64) -> I64 -> I64 = fn x -> x + n
+  fn ap (f: I64 -> I64, x: I64) -> I64 = f(x)
+  fn run_view (v: () -> Set User) -> I64 = count(u for u in v())
+  fn everyone () -> Set User = from u in users select u
+  fn reach_by (step: Key users -> Set (Key users), me: Key users) -> Set (Key users) =
+    fix r = step(me) union (from x in r, y in step(x) select y) in r
+  type Follow = { src: Key users, dst: Key users }
+  relation follows : Follow key (src, dst)
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" },
+                     User { id: users.key(3), name: "cy" }]
+  insert identities from [EmailPass { id: identities.key(1), user: users.key(1), email: "ann@x" },
+                          Google { id: identities.key(2), user: users.key(1), gid: "g-ann" },
+                          Apple { id: identities.key(3), user: users.key(2), sub: "a-bo" }]
+  insert follows from [Follow { src: users.key(1), dst: users.key(2) },
+                       Follow { src: users.key(2), dst: users.key(3) }]
+# A lambda passed as an argument.
+query
+  having(fn i -> match i | Google _ -> true | EmailPass _ -> false | Apple _ -> false)
+----
+users.key(1)
+query
+  having(fn i -> true)
+----
+users.key(1)
+users.key(2)
+# A lambda of several parameters is curried and applies its arguments in order.
+query
+  apply2(fn (a: I64, b: I64) -> a - b, 10, 3)
+----
+7
+# A schema function named without a call is a function value of its curried type.
+query
+  apply2(minus, 10, 3)
+----
+7
+# A function may return a function.
+query
+  ap(adder(2), 5)
+----
+7
+query
+  apply2(fn (a: I64, b: I64) -> ap(adder(a), b), 4, 5)
+----
+9
+# A parameterless function named without a call has type () -> R.
+query
+  run_view(everyone)
+----
+3
+# A function whose body holds a fix may take a function parameter that every call supplies.
+query
+  reach_by(fn u -> from f in follows where f.src == u select f.dst, users.key(1))
+----
+users.key(2)
+users.key(3)
+# A function value is never a query result, a set element or a record field of a result, and == never applies to it.
+error Invalid
+  fn x -> x + 1
+error Invalid
+  adder(2)
+error Invalid
+  minus == minus
+error Invalid
+  [fn (x: I64) -> x]
+error Invalid
+  { f: adder(1) }
+# A lambda's argument must have its parameter's type.
+error Invalid
+  apply2(fn (a: I64, b: I64) -> a == b, 1, 2)

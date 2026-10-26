@@ -1,0 +1,42 @@
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation users : User key id generate sequence
+  relation identities : Identity
+    key id generate sequence
+    unique (email) in EmailPass
+    unique (gid) in Google
+    unique (sub) in Apple
+  set OAuth of identities = Google | Apple
+  fn display_name (i: Identity) -> Text = match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+  type Phone = { id: Key phones, owner: Key users on delete cascade, seen: I64 }
+  type Follow = { src: Key users, dst: Key users }
+  type Employee = { id: Key employees, name: Text, manager: Option (Key employees) }
+  type Reset = { id: Key resets, identity: Key identities.EmailPass on delete cascade }
+  type Session = { id: Key sessions, owner: Option (Key users) }
+  type Via = Courier { name: Text } | Mail { tracking: Text }
+  type Shipment = Pending | Shipped { via: Via }
+  type Parcel = { id: Key parcels, state: Shipment, code: Text }
+  relation phones : Phone key id generate sequence
+  relation follows : Follow key (src, dst)
+  relation employees : Employee key id generate sequence
+  relation resets : Reset key id generate sequence
+  relation sessions : Session key id generate sequence
+  relation parcels : Parcel key id generate sequence
+  fn uid (u: User) -> Key users = key u
+  fn all_follows () -> Set Follow = from f in follows select f
+  fn ids_of (u: Key users) -> Set Identity = from i in identities where i.user == u select i
+  fn names (s: Set User) -> Set Text = from u in s select u.name
+  fn sign_ins () -> Set (Local { id: Key identities, email: Text }
+                       | Remote { id: Key identities, provider: Text }) =
+    from i in identities select match i
+      | EmailPass e -> Local  { id: key e, email: e.email }
+      | Google g    -> Remote { id: key g, provider: "google" }
+      | Apple a     -> Remote { id: key a, provider: "apple" }

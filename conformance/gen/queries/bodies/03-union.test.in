@@ -1,0 +1,56 @@
+# a union b is set union; equal elements are one; element types join.
+@SCHEMA@
+@RUN@
+query rowsort
+  (from u in users where u.name == "ann" select u.name) union (from u in users select u.name)
+----
+"ann"
+"bo"
+"cy"
+query
+  count(x for x in ((from f in follows select f.src) union (from f in follows select f.dst)))
+----
+3
+query rowsort
+  (from g in identities.Google select g) union (from a in identities.Apple select a)
+----
+Google { id: identities.key(2), user: users.key(1), gid: "g-ann" }
+Google { id: identities.key(3), user: users.key(2), gid: "root" }
+Apple { id: identities.key(4), user: users.key(2), sub: "a-bo" }
+query rowsort
+  from x in ((from g in identities.Google select g) union (from a in identities.Apple select a)) select match x
+    | Google g -> g.gid
+    | Apple a  -> a.sub
+----
+"a-bo"
+"g-ann"
+"root"
+query rowsort
+  (from g in identities.Google select key g) union (from e in identities.EmailPass select key e)
+----
+identities.key(1)
+identities.key(2)
+identities.key(3)
+query rowsort
+  (from u in users select { n: u.name }) union (from g in identities.Google select { n: g.gid })
+----
+{ n: "ann" }
+{ n: "bo" }
+{ n: "cy" }
+{ n: "g-ann" }
+{ n: "root" }
+query rowsort
+  (from u in users where false select u.name) union (from u in users where false select u.name)
+----
+
+# Operands whose element types do not join are refused.
+error Invalid
+  (from u in users select u.name) union (from u in users select value(key u))
+error Invalid
+  (from u in users select { n: u.name }) union (from u in users select { m: u.name })
+error Invalid
+  (from u in users select { n: u.name }) union (from u in users select { n: u.name, k: key u })
+error Invalid
+  (from u in users select u) union (from i in identities select i)
+error Invalid
+  (from u in users select key u) union (from i in identities select key i)

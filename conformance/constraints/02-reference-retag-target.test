@@ -1,0 +1,29 @@
+# A retag that moves a referenced row out of a reference's constructor set violates that reference; a reference to the whole relation is unaffected.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+  type Reset = { id: Key resets, identity: Key identities.EmailPass }
+  relation resets : Reset key id generate sequence index (identity)
+  type Visit = { id: Key visits, identity: Key identities }
+  relation visits : Visit key id generate sequence index (identity)
+run
+  insert identities.EmailPass { id: identities.key(1), user: "u", email: "a@x" }
+  insert identities.EmailPass { id: identities.key(2), user: "v", email: "b@x" }
+  insert resets from (from e in identities.EmailPass where e.user == "u" select Reset { id: resets.key(1), identity: key e })
+  insert visits { id: visits.key(1), identity: identities.key(2) }
+error Violated
+  update i in identities.EmailPass where key i == identities.key(1) set Google { gid: "g" }
+run
+  update i in identities.EmailPass where key i == identities.key(2) set Google { gid: "g" }
+run
+  transact
+    delete r in resets where r.identity == identities.key(1)
+    update i in identities.EmailPass where key i == identities.key(1) set Google { gid: "h" }
+query
+  from g in identities.Google select g.gid
+----
+"g"
+"h"

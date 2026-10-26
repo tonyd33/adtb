@@ -1,0 +1,32 @@
+# Integer arithmetic stays in one integer type and faults outside its range or on division by zero, never wrapping.
+schema
+  module test
+  fn i8_of (x: I8) -> I8 = x
+  fn i16_of (x: I16) -> I16 = x
+  fn i32_of (x: I32) -> I32 = x
+query
+  i8_of(100) + 27
+----
+127
+error Faulted
+  i8_of(100) + 28
+error Faulted
+  i8_of(-100) - 29
+error Faulted
+  i32_of(65536) * 65536
+error Faulted
+  9223372036854775807 + 1
+error Faulted
+  -9223372036854775807 - 2
+error Faulted
+  7 / 0
+error Faulted
+  7 % 0
+error Invalid
+  i8_of(1) + i16_of(1)
+error Invalid
+  i32_of(1) == 1 + 0
+query
+  i16_of(300) * 100
+----
+30000

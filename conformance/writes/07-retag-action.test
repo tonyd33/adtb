@@ -1,0 +1,40 @@
+# on delete retag moves each referrer to the named constructor with the given payload, filling the rest as a retag does and keeping key and header fields.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity = { id: Key identities, user: Key users, gid: Text }
+  relation identities : Identity key id generate sequence
+  type Login { id: Key logins, user: Key users }
+    = Active  { identity: Key identities on delete retag Revoked { reason: "identity gone" } }
+    | Revoked { reason: Text, note: Text }
+  relation logins : Login key id generate sequence default Revoked.note = "auto"
+  type Ticket { id: Key tickets } = Open { owner: Key users on delete retag Closed {} } | Closed { why: Text }
+  relation tickets : Ticket key id generate sequence default Closed.why = "owner gone"
+run
+  insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
+  insert identities from ([{ id: identities.key(1), user: users.key(1), gid: "g1" },
+                           { id: identities.key(2), user: users.key(2), gid: "g2" }])
+  insert logins.Active { id: logins.key(1), user: users.key(1), identity: identities.key(1) }
+  insert logins.Active { id: logins.key(2), user: users.key(2), identity: identities.key(2) }
+  insert tickets.Open { id: tickets.key(1), owner: users.key(1) }
+run
+  delete i in identities where key i == identities.key(1)
+query
+  from s in logins select s
+----
+Active { id: logins.key(2), user: users.key(2), identity: identities.key(2) }
+Revoked { id: logins.key(1), user: users.key(1), reason: "identity gone", note: "auto" }
+run
+  (delete i in identities where key i == identities.key(2),
+   delete s in logins where key s == logins.key(1))
+query
+  from s in logins select s
+----
+Revoked { id: logins.key(2), user: users.key(2), reason: "identity gone", note: "auto" }
+run
+  (delete s in logins, delete x in users where key x == users.key(1))
+query
+  from t in tickets select t
+----
+Closed { id: tickets.key(1), why: "owner gone" }

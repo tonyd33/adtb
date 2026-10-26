@@ -372,6 +372,14 @@ alone, and flags after a `-` are cleared. The flags are:
 
 Any other flag, `x` and `R` among them, is a compile error.
 
+The Perl classes are Unicode, unlike RE2's: `\d` is a decimal digit
+(`\p{Nd}`), `\s` a white space character (`\p{White_Space}`), `\w` a
+word character of Unicode Technical Standard #18 (a letter, mark,
+decimal digit, connector punctuation or join control), and `\b` a
+boundary between a `\w` and a scalar value that is not one. They follow
+the recorded Unicode version, as `\p{..}` does: `matches("٣", "^\\d$")`
+is `true`.
+
 `text(x)` gives, for an integer, its decimal digits with a leading `-`
 when negative; for a `Decimal s`, the digits with exactly `s`
 fractional digits; for a float, the shortest decimal that reads back
@@ -387,7 +395,7 @@ where ends_with(lower(i.email), "@example.com") and scalar_len(i.email) <= 254
 select { id: key i, label: "user " ++ text(scalar_len(i.email)) }
 ```
 
-Rulings: types/text-length/explicit, types/text-eq/nfc, types/collation/sortkey-fn, types/collation/version/versioned-name, spec/textual-forms/interop, spec/collation-names/cldr, spec/regex-flags/re2, spec/unicode-version/one
+Rulings: types/text-length/explicit, types/text-eq/nfc, types/collation/sortkey-fn, types/collation/version/versioned-name, spec/textual-forms/interop, spec/collation-names/cldr, spec/regex-flags/re2, spec/regex-classes/unicode, spec/unicode-version/one
 
 ## 5. Bytes
 

@@ -1,0 +1,49 @@
+# The binders of one fix are one simultaneous least fixpoint.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Follow = { src: Key users, dst: Key users }
+  relation users : User key id generate sequence
+  relation follows : Follow key (src, dst)
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" },
+                     User { id: users.key(3), name: "cy" },
+                     User { id: users.key(4), name: "di" }]
+  insert follows from [Follow { src: users.key(1), dst: users.key(2) },
+                       Follow { src: users.key(2), dst: users.key(3) },
+                       Follow { src: users.key(3), dst: users.key(4) }]
+# Users an odd number of steps from ann.
+query
+  fix even = (from u in users where key u == users.key(1) select key u)
+             union (from o in odd, f in follows where f.src == o select f.dst),
+      odd  = from v in even, f in follows where f.src == v select f.dst
+  in from u in users where exists o in odd where o == key u select u.name
+----
+"bo"
+"di"
+# The body of the fix may name any of its binders.
+query
+  fix even = (from u in users where key u == users.key(1) select key u)
+             union (from o in odd, f in follows where f.src == o select f.dst),
+      odd  = from v in even, f in follows where f.src == v select f.dst
+  in even
+----
+users.key(1)
+users.key(3)
+# With a cycle, a user reached at both parities is in both sets.
+run
+  insert follows { src: users.key(4), dst: users.key(1) }
+  insert follows { src: users.key(3), dst: users.key(1) }
+query rowsort
+  fix even = (from u in users where key u == users.key(1) select key u)
+             union (from o in odd, f in follows where f.src == o select f.dst),
+      odd  = from v in even, f in follows where f.src == v select f.dst
+  in from u in users
+     where (exists e in even where e == key u) and (exists o in odd where o == key u)
+     select u.name
+----
+"ann"
+"bo"
+"cy"
+"di"

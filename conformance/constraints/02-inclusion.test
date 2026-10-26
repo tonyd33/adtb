@@ -1,0 +1,35 @@
+# An inclusion constraint requires every assignment's user and org to appear together in a membership.
+schema
+  module test
+  type Membership = { id: Key memberships, user: Text, org: Text }
+  relation memberships : Membership
+    key id generate sequence
+    unique (user, org)
+  type Assignment = { id: Key assignments, user: Text, org: Text, task: Text }
+  relation assignments : Assignment key id generate sequence index (user, org)
+  constraint assigned_member =
+    from a in assignments
+    where not exists m in memberships where m.user == a.user and m.org == a.org
+    select a
+run
+  insert memberships { id: memberships.key(1), user: "u", org: "o1" }
+  insert memberships { id: memberships.key(2), user: "v", org: "o2" }
+  insert assignments { id: assignments.key(1), user: "u", org: "o1", task: "t1" }
+error Violated
+  insert assignments { id: assignments.key(2), user: "u", org: "o2", task: "t2" }
+error Violated
+  delete m in memberships where m.user == "u"
+error Violated
+  update m in memberships where m.user == "u" set Membership { m with org: "o3" }
+run
+  transact
+    insert memberships { id: memberships.key(3), user: "u", org: "o2" }
+    insert assignments { id: assignments.key(2), user: "u", org: "o2", task: "t2" }
+run
+  transact
+    delete a in assignments where a.org == "o1"
+    delete m in memberships where m.org == "o1"
+query
+  from a in assignments select a.task
+----
+"t2"

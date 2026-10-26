@@ -1,0 +1,46 @@
+# A relation and every comprehension result is a set: equal values are kept once.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert users { id: users.key(2), name: "ann" }
+  insert identities.EmailPass { id: identities.key(1), user: users.key(1), email: "a@x" }
+  insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g" }
+  insert identities.Apple { id: identities.key(3), user: users.key(2), sub: "s" }
+query
+  from u in users select u.name
+----
+"ann"
+query
+  from i in identities select match i
+    | EmailPass e -> e.user
+    | Google g    -> g.user
+    | Apple a     -> a.user
+----
+users.key(1)
+users.key(2)
+query
+  count(x for x in (from i in identities select i.user))
+----
+2
+query
+  (from u in users select u.name) union (from i in identities.Google select "ann")
+----
+"ann"
+query
+  [3, 1, 3, 2, 1]
+----
+1
+2
+3
+query
+  count(x for x in [1, 1, 1])
+----
+1

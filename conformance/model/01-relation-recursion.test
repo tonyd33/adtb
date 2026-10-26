@@ -1,0 +1,21 @@
+# Recursive structure is rows referencing rows through keys of a relation variable.
+schema
+  module test
+  type ExprNode { id: Key expr_nodes } = Lit { n: I64 }
+                                       | Add { l: Key expr_nodes, r: Key expr_nodes }
+  relation expr_nodes : ExprNode key id generate sequence
+run
+  transact
+    insert expr_nodes.Add { id: expr_nodes.key(3), l: expr_nodes.key(1), r: expr_nodes.key(2) }
+    insert expr_nodes.Lit { id: expr_nodes.key(1), n: 4 }
+    insert expr_nodes.Lit { id: expr_nodes.key(2), n: 5 }
+query
+  from a in expr_nodes.Add select match a.l | Lit x -> x.n | Add _ -> 0
+----
+4
+query
+  from a in expr_nodes.Add select a
+----
+Add { id: expr_nodes.key(3), l: expr_nodes.key(1), r: expr_nodes.key(2) }
+error Violated
+  insert expr_nodes.Add { id: expr_nodes.key(4), l: expr_nodes.key(1), r: expr_nodes.key(9) }

@@ -1,0 +1,36 @@
+# Every reference is a foreign key to its constructor set: it holds only the key of an existing row of that set.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+  type Visit    = { id: Key visits, identity: Key identities }
+  type Recovery = { id: Key recoveries, identity: Key identities.EmailPass }
+  relation visits     : Visit key id generate sequence
+  relation recoveries : Recovery key id generate sequence
+run
+  insert identities.EmailPass { id: identities.key(1), user: "ann", email: "a@x" }
+  insert identities.EmailPass { id: identities.key(2), user: "bo", email: "b@x" }
+  insert visits { id: visits.key(1), identity: identities.key(1) }
+  insert recoveries from (from e in identities.EmailPass where e.user == "ann" select { id: recoveries.key(1), identity: key e })
+query
+  identities.key(99)
+----
+identities.key(99)
+error Violated
+  insert visits { id: visits.key(2), identity: identities.key(99) }
+error Violated
+  delete i in identities where i.user == "ann"
+error Violated
+  update i in identities where i.user == "ann" set Google { gid: "g" }
+run
+  update i in identities where i.user == "bo" set Google { gid: "g" }
+query
+  from i in identities.Google select key i
+----
+identities.key(2)
+query
+  count(r for r in recoveries)
+----
+1

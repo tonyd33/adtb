@@ -1,0 +1,49 @@
+# Key r is a distinct type for every relation variable, represented by the key value, built by r.key(v) and read by value(k).
+schema
+  module test
+  type Country = { code: Text, name: Text }
+  relation countries : Country key code
+  type Part = { id: Key parts, name: Text }
+  relation parts : Part key id generate sequence
+  type Manufactured = { part: Key parts, plant: Text }
+  relation manufactured : Manufactured key part
+run
+  insert countries { code: "PT", name: "Portugal" }
+  insert parts { id: parts.key(1), name: "bolt" }
+  insert manufactured { part: parts.key(1), plant: "north" }
+query
+  countries.key("PT")
+----
+countries.key("PT")
+query
+  value(countries.key("PT"))
+----
+"PT"
+query
+  from c in countries where key c == countries.key("PT") select c.name
+----
+"Portugal"
+error Invalid
+  countries.key("PT") == "PT"
+query
+  value(parts.key(1))
+----
+1
+error Invalid
+  parts.key(1) == 1
+query
+  from m in manufactured select key m
+----
+manufactured.key(parts.key(1))
+query
+  value(manufactured.key(parts.key(1)))
+----
+parts.key(1)
+error Invalid
+  manufactured.key(parts.key(1)) == parts.key(1)
+query
+  from m in manufactured where m.part == parts.key(1) select m.plant
+----
+"north"
+error Invalid
+  countries.key(1)

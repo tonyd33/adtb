@@ -1,0 +1,38 @@
+# update x where p set e and delete x where p, with x a snapshot row and no in, act only when p holds.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+run
+  insert users from (from k in [1, 2, 3, 4] select { id: users.key(k), name: "u" ++ print(k) })
+run
+  match users.key(1)
+    | User u -> update u where u.name == "nope" set User { u with name: "one" }
+run
+  match users.key(2)
+    | User u -> update u where u.name == "u2" set User { u with name: "two" }
+run
+  match users.key(3)
+    | User u -> delete u where u.name == "nope"
+run
+  match users.key(4)
+    | User u -> delete u where u.name == "u4"
+query
+  from u in users select u
+----
+User { id: users.key(1), name: "u1" }
+User { id: users.key(2), name: "two" }
+User { id: users.key(3), name: "u3" }
+run
+  insert users { id: users.key(1), name: "again" }
+  unless conflict on key
+  else update old where old.name == "u1" set User { name: "via-old" }
+  insert users { id: users.key(2), name: "again" }
+  unless conflict on key
+  else update old where old.name == "u1" set User { name: "not-taken" }
+query
+  from u in users select u
+----
+User { id: users.key(1), name: "via-old" }
+User { id: users.key(2), name: "two" }
+User { id: users.key(3), name: "u3" }

@@ -1,0 +1,44 @@
+# exists is true when some binding satisfies its condition; not exists negates it.
+@SCHEMA@
+@RUN@
+query rowsort
+  from u in users where exists i in u.<identities.user select u.name
+----
+"ann"
+"bo"
+query rowsort
+  from u in users where not exists i in u.<identities.user select u.name
+----
+"cy"
+query rowsort
+  from u in users where exists i in identities.Google where i.user == key u and i.gid == "root" select u.name
+----
+"bo"
+query rowsort
+  from u in users where exists f in follows, g in follows where f.dst == key u and g.src == key u select u.name
+----
+"bo"
+"cy"
+query
+  exists u in users where u.name == "zed"
+----
+false
+query
+  exists u in users
+----
+true
+query
+  not exists d in phones where d.seen > 100
+----
+true
+query
+  exists x in (from u in users where false select u)
+----
+false
+# exists has the value of a count above zero.
+query rowsort
+  from u in users select { name: u.name, a: exists d in u.<phones.owner, b: count(d for d in u.<phones.owner) > 0 }
+----
+{ name: "ann", a: true, b: true }
+{ name: "bo", a: false, b: false }
+{ name: "cy", a: false, b: false }

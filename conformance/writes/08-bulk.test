@@ -1,0 +1,36 @@
+# Every write is set at a time and one change set: a bulk write that violates a constraint on one row applies to none.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  check short on users (scalar_len(name) < 5)
+  type Score = { id: Key scores, user: Key users, n: I64 }
+  relation scores : Score key id generate sequence
+run
+  insert users from (from k in [1, 2, 3] select { id: users.key(k), name: "u" ++ print(k) })
+error Violated
+  insert users from (from n in ["ok", "toolong"] select { name: n })
+error Violated
+  update u in users set User { u with name: if key u == users.key(2) then "toolong" else "x" }
+query
+  from u in users select u.name
+----
+"u1"
+"u2"
+"u3"
+run
+  insert scores from (from u in users select { id: scores.key(value(key u)), user: key u, n: value(key u) * 10 })
+run
+  update s in scores set Score { s with n: s.n + 1 }
+query
+  from s in scores select s.n
+----
+11
+21
+31
+error Violated
+  delete u in users where key u != users.key(9)
+query
+  count(u for u in users)
+----
+3

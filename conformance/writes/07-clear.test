@@ -1,0 +1,20 @@
+# on delete clear sets an optional reference to None in the same change set.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Note = { id: Key notes, author: Option (Key users) on delete clear, editor: Option (Key users) on delete clear, body: Text }
+  relation notes : Note key id generate sequence
+run
+  insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
+  insert notes from ([{ id: notes.key(1), author: Some { value: users.key(1) }, editor: Some { value: users.key(1) }, body: "a" },
+                      { id: notes.key(2), author: Some { value: users.key(2) }, editor: Some { value: users.key(1) }, body: "b" },
+                      { id: notes.key(3), author: None, editor: None, body: "c" }])
+run
+  delete x in users where key x == users.key(1)
+query
+  from n in notes select n
+----
+Note { id: notes.key(1), author: None, editor: None, body: "a" }
+Note { id: notes.key(2), author: Some { value: users.key(2) }, editor: None, body: "b" }
+Note { id: notes.key(3), author: None, editor: None, body: "c" }

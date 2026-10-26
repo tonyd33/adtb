@@ -1,0 +1,29 @@
+# A constraint query and a check may be partial; a fault while checking fails the statement as a fault.
+schema
+  module test
+  type Raw = { id: Key raws, n: I64 }
+  relation raws : Raw key id generate sequence
+  constraint small_ratio = from r in raws where 100 / r.n > 50 select r
+  type Cell = { id: Key cells, d: I64 }
+  relation cells : Cell key id generate sequence
+  check divides on cells (10 / d != 0)
+run
+  insert raws { id: raws.key(1), n: 3 }
+error Faulted
+  insert raws { id: raws.key(2), n: 0 }
+error Violated
+  insert raws { id: raws.key(2), n: 1 }
+run
+  insert cells { id: cells.key(1), d: 5 }
+error Faulted
+  insert cells { id: cells.key(2), d: 0 }
+error Violated
+  insert cells { id: cells.key(2), d: 20 }
+query
+  from r in raws select r.n
+----
+3
+query
+  from c in cells select c.d
+----
+5

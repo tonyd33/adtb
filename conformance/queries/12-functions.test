@@ -1,0 +1,69 @@
+# A call means the function's body with its parameters bound to the arguments; a view is called with ().
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+  relation users : User key id generate sequence
+  relation identities : Identity key id generate sequence
+  fn display_name (i: Identity) -> Text = match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+  fn logins_of (u: Key users) -> Set Text =
+    from i in identities where i.user == u select display_name(i)
+  fn active () -> Set User = from u in users where exists i in u.<identities.user select u
+  fn minus (a: I64, b: I64) -> I64 = a - b
+  fn label (r: { name: Text, n: I64 }) -> Text = r.name
+  fn twice_active () -> I64 = count(u for u in active()) * 2
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" },
+                     User { id: users.key(3), name: "cy" }]
+  insert identities from [EmailPass { id: identities.key(1), user: users.key(1), email: "ann@x" },
+                          Google { id: identities.key(2), user: users.key(1), gid: "g-ann" },
+                          Google { id: identities.key(3), user: users.key(2), gid: "g-bo" }]
+query rowsort
+  from u in active(), l in logins_of(key u) select { name: u.name, login: l }
+----
+{ name: "ann", login: "ann@x" }
+{ name: "ann", login: "g-ann" }
+{ name: "bo", login: "g-bo" }
+query
+  from u in active() select u.name
+----
+"ann"
+"bo"
+query
+  logins_of(users.key(3))
+----
+
+# Arguments bind to parameters in order.
+query
+  minus(10, 3)
+----
+7
+# A function may call other functions and views.
+query
+  twice_active()
+----
+4
+# A record parameter takes a record with exactly its fields.
+query
+  label({ name: "x", n: 1 })
+----
+"x"
+error Invalid
+  label({ name: "x" })
+error Invalid
+  label({ name: "x", n: 1, extra: true })
+# A call must supply an argument of each parameter's type.
+error Invalid
+  minus(10)
+error Invalid
+  minus(10, "3")
+error Invalid
+  logins_of(users.key(1), 2)
+# A view is called with ().
+error Invalid
+  from u in active select u.name

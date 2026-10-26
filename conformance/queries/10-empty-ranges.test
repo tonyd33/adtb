@@ -1,0 +1,83 @@
+# Only a single generator over a group with no where is a nonempty range; min, max and avg over any other range return Option.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Order = { id: Key orders, user: Key users, total: I64, price: F64 }
+  relation users : User key id generate sequence
+  relation orders : Order key id generate sequence
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" },
+                     User { id: users.key(3), name: "cy" }]
+  insert orders from [Order { id: orders.key(1), user: users.key(1), total: 100, price: 1.0 },
+                      Order { id: orders.key(2), user: users.key(1), total: 50, price: 3.0 },
+                      Order { id: orders.key(3), user: users.key(2), total: 30, price: 2.0 }]
+# Over an empty range count and sum are 0, min, max and avg are None.
+query
+  count(o for o in orders where o.total > 1000)
+----
+0
+query
+  sum(o.total for o in orders where o.total > 1000)
+----
+0
+query
+  max(o.total for o in orders where o.total > 1000)
+----
+None
+query
+  min(o.total for o in orders where o.total > 1000)
+----
+None
+query
+  avg(o.price for o in orders where o.total > 1000)
+----
+None
+# A possibly empty range that is not empty still gives Some.
+query rowsort
+  from u in users
+  select { name: u.name, top: max(o.total for o in orders where o.user == key u) }
+----
+{ name: "ann", top: Some { value: 100 } }
+{ name: "bo", top: Some { value: 30 } }
+{ name: "cy", top: None }
+query rowsort
+  from u in users
+  select { name: u.name, mean: avg(o.price for o in orders where o.user == key u) }
+----
+{ name: "ann", mean: Some { value: 2.0 } }
+{ name: "bo", mean: Some { value: 2.0 } }
+{ name: "cy", mean: None }
+# A single generator over a group with no where gives the element type itself.
+query rowsort
+  from o in orders group o by o.user into g
+  select { user: g.key, top: max(x.total for x in g), low: min(x.total for x in g), mean: avg(x.price for x in g) }
+----
+{ user: users.key(1), top: 100, low: 50, mean: 2.0 }
+{ user: users.key(2), top: 30, low: 30, mean: 2.0 }
+query rowsort
+  from o in orders group o by o.user into g
+  select { user: g.key, top: max(x.total for x in g) + 1 }
+----
+{ user: users.key(1), top: 101 }
+{ user: users.key(2), top: 31 }
+# A where over a group makes the range possibly empty.
+query rowsort
+  from o in orders group o by o.user into g
+  select { user: g.key, top: max(x.total for x in g where x.total > 60) }
+----
+{ user: users.key(1), top: Some { value: 100 } }
+{ user: users.key(2), top: None }
+error Invalid
+  from o in orders group o by o.user into g
+  select { user: g.key, top: max(x.total for x in g where x.total > 60) + 1 }
+# Two generators, even both over the group, make the range possibly empty.
+query rowsort
+  from o in orders group o by o.user into g
+  select { user: g.key, top: max(x.total for x in g, y in g) }
+----
+{ user: users.key(1), top: Some { value: 100 } }
+{ user: users.key(2), top: Some { value: 30 } }
+# A range over a relation is possibly empty even when it is not.
+error Invalid
+  max(o.total for o in orders) + 1

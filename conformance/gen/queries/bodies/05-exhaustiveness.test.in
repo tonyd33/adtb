@@ -1,0 +1,66 @@
+# A match names every constructor of its scrutinee's static type in an unguarded arm; a scalar match ends with _ or a binder.
+@SCHEMA@
+@RUN@
+error Invalid
+  from i in identities select match i | EmailPass e -> e.email | Google g -> g.gid
+error Invalid
+  from p in parcels select match p.state | Shipped _ -> 1
+# Only the constructors of the static type are covered.
+query rowsort
+  from x in identities.(Google | Apple) select match x | Google g -> g.gid | Apple a -> a.sub
+----
+"a-bo"
+"g-ann"
+"root"
+query rowsort
+  from x in identities.Google select match x | Google g -> g.gid
+----
+"g-ann"
+"root"
+error Invalid
+  from x in identities.(Google | Apple) select match x | Google g -> g.gid | Apple a -> a.sub | EmailPass e -> e.email
+error Invalid
+  from x in identities.(Google | Apple) select match x | Google g -> g.gid
+# Coverage through an or-pattern and through a named set.
+query rowsort
+  from i in identities select match i | EmailPass _ -> "m" | Google _ | Apple _ -> "o"
+----
+"m"
+"o"
+query rowsort
+  from i in identities select match i | EmailPass _ -> "m" | OAuth _ -> "o"
+----
+"m"
+"o"
+# Guarded arms do not count toward coverage.
+error Invalid
+  from i in identities select match i
+    | Google g if g.gid == "root" -> "staff"
+    | Google g if g.gid != "root" -> "guest"
+    | EmailPass _                 -> "guest"
+    | Apple _                     -> "guest"
+error Invalid
+  from i in identities select match i
+    | Google _    -> 1
+    | EmailPass _ -> 2
+    | Apple a if true -> 3
+# A scalar match ends with an unguarded _ or binder.
+error Invalid
+  from u in users select match u.name | "ann" -> 1 | "bo" -> 2 | "cy" -> 3
+error Invalid
+  from d in phones select match d.seen | 10 -> 1 | 20 -> 2
+error Invalid
+  from d in phones select match d.seen | 10 -> 1 | n if n > 0 -> 2
+query rowsort
+  from d in phones select match d.seen | 10 -> 1 | n -> n
+----
+1
+20
+# Bool is a sum of True and False.
+error Invalid
+  from u in users select match u.name == "ann" | True -> 1
+query rowsort
+  from u in users select match u.name == "ann" | True -> 1 | False -> 0
+----
+0
+1

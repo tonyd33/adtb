@@ -1,0 +1,64 @@
+# NaN equals NaN and is greater than every other float, positive infinity included.
+schema
+  module test
+  fn f (x: F64) -> F64 = x
+  fn nan () -> F64 = f(0.0) / f(0.0)
+  fn inf () -> F64 = f(1.0) / f(0.0)
+  type Metric = { id: Key metrics, v: F64 }
+  relation metrics : Metric key id generate sequence
+query
+  nan() == nan()
+----
+true
+query
+  nan() != nan()
+----
+false
+query
+  nan() > inf()
+----
+true
+query
+  inf() < nan()
+----
+true
+query
+  nan() == inf()
+----
+false
+query
+  -inf() < f(-1e300)
+----
+true
+run
+  insert metrics { id: metrics.key(1), v: 150.0 }
+  insert metrics { id: metrics.key(2), v: nan() }
+  insert metrics { id: metrics.key(3), v: 50.0 }
+  insert metrics { id: metrics.key(4), v: inf() }
+  insert metrics { id: metrics.key(5), v: -inf() }
+query
+  from m in metrics where m.v > 100.0 select key m
+----
+metrics.key(1)
+metrics.key(2)
+metrics.key(4)
+query
+  from m in metrics select m.v
+----
+-inf
+50.0
+150.0
+inf
+NaN
+query
+  from m in metrics select m order by m.v desc
+----
+Metric { id: metrics.key(2), v: NaN }
+Metric { id: metrics.key(4), v: inf }
+Metric { id: metrics.key(1), v: 150.0 }
+Metric { id: metrics.key(3), v: 50.0 }
+Metric { id: metrics.key(5), v: -inf }
+query
+  max(m.v for m in metrics)
+----
+Some { value: NaN }

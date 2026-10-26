@@ -1,0 +1,77 @@
+# A relation names its rows; r.C, r.(C | D) and a named set select rows by constructor.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities select key i
+----
+identities.key(1)
+identities.key(2)
+identities.key(3)
+identities.key(4)
+query rowsort
+  from e in identities.EmailPass select e
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "ann@example.com", hash: 0x6831 }
+query rowsort
+  from g in identities.Google select g.gid
+----
+"g-ann"
+"root"
+query rowsort
+  from a in identities.Apple select a
+----
+Apple { id: identities.key(4), user: users.key(2), sub: "a-bo" }
+query rowsort
+  from x in identities.(Google | Apple) select key x
+----
+identities.key(2)
+identities.key(3)
+identities.key(4)
+query rowsort
+  from x in identities.(Apple | EmailPass) select key x
+----
+identities.key(1)
+identities.key(4)
+query rowsort
+  from o in identities.OAuth select key o
+----
+identities.key(2)
+identities.key(3)
+identities.key(4)
+query rowsort
+  from i in identities select i
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "ann@example.com", hash: 0x6831 }
+Google { id: identities.key(2), user: users.key(1), gid: "g-ann" }
+Google { id: identities.key(3), user: users.key(2), gid: "root" }
+Apple { id: identities.key(4), user: users.key(2), sub: "a-bo" }
+# The relation is the disjoint union of its constructor relations.
+query
+  count(i for i in identities)
+----
+4
+query
+  count(x for x in ((from e in identities.EmailPass select e) union (from g in identities.Google select g) union (from a in identities.Apple select a)))
+----
+4
+query
+  count(x for x in identities.EmailPass) + count(x for x in identities.Google) + count(x for x in identities.Apple)
+----
+4
+# A record type is a one-constructor sum: r and r.User hold the same rows.
+query rowsort
+  from u in users.User select u
+----
+User { id: users.key(1), name: "ann" }
+User { id: users.key(2), name: "bo" }
+User { id: users.key(3), name: "cy" }
+query rowsort
+  from u in users select u
+----
+User { id: users.key(1), name: "ann" }
+User { id: users.key(2), name: "bo" }
+User { id: users.key(3), name: "cy" }
+error Invalid
+  from x in identities.Facebook select x
+error Invalid
+  from x in users.Google select x

@@ -1,0 +1,81 @@
+# A named-set pattern covers every member; its payload forms range over the fields every member shares.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities select match i
+    | EmailPass e -> e.email
+    | OAuth o     -> display_name(o)
+----
+"a-bo"
+"ann@example.com"
+"g-ann"
+"root"
+query rowsort
+  from i in identities select match i
+    | EmailPass { user } -> user
+    | OAuth { user }     -> user
+----
+users.key(1)
+users.key(2)
+query rowsort
+  from i in identities select match i
+    | EmailPass _ -> "mail"
+    | OAuth _     -> "oauth"
+----
+"mail"
+"oauth"
+query rowsort
+  from i in identities select match i
+    | EmailPass _ -> identities.key(0)
+    | OAuth o     -> key o
+----
+identities.key(0)
+identities.key(2)
+identities.key(3)
+identities.key(4)
+# The binder has the set's row type: header fields, no member's own fields.
+query rowsort
+  from i in identities select match i
+    | EmailPass e -> e.user
+    | OAuth o     -> o.user
+----
+users.key(1)
+users.key(2)
+error Invalid
+  from i in identities select match i
+    | EmailPass e -> e.email
+    | OAuth o     -> o.gid
+error Invalid
+  from i in identities select match i
+    | EmailPass e -> e.email
+    | OAuth { gid } -> gid
+# Bare S needs every member nullary.
+error Invalid
+  from i in identities select match i
+    | EmailPass _ -> 1
+    | OAuth       -> 2
+# A named-set arm and a member arm overlap: the member arm after it is unreachable.
+error Invalid
+  from i in identities select match i
+    | EmailPass _ -> 1
+    | OAuth _     -> 2
+    | Google _    -> 3
+query rowsort
+  from i in identities select match i
+    | Google g if g.gid == "root" -> "root"
+    | EmailPass _ -> "mail"
+    | OAuth _     -> "oauth"
+----
+"mail"
+"oauth"
+"root"
+# A named set matches values of the sum that come from a field or a function, not only rows.
+query rowsort
+  from x in ids_of(users.key(2)) select match x | OAuth o -> o.user | EmailPass e -> e.user
+----
+users.key(2)
+# A named set over a constructor set's row covers only what the scrutinee's type has.
+query rowsort
+  from x in identities.(Google | Apple) select match x | OAuth _ -> 1
+----
+1

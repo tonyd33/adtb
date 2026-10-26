@@ -1,0 +1,14 @@
+# A function type is not a value type: no query result, set element or record field holds a function.
+schema
+  module test
+  fn twice (f: I64 -> I64, x: I64) -> I64 = f(f(x))
+query
+  twice(fn y -> y + 1, 3)
+----
+5
+error Invalid
+  fn (y: I64) -> y + 1
+error Invalid
+  { f: fn (y: I64) -> y + 1 }
+error Invalid
+  from x in [1, 2] select fn (y: I64) -> x + y

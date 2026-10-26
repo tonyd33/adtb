@@ -1,0 +1,38 @@
+# A relation's key holds at most one row per key value, judged over the whole statement; an insert never replaces a row.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+error KeyViolation
+  insert users { id: users.key(1), name: "b" }
+error KeyViolation
+  insert users { id: users.key(1), name: "a" }
+error KeyViolation
+  transact
+    insert users { id: users.key(2), name: "b" }
+    insert users { id: users.key(2), name: "c" }
+error KeyViolation
+  transact
+    update u in users where key u == users.key(1) set User { u with name: "p" }
+    update u in users where key u == users.key(1) set User { u with name: "q" }
+query
+  from u in users select { id: key u, name: u.name }
+----
+{ id: users.key(1), name: "a" }
+# two inserts of one identical row are one effect
+run
+  transact
+    insert users { id: users.key(3), name: "c" }
+    insert users { id: users.key(3), name: "c" }
+# a delete and an insert of one key in one statement replace the row
+run
+  transact
+    delete u in users where key u == users.key(1)
+    insert users { id: users.key(1), name: "z" }
+query
+  from u in users select { id: key u, name: u.name }
+----
+{ id: users.key(1), name: "z" }
+{ id: users.key(3), name: "c" }

@@ -1,0 +1,40 @@
+# A sum not declared ordered has no order: sorting by it, <, min and max over it are type errors.
+schema
+  module test
+  type Status = Draft | Sent { at: I64 }
+  type Rec = { a: I64 }
+  type Doc = { id: I64, status: Status, rec: Rec }
+  relation docs : Doc key id
+  fn kinds () -> Set (Low { n: I64 } | High { n: I64 }) = from d in docs select Low { n: d.id }
+run
+  insert docs { id: 1, status: Draft, rec: Rec { a: 1 } }
+query
+  Draft == Draft
+----
+true
+error Invalid
+  Draft < Sent { at: 1 }
+error Invalid
+  Rec { a: 1 } < Rec { a: 2 }
+error Invalid
+  from d in docs select d order by d.status
+error Invalid
+  min(d.status for d in docs)
+error Invalid
+  max(d.rec for d in docs)
+error Invalid
+  from d in docs select d order by d
+error Invalid
+  { a: 1 } < { a: 2 }
+error Invalid
+  from d in docs select d order by { a: d.id }
+error Invalid
+  from k in kinds() select k order by k
+query rowsort
+  kinds()
+----
+Low { n: 1 }
+query
+  from d in docs select d order by d.id
+----
+Doc { id: 1, status: Draft, rec: Rec { a: 1 } }

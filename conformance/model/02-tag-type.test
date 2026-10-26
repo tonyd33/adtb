@@ -1,0 +1,47 @@
+# Tag T has one nullary constructor per constructor of T, in order, and is ordered exactly when T is.
+schema
+  module test
+  type Shape { id: Key shapes } = Circle { r: I64 } | Square { side: I64 } | Dot
+  relation shapes : Shape key id generate sequence
+  type Stage ordered = Draft | Sent { n: I64 } | Paid
+  type Doc = { id: Key docs, stage: Stage }
+  relation docs : Doc key id generate sequence
+run
+  insert shapes.Circle { id: shapes.key(1), r: 2 }
+  insert shapes.Circle { id: shapes.key(2), r: 3 }
+  insert shapes.Dot { id: shapes.key(3) }
+  insert docs { id: docs.key(1), stage: Paid }
+  insert docs { id: docs.key(2), stage: Sent { n: 1 } }
+  insert docs { id: docs.key(3), stage: Draft }
+query rowsort
+  from s in shapes group s by tag(s) into g select { tag: g.key, n: count(x for x in g) }
+----
+{ tag: Circle, n: 2 }
+{ tag: Dot, n: 1 }
+query
+  from s in shapes where tag(s) == Dot select key s
+----
+shapes.key(3)
+query
+  from d in docs select tag(d.stage)
+----
+Draft
+Sent
+Paid
+query
+  from d in docs where tag(d.stage) > Draft select key d
+----
+docs.key(1)
+docs.key(2)
+query
+  (Tag Shape).parse("Square")
+----
+Some { value: Square }
+query
+  (Tag Shape).parse("Triangle")
+----
+None
+error Invalid
+  from s in shapes where tag(s) < Dot select key s
+error Invalid
+  from s in shapes select match tag(s) | Circle -> 1 | Square -> 2

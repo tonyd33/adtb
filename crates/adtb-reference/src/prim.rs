@@ -332,11 +332,11 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         Prim::StartsWith => Ok(Value::bool(text(&v[0]).starts_with(text(&v[1])))),
         Prim::EndsWith => Ok(Value::bool(text(&v[0]).ends_with(text(&v[1])))),
         Prim::Contains => Ok(Value::bool(text(&v[0]).contains(text(&v[1])))),
-        Prim::Matches => Ok(Value::bool(unicode::matches(text(&v[0]), text(&v[1])))),
+        Prim::Matches => Ok(Value::bool(it.compiled.matches(text(&v[0]), text(&v[1])))),
         Prim::Lower => Ok(Text(unicode::lower(text(&v[0])))),
         Prim::Upper => Ok(Text(unicode::upper(text(&v[0])))),
         Prim::Fold => Ok(Text(unicode::fold(text(&v[0])))),
-        Prim::Collate => Ok(SortKey(unicode::collate(text(&v[0]), text(&v[1])))),
+        Prim::Collate => Ok(SortKey(it.compiled.collate(text(&v[0]), text(&v[1])))),
         Prim::Utf8 => match &v[0] {
             Bytes(b) => Ok(match String::from_utf8(b.clone()) {
                 Ok(t) => Value::some(Text(unicode::nfc(&t))),

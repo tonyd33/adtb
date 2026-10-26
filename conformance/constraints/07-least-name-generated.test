@@ -1,0 +1,42 @@
+# Generated constraints take part in the least-name choice by their canonical names, capital letters sorting before lowercase ones.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Badge = { id: Key badges, owner: Key users, label: Text }
+  relation badges : Badge key id generate sequence index (owner) unique (label)
+  type Login { id: Key logins, user: Key users }
+    = Active  { badge: Key badges }
+    | Revoked
+  relation logins : Login key id generate sequence index (user)
+  type Email = new Text where scalar_len(self) > 2
+  type Contact = { id: Key contacts, email: Email }
+  relation contacts : Contact key id generate sequence
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert badges { id: badges.key(1), owner: users.key(1), label: "b1" }
+  insert logins.Active { id: logins.key(1), user: users.key(1), badge: badges.key(1) }
+  insert contacts { id: contacts.key(1), email: Email("a@b") }
+# test::badges.Badge.owner sorts before test::badges.key
+error Violated
+  insert badges { id: badges.key(1), owner: users.key(9), label: "b2" }
+# test::badges.key sorts before test::badges.unique(label)
+error KeyViolation
+  transact
+    insert badges { id: badges.key(1), owner: users.key(1), label: "b3" }
+    insert badges { id: badges.key(2), owner: users.key(1), label: "b1" }
+# test::logins.key sorts before test::logins.user, a header field
+error KeyViolation
+  insert logins.Revoked { id: logins.key(1), user: users.key(9) }
+# test::logins.Active.badge sorts before test::logins.key
+error Violated
+  insert logins.Active { id: logins.key(1), user: users.key(1), badge: badges.key(9) }
+# test::Email.domain sorts before test::contacts.key
+error Violated
+  insert contacts { id: contacts.key(1), email: Email("x") }
+error KeyViolation
+  insert contacts { id: contacts.key(1), email: Email("xyz") }
+query
+  count(b for b in badges)
+----
+1

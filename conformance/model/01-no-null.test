@@ -1,0 +1,21 @@
+# There is no NULL: absence is a constructor such as None, and None needs a type fixed by its context.
+schema
+  module test
+  type Profile = { id: Key profiles, phone: Option Text }
+  relation profiles : Profile key id generate sequence
+run
+  insert profiles { id: profiles.key(1), phone: None }
+  insert profiles { id: profiles.key(2), phone: Some { value: "555" } }
+query rowsort
+  from p in profiles select match p.phone | None -> "-" | Some s -> s.value
+----
+"-"
+"555"
+query
+  from p in profiles where p.phone == None select key p
+----
+profiles.key(1)
+error Invalid
+  None
+error Invalid
+  insert profiles { id: profiles.key(3), phone: null }

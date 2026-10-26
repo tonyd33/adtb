@@ -1,0 +1,24 @@
+# Generators belong to the relation variable: only an insert may omit a generated field; elsewhere a value gives every field.
+schema
+  module test
+  type Order = { id: Key orders, buyer: Text }
+  relation orders : Order key id generate sequence
+  fn mk (b: Text) -> Order = Order { id: orders.key(7), buyer: b }
+query
+  mk("x")
+----
+Order { id: orders.key(7), buyer: "x" }
+error Invalid
+  Order { buyer: "x" }
+run
+  insert orders { buyer: "x" }
+query
+  count(o for o in orders where o.buyer == "x")
+----
+1
+run
+  insert orders mk("y")
+query
+  from o in orders where o.buyer == "y" select key o
+----
+orders.key(7)

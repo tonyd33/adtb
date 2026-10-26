@@ -1,0 +1,59 @@
+# An operation applied outside its domain faults and aborts the statement, which returns no rows and applies no effects.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Order = { id: Key orders, user: Key users, total: I64, qty: I64 }
+  type Raw = { id: Key raws, n: I64, small: I8 }
+  relation users : User key id generate sequence
+  relation orders : Order key id generate sequence
+  relation raws : Raw key id generate sequence
+run
+  insert users from [User { id: users.key(1), name: "ann" }]
+  insert orders from [Order { id: orders.key(1), user: users.key(1), total: 100, qty: 2 },
+                      Order { id: orders.key(2), user: users.key(1), total: 100, qty: 0 },
+                      Order { id: orders.key(3), user: users.key(1), total: 30, qty: 3 }]
+  insert raws from [Raw { id: raws.key(1), n: 9223372036854775807, small: -128 },
+                    Raw { id: raws.key(2), n: 3000000000, small: 5 }]
+# Division and remainder by zero.
+error Faulted
+  from o in orders select o.total / o.qty
+error Faulted
+  from o in orders select o.total % o.qty
+# Integer overflow.
+error Faulted
+  from r in raws where r.id == raws.key(1) select r.n + 1
+error Faulted
+  from r in raws where r.id == raws.key(1) select r.n * 2
+error Faulted
+  from r in raws where r.id == raws.key(1) select -r.small
+error Faulted
+  from r in raws where r.id == raws.key(1) select r.small - 1
+# A conversion out of range of the target type.
+error Faulted
+  from r in raws where r.id == raws.key(2) select i32(r.n)
+# The declared result type is unchanged by operations that can fault.
+query
+  from o in orders where o.qty > 0 select o.total / o.qty
+----
+10
+50
+query
+  from r in raws where r.id == raws.key(2) select i32(r.n - 2999999990)
+----
+10
+# A faulting write applies no effects.
+error Faulted
+  insert users from (from o in orders select User { id: users.key(10 + o.total / o.qty), name: "x" })
+query
+  from u in users select u.name
+----
+"ann"
+error Faulted
+  update o in orders where o.id == orders.key(2) set Order { o with total: o.total / o.qty }
+query
+  from o in orders where o.id == orders.key(2) select o.total
+----
+100
+# A fail in a write is a rejection, not a fault.
+error UserError
+  fail "no"

@@ -1,0 +1,36 @@
+# Bytes hold arbitrary bytes, order by unsigned byte with a prefix first, and are never Text.
+schema
+  module test
+  fn b (t: Text) -> Option Bytes = Bytes.parse(t)
+query
+  b("0x80") > b("0x7f")
+----
+true
+query
+  b("0x00") < b("0x0000")
+----
+true
+query
+  b("0x") < b("0x00")
+----
+true
+query
+  b("0x01ff") < b("0x02")
+----
+true
+query
+  b("0x00FF") == b("0x00ff")
+----
+true
+query
+  match b("0xff") | Some x -> utf8(x.value) | None -> None
+----
+None
+query
+  match b("0x65cc81") | Some x -> x.value == bytes("é") | None -> false
+----
+false
+query
+  b("0xc3a9")
+----
+Some { value: 0xc3a9 }

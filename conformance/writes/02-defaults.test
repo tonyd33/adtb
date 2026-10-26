@@ -1,0 +1,55 @@
+# A field with a default may be omitted from an insert into the relation that declares it; a given field overrides it; other relations of the type need every field.
+schema
+  module test
+  type Counter = { id: Key counters, name: Text, n: I64 }
+  relation counters : Counter key id generate sequence default n = 0
+  type Counter2 = { id: Key others, name: Text, n: I64 }
+  relation others : Counter2 key id generate sequence
+  type Shape { id: Key shapes } = Circle { r: I64, label: Text } | Square { side: I64, label: Text }
+  relation shapes : Shape key id generate sequence
+    default label = "plain"
+    default Square.side = 1
+run
+  insert counters { id: counters.key(1), name: "a" }
+  insert counters { id: counters.key(2), name: "b", n: 5 }
+  insert counters from (from k in [3] select { id: counters.key(k), name: "c" })
+  insert shapes.Circle { id: shapes.key(1), r: 2 }
+  insert shapes.Square { id: shapes.key(2) }
+  insert shapes.Square { id: shapes.key(3), side: 4, label: "big" }
+  insert shapes from (from k in [4] select Circle { id: shapes.key(k), r: 9 })
+query
+  from c in counters select c
+----
+Counter { id: counters.key(1), name: "a", n: 0 }
+Counter { id: counters.key(2), name: "b", n: 5 }
+Counter { id: counters.key(3), name: "c", n: 0 }
+query
+  from s in shapes select s
+----
+Circle { id: shapes.key(1), r: 2, label: "plain" }
+Circle { id: shapes.key(4), r: 9, label: "plain" }
+Square { id: shapes.key(2), side: 1, label: "plain" }
+Square { id: shapes.key(3), side: 4, label: "big" }
+error Invalid
+  insert shapes.Circle { id: shapes.key(5) }
+error Invalid
+  insert others { id: others.key(1), name: "x" }
+error Invalid
+  from c in [Counter { id: counters.key(9), name: "z" }] select c
+query
+  count(s for s in shapes)
+----
+4
+error Invalid
+  insert counters from ([{ id: counters.key(9), name: "lit" }])
+run
+  insert shapes from (
+    from k in [5, 6]
+    select match k
+      | 5 -> Circle { id: shapes.key(k), r: 1 }
+      | _ -> Square { id: shapes.key(k), label: "six" })
+query
+  from s in shapes where value(key s) > 4 select s
+----
+Circle { id: shapes.key(5), r: 1, label: "plain" }
+Square { id: shapes.key(6), side: 1, label: "six" }

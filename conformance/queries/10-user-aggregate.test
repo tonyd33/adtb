@@ -1,0 +1,35 @@
+# A user-defined aggregate folds once per binding and returns Option over a possibly empty range.
+schema
+  module test
+  aggregate tally (x: I64) -> I64 =
+    state { n: I64, s: I64 } init { n: 0, s: 0 }
+    step (st, x) -> { n: st.n + 1, s: st.s + x }
+    merge (a, b) -> { n: a.n + b.n, s: a.s + b.s }
+    finish st -> st.n * 1000 + st.s
+  type Sale = { id: Key sales, region: Text, total: I64 }
+  relation sales : Sale key id generate sequence
+run
+  insert sales from [Sale { id: sales.key(1), region: "eu", total: 1 },
+                     Sale { id: sales.key(2), region: "eu", total: 1 },
+                     Sale { id: sales.key(3), region: "us", total: 4 }]
+# Over a group the result has the declared type; equal values of two bindings each count.
+query rowsort
+  from o in sales group o by o.region into g
+  select { region: g.key, t: tally(x.total for x in g) }
+----
+{ region: "eu", t: 2002 }
+{ region: "us", t: 1004 }
+# Over a possibly empty range the result is an Option.
+query
+  tally(o.total for o in sales)
+----
+Some { value: 3006 }
+query
+  tally(o.total for o in sales where o.total > 10)
+----
+None
+# A user-defined aggregate accepts a generator over a select, ranging over its distinct values.
+query
+  tally(t for t in (from o in sales select o.total))
+----
+Some { value: 2005 }

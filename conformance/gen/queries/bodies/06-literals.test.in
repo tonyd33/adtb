@@ -1,0 +1,38 @@
+# A literal pattern matches a scalar equal to it, Text compared after NFC normalisation, at the scrutinee's type.
+@SCHEMA@
+@RUN@
+run
+  transact
+    insert users { id: users.key(4), name: "caf\u{e9}" }
+    insert users { id: users.key(5), name: "nai\u{308}ve" }
+query rowsort
+  from u in users select match u.name | "US" -> 0 | "ann" -> 1 | _ -> 2
+----
+1
+2
+query rowsort
+  from u in users where key u == users.key(4) select match u.name | "cafe\u{301}" -> "nfc" | _ -> "no"
+----
+"nfc"
+query rowsort
+  from u in users where key u == users.key(5) select match u.name | "na\u{ef}ve" -> "nfc" | _ -> "no"
+----
+"nfc"
+query rowsort
+  from d in phones select match d.seen | 10 -> "ten" | 20 -> "twenty" | _ -> "other"
+----
+"ten"
+"twenty"
+query rowsort
+  from d in phones select match d.seen - 30 | -20 -> "minus twenty" | _ -> "other"
+----
+"minus twenty"
+"other"
+# A literal takes the scrutinee's type; one of another type is refused.
+error Invalid
+  from u in users select match u.name | 1 -> 0 | _ -> 2
+error Invalid
+  from d in phones select match d.seen | "ten" -> 0 | _ -> 2
+# A literal never matches a value of a sum.
+error Invalid
+  from p in parcels select match p.state | "Pending" -> 0 | _ -> 1

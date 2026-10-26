@@ -1,0 +1,32 @@
+# A domain applies to values of the newtype at any depth inside a stored row, in every relation that stores them.
+schema
+  module test
+  type Code = new I64 where self > 0
+  type Pin = Unset | Fixed { code: Code }
+  type Lock = { id: Key locks, pin: Pin, spare: Option Code }
+  relation locks : Lock key id generate sequence
+  type Badge { id: Key badges } = Plain | Coded { code: Code }
+  relation badges : Badge key id generate sequence
+run
+  insert locks { id: locks.key(1), pin: Unset, spare: None }
+  insert locks { id: locks.key(2), pin: Fixed { code: Code(7) }, spare: Some { value: Code(1) } }
+  insert badges.Plain { id: badges.key(1) }
+  insert badges.Coded { id: badges.key(2), code: Code(3) }
+error Violated
+  insert locks { id: locks.key(3), pin: Fixed { code: Code(0) }, spare: None }
+error Violated
+  insert locks { id: locks.key(3), pin: Unset, spare: Some { value: Code(-1) } }
+error Violated
+  insert badges.Coded { id: badges.key(3), code: Code(0) }
+error Violated
+  update b in badges.Plain set Coded { code: Code(-5) }
+query
+  from l in locks select value(key l)
+----
+1
+2
+query
+  from b in badges select value(key b)
+----
+1
+2

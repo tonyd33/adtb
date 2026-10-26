@@ -1,0 +1,58 @@
+# Rows, value-level sums, records, keys and scalars are each matched by their constructor or by literals.
+@SCHEMA@
+@RUN@
+# A row, by its constructor.
+query rowsort
+  from i in identities where i.user == users.key(2) select match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+----
+"a-bo"
+"root"
+# A value-level sum field, by its constructor.
+query rowsort
+  from p in parcels select { code: p.code, shipped: match p.state | Pending -> false | Shipped _ -> true }
+----
+{ code: "p1", shipped: false }
+{ code: "p2", shipped: true }
+{ code: "p3", shipped: true }
+# A sum value built by the query.
+query
+  match Shipped { via: Mail { tracking: "z" } } | Shipped { via: Courier c } -> c.name | Shipped { via: Mail m } -> m.tracking
+----
+"z"
+# A record, as a one-constructor sum.
+query rowsort
+  from u in users select match u | User { name } -> name
+----
+"ann"
+"bo"
+"cy"
+query rowsort
+  from u in users select match u | User x -> value(key x)
+----
+1
+2
+3
+# A scalar, by literal patterns.
+query rowsort
+  from u in users select match u.name | "ann" -> 1 | "bo" -> 2 | _ -> 3
+----
+1
+2
+3
+query rowsort
+  from d in phones select match d.seen | 10 -> "ten" | n -> "other"
+----
+"other"
+"ten"
+# Option is a sum.
+query rowsort
+  from e in employees select match e.manager | None -> "top" | Some { value: m } -> m.name
+----
+"boss"
+"top"
+# A constructor application has its constructor's row type, so other constructors are not its arms.
+error Invalid
+  match Shipped { via: Mail { tracking: "z" } } | Pending -> "p" | Shipped _ -> "s"

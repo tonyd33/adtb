@@ -1,0 +1,23 @@
+# The select of a constraint query may be the row, its key, a record or any value; a returned row is a violation whatever its shape.
+schema
+  module test
+  type Item = { id: Key items, n: I64 }
+  relation items : Item key id generate sequence
+  constraint by_row = from i in items where i.n == 1 select i
+  constraint by_key = from i in items where i.n == 2 select key i
+  constraint by_record = from i in items where i.n == 3 select { item: key i, n: i.n }
+  constraint by_constant = from i in items where i.n == 4 select "four"
+error Violated
+  insert items { id: items.key(1), n: 1 }
+error Violated
+  insert items { id: items.key(2), n: 2 }
+error Violated
+  insert items { id: items.key(3), n: 3 }
+error Violated
+  insert items { id: items.key(4), n: 4 }
+run
+  insert items { id: items.key(5), n: 5 }
+query
+  from i in items select i.n
+----
+5

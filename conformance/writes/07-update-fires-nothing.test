@@ -1,0 +1,36 @@
+# Only deletion triggers an action: an update or a retag of the target leaves its referrers unchanged.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities } = Google { gid: Text } | Apple { sub: Text }
+  relation identities : Identity key id generate sequence
+  type Login { id: Key logins }
+    = Active  { identity: Key identities on delete retag Revoked {} }
+    | Revoked
+  relation logins : Login key id generate sequence
+  type Post = { id: Key posts, author: Key users on delete cascade }
+  relation posts : Post key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+  insert identities.Google { id: identities.key(1), gid: "g" }
+  insert logins.Active { id: logins.key(1), identity: identities.key(1) }
+  insert posts { id: posts.key(1), author: users.key(1) }
+run
+  update i in identities.Google set Apple { sub: "a" }
+run
+  update u in users set User { u with name: "b" }
+query
+  from s in logins select s
+----
+Active { id: logins.key(1), identity: identities.key(1) }
+query
+  from p in posts select p
+----
+Post { id: posts.key(1), author: users.key(1) }
+run
+  (delete u in users, insert users { id: users.key(1), name: "c" })
+query
+  from p in posts select p
+----
+Post { id: posts.key(1), author: users.key(1) }

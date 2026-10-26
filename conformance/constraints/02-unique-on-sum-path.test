@@ -1,0 +1,27 @@
+# A unique over a path into a value-level sum field constrains only rows whose field holds that constructor.
+schema
+  module test
+  type Status = Draft | Paid { ref: Text }
+  type Invoice = { id: Key invoices, status: Status }
+  relation invoices : Invoice key id generate sequence unique (status.Paid.ref)
+run
+  insert invoices { id: invoices.key(1), status: Draft }
+  insert invoices { id: invoices.key(2), status: Draft }
+  insert invoices { id: invoices.key(3), status: Paid { ref: "r1" } }
+error Violated
+  insert invoices { id: invoices.key(4), status: Paid { ref: "r1" } }
+error Violated
+  update i in invoices where key i == invoices.key(1) set Invoice { i with status: Paid { ref: "r1" } }
+run
+  insert invoices { id: invoices.key(4), status: Paid { ref: "r2" } }
+run
+  update i in invoices where key i == invoices.key(3) set Invoice { i with status: Draft }
+run
+  update i in invoices where key i == invoices.key(1) set Invoice { i with status: Paid { ref: "r1" } }
+query
+  from i in invoices select { id: key i, status: i.status }
+----
+{ id: invoices.key(1), status: Paid { ref: "r1" } }
+{ id: invoices.key(2), status: Draft }
+{ id: invoices.key(3), status: Draft }
+{ id: invoices.key(4), status: Paid { ref: "r2" } }

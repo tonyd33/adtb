@@ -1,0 +1,35 @@
+# min and max in a constraint give an Option, None over an empty range.
+schema
+  module test
+  type Entry = { id: Key entries, cap: I64 }
+  relation entries : Entry key id generate sequence
+  type Line = { id: Key lines, entry: Key entries, amount: I64 }
+  relation lines : Line
+    key id generate sequence
+    index (entry, amount)
+  constraint under_cap =
+    from e in entries
+    where match max(l.amount for l in lines where l.entry == key e)
+      | None -> false
+      | Some m -> m.value > e.cap
+    select e
+  constraint not_negative =
+    from e in entries
+    where min(l.amount for l in lines where l.entry == key e) == Some { value: -1 }
+    select e
+run
+  insert entries { id: entries.key(1), cap: 10 }
+  insert lines { id: lines.key(1), entry: entries.key(1), amount: 10 }
+error Violated
+  insert lines { id: lines.key(2), entry: entries.key(1), amount: 11 }
+error Violated
+  insert lines { id: lines.key(2), entry: entries.key(1), amount: -1 }
+error Violated
+  update e in entries set Entry { e with cap: 9 }
+run
+  insert lines { id: lines.key(2), entry: entries.key(1), amount: -2 }
+query
+  from l in lines select l.amount
+----
+-2
+10

@@ -1,0 +1,102 @@
+# Within one fix each binder occurs only at positive positions; a lower stratum may be negated or aggregated.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Follow = { src: Key users, dst: Key users }
+  type Node = A { n: I64 } | B { n: I64 }
+  relation users : User key id generate sequence
+  relation follows : Follow key (src, dst)
+  fn size (xs: Set (Key users)) -> I64 = count(x for x in xs)
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" },
+                     User { id: users.key(3), name: "cy" }]
+  insert follows from [Follow { src: users.key(1), dst: users.key(2) }]
+# Negating a fix binder in the outer query is accepted: the fix is complete first.
+query
+  fix reach = (from f in follows where f.src == users.key(1) select f.dst)
+            union (from r in reach, f in follows where f.src == r select f.dst)
+  in from u in users where not exists r in reach where r == key u select u.name
+----
+"ann"
+"cy"
+# A relation variable may be negated inside a body.
+query
+  fix x = (from u in users where key u == users.key(1) select key u)
+        union (from r in x, f in follows
+               where f.src == r and not exists g in follows where g.src == f.dst
+               select f.dst)
+  in x
+----
+users.key(1)
+users.key(2)
+# An inner fix none of whose bodies mentions the outer binders is a lower stratum.
+query
+  fix outer = (from u in users
+               where not exists r in (fix reach = (from f in follows where f.src == users.key(1) select f.dst)
+                                                union (from r in reach, f in follows where f.src == r select f.dst)
+                                      in reach)
+                     where r == key u
+               select key u)
+  in outer
+----
+users.key(1)
+users.key(3)
+# A positive inner fix may mention the outer binder in its bodies.
+query
+  fix x = (from u in users where key u == users.key(1) select key u)
+        union (fix y = (from r in x, f in follows where f.src == r select f.dst) in y)
+  in x
+----
+users.key(1)
+users.key(2)
+# An exists in a where condition is positive, and so are both operands of or.
+query
+  fix x = (from u in users where key u == users.key(1) select key u)
+        union (from u in users where exists r in x where r == key u or false select key u)
+  in x
+----
+users.key(1)
+# A match in a body stays positive.
+query rowsort
+  fix x = [A { n: 1 }, B { n: 2 }]
+        union (from v in x select match v | A a -> A { n: a.n } | B b -> B { n: b.n })
+  in x
+----
+A { n: 1 }
+B { n: 2 }
+# The operand of not exists is not positive.
+error Invalid
+  fix x = (from u in users where key u == users.key(1) select key u)
+        union (from u in users where not exists r in x where r == key u select key u)
+  in x
+# Nor is the range of an aggregate.
+error Invalid
+  fix x = (from u in users where key u == users.key(1) select key u)
+        union (from u in users where count(r for r in x) < 2 select key u)
+  in x
+# Nor is a function argument.
+error Invalid
+  fix x = (from u in users where key u == users.key(1) select key u)
+        union (from u in users where size(x) < 2 select key u)
+  in x
+# Nor the source of a group.
+error Invalid
+  fix x = (from u in users where key u == users.key(1) select key u)
+        union (from r in x group r by r into g select g.key)
+  in x
+# Nor the source of top.
+error Invalid
+  fix x = (from u in users where key u == users.key(1) select key u)
+        union (top 1 by r (from r in x select r))
+  in x
+# Nor the condition of an if whose else branch is not empty.
+error Invalid
+  fix x = (from u in users where key u == users.key(1) select key u)
+        union (if exists r in x where r == users.key(2) then [users.key(3)] else [users.key(2)])
+  in x
+# Mutually recursive binders may not negate each other.
+error Invalid
+  fix a = from u in users where not exists r in b where r == key u select key u,
+      b = from u in users where exists r in a where r == key u select key u
+  in a

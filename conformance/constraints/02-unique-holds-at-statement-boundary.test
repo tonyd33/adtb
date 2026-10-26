@@ -1,0 +1,27 @@
+# A unique is judged at the end of the statement, so two rows may swap their values in one statement.
+schema
+  module test
+  type Seat = { id: Key seats, label: Text }
+  relation seats : Seat key id generate sequence unique (label)
+run
+  insert seats { id: seats.key(1), label: "a" }
+  insert seats { id: seats.key(2), label: "b" }
+run
+  transact
+    update s in seats where key s == seats.key(1) set Seat { s with label: "b" }
+    update s in seats where key s == seats.key(2) set Seat { s with label: "a" }
+query rowsort
+  from s in seats select { id: key s, label: s.label }
+----
+{ id: seats.key(1), label: "b" }
+{ id: seats.key(2), label: "a" }
+error Violated
+  update s in seats where key s == seats.key(1) set Seat { s with label: "a" }
+# a row rewritten with its own value does not conflict with itself
+run
+  update s in seats set s
+query rowsort
+  from s in seats select s.label
+----
+"a"
+"b"

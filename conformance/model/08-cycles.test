@@ -1,0 +1,28 @@
+# References are checked at the end of the change set, so rows that reference each other are inserted together.
+schema
+  module test
+  type Team   = { id: Key teams, name: Text, lead: Key members }
+  type Member = { id: Key members, team: Key teams }
+  relation teams   : Team key id generate sequence
+  relation members : Member key id generate sequence
+  type Person = { id: Key people, mentor: Key people }
+  relation people : Person key id generate sequence
+error Violated
+  insert teams { id: teams.key(1), name: "core", lead: members.key(9) }
+run
+  transact
+    let t = insert teams { id: teams.key(1), name: "core", lead: members.key(9) }
+    let m = insert members { id: members.key(9), team: key t }
+    return key t
+query
+  from t in teams select t.lead.team.name
+----
+"core"
+run
+  insert people { id: people.key(1), mentor: people.key(1) }
+query
+  from p in people select p.mentor.mentor
+----
+people.key(1)
+error Violated
+  delete m in members

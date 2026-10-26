@@ -1,0 +1,71 @@
+# Take, after and top need an ordering that includes the row's key, a field covered by a key or unique, or the selected key.
+schema
+  module test
+  type User = { id: Key users, name: Text, email: Text, age: I64 }
+  relation users : User key id generate sequence
+    unique (email)
+  type Pay { id: Key pays, amount: I64 } = Card { last4: Text } | Cash { till: I64 }
+  relation pays : Pay key id generate sequence
+    unique (last4) in Card
+run
+  insert users from [User { id: users.key(1), name: "ann", email: "c@x", age: 30 },
+                     User { id: users.key(2), name: "bo", email: "a@x", age: 20 },
+                     User { id: users.key(3), name: "cy", email: "b@x", age: 30 }]
+  insert pays from [Card { id: pays.key(1), amount: 5, last4: "9" },
+                    Card { id: pays.key(2), amount: 7, last4: "1" },
+                    Cash { id: pays.key(3), amount: 7, till: 1 }]
+# The key, through key or the key field.
+query
+  from u in users select u order by key u take 1
+----
+User { id: users.key(1), name: "ann", email: "c@x", age: 30 }
+query
+  from u in users select u order by u.id desc take 1
+----
+User { id: users.key(3), name: "cy", email: "b@x", age: 30 }
+# A field covered by a unique.
+query
+  from u in users select u order by u.email take 2
+----
+User { id: users.key(2), name: "bo", email: "a@x", age: 20 }
+User { id: users.key(3), name: "cy", email: "b@x", age: 30 }
+# A compound order including the key.
+query
+  from u in users select u order by (u.age desc, key u) take 2
+----
+User { id: users.key(1), name: "ann", email: "c@x", age: 30 }
+User { id: users.key(3), name: "cy", email: "b@x", age: 30 }
+# A unique of a constructor set covers rows of that constructor set.
+query
+  from c in pays.Card select c order by c.last4 take 1
+----
+Card { id: pays.key(2), amount: 7, last4: "1" }
+# A selected key ordered by itself.
+query
+  from u in users select key u order by key u desc take 1
+----
+users.key(3)
+# An ordering that may tie distinct elements is refused for take, after and top.
+error Invalid
+  from u in users select u order by u.age take 1
+error Invalid
+  from u in users select u order by (u.age, u.name) take 1
+error Invalid
+  from u in users select u order by u.age take 5 after Some { value: 20 }
+error Invalid
+  from u in users select { user: u, top: top 1 by u2.age (from u2 in users select u2) }
+error Invalid
+  from p in pays select p order by p.amount take 1
+# A unique in one constructor does not cover the whole sum.
+error Invalid
+  from p in pays.(Card | Cash) select p order by (match p | Card c -> c.last4 | Cash _ -> "") take 1
+# A selected value that is neither a row nor a key has no determinate order.
+error Invalid
+  from u in users select u.age order by u.age take 1
+# Order by alone allows ties.
+query rowsort
+  from u in users select u order by u.age
+----
+User { id: users.key(2), name: "bo", email: "a@x", age: 20 }
+User { id: users.key(1), name: "ann", email: "c@x", age: 30 }
+User { id: users.key(3), name: "cy", email: "b@x", age: 30 }

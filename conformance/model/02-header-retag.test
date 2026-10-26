@@ -1,0 +1,21 @@
+# A value keeps its key and header fields when it changes constructor.
+schema
+  module test
+  type Channel { id: Key channels, owner: Text }
+    = Mail  { address: Text }
+    | Phone { number: Text }
+  relation channels : Channel key id generate sequence
+  type Note = { id: Key notes, channel: Key channels }
+  relation notes : Note key id generate sequence
+run
+  insert channels.Mail { id: channels.key(1), owner: "ann", address: "a@x" }
+  insert notes { id: notes.key(1), channel: channels.key(1) }
+  update c in channels where key c == channels.key(1) set Phone { number: "7" }
+query
+  from c in channels select c
+----
+Phone { id: channels.key(1), owner: "ann", number: "7" }
+query
+  from n in notes select match n.channel | Mail m -> m.address | Phone p -> p.number
+----
+"7"

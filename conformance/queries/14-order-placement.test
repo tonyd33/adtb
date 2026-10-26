@@ -1,0 +1,27 @@
+# Order by, take and after are allowed only on the outermost comprehension of an ad hoc statement.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+    unique (name)
+run
+  insert users from [User { id: users.key(1), name: "cy" },
+                     User { id: users.key(2), name: "ann" }]
+query
+  from u in users select u.name order by u.name
+----
+"ann"
+"cy"
+error Invalid
+  count(x for x in (from u in users select u.name order by u.name))
+error Invalid
+  from v in (from u in users select u order by u.name) select v.name
+error Invalid
+  from u in users select { name: u.name, others: from v in users select v.name order by v.name }
+error Invalid
+  (from u in users select u.name order by u.name) union (from u in users select u.name)
+error Invalid
+  exists u in (from u in users select u order by u.id take 1)
+# Take is allowed only after order by.
+error Invalid
+  from u in users select u take 1

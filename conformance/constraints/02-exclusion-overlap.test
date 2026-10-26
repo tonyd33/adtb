@@ -1,0 +1,44 @@
+# An exclusion forbids two bookings of one resource whose spans overlap, across every constructor of its scope.
+schema
+  module test
+  type Booking { id: Key bookings, resource: Text, during: Span I64 }
+    = Room { seats: I64 }
+    | Desk
+  relation bookings : Booking
+    key id generate sequence
+    interval index (resource, during) in (Room | Desk)
+  constraint no_double_booking =
+    from a in bookings.(Room | Desk), b in bookings.(Room | Desk)
+    where a.resource == b.resource and overlaps(a.during, b.during) and key a != key b
+    select { a: key a, b: key b }
+run
+  insert bookings.Room { id: bookings.key(1), resource: "r1", during: span(10, 20), seats: 4 }
+# spans that only touch do not overlap
+run
+  insert bookings.Room { id: bookings.key(2), resource: "r1", during: span(20, 30), seats: 4 }
+  insert bookings.Desk { id: bookings.key(3), resource: "r1", during: span(0, 10) }
+# another resource
+run
+  insert bookings.Room { id: bookings.key(4), resource: "r2", during: span(10, 20), seats: 2 }
+error Violated
+  insert bookings.Room { id: bookings.key(5), resource: "r1", during: span(15, 16), seats: 1 }
+# a Desk conflicts with a Room of the same resource
+error Violated
+  insert bookings.Desk { id: bookings.key(5), resource: "r1", during: span(29, 31) }
+error Violated
+  insert bookings.Desk { id: bookings.key(5), resource: "r2", during: span(0, 100) }
+error Violated
+  update b in bookings.Room where key b == bookings.key(4) set Room { b with resource: "r1" }
+error Violated
+  transact
+    insert bookings.Desk { id: bookings.key(5), resource: "r3", during: span(1, 5) }
+    insert bookings.Desk { id: bookings.key(6), resource: "r3", during: span(4, 8) }
+# moving one booking out of the way and another into its place in one statement
+run
+  transact
+    update b in bookings.Room where key b == bookings.key(1) set Room { b with during: span(40, 50) }
+    insert bookings.Desk { id: bookings.key(5), resource: "r1", during: span(12, 18) }
+query
+  from b in bookings where b.resource == "r1" and overlaps(b.during, span(12, 18)) select value(key b)
+----
+5

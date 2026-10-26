@@ -1,0 +1,46 @@
+# The scale of a Decimal is part of its type; each number has one value per scale and prints with exactly that many digits.
+schema
+  module test
+  fn d0 (x: Decimal 0) -> Decimal 0 = x
+  fn d2 (x: Decimal 2) -> Decimal 2 = x
+  fn d38 (x: Decimal 38) -> Decimal 38 = x
+  type Price = { id: Key prices, amount: Decimal 2 }
+  relation prices : Price key id generate sequence
+query
+  1.50
+----
+1.50
+query
+  d2(1.5)
+----
+1.50
+query
+  d2(3)
+----
+3.00
+query
+  [d2(1.5), d2(1.50), d2(1.75 - 0.25)]
+----
+1.50
+error Invalid
+  d2(1.234)
+query
+  d0(99999999999999999999999999999999999999)
+----
+99999999999999999999999999999999999999
+error Invalid
+  d0(100000000000000000000000000000000000000)
+query
+  d38(0.5)
+----
+0.50000000000000000000000000000000000000
+error Invalid
+  (Decimal 39).parse("1")
+run
+  insert prices { id: prices.key(1), amount: 2.5 }
+query
+  from p in prices select p.amount
+----
+2.50
+error Invalid
+  d0(1.5)

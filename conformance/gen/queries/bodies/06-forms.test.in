@@ -1,0 +1,48 @@
+# Pattern forms: _, a binder, nullary C, C _, C x, record patterns, literals and alternatives.
+@SCHEMA@
+@RUN@
+query rowsort
+  from p in parcels select match p.state | Pending -> "pending" | Shipped _ -> "shipped"
+----
+"pending"
+"shipped"
+query rowsort
+  from p in parcels select match p.state | Pending -> "pending" | Shipped s -> match s.via | Courier _ -> "courier" | Mail _ -> "mail"
+----
+"courier"
+"mail"
+"pending"
+query rowsort
+  from p in parcels select match p.state | Pending -> "-" | Shipped { via: Courier { name } } -> name | Shipped { via: Mail { tracking: t } } -> t
+----
+"-"
+"dhl"
+"t-3"
+query rowsort
+  from u in users select match u.name | "ann" -> "first" | _ -> "rest"
+----
+"first"
+"rest"
+query rowsort
+  from u in users select match u.name | "ann" -> "first" | other -> other
+----
+"bo"
+"cy"
+"first"
+query rowsort
+  from u in users select match u.name | "ann" | "bo" -> 1 | _ -> 2
+----
+1
+2
+# true and false are constructor patterns.
+query rowsort
+  from u in users select match u.name == "cy" | false -> 0 | true -> 1
+----
+0
+1
+# A nullary constructor pattern takes no payload form other than itself.
+error Invalid
+  from p in parcels select match p.state | Pending x -> 0 | Shipped _ -> 1
+# A constructor with a payload is not matched by its bare name.
+error Invalid
+  from p in parcels select match p.state | Pending -> 0 | Shipped -> 1

@@ -1,0 +1,30 @@
+# A match-scoped check gives one predicate per constructor, an arm of true leaving that constructor unconstrained.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  check login_valid on identities (match self
+    | EmailPass e -> scalar_len(e.email) <= 5
+    | Google g    -> scalar_len(g.gid) > 0
+    | Apple a     -> true)
+run
+  insert identities.EmailPass { id: identities.key(1), user: "u", email: "a@b" }
+  insert identities.Google { id: identities.key(2), user: "u", gid: "g" }
+  insert identities.Apple { id: identities.key(3), user: "u", sub: "" }
+error Violated
+  insert identities.EmailPass { id: identities.key(4), user: "u", email: "abcdef" }
+error Violated
+  insert identities.Google { id: identities.key(4), user: "u", gid: "" }
+error Violated
+  update i in identities.Apple set Google { gid: "" }
+run
+  update i in identities.Apple set Google { gid: "x" }
+query
+  from i in identities select value(key i)
+----
+1
+2
+3

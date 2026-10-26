@@ -1,0 +1,57 @@
+# A retag fails while a reference typed to the old constructor reaches the row at the end of the statement; references to the whole relation are unaffected.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+  type Reset = { id: Key resets, identity: Key identities.EmailPass, token: Text }
+  relation resets : Reset key id generate sequence
+  type Session = { id: Key sessions, identity: Key identities }
+  relation sessions : Session key id generate sequence
+run
+  insert users { id: users.key(1), name: "a" }
+  insert identities from ([EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h" },
+                           EmailPass { id: identities.key(2), user: users.key(1), email: "b@x", hash: "h" }])
+  insert resets from (from e in identities.EmailPass where key e == identities.key(1)
+                      select { id: resets.key(1), identity: key e, token: "t" })
+  insert sessions from ([{ id: sessions.key(1), identity: identities.key(1) },
+                         { id: sessions.key(2), identity: identities.key(2) }])
+error Violated
+  update i in identities.EmailPass where i.id == identities.key(1) set Google { gid: "g" }
+query
+  from i in identities.EmailPass select key i
+----
+identities.key(1)
+identities.key(2)
+run
+  update i in identities.EmailPass where i.id == identities.key(2) set Google { gid: "g2" }
+query
+  from s in sessions select match s.identity | EmailPass e -> e.email | Google g -> g.gid
+----
+"a@x"
+"g2"
+run
+  transact
+    delete r in resets where r.identity == identities.key(1)
+    update i in identities.EmailPass where i.id == identities.key(1) set Google { gid: "g1" }
+query
+  from i in identities.Google select key i
+----
+identities.key(1)
+identities.key(2)
+run
+  insert identities.EmailPass { id: identities.key(3), user: users.key(1), email: "c@x", hash: "h" }
+  insert resets from (from e in identities.EmailPass where key e == identities.key(3)
+                      select { id: resets.key(3), identity: key e, token: "t3" })
+run
+  transact
+    let n = insert identities.EmailPass { id: identities.key(4), user: users.key(1), email: "d@x", hash: "h" }
+    update r in resets where key r == resets.key(3) set Reset { r with identity: key n }
+    update i in identities.EmailPass where i.id == identities.key(3) set Google { gid: "g3" }
+query
+  from r in resets select r.identity
+----
+identities.key(4)

@@ -1,0 +1,31 @@
+# A unique without a constructor set ranges over every constructor of the sum.
+schema
+  module test
+  type Channel { id: Key channels, user: Text, label: Text }
+    = Mail  { address: Text }
+    | Phone { number: Text }
+  relation channels : Channel
+    key id generate sequence
+    unique (user, label)
+run
+  insert channels.Mail { id: channels.key(1), user: "u", label: "home", address: "a" }
+  insert channels.Phone { id: channels.key(2), user: "u", label: "work", number: "1" }
+  insert channels.Phone { id: channels.key(3), user: "v", label: "home", number: "2" }
+error Violated
+  insert channels.Phone { id: channels.key(4), user: "u", label: "home", number: "3" }
+error Violated
+  insert channels.Mail { id: channels.key(4), user: "u", label: "work", address: "b" }
+error Violated
+  update c in channels where key c == channels.key(3) set match c
+    | Mail m -> m
+    | Phone p -> Phone { p with user: "u" }
+run
+  update c in channels where key c == channels.key(1) set match c
+    | Mail m -> Mail { m with address: "c" }
+    | Phone p -> p
+query
+  from c in channels select { user: c.user, label: c.label }
+----
+{ label: "home", user: "u" }
+{ label: "home", user: "v" }
+{ label: "work", user: "u" }

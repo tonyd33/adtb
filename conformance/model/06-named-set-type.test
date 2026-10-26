@@ -1,0 +1,32 @@
+# A named constructor set of a relation is used as r.S and, at the type level, as T.S over the same constructors.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  set OAuth of identities = Google | Apple
+  fn subject (x: Identity.OAuth) -> Text = match x | Google g -> g.gid | Apple a -> a.sub
+run
+  insert identities.EmailPass { id: identities.key(1), user: "ann", email: "a@x" }
+  insert identities.Google { id: identities.key(2), user: "ann", gid: "g" }
+  insert identities.Apple { id: identities.key(3), user: "bo", sub: "s" }
+query
+  from i in identities.OAuth select subject(i)
+----
+"g"
+"s"
+query
+  from i in identities.(Google | Apple) select subject(i)
+----
+"g"
+"s"
+query
+  from i in identities.Google select subject(i)
+----
+"g"
+error Invalid
+  from i in identities select subject(i)
+error Invalid
+  from i in identities.EmailPass select subject(i)

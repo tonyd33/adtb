@@ -1,0 +1,37 @@
+# An aggregate constraint: the lines of every entry sum to zero, and an entry with no lines sums to zero.
+schema
+  module test
+  type Entry = { id: Key entries, memo: Text }
+  relation entries : Entry key id generate sequence
+  type Line = { id: Key lines, entry: Key entries on delete cascade, amount: I64 }
+  relation lines : Line
+    key id generate sequence
+    index (entry)
+  constraint balanced =
+    from e in entries
+    where sum(l.amount for l in lines where l.entry == key e) != 0
+    select e
+run
+  insert entries { id: entries.key(1), memo: "empty" }
+run
+  transact
+    insert entries { id: entries.key(2), memo: "pay" }
+    insert lines { id: lines.key(1), entry: entries.key(2), amount: 100 }
+    insert lines { id: lines.key(2), entry: entries.key(2), amount: -100 }
+error Violated
+  insert lines { id: lines.key(3), entry: entries.key(1), amount: 5 }
+error Violated
+  delete l in lines where key l == lines.key(1)
+error Violated
+  update l in lines where key l == lines.key(1) set Line { l with amount: 99 }
+run
+  transact
+    update l in lines where key l == lines.key(1) set Line { l with amount: 60 }
+    insert lines { id: lines.key(3), entry: entries.key(2), amount: 40 }
+# deleting an entry cascades to its lines and leaves every remaining entry balanced
+run
+  delete e in entries where key e == entries.key(2)
+query
+  count(l for l in lines)
+----
+0

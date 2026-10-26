@@ -1,0 +1,50 @@
+# Field patterns nest to any depth; coverage is decided over every discriminated position.
+@SCHEMA@
+@RUN@
+query rowsort
+  from p in parcels select match p.state
+    | Shipped { via: Courier c } -> c.name
+    | Shipped { via: Mail m }    -> m.tracking
+    | Pending                    -> "pending"
+----
+"dhl"
+"pending"
+"t-3"
+query rowsort
+  from p in parcels select match p.state
+    | Shipped { via: Courier { name: "dhl" } } -> "dhl courier"
+    | Shipped { via: Courier _ }               -> "other courier"
+    | Shipped { via: Mail { tracking } }       -> tracking
+    | Pending                                  -> "pending"
+----
+"dhl courier"
+"pending"
+"t-3"
+query rowsort
+  from e in employees select match e.manager
+    | Some { value: m } -> (match m.manager | None -> "under top" | Some _ -> "deeper")
+    | None              -> "top"
+----
+"top"
+"under top"
+# A discriminated nested sum position must have every constructor.
+error Invalid
+  from p in parcels select match p.state
+    | Shipped { via: Courier c } -> c.name
+    | Pending                    -> "pending"
+error Invalid
+  from p in parcels select match p.state
+    | Shipped { via: Courier c } -> c.name
+    | Shipped { via: Mail m } if true -> m.tracking
+    | Pending                    -> "pending"
+# A nested scalar position needs a final _ or binder.
+error Invalid
+  from p in parcels select match p.state
+    | Shipped { via: Courier { name: "dhl" } } -> "dhl"
+    | Shipped { via: Mail _ }                  -> "mail"
+    | Pending                                  -> "pending"
+# A nested match takes every following arm unless parenthesised.
+error Invalid
+  from e in employees select match e.manager
+    | Some { value: m } -> match m.manager | None -> "under top" | Some _ -> "deeper"
+    | None              -> "top"

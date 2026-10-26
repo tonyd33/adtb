@@ -1,0 +1,23 @@
+# A fault while evaluating a constraint fails the statement as a fault, ahead of every violation, keys included.
+schema
+  module test
+  type Raw = { id: Key raws, n: I64 }
+  relation raws : Raw key id generate sequence
+  check divides on raws (10 / n != 0)
+  constraint aa_small = from r in raws where r.n > 100 select r
+run
+  insert raws { id: raws.key(1), n: 5 }
+error Faulted
+  insert raws { id: raws.key(1), n: 0 }
+error Faulted
+  transact
+    insert raws { id: raws.key(2), n: 0 }
+    insert raws { id: raws.key(3), n: 500 }
+error Violated
+  insert raws { id: raws.key(2), n: 500 }
+error KeyViolation
+  insert raws { id: raws.key(1), n: 7 }
+query
+  from r in raws select r.n
+----
+5

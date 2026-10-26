@@ -1,0 +1,20 @@
+# Anonymous record types are structural: equal when they have the same field names at equal types, in any order.
+query
+  { a: 1, b: "x" } == { b: "x", a: 1 }
+----
+true
+query
+  { a: 1, b: "x" } == { a: 1, b: "y" }
+----
+false
+query rowsort
+  (from x in [1] select { a: x, b: "p" }) union (from y in [2] select { b: "q", a: y })
+----
+{ a: 1, b: "p" }
+{ a: 2, b: "q" }
+error Invalid
+  { a: 1 } == { b: 1 }
+error Invalid
+  { a: 1 } == { a: 1, b: 2 }
+error Invalid
+  { a: 1 } == { a: "1" }

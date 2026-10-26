@@ -1,0 +1,35 @@
+# No numeric type converts to another implicitly; every conversion is a written call.
+schema
+  module test
+  type Sale = { id: Key sales, qty: I32, unit_cents: I64, rate: Decimal 2, w: F64 }
+  relation sales : Sale key id generate sequence
+run
+  insert sales { id: sales.key(1), qty: 3, unit_cents: 250, rate: 1.50, w: 2.0 }
+query
+  from s in sales select i64(s.qty) * s.unit_cents
+----
+750
+error Invalid
+  from s in sales select s.qty * s.unit_cents
+error Invalid
+  from s in sales select s.rate * s.unit_cents
+error Invalid
+  from s in sales select s.w * s.unit_cents
+error Invalid
+  from s in sales select s.rate + s.w
+error Invalid
+  from s in sales where s.qty == s.unit_cents select key s
+query
+  from s in sales select decimal(s.unit_cents, 0) * s.rate
+----
+375.00
+query
+  from s in sales select f64(s.unit_cents) * s.w
+----
+500.0
+error Faulted
+  i8(300)
+query
+  checked_i8(300)
+----
+None

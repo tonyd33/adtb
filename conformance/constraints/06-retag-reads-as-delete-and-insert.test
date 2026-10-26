@@ -1,0 +1,35 @@
+# A retag from C to D appears in deleted(r.C) and inserted(r.D) under one key, so a closed account cannot be reopened.
+schema
+  module test
+  type Account { id: Key accounts, owner: Text, opened: I64 }
+    = Open
+    | Closed { closed: I64 }
+  relation accounts : Account key id generate sequence
+  constraint no_reopen =
+    from o in deleted(accounts.Closed), n in inserted(accounts.Open)
+    where key o == key n
+    select n
+run
+  insert accounts.Open { id: accounts.key(1), owner: "u", opened: 1 }
+  insert accounts.Closed { id: accounts.key(2), owner: "u", opened: 1, closed: 2 }
+run
+  update a in accounts.Open where key a == accounts.key(1) set Closed { closed: 5 }
+error Violated
+  update a in accounts.Closed where key a == accounts.key(1) set Open { }
+error Violated
+  transact
+    delete a in accounts where key a == accounts.key(2)
+    insert accounts.Open { id: accounts.key(2), owner: "u", opened: 1 }
+# deleting a closed account and opening another under a new key
+run
+  transact
+    delete a in accounts where key a == accounts.key(2)
+    insert accounts.Open { id: accounts.key(3), owner: "u", opened: 7 }
+# an update within Closed is not a reopen
+run
+  update a in accounts.Closed set Closed { a with closed: 9 }
+query
+  from a in accounts select { id: key a, open: match a | Open o -> true | Closed c -> false }
+----
+{ id: accounts.key(1), open: false }
+{ id: accounts.key(3), open: true }

@@ -1,0 +1,110 @@
+# Order by delivers the final result in the order of its keys, ascending by default.
+schema
+  module test
+  type User = { id: Key users, name: Text, age: I64 }
+  type Kind = Small | Large
+  type Stage ordered = Draft | Sent { at: I64 } | Paid { at: I64 }
+  type Item = { id: Key items, kind: Kind, stage: Stage, w: I64 }
+  relation users : User key id generate sequence
+  relation items : Item key id generate sequence
+run
+  insert users from [User { id: users.key(1), name: "cy", age: 30 },
+                     User { id: users.key(2), name: "ann", age: 20 },
+                     User { id: users.key(3), name: "bo", age: 30 }]
+  insert items from [Item { id: items.key(1), kind: Small, stage: Paid { at: 1 }, w: 3 },
+                     Item { id: items.key(2), kind: Large, stage: Draft, w: 1 },
+                     Item { id: items.key(3), kind: Small, stage: Sent { at: 9 }, w: 2 },
+                     Item { id: items.key(4), kind: Large, stage: Sent { at: 2 }, w: 4 }]
+query
+  from u in users select u.name order by u.name
+----
+"ann"
+"bo"
+"cy"
+query
+  from u in users select u.name order by u.name asc
+----
+"ann"
+"bo"
+"cy"
+query
+  from u in users select u.name order by u.name desc
+----
+"cy"
+"bo"
+"ann"
+# The selected value may be a row; the ordering reads it.
+query
+  from u in users select u order by u.name desc
+----
+User { id: users.key(1), name: "cy", age: 30 }
+User { id: users.key(3), name: "bo", age: 30 }
+User { id: users.key(2), name: "ann", age: 20 }
+# A compound ordering compares by the first key, then the next on a tie, each with its own direction.
+query
+  from u in users select { name: u.name, age: u.age } order by (u.age desc, u.name)
+----
+{ name: "bo", age: 30 }
+{ name: "cy", age: 30 }
+{ name: "ann", age: 20 }
+query
+  from u in users select { name: u.name, age: u.age } order by (u.age, u.name desc)
+----
+{ name: "ann", age: 20 }
+{ name: "cy", age: 30 }
+{ name: "bo", age: 30 }
+# An expression of the selected value.
+query
+  from u in users select u.age order by 0 - u.age
+----
+30
+20
+# A field held unchanged in a selected record may be ordered by.
+query
+  from u in users select { n: u.name, a: u.age } order by u.name
+----
+{ n: "ann", a: 20 }
+{ n: "bo", a: 30 }
+{ n: "cy", a: 30 }
+# Elements equal on every key come in an unspecified order among themselves.
+query rowsort
+  from u in users select u order by u.age
+----
+User { id: users.key(2), name: "ann", age: 20 }
+User { id: users.key(3), name: "bo", age: 30 }
+User { id: users.key(1), name: "cy", age: 30 }
+query
+  from u in users select u.age order by u.age
+----
+20
+30
+# A declared ordered sum orders by constructor declaration order, then fields.
+query
+  from i in items select { id: i.id, stage: i.stage } order by i.stage
+----
+{ id: items.key(2), stage: Draft }
+{ id: items.key(4), stage: Sent { at: 2 } }
+{ id: items.key(3), stage: Sent { at: 9 } }
+{ id: items.key(1), stage: Paid { at: 1 } }
+query
+  from i in items select { id: i.id, stage: i.stage, w: i.w } order by (tag(i.stage), i.w desc)
+----
+{ id: items.key(2), stage: Draft, w: 1 }
+{ id: items.key(4), stage: Sent { at: 2 }, w: 4 }
+{ id: items.key(3), stage: Sent { at: 9 }, w: 2 }
+{ id: items.key(1), stage: Paid { at: 1 }, w: 3 }
+# A sum not declared ordered has no order.
+error Invalid
+  from i in items select i order by i.kind
+error Invalid
+  from i in items select i order by tag(i.kind)
+# Anonymous records are never an ordering key.
+error Invalid
+  from u in users select u order by { a: u.age }
+# An ordering expression may read a generator only through the selected value.
+error Invalid
+  from u in users select u.id order by u.name
+error Invalid
+  from u in users select { n: u.name } order by u.age
+error Invalid
+  from u in users, v in users select u.name order by v.name

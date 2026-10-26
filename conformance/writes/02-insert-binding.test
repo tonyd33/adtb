@@ -1,0 +1,48 @@
+# A let on an insert binds the rows it inserts, with defaults and generated keys filled in: one row for a single-row insert, a set for the from form.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+  type Copy = { id: Key copies, text: Text }
+  relation copies : Copy key id generate sequence
+  type Flag = { id: Key flags, label: Text }
+  relation flags : Flag key id generate sequence default label = "none"
+run
+  transact
+    let u = insert users { name: "eve" }
+    let i = insert identities.Google { user: key u, gid: "g-eve" }
+    insert copies { id: copies.key(1), text: i.gid }
+    insert copies { id: copies.key(2), text: u.name }
+query
+  from g in identities.Google select g.user.name
+----
+"eve"
+query
+  from c in copies select c.text
+----
+"eve"
+"g-eve"
+run
+  transact
+    let f = insert flags { id: flags.key(1) }
+    insert copies { id: copies.key(3), text: f.label }
+query
+  from c in copies where key c == copies.key(3) select c.text
+----
+"none"
+run
+  transact
+    let s = insert identities from ([EmailPass { id: identities.key(50), user: users.key(1), email: "e", hash: "h" },
+                                     Google { id: identities.key(51), user: users.key(1), gid: "g" }])
+    insert copies from (
+      from x in s
+      select { id: copies.key(100 + value(key x)), text: match x | EmailPass e -> e.email | Google g -> g.gid })
+query
+  from c in copies where value(key c) > 100 select c
+----
+Copy { id: copies.key(150), text: "e" }
+Copy { id: copies.key(151), text: "g" }

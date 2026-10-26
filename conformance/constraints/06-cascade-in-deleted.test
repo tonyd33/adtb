@@ -1,0 +1,21 @@
+# The rows a delete action derives are part of the change set that deleted(R) reads.
+schema
+  module test
+  type Entry = { id: Key entries, memo: Text }
+  relation entries : Entry key id generate sequence
+  type Line = { id: Key lines, entry: Key entries on delete cascade, amount: I64, locked: Bool }
+  relation lines : Line key id generate sequence index (entry)
+  constraint locked_kept = from l in deleted(lines) where l.locked select l
+run
+  insert entries { id: entries.key(1), memo: "a" }
+  insert entries { id: entries.key(2), memo: "b" }
+  insert lines { id: lines.key(1), entry: entries.key(1), amount: 1, locked: false }
+  insert lines { id: lines.key(2), entry: entries.key(2), amount: 2, locked: true }
+error Violated
+  delete e in entries where key e == entries.key(2)
+run
+  delete e in entries where key e == entries.key(1)
+query
+  from l in lines select value(key l)
+----
+2

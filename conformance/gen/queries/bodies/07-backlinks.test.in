@@ -1,0 +1,90 @@
+# x.<R.f is the set of rows of R whose reference f names x.
+@SCHEMA@
+@RUN@
+query rowsort
+  from u in users, i in u.<identities.user select { name: u.name, id: key i }
+----
+{ name: "ann", id: identities.key(1) }
+{ name: "ann", id: identities.key(2) }
+{ name: "bo", id: identities.key(3) }
+{ name: "bo", id: identities.key(4) }
+query rowsort
+  from u in users where u.name == "ann" select u.<identities.user
+----
+[EmailPass { id: identities.key(1), user: users.key(1), email: "ann@example.com", hash: 0x6831 }, Google { id: identities.key(2), user: users.key(1), gid: "g-ann" }]
+query rowsort
+  from u in users where u.name == "ann" select (from i in identities where i.user == key u select i)
+----
+[EmailPass { id: identities.key(1), user: users.key(1), email: "ann@example.com", hash: 0x6831 }, Google { id: identities.key(2), user: users.key(1), gid: "g-ann" }]
+query rowsort
+  from u in users select { name: u.name, n: count(i for i in u.<identities.user) }
+----
+{ name: "ann", n: 2 }
+{ name: "bo", n: 2 }
+{ name: "cy", n: 0 }
+query rowsort
+  from u in users where exists i in u.<identities.user select u.name
+----
+"ann"
+"bo"
+# A backlink over a constructor relation, a constructor set and a named set.
+query rowsort
+  from u in users select { name: u.name, n: count(g for g in u.<identities.Google.user) }
+----
+{ name: "ann", n: 1 }
+{ name: "bo", n: 1 }
+{ name: "cy", n: 0 }
+query rowsort
+  from u in users, x in u.<identities.(Apple | EmailPass).user select key x
+----
+identities.key(1)
+identities.key(4)
+query rowsort
+  from u in users, o in u.<identities.OAuth.user where u.name == "bo" select key o
+----
+identities.key(3)
+identities.key(4)
+# A backlink from a key.
+query rowsort
+  from i in users.key(2).<identities.user select key i
+----
+identities.key(3)
+identities.key(4)
+query rowsort
+  from x in users.key(9).<identities.user select key x
+----
+
+query rowsort
+  from i in identities, d in i.user.<phones.owner select key d
+----
+phones.key(1)
+phones.key(2)
+# A backlink through a reference to one constructor.
+query rowsort
+  from e in identities.EmailPass, r in e.<resets.identity select key r
+----
+resets.key(1)
+# A backlink through an Option field holds the rows whose field is Some of the key.
+query rowsort
+  from u in users select { name: u.name, n: count(s for s in u.<sessions.owner) }
+----
+{ name: "ann", n: 1 }
+{ name: "bo", n: 0 }
+{ name: "cy", n: 0 }
+query rowsort
+  from u in users, s in u.<sessions.owner select key s
+----
+sessions.key(1)
+query rowsort
+  from e in employees, w in e.<employees.manager select { boss: e.name, worker: w.name }
+----
+{ boss: "boss", worker: "w" }
+# A backlink is a set; used as a single value it is refused.
+error Invalid
+  from u in users select u.<identities.user.user
+error Invalid
+  from u in users where u.<identities.user == key u select u
+error Invalid
+  from u in users select u.<identities.gid
+error Invalid
+  from u in users select u.<users.name

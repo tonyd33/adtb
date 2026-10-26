@@ -1,0 +1,28 @@
+# A row check refuses a stored row of its scope whose expression is false; fields are in scope by name and the row as self.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+  check email_length on identities.EmailPass (scalar_len(email) <= 5)
+  check gid_not_user on identities.Google (self.gid != self.user)
+run
+  insert identities.EmailPass { id: identities.key(1), user: "u", email: "a@bcd" }
+  insert identities.Google { id: identities.key(2), user: "u", gid: "g" }
+error Violated
+  insert identities.EmailPass { id: identities.key(3), user: "u", email: "a@bcde" }
+error Violated
+  insert identities.Google { id: identities.key(3), user: "x", gid: "x" }
+error Violated
+  update e in identities.EmailPass set EmailPass { e with email: "aaaaaa" }
+# a retag into the checked constructor is checked as an insert into it
+error Violated
+  update e in identities.EmailPass set Google { gid: "u" }
+run
+  update e in identities.EmailPass set Google { gid: "h" }
+query
+  from g in identities.Google select g.gid
+----
+"g"
+"h"

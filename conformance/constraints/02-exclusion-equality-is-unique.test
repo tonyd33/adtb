@@ -1,0 +1,30 @@
+# An exclusion under equality on every compared field accepts and refuses the same writes as a unique on those fields.
+schema
+  module test
+  type Slot = { id: Key slots, room: Text, hour: I64 }
+  relation slots : Slot key id generate sequence unique (room, hour)
+  type Cell = { id: Key cells, room: Text, hour: I64 }
+  relation cells : Cell key id generate sequence index (room, hour)
+  constraint one_per_hour =
+    from a in cells, b in cells
+    where a.room == b.room and a.hour == b.hour and key a != key b
+    select { a: key a, b: key b }
+run
+  insert slots { id: slots.key(1), room: "a", hour: 9 }
+  insert cells { id: cells.key(1), room: "a", hour: 9 }
+  insert slots { id: slots.key(2), room: "a", hour: 10 }
+  insert cells { id: cells.key(2), room: "a", hour: 10 }
+  insert slots { id: slots.key(3), room: "b", hour: 9 }
+  insert cells { id: cells.key(3), room: "b", hour: 9 }
+error Violated
+  insert slots { id: slots.key(4), room: "a", hour: 9 }
+error Violated
+  insert cells { id: cells.key(4), room: "a", hour: 9 }
+query
+  count(s for s in slots)
+----
+3
+query
+  count(c for c in cells)
+----
+3

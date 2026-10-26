@@ -1,0 +1,71 @@
+# Arms of a match join: rows of one sum at the union of their sets, keys likewise; other types do not join.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities select match i
+    | Google g    -> g
+    | Apple a     -> a
+    | EmailPass e -> e
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "ann@example.com", hash: 0x6831 }
+Google { id: identities.key(2), user: users.key(1), gid: "g-ann" }
+Google { id: identities.key(3), user: users.key(2), gid: "root" }
+Apple { id: identities.key(4), user: users.key(2), sub: "a-bo" }
+# The joined rows keep their constructor.
+query rowsort
+  from x in (from i in identities select match i | Google g -> g | Apple a -> a | EmailPass e -> e) select match x
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+----
+"a-bo"
+"ann@example.com"
+"g-ann"
+"root"
+query rowsort
+  from i in identities select match i
+    | Google g    -> key g
+    | Apple a     -> key a
+    | EmailPass e -> key e
+----
+identities.key(1)
+identities.key(2)
+identities.key(3)
+identities.key(4)
+query rowsort
+  from i in identities select match i
+    | EmailPass e -> { k: i.user, t: e.email }
+    | Google g    -> { k: g.user, t: g.gid }
+    | Apple a     -> { k: a.user, t: a.sub }
+----
+{ k: users.key(1), t: "ann@example.com" }
+{ k: users.key(1), t: "g-ann" }
+{ k: users.key(2), t: "a-bo" }
+{ k: users.key(2), t: "root" }
+# Values of different named types do not join.
+error Invalid
+  from i in identities select match i
+    | EmailPass e -> e
+    | Google g    -> g
+    | Apple a     -> a.user
+error Invalid
+  from i in identities select match i
+    | EmailPass e -> e.email
+    | Google g    -> g.gid
+    | Apple a     -> value(key a)
+# Anonymous records join only when equal.
+error Invalid
+  from i in identities select match i
+    | EmailPass e -> { email: e.email }
+    | Google g    -> { gid: g.gid }
+    | Apple a     -> { gid: a.sub }
+error Invalid
+  from i in identities select match i
+    | EmailPass e -> { t: e.email, k: key e }
+    | Google g    -> { t: g.gid }
+    | Apple a     -> { t: a.sub }
+error Invalid
+  from i in identities select match i
+    | EmailPass e -> key e
+    | Google g    -> key g
+    | Apple a     -> a.user

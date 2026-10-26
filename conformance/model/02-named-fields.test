@@ -1,0 +1,32 @@
+# Constructor fields are named: a constructor application or record literal binds each field by name, in any written order.
+schema
+  module test
+  type Point = { x: I64, y: I64 }
+  type P = { id: Key ps, x: I64, y: I64 }
+  relation ps : P key id generate sequence
+query
+  Point { y: 2, x: 1 }
+----
+Point { x: 1, y: 2 }
+query
+  (Point { y: 2, x: 1 }).x
+----
+1
+query
+  Point { x: 1, y: 2 } == Point { y: 2, x: 1 }
+----
+true
+query
+  { y: 2, x: 1 } == { x: 1, y: 2 }
+----
+true
+run
+  insert ps { x: 3, id: ps.key(1), y: 4 }
+query
+  count(p for p in ps where p.x == 3 and p.y == 4)
+----
+1
+query
+  count(p for p in ps where p.id == ps.key(1))
+----
+1

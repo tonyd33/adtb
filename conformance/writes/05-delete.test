@@ -1,0 +1,74 @@
+# A delete removes every row of its range satisfying its filter, or the one snapshot row it names; a let binds the rows it names as they were.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+  type Login { id: Key logins, user: Key users }
+    = Active  { identity: Key identities }
+    | Revoked { reason: Text }
+  relation logins : Login key id generate sequence
+  type Copy = { id: Key copies, text: Text }
+  relation copies : Copy key id generate sequence
+run
+  insert users from (from k in [1, 2, 3] select { id: users.key(k), name: "u" ++ print(k) })
+  insert identities from ([Google { id: identities.key(1), user: users.key(1), gid: "g1" },
+                           Google { id: identities.key(2), user: users.key(2), gid: "g2" }])
+  insert logins from ([Active { id: logins.key(1), user: users.key(1), identity: identities.key(1) },
+                       Active { id: logins.key(2), user: users.key(2), identity: identities.key(2) },
+                       Revoked { id: logins.key(3), user: users.key(1), reason: "r" },
+                       Revoked { id: logins.key(4), user: users.key(2), reason: "r" }])
+run
+  delete s in logins.Revoked where s.user == users.key(1)
+query
+  from s in logins select key s
+----
+logins.key(1)
+logins.key(2)
+logins.key(4)
+run
+  delete s in (from s in logins.Active, i in identities.Google
+               where s.identity == key i and i.gid == "g2" select s)
+query
+  from s in logins select key s
+----
+logins.key(1)
+logins.key(4)
+run
+  delete s in logins where s.user == users.key(9)
+query
+  count(s for s in logins)
+----
+2
+run
+  match logins.key(4)
+    | Active a -> skip
+    | Revoked r -> delete r
+query
+  from s in logins select key s
+----
+logins.key(1)
+run
+  transact
+    let d = delete u in users where u.name == "u3"
+    insert copies from (from x in d select { id: copies.key(1), text: x.name })
+query
+  from c in copies select c.text
+----
+"u3"
+query
+  from u in users select key u
+----
+users.key(1)
+users.key(2)
+run
+  delete s in logins
+  delete i in identities
+  delete u in users
+query
+  count(u for u in users)
+----
+0

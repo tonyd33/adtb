@@ -1,0 +1,47 @@
+# At-least-one participation: every user has an identity, so a user and its first identity are created in one statement.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence index (user)
+  constraint has_identity =
+    from u in users
+    where not exists i in identities where i.user == key u
+    select u
+error Violated
+  insert users { id: users.key(1), name: "ann" }
+query
+  count(u for u in users)
+----
+0
+run
+  transact
+    let u = insert users { id: users.key(1), name: "ann" }
+    let i = insert identities.Google { id: identities.key(1), user: key u, gid: "g" }
+    return key i
+run
+  insert identities.EmailPass { id: identities.key(2), user: users.key(1), email: "a@x" }
+run
+  delete i in identities where key i == identities.key(1)
+error Violated
+  delete i in identities where key i == identities.key(2)
+# moving the last identity to another user
+run
+  transact
+    insert users { id: users.key(2), name: "bo" }
+    insert identities.Google { id: identities.key(3), user: users.key(2), gid: "h" }
+error Violated
+  update i in identities where key i == identities.key(2) set match i
+    | EmailPass e -> EmailPass { e with user: users.key(2) }
+    | Google g -> g
+run
+  transact
+    delete i in identities where i.user == users.key(1)
+    delete u in users where key u == users.key(1)
+query
+  from u in users select u.name
+----
+"bo"

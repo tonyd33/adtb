@@ -43,7 +43,32 @@ error Invalid
 Values are written in the textual syntax of
 [interop.md](interop.md#1-textual-value-syntax).
 
-Rulings: project/spec/test-format/script
+A directive starts in the first column, and its body is the lines
+below it indented by two spaces; a body may hold blank lines. A line
+starting with `#` between directives is a comment. A query's rows
+follow `----` and end at a blank line, a comment or the next
+directive; a query with no rows is `----` followed by a blank line.
+Without `schema`, the database holds only the prelude.
+
+- A set result is compared as a set, and its rows are written in
+  printed order ([interop.md §1.1](interop.md#11-one-syntax));
+  `rowsort` lifts the order.
+- A result ordered by `order by` is compared in order, and as a
+  multiset under `rowsort`. Elements tied on the ordering are
+  delivered in any order, so a script orders them determinately or
+  uses `rowsort`.
+- A result that is not a set is one row.
+- `error C` runs its statements in order: each but the last succeeds,
+  and the last is refused with `C`. Its text is one ad hoc text, so
+  none of its statements commits
+  ([queries.md §16](queries.md#16-ad-hoc-statements)).
+- A `query` that changes the database differs from its script.
+
+The suite holds one directory per part of this specification, named
+after it (`model`, `queries`), and one script per file, with the
+extension `.test`.
+
+Rulings: project/spec/test-format/script, spec/script-format/indented
 
 ## 3. Running a test
 

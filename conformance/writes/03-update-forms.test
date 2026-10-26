@@ -1,0 +1,59 @@
+# An update ranges over a constructor relation, a relation variable or a key-preserving query, and sets the whole new value of each row satisfying its filter.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+  relation identities : Identity key id generate sequence
+  type Import = { id: Key imports, user: Key users, sub: Text }
+  relation imports : Import key id generate sequence
+run
+  insert users from (from k in [1, 2, 3] select { id: users.key(k), name: "u" ++ print(k) })
+  insert identities from ([EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1" },
+                           Google { id: identities.key(2), user: users.key(1), gid: "g1" },
+                           Google { id: identities.key(3), user: users.key(2), gid: "g2" }])
+  insert imports { id: imports.key(1), user: users.key(3), sub: "g2" }
+run
+  update g in identities.Google where g.user == users.key(1) set Google { g with gid: "g1b" }
+query
+  from g in identities.Google select g
+----
+Google { id: identities.key(2), user: users.key(1), gid: "g1b" }
+Google { id: identities.key(3), user: users.key(2), gid: "g2" }
+run
+  update i in identities where i.user == users.key(1)
+  set match i
+    | EmailPass e -> EmailPass { e with hash: e.hash ++ "!" }
+    | Google g    -> g
+query
+  from i in identities select i
+----
+EmailPass { id: identities.key(1), user: users.key(1), email: "a@x", hash: "h1!" }
+Google { id: identities.key(2), user: users.key(1), gid: "g1b" }
+Google { id: identities.key(3), user: users.key(2), gid: "g2" }
+run
+  update g in (from g in identities.Google, x in imports where g.gid == x.sub select g)
+  set Google { g with user: users.key(3) }
+query
+  from g in identities.Google select g.user
+----
+users.key(1)
+users.key(3)
+run
+  update u in users set User { u with name: u.name ++ "!" }
+query
+  from u in users select u.name
+----
+"u1!"
+"u2!"
+"u3!"
+run
+  update u in users where u.name == "nobody" set User { u with name: "x" }
+query
+  from u in users select u.name
+----
+"u1!"
+"u2!"
+"u3!"

@@ -1,0 +1,107 @@
+# Arms that build constructors give a result sum; each element keeps its constructor.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities.(EmailPass | Google) where i.user == users.key(1)
+  select match i
+    | EmailPass e -> ByEmail { email: e.email }
+    | Google g    -> ByGoogle { gid: g.gid }
+----
+ByEmail { email: "ann@example.com" }
+ByGoogle { gid: "g-ann" }
+query rowsort
+  from i in identities select match i
+    | EmailPass e -> Local { id: i.id }
+    | Google g    -> Remote { id: i.id, via: "google" }
+    | Apple a     -> Remote { id: i.id, via: "apple" }
+----
+Local { id: identities.key(1) }
+Remote { id: identities.key(2), via: "google" }
+Remote { id: identities.key(3), via: "google" }
+Remote { id: identities.key(4), via: "apple" }
+# A query-built sum is ranged over by constructor.
+query rowsort
+  from r in (from i in identities select match i
+    | EmailPass e -> Local { id: i.id }
+    | Google g    -> Remote { id: i.id, via: "google" }
+    | Apple a     -> Remote { id: i.id, via: "apple" }).Remote
+  select r.via
+----
+"apple"
+"google"
+# A query-built sum is matched exhaustively.
+query rowsort
+  from r in (from i in identities select match i
+    | EmailPass e -> Local { id: i.id }
+    | Google g    -> Remote { id: i.id, via: "google" }
+    | Apple a     -> Remote { id: i.id, via: "apple" })
+  select match r
+    | Local l  -> "local"
+    | Remote m -> m.via
+----
+"apple"
+"google"
+"local"
+error Invalid
+  from r in (from i in identities select match i
+    | EmailPass e -> Local { id: i.id }
+    | Google g    -> Remote { id: i.id, via: "google" }
+    | Apple a     -> Remote { id: i.id, via: "apple" })
+  select match r
+    | Remote m -> m.via
+# The constructors of a result sum are structural: the same names and payloads in another order are one type.
+query rowsort
+  (from i in identities.EmailPass select match i | EmailPass e -> A { t: e.email })
+  union (from i in identities.Google select match i | Google g -> B { n: 1 })
+----
+A { t: "ann@example.com" }
+B { n: 1 }
+query rowsort
+  (from i in identities select match i
+    | EmailPass e -> A { t: e.email }
+    | Google g    -> B { n: 1 }
+    | Apple a     -> B { n: 2 })
+  union
+  (from i in identities select match i
+    | EmailPass e -> B { n: 3 }
+    | Google g    -> A { t: g.gid }
+    | Apple a     -> A { t: a.sub })
+----
+A { t: "a-bo" }
+A { t: "ann@example.com" }
+A { t: "g-ann" }
+A { t: "root" }
+B { n: 1 }
+B { n: 2 }
+B { n: 3 }
+# One constructor name built with two payload types is refused.
+error Invalid
+  from i in identities select match i
+    | EmailPass e -> A { t: e.email }
+    | Google g    -> A { t: 1 }
+    | Apple a     -> A { t: a.sub }
+# A declared result sum: a schema function's anonymous result sum.
+query rowsort
+  from l in sign_ins() select l
+----
+Local { id: identities.key(1), email: "ann@example.com" }
+Remote { id: identities.key(2), provider: "google" }
+Remote { id: identities.key(3), provider: "google" }
+Remote { id: identities.key(4), provider: "apple" }
+query rowsort
+  from l in sign_ins() select match l
+    | Local x  -> x.email
+    | Remote r -> r.provider
+----
+"ann@example.com"
+"apple"
+"google"
+error Invalid
+  from l in sign_ins() select match l
+    | Local x  -> x.email
+# No depth subtyping: one constructor built with keys of different constructor sets has no join.
+error Invalid
+  from i in identities select match i
+    | EmailPass e -> Local { id: key e }
+    | Google g    -> Remote { id: key g }
+    | Apple a     -> Remote { id: key a }

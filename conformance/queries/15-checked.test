@@ -1,0 +1,53 @@
+# Each checked operator returns None exactly where its faulting form would fault, Some of the result otherwise.
+schema
+  module test
+  type Raw = { id: Key raws, a: I64, b: I64, small: I8 }
+  relation raws : Raw key id generate sequence
+run
+  insert raws from [Raw { id: raws.key(1), a: 9223372036854775807, b: 0, small: -128 },
+                    Raw { id: raws.key(2), a: 7, b: 2, small: 5 },
+                    Raw { id: raws.key(3), a: -7, b: -1, small: 127 }]
+query rowsort
+  from r in raws
+  select { id: r.id,
+           add: checked_add(r.a, 1),
+           sub: checked_sub(r.b, r.a),
+           mul: checked_mul(r.a, r.b),
+           div: checked_div(r.a, r.b),
+           rem: checked_rem(r.a, r.b),
+           neg: checked_neg(r.small) }
+----
+{ id: raws.key(1), add: None, sub: Some { value: -9223372036854775807 }, mul: Some { value: 0 }, div: None, rem: None, neg: None }
+{ id: raws.key(2), add: Some { value: 8 }, sub: Some { value: -5 }, mul: Some { value: 14 }, div: Some { value: 3 }, rem: Some { value: 1 }, neg: Some { value: -5 } }
+{ id: raws.key(3), add: Some { value: -6 }, sub: Some { value: 6 }, mul: Some { value: 7 }, div: Some { value: 7 }, rem: Some { value: 0 }, neg: Some { value: -127 } }
+# Overflow of a narrower type is decided at that type.
+query rowsort
+  from r in raws select { id: r.id, s: checked_add(r.small, r.small) }
+----
+{ id: raws.key(1), s: None }
+{ id: raws.key(2), s: Some { value: 10 } }
+{ id: raws.key(3), s: None }
+# Division truncates toward zero and the remainder takes the sign of the dividend.
+query
+  from r in raws where r.id == raws.key(3) select { d: checked_div(r.a, 2), m: checked_rem(r.a, 2) }
+----
+{ d: Some { value: -3 }, m: Some { value: -1 } }
+# The minimum value divided by -1 overflows.
+query
+  from r in raws where r.id == raws.key(1) select checked_div(0 - r.a - 1, -1)
+----
+None
+# A checked conversion.
+query rowsort
+  from r in raws select { id: r.id, c: checked_i8(r.a) }
+----
+{ id: raws.key(1), c: None }
+{ id: raws.key(2), c: Some { value: 7 } }
+{ id: raws.key(3), c: Some { value: -7 } }
+# Matched to a default where the operator would fault.
+query rowsort
+  from r in raws select match checked_div(r.a, r.b) | None -> 0 | Some { value: q } -> q
+----
+0
+3
+7

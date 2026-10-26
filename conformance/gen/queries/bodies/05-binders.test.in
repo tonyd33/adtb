@@ -1,0 +1,60 @@
+# C x binds x at the constructor's row type: rows keep key and header fields; value-level binders have no key.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities select match i
+    | EmailPass e -> { owner: e.user, login: e.email }
+    | Google g    -> { owner: g.user, login: g.gid }
+    | Apple a     -> { owner: a.user, login: a.sub }
+----
+{ owner: users.key(1), login: "ann@example.com" }
+{ owner: users.key(1), login: "g-ann" }
+{ owner: users.key(2), login: "a-bo" }
+{ owner: users.key(2), login: "root" }
+# A row binder may be passed where the sum is expected.
+query rowsort
+  from i in identities select match i
+    | EmailPass e -> display_name(e)
+    | Google g    -> display_name(g)
+    | Apple a     -> "apple"
+----
+"ann@example.com"
+"apple"
+"g-ann"
+"root"
+query rowsort
+  from i in identities select match i
+    | EmailPass e -> e.id
+    | Google g    -> g.id
+    | Apple a     -> a.id
+----
+identities.key(1)
+identities.key(2)
+identities.key(3)
+identities.key(4)
+# key of a row binder is a key of its constructor relation, which widens to the relation's key.
+query rowsort
+  from i in identities, r in resets select match i
+    | EmailPass e -> r.identity == key e
+    | Google g    -> false
+    | Apple a     -> false
+----
+false
+true
+# The binder has only its constructor's own fields beside the header.
+error Invalid
+  from i in identities select match i
+    | EmailPass e -> e.gid
+    | Google g    -> g.gid
+    | Apple a     -> a.sub
+# A value-level binder has its constructor's fields and no key.
+query rowsort
+  from p in parcels select match p.state | Pending -> "p" | Shipped s -> match s.via | Courier c -> c.name | Mail m -> m.tracking
+----
+"dhl"
+"p"
+"t-3"
+error Invalid
+  from p in parcels select match p.state | Pending -> 0 | Shipped s -> key s
+error Invalid
+  from p in parcels select match p.state | Pending -> "p" | Shipped s -> s.code

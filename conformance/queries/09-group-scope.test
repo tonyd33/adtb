@@ -1,0 +1,45 @@
+# Enclosing binders stay in scope after into, and a group passed as an argument is the set of its values.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Order = { id: Key orders, user: Key users, total: I64, qty: I64 }
+  relation users : User key id generate sequence
+  relation orders : Order key id generate sequence
+  fn size (xs: Set I64) -> I64 = count(x for x in xs)
+  fn largest (xs: Set I64) -> Option I64 = max(x for x in xs)
+  fn ids (xs: Set Order) -> Set (Key orders) = from x in xs select x.id
+run
+  insert users from [User { id: users.key(1), name: "ann" },
+                     User { id: users.key(2), name: "bo" },
+                     User { id: users.key(3), name: "cy" }]
+  insert orders from [Order { id: orders.key(1), user: users.key(1), total: 100, qty: 2 },
+                      Order { id: orders.key(2), user: users.key(1), total: 100, qty: 0 },
+                      Order { id: orders.key(3), user: users.key(2), total: 30, qty: 3 },
+                      Order { id: orders.key(4), user: users.key(1), total: 50, qty: 5 }]
+# An enclosing query's binder is visible in the clauses after into.
+query rowsort
+  from u in users
+  select { name: u.name,
+           n: from o in orders group o by o.user into g
+              where g.key == key u
+              select count(x for x in g) }
+----
+{ name: "ann", n: [3] }
+{ name: "bo", n: [1] }
+{ name: "cy", n: [] }
+# A group passed to a function is the nonempty set of its values, so equal values merge.
+query rowsort
+  from o in orders group o.total by o.user into g
+  select { user: g.key, n: size(g), top: largest(g) }
+----
+{ user: users.key(1), n: 2, top: Some { value: 100 } }
+{ user: users.key(2), n: 1, top: Some { value: 30 } }
+query rowsort
+  from o in orders group o by o.user into g
+  select { user: g.key, ids: ids(g) }
+----
+{ user: users.key(1), ids: [orders.key(1), orders.key(2), orders.key(4)] }
+{ user: users.key(2), ids: [orders.key(3)] }
+# The group binder is not a binder of the source after into.
+error Invalid
+  from o in orders group o by o.user into g select g.total

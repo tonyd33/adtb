@@ -1,0 +1,57 @@
+# A guarded arm is chosen when its pattern matches and its guard is true; otherwise matching continues.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities select { gid: display_name(i), role: match i
+    | Google g if g.gid == "root" -> "staff"
+    | Google _                    -> "guest"
+    | EmailPass _                 -> "guest"
+    | Apple _                     -> "guest" }
+----
+{ gid: "a-bo", role: "guest" }
+{ gid: "ann@example.com", role: "guest" }
+{ gid: "g-ann", role: "guest" }
+{ gid: "root", role: "staff" }
+query rowsort
+  from i in identities select match i
+    | EmailPass e if e.user == users.key(1) -> "ann mail"
+    | OAuth o if o.user == users.key(1)     -> "ann oauth"
+    | OAuth o if o.user == users.key(2)     -> "bo oauth"
+    | EmailPass _ -> "mail"
+    | OAuth _     -> "oauth"
+----
+"ann mail"
+"ann oauth"
+"bo oauth"
+query rowsort
+  from u in users select match u.name
+    | n if scalar_len(n) > 2 -> "long"
+    | "bo"                   -> "bo"
+    | _                      -> "short"
+----
+"bo"
+"long"
+"short"
+# A guard false for every value falls through to the unguarded arm.
+query rowsort
+  from i in identities.Google select match i | Google g if false -> "never" | Google _ -> "always"
+----
+"always"
+# A guard may use binders of a record pattern.
+query rowsort
+  from i in identities select match i
+    | Google { gid } if gid == "root" -> 1
+    | Google _ -> 2
+    | EmailPass _ -> 3
+    | Apple _ -> 4
+----
+1
+2
+3
+4
+error Invalid
+  from i in identities select match i
+    | Google g if g.gid -> 1
+    | Google _ -> 2
+    | EmailPass _ -> 3
+    | Apple _ -> 4

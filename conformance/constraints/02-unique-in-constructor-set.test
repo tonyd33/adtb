@@ -1,0 +1,38 @@
+# A unique scoped to a constructor or a constructor set forbids two rows of that scope agreeing on its fields, and constrains no other row.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity
+    key id generate sequence
+    unique (email) in EmailPass
+    unique (gid) in Google
+    unique (user) in (Google | Apple)
+run
+  insert identities.EmailPass { id: identities.key(1), user: "u1", email: "a@x" }
+  insert identities.Google { id: identities.key(2), user: "u1", gid: "g1" }
+error Violated
+  insert identities.EmailPass { id: identities.key(3), user: "u2", email: "a@x" }
+error Violated
+  insert identities.Google { id: identities.key(3), user: "u2", gid: "g1" }
+error Violated
+  insert identities.Apple { id: identities.key(3), user: "u1", sub: "s" }
+# EmailPass is outside the scope of the unique on user
+run
+  insert identities.EmailPass { id: identities.key(3), user: "u1", email: "b@x" }
+# text is compared exactly
+run
+  insert identities.EmailPass { id: identities.key(4), user: "u4", email: "A@x" }
+error Violated
+  transact
+    insert identities.Google { id: identities.key(5), user: "u5", gid: "g5" }
+    insert identities.Google { id: identities.key(6), user: "u6", gid: "g5" }
+query
+  from i in identities select value(key i)
+----
+1
+2
+3
+4

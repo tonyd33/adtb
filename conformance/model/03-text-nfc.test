@@ -1,0 +1,41 @@
+# Text is NFC: every constructed text is normalized, so canonically equivalent texts are one value.
+schema
+  module test
+  type Person = { id: Key people, name: Text }
+  relation people : Person key id generate sequence
+query
+  "e\u{301}" == "\u{e9}"
+----
+true
+query
+  "e\u{301}"
+----
+"é"
+query
+  ["e\u{301}", "é"]
+----
+"é"
+query
+  bytes_len("e\u{301}")
+----
+2
+query
+  ("e" ++ "\u{301}") == "é"
+----
+true
+run
+  insert people { id: people.key(1), name: "Ame\u{301}lie" }
+query
+  from p in people where p.name == "Amélie" select key p
+----
+people.key(1)
+query
+  from p in people select scalar_len(p.name)
+----
+6
+query
+  "a" == "A"
+----
+false
+error Invalid
+  "a" == bytes("a")

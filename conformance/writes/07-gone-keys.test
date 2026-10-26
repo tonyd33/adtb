@@ -1,0 +1,41 @@
+# The gone keys are the keys the statement leaves without a row, closed under cascade; every other action reacts to all of them.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Post = { id: Key posts, author: Key users on delete cascade, body: Text }
+  relation posts : Post key id generate sequence
+  type Pin = { id: Key pins, post: Option (Key posts) on delete clear, label: Text }
+  relation pins : Pin key id generate sequence
+  type Draft { id: Key drafts }
+    = Linked { post: Key posts on delete retag Orphan {} }
+    | Orphan
+  relation drafts : Draft key id generate sequence
+run
+  insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
+  insert posts from ([{ id: posts.key(1), author: users.key(1), body: "p1" },
+                      { id: posts.key(2), author: users.key(2), body: "p2" }])
+  insert pins from ([{ id: pins.key(1), post: Some { value: posts.key(1) }, label: "a" },
+                     { id: pins.key(2), post: Some { value: posts.key(2) }, label: "b" }])
+  insert drafts.Linked { id: drafts.key(1), post: posts.key(1) }
+run
+  delete x in users where key x == users.key(1)
+query
+  from p in posts select key p
+----
+posts.key(2)
+query
+  from p in pins select p
+----
+Pin { id: pins.key(1), post: None, label: "a" }
+Pin { id: pins.key(2), post: Some { value: posts.key(2) }, label: "b" }
+query
+  from d in drafts select d
+----
+Orphan { id: drafts.key(1) }
+run
+  (delete x in users where key x == users.key(2), insert users { id: users.key(2), name: "back" })
+query
+  from p in posts select key p
+----
+posts.key(2)

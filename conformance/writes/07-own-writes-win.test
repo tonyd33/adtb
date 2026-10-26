@@ -1,0 +1,45 @@
+# Delete actions reach only pre-state rows the statement neither replaces nor deletes; inserted and replaced rows are judged by their own values.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Note = { id: Key notes, author: Option (Key users) on delete clear, body: Text }
+  relation notes : Note key id generate sequence
+  type Post = { id: Key posts, author: Key users on delete cascade, body: Text }
+  relation posts : Post key id generate sequence
+run
+  insert users from (from k in [1, 2, 3, 4] select { id: users.key(k), name: "u" ++ print(k) })
+  insert notes { id: notes.key(1), author: Some { value: users.key(1) }, body: "n1" }
+  insert posts { id: posts.key(1), author: users.key(1), body: "p1" }
+error Violated
+  (insert notes { id: notes.key(2), author: Some { value: users.key(2) }, body: "new" },
+   delete x in users where key x == users.key(2))
+error Violated
+  (insert posts { id: posts.key(2), author: users.key(2), body: "new" },
+   delete x in users where key x == users.key(2))
+error Violated
+  (update n in notes set Note { n with body: "edited" },
+   delete x in users where key x == users.key(1),
+   delete p in posts)
+error Violated
+  (update p in posts set Post { p with body: "edited" },
+   delete x in users where key x == users.key(1))
+query
+  from u in users select key u
+----
+users.key(1)
+users.key(2)
+users.key(3)
+users.key(4)
+run
+  (update n in notes set Note { n with author: Some { value: users.key(3) } },
+   update p in posts set Post { p with author: users.key(3) },
+   delete x in users where key x == users.key(1))
+query
+  from n in notes select n
+----
+Note { id: notes.key(1), author: Some { value: users.key(3) }, body: "n1" }
+query
+  from p in posts select p
+----
+Post { id: posts.key(1), author: users.key(3), body: "p1" }

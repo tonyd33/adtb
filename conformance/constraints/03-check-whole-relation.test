@@ -1,0 +1,21 @@
+# A check on the whole relation variable covers every constructor of the sum.
+schema
+  module test
+  type Account { id: Key accounts, owner: Text, opened: I64 }
+    = Open
+    | Closed { closed: I64 }
+  relation accounts : Account key id generate sequence
+  check opened_positive on accounts (opened > 0)
+run
+  insert accounts.Open { id: accounts.key(1), owner: "u", opened: 1 }
+  insert accounts.Closed { id: accounts.key(2), owner: "u", opened: 2, closed: 3 }
+error Violated
+  insert accounts.Open { id: accounts.key(3), owner: "u", opened: 0 }
+error Violated
+  insert accounts.Closed { id: accounts.key(3), owner: "u", opened: -1, closed: 3 }
+error Violated
+  update a in accounts.Open set Closed { opened: 0, closed: 5 }
+query
+  count(a for a in accounts)
+----
+2

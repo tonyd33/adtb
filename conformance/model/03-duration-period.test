@@ -1,0 +1,57 @@
+# Duration is exact microseconds and Period is calendar months and days; they are distinct types with no implicit conversion.
+schema
+  module test
+  fn at (t: Text) -> Set Instant = match Instant.parse(t) | Some s -> [s.value] | None -> []
+  fn p (t: Text) -> Set Period = match Period.parse(t) | Some s -> [s.value] | None -> []
+query
+  1d == 24h
+----
+true
+query
+  90s
+----
+90s
+query
+  1d + 1us
+----
+86400000001us
+query
+  60min
+----
+1h
+query
+  -(90s)
+----
+-90s
+query
+  0s == 0us
+----
+true
+query
+  from a in p("P1M0D"), b in p("P0M30D") select a == b
+----
+false
+query
+  from a in p("P1M0D"), b in p("P0M30D") select a + b
+----
+P1M30D
+query
+  from a in p("P12M0D") select a == months(12)
+----
+true
+query
+  from a in p("P0M-15D") select a
+----
+P0M-15D
+error Invalid
+  from a in p("P0M1D") select a == 1d
+error Invalid
+  from a in p("P0M1D"), b in p("P0M2D") select a < b
+error Invalid
+  from i in at("2026-10-25T00:00:00Z"), a in p("P0M1D") select i + a
+query
+  from i in at("2026-10-25T00:00:00Z") select i + 1d
+----
+2026-10-26T00:00:00.000000Z
+error Invalid
+  1d == 86400

@@ -1,0 +1,57 @@
+# An aggregate in a match arm has its own generators, and an aggregate over a match ranges over its result.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  type Order = { id: Key orders, user: Key users, total: I64 }
+  relation users : User key id generate sequence
+  relation identities : Identity key id generate sequence
+  relation orders : Order key id generate sequence
+run
+  insert users from [User { id: users.key(1), name: "ann" }, User { id: users.key(2), name: "bo" }]
+  insert identities from [EmailPass { id: identities.key(1), user: users.key(1), email: "same" },
+                          Google { id: identities.key(2), user: users.key(1), gid: "same" },
+                          Google { id: identities.key(3), user: users.key(2), gid: "g-bo" },
+                          Apple { id: identities.key(4), user: users.key(2), sub: "a-bo" }]
+  insert orders from [Order { id: orders.key(1), user: users.key(1), total: 10 },
+                      Order { id: orders.key(2), user: users.key(1), total: 20 },
+                      Order { id: orders.key(3), user: users.key(2), total: 5 }]
+# An aggregate over a match's result counts its distinct values: two arms giving "same" are one.
+query
+  count(x for x in (from i in identities
+                    select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub))
+----
+3
+query
+  count(x for x in (from i in identities select i))
+----
+4
+# An aggregate inside an arm ranges over its own generators and may mention the arm's binder.
+query rowsort
+  from i in identities
+  select { id: i.id,
+           n: match i
+                | EmailPass e -> sum(o.total for o in orders where o.user == e.user)
+                | Google g    -> count(o for o in orders where o.user == g.user)
+                | Apple a     -> 0 }
+----
+{ id: identities.key(1), n: 30 }
+{ id: identities.key(2), n: 2 }
+{ id: identities.key(3), n: 1 }
+{ id: identities.key(4), n: 0 }
+# No aggregate ranges over the rows that reach an arm: the Google arm counts every Google row.
+query rowsort
+  from i in identities
+  select { id: i.id,
+           n: match i
+                | EmailPass _ -> 0
+                | Google _    -> count(x for x in identities.Google)
+                | Apple _     -> 0 }
+----
+{ id: identities.key(1), n: 0 }
+{ id: identities.key(2), n: 2 }
+{ id: identities.key(3), n: 2 }
+{ id: identities.key(4), n: 0 }

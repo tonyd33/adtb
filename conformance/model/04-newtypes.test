@@ -1,0 +1,64 @@
+# A newtype is a distinct nominal type over a base type, built by calling its name and read back with unwrap.
+schema
+  module test
+  type Email = new Text where matches(self, "^[^@]+@[^@]+$")
+  type Cents = new I64
+  type Pennies = new I64
+  type Contact = { id: Key contacts, email: Email }
+  type Wallet = { id: Key wallets, c: Cents }
+  relation wallets : Wallet key id generate sequence
+  relation contacts : Contact key id generate sequence
+  fn total (c: Cents) -> I64 = unwrap(c)
+run
+  insert contacts { id: contacts.key(1), email: Email("a@b") }
+error Invalid
+  insert contacts { id: contacts.key(2), email: "a@b" }
+query
+  from c in contacts select unwrap(c.email)
+----
+"a@b"
+query
+  from c in contacts select c.email
+----
+Email("a@b")
+query
+  unwrap(Cents(250))
+----
+250
+query
+  total(Cents(7))
+----
+7
+error Invalid
+  total(7)
+error Invalid
+  total(Pennies(7))
+error Invalid
+  Cents(1) == Pennies(1)
+error Invalid
+  Cents(1) == 1
+error Invalid
+  Email("a@b") == "a@b"
+query
+  Email("a@b") == Email("a@b")
+----
+true
+query
+  Cents(1) < Cents(2)
+----
+true
+query
+  [Cents(2), Cents(1), Cents(2)]
+----
+Cents(1)
+Cents(2)
+error Invalid
+  Cents(1) + Cents(2)
+error Invalid
+  -Cents(1)
+error Invalid
+  sum(w.c for w in wallets)
+query
+  unwrap(Cents(1)) + unwrap(Cents(2))
+----
+3

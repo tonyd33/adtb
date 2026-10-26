@@ -128,6 +128,18 @@ fn matches_works_over_scalar_values() {
 }
 
 #[test]
+fn the_perl_classes_of_matches_are_unicode() {
+    let f = fixture();
+    assert_eq!(yes(), f.eval(r#"matches("٣", "^\\d$")"#));
+    assert_eq!(no(), f.eval(r#"matches("x", "^\\d$")"#));
+    assert_eq!(yes(), f.eval(r#"matches("é_1", "^\\w+$")"#));
+    assert_eq!(no(), f.eval(r#"matches("a-b", "^\\w+$")"#));
+    assert_eq!(yes(), f.eval("matches(\"a\u{2003}b\", \"^a\\\\sb$\")"));
+    assert_eq!(yes(), f.eval(r#"matches("café bar", "café\\b")"#));
+    assert_eq!(no(), f.eval(r#"matches("cafés", "café\\b")"#));
+}
+
+#[test]
 fn matches_is_case_sensitive_unless_it_begins_with_i() {
     let f = fixture();
     assert_eq!(no(), f.eval(r#"matches("ABC", "abc")"#));

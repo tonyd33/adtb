@@ -1,0 +1,46 @@
+# Integers, decimals and durations order numerically and time values chronologically.
+schema
+  module test
+  fn i8_of (x: I8) -> I8 = x
+  fn d2 (x: Decimal 2) -> Decimal 2 = x
+query
+  [i8_of(3), -i8_of(127), i8_of(0)]
+----
+-127
+0
+3
+query
+  [d2(2.5), d2(1.25), d2(10)]
+----
+1.25
+2.50
+10.00
+query
+  -(1.5) < 1.25
+----
+true
+query
+  [1h, 90s, -(1s), 1d]
+----
+-1s
+90s
+1h
+1d
+query
+  Instant.parse("1969-12-31T23:59:59Z") < Instant.parse("1970-01-01T00:00:00Z")
+----
+true
+query
+  Date.parse("2025-12-31") < Date.parse("2026-01-01")
+----
+true
+query
+  Time.parse("09:30:00") < Time.parse("10:00:00")
+----
+true
+query
+  DateTime.parse("2026-01-01T23:59:59") < DateTime.parse("2026-01-02T00:00:00")
+----
+true
+error Invalid
+  Period.parse("P1M0D") < Period.parse("P2M0D")

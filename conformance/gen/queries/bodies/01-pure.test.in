@@ -1,0 +1,32 @@
+# A query reads one snapshot, gives the same value each time and cannot write.
+@SCHEMA@
+@RUN@
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+"cy"
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+"cy"
+run
+  transact
+    insert users { id: users.key(4), name: "di" }
+query rowsort
+  from u in users select u.name
+----
+"ann"
+"bo"
+"cy"
+"di"
+# Two reads of one relation variable in one query see the same rows.
+query
+  count(p for p in (from a in users, b in users where key a == key b select key a))
+----
+4
+error Invalid
+  from u in users select insert users { name: "x" }

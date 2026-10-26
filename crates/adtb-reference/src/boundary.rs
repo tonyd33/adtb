@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use adtb_lang::schema::{OnDelete, Stage as SchemaStage, TypeDefKind};
 use adtb_lang::types::{CtorSet, RelId, Ty, TypeId};
@@ -477,9 +478,10 @@ impl Interpreter<'_> {
     /// Returns every constraint of the schema that transition `change` into `db` violates, by
     /// name, each with its report.
     fn violations(&self, db: &Database, change: &Change) -> R<BTreeMap<String, Violation>> {
-        let after = Interpreter::new(self.schema, self.program, db)
+        let mut after = Interpreter::new(self.schema, self.program, db)
             .with_change(change)
             .with_fix_limit(self.fix_limit);
+        after.compiled = Rc::clone(&self.compiled);
         let run = Run {
             it: &after,
             query: &self.program.terms,

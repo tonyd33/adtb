@@ -1,0 +1,58 @@
+# Every alternative binds the same names; a whole-value binder has the alternatives' row type, a field binder their join.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities select match i
+    | Google g | Apple g -> g.user
+    | EmailPass e        -> e.user
+----
+users.key(1)
+users.key(2)
+query rowsort
+  from i in identities select match i
+    | Google g | Apple g -> key g
+    | EmailPass e        -> key e
+----
+identities.key(1)
+identities.key(2)
+identities.key(3)
+identities.key(4)
+query rowsort
+  from i in identities select match i
+    | Google { gid: t } | Apple { sub: t } -> t
+    | EmailPass { email: t }               -> t
+----
+"a-bo"
+"ann@example.com"
+"g-ann"
+"root"
+query rowsort
+  from i in identities select match i
+    | Google g | Apple g -> display_name(g)
+    | EmailPass _        -> "-"
+----
+"-"
+"a-bo"
+"g-ann"
+"root"
+query rowsort
+  from p in parcels select match p.state
+    | Shipped { via: Courier _ } | Pending -> "a"
+    | Shipped { via: Mail _ }             -> "b"
+----
+"a"
+"b"
+# Alternatives that bind different names are refused.
+error Invalid
+  from i in identities select match i
+    | Google g | Apple a -> 1
+    | EmailPass _        -> 2
+error Invalid
+  from i in identities select match i
+    | Google g | Apple _ -> 1
+    | EmailPass _        -> 2
+# A whole-value binder over the alternatives has only the shared fields.
+error Invalid
+  from i in identities select match i
+    | Google g | Apple g -> g.gid
+    | EmailPass _        -> "-"

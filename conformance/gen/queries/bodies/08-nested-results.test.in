@@ -1,0 +1,63 @@
+# A result record may hold a set; a missing related row gives an empty set and the row is kept once.
+@SCHEMA@
+@RUN@
+query rowsort
+  from u in users
+  select { name: u.name,
+           phones: from d in phones where d.owner == key u select d.seen }
+----
+{ name: "ann", phones: [10, 20] }
+{ name: "bo", phones: [] }
+{ name: "cy", phones: [] }
+query rowsort
+  from u in users
+  select { name: u.name,
+           phones: from d in phones where d.owner == key u select d }
+----
+{ name: "ann", phones: [Phone { id: phones.key(1), owner: users.key(1), seen: 10 }, Phone { id: phones.key(2), owner: users.key(1), seen: 20 }] }
+{ name: "bo", phones: [] }
+{ name: "cy", phones: [] }
+query
+  count(r for r in (from u in users select { name: u.name, ds: u.<phones.owner }))
+----
+3
+# Nested to any depth.
+query rowsort
+  from u in users where u.name != "cy"
+  select { name: u.name,
+           ids: from i in u.<identities.user select { id: key i, pals: from f in follows where f.src == i.user select f.dst } }
+----
+{ name: "ann", ids: [{ id: identities.key(1), pals: [users.key(2)] }, { id: identities.key(2), pals: [users.key(2)] }] }
+{ name: "bo", ids: [{ id: identities.key(3), pals: [users.key(3)] }, { id: identities.key(4), pals: [users.key(3)] }] }
+# A nested set is flattened by ranging over it.
+query rowsort
+  from r in (from u in users select { name: u.name, ds: u.<phones.owner }),
+       d in r.ds
+  select { name: r.name, seen: d.seen }
+----
+{ name: "ann", seen: 10 }
+{ name: "ann", seen: 20 }
+query rowsort
+  from r in (from u in users select { name: u.name, ds: u.<phones.owner }) where r.ds == (from d in phones where false select d) select r.name
+----
+"bo"
+"cy"
+# Nested sets compare as sets: equal results are one element.
+query rowsort
+  from u in users where u.name != "ann" select { ds: u.<phones.owner }
+----
+{ ds: [] }
+query rowsort
+  from u in users select (from d in phones where d.owner == key u select d.seen) == (from d in phones where d.owner == key u and d.seen > 0 select d.seen)
+----
+true
+query rowsort
+  from f in follows select { dst: f.dst, srcs: from g in follows where g.dst == f.dst select g.src }
+----
+{ dst: users.key(2), srcs: [users.key(1), users.key(3)] }
+{ dst: users.key(3), srcs: [users.key(2)] }
+query rowsort
+  from x in (from f in follows select (from g in follows where g.dst == f.dst select g.src)) select x
+----
+[users.key(1), users.key(3)]
+[users.key(2)]

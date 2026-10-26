@@ -1,0 +1,33 @@
+# One declared sum may be the type of a field (value level) and the element type of a relation (relation level).
+schema
+  module test
+  type Via { name: Text } = Courier | Mail { tracking: Text }
+  relation vias : Via key name
+  type Shipment = { id: Key shipments, via: Via }
+  relation shipments : Shipment key id generate sequence
+run
+  insert vias.Courier { name: "dhl" }
+  insert shipments { id: shipments.key(1), via: Courier { name: "ups" } }
+  insert shipments { id: shipments.key(2), via: Mail { name: "post", tracking: "t9" } }
+query rowsort
+  from s in shipments select match s.via | Courier c -> c.name | Mail m -> m.tracking
+----
+"ups"
+"t9"
+query rowsort
+  from s in shipments select s.via.name
+----
+"ups"
+"post"
+query
+  from s in shipments where s.via == Courier { name: "ups" } select key s
+----
+shipments.key(1)
+query
+  from v in vias.Courier select v
+----
+Courier { name: "dhl" }
+query
+  from s in shipments, v in vias where s.via == v select key s
+----
+

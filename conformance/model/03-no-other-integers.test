@@ -1,0 +1,11 @@
+# There are no unsigned integer types and no integer type wider than 64 bits.
+error Invalid
+  U8.parse("1")
+error Invalid
+  U64.parse("1")
+error Invalid
+  I128.parse("1")
+query
+  I64.parse("12")
+----
+Some { value: 12 }

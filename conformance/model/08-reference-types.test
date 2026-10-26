@@ -1,0 +1,50 @@
+# A reference is typed by the constructor set it may point at; a narrower reference widens implicitly, never the reverse.
+schema
+  module test
+  type Identity { id: Key identities, user: Text }
+    = EmailPass { email: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  set OAuth of identities = Google | Apple
+  type Visit      = { id: Key visits, identity: Key identities }
+  type Recovery   = { id: Key recoveries, identity: Key identities.EmailPass }
+  type OAuthToken = { id: Key oauth_tokens, identity: Key identities.OAuth }
+  relation visits       : Visit key id generate sequence
+  relation recoveries   : Recovery key id generate sequence
+  relation oauth_tokens : OAuthToken key id generate sequence
+run
+  insert identities.EmailPass { id: identities.key(1), user: "ann", email: "a@x" }
+  insert identities.Google { id: identities.key(2), user: "ann", gid: "g" }
+  insert identities.Apple { id: identities.key(3), user: "bo", sub: "s" }
+run
+  insert recoveries from (from e in identities.EmailPass select { id: recoveries.key(1), identity: key e })
+  insert oauth_tokens from (from g in identities.Google select { id: oauth_tokens.key(1), identity: key g })
+  insert oauth_tokens from (from a in identities.Apple select { id: oauth_tokens.key(2), identity: key a })
+  insert visits from (from e in identities.EmailPass select { id: visits.key(1), identity: key e })
+  insert visits { id: visits.key(2), identity: identities.key(2) }
+query
+  from r in recoveries select r.identity
+----
+identities.key(1)
+query
+  from v in visits, r in recoveries where v.identity == r.identity select key v
+----
+visits.key(1)
+query
+  from t in oauth_tokens, v in visits where t.identity == v.identity select key t
+----
+oauth_tokens.key(1)
+query
+  from t in oauth_tokens select value(t.identity)
+----
+2
+3
+error Invalid
+  insert recoveries { id: recoveries.key(2), identity: identities.key(2) }
+error Invalid
+  insert recoveries from (from g in identities.Google select { id: recoveries.key(2), identity: key g })
+error Invalid
+  insert oauth_tokens from (from e in identities.EmailPass select { id: oauth_tokens.key(3), identity: key e })
+error Invalid
+  from v in visits select v.identity == 1

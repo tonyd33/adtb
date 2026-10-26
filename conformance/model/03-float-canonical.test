@@ -1,0 +1,58 @@
+# Float results are canonical: -0.0 becomes 0.0 and every NaN is one NaN; arithmetic does not fault.
+schema
+  module test
+  fn f (x: F64) -> F64 = x
+  fn g (x: F32) -> F32 = x
+  type Metric = { id: Key metrics, v: F64 }
+  relation metrics : Metric key id generate sequence
+query
+  1e0
+----
+1.0
+query
+  f(1.0) / f(0.0)
+----
+inf
+query
+  f(-1.0) / f(0.0)
+----
+-inf
+query
+  f(0.0) / f(0.0)
+----
+NaN
+query
+  g(1.0) / g(0.0)
+----
+inf
+query
+  f(1e308) * 10.0
+----
+inf
+query
+  -f(0.0)
+----
+0.0
+query
+  [f(0.0), -f(0.0)]
+----
+0.0
+query
+  [f(0.0) / f(0.0), f(1.0) / f(0.0) - f(1.0) / f(0.0)]
+----
+NaN
+run
+  insert metrics { id: metrics.key(1), v: f(0.0) * f(-1.0) }
+  insert metrics { id: metrics.key(2), v: 0.0 }
+query
+  from m in metrics select m.v
+----
+0.0
+query
+  count(m for m in metrics where m.v == f(0.0))
+----
+2
+query
+  f(1.0) + f(2.0)
+----
+3.0

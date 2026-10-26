@@ -1,0 +1,27 @@
+# A field binder in an or-pattern has the join of its types; with no join the pattern is refused.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  type Account { id: Key accounts }
+    = Admin { boss: Key users.User, label: Text }
+    | Staff { boss: Key users, label: I64 }
+    | Guest
+  relation users : User key id generate sequence
+  relation accounts : Account key id generate sequence
+run
+  transact
+    insert users { id: users.key(1), name: "ann" }
+    insert accounts.Admin { id: accounts.key(1), boss: users.key(1), label: "a" }
+    insert accounts.Staff { id: accounts.key(2), boss: users.key(1), label: 7 }
+    insert accounts.Guest { id: accounts.key(3) }
+query rowsort
+  from a in accounts select match a
+    | Admin { boss: b } | Staff { boss: b } -> b
+    | Guest g -> users.key(9)
+----
+users.key(1)
+users.key(9)
+error Invalid
+  from a in accounts select match a
+    | Admin { label: l } | Staff { label: l } -> 1
+    | Guest _ -> 2

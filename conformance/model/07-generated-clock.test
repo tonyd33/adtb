@@ -1,0 +1,17 @@
+# A generate clock default gives every row of one statement the same Instant.
+schema
+  module test
+  type Event = { id: I64, at: Instant }
+  relation events : Event
+    key id
+    default at = generate clock
+run
+  insert events from (from n in [1, 2, 3] select { id: n })
+query
+  count(t for t in (from e in events select e.at))
+----
+1
+query
+  count(e for e in events)
+----
+3

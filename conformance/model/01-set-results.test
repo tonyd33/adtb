@@ -1,0 +1,28 @@
+# Set T is the type of query results, function results and fields of anonymous result records; many-valued facts are relations.
+schema
+  module test
+  type Doc = { id: Key docs, title: Text }
+  relation docs : Doc key id generate sequence
+  type DocTag = { doc: Key docs, tag: Text }
+  relation doc_tags : DocTag key (doc, tag)
+  fn tags_of (d: Key docs) -> Set Text = from t in doc_tags where t.doc == d select t.tag
+run
+  insert docs { id: docs.key(1), title: "a" }
+  insert docs { id: docs.key(2), title: "b" }
+  insert doc_tags { doc: docs.key(1), tag: "x" }
+  insert doc_tags { doc: docs.key(1), tag: "y" }
+query rowsort
+  from d in docs select { title: d.title, tags: tags_of(key d) }
+----
+{ title: "a", tags: ["x", "y"] }
+{ title: "b", tags: [] }
+query rowsort
+  from d in docs select { title: d.title, tags: from t in d.<doc_tags.doc select t.tag }
+----
+{ title: "a", tags: ["x", "y"] }
+{ title: "b", tags: [] }
+query
+  from d in docs, t in d.<doc_tags.doc select key t
+----
+doc_tags.key(doc: docs.key(1), tag: "x")
+doc_tags.key(doc: docs.key(1), tag: "y")

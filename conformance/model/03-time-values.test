@@ -1,0 +1,51 @@
+# Time values have microsecond precision on one 86400-second-day time scale; a leap second is not representable.
+schema
+  module test
+  fn diff (a: Text, b: Text) -> Option Duration =
+    match Instant.parse(a)
+    | Some x -> (match Instant.parse(b) | Some y -> Some { value: y.value - x.value } | None -> None)
+    | None -> None
+query
+  Instant.parse("2026-10-25T09:30:00Z")
+----
+Some { value: 2026-10-25T09:30:00.000000Z }
+query
+  Instant.parse("2026-10-25T09:30:00.000001Z") > Instant.parse("2026-10-25T09:30:00Z")
+----
+true
+query
+  Instant.parse("2016-12-31T23:59:60Z")
+----
+None
+query
+  Time.parse("23:59:60")
+----
+None
+query
+  Time.parse("23:59:59.999999")
+----
+Some { value: 23:59:59.999999 }
+query
+  Time.parse("24:00:00")
+----
+None
+query
+  Date.parse("2024-02-29")
+----
+Some { value: 2024-02-29 }
+query
+  Date.parse("2023-02-29")
+----
+None
+query
+  DateTime.parse("2026-10-25T09:30:00")
+----
+Some { value: 2026-10-25T09:30:00.000000 }
+query
+  diff("2016-12-31T00:00:00Z", "2017-01-01T00:00:00Z")
+----
+Some { value: 1d }
+query
+  diff("2026-10-25T09:30:00Z", "2026-10-25T09:30:00.000001Z")
+----
+Some { value: 1us }

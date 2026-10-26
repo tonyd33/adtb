@@ -1,0 +1,31 @@
+# Related rows are reached by generators joined by predicates; a reference compares with the key of a row.
+@SCHEMA@
+@RUN@
+query rowsort
+  from i in identities, u in users where i.user == key u select u.name
+----
+"ann"
+"bo"
+query rowsort
+  from i in identities, u in users where i.user == key u select { id: key i, name: u.name }
+----
+{ id: identities.key(1), name: "ann" }
+{ id: identities.key(2), name: "ann" }
+{ id: identities.key(3), name: "bo" }
+{ id: identities.key(4), name: "bo" }
+# A join no reference names.
+query rowsort
+  from a in follows, b in follows where a.dst == b.src and b.dst == a.src select { x: a.src, y: a.dst }
+----
+{ x: users.key(2), y: users.key(3) }
+{ x: users.key(3), y: users.key(2) }
+query rowsort
+  from u in users, v in users where u.name < v.name and exists f in follows where f.src == key u and f.dst == key v select { u: u.name, v: v.name }
+----
+{ u: "ann", v: "bo" }
+{ u: "bo", v: "cy" }
+query rowsort
+  from g in identities.Google, u in users where g.user == key u select { gid: g.gid, name: u.name }
+----
+{ gid: "g-ann", name: "ann" }
+{ gid: "root", name: "bo" }

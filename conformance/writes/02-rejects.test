@@ -1,0 +1,61 @@
+# An insert with rejects into inserts every row whose record succeeds and one rejected row per failing record; without it a failing record is bad input.
+schema
+  module test
+  type Raw = { id: Key raws, n: I64 }
+  relation raws : Raw key id generate sequence
+  type Out = { id: Key outs, n: I64 }
+  relation outs : Out key id generate sequence
+  relation out_rejects : RejectedRow key (load, line)
+  check small on outs (n < 100)
+run
+  insert raws from (from k in [1, 2, 3] select { id: raws.key(k), n: if k == 2 then -1 else k })
+run
+  insert outs from (
+    from r in raws select { id: outs.key(value(key r)), n: if r.n > 0 then r.n else reject "negative" })
+  rejects into out_rejects
+query
+  from o in outs select o
+----
+Out { id: outs.key(1), n: 1 }
+Out { id: outs.key(3), n: 3 }
+query
+  from j in out_rejects select { line: j.line, source: j.source, raw: j.raw, reason: j.reason }
+----
+{ line: 2, source: "raws", raw: "Raw { id: raws.key(2), n: -1 }", reason: "negative" }
+error BadInput
+  insert outs from (
+    from r in raws select { id: outs.key(10 + value(key r)), n: if r.n > 0 then r.n else reject "negative" })
+run
+  insert outs from (
+    from r in raws select { id: outs.key(20 + value(key r)), n: if r.n > 0 then r.n else reject "negative" })
+  rejects into out_rejects
+query
+  count(j for j in out_rejects)
+----
+2
+query
+  count(l for l in (from j in out_rejects select j.load))
+----
+2
+error Violated
+  insert outs from (
+    from r in raws select { id: outs.key(30 + value(key r)), n: if r.n > 0 then r.n * 100 else reject "negative" })
+  rejects into out_rejects
+query
+  count(j for j in out_rejects)
+----
+2
+query
+  count(o for o in outs)
+----
+4
+error Invalid
+  insert outs from (
+    from r in raws, s in raws where key r == key s
+    select { id: outs.key(40 + value(key r)), n: if r.n > 0 then r.n else reject "negative" })
+  rejects into out_rejects
+error Invalid
+  insert outs from ([{ id: outs.key(50), n: 1 }])
+  rejects into out_rejects
+error Invalid
+  from r in raws select if r.n > 0 then r.n else reject "negative"

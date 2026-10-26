@@ -1,0 +1,30 @@
+# deleted(R) holds the rows a statement deletes, an update's old row included, so a constraint over it makes R append-only.
+schema
+  module test
+  type Event = { id: Key events, at: I64, body: Text }
+  relation events : Event key id generate sequence
+  constraint append_only = from e in deleted(events) select e
+run
+  insert events { id: events.key(1), at: 1, body: "a" }
+  insert events { id: events.key(2), at: 2, body: "b" }
+error Violated
+  delete e in events where key e == events.key(1)
+error Violated
+  update e in events where key e == events.key(1) set Event { e with body: "z" }
+# an update to the row's own value changes nothing, so nothing is deleted
+run
+  update e in events set e
+# a delete and a reinsert of the identical row cancel out in the normalised change set
+run
+  transact
+    delete e in events where key e == events.key(2)
+    insert events { id: events.key(2), at: 2, body: "b" }
+error Violated
+  transact
+    delete e in events where key e == events.key(2)
+    insert events { id: events.key(2), at: 2, body: "c" }
+query
+  from e in events select { id: key e, body: e.body }
+----
+{ body: "a", id: events.key(1) }
+{ body: "b", id: events.key(2) }

@@ -1,0 +1,24 @@
+# Two declared types with the same fields are distinct types: no value of one is a value of the other.
+schema
+  module test
+  type A = { n: I64 }
+  type B = { n: I64 }
+  type HoldsA = { id: Key holders, a: A }
+  relation holders : HoldsA key id generate sequence
+  fn n_of (a: A) -> I64 = a.n
+query
+  n_of(A { n: 3 })
+----
+3
+error Invalid
+  n_of(B { n: 3 })
+error Invalid
+  A { n: 1 } == B { n: 1 }
+run
+  insert holders { id: holders.key(1), a: A { n: 1 } }
+error Invalid
+  insert holders { id: holders.key(2), a: B { n: 1 } }
+query
+  from h in holders select h.a
+----
+A { n: 1 }

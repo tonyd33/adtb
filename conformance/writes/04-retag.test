@@ -1,0 +1,61 @@
+# An update whose new value has another constructor retags the row: it keeps its key and header fields and moves between constructor relations.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Text }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  type Session = { id: Key sessions, identity: Key identities }
+  relation sessions : Session key id generate sequence
+  fn lookup (email: Text) -> Text = lower(email)
+run
+  insert users from (from k in [1, 2] select { id: users.key(k), name: "u" ++ print(k) })
+  insert identities from ([EmailPass { id: identities.key(1), user: users.key(1), email: "Ann@X", hash: "h1" },
+                           EmailPass { id: identities.key(2), user: users.key(2), email: "Bo@X", hash: "h2" }])
+  insert sessions { id: sessions.key(1), identity: identities.key(1) }
+run
+  update i in identities where i.id == identities.key(1)
+  set match i
+    | EmailPass e -> Google { gid: lookup(e.email) }
+    | Google g    -> g
+    | Apple a     -> a
+query
+  from i in identities select i
+----
+EmailPass { id: identities.key(2), user: users.key(2), email: "Bo@X", hash: "h2" }
+Google { id: identities.key(1), user: users.key(1), gid: "ann@x" }
+query
+  from i in identities.EmailPass select key i
+----
+identities.key(2)
+query
+  from s in sessions select match s.identity | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+----
+"ann@x"
+run
+  update i in identities.EmailPass set Apple { i with sub: i.email }
+query
+  from i in identities select i
+----
+Google { id: identities.key(1), user: users.key(1), gid: "ann@x" }
+Apple { id: identities.key(2), user: users.key(2), sub: "Bo@X" }
+run
+  update i in identities.Google set Apple { user: users.key(2), sub: "moved" }
+query
+  from i in identities.Apple select i
+----
+Apple { id: identities.key(1), user: users.key(2), sub: "moved" }
+Apple { id: identities.key(2), user: users.key(2), sub: "Bo@X" }
+error Invalid
+  update i in identities.Apple set Google { }
+error Invalid
+  update i in identities.Apple set Google { i with }
+error Invalid
+  update i in identities.Apple set EmailPass { email: "e" }
+query
+  count(i for i in identities.Apple)
+----
+2

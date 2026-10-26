@@ -1,0 +1,20 @@
+# An optional reference holding None is unconstrained; holding Some, it must name an existing row.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Note = { id: Key notes, author: Option (Key users), body: Text }
+  relation notes : Note key id generate sequence index (author)
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert notes { id: notes.key(1), author: None, body: "n1" }
+  insert notes { id: notes.key(2), author: Some { value: users.key(1) }, body: "n2" }
+error Violated
+  insert notes { id: notes.key(3), author: Some { value: users.key(5) }, body: "n3" }
+error Violated
+  delete u in users
+query
+  from n in notes select n.body
+----
+"n1"
+"n2"

@@ -1,0 +1,69 @@
+# A constructor set's row type has the header fields and the fields every member declares at one type.
+schema
+  module test
+  type Shape { id: Key shapes, tag: Text }
+    = Circle { r: I64, label: Text }
+    | Square { s: I64, label: Text }
+    | Blob   { label: I64 }
+    | Dot
+  relation shapes : Shape key id generate sequence
+  set Labelled of shapes = Circle | Square
+  set Round of shapes = Circle | Blob
+run
+  transact
+    insert shapes.Circle { id: shapes.key(1), tag: "t1", r: 5, label: "c" }
+    insert shapes.Square { id: shapes.key(2), tag: "t2", s: 7, label: "s" }
+    insert shapes.Blob { id: shapes.key(3), tag: "t3", label: 9 }
+    insert shapes.Dot { id: shapes.key(4), tag: "t4" }
+query rowsort
+  from x in shapes.(Circle | Square) select x.label
+----
+"c"
+"s"
+query rowsort
+  from x in shapes.Labelled select x.label
+----
+"c"
+"s"
+query rowsort
+  from x in shapes.(Circle | Dot) select x.tag
+----
+"t1"
+"t4"
+query rowsort
+  from x in shapes select x.tag
+----
+"t1"
+"t2"
+"t3"
+"t4"
+query rowsort
+  from x in shapes.Circle select { r: x.r, label: x.label }
+----
+{ r: 5, label: "c" }
+query rowsort
+  from x in shapes.Blob select x.label
+----
+9
+query rowsort
+  from x in shapes.Dot select x
+----
+Dot { id: shapes.key(4), tag: "t4" }
+# A field declared at different types is not a field of the set.
+error Invalid
+  from x in shapes.(Circle | Blob) select x.label
+error Invalid
+  from x in shapes.Round select x.label
+# A field only some members declare is not a field of the set.
+error Invalid
+  from x in shapes.(Circle | Square) select x.r
+error Invalid
+  from x in shapes select x.label
+error Invalid
+  from x in shapes.Dot select x.label
+# A row of a row type is a value of the sum.
+query rowsort
+  (from c in shapes.Circle select c) union (from d in shapes.Dot select d)
+----
+Circle { id: shapes.key(1), tag: "t1", r: 5, label: "c" }
+Dot { id: shapes.key(4), tag: "t4" }
