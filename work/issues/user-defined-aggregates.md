@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 177
 summary: "user-defined aggregates are refused unchecked, so interop.md:1053 fails"
-tags: [lang]
+branch: adtb-lang4
+tags:
+  - lang
 ---
 
 # Feature: check user-defined aggregates

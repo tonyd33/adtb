@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 480
-summary: "quarantine marks are not persisted; a quarantined heap or index is found again only by recovery or verify"
+summary: quarantine marks are not persisted; a quarantined heap or index is found again only by recovery or verify
+branch: pager
 depends-on:
   - pager-and-log
 tags:

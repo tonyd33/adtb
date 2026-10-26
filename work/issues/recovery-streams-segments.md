@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 490
-summary: "recovery and verify read whole log segments into memory"
+summary: recovery and verify read whole log segments into memory
+branch: pager
 depends-on:
   - pager-and-log
 tags:

@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 176
 summary: "temp relations are never declared, so later items cannot name them and 2 spec blocks fail"
-tags: [lang]
+branch: adtb-lang4
+tags:
+  - lang
 ---
 
 # Feature: temp relations

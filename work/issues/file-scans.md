@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 175
 summary: "read_parquet and read_csv are missing from the prelude, so 4 spec blocks fail"
-tags: [lang]
+branch: adtb-lang4
+tags:
+  - lang
 ---
 
 # Feature: file scans in the prelude
