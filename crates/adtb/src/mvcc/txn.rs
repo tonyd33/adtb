@@ -61,8 +61,28 @@ struct State {
 /// call that starts, ends or reads for a transaction fails with [`Error::Corrupt`], naming the
 /// first page found damaged. The commit log stays readable through [`Transactions::commit_log`]
 /// for verification and repair.
+///
+/// Clones are handles on one set of transactions.
 #[derive(Debug)]
-pub struct Transactions<R: Runtime> {
+pub struct Transactions<R: Runtime>(std::sync::Arc<Shared<R>>);
+
+impl<R: Runtime> Clone for Transactions<R> {
+    fn clone(&self) -> Self {
+        Transactions(self.0.clone())
+    }
+}
+
+impl<R: Runtime> std::ops::Deref for Transactions<R> {
+    type Target = Shared<R>;
+
+    fn deref(&self) -> &Shared<R> {
+        &self.0
+    }
+}
+
+/// The state every handle on one set of transactions shares.
+#[derive(Debug)]
+pub struct Shared<R: Runtime> {
     rt: R,
     clog: RwLock<CommitLog>,
     state: Lock<State>,
@@ -103,12 +123,12 @@ impl<R: Runtime> Transactions<R> {
             opened: pager.durable(),
             reads: BTreeMap::new(),
         };
-        Transactions {
+        Transactions(std::sync::Arc::new(Shared {
             rt,
             clog: RwLock::new(clog),
             state: Lock::new(state),
             quarantine: OnceLock::new(),
-        }
+        }))
     }
 
     /// Returns the damage that quarantined the database, if any.

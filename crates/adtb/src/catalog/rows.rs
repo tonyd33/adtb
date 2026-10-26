@@ -75,7 +75,8 @@ pub struct IndexSpec {
     pub ctors: Vec<u32>,
     pub fields: Vec<String>,
     kind: &'static str,
-    clause: String,
+    /// The clause as the catalog writes it.
+    pub clause: String,
 }
 
 /// Returns the key index, the uniques and indexes and the implied indexes of every relation of

@@ -125,7 +125,26 @@ pub(crate) struct Meta {
 ///
 /// Lock order: page latches, then the flush lock, then the log lock, then the meta lock. The
 /// header, allocation and driver locks are taken alone.
-pub struct Pager<R: Runtime> {
+///
+/// Clones are handles on one pager.
+pub struct Pager<R: Runtime>(std::sync::Arc<Shared<R>>);
+
+impl<R: Runtime> Clone for Pager<R> {
+    fn clone(&self) -> Self {
+        Pager(self.0.clone())
+    }
+}
+
+impl<R: Runtime> Deref for Pager<R> {
+    type Target = Shared<R>;
+
+    fn deref(&self) -> &Shared<R> {
+        &self.0
+    }
+}
+
+/// The state every handle on one pager shares.
+pub struct Shared<R: Runtime> {
     pub(crate) rt: R,
     pub(crate) name: String,
     pub(crate) page_size: usize,
@@ -146,6 +165,12 @@ pub struct Pager<R: Runtime> {
 }
 
 impl<R: Runtime> std::fmt::Debug for Pager<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<R: Runtime> std::fmt::Debug for Shared<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pager")
             .field("name", &self.name)
@@ -303,7 +328,7 @@ impl<R: Runtime> Pager<R> {
             header.log_block as usize,
             header.segment_size,
         );
-        Pager {
+        Pager(std::sync::Arc::new(Shared {
             name: o.name.clone(),
             page_size: header.page_size as usize,
             pool_frames: o.pool_frames,
@@ -327,7 +352,7 @@ impl<R: Runtime> Pager<R> {
             alloc: Lock::new(Default::default()),
             marks: Lock::new(Default::default()),
             rt,
-        }
+        }))
     }
 
     /// Create an empty database: its data file, its first log segment and a first checkpoint.

@@ -425,18 +425,37 @@ fn a_migration_declaring_has_identity_with_no_declared_index_is_admitted() {
 
 #[test]
 fn dropping_an_index_an_admitted_constraint_needs_is_refused_naming_the_constraint() {
-    let indexed = format!("{RUNNING}  index (user)\n{HAS_IDENTITY}");
+    let by_email = "add constraint by_email =
+  from u in users
+  where not exists i in identities.EmailPass where i.email == u.name
+  select u
+";
+    let indexed = RUNNING.replacen(
+        "add relation users : User key id generate sequence\n",
+        "add relation users : User key id generate sequence\n  index (name)\n",
+        1,
+    );
     let got = migrate(
-        &indexed,
-        Some("module auth\ndrop index (user) in identities\n"),
+        &format!("{indexed}{by_email}"),
+        Some("module auth\ndrop index (name) in users\n"),
     );
     let Some(Err(CatalogError::Refused(why))) = got.get(1) else {
         panic!("the drop is not refused: {got:?}")
     };
     assert!(
-        why.iter().any(|w| w.contains("auth::has_identity")),
+        why.iter().any(|w| w.contains("auth::by_email")),
         "the refusal does not name the constraint: {why:?}"
     );
+}
+
+#[test]
+fn dropping_the_declared_index_leading_a_reference_field_brings_back_the_implied_one() {
+    let indexed = format!("{RUNNING}  index (user)\n{HAS_IDENTITY}");
+    let got = migrate(
+        &indexed,
+        Some("module auth\ndrop index (user) in identities\n"),
+    );
+    assert!(matches!(got.as_slice(), [Ok(()), Ok(())]), "{got:?}");
 }
 
 /// An abort as the two sides are compared: what it is, and the rows it reports.

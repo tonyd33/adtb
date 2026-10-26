@@ -23,15 +23,29 @@ pub fn repr(schema: &Schema, ty: &Ty) -> Ty {
 /// The order key of each constructor of a declared sum, by the constructor's catalog id.
 pub type OrderKeys = BTreeMap<u64, OrderKey>;
 
-/// Returns order keys spread over the constructors of each declared sum of `schema` that `keys`
-/// holds none for, in declaration order.
+/// Returns an order key for each constructor of a declared sum of `schema` that `keys` holds
+/// none for: spread over the sum when `keys` holds none of its constructors, else between the
+/// keys of its neighbours in declaration order.
+///
+/// Precondition: the keys `keys` holds for each sum's constructors rise in declaration order.
 pub fn new_order_keys(schema: &Schema, keys: &OrderKeys) -> OrderKeys {
     let mut out = OrderKeys::new();
     for cs in declared_sums(schema) {
-        if cs.iter().any(|id| keys.contains_key(id)) {
+        if !cs.iter().any(|id| keys.contains_key(id)) {
+            out.extend(cs.iter().copied().zip(OrderKey::spread(cs.len())));
             continue;
         }
-        out.extend(cs.iter().copied().zip(OrderKey::spread(cs.len())));
+        let mut last: Option<OrderKey> = None;
+        for (i, id) in cs.iter().enumerate() {
+            if let Some(k) = keys.get(id) {
+                last = Some(k.clone());
+                continue;
+            }
+            let next = cs[i + 1..].iter().find_map(|c| keys.get(c));
+            let k = OrderKey::between(last.as_ref(), next);
+            out.insert(*id, k.clone());
+            last = Some(k);
+        }
     }
     out
 }

@@ -104,7 +104,8 @@ fn unapplied(rows: &[(u32, Vec<Value>)]) -> Vec<String> {
         .collect()
 }
 
-/// Check that the catalog of `pager` holds the rows its schema declares, that no transaction
+/// Check that the catalog of `pager` holds the rows its schema declares and the row of its
+/// latest migration, that no transaction
 /// committed twice, and that it verifies clean.
 fn check_whole(pager: &Pager<SimRuntime>, catalog: &Catalog, txns: &Transactions<SimRuntime>) {
     let schema = catalog.schema();
@@ -127,11 +128,12 @@ fn check_whole(pager: &Pager<SimRuntime>, catalog: &Catalog, txns: &Transactions
         .iter()
         .map(|(c, row)| format!("{:?}", (c, &row[..3])))
         .collect();
-    assert_eq!(
-        want,
-        unapplied(&migration_rows(pager, catalog, txns)),
-        "rows of migrations"
-    );
+    let version = Value::I64(i64::try_from(catalog.source().version).expect("a version"));
+    let latest: Vec<(u32, Vec<Value>)> = migration_rows(pager, catalog, txns)
+        .into_iter()
+        .filter(|(_, row)| row[0] == version)
+        .collect();
+    assert_eq!(want, unapplied(&latest), "rows of migrations");
     let report = verify_catalog(pager, catalog, txns);
     assert!(report.is_clean() && report.complete, "{report:#?}");
     let commits: BTreeSet<u64> = report.commits.iter().copied().collect();
@@ -560,7 +562,7 @@ fn a_migration_after_a_crashed_one_applies() {
 }
 
 #[test]
-fn only_a_first_migration_of_declarations_applies() {
+fn a_migration_that_does_not_apply_to_the_schema_is_refused_and_a_later_one_applies() {
     let mut sim = Sim::new(17, Config::default());
     finished(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
@@ -569,8 +571,6 @@ fn only_a_first_migration_of_declarations_applies() {
             Err(Error::Refused(why)) => why,
             other => panic!("not refused: {other:?}"),
         };
-        let why = refused(catalog.migrate(&pager, &txns, "module auth\ndrop module auth\n"));
-        assert_eq!(vec!["`drop module auth` declares nothing"], why);
         let why =
             refused(catalog.migrate(&pager, &txns, "module auth\nadd type T = { id: I64 }\n"));
         assert_eq!(
@@ -581,13 +581,10 @@ fn only_a_first_migration_of_declarations_applies() {
         catalog
             .migrate(&pager, &txns, RUNNING)
             .expect("the migration applies");
-        let why =
-            refused(catalog.migrate(&pager, &txns, "module auth\nadd type T = { id: I64 }\n"));
-        assert_eq!(
-            vec!["the schema is at version 1; only a first migration applies"],
-            why
-        );
-        assert_eq!(1, catalog.source().version);
+        catalog
+            .migrate(&pager, &txns, "module auth\nadd type T = { id: I64 }\n")
+            .expect("a later migration applies");
+        assert_eq!(2, catalog.source().version);
         check_whole(&pager, &catalog, &txns);
     });
 }

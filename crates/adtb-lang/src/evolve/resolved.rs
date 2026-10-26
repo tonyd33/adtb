@@ -52,6 +52,131 @@ pub enum Resolved {
         constraint: u64,
         body: String,
     },
+    DropModule {
+        module: String,
+    },
+    DropType {
+        sum: u64,
+    },
+    DropRelation {
+        relation: u64,
+    },
+    DropSet {
+        set: u64,
+    },
+    AddConstructor {
+        ctor: u64,
+        sum: u64,
+        decl: String,
+        place: Place,
+    },
+    RemoveConstructor {
+        ctor: u64,
+    },
+    Enable {
+        target: Target,
+    },
+    Disable {
+        target: Target,
+    },
+    Deprecate {
+        target: Target,
+    },
+    RenameConstructor {
+        ctor: u64,
+        name: String,
+    },
+    RenameType {
+        sum: u64,
+        name: String,
+    },
+    RenameRelation {
+        relation: u64,
+        name: String,
+    },
+    RenameSet {
+        set: u64,
+        name: String,
+    },
+    RenameField {
+        field: u64,
+        name: String,
+    },
+    Split {
+        ctor: u64,
+        decl: String,
+        routing: String,
+    },
+    Merge {
+        ctor: u64,
+        decl: String,
+        routing: Option<String>,
+    },
+    Nest {
+        ctor: u64,
+        decl: String,
+    },
+    Unnest {
+        ctor: u64,
+    },
+    AddField {
+        field: u64,
+        decl: String,
+        fill: String,
+    },
+    DropField {
+        field: u64,
+    },
+    MoveField {
+        field: u64,
+        header: bool,
+        fill: Option<String>,
+    },
+    DropUnique {
+        index: u64,
+    },
+    DropIndex {
+        index: u64,
+    },
+    Rekey {
+        relation: u64,
+        key: u64,
+        fields: String,
+    },
+    RedefineFn {
+        function: u64,
+        decl: String,
+    },
+    DropFn {
+        function: u64,
+    },
+    DropAggregate {
+        function: u64,
+    },
+    DropConstraint {
+        constraint: u64,
+    },
+    DropCheck {
+        constraint: u64,
+    },
+    Revert {
+        migration: u64,
+    },
+}
+
+/// The constructor relation, or the constructor of a type, a write state operator names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    InRelation { relation: u64, ctor: u64 },
+    OfType { ctor: u64 },
+}
+
+/// Where an added constructor goes in its type's declaration order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Place {
+    Last,
+    Before { ctor: u64 },
+    After { ctor: u64 },
 }
 
 /// A clause of a resolved operator.
@@ -59,6 +184,8 @@ pub enum Resolved {
 pub enum Clause {
     /// A constructor a named set lists, or one a unique or index written with `in` ranges over.
     Member { ctor: u64 },
+    /// A named set an added constructor joins.
+    Joins { set: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -269,15 +396,45 @@ fn resolvable(op: &OperatorKind) -> bool {
     matches!(
         op,
         OperatorKind::AddModule(_)
+            | OperatorKind::DropModule(_)
             | OperatorKind::AddType(_)
+            | OperatorKind::DropType(_)
+            | OperatorKind::RenameType(..)
             | OperatorKind::AddRelation(_)
+            | OperatorKind::DropRelation(_)
+            | OperatorKind::RenameRelation(..)
             | OperatorKind::AddSet(_)
+            | OperatorKind::DropSet(..)
+            | OperatorKind::RenameSet(..)
+            | OperatorKind::AddConstructor { .. }
+            | OperatorKind::RemoveConstructor(_)
+            | OperatorKind::RenameConstructor(..)
+            | OperatorKind::SplitConstructor { .. }
+            | OperatorKind::MergeConstructor { .. }
+            | OperatorKind::NestConstructor { .. }
+            | OperatorKind::UnnestConstructor(..)
+            | OperatorKind::AddField { .. }
+            | OperatorKind::DropField(_)
+            | OperatorKind::RenameField(..)
+            | OperatorKind::MoveField { .. }
             | OperatorKind::AddUnique(..)
+            | OperatorKind::DropUnique(..)
             | OperatorKind::AddIndex { .. }
+            | OperatorKind::DropIndex { .. }
+            | OperatorKind::Rekey { .. }
             | OperatorKind::DefineFn(_)
+            | OperatorKind::RedefineFn(_)
+            | OperatorKind::DropFn(_)
             | OperatorKind::DefineAggregate(_)
+            | OperatorKind::DropAggregate(_)
             | OperatorKind::AddConstraint(_)
+            | OperatorKind::DropConstraint(_)
             | OperatorKind::AddCheck(_)
+            | OperatorKind::DropCheck(_)
+            | OperatorKind::Enable(_)
+            | OperatorKind::Disable(_)
+            | OperatorKind::Deprecate(_)
+            | OperatorKind::Revert { .. }
     )
 }
 
@@ -350,7 +507,7 @@ impl Resolver<'_> {
             }
             OperatorKind::AddUnique(fields, on) | OperatorKind::AddIndex { fields, on, .. } => {
                 let rel = self.relation(&on.relation).ok_or_else(gone)?;
-                let index = self.next_index(rel, &on.relation).ok_or_else(gone)?;
+                let index = self.next_index(rel).ok_or_else(gone)?;
                 for c in on.sel.iter().flat_map(sel_idents) {
                     clauses.push(Clause::Member {
                         ctor: self.ctor(rel, &c.text).ok_or_else(gone)?,
@@ -391,7 +548,7 @@ impl Resolver<'_> {
                 constraint: self.constraint(&c.name).ok_or_else(gone)?,
                 body: term(c.span),
             },
-            _ => return Err(gone()),
+            kind => self.changing(kind, &mut clauses).ok_or_else(gone)?,
         };
         Ok(ResolvedOp {
             op: resolved,
@@ -429,14 +586,15 @@ impl Resolver<'_> {
         self.schema.ids.ctors.get(&(def, c)).copied()
     }
 
-    /// Returns the id of the unique or index an operator appends to `rel`, `q` naming it.
-    fn next_index(&mut self, rel: RelId, q: &QName) -> Option<u64> {
+    /// Returns the id of the unique or index an operator appends to `rel`.
+    fn next_index(&mut self, rel: RelId) -> Option<u64> {
         let at = match self.indexes.get(&rel) {
             Some(&n) => n,
-            None => match self.value(self.before, q)? {
-                ValueDef::Relation(r) => self.before.relation(r).indexes.len(),
-                _ => return None,
-            },
+            None => {
+                let id = self.schema.ids.relations[&rel];
+                let (&r, _) = self.before.ids.relations.iter().find(|&(_, &x)| x == id)?;
+                self.before.relation(r).indexes.len()
+            }
         };
         self.indexes.insert(rel, at + 1);
         self.schema.ids.indexes.get(&(rel, at)).copied()
@@ -464,5 +622,359 @@ impl Resolver<'_> {
             ValueDef::Check(i) => self.schema.ids.checks.get(&(i as usize)).copied(),
             _ => None,
         }
+    }
+}
+
+impl Resolver<'_> {
+    /// Returns the resolved form of an operator that drops, renames or reshapes objects, its
+    /// clauses appended to `clauses`; `None` when an object it names is in neither schema.
+    fn changing(&self, kind: &OperatorKind, clauses: &mut Vec<Clause>) -> Option<Resolved> {
+        let text = &self.logged.text;
+        let term = |span: Span| canonical_term(text, span, self.names);
+        let (before, after) = (self.before, self.schema);
+        let own = |name: &ast::Ident| QName {
+            module: None,
+            name: name.clone(),
+        };
+        Some(match kind {
+            OperatorKind::DropModule(m) => Resolved::DropModule {
+                module: m.text.clone(),
+            },
+            OperatorKind::DropType(t) => Resolved::DropType {
+                sum: self.type_in(before, t)?,
+            },
+            OperatorKind::RenameType(t, to) => Resolved::RenameType {
+                sum: self
+                    .type_in(before, t)
+                    .or_else(|| self.type_in(after, &renamed(t, to)))?,
+                name: to.text.clone(),
+            },
+            OperatorKind::DropRelation(r) => Resolved::DropRelation {
+                relation: before.ids.relations[&self.relation_in(before, r)?],
+            },
+            OperatorKind::RenameRelation(r, to) => Resolved::RenameRelation {
+                relation: match self.relation_in(before, r) {
+                    Some(rel) => before.ids.relations[&rel],
+                    None => after.ids.relations[&self.relation_in(after, &renamed(r, to))?],
+                },
+                name: to.text.clone(),
+            },
+            OperatorKind::DropSet(set, r) => Resolved::DropSet {
+                set: self.set_in(before, r, &set.text)?,
+            },
+            OperatorKind::RenameSet(set, r, to) => Resolved::RenameSet {
+                set: self
+                    .set_in(before, r, &set.text)
+                    .or_else(|| self.set_in(after, r, &to.text))?,
+                name: to.text.clone(),
+            },
+            OperatorKind::DropUnique(fields, on) => Resolved::DropUnique {
+                index: self.index_in(before, fields, on, true)?,
+            },
+            OperatorKind::DropIndex { fields, on, .. } => Resolved::DropIndex {
+                index: self.index_in(before, fields, on, false)?,
+            },
+            OperatorKind::Rekey { relation, key, .. } => {
+                let rel = self.relation_in(after, relation)?;
+                Resolved::Rekey {
+                    relation: after.ids.relations[&rel],
+                    key: *after.ids.keys.get(&rel)?,
+                    fields: term(key.first()?.span.to(key.last()?.span)),
+                }
+            }
+            OperatorKind::RedefineFn(f) => Resolved::RedefineFn {
+                function: self.function_in(after, &own(&f.name))?,
+                decl: term(f.span),
+            },
+            OperatorKind::DropFn(f) => Resolved::DropFn {
+                function: self.function_in(before, f)?,
+            },
+            OperatorKind::DropAggregate(f) => Resolved::DropAggregate {
+                function: self.function_in(before, f)?,
+            },
+            OperatorKind::DropConstraint(c) => Resolved::DropConstraint {
+                constraint: self.constraint_in(before, c)?,
+            },
+            OperatorKind::DropCheck(c) => Resolved::DropCheck {
+                constraint: self.constraint_in(before, c)?,
+            },
+            OperatorKind::Revert { migration, .. } => Resolved::Revert {
+                migration: migration.parse().ok()?,
+            },
+            kind => return self.reshaping(kind, clauses),
+        })
+    }
+
+    /// Returns the resolved form of an operator that adds, removes or reshapes constructors or
+    /// fields, its clauses appended to `clauses`; `None` when an object it names is in neither
+    /// schema or it is no such operator.
+    fn reshaping(&self, kind: &OperatorKind, clauses: &mut Vec<Clause>) -> Option<Resolved> {
+        let text = &self.logged.text;
+        let term = |span: Span| canonical_term(text, span, self.names);
+        let def = |name: &ast::Ident| term(ctor_def_span(text, name));
+        let (before, after) = (self.before, self.schema);
+        Some(match kind {
+            OperatorKind::AddConstructor {
+                path, place, joins, ..
+            } => {
+                let ctor = self.type_ctor(after, &path.ty, &path.ctor.text)?;
+                let place = match place {
+                    None => Place::Last,
+                    Some(CtorPlace::Before(c)) => Place::Before {
+                        ctor: self.type_ctor(after, &path.ty, &c.text)?,
+                    },
+                    Some(CtorPlace::After(c)) => Place::After {
+                        ctor: self.type_ctor(after, &path.ty, &c.text)?,
+                    },
+                };
+                for j in joins {
+                    for s in j.sel.iter().flat_map(sel_idents) {
+                        clauses.push(Clause::Joins {
+                            set: self.set_in(after, &j.relation, &s.text)?,
+                        });
+                    }
+                }
+                Resolved::AddConstructor {
+                    ctor,
+                    sum: self.type_in(after, &path.ty)?,
+                    decl: def(&path.ctor),
+                    place,
+                }
+            }
+            OperatorKind::RemoveConstructor(path) => Resolved::RemoveConstructor {
+                ctor: self.type_ctor(before, &path.ty, &path.ctor.text)?,
+            },
+            OperatorKind::RenameConstructor(path, to) => Resolved::RenameConstructor {
+                ctor: self
+                    .type_ctor(before, &path.ty, &path.ctor.text)
+                    .or_else(|| self.type_ctor(after, &path.ty, &to.text))?,
+                name: to.text.clone(),
+            },
+            OperatorKind::Enable(t) => Resolved::Enable {
+                target: self.target(t)?,
+            },
+            OperatorKind::Disable(t) => Resolved::Disable {
+                target: self.target(t)?,
+            },
+            OperatorKind::Deprecate(t) => Resolved::Deprecate {
+                target: self.target(t)?,
+            },
+            OperatorKind::SplitConstructor {
+                path, into, arms, ..
+            } => Resolved::Split {
+                ctor: self.type_ctor(before, &path.ty, &path.ctor.text)?,
+                decl: term(
+                    ctor_def_span(text, &into.first()?.name)
+                        .to(ctor_def_span(text, &into.last()?.name)),
+                ),
+                routing: arms_term(arms).map_or_else(String::new, term),
+            },
+            OperatorKind::MergeConstructor { ty, into, arms, .. } => Resolved::Merge {
+                ctor: self.type_ctor(after, ty, &into.name.text)?,
+                decl: def(&into.name),
+                routing: arms.as_deref().and_then(arms_term).map(term),
+            },
+            OperatorKind::NestConstructor { ty, into, .. } => Resolved::Nest {
+                ctor: self.type_ctor(after, ty, &into.name.text)?,
+                decl: def(&into.name),
+            },
+            OperatorKind::UnnestConstructor(path, _) => Resolved::Unnest {
+                ctor: self.type_ctor(before, &path.ty, &path.ctor.text)?,
+            },
+            OperatorKind::AddField { path, ty, fill } => Resolved::AddField {
+                field: self.field_in(after, path, &path.field.text)?,
+                decl: term(path.field.span.to(ty.span)),
+                fill: term(fill_span(fill)?),
+            },
+            OperatorKind::DropField(path) => Resolved::DropField {
+                field: self.field_in(before, path, &path.field.text)?,
+            },
+            OperatorKind::RenameField(path, to) => Resolved::RenameField {
+                field: self
+                    .field_in(before, path, &path.field.text)
+                    .or_else(|| self.field_in(after, path, &to.text))?,
+                name: to.text.clone(),
+            },
+            OperatorKind::MoveField {
+                path,
+                to,
+                sel,
+                fill,
+            } => {
+                let header = sel.is_none();
+                let field = if header {
+                    let into = ast::FieldPath {
+                        ty: to.clone(),
+                        ctor: None,
+                        field: path.field.clone(),
+                    };
+                    self.field_in(after, &into, &path.field.text)?
+                } else {
+                    let first = sel.iter().flat_map(sel_idents).next()?;
+                    let into = ast::FieldPath {
+                        ty: to.clone(),
+                        ctor: Some(first.clone()),
+                        field: path.field.clone(),
+                    };
+                    self.field_in(after, &into, &path.field.text)?
+                };
+                Resolved::MoveField {
+                    field,
+                    header,
+                    fill: match fill {
+                        Some(f) => Some(term(fill_span(f)?)),
+                        None => None,
+                    },
+                }
+            }
+            _ => return None,
+        })
+    }
+
+    fn type_in(&self, schema: &Schema, q: &QName) -> Option<u64> {
+        let m = schema.module_named(&self.module_of(q))?;
+        let def = schema.module(m).types.get(&q.name.text)?;
+        schema.ids.types.get(def).copied()
+    }
+
+    fn relation_in(&self, schema: &Schema, q: &QName) -> Option<RelId> {
+        let m = schema.module_named(&self.module_of(q))?;
+        match schema.module(m).values.get(&q.name.text)? {
+            ValueDef::Relation(r) => Some(*r),
+            _ => None,
+        }
+    }
+
+    fn set_in(&self, schema: &Schema, r: &QName, set: &str) -> Option<u64> {
+        let rel = self.relation_in(schema, r)?;
+        schema.ids.sets.get(&(rel, set.to_string())).copied()
+    }
+
+    fn type_def(&self, schema: &Schema, q: &QName) -> Option<TypeId> {
+        let m = schema.module_named(&self.module_of(q))?;
+        schema.module(m).types.get(&q.name.text).copied()
+    }
+
+    fn type_ctor(&self, schema: &Schema, ty: &QName, ctor: &str) -> Option<u64> {
+        let def = self.type_def(schema, ty)?;
+        let c = schema.ty(def).ctor_index(ctor)?;
+        schema.ids.ctors.get(&(def, c)).copied()
+    }
+
+    fn field_in(&self, schema: &Schema, path: &ast::FieldPath, name: &str) -> Option<u64> {
+        let def = self.type_def(schema, &path.ty)?;
+        let ctor = match &path.ctor {
+            Some(c) => Some(schema.ty(def).ctor_index(&c.text)?),
+            None => None,
+        };
+        let id = schema.ids.fields.get(&(def, ctor, name.to_string()));
+        id.or_else(|| match ctor {
+            None => schema.ids.fields.get(&(def, Some(0), name.to_string())),
+            Some(_) => None,
+        })
+        .copied()
+    }
+
+    fn target(&self, t: &CtorTarget) -> Option<Target> {
+        Some(match t {
+            CtorTarget::Relation(on) => {
+                let c = on.sel.iter().flat_map(sel_idents).next()?;
+                let found = [self.schema, self.before].into_iter().find_map(|s| {
+                    let rel = self.relation_in(s, &on.relation)?;
+                    let def = s.relation(rel).elem_def;
+                    let k = s.ty(def).ctor_index(&c.text)?;
+                    Some((s.ids.relations[&rel], *s.ids.ctors.get(&(def, k))?))
+                })?;
+                Target::InRelation {
+                    relation: found.0,
+                    ctor: found.1,
+                }
+            }
+            CtorTarget::Type(path) => Target::OfType {
+                ctor: self
+                    .type_ctor(self.schema, &path.ty, &path.ctor.text)
+                    .or_else(|| self.type_ctor(self.before, &path.ty, &path.ctor.text))?,
+            },
+        })
+    }
+
+    fn index_in(
+        &self,
+        schema: &Schema,
+        fields: &[Expr],
+        on: &ast::RelationRef,
+        unique: bool,
+    ) -> Option<u64> {
+        let rel = self.relation_in(schema, &on.relation)?;
+        let def = schema.relation(rel).elem_def;
+        let names = |es: &[Expr]| -> Option<Vec<String>> {
+            es.iter()
+                .map(|e| match &e.kind {
+                    ast::ExprKind::Name(q) if q.module.is_none() => Some(q.name.text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let wanted = names(fields)?;
+        let scope: Option<Vec<u32>> = match &on.sel {
+            None => None,
+            Some(sel) => Some(
+                sel_idents(sel)
+                    .iter()
+                    .map(|c| schema.ty(def).ctor_index(&c.text))
+                    .collect::<Option<_>>()?,
+            ),
+        };
+        let at = schema.relation(rel).indexes.iter().position(|d| {
+            d.unique == unique
+                && names(&d.fields).as_ref() == Some(&wanted)
+                && d.scope.as_ref().map(|s| s.to_vec()) == scope
+        })?;
+        schema.ids.indexes.get(&(rel, at)).copied()
+    }
+
+    fn function_in(&self, schema: &Schema, q: &QName) -> Option<u64> {
+        let m = schema.module_named(&self.module_of(q))?;
+        match schema.module(m).values.get(&q.name.text)? {
+            ValueDef::Function(f) => schema.ids.functions.get(f).copied(),
+            ValueDef::Aggregate(i) => schema.ids.aggregates.get(&(*i as usize)).copied(),
+            _ => None,
+        }
+    }
+
+    fn constraint_in(&self, schema: &Schema, q: &QName) -> Option<u64> {
+        let m = schema.module_named(&self.module_of(q))?;
+        match schema.module(m).values.get(&q.name.text)? {
+            ValueDef::Constraint(i) => schema.ids.constraints.get(&(*i as usize)).copied(),
+            ValueDef::Check(i) => schema.ids.checks.get(&(*i as usize)).copied(),
+            _ => None,
+        }
+    }
+}
+
+/// Returns `q` with its name `to`.
+fn renamed(q: &QName, to: &ast::Ident) -> QName {
+    QName {
+        module: q.module.clone(),
+        name: to.clone(),
+    }
+}
+
+/// Returns the span from the first arm's pattern to the last arm's body.
+fn arms_term(arms: &[ast::Arm]) -> Option<Span> {
+    let first = arms.first()?.patterns.first()?.span;
+    Some(first.to(arms.last()?.body.span))
+}
+
+/// Returns the span of the constructor definition named at `name`, through its record's braces.
+fn ctor_def_span(text: &str, name: &ast::Ident) -> Span {
+    let end = braces_at(text, name.span.end as usize).map_or(name.span.end as usize, |b| b.end);
+    Span::new(name.span.start as usize, end)
+}
+
+fn fill_span(fill: &Fill) -> Option<Span> {
+    match fill {
+        Fill::Expr(e) => Some(e.span),
+        Fill::Match(arms) => arms_term(arms),
     }
 }

@@ -726,7 +726,28 @@ pub fn check_row(
     if let (Some(out), Some(refs)) = (record, c.refs.take()) {
         out.extend(refs.into_inner());
     }
-    checked.map(|(tm, ty)| (c.terms, tm, ty))
+    checked.map(|(_, tm, ty)| (c.terms, tm, ty))
+}
+
+/// Type checks `body` as [`check_row`] does, as a query whose one parameter is the row.
+pub fn row_query(
+    schema: &Schema,
+    program: &Program,
+    module: ModuleId,
+    row: &Ty,
+    body: RowBody,
+    expected: Option<&Ty>,
+) -> Result<Query, Diag> {
+    let mut c = Checker::new(schema, Visible::module(module), Context::Schema);
+    let (v, tm, ty) = row_body(&mut c, program, row, body, expected)?;
+    let term = c.terms.add(
+        Kind::Lam(v, tm),
+        Ty::Fn(Box::new(row.clone()), Box::new(ty)),
+    );
+    Ok(Query {
+        terms: c.terms,
+        term,
+    })
 }
 
 fn row_body(
@@ -735,11 +756,11 @@ fn row_body(
     row: &Ty,
     body: RowBody,
     expected: Option<&Ty>,
-) -> Result<(Tm, Ty), Diag> {
+) -> Result<(Var, Tm, Ty), Diag> {
     c.scope.push();
+    let v = c.bind(ROW, row.clone(), None);
     let (out, span) = match body {
         RowBody::Match(arms, span) => {
-            let v = c.bind(ROW, row.clone(), None);
             if let Ty::Data { def, .. } = row {
                 c.carry = Some((v, *def));
             }
@@ -769,7 +790,7 @@ fn row_body(
             "a fill or a routing reads only its row; this reads a relation, a reference, a generated key, `caller` or a function that does",
         ));
     }
-    Ok((out.tm, out.ty))
+    Ok((v, out.tm, out.ty))
 }
 
 /// The name a row body binds its row to, which no source text can spell.

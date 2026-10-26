@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use adtb_lang::check::Program;
+use adtb_lang::evolve::Logged;
 use adtb_lang::norm;
+use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 
@@ -362,8 +364,9 @@ impl<R: Runtime> Engine<R> {
     }
 }
 
-/// Apply the migrations of `log` beyond the file's own, refusing a log that is not a prefix of
-/// the file's or that the file's is not a prefix of.
+/// Apply the migrations of `log` beyond the file's own, each as its own schema change, stopping
+/// at the first refused one. Refuses a log whose migrations at or below the file's version differ
+/// from the file's by hash, naming the first that does.
 fn migrate<R: Runtime>(
     catalog: &mut Catalog,
     pager: &Pager<R>,
@@ -374,30 +377,28 @@ fn migrate<R: Runtime>(
     if let Some((m, _)) = stored
         .iter()
         .zip(&log.migrations)
-        .find(|(m, shipped)| &m.text != *shipped)
+        .find(|(m, shipped)| &m.text != *shipped && !same_hash(m, shipped))
     {
         return Err(OpenError::Diverged { version: m.number });
     }
-    let applied = stored.len();
-    let mut beyond = log.migrations.iter().skip(applied);
-    let version = catalog.source().version;
-    if let Some(text) = beyond.next() {
-        if applied != 0 {
-            return Err(refused(
-                version + 1,
-                "only a first migration applies in this engine yet".into(),
-            ));
-        }
+    for text in log.migrations.iter().skip(stored.len()) {
+        let version = catalog.source().version + 1;
         catalog.migrate(pager, txns, text).map_err(|e| match e {
-            catalog::Error::Refused(why) => refused(version + 1, why.join("\n")),
+            catalog::Error::Refused(why) => refused(version, why.join("\n")),
             other => corrupt(other),
         })?;
     }
-    if beyond.next().is_some() {
-        return Err(refused(
-            catalog.source().version + 1,
-            "only a first migration applies in this engine yet".into(),
-        ));
-    }
     Ok(())
+}
+
+/// Returns whether `text`, applied where migration `m` of the log was, gives the version hash
+/// `m` gives.
+fn same_hash(m: &Logged, text: &str) -> bool {
+    let hash = |text: &str| {
+        let file = parse_migration(text, ParseOptions::default()).ok().ok()?;
+        let source = m.before.migrate(&file, text).ok()?;
+        let schema = source.schema().ok()?;
+        Some(catalog::version_hash(&schema, &source))
+    };
+    hash(text).is_some_and(|h| Some(h) == hash(&m.text))
 }

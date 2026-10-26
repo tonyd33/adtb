@@ -260,13 +260,16 @@ fn a_later_migration_resolves_against_the_source_after_it() {
 
 #[test]
 fn an_operator_with_no_resolved_form_is_refused_at_its_span() {
-    let text = "module auth\nrename type User to Person\n";
+    let text = "module auth\nadd default users.name = \"anon\"\n";
     let src = migrated(&first(), text);
     let ds = src
         .resolved(2)
-        .expect_err("a rename has no resolved form yet");
+        .expect_err("a default has no resolved form yet");
     assert_eq!(1, ds.len(), "{ds:?}");
-    assert_eq!("rename type User to Person", &text[ds[0].span.range()]);
+    assert_eq!(
+        "add default users.name = \"anon\"",
+        &text[ds[0].span.range()]
+    );
 }
 
 #[test]
@@ -507,4 +510,21 @@ add field Device.label: Text fill \"\"
         "type app::Device = { id : Key app::devices , owner : Key app::owners }",
         canonical_term(text, Span::new(at, at + decl.len()), &names)
     );
+}
+
+#[test]
+fn renames_and_drops_resolve_to_the_ids_of_what_they_name() {
+    let text = "module auth\nrename type User to Person\ndrop index (user) in identities\ndrop fn display_name\n";
+    let src = migrated(&first(), text);
+    let got: Vec<Resolved> = ops(&src, 2).into_iter().map(|o| o.op).collect();
+    assert_eq!(3, got.len(), "{got:?}");
+    assert_eq!(
+        Resolved::RenameType {
+            sum: id(&src, "type auth::Person"),
+            name: "Person".into()
+        },
+        got[0]
+    );
+    assert!(matches!(got[1], Resolved::DropIndex { .. }), "{got:?}");
+    assert!(matches!(got[2], Resolved::DropFn { .. }), "{got:?}");
 }

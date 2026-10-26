@@ -259,7 +259,7 @@ fn a_second_migration_applies_at_open() {
     run(&mut sim, |rt| {
         let next = Log::new([
             SHOP,
-            "module shop\nadd type Tag = { id: Key tags, name: Text }\nadd relation tags : Tag key id generate sequence\n",
+            "module shop\nadd type Label = { id: Key tags, name: Text }\nadd relation tags : Label key id generate sequence\n",
         ]);
         let db = Database::open_in(rt, "app.adt", &next, &options())
             .expect("the second migration applies");

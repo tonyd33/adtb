@@ -31,7 +31,7 @@ use text::*;
 mod tests;
 
 pub use crate::schema::Stage;
-pub use resolved::{Clause, Code, Function, Resolved, ResolvedOp};
+pub use resolved::{Clause, Code, Function, Place, Resolved, ResolvedOp, Target};
 
 /// A stage and the version whose migration set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

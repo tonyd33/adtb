@@ -1,4 +1,4 @@
-use adtb_lang::evolve::{Clause, Resolved, ResolvedOp, Source};
+use adtb_lang::evolve::{Clause, Place, Resolved, ResolvedOp, Source, Target};
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::Ty;
 
@@ -185,12 +185,189 @@ fn operator(schema: &Schema, ty: &Ty, op: &ResolvedOp) -> Value {
             "AddCheck",
             &[("constraint", id(*constraint)), ("body", text(body))],
         ),
+        other => changing(schema, ty, other),
     }
+}
+
+/// Returns the value of an operator that drops, renames or reshapes objects.
+fn changing(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
+    let v = |ctor: &str, fields: &[(&str, Value)]| sum(schema, ty, ctor, fields);
+    let field = |ctor: &str, name: &str| field_of(schema, ty, ctor, name);
+    let target = |ctor: &str, t: &Target| {
+        let tt = field(ctor, "target");
+        let value = match t {
+            Target::InRelation { relation, ctor } => sum(
+                schema,
+                &tt,
+                "InRelation",
+                &[("relation", id(*relation)), ("ctor", id(*ctor))],
+            ),
+            Target::OfType { ctor } => sum(schema, &tt, "OfType", &[("ctor", id(*ctor))]),
+        };
+        v(ctor, &[("target", value)])
+    };
+    match op {
+        Resolved::DropModule { module } => v("DropModule", &[("module", text(module))]),
+        Resolved::DropType { sum } => v("DropType", &[("sum", id(*sum))]),
+        Resolved::DropRelation { relation } => v("DropRelation", &[("relation", id(*relation))]),
+        Resolved::DropSet { set } => v("DropSet", &[("set", id(*set))]),
+        Resolved::AddConstructor {
+            ctor,
+            sum: of,
+            decl,
+            place,
+        } => {
+            let pt = field("AddConstructor", "place");
+            let place = match place {
+                Place::Last => sum(schema, &pt, "Last", &[]),
+                Place::Before { ctor } => sum(schema, &pt, "Before", &[("ctor", id(*ctor))]),
+                Place::After { ctor } => sum(schema, &pt, "After", &[("ctor", id(*ctor))]),
+            };
+            v(
+                "AddConstructor",
+                &[
+                    ("ctor", id(*ctor)),
+                    ("sum", id(*of)),
+                    ("decl", text(decl)),
+                    ("place", place),
+                ],
+            )
+        }
+        Resolved::RemoveConstructor { ctor } => v("RemoveConstructor", &[("ctor", id(*ctor))]),
+        Resolved::Enable { target: t } => target("Enable", t),
+        Resolved::Disable { target: t } => target("Disable", t),
+        Resolved::Deprecate { target: t } => target("Deprecate", t),
+        Resolved::RenameConstructor { ctor, name } => v(
+            "RenameConstructor",
+            &[("ctor", id(*ctor)), ("name", text(name))],
+        ),
+        Resolved::RenameType { sum, name } => {
+            v("RenameType", &[("sum", id(*sum)), ("name", text(name))])
+        }
+        Resolved::RenameRelation { relation, name } => v(
+            "RenameRelation",
+            &[("relation", id(*relation)), ("name", text(name))],
+        ),
+        Resolved::RenameSet { set, name } => {
+            v("RenameSet", &[("set", id(*set)), ("name", text(name))])
+        }
+        Resolved::RenameField { field, name } => v(
+            "RenameField",
+            &[("field", id(*field)), ("name", text(name))],
+        ),
+        Resolved::DropUnique { index } => v("DropUnique", &[("index", id(*index))]),
+        Resolved::DropIndex { index } => v("DropIndex", &[("index", id(*index))]),
+        Resolved::Rekey {
+            relation,
+            key,
+            fields,
+        } => v(
+            "Rekey",
+            &[
+                ("relation", id(*relation)),
+                ("key", id(*key)),
+                ("fields", text(fields)),
+            ],
+        ),
+        Resolved::RedefineFn { function, decl } => v(
+            "RedefineFn",
+            &[("function", id(*function)), ("decl", text(decl))],
+        ),
+        Resolved::DropFn { function } => v("DropFn", &[("function", id(*function))]),
+        Resolved::DropAggregate { function } => v("DropAggregate", &[("function", id(*function))]),
+        Resolved::DropConstraint { constraint } => {
+            v("DropConstraint", &[("constraint", id(*constraint))])
+        }
+        Resolved::DropCheck { constraint } => v("DropCheck", &[("constraint", id(*constraint))]),
+        Resolved::Revert { migration } => v("Revert", &[("migration", id(*migration))]),
+        other => reshaping(schema, ty, other),
+    }
+}
+
+/// Returns the value of an operator that reshapes constructors or fields.
+fn reshaping(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
+    let v = |ctor: &str, fields: &[(&str, Value)]| sum(schema, ty, ctor, fields);
+    let option = |ctor: &str, name: &str, t: Option<&String>| {
+        let o = field_of(schema, ty, ctor, name);
+        match t {
+            Some(t) => sum(schema, &o, "Some", &[("value", text(t))]),
+            None => sum(schema, &o, "None", &[]),
+        }
+    };
+    match op {
+        Resolved::Split {
+            ctor,
+            decl,
+            routing,
+        } => v(
+            "Split",
+            &[
+                ("ctor", id(*ctor)),
+                ("decl", text(decl)),
+                ("routing", text(routing)),
+            ],
+        ),
+        Resolved::Merge {
+            ctor,
+            decl,
+            routing,
+        } => v(
+            "Merge",
+            &[
+                ("ctor", id(*ctor)),
+                ("decl", text(decl)),
+                ("routing", option("Merge", "routing", routing.as_ref())),
+            ],
+        ),
+        Resolved::Nest { ctor, decl } => v("Nest", &[("ctor", id(*ctor)), ("decl", text(decl))]),
+        Resolved::Unnest { ctor } => v("Unnest", &[("ctor", id(*ctor))]),
+        Resolved::AddField { field, decl, fill } => v(
+            "AddField",
+            &[
+                ("field", id(*field)),
+                ("decl", text(decl)),
+                ("fill", text(fill)),
+            ],
+        ),
+        Resolved::DropField { field } => v("DropField", &[("field", id(*field))]),
+        Resolved::MoveField {
+            field,
+            header,
+            fill,
+        } => v(
+            "MoveField",
+            &[
+                ("field", id(*field)),
+                ("header", boolean(schema, *header)),
+                ("fill", option("MoveField", "fill", fill.as_ref())),
+            ],
+        ),
+        declaring => panic!("{declaring:?} is a declaring operator"),
+    }
+}
+
+/// Returns the type of field `name` of constructor `ctor` of the declared sum `ty`.
+fn field_of(schema: &Schema, ty: &Ty, ctor: &str, name: &str) -> Ty {
+    let Ty::Data { def, .. } = ty else {
+        panic!("{ty:?} is a declared sum")
+    };
+    let k = schema
+        .ty(*def)
+        .ctor_index(ctor)
+        .expect("an operator constructor");
+    layout::ctors(schema, ty)
+        .swap_remove(k as usize)
+        .1
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .unwrap_or_else(|| panic!("`{ctor}` has field `{name}`"))
+        .1
 }
 
 fn clause(schema: &Schema, ty: &Ty, c: &Clause) -> Value {
     match c {
         Clause::Member { ctor } => sum(schema, ty, "Member", &[("ctor", id(*ctor))]),
+        Clause::Joins { set } => sum(schema, ty, "Joins", &[("set", id(*set))]),
     }
 }
 

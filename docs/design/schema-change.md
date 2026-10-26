@@ -61,15 +61,23 @@ Postconditions:
   root page names no roots heap frees every page but the commit log's
   and the root page, and creates the catalog again with the same commit
   log, so no transaction id is assigned twice.
-- `migrate` applies the first migration of the file, holding only
-  operators that declare objects, as one transaction: it creates the
-  heaps and indexes of every relation it declares, writes the rows
-  `declared` gives for every object it declares and for the migration,
-  and the row `applied` gives at the pager's wall-clock time, and
-  returns once the migration is durable. It refuses a migration whose
-  operators do not resolve (§4.1) or that defines a function over a
-  Wasm module no migration installs. A refused migration changes
-  nothing.
+- `migrate` applies the migration numbered one past the source's
+  version as one transaction. It maps the rows of every relation whose
+  constructors, fields or indexes the migration changes through each
+  operator in turn: a field kept by id keeps its value, a constructor of
+  a value-level sum keeps its catalog id. It stores each such relation in
+  new heaps and indexes, keeps every other relation's, writes the rows
+  `declared` gives for the new version and deletes the ones it no longer
+  gives, writes the row `applied` gives at the pager's wall-clock time,
+  and returns once the migration is durable. It refuses a migration
+  whose operators do not resolve (§4.1), that defines a function over a
+  Wasm module no migration installs, whose result has a constraint with
+  no index-bounded incremental check, or whose data contradicts it: a
+  removed constructor or relation that holds rows, a disabled
+  constructor relation that holds rows, a unique or key that two mapped
+  rows share. A refused migration changes nothing.
+- Once `migrate` or `open` returns, no page of a structure the
+  migration replaced, or created and did not commit, is allocated.
 - `declared` gives, beyond the rows of each object, a row of
   `functions` for each function and aggregate of the user modules,
   and for each migration of the log a row of `migration_ops` for each
@@ -89,7 +97,8 @@ Postconditions:
   not resolve.
 - After a crash during `migrate`, `open` finds either the whole
   migration or none of it, and frees every page the migration
-  allocated if it did not commit. When a damaged page keeps it from
+  allocated if it did not commit, or every page of the structures it
+  replaced if it did. When a damaged page keeps it from
   finding those pages, `open` fails with that damage and frees none
   of them, and a later `open` over the mended page frees them all.
 - `open` finds every heap and index from the file header alone, and
@@ -325,11 +334,22 @@ Postconditions of `Source::resolved(n)`:
   list without its parentheses for `add unique` and `add index`.
 - A named set has a `Member` clause for each constructor it lists, in
   order, and a unique or index written with `in r.C` one for each
-  constructor of its scope. No other operator has clauses.
-- Operators other than those that declare an object (`add module`,
-  `add type`, `add relation`, `add set`, `add unique`, `add index`,
-  `define fn`, `define aggregate`, `add constraint`, `add check`) have
-  no resolved form yet, and are refused at their spans.
+  constructor of its scope. An added constructor has a `Joins` clause
+  for each named set it joins. No other operator has clauses.
+- An operator that drops, renames or removes an object names it by its
+  id in the schema before the migration, or, for a rename of an object
+  the migration creates, in the schema after it; an operator that
+  creates one names it by its id after the migration.
+- A constructor definition operand (`add constructor`, the products of
+  `split`, the result of `merge` and `nest`) is the definition from its
+  name through its record's braces; `add field`'s is the field from its
+  name through its type; a fill or routing is its expression or its
+  arms from the first pattern to the last body; `rekey`'s is its key
+  fields.
+- `install`, `uninstall`, `add default`, `drop default`, `store`,
+  `unstore`, the computed field operators, `grant`, `revoke`,
+  `adopt tzdb` and `script` have no resolved form yet, and are refused
+  at their spans.
 - The result depends on the migration's tokens and names, not its
   whitespace or comments.
 
