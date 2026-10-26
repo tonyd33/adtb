@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 593
 summary: "the shared printer panics on a mistyped value, Textual for Val panics on a list, and copies of parse_uuid and self_key remain"
-tags: [quality]
+closed: 2026-10-26
+tags:
+  - quality
 ---
 
 # Feature: textual syntax follow-ups
@@ -17,3 +19,9 @@ From the textual syntax track:
 - `crates/adtb-reference/src/prim.rs` has its own `parse_uuid`; use `adtb_lang::textual::parse_uuid`.
 - `self_key` and the key value type logic are copied in `crates/adtb/src/write/schema.rs` and `catalog/layout.rs`; use the `adtb-lang` versions.
 - The round-trip tests in `crates/adtb-reference/tests/textual.rs` duplicate the new `adtb-lang` ones; delete them once `adtb-testkit` lands, and move the random value drawer duplicated in the `adtb-lang` and `adtb-sim` tests into `adtb-testkit`.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed as qporyrxu. The reference round-trip test stays: it is the only round trip over the reference reader and builders.
