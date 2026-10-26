@@ -9,7 +9,9 @@ use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
 use crate::btree::{self, Index, prefix_end};
 use crate::heap::{FieldType, Header, Heap, walk};
 use crate::key::{CtorId, KeySchema, KeyType, Scalar, Tid, Value};
-use crate::mvcc::{SerialId, SerializationFailure, Serializer, Snapshot, Transactions, Xid};
+use crate::mvcc::{
+    SerialId, SerializationFailure, Serializer, Snapshot, Status, Transactions, Xid,
+};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager, Pid};
@@ -40,6 +42,18 @@ pub trait Reads: Send + Sync {
 
     /// Record that the version at `tid` of heap `heap` was read.
     fn fetched(&self, heap: u32, tid: Tid) -> Result<(), SerializationFailure>;
+
+    /// Record that what the reader saw depends on `writer`, the inserter of a version it missed
+    /// or the deleter of one it saw, when its snapshot does not count `writer` as committed and
+    /// `writer` did not abort.
+    fn depends(&self, writer: Xid) -> Result<(), Error>;
+}
+
+/// Returns the writer the visibility of the version with header `h` depends on, `seen` its
+/// visibility: its deleter when seen, its inserter when not; `None` when it has no deleter.
+fn writer_of(h: &Header, seen: bool) -> Option<Xid> {
+    let x = Xid(if seen { h.xmax } else { h.xmin });
+    (x != Xid::NONE).then_some(x)
 }
 
 /// Reads at a snapshot of the transactions layer, recording SIREAD locks with `serial` when it
@@ -93,6 +107,27 @@ impl<R: Runtime> Reads for AtSnapshot<R> {
             Some((s, id)) => s.lock(&self.rt).read_tuple(*id, heap, tid),
             None => Ok(()),
         }
+    }
+
+    fn depends(&self, writer: Xid) -> Result<(), Error> {
+        let Some((s, id)) = &self.serial else {
+            return Ok(());
+        };
+        if Some(writer) == self.reader {
+            return Ok(());
+        }
+        let status = |x| self.txns.status(&self.pager, x);
+        if self
+            .snapshot
+            .counts_committed(writer, status)
+            .map_err(Error::Page)?
+            || status(writer).map_err(Error::Page)? == Status::Aborted
+        {
+            return Ok(());
+        }
+        s.lock(&self.rt)
+            .read_from(*id, writer)
+            .map_err(Error::Serialization)
     }
 }
 
@@ -160,24 +195,30 @@ impl<R: Runtime> Store<R> {
         let mut out = Vec::new();
         let mut b = BatchBuilder::new(schema.clone());
         let mut failed = None;
+        let mut writers = BTreeSet::new();
         heap.scan(&self.pager, |v| {
             if failed.is_some() {
                 return;
             }
             match self.reads.sees(&v.header) {
-                Ok(true) => {
-                    b.push_row(&v.row);
-                    if b.len() == rows {
-                        let full = std::mem::replace(&mut b, BatchBuilder::new(schema.clone()));
-                        out.push(full.finish());
+                Ok(seen) => {
+                    writers.extend(writer_of(&v.header, seen));
+                    if seen {
+                        b.push_row(&v.row);
+                        if b.len() == rows {
+                            let full = std::mem::replace(&mut b, BatchBuilder::new(schema.clone()));
+                            out.push(full.finish());
+                        }
                     }
                 }
-                Ok(false) => {}
                 Err(e) => failed = Some(e),
             }
         })?;
         if let Some(e) = failed {
             return Err(Error::Page(e));
+        }
+        for w in writers {
+            self.reads.depends(w)?;
         }
         if !b.is_empty() {
             out.push(b.finish());
@@ -189,8 +230,12 @@ impl<R: Runtime> Store<R> {
     pub fn fetch(&self, id: HeapId, tid: Tid) -> Result<Option<(Tid, Vec<Value>)>, Error> {
         let heap = &self.heap(id).heap;
         let mut failed = None;
+        let mut writers = BTreeSet::new();
         let link = walk(&self.pager, tid, |l| match self.reads.sees(&l.header) {
-            Ok(seen) => seen,
+            Ok(seen) => {
+                writers.extend(writer_of(&l.header, seen));
+                seen
+            }
             Err(e) => {
                 failed = Some(e);
                 true
@@ -198,6 +243,9 @@ impl<R: Runtime> Store<R> {
         })?;
         if let Some(e) = failed {
             return Err(Error::Page(e));
+        }
+        for w in writers {
+            self.reads.depends(w)?;
         }
         let Some(link) = link.filter(|l| l.heap == heap.id()) else {
             return Ok(None);

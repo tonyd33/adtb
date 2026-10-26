@@ -1,5 +1,6 @@
 mod apply;
 mod check;
+mod delta;
 mod eval;
 mod fresh;
 mod schema;
@@ -77,6 +78,9 @@ pub enum Error {
     Unsupported(String),
     /// The plan or a value breaks the invariant this text names, one the checker guarantees.
     Internal(String),
+    /// The schema has a constraint without an index-bounded incremental check; each constraint
+    /// refused, with why.
+    Refused(Vec<(String, String)>),
 }
 
 impl Error {
@@ -145,6 +149,21 @@ impl From<exec::Error> for Error {
             exec::Error::Cancelled => Error::Unsupported("a cancelled statement".into()),
             exec::Error::Internal(what) => Error::Internal(what),
         }
+    }
+}
+
+/// Returns each constraint and check of `schema` without an index-bounded incremental check
+/// over the indexes `catalog` describes, by qualified name, with why; empty when the schema
+/// admits every one.
+pub fn refusals(
+    schema: &Schema,
+    normal: &NormalProgram,
+    catalog: &Catalog,
+) -> Vec<(String, String)> {
+    let mut terms = normal.terms.clone();
+    match delta::compile(schema, normal, &mut terms, catalog) {
+        Ok(_) => Vec::new(),
+        Err(why) => why.into_iter().map(|r| (r.constraint, r.detail)).collect(),
     }
 }
 
@@ -260,7 +279,7 @@ impl<R: Runtime> Database<R> {
                 (*r, (*var, body))
             })
             .collect();
-        let denials = check::denials(&setup.schema, &setup.normal, &mut program);
+        let denials = check::denials(&setup.schema, &setup.normal, &setup.catalog, &mut program)?;
         let rels = schema::rels(&setup.schema, &setup.normal, &setup.catalog)?;
         let sequences = match setup.sequences {
             Some(pid) => Sequences::open(&setup.pager, pid)?,

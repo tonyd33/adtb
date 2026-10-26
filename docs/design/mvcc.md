@@ -518,6 +518,12 @@ its writes cover and records a rw-antidependency for each.
 | Heap `(heap)` | a sequential scan of a heap | any insert into that heap |
 | Schema version `(v)` | every statement, for the schema version it runs at | the commit of a migration producing a later version |
 
+A read whose outcome depends on a writer its snapshot does not count
+as committed records a rw-antidependency from the reader to that
+writer, unless the writer aborted: reading a version whose deleter is
+such a writer, and missing a version whose inserter is one. The locks
+above cover writes after the read; this covers writes before it.
+
 Range locks are next-key ranges, not leaf pages. Each range lock
 carries the constructor set the query read, as a set over the index's
 constructor ids, so a query over `identities.(Google | Apple)` that

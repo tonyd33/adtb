@@ -209,6 +209,39 @@ fn ctor_relations(schema: &Schema) -> Vec<(RelId, u32)> {
         .collect()
 }
 
+/// Returns the planner's description of every relation of `schema` over the heaps `heaps`, by
+/// relation and constructor, and the indexes `specs`.
+fn planned<'s>(
+    schema: &Schema,
+    specs: impl Iterator<Item = &'s IndexSpec> + Clone,
+    heaps: &BTreeMap<(RelId, u32), HeapId>,
+) -> plan::Catalog {
+    let mut out = plan::Catalog::default();
+    for &r in schema.ids.relations.keys() {
+        let indexes = specs
+            .clone()
+            .filter(|s| s.relation == r)
+            .map(|s| IndexDesc {
+                id: IndexId(s.id),
+                ctors: s.ctors.clone(),
+                fields: s.fields.clone(),
+                unique: s.unique,
+                ordered: true,
+            })
+            .collect();
+        let desc = RelationDesc {
+            heaps: heaps
+                .range((r, 0)..=(r, u32::MAX))
+                .map(|((_, c), h)| (*c, *h))
+                .collect(),
+            key_index: IndexId(schema.ids.keys[&r]),
+            indexes,
+        };
+        out.relations.insert(r, desc);
+    }
+    out
+}
+
 /// Update the root page `pid` with `f`.
 fn update_root<R: Runtime>(
     pager: &Pager<R>,
@@ -589,8 +622,9 @@ impl Catalog {
     /// is durable.
     ///
     /// Fails with [`Error::Refused`], changing nothing, if a migration was applied before, if
-    /// `text` holds an operator other than one that declares an object, or if the migration does
-    /// not apply to the empty schema. On any other failure the transaction is aborted, and the
+    /// `text` holds an operator other than one that declares an object, if the migration does
+    /// not apply to the empty schema, or if a constraint it declares has no index-bounded
+    /// incremental check. On any other failure the transaction is aborted, and the
     /// catalog must be opened again.
     ///
     /// Postcondition: [`Catalog::open`] after a crash finds either the whole migration or
@@ -639,6 +673,9 @@ impl Catalog {
         if let Err(why) = recordable(&next) {
             return refused(why);
         }
+        if let Err(why) = self.admits(&next, &schema) {
+            return refused(why);
+        }
         let x = txns.begin(pager)?;
         let added = ctor_relations(&schema)
             .into_iter()
@@ -658,6 +695,39 @@ impl Catalog {
         let lsn = update_root(pager, self.root, |r| r.changing = 0)?;
         pager.wait_durable(lsn);
         Ok(())
+    }
+
+    /// Refuses `schema`, built from `source`, when a constraint of it has no index-bounded
+    /// incremental check over the heaps [`Catalog::extend`] would create and its indexes; each
+    /// reason.
+    fn admits(&self, source: &Source, schema: &Schema) -> Result<(), Vec<String>> {
+        let (_, program) = source
+            .check()
+            .map_err(|ds| ds.into_iter().map(|d| d.diag.message).collect::<Vec<_>>())?;
+        let normal = adtb_lang::norm::program(schema, &program)
+            .map_err(|e| vec![format!("the schema does not normalise: {e:?}")])?;
+        let mut heaps: BTreeMap<(RelId, u32), HeapId> = BTreeMap::new();
+        let mut next = self.next_heap;
+        for rc in ctor_relations(schema) {
+            let id = match self.heaps.get(&rc) {
+                Some(h) => h.id(),
+                None => {
+                    next += 1;
+                    next - 1
+                }
+            };
+            heaps.insert(rc, HeapId(u64::from(id)));
+        }
+        let specs = indexes(schema);
+        let catalog = planned(schema, specs.values(), &heaps);
+        let why = crate::write::refusals(schema, &normal, &catalog);
+        if why.is_empty() {
+            return Ok(());
+        }
+        Err(why
+            .into_iter()
+            .map(|(c, detail)| format!("constraint {c} is not admitted: {detail}"))
+            .collect())
     }
 
     /// Make the catalog that of `source` as transaction `x`: create the structures of every
@@ -789,33 +859,12 @@ impl Catalog {
 
     /// Returns the planner's description of every relation.
     pub fn plan(&self) -> plan::Catalog {
-        let mut out = plan::Catalog::default();
-        for &r in self.schema.ids.relations.keys() {
-            let heaps = self
-                .heaps
-                .range((r, 0)..=(r, u32::MAX))
-                .map(|((_, c), h)| (*c, HeapId(u64::from(h.id()))))
-                .collect();
-            let indexes = self
-                .indexes
-                .values()
-                .filter(|(s, _)| s.relation == r)
-                .map(|(s, _)| IndexDesc {
-                    id: IndexId(s.id),
-                    ctors: s.ctors.clone(),
-                    fields: s.fields.clone(),
-                    unique: s.unique,
-                    ordered: true,
-                })
-                .collect();
-            let desc = RelationDesc {
-                heaps,
-                key_index: IndexId(self.schema.ids.keys[&r]),
-                indexes,
-            };
-            out.relations.insert(r, desc);
-        }
-        out
+        let heaps: BTreeMap<(RelId, u32), HeapId> = self
+            .heaps
+            .iter()
+            .map(|(rc, h)| (*rc, HeapId(u64::from(h.id()))))
+            .collect();
+        planned(&self.schema, self.indexes.values().map(|(s, _)| s), &heaps)
     }
 
     /// Returns every structure of the file for `verify`: the commit log `clog`, the catalog's

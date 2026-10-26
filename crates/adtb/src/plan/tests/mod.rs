@@ -746,3 +746,56 @@ fn a_dereference_of_a_value_that_is_not_a_key_is_an_internal_error() {
         got
     );
 }
+
+/// Returns the bounded plan of `text` over the set parameter `xs` of type `ty`.
+fn bounded(f: &Fixture, text: &str, ty: &str) -> Result<Plan, Error> {
+    let (normal, t) = f.normal(text, &[("xs", ty)]);
+    plan_bounded(
+        &f.schema,
+        &f.catalog,
+        &normal.terms,
+        t,
+        &[normal.params["xs"]],
+    )
+}
+
+#[test]
+fn a_bounded_plan_reads_every_relation_through_an_index_probe() {
+    let f = running();
+    let text = "from x in xs, i in identities where i.user == x \
+                and not exists p in posts where p.author == x select i.id";
+    let p = bounded(&f, text, "Set (Key users)").unwrap_or_else(|e| panic!("no plan: {e}"));
+    let shown = format!("{:?}", p.root);
+    assert!(!shown.contains("Scan {"), "{shown}");
+    let (normal, t) = f.normal(text, &[("xs", "Set (Key users)")]);
+    let none = plan_with(&f, &normal.terms, t, &[normal.params["xs"]], Rewrites::NONE);
+    assert!(format!("{:?}", none.root).contains("Scan {"));
+}
+
+#[test]
+fn a_bounded_plan_refuses_a_read_no_index_reaches() {
+    let f = running();
+    let e = bounded(
+        &f,
+        "from x in xs, p in phones where p.owner == x select p",
+        "Set (Key users)",
+    )
+    .expect_err("phones has no index on owner");
+    assert_eq!(
+        Error::Unbounded {
+            rel: f.rel("phones"),
+            ctors: vec![0],
+            fields: vec!["owner".to_string()],
+        },
+        e
+    );
+}
+
+#[test]
+fn a_bounded_plan_refuses_a_fixpoint() {
+    let f = running();
+    let text = "fix reach = xs union (from r in reach, g in follows where g.src == r select g.dst) \
+                in reach";
+    let e = bounded(&f, text, "Set (Key users)").expect_err("a fix is outside the bound");
+    assert_eq!(Error::Outside("fix"), e);
+}

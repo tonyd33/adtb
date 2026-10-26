@@ -56,6 +56,25 @@ transaction's snapshot and keep no other state.
 Admission precondition: a view is admitted only when every join
 reached from a delta has an index.
 
+A constraint has one delta query per read of a constructor set in its
+query, over the rows of the change set that read can see change: the
+inserted rows for a generator of the query's top level, the inserted
+and deleted rows for a read nested in an expression or a dereference,
+the transition itself for `inserted` and `deleted`, and none for
+`prior`, which reads the pre-state the constraint held in. A constraint
+whose top level ranges over `inserted` or `deleted` has one delta
+query, the query itself.
+
+Admission postcondition: a constraint is admitted exactly when every
+delta query plans under `plan::plan_bounded`
+([execution.md §1.1](execution.md#11-the-planners-input)), each `min`
+and `max` of a field over rows sharing a group key has an index whose
+fields are the group's fields then the aggregated field, and each
+generator a delta probes under `overlaps` on a range field has an
+`interval index` whose fields are the equality fields then the range
+field. A refusal names, per delta query, the relation whose changes
+it checks and the missing index or the operator outside the bound.
+
 Rulings: derived/ivm/state/base-indexes
 
 ## 4. Maintained aggregates and range exclusions

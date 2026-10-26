@@ -1,100 +1,56 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use adtb_lang::kernel::{Kind, Terms, Tm, Transition, Var};
+use adtb_lang::kernel::{Terms, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Schema, TypeDefKind};
-use adtb_lang::types::{CtorSet, RelId, Ty, TypeId};
+use adtb_lang::types::{RelId, Ty, TypeId};
 
-use crate::exec::Val;
 use crate::exec::types::ctors;
+use crate::exec::{self, Val};
+use crate::plan::Catalog;
 use crate::runtime::Runtime;
 
+use super::delta::{self, Delta, Input, Part};
 use super::eval::{Arena, Env, Stmt, Violations, pairs, violate};
 use super::schema::RefField;
 use super::{Error, Rows};
 
-/// A constraint or check of the schema, as its denial query in the program arena.
-#[derive(Debug)]
+/// A constraint or check of the schema, as its incremental checks ready to run.
 pub struct Denial {
     pub name: String,
-    pub term: Tm,
-    /// The variable standing for each transition the query reads.
-    pub transitions: Vec<(Var, Transition, RelId, Option<CtorSet>)>,
     /// The relation variables the query reads.
     pub reads: BTreeSet<RelId>,
+    pub deltas: Vec<(Delta, Arc<exec::Program>)>,
 }
 
-/// Replace each transition read under `t` in place by a variable, and return the variables
-/// with the relations every read under `t` names.
-fn scan(
+/// Returns the incremental checks of every constraint and check of `schema`, their terms added
+/// to `terms`, a copy of `normal`'s arena.
+///
+/// Fails with [`Error::Refused`] when a constraint has no index-bounded incremental check.
+pub fn denials(
+    schema: &Schema,
+    normal: &NormalProgram,
+    catalog: &Catalog,
     terms: &mut Terms,
-    t: Tm,
-    seen: &mut BTreeSet<Tm>,
-    out: &mut Vec<(Var, Transition, RelId, Option<CtorSet>)>,
-    reads: &mut BTreeSet<RelId>,
-) {
-    if !seen.insert(t) {
-        return;
+) -> Result<Vec<Denial>, Error> {
+    let checks = delta::compile(schema, normal, terms, catalog).map_err(|why| {
+        Error::Refused(why.into_iter().map(|r| (r.constraint, r.detail)).collect())
+    })?;
+    let mut out = Vec::new();
+    for c in checks {
+        let mut deltas = Vec::new();
+        for d in c.deltas {
+            let program = Arc::new(exec::compile(schema, catalog, &d.plan, None)?);
+            deltas.push((d, program));
+        }
+        out.push(Denial {
+            name: c.name,
+            reads: c.reads,
+            deltas,
+        });
     }
-    match terms.kind(t).clone() {
-        Kind::Transition(x, r, s) => {
-            let ty = terms.ty(t).clone();
-            let v = terms.var(&format!("%transition{}", t.0), ty);
-            terms.nodes[t.0 as usize].kind = Kind::Var(v);
-            out.push((v, x, r, s));
-            reads.insert(r);
-        }
-        Kind::Rel(r, _) => {
-            reads.insert(r);
-        }
-        Kind::Deref { key, .. } => {
-            if let Ty::Key { rel, .. } = terms.ty(key) {
-                reads.insert(*rel);
-            }
-            scan(terms, key, seen, out, reads);
-        }
-        _ => {
-            for c in terms.children(t) {
-                scan(terms, c, seen, out, reads);
-            }
-        }
-    }
-}
-
-/// Returns the denial query of every constraint and check, with its transition reads replaced
-/// by variables in `terms`, a copy of `normal`'s arena.
-pub fn denials(schema: &Schema, normal: &NormalProgram, terms: &mut Terms) -> Vec<Denial> {
-    let named = schema
-        .constraints
-        .iter()
-        .map(|c| (c.module, &c.name))
-        .zip(&normal.constraints)
-        .chain(
-            schema
-                .checks
-                .iter()
-                .map(|c| (c.module, &c.name))
-                .zip(&normal.checks),
-        );
-    named
-        .map(|((module, name), t)| {
-            let mut transitions = Vec::new();
-            let mut reads = BTreeSet::new();
-            scan(
-                terms,
-                *t,
-                &mut BTreeSet::new(),
-                &mut transitions,
-                &mut reads,
-            );
-            Denial {
-                name: format!("{}::{name}", schema.module(module).name),
-                term: *t,
-                transitions,
-                reads,
-            }
-        })
-        .collect()
+    Ok(out)
 }
 
 impl<R: Runtime> Stmt<'_, R> {
@@ -166,54 +122,32 @@ impl<R: Runtime> Stmt<'_, R> {
             if d.reads.is_disjoint(&touched) {
                 continue;
             }
-            let mut env = Env::new();
-            for (var, x, r, s) in &d.transitions {
-                env.insert(
-                    *var,
-                    Val::set(self.transition(*x, *r, s.as_deref(), plus, minus)?),
-                );
-            }
-            match self.eval(Arena::Program, d.term, &env)? {
-                Val::Set(report) => violate(viol, &d.name, report.iter().cloned()),
-                other => {
-                    return Err(Error::Internal(format!(
-                        "a denial query returns a set, found {other:?}"
-                    )));
+            for (delta, program) in &d.deltas {
+                let params: Vec<(Var, Val)> = delta
+                    .inputs
+                    .iter()
+                    .map(|i| (i.var, Val::set(input_rows(i, plus, minus))))
+                    .collect();
+                let idle = delta.trigger.is_some_and(|t| {
+                    params
+                        .iter()
+                        .any(|(v, rows)| *v == t && matches!(rows, Val::Set(s) if s.is_empty()))
+                });
+                if idle {
+                    continue;
+                }
+                let call = self.db.call(&self.store)?;
+                match exec::execute(self.db.rt.clone(), program.clone(), call, &params)? {
+                    Val::Set(report) => violate(viol, &d.name, report.iter().cloned()),
+                    other => {
+                        return Err(Error::Internal(format!(
+                            "a denial query returns a set, found {other:?}"
+                        )));
+                    }
                 }
             }
         }
         Ok(())
-    }
-
-    fn transition(
-        &self,
-        x: Transition,
-        rel: RelId,
-        of: Option<&[u32]>,
-        plus: &Rows,
-        minus: &Rows,
-    ) -> Result<BTreeSet<Val>, Error> {
-        let pick = |rows: &Rows| -> BTreeSet<Val> {
-            rows.iter()
-                .filter(|((r, c), _)| *r == rel && of.is_none_or(|s| s.contains(c)))
-                .flat_map(|(_, vs)| vs.iter().cloned())
-                .collect()
-        };
-        Ok(match x {
-            Transition::Inserted => pick(plus),
-            Transition::Deleted => pick(minus),
-            Transition::Prior => {
-                let inserted = pick(plus);
-                let mut out: BTreeSet<Val> = self
-                    .rows(rel, of)?
-                    .into_iter()
-                    .map(|(_, v)| v)
-                    .filter(|v| !inserted.contains(v))
-                    .collect();
-                out.extend(pick(minus));
-                out
-            }
-        })
     }
 
     /// Check the uniques of `rel` that no index holds against the rows the change set inserts.
@@ -302,4 +236,22 @@ impl<R: Runtime> Stmt<'_, R> {
 fn domain_name(schema: &Schema, t: TypeId) -> String {
     let d = schema.ty(t);
     format!("{}::{}.domain", schema.module(d.module).name, d.name)
+}
+
+/// Returns the rows of the change set `input` names.
+fn input_rows(input: &Input, plus: &Rows, minus: &Rows) -> BTreeSet<Val> {
+    let pick = |rows: &Rows| -> Vec<Val> {
+        rows.iter()
+            .filter(|((r, c), _)| *r == input.rel && input.ctors.contains(c))
+            .flat_map(|(_, vs)| vs.iter().cloned())
+            .collect()
+    };
+    let mut out = BTreeSet::new();
+    if input.part != Part::Deleted {
+        out.extend(pick(plus));
+    }
+    if input.part != Part::Inserted {
+        out.extend(pick(minus));
+    }
+    out
 }

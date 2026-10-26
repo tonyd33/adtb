@@ -6,13 +6,13 @@ mod terms;
 mod tests;
 
 pub use catalog::{Catalog, HeapId, IndexDesc, IndexId, RelationDesc};
-pub use lower::plan;
-pub(crate) use terms::with_children;
+pub use lower::{plan, plan_bounded};
+pub(crate) use terms::{Facts, with_children};
 
 use std::collections::BTreeSet;
 
 use adtb_lang::kernel::{Agg, Terms, Tm, Var};
-use adtb_lang::types::Ty;
+use adtb_lang::types::{CtorSet, RelId, Ty};
 
 /// A physical plan: the computation of one value from the database and the parameters.
 #[derive(Clone, Debug)]
@@ -276,6 +276,15 @@ pub enum Error {
     NotAQuery(&'static str),
     /// The term breaks the invariant this text names, one the checker or normaliser guarantees.
     Internal(String),
+    /// Under [`plan_bounded`], the term reads `ctors` of `rel` where no index covering them
+    /// has leading fields among `fields`, the fields its conditions fix.
+    Unbounded {
+        rel: RelId,
+        ctors: CtorSet,
+        fields: Vec<String>,
+    },
+    /// Under [`plan_bounded`], the term holds this operator.
+    Outside(&'static str),
 }
 
 impl std::fmt::Display for Error {
@@ -284,6 +293,14 @@ impl std::fmt::Display for Error {
             Error::UserCode(name) => write!(f, "a plan cannot run user-defined code yet: `{name}`"),
             Error::NotAQuery(what) => write!(f, "a plan computes a query, not {what}"),
             Error::Internal(what) => write!(f, "a broken invariant: {what}"),
+            Error::Unbounded { rel, fields, .. } => {
+                write!(
+                    f,
+                    "no index probe reaches {rel:?} on ({})",
+                    fields.join(", ")
+                )
+            }
+            Error::Outside(what) => write!(f, "`{what}` is outside the bound"),
         }
     }
 }

@@ -31,10 +31,46 @@ pub fn plan(
     params: &[Var],
     options: Options,
 ) -> Result<Plan, Error> {
+    plan_in(schema, catalog, terms, root, params, options, false)
+}
+
+/// Returns the plan of `root`, as [`plan`] does, reading every constructor relation only through
+/// an index probe keyed by values bound before it.
+///
+/// Fails with [`Error::Unbounded`] when some read has no such probe, and with
+/// [`Error::Outside`] when `root` holds a `fix`.
+pub fn plan_bounded(
+    schema: &Schema,
+    catalog: &Catalog,
+    terms: &Terms,
+    root: Tm,
+    params: &[Var],
+) -> Result<Plan, Error> {
+    plan_in(
+        schema,
+        catalog,
+        terms,
+        root,
+        params,
+        Options::default(),
+        true,
+    )
+}
+
+fn plan_in(
+    schema: &Schema,
+    catalog: &Catalog,
+    terms: &Terms,
+    root: Tm,
+    params: &[Var],
+    options: Options,
+    bounded: bool,
+) -> Result<Plan, Error> {
     let mut p = Planner {
         schema,
         catalog,
         rw: options.rewrites,
+        bounded,
         t: terms.clone(),
         total: Totality::new(schema, options.hiding),
         facts: Facts::default(),
@@ -55,6 +91,8 @@ struct Planner<'a> {
     schema: &'a Schema,
     catalog: &'a Catalog,
     rw: Rewrites,
+    /// Set to read every constructor relation only through an index probe.
+    bounded: bool,
     t: Terms,
     total: Totality<'a>,
     facts: Facts,
@@ -450,6 +488,7 @@ impl Planner<'_> {
         }
         let ty = self.ty(t);
         match self.kind(t) {
+            Kind::Fix(..) if self.bounded => Err(Error::Outside("fix")),
             Kind::Fix(binds, body) => self.fix(&binds, body),
             Kind::Let(x, e, b) => Ok(Eval::Let(
                 x,
@@ -751,6 +790,25 @@ impl Planner<'_> {
         best.map(|(_, p)| p)
     }
 
+    /// Returns the refusal of a read of the rows `x` of `ctors` of `rel` under `conds` that no
+    /// index probe reaches.
+    fn unbounded(&mut self, rel: RelId, ctors: &CtorSet, x: Var, conds: &[Tm]) -> Error {
+        let n = self.total_prefix(conds);
+        let mut fields: Vec<String> = Vec::new();
+        for c in &conds[..n] {
+            for (f, _) in self.equality(rel, *c, x).unwrap_or_default() {
+                if !fields.contains(&f) {
+                    fields.push(f);
+                }
+            }
+        }
+        Error::Unbounded {
+            rel,
+            ctors: ctors.clone(),
+            fields,
+        }
+    }
+
     fn spine(&mut self, t: Tm, q: &mut QueryCx, sc: &Scope) -> Result<Spine, Error> {
         self.refuse(t)?;
         match self.kind(t) {
@@ -823,7 +881,7 @@ impl Planner<'_> {
         sc: &Scope,
     ) -> Result<Spine, Error> {
         let (conds, rest) = self.pulled(body);
-        if self.rw.index_scan
+        if (self.rw.index_scan || self.bounded)
             && let Some(probe) = self.index_for(r, ctors, x, &conds)
         {
             let rows = if probe.unique() { 1.0 } else { PROBE_ROWS };
@@ -853,6 +911,9 @@ impl Planner<'_> {
                     })
                     .collect(),
             ));
+        }
+        if self.bounded {
+            return Err(self.unbounded(r, ctors, x, &conds));
         }
         let heaps = if self.rw.prune {
             ctors.clone()
@@ -1089,6 +1150,7 @@ impl Planner<'_> {
             return self.join(r, &ctors, y, body, q, sc);
         }
         if self.rw.group_agg
+            && !self.bounded
             && let Kind::Group { var, source, by } = self.kind(src)
             && let Some(c) = self.fused_group(y, var, source, by, body, q, sc)?
         {
@@ -1125,7 +1187,7 @@ impl Planner<'_> {
         let sc = &sc.clone().times(0.5f64.powi(pre.len() as i32));
         let n = self.total_prefix(&conds);
         let mut options: Vec<(f64, Access)> = Vec::new();
-        if self.rw.index_join
+        if (self.rw.index_join || self.bounded)
             && let Some(probe) = self.index_for(r, ctors, y, &conds)
         {
             let per = if probe.unique() {
@@ -1134,6 +1196,9 @@ impl Planner<'_> {
                 PROBE_COST + PROBE_ROWS
             };
             options.push((sc.rows * per, Access::Index(probe)));
+        }
+        if self.bounded && options.is_empty() {
+            return Err(self.unbounded(r, ctors, y, &conds));
         }
         let mut keys = Vec::new();
         let mut filters = Vec::new();
@@ -1160,7 +1225,7 @@ impl Planner<'_> {
         }
         let build_rows = ctors.len() as f64 * HEAP_ROWS;
         let kept = build_rows * 0.5f64.powi(filters.len() as i32);
-        if !keys.is_empty() {
+        if !keys.is_empty() && !self.bounded {
             options.push((
                 build_rows + sc.rows,
                 Access::Build {
@@ -1169,13 +1234,15 @@ impl Planner<'_> {
                 },
             ));
         }
-        options.push((
-            build_rows + sc.rows * kept,
-            Access::Build {
-                keys: Vec::new(),
-                filters: filters.clone(),
-            },
-        ));
+        if !self.bounded {
+            options.push((
+                build_rows + sc.rows * kept,
+                Access::Build {
+                    keys: Vec::new(),
+                    filters: filters.clone(),
+                },
+            ));
+        }
         let (_, access) = options
             .into_iter()
             .min_by(|a, b| a.0.total_cmp(&b.0))

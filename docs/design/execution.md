@@ -70,6 +70,24 @@ Postconditions:
   the statement with `Internal { what }` as it fails one on a fault,
   and the transaction stays open.
 
+```text
+fn plan::plan_bounded(schema: &Schema, catalog: &Catalog, terms: &Terms, root: Tm,
+                      params: &[Var]) -> Result<Plan, plan::Error>
+```
+
+Preconditions: those of `plan`.
+
+Postconditions: those of `plan` with every rewrite on, and:
+
+- On `Ok(p)`, `p` has no `Scan` source and no `Build`: it reads every
+  constructor relation through an `Index` end or a `Lookup` whose key
+  holds at least one value, bound before the read.
+- `Err(Unbounded { rel, ctors, fields })` when some read of `ctors` of
+  `rel` has no such probe; `fields` are the fields of the read row that
+  the equalities among its conditions fix, in order of first mention,
+  empty when none does.
+- `Err(Outside("fix"))` when `root` holds a `fix`.
+
 ### 1.2 Plan structure
 
 | Type | Fields | Meaning |
