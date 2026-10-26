@@ -170,6 +170,31 @@ fn a_name_written_qualified_is_one_token() {
 }
 
 #[test]
+fn a_prelude_name_written_qualified_drops_its_qualifier() {
+    let src = source(&[
+        (
+            "auth",
+            "type User = { id: Key users, age: I64, nick: prelude::Option Text }",
+        ),
+        ("auth", "relation users : User key id generate sequence"),
+        (
+            "auth",
+            "fn nick (u: User) -> prelude::Option I64 = prelude::Option.Some { value: u.age }",
+        ),
+    ]);
+    src.check()
+        .unwrap_or_else(|e| panic!("the schema checks: {e:?}"));
+    assert_eq!(
+        term(&src, 0, "type"),
+        "type auth::User = { id : Key auth::users , age : I64 , nick : Option Text }"
+    );
+    assert_eq!(
+        term(&src, 2, "fn"),
+        "fn auth::nick ( u : auth::User ) -> Option I64 = Option . Some { value : u . age }"
+    );
+}
+
+#[test]
 fn a_type_named_in_a_body_is_qualified() {
     let src = auth(&[(
         "auth",

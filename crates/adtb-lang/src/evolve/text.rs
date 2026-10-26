@@ -49,13 +49,13 @@ pub(super) fn item_end(text: &str, at: usize) -> usize {
 }
 
 /// The edit that adds `item` to the comma-separated items of `braces`.
-pub(super) fn add_item(text: &str, braces: Range<usize>, item: &str) -> (Range<usize>, String) {
+pub(super) fn add_item(text: &str, braces: Range<usize>, item: Written) -> (Range<usize>, Written) {
     let inner = &text[braces.start + 1..braces.end - 1];
     if inner.trim().is_empty() {
-        return (braces, format!("{{ {item} }}"));
+        return (braces, Written::concat(["{ ".into(), item, " }".into()]));
     }
     let last = braces.start + 1 + inner.trim_end().len();
-    (last..last, format!(", {item}"))
+    (last..last, Written::prefixed([item], ", "))
 }
 
 /// The range to delete to remove the item starting at `at` from the items of `braces`, and whether it was the only one.
@@ -151,21 +151,16 @@ pub(super) fn add_field_edit(
     h: usize,
     t: &ast::TypeDecl,
     ctor: Option<&str>,
-    item: &str,
-) -> Option<(Range<usize>, String)> {
+    item: Written,
+) -> Option<(Range<usize>, Written)> {
     if let Some(b) = field_braces(text, h, t, ctor) {
         return Some(add_item(text, b, item));
     }
-    match ctor {
-        Some(c) => {
-            let at = ctor_name_end(h, t, c)?;
-            Some((at..at, format!(" {{ {item} }}")))
-        }
-        None => {
-            let at = t.params.last().map_or(t.name.span.end, |p| p.span.end) as usize - h;
-            Some((at..at, format!(" {{ {item} }}")))
-        }
-    }
+    let at = match ctor {
+        Some(c) => ctor_name_end(h, t, c)?,
+        None => t.params.last().map_or(t.name.span.end, |p| p.span.end) as usize - h,
+    };
+    Some((at..at, Written::concat([" { ".into(), item, " }".into()])))
 }
 
 /// The ranges of the clauses of a relation declaration, in order, local to `text`.

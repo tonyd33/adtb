@@ -2,8 +2,8 @@ use super::*;
 
 impl Cx<'_> {
     /// The text of an `arm` clause's arm: its pattern through its body.
-    pub(super) fn arm_text(&self, a: &ast::ArmClause) -> String {
-        self.text[a.pattern.span.start as usize..a.body.span.end as usize].to_string()
+    pub(super) fn arm_text(&self, a: &ast::ArmClause) -> Written {
+        self.copy_range(a.pattern.span.start as usize..a.body.span.end as usize)
     }
 
     /// The declaration an `arm` clause names, and for a computed field the span of its expression.
@@ -87,8 +87,8 @@ impl Cx<'_> {
         at: Span,
         def: TypeId,
         replaced: &[u32],
-        arms: &[String],
-    ) -> Vec<(Range<usize>, String)> {
+        arms: &[Written],
+    ) -> Vec<(Range<usize>, Written)> {
         let h = header(&self.src.decls[i].module).len();
         let text = &self.src.decls[i].text;
         let Some(d) = self.src.parsed(i) else {
@@ -111,12 +111,11 @@ impl Cx<'_> {
                 })
             });
             if names_replaced {
-                edits.push((arm_range(text, h, a), String::new()));
+                edits.push((arm_range(text, h, a), Written::default()));
             }
         }
         let end = at.end as usize - h;
-        let added: String = arms.iter().map(|a| format!("\n  | {a}")).collect();
-        edits.push((end..end, added));
+        edits.push((end..end, Written::prefixed(arms.iter().cloned(), "\n  | ")));
         edits
     }
 
@@ -176,14 +175,14 @@ impl Cx<'_> {
                 );
             }
         }
-        let ctor_text = self.text[ctor_extent(self.text, &path.ctor, has_record)].to_string();
+        let ctor_text = self.copy_range(ctor_extent(self.text, &path.ctor, has_record));
         let h = header(&self.src.decls[i].module).len();
         let text = self.src.decls[i].text.clone();
         let ctors = ctor_extents(&text, h, &t);
         let edit = match place {
             None => {
                 let at = ctors.last().map_or(text.trim_end().len(), |c| c.2);
-                (at..at, format!("\n  | {ctor_text}"))
+                (at..at, Written::prefixed([ctor_text], "\n  | "))
             }
             Some(CtorPlace::Before(c) | CtorPlace::After(c)) => {
                 let Some(k) = ctors.iter().position(|x| x.0 == c.text) else {
@@ -195,11 +194,11 @@ impl Cx<'_> {
                 match place {
                     Some(CtorPlace::Before(_)) => {
                         let at = ctors[k].1.start;
-                        (at..at, format!("{ctor_text}\n  | "))
+                        (at..at, Written::concat([ctor_text, "\n  | ".into()]))
                     }
                     _ => {
                         let at = ctors[k].2;
-                        (at..at, format!("\n  | {ctor_text}"))
+                        (at..at, Written::prefixed([ctor_text], "\n  | "))
                     }
                 }
             }
@@ -250,7 +249,7 @@ impl Cx<'_> {
             .ctor_index(name)
             .expect("the added constructor");
         let refs = check::schema_refs(&after);
-        let mut inserts: BTreeMap<(usize, usize), String> = BTreeMap::new();
+        let mut inserts: BTreeMap<(usize, usize), Written> = BTreeMap::new();
         for a in arms {
             let (k, within) = self.arm_target(a)?;
             let at = self.target_match(&refs, a, k, within, &|ty| holds(&after, ty, def, c))?;
@@ -258,7 +257,7 @@ impl Cx<'_> {
             inserts
                 .entry((k, end))
                 .or_default()
-                .push_str(&format!("\n  | {}", self.arm_text(a)));
+                .append(Written::prefixed([self.arm_text(a)], "\n  | "));
         }
         self.insert_all(inserts);
         Ok(())
@@ -267,7 +266,7 @@ impl Cx<'_> {
 
 impl Cx<'_> {
     /// Applies insertions keyed by declaration and position.
-    pub(super) fn insert_all(&mut self, inserts: BTreeMap<(usize, usize), String>) {
+    pub(super) fn insert_all(&mut self, inserts: BTreeMap<(usize, usize), Written>) {
         let mut by_decl: Edits = BTreeMap::new();
         for ((k, at), s) in inserts {
             by_decl.entry(k).or_default().push((at..at, s));
@@ -375,7 +374,7 @@ impl Cx<'_> {
                     edits
                         .entry(j)
                         .or_default()
-                        .push((from..to, out.join(" | ")));
+                        .push((from..to, out.join(" | ").into()));
                 }
             }
             let sets: BTreeSet<String> = schema
@@ -453,7 +452,10 @@ impl Cx<'_> {
                 } else {
                     (from, to)
                 };
-                edits.entry(j).or_default().push((from..to, sel_text(&out)));
+                edits
+                    .entry(j)
+                    .or_default()
+                    .push((from..to, sel_text(&out).into()));
             }
         }
         if errs.is_empty() {
@@ -585,7 +587,7 @@ impl Cx<'_> {
                 if only {
                     let e = edits.entry(k).or_default();
                     e.retain(|(r, _)| !(r.start >= ranges[n].start && r.end <= ranges[n].end));
-                    e.push((clause_removal(&text, &ranges, n), String::new()));
+                    e.push((clause_removal(&text, &ranges, n), String::new().into()));
                 }
             }
         }
@@ -602,7 +604,7 @@ impl Cx<'_> {
                 .collect();
             for at in matches {
                 let mut es = self.replace_arms(&refs, j, at, def, &[c], &[]);
-                es.retain(|(r, s)| !(r.is_empty() && s.is_empty()));
+                es.retain(|(r, s)| !(r.is_empty() && s.text.is_empty()));
                 edits.entry(j).or_default().extend(es);
             }
         }
@@ -616,7 +618,7 @@ impl Cx<'_> {
         edits
             .entry(i)
             .or_default()
-            .push((ctor_removal(&ctors, k), String::new()));
+            .push((ctor_removal(&ctors, k), String::new().into()));
         self.apply_edits(edits);
         let rel_keys: BTreeSet<(String, String)> = rels
             .iter()
@@ -672,7 +674,7 @@ impl Cx<'_> {
             edits
                 .entry(i)
                 .or_default()
-                .push((self.src.local(i, cd.name.span), to.text.clone()));
+                .push((self.src.local(i, cd.name.span), to.text.clone().into()));
         }
         for (_, f) in decl_fields(&t) {
             if let Some(ast::RefAction::Retag(x, _)) = &f.on_delete
@@ -680,7 +682,7 @@ impl Cx<'_> {
             {
                 edits.entry(i).or_default().push((
                     x.span.start as usize - h..x.span.end as usize - h,
-                    to.text.clone(),
+                    to.text.clone().into(),
                 ));
             }
         }
@@ -690,7 +692,7 @@ impl Cx<'_> {
                 edits
                     .entry(j)
                     .or_default()
-                    .push((self.src.local(j, span), to.text.clone()));
+                    .push((self.src.local(j, span), to.text.clone().into()));
             }
         }
         for (_, m, rname) in &rels {
@@ -707,7 +709,7 @@ impl Cx<'_> {
                     edits
                         .entry(k)
                         .or_default()
-                        .push((self.src.local(k, x.span), to.text.clone()));
+                        .push((self.src.local(k, x.span), to.text.clone().into()));
                 }
             }
         }
@@ -735,7 +737,7 @@ impl Cx<'_> {
                 edits
                     .entry(j)
                     .or_default()
-                    .push((self.src.local(j, s), to.text.clone()));
+                    .push((self.src.local(j, s), to.text.clone().into()));
             }
         }
         self.apply_edits(edits);
@@ -797,8 +799,8 @@ pub(super) struct ScopedClause {
 pub(super) type Carries = Vec<(String, String, String, String)>;
 
 impl Cx<'_> {
-    pub(super) fn ctor_def_text(&self, d: &ast::CtorDef) -> String {
-        self.text[ctor_extent(self.text, &d.name, d.record.is_some())].to_string()
+    pub(super) fn ctor_def_text(&self, d: &ast::CtorDef) -> Written {
+        self.copy_range(ctor_extent(self.text, &d.name, d.record.is_some()))
     }
 
     /// Every unique and index clause of a relation of `def`.
@@ -860,7 +862,7 @@ impl Cx<'_> {
         def_q: &QName,
         sources: &[String],
         products: &[String],
-        product_texts: &[String],
+        product_texts: &[Written],
         arms: &[ast::Arm],
     ) -> R<Carries> {
         let (_, program) = self.checked()?;
@@ -955,14 +957,26 @@ impl Cx<'_> {
         Ok(carries)
     }
 
+    /// The text of a `unique` or `index` clause of a split, with the fields as written in the migration.
+    fn replacement_text(&self, kind: &str, fields: &[Expr], scope: &ast::CtorScope) -> Written {
+        let names: Vec<String> = scope_idents(scope).iter().map(|x| x.text.clone()).collect();
+        Written::concat([
+            format!("{kind} (").into(),
+            self.fields_text(fields),
+            format!(") in {}", sel_text(&names)).into(),
+        ])
+    }
+
     /// The schema with constructors `texts` appended to type declaration `i`, beside the ones it has.
-    pub(super) fn with_ctors(&self, i: usize, t: &ast::TypeDecl, texts: &[String]) -> R<Schema> {
+    pub(super) fn with_ctors(&self, i: usize, t: &ast::TypeDecl, texts: &[Written]) -> R<Schema> {
         let mut temp = self.src.clone();
         let h = header(&temp.decls[i].module).len();
         let text = temp.decls[i].text.clone();
         let at = ctor_extents(&text, h, t).last().map_or(text.len(), |c| c.2);
-        let added: String = texts.iter().map(|p| format!("\n  | {p}")).collect();
-        temp.edit(i, vec![(at..at, added)]);
+        temp.edit(
+            i,
+            vec![(at..at, Written::prefixed(texts.iter().cloned(), "\n  | "))],
+        );
         temp.schema().map_err(|ds| {
             ds.into_iter()
                 .map(|d| Diag::new(self.span, d.diag.message))
@@ -976,8 +990,8 @@ impl Cx<'_> {
         i: usize,
         t: &ast::TypeDecl,
         sources: &[String],
-        text: &str,
-    ) -> Vec<(Range<usize>, String)> {
+        text: &Written,
+    ) -> Vec<(Range<usize>, Written)> {
         let h = header(&self.src.decls[i].module).len();
         let ctors = ctor_extents(&self.src.decls[i].text, h, t);
         let mut edits = Vec::new();
@@ -987,10 +1001,10 @@ impl Cx<'_> {
                 continue;
             }
             if first {
-                edits.push((c.1.start..c.2, text.to_string()));
+                edits.push((c.1.start..c.2, text.clone()));
                 first = false;
             } else {
-                edits.push((ctor_removal(&ctors, k), String::new()));
+                edits.push((ctor_removal(&ctors, k), Written::default()));
             }
         }
         edits
@@ -1005,7 +1019,7 @@ impl Cx<'_> {
         replaced: &[u32],
         clauses: &[ast::ArmClause],
     ) -> R<Edits> {
-        let mut groups: BTreeMap<(usize, (u32, u32)), Vec<String>> = BTreeMap::new();
+        let mut groups: BTreeMap<(usize, (u32, u32)), Vec<Written>> = BTreeMap::new();
         for a in clauses {
             let (k, within) = self.arm_target(a)?;
             let at = self.target_match(refs, a, k, within, &|ty| {
@@ -1301,7 +1315,7 @@ impl Cx<'_> {
             }
         }
         let mut clause_edits: Edits = BTreeMap::new();
-        let mut added: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+        let mut added: BTreeMap<usize, Vec<Written>> = BTreeMap::new();
         for cl in self.scoped_clauses(&schema, def)? {
             let Some(scope) = &cl.scope else { continue };
             let inside = scope.iter().filter(|c| src_ix.contains(c)).count();
@@ -1330,7 +1344,7 @@ impl Cx<'_> {
                 clause_edits
                     .entry(cl.decl)
                     .or_default()
-                    .push((cl.range.clone(), new));
+                    .push((cl.range.clone(), new.into()));
                 continue;
             }
             let mut out_fields: Option<Vec<String>> = None;
@@ -1367,7 +1381,7 @@ impl Cx<'_> {
             }
             clause_edits.entry(cl.decl).or_default().push((
                 clause_removal(&text, std::slice::from_ref(&cl.range), 0),
-                String::new(),
+                String::new().into(),
             ));
             let new = format!(
                 "{} ({}) in {m}",
@@ -1375,14 +1389,16 @@ impl Cx<'_> {
                 out_fields.unwrap_or_default().join(", ")
             );
             let list = added.entry(cl.decl).or_default();
-            if !list.contains(&new) {
-                list.push(new);
+            if !list.iter().any(|x| x.text == new) {
+                list.push(new.into());
             }
         }
         for (k, news) in added {
             let end = self.src.decls[k].text.trim_end().len();
-            let s: String = news.iter().map(|n| format!("\n  {n}")).collect();
-            clause_edits.entry(k).or_default().push((end..end, s));
+            clause_edits
+                .entry(k)
+                .or_default()
+                .push((end..end, Written::prefixed(news, "\n  ")));
         }
         edits = Self::merged(edits, clause_edits);
         edits
@@ -1415,7 +1431,7 @@ impl Cx<'_> {
         }
         let source = path.ctor.text.clone();
         let products: Vec<String> = into.iter().map(|d| d.name.text.clone()).collect();
-        let texts: Vec<String> = into.iter().map(|d| self.ctor_def_text(d)).collect();
+        let texts: Vec<Written> = into.iter().map(|d| self.ctor_def_text(d)).collect();
         let carries = self.routing(
             &path.ty,
             std::slice::from_ref(&source),
@@ -1428,30 +1444,17 @@ impl Cx<'_> {
         let mut arm_clauses = Vec::new();
         for cl in clauses {
             match cl {
-                ast::SplitClause::Unique(fs, s) => replacements.push(format!(
-                    "unique ({}) in {}",
-                    self.fields_text(fs),
-                    sel_text(
-                        &scope_idents(s)
-                            .iter()
-                            .map(|x| x.text.clone())
-                            .collect::<Vec<_>>()
-                    )
-                )),
+                ast::SplitClause::Unique(fs, s) => {
+                    replacements.push(self.replacement_text("unique", fs, s));
+                }
                 ast::SplitClause::Index {
                     interval,
                     fields,
                     scope,
-                } => replacements.push(format!(
-                    "{} ({}) in {}",
+                } => replacements.push(self.replacement_text(
                     if *interval { "interval index" } else { "index" },
-                    self.fields_text(fields),
-                    sel_text(
-                        &scope_idents(scope)
-                            .iter()
-                            .map(|x| x.text.clone())
-                            .collect::<Vec<_>>()
-                    )
+                    fields,
+                    scope,
                 )),
                 ast::SplitClause::Arm(a) => arm_clauses.push(a.clone()),
             }
@@ -1468,7 +1471,7 @@ impl Cx<'_> {
             },
         )?;
         let mut clause_edits: Edits = BTreeMap::new();
-        let mut added: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+        let mut added: BTreeMap<usize, Vec<Written>> = BTreeMap::new();
         let mut decls_of_t = BTreeSet::new();
         for cl in self.scoped_clauses(&schema, def)? {
             decls_of_t.insert(cl.decl);
@@ -1488,10 +1491,10 @@ impl Cx<'_> {
                         names.push(td.ctors()[x as usize].name.clone());
                     }
                 }
-                clause_edits
-                    .entry(cl.decl)
-                    .or_default()
-                    .push((cl.range.clone(), format!("{shown} in {}", sel_text(&names))));
+                clause_edits.entry(cl.decl).or_default().push((
+                    cl.range.clone(),
+                    format!("{shown} in {}", sel_text(&names)).into(),
+                ));
                 continue;
             }
             let header: BTreeSet<&str> = schema
@@ -1536,20 +1539,21 @@ impl Cx<'_> {
             }
             clause_edits.entry(cl.decl).or_default().push((
                 clause_removal(&text, std::slice::from_ref(&cl.range), 0),
-                String::new(),
+                String::new().into(),
             ));
             let list = added.entry(cl.decl).or_default();
             for img in images {
-                if !list.contains(&img) {
-                    list.push(img);
+                if !list.iter().any(|x| x.text == img) {
+                    list.push(img.into());
                 }
             }
         }
         for k in decls_of_t {
             let list = added.entry(k).or_default();
             for r in &replacements {
-                if !list.contains(r) {
-                    list.push(r.clone());
+                match list.iter_mut().find(|x| x.text == r.text) {
+                    Some(x) => *x = r.clone(),
+                    None => list.push(r.clone()),
                 }
             }
         }
@@ -1558,15 +1562,17 @@ impl Cx<'_> {
                 continue;
             }
             let end = self.src.decls[k].text.trim_end().len();
-            let s: String = news.iter().map(|n| format!("\n  {n}")).collect();
-            clause_edits.entry(k).or_default().push((end..end, s));
+            clause_edits
+                .entry(k)
+                .or_default()
+                .push((end..end, Written::prefixed(news, "\n  ")));
         }
         edits = Self::merged(edits, clause_edits);
         edits.entry(i).or_default().extend(self.replace_ctors(
             i,
             &t,
             std::slice::from_ref(&source),
-            &texts.join("\n  | "),
+            &Written::joined(texts, "\n  | "),
         ));
         let arm_edits = self.arm_replacements(&schema, &refs, def, &[c], &arm_clauses)?;
         edits = Self::merged(edits, arm_edits);
@@ -1700,7 +1706,7 @@ impl Cx<'_> {
             }
             clause_edits.entry(cl.decl).or_default().push((
                 cl.range.clone(),
-                format!("{} ({}) in {}", cl.kind, fs.join(", "), sel_text(&names)),
+                format!("{} ({}) in {}", cl.kind, fs.join(", "), sel_text(&names)).into(),
             ));
         }
         edits = Self::merged(edits, clause_edits);
@@ -1817,7 +1823,7 @@ impl Cx<'_> {
             };
             clause_edits.entry(cl.decl).or_default().push((
                 cl.range.clone(),
-                format!("{} ({}) in {}", cl.kind, fs.join(", "), sel_text(&names)),
+                format!("{} ({}) in {}", cl.kind, fs.join(", "), sel_text(&names)).into(),
             ));
         }
         edits = Self::merged(edits, clause_edits);
@@ -1825,7 +1831,7 @@ impl Cx<'_> {
             i,
             &t,
             std::slice::from_ref(&n),
-            &texts.join("\n  | "),
+            &texts.join("\n  | ").into(),
         ));
         let arm_edits = self.arm_replacements(&schema, &refs, def, &[c], clauses)?;
         edits = Self::merged(edits, arm_edits);

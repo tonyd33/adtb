@@ -290,7 +290,7 @@ The catalog writes each operand written in the language as a `Term`
 | `Logged::names()` | the `Names` of the migration's text, by span; or the operands whose names it cannot resolve |
 | `canon::canonical_term(text, span, names)` | the canonical token form of the term at `span` of `text` |
 | `Source::resolved(n)` | the operators of migration `n` of the log in ordinal order, each a `Resolved` with its `Clause`s; or the operators with no resolved form, or the operands whose names do not resolve |
-| `Source::functions()` | every function and aggregate of the user modules: its id, module, name, signature as written, and its `Code` |
+| `Source::functions()` | every function and aggregate of the user modules: its id, module, name, signature as written, whether it is deterministic, and its `Code` |
 
 Postconditions of `Source::names()` and `Logged::names()`:
 
@@ -302,12 +302,14 @@ Postconditions of `Source::names()` and `Logged::names()`:
   module.
 - `Logged::names()` resolves an operand written into a declaration
   (a declaration, a constructor, a field type, an arm, a unique or index
-  field, a default, a computed field) as it resolves in that
-  declaration of the source after its operator, or of the migration's
-  result when that source does not build; the fields of a dropped
-  unique or index as in the clause before the operator; a fill or a
-  routing as its operator checks it. It holds no names for a `script`
-  write, a grant or revoke target, or a `revert` fill.
+  field, a default, a computed field) as it resolves at the place its
+  operator wrote it, in the source after the operator, or in the
+  migration's result when that source does not build; the fields of a
+  dropped unique or index as in the clause they match before the
+  operator; a fill, a routing, a `script` write and a `revert` fill as
+  their operator checks them; a grant or revoke target as its operator
+  resolves it. The place of an operand never depends on its spelling,
+  so an operand whose text recurs elsewhere resolves the same.
 
 Precondition of `Source::resolved(n)`: the log holds migration `n`.
 
@@ -337,7 +339,12 @@ Postconditions of `Source::functions()`:
   body as written and in canonical token form; an aggregate has
   `Code::Aggregate` with everything after the `=` of its declaration;
   `wasm` and `host` bodies give their module and export, or their
-  symbol, version and whether they are declared deterministic.
+  symbol and version.
+- A function is deterministic when it is not a host function declared
+  without `deterministic` and every function it names, transitively,
+  is deterministic; an aggregate when every function it names is.
+  A cycle of functions that names nothing nondeterministic is
+  deterministic.
 - The canonical form depends on the body's tokens and names, not its
   whitespace or comments.
 
@@ -345,4 +352,5 @@ Postcondition of `canonical_term`: a name with a module is spelled
 `module::name`, a qualifier written before it dropped; a name of the
 prelude, and every other token, as the canonical token form states.
 Precondition: `span` lies on token boundaries and `names` resolves
-every name in it.
+every name in it. Debug builds panic on a type, constructor or named
+set name that `names` does not resolve.

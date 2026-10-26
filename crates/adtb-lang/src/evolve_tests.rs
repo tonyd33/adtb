@@ -2148,3 +2148,68 @@ store named
     assert_eq!(None, schema.ids.view_types.get(&f));
     assert_eq!(None, schema.ids.view_ctors.get(&f));
 }
+
+/// The canonical token form of `operand` in the last migration of `src`, names as it resolves them.
+fn logged_term(src: &Source, operand: &str) -> String {
+    let logged = src.log.last().expect("a migration");
+    let names = logged
+        .names()
+        .unwrap_or_else(|ds| panic!("the names resolve: {ds:?}"));
+    let at = logged
+        .text
+        .find(operand)
+        .unwrap_or_else(|| panic!("no {operand:?} in {:?}", logged.text));
+    crate::canon::canonical_term(&logged.text, Span::new(at, at + operand.len()), &names)
+}
+
+#[test]
+fn the_names_of_a_script_write_resolve() {
+    let write = "update i in identities.Google where ends_with(i.gid, \"@corp\")
+  set Corp { i with domain: i.gid }";
+    let s = applies(
+        &running(),
+        &format!(
+            "module auth
+add constructor Identity.Corp {{ domain: Text }}
+  arm display_name: Corp c -> c.domain
+  arm login_present: Corp c -> scalar_len(c.domain) == 0
+enable identities.Corp
+script
+  {write}"
+        ),
+    );
+    assert_eq!(
+        "update i in auth::identities . auth::Google where ends_with ( i . gid , \"@corp\" ) set auth::Corp { i with domain : i . gid }",
+        logged_term(&s, write)
+    );
+}
+
+#[test]
+fn the_names_of_grant_and_revoke_targets_resolve() {
+    let s = applies(
+        &running(),
+        "module auth\ngrant read identities.(EmailPass | Google) (user) to support",
+    );
+    assert_eq!(
+        "auth::identities . ( auth::EmailPass | auth::Google )",
+        logged_term(&s, "identities.(EmailPass | Google)")
+    );
+    let s = applies(
+        &s,
+        "module auth\nrevoke read identities.(EmailPass | Google) (user) from support",
+    );
+    assert_eq!(
+        "auth::identities . ( auth::EmailPass | auth::Google )",
+        logged_term(&s, "identities.(EmailPass | Google)")
+    );
+    let s = applies(&running(), "module auth\ngrant call fn display_name to web");
+    assert_eq!("auth::display_name", logged_term(&s, "display_name"));
+}
+
+#[test]
+fn the_names_of_a_revert_fill_resolve() {
+    let s = applies(&running(), "module auth\ndefine fn blank () -> Text = \"\"");
+    let s = applies(&s, "module auth\ndrop field User.name");
+    let s = applies(&s, "module auth\nrevert 0002\n  fill User.name = blank()");
+    assert_eq!("auth::blank ( )", logged_term(&s, "blank()"));
+}

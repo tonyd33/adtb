@@ -162,6 +162,30 @@ pub fn function_refs(schema: &Schema, f: FnId) -> BTreeSet<FnId> {
     r.functions
 }
 
+/// Returns the functions the expressions of aggregate `a` name, called or passed as values.
+pub fn aggregate_refs(schema: &Schema, a: usize) -> BTreeSet<FnId> {
+    let def = &schema.aggregates[a];
+    let params: Vec<&Ident> = def.decl.params.iter().map(|p| &p.name).collect();
+    let (s, x, step) = &def.decl.step;
+    let (l, r, merge) = &def.decl.merge;
+    let (f, finish) = &def.decl.finish;
+    let mut out = BTreeSet::new();
+    for (extra, e) in [
+        (vec![], &def.decl.init),
+        (vec![s, x], step),
+        (vec![l, r], merge),
+        (vec![f], finish),
+    ] {
+        let mut res = Resolver::new(schema, Visible::module(def.module), Context::Function);
+        for name in params.iter().chain(&extra) {
+            res.scope.bind(&name.text, ());
+        }
+        res.expr(e);
+        out.append(&mut res.functions);
+    }
+    out
+}
+
 /// Checks the names in every expression the schema declares.
 pub fn check_schema(schema: &Schema) -> Vec<FileDiag> {
     let mut out = Vec::new();

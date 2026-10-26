@@ -411,6 +411,27 @@ fn a_host_function_is_hashed_over_its_declared_version() {
 }
 
 #[test]
+fn a_language_function_calling_a_nondeterministic_one_is_not_deterministic() {
+    let src = migrated(
+        &migrated(&Source::default(), FIRST),
+        "module app\ndefine fn label (t: Text) -> Text = stamp(t)\n",
+    );
+    let deterministic = |name: &str| function_row(&src, name).1[4].clone();
+    let (falsity, truth) = (
+        Value::Sum {
+            ctor: 0,
+            fields: Vec::new(),
+        },
+        Value::Sum {
+            ctor: 1,
+            fields: Vec::new(),
+        },
+    );
+    assert_eq!(falsity, deterministic("label"));
+    assert_eq!(truth, deterministic("area"));
+}
+
+#[test]
 fn the_migrations_row_holds_the_version_its_hash_and_its_text() {
     let src = migrated(&Source::default(), FIRST);
     let schema = src.schema().expect("it builds");

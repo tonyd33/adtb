@@ -4,7 +4,7 @@ use super::*;
 #[derive(Clone, Debug)]
 pub(super) enum Inverse {
     /// Operators, as source text, applied in the migration's module.
-    Ops(String),
+    Ops(Written),
     /// Removes the constructor an `add constructor` added, with its arms.
     Unadd(ast::CtorPath),
     /// Puts back a removed constructor, as written, after the constructor named, else first.
@@ -320,20 +320,16 @@ impl Cx<'_> {
     }
 
     /// The text of the fill a revert gives for field path `path`.
-    pub(super) fn fill_for(&self, fills: &[(ast::FieldPath, Fill)], path: &str) -> Option<String> {
+    pub(super) fn fill_for(&self, fills: &[(ast::FieldPath, Fill)], path: &str) -> Option<Written> {
         fills
             .iter()
             .find(|(p, _)| path_text(p) == path)
             .map(|(_, f)| match f {
-                Fill::Expr(e) => self.slice(e.span).to_string(),
+                Fill::Expr(e) => self.copy(e.span),
                 Fill::Match(arms) => {
                     let start = arms[0].patterns[0].span.start as usize;
                     let end = arms.last().expect("an arm").body.span.end as usize;
-                    format!(
-                        "match
-  | {}",
-                        &self.text[start..end]
-                    )
+                    Written::concat(["match\n  | ".into(), self.copy_range(start..end)])
                 }
             })
     }
@@ -366,7 +362,7 @@ impl Cx<'_> {
                 text,
                 states: Vec::new(),
             };
-        let ops = |s: String| Ok(vec![Inverse::Ops(s)]);
+        let ops = |s: String| Ok(vec![Inverse::Ops(s.into())]);
         match &op.kind {
             OperatorKind::AddModule(m) => Ok(vec![Inverse::Module {
                 name: m.text.clone(),
@@ -553,6 +549,7 @@ impl Cx<'_> {
                     text: &logged.text,
                     span: op.span,
                     noted: None,
+                    copying: false,
                 };
                 let (relation, key, _) = cx.stage_key(t)?;
                 let prior = if relation {
@@ -581,10 +578,10 @@ impl Cx<'_> {
                     )]
                 })?;
                 Ok(vec![
-                    Inverse::Ops(format!(
-                        "add field {}: {ty} fill {fill}",
-                        qualified_path(path, &m)
-                    )),
+                    Inverse::Ops(Written::concat([
+                        format!("add field {}: {ty} fill ", qualified_path(path, &m)).into(),
+                        fill,
+                    ])),
                     self.reorder(before, path, path.ctor.as_ref().map(|c| c.text.clone())),
                 ])
             }
@@ -603,10 +600,13 @@ impl Cx<'_> {
                 let m = q(&path.ty);
                 match (&path.ctor, sel) {
                     (Some(c), None) => Ok(vec![
-                        Inverse::Ops(format!(
-                            "move field {m}::{}.{} to {m}::{}.{}",
-                            to.name.text, path.field.text, to.name.text, c.text
-                        )),
+                        Inverse::Ops(
+                            format!(
+                                "move field {m}::{}.{} to {m}::{}.{}",
+                                to.name.text, path.field.text, to.name.text, c.text
+                            )
+                            .into(),
+                        ),
                         self.reorder(before, path, Some(c.text.clone())),
                     ]),
                     (None, Some(sel)) => {
@@ -620,18 +620,19 @@ impl Cx<'_> {
                                 path_text(path)
                             ));
                         };
-                        let mut s = String::new();
+                        let mut s = Written::default();
                         for other in &names[1..] {
-                            s.push_str(&format!(
+                            s.push(&format!(
                                 "drop field {m}::{}.{other}.{}\n",
                                 path.ty.name.text, path.field.text
                             ));
                         }
-                        s.push_str(&format!(
-                            "move field {m}::{}.{first}.{} to {m}::{} fill {fill}",
+                        s.push(&format!(
+                            "move field {m}::{}.{first}.{} to {m}::{} fill ",
                             path.ty.name.text, path.field.text, path.ty.name.text
                         ));
-                        ops(s)
+                        s.append(fill);
+                        Ok(vec![Inverse::Ops(s)])
                     }
                     _ => Ok(Vec::new()),
                 }
@@ -683,7 +684,7 @@ impl Cx<'_> {
                             .position(|c| matches!(c, RelationClause::Key(..)))?;
                         Some(before.decls[i].text[ranges[k].clone()].to_string())
                     });
-                let mut out = vec![Inverse::Ops(s)];
+                let mut out = vec![Inverse::Ops(s.into())];
                 if let Some(text) = clause {
                     out.push(Inverse::KeyClause {
                         relation: QName {
@@ -1060,6 +1061,7 @@ impl Cx<'_> {
             text: self.text,
             span: self.span,
             noted: None,
+            copying: false,
         };
         let Ok(clauses) = cx.scoped_clauses(&schema, def) else {
             return Vec::new();
@@ -1188,7 +1190,7 @@ impl Cx<'_> {
             inverse_arms.concat()
         );
         s.push_str(&self.restored_arms(before, clauses, std::slice::from_ref(&path.ctor.text)));
-        Ok(vec![Inverse::Ops(s)])
+        Ok(vec![Inverse::Ops(s.into())])
     }
 
     pub(super) fn merge_inverse(
@@ -1343,7 +1345,7 @@ impl Cx<'_> {
             s.push_str(&c);
         }
         s.push_str(&self.restored_arms(before, clauses, &sources));
-        Ok(vec![Inverse::Ops(s)])
+        Ok(vec![Inverse::Ops(s.into())])
     }
 
     /// The `arm` clauses that put back, for each dependent `clauses` name, its arms over `ctors` in `before`.
@@ -1412,14 +1414,12 @@ impl Cx<'_> {
         };
         match inv {
             Inverse::Ops(text) => {
-                let full = format!(
-                    "module {}
-{text}",
-                    self.module
-                );
+                let head = format!("module {}\n", self.module);
+                let full = format!("{head}{}", text.text);
                 let m = crate::parse::parse_migration(&full, Options::default())
                     .ok()
-                    .map_err(|ds| wrap(ds, &text))?;
+                    .map_err(|ds| wrap(ds, &text.text))?;
+                let noted = RefCell::new(Names::default());
                 for op in &m.operators {
                     let before = self.src.clone();
                     let mut sub = Cx {
@@ -1427,11 +1427,20 @@ impl Cx<'_> {
                         module: self.module.clone(),
                         text: &full,
                         span: op.span,
-                        noted: None,
+                        noted: self.noted.map(|_| &noted),
+                        copying: false,
                     };
                     sub.operator(&op.kind)
                         .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
                     self.src.rename_ids(&before, &self.module, &op.kind);
+                }
+                if let Some(out) = self.noted {
+                    let noted = noted.into_inner();
+                    for (o, from) in &text.copies {
+                        let at = head.len() + o;
+                        out.borrow_mut()
+                            .copy(&noted, at..at + from.len(), from.start);
+                    }
                 }
                 Ok(())
             }
@@ -1523,9 +1532,9 @@ impl Cx<'_> {
             } => {
                 let found = self.src.find(kind, &module, &name);
                 match (found, text) {
-                    (Some(i), Some(t)) => self.src.decls[i].text = t,
+                    (Some(i), Some(t)) => self.src.rewrite(i, t),
                     (Some(i), None) => {
-                        self.src.decls.remove(i);
+                        self.src.remove_decl(i);
                         if kind == "relation" {
                             self.src
                                 .states
@@ -1538,7 +1547,7 @@ impl Cx<'_> {
                         }
                     }
                     (None, Some(t)) => {
-                        self.src.push(&module, &t);
+                        self.src.push(&module, t);
                     }
                     (None, None) => {}
                 }

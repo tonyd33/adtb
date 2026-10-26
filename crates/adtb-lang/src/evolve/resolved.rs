@@ -76,6 +76,9 @@ pub struct Function {
     pub name: String,
     /// The type parameters, parameters and result type, as written.
     pub signature: String,
+    /// Whether every function it calls, transitively, is deterministic, a host function only when
+    /// declared so.
+    pub deterministic: bool,
     pub code: Code,
 }
 
@@ -98,7 +101,6 @@ pub enum Code {
     Host {
         symbol: String,
         version: String,
-        deterministic: bool,
     },
 }
 
@@ -141,6 +143,7 @@ impl Source {
     pub fn functions(&self) -> Result<Vec<Function>, Vec<FileDiag>> {
         let schema = self.schema()?;
         let names = self.names()?;
+        let deterministic = deterministic_functions(&schema);
         let mut out = Vec::new();
         for (file, f) in self.files()? {
             let Some(module) = schema.module_named(&f.module.text) else {
@@ -156,7 +159,7 @@ impl Source {
             };
             let values = &schema.module(module).values;
             for d in &f.decls {
-                let (id, name, result, code) = match d {
+                let (id, name, result, det, code) = match d {
                     Decl::Fn(fd) => {
                         let Some(&ValueDef::Function(fid)) = values.get(&fd.name.text) else {
                             continue;
@@ -170,20 +173,16 @@ impl Source {
                                 module: module.clone(),
                                 export: export.clone(),
                             },
-                            ast::FnBody::Host {
-                                name,
-                                version,
-                                deterministic,
-                            } => Code::Host {
+                            ast::FnBody::Host { name, version, .. } => Code::Host {
                                 symbol: name.clone(),
                                 version: version.clone(),
-                                deterministic: *deterministic,
                             },
                         };
                         (
                             schema.ids.functions.get(&fid),
                             &fd.name,
                             fd.result.span,
+                            deterministic[fid.0 as usize],
                             code,
                         )
                     }
@@ -198,6 +197,9 @@ impl Source {
                             id,
                             &a.name,
                             a.result.span,
+                            crate::resolve::aggregate_refs(&schema, i as usize)
+                                .iter()
+                                .all(|g| deterministic[g.0 as usize]),
                             Code::Aggregate { body, canonical },
                         )
                     }
@@ -211,12 +213,45 @@ impl Source {
                     signature: text[name.span.end as usize..result.end as usize]
                         .trim()
                         .to_string(),
+                    deterministic: det,
                     code,
                 });
             }
         }
         Ok(out)
     }
+}
+
+/// Returns, for each function of `schema`, whether every function it calls, transitively, is
+/// deterministic.
+fn deterministic_functions(schema: &Schema) -> Vec<bool> {
+    let calls: Vec<BTreeSet<FnId>> = (0..schema.functions.len() as u32)
+        .map(|i| crate::resolve::function_refs(schema, FnId(i)))
+        .collect();
+    let mut det: Vec<bool> = schema
+        .functions
+        .iter()
+        .map(|f| {
+            !matches!(
+                f.body,
+                ast::FnBody::Host {
+                    deterministic: false,
+                    ..
+                }
+            )
+        })
+        .collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (i, gs) in calls.iter().enumerate() {
+            if det[i] && gs.iter().any(|g| !det[g.0 as usize]) {
+                det[i] = false;
+                changed = true;
+            }
+        }
+    }
+    det
 }
 
 /// Returns the span from the first token after the first `=` at or after `from` to `end`.

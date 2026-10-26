@@ -505,26 +505,19 @@ impl Builder<'_> {
             .functions()
             .unwrap_or_else(|ds| panic!("the functions of a checked source resolve: {ds:?}"));
         for f in functions {
-            let (ctor, deterministic, hashed, own) = match &f.code {
+            let (ctor, hashed, own) = match &f.code {
                 Code::Language { body, canonical } => (
                     "Language",
-                    true,
                     canonical,
                     vec![("body", Value::Text(body.clone()))],
                 ),
                 Code::Aggregate { body, canonical } => (
                     "Aggregate",
-                    true,
                     canonical,
                     vec![("body", Value::Text(body.clone()))],
                 ),
-                Code::Host {
-                    symbol,
-                    version,
-                    deterministic,
-                } => (
+                Code::Host { symbol, version } => (
                     "Host",
-                    *deterministic,
                     version,
                     vec![
                         ("symbol", Value::Text(symbol.clone())),
@@ -543,7 +536,7 @@ impl Builder<'_> {
                 ("module", Value::Text(f.module)),
                 ("name", Value::Text(f.name)),
                 ("signature", Value::Text(f.signature)),
-                ("deterministic", self.boolean(deterministic)),
+                ("deterministic", self.boolean(f.deterministic)),
                 (
                     "hash",
                     Value::Bytes(blake3::hash(hashed.as_bytes()).as_bytes().to_vec()),

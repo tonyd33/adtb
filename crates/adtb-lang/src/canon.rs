@@ -33,6 +33,7 @@ impl Names {
             Ref::Relation(r) | Ref::Set(r, _) => schema.relation(*r).module,
             Ref::Function(f) => schema.function(*f).module,
             Ref::Aggregate(a) => schema.aggregates[*a as usize].module,
+            Ref::BuiltinType => PRELUDE,
             Ref::Field { .. } | Ref::Match(_) => return,
         };
         self.qualify(schema, span, module);
@@ -94,6 +95,16 @@ pub fn canonical_term(text: &str, span: Span, names: &Names) -> String {
             i += 3;
             continue;
         }
+        debug_assert!(
+            tok != Tok::ColonColon,
+            "every name a term writes qualified resolves, and the one at {at:?} of {:?} does not",
+            &text[span.range()]
+        );
+        debug_assert!(
+            tok != Tok::Upper || names.get(at).is_some(),
+            "every type, constructor and named set a term names resolves, and `{written}` at {at:?} of {:?} does not",
+            &text[span.range()]
+        );
         out.push(match tok {
             Tok::Lower | Tok::Upper => spelled(names, at, written),
             Tok::Int => digits(written).to_string(),
@@ -170,11 +181,15 @@ fn text_literal(value: &str) -> String {
 pub fn type_refs(schema: &Schema, module: ModuleId, t: &ast::Type, out: &mut Vec<(Span, Ref)>) {
     match &t.kind {
         ast::TypeKind::Named { name, sel, args } => {
-            if let Ok(TypeName::Decl(def)) = schema.lookup_type(module, name) {
-                out.push((name.name.span, Ref::Type(def)));
-                if let Some(sel) = sel {
-                    type_sel_refs(schema, def, sel, out);
+            match schema.lookup_type(module, name) {
+                Ok(TypeName::Decl(def)) => {
+                    out.push((name.name.span, Ref::Type(def)));
+                    if let Some(sel) = sel {
+                        type_sel_refs(schema, def, sel, out);
+                    }
                 }
+                Ok(_) => out.push((name.name.span, Ref::BuiltinType)),
+                Err(_) => {}
             }
             for a in args {
                 if let ast::TypeArg::Type(t) = a {
@@ -182,7 +197,11 @@ pub fn type_refs(schema: &Schema, module: ModuleId, t: &ast::Type, out: &mut Vec
                 }
             }
         }
-        ast::TypeKind::Key(r) => relation_ref_refs(schema, module, r, out),
+        ast::TypeKind::Key(r) => {
+            let at = t.span.start as usize;
+            out.push((Span::new(at, at + "Key".len()), Ref::BuiltinType));
+            relation_ref_refs(schema, module, r, out);
+        }
         ast::TypeKind::Record(fs) => fs
             .iter()
             .for_each(|f| type_refs(schema, module, &f.ty, out)),

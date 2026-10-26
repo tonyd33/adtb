@@ -74,6 +74,8 @@ pub struct AggregateTerms {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ref {
     Type(TypeId),
+    /// A type of the prelude with no declaration: a base type, `Key`, `Decimal`, `Set`, `Group` or `Tag`.
+    BuiltinType,
     Relation(RelId),
     Function(FnId),
     Aggregate(u32),
@@ -826,10 +828,25 @@ pub fn check_adhoc(
     items: &[ast::AdhocItem],
     params: &BTreeMap<String, Ty>,
 ) -> Result<Adhoc, Vec<Diag>> {
+    check_adhoc_recording(schema, program, items, params, None)
+}
+
+/// Type checks ad hoc text as [`check_adhoc`] does. With `record`, appends the schema objects the text
+/// names, as [`schema_refs`] reports them, those of items before a refused one included.
+pub fn check_adhoc_recording(
+    schema: &Schema,
+    program: &Program,
+    items: &[ast::AdhocItem],
+    params: &BTreeMap<String, Ty>,
+    record: Option<&mut Vec<(Span, Ref)>>,
+) -> Result<Adhoc, Vec<Diag>> {
     let mut diags = Vec::new();
     let temps = adhoc::temp_relations(schema, items, &mut diags);
     let checked = temps.as_ref().map_or(schema, |(s, _)| s);
     let mut c = Checker::new(checked, Visible::all(checked), Context::Adhoc);
+    if record.is_some() {
+        c.refs = Some(RefCell::new(Vec::new()));
+    }
     c.fn_rows.clone_from(&program.fn_rows);
     for (name, ty) in params {
         let v = c.terms.var(name, ty.clone());
@@ -851,6 +868,9 @@ pub fn check_adhoc(
             Ok(None) => {}
             Err(d) => diags.push(d),
         }
+    }
+    if let (Some(out), Some(refs)) = (record, c.refs.take()) {
+        out.extend(refs.into_inner());
     }
     if !diags.is_empty() {
         return Err(diags);

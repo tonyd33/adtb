@@ -17,6 +17,7 @@ terms and share nothing else.
 | --- | --- |
 | `check_schema(schema)` | `Program`: one arena holding the term of every function, constraint, check, newtype domain, default, computed field, index field, retag delete action (§4.6) and user-defined aggregate of the schema |
 | `check_adhoc(schema, program, items, params)` | `Adhoc`: an arena with one term per query, write and `transact` statement, in the order of the items, and the variable of each ad hoc parameter; commands, grants, revokes and role, peer and temp relation statements are checked and have no term |
+| `check_adhoc_recording(schema, program, items, params, record)` | as `check_adhoc`; with `record`, also appends each schema object the text names, by span, as `schema_refs` reports them, those of items before a refused one included |
 | `check_query(schema, program, module, q)` | `Query`: an arena with the term of one registered query |
 | `check_txn(schema, program, module, t)` | `Txn`: an arena with the term of one registered transaction |
 

@@ -125,14 +125,14 @@ impl Cx<'_> {
         let (i, t) = self.type_decl(&path.ty)?;
         let part = self.part(&t, path)?;
         self.field_is_free(&t, &part, &path.field)?;
-        let item = format!("{}: {}", path.field.text, self.slice(ty.span));
+        let item = Written::concat([format!("{}: ", path.field.text).into(), self.copy(ty.span)]);
         let h = header(&self.src.decls[i].module).len();
         let text = self.src.decls[i].text.clone();
         let ctor = match &part {
             Part::Header => None,
             Part::Ctor(c) => Some(c.as_str()),
         };
-        let Some(edit) = add_field_edit(&text, h, &t, ctor, &item) else {
+        let Some(edit) = add_field_edit(&text, h, &t, ctor, item) else {
             return self.err("the field has no place in the declaration");
         };
         self.src.edit(i, vec![edit]);
@@ -219,7 +219,7 @@ impl Cx<'_> {
         edits
             .entry(i)
             .or_default()
-            .push((self.src.local(i, f.name.span), to.text.clone()));
+            .push((self.src.local(i, f.name.span), to.text.clone().into()));
         for (file, span, r) in check::schema_refs(&schema) {
             if let Ref::Field {
                 def: d,
@@ -240,7 +240,7 @@ impl Cx<'_> {
                 edits
                     .entry(j)
                     .or_default()
-                    .push((self.src.local(j, span), text));
+                    .push((self.src.local(j, span), text.into()));
             }
         }
         let cname = match &part {
@@ -262,7 +262,7 @@ impl Cx<'_> {
                                 edits
                                     .entry(k)
                                     .or_default()
-                                    .push((self.src.local(k, x.span), to.text.clone()));
+                                    .push((self.src.local(k, x.span), to.text.clone().into()));
                             }
                         }
                     }
@@ -276,7 +276,7 @@ impl Cx<'_> {
                         edits
                             .entry(k)
                             .or_default()
-                            .push((self.src.local(k, field.span), to.text.clone()));
+                            .push((self.src.local(k, field.span), to.text.clone().into()));
                     }
                     _ => {}
                 }
@@ -339,8 +339,9 @@ impl Cx<'_> {
                 let removal = self
                     .field_removal(i, &t, &part, &path.field.text)
                     .expect("the field");
-                let added = add_field_edit(&text, h, &t, None, &item).expect("a header place");
-                self.src.edit(i, vec![removal, added]);
+                let added = add_field_edit(&text, h, &t, None, item.as_str().into())
+                    .expect("a header place");
+                self.src.edit(i, vec![(removal.0, removal.1.into()), added]);
                 if others.is_empty() {
                     return Ok(());
                 }
@@ -385,10 +386,11 @@ impl Cx<'_> {
                 let removal = self
                     .field_removal(i, &t, &part, &path.field.text)
                     .expect("the field");
-                let mut edits = vec![removal];
+                let mut edits = vec![(removal.0, Written::from(removal.1))];
                 for c in &targets {
                     edits.push(
-                        add_field_edit(&text, h, &t, Some(c), &item).expect("a constructor place"),
+                        add_field_edit(&text, h, &t, Some(c), item.as_str().into())
+                            .expect("a constructor place"),
                     );
                 }
                 self.src.edit(i, edits);
@@ -406,10 +408,10 @@ impl Cx<'_> {
 
 impl Cx<'_> {
     /// The text of the expressions `fields`, as written in the migration.
-    pub(super) fn fields_text(&self, fields: &[Expr]) -> String {
+    pub(super) fn fields_text(&self, fields: &[Expr]) -> Written {
         let first = fields.first().expect("an index has a field").span;
         let last = fields.last().expect("an index has a field").span;
-        self.text[first.start as usize..last.end as usize].to_string()
+        self.copy(first.to(last))
     }
 
     pub(super) fn scope_text(&self, on: &ast::RelationRef) -> String {
@@ -423,10 +425,11 @@ impl Cx<'_> {
     }
 
     /// Appends a clause to the declaration of relation `q`.
-    pub(super) fn append_clause(&mut self, q: &QName, clause: &str) -> R<()> {
+    pub(super) fn append_clause(&mut self, q: &QName, clause: Written) -> R<()> {
         let (i, _) = self.relation_decl(q)?;
         let end = self.src.decls[i].text.trim_end().len();
-        self.src.edit(i, vec![(end..end, format!("\n  {clause}"))]);
+        self.src
+            .edit(i, vec![(end..end, Written::prefixed([clause], "\n  "))]);
         Ok(())
     }
 
@@ -436,12 +439,12 @@ impl Cx<'_> {
         fields: &[Expr],
         on: &ast::RelationRef,
     ) -> R<()> {
-        let clause = format!(
-            "{kind} ({}){}",
+        let clause = Written::concat([
+            format!("{kind} (").into(),
             self.fields_text(fields),
-            self.scope_text(on)
-        );
-        self.append_clause(&on.relation, &clause)
+            format!("){}", self.scope_text(on)).into(),
+        ]);
+        self.append_clause(&on.relation, clause)
     }
 
     /// The clauses of relation `q`'s declaration with their ranges.
@@ -525,6 +528,18 @@ impl Cx<'_> {
                 Some(s) => all(schema.relation_sel(rel, &scope_sel(s)).ok()),
             };
             if scope == want_scope && same(&field_texts(fs), &want) {
+                for (e, f) in fields.iter().zip(fs) {
+                    let (from, at) = (e.span.start as usize, f.span.start as usize - h);
+                    let theirs = lex(&text[at..f.span.end as usize - h]).0;
+                    for (a, b) in lex(self.slice(e.span)).0.iter().zip(&theirs) {
+                        let r = a.span.range();
+                        self.src.read_mark(
+                            from + r.start..from + r.end,
+                            i,
+                            at + b.span.start as usize,
+                        );
+                    }
+                }
                 self.drop_clause(i, &ranges, k);
                 return Ok(());
             }
@@ -556,10 +571,13 @@ impl Cx<'_> {
             None => field.text.clone(),
         };
         let v = match value {
-            ast::DefaultValue::Generate(g) => format!("generate {}", g.text),
-            ast::DefaultValue::Expr(e) => self.slice(e.span).to_string(),
+            ast::DefaultValue::Generate(g) => format!("generate {}", g.text).into(),
+            ast::DefaultValue::Expr(e) => self.copy(e.span),
         };
-        self.append_clause(relation, &format!("default {path} = {v}"))
+        self.append_clause(
+            relation,
+            Written::concat([format!("default {path} = ").into(), v]),
+        )
     }
 
     pub(super) fn drop_default(
@@ -618,13 +636,17 @@ impl Cx<'_> {
         ty: &ast::Type,
         expr: &Expr,
     ) -> R<()> {
-        let clause = format!(
-            "computed {}: {} = {}",
-            field.text,
-            self.slice(ty.span),
-            self.slice(expr.span)
-        );
-        self.append_clause(relation, &clause)
+        let clause = self.computed_text(field, ty, expr);
+        self.append_clause(relation, clause)
+    }
+
+    fn computed_text(&self, field: &ast::Ident, ty: &ast::Type, expr: &Expr) -> Written {
+        Written::concat([
+            format!("computed {}: ", field.text).into(),
+            self.copy(ty.span),
+            " = ".into(),
+            self.copy(expr.span),
+        ])
     }
 
     pub(super) fn redefine_computed(
@@ -635,12 +657,7 @@ impl Cx<'_> {
         expr: &Expr,
     ) -> R<()> {
         let (i, ranges, k) = self.computed_clause(relation, field)?;
-        let clause = format!(
-            "computed {}: {} = {}",
-            field.text,
-            self.slice(ty.span),
-            self.slice(expr.span)
-        );
+        let clause = self.computed_text(field, ty, expr);
         self.src.edit(i, vec![(ranges[k].clone(), clause)]);
         Ok(())
     }

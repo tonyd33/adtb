@@ -375,6 +375,13 @@ field, each with the clause's text. A generated key's `text` is its
 expression as written. A stored view is a row of `relations` of kind
 `Stored`, defined by a row of `functions`.
 
+A function's `signature` and `body` are as written in its declaration;
+an aggregate's `body` is everything after the `=` of its declaration.
+A function written in the language is `deterministic` when every
+function it calls, directly or through other functions, is
+deterministic; a call to a host function not declared `deterministic`
+makes it, and every function that calls it, nondeterministic.
+
 Every hash in the catalog is BLAKE3-256. A function's `hash` is the
 content hash that is part of its identity
 ([interop.md](interop.md#95-function-identity)); a Wasm module is keyed
@@ -488,8 +495,9 @@ relation feed_members : FeedMember key (feed, relation, ctor)
 `migrations` is the operator log of
 [evolution.md](evolution.md#1-the-operator-log), one row per migration;
 `hash` is the version's hash, the BLAKE3-256 hash of the log prefix
-up to and including this migration, and `text` the migration as
-written.
+up to and including this migration, `text` the migration as
+written, and `applied` the wall-clock time at which it was applied,
+read in the transaction that applied it.
 
 `migration_ops` holds each migration's resolved operators, one row per
 operator, `ordinal` its position in the migration from 1. Each
@@ -520,14 +528,21 @@ canonical token form of the resolved operand
 ([syntax.md §2.9](syntax.md#29-canonical-token-form)), with every Wasm
 module it names written as the module's hash. The `decl` of `Store` is
 the stored view's declaration, `store f` with its clauses, as a `Term`.
+The `body` of `AddConstraint` and `AddCheck` is the whole declaration
+after the verb, so a check's `body` holds its `on` target. A `fields`
+Term is the field list without its parentheses: `email, name` for
+`add unique (email, name) in users`.
 
 The clauses an operator takes any number of are rows of
 `migration_clauses`, `clause` their position from 1: `Joins` for a
 `joins` set, `Member` for each constructor a merge or nest replaces, a
-named set lists, a moved field goes to or an index or unique ranges
-over, `Arm` for an `arm` clause, `Replacement` for the `unique` and
+named set lists, a moved field goes to or the written `in r.C` scope
+of an index or unique names, `Arm` for an `arm` clause, `Replacement`
+for the `unique` and
 `index` clauses of a split, `Carry` for a field after `carry`, and
-`Fill` for a revert's `fill`. The version hash
+`Fill` for a revert's `fill`. An index or unique added without a
+scope has no `Member` clauses and ranges over every constructor of its
+relation, constructors added after it included. The version hash
 ([evolution.md §2.1](evolution.md#21-position-and-hash)) encodes these
 rows.
 The log holds only migrations; bundles, their registration, leases,

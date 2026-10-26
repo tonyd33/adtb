@@ -78,6 +78,92 @@ pub struct Source {
     pub ids: BTreeMap<String, u64>,
     /// The next id of each space.
     pub next: BTreeMap<crate::ids::Space, u64>,
+    /// Where operators copied the text of the migration [`Logged::names`] replays; `None` otherwise.
+    pub marks: Option<Marks>,
+}
+
+/// Text of the migration being replayed that an operator copied into a declaration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Mark {
+    /// The copied range of the migration's text.
+    from: Range<usize>,
+    decl: usize,
+    /// The offset of the copy in the declaration's text, without the header.
+    at: usize,
+}
+
+/// The copies of a replayed migration's text in the declarations of a source.
+#[derive(Clone, Debug, Default)]
+pub struct Marks {
+    /// The copies in the declarations as they are now, each moved by every later edit, less the text a
+    /// later edit replaces.
+    written: Vec<Mark>,
+    /// The text of the migration that the current operator matched against declarations as they were
+    /// before it.
+    read: Vec<Mark>,
+}
+
+/// Text an operator writes into a declaration, with the ranges of the migration's text it copies.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Written {
+    text: String,
+    /// Each copy's offset in `text`, and the range of the migration's text it copies.
+    copies: Vec<(usize, Range<usize>)>,
+}
+
+impl Written {
+    fn push(&mut self, s: &str) {
+        self.text.push_str(s);
+    }
+
+    fn append(&mut self, w: Written) {
+        let at = self.text.len();
+        self.text.push_str(&w.text);
+        self.copies
+            .extend(w.copies.into_iter().map(|(o, r)| (at + o, r)));
+    }
+
+    /// Returns `parts`, each after `before`.
+    fn prefixed(parts: impl IntoIterator<Item = Written>, before: &str) -> Written {
+        let mut out = Written::default();
+        for p in parts {
+            out.push(before);
+            out.append(p);
+        }
+        out
+    }
+
+    /// Returns `parts` with `sep` between each two.
+    fn joined(parts: impl IntoIterator<Item = Written>, sep: &str) -> Written {
+        let mut out = Written::default();
+        for (k, p) in parts.into_iter().enumerate() {
+            if k > 0 {
+                out.push(sep);
+            }
+            out.append(p);
+        }
+        out
+    }
+
+    /// Returns `pieces` concatenated.
+    fn concat(pieces: impl IntoIterator<Item = Written>) -> Written {
+        Written::joined(pieces, "")
+    }
+}
+
+impl From<String> for Written {
+    fn from(text: String) -> Written {
+        Written {
+            text,
+            copies: Vec::new(),
+        }
+    }
+}
+
+impl From<&str> for Written {
+    fn from(text: &str) -> Written {
+        text.to_string().into()
+    }
 }
 
 /// Why a migration is refused: the operators that do not apply, at their spans in the migration's text,
@@ -354,21 +440,115 @@ impl Source {
     }
 
     /// Replaces each range of declaration `i`'s text by its text.
-    fn edit(&mut self, i: usize, mut edits: Vec<(Range<usize>, String)>) {
+    ///
+    /// Precondition: the ranges do not overlap, except that equal edits count once.
+    fn edit<W: Into<Written>>(&mut self, i: usize, edits: Vec<(Range<usize>, W)>) {
+        let mut edits: Vec<(Range<usize>, Written)> =
+            edits.into_iter().map(|(r, w)| (r, w.into())).collect();
         edits.sort_by(|a, b| b.0.start.cmp(&a.0.start).then(b.0.end.cmp(&a.0.end)));
         edits.dedup();
-        let text = &mut self.decls[i].text;
-        for (r, s) in edits {
-            text.replace_range(r, &s);
+        for (r, w) in edits {
+            self.decls[i].text.replace_range(r.clone(), &w.text);
+            let Some(marks) = &mut self.marks else {
+                continue;
+            };
+            let grown = w.text.len() as isize - r.len() as isize;
+            let moved = |at: usize| {
+                at.checked_add_signed(grown)
+                    .expect("a copy after an edit stays inside its declaration")
+            };
+            let mut kept = Vec::new();
+            for m in std::mem::take(&mut marks.written) {
+                let end = m.at + m.from.len();
+                if m.decl != i || end <= r.start {
+                    kept.push(m);
+                } else if m.at >= r.end {
+                    kept.push(Mark {
+                        at: moved(m.at),
+                        ..m
+                    });
+                } else {
+                    if m.at < r.start {
+                        kept.push(Mark {
+                            from: m.from.start..m.from.start + (r.start - m.at),
+                            ..m.clone()
+                        });
+                    }
+                    if end > r.end {
+                        kept.push(Mark {
+                            from: m.from.end - (end - r.end)..m.from.end,
+                            decl: i,
+                            at: moved(r.end),
+                        });
+                    }
+                }
+            }
+            marks.written = kept;
+            marks.written.extend(
+                w.copies
+                    .into_iter()
+                    .filter(|(_, from)| !from.is_empty())
+                    .map(|(o, from)| Mark {
+                        from,
+                        decl: i,
+                        at: r.start + o,
+                    }),
+            );
         }
     }
 
-    fn push(&mut self, module: &str, text: &str) -> usize {
+    fn push(&mut self, module: &str, text: impl Into<Written>) -> usize {
         self.decls.push(SourceDecl {
             module: module.to_string(),
-            text: text.to_string(),
+            text: String::new(),
         });
-        self.decls.len() - 1
+        let i = self.decls.len() - 1;
+        self.edit(i, vec![(0..0, text)]);
+        i
+    }
+
+    /// Replaces the whole text of declaration `i`.
+    fn rewrite(&mut self, i: usize, text: impl Into<Written>) {
+        let end = self.decls[i].text.len();
+        self.edit(i, vec![(0..end, text)]);
+    }
+
+    /// Removes every declaration `drop` holds.
+    fn remove_decls(&mut self, drop: impl Fn(usize, &SourceDecl) -> bool) {
+        let mut kept = Vec::new();
+        let mut decls = Vec::new();
+        for (i, d) in std::mem::take(&mut self.decls).into_iter().enumerate() {
+            if drop(i, &d) {
+                kept.push(None);
+            } else {
+                kept.push(Some(decls.len()));
+                decls.push(d);
+            }
+        }
+        self.decls = decls;
+        if let Some(marks) = &mut self.marks {
+            for ms in [&mut marks.written, &mut marks.read] {
+                ms.retain_mut(|m| match kept[m.decl] {
+                    Some(k) => {
+                        m.decl = k;
+                        true
+                    }
+                    None => false,
+                });
+            }
+        }
+    }
+
+    fn remove_decl(&mut self, i: usize) {
+        self.remove_decls(|j, _| j == i);
+    }
+
+    /// Records that the operator matched the text at `from` of the migration against the text at `at`
+    /// of declaration `i`, as it is before the operator edits it.
+    fn read_mark(&mut self, from: Range<usize>, i: usize, at: usize) {
+        if let Some(marks) = &mut self.marks {
+            marks.read.push(Mark { from, decl: i, at });
+        }
     }
 
     /// Applies a migration, numbered one past the current version, and rechecks the result.
@@ -437,6 +617,7 @@ impl Source {
             text,
             span: op.span,
             noted,
+            copying: noted.is_some(),
         }
         .operator(&op.kind);
         match r {
@@ -511,12 +692,14 @@ struct Cx<'a> {
     span: Span,
     /// Where a fill or routing records the names it resolves, when replaying for them.
     noted: Option<&'a RefCell<Names>>,
+    /// Whether the text the operator copies into declarations is recorded as copies of `text`.
+    copying: bool,
 }
 
 type R<T> = Result<T, Vec<Diag>>;
 
 /// Edits of declaration texts, by declaration.
-type Edits = BTreeMap<usize, Vec<(Range<usize>, String)>>;
+type Edits = BTreeMap<usize, Vec<(Range<usize>, Written)>>;
 
 /// A write state's key: the module, the relation variable or type, and the constructor.
 type StateKey = (String, String, String);
@@ -532,6 +715,22 @@ impl Cx<'_> {
 
     fn slice(&self, span: Span) -> &str {
         &self.text[span.range()]
+    }
+
+    /// Returns the text at `span` of the migration, as a copy of it.
+    fn copy(&self, span: Span) -> Written {
+        self.copy_range(span.range())
+    }
+
+    fn copy_range(&self, r: Range<usize>) -> Written {
+        Written {
+            text: self.text[r.clone()].to_string(),
+            copies: if self.copying {
+                vec![(0, r)]
+            } else {
+                Vec::new()
+            },
+        }
     }
 
     /// Records the names a fill or routing of this operator resolves, when replaying for them.
@@ -852,7 +1051,7 @@ impl Cx<'_> {
                 );
             }
         }
-        self.src.decls.retain(|d| d.module != m.text);
+        self.src.remove_decls(|_, d| d.module == m.text);
         self.src.modules.remove(&m.text);
         self.src.installed.remove(&m.text);
         Ok(())
@@ -878,9 +1077,9 @@ impl Cx<'_> {
                 format!("module `{}` already declares {kind} `{name}`", self.module),
             );
         }
-        let text = self.slice(span).to_string();
+        let text = self.copy(span);
         let module = self.module.clone();
-        self.src.push(&module, &text);
+        self.src.push(&module, text);
         Ok(())
     }
 
@@ -894,7 +1093,8 @@ impl Cx<'_> {
                 ),
             );
         };
-        self.src.decls[i].text = self.slice(span).to_string();
+        let text = self.copy(span);
+        self.src.rewrite(i, text);
         Ok(())
     }
 
@@ -906,7 +1106,7 @@ impl Cx<'_> {
                 format!("module `{m}` declares no {kind} `{}`", q.name.text),
             );
         };
-        self.src.decls.remove(i);
+        self.src.remove_decl(i);
         Ok(())
     }
 
@@ -971,7 +1171,7 @@ impl Cx<'_> {
             }
         }
         let module = self.module_of(q);
-        self.src.decls.remove(i);
+        self.src.remove_decl(i);
         self.src
             .value_states
             .retain(|(m, t, _), _| !(*m == module && *t == decl.name.text));
@@ -1136,9 +1336,7 @@ impl Cx<'_> {
         let mut drop = sets;
         drop.push(i);
         drop.sort_unstable();
-        for j in drop.into_iter().rev() {
-            self.src.decls.remove(j);
-        }
+        self.src.remove_decls(|j, _| drop.contains(&j));
         self.src
             .states
             .retain(|(m, r, _), _| !(*m == module && r == name));
@@ -1161,17 +1359,17 @@ impl Cx<'_> {
         }
         let from = q.name.text.clone();
         let mut edits: Edits = BTreeMap::new();
-        edits
-            .entry(i)
-            .or_default()
-            .push((self.src.local(i, decl.name.name.span), to.text.clone()));
+        edits.entry(i).or_default().push((
+            self.src.local(i, decl.name.name.span),
+            to.text.clone().into(),
+        ));
         for (file, span, r) in check::schema_refs(&schema) {
             if matches!(r, Ref::Relation(x) if x == rel) {
                 let j = file.0 as usize;
                 edits
                     .entry(j)
                     .or_default()
-                    .push((self.src.local(j, span), to.text.clone()));
+                    .push((self.src.local(j, span), to.text.clone().into()));
             }
         }
         for j in 0..self.src.decls.len() {
@@ -1205,7 +1403,7 @@ impl Cx<'_> {
                 edits
                     .entry(j)
                     .or_default()
-                    .push((self.src.local(j, s), to.text.clone()));
+                    .push((self.src.local(j, s), to.text.clone().into()));
             }
         }
         for (j, es) in edits {
@@ -1239,7 +1437,7 @@ impl Cx<'_> {
 
     fn drop_set(&mut self, name: &ast::Ident, rel: &QName) -> R<()> {
         let (i, _) = self.set_decl(name, rel)?;
-        self.src.decls.remove(i);
+        self.src.remove_decl(i);
         Ok(())
     }
 
@@ -1264,14 +1462,14 @@ impl Cx<'_> {
         edits
             .entry(i)
             .or_default()
-            .push((self.src.local(i, decl.name.span), to.text.clone()));
+            .push((self.src.local(i, decl.name.span), to.text.clone().into()));
         for (file, span, x) in check::schema_refs(&schema) {
             if matches!(&x, Ref::Set(y, s) if *y == r && *s == name.text) {
                 let j = file.0 as usize;
                 edits
                     .entry(j)
                     .or_default()
-                    .push((self.src.local(j, span), to.text.clone()));
+                    .push((self.src.local(j, span), to.text.clone().into()));
             }
         }
         self.each_selection(&schema, r, &module, &mut |j, ident| {
@@ -1279,7 +1477,7 @@ impl Cx<'_> {
                 edits
                     .entry(j)
                     .or_default()
-                    .push((ident.span.range(), to.text.clone()));
+                    .push((ident.span.range(), to.text.clone().into()));
             }
         });
         self.apply_edits(edits);
@@ -1346,13 +1544,16 @@ impl Cx<'_> {
 
     fn script(&mut self, w: &ast::Write) -> R<()> {
         let (schema, program) = self.checked()?;
-        check::check_adhoc(
+        let mut refs = Vec::new();
+        check::check_adhoc_recording(
             &schema,
             &program,
             &[ast::AdhocItem::Write(w.clone())],
             &BTreeMap::new(),
-        )
-        .map(|_| ())
+            self.noted.is_some().then_some(&mut refs),
+        )?;
+        self.note(&schema, &refs);
+        Ok(())
     }
 
     fn log_grant(&mut self, privileges: &[ast::Privilege]) -> R<()> {
@@ -1360,6 +1561,7 @@ impl Cx<'_> {
         let vis = crate::resolve::Visible::module(
             schema.module_named(&self.module).unwrap_or(schema::PRELUDE),
         );
+        let refs = RefCell::new(Vec::new());
         let relation = |r: &ast::RelationRef| -> R<()> {
             let rel = match crate::resolve::lookup_value(&schema, &vis, &r.relation) {
                 Ok(ValueDef::Relation(rel)) => rel,
@@ -1377,10 +1579,19 @@ impl Cx<'_> {
                     "a grant on a `catalog::` or `sys::` relation is deployment state, an ad hoc statement, never an operator in a migration",
                 );
             }
+            let mut refs = refs.borrow_mut();
+            refs.push((r.relation.name.span, Ref::Relation(rel)));
             if let Some(sel) = &r.sel {
                 schema
                     .relation_sel(rel, sel)
                     .map_err(|e| vec![Diag::new(r.span, e)])?;
+                let def = schema.relation(rel).elem_def;
+                for x in sel_idents(sel) {
+                    refs.push(match schema.ty(def).ctor_index(&x.text) {
+                        Some(c) => (x.span, Ref::Ctor(def, c)),
+                        None => (x.span, Ref::Set(rel, x.text.clone())),
+                    });
+                }
             }
             Ok(())
         };
@@ -1395,7 +1606,9 @@ impl Cx<'_> {
                     relation(b)?;
                 }
                 ast::Privilege::CallFn(f) => match crate::resolve::lookup_value(&schema, &vis, f) {
-                    Ok(ValueDef::Function(_)) => {}
+                    Ok(ValueDef::Function(g)) => {
+                        refs.borrow_mut().push((f.name.span, Ref::Function(g)));
+                    }
                     Ok(_) => {
                         return self
                             .err_at(f.span(), format!("`{}` is not a function", f.name.text));
@@ -1418,6 +1631,7 @@ impl Cx<'_> {
                 }
             }
         }
+        self.note(&schema, &refs.into_inner());
         Ok(())
     }
 

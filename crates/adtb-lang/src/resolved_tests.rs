@@ -308,10 +308,12 @@ fn functions_carry_their_signature_and_code() {
         Code::Host {
             symbol: "stamp".into(),
             version: "1.2".into(),
-            deterministic: false,
         },
         by_name("stamp").code
     );
+    assert!(!by_name("stamp").deterministic);
+    assert!(display.deterministic);
+    assert!(by_name("longest").deterministic);
     let longest = by_name("longest");
     assert_eq!("(x: Text) -> Text", longest.signature);
     let Code::Aggregate { body, canonical } = &longest.code else {
@@ -346,5 +348,163 @@ fn a_function_body_canonical_form_ignores_whitespace_and_comments() {
     assert_eq!(
         canonical(&first()),
         canonical(&migrated(&Source::default(), &respaced))
+    );
+}
+
+fn determinism(decls: &[&str]) -> BTreeMap<String, bool> {
+    let src = Source::new(
+        decls
+            .iter()
+            .map(|text| SourceDecl {
+                module: "app".into(),
+                text: (*text).to_string(),
+            })
+            .collect(),
+    )
+    .unwrap_or_else(|e| panic!("the schema builds: {e:?}"));
+    src.functions()
+        .unwrap_or_else(|e| panic!("the functions resolve: {e:?}"))
+        .into_iter()
+        .map(|f| (f.name, f.deterministic))
+        .collect()
+}
+
+#[test]
+fn a_function_calling_a_nondeterministic_host_function_is_nondeterministic_transitively() {
+    let det = determinism(&[
+        r#"fn clock (x: I64) -> I64 = host "clock" version "1""#,
+        r#"fn pure (x: I64) -> I64 = host "pure" version "1" deterministic"#,
+        "fn direct (x: I64) -> I64 = clock(x) + 1",
+        "fn indirect (x: I64) -> I64 = direct(x) * 2",
+        "fn clean (x: I64) -> I64 = pure(x) + abs(x)",
+        "fn passed (x: I64) -> I64 = apply(clock, x)",
+        "fn apply (f: I64 -> I64, x: I64) -> I64 = f(x)",
+    ]);
+    assert_eq!(
+        BTreeMap::from([
+            ("apply".to_string(), true),
+            ("clean".to_string(), true),
+            ("clock".to_string(), false),
+            ("direct".to_string(), false),
+            ("indirect".to_string(), false),
+            ("passed".to_string(), false),
+            ("pure".to_string(), true),
+        ]),
+        det
+    );
+}
+
+#[test]
+fn a_cycle_of_functions_is_deterministic_unless_it_reaches_a_nondeterministic_one() {
+    let det = determinism(&[
+        "fn even (x: I64) -> Bool = if x == 0 then True else odd(x - 1)",
+        "fn odd (x: I64) -> Bool = if x == 0 then False else even(x - 1)",
+        r#"fn clock (x: I64) -> I64 = host "clock" version "1""#,
+        "fn ping (x: I64) -> I64 = if x == 0 then clock(x) else pong(x - 1)",
+        "fn pong (x: I64) -> I64 = ping(x)",
+    ]);
+    assert_eq!(
+        BTreeMap::from([
+            ("clock".to_string(), false),
+            ("even".to_string(), true),
+            ("odd".to_string(), true),
+            ("ping".to_string(), false),
+            ("pong".to_string(), false),
+        ]),
+        det
+    );
+}
+
+#[test]
+fn an_aggregate_calling_a_nondeterministic_function_is_nondeterministic() {
+    let det = determinism(&[
+        r#"fn clock (x: I64) -> I64 = host "clock" version "1""#,
+        "fn later (x: I64) -> I64 = clock(x)",
+        "aggregate stamped (x: I64) -> I64 =
+  state { n: I64 }
+  init { n: 0 }
+  step (s, x) -> { n: s.n + later(x) }
+  merge (a, b) -> { n: a.n + b.n }
+  finish s -> s.n",
+        "aggregate total (x: I64) -> I64 =
+  state { n: I64 }
+  init { n: 0 }
+  step (s, x) -> { n: s.n + x }
+  merge (a, b) -> { n: a.n + b.n }
+  finish s -> s.n",
+    ]);
+    assert_eq!(Some(&false), det.get("stamped"), "{det:?}");
+    assert_eq!(Some(&true), det.get("total"), "{det:?}");
+}
+
+#[test]
+fn a_check_body_keeps_its_on_target() {
+    let src = first();
+    assert_eq!(
+        Resolved::AddCheck {
+            constraint: id(&src, "constraint auth::short_gid"),
+            body: "check auth::short_gid on auth::identities . auth::Google ( scalar_len ( gid ) <= 64 )"
+                .into(),
+        },
+        ops(&src, 1)[13].op
+    );
+}
+
+#[test]
+fn a_fields_term_is_the_field_list_without_its_parentheses() {
+    let src = migrated(
+        &first(),
+        "module auth\nadd unique (user, email) in identities.EmailPass\n",
+    );
+    let Resolved::AddUnique { fields, .. } = &ops(&src, 2)[0].op else {
+        panic!("{:?}", ops(&src, 2))
+    };
+    assert_eq!("user , email", fields);
+}
+
+#[test]
+fn an_operand_whose_spelling_recurs_resolves_after_a_forward_reference() {
+    let text = "module app
+add module app
+add type User = { id: Key users, name: Text }
+add relation users : User key id
+add type Device = { id: Key devices, name: Text }
+add unique (name) in users
+add relation devices : Device key id
+";
+    let src = migrated(&Source::default(), text);
+    let ops = ops(&src, 1);
+    let Resolved::AddUnique { fields, .. } = &ops[4].op else {
+        panic!("{ops:?}")
+    };
+    assert_eq!("name", fields);
+    assert_eq!(
+        Resolved::AddType {
+            sum: id(&src, "type app::Device"),
+            decl: "type app::Device = { id : Key app::devices , name : Text }".into(),
+        },
+        ops[3].op
+    );
+}
+
+#[test]
+fn an_operand_a_later_operator_edits_around_still_resolves() {
+    let text = "module app
+add module app
+add type Owner = { id: Key owners, name: Text }
+add relation owners : Owner key id
+add type Device = { id: Key devices, owner: Key owners }
+add relation devices : Device key id
+add field Device.label: Text fill \"\"
+";
+    let src = migrated(&Source::default(), text);
+    let names = src.log[0]
+        .names()
+        .unwrap_or_else(|ds| panic!("the names resolve: {ds:?}"));
+    let decl = "type Device = { id: Key devices, owner: Key owners }";
+    let at = text.find(decl).expect("the declaration");
+    assert_eq!(
+        "type app::Device = { id : Key app::devices , owner : Key app::owners }",
+        canonical_term(text, Span::new(at, at + decl.len()), &names)
     );
 }
