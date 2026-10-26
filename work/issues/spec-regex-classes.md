@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 299
 summary: "prelude.md says matches uses RE2 syntax, but RE2's \\d, \\w, \\s and \\b are ASCII while both implementations use Unicode"
+branch: adtb-conf
 tags:
   - spec
 ---

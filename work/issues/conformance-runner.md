@@ -1,10 +1,13 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 230
 summary: "no runner for the script format of docs/spec/conformance.md, and no conformance suite"
-tags: [reference, test]
+branch: adtb-conf
+tags:
+  - reference
+  - test
 ---
 
 # Feature: conformance runner and first suite

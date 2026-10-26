@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 260
-summary: "matches and collate build a new regex or collator on every call"
+summary: matches and collate build a new regex or collator on every call
+branch: adtb-conf
 tags:
   - reference
 ---
