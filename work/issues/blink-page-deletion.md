@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 541
 summary: "B-link pages are never freed; deleting them needs a rule, since descents rely on page ids staying valid"
+branch: adtb-blink4
 depends-on:
   - blink-space-reuse
 tags:

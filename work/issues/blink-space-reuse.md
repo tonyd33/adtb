@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 540
 summary: "the B-link tree has no posting-list deduplication, kill bits, empty-page recycling or right-edge append"
+branch: adtb-blink4
 depends-on:
   - blink-tree
 tags:

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 690
-summary: "spending every 64-bit xid panics instead of refusing new transactions"
+summary: spending every 64-bit xid panics instead of refusing new transactions
+branch: adtb-txn3
 depends-on:
   - commit-log-snapshots
 tags:

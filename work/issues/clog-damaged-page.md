@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 610
-summary: "a damaged commit log page leaves its transactions running; nothing defines what it stops"
+summary: a damaged commit log page leaves its transactions running; nothing defines what it stops
+branch: adtb-txn3
 depends-on:
   - commit-log-snapshots
 tags:

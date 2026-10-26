@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 570
 summary: "verify rereads the whole log on every call, checks only commit log page kinds, and skips cross-heap moved chains"
+branch: adtb-vac2
 depends-on:
   - verify-structural
 tags:

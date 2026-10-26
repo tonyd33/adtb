@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 560
 summary: "vacuum requires that no write to the sum runs during it, and its orphan chunk sweep scans every version"
+branch: adtb-vac2
 depends-on:
   - vacuum
   - ssi-integration
