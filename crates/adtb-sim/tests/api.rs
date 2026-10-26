@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use adtb::runtime::Threads;
 use adtb::{
-    AdHocTransaction, CallOptions, CreateOptions, Database, DynRows, Error, Log, OpenError,
-    OpenOptions, RejectReason, RetryReason, TxnCallOptions, TxnOptions, Value,
+    AdHocTransaction, CallOptions, CreateOptions, Database, DynRows, Error, Limit, Log, OpenError,
+    OpenOptions, Position, RejectReason, RetryReason, TxnCallOptions, TxnOptions, Value,
 };
 use adtb_lang::textual::print;
 use adtb_lang::types::{Base, Ty};
@@ -435,7 +435,7 @@ fn an_interactive_transaction_sees_its_own_writes_and_publishes_them_at_commit()
                 query(&db, NAMES).is_empty(),
                 "seed {seed}: seen before commit"
             );
-            let at = t.commit().expect("commit");
+            let at = t.commit(None).expect("commit");
             assert!(at.lsn > 0, "seed {seed}: {at:?}");
             assert_eq!(vec![r#""ann""#], query(&db, NAMES), "seed {seed}");
         });
@@ -491,7 +491,7 @@ insert notes { id: notes.key(1), body: "collides" }"#,
             &TxnCallOptions::default(),
         )
         .expect("a later call");
-        t.commit().expect("commit");
+        t.commit(None).expect("commit");
         assert_eq!(
             vec![r#""kept""#, r#""later""#],
             query(&db, "from n in notes select n.body")
@@ -517,7 +517,7 @@ fn constraints_hold_after_every_call_of_an_interactive_transaction() {
         );
         t.query_text(SIGN_UP, &name("ann"), &TxnCallOptions::default())
             .expect("one call inserting both");
-        t.commit().expect("commit");
+        t.commit(None).expect("commit");
         assert_eq!(vec![r#""ann""#], query(&db, NAMES));
     });
 }
@@ -538,7 +538,7 @@ fn a_read_only_transaction_refuses_writes() {
             &TxnCallOptions::default(),
         );
         assert!(got.as_ref().is_err_and(is_invalid), "{got:?}");
-        t.commit().expect("commit");
+        t.commit(None).expect("commit");
     });
 }
 
@@ -550,12 +550,221 @@ fn a_deferrable_read_only_transaction_reads_and_commits() {
         let opts = TxnOptions {
             read_only: true,
             deferrable: true,
+            ..TxnOptions::default()
         };
         let mut t = db.begin(&opts).expect("a deferrable transaction begins");
         assert_eq!(vec![r#""ann""#], in_txn(&mut t, NAMES));
-        t.commit().expect("commit");
+        t.commit(None).expect("commit");
     });
 }
+
+#[test]
+fn a_deferrable_block_runs_as_ad_hoc_text() {
+    once(0, |rt| {
+        let db = open(&rt);
+        sign_up(&db, "ann");
+        assert_eq!(
+            vec!["1"],
+            query(
+                &db,
+                "transact read_only deferrable\n  return count(c for c in customers)"
+            )
+        );
+    });
+}
+
+#[test]
+fn only_a_read_only_transaction_is_deferrable() {
+    once(0, |rt| {
+        let db = open(&rt);
+        let opts = TxnOptions {
+            deferrable: true,
+            ..TxnOptions::default()
+        };
+        let got = db.begin(&opts).map(drop);
+        assert!(got.as_ref().is_err_and(is_invalid), "{got:?}");
+    });
+}
+
+#[test]
+fn a_deferrable_transaction_begins_once_the_writers_running_at_its_snapshot_end() {
+    for seed in SEEDS {
+        once(seed, |rt| {
+            let db = open(&rt);
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let mut w = db.begin(&TxnOptions::default()).expect("begin the writer");
+            w.query_text(
+                r#"insert notes { body: "w" }"#,
+                &[],
+                &TxnCallOptions::default(),
+            )
+            .expect("the writer writes");
+            let reader = {
+                let db = db.clone();
+                let events = events.clone();
+                rt.spawn("reader", move || {
+                    let opts = TxnOptions {
+                        read_only: true,
+                        deferrable: true,
+                        ..TxnOptions::default()
+                    };
+                    let mut t = db.begin(&opts).expect("a deferrable transaction begins");
+                    events.lock().unwrap().push("begun");
+                    in_txn(&mut t, "count(n for n in notes)");
+                    t.commit(None).expect("the reader commits");
+                })
+            };
+            events.lock().unwrap().push("writer commits");
+            w.commit(None).expect("the writer commits");
+            rt.join(reader);
+            assert_eq!(
+                vec!["writer commits", "begun"],
+                *events.lock().unwrap(),
+                "seed {seed}"
+            );
+        });
+    }
+}
+
+#[test]
+fn a_serialization_failure_names_the_transaction_by_its_id() {
+    once(0, |rt| {
+        let db = open(&rt);
+        seed_note(&db);
+        let mut a = db.begin(&TxnOptions::default()).expect("begin a");
+        let mut b = db.begin(&TxnOptions::default()).expect("begin b");
+        assert_ne!(a.id(), b.id());
+        assert!(b.id().0 > 0, "{:?}", b.id());
+        a.query_text(BUMP, &body("a"), &TxnCallOptions::default())
+            .expect("a writes");
+        a.commit(None).expect("a commits");
+        let id = b.id();
+        let got = b.query_text(BUMP, &body("b"), &TxnCallOptions::default());
+        match got {
+            Err(Error::Retry {
+                reason: RetryReason::Serialization { txn, .. },
+            }) => assert_eq!(id, txn),
+            other => panic!("not a serialization failure: {other:?}"),
+        }
+    });
+}
+
+const UNBOUNDED: &str = "fix n = [1] union (from r in n select r + 1) in count(x for x in n)";
+const FIVE_ROUNDS: &str =
+    "fix n = [1] union (from r in n where r < 5 select r + 1) in count(x for x in n)";
+
+fn rounds_exceeded(e: &Error) -> Option<i64> {
+    match e {
+        Error::Rejected {
+            reason:
+                RejectReason::StatementLimit {
+                    limit: Limit::Rounds { rounds },
+                },
+        } => Some(*rounds),
+        _ => None,
+    }
+}
+
+#[test]
+fn the_round_limit_of_an_open_rejects_a_longer_fixpoint() {
+    once(0, |rt| {
+        let opts = OpenOptions {
+            fix_rounds: Some(3),
+            ..options()
+        };
+        let db = Database::open_in(rt, "app.adt", &log(), &opts).expect("the database opens");
+        let got = db.query_text(FIVE_ROUNDS, &[], &CallOptions::default());
+        let err = got.expect_err("five rounds run past a limit of three");
+        assert_eq!(Some(3), rounds_exceeded(&err), "{err:?}");
+        let more = CallOptions {
+            fix_rounds: Some(50),
+            ..CallOptions::default()
+        };
+        let got = db
+            .query_text(FIVE_ROUNDS, &[], &more)
+            .expect("fifty rounds suffice");
+        assert_eq!(
+            vec!["5"],
+            printed(got.into_iter().next().expect("a result"))
+        );
+    });
+}
+
+#[test]
+fn the_round_limit_of_a_call_rejects_an_unbounded_fixpoint() {
+    once(0, |rt| {
+        let db = open(&rt);
+        let call = CallOptions {
+            fix_rounds: Some(20),
+            ..CallOptions::default()
+        };
+        let err = db
+            .query_text(UNBOUNDED, &[], &call)
+            .expect_err("an unbounded fix runs past its limit");
+        assert_eq!(Some(20), rounds_exceeded(&err), "{err:?}");
+        let mut t = db.begin(&TxnOptions::default()).expect("begin");
+        let in_call = TxnCallOptions {
+            fix_rounds: Some(4),
+            ..TxnCallOptions::default()
+        };
+        let err = t
+            .query_text(FIVE_ROUNDS, &[], &in_call)
+            .expect_err("five rounds run past a limit of four");
+        assert_eq!(Some(4), rounds_exceeded(&err), "{err:?}");
+        assert_eq!(vec!["5"], in_txn(&mut t, FIVE_ROUNDS));
+        t.commit(None).expect("commit");
+    });
+}
+
+#[test]
+fn a_read_after_a_position_past_the_history_is_refused() {
+    once(0, |rt| {
+        let db = open(&rt);
+        let mut t = db.begin(&TxnOptions::default()).expect("begin");
+        t.query_text(
+            r#"insert notes { body: "a" }"#,
+            &[],
+            &TxnCallOptions::default(),
+        )
+        .expect("an insert");
+        let at = t.commit(None).expect("commit");
+        let after = |position| CallOptions {
+            after: Some(position),
+            ..CallOptions::default()
+        };
+        let got = db.query_text(NOTES, &[], &after(at));
+        assert_eq!(1, got.expect("a read after its own commit").len());
+        let past = Position {
+            epoch: at.epoch,
+            lsn: at.lsn + 1_000_000,
+        };
+        let got = db.query_text(NOTES, &[], &after(past));
+        assert!(
+            matches!(
+                &got,
+                Err(Error::Rejected {
+                    reason: RejectReason::PositionNotOnHistory { position },
+                }) if *position == past
+            ),
+            "{got:?}"
+        );
+    });
+}
+
+#[test]
+fn a_deadline_is_refused_until_the_engine_runs_one() {
+    once(0, |rt| {
+        let db = open(&rt);
+        let opts = CallOptions {
+            deadline: Some(std::time::SystemTime::UNIX_EPOCH),
+            ..CallOptions::default()
+        };
+        let got = db.query_text(NAMES, &[], &opts);
+        assert!(got.as_ref().is_err_and(is_invalid), "{got:?}");
+    });
+}
+
+const NOTES: &str = "from n in notes select n.body";
 
 fn is_serialization(e: &Error) -> bool {
     matches!(
@@ -591,7 +800,7 @@ fn concurrent_interactive_transactions_fail_one_with_a_serialization_failure() {
             let mut b = db.begin(&TxnOptions::default()).expect("begin b");
             a.query_text(BUMP, &body("a"), &TxnCallOptions::default())
                 .expect("a writes");
-            a.commit().expect("a commits");
+            a.commit(None).expect("a commits");
             let err = b
                 .query_text(BUMP, &body("b"), &TxnCallOptions::default())
                 .expect_err("b writes the row a committed after b's snapshot");
@@ -602,7 +811,7 @@ fn concurrent_interactive_transactions_fail_one_with_a_serialization_failure() {
                 later.map(drop),
                 "seed {seed}: a later call"
             );
-            assert_eq!(Err(err), b.commit(), "seed {seed}: the commit");
+            assert_eq!(Err(err), b.commit(None), "seed {seed}: the commit");
             assert_eq!(
                 vec![r#""a""#],
                 query(&db, "from n in notes select n.body"),
@@ -632,8 +841,8 @@ fn a_write_skew_between_interactive_transactions_does_not_commit_both() {
                 &[],
                 &TxnCallOptions::default(),
             );
-            let ca = wa.and_then(|_| a.commit());
-            let cb = wb.and_then(|_| b.commit());
+            let ca = wa.and_then(|_| a.commit(None));
+            let cb = wb.and_then(|_| b.commit(None));
             assert!(
                 ca.is_err() || cb.is_err(),
                 "seed {seed}: both commit after reading no notes"
@@ -763,6 +972,20 @@ fn concurrent_text_from_many_threads_commits_every_write() {
     }
 }
 
+/// Returns what `verify` finds in the closed file `app.adt`, and whether its counters page is
+/// named.
+fn verified(rt: SimRuntime) -> (adtb::verify::Report, bool) {
+    let options = adtb::storage::Options {
+        page_size: 8192,
+        threads: 4,
+        ..adtb::storage::Options::new("app.adt")
+    };
+    let (pager, _) = adtb::storage::Pager::open(rt.clone(), &options).expect("the pager");
+    let (catalog, txns) = adtb::catalog::Catalog::open(rt, &pager).expect("the catalog");
+    let report = adtb::verify::verify(&pager, &catalog.inventory(&txns.commit_log()));
+    (report, catalog.sequences().is_some())
+}
+
 #[test]
 fn a_closed_file_verifies_clean_with_every_page_accounted_for() {
     let mut sim = Sim::new(7, Config::default());
@@ -772,16 +995,29 @@ fn a_closed_file_verifies_clean_with_every_page_accounted_for() {
         db.close().expect("close");
     });
     run(&mut sim, |rt| drop(open(&rt)));
-    run(&mut sim, |rt| {
-        let options = adtb::storage::Options {
-            page_size: 8192,
-            threads: 4,
-            ..adtb::storage::Options::new("app.adt")
-        };
-        let (pager, _) = adtb::storage::Pager::open(rt.clone(), &options).expect("the pager");
-        let (catalog, txns) = adtb::catalog::Catalog::open(rt, &pager).expect("the catalog");
-        assert!(catalog.sequences().is_some(), "the counters page is named");
-        let report = adtb::verify::verify(&pager, &catalog.inventory(&txns.commit_log()));
-        assert!(report.is_clean() && report.complete, "{report:#?}");
-    });
+    let (report, named) = run(&mut sim, verified);
+    assert!(named, "the counters page is named");
+    assert!(report.is_clean() && report.complete, "{report:#?}");
+}
+
+#[test]
+fn a_crash_as_the_first_open_names_its_counters_page_leaks_no_page() {
+    let seed = 11;
+    let mut sim = Sim::new(seed, Config::default());
+    sim.record();
+    run(&mut sim, |rt| std::mem::forget(open(&rt)));
+    let recording = sim.recording();
+    let flushes = recording.flushes();
+    let from = flushes[flushes.len().saturating_sub(3)];
+    for at in from..=recording.len() {
+        let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
+        let mut sim = Sim::with_files(seed + at as u64, Config::default(), files);
+        run(&mut sim, |rt| open(&rt).close().expect("close"));
+        let (report, named) = run(&mut sim, verified);
+        assert!(named, "crash at {at}: the counters page is named");
+        assert!(
+            report.is_clean() && report.complete,
+            "crash at {at}: {report:#?}"
+        );
+    }
 }

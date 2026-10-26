@@ -6,12 +6,11 @@ use adtb_lang::textual::{Form, PrintError, print};
 use adtb_lang::types::{Base, RelId, Ty};
 
 use crate::exec::{Exceeded, Val};
-use crate::mvcc::Xid;
 use crate::write::{self, Rejection};
 
 pub use crate::exec::Fault;
 
-use super::Position;
+use super::{Position, TxnId};
 
 /// A failure the engine reports to a caller, as the prelude sum `Error` gives it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,7 +25,7 @@ pub enum RetryReason {
     /// `txn` names the caller's aborted transaction; `on` the constructor relation of the
     /// caller's own read or write on the conflicting edge, or `""` when it is not known.
     Serialization {
-        txn: i64,
+        txn: TxnId,
         on: String,
     },
     SafePointTimeout {
@@ -238,7 +237,7 @@ impl Error {
 
     /// Returns the client error of write-path error `e`, met by transaction `txn` of a database
     /// of `schema`.
-    pub(super) fn of_write(schema: &Schema, txn: Xid, e: write::Error) -> Error {
+    pub(super) fn of_write(schema: &Schema, txn: TxnId, e: write::Error) -> Error {
         match e {
             write::Error::Rejected(r) => Error::rejected(rejection(schema, r)),
             write::Error::Fault(fault) => Error::rejected(RejectReason::Faulted { fault }),
@@ -254,7 +253,7 @@ impl Error {
             }),
             write::Error::Serialization(_) => Error::Retry {
                 reason: RetryReason::Serialization {
-                    txn: i64::try_from(txn.0).unwrap_or(i64::MAX),
+                    txn,
                     on: String::new(),
                 },
             },
@@ -343,7 +342,7 @@ impl fmt::Display for RetryReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (name, fields): (&str, &[(&str, &dyn fmt::Debug)]) = match self {
             RetryReason::Serialization { txn, on } => {
-                ("Serialization", &[("txn", txn), ("on", &Txt(on))])
+                ("Serialization", &[("txn", &txn.0), ("on", &Txt(on))])
             }
             RetryReason::SafePointTimeout { waited } => {
                 ("SafePointTimeout", &[("waited", &Dur(*waited))])
@@ -579,7 +578,7 @@ mod tests {
     #[test]
     fn a_broken_checker_guarantee_is_rejected_as_internal() {
         let schema = crate::catalog::engine_schema();
-        let got = Error::of_write(&schema, Xid(7), write::Error::Internal("a set".into()));
+        let got = Error::of_write(&schema, TxnId(7), write::Error::Internal("a set".into()));
         assert_eq!(
             Error::Rejected {
                 reason: RejectReason::Internal {
@@ -594,12 +593,12 @@ mod tests {
     fn a_serialization_failure_names_the_callers_transaction() {
         let schema = crate::catalog::engine_schema();
         let f = crate::mvcc::SerializationFailure::new(crate::mvcc::Cause::LaterCommit, Vec::new());
-        let got = Error::of_write(&schema, Xid(7), write::Error::Serialization(f));
+        let got = Error::of_write(&schema, TxnId(7), write::Error::Serialization(f));
         assert!(
             matches!(
                 got,
                 Error::Retry {
-                    reason: RetryReason::Serialization { txn: 7, .. }
+                    reason: RetryReason::Serialization { txn: TxnId(7), .. }
                 }
             ),
             "{got:?}"

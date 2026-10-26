@@ -152,7 +152,7 @@ fn next_is_body(lines: &[&str]) -> bool {
 
 /// The fixpoint round limit of a statement. The step at which a statement exceeds its limits is
 /// free, so a low limit keeps an unbounded `fix` quick.
-const FIX_ROUNDS: usize = 200;
+pub(crate) const FIX_ROUNDS: usize = 200;
 
 struct Run {
     schema: Schema,

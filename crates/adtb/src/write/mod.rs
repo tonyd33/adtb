@@ -19,8 +19,8 @@ use adtb_sys::lock::Lock;
 
 use crate::exec::{self, Budget, Scheduler, StoredHeap, StoredIndex, Val};
 use crate::mvcc::{
-    Access, Limits, Scope, SerialId, SerializationFailure, Serializer, Snapshot, SnapshotId,
-    Transactions, Waits, Xid,
+    Access, Limits, Safety, Scope, SerialId, SerializationFailure, Serializer, Snapshot,
+    SnapshotId, Transactions, Waits, Xid,
 };
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::runtime::Runtime;
@@ -192,19 +192,33 @@ pub struct Failed {
     pub error: Error,
 }
 
-/// A read-write transaction.
+/// A transaction, read-write or read-only.
 #[derive(Debug)]
 pub struct Txn {
-    xid: Xid,
+    /// `None` for a read-only transaction.
+    xid: Option<Xid>,
     sid: SerialId,
     snapshot: Snapshot,
     hold: SnapshotId,
 }
 
 impl Txn {
-    pub fn xid(&self) -> Xid {
+    /// Returns the transaction's id, `None` for a read-only one.
+    pub fn xid(&self) -> Option<Xid> {
         self.xid
     }
+
+    fn writer(&self) -> Result<Xid, Error> {
+        self.xid
+            .ok_or_else(|| Error::Internal("a read-only transaction runs no write".into()))
+    }
+}
+
+/// What bounds the statements of one call, past the database's own bounds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Bounds {
+    /// The rounds a fixpoint may take, else the database's limit.
+    pub fix_rounds: Option<usize>,
 }
 
 /// The heaps and indexes of the relation variables a catalog describes.
@@ -217,8 +231,8 @@ pub struct Bindings {
 /// The relation variables of a schema over their heaps and indexes, and the transactions that
 /// write them.
 ///
-/// Lock order: one index latch, then the serializer, then the sequences. `Transactions`, the
-/// pager and the heaps lock themselves and take none of these.
+/// Lock order: one index latch, then the serializer, then the readers, then the sequences.
+/// `Transactions`, the pager and the heaps lock themselves and take none of these.
 pub struct Database<R: Runtime> {
     rt: R,
     schema: Arc<Schema>,
@@ -239,6 +253,8 @@ pub struct Database<R: Runtime> {
     rels: Rels,
     denials: Vec<check::Denial>,
     sequences: Lock<Sequences>,
+    /// The snapshot of each running read-only transaction, for its safe snapshot marker.
+    readers: Lock<BTreeMap<SerialId, (SnapshotId, Snapshot)>>,
     uuids: AtomicU64,
     budget: Arc<Budget>,
     pool: Option<Arc<Scheduler<R>>>,
@@ -342,6 +358,7 @@ impl<R: Runtime> Database<R> {
             rels,
             denials,
             sequences: Lock::new(sequences),
+            readers: Lock::default(),
             uuids: AtomicU64::new(seed >> 2),
             budget: setup.budget,
             pool: setup.pool,
@@ -355,6 +372,7 @@ impl<R: Runtime> Database<R> {
         &self.pager
     }
 
+    /// Begin a read-write transaction.
     pub fn begin(&self) -> Result<Txn, Error> {
         let xid = self.txns.begin(&self.pager)?;
         let (hold, snapshot, sid) = {
@@ -364,11 +382,59 @@ impl<R: Runtime> Database<R> {
         };
         self.waits.started(xid);
         Ok(Txn {
-            xid,
+            xid: Some(xid),
             sid,
             snapshot,
             hold,
         })
+    }
+
+    /// Begin a read-only transaction. A `deferrable` one waits until its snapshot is safe,
+    /// taking a new snapshot each time one is found unsafe, and then never fails with a
+    /// serialization failure.
+    pub fn begin_read(&self, deferrable: bool) -> Result<Txn, Error> {
+        loop {
+            let tx = {
+                let mut ser = self.ser.lock(&self.rt);
+                let (hold, snapshot) = self.txns.take(Scope::Every)?;
+                let sid = ser.begin(if deferrable {
+                    Access::Deferrable
+                } else {
+                    Access::ReadOnly
+                });
+                self.readers
+                    .lock(&self.rt)
+                    .insert(sid, (hold, snapshot.clone()));
+                self.log_safe(&mut ser);
+                Txn {
+                    xid: None,
+                    sid,
+                    snapshot,
+                    hold,
+                }
+            };
+            if !deferrable {
+                return Ok(tx);
+            }
+            loop {
+                let safety = self.ser.lock(&self.rt).safety(tx.sid);
+                match safety {
+                    Safety::Safe => return Ok(tx),
+                    Safety::Unsafe => break,
+                    Safety::Pending(writers) => self.waits.wait(None, writers[0])?,
+                }
+            }
+            self.abort(tx)?;
+        }
+    }
+
+    /// Log a safe snapshot marker for every read-only transaction `ser` has found safe.
+    fn log_safe(&self, ser: &mut Serializer) {
+        let readers = self.readers.lock(&self.rt);
+        for sid in ser.take_safe() {
+            let (hold, snapshot) = &readers[&sid];
+            self.txns.log_safe_snapshot(&self.pager, *hold, snapshot);
+        }
     }
 
     /// Run term `t` of `terms`, a `Transact`, a write or a query, as one statement of `tx`, each
@@ -385,15 +451,15 @@ impl<R: Runtime> Database<R> {
         params: &[(Var, Val)],
         clock: i64,
     ) -> Result<Outcome, Error> {
-        match self.statements(tx, terms, &[t], params, clock) {
+        match self.statements(tx, terms, &[t], params, clock, Bounds::default()) {
             Ok(mut done) => Ok(done.remove(0)),
             Err(f) => Err(f.error),
         }
     }
 
     /// Run terms `items` of `terms` in order as statements of `tx`, each reading the change sets
-    /// of the ones before it, as [`statement`](Database::statement) runs one. Returns each
-    /// one's outcome.
+    /// of the ones before it and bounded by `bounds`, as [`statement`](Database::statement) runs
+    /// one. Returns each one's outcome.
     ///
     /// On an `Err` that [ends the transaction](Error::ends_transaction), abort `tx`. On any other
     /// `Err` none of the items has an effect and `tx` goes on.
@@ -404,11 +470,16 @@ impl<R: Runtime> Database<R> {
         items: &[Tm],
         params: &[(Var, Val)],
         clock: i64,
+        bounds: Bounds,
     ) -> Result<Vec<Outcome>, Failed> {
+        let options = exec::Options {
+            fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
+            ..self.options
+        };
         let mut ran = Vec::with_capacity(items.len());
         let mut out = Vec::with_capacity(items.len());
         for (item, t) in items.iter().enumerate() {
-            let s = eval::Stmt::new(self, tx, terms, *t, clock);
+            let s = eval::Stmt::new(self, tx, terms, *t, clock, options);
             match s.run(params) {
                 Ok(o) => {
                     out.push(o);
@@ -440,28 +511,34 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Commit `tx`. Returns its commit position once the log is durable past its commit and
-    /// every commit it read.
+    /// every commit it read; for a read-only transaction, the position of the latest commit it
+    /// read, else of the log's durable end.
     pub fn commit(&self, tx: Txn) -> Result<Position, Error> {
         let done = {
             let mut ser = self.ser.lock(&self.rt);
             match ser.precommit(tx.sid) {
                 Err(f) => Err(Error::Serialization(f)),
-                Ok(()) => match self.txns.commit(&self.pager, tx.xid) {
+                Ok(()) => match tx.xid.map(|x| self.txns.commit(&self.pager, x)).transpose() {
                     Err(e) => Err(e.into()),
                     Ok(own) => {
                         ser.committed(tx.sid);
+                        self.log_safe(&mut ser);
+                        self.readers.lock(&self.rt).remove(&tx.sid);
                         let read = self.txns.read_upto(tx.hold);
                         self.txns.release(tx.hold);
-                        Ok((own, read.map_or(own, |r| r.max(own))))
+                        Ok(own.max(read))
                     }
                 },
             }
         };
         match done {
-            Ok((own, wait)) => {
+            Ok(wait) => {
+                let wait = wait.unwrap_or_else(|| self.pager.durable());
                 self.pager.wait_durable(wait);
-                self.waits.ended(tx.xid);
-                Ok(self.pager.position(own))
+                if let Some(x) = tx.xid {
+                    self.waits.ended(x);
+                }
+                Ok(self.pager.position(wait))
             }
             Err(e) => {
                 self.abort(tx)?;
@@ -476,12 +553,16 @@ impl<R: Runtime> Database<R> {
     pub fn abort(&self, tx: Txn) -> Result<(), Error> {
         let aborted = {
             let mut ser = self.ser.lock(&self.rt);
-            let aborted = self.txns.abort(&self.pager, tx.xid);
+            let aborted = tx.xid.map(|x| self.txns.abort(&self.pager, x)).transpose();
             ser.aborted(tx.sid);
+            self.log_safe(&mut ser);
+            self.readers.lock(&self.rt).remove(&tx.sid);
             self.txns.release(tx.hold);
             aborted
         };
-        self.waits.ended(tx.xid);
+        if let Some(x) = tx.xid {
+            self.waits.ended(x);
+        }
         aborted?;
         Ok(())
     }
@@ -517,7 +598,7 @@ impl<R: Runtime> Database<R> {
             pager: self.pager.clone(),
             txns: self.txns.clone(),
             snapshot: tx.snapshot.clone(),
-            reader: Some(tx.xid),
+            reader: tx.xid,
             serial: Some((self.ser.clone(), tx.sid)),
         };
         Arc::new(exec::Store {
@@ -528,7 +609,11 @@ impl<R: Runtime> Database<R> {
         })
     }
 
-    fn call(&self, store: &Arc<exec::Store<R>>) -> Result<exec::Call<R>, Error> {
+    fn call(
+        &self,
+        store: &Arc<exec::Store<R>>,
+        options: exec::Options,
+    ) -> Result<exec::Call<R>, Error> {
         let grant =
             self.budget
                 .admit(self.grant)
@@ -539,7 +624,7 @@ impl<R: Runtime> Database<R> {
             store: store.clone(),
             grant,
             pool: self.pool.clone(),
-            options: self.options,
+            options,
             cancel: Arc::new(AtomicBool::new(false)),
         })
     }

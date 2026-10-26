@@ -19,8 +19,8 @@ pub use adtb_sys::runtime;
 #[cfg(target_os = "linux")]
 pub use api::open;
 pub use api::{
-    AdHocTransaction, CallOptions, Committed, CreateOptions, Database, DynRows, Error, FatalReason,
-    Fault, Limit, Log, OpenError, OpenOptions, Position, RejectReason, RetryReason, TxnCallOptions,
-    TxnOptions,
+    AdHocTransaction, CallOptions, Committed, CreateOptions, Database, Durability, DynRows, Error,
+    FatalReason, Fault, Limit, Log, OpenError, OpenOptions, Position, RejectReason, RetryReason,
+    TxnCallOptions, TxnId, TxnOptions,
 };
 pub use exec::Val as Value;

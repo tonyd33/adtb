@@ -2,8 +2,11 @@
 
 use std::path::{Path, PathBuf};
 
-use adtb::{CallOptions, CreateOptions, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions};
+use adtb::{
+    CallOptions, CreateOptions, Database, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions,
+};
 use adtb_lang::textual::print;
+use adtb_sys::os::{Backend, OsRuntime};
 
 const SHOP: &str = r"module shop
 add module shop
@@ -41,7 +44,7 @@ fn options() -> OpenOptions {
     }
 }
 
-fn names(db: &adtb::Database) -> Vec<String> {
+fn names(db: &Database) -> Vec<String> {
     let mut out = db
         .query_text(
             "from c in customers select c.name",
@@ -74,7 +77,7 @@ fn a_database_written_through_the_api_reopens_with_its_rows() {
             &TxnCallOptions::default(),
         )
         .expect("an insert in a transaction");
-        t.commit().expect("commit");
+        t.commit(None).expect("commit");
         db.close().expect("close");
     }
     assert!(path.is_file());
@@ -130,4 +133,18 @@ fn a_closed_database_holds_no_file_open() {
     assert_eq!(Vec::<PathBuf>::new(), open_under(&dir));
     let db = adtb::open(&path, &log, &OpenOptions::default()).expect("reopen");
     assert_eq!(vec![r#""ann""#], names(&db));
+}
+
+#[test]
+fn a_failed_open_holds_no_file_open() {
+    let dir = scratch("refused");
+    let rt = OsRuntime::new(&dir, Backend::Pool { threads: 2 });
+    let refused = Log::new([SHOP, "module shop\nremove relation missing"]);
+    let got = Database::open_in(rt.clone(), "shop.adt", &refused, &options());
+    assert!(
+        matches!(got, Err(OpenError::MigrationRefused { version: 2, .. })),
+        "{got:?}"
+    );
+    assert_eq!(Vec::<PathBuf>::new(), open_under(&dir));
+    drop(rt);
 }

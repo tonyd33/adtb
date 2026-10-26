@@ -139,7 +139,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 if idle {
                     continue;
                 }
-                let call = self.db.call(&self.store)?;
+                let call = self.db.call(&self.store, self.options)?;
                 match exec::execute(self.db.rt.clone(), program.clone(), call, &params)? {
                     Val::Set(report) => violate(viol, &d.name, report.iter().cloned()),
                     other => {

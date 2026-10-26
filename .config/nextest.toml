@@ -1,11 +1,6 @@
 [profile.default]
 slow-timeout = { period = "30s", terminate-after = 4 }
 
-# Each runs a part of the conformance suite, a child process per file.
-[[profile.default.overrides]]
-filter = "package(adtb-conformance) & binary(engine)"
-slow-timeout = { period = "60s", terminate-after = 5 }
-
 # For iteration: one seed per `support::sweep` sweep, and no crash sweeps.
 [profile.quick]
 default-filter = "not test(/crash/)"

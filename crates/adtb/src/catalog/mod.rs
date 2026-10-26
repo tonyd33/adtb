@@ -34,7 +34,7 @@ pub use oplog::{Hash, version_hash};
 pub use rows::{IndexSpec, Rows, applied, declared, indexed_fields, indexes};
 
 use change::Data;
-use root::Root;
+use root::{NAMING_SEQUENCES, Root};
 
 /// The heap id of the large-value store every heap shares.
 const LARGE: u32 = 1;
@@ -1088,14 +1088,26 @@ impl Catalog {
         (self.sequences != Pid(0)).then_some(self.sequences)
     }
 
+    /// Mark the catalog whose root page is `root` as changing, before the write path allocates
+    /// its page of generated counters, so an open after a crash frees that page until
+    /// [`Catalog::name_sequences`] names it.
+    pub fn naming_sequences<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<(), PageError> {
+        update_root(pager, root, |r| r.changing = NAMING_SEQUENCES)?;
+        Ok(())
+    }
+
     /// Name `pid` as the write path's page of generated counters in the catalog whose root page
-    /// is `root`. Returns once the naming is durable.
+    /// is `root`, and end the change [`Catalog::naming_sequences`] began. Returns once the naming
+    /// is durable.
     pub fn name_sequences<R: Runtime>(
         pager: &Pager<R>,
         root: Pid,
         pid: Pid,
     ) -> Result<(), PageError> {
-        let lsn = update_root(pager, root, |r| r.sequences = pid)?;
+        let lsn = update_root(pager, root, |r| {
+            r.sequences = pid;
+            r.changing = 0;
+        })?;
         pager.wait_durable(lsn);
         Ok(())
     }

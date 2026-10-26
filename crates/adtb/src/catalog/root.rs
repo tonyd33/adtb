@@ -3,6 +3,10 @@ use crate::storage::{HEADER_LEN, Pid};
 /// The format of the catalog's root page.
 pub const FORMAT: u16 = 1;
 
+/// The `changing` of a root page whose catalog is naming its page of generated counters; no
+/// transaction has this id.
+pub const NAMING_SEQUENCES: u64 = u64::MAX;
+
 /// What the catalog's root page names: the structures found before any catalog row is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Root {
@@ -14,7 +18,8 @@ pub struct Root {
     pub roots: (u32, Pid),
     /// No heap has this id or a higher one.
     pub next_heap: u32,
-    /// The transaction of the schema change in progress, 0 when none is.
+    /// The transaction of the schema change in progress, [`NAMING_SEQUENCES`] while the write
+    /// path's page of generated counters is allocated but not named, 0 when neither is.
     pub changing: u64,
     /// The write path's page of generated counters, `Pid(0)` until it has one.
     pub sequences: Pid,

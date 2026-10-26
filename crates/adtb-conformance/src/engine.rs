@@ -3,12 +3,12 @@ use adtb::{
     AdHocTransaction, CallOptions, CreateOptions, Database, DynRows, Error, Log, OpenOptions,
     TxnCallOptions, TxnOptions, Value,
 };
-use adtb_lang::ast::AdhocItem;
+use adtb_lang::ast::{AdhocItem, TxnOption};
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::textual::{self, Form};
 use adtb_lang::types::Ty;
 
-use crate::{Difference, Directive, Kind, Script, differ, modules, repeated};
+use crate::{Difference, Directive, FIX_ROUNDS, Kind, Script, differ, modules, repeated};
 
 const FILE: &str = "conformance.adt";
 
@@ -25,6 +25,7 @@ pub fn run_engine<R: Runtime>(rt: R, script: &Script) -> Vec<Difference> {
     }
     let options = OpenOptions {
         create: Some(CreateOptions::default()),
+        fix_rounds: Some(FIX_ROUNDS),
         ..OpenOptions::default()
     };
     let db = match Database::open_in(rt, FILE, &log, &options) {
@@ -137,14 +138,19 @@ fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Differen
             {
                 return Err(differ(d.line, "a query holds one statement"));
             }
-            let read_only = TxnOptions {
-                read_only: true,
-                ..TxnOptions::default()
+            let got = if deferrable(&d.body) {
+                db.query_text(&d.body, &[], &CallOptions::default())
+            } else {
+                let read_only = TxnOptions {
+                    read_only: true,
+                    ..TxnOptions::default()
+                };
+                let mut t = begin(db, d.line, &read_only)?;
+                let got = t.query_text(&d.body, &[], &TxnCallOptions::default());
+                t.rollback()
+                    .map_err(|e| differ(d.line, format!("the rollback fails: {}", shown(&e))))?;
+                got
             };
-            let mut t = begin(db, d.line, &read_only)?;
-            let got = t.query_text(&d.body, &[], &TxnCallOptions::default());
-            t.rollback()
-                .map_err(|e| differ(d.line, format!("the rollback fails: {}", shown(&e))))?;
             let mut results =
                 got.map_err(|e| differ(d.line, format!("refused with {}", shown(&e))))?;
             match results.len() {
@@ -166,6 +172,19 @@ fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Differen
             }
         }
     }
+}
+
+/// Returns whether `body` is one `read_only deferrable` block, which writes nothing and does not
+/// run inside an interactive transaction.
+fn deferrable(body: &str) -> bool {
+    parse_adhoc(body, Options::default())
+        .ok()
+        .is_ok_and(|items| match items.as_slice() {
+            [AdhocItem::Transact(b)] => b
+                .options
+                .contains(&TxnOption::ReadOnly { deferrable: true }),
+            _ => false,
+        })
 }
 
 fn begin<'a, R: Runtime>(

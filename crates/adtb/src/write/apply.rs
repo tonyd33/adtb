@@ -53,7 +53,7 @@ impl<R: Runtime> Stmt<'_, R> {
     /// Returns the TID of the version of `rel`'s row with key `key` the statement read, once no
     /// other running transaction writes it.
     fn writable(&self, rel: RelId, key: &Val) -> Result<(u32, Tid), Error> {
-        let xid = self.tx.xid;
+        let xid = self.tx.writer()?;
         loop {
             let (c, tid, _) = self
                 .by_key(rel, key)?
@@ -104,7 +104,10 @@ impl<R: Runtime> Stmt<'_, R> {
                     .push((*c, v.clone()));
             }
         }
-        let xid = self.tx.xid;
+        if ops.is_empty() {
+            return Ok(());
+        }
+        let xid = self.tx.writer()?;
         let pager = &self.db.pager;
         let mut written = Vec::new();
         for ((rel, key), (old, news)) in &ops {
@@ -216,7 +219,7 @@ impl<R: Runtime> Stmt<'_, R> {
         let pager = &self.db.pager;
         for u in self.undo.borrow_mut().drain(..).rev() {
             match u {
-                Undo::Kill(heap, tid) => self.heap(heap).delete(pager, tid, self.tx.xid.0)?,
+                Undo::Kill(heap, tid) => self.heap(heap).delete(pager, tid, self.tx.writer()?.0)?,
                 Undo::Restore(heap, tid) => self.heap(heap).restore(pager, tid)?,
             }
         }
@@ -232,7 +235,7 @@ impl<R: Runtime> Stmt<'_, R> {
         groups: &mut BTreeMap<(RelId, IndexId, Vec<u8>), BTreeMap<Val, Val>>,
     ) -> Result<(), Error> {
         let r = self.rel(w.rel);
-        let xid = self.tx.xid;
+        let xid = self.tx.writer()?;
         let pager = &self.db.pager;
         for (id, ix) in &r.indexes {
             let Some(at) = ix.at.get(&w.ctor) else {

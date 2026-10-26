@@ -106,6 +106,7 @@ pub struct Stmt<'a, R: Runtime> {
     fresh: Occurrences,
     root: Tm,
     clock: i64,
+    pub options: exec::Options,
     pub store: Arc<exec::Store<R>>,
     drawn: RefCell<BTreeMap<(Arena, Val), Val>>,
     load: Cell<Option<i64>>,
@@ -114,7 +115,14 @@ pub struct Stmt<'a, R: Runtime> {
 }
 
 impl<'a, R: Runtime> Stmt<'a, R> {
-    pub fn new(db: &'a Database<R>, tx: &'a Txn, terms: &Terms, root: Tm, clock: i64) -> Self {
+    pub fn new(
+        db: &'a Database<R>,
+        tx: &'a Txn,
+        terms: &Terms,
+        root: Tm,
+        clock: i64,
+        options: exec::Options,
+    ) -> Self {
         let mut terms = terms.clone();
         let mut fresh = Occurrences::new();
         let root = fresh::rewrite(&mut terms, root, &[], &mut fresh);
@@ -125,6 +133,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             fresh,
             root,
             clock,
+            options,
             store: db.store(tx),
             drawn: RefCell::default(),
             load: Cell::default(),
@@ -142,6 +151,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             fresh: Occurrences::new(),
             root: Tm(0),
             clock: 0,
+            options: db.options,
             store: db.store(tx),
             drawn: RefCell::default(),
             load: Cell::default(),
@@ -212,7 +222,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 x
             }
         };
-        let call = self.db.call(&self.store)?;
+        let call = self.db.call(&self.store, self.options)?;
         let bound: Vec<(Var, Val)> = env.iter().map(|(v, x)| (*v, x.clone())).collect();
         let v = exec::execute(self.db.rt.clone(), program, call, &bound)?;
         let ty = self.arena(a).ty(t).clone();

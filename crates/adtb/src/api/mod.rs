@@ -5,7 +5,7 @@ mod text;
 mod txn;
 
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adtb_lang::check::Program;
 use adtb_lang::evolve::Logged;
@@ -16,10 +16,10 @@ use adtb_lang::types::Ty;
 
 use crate::catalog::{self, Catalog};
 use crate::exec::{self, Budget, Val};
-use crate::mvcc::{Limits, Xid};
+use crate::mvcc::Limits;
 use crate::runtime::Runtime;
 use crate::storage::{self, LATCHES_PER_THREAD, Pager};
-use crate::write::{self, Bindings, Setup, Txn};
+use crate::write::{self, Bindings, Bounds, Setup, Txn};
 
 pub use error::{Error, FatalReason, Fault, Limit, OpenError, RejectReason, RetryReason};
 pub use text::DynRows;
@@ -64,6 +64,8 @@ pub struct OpenOptions {
     pub pool_bytes: Option<u64>,
     pub query_memory_bytes: Option<u64>,
     pub workers: Option<usize>,
+    /// The rounds a fixpoint may take before its statement is rejected for its limit.
+    pub fix_rounds: Option<usize>,
 }
 
 impl OpenOptions {
@@ -101,10 +103,33 @@ impl From<storage::Position> for Position {
     }
 }
 
+/// The id of a transaction: a random positive 63-bit integer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TxnId(pub i64);
+
+/// The durability a commit acknowledgement promises.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Durability {
+    #[default]
+    Local,
+    Quorum,
+}
+
 /// The options of a call outside an interactive transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct CallOptions {}
+pub struct CallOptions {
+    pub deadline: Option<SystemTime>,
+    pub limit: Option<Duration>,
+    pub priority: Option<u8>,
+    pub durability: Durability,
+    /// Read no snapshot older than this commit position.
+    pub after: Option<Position>,
+    /// The most reruns of text that writes on a serialization failure, in place of its
+    /// `retry n` or the retry limit.
+    pub retry: Option<u32>,
+    /// The rounds a fixpoint of the call may take, else the limit the database was opened with.
+    pub fix_rounds: Option<usize>,
+}
 
 /// A handle on an open database file. Clones share one engine, which closes when the last
 /// handle is dropped.
@@ -122,6 +147,7 @@ impl<R: Runtime> Clone for Database<R> {
 }
 
 struct Engine<R: Runtime> {
+    rt: R,
     schema: Arc<Schema>,
     program: Program,
     pager: Arc<Pager<R>>,
@@ -168,27 +194,38 @@ impl<R: Runtime> Database<R> {
     /// Run ad hoc text as one transaction, each free name of it bound by `params` to a value of
     /// the given type. Returns the rows of each item that yields a result, in item order.
     ///
-    /// Text that writes is rerun on a serialization failure up to its `retry n`, else up to the
-    /// retry limit.
+    /// Text that only reads runs as a read-only transaction, waiting for a safe snapshot when a
+    /// block of it is `read_only deferrable`. Text that writes is rerun on a serialization
+    /// failure up to `opts.retry`, else its `retry n`, else the retry limit.
+    ///
+    /// A database without replicas commits at `local` whatever level the options name.
     pub fn query_text(
         &self,
         text: &str,
         params: &[(&str, Ty, Val)],
-        _opts: &CallOptions,
+        opts: &CallOptions,
     ) -> Result<Vec<DynRows>, Error> {
-        let e = &*self.engine;
-        let p = Prepared::new(&e.schema, &e.program, text, params)?;
-        if p.deferrable {
-            return Err(Error::invalid(
-                "a read_only deferrable block does not run in this engine yet",
-            ));
+        if opts.deadline.is_some() || opts.limit.is_some() {
+            return Err(unsupported("a deadline or statement limit on a call"));
         }
-        let reruns = p.retry.unwrap_or(RETRY_LIMIT);
+        let e = &*self.engine;
+        e.reads_after(opts.after)?;
+        let p = Prepared::new(&e.schema, &e.program, text, params)?;
+        let bounds = Bounds {
+            fix_rounds: opts.fix_rounds,
+        };
+        if !p.writes {
+            let id = e.txn_id();
+            let tx = e.begin_read(id, p.deferrable)?;
+            return e.run(id, tx, &p, bounds);
+        }
+        let reruns = opts.retry.map_or(p.retry.unwrap_or(RETRY_LIMIT), u64::from);
         let mut ran = 0;
         loop {
-            let tx = e.begin()?;
-            match e.run(tx, &p) {
-                Err(err) if err.is_serialization() && p.writes && ran < reruns => ran += 1,
+            let id = e.txn_id();
+            let tx = e.begin(id)?;
+            match e.run(id, tx, &p, bounds) {
+                Err(err) if err.is_serialization() && ran < reruns => ran += 1,
                 done => return done,
             }
         }
@@ -237,19 +274,20 @@ pub fn open(
     Database::open(path, log, options)
 }
 
+fn unsupported(what: &str) -> Error {
+    Error::invalid(format!("{what} does not run in this engine yet"))
+}
+
 fn corrupt(detail: impl std::fmt::Debug) -> OpenError {
     OpenError::Corrupt {
         detail: format!("{detail:?}"),
     }
 }
 
-fn refused(version: u64, detail: String) -> OpenError {
+fn refused(version: u64, reason: RejectReason) -> OpenError {
     OpenError::MigrationRefused {
         version,
-        reason: Error::rejected(RejectReason::SchemaRefused {
-            operator: String::new(),
-            detail,
-        }),
+        reason: Error::rejected(reason),
     }
 }
 
@@ -271,6 +309,18 @@ impl<R: Runtime> Engine<R> {
             Err(storage::OpenError::NotFound) => return Err(OpenError::NotFound),
             Err(e) => return Err(corrupt(e)),
         };
+        let pager = Arc::new(pager);
+        Engine::on(rt, pager.clone(), log, options).inspect_err(|_| pager.close())
+    }
+
+    /// Open the catalog of the recovered `pager`, apply the migrations of `log` beyond the
+    /// file's own, and bind the write path to it.
+    fn on(
+        rt: R,
+        pager: Arc<Pager<R>>,
+        log: &Log,
+        options: &OpenOptions,
+    ) -> Result<Engine<R>, OpenError> {
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
         migrate(&mut catalog, &pager, &txns, log)?;
         let (schema, program) = catalog
@@ -282,15 +332,18 @@ impl<R: Runtime> Engine<R> {
         let root = catalog.root();
         let sequences = catalog.sequences();
         let (heaps, indexes) = catalog.bindings();
-        let pager = Arc::new(pager);
         let schema = Arc::new(schema);
         let query_memory = options
             .query_memory_bytes
             .map_or(DEFAULT_QUERY_MEMORY, |b| {
                 usize::try_from(b).unwrap_or(usize::MAX)
             });
+        let defaults = exec::Options::default();
+        if sequences.is_none() {
+            Catalog::naming_sequences(&pager, root).map_err(corrupt)?;
+        }
         let db = write::Database::new(
-            rt,
+            rt.clone(),
             Setup {
                 schema: schema.clone(),
                 normal: Arc::new(normal),
@@ -301,7 +354,10 @@ impl<R: Runtime> Engine<R> {
                 budget: Budget::new(query_memory),
                 grant: STATEMENT_GRANT.min(query_memory),
                 pool: None,
-                options: exec::Options::default(),
+                options: exec::Options {
+                    fix_rounds: options.fix_rounds.unwrap_or(defaults.fix_rounds),
+                    ..defaults
+                },
                 limits: Limits::default(),
                 sequences,
             },
@@ -311,6 +367,7 @@ impl<R: Runtime> Engine<R> {
             Catalog::name_sequences(&pager, root, db.sequences_root()).map_err(corrupt)?;
         }
         Ok(Engine {
+            rt,
             schema,
             program,
             pager,
@@ -320,45 +377,68 @@ impl<R: Runtime> Engine<R> {
         })
     }
 
-    fn write_error(&self, txn: Xid, e: write::Error) -> Error {
+    /// Returns a new transaction id.
+    fn txn_id(&self) -> TxnId {
+        TxnId(i64::try_from((self.rt.next_u64() >> 1).max(1)).expect("63 bits fit an i64"))
+    }
+
+    fn write_error(&self, txn: TxnId, e: write::Error) -> Error {
         Error::of_write(&self.schema, txn, e)
     }
 
-    fn begin(&self) -> Result<Txn, Error> {
-        self.db.begin().map_err(|e| self.write_error(Xid(0), e))
+    fn begin(&self, id: TxnId) -> Result<Txn, Error> {
+        self.db.begin().map_err(|e| self.write_error(id, e))
     }
 
-    fn abort(&self, tx: Txn) -> Result<(), Error> {
-        let xid = tx.xid();
-        self.db.abort(tx).map_err(|e| self.write_error(xid, e))
+    fn begin_read(&self, id: TxnId, deferrable: bool) -> Result<Txn, Error> {
+        self.db
+            .begin_read(deferrable)
+            .map_err(|e| self.write_error(id, e))
+    }
+
+    fn abort(&self, id: TxnId, tx: Txn) -> Result<(), Error> {
+        self.db.abort(tx).map_err(|e| self.write_error(id, e))
+    }
+
+    /// Refuses a commit position past every commit of the database's history.
+    fn reads_after(&self, after: Option<Position>) -> Result<(), Error> {
+        let end = Position::from(self.pager.position(self.pager.durable()));
+        match after {
+            Some(position) if position > end => {
+                Err(Error::rejected(RejectReason::PositionNotOnHistory {
+                    position,
+                }))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Returns the instant every `generate clock` of a statement starting now takes.
     fn clock(&self) -> i64 {
-        let micros = |d: std::time::Duration| i64::try_from(d.as_micros()).unwrap_or(i64::MAX);
+        let micros = |d: Duration| i64::try_from(d.as_micros()).unwrap_or(i64::MAX);
         match self.pager.wall().duration_since(UNIX_EPOCH) {
             Ok(d) => micros(d),
             Err(e) => -micros(e.duration()),
         }
     }
 
-    /// Run `p` in `tx` and commit it, or abort it on any failure.
-    fn run(&self, tx: Txn, p: &Prepared) -> Result<Vec<DynRows>, Error> {
-        let xid = tx.xid();
+    /// Run `p` in `tx`, the transaction `id`, bounded by `bounds`, and commit it, or abort it on
+    /// any failure.
+    fn run(&self, id: TxnId, tx: Txn, p: &Prepared, bounds: Bounds) -> Result<Vec<DynRows>, Error> {
         let ran = self
             .db
-            .statements(&tx, p.terms(), p.items(), p.params(), self.clock());
+            .statements(&tx, p.terms(), p.items(), p.params(), self.clock(), bounds);
         let rows = match ran {
             Ok(outcomes) => p.results(&self.schema, outcomes),
-            Err(f) => Err(self.write_error(xid, f.error)),
+            Err(f) => Err(self.write_error(id, f.error)),
         };
         match rows {
             Ok(rows) => {
-                self.db.commit(tx).map_err(|e| self.write_error(xid, e))?;
+                self.db.commit(tx).map_err(|e| self.write_error(id, e))?;
                 Ok(rows)
             }
             Err(e) => {
-                self.abort(tx)?;
+                self.abort(id, tx)?;
                 Err(e)
             }
         }
@@ -385,7 +465,14 @@ fn migrate<R: Runtime>(
     for text in log.migrations.iter().skip(stored.len()) {
         let version = catalog.source().version + 1;
         catalog.migrate(pager, txns, text).map_err(|e| match e {
-            catalog::Error::Refused(why) => refused(version, why.join("\n")),
+            catalog::Error::Refused(why) => refused(
+                version,
+                RejectReason::SchemaRefused {
+                    operator: String::new(),
+                    detail: why.join("\n"),
+                },
+            ),
+            catalog::Error::Internal(what) => refused(version, RejectReason::Internal { what }),
             other => corrupt(other),
         })?;
     }

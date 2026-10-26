@@ -102,7 +102,7 @@ impl<'db, O: Write, E: Write> Session<'db, O, E> {
                 .db
                 .begin(&TxnOptions::default())
                 .map(|t| self.txn = Some(t)),
-            (Command::Commit, Some(t)) => t.commit().map(drop),
+            (Command::Commit, Some(t)) => t.commit(None).map(drop),
             (Command::Rollback, Some(t)) => t.rollback(),
         };
         if let Err(e) = done {
