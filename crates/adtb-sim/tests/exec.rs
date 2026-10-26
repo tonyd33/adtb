@@ -6,7 +6,7 @@ mod plan {
 #[allow(dead_code)]
 mod fixture;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -408,13 +408,13 @@ struct Db {
     heaps: BTreeMap<adtb::plan::HeapId, Heap>,
     rows: BTreeMap<adtb::plan::HeapId, Vec<FieldType>>,
     indexes: BTreeMap<adtb::plan::IndexId, (StoredIndex, Vec<String>, RelId)>,
-    txns: Arc<Lock<Transactions>>,
+    txns: Arc<Transactions<SimRuntime>>,
 }
 
 impl Db {
     fn create(rt: &SimRuntime, f: &Fixture) -> Db {
         let pager = Arc::new(Pager::create(rt.clone(), &options()).expect("create"));
-        let txns = Arc::new(Lock::new(Transactions::create(&pager).expect("commit log")));
+        let txns = Arc::new(Transactions::create(rt.clone(), &pager).expect("commit log"));
         let mut heaps = BTreeMap::new();
         let mut rows = BTreeMap::new();
         let mut indexes = BTreeMap::new();
@@ -557,20 +557,20 @@ impl Db {
         }
     }
 
-    fn begin(&self, rt: &SimRuntime) -> u64 {
-        self.txns.lock(rt).begin(&self.pager).expect("begin").0
+    fn begin(&self) -> u64 {
+        self.txns.begin(&self.pager).expect("begin").0
     }
 
-    fn commit(&self, rt: &SimRuntime, x: u64) {
-        self.txns
-            .lock(rt)
+    fn commit(&self, x: u64) {
+        let lsn = self
+            .txns
             .commit(&self.pager, adtb::mvcc::Xid(x))
             .expect("commit");
+        self.pager.wait_durable(lsn);
     }
 
-    fn abort(&self, rt: &SimRuntime, x: u64) {
+    fn abort(&self, x: u64) {
         self.txns
-            .lock(rt)
             .abort(&self.pager, adtb::mvcc::Xid(x))
             .expect("abort");
     }
@@ -582,18 +582,9 @@ impl Db {
         let mut db = Db::create(rt, f);
         let mut all: Vec<(RelId, u32, Value)> = Vec::new();
         for ((r, c), rows) in &f.db {
-            let names: BTreeSet<String> =
-                Db::row_ty(f, *r, *c).into_iter().map(|(n, _)| n).collect();
-            for v in rows {
-                let Value::Ctor(_, fs) = v else {
-                    unreachable!()
-                };
-                if fs.iter().map(|(n, _)| n.clone()).collect::<BTreeSet<_>>() == names {
-                    all.push((*r, *c, v.clone()));
-                }
-            }
+            all.extend(rows.iter().map(|v| (*r, *c, v.clone())));
         }
-        let a = db.begin(rt);
+        let a = db.begin();
         let mut decoys = Vec::new();
         for (r, c, row) in &all {
             match mutated(&f.schema, *r, row) {
@@ -606,25 +597,25 @@ impl Db {
                 }
             }
         }
-        db.commit(rt, a);
-        let e = db.begin(rt);
+        db.commit(a);
+        let e = db.begin();
         for (r, c, tid, row) in &decoys {
             db.replace(f, *r, *c, *tid, row, e);
         }
-        db.commit(rt, e);
+        db.commit(e);
         let copy = |r: RelId, row: &Value| mutated(&f.schema, r, row).unwrap_or(row.clone());
-        let b = db.begin(rt);
+        let b = db.begin();
         for (r, c, row) in &all {
             db.put(f, *r, *c, &copy(*r, row), b);
         }
-        db.abort(rt, b);
-        let cx = db.begin(rt);
+        db.abort(b);
+        let cx = db.begin();
         let mut gone = Vec::new();
         for (r, c, row) in &all {
             gone.push((*r, *c, db.put(f, *r, *c, &copy(*r, row), cx)));
         }
-        db.commit(rt, cx);
-        let d = db.begin(rt);
+        db.commit(cx);
+        let d = db.begin();
         for (r, c, tid) in gone {
             let h = f.catalog.heap(r, c);
             db.heaps
@@ -633,8 +624,8 @@ impl Db {
                 .delete(&db.pager, tid, d)
                 .expect("delete");
         }
-        db.commit(rt, d);
-        let running = db.begin(rt);
+        db.commit(d);
+        let running = db.begin();
         for (r, c, row) in &all {
             db.put(f, *r, *c, &copy(*r, row), running);
         }
@@ -642,7 +633,7 @@ impl Db {
     }
 
     fn store(self, rt: &SimRuntime) -> Arc<Store<SimRuntime>> {
-        let (_, snapshot) = self.txns.lock(rt).take(Scope::Every);
+        let (_, snapshot) = self.txns.take(Scope::Every).expect("a snapshot");
         let mut serializer = Serializer::new(Limits::default());
         let serial = serializer.begin(Access::ReadOnly);
         let reads = AtSnapshot {

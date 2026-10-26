@@ -47,7 +47,7 @@ pub trait Reads: Send + Sync {
 pub struct AtSnapshot<R: Runtime> {
     pub rt: R,
     pub pager: Arc<Pager<R>>,
-    pub txns: Arc<Lock<Transactions>>,
+    pub txns: Arc<Transactions<R>>,
     pub snapshot: Snapshot,
     pub reader: Option<Xid>,
     pub serial: Option<(Arc<Lock<Serializer>>, SerialId)>,
@@ -65,7 +65,6 @@ impl<R: Runtime> std::fmt::Debug for AtSnapshot<R> {
 impl<R: Runtime> Reads for AtSnapshot<R> {
     fn sees(&self, h: &Header) -> Result<bool, PageError> {
         self.txns
-            .lock(&self.rt)
             .sees(&self.pager, &self.snapshot, self.reader, h.xmin, h.xmax)
     }
 
