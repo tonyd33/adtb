@@ -212,6 +212,10 @@ pub struct AggregateDef {
     pub name: String,
     pub module: ModuleId,
     pub decl: ast::AggregateDecl,
+    pub params: Vec<(String, Ty)>,
+    pub result: Ty,
+    /// The state record, its fields sorted by name.
+    pub state: Ty,
     pub file: FileId,
 }
 
@@ -855,6 +859,9 @@ impl Builder<'_> {
                             name: a.name.text.clone(),
                             module,
                             decl: a.clone(),
+                            params: Vec::new(),
+                            result: Ty::Unit,
+                            state: Ty::Unit,
                             file,
                         });
                     }
@@ -879,6 +886,9 @@ impl Builder<'_> {
         }
         for &(file, module, id, f) in &fn_decls {
             self.fn_signature(file, module, id, f);
+        }
+        for i in 0..self.schema.aggregates.len() {
+            self.aggregate_signature(i);
         }
         for (file, module, s) in stores {
             self.store(file, module, s);
@@ -1514,6 +1524,50 @@ impl Builder<'_> {
                 "a relation's element type has no free type parameters",
             );
         }
+    }
+
+    fn aggregate_signature(&mut self, i: usize) {
+        let (file, module, a) = {
+            let d = &self.schema.aggregates[i];
+            (d.file, d.module, d.decl.clone())
+        };
+        let scope = TypeScope {
+            module,
+            params: &[],
+            mode: TypeMode::Signature,
+        };
+        let mut params: Vec<(String, Ty)> = Vec::new();
+        for p in &a.params {
+            if params.iter().any(|(n, _)| *n == p.name.text) {
+                self.err(
+                    file,
+                    p.name.span,
+                    format!("parameter `{}` is declared twice", p.name.text),
+                );
+            }
+            let ty = self.resolve_type(file, &scope, &p.ty).unwrap_or(Ty::Unit);
+            params.push((p.name.text.clone(), ty));
+        }
+        let result = self
+            .resolve_type(file, &scope, &a.result)
+            .unwrap_or(Ty::Unit);
+        let mut fields: Vec<(String, Ty)> = Vec::new();
+        for f in &a.state {
+            if fields.iter().any(|(n, _)| *n == f.name.text) {
+                self.err(
+                    file,
+                    f.name.span,
+                    format!("state field `{}` is declared twice", f.name.text),
+                );
+            }
+            let ty = self.resolve_type(file, &scope, &f.ty).unwrap_or(Ty::Unit);
+            fields.push((f.name.text.clone(), ty));
+        }
+        fields.sort_by(|x, y| x.0.cmp(&y.0));
+        let def = &mut self.schema.aggregates[i];
+        def.params = params;
+        def.result = result;
+        def.state = Ty::Record(fields);
     }
 
     fn fn_signature(&mut self, file: FileId, module: ModuleId, id: FnId, f: &ast::FnDecl) {

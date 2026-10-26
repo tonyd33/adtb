@@ -98,14 +98,16 @@ within an operator in this order:
 | `add relation` | the relation variable; then, for its clauses in written order, an index for the key and for each `unique` and `index`, a default for the key's `generate` and for each `default`, and a computed field for each `computed` |
 | `add set` | the named set |
 | `add constructor` | the constructor, then its fields in declared order |
-| `split`, `merge`, `nest`, `unnest` | the new constructors in listed order (for `unnest`, in the order of the field's sum), each followed by its fields in declared order; then an index for each `unique` and `index` clause of a split, in written order |
+| `split`, `merge`, `nest`, `unnest` | the new constructors in listed order (for `unnest`, in the order of the field's sum), each followed by its fields in declared order; then, for each relation variable of the type in id order, an index for each unique and index the operator re-scopes or a split's `unique` and `index` clauses add, in the order of the relation variable's clauses after the operator |
 | `add field` | the field |
+| `move field` | for a move down, a field for each listed constructor but the first, in declaration order |
 | `add unique`, `add index`, `add interval index` | the index |
 | `rekey` | an index for the new key |
 | `add default` | the default |
 | `define fn`, `define aggregate` | the function |
 | `add constraint`, `add check` | the constraint |
-| `store f` | the relation variable of the view, then an index for its key and for each `unique` and `index` clause, in written order |
+| `store f` | the relation variable of the view, then a type for the view's element type and its one constructor, then that constructor's fields when the element type is a record, in the order the function's result type writes them; then an index for its key and for each `unique` and `index` clause, in written order |
+| `install` | what each declaration of the package creates, as the `add` operator that declares it, in package order |
 | `add computed` | the computed field |
 | `revert` | what each of its inverse operators creates, as that operator |
 
@@ -119,9 +121,20 @@ add constructor Identity.Apple { sub: Text }
 -- Apple 1052; field sub 2013
 ```
 
+An operator records the id of the first object it creates (§2.4); the
+ids of the others follow from this order and the operator's `decl`
+term.
+
 Renaming, redefining, enabling, disabling or deprecating an object
 leaves its id unchanged. A constructor re-added by an inverse is a new
-constructor and takes a new id. Ids below 1024 are those of the fixed
+constructor and takes a new id. A unique or index that a split, merge,
+nest or unnest re-scopes, one whose clause names a constructor the
+operator replaces, is a new index with a new id, and the old index is
+dropped. A field that `move field` moves keeps its id: moved up, the
+header field has the id of the constructor's field; moved down, the
+field of the first listed constructor in declaration order has the
+header field's id, and the field of each other listed constructor is
+new. Ids below 1024 are those of the fixed
 table of §4.6. A constructor's id is its wire tag and its stored tag.
 An id belongs to the declared constructor of a type and is shared by
 every instantiation of a parametric sum. Key values of every catalog
@@ -133,6 +146,8 @@ records that in the row (a constructor, its fields, named sets and the
 other objects get `dropped: Some { value: v }` with
 the schema version `v` that dropped them). A key held in a `sys::` row or in a stored plan
 therefore always resolves.
+
+Rulings: spec/ids/operator-ids/implied, spec/ids/rescoped-index/new, spec/ids/moved-field/keeps, spec/ids/view-type/new-type, spec/ids/package/as-operators
 
 ### 1.3 Volatile relations
 
@@ -1100,7 +1115,22 @@ have no fixed id, nor has a `Principal` the schema declares
 ([security.md](security.md#11-the-principal-sum)). Ids 287 to 290, 306
 to 309 and from 460 to 1023 are unassigned.
 
-Rulings: project/spec/errors/closed-sum, project/spec/errors/new-kind/coarse, project/spec/errors/new-kind/pinned, spec/evolution/concurrent-apply/refuse
+Fields and indexes have fixed ids in their own spaces. In edition
+2026-10 and catalog version 1, the engine's fields take ids from 0:
+for each type of the tables above in id order, its header fields in
+declared order, then each constructor's fields, constructors in listed
+order and fields in declared order. The prelude's fields take ids 0
+to 85 (`Option.Some.value` 0, `Result.Ok.value` 1,
+`Result.Err.error` 2), and the fields of the `catalog` and `sys`
+modules continue to 551. The engine's indexes take ids from 0: for
+each relation variable of the tables above in id order, the index of
+its key, then an index for each `unique` clause in written order;
+they end at 60. A field or index that a later edition or catalog
+version adds takes the next id of its space not used in any earlier
+one. The engine declares no named sets, constraints, defaults or
+computed fields.
+
+Rulings: project/spec/errors/closed-sum, project/spec/errors/new-kind/coarse, project/spec/errors/new-kind/pinned, spec/evolution/concurrent-apply/refuse, spec/ids/engine-objects/fixed-table
 
 ## 5. Statistics
 

@@ -88,6 +88,20 @@ pub enum Prim {
     /// `T.parse(t)`, at the node's type `Option T`.
     Parse,
     Print,
+    /// The rows of the files a path names, at the node's type `Set T`; `pins` is the version the
+    /// files' constructor names are read at, the caller's when `None`.
+    ReadFile {
+        format: FileFormat,
+        pins: Option<u64>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FileFormat {
+    Csv,
+    Ndjson,
+    Parquet,
+    Arrow,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

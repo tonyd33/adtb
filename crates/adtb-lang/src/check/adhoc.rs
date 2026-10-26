@@ -6,11 +6,7 @@ use crate::ast::{
 
 impl Checker<'_> {
     /// Checks one ad hoc item; returns its term when it is a query, a write or a `transact` block.
-    pub(super) fn adhoc_item(
-        &mut self,
-        item: &AdhocItem,
-        temps: &mut Vec<String>,
-    ) -> R<Option<Tm>> {
+    pub(super) fn adhoc_item(&mut self, item: &AdhocItem) -> R<Option<Tm>> {
         match item {
             AdhocItem::Expr(e) => self.statement(e).map(|o| Some(o.tm)),
             AdhocItem::Write(w) => self.write(w).map(Some),
@@ -25,7 +21,7 @@ impl Checker<'_> {
             }
             AdhocItem::Role(r, _) => self.role_stmt(r).map(|()| None),
             AdhocItem::Peer(PeerStmt::Map { .. } | PeerStmt::Unmap { .. }, _) => Ok(None),
-            AdhocItem::Temp(t) => self.temp_decl(t, temps).map(|()| None),
+            AdhocItem::Temp(_) => Ok(None),
         }
     }
 
@@ -106,11 +102,26 @@ impl Checker<'_> {
         }
     }
 
-    fn temp_decl(&mut self, t: &TempDecl, temps: &mut Vec<String>) -> R<()> {
-        if temps.contains(&t.name.text) {
+    /// Returns the row type and key fields of a temp relation, `taken` holding the names of the
+    /// temp relations declared before it.
+    fn temp_decl(&self, t: &TempDecl, taken: &[String]) -> R<(Ty, Vec<String>)> {
+        if taken.contains(&t.name.text) {
             return Err(diag(
                 t.name.span,
                 format!("temp relation `{}` is declared twice", t.name.text),
+            ));
+        }
+        let q = ast::QName {
+            module: None,
+            name: t.name.clone(),
+        };
+        if let Ok(ValueDef::Relation(_)) = self.lookup_value(&q) {
+            return Err(diag(
+                t.name.span,
+                format!(
+                    "`{}` is a relation variable the text reads; a temp relation takes another name",
+                    t.name.text
+                ),
             ));
         }
         let ty = self.resolve_type(&t.ty)?;
@@ -140,45 +151,53 @@ impl Checker<'_> {
                 ));
             }
         };
-        if let Some((fields, generate)) = &t.key {
-            let mut seen: Vec<&str> = Vec::new();
-            for f in fields {
-                if !candidates.contains(&f.text) {
-                    return Err(diag(
-                        f.span,
-                        format!(
-                            "key field `{}` is not a field of {}, or not one every constructor has",
-                            f.text,
-                            self.show(&ty)
-                        ),
-                    ));
-                }
-                if seen.contains(&f.text.as_str()) {
-                    return Err(diag(
-                        f.span,
-                        format!("key field `{}` is named twice", f.text),
-                    ));
-                }
-                seen.push(&f.text);
-            }
-            if let Some(g) = generate {
-                if !matches!(g.text.as_str(), "sequence" | "uuidv7") {
-                    return Err(diag(
-                        g.span,
-                        format!(
-                            "`{}` is not a key generator; use `sequence` or `uuidv7`",
-                            g.text
-                        ),
-                    ));
-                }
+        let Some((fields, generate)) = &t.key else {
+            if let Ty::Data { def, .. } = &ty
+                && self.schema.ty(*def).ctors().len() > 1
+            {
                 return Err(diag(
-                    g.span,
-                    "a generated key is one field of type `Key` of its own relation, and no type names a temp relation",
+                    t.span,
+                    "a temp relation of a sum of several constructors keyed by its whole row is not checked yet",
                 ));
             }
+            return Ok((ty, candidates));
+        };
+        let mut seen: Vec<&str> = Vec::new();
+        for f in fields {
+            if !candidates.contains(&f.text) {
+                return Err(diag(
+                    f.span,
+                    format!(
+                        "key field `{}` is not a field of {}, or not one every constructor has",
+                        f.text,
+                        self.show(&ty)
+                    ),
+                ));
+            }
+            if seen.contains(&f.text.as_str()) {
+                return Err(diag(
+                    f.span,
+                    format!("key field `{}` is named twice", f.text),
+                ));
+            }
+            seen.push(&f.text);
         }
-        temps.push(t.name.text.clone());
-        Ok(())
+        if let Some(g) = generate {
+            if !matches!(g.text.as_str(), "sequence" | "uuidv7") {
+                return Err(diag(
+                    g.span,
+                    format!(
+                        "`{}` is not a key generator; use `sequence` or `uuidv7`",
+                        g.text
+                    ),
+                ));
+            }
+            return Err(diag(
+                g.span,
+                "a generated key is one field of type `Key` of its own relation, and no type names a temp relation",
+            ));
+        }
+        Ok((ty, fields.iter().map(|f| f.text.clone()).collect()))
     }
 
     /// Returns the type of a key of the engine's relation `module::name`.
@@ -406,4 +425,118 @@ impl Checker<'_> {
         }
         self.add(Kind::Case { scrutinee: t, arms }, to.clone())
     }
+}
+
+/// Returns `schema` with the temp relations of `items` added, and the relation each temp
+/// declaration declares, in order, or `None` when the text declares none. A declaration that is
+/// refused adds its diagnostic to `diags` and declares nothing.
+pub(super) fn temp_relations(
+    schema: &Schema,
+    items: &[AdhocItem],
+    diags: &mut Vec<Diag>,
+) -> Option<(Schema, Vec<Option<RelId>>)> {
+    let decls: Vec<&TempDecl> = items
+        .iter()
+        .filter_map(|i| match i {
+            AdhocItem::Temp(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    if decls.is_empty() {
+        return None;
+    }
+    let mut out = schema.clone();
+    let module = match out.module_named(TEMP_MODULE) {
+        Some(m) => m,
+        None => {
+            out.modules.push(crate::schema::ModuleDef {
+                name: TEMP_MODULE.to_string(),
+                engine: false,
+                types: BTreeMap::new(),
+                values: BTreeMap::new(),
+            });
+            ModuleId(out.modules.len() as u32 - 1)
+        }
+    };
+    let mut taken: Vec<String> = out.module(module).values.keys().cloned().collect();
+    let mut declared = Vec::new();
+    for t in decls {
+        let c = Checker::new(schema, Visible::all(schema), Context::Adhoc);
+        let (ty, key) = match c.temp_decl(t, &taken) {
+            Ok(x) => x,
+            Err(d) => {
+                diags.push(d);
+                declared.push(None);
+                continue;
+            }
+        };
+        let (elem, elem_def) = match ty {
+            Ty::Record(fs) => {
+                let def = TypeId(out.types.len() as u32);
+                let fields = fs
+                    .into_iter()
+                    .map(|(name, ty)| crate::schema::FieldDef {
+                        name,
+                        ty,
+                        on_delete: crate::schema::OnDelete::Restrict,
+                        span: t.ty.span,
+                    })
+                    .collect();
+                out.types.push(crate::schema::TypeDef {
+                    name: t.name.text.clone(),
+                    module,
+                    params: Vec::new(),
+                    ordered: false,
+                    kind: TypeDefKind::Sum {
+                        header: Vec::new(),
+                        ctors: vec![crate::schema::CtorDef {
+                            name: t.name.text.clone(),
+                            fields,
+                            span: t.ty.span,
+                        }],
+                        record: true,
+                    },
+                    file: FileId(0),
+                    span: t.span,
+                });
+                let elem = Ty::Data {
+                    def,
+                    args: Vec::new(),
+                    ctors: None,
+                };
+                (elem, def)
+            }
+            Ty::Data { def, args, .. } => (
+                Ty::Data {
+                    def,
+                    args,
+                    ctors: None,
+                },
+                def,
+            ),
+            _ => unreachable!("a temp relation holds a declared sum or a record"),
+        };
+        let rel = RelId(out.relations.len() as u32);
+        out.relations.push(crate::schema::RelationDef {
+            name: t.name.text.clone(),
+            module,
+            elem,
+            elem_def,
+            key,
+            generate: None,
+            indexes: Vec::new(),
+            defaults: Vec::new(),
+            computed: Vec::new(),
+            sets: Vec::new(),
+            volatile: false,
+            file: FileId(0),
+            span: t.span,
+        });
+        out.modules[module.0 as usize]
+            .values
+            .insert(t.name.text.clone(), ValueDef::Relation(rel));
+        taken.push(t.name.text.clone());
+        declared.push(Some(rel));
+    }
+    Some((out, declared))
 }

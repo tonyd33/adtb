@@ -823,3 +823,41 @@ fn adhoc_anonymous_constructors_are_numbered_in_their_joined_sum() {
             .unwrap()
     );
 }
+
+#[test]
+fn a_user_defined_aggregate_folds_its_inputs() {
+    let mut f = Fixture::new(
+        r#"
+aggregate mean (x: F64) -> F64 =
+  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
+  step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
+  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
+  finish st -> st.s / st.n
+type Sale = { id: Key sales, region: Text, total: F64 }
+relation sales : Sale key id generate sequence
+"#,
+    );
+    f.rows(
+        "sales",
+        r#"[Sale { id: sales.key(1), region: "eu", total: 1.0 },
+            Sale { id: sales.key(2), region: "eu", total: 2.0 },
+            Sale { id: sales.key(3), region: "us", total: 4.0 }]"#,
+    );
+    let got = f.value(
+        "from o in sales group o by o.region into g
+         select { region: g.key, mean: mean(x.total for x in g) }",
+    );
+    let want = set([
+        rec(vec![("region", text("eu")), ("mean", Value::F64(1.5))]),
+        rec(vec![("region", text("us")), ("mean", Value::F64(4.0))]),
+    ]);
+    assert_eq!(want, got);
+    assert_eq!(
+        Value::some(Value::F64(7.0 / 3.0)),
+        f.value("mean(o.total for o in sales)")
+    );
+    assert_eq!(
+        Value::none(),
+        f.value("mean(o.total for o in sales where o.total > 10.0)")
+    );
+}

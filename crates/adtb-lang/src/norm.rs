@@ -22,6 +22,17 @@ pub struct NormalProgram {
     pub computed: BTreeMap<(RelId, usize), (Var, Tm)>,
     /// Each index field, its value a body over the row's variable.
     pub index_fields: BTreeMap<(RelId, usize, usize), (Var, IndexField)>,
+    /// Each user-defined aggregate's parts; `None` for one that did not check or whose parts are not first-order.
+    pub aggregates: Vec<Option<NormalAggregate>>,
+}
+
+/// The normal forms of a user-defined aggregate's parts, each over its variables.
+#[derive(Debug)]
+pub struct NormalAggregate {
+    pub init: Tm,
+    pub step: (Vec<Var>, Tm),
+    pub merge: (Vec<Var>, Tm),
+    pub finish: (Vec<Var>, Tm),
 }
 
 /// The normal forms of the items of ad hoc text.
@@ -51,6 +62,7 @@ pub enum Root {
     Default(RelId, usize),
     Computed(RelId, usize),
     IndexField(RelId, usize, usize),
+    Aggregate(usize),
     Item(usize),
     Query,
 }
@@ -110,6 +122,27 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
         let path = f.path.clone();
         index_fields.insert((r, i, j), (x, IndexField { value, path }));
     }
+    let mut aggregates = Vec::with_capacity(p.aggregates.len());
+    for (i, a) in p.aggregates.iter().enumerate() {
+        let Some(a) = a else {
+            aggregates.push(None);
+            continue;
+        };
+        let root = Root::Aggregate(i);
+        let init = at(root, n.root(a.init))?;
+        let step = at(root, n.function(MAIN, a.step, 2))?;
+        let merge = at(root, n.function(MAIN, a.merge, 2))?;
+        let finish = at(root, n.function(MAIN, a.finish, 1))?;
+        aggregates.push(match (step, merge, finish) {
+            (Some(step), Some(merge), Some(finish)) => Some(NormalAggregate {
+                init,
+                step,
+                merge,
+                finish,
+            }),
+            _ => None,
+        });
+    }
     Ok(NormalProgram {
         terms: n.out,
         functions,
@@ -120,6 +153,7 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
         defaults,
         computed,
         index_fields,
+        aggregates,
     })
 }
 

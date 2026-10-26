@@ -144,6 +144,10 @@ pub const PRELUDE_FUNCTIONS: &[&str] = &[
     "inserted",
     "deleted",
     "prior",
+    "read_csv",
+    "read_ndjson",
+    "read_parquet",
+    "read_arrow",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

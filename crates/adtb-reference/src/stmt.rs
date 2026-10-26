@@ -1,12 +1,14 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::kernel::{Conflict, Kind, PathStep, Terms, Tm, Var};
+use adtb_lang::kernel::{Conflict, Kind, PathStep, Prim, Terms, Tm, Var};
 use adtb_lang::schema::Generator;
 use adtb_lang::types::{RelId, Ty};
 
 use crate::eval::bool_of;
-use crate::eval::{Abort, Arena, Change, Database, Env, Here, Interpreter, R, Run, case_arm};
+use crate::eval::{
+    Abort, Arena, Change, Database, Env, Here, Interpreter, R, Run, case_arm, not_yet,
+};
 use crate::textual::print;
 use crate::value::Value;
 
@@ -440,6 +442,7 @@ impl Run<'_, '_> {
         let source = match terms.kind(rows) {
             Kind::For(x, src, body) => match terms.kind(*src) {
                 Kind::Rel(r, s) => Some((*x, *r, s.clone(), *body)),
+                Kind::Prim(Prim::ReadFile { .. }, _) => return not_yet("a file scan"),
                 _ => None,
             },
             _ => None,

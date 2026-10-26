@@ -82,6 +82,10 @@ fn root_site(schema: &Schema, root: Root) -> (FileId, Span) {
             let d = schema.relation(r);
             (d.file, d.indexes[i].fields[j].span)
         }
+        Root::Aggregate(i) => {
+            let d = &schema.aggregates[i];
+            (d.file, d.decl.span)
+        }
         Root::Item(_) | Root::Query => unreachable!("a schema has no ad hoc items or queries"),
     }
 }
@@ -134,6 +138,13 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
             .iter()
             .map(|(&(r, i, j), (_, f))| (Root::IndexField(r, i, j), f.value)),
     );
+    for (i, a) in n.aggregates.iter().enumerate() {
+        if let Some(a) = a {
+            for t in [a.init, a.step.1, a.merge.1, a.finish.1] {
+                roots.push((Root::Aggregate(i), t));
+            }
+        }
+    }
     roots
         .into_iter()
         .filter_map(|(root, t)| {
@@ -149,7 +160,9 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
 fn volatile_free(schema: &Schema, terms: &Terms, root: Root, t: Tm) -> Result<(), String> {
     let what = match root {
         Root::Function(f) if schema.function(f).stored.is_some() => "a stored view",
-        Root::Function(_) | Root::Domain(_) | Root::Item(_) | Root::Query => return Ok(()),
+        Root::Function(_) | Root::Aggregate(_) | Root::Domain(_) | Root::Item(_) | Root::Query => {
+            return Ok(());
+        }
         Root::Constraint(_) => "a constraint",
         Root::Check(_) => "a row check",
         Root::Retag(_) => "a delete action",

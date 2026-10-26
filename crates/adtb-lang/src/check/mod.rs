@@ -54,6 +54,18 @@ pub struct Program {
     pub computed: BTreeMap<(RelId, usize), (Var, Tm)>,
     /// Each index field, its value a `Lam` over the row, keyed by relation, index position and field position.
     pub index_fields: BTreeMap<(RelId, usize, usize), IndexField>,
+    /// Each user-defined aggregate's parts, by position among `Schema::aggregates`.
+    pub aggregates: Vec<Option<AggregateTerms>>,
+}
+
+/// The parts of a user-defined aggregate: `init` a state, `step` a `Lam` over the state and an
+/// input, `merge` a `Lam` over two states, `finish` a `Lam` over a state.
+#[derive(Clone, Copy, Debug)]
+pub struct AggregateTerms {
+    pub init: Tm,
+    pub step: Tm,
+    pub merge: Tm,
+    pub finish: Tm,
 }
 
 /// A schema object a body names, as [`schema_refs`] reports it at the span that names it.
@@ -138,6 +150,8 @@ pub struct Checker<'a> {
     carry: Option<(Var, TypeId)>,
     /// The locals that stand for a field of a row, which a bare field name in an index or check binds.
     row_fields: BTreeMap<Var, (TypeId, Option<CtorSet>, String)>,
+    /// The temp relations of ad hoc text not yet declared at the item being checked.
+    hidden: BTreeSet<RelId>,
 }
 
 impl std::fmt::Debug for Checker<'_> {
@@ -171,6 +185,7 @@ impl<'a> Checker<'a> {
             coverage: true,
             carry: None,
             row_fields: BTreeMap::new(),
+            hidden: BTreeSet::new(),
         }
     }
 
@@ -271,6 +286,11 @@ impl<'a> Checker<'a> {
 
     fn lookup_value(&self, name: &ast::QName) -> Result<ValueDef, String> {
         let v = crate::resolve::lookup_value(self.schema, &self.vis, name);
+        if let Ok(ValueDef::Relation(r)) = v
+            && self.hidden.contains(&r)
+        {
+            return Err(format!("no `{}` in scope", name.name.text));
+        }
         match v {
             Ok(ValueDef::Relation(r)) => self.note(name.name.span, Ref::Relation(r)),
             Ok(ValueDef::Function(f)) => self.note(name.name.span, Ref::Function(f)),
@@ -472,6 +492,7 @@ fn bodies(
         defaults: BTreeMap::new(),
         computed: BTreeMap::new(),
         index_fields: BTreeMap::new(),
+        aggregates: vec![None; schema.aggregates.len()],
     };
     let mut diags = Vec::new();
     let mut fn_rows = vec![None; schema.functions.len()];
@@ -523,6 +544,22 @@ fn bodies(
         );
         fn_rows[id.0 as usize] = rows;
         program.functions[id.0 as usize] = tm;
+    }
+    for (i, def) in schema.aggregates.iter().enumerate() {
+        let mut parts = None;
+        run(
+            def.module,
+            Context::Function,
+            def.file,
+            &mut terms,
+            &fn_rows,
+            &mut |c| {
+                let p = c.aggregate_decl(def)?;
+                parts = Some(p);
+                Ok(p.init)
+            },
+        );
+        program.aggregates[i] = parts;
     }
     for con in &schema.constraints {
         if let Some(tm) = run(
@@ -734,7 +771,20 @@ pub struct Adhoc {
     pub terms: Terms,
     pub items: Vec<Tm>,
     pub params: BTreeMap<String, Var>,
+    /// The schema the terms were checked against when the text declares temp relations: the given
+    /// schema with each temp relation appended to its relations in module [`TEMP_MODULE`].
+    pub temps: Option<Schema>,
 }
+
+impl Adhoc {
+    /// Returns the schema the terms name declarations of, `given` being the one the text was checked against.
+    pub fn schema<'a>(&'a self, given: &'a Schema) -> &'a Schema {
+        self.temps.as_ref().unwrap_or(given)
+    }
+}
+
+/// The module that holds the temp relations of ad hoc text; no module can take its name.
+pub const TEMP_MODULE: &str = "temp";
 
 /// Type checks ad hoc text, its free names typed by `params`, against `program`, the checked `schema`.
 pub fn check_adhoc(
@@ -743,16 +793,26 @@ pub fn check_adhoc(
     items: &[ast::AdhocItem],
     params: &BTreeMap<String, Ty>,
 ) -> Result<Adhoc, Vec<Diag>> {
-    let mut c = Checker::new(schema, Visible::all(schema), Context::Adhoc);
+    let mut diags = Vec::new();
+    let temps = adhoc::temp_relations(schema, items, &mut diags);
+    let checked = temps.as_ref().map_or(schema, |(s, _)| s);
+    let mut c = Checker::new(checked, Visible::all(checked), Context::Adhoc);
     for (name, ty) in params {
         let v = c.terms.var(name, ty.clone());
         c.params.insert(name.clone(), (v, ty.clone()));
     }
+    let declared: Vec<Option<RelId>> = temps.as_ref().map_or(Vec::new(), |(_, d)| d.clone());
+    c.hidden = declared.iter().flatten().copied().collect();
+    let mut declared = declared.into_iter();
     let mut out = Vec::new();
-    let mut diags = Vec::new();
-    let mut temps = Vec::new();
     for item in items {
-        match c.adhoc_item(item, &mut temps) {
+        if let ast::AdhocItem::Temp(_) = item {
+            if let Some(Some(r)) = declared.next() {
+                c.hidden.remove(&r);
+            }
+            continue;
+        }
+        match c.adhoc_item(item) {
             Ok(Some(tm)) => out.push(tm),
             Ok(None) => {}
             Err(d) => diags.push(d),
@@ -765,7 +825,9 @@ pub fn check_adhoc(
         params: c.params.iter().map(|(n, (v, _))| (n.clone(), *v)).collect(),
         terms: c.terms,
         items: out,
+        temps: temps.map(|(s, _)| s),
     };
+    let schema = adhoc.schema(schema);
     let spans: Vec<Span> = items
         .iter()
         .filter_map(|i| match i {
@@ -868,6 +930,42 @@ impl Checker<'_> {
             .rows
             .filter(|_| matches!(def.result, Ty::Set(_) | Ty::NonEmpty(_)));
         Ok((self.lams(vars, out.tm, def.result.clone()), rows))
+    }
+
+    fn aggregate_decl(&mut self, def: &crate::schema::AggregateDef) -> R<AggregateTerms> {
+        let a = &def.decl;
+        let [(_, input)] = def.params.as_slice() else {
+            return Err(diag(
+                a.span,
+                "an aggregate of other than one parameter is not checked yet",
+            ));
+        };
+        let state = &def.state;
+        let init = self.check(&a.init, state)?.tm;
+        let (s, x, e) = &a.step;
+        let step = self.lam_over(&[(s, state), (x, input)], e, state)?;
+        let (l, r, e) = &a.merge;
+        let merge = self.lam_over(&[(l, state), (r, state)], e, state)?;
+        let (f, e) = &a.finish;
+        let finish = self.lam_over(&[(f, state)], e, &def.result)?;
+        Ok(AggregateTerms {
+            init,
+            step,
+            merge,
+            finish,
+        })
+    }
+
+    /// Checks `body` against `ty` with `binds` in scope; returns it as a `Lam` over them.
+    fn lam_over(&mut self, binds: &[(&ast::Ident, &Ty)], body: &ast::Expr, ty: &Ty) -> R<Tm> {
+        self.scope.push();
+        let vars: Vec<Var> = binds
+            .iter()
+            .map(|(x, t)| self.bind(&x.text, (*t).clone(), None))
+            .collect();
+        let out = self.check(body, ty);
+        self.scope.pop();
+        Ok(self.lams(vars, out?.tm, ty.clone()))
     }
 
     /// Checks a top-level query of ad hoc text, where `order by` is allowed.

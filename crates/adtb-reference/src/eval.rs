@@ -385,6 +385,30 @@ impl Run<'_, '_> {
         args.into_iter().try_fold(f, |g, a| self.apply(g, a))
     }
 
+    /// Folds the inputs `ms` of user-defined aggregate `i` from its `init` with its `step`, then
+    /// finishes the state; `None` over no input when `ty`, the result type, is an `Option` of the
+    /// declared result.
+    fn user_aggregate(&self, i: u32, ms: Vec<Value>, ty: &Ty) -> R<Value> {
+        let def = &self.it.schema.aggregates[i as usize];
+        let parts = self.it.program.aggregates[i as usize].expect("a checked aggregate");
+        let direct = *ty == def.result;
+        if ms.is_empty() && !direct {
+            return Ok(Value::none());
+        }
+        let h = Here {
+            arena: Arena::Program,
+            targs: Rc::from(Vec::new()),
+        };
+        let mut state = self.eval(&h, parts.init, &Env::default())?;
+        let step = self.eval(&h, parts.step, &Env::default())?;
+        for m in ms {
+            state = self.apply_all(step.clone(), vec![state, m])?;
+        }
+        let finish = self.eval(&h, parts.finish, &Env::default())?;
+        let v = self.apply(finish, state)?;
+        Ok(if direct { v } else { Value::some(v) })
+    }
+
     fn call(&self, f: FnId, targs: Rc<[Ty]>, args: Vec<Value>) -> R<Value> {
         let Some(tm) = self.it.program.functions[f.0 as usize] else {
             return not_yet(&format!(
@@ -566,7 +590,10 @@ impl Run<'_, '_> {
                 for v in a {
                     ms.push(self.eval(h, *body, &env.bind(*var, v))?);
                 }
-                aggregate(*op, ms, &self.ty(h, t), &self.ty(h, *body))
+                match op {
+                    Agg::User(i) => self.user_aggregate(*i, ms, &self.ty(h, t)),
+                    _ => aggregate(*op, ms, &self.ty(h, t), &self.ty(h, *body)),
+                }
             }
             Kind::Group { var, source, by } => {
                 let mut groups: BTreeMap<Value, BTreeSet<Value>> = BTreeMap::new();
@@ -780,7 +807,7 @@ fn aggregate(op: Agg, ms: Vec<Value>, ty: &Ty, body: &Ty) -> R<Value> {
             };
             Ok(wrap(v))
         }
-        Agg::User(_) => not_yet("user-defined aggregates"),
+        Agg::User(_) => unreachable!("a user-defined aggregate folds with its own terms"),
     }
 }
 

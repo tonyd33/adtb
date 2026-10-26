@@ -30,8 +30,8 @@ Postconditions:
 - `Err(Abort::Limit)`: a `fix` took more steps than its limit; the
   statement is rejected with `StatementLimit`.
 - `Err(Abort::NotYet(form))`: the term holds a form the interpreter
-  does not evaluate yet: `at`, a Wasm or host function, or a
-  user-defined aggregate.
+  does not evaluate yet: `at`, a Wasm or host function, or a file
+  scan.
 
 `caller` denotes the value given by `with_caller`. In a constraint
 body, `inserted`, `deleted` and `prior` read the transition given by

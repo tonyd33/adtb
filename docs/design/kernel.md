@@ -15,7 +15,7 @@ terms and share nothing else.
 
 | Entry point | Returns |
 | --- | --- |
-| `check_schema(schema)` | `Program`: one arena holding the term of every function, constraint, check, newtype domain, default, computed field, index field and retag delete action (§4.6) of the schema |
+| `check_schema(schema)` | `Program`: one arena holding the term of every function, constraint, check, newtype domain, default, computed field, index field, retag delete action (§4.6) and user-defined aggregate of the schema |
 | `check_adhoc(schema, program, items, params)` | `Adhoc`: an arena with one term per query, write and `transact` statement, in the order of the items, and the variable of each ad hoc parameter; commands, grants, revokes and role, peer and temp relation statements are checked and have no term |
 | `check_query(schema, program, module, q)` | `Query`: an arena with the term of one registered query |
 | `check_txn(schema, program, module, t)` | `Txn`: an arena with the term of one registered transaction |
@@ -29,6 +29,11 @@ Postconditions on a `Program`:
   violations.
 - `domains[N]` is the predicate of newtype `N` over its `self`
   variable, at `N`'s base type.
+- `aggregates[a]` holds the parts of `schema.aggregates[a]`, `None`
+  only when they did not check: `init`, a state; `step`, a `Lam` over
+  a state and then an input; `merge`, a `Lam` over two states;
+  `finish`, a `Lam` over a state, at the declared result type. A state
+  is the `Record` of the declared state fields.
 - `index_fields[(r, i, k)]` is the `k`-th field of `r`'s `i`-th index:
   `value`, a `Lam` over a row of `r` in the index's scope, and `path`.
   For an element that is a path through a constructor of a value-level
@@ -42,6 +47,20 @@ Postconditions on a `Program`:
   existing row or the proposed one. `value` is evaluated only at such a row,
   and is a `Case` per constructor step whose other arms are
   `Unreachable`.
+
+Postconditions on an `Adhoc`:
+
+- When the text declares temp relations, `Adhoc.temps` is the schema
+  its terms name declarations of: `schema` with one `RelationDef` per
+  temp relation appended to `schema.relations`, in declaration order,
+  in a module named `temp`, which no schema module can be named. A
+  temp relation of an anonymous record type has a record `TypeDef` of
+  its own, named after the relation and appended to `schema.types`.
+  `Adhoc::schema(schema)` returns the schema to read; a consumer reads
+  every declaration a term names from it. A temp relation has no
+  catalog id. Checking the next text of the same interactive
+  transaction against `Adhoc::schema(schema)` keeps the earlier
+  texts' temp relations in scope.
 
 A term is a `Tm`, an index into its arena's `nodes`; each node has a
 `kind` and a `ty`. A `Call` names a function by `FnId`, and the
@@ -147,7 +166,7 @@ caller's, before reading a type that may hold one.
 | `EmptySet`, `Singleton(e)`, `Union(a, b)` | `τ` is a set type; elements are subtypes of its element type |
 | `For(x, src, b)` | `ty(src)` is a set of `ty(x)`; `τ = ty(b)`, a set |
 | `IsEmpty(e)`, `Exists(e)` | `ty(e)` is a set; `τ = Bool` |
-| `Agg { op, var, source, body }` | `ty(source)` is a set, `Set⁺` when the range is nonempty (a single generator over a group, with no filter); `τ` is `I64` for `count` and `ty(body)` for `sum`; for `min`, `max` and `avg` it is `ty(body)` exactly when the range is nonempty, else `Option ty(body)` |
+| `Agg { op, var, source, body }` | `ty(source)` is a set, `Set⁺` when the range is nonempty (a single generator over a group, with no filter); `τ` is `I64` for `count` and `ty(body)` for `sum`; for `min`, `max` and `avg` it is `ty(body)` exactly when the range is nonempty, else `Option ty(body)`; for `User(a)`, `ty(body)` is the type of the aggregate's one parameter and `τ` its declared result type exactly when the range is nonempty, else `Option` of it |
 | `Group { var, source, by }` | `τ = Set { key: ty(by), rows: Set⁺ ty(var) }` |
 | `Top { count, keys, var, source }` | `ty(count) = I64`; each key is over `var`, ordered, `true` for `desc`; `τ = ty(source)` |
 | `Present { var, source, keys, take, after }` | the final result of an ad hoc statement or a registered query body, nested nowhere else; `take : I64`; `after : Option K` for one key of type `K`, or an `Option` of a record with one field per key, whose fields in name order match the keys in order; `τ = ty(source)`, delivered as a sequence |
@@ -205,7 +224,7 @@ from. Each form below is stated against that desugaring.
 | `Delete(r, e)` | `e : Set T`, `T` a row type of `r` | `{ del(r, v) \| v ∈ e ∩ D(r) }` | `delete r (for x in R do if p then {x} else {})`; `delete x` is `Delete(r, {x})`, `delete x where p` is `Delete(r, if p then {x} else {})` |
 | `Replace(r, e, f)` | `e : Set T` of rows of `r`; `f = Lam(x, n)`, `f : T -> T_r`; this `Lam` remains in a normal form (§7) | for each `v ∈ e`: `KeyChanged` if `key_r(f v) ≠ key_r(v)`; nothing if `f v = v` or `v ∉ D(r)`; `rep(r, v, f v)` otherwise | `for x in R do if p then replace r x e° else skip`, with `e` the filtered rows and `f` the completed new value `e°` |
 | `Upsert { rel, rows, on, old, new, otherwise, single }` | `rows : Set T`, filled; `on` is `Key` or `Unique(i)`, `i` an index of `rel` with `unique`; `old : T_rel` restricted to the constructor set of `on` (every constructor for `Key`); `new : T`; `otherwise : Change` | for each `n ∈ rows`, `O` = the rows `o` of `rel.S` in `D` whose `on` values equal `n`'s: `ins(rel, n)` if `O` is empty, else the effects of `otherwise` with `old ↦ o`, `new ↦ n`, for each `o ∈ O` | the `let! ξ_V … for new in ξ_V do … if empty(ξ_O) then insert … else for old in ξ_O do w` of §10.3 |
-| `Rejects { into, insert }` | `insert` is an `Insert` or `Upsert` whose rows are `For(x, Rel(r₀, S), body)`; `into` holds `RejectedRow` | evaluates `body` per record `p` of the source: rows of records that compute are the inner form's rows; a record whose computation reaches `Reject(m)` or does not convert contributes `ins(into, { load: ℓ, line, source, raw, reason: m })` instead; `ℓ` is one fresh value per statement | `insert r (for x in e₀ do e) rejects into j` (§6.7) |
+| `Rejects { into, insert }` | `insert` is an `Insert` or `Upsert` whose rows are `For(x, src, body)` with `src` a `Rel(r₀, S)` or a `Prim(ReadFile, [path])`; `into` holds `RejectedRow` | evaluates `body` per record `p` of the source: rows of records that compute are the inner form's rows; a record whose computation reaches `Reject(m)` or does not convert contributes `ins(into, { load: ℓ, line, source, raw, reason: m })` instead; `ℓ` is one fresh value per statement | `insert r (for x in e₀ do e) rejects into j` (§6.7) |
 | `Par(ws)` | each `w : Change` | the union of the effects of every `w`; order chooses neither the change set nor which abort is the outcome | `w₁ ∥ … ∥ wₙ` |
 | `Fail(t)` | `t : Text` | rejects the statement with `UserError(t)`; not a fault | `fail e` |
 | `Reject(t)` | `t : Text`, any type; only inside the rows of an `Insert` or `Upsert` | the record being computed is rejected with message `t`; without an enclosing `Rejects` the statement fails with `BadInput` | `reject e` |
@@ -305,6 +324,7 @@ Arguments are listed in `args` order and evaluated left to right.
 | `AddPeriod`, `Zoned` | the operand, a `Period` or a zone name, an `Overflow` | the result, or its `Option` for `Reject` |
 | `InZone`, `ToInstant` | as [../spec/prelude.md §6.4](../spec/prelude.md#64-zones) | as there |
 | `Span`, `Start`, `End`, `Overlaps`, `Covers` | as [../spec/prelude.md §2.8](../spec/prelude.md#28-span); `Covers`'s second argument is a span or a point, told apart by its type | as there |
+| `ReadFile { format, pins }` | the path, a `Text` | `Set T`, `T` the declared row type; constructor names in the files are read at schema version `pins`, or at the caller's when `None` ([../spec/interop.md §3](../spec/interop.md#3-file-scans)) |
 
 ## 6. The schema a term refers to
 
@@ -329,9 +349,11 @@ A term names declarations by id; a consumer reads them from the
 - `Schema::ids` holds the catalog id of each object
   ([../spec/catalog.md §1.2](../spec/catalog.md#12-identity-of-catalog-objects)):
   every object of a user module has one, and the engine's types,
-  constructors and relation variables have their fixed ids
-  ([../spec/catalog.md §4.6](../spec/catalog.md#46-constructor-ids-of-engine-defined-sums));
-  the engine's other objects have none. A schema `schema::build`
+  constructors, relation variables, fields and indexes have their
+  fixed ids
+  ([../spec/catalog.md §4.6](../spec/catalog.md#46-constructor-ids-of-engine-defined-sums)).
+  A stored view's row type, its constructor and its fields have ids in
+  `view_types`, `view_ctors` and `view_fields`, by the view's function. A schema `schema::build`
   returns numbers its user objects as one migration declaring its
   files' declarations in order would; one `Source::schema` returns
   carries the ids of its log ([schema-change.md §4](schema-change.md#4-the-schema-transition)).
@@ -358,13 +380,15 @@ against `schema` and `p`.
 
 Each result is a new arena. `NormalProgram` holds the normal form of
 every constraint, check, newtype domain, default, computed field, index
-field and retag value of the schema, and of every function whose
+field, retag value and user-defined aggregate part of the schema, and of every function whose
 parameters and result are first-order, over that function's parameter
 variables. A function that takes or returns a function has no normal
 form of its own, and neither has a Wasm or host function. A computed
 field is a body over its `self` variable; an index field's `value` and
 a retag value are each a body over the row's variable, and an index
-field keeps its `path`. `NormalQuery` is a
+field keeps its `path`. An aggregate's `step`, `merge` and `finish`
+are each a body over their variables, `None` for the aggregate when
+one of its parts is not first-order. `NormalQuery` is a
 registered query's or transaction's body over its parameter variables;
 one with no parameters has one variable of type `()`. `Error` is never
 returned for a body the checker accepted.

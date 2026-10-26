@@ -77,7 +77,15 @@ impl<'s> Totality<'s> {
         use Prim::*;
         match p {
             Add | Sub | Mul | Div => !is_float(result),
-            Rem | DecimalDiv | Rescale | ParseUuid | Zoned | InZone | Span | AddPeriod => true,
+            Rem
+            | DecimalDiv
+            | Rescale
+            | ParseUuid
+            | Zoned
+            | InZone
+            | Span
+            | AddPeriod
+            | ReadFile { .. } => true,
             Neg => !matches!(result, Ty::Base(Base::Decimal(_) | Base::F32 | Base::F64)),
             Abs => !matches!(result, Ty::Base(Base::Decimal(_) | Base::F32 | Base::F64)),
             Convert { checked: true } => false,

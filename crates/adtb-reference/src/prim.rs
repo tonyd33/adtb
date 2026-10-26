@@ -315,6 +315,7 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
             .ok_or(Abort::Fault(Fault::InvalidText)),
         Prim::ToText => Ok(Text(textual::to_text(it.schema, &v[0], &tys[0]))),
         Prim::Print => Ok(Text(textual::print(it.schema, &v[0], &tys[0]))),
+        Prim::ReadFile { .. } => crate::eval::not_yet("a file scan"),
         Prim::Parse => Ok(
             match textual::parse(it.schema, text(&v[0]), option_arg(ty)) {
                 Ok(x) => Value::some(x),

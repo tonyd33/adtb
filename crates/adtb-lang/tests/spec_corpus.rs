@@ -606,16 +606,47 @@ fn render_in(src: &Source, entries: &[Entry], b: Option<&Block>, d: &FileDiag) -
     }
 }
 
-/// Type checks block `b` against the running schema `part`.
-fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<String>> {
-    let items = parse_example(&b.text, Options { elisions: true })
-        .ok()
-        .map_err(|ds| {
-            vec![format!(
-                "{}:{}: does not parse: {}",
-                b.file, b.line, ds[0].message
-            )]
-        })?;
+/// Blocks whose ad hoc text runs in the transaction of an earlier block, by a line of each.
+const CONTINUES: &[(&str, &str, &str)] = &[(
+    "interop.md",
+    "temp relation identity_dupes",
+    "temp relation identity_stage",
+)];
+
+/// The blocks whose items run before those of `b`: the block it continues, and so on.
+fn continued<'a>(blocks: &'a [Block], b: &'a Block) -> Vec<&'a Block> {
+    let mut out = Vec::new();
+    let mut at = b;
+    while let Some((_, _, earlier)) = CONTINUES
+        .iter()
+        .find(|(f, here, _)| *f == at.file && at.text.contains(here))
+    {
+        let prior = running::find(blocks, (at.file.as_str(), earlier));
+        out.insert(0, prior);
+        at = prior;
+    }
+    out
+}
+
+/// Type checks block `b`, after the blocks it continues, against the running schema `part`.
+fn check_block(
+    blocks: &[Block],
+    b: &Block,
+    part: &[Entry],
+    prelude: &[Entry],
+) -> Result<(), Vec<String>> {
+    let mut sources = Vec::new();
+    for bk in continued(blocks, b).into_iter().chain([b]) {
+        let items = parse_example(&bk.text, Options { elisions: true })
+            .ok()
+            .map_err(|ds| {
+                vec![format!(
+                    "{}:{}: does not parse: {}",
+                    bk.file, bk.line, ds[0].message
+                )]
+            })?;
+        sources.push((bk, items));
+    }
     let in_migration = names_a_migration(b);
     let mut entries = part.to_vec();
     for d in context(b) {
@@ -629,7 +660,7 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
     let mut txns: Vec<TxnDecl> = Vec::new();
     let mut migrations: Vec<MigrationFile> = Vec::new();
     let mut errs = Vec::new();
-    let declare = |entries: &mut Vec<Entry>, module: &str, d: Decl| {
+    let declare = |entries: &mut Vec<Entry>, b: &Block, module: &str, d: Decl| {
         let key = decl_key(&d);
         let text = unqualified(&b.text[decl_span(&d).range()]);
         if !prelude.iter().any(|e| e.key == key && e.spelled(&text)) {
@@ -640,7 +671,10 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
         text: m.to_string(),
         span: Span::default(),
     };
-    for item in items {
+    for (bk, item) in sources
+        .into_iter()
+        .flat_map(|(bk, items)| items.into_iter().map(move |i| (bk, i)))
+    {
         match item {
             ExampleItem::Module(m) => module = m.text,
             ExampleItem::Decl(Decl::Store(st)) if !migrations.is_empty() => {
@@ -650,7 +684,7 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
                     kind: OperatorKind::Store(st),
                 });
             }
-            ExampleItem::Decl(d) => declare(&mut entries, &module, d),
+            ExampleItem::Decl(d) => declare(&mut entries, bk, &module, d),
             ExampleItem::Operator(op) => match op.kind {
                 OperatorKind::Grant(g) if !in_migration => adhoc.push(AdhocItem::Grant(g)),
                 OperatorKind::Revoke(r) if !in_migration => adhoc.push(AdhocItem::Revoke(r)),
@@ -666,8 +700,8 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
             ExampleItem::BundleHeader(_) | ExampleItem::Import(Import::Fn(_)) => {}
             ExampleItem::Import(Import::Module(m)) => reads = Some(m.text),
             ExampleItem::BundleItem(i) => match i {
-                BundleItem::Fn(f) => declare(&mut entries, &module, Decl::Fn(f)),
-                BundleItem::Aggregate(a) => declare(&mut entries, &module, Decl::Aggregate(a)),
+                BundleItem::Fn(f) => declare(&mut entries, bk, &module, Decl::Fn(f)),
+                BundleItem::Aggregate(a) => declare(&mut entries, bk, &module, Decl::Aggregate(a)),
                 BundleItem::Query(q) => queries.push(q),
                 BundleItem::Txn(t) => txns.push(t),
                 BundleItem::Feed(_) => {}
@@ -795,7 +829,7 @@ fn spec_examples_check() {
         }
         checked += 1;
         let part = parts.get(b.file.as_str()).unwrap_or(&base);
-        if let Err(es) = check_block(b, part, &prelude) {
+        if let Err(es) = check_block(&blocks, b, part, &prelude) {
             failures.push(format!("{}:{}:\n  {}", b.file, b.line, es.join("\n  ")));
         }
     }

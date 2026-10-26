@@ -2697,3 +2697,93 @@ fn a_declared_type_never_holds_an_anonymous_sum() {
         "declare a sum type for it",
     );
 }
+
+const MEAN: &str = r#"
+aggregate mean (x: F64) -> F64 =
+  state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
+  step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
+  merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
+  finish st -> st.s / st.n
+type Reading = { id: Key readings, at: Text, v: F64 }
+relation readings : Reading key id generate sequence
+"#;
+
+#[test]
+fn user_defined_aggregates_check() {
+    accepts(MEAN);
+    accepts(&format!(
+        "{MEAN}fn avg_all () -> Option F64 = mean(r.v for r in readings)"
+    ));
+    accepts(&format!(
+        "{MEAN}fn per_place () -> Set ({{ at: Text, m: F64 }}) =
+  from r in readings group r by r.at into g select {{ at: g.key, m: mean(x.v for x in g) }}"
+    ));
+    refuses(
+        &format!("{MEAN}fn bad () -> F64 = mean(r.v for r in readings)"),
+        "Option",
+    );
+    refuses(
+        &format!("{MEAN}fn bad () -> Option F64 = mean(r.at for r in readings)"),
+        "F64",
+    );
+    refuses(
+        &format!("{MEAN}fn bad () -> F64 = mean(1.0)"),
+        "is an aggregate",
+    );
+}
+
+#[test]
+fn user_defined_aggregate_parts_are_typed() {
+    refuses(
+        r#"aggregate bad (x: F64) -> F64 =
+  state { s: F64 } init { s: "zero" }
+  step (st, x) -> { s: st.s + x }
+  merge (a, b) -> { s: a.s + b.s }
+  finish st -> st.s"#,
+        "",
+    );
+    refuses(
+        r#"aggregate bad (x: F64) -> F64 =
+  state { s: F64 } init { s: 0.0 }
+  step (st, x) -> { s: st.s + x, n: 1.0 }
+  merge (a, b) -> { s: a.s + b.s }
+  finish st -> st.s"#,
+        "",
+    );
+    refuses(
+        r#"aggregate bad (x: F64) -> Text =
+  state { s: F64 } init { s: 0.0 }
+  step (st, x) -> { s: st.s + x }
+  merge (a, b) -> { s: a.s + b.s }
+  finish st -> st.s"#,
+        "Text",
+    );
+    refuses(
+        r#"aggregate bad (x: F64) -> F64 =
+  state { s: F64, s: F64 } init { s: 0.0 }
+  step (st, x) -> { s: st.s + x }
+  merge (a, b) -> { s: a.s + b.s }
+  finish st -> st.s"#,
+        "declared twice",
+    );
+}
+
+#[test]
+fn file_scans_occur_only_in_ad_hoc_text_and_load_sources() {
+    refuses(
+        "fn from_file () -> Set User = read_csv(\"u.csv\", User)",
+        "reads files only in ad hoc text and in the source query of an insert",
+    );
+    refuses(
+        "constraint bad = from u in read_csv(\"u.csv\", User) select u",
+        "reads files only",
+    );
+    let q = query(
+        "",
+        "query from_file () -> Set User = read_csv(\"u.csv\", User)",
+    );
+    assert!(
+        q.as_ref().is_err_and(|m| m.contains("reads files only")),
+        "{q:?}"
+    );
+}

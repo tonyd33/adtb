@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::{BinOp, Expr, ExprKind, Lit};
-use crate::kernel::{Kind, Prim, Transition};
+use crate::kernel::{FileFormat, Kind, Prim, Transition};
 
 impl Checker<'_> {
     fn arity<'e>(&self, name: &str, es: &'e [Expr], n: usize, span: Span) -> R<&'e [Expr]> {
@@ -671,6 +671,68 @@ impl Checker<'_> {
             }
             _ => Err(diag(span, format!("`{name}` is not a function"))),
         }
+    }
+
+    /// `read_csv(path, T)` and the other file scans, each read at the declared row type `T`.
+    pub(super) fn file_scan(
+        &mut self,
+        name: &str,
+        format: FileFormat,
+        es: &[Expr],
+        pins: Option<&ast::Version>,
+        span: Span,
+    ) -> R<Out> {
+        if self.ctx != Context::Adhoc && !self.reject_ok {
+            return Err(diag(
+                span,
+                format!(
+                    "`{name}` reads files only in ad hoc text and in the source query of an insert"
+                ),
+            ));
+        }
+        let [path, row] = self.arity(name, es, 2, span)? else {
+            unreachable!()
+        };
+        let row = self.row_type_arg(name, row)?;
+        let path = self.base_arg(path, Base::Text)?;
+        let pins = pins.map(|v| v.number);
+        Ok(self.prim(
+            Prim::ReadFile { format, pins },
+            vec![path],
+            Ty::Set(Box::new(row)),
+        ))
+    }
+
+    /// The row type a file scan names: a declared record or sum type with no parameters.
+    fn row_type_arg(&self, name: &str, e: &Expr) -> R<Ty> {
+        let refused = || {
+            diag(
+                e.span,
+                format!("`{name}` takes a declared record or sum type as its row type"),
+            )
+        };
+        let ExprKind::Ctor {
+            path,
+            ctor: None,
+            record: None,
+        } = &e.kind
+        else {
+            return Err(refused());
+        };
+        let def = match self.lookup_type(path) {
+            Ok(TypeName::Decl(d)) => d,
+            Ok(_) => return Err(refused()),
+            Err(m) => return Err(diag(e.span, m)),
+        };
+        let td = self.schema.ty(def);
+        if matches!(td.kind, TypeDefKind::Newtype { .. }) || !td.params.is_empty() {
+            return Err(refused());
+        }
+        Ok(Ty::Data {
+            def,
+            args: Vec::new(),
+            ctors: None,
+        })
     }
 
     /// `r`, `r.C`, `r.(C | D)` or `r.S` written as an expression.

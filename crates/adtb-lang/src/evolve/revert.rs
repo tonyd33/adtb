@@ -1411,6 +1411,7 @@ impl Cx<'_> {
                     .ok()
                     .map_err(|ds| wrap(ds, &text))?;
                 for op in &m.operators {
+                    let before = self.src.clone();
                     let mut sub = Cx {
                         src: &mut *self.src,
                         module: self.module.clone(),
@@ -1419,6 +1420,7 @@ impl Cx<'_> {
                     };
                     sub.operator(&op.kind)
                         .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
+                    self.src.rename_ids(&before, &self.module, &op.kind);
                 }
                 Ok(())
             }

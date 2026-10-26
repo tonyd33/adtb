@@ -1,7 +1,7 @@
 use super::write::Site;
 use super::*;
 use crate::ast::{BinOp, CallArgs, Expr, ExprKind, Lit, RecordExpr, UnOp};
-use crate::kernel::{Agg, Const, Kind, Prim};
+use crate::kernel::{Agg, Const, FileFormat, Kind, Prim};
 
 /// A clause of a comprehension, elaborated: a generator or a filter.
 enum Frame {
@@ -131,8 +131,8 @@ impl Checker<'_> {
                 o
             }
             ExprKind::Set(es) => self.set_literal(es, Some(expected), e.span)?,
-            ExprKind::Call { callee, args, .. } => {
-                self.call(callee, args, Some(expected), e.span)?
+            ExprKind::Call { callee, args, pins } => {
+                self.call(callee, args, pins.as_ref(), Some(expected), e.span)?
             }
             ExprKind::Fix(binds, body) => self.fix(binds, body, Some(expected))?,
             ExprKind::Top { count, keys, body } => {
@@ -175,7 +175,9 @@ impl Checker<'_> {
         match &e.kind {
             ExprKind::Lit(_) => self.literal(e, None),
             ExprKind::Name(q) => self.name(q),
-            ExprKind::Call { callee, args, .. } => self.call(callee, args, None, e.span),
+            ExprKind::Call { callee, args, pins } => {
+                self.call(callee, args, pins.as_ref(), None, e.span)
+            }
             ExprKind::TypeCall { ty, func, args } => self.type_call(ty, func, args, e.span),
             ExprKind::Ctor { path, ctor, record } => {
                 self.ctor(path, ctor.as_ref(), record.as_ref(), None, e.span, None)
@@ -2556,10 +2558,23 @@ impl Checker<'_> {
         &mut self,
         callee: &ast::QName,
         args: &CallArgs,
+        pins: Option<&ast::Version>,
         expected: Option<&Ty>,
         span: Span,
     ) -> R<Out> {
         let text = callee.name.text.as_str();
+        let format = match text {
+            "read_csv" => Some(FileFormat::Csv),
+            "read_ndjson" => Some(FileFormat::Ndjson),
+            "read_parquet" => Some(FileFormat::Parquet),
+            "read_arrow" => Some(FileFormat::Arrow),
+            _ => None,
+        };
+        if let Some(v) = pins
+            && (format.is_none() || callee.module.is_some())
+        {
+            return Err(diag(v.span, "only a file scan takes `pins`"));
+        }
         if text.starts_with(|c: char| c.is_ascii_uppercase()) {
             return self.newtype_call(callee, args, span);
         }
@@ -2570,8 +2585,29 @@ impl Checker<'_> {
         }
         match self.lookup_value(callee) {
             Ok(ValueDef::Function(f)) => return self.call_fn(f, args, expected, span),
-            Ok(ValueDef::Aggregate(_)) => {
-                return Err(diag(span, "user-defined aggregates are not checked yet"));
+            Ok(ValueDef::Aggregate(a)) => {
+                return match args {
+                    CallArgs::Aggregate {
+                        expr,
+                        generators,
+                        filter,
+                    } => {
+                        self.scope.push();
+                        let r = self.aggregate_in(
+                            Agg::User(a),
+                            text,
+                            expr,
+                            generators,
+                            filter.as_deref(),
+                        );
+                        self.scope.pop();
+                        r
+                    }
+                    CallArgs::List(_) => Err(diag(
+                        span,
+                        format!("`{text}` is an aggregate: `{text}(e for x in q)`"),
+                    )),
+                };
             }
             Ok(ValueDef::Relation(_)) => {
                 return Err(diag(
@@ -2586,13 +2622,17 @@ impl Checker<'_> {
                 }
             }
         }
-        match args {
-            CallArgs::Aggregate {
-                expr,
-                generators,
-                filter,
-            } => self.aggregate(text, expr, generators, filter.as_deref(), span),
-            CallArgs::List(es) => self.prelude_call(text, es, span),
+        match (args, format) {
+            (
+                CallArgs::Aggregate {
+                    expr,
+                    generators,
+                    filter,
+                },
+                _,
+            ) => self.aggregate(text, expr, generators, filter.as_deref(), span),
+            (CallArgs::List(es), Some(format)) => self.file_scan(text, format, es, pins, span),
+            (CallArgs::List(es), None) => self.prelude_call(text, es, span),
         }
     }
 
@@ -2863,7 +2903,23 @@ impl Checker<'_> {
             let xi = self.fresh(rec_ty);
             (xi, source, nonempty, labels)
         };
-        let v = self.synth(value)?;
+        let v = match op {
+            Agg::User(a) => {
+                let def = &self.schema.aggregates[a as usize];
+                let [(_, input)] = def.params.as_slice() else {
+                    return Err(diag(
+                        value.span,
+                        format!(
+                            "`{name}` takes {} parameters; an aggregate of other than one parameter is not checked yet",
+                            def.params.len()
+                        ),
+                    ));
+                };
+                let input = input.clone();
+                self.check(value, &input)?
+            }
+            _ => self.synth(value)?,
+        };
         let ty = match op {
             Agg::Count => Ty::Base(Base::I64),
             Agg::Sum => {
@@ -2904,7 +2960,14 @@ impl Checker<'_> {
                     self.option_ty(v.ty.clone())
                 }
             }
-            Agg::User(_) => unreachable!("only prelude aggregates reach here"),
+            Agg::User(a) => {
+                let result = self.schema.aggregates[a as usize].result.clone();
+                if nonempty {
+                    result
+                } else {
+                    self.option_ty(result)
+                }
+            }
         };
         let body = if single {
             v.tm

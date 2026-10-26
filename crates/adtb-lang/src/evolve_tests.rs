@@ -1982,3 +1982,148 @@ enable post_badges.Emoji",
         schema.stage(rel(&schema, "post_badges"), emoji)
     );
 }
+
+fn field_id(s: &Schema, t: &str, c: Option<&str>, f: &str) -> Option<u64> {
+    let def = ty(s, t);
+    let c = c.map(|c| s.ty(def).ctor_index(c).expect("a constructor"));
+    s.ids.fields.get(&(def, c, f.to_string())).copied()
+}
+
+#[test]
+fn a_moved_field_keeps_its_id() {
+    let s = applies(
+        &running(),
+        "module auth\nadd field Identity.EmailPass.verified: Bool fill false",
+    );
+    let added = field_id(&ids_of(&s), "Identity", Some("EmailPass"), "verified").unwrap();
+    let s = applies(
+        &s,
+        "module auth
+move field Identity.EmailPass.verified to Identity fill match
+  | Google g -> true
+  | Apple a  -> true",
+    );
+    let up = ids_of(&s);
+    assert_eq!(Some(added), field_id(&up, "Identity", None, "verified"));
+    let next = up.ids.fields.values().max().copied().unwrap() + 1;
+    let s = applies(
+        &s,
+        "module auth\nmove field Identity.verified to Identity.(Apple | Google | EmailPass)",
+    );
+    let down = ids_of(&s);
+    assert_eq!(
+        Some(added),
+        field_id(&down, "Identity", Some("EmailPass"), "verified")
+    );
+    assert_eq!(
+        Some(next),
+        field_id(&down, "Identity", Some("Google"), "verified")
+    );
+    assert_eq!(
+        Some(next + 1),
+        field_id(&down, "Identity", Some("Apple"), "verified")
+    );
+}
+
+#[test]
+fn a_rescoped_index_is_a_new_index() {
+    let base = ids_of(&running());
+    let r = rel(&base, "identities");
+    let next = base
+        .ids
+        .indexes
+        .values()
+        .chain(base.ids.keys.values())
+        .max()
+        .copied()
+        .unwrap()
+        + 1;
+    let gid = |s: &Schema| {
+        let r = rel(s, "identities");
+        (0..s.relation(r).indexes.len())
+            .map(|i| s.ids.indexes[&(r, i)])
+            .collect::<Vec<_>>()
+    };
+    let before = gid(&base);
+    let s = applies(
+        &running(),
+        "module auth
+add type Provider = Google | Apple
+merge constructor Identity.(Google | Apple) into Social
+  { provider: Provider, sub: Text }
+  by match
+    | Google g -> Social { provider: Google, sub: g.gid }
+    | Apple a  -> Social { provider: Apple, sub: a.sub }
+  arm display_name: Social s -> s.sub
+  arm login_present: Social s -> scalar_len(s.sub) == 0",
+    );
+    let after = ids_of(&s);
+    let ids = gid(&after);
+    assert!(
+        ids.contains(&base.ids.indexes[&(r, 0)]),
+        "{before:?} {ids:?}"
+    );
+    assert!(ids.contains(&next), "{before:?} {ids:?}");
+    assert!(
+        !ids.contains(&base.ids.indexes[&(r, 1)]),
+        "{before:?} {ids:?}"
+    );
+}
+
+#[test]
+fn a_stored_view_has_a_row_type() {
+    let s = applies(
+        &running(),
+        "module auth
+define fn per_user () -> Set ({ user: Key users, logins: I64 }) =
+  from u in users select { user: key u, logins: count(i for i in identities where i.user == key u) }
+store per_user
+  key user",
+    );
+    let schema = ids_of(&s);
+    let f = match schema
+        .module(schema.module_named("auth").unwrap())
+        .values
+        .get("per_user")
+    {
+        Some(&ValueDef::Function(f)) => f,
+        _ => panic!("no view"),
+    };
+    let view = schema.ids.views[&f];
+    assert_eq!(Some(&(view + 1)), schema.ids.view_types.get(&f));
+    assert_eq!(Some(&(view + 2)), schema.ids.view_ctors.get(&f));
+    let user = schema.ids.view_fields[&(f, "user".to_string())];
+    assert_eq!(
+        Some(&(user + 1)),
+        schema.ids.view_fields.get(&(f, "logins".to_string()))
+    );
+}
+
+#[test]
+fn a_reverted_move_or_rename_keeps_its_ids() {
+    let base = ids_of(&running());
+    let gid = field_id(&base, "Identity", Some("Google"), "gid");
+    let s = applies(
+        &running(),
+        "module auth\nrename field Identity.Google.gid to subject",
+    );
+    let s = applies(&s, "module auth\nrevert 0001");
+    assert_eq!(
+        gid,
+        field_id(&ids_of(&s), "Identity", Some("Google"), "gid")
+    );
+    let s = applies(
+        &running(),
+        "module auth
+move field Identity.EmailPass.email to Identity fill match
+  | Google g -> g.gid
+  | Apple a  -> a.sub",
+    );
+    let email = field_id(&base, "Identity", Some("EmailPass"), "email");
+    assert_eq!(email, field_id(&ids_of(&s), "Identity", None, "email"));
+    let s = applies(&s, "module auth\nrevert 0001");
+    assert_eq!(
+        email,
+        field_id(&ids_of(&s), "Identity", Some("EmailPass"), "email")
+    );
+}

@@ -576,3 +576,72 @@ fn every_constructor_is_enabled_in_a_schema_built_from_declarations() {
     assert_eq!(Stage::Enabled, s.stage(identities, 1));
     assert_eq!(Stage::Enabled, s.value_stage(type_id(&s, "Identity"), 1));
 }
+
+#[test]
+fn engine_fields_and_keys_take_their_fixed_ids() {
+    let s = build_src(&[]).unwrap();
+    let field = |t, c, f: &str| s.ids.fields.get(&(t, c, f.to_string())).copied();
+    let option = s.prelude_type("Option");
+    assert_eq!(Some(0), field(option, Some(1), "value"));
+    let result = s.prelude_type("Result");
+    assert_eq!(Some(1), field(result, Some(0), "value"));
+    assert_eq!(Some(2), field(result, Some(1), "error"));
+    assert_eq!(Some(&0), s.ids.keys.get(&rel_id(&s, "catalog", "types")));
+    assert_eq!(
+        Some(&1),
+        s.ids.keys.get(&rel_id(&s, "catalog", "constructors"))
+    );
+    for (i, t) in s.types.iter().enumerate() {
+        if !s.module(t.module).engine {
+            continue;
+        }
+        let def = TypeId(i as u32);
+        for f in t.header() {
+            assert!(field(def, None, &f.name).is_some_and(|id| id < 1024));
+        }
+        for (k, c) in t.ctors().iter().enumerate() {
+            for f in &c.fields {
+                assert!(
+                    field(def, Some(k as u32), &f.name).is_some_and(|id| id < 1024),
+                    "no fixed id for `{}.{}.{}`",
+                    t.name,
+                    c.name,
+                    f.name
+                );
+            }
+        }
+    }
+    let credentials = rel_id(&s, "catalog", "credentials");
+    let key = s.ids.keys[&credentials];
+    assert_eq!(Some(&(key + 1)), s.ids.indexes.get(&(credentials, 0)));
+    assert_eq!(
+        Some(&(key + 2)),
+        s.ids.keys.get(&rel_id(&s, "sys", "collations"))
+    );
+    for (i, r) in s.relations.iter().enumerate() {
+        let rel = RelId(i as u32);
+        assert!(s.ids.keys[&rel] < 1024);
+        for k in 0..r.indexes.len() {
+            assert!(s.ids.indexes[&(rel, k)] < 1024);
+        }
+    }
+    let prelude = s.module_named("prelude").unwrap();
+    let prelude_max = s
+        .ids
+        .fields
+        .iter()
+        .filter(|((t, _, _), _)| s.ty(*t).module == prelude)
+        .map(|(_, id)| *id)
+        .max();
+    assert_eq!(Some(85), prelude_max);
+    assert_eq!(Some(551), s.ids.fields.values().max().copied());
+    assert_eq!(
+        Some(60),
+        s.ids
+            .indexes
+            .values()
+            .chain(s.ids.keys.values())
+            .max()
+            .copied()
+    );
+}

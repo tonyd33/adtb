@@ -3,7 +3,7 @@ use crate::ast::{
     BinOp, BlockItem, CallArgs, ConflictTarget, CtorScope, Expr, ExprKind, LetValue, Pattern,
     RecordExpr, TransactBlock, TxnOption, UnOp, Write, WriteArm, WriteKind,
 };
-use crate::kernel::{Conflict, Durability, TxnOptions};
+use crate::kernel::{Conflict, Durability, Prim, TxnOptions};
 use crate::schema::OnDelete;
 
 /// Where a constructor value becomes a row of `rel`: omitted fields are filled from the relation, and from `old` for an update.
@@ -735,13 +735,16 @@ impl Checker<'_> {
             _ => unreachable!("rejects wraps an insert"),
         };
         let over_source = match self.terms.kind(rows) {
-            Kind::For(_, src, _) => matches!(self.terms.kind(*src), Kind::Rel(..)),
+            Kind::For(_, src, _) => matches!(
+                self.terms.kind(*src),
+                Kind::Rel(..) | Kind::Prim(Prim::ReadFile { .. }, _)
+            ),
             _ => false,
         };
         if !one_generator || !over_source {
             return Err(diag(
                 span,
-                "`rejects into` needs rows from a comprehension with a single generator over a source relation, so each row has one source record",
+                "`rejects into` needs rows from a comprehension with a single generator over a source relation or a file scan, so each row has one source record",
             ));
         }
         let into = match self.lookup_value(j) {

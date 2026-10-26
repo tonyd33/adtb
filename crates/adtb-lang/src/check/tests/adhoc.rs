@@ -309,3 +309,98 @@ fn adhoc_items_without_terms_leave_the_others_in_order() {
     .unwrap();
     assert_eq!(2, a.items.len());
 }
+
+#[test]
+fn a_temp_relation_is_in_scope_after_its_declaration() {
+    adhoc_accepts(
+        &[],
+        "temp relation raw : { kind: Text, user: I64 }\nfrom r in raw select r.kind",
+    );
+    adhoc_accepts(
+        &[],
+        "temp relation stage : RejectedRow key (load, line)
+insert stage from (from t in read_csv(\"x.csv\", RejectedRow) select t)
+update s in stage where s.line == 3 set RejectedRow { s with reason: \"fixed\" }
+delete s in stage where s.line == 4
+from s in stage select s.raw",
+    );
+    adhoc_accepts(
+        &[],
+        "temp relation raw : { kind: Text, n: I64 }
+insert raw from (from u in users select { kind: u.name, n: 1 })
+from r in raw where r.n > 0 select r.kind",
+    );
+    adhoc_accepts(
+        &[],
+        "temp relation copies : User key id\nfrom c in copies select c.name",
+    );
+}
+
+#[test]
+fn a_name_before_its_temp_declaration_is_a_parameter() {
+    adhoc_refuses(
+        &[],
+        "from r in raw select r\ntemp relation raw : { a: I64 }",
+        "`raw` is a parameter of this text",
+    );
+}
+
+#[test]
+fn a_temp_relation_takes_a_name_no_relation_variable_has() {
+    adhoc_refuses(
+        &[],
+        "temp relation users : { a: I64 }",
+        "a temp relation takes another name",
+    );
+}
+
+#[test]
+fn a_temp_relation_of_a_sum_without_a_key_is_keyed_by_its_whole_row() {
+    adhoc_accepts(&[], "temp relation ids : Identity\nfrom i in ids select i");
+}
+
+#[test]
+fn file_scans_read_at_the_declared_row_type() {
+    adhoc_accepts(&[], "from r in read_csv(\"users.csv\", User) select r.name");
+    adhoc_accepts(
+        &[],
+        "from r in read_parquet(\"logs/*.parquet\", User) select r.name",
+    );
+    adhoc_accepts(
+        &[],
+        "from r in read_ndjson(\"u.ndjson\", Identity) select r",
+    );
+    adhoc_accepts(&[], "from r in read_arrow(\"u.arrow\", User) select r");
+    adhoc_accepts(
+        &[],
+        "from r in read_csv(\"users-old.csv\", User) pins 3 (c41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41e) select r.name",
+    );
+    adhoc_refuses(&[], "read_csv(\"x.csv\", Nope)", "no type `Nope`");
+    adhoc_refuses(
+        &[],
+        "read_csv(\"x.csv\", Text)",
+        "a declared record or sum type",
+    );
+    adhoc_refuses(
+        &[],
+        "read_csv(\"x.csv\", Option)",
+        "a declared record or sum type",
+    );
+    adhoc_refuses(&[], "read_csv(3, User)", "Text");
+    adhoc_refuses(&[], "read_csv(\"x.csv\")", "takes 2 arguments");
+    adhoc_refuses(
+        &[],
+        "display_name(i) pins 3 (c41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41ec41e)",
+        "only a file scan takes `pins`",
+    );
+}
+
+#[test]
+fn a_file_scan_is_the_source_of_rejects() {
+    adhoc_accepts(
+        &[],
+        "temp relation rejects : RejectedRow key (load, line)
+insert users from (from r in read_csv(\"u.csv\", User) select User { id: r.id, name: r.name })
+rejects into rejects",
+    );
+}

@@ -7,8 +7,7 @@ use crate::types::*;
 
 /// The catalog ids of a schema's objects, by the handle of each in the schema.
 ///
-/// Every object of a user module has an id. The engine's types, constructors and relation
-/// variables have their fixed ids; its other objects have none.
+/// Every object of a user module has an id, and every object of an engine module its fixed id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CatalogIds {
     pub types: BTreeMap<TypeId, u64>,
@@ -41,6 +40,12 @@ pub struct CatalogIds {
     pub view_keys: BTreeMap<FnId, u64>,
     /// A stored view's uniques and indexes, by position among its clauses of those kinds.
     pub view_indexes: BTreeMap<(FnId, usize), u64>,
+    /// The type of each stored view's rows.
+    pub view_types: BTreeMap<FnId, u64>,
+    /// The one constructor of each stored view's row type.
+    pub view_ctors: BTreeMap<FnId, u64>,
+    /// The fields of a stored view's row constructor, by view and name.
+    pub view_fields: BTreeMap<(FnId, String), u64>,
 }
 
 /// An id space of catalog objects.
@@ -77,6 +82,9 @@ pub enum Slot {
     View(FnId),
     ViewKey(FnId),
     ViewIndex(FnId, usize),
+    ViewType(FnId),
+    ViewCtor(FnId),
+    ViewField(FnId, String),
 }
 
 /// One object of a user module, in the order a migration declaring the module files in order creates it.
@@ -108,6 +116,9 @@ impl CatalogIds {
             Slot::View(f) => self.views.insert(f, id),
             Slot::ViewKey(f) => self.view_keys.insert(f, id),
             Slot::ViewIndex(f, i) => self.view_indexes.insert((f, i), id),
+            Slot::ViewType(f) => self.view_types.insert(f, id),
+            Slot::ViewCtor(f) => self.view_ctors.insert(f, id),
+            Slot::ViewField(f, n) => self.view_fields.insert((f, n), id),
         };
     }
 }
@@ -161,6 +172,33 @@ fn engine(schema: &Schema) -> CatalogIds {
             .find(|(rm, rn, _)| rm == m && *rn == r.name)
         {
             ids.relations.insert(RelId(i as u32), *id);
+        }
+    }
+    let mut types: Vec<(u64, TypeId)> = ids.types.iter().map(|(&t, &id)| (id, t)).collect();
+    types.sort();
+    let mut field = 0;
+    for (_, def) in types {
+        let td = schema.ty(def);
+        let parts = td.header().iter().map(|f| (None, f)).chain(
+            td.ctors()
+                .iter()
+                .enumerate()
+                .flat_map(|(k, c)| c.fields.iter().map(move |f| (Some(k as u32), f))),
+        );
+        for (c, f) in parts {
+            ids.fields.insert((def, c, f.name.clone()), field);
+            field += 1;
+        }
+    }
+    let mut relations: Vec<(u64, RelId)> = ids.relations.iter().map(|(&r, &id)| (id, r)).collect();
+    relations.sort();
+    let mut index = 0;
+    for (_, r) in relations {
+        ids.keys.insert(r, index);
+        index += 1;
+        for i in 0..schema.relation(r).indexes.len() {
+            ids.indexes.insert((r, i), index);
+            index += 1;
         }
     }
     ids
@@ -298,6 +336,19 @@ pub fn objects(
                     };
                     let vn = &s.view.name.text;
                     push(Space::Shared, Slot::View(f), format!("relation {m}::{vn}"));
+                    push(Space::Shared, Slot::ViewType(f), format!("type {m}::{vn}"));
+                    push(
+                        Space::Shared,
+                        Slot::ViewCtor(f),
+                        format!("ctor {m}::{vn}.{vn}"),
+                    );
+                    for name in view_fields(files, m, vn) {
+                        push(
+                            Space::Field,
+                            Slot::ViewField(f, name.clone()),
+                            format!("field {m}::{vn}.{vn}.{name}"),
+                        );
+                    }
                     let name = format!("{m}::{vn}");
                     clause_objects(&mut push, *file, text, &s.clauses, &name, Owner::View(f));
                 }
@@ -305,6 +356,35 @@ pub fn objects(
         }
     }
     out
+}
+
+/// The fields of the rows of view `view` of module `module`, as its result type writes them; none
+/// when its rows are not records.
+fn view_fields(files: &[(FileId, ast::SchemaFile)], module: &str, view: &str) -> Vec<String> {
+    let result = files
+        .iter()
+        .filter(|(_, sf)| sf.module.text == module)
+        .flat_map(|(_, sf)| &sf.decls)
+        .find_map(|d| match d {
+            Decl::Fn(f) if f.name.text == view => Some(&f.result),
+            _ => None,
+        });
+    let Some(ast::Type {
+        kind: ast::TypeKind::Named { args, .. },
+        ..
+    }) = result
+    else {
+        return Vec::new();
+    };
+    match args.as_slice() {
+        [
+            ast::TypeArg::Type(ast::Type {
+                kind: ast::TypeKind::Record(fs),
+                ..
+            }),
+        ] => fs.iter().map(|f| f.name.text.clone()).collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// What declares a run of clauses.

@@ -277,6 +277,30 @@ impl Source {
                     None
                 });
             }
+            OperatorKind::MoveField { path, sel, .. } => {
+                let m = q(&path.ty);
+                let t = path.ty.name.text.clone();
+                let f = path.field.text.clone();
+                let (from, to) = match (&path.ctor, sel) {
+                    (Some(c), None) => (format!("{t}.{}.{f}", c.text), format!("{t}.{f}")),
+                    (None, Some(sel)) => {
+                        let Some(first) = before.built().ok().and_then(|schema| {
+                            let def = *schema.module(schema.module_named(&m)?).types.get(&t)?;
+                            sel_idents(sel)
+                                .iter()
+                                .filter_map(|x| schema.ty(def).ctor_index(&x.text))
+                                .min()
+                                .map(|k| schema.ty(def).ctors()[k as usize].name.clone())
+                        }) else {
+                            return;
+                        };
+                        (format!("{t}.{f}"), format!("{t}.{first}.{f}"))
+                    }
+                    _ => return,
+                };
+                let (from, to) = (format!("field {m}::{from}"), format!("field {m}::{to}"));
+                rewrite(&mut self.ids, &|k| (k == from).then(|| to.clone()));
+            }
             _ => {}
         }
     }
