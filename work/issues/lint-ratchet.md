@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 90
 summary: "the workspace has no lint configuration beyond clippy's default set"
-tags: [quality]
+branch: adtb-lint
+tags:
+  - quality
 ---
 
 # Feature: workspace lint ratchet
