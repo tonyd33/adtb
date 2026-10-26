@@ -1,8 +1,10 @@
 mod change;
 pub mod layout;
+mod moved;
 mod oplog;
 mod root;
 mod rows;
+mod validate;
 
 #[cfg(test)]
 mod tests;
@@ -64,6 +66,8 @@ pub enum Error {
     /// A stored migration does not parse or apply under this engine; its version and each
     /// reason.
     Unaccepted(u64, Vec<String>),
+    /// A guarantee of the checker or planner does not hold; the one named.
+    Internal(String),
 }
 
 impl From<PageError> for Error {
@@ -618,8 +622,11 @@ impl Catalog {
     /// Fails with [`Error::Refused`], changing nothing, if the migration does not apply to the
     /// schema, if a constraint of the result has no index-bounded incremental check, or if the
     /// data contradicts an operator: a constructor or relation it removes holds rows, a unique or
-    /// key it adds finds a duplicate, or a constructor it disables holds rows. On any other
-    /// failure the transaction is aborted, and the catalog must be opened again.
+    /// key it adds finds a duplicate, a constructor it disables holds rows, a fill or routing
+    /// faults on a row, or a constraint or check it adds, or one reading a relation it rewrites,
+    /// has violating rows in the final state. Fails with [`Error::Internal`] when admitting or
+    /// validating a constraint breaks a guarantee of the checker. On any other failure the
+    /// transaction is aborted, and the catalog must be opened again.
     ///
     /// Postcondition: [`Catalog::open`] after a crash finds either the whole migration or
     /// nothing of it, and no page of the structures the migration replaced or created but did not
@@ -653,9 +660,7 @@ impl Catalog {
         if let Err(why) = recordable(&next) {
             return refused(why);
         }
-        if let Err(why) = self.admits(&next, &schema) {
-            return refused(why);
-        }
+        self.admits(&next, &schema)?;
         let x = txns.begin(pager)?;
         update_root(pager, self.root, |r| r.changing = x.0)?;
         let (id, snapshot) = txns.take(Scope::Every)?;
@@ -687,12 +692,12 @@ impl Catalog {
     /// Refuses `schema`, built from `source`, when a constraint of it has no index-bounded
     /// incremental check over the heaps [`Catalog::extend`] would create and its indexes; each
     /// reason.
-    fn admits(&self, source: &Source, schema: &Schema) -> Result<(), Vec<String>> {
-        let (_, program) = source
-            .check()
-            .map_err(|ds| ds.into_iter().map(|d| d.diag.message).collect::<Vec<_>>())?;
+    fn admits(&self, source: &Source, schema: &Schema) -> Result<(), Error> {
+        let (_, program) = source.check().map_err(|ds| {
+            Error::Refused(ds.into_iter().map(|d| d.diag.message).collect::<Vec<_>>())
+        })?;
         let normal = adtb_lang::norm::program(schema, &program)
-            .map_err(|e| vec![format!("the schema does not normalise: {e:?}")])?;
+            .map_err(|e| Error::Refused(vec![format!("the schema does not normalise: {e:?}")]))?;
         let mut heaps: BTreeMap<(RelId, u32), HeapId> = BTreeMap::new();
         let mut next = self.next_heap;
         for rc in ctor_relations(schema) {
@@ -707,14 +712,15 @@ impl Catalog {
         }
         let specs = indexes(schema);
         let catalog = planned(schema, specs.values(), &heaps);
-        let why = crate::write::refusals(schema, &normal, &catalog);
+        let why = crate::write::refusals(schema, &normal, &catalog).map_err(Error::Internal)?;
         if why.is_empty() {
             return Ok(());
         }
-        Err(why
-            .into_iter()
-            .map(|(c, detail)| format!("constraint {c} is not admitted: {detail}"))
-            .collect())
+        Err(Error::Refused(
+            why.into_iter()
+                .map(|(c, detail)| format!("constraint {c} is not admitted: {detail}"))
+                .collect(),
+        ))
     }
 
     /// Returns the catalog of `next`, the source after migration `file`, as transaction `x`
@@ -759,12 +765,24 @@ impl Catalog {
         let mut why = Vec::new();
         for op in &file.operators {
             let mut after = at.clone();
-            if let Err(ds) = after.apply(module, op, text) {
-                return Err(Error::Refused(ds.into_iter().map(|d| d.message).collect()));
-            }
+            let steps = match after.steps(module, op, text) {
+                Ok(s) => s,
+                Err(ds) => {
+                    return Err(Error::Refused(ds.into_iter().map(|d| d.message).collect()));
+                }
+            };
             why.extend(self.emptied(pager, txns, snapshot, &before, &data, module, op)?);
-            if let Ok(schema) = after.schema() {
-                let moved = change::Moved::default();
+            for step in steps {
+                let Ok(schema) = step.after.schema() else {
+                    continue;
+                };
+                let moved = match moved::moved(&before, &schema, &step.maps, &data) {
+                    Ok(m) => m,
+                    Err(w) => {
+                        why.extend(w);
+                        change::Moved::default()
+                    }
+                };
                 if let Err(w) = change::step(&before, &schema, &mut data, moved) {
                     why.extend(w);
                 }
@@ -776,7 +794,7 @@ impl Catalog {
             return Err(Error::Refused(why));
         }
         let old = declared(&self.schema, &self.source);
-        self.build(
+        let built = self.build(
             pager,
             txns,
             &Built {
@@ -787,7 +805,12 @@ impl Catalog {
                 rewritten: &rewritten,
                 old,
             },
-        )
+        )?;
+        let why = built.violations(pager, txns, x, snapshot, &self.schema, &rewritten)?;
+        if !why.is_empty() {
+            return Err(Error::Refused(why));
+        }
+        Ok(built)
     }
 
     /// Returns why the data refuses `op`, applied to `schema` of a migration of `module`, beyond
@@ -1079,22 +1102,22 @@ impl Catalog {
 
     /// Returns the heap of every constructor relation and every index, as the executor and the
     /// write path bind them.
-    pub fn into_bindings(self) -> (BTreeMap<HeapId, StoredHeap>, BTreeMap<IndexId, StoredIndex>) {
+    pub fn bindings(&self) -> (BTreeMap<HeapId, StoredHeap>, BTreeMap<IndexId, StoredIndex>) {
         let schema = &self.schema;
         let heaps = self
             .heaps
-            .into_iter()
-            .map(|((r, c), heap)| {
+            .iter()
+            .map(|(&(r, c), heap)| {
                 let stored = StoredHeap {
                     row: row_type(schema, r, c),
-                    heap,
+                    heap: heap.clone(),
                 };
                 (HeapId(u64::from(stored.heap.id())), stored)
             })
             .collect();
         let indexes = self
             .indexes
-            .into_values()
+            .values()
             .map(|(spec, index)| {
                 let ctors = spec
                     .ctors
@@ -1106,7 +1129,13 @@ impl Catalog {
                         )
                     })
                     .collect();
-                (IndexId(spec.id), StoredIndex { index, ctors })
+                (
+                    IndexId(spec.id),
+                    StoredIndex {
+                        index: index.clone(),
+                        ctors,
+                    },
+                )
             })
             .collect();
         (heaps, indexes)

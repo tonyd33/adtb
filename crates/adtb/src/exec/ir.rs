@@ -210,7 +210,7 @@ pub struct Program {
 }
 
 /// The fault constructors of the prelude's `Fault`, by the executor's fault order.
-fn fault_ctors(schema: &Schema) -> Vec<u32> {
+pub(super) fn fault_ctors(schema: &Schema) -> Vec<u32> {
     let def = schema.ty(schema.prelude_type("Fault"));
     super::Fault::ALL
         .iter()

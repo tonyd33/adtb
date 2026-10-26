@@ -34,8 +34,11 @@ pub fn denials(
     catalog: &Catalog,
     terms: &mut Terms,
 ) -> Result<Vec<Denial>, Error> {
-    let checks = delta::compile(schema, normal, terms, catalog).map_err(|why| {
-        Error::Refused(why.into_iter().map(|r| (r.constraint, r.detail)).collect())
+    let checks = delta::compile(schema, normal, terms, catalog).map_err(|e| match e {
+        delta::Unadmitted::Refused(why) => {
+            Error::Refused(why.into_iter().map(|r| (r.constraint, r.detail)).collect())
+        }
+        delta::Unadmitted::Internal(what) => Error::Internal(what),
     })?;
     let mut out = Vec::new();
     for c in checks {

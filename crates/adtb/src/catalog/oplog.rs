@@ -1,4 +1,6 @@
-use adtb_lang::evolve::{Clause, Place, Resolved, ResolvedOp, Source, Target};
+use adtb_lang::evolve::{
+    ArmTarget, Clause, IndexKind, Place, Resolved, ResolvedOp, Source, Target,
+};
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::Ty;
 
@@ -368,6 +370,53 @@ fn clause(schema: &Schema, ty: &Ty, c: &Clause) -> Value {
     match c {
         Clause::Member { ctor } => sum(schema, ty, "Member", &[("ctor", id(*ctor))]),
         Clause::Joins { set } => sum(schema, ty, "Joins", &[("set", id(*set))]),
+        Clause::Arm { target, arm } => {
+            let at = field_of(schema, ty, "Arm", "target");
+            let target = match target {
+                ArmTarget::OfFn { function } => {
+                    sum(schema, &at, "OfFn", &[("function", id(*function))])
+                }
+                ArmTarget::OfConstraint { constraint } => sum(
+                    schema,
+                    &at,
+                    "OfConstraint",
+                    &[("constraint", id(*constraint))],
+                ),
+                ArmTarget::OfComputed { computed } => {
+                    sum(schema, &at, "OfComputed", &[("computed", id(*computed))])
+                }
+            };
+            sum(schema, ty, "Arm", &[("target", target), ("arm", text(arm))])
+        }
+        Clause::Replacement {
+            index,
+            kind,
+            fields,
+        } => {
+            let kt = field_of(schema, ty, "Replacement", "kind");
+            let kind = match kind {
+                IndexKind::Unique => "Unique",
+                IndexKind::Plain => "Plain",
+                IndexKind::Interval => "Interval",
+            };
+            sum(
+                schema,
+                ty,
+                "Replacement",
+                &[
+                    ("index", id(*index)),
+                    ("kind", sum(schema, &kt, kind, &[])),
+                    ("fields", text(fields)),
+                ],
+            )
+        }
+        Clause::Carry { field } => sum(schema, ty, "Carry", &[("field", id(*field))]),
+        Clause::Fill { field, fill } => sum(
+            schema,
+            ty,
+            "Fill",
+            &[("field", id(*field)), ("fill", text(fill))],
+        ),
     }
 }
 

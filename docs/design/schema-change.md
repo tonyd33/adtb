@@ -210,6 +210,7 @@ not this function's.
 | `Source::new(decls)` | the source of a schema declared directly, every constructor relation and value-level constructor `Enabled` at version 0 |
 | `Source::migrate(m, text)` | the source after migration `m`, whose spans index `text`, numbered `version + 1` and appended to `log`; or a `Refusal` |
 | `Source::check()` | the built `Schema` and its `Program` ([kernel.md](kernel.md)) |
+| `Source::steps(module, op, text)` | applies operator `op` as `Source::apply` does, and returns its steps: each the source after it and the `RowMap`s that move rows beyond what each kept field and constructor carries by id |
 
 A `Source` holds the declaration texts of every user module, the
 modules that hold nothing, the installed extensions, the write state
@@ -282,6 +283,29 @@ whose element type is the operator's type.
 | `script w` | `w` checks as ad hoc text against the schema the operators before it produce | the source is unchanged |
 | `revert n` | `n` is in the log and holds no `script`; no later migration names an object `n` creates; each inverse that adds a field the log holds no value for has a `fill` | the inverses of `n`'s operators, last first, apply as the table states, computed against the source before each; an added constructor goes with its arms, a removed one comes back at its place with its states and its constraints' arms, a split or merge is inverted when its routing binds or fixes every field and carries each binding whole, else refused |
 
+Postconditions of `steps`:
+
+- An operator other than `revert` is one step. A `revert` is a step
+  per operator of each inverse, last first, and a step per other
+  inverse, as the table states.
+- Each step's `RowMap`s are stated against the source after the step
+  before it, the first's against the source `steps` is called on; the
+  last step's source is the source `steps` leaves.
+- Every object of a step's source has its catalog id: ids are
+  reconciled after each step, so the last step's ids are the result's.
+- A `Fill` or `Route` is a `RowFn`: a normal query of one parameter,
+  the row, checked and normalised against its `schema`, reading only
+  the row. A `Fill`'s schema is the step's source before it; a
+  `Route`'s is that schema with the products appended to the type, and
+  its value is a constructor of that schema named as the product the
+  row goes to, holding the header and the product's fields.
+- `add field` gives a `Fill` of the field over the constructors that
+  gain it; `move field` a `Copy` of the field for the constructors that
+  keep it and, moving up, a `Fill` for the others; `split` and `merge`
+  with `by` a `Route`; `merge` without `by` a `Merge` naming the
+  discriminator; `nest` a `Nest`; `unnest` an `Unnest`; `rekey` a
+  `Rekey`. Every other operator gives none.
+
 Write states are the source's, not the catalog's: evolution writes
 `catalog::ctor_states` and `catalog::value_states` from them. A
 refusal of evolution's own checks (data, bundles, readers-first) is
@@ -335,7 +359,18 @@ Postconditions of `Source::resolved(n)`:
 - A named set has a `Member` clause for each constructor it lists, in
   order, and a unique or index written with `in r.C` one for each
   constructor of its scope. An added constructor has a `Joins` clause
-  for each named set it joins. No other operator has clauses.
+  for each named set it joins. A merge or nest has a `Member` clause
+  for each constructor it replaces, by its id before the migration, and
+  a `move field` down one for each constructor it moves the field to.
+  An `arm` clause is an `Arm` naming the function, constraint or
+  computed field it extends and the arm from its pattern through its
+  body; a split's `unique` and `index` clauses are `Replacement`s, each
+  the next of the last indexes of the type's relation the migration
+  gives new ids; a rekey has a `Carry` for each carried field and a
+  revert a `Fill` for each fill, the field by its id after the
+  migration. Clauses follow the operator's text in order, `Joins` and
+  `Member` clauses before `Arm` clauses. No other operator has
+  clauses.
 - An operator that drops, renames or removes an object names it by its
   id in the schema before the migration, or, for a rename of an object
   the migration creates, in the schema after it; an operator that

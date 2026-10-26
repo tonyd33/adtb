@@ -313,7 +313,15 @@ impl Cx<'_> {
         }
         for step in steps.into_iter().rev() {
             for inv in step {
+                let recorded = matches!(inv, Inverse::Ops(_) | Inverse::Replay(_));
                 self.undo(inv)?;
+                self.src.reconcile_ids();
+                if let (Some(steps), false) = (self.steps, recorded) {
+                    steps.borrow_mut().push(Step {
+                        after: self.src.clone(),
+                        maps: Vec::new(),
+                    });
+                }
             }
         }
         Ok(())
@@ -550,6 +558,7 @@ impl Cx<'_> {
                     span: op.span,
                     noted: None,
                     copying: false,
+                    steps: None,
                 };
                 let (relation, key, _) = cx.stage_key(t)?;
                 let prior = if relation {
@@ -1062,6 +1071,7 @@ impl Cx<'_> {
             span: self.span,
             noted: None,
             copying: false,
+            steps: None,
         };
         let Ok(clauses) = cx.scoped_clauses(&schema, def) else {
             return Vec::new();
@@ -1429,10 +1439,21 @@ impl Cx<'_> {
                         span: op.span,
                         noted: self.noted.map(|_| &noted),
                         copying: false,
+                        steps: None,
                     };
                     sub.operator(&op.kind)
                         .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
                     self.src.rename_ids(&before, &self.module, &op.kind);
+                    self.src.reconcile_ids();
+                    if let Some(steps) = self.steps {
+                        let maps = before
+                            .row_maps(&self.module, op, &full, self.src)
+                            .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
+                        steps.borrow_mut().push(Step {
+                            after: self.src.clone(),
+                            maps,
+                        });
+                    }
                 }
                 if let Some(out) = self.noted {
                     let noted = noted.into_inner();
@@ -1624,7 +1645,13 @@ impl Cx<'_> {
             }
             Inverse::Replay(l) => {
                 for op in &l.operators {
-                    self.src.apply(&l.module, op, &l.text)?;
+                    match self.steps {
+                        Some(steps) => {
+                            let mut more = self.src.steps(&l.module, op, &l.text)?;
+                            steps.borrow_mut().append(&mut more);
+                        }
+                        None => self.src.apply(&l.module, op, &l.text)?,
+                    }
                 }
                 Ok(())
             }

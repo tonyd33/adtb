@@ -218,14 +218,22 @@ fn an_added_field_takes_its_fill_in_every_existing_row() {
         &["module shop\nadd field Customer.vip: Bool fill false\n"],
         |db| {
             let db = db.expect("the add applies");
+            let vips = "from c in customers select { name: c.name, vip: c.vip }";
             assert_eq!(
-                vec!["false", "false"],
-                query(&db, "from c in customers select c.vip")
+                vec![
+                    r#"{ name: "ann", vip: False }"#,
+                    r#"{ name: "bob", vip: False }"#
+                ],
+                query(&db, vips)
             );
             write(&db, r#"insert customers { name: "cy", vip: true }"#);
             assert_eq!(
-                vec!["false", "false", "true"],
-                query(&db, "from c in customers select c.vip")
+                vec![
+                    r#"{ name: "ann", vip: False }"#,
+                    r#"{ name: "bob", vip: False }"#,
+                    r#"{ name: "cy", vip: True }"#
+                ],
+                query(&db, vips)
             );
         },
     );
@@ -613,4 +621,467 @@ fn a_migration_refused_by_its_data_changes_nothing_and_the_next_applies() {
         assert_eq!(2, catalog.source().version);
         assert_clean(&pager, &catalog, &txns);
     });
+}
+
+const INVOICE: &str = r#"transact
+  let c = insert customers { name: "cy" }
+  insert payments.Invoice { customer: key c, due: "2027-01" }"#;
+
+/// Opens a database at `SHOP` with `CUSTOMERS` and `INVOICE`, then reopens it with `later`
+/// appended to the log, and runs `body` over the result of that open.
+fn after_invoice(
+    seed: u64,
+    later: &[&str],
+    body: impl FnOnce(Result<Database<SimRuntime>, OpenError>),
+) {
+    let mut sim = Sim::new(seed, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP]);
+        write(&db, CUSTOMERS);
+        write(&db, INVOICE);
+    });
+    let mut log = vec![SHOP];
+    log.extend_from_slice(later);
+    run(&mut sim, |rt| body(open(&rt, &log)));
+}
+
+const NEST: &str = r"module shop
+add type Method = Card { last4: Text } | Invoice { due: Text }
+nest constructor Payment.(Card | Invoice) into Held { method: Method }
+";
+
+#[test]
+fn a_nest_holds_each_row_as_a_value_of_the_nested_sum() {
+    after_invoice(40, &[NEST], |db| {
+        let db = db.expect("the nest applies");
+        assert_eq!(
+            vec![r#"Card { last4: "4242" }"#, r#"Invoice { due: "2027-01" }"#],
+            query(&db, "from p in payments.Held select p.method")
+        );
+        assert_eq!(2, query(&db, "from p in payments select p.id").len());
+    });
+}
+
+#[test]
+fn an_unnest_lifts_each_held_value_to_its_constructor_keeping_the_key() {
+    let unnest = "module shop\nunnest constructor Payment.Held\n";
+    after_invoice(41, &[NEST, unnest], |db| {
+        let db = db.expect("the unnest applies");
+        assert_eq!(
+            vec![r#""4242""#],
+            query(&db, "from p in payments.Card select p.last4")
+        );
+        assert_eq!(
+            vec![r#""2027-01""#],
+            query(&db, "from p in payments.Invoice select p.due")
+        );
+        assert_eq!(
+            vec![r#""ann""#],
+            query(
+                &db,
+                "from p in payments.Card, c in customers where p.customer == key c select c.name"
+            )
+        );
+    });
+}
+
+#[test]
+fn moving_a_field_to_the_header_keeps_its_values_and_fills_the_other_constructors() {
+    let up = "module shop\nmove field Payment.Card.last4 to Payment fill match\n  | Invoice i -> i.due\n";
+    after_invoice(42, &[up], |db| {
+        let db = db.expect("the move applies");
+        assert_eq!(
+            vec![r#""2027-01""#, r#""4242""#],
+            query(&db, "from p in payments select p.last4")
+        );
+    });
+}
+
+#[test]
+fn moving_a_header_field_down_keeps_its_values_in_the_listed_constructors() {
+    let add = "module shop\nadd field Payment.note: Text fill \"n\"\n";
+    let down = "module shop\nmove field Payment.note to Payment.(Card)\n";
+    after_invoice(43, &[add, down], |db| {
+        let db = db.expect("the move applies");
+        assert_eq!(
+            vec![r#""n""#],
+            query(&db, "from p in payments.Card select p.note")
+        );
+        let got = fails(&db, "from p in payments.Invoice select p.note");
+        assert!(matches!(got, Error::Rejected { .. }), "{got:?}");
+    });
+}
+
+#[test]
+fn a_merge_without_a_routing_maps_fields_by_name_and_fills_the_discriminator() {
+    let rename = "module shop\nrename field Payment.Invoice.due to detail\nrename field Payment.Card.last4 to detail\n";
+    let merge = r"module shop
+add type Kind = Card | Invoice
+merge constructor Payment.(Card | Invoice) into Any { kind: Kind, detail: Text }
+";
+    after_invoice(44, &[rename, merge], |db| {
+        let db = db.expect("the merge applies");
+        assert_eq!(
+            vec![
+                r#"{ detail: "2027-01", kind: Invoice }"#,
+                r#"{ detail: "4242", kind: Card }"#
+            ],
+            query(
+                &db,
+                "from p in payments.Any select { detail: p.detail, kind: p.kind }"
+            )
+        );
+    });
+}
+
+#[test]
+fn a_rekey_carries_every_reference_to_the_new_key() {
+    let rekey = r"module shop
+rekey relation customers key name
+  carry Payment.customer
+drop field Customer.id
+";
+    after_invoice(45, &[rekey], |db| {
+        let db = db.expect("the rekey applies");
+        assert_eq!(
+            vec![r#""ann""#, r#""cy""#],
+            query(
+                &db,
+                "from p in payments, c in customers where p.customer == key c select c.name"
+            )
+        );
+    });
+}
+
+#[test]
+fn a_rekey_whose_new_key_two_rows_share_is_refused() {
+    let same = r#"insert customers { name: "ann" }"#;
+    let rekey = r"module shop
+rekey relation customers key name
+  carry Payment.customer
+drop field Customer.id
+";
+    let mut sim = Sim::new(46, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP]);
+        write(&db, CUSTOMERS);
+        write(&db, same);
+    });
+    run(&mut sim, |rt| {
+        let (version, detail) = refusal(open(&rt, &[SHOP, rekey]));
+        assert_eq!(2, version);
+        assert!(detail.contains("customers"), "{detail}");
+    });
+}
+
+#[test]
+fn an_added_check_existing_rows_violate_is_refused() {
+    let check = "module shop\nadd field Customer.score: I32 fill 0\nadd check scored on customers (score > 0)\n";
+    after(47, &[check], |db| {
+        let (version, detail) = refusal(db);
+        assert_eq!(2, version);
+        assert!(detail.contains("scored"), "{detail}");
+    });
+}
+
+#[test]
+fn a_fill_that_breaks_an_existing_check_is_refused() {
+    let check = "module shop\nadd check short on payments.Card (scalar_len(last4) == 4)\n";
+    let split = r#"module shop
+split constructor Payment.Card into Visa { last4: Text } | Other { last4: Text }
+  by match
+    | Card c -> Visa { last4: "12345" }
+"#;
+    after(48, &[check, split], |db| {
+        let (version, detail) = refusal(db);
+        assert_eq!(3, version);
+        assert!(detail.contains("short"), "{detail}");
+    });
+}
+
+#[test]
+fn a_fill_whose_evaluation_faults_refuses_the_migration() {
+    let add = "module shop\nadd field Customer.ratio: I64 fill 1 / 0\n";
+    after(49, &[add], |db| {
+        let (version, detail) = refusal(db);
+        assert_eq!(2, version);
+        assert!(detail.contains("DivisionByZero"), "{detail}");
+    });
+}
+
+#[test]
+fn a_crash_at_every_flush_of_a_split_reopens_to_the_split_with_every_row_routed() {
+    let seed = 50;
+    let split = r"module shop
+split constructor Payment.Card into Visa { digits: Text } | Other { digits: Text }
+  by match
+    | Card { last4 } -> Visa { digits: last4 }
+";
+    let mut sim = Sim::new(seed, Config::default());
+    sim.record();
+    let mut start = 0;
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP]);
+        write(&db, CUSTOMERS);
+        db.close().expect("the database closes");
+        start = rt.recorded();
+        let db = opened(&rt, &[SHOP, split]);
+        db.close().expect("the database closes");
+    });
+    let recording = sim.recording();
+    let flushes: Vec<usize> = recording
+        .flushes()
+        .into_iter()
+        .filter(|&f| f >= start)
+        .collect();
+    assert!(flushes.len() > 2, "{} flushes", flushes.len());
+    for at in flushes {
+        let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
+        let mut sim = Sim::with_files(seed + at as u64, Config::default(), files);
+        run(&mut sim, |rt| {
+            let db = opened(&rt, &[SHOP, split]);
+            assert_eq!(
+                vec![r#""4242""#],
+                query(&db, "from p in payments.Visa select p.digits"),
+                "after a crash at event {at}"
+            );
+            assert_eq!(
+                2,
+                query(&db, "from c in customers select c.name").len(),
+                "after a crash at event {at}"
+            );
+        });
+    }
+}
+
+#[test]
+fn a_shipped_migration_differing_only_in_an_arm_clause_diverges() {
+    let shop = format!(
+        "{SHOP}define fn method (p: Payment) -> Text = match p\n  | Card c -> c.last4\n  | Invoice i -> i.due\n"
+    );
+    let add = |arm: &str| {
+        format!(
+            "module shop\nadd constructor Payment.Wire {{ iban: Text }}\n  arm method: Wire w -> {arm}\n"
+        )
+    };
+    let (first, other) = (add("w.iban"), add("\"wire\""));
+    let mut sim = Sim::new(51, Config::default());
+    run(&mut sim, |rt| drop(opened(&rt, &[&shop, &first])));
+    run(&mut sim, |rt| match open(&rt, &[&shop, &other]) {
+        Err(OpenError::Diverged { version }) => assert_eq!(2, version),
+        got => panic!("a different arm clause does not diverge: {:?}", got.err()),
+    });
+}
+
+#[test]
+fn a_shipped_migration_differing_only_in_a_carried_field_diverges() {
+    let shop = format!(
+        "{SHOP}add type Note = {{ id: Key notes, about: Key customers, text: Text }}\nadd relation notes : Note key id generate sequence\n"
+    );
+    let rekey = "module shop\nrekey relation customers key name\n  carry Payment.customer, Note.about\ndrop field Customer.id\n";
+    let reordered = "module shop\nrekey relation customers key name\n  carry Note.about, Payment.customer\ndrop field Customer.id\n";
+    let mut sim = Sim::new(52, Config::default());
+    run(&mut sim, |rt| drop(opened(&rt, &[&shop, rekey])));
+    run(&mut sim, |rt| match open(&rt, &[&shop, reordered]) {
+        Err(OpenError::Diverged { version }) => assert_eq!(2, version),
+        got => panic!("a reordered carry clause does not diverge: {:?}", got.err()),
+    });
+}
+
+#[test]
+fn reverting_an_invertible_split_merges_the_rows_back() {
+    let brand = "module shop\nadd type Brand = Visa | Other\nadd field Payment.Card.brand: Brand fill Visa\n";
+    let split = r"module shop
+split constructor Payment.Card into Visa { last4: Text } | Other { last4: Text }
+  by match
+    | Card { brand: Visa, last4 }  -> Visa { last4: last4 }
+    | Card { brand: Other, last4 } -> Other { last4: last4 }
+";
+    let revert = "module shop\nrevert 0003\n";
+    after_invoice(60, &[brand, split, revert], |db| {
+        let db = db.expect("the revert applies");
+        assert_eq!(
+            vec![r#"{ brand: Visa, last4: "4242" }"#],
+            query(
+                &db,
+                "from p in payments.Card select { brand: p.brand, last4: p.last4 }"
+            )
+        );
+        assert_eq!(
+            vec![r#""2027-01""#],
+            query(&db, "from p in payments.Invoice select p.due")
+        );
+        let got = fails(&db, "from p in payments.Visa select p.last4");
+        assert!(matches!(got, Error::Rejected { .. }), "{got:?}");
+    });
+}
+
+#[test]
+fn reverting_an_exact_merge_splits_the_rows_back_by_the_discriminator() {
+    let merge = r"module shop
+add type Kind = Card | Invoice
+merge constructor Payment.(Card | Invoice) into Any { kind: Kind, last4: Text }
+  by match
+    | Card c    -> Any { kind: Card, last4: c.last4 }
+    | Invoice i -> Any { kind: Invoice, last4: i.due }
+";
+    let revert = "module shop\nrevert 0002\n";
+    after_invoice(61, &[merge, revert], |db| {
+        let db = db.expect("the revert applies");
+        assert_eq!(
+            vec![r#""4242""#],
+            query(&db, "from p in payments.Card select p.last4")
+        );
+        assert_eq!(
+            vec![r#""2027-01""#],
+            query(&db, "from p in payments.Invoice select p.due")
+        );
+    });
+}
+
+#[test]
+fn reverting_a_nest_unnests_the_rows() {
+    let revert = "module shop\nrevert 0002\n";
+    after_invoice(62, &[NEST, revert], |db| {
+        let db = db.expect("the revert applies");
+        assert_eq!(
+            vec![r#""4242""#],
+            query(&db, "from p in payments.Card select p.last4")
+        );
+        assert_eq!(
+            vec![r#""2027-01""#],
+            query(&db, "from p in payments.Invoice select p.due")
+        );
+    });
+}
+
+#[test]
+fn reverting_an_unnest_nests_the_rows_again() {
+    let unnest = "module shop\nunnest constructor Payment.Held\n";
+    let revert = "module shop\nrevert 0003\n";
+    after_invoice(63, &[NEST, unnest, revert], |db| {
+        let db = db.expect("the revert applies");
+        assert_eq!(
+            vec![r#"Card { last4: "4242" }"#, r#"Invoice { due: "2027-01" }"#],
+            query(&db, "from p in payments.Held select p.method")
+        );
+    });
+}
+
+#[test]
+fn reverting_a_move_to_the_header_moves_the_field_back_and_keeps_its_values() {
+    let up = "module shop\nmove field Payment.Card.last4 to Payment fill match\n  | Invoice i -> i.due\n";
+    let revert = "module shop\nrevert 0002\n";
+    after_invoice(64, &[up, revert], |db| {
+        let db = db.expect("the revert applies");
+        assert_eq!(
+            vec![r#""4242""#],
+            query(&db, "from p in payments.Card select p.last4")
+        );
+        let got = fails(&db, "from p in payments.Invoice select p.last4");
+        assert!(matches!(got, Error::Rejected { .. }), "{got:?}");
+    });
+}
+
+#[test]
+fn reverting_an_added_field_drops_it_and_keeps_the_rows() {
+    let add = "module shop\nadd field Customer.vip: Bool fill false\n";
+    let revert = "module shop\nrevert 0002\n";
+    after(65, &[add, revert], |db| {
+        let db = db.expect("the revert applies");
+        assert_eq!(
+            vec![r#""ann""#, r#""bob""#],
+            query(&db, "from c in customers select c.name")
+        );
+        let got = fails(&db, "from c in customers select c.vip");
+        assert!(matches!(got, Error::Rejected { .. }), "{got:?}");
+    });
+}
+
+#[test]
+fn reverting_a_revert_applies_the_migration_again_with_its_data_map() {
+    let add = "module shop\nadd field Customer.vip: Bool fill false\n";
+    let revert = "module shop\nrevert 0002\n";
+    let again = "module shop\nrevert 0003\n";
+    after(66, &[add, revert, again], |db| {
+        let db = db.expect("the second revert applies");
+        assert_eq!(
+            vec![
+                r#"{ name: "ann", vip: False }"#,
+                r#"{ name: "bob", vip: False }"#
+            ],
+            query(
+                &db,
+                "from c in customers select { name: c.name, vip: c.vip }"
+            )
+        );
+    });
+}
+
+#[test]
+fn reverting_a_migration_of_several_operators_undoes_them_last_first() {
+    let two = "module shop\nadd field Payment.Card.network: Text fill \"visa\"\nrename field Payment.Card.last4 to digits\n";
+    let revert = "module shop\nrevert 0002\n";
+    after(67, &[two, revert], |db| {
+        let db = db.expect("the revert applies");
+        assert_eq!(
+            vec![r#""4242""#],
+            query(&db, "from p in payments.Card select p.last4")
+        );
+        let got = fails(&db, "from p in payments.Card select p.network");
+        assert!(matches!(got, Error::Rejected { .. }), "{got:?}");
+    });
+}
+
+#[test]
+fn reverting_a_lossy_split_is_refused() {
+    let lossy = r#"module shop
+split constructor Payment.Card into Visa { digits: Text } | Other { digits: Text }
+  by match
+    | Card c -> Visa { digits: "xxxx" }
+"#;
+    let revert = "module shop\nrevert 0002\n";
+    after(68, &[lossy, revert], |db| {
+        let (version, _) = refusal(db);
+        assert_eq!(3, version);
+    });
+}
+
+#[test]
+fn a_crash_at_every_flush_of_a_revert_with_a_fill_reopens_to_the_revert_with_its_fill() {
+    let seed = 69;
+    let drop_field = "module shop\ndrop field Payment.Card.last4\n";
+    let revert = "module shop\nrevert 0002\n  fill Payment.Card.last4 = \"0000\"\n";
+    let mut sim = Sim::new(seed, Config::default());
+    sim.record();
+    let mut start = 0;
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP]);
+        write(&db, CUSTOMERS);
+        db.close().expect("the database closes");
+        let db = opened(&rt, &[SHOP, drop_field]);
+        db.close().expect("the database closes");
+        start = rt.recorded();
+        let db = opened(&rt, &[SHOP, drop_field, revert]);
+        db.close().expect("the database closes");
+    });
+    let recording = sim.recording();
+    let flushes: Vec<usize> = recording
+        .flushes()
+        .into_iter()
+        .filter(|&f| f >= start)
+        .collect();
+    assert!(flushes.len() > 2, "{} flushes", flushes.len());
+    for at in flushes {
+        let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
+        let mut sim = Sim::with_files(seed + at as u64, Config::default(), files);
+        run(&mut sim, |rt| {
+            let db = opened(&rt, &[SHOP, drop_field, revert]);
+            assert_eq!(
+                vec![r#""0000""#],
+                query(&db, "from p in payments.Card select p.last4"),
+                "after a crash at event {at}"
+            );
+        });
+    }
 }

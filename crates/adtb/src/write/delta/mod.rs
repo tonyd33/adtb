@@ -52,6 +52,21 @@ pub struct Checks {
     pub deltas: Vec<Delta>,
 }
 
+/// Why the constraints of a schema compile to no incremental checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unadmitted {
+    /// Each constraint without an index-bounded incremental check, with why.
+    Refused(Vec<Refusal>),
+    /// A guarantee of the checker does not hold; the one named.
+    Internal(String),
+}
+
+/// Why one constraint compiles to no incremental check.
+enum Outside {
+    Refused(Vec<String>),
+    Internal(String),
+}
+
 /// A constraint the schema cannot admit: it has no index-bounded incremental check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refusal {
@@ -64,13 +79,14 @@ pub struct Refusal {
 /// to `terms`, a copy of `normal`'s arena, each planned over `catalog` with every relation read
 /// through index probes.
 ///
-/// Fails with a refusal per constraint and reason when some constraint has no such check.
+/// Fails with a refusal per constraint and reason when some constraint has no such check, and
+/// with the internal error when compiling one breaks a guarantee of the checker.
 pub fn compile(
     schema: &Schema,
     normal: &NormalProgram,
     terms: &mut Terms,
     catalog: &Catalog,
-) -> Result<Vec<Checks>, Vec<Refusal>> {
+) -> Result<Vec<Checks>, Unadmitted> {
     let named = schema
         .constraints
         .iter()
@@ -123,16 +139,17 @@ pub fn compile(
                 reads,
                 deltas,
             }),
-            Err(why) => refused.extend(why.into_iter().map(|detail| Refusal {
+            Err(Outside::Refused(why)) => refused.extend(why.into_iter().map(|detail| Refusal {
                 constraint: name.clone(),
                 detail,
             })),
+            Err(Outside::Internal(what)) => return Err(Unadmitted::Internal(what)),
         }
     }
     if refused.is_empty() {
         Ok(out)
     } else {
-        Err(refused)
+        Err(Unadmitted::Refused(refused))
     }
 }
 
@@ -377,7 +394,7 @@ impl Compiler<'_> {
 
     /// Returns the delta queries of the constraint `name` with query `q`, or every reason it is
     /// outside the bound.
-    fn constraint(&mut self, q: Tm) -> Result<Vec<Delta>, Vec<String>> {
+    fn constraint(&mut self, q: Tm) -> Result<Vec<Delta>, Outside> {
         let mut binders = HashMap::new();
         let mut occurrences = Vec::new();
         self.top(q, &mut binders, &mut occurrences);
@@ -401,7 +418,7 @@ impl Compiler<'_> {
                 };
                 match made {
                     Ok((t, trigger)) => terms.push((t, Some(trigger), what)),
-                    Err(e) => return Err(vec![format!("{what}: {}", self.refusal(&e))]),
+                    Err(e) => return Err(Outside::Refused(vec![self.reason(&what, e)?])),
                 }
             }
         }
@@ -410,7 +427,7 @@ impl Compiler<'_> {
         for (t, trigger, what) in terms {
             let t = match self.priors(t) {
                 Ok(t) => t,
-                Err(e) => return Err(vec![format!("{what}: {}", self.refusal(&e))]),
+                Err(e) => return Err(Outside::Refused(vec![self.reason(&what, e)?])),
             };
             for reason in self.shapes(t) {
                 let r = format!("{what}: {reason}");
@@ -427,14 +444,26 @@ impl Compiler<'_> {
                     plan,
                 }),
                 Err(e) => {
-                    let r = format!("{what}: {}", self.refusal(&e));
+                    let r = self.reason(&what, e)?;
                     if !why.contains(&r) {
                         why.push(r);
                     }
                 }
             }
         }
-        if why.is_empty() { Ok(deltas) } else { Err(why) }
+        if why.is_empty() {
+            Ok(deltas)
+        } else {
+            Err(Outside::Refused(why))
+        }
+    }
+
+    /// Returns why `what` has no bounded check, for `e`; fails with an internal error as itself.
+    fn reason(&self, what: &str, e: plan::Error) -> Result<String, Outside> {
+        match e {
+            plan::Error::Internal(broken) => Err(Outside::Internal(broken)),
+            e => Ok(format!("{what}: {}", self.refusal(&e))),
+        }
     }
 
     fn refusal(&self, e: &plan::Error) -> String {

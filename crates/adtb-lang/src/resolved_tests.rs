@@ -528,3 +528,81 @@ fn renames_and_drops_resolve_to_the_ids_of_what_they_name() {
     assert!(matches!(got[1], Resolved::DropIndex { .. }), "{got:?}");
     assert!(matches!(got[2], Resolved::DropFn { .. }), "{got:?}");
 }
+
+#[test]
+fn dropping_a_relation_then_its_type_resolves() {
+    let text = "module auth\nadd type Label = { id: Key labels, name: Text }\nadd relation labels : Label key id\n";
+    let src = migrated(&first(), text);
+    let src = migrated(&src, "module auth\ndrop relation labels\ndrop type Label\n");
+    let got: Vec<Resolved> = ops(&src, 3).into_iter().map(|o| o.op).collect();
+    assert_eq!(2, got.len(), "{got:?}");
+}
+
+#[test]
+fn an_arm_clause_resolves_to_its_target_and_canonical_arm() {
+    let text = "module auth\nadd constructor Identity.Passkey { cred: Bytes }\n  arm display_name: Passkey p -> \"passkey\"\n";
+    let src = migrated(&first(), text);
+    let got = ops(&src, 2);
+    assert_eq!(
+        vec![Clause::Arm {
+            target: ArmTarget::OfFn {
+                function: id(&src, "fn auth::display_name")
+            },
+            arm: "auth::Passkey p -> \"passkey\"".into()
+        }],
+        got[0].clauses
+    );
+}
+
+#[test]
+fn a_merge_lists_the_constructors_it_replaces_and_its_arms() {
+    let text = r"module auth
+add type Provider = Google | Apple
+merge constructor Identity.(Google | Apple) into Social { provider: Provider, sub: Text }
+  by match
+    | Google g -> Social { provider: Google, sub: g.gid }
+    | Apple a  -> Social { provider: Apple, sub: a.sub }
+  arm display_name: Social s -> s.sub
+";
+    let before = migrated(
+        &first(),
+        "module auth\ndrop unique (gid) in identities.Google\ndrop check short_gid\n",
+    );
+    let google = id(&before, "ctor auth::Identity.Google");
+    let apple = id(&before, "ctor auth::Identity.Apple");
+    let src = migrated(&before, text);
+    let got = ops(&src, 3);
+    assert_eq!(3, got[1].clauses.len(), "{:?}", got[1].clauses);
+    assert_eq!(Clause::Member { ctor: google }, got[1].clauses[0]);
+    assert_eq!(Clause::Member { ctor: apple }, got[1].clauses[1]);
+    assert!(
+        matches!(&got[1].clauses[2], Clause::Arm { arm, .. } if arm == "auth::Social s -> s . sub"),
+        "{:?}",
+        got[1].clauses
+    );
+}
+
+#[test]
+fn a_rekey_lists_its_carried_fields_and_a_revert_its_fills() {
+    let src = migrated(
+        &first(),
+        "module auth\nadd field Identity.EmailPass.note: Text fill \"\"\n",
+    );
+    let note = id(&src, "field auth::Identity.EmailPass.note");
+    let src = migrated(&src, "module auth\ndrop field Identity.EmailPass.note\n");
+    let src = migrated(
+        &src,
+        "module auth\nrevert 0003\n  fill Identity.EmailPass.note = \"x\"\n",
+    );
+    let got = ops(&src, 4);
+    let [Clause::Fill { field, fill }] = got[0].clauses.as_slice() else {
+        panic!("one fill clause: {:?}", got[0].clauses);
+    };
+    assert_ne!(note, *field, "a restored field is a new object");
+    assert_eq!("\"x\"", fill);
+    let text =
+        "module auth\nrekey relation users key name\n  carry Identity.user\ndrop field User.id\n";
+    let user = id(&src, "field auth::Identity.user");
+    let src = migrated(&src, text);
+    assert_eq!(vec![Clause::Carry { field: user }], ops(&src, 5)[0].clauses);
+}

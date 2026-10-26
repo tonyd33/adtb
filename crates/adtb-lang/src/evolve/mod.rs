@@ -21,6 +21,7 @@ mod ids;
 mod names;
 mod resolved;
 mod revert;
+mod rowmap;
 mod text;
 
 use field::{Part, path_text};
@@ -31,7 +32,10 @@ use text::*;
 mod tests;
 
 pub use crate::schema::Stage;
-pub use resolved::{Clause, Code, Function, Place, Resolved, ResolvedOp, Target};
+pub use resolved::{
+    ArmTarget, Clause, Code, Function, IndexKind, Place, Resolved, ResolvedOp, Target,
+};
+pub use rowmap::{RowFn, RowMap, Step};
 
 /// A stage and the version whose migration set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -610,6 +614,17 @@ impl Source {
         text: &str,
         noted: Option<&RefCell<Names>>,
     ) -> Result<(), Vec<Diag>> {
+        self.apply_recording(module, op, text, noted, None)
+    }
+
+    fn apply_recording(
+        &mut self,
+        module: &str,
+        op: &Operator,
+        text: &str,
+        noted: Option<&RefCell<Names>>,
+        steps: Option<&RefCell<Vec<Step>>>,
+    ) -> Result<(), Vec<Diag>> {
         let before = self.clone();
         let r = Cx {
             src: self,
@@ -618,6 +633,7 @@ impl Source {
             span: op.span,
             noted,
             copying: noted.is_some(),
+            steps,
         }
         .operator(&op.kind);
         match r {
@@ -694,6 +710,8 @@ struct Cx<'a> {
     noted: Option<&'a RefCell<Names>>,
     /// Whether the text the operator copies into declarations is recorded as copies of `text`.
     copying: bool,
+    /// Where a revert records the steps of its inverses, when replaying for them.
+    steps: Option<&'a RefCell<Vec<Step>>>,
 }
 
 type R<T> = Result<T, Vec<Diag>>;
@@ -1131,7 +1149,18 @@ impl Cx<'_> {
 
     fn drop_type(&mut self, q: &QName) -> R<()> {
         let (i, decl) = self.type_decl(q)?;
-        let schema = self.schema()?;
+        let schema = match self.schema() {
+            Ok(s) => s,
+            Err(ds) => {
+                let mut without = self.src.clone();
+                without.remove_decl(i);
+                if without.schema().is_err() {
+                    return Err(ds);
+                }
+                self.remove_type(i, &decl);
+                return Ok(());
+            }
+        };
         let def = self.type_id(&schema, q)?;
         let name = &q.name.text;
         let refused = |what: String| -> R<()> {
@@ -1170,12 +1199,17 @@ impl Cx<'_> {
                 return refused(self.object_name(file));
             }
         }
-        let module = self.module_of(q);
+        self.remove_type(i, &decl);
+        Ok(())
+    }
+
+    /// Removes type declaration `i`, `decl`, and its value-level states.
+    fn remove_type(&mut self, i: usize, decl: &ast::TypeDecl) {
+        let module = self.src.decls[i].module.clone();
         self.src.remove_decl(i);
         self.src
             .value_states
             .retain(|(m, t, _), _| !(*m == module && *t == decl.name.text));
-        Ok(())
     }
 
     fn rename_type(&mut self, q: &QName, to: &ast::Ident) -> R<()> {

@@ -281,7 +281,7 @@ impl<R: Runtime> Engine<R> {
         let plan = catalog.plan();
         let root = catalog.root();
         let sequences = catalog.sequences();
-        let (heaps, indexes) = catalog.into_bindings();
+        let (heaps, indexes) = catalog.bindings();
         let pager = Arc::new(pager);
         let schema = Arc::new(schema);
         let query_memory = options

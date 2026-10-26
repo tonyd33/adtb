@@ -795,6 +795,15 @@ pub(super) struct ScopedClause {
     pub(super) scope: Option<CtorSet>,
 }
 
+/// What a fill or a routing checks against.
+pub(super) struct RowTypes {
+    pub(super) schema: Schema,
+    pub(super) program: Program,
+    pub(super) module: ModuleId,
+    pub(super) row: Ty,
+    pub(super) result: Ty,
+}
+
 /// What a routing carries whole: (source constructor, field, product constructor, field).
 pub(super) type Carries = Vec<(String, String, String, String)>;
 
@@ -865,30 +874,21 @@ impl Cx<'_> {
         product_texts: &[Written],
         arms: &[ast::Arm],
     ) -> R<Carries> {
-        let (_, program) = self.checked()?;
-        let (i, t) = self.type_decl(def_q)?;
-        let schema = self.with_ctors(i, &t, product_texts)?;
-        let def = self.type_id(&schema, def_q)?;
-        let td = schema.ty(def);
-        let src_ix: Vec<u32> = sources.iter().filter_map(|s| td.ctor_index(s)).collect();
-        let prod_ix: Vec<u32> = products.iter().filter_map(|p| td.ctor_index(p)).collect();
-        let module = schema
-            .module_named(&self.module_of(def_q))
-            .unwrap_or(schema::PRELUDE);
-        let row = Self::row_ty(&schema, def, Some(src_ix));
-        let expected = Self::row_ty(&schema, def, Some(prod_ix));
+        let rt = self.routing_types(def_q, sources, products, product_texts)?;
+        let (schema, program, module, row, expected) =
+            (&rt.schema, &rt.program, rt.module, &rt.row, &rt.result);
         let mut refs = Vec::new();
         check::check_row(
-            &schema,
-            &program,
+            schema,
+            program,
             module,
-            &row,
+            row,
             RowBody::Match(arms, self.span),
-            Some(&expected),
+            Some(expected),
             Some(&mut refs),
         )
         .map_err(|d| vec![d])?;
-        self.note(&schema, &refs);
+        self.note(schema, &refs);
         let mut carries = Vec::new();
         for a in arms {
             let Some(p) = a.patterns.first() else {
@@ -955,6 +955,37 @@ impl Cx<'_> {
             }
         }
         Ok(carries)
+    }
+
+    /// Returns what a routing over rows of `sources` to `products` types against: the schema with
+    /// the products appended to `def_q`, its row type over the sources and its result type over the
+    /// products.
+    pub(super) fn routing_types(
+        &self,
+        def_q: &QName,
+        sources: &[String],
+        products: &[String],
+        product_texts: &[Written],
+    ) -> R<RowTypes> {
+        let (_, program) = self.checked()?;
+        let (i, t) = self.type_decl(def_q)?;
+        let schema = self.with_ctors(i, &t, product_texts)?;
+        let def = self.type_id(&schema, def_q)?;
+        let td = schema.ty(def);
+        let src_ix: Vec<u32> = sources.iter().filter_map(|s| td.ctor_index(s)).collect();
+        let prod_ix: Vec<u32> = products.iter().filter_map(|p| td.ctor_index(p)).collect();
+        let module = schema
+            .module_named(&self.module_of(def_q))
+            .unwrap_or(schema::PRELUDE);
+        let row = Self::row_ty(&schema, def, Some(src_ix));
+        let result = Self::row_ty(&schema, def, Some(prod_ix));
+        Ok(RowTypes {
+            schema,
+            program,
+            module,
+            row,
+            result,
+        })
     }
 
     /// The text of a `unique` or `index` clause of a split, with the fields as written in the migration.

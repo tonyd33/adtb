@@ -123,8 +123,8 @@ pub type Fill<'a> = dyn Fn(&[Field], &[Value]) -> Result<Value, String> + 'a;
 
 /// Map `data` from schema `a` to schema `b`, the schemas before and after one operator.
 ///
-/// A row of a constructor both schemas have keeps each field both have, by field id, and takes
-/// each other field from `moved.fills`. A constructor only `b` has holds the rows `moved.routed`
+/// A row of a constructor both schemas have takes each field `moved.fills` gives from it, and
+/// keeps each other field both have, by field id. A constructor only `b` has holds the rows `moved.routed`
 /// gives it. Fails naming each constructor relation that `b` lacks, `moved` does not consume and
 /// that holds rows, each relation `b` lacks that holds rows, and each field a constructor with
 /// rows gains and `moved` does not fill.
@@ -192,8 +192,8 @@ pub fn step(a: &Schema, b: &Schema, data: &mut Data, mut moved: Moved) -> Result
     Ok(())
 }
 
-/// Returns `row`, with fields `from`, as a row with fields `to`: each field `from` has by id
-/// converted, each other one from the fill `fill` gives for its id.
+/// Returns `row`, with fields `from`, as a row with fields `to`: each field the fill `fill` gives
+/// for its id from it, each other field `from` has by id converted.
 fn carry<'f>(
     from: &[Field],
     to: &[Field],
@@ -209,9 +209,9 @@ fn carry<'f>(
                             .then(|| from.iter().position(|f| f.name == t.name))
                             .flatten()
                     });
-            match (kept, t.id.and_then(&fill)) {
-                (Some(at), _) => convert(&from[at].ty, &t.ty, &row[at]),
-                (None, Some(f)) => f(from, row),
+            match (t.id.and_then(&fill), kept) {
+                (Some(f), _) => f(from, row),
+                (None, Some(at)) => convert(&from[at].ty, &t.ty, &row[at]),
                 (None, None) => Err(format!("field `{}` has no value for existing rows", t.name)),
             }
         })

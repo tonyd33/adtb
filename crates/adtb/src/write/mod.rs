@@ -156,15 +156,20 @@ impl From<exec::Error> for Error {
 /// Returns each constraint and check of `schema` without an index-bounded incremental check
 /// over the indexes `catalog` describes, by qualified name, with why; empty when the schema
 /// admits every one.
+///
+/// Fails with the guarantee of the checker that compiling a check breaks.
 pub fn refusals(
     schema: &Schema,
     normal: &NormalProgram,
     catalog: &Catalog,
-) -> Vec<(String, String)> {
+) -> Result<Vec<(String, String)>, String> {
     let mut terms = normal.terms.clone();
     match delta::compile(schema, normal, &mut terms, catalog) {
-        Ok(_) => Vec::new(),
-        Err(why) => why.into_iter().map(|r| (r.constraint, r.detail)).collect(),
+        Ok(_) => Ok(Vec::new()),
+        Err(delta::Unadmitted::Refused(why)) => {
+            Ok(why.into_iter().map(|r| (r.constraint, r.detail)).collect())
+        }
+        Err(delta::Unadmitted::Internal(what)) => Err(what),
     }
 }
 

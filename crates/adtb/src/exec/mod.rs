@@ -25,7 +25,8 @@ pub use value::{F32, F64, Val};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use adtb_lang::kernel::Var;
+use adtb_lang::kernel::{Terms, Tm, Var};
+use adtb_lang::schema::Schema;
 use adtb_lang::textual::PrintError;
 
 use crate::batch::{self, Batch, BatchBuilder, Datum};
@@ -121,6 +122,38 @@ impl From<PageError> for Error {
 impl From<PrintError> for Error {
     fn from(e: PrintError) -> Error {
         Error::Internal(e.message)
+    }
+}
+
+/// A scalar expression of one variable, compiled.
+#[derive(Debug)]
+pub struct Scalar {
+    code: Arc<code::Code>,
+    var: Var,
+    vars: usize,
+    shared: code::Shared,
+}
+
+impl Scalar {
+    /// Compiles `body`, a scalar normal form in `terms` for `schema` whose one free variable is
+    /// `var`.
+    pub fn new(schema: &Schema, terms: &Terms, var: Var, body: Tm) -> Result<Scalar, Error> {
+        Ok(Scalar {
+            code: code::Compiler::new(schema, terms).code(body)?,
+            var,
+            vars: terms.vars.len(),
+            shared: code::Shared {
+                caller: None,
+                fault_ctors: ir::fault_ctors(schema),
+            },
+        })
+    }
+
+    /// Returns the expression's value with its variable bound to `v`.
+    pub fn eval(&self, v: Val) -> Result<Val, Error> {
+        let mut f = frame::Frame::unit(self.vars);
+        f.bind_one(self.var.0, v);
+        self.code.eval_one(&mut f, &self.shared)
     }
 }
 

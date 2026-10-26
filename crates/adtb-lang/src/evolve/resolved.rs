@@ -182,10 +182,39 @@ pub enum Place {
 /// A clause of a resolved operator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Clause {
-    /// A constructor a named set lists, or one a unique or index written with `in` ranges over.
+    /// A constructor a named set lists, a merge or nest replaces, a moved field goes to, or a
+    /// unique or index written with `in` ranges over.
     Member { ctor: u64 },
     /// A named set an added constructor joins.
     Joins { set: u64 },
+    /// An `arm` clause: what its arm ends the match of, and the arm.
+    Arm { target: ArmTarget, arm: String },
+    /// A `unique` or `index` clause of a split: the index it adds, its kind and its fields.
+    Replacement {
+        index: u64,
+        kind: IndexKind,
+        fields: String,
+    },
+    /// A field a rekey carries.
+    Carry { field: u64 },
+    /// A field a revert fills, with its fill.
+    Fill { field: u64, fill: String },
+}
+
+/// The schema object an `arm` clause's arm belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArmTarget {
+    OfFn { function: u64 },
+    OfConstraint { constraint: u64 },
+    OfComputed { computed: u64 },
+}
+
+/// The kind of an index a split's replacement clause adds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexKind {
+    Unique,
+    Plain,
+    Interval,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -674,7 +703,18 @@ impl Resolver<'_> {
             OperatorKind::DropIndex { fields, on, .. } => Resolved::DropIndex {
                 index: self.index_in(before, fields, on, false)?,
             },
-            OperatorKind::Rekey { relation, key, .. } => {
+            OperatorKind::Rekey {
+                relation,
+                key,
+                carry,
+            } => {
+                for p in carry {
+                    clauses.push(Clause::Carry {
+                        field: self
+                            .field_in(before, p, &p.field.text)
+                            .or_else(|| self.field_in(after, p, &p.field.text))?,
+                    });
+                }
                 let rel = self.relation_in(after, relation)?;
                 Resolved::Rekey {
                     relation: after.ids.relations[&rel],
@@ -698,9 +738,17 @@ impl Resolver<'_> {
             OperatorKind::DropCheck(c) => Resolved::DropCheck {
                 constraint: self.constraint_in(before, c)?,
             },
-            OperatorKind::Revert { migration, .. } => Resolved::Revert {
-                migration: migration.parse().ok()?,
-            },
+            OperatorKind::Revert { migration, fills } => {
+                for (p, f) in fills {
+                    clauses.push(Clause::Fill {
+                        field: self.field_in(after, p, &p.field.text)?,
+                        fill: canonical_term(&self.logged.text, fill_span(f)?, self.names),
+                    });
+                }
+                Resolved::Revert {
+                    migration: migration.parse().ok()?,
+                }
+            }
             kind => return self.reshaping(kind, clauses),
         })
     }
@@ -715,7 +763,11 @@ impl Resolver<'_> {
         let (before, after) = (self.before, self.schema);
         Some(match kind {
             OperatorKind::AddConstructor {
-                path, place, joins, ..
+                path,
+                place,
+                joins,
+                arms,
+                ..
             } => {
                 let ctor = self.type_ctor(after, &path.ty, &path.ctor.text)?;
                 let place = match place {
@@ -733,6 +785,9 @@ impl Resolver<'_> {
                             set: self.set_in(after, &j.relation, &s.text)?,
                         });
                     }
+                }
+                for a in arms {
+                    clauses.push(self.arm_clause(a)?);
                 }
                 Resolved::AddConstructor {
                     ctor,
@@ -758,28 +813,6 @@ impl Resolver<'_> {
             },
             OperatorKind::Deprecate(t) => Resolved::Deprecate {
                 target: self.target(t)?,
-            },
-            OperatorKind::SplitConstructor {
-                path, into, arms, ..
-            } => Resolved::Split {
-                ctor: self.type_ctor(before, &path.ty, &path.ctor.text)?,
-                decl: term(
-                    ctor_def_span(text, &into.first()?.name)
-                        .to(ctor_def_span(text, &into.last()?.name)),
-                ),
-                routing: arms_term(arms).map_or_else(String::new, term),
-            },
-            OperatorKind::MergeConstructor { ty, into, arms, .. } => Resolved::Merge {
-                ctor: self.type_ctor(after, ty, &into.name.text)?,
-                decl: def(&into.name),
-                routing: arms.as_deref().and_then(arms_term).map(term),
-            },
-            OperatorKind::NestConstructor { ty, into, .. } => Resolved::Nest {
-                ctor: self.type_ctor(after, ty, &into.name.text)?,
-                decl: def(&into.name),
-            },
-            OperatorKind::UnnestConstructor(path, _) => Resolved::Unnest {
-                ctor: self.type_ctor(before, &path.ty, &path.ctor.text)?,
             },
             OperatorKind::AddField { path, ty, fill } => Resolved::AddField {
                 field: self.field_in(after, path, &path.field.text)?,
@@ -811,6 +844,11 @@ impl Resolver<'_> {
                     self.field_in(after, &into, &path.field.text)?
                 } else {
                     let first = sel.iter().flat_map(sel_idents).next()?;
+                    for c in sel.iter().flat_map(sel_idents) {
+                        clauses.push(Clause::Member {
+                            ctor: self.type_ctor(after, to, &c.text)?,
+                        });
+                    }
                     let into = ast::FieldPath {
                         ty: to.clone(),
                         ctor: Some(first.clone()),
@@ -827,8 +865,180 @@ impl Resolver<'_> {
                     },
                 }
             }
+            kind => return self.restructuring(kind, clauses),
+        })
+    }
+
+    /// Returns the resolved form of an operator that splits, merges, nests or unnests
+    /// constructors, its clauses appended to `clauses`; `None` when an object it names is in
+    /// neither schema or it is no such operator.
+    fn restructuring(&self, kind: &OperatorKind, clauses: &mut Vec<Clause>) -> Option<Resolved> {
+        let text = &self.logged.text;
+        let term = |span: Span| canonical_term(text, span, self.names);
+        let def = |name: &ast::Ident| term(ctor_def_span(text, name));
+        let (before, after) = (self.before, self.schema);
+        Some(match kind {
+            OperatorKind::SplitConstructor {
+                path,
+                into,
+                arms,
+                clauses: split,
+            } => {
+                clauses.extend(self.split_clauses(&path.ty, split)?);
+                Resolved::Split {
+                    ctor: self.type_ctor(before, &path.ty, &path.ctor.text)?,
+                    decl: term(
+                        ctor_def_span(text, &into.first()?.name)
+                            .to(ctor_def_span(text, &into.last()?.name)),
+                    ),
+                    routing: arms_term(arms).map_or_else(String::new, term),
+                }
+            }
+            OperatorKind::MergeConstructor {
+                ty,
+                sel,
+                into,
+                arms,
+                clauses: given,
+            } => {
+                clauses.extend(self.replaced(ty, sel)?);
+                for a in given {
+                    clauses.push(self.arm_clause(a)?);
+                }
+                Resolved::Merge {
+                    ctor: self.type_ctor(after, ty, &into.name.text)?,
+                    decl: def(&into.name),
+                    routing: arms.as_deref().and_then(arms_term).map(term),
+                }
+            }
+            OperatorKind::NestConstructor {
+                ty,
+                sel,
+                into,
+                clauses: given,
+            } => {
+                clauses.extend(self.replaced(ty, sel)?);
+                for a in given {
+                    clauses.push(self.arm_clause(a)?);
+                }
+                Resolved::Nest {
+                    ctor: self.type_ctor(after, ty, &into.name.text)?,
+                    decl: def(&into.name),
+                }
+            }
+            OperatorKind::UnnestConstructor(path, given) => {
+                for a in given {
+                    clauses.push(self.arm_clause(a)?);
+                }
+                Resolved::Unnest {
+                    ctor: self.type_ctor(before, &path.ty, &path.ctor.text)?,
+                }
+            }
             _ => return None,
         })
+    }
+
+    /// Returns the clause of `arm` clause `a`.
+    fn arm_clause(&self, a: &ast::ArmClause) -> Option<Clause> {
+        let after = self.schema;
+        let target = match &a.field {
+            Some(f) => {
+                let rel = self.relation_in(after, &a.target)?;
+                let at = after
+                    .relation(rel)
+                    .computed
+                    .iter()
+                    .position(|c| c.name == f.text)?;
+                ArmTarget::OfComputed {
+                    computed: *after.ids.computed.get(&(rel, at))?,
+                }
+            }
+            None => match self.function_in(after, &a.target) {
+                Some(function) => ArmTarget::OfFn { function },
+                None => ArmTarget::OfConstraint {
+                    constraint: self.constraint_in(after, &a.target)?,
+                },
+            },
+        };
+        Some(Clause::Arm {
+            target,
+            arm: canonical_term(
+                &self.logged.text,
+                a.pattern.span.to(a.body.span),
+                self.names,
+            ),
+        })
+    }
+
+    /// Returns a `Member` clause for each constructor of `ty` that `sel` names, before the
+    /// operator.
+    fn replaced(&self, ty: &QName, sel: &CtorSel) -> Option<Vec<Clause>> {
+        sel_idents(sel)
+            .iter()
+            .map(|c| {
+                Some(Clause::Member {
+                    ctor: self.type_ctor(self.before, ty, &c.text)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Returns the clauses of a split of a constructor of `ty`, in order: each `unique` or
+    /// `index` clause takes, in order, the last indexes of `ty`'s relation the migration gives new
+    /// ids.
+    fn split_clauses(&self, ty: &QName, given: &[ast::SplitClause]) -> Option<Vec<Clause>> {
+        let term = |span: Span| canonical_term(&self.logged.text, span, self.names);
+        let added = given
+            .iter()
+            .filter(|c| !matches!(c, ast::SplitClause::Arm(_)))
+            .count();
+        let mut fresh = Vec::new();
+        if added > 0 {
+            let def = self.type_def(self.schema, ty)?;
+            let old: BTreeSet<u64> = self.before.ids.indexes.values().copied().collect();
+            let (&rel, _) = self
+                .schema
+                .ids
+                .relations
+                .iter()
+                .find(|&(&r, _)| self.schema.relation(r).elem_def == def)?;
+            fresh = self
+                .schema
+                .ids
+                .indexes
+                .range((rel, 0)..=(rel, usize::MAX))
+                .map(|(_, &id)| id)
+                .filter(|id| !old.contains(id))
+                .collect();
+            fresh.drain(..fresh.len().checked_sub(added)?);
+        }
+        let mut fresh = fresh.into_iter();
+        let mut out = Vec::new();
+        for c in given {
+            let (kind, fields) = match c {
+                ast::SplitClause::Arm(a) => {
+                    out.push(self.arm_clause(a)?);
+                    continue;
+                }
+                ast::SplitClause::Unique(fs, _) => (IndexKind::Unique, fs),
+                ast::SplitClause::Index {
+                    interval, fields, ..
+                } => (
+                    if *interval {
+                        IndexKind::Interval
+                    } else {
+                        IndexKind::Plain
+                    },
+                    fields,
+                ),
+            };
+            out.push(Clause::Replacement {
+                index: fresh.next()?,
+                kind,
+                fields: term(fields.first()?.span.to(fields.last()?.span)),
+            });
+        }
+        Some(out)
     }
 
     fn type_in(&self, schema: &Schema, q: &QName) -> Option<u64> {
