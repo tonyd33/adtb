@@ -75,7 +75,7 @@ pub struct Vm {
 }
 
 impl Vm {
-    pub fn create<R: Runtime>(pager: &mut Pager<R>, owner: u32) -> Result<Vm, PageError> {
+    pub fn create<R: Runtime>(pager: &Pager<R>, owner: u32) -> Result<Vm, PageError> {
         let root = pager.allocate(1, PageKind::VisibilityMap, owner)?;
         Ok(Vm { root, owner })
     }
@@ -92,7 +92,7 @@ impl Vm {
     fn leaf<R: Runtime>(
         &self,
         stage: &Stage,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         pid: Pid,
     ) -> Result<Option<Pid>, PageError> {
         let size = pager.page_size();
@@ -112,7 +112,7 @@ impl Vm {
     }
 
     /// Returns whether the bit of `pid` is set.
-    pub fn get<R: Runtime>(&self, pager: &mut Pager<R>, pid: Pid) -> Result<bool, PageError> {
+    pub fn get<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<bool, PageError> {
         let stage = Stage::new();
         let Some(leaf) = self.leaf(&stage, pager, pid)? else {
             return Ok(false);
@@ -127,7 +127,7 @@ impl Vm {
     pub fn put<R: Runtime>(
         &self,
         stage: &mut Stage,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         pid: Pid,
         on: bool,
     ) -> Result<(), PageError> {
@@ -143,7 +143,7 @@ impl Vm {
     }
 
     /// Add the map pages the path to `pid` lacks.
-    fn extend<R: Runtime>(&self, pager: &mut Pager<R>, pid: Pid) -> Result<(), PageError> {
+    fn extend<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
         let size = pager.page_size();
         while pid.0 >= reach(size, level(&pager.read(self.root)?)) {
             let moved = pager.allocate(1, PageKind::VisibilityMap, self.owner)?;
@@ -179,7 +179,7 @@ impl Vm {
     }
 
     /// Returns every page id whose bit is set, in order.
-    pub fn marked<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<Vec<Pid>, PageError> {
+    pub fn marked<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
         let size = pager.page_size();
         let mut out = Vec::new();
         let mut todo = vec![(self.root, 0)];

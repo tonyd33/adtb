@@ -78,8 +78,8 @@ fn below(rt: &SimRuntime, n: usize) -> usize {
 fn setup(sim: &mut Sim, heap_pages: usize) -> (Pid, Vec<Pid>) {
     let mut out = None;
     let outcome = sim.run(|rt| {
-        let mut pager = Pager::create(rt, &options()).expect("create");
-        let txns = Transactions::create(&mut pager).expect("commit log");
+        let pager = Pager::create(rt, &options()).expect("create");
+        let txns = Transactions::create(&pager).expect("commit log");
         let pages = (0..heap_pages)
             .map(|_| {
                 pager
@@ -102,7 +102,7 @@ fn with_open<T>(
     let mut out = None;
     let outcome = sim.run(|rt| {
         let (mut pager, _) = Pager::open(rt, &options()).expect("open");
-        let mut txns = Transactions::open(&mut pager, root).expect("open the commit log");
+        let mut txns = Transactions::open(&pager, root).expect("open the commit log");
         out = Some(body(&mut pager, &mut txns));
     });
     assert_eq!(Outcome::Finished, outcome);
@@ -384,15 +384,15 @@ impl Recovered for Report {
 }
 
 fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &Mutex<World>) {
-    let Ok((mut pager, _)) = Pager::open(rt.clone(), &options()) else {
+    let Ok((pager, _)) = Pager::open(rt.clone(), &options()) else {
         return;
     };
-    let mut txns = Transactions::open(&mut pager, root).expect("open the commit log");
+    let mut txns = Transactions::open(&pager, root).expect("open the commit log");
     let mut unacked: Vec<Xid> = Vec::new();
     for _ in 0..4000 {
         match below(&rt, 12) {
             0..=3 => {
-                let x = txns.begin(&mut pager).expect("begin");
+                let x = txns.begin(&pager).expect("begin");
                 let mut w = world.lock().unwrap();
                 assert!(
                     w.assigned.last().is_none_or(|&l| l < x),
@@ -421,10 +421,10 @@ fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &M
                 let x = running[below(&rt, running.len())];
                 ledger.submit(x.0);
                 if below(&rt, 4) == 0 {
-                    txns.abort(&mut pager, x).expect("abort");
+                    txns.abort(&pager, x).expect("abort");
                     ledger.abort(x.0);
                 } else {
-                    txns.commit(&mut pager, x).expect("commit");
+                    txns.commit(&pager, x).expect("commit");
                     unacked.push(x);
                 }
             }
@@ -444,11 +444,11 @@ fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &M
 }
 
 fn inspect(rt: SimRuntime, root: Pid, assigned: &[Xid]) -> Report {
-    let (mut pager, _) = Pager::open(rt, &options()).expect("open");
-    let txns = Transactions::open(&mut pager, root).expect("open the commit log");
+    let (pager, _) = Pager::open(rt, &options()).expect("open");
+    let txns = Transactions::open(&pager, root).expect("open the commit log");
     let statuses = assigned
         .iter()
-        .map(|&x| (x, txns.status(&mut pager, x).expect("status")))
+        .map(|&x| (x, txns.status(&pager, x).expect("status")))
         .collect();
     let v = pager.verify();
     Report {

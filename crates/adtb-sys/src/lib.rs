@@ -2,5 +2,6 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 
 pub mod buf;
+pub mod lock;
 pub mod pages;
 pub mod runtime;

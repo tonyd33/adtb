@@ -150,20 +150,20 @@ struct Db {
 
 impl Db {
     fn create(rt: SimRuntime, fanout: u16) -> (Db, Roots) {
-        let mut pager = Pager::create(rt, &options()).expect("create");
-        let txns = Transactions::create(&mut pager).expect("commit log");
-        let large = LargeStore::create(&mut pager, LARGE_ID).expect("large store");
+        let pager = Pager::create(rt, &options()).expect("create");
+        let txns = Transactions::create(&pager).expect("commit log");
+        let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
         let heaps: Vec<Heap> = (0..3)
             .map(|h| {
-                Heap::create_with_fanout(&mut pager, HEAP_IDS[h], row_type(h), large, fanout)
+                Heap::create_with_fanout(&pager, HEAP_IDS[h], row_type(h), large, fanout)
                     .expect("heap")
             })
             .collect();
         let [s0, s1] = schemas();
         let [c0, c1] = index_ctors();
         let indexes = vec![
-            Index::create(&mut pager, INDEX_IDS[0], s0, c0).expect("index"),
-            Index::create(&mut pager, INDEX_IDS[1], s1, c1).expect("index"),
+            Index::create(&pager, INDEX_IDS[0], s0, c0).expect("index"),
+            Index::create(&pager, INDEX_IDS[1], s1, c1).expect("index"),
         ];
         let roots = Roots {
             clog: txns.commit_log().root(),
@@ -184,8 +184,8 @@ impl Db {
     }
 
     fn open(rt: SimRuntime, roots: Roots) -> Option<Db> {
-        let (mut pager, _) = Pager::open(rt, &options()).ok()?;
-        let txns = Transactions::open(&mut pager, roots.clog).ok()?;
+        let (pager, _) = Pager::open(rt, &options()).ok()?;
+        let txns = Transactions::open(&pager, roots.clog).ok()?;
         let large = LargeStore::open(LARGE_ID, roots.large);
         let heaps = (0..3)
             .map(|h| Heap::open(&pager, HEAP_IDS[h], roots.heaps[h], row_type(h), large).unwrap())
@@ -223,23 +223,23 @@ impl Db {
     }
 
     fn prune(&mut self, heap: usize, pid: Pid) {
-        vacuum::prune(&mut self.pager, &self.txns, &mut self.heaps[heap], pid).expect("prune");
+        vacuum::prune(&self.pager, &self.txns, &mut self.heaps[heap], pid).expect("prune");
     }
 
     /// Returns what the heaps, the store, the indexes and the routing between them report wrong.
     fn verify(&mut self) -> Vec<String> {
         let mut problems = Vec::new();
         for heap in &self.heaps {
-            problems.extend(heap.verify(&mut self.pager).expect("heap verify"));
+            problems.extend(heap.verify(&self.pager).expect("heap verify"));
         }
         problems.extend(
             self.heaps[0]
                 .large()
-                .verify(&mut self.pager)
+                .verify(&self.pager)
                 .expect("store verify"),
         );
         for (i, index) in self.indexes.iter().enumerate() {
-            if let Err(e) = index.tree().verify(&mut self.pager) {
+            if let Err(e) = index.tree().verify(&self.pager) {
                 problems.push(format!("index {i}: {e:?}"));
             }
         }
@@ -263,7 +263,7 @@ impl Db {
 
     fn index(&mut self, heap: usize, row: &[Value], tid: Tid) {
         for (i, e) in entries(heap, row, tid) {
-            assert!(self.indexes[i].insert(&mut self.pager, &e).expect("index"));
+            assert!(self.indexes[i].insert(&self.pager, &e).expect("index"));
         }
     }
 
@@ -272,20 +272,14 @@ impl Db {
         let mut versions = Vec::new();
         for &h in heaps {
             self.heaps[h]
-                .scan(&mut self.pager, |v| versions.push((h, v)))
+                .scan(&self.pager, |v| versions.push((h, v)))
                 .expect("scan");
         }
         let mut out = Visible::default();
         for (h, v) in versions {
             let seen = self
                 .txns
-                .sees(
-                    &mut self.pager,
-                    snapshot,
-                    None,
-                    v.header.xmin,
-                    v.header.xmax,
-                )
+                .sees(&self.pager, snapshot, None, v.header.xmin, v.header.xmax)
                 .expect("sees");
             if seen {
                 out.add(key_of(&v.row), h, v.row, v.tid);
@@ -298,7 +292,7 @@ impl Db {
     /// version or the heap-only versions after it on its page.
     fn index_visible(&mut self, snapshot: &Snapshot, heaps: &[usize]) -> Visible {
         let all = self.indexes[0]
-            .range(&mut self.pager, Bound::Unbounded, Bound::Unbounded)
+            .range(&self.pager, Bound::Unbounded, Bound::Unbounded)
             .expect("index scan");
         let mut out = Visible::default();
         for e in all {
@@ -309,7 +303,7 @@ impl Db {
             let found = self.chain_visible(snapshot, e.tid);
             if let Some(tid) = found {
                 let v = self.heaps[h]
-                    .read(&mut self.pager, tid)
+                    .read(&self.pager, tid)
                     .expect("read")
                     .expect("a visible version");
                 out.add(key_of(&v.row), h, v.row, tid);
@@ -351,11 +345,11 @@ impl Db {
         for h in 0..3 {
             let mut versions = Vec::new();
             self.heaps[h]
-                .scan(&mut self.pager, |v| versions.push(v))
+                .scan(&self.pager, |v| versions.push(v))
                 .expect("scan");
             for v in versions {
                 let pid = Pid(v.tid.page());
-                if !self.heaps[h].all_visible(&mut self.pager, pid).unwrap() {
+                if !self.heaps[h].all_visible(&self.pager, pid).unwrap() {
                     continue;
                 }
                 let readers = held
@@ -366,7 +360,7 @@ impl Db {
                 for s in readers {
                     let sees = self
                         .txns
-                        .sees(&mut self.pager, s, None, v.header.xmin, v.header.xmax)
+                        .sees(&self.pager, s, None, v.header.xmin, v.header.xmax)
                         .unwrap();
                     if !sees {
                         problems.push(format!(
@@ -501,16 +495,14 @@ fn perform(db: &mut Db, live: &mut Live, op: &Op, xid: Xid) {
     let x = xid.0;
     match op {
         Op::Insert { key, heap, row } => {
-            let tid = db.heaps[*heap]
-                .insert(&mut db.pager, x, row)
-                .expect("insert");
+            let tid = db.heaps[*heap].insert(&db.pager, x, row).expect("insert");
             db.index(*heap, row, tid);
             live.insert(*key, (*heap, tid, row.clone()));
         }
         Op::Update { key, row } => {
             let (heap, tid, _) = live[key].clone();
             let u = db.heaps[heap]
-                .update(&mut db.pager, tid, x, row, indexed(heap))
+                .update(&db.pager, tid, x, row, indexed(heap))
                 .expect("update");
             if !u.heap_only {
                 db.index(heap, row, u.tid);
@@ -519,14 +511,12 @@ fn perform(db: &mut Db, live: &mut Live, op: &Op, xid: Xid) {
         }
         Op::Delete { key } => {
             let (heap, tid, _) = live.remove(key).unwrap();
-            db.heaps[heap]
-                .delete(&mut db.pager, tid, x)
-                .expect("delete");
+            db.heaps[heap].delete(&db.pager, tid, x).expect("delete");
         }
         Op::Retag { key, to, row } => {
             let (heap, tid, _) = live[key].clone();
             let (from, into) = pair(&mut db.heaps, heap, *to);
-            let t = from.retag(&mut db.pager, tid, x, into, row).expect("retag");
+            let t = from.retag(&db.pager, tid, x, into, row).expect("retag");
             db.index(*to, row, t);
             live.insert(*key, (*to, t, row.clone()));
         }
@@ -600,7 +590,7 @@ impl Client {
 
     /// Begin a transaction and perform up to `n` operations in it.
     fn start(&mut self, db: &mut Db, next: &mut impl FnMut() -> u64, n: u64) -> Running {
-        let xid = db.txns.begin(&mut db.pager).expect("begin");
+        let xid = db.txns.begin(&db.pager).expect("begin");
         let mut run = Running {
             xid,
             live: self.live.clone(),
@@ -620,7 +610,7 @@ impl Client {
 
     fn finish(&mut self, db: &mut Db, run: Running, commit: bool) {
         if commit {
-            db.txns.commit(&mut db.pager, run.xid).expect("commit");
+            db.txns.commit(&db.pager, run.xid).expect("commit");
             self.done.push(run.xid);
             for k in &run.keys {
                 match run.live.get(k) {
@@ -629,7 +619,7 @@ impl Client {
                 };
             }
         } else {
-            db.txns.abort(&mut db.pager, run.xid).expect("abort");
+            db.txns.abort(&db.pager, run.xid).expect("abort");
             self.ops.remove(&run.xid);
         }
     }
@@ -764,7 +754,7 @@ fn vacuum_keeps_what_live_snapshots_see_and_cleans_the_rest() {
                     }
                     17 => {
                         let h = (next() % 3) as usize;
-                        let pages = db.heaps[h].pages(&mut db.pager).unwrap();
+                        let pages = db.heaps[h].pages(&db.pager).unwrap();
                         if !pages.is_empty() {
                             let pid = pages[(next() % pages.len() as u64) as usize];
                             db.prune(h, pid);
@@ -784,13 +774,13 @@ fn vacuum_keeps_what_live_snapshots_see_and_cleans_the_rest() {
             assert!(problems.is_empty(), "seed {seed} at the end: {problems:#?}");
             let mut writers = Vec::new();
             for heap in &db.heaps {
-                heap.scan(&mut db.pager, |v| {
+                heap.scan(&db.pager, |v| {
                     writers.extend([v.header.xmin, v.header.xmax]);
                 })
                 .unwrap();
             }
             for x in writers.into_iter().filter(|&x| x != 0) {
-                let aborted = db.txns.status(&mut db.pager, Xid(x)).unwrap() == Status::Aborted;
+                let aborted = db.txns.status(&db.pager, Xid(x)).unwrap() == Status::Aborted;
                 assert!(
                     !aborted || Xid(x) >= last.clean_below,
                     "a version names aborted {x}"
@@ -856,27 +846,27 @@ fn a_write_clears_the_all_visible_bit() {
     let mut sim = Sim::new(32, Config::default());
     finished(&mut sim, |rt| {
         let (mut db, _) = Db::create(rt, 4);
-        let x = db.txns.begin(&mut db.pager).unwrap();
+        let x = db.txns.begin(&db.pager).unwrap();
         let mut tids = Vec::new();
         for key in 0..40 {
             let row = make_row(APPLE, key, key as u64);
-            let tid = db.heaps[APPLE].insert(&mut db.pager, x.0, &row).unwrap();
+            let tid = db.heaps[APPLE].insert(&db.pager, x.0, &row).unwrap();
             db.index(APPLE, &row, tid);
             tids.push(tid);
         }
-        db.txns.commit(&mut db.pager, x).unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
         db.vacuum(usize::MAX);
         let pid = Pid(tids[7].page());
-        assert!(db.heaps[APPLE].all_visible(&mut db.pager, pid).unwrap());
+        assert!(db.heaps[APPLE].all_visible(&db.pager, pid).unwrap());
         assert_eq!(1, db.vacuum(usize::MAX).skipped);
-        let x = db.txns.begin(&mut db.pager).unwrap();
-        db.heaps[APPLE].delete(&mut db.pager, tids[7], x.0).unwrap();
-        assert!(!db.heaps[APPLE].all_visible(&mut db.pager, pid).unwrap());
+        let x = db.txns.begin(&db.pager).unwrap();
+        db.heaps[APPLE].delete(&db.pager, tids[7], x.0).unwrap();
+        assert!(!db.heaps[APPLE].all_visible(&db.pager, pid).unwrap());
         assert_eq!(Vec::<String>::new(), db.verify());
-        db.txns.abort(&mut db.pager, x).unwrap();
+        db.txns.abort(&db.pager, x).unwrap();
         let report = db.vacuum(usize::MAX);
         assert_eq!((1, 1), (report.cleared, report.all_visible), "{report:?}");
-        assert!(db.heaps[APPLE].all_visible(&mut db.pager, pid).unwrap());
+        assert!(db.heaps[APPLE].all_visible(&db.pager, pid).unwrap());
         assert_eq!(Vec::<String>::new(), db.verify());
     });
 }
@@ -893,39 +883,35 @@ fn empty_pages_leave_the_heap_and_their_positions_are_reused() {
                 Value::Bytes(vec![key as u8; 900]),
             ]
         };
-        let x = db.txns.begin(&mut db.pager).unwrap();
+        let x = db.txns.begin(&db.pager).unwrap();
         let mut tids = Vec::new();
         for key in 0..60 {
-            let tid = db.heaps[EMAIL]
-                .insert(&mut db.pager, x.0, &row(key))
-                .unwrap();
+            let tid = db.heaps[EMAIL].insert(&db.pager, x.0, &row(key)).unwrap();
             db.index(EMAIL, &row(key), tid);
             tids.push(tid);
         }
-        db.txns.commit(&mut db.pager, x).unwrap();
-        let before = db.heaps[EMAIL].pages(&mut db.pager).unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
+        let before = db.heaps[EMAIL].pages(&db.pager).unwrap();
         assert!(before.len() > 10, "{} pages", before.len());
-        let x = db.txns.begin(&mut db.pager).unwrap();
+        let x = db.txns.begin(&db.pager).unwrap();
         for (key, tid) in tids.iter().enumerate() {
             if key % 20 != 0 {
-                db.heaps[EMAIL].delete(&mut db.pager, *tid, x.0).unwrap();
+                db.heaps[EMAIL].delete(&db.pager, *tid, x.0).unwrap();
             }
         }
-        db.txns.commit(&mut db.pager, x).unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
         let report = db.vacuum(usize::MAX);
-        let after = db.heaps[EMAIL].pages(&mut db.pager).unwrap();
+        let after = db.heaps[EMAIL].pages(&db.pager).unwrap();
         assert_eq!(before.len() - after.len(), report.removed, "{report:?}");
         assert!(after.len() <= 3, "{} pages left", after.len());
         assert_eq!(Vec::<String>::new(), db.verify());
-        let x = db.txns.begin(&mut db.pager).unwrap();
+        let x = db.txns.begin(&db.pager).unwrap();
         for key in 100..160 {
-            let tid = db.heaps[EMAIL]
-                .insert(&mut db.pager, x.0, &row(key))
-                .unwrap();
+            let tid = db.heaps[EMAIL].insert(&db.pager, x.0, &row(key)).unwrap();
             db.index(EMAIL, &row(key), tid);
         }
-        db.txns.commit(&mut db.pager, x).unwrap();
-        let refilled = db.heaps[EMAIL].pages(&mut db.pager).unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
+        let refilled = db.heaps[EMAIL].pages(&db.pager).unwrap();
         assert!(
             refilled.len() >= before.len() - 3,
             "{} pages",
@@ -946,16 +932,16 @@ fn an_aborted_large_value_leaves_no_chunk_behind() {
         let large = db.heaps[EMAIL].large();
         let big: Vec<u8> = (0..50_000u32).map(|i| (i * 7 + i / 300) as u8).collect();
         let row = vec![Value::I64(1), Value::Text("a".into()), Value::Bytes(big)];
-        let x = db.txns.begin(&mut db.pager).unwrap();
-        let tid = db.heaps[EMAIL].insert(&mut db.pager, x.0, &row).unwrap();
+        let x = db.txns.begin(&db.pager).unwrap();
+        let tid = db.heaps[EMAIL].insert(&db.pager, x.0, &row).unwrap();
         db.index(EMAIL, &row, tid);
-        assert!(large.pages(&mut db.pager).unwrap().len() >= 50_000 / PAGE);
-        db.txns.abort(&mut db.pager, x).unwrap();
+        assert!(large.pages(&db.pager).unwrap().len() >= 50_000 / PAGE);
+        db.txns.abort(&db.pager, x).unwrap();
         let report = db.vacuum(usize::MAX);
         assert!(report.chunks >= 50_000 / PAGE, "{report:?}");
         assert_eq!(2, report.entries, "{report:?}");
-        assert!(large.pages(&mut db.pager).unwrap().is_empty());
-        assert!(db.heaps[EMAIL].pages(&mut db.pager).unwrap().is_empty());
+        assert!(large.pages(&db.pager).unwrap().is_empty());
+        assert!(db.heaps[EMAIL].pages(&db.pager).unwrap().is_empty());
         assert_eq!(Vec::<String>::new(), db.verify());
     });
 }
@@ -1052,35 +1038,33 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
     finished(&mut sim, |rt| {
         let (mut db, _) = Db::create(rt, 4);
         let row = vec![Value::I64(1), Value::I32(0)];
-        let x = db.txns.begin(&mut db.pager).unwrap();
-        let t = db.heaps[APPLE].insert(&mut db.pager, x.0, &row).unwrap();
+        let x = db.txns.begin(&db.pager).unwrap();
+        let t = db.heaps[APPLE].insert(&db.pager, x.0, &row).unwrap();
         db.index(APPLE, &row, t);
-        db.txns.commit(&mut db.pager, x).unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
         let (old_id, _) = db
             .txns
             .take(Scope::Heaps(BTreeSet::from([HEAP_IDS[APPLE]])));
-        let x = db.txns.begin(&mut db.pager).unwrap();
+        let x = db.txns.begin(&db.pager).unwrap();
         let (apple, email) = pair(&mut db.heaps, APPLE, EMAIL);
         let moved_row = vec![Value::I64(1), Value::Text("m".into()), Value::Bytes(vec![])];
-        let moved = apple
-            .retag(&mut db.pager, t, x.0, email, &moved_row)
-            .unwrap();
+        let moved = apple.retag(&db.pager, t, x.0, email, &moved_row).unwrap();
         db.index(EMAIL, &moved_row, moved);
-        db.txns.commit(&mut db.pager, x).unwrap();
-        let x = db.txns.begin(&mut db.pager).unwrap();
-        db.heaps[EMAIL].delete(&mut db.pager, moved, x.0).unwrap();
-        db.txns.commit(&mut db.pager, x).unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
+        let x = db.txns.begin(&db.pager).unwrap();
+        db.heaps[EMAIL].delete(&db.pager, moved, x.0).unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
         let report = db.vacuum(usize::MAX);
         assert!(report.freed >= 1, "{report:?}");
-        assert!(db.heaps[APPLE].read(&mut db.pager, t).unwrap().is_some());
-        assert!(!db.heaps[EMAIL].holds(&mut db.pager, moved).unwrap());
-        let x = db.txns.begin(&mut db.pager).unwrap();
+        assert!(db.heaps[APPLE].read(&db.pager, t).unwrap().is_some());
+        assert!(!db.heaps[EMAIL].holds(&db.pager, moved).unwrap());
+        let x = db.txns.begin(&db.pager).unwrap();
         let other = vec![Value::I64(2), Value::Text("o".into()), Value::Bytes(vec![])];
-        let reused = db.heaps[EMAIL].insert(&mut db.pager, x.0, &other).unwrap();
+        let reused = db.heaps[EMAIL].insert(&db.pager, x.0, &other).unwrap();
         db.index(EMAIL, &other, reused);
-        db.txns.commit(&mut db.pager, x).unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
         assert_eq!(moved, reused, "the freed slot is taken again");
-        assert_eq!(None, walk(&mut db.pager, t, |l| l.tid == reused).unwrap());
+        assert_eq!(None, walk(&db.pager, t, |l| l.tid == reused).unwrap());
         db.txns.release(old_id);
         assert_eq!(Vec::<String>::new(), db.verify());
     });
@@ -1198,7 +1182,7 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
     let w = world.lock().unwrap();
     let mut committed = BTreeSet::new();
     for x in w.ops.keys() {
-        if db.txns.status(&mut db.pager, *x).unwrap() == Status::Committed {
+        if db.txns.status(&db.pager, *x).unwrap() == Status::Committed {
             committed.insert(*x);
         }
     }

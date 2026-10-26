@@ -10,7 +10,7 @@ use super::run::{Error, Sum};
 
 /// Returns what is wrong between the indexes of `sum` and its heaps: an entry whose constructor
 /// has no heap in the sum, or whose TID names no version, dead mark or redirect of that heap.
-pub fn verify<R: Runtime>(pager: &mut Pager<R>, sum: &Sum) -> Result<Vec<String>, Error> {
+pub fn verify<R: Runtime>(pager: &Pager<R>, sum: &Sum) -> Result<Vec<String>, Error> {
     let heaps: BTreeMap<CtorId, &Heap> = sum.heaps.iter().map(|(c, h)| (*c, &**h)).collect();
     let mut problems = Vec::new();
     for (i, index) in sum.indexes.iter().enumerate() {

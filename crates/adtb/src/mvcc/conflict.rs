@@ -1,7 +1,11 @@
-use super::{SerializationFailure, Snapshot, Status, Xid};
+use super::{Cause, SerializationFailure, Snapshot, Status, Xid};
+
+fn later(x: Xid) -> SerializationFailure {
+    SerializationFailure::new(Cause::LaterCommit, vec![x])
+}
 
 /// What a uniqueness probe does about one version it found under the probed key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Probe {
     /// The version does not hold the key in the latest committed state.
     Skip,
@@ -13,7 +17,7 @@ pub enum Probe {
 }
 
 /// What a write does about the version it updates, deletes or retags.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Write {
     Proceed,
     /// Wait for the transaction to end, then check the version again.
@@ -49,21 +53,21 @@ pub fn probe_unique<E>(
     if xmax != Xid::NONE {
         match status(xmax)? {
             Status::Committed if in_snapshot(xmax, &mut status)? => return Ok(Probe::Skip),
-            Status::Committed => return Ok(Probe::Fail(SerializationFailure)),
+            Status::Committed => return Ok(Probe::Fail(later(xmax))),
             Status::InProgress if inserter == Status::InProgress => {
                 return Ok(Probe::Wait(xmin));
             }
             Status::InProgress if in_snapshot(xmin, &mut status)? => {
                 return Ok(Probe::Wait(xmax));
             }
-            Status::InProgress => return Ok(Probe::Fail(SerializationFailure)),
+            Status::InProgress => return Ok(Probe::Fail(later(xmin))),
             Status::Aborted => {}
         }
     }
     Ok(match inserter {
         Status::InProgress => Probe::Wait(xmin),
         _ if in_snapshot(xmin, &mut status)? => Probe::Conflict,
-        _ => Probe::Fail(SerializationFailure),
+        _ => Probe::Fail(later(xmin)),
     })
 }
 
@@ -81,7 +85,7 @@ pub fn check_write<E>(
     Ok(match status(xmax)? {
         Status::Aborted => Write::Proceed,
         Status::InProgress => Write::Wait(xmax),
-        Status::Committed => Write::Fail(SerializationFailure),
+        Status::Committed => Write::Fail(later(xmax)),
     })
 }
 

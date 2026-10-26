@@ -11,11 +11,11 @@ use super::alloc::diff;
 use super::block::LogFinding;
 use super::driver::Driver;
 use super::header::{self, FileHeader, REGION};
-use super::lock::Lock;
 use super::log::Log;
 use super::page::{self, FIRST_EDITABLE, Verdict, valid_page_size};
 use super::record::{Edit, Record};
 use super::{Lsn, Pid};
+use adtb_sys::lock::Lock;
 
 #[derive(Clone, Debug)]
 pub struct Options {

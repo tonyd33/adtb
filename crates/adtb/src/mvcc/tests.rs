@@ -6,8 +6,9 @@ use std::ops::Bound;
 use super::clog::{Directory, Root, directory_capacity, locate, per_page, set_status, status_at};
 use super::txn::extend;
 use super::{
-    Access, Holds, Limits, Probe, RESERVATION, Safety, Scope, SerialId, SerializationFailure,
-    Serializer, Snapshot, Status, Write, Xid, check_write, probe_unique, read_before,
+    Access, Cause, Holds, Limits, Probe, RESERVATION, Safety, Scope, SerialId,
+    SerializationFailure, Serializer, Snapshot, Status, Write, Xid, check_write, probe_unique,
+    read_before,
 };
 use crate::key::{CtorId, Tid};
 use crate::storage::{HEADER_LEN, Pid};
@@ -295,7 +296,7 @@ fn a_live_committed_version_in_the_snapshot_conflicts() {
 
 #[test]
 fn a_live_version_committed_after_the_snapshot_fails() {
-    assert_eq!(Probe::Fail(SerializationFailure), probe(7, 0));
+    assert_eq!(Probe::Fail(later(7)), probe(7, 0));
 }
 
 #[test]
@@ -311,7 +312,7 @@ fn a_version_deleted_before_the_snapshot_is_skipped() {
 
 #[test]
 fn a_version_deleted_after_the_snapshot_fails() {
-    assert_eq!(Probe::Fail(SerializationFailure), probe(2, 7));
+    assert_eq!(Probe::Fail(later(7)), probe(2, 7));
 }
 
 #[test]
@@ -321,7 +322,7 @@ fn a_visible_version_a_running_transaction_deletes_waits_for_the_deleter() {
 
 #[test]
 fn a_version_committed_after_the_snapshot_and_being_deleted_fails() {
-    assert_eq!(Probe::Fail(SerializationFailure), probe(7, 6));
+    assert_eq!(Probe::Fail(later(7)), probe(7, 6));
 }
 
 #[test]
@@ -334,7 +335,7 @@ fn dead_versions_and_the_inserters_own_deletes_are_skipped() {
 #[test]
 fn a_version_whose_deleter_aborted_is_live() {
     assert_eq!(Probe::Conflict, probe(2, 8));
-    assert_eq!(Probe::Fail(SerializationFailure), probe(7, 8));
+    assert_eq!(Probe::Fail(later(7)), probe(7, 8));
 }
 
 #[test]
@@ -354,7 +355,7 @@ fn a_write_waits_for_a_running_deleter_and_fails_on_a_committed_one() {
     assert_eq!(Write::Proceed, check(10));
     assert_eq!(Write::Proceed, check(8));
     assert_eq!(Write::Wait(Xid(5)), check(5));
-    assert_eq!(Write::Fail(SerializationFailure), check(7));
+    assert_eq!(Write::Fail(later(7)), check(7));
 }
 
 #[test]
@@ -405,6 +406,14 @@ fn rw(s: &mut Serializer, x: u64) -> SerialId {
     s.begin(Access::ReadWrite(Xid(x)))
 }
 
+fn later(x: u64) -> SerializationFailure {
+    SerializationFailure::new(Cause::LaterCommit, vec![Xid(x)])
+}
+
+fn dangerous(with: &[u64]) -> SerializationFailure {
+    SerializationFailure::new(Cause::Dangerous, with.iter().map(|&x| Xid(x)).collect())
+}
+
 fn commit(s: &mut Serializer, id: SerialId) -> Result<(), SerializationFailure> {
     s.precommit(id)?;
     s.committed(id);
@@ -428,7 +437,7 @@ fn write_skew_aborts_one_side() {
     assert_eq!(BTreeSet::from([t2]), s.writers_after(t1));
     assert_eq!(BTreeSet::from([t1]), s.writers_after(t2));
     commit(&mut s, t1).unwrap();
-    assert_eq!(Err(SerializationFailure), commit(&mut s, t2));
+    assert_eq!(Err(dangerous(&[1])), commit(&mut s, t2));
 }
 
 #[test]
@@ -441,10 +450,7 @@ fn write_skew_fails_at_the_write_once_the_other_side_committed() {
     }
     s.insert_entry(t1, INDEX, &key(1), E).unwrap();
     commit(&mut s, t1).unwrap();
-    assert_eq!(
-        Err(SerializationFailure),
-        s.insert_entry(t2, INDEX, &key(2), E)
-    );
+    assert_eq!(Err(dangerous(&[1])), s.insert_entry(t2, INDEX, &key(2), E));
 }
 
 /// Fekete's read-only anomaly: `t2` reads X and Y and writes X; `t1` writes Y and commits; `t3`
@@ -470,7 +476,7 @@ fn feketes_read_only_anomaly_aborts_the_writer() {
     s.read_from(t3, Xid(2)).unwrap();
     read_key(&mut s, t3, b'y', &[E]);
     commit(&mut s, t3).unwrap();
-    assert_eq!(Err(SerializationFailure), commit(&mut s, t2));
+    assert_eq!(Err(dangerous(&[1])), commit(&mut s, t2));
 }
 
 #[test]
@@ -592,6 +598,7 @@ fn tuple_locks_promote_to_a_page_lock_then_a_heap_lock() {
         tuples_per_page: 2,
         pages_per_heap: 2,
         ranges_per_index: 2,
+        ..Limits::default()
     };
     let mut s = Serializer::new(limits);
     let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
@@ -621,6 +628,7 @@ fn range_locks_promote_to_an_index_lock_keeping_their_constructors() {
         tuples_per_page: 2,
         pages_per_heap: 2,
         ranges_per_index: 2,
+        ..Limits::default()
     };
     let mut s = Serializer::new(limits);
     let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
@@ -699,9 +707,44 @@ fn a_doomed_transaction_fails_its_next_operation() {
     let mut s = Serializer::default();
     let (_, t2, t3) = fekete(&mut s, Access::ReadOnly);
     s.read_from(t3, Xid(2)).unwrap();
-    assert_eq!(Err(SerializationFailure), s.check(t2));
-    assert_eq!(
-        Err(SerializationFailure),
-        s.insert_entry(t2, INDEX, &key(9), E)
-    );
+    assert_eq!(Err(dangerous(&[1])), s.check(t2));
+    assert_eq!(Err(dangerous(&[1])), s.insert_entry(t2, INDEX, &key(9), E));
+}
+
+#[test]
+fn the_total_budget_promotes_the_largest_holders_locks() {
+    let limits = Limits {
+        total: 4,
+        ..Limits::default()
+    };
+    let mut s = Serializer::new(limits);
+    let (big, small, w) = (rw(&mut s, 1), rw(&mut s, 2), rw(&mut s, 3));
+    s.read_tuple(small, HEAP, tid(9, 1)).unwrap();
+    for slot in 0..3 {
+        s.read_tuple(big, HEAP, tid(5, slot)).unwrap();
+    }
+    assert_eq!(4, s.held());
+    s.read_tuple(big, HEAP, tid(6, 0)).unwrap();
+    assert_eq!((2, 1), (s.locks(big), s.locks(small)));
+    s.write_tuple(w, HEAP, tid(5, 7)).unwrap();
+    assert_eq!(BTreeSet::from([big]), s.readers_before(w));
+    for k in 0..4 {
+        read_key(&mut s, big, k, &[G]);
+    }
+    assert!(s.held() <= 4, "{} locks held", s.held());
+    s.insert_entry(w, INDEX, &key(200), G).unwrap();
+    s.write_tuple(w, HEAP, tid(6, 9)).unwrap();
+    assert_eq!(BTreeSet::from([big]), s.readers_before(w));
+}
+
+#[test]
+fn a_failure_names_the_other_transactions_of_its_conflict() {
+    let mut s = Serializer::default();
+    let (t1, t2, t3) = (rw(&mut s, 1), rw(&mut s, 2), rw(&mut s, 3));
+    read_key(&mut s, t1, 1, &[E]);
+    s.insert_entry(t2, INDEX, &key(1), E).unwrap();
+    read_key(&mut s, t2, 2, &[E]);
+    s.insert_entry(t3, INDEX, &key(2), E).unwrap();
+    commit(&mut s, t3).unwrap();
+    assert_eq!(Err(dangerous(&[1, 3])), commit(&mut s, t2));
 }

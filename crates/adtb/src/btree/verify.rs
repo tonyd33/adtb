@@ -33,7 +33,7 @@ impl BTree {
     /// the level above exactly when it is marked incomplete; every downlink
     /// must name a page of the level below, in order, whose low key is the
     /// downlink's separator.
-    pub fn verify<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<Vec<Vec<u8>>, Error> {
+    pub fn verify<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Vec<u8>>, Error> {
         let mut seen = BTreeSet::new();
         let height = visit(pager, self.owner(), self.root(), |n| {
             if n.right().is_some() || n.high()?.is_some() {
@@ -105,7 +105,7 @@ impl BTree {
 
     /// Finish every split whose page lacks its downlink. Returns the number
     /// finished.
-    pub fn repair<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<usize, Error> {
+    pub fn repair<R: Runtime>(&self, pager: &Pager<R>) -> Result<usize, Error> {
         let height = self.height(pager)?;
         let mut finished = 0;
         for level in (0..height).rev() {

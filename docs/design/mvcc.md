@@ -160,8 +160,11 @@ Invariants:
 
 A commit changes the commit log page to committed and then logs the
 commit record; an abort does the same with aborted and the abort
-record. A commit is durable, and may be acknowledged, once the log is
-durable past its commit record.
+record. A commit is durable once the log is durable past its commit
+record. A transaction, read-only included, is acknowledged only once
+the log is durable past its own commit record and past the commit
+record of every commit its snapshot reads; `Transactions::read_upto`
+gives the last of those for a snapshot.
 
 Precondition on the pager: a page change and the commit or abort
 record logged by the next call on the pager lie in one batch
@@ -531,6 +534,10 @@ Postconditions:
   dropped; an aborted transaction's are dropped at once.
 - A transaction chosen to abort fails its next read, write or commit
   with a serialization failure.
+- A serialization failure names its cause (a row or key committed
+  after the snapshot, a dangerous structure, or a cycle of waits) and
+  the xids of the other transactions in the conflict, in order; a
+  read-only transaction has no xid and is not named.
 
 Rulings: engine/serializable-only, engine/ssi, engine/write-skew/by-isolation, engine/retag-fk/by-isolation, mvcc/next-key, mvcc/ctor-tagged, mvcc/retag-phantom/as-insert, mvcc/split-locks/promote-heaps, engine/retry/safe-snapshot
 
@@ -955,8 +962,12 @@ Pressure is counted per transaction: more tuple locks on one page than
 a threshold become a page lock, more page locks on one heap a heap
 lock, more range locks on one index an index lock whose constructor
 set is the union of theirs. A lock already covered by a coarser one the
-transaction holds is not taken. A write checks the tuple, page and heap
-locks that cover the version it writes.
+transaction holds is not taken. Beyond a budget on the locks of every
+transaction together, the largest holder's locks promote one level:
+all its tuple locks to page locks, else its page locks to heap locks,
+else its range locks to index locks, until the total is within the
+budget or nothing is left to promote. A write checks the tuple, page
+and heap locks that cover the version it writes.
 
 ### 12.8 Index-only scans
 

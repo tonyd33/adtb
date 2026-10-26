@@ -3,7 +3,6 @@ mod block;
 mod crc;
 mod driver;
 mod header;
-mod lock;
 mod log;
 mod page;
 mod pager;

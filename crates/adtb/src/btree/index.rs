@@ -18,7 +18,7 @@ pub struct Index {
 
 impl Index {
     pub fn create<R: Runtime>(
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         owner: u32,
         schema: KeySchema,
         ctors: BTreeSet<CtorId>,
@@ -59,21 +59,21 @@ impl Index {
     /// Insert `entry`. Returns false if it is already in the index.
     ///
     /// Panics if its constructor is not in the index's set.
-    pub fn insert<R: Runtime>(&self, pager: &mut Pager<R>, entry: &Entry) -> Result<bool, Error> {
+    pub fn insert<R: Runtime>(&self, pager: &Pager<R>, entry: &Entry) -> Result<bool, Error> {
         self.tree.insert(pager, &self.encode(entry))
     }
 
     /// Delete `entry`. Returns false if it was not in the index.
     ///
     /// Panics if its constructor is not in the index's set.
-    pub fn delete<R: Runtime>(&self, pager: &mut Pager<R>, entry: &Entry) -> Result<bool, Error> {
+    pub fn delete<R: Runtime>(&self, pager: &Pager<R>, entry: &Entry) -> Result<bool, Error> {
         self.tree.delete(pager, &self.encode(entry))
     }
 
     /// Delete every entry `keep` refuses, one leaf at a time. Returns the number deleted.
     pub fn retain<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         mut keep: impl FnMut(&Entry) -> bool,
     ) -> Result<usize, Error> {
         let mut bad = None;
@@ -94,7 +94,7 @@ impl Index {
 
     fn decode_all<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         mut cursor: Cursor,
     ) -> Result<Vec<Entry>, Error> {
         let mut out = Vec::new();
@@ -107,25 +107,21 @@ impl Index {
     /// Returns the entries whose encoding starts with `prefix`, in order.
     pub fn scan_prefix<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         prefix: &[u8],
     ) -> Result<Vec<Entry>, Error> {
         self.decode_all(pager, self.tree.prefix(prefix))
     }
 
     /// Returns every entry of `key`, in order of constructor and TID.
-    pub fn probe<R: Runtime>(
-        &self,
-        pager: &mut Pager<R>,
-        key: &[Value],
-    ) -> Result<Vec<Entry>, Error> {
+    pub fn probe<R: Runtime>(&self, pager: &Pager<R>, key: &[Value]) -> Result<Vec<Entry>, Error> {
         self.scan_prefix(pager, &self.schema.encode(key))
     }
 
     /// Returns the entries of `key` and constructor `ctor`, in TID order.
     pub fn probe_ctor<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         key: &[Value],
         ctor: CtorId,
     ) -> Result<Vec<Entry>, Error> {
@@ -137,7 +133,7 @@ impl Index {
     /// Returns the entries whose keys lie between `lo` and `hi`, in order.
     pub fn range<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         lo: Bound<&[Value]>,
         hi: Bound<&[Value]>,
     ) -> Result<Vec<Entry>, Error> {

@@ -181,7 +181,7 @@ pub struct CommitLog {
 
 impl CommitLog {
     /// Allocate an empty commit log. Ids from [`Xid::FIRST`] are unreserved.
-    pub fn create<R: Runtime>(pager: &mut Pager<R>) -> Result<CommitLog, PageError> {
+    pub fn create<R: Runtime>(pager: &Pager<R>) -> Result<CommitLog, PageError> {
         let root_pid = pager.allocate(PAGE_FORMAT, PageKind::CommitLog, 0)?;
         let dir = Directory {
             pid: pager.allocate(PAGE_FORMAT, PageKind::CommitLog, 0)?,
@@ -212,7 +212,7 @@ impl CommitLog {
     /// reserved id still in progress.
     ///
     /// Postcondition: every id below [`CommitLog::reserved`] has resolved.
-    pub fn open<R: Runtime>(pager: &mut Pager<R>, root: Pid) -> Result<CommitLog, PageError> {
+    pub fn open<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<CommitLog, PageError> {
         let page = pager.read(root)?;
         check_role(root, &page, ROOT_PAGE);
         let state = Root::read(&page);
@@ -242,7 +242,7 @@ impl CommitLog {
         Ok(clog)
     }
 
-    fn abort_unresolved<R: Runtime>(&mut self, pager: &mut Pager<R>) -> Result<(), PageError> {
+    fn abort_unresolved<R: Runtime>(&mut self, pager: &Pager<R>) -> Result<(), PageError> {
         let from = self.root.resolved.max(self.root.bound);
         let to = self.root.reserved;
         if from >= to {
@@ -317,7 +317,7 @@ impl CommitLog {
     /// `resolved` lies outside `[resolved, reserved]` of the current reservation.
     pub fn reserve<R: Runtime>(
         &mut self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         upto: Xid,
         resolved: Xid,
     ) -> Result<Lsn, PageError> {
@@ -378,7 +378,7 @@ impl CommitLog {
     /// Returns the status of `x`.
     ///
     /// Panics if `x` is not reserved.
-    pub fn status<R: Runtime>(&self, pager: &mut Pager<R>, x: Xid) -> Result<Status, PageError> {
+    pub fn status<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Status, PageError> {
         assert!(
             Xid::FIRST <= x && x < self.root.reserved,
             "{x:?} is not a reserved id"
@@ -396,13 +396,13 @@ impl CommitLog {
     /// damaged.
     ///
     /// Panics if `x` is not reserved or has resolved.
-    pub fn commit<R: Runtime>(&mut self, pager: &mut Pager<R>, x: Xid) -> Result<Lsn, PageError> {
+    pub fn commit<R: Runtime>(&mut self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
         let (pid, i) = self.slot(x);
         pager.commit(x.0, &[pid], |p| set_status(p[0], i, Status::Committed))
     }
 
     /// Record that `x` aborted and log its abort record, in one batch.
-    pub fn abort<R: Runtime>(&mut self, pager: &mut Pager<R>, x: Xid) -> Result<Lsn, PageError> {
+    pub fn abort<R: Runtime>(&mut self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
         let (pid, i) = self.slot(x);
         pager.abort(x.0, &[pid], |p| set_status(p[0], i, Status::Aborted))
     }
@@ -424,11 +424,7 @@ impl CommitLog {
     /// it, and none has an aborted deleter below it in `xmax`.
     ///
     /// Panics if `bound` is past the reservation.
-    pub fn truncate<R: Runtime>(
-        &mut self,
-        pager: &mut Pager<R>,
-        bound: Xid,
-    ) -> Result<(), PageError> {
+    pub fn truncate<R: Runtime>(&mut self, pager: &Pager<R>, bound: Xid) -> Result<(), PageError> {
         assert!(
             bound <= self.root.reserved,
             "truncation to {bound:?} passes the reservation"

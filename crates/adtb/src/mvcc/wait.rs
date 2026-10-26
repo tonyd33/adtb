@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::{Runtime, ThreadId};
 
-use super::latch::Latch;
-use super::{SerializationFailure, Xid};
+use super::{Cause, SerializationFailure, Xid};
+use adtb_sys::lock::Lock;
 
 #[derive(Debug, Default)]
 struct State {
@@ -22,14 +22,14 @@ struct State {
 #[derive(Debug)]
 pub struct Waits<R: Runtime> {
     rt: R,
-    state: Latch<State>,
+    state: Lock<State>,
 }
 
 impl<R: Runtime> Waits<R> {
     pub fn new(rt: R) -> Waits<R> {
         Waits {
             rt,
-            state: Latch::default(),
+            state: Lock::default(),
         }
     }
 
@@ -60,12 +60,12 @@ impl<R: Runtime> Waits<R> {
                 return Ok(());
             }
             if let Some(me) = me {
-                let mut at = on;
-                while let Some(&next) = st.waits_for.get(&at) {
+                let mut cycle = vec![on];
+                while let Some(&next) = st.waits_for.get(cycle.last().expect("starts at `on`")) {
                     if next == me {
-                        return Err(SerializationFailure);
+                        return Err(SerializationFailure::new(Cause::Deadlock, cycle));
                     }
-                    at = next;
+                    cycle.push(next);
                 }
                 st.waits_for.insert(me, on);
             }

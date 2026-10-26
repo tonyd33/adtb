@@ -1,6 +1,5 @@
 mod clog;
 mod conflict;
-mod latch;
 mod snapshot;
 mod ssi;
 mod txn;
@@ -48,5 +47,27 @@ impl Status {
 }
 
 /// The transaction must abort, and may be retried at a new snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SerializationFailure {
+    pub cause: Cause,
+    /// The other transactions in the conflict that have xids, in order. A read-only transaction
+    /// has none and is not named.
+    pub with: Vec<Xid>,
+}
+
+impl SerializationFailure {
+    pub fn new(cause: Cause, with: Vec<Xid>) -> SerializationFailure {
+        SerializationFailure { cause, with }
+    }
+}
+
+/// Why a transaction failed with a serialization failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SerializationFailure;
+pub enum Cause {
+    /// A row or key it writes was written by a transaction that committed after its snapshot.
+    LaterCommit,
+    /// A rw-antidependency completed a dangerous structure that it was chosen to break.
+    Dangerous,
+    /// Waiting would have closed a cycle of transactions waiting for each other.
+    Deadlock,
+}

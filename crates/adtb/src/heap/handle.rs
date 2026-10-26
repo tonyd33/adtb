@@ -15,7 +15,7 @@ use super::vm::Vm;
 use super::{fixed, slotted};
 
 /// Converts a row of the previous format into a row of this one.
-pub type Upgrade = Box<dyn Fn(Vec<Value>) -> Vec<Value>>;
+pub type Upgrade = Box<dyn Fn(Vec<Value>) -> Vec<Value> + Send + Sync>;
 
 struct Format {
     layout: Layout,
@@ -124,7 +124,7 @@ impl Heap {
     /// Create an empty heap with id `id` whose rows have fields `row`, out-of-line values in
     /// `large`.
     pub fn create<R: Runtime>(
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         id: u32,
         row: Vec<FieldType>,
         large: LargeStore,
@@ -135,7 +135,7 @@ impl Heap {
 
     /// Create an empty heap whose directory pages hold `fanout` entries each.
     pub fn create_with_fanout<R: Runtime>(
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         id: u32,
         row: Vec<FieldType>,
         large: LargeStore,
@@ -230,14 +230,14 @@ impl Heap {
     }
 
     /// Returns every page of the heap, in directory order.
-    pub fn pages<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<Vec<Pid>, PageError> {
+    pub fn pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
         self.space.pages(pager)
     }
 
     /// Returns the row format, flags and bytes of the version at `tid`, if a version is there.
     fn raw<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         tid: Tid,
     ) -> Result<Option<(u16, Flags, Vec<u8>)>, PageError> {
         let page = &pager.read(Pid(tid.page()))?.to_vec();
@@ -264,7 +264,7 @@ impl Heap {
     /// values.
     fn decode<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         format: u16,
         version: &[u8],
     ) -> Result<(Vec<Value>, Vec<Pointer>), PageError> {
@@ -300,7 +300,7 @@ impl Heap {
     /// Panics if `tid` names a page of another heap.
     pub fn read<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         tid: Tid,
     ) -> Result<Option<Version>, PageError> {
         let Some((format, flags, bytes)) = self.raw(pager, tid)? else {
@@ -318,7 +318,7 @@ impl Heap {
     /// Call `f` on every version of the heap, in directory order and then slot order.
     pub fn scan<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         mut f: impl FnMut(Version),
     ) -> Result<(), PageError> {
         for pid in self.space.pages(pager)? {
@@ -347,7 +347,7 @@ impl Heap {
     /// move out of line, largest first, while the version exceeds a quarter of a page.
     fn body<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         row: &[Value],
         reuse: &[Pointer],
     ) -> Result<Vec<u8>, Error> {
@@ -400,11 +400,7 @@ impl Heap {
 
     /// Returns `page` with every version on it in the newest format, at the same slots, or
     /// `None` if they would not fit.
-    fn convert<R: Runtime>(
-        &self,
-        pager: &mut Pager<R>,
-        page: &[u8],
-    ) -> Result<Option<Vec<u8>>, Error> {
+    fn convert<R: Runtime>(&self, pager: &Pager<R>, page: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         let from = storage::format(page);
         let target = match page::arrangement(page) {
             Arrangement::Slotted => Arrangement::Slotted,
@@ -446,7 +442,7 @@ impl Heap {
     fn try_put<R: Runtime>(
         &self,
         stage: &mut Stage,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         pid: Pid,
         version: &[u8],
         flags: Flags,
@@ -475,7 +471,7 @@ impl Heap {
     fn place<R: Runtime>(
         &mut self,
         stage: &mut Stage,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         version: &[u8],
         flags: Flags,
     ) -> Result<Tid, Error> {
@@ -515,7 +511,7 @@ impl Heap {
     fn supersede<R: Runtime>(
         &self,
         stage: &mut Stage,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         at: Tid,
         xid: u64,
         next: Option<Tid>,
@@ -538,7 +534,7 @@ impl Heap {
         self.unmark(stage, pager, Pid(at.page()))
     }
 
-    fn vm<R: Runtime>(&self, stage: &Stage, pager: &mut Pager<R>) -> Result<Vm, PageError> {
+    fn vm<R: Runtime>(&self, stage: &Stage, pager: &Pager<R>) -> Result<Vm, PageError> {
         let root = self.space.vm(stage, pager)?;
         Ok(Vm::open(
             root.expect("a heap's directory names its visibility map"),
@@ -551,7 +547,7 @@ impl Heap {
     fn unmark<R: Runtime>(
         &self,
         stage: &mut Stage,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         pid: Pid,
     ) -> Result<(), PageError> {
         let page = stage.page(pager, pid)?;
@@ -564,18 +560,14 @@ impl Heap {
 
     /// Returns whether the visibility map has the bit of page `pid` set: every version on it is
     /// visible to every snapshot.
-    pub fn all_visible<R: Runtime>(
-        &self,
-        pager: &mut Pager<R>,
-        pid: Pid,
-    ) -> Result<bool, PageError> {
+    pub fn all_visible<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<bool, PageError> {
         self.vm(&Stage::new(), pager)?.get(pager, pid)
     }
 
     /// Returns the bytes of heap page `pid`.
     ///
     /// Panics if `pid` is not a page of this heap.
-    fn own_page<R: Runtime>(&self, pager: &mut Pager<R>, pid: Pid) -> Result<Vec<u8>, PageError> {
+    fn own_page<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<Vec<u8>, PageError> {
         let page = pager.read(pid)?.to_vec();
         assert_eq!(
             self.id,
@@ -588,7 +580,7 @@ impl Heap {
 
     /// Returns whether `tid` names a slot of this heap holding a version, a dead mark or a
     /// redirect.
-    pub fn holds<R: Runtime>(&self, pager: &mut Pager<R>, tid: Tid) -> Result<bool, PageError> {
+    pub fn holds<R: Runtime>(&self, pager: &Pager<R>, tid: Tid) -> Result<bool, PageError> {
         let page = &pager.read(Pid(tid.page()))?.to_vec();
         Ok(page::is_heap(page)
             && storage::owner(page) == self.id
@@ -600,9 +592,9 @@ impl Heap {
     /// keeps.
     pub fn dead_slots<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         pid: Pid,
-        mut judge: impl FnMut(&mut Pager<R>, &Header) -> Result<Fate, PageError>,
+        mut judge: impl FnMut(&Pager<R>, &Header) -> Result<Fate, PageError>,
     ) -> Result<Vec<u16>, PageError> {
         let page = self.own_page(pager, pid)?;
         let fates = prune::judge(&page, |h| judge(pager, h))?;
@@ -625,9 +617,9 @@ impl Heap {
     /// version `judge` keeps.
     pub fn prune<R: Runtime>(
         &mut self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         pid: Pid,
-        mut judge: impl FnMut(&mut Pager<R>, &Header) -> Result<Fate, PageError>,
+        mut judge: impl FnMut(&Pager<R>, &Header) -> Result<Fate, PageError>,
         cleaned: &[u16],
         mark: bool,
     ) -> Result<Pruned, PageError> {
@@ -689,7 +681,7 @@ impl Heap {
     }
 
     /// Returns the pointer of every out-of-line value a version of the heap holds.
-    pub fn out_of_line<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<Vec<Pointer>, PageError> {
+    pub fn out_of_line<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pointer>, PageError> {
         let mut out = Vec::new();
         for pid in self.space.pages(pager)? {
             let page = pager.read(pid)?.to_vec();
@@ -708,7 +700,7 @@ impl Heap {
     /// Panics if `row` is not a row of the newest format.
     pub fn insert<R: Runtime>(
         &mut self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         xid: u64,
         row: &[Value],
     ) -> Result<Tid, Error> {
@@ -727,7 +719,7 @@ impl Heap {
     /// `indexed`, the key fields of every index over this heap's constructor, changes.
     pub fn update<R: Runtime>(
         &mut self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         at: Tid,
         xid: u64,
         row: &[Value],
@@ -763,12 +755,7 @@ impl Heap {
     }
 
     /// Mark the version at `at` deleted by `xid`.
-    pub fn delete<R: Runtime>(
-        &mut self,
-        pager: &mut Pager<R>,
-        at: Tid,
-        xid: u64,
-    ) -> Result<(), Error> {
+    pub fn delete<R: Runtime>(&mut self, pager: &Pager<R>, at: Tid, xid: u64) -> Result<(), Error> {
         let mut stage = Stage::new();
         self.supersede(&mut stage, pager, at, xid, None, Flags::NONE)?;
         stage.commit(pager)?;
@@ -785,7 +772,7 @@ impl Heap {
     /// Panics if `to` is this heap or belongs to another sum.
     pub fn retag<R: Runtime>(
         &mut self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         at: Tid,
         xid: u64,
         to: &mut Heap,
@@ -807,7 +794,7 @@ impl Heap {
     }
 
     /// Returns what is wrong with the heap's pages, directory and visibility map.
-    pub fn verify<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<Vec<String>, PageError> {
+    pub fn verify<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<String>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
         let vm = self.vm(&Stage::new(), pager)?;
@@ -868,7 +855,7 @@ impl Heap {
 /// The chain ends at a slot holding no version, at a page that is not a heap page, or at a
 /// version whose `xmin` is not the `xmax` of the version before it.
 pub fn walk<R: Runtime>(
-    pager: &mut Pager<R>,
+    pager: &Pager<R>,
     start: Tid,
     mut stop: impl FnMut(&Link) -> bool,
 ) -> Result<Option<Link>, PageError> {

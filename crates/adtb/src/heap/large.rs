@@ -24,7 +24,7 @@ pub struct LargeStore {
 
 impl LargeStore {
     /// Create an empty store; `id` comes from the heap id space.
-    pub fn create<R: Runtime>(pager: &mut Pager<R>, id: u32) -> Result<LargeStore, PageError> {
+    pub fn create<R: Runtime>(pager: &Pager<R>, id: u32) -> Result<LargeStore, PageError> {
         let fanout = max_fanout(pager.page_size());
         Ok(LargeStore {
             space: Space::create(pager, id, fanout, None)?,
@@ -47,17 +47,13 @@ impl LargeStore {
     }
 
     /// Returns every page of the store, in directory order.
-    pub fn pages<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<Vec<Pid>, PageError> {
+    pub fn pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
         self.space.pages(pager)
     }
 
     /// Store `bytes` and return the pointer to them. Chunks are written last first, so every
     /// chunk written names one already present.
-    pub fn write<R: Runtime>(
-        &self,
-        pager: &mut Pager<R>,
-        bytes: &[u8],
-    ) -> Result<Pointer, PageError> {
+    pub fn write<R: Runtime>(&self, pager: &Pager<R>, bytes: &[u8]) -> Result<Pointer, PageError> {
         let chunk = slotted::max_version(pager.page_size()) - NEXT;
         let mut next = None;
         for piece in bytes.chunks(chunk).rev() {
@@ -71,7 +67,7 @@ impl LargeStore {
         })
     }
 
-    fn insert<R: Runtime>(&self, pager: &mut Pager<R>, tuple: &[u8]) -> Result<Tid, PageError> {
+    fn insert<R: Runtime>(&self, pager: &Pager<R>, tuple: &[u8]) -> Result<Tid, PageError> {
         let size = pager.page_size();
         let need = need_category(Arrangement::Slotted.need(tuple.len()), size);
         let pid = match self
@@ -94,7 +90,7 @@ impl LargeStore {
     /// Returns the value `pointer` names.
     pub fn read<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         pointer: Pointer,
     ) -> Result<Vec<u8>, PageError> {
         let mut out = Vec::with_capacity(pointer.len as usize);
@@ -119,7 +115,7 @@ impl LargeStore {
     /// Returns the TID of every chunk of the value `pointer` names, first to last.
     pub fn chunks<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         pointer: Pointer,
     ) -> Result<Vec<Tid>, PageError> {
         let mut out = Vec::new();
@@ -142,7 +138,7 @@ impl LargeStore {
     /// that stores a value is in progress.
     pub fn sweep<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         keep: &BTreeSet<Tid>,
     ) -> Result<usize, PageError> {
         let size = pager.page_size();
@@ -180,7 +176,7 @@ impl LargeStore {
     }
 
     /// Returns what is wrong with the store's directory and pages.
-    pub fn verify<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<Vec<String>, PageError> {
+    pub fn verify<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<String>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
         for (position, leaf) in check.leaves.into_iter().enumerate() {

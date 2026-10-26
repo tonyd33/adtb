@@ -4,7 +4,7 @@ use std::ops::{Bound, RangeBounds};
 use crate::key::{CtorId, Tid};
 use crate::storage::Pid;
 
-use super::{SerializationFailure, Xid};
+use super::{Cause, SerializationFailure, Xid};
 
 /// A transaction known to the serializer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -42,6 +42,9 @@ pub struct Limits {
     pub pages_per_heap: usize,
     /// Range locks on one index beyond which they become an index lock.
     pub ranges_per_index: usize,
+    /// SIREAD locks of every transaction together beyond which the largest holders' locks
+    /// promote a level at a time.
+    pub total: usize,
 }
 
 impl Default for Limits {
@@ -50,6 +53,7 @@ impl Default for Limits {
             tuples_per_page: 8,
             pages_per_heap: 64,
             ranges_per_index: 64,
+            total: 1 << 16,
         }
     }
 }
@@ -81,6 +85,16 @@ impl Range {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Out {
+    commit: u64,
+    xid: Option<Xid>,
+}
+
+fn earlier(a: Option<Out>, b: Out) -> Option<Out> {
+    Some(a.filter(|a| a.commit <= b.commit).unwrap_or(b))
+}
+
 #[derive(Debug)]
 struct Sxact {
     xid: Option<Xid>,
@@ -89,7 +103,8 @@ struct Sxact {
     snapshot: u64,
     /// The commit's position in the order of commits, counting from 1.
     commit: Option<u64>,
-    doomed: bool,
+    /// The failure it reports once chosen to abort.
+    doomed: Option<SerializationFailure>,
     safe: bool,
     unsafe_: bool,
     /// Transactions that read before this one wrote.
@@ -97,7 +112,7 @@ struct Sxact {
     /// Transactions this one read before they wrote.
     outs: BTreeSet<SerialId>,
     /// The earliest commit of a transaction in `outs`, kept after that transaction is forgotten.
-    earliest_out: Option<u64>,
+    earliest_out: Option<Out>,
     /// For a read-only transaction, the read-write transactions concurrent with its snapshot
     /// that have not ended.
     pending: BTreeSet<SerialId>,
@@ -130,6 +145,8 @@ pub struct Serializer {
     points: BTreeMap<Point, BTreeSet<SerialId>>,
     ranges: BTreeMap<Pid, Vec<Range>>,
     indexes: BTreeMap<Pid, BTreeMap<SerialId, BTreeSet<CtorId>>>,
+    /// SIREAD locks held, each range and index lock counted once.
+    held: usize,
 }
 
 impl Serializer {
@@ -173,7 +190,7 @@ impl Serializer {
                 read_only,
                 snapshot: self.commits,
                 commit: None,
-                doomed: false,
+                doomed: None,
                 safe,
                 unsafe_: false,
                 ins: BTreeSet::new(),
@@ -219,10 +236,9 @@ impl Serializer {
 
     /// Fails if `id` has been chosen to abort.
     pub fn check(&self, id: SerialId) -> Result<(), SerializationFailure> {
-        if self.get(id).doomed {
-            Err(SerializationFailure)
-        } else {
-            Ok(())
+        match &self.get(id).doomed {
+            Some(f) => Err(f.clone()),
+            None => Ok(()),
         }
     }
 
@@ -250,6 +266,7 @@ impl Serializer {
             }
             self.lock_page(id, heap, page);
         }
+        self.keep_budget();
         Ok(())
     }
 
@@ -340,39 +357,105 @@ impl Serializer {
             hi,
             ctors,
         });
+        self.held += 1;
         let count = self.get_mut(id).ranges.entry(index).or_default();
         *count += 1;
         if *count > self.limits.ranges_per_index {
             self.lock_index(id, index, BTreeSet::new());
         }
+        self.keep_budget();
         Ok(())
     }
 
     fn lock_index(&mut self, id: SerialId, index: Pid, mut ctors: BTreeSet<CtorId>) {
         if let Some(ranges) = self.ranges.get_mut(&index) {
+            let before = ranges.len();
             ranges.retain(|r| {
                 if r.holder == id {
                     ctors.extend(&r.ctors);
                 }
                 r.holder != id
             });
+            self.held -= before - ranges.len();
         }
         self.get_mut(id).ranges.insert(index, 0);
-        self.indexes
-            .entry(index)
-            .or_default()
-            .entry(id)
-            .or_default()
-            .extend(ctors);
+        let locks = self.indexes.entry(index).or_default();
+        if !locks.contains_key(&id) {
+            self.held += 1;
+        }
+        locks.entry(id).or_default().extend(ctors);
+    }
+
+    /// Promote the locks of the largest holders a level at a time until the total is within
+    /// the budget, or nothing is left to promote.
+    fn keep_budget(&mut self) {
+        while self.held > self.limits.total {
+            let mut holders: Vec<(usize, SerialId)> =
+                self.sxacts.keys().map(|&id| (self.locks(id), id)).collect();
+            holders.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            if !holders.into_iter().any(|(_, id)| self.coarsen(id)) {
+                return;
+            }
+        }
+    }
+
+    /// Promote every tuple lock of `id` to its page lock, or failing any, every page lock to its
+    /// heap lock, or failing any, every range lock to its index lock. Returns whether a lock was
+    /// promoted.
+    fn coarsen(&mut self, id: SerialId) -> bool {
+        let points: Vec<Point> = self.get(id).points.iter().copied().collect();
+        let tuples: BTreeSet<(u32, u64)> = points
+            .iter()
+            .filter_map(|p| match p {
+                Point::Tuple(h, t) => Some((*h, t.page())),
+                _ => None,
+            })
+            .collect();
+        if !tuples.is_empty() {
+            for p in points.iter().filter(|p| matches!(p, Point::Tuple(..))) {
+                self.unlock(id, *p);
+            }
+            for (heap, page) in tuples {
+                self.lock_page(id, heap, page);
+            }
+            return true;
+        }
+        let pages: BTreeSet<u32> = points
+            .iter()
+            .filter_map(|p| match p {
+                Point::Page(h, _) => Some(*h),
+                _ => None,
+            })
+            .collect();
+        if !pages.is_empty() {
+            for heap in pages {
+                self.lock_heap(id, heap);
+            }
+            return true;
+        }
+        let ranged: Vec<Pid> = self
+            .ranges
+            .iter()
+            .filter(|(_, rs)| rs.iter().any(|r| r.holder == id))
+            .map(|(&i, _)| i)
+            .collect();
+        for &index in &ranged {
+            self.lock_index(id, index, BTreeSet::new());
+        }
+        !ranged.is_empty()
     }
 
     fn lock(&mut self, id: SerialId, p: Point) {
-        self.get_mut(id).points.insert(p);
+        if self.get_mut(id).points.insert(p) {
+            self.held += 1;
+        }
         self.points.entry(p).or_default().insert(id);
     }
 
     fn unlock(&mut self, id: SerialId, p: Point) {
-        self.get_mut(id).points.remove(&p);
+        if self.get_mut(id).points.remove(&p) {
+            self.held -= 1;
+        }
         if let Some(holders) = self.points.get_mut(&p) {
             holders.remove(&id);
             if holders.is_empty() {
@@ -503,10 +586,14 @@ impl Serializer {
 
     fn release_index(&mut self, id: SerialId, index: Pid) {
         if let Some(ranges) = self.ranges.get_mut(&index) {
+            let before = ranges.len();
             ranges.retain(|r| r.holder != id);
+            self.held -= before - ranges.len();
         }
-        if let Some(locks) = self.indexes.get_mut(&index) {
-            locks.remove(&id);
+        if let Some(locks) = self.indexes.get_mut(&index)
+            && locks.remove(&id).is_some()
+        {
+            self.held -= 1;
         }
         self.get_mut(id).ranges.remove(&index);
     }
@@ -568,43 +655,69 @@ impl Serializer {
             return Ok(());
         }
         let (r, w) = (self.get(reader), self.get(writer));
-        let others_doomed = (reader != me && r.doomed) || (writer != me && w.doomed);
+        let others_doomed =
+            (reader != me && r.doomed.is_some()) || (writer != me && w.doomed.is_some());
         if others_doomed || r.safe || !Serializer::concurrent(r, w) {
             return Ok(());
         }
-        let wc = w.commit;
-        if self.dangerous(reader, writer) {
-            if writer == me || wc.is_some() {
-                return Err(SerializationFailure);
+        let wc = w.commit.map(|commit| Out { commit, xid: w.xid });
+        if let Some(members) = self.dangerous(reader, writer) {
+            let victim = if writer == me || wc.is_some() {
+                me
+            } else {
+                writer
+            };
+            let failure = self.failure(victim, members);
+            if victim == me {
+                return Err(failure);
             }
-            self.get_mut(writer).doomed = true;
+            self.get_mut(writer).doomed = Some(failure);
         }
         let r = self.get_mut(reader);
         r.outs.insert(writer);
         if let Some(c) = wc {
-            r.earliest_out = Some(r.earliest_out.map_or(c, |e| e.min(c)));
+            r.earliest_out = earlier(r.earliest_out, c);
         }
         self.get_mut(writer).ins.insert(reader);
         Ok(())
     }
 
-    /// Returns whether a new rw-antidependency `reader` to `writer` completes a dangerous
-    /// structure whose last transaction committed first.
-    fn dangerous(&self, reader: SerialId, writer: SerialId) -> bool {
+    /// Returns the xids of the transactions of the dangerous structure that a new
+    /// rw-antidependency `reader` to `writer` completes, if it completes one whose last
+    /// transaction committed first.
+    fn dangerous(&self, reader: SerialId, writer: SerialId) -> Option<Vec<Option<Xid>>> {
         let (r, w) = (self.get(reader), self.get(writer));
-        let through_writer = w.earliest_out.is_some_and(|c3| {
-            r.commit.is_none_or(|rc| c3 <= rc) && (!r.read_only || c3 <= r.snapshot)
-        });
-        let into_reader = w.commit.is_some_and(|wc| {
-            !r.read_only
-                && r.ins.iter().any(|t0| {
-                    let t0 = self.get(*t0);
-                    !t0.doomed
-                        && t0.commit.is_none_or(|c| c >= wc)
-                        && (!t0.read_only || t0.snapshot >= wc)
-                })
-        });
-        through_writer || into_reader
+        if let Some(t3) = w.earliest_out
+            && r.commit.is_none_or(|rc| t3.commit <= rc)
+            && (!r.read_only || t3.commit <= r.snapshot)
+        {
+            return Some(vec![r.xid, w.xid, t3.xid]);
+        }
+        let wc = w.commit?;
+        if r.read_only {
+            return None;
+        }
+        r.ins
+            .iter()
+            .map(|t0| self.get(*t0))
+            .find(|t0| {
+                t0.doomed.is_none()
+                    && t0.commit.is_none_or(|c| c >= wc)
+                    && (!t0.read_only || t0.snapshot >= wc)
+            })
+            .map(|t0| vec![t0.xid, r.xid, w.xid])
+    }
+
+    /// Returns the failure `victim` reports for breaking a conflict among `members`.
+    fn failure(&self, victim: SerialId, members: Vec<Option<Xid>>) -> SerializationFailure {
+        let own = self.get(victim).xid;
+        let mut with: Vec<Xid> = Vec::new();
+        for x in members.into_iter().flatten() {
+            if Some(x) != own && !with.contains(&x) {
+                with.push(x);
+            }
+        }
+        SerializationFailure::new(Cause::Dangerous, with)
     }
 
     /// Check that `id` may commit, choosing to abort any transaction its commit would leave
@@ -616,19 +729,20 @@ impl Serializer {
         let mut doom = Vec::new();
         for near in &self.get(id).ins {
             let n = self.get(*near);
-            if !n.active() || n.doomed {
+            if !n.active() || n.doomed.is_some() {
                 continue;
             }
-            let far_live = n.ins.iter().any(|far| {
-                let f = self.get(*far);
-                *far == id || (f.active() && !f.read_only && !f.doomed)
+            let far_live = n.ins.iter().find(|far| {
+                let f = self.get(**far);
+                **far == id || (f.active() && !f.read_only && f.doomed.is_none())
             });
-            if far_live {
-                doom.push(*near);
+            if let Some(far) = far_live {
+                let members = vec![self.get(*far).xid, n.xid, self.get(id).xid];
+                doom.push((*near, self.failure(*near, members)));
             }
         }
-        for n in doom {
-            self.get_mut(n).doomed = true;
+        for (n, failure) in doom {
+            self.get_mut(n).doomed = Some(failure);
         }
         Ok(())
     }
@@ -640,16 +754,20 @@ impl Serializer {
         let c = self.commits;
         let s = self.get_mut(id);
         s.commit = Some(c);
+        let out = Out {
+            commit: c,
+            xid: s.xid,
+        };
         let ins: Vec<SerialId> = s.ins.iter().copied().collect();
         let earliest_out = s.earliest_out;
         for r in ins {
             let r = self.get_mut(r);
-            r.earliest_out = Some(r.earliest_out.map_or(c, |e| e.min(c)));
+            r.earliest_out = earlier(r.earliest_out, out);
         }
         let mut resolved = Vec::new();
         for (&ro, s) in &mut self.sxacts {
             if s.read_only && s.pending.remove(&id) {
-                if earliest_out.is_some_and(|e| e <= s.snapshot) {
+                if earliest_out.is_some_and(|e| e.commit <= s.snapshot) {
                     s.unsafe_ = true;
                 }
                 if s.unsafe_ || s.pending.is_empty() {
@@ -765,6 +883,11 @@ impl Serializer {
     /// Returns the number of transactions the serializer still tracks, running or committed.
     pub fn tracked(&self) -> usize {
         self.sxacts.len()
+    }
+
+    /// Returns the number of SIREAD locks held, each range and index lock counted once.
+    pub fn held(&self) -> usize {
+        self.held
     }
 
     /// Returns the number of SIREAD locks `id` holds, each range and index lock counted once.

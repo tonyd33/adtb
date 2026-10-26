@@ -94,11 +94,11 @@ struct Db {
 
 impl Db {
     fn create(rt: SimRuntime, fanout: u16) -> (Db, Roots) {
-        let mut pager = Pager::create(rt, &options()).expect("create");
-        let large = LargeStore::create(&mut pager, LARGE_ID).expect("large store");
+        let pager = Pager::create(rt, &options()).expect("create");
+        let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
         let heaps: Vec<Heap> = (0..3)
             .map(|h| {
-                Heap::create_with_fanout(&mut pager, HEAP_IDS[h], row_type(h), large, fanout)
+                Heap::create_with_fanout(&pager, HEAP_IDS[h], row_type(h), large, fanout)
                     .expect("heap")
             })
             .collect();
@@ -238,7 +238,7 @@ fn current(db: &mut Db, committed: impl Fn(u64) -> bool) -> (Live, Vec<String>) 
     let mut out = Live::new();
     let mut problems = Vec::new();
     for (h, heap) in db.heaps.iter().enumerate() {
-        heap.scan(&mut db.pager, |v| {
+        heap.scan(&db.pager, |v| {
             let deleted = v.header.xmax != 0 && committed(v.header.xmax);
             if committed(v.header.xmin) && !deleted {
                 let key = key_of(&v.row);
@@ -260,13 +260,12 @@ fn check_links(db: &mut Db) -> Vec<String> {
     let mut problems = Vec::new();
     for heap in &db.heaps {
         let mut versions = Vec::new();
-        heap.scan(&mut db.pager, |v| versions.push(v))
-            .expect("scan");
+        heap.scan(&db.pager, |v| versions.push(v)).expect("scan");
         for v in versions {
             let next = v
                 .header
                 .next
-                .map(|n| walk(&mut db.pager, n, |_| true).unwrap().unwrap());
+                .map(|n| walk(&db.pager, n, |_| true).unwrap().unwrap());
             let (moved, hot) = (
                 v.flags.contains(Flags::MOVED),
                 v.flags.contains(Flags::HOT_UPDATED),
@@ -290,7 +289,7 @@ fn check_links(db: &mut Db) -> Vec<String> {
 fn verify(db: &mut Db) -> Vec<String> {
     let mut problems = Vec::new();
     for heap in &db.heaps {
-        problems.extend(heap.verify(&mut db.pager).expect("verify"));
+        problems.extend(heap.verify(&db.pager).expect("verify"));
     }
     problems
 }
@@ -338,7 +337,7 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
                 }
             }
             for (key, (heap, tid, _)) in &live {
-                let end = walk(&mut db.pager, first[key], |l| l.header.next.is_none())
+                let end = walk(&db.pager, first[key], |l| l.header.next.is_none())
                     .unwrap()
                     .expect("chain ends");
                 assert_eq!((HEAP_IDS[*heap], *tid), (end.heap, end.tid), "key {key}");
@@ -347,7 +346,7 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
                 hot > 0 && cold > 0,
                 "{hot} heap-only updates, {cold} others"
             );
-            let pages = db.heaps[EMAIL].pages(&mut db.pager).unwrap().len();
+            let pages = db.heaps[EMAIL].pages(&db.pager).unwrap().len();
             assert!(pages > 4, "{pages} pages, so one directory level");
         });
     }
@@ -572,11 +571,11 @@ fn the_directory_splits_and_its_root_stays() {
                 Value::Text(String::new()),
                 Value::Bytes(vec![key as u8; 900]),
             ];
-            tids.push((db.heaps[EMAIL].insert(&mut db.pager, 1, &row).unwrap(), row));
+            tids.push((db.heaps[EMAIL].insert(&db.pager, 1, &row).unwrap(), row));
             assert_eq!(Vec::<String>::new(), verify(&mut db), "after key {key}");
         }
         assert_eq!(root, db.heaps[EMAIL].root());
-        let pages = db.heaps[EMAIL].pages(&mut db.pager).unwrap();
+        let pages = db.heaps[EMAIL].pages(&db.pager).unwrap();
         assert!(
             pages.len() > 27,
             "{} pages, so no fourth level",
@@ -584,7 +583,7 @@ fn the_directory_splits_and_its_root_stays() {
         );
         assert_eq!(pages.len(), pages.iter().collect::<BTreeSet<_>>().len());
         for (tid, row) in tids {
-            let v = db.heaps[EMAIL].read(&mut db.pager, tid).unwrap().unwrap();
+            let v = db.heaps[EMAIL].read(&db.pager, tid).unwrap().unwrap();
             assert_eq!(row, v.row);
         }
     });
@@ -601,9 +600,9 @@ fn a_reopened_heap_finds_room_through_its_directory() {
                 Value::Text(String::new()),
                 Value::Bytes(vec![1; 900]),
             ];
-            db.heaps[EMAIL].insert(&mut db.pager, 1, &row).unwrap();
+            db.heaps[EMAIL].insert(&db.pager, 1, &row).unwrap();
         }
-        let pages = db.heaps[EMAIL].pages(&mut db.pager).unwrap().len();
+        let pages = db.heaps[EMAIL].pages(&db.pager).unwrap().len();
         let mut reopened = Heap::open(
             &db.pager,
             HEAP_IDS[EMAIL],
@@ -617,9 +616,9 @@ fn a_reopened_heap_finds_room_through_its_directory() {
             Value::Text(String::new()),
             Value::Bytes(vec![2; 10]),
         ];
-        let t = reopened.insert(&mut db.pager, 2, &small).unwrap();
-        assert_eq!(pages, reopened.pages(&mut db.pager).unwrap().len());
-        assert_eq!(small, reopened.read(&mut db.pager, t).unwrap().unwrap().row);
+        let t = reopened.insert(&db.pager, 2, &small).unwrap();
+        assert_eq!(pages, reopened.pages(&db.pager).unwrap().len());
+        assert_eq!(small, reopened.read(&db.pager, t).unwrap().unwrap().row);
     });
 }
 
@@ -627,7 +626,7 @@ fn a_reopened_heap_finds_room_through_its_directory() {
 fn a_heap_scan_builds_a_batch_that_reads_back_its_rows() {
     let mut sim = Sim::new(8, Config::default());
     finished(&mut sim, |rt| {
-        let (mut db, _) = Db::create(rt, 4);
+        let (db, _) = Db::create(rt, 4);
         let ctor = |id, fields| CtorType {
             id: CtorId(id),
             fields,
@@ -642,7 +641,7 @@ fn a_heap_scan_builds_a_batch_that_reads_back_its_rows() {
             ]),
         ];
         let large = db.heaps[EMAIL].large();
-        let mut heap = Heap::create(&mut db.pager, 20, row_type.clone(), large).unwrap();
+        let mut heap = Heap::create(&db.pager, 20, row_type.clone(), large).unwrap();
         let rows: Vec<Vec<Value>> = (0..300i64)
             .map(|k| {
                 let note = match k % 3 {
@@ -673,10 +672,10 @@ fn a_heap_scan_builds_a_batch_that_reads_back_its_rows() {
             })
             .collect();
         for r in &rows {
-            heap.insert(&mut db.pager, 1, r).unwrap();
+            heap.insert(&db.pager, 1, r).unwrap();
         }
         let mut b = BatchBuilder::new(Schema::of_heap(&row_type));
-        heap.scan(&mut db.pager, |v| b.push_row(&v.row)).unwrap();
+        heap.scan(&db.pager, |v| b.push_row(&v.row)).unwrap();
         let batch: Batch = b.finish();
         assert_eq!(rows.len(), batch.len());
         let mut read: Vec<Vec<Value>> = (0..batch.len()).map(|i| batch.row(i)).collect();

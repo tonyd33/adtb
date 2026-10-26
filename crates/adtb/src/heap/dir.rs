@@ -123,7 +123,7 @@ impl Space {
     /// Create an empty space whose directory pages hold `fanout` entries each, and whose root
     /// names the visibility map rooted at `vm`, if any.
     pub fn create<R: Runtime>(
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         owner: u32,
         fanout: u16,
         vm: Option<Pid>,
@@ -156,13 +156,13 @@ impl Space {
     pub fn vm<R: Runtime>(
         &self,
         stage: &Stage,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
     ) -> Result<Option<Pid>, PageError> {
         Ok(vm_root(&stage.read(pager, self.root)?))
     }
 
     /// Returns every page of the space, in position order.
-    pub fn pages<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<Vec<Pid>, PageError> {
+    pub fn pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
         let mut out = Vec::new();
         let mut todo = vec![self.root];
         while let Some(pid) = todo.pop() {
@@ -180,7 +180,7 @@ impl Space {
 
     /// Returns what is wrong with the directory, and its level-0 entries in position order, a hole
     /// as `None`.
-    pub fn check<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<Check, PageError> {
+    pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Check, PageError> {
         let mut found = Check::default();
         let root = pager.read(self.root)?.to_vec();
         let at = Want {
@@ -194,7 +194,7 @@ impl Space {
 
     fn check_node<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         pid: Pid,
         want: Want,
         found: &mut Check,
@@ -255,7 +255,7 @@ impl Space {
     pub fn find<R: Runtime>(
         &self,
         stage: &Stage,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         need: u16,
         arrangement: Arrangement,
         format: u16,
@@ -283,7 +283,7 @@ impl Space {
 
     fn fill<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         position: u32,
         arrangement: Arrangement,
         format: u16,
@@ -303,13 +303,13 @@ impl Space {
     pub fn vacate<R: Runtime>(
         &self,
         stage: &mut Stage,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         position: u32,
     ) -> Result<(), PageError> {
         self.write_entry(stage, pager, position, Some(HOLE), HOLE_CATEGORY)
     }
 
-    fn len<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<u64, PageError> {
+    fn len<R: Runtime>(&self, pager: &Pager<R>) -> Result<u64, PageError> {
         let mut node = pager.read(self.root)?.to_vec();
         let cap = capacity(&node);
         let mut total = 0;
@@ -325,7 +325,7 @@ impl Space {
     pub fn set_category<R: Runtime>(
         &self,
         stage: &mut Stage,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         position: u32,
         category: u8,
     ) -> Result<(), PageError> {
@@ -337,7 +337,7 @@ impl Space {
     fn write_entry<R: Runtime>(
         &self,
         stage: &mut Stage,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         position: u32,
         page: Option<Pid>,
         category: u8,
@@ -378,7 +378,7 @@ impl Space {
     /// directory pages it touches are then written in one update.
     pub fn append<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         arrangement: Arrangement,
         format: u16,
     ) -> Result<Pid, PageError> {

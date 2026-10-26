@@ -74,7 +74,7 @@ enum Plan {
 /// Returns what `f` makes of node `pid`, refusing a page that is not a node
 /// of `owner`.
 pub(super) fn visit<R: Runtime, T>(
-    pager: &mut Pager<R>,
+    pager: &Pager<R>,
     owner: u32,
     pid: Pid,
     f: impl FnOnce(&Node) -> Result<T, Malformed>,
@@ -109,7 +109,7 @@ fn split_point(items: &[Item]) -> usize {
 
 impl BTree {
     /// Allocate an empty tree whose pages carry `owner`.
-    pub fn create<R: Runtime>(pager: &mut Pager<R>, owner: u32) -> Result<BTree, PageError> {
+    pub fn create<R: Runtime>(pager: &Pager<R>, owner: u32) -> Result<BTree, PageError> {
         let root = pager.allocate(FORMAT, kind_of(0), owner)?;
         Ok(BTree { root, owner })
     }
@@ -128,7 +128,7 @@ impl BTree {
 
     /// Returns the root's level, which is the number of levels above the
     /// leaves.
-    pub fn height<R: Runtime>(&self, pager: &mut Pager<R>) -> Result<u16, Error> {
+    pub fn height<R: Runtime>(&self, pager: &Pager<R>) -> Result<u16, Error> {
         visit(pager, self.owner, self.root, |n| Ok(n.level()))
     }
 
@@ -140,7 +140,7 @@ impl BTree {
     /// Returns the descent to the page at `level` whose range holds `key`.
     pub(super) fn descend<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         key: &[u8],
         level: u16,
     ) -> Result<Descent, Error> {
@@ -197,7 +197,7 @@ impl BTree {
     /// there if it is in the tree.
     fn find<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         entry: &[u8],
     ) -> Result<(Descent, Option<usize>), Error> {
         let descent = self.descend(pager, entry, 0)?;
@@ -208,14 +208,14 @@ impl BTree {
         Ok((descent, slot))
     }
 
-    pub fn contains<R: Runtime>(&self, pager: &mut Pager<R>, entry: &[u8]) -> Result<bool, Error> {
+    pub fn contains<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
         Ok(self.find(pager, entry)?.1.is_some())
     }
 
     /// Insert `entry`, first finishing each split whose page the descent
     /// reaches by a right link without a downlink. Returns false, changing no
     /// entry, if it is already in the tree.
-    pub fn insert<R: Runtime>(&self, pager: &mut Pager<R>, entry: &[u8]) -> Result<bool, Error> {
+    pub fn insert<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
         let max = BTree::max_entry_len(pager.page_size());
         if entry.len() > max {
             return Err(Error::TooLong {
@@ -242,11 +242,7 @@ impl BTree {
     }
 
     /// Insert the downlink of `split`'s page into its parent's level.
-    pub(super) fn finish<R: Runtime>(
-        &self,
-        pager: &mut Pager<R>,
-        split: Split,
-    ) -> Result<(), Error> {
+    pub(super) fn finish<R: Runtime>(&self, pager: &Pager<R>, split: Split) -> Result<(), Error> {
         let mut stack = split.stack;
         let parent = stack
             .pop()
@@ -259,7 +255,7 @@ impl BTree {
     }
 
     /// Delete `entry`. Returns false if it was not in the tree.
-    pub fn delete<R: Runtime>(&self, pager: &mut Pager<R>, entry: &[u8]) -> Result<bool, Error> {
+    pub fn delete<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
         let (descent, slot) = self.find(pager, entry)?;
         let Some(i) = slot else {
             return Ok(false);
@@ -272,7 +268,7 @@ impl BTree {
     /// one update. Returns the number of entries deleted.
     pub fn retain<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         mut keep: impl FnMut(&[u8]) -> bool,
     ) -> Result<usize, Error> {
         let mut pid = self.descend(pager, &[], 0)?.pid;
@@ -310,7 +306,7 @@ impl BTree {
     /// downlink is added.
     fn put<R: Runtime>(
         &self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         mut pid: Pid,
         mut stack: Vec<Pid>,
         mut item: Item,
@@ -448,7 +444,7 @@ pub struct Cursor {
 
 impl Cursor {
     /// Returns the next entry in the range, or `None` past its end.
-    pub fn next<R: Runtime>(&mut self, pager: &mut Pager<R>) -> Result<Option<Vec<u8>>, Error> {
+    pub fn next<R: Runtime>(&mut self, pager: &Pager<R>) -> Result<Option<Vec<u8>>, Error> {
         loop {
             if let Some(e) = self.buffered.pop_front() {
                 self.after = Bound::Excluded(e.clone());
@@ -490,7 +486,7 @@ impl Cursor {
     }
 
     /// Returns every entry left in the range.
-    pub fn collect<R: Runtime>(mut self, pager: &mut Pager<R>) -> Result<Vec<Vec<u8>>, Error> {
+    pub fn collect<R: Runtime>(mut self, pager: &Pager<R>) -> Result<Vec<Vec<u8>>, Error> {
         let mut out = Vec::new();
         while let Some(e) = self.next(pager)? {
             out.push(e);

@@ -7,7 +7,7 @@ exposes safe types to `adtb`. Every other crate has
 
 ## 1. Safe types
 
-The safe types are `Frame`, `PageRef` and `AlignedBuf`.
+The safe types are `Frame`, `PageRef`, `AlignedBuf` and `Lock`.
 
 `adtb-sys` states its contract in its documentation; this file states
 what `adtb` may rely on.
@@ -49,6 +49,27 @@ optimistic.read(offset, out) / optimistic.validate() / optimistic.upgrade()
 `Exclusive` and `Shared` read as `&[u8]`. Waiting calls
 `threads.yield_now`. Only `adtb`'s pager uses these types; consumers
 see pages as [storage.md §2.3](storage.md#23-page-access) states.
+
+`lock::Lock<T>` is the mutex every in-memory structure of `adtb`
+shared between threads sits behind:
+
+```text
+Lock::new(value) -> Lock<T>
+lock.lock(threads) -> MutexGuard<T>     // waits through threads.yield_now
+```
+
+Invariants:
+
+- A waiter spins only through `yield_now`, so a scheduler that switches
+  threads only at runtime calls runs the holder.
+- A lock whose holder panicked is handed to the next caller as it was
+  left; it is never refused.
+
+Preconditions:
+
+- A holder may block in the runtime, as for I/O, but never parks
+  waiting for a thread that needs the lock.
+- A thread never asks for a lock it holds.
 
 Rulings: project/arch/unsafe/confined
 

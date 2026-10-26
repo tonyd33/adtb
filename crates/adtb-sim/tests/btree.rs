@@ -347,10 +347,10 @@ fn a_tree_reopens_from_its_root() {
     let root = Arc::new(Mutex::new(Pid(0)));
     let r = root.clone();
     let outcome = sim.run(move |rt| {
-        let mut pager = Pager::create(rt, &options()).unwrap();
-        let tree = BTree::create(&mut pager, OWNER).unwrap();
+        let pager = Pager::create(rt, &options()).unwrap();
+        let tree = BTree::create(&pager, OWNER).unwrap();
         for i in 0..2000_u32 {
-            tree.insert(&mut pager, &[i.to_be_bytes().as_slice(), &[7; 60]].concat())
+            tree.insert(&pager, &[i.to_be_bytes().as_slice(), &[7; 60]].concat())
                 .unwrap();
         }
         pager.flush_log();
@@ -359,18 +359,15 @@ fn a_tree_reopens_from_its_root() {
     assert_eq!(Outcome::Finished, outcome);
     let root = *root.lock().unwrap();
     let outcome = sim.run(move |rt| {
-        let (mut pager, _) = Pager::open(rt, &options()).unwrap();
+        let (pager, _) = Pager::open(rt, &options()).unwrap();
         let tree = BTree::open(root, OWNER);
-        assert_eq!(tree.verify(&mut pager).unwrap().len(), 2000);
+        assert_eq!(tree.verify(&pager).unwrap().len(), 2000);
         assert!(
-            tree.contains(
-                &mut pager,
-                &[&1999_u32.to_be_bytes()[..], &[7; 60]].concat()
-            )
-            .unwrap()
+            tree.contains(&pager, &[&1999_u32.to_be_bytes()[..], &[7; 60]].concat())
+                .unwrap()
         );
         let other = BTree::open(root, OWNER + 1);
-        assert_eq!(other.verify(&mut pager), Err(Error::Malformed(root)));
+        assert_eq!(other.verify(&pager), Err(Error::Malformed(root)));
     });
     assert_eq!(Outcome::Finished, outcome);
 }
@@ -685,7 +682,7 @@ fn crash_options() -> Options {
 }
 
 fn crash_workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
-    let (mut pager, _) = Pager::open(rt.clone(), &crash_options()).expect("open");
+    let (pager, _) = Pager::open(rt.clone(), &crash_options()).expect("open");
     let tree = BTree::open(world.lock().unwrap().root.unwrap(), OWNER);
     let max = 200;
     for _ in 0..steps {
@@ -703,9 +700,9 @@ fn crash_workload(rt: SimRuntime, world: &Mutex<World>, steps: usize) {
         world.lock().unwrap().ops.push((insert, e.clone()));
         let start = rt.recorded();
         if insert {
-            tree.insert(&mut pager, &e).expect("insert");
+            tree.insert(&pager, &e).expect("insert");
         } else {
-            tree.delete(&mut pager, &e).expect("delete");
+            tree.delete(&pager, &e).expect("delete");
         }
         world.lock().unwrap().spans.push((start, rt.recorded()));
         match below(&rt, 30) {
@@ -743,8 +740,8 @@ fn incomplete_at(recording: &Recording, at: usize, root: Pid, seed: u64) -> usiz
     assert_eq!(
         Outcome::Finished,
         sim.run(|rt| {
-            let (mut pager, _) = Pager::open(rt, &crash_options()).expect("reopen");
-            n = BTree::open(root, OWNER).repair(&mut pager).expect("repair");
+            let (pager, _) = Pager::open(rt, &crash_options()).expect("reopen");
+            n = BTree::open(root, OWNER).repair(&pager).expect("repair");
         })
     );
     n
@@ -808,8 +805,8 @@ fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
     let world = Arc::new(Mutex::new(World::default()));
     let w = world.clone();
     let outcome = sim.run(move |rt| {
-        let mut pager = Pager::create(rt, &crash_options()).expect("create");
-        let tree = BTree::create(&mut pager, OWNER).expect("create tree");
+        let pager = Pager::create(rt, &crash_options()).expect("create");
+        let tree = BTree::create(&pager, OWNER).expect("create tree");
         pager.flush_log();
         w.lock().unwrap().root = Some(tree.root());
     });
@@ -834,13 +831,13 @@ fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
         let found = Arc::new(Mutex::new(None));
         let f = found.clone();
         let outcome = sim.run(move |rt| {
-            let (mut pager, _) = Pager::open(rt, &crash_options()).expect("reopen");
+            let (pager, _) = Pager::open(rt, &crash_options()).expect("reopen");
             let tree = BTree::open(root, OWNER);
-            let recovered = tree.verify(&mut pager);
+            let recovered = tree.verify(&pager);
             if recovered.is_ok() {
-                *finished.lock().unwrap() += tree.repair(&mut pager).expect("repair");
-                assert_eq!(tree.repair(&mut pager), Ok(0), "seed {seed} round {round}");
-                assert_eq!(tree.verify(&mut pager), recovered);
+                *finished.lock().unwrap() += tree.repair(&pager).expect("repair");
+                assert_eq!(tree.repair(&pager), Ok(0), "seed {seed} round {round}");
+                assert_eq!(tree.verify(&pager), recovered);
                 pager.flush_log();
             }
             *f.lock().unwrap() = Some(recovered);
@@ -924,16 +921,16 @@ fn recover_and(
     let outcome = replay.run(|rt| {
         let (mut pager, _) = Pager::open(rt, &split_options()).expect("reopen");
         let tree = BTree::open(root, OWNER);
-        let entries = tree.verify(&mut pager).expect("verify the recovered tree");
+        let entries = tree.verify(&pager).expect("verify the recovered tree");
         let all: Vec<Vec<u8>> = (0..SPLIT_ENTRIES).map(split_entry).collect();
         assert!(
             entries.iter().all(|e| all.contains(e)),
             "flush boundary {at}"
         );
         found = body(&tree, &mut pager);
-        assert_eq!(tree.repair(&mut pager), Ok(0), "flush boundary {at}");
+        assert_eq!(tree.repair(&pager), Ok(0), "flush boundary {at}");
         assert_eq!(
-            tree.verify(&mut pager).as_ref(),
+            tree.verify(&pager).as_ref(),
             Ok(&all),
             "flush boundary {at}"
         );
@@ -960,20 +957,18 @@ fn record_splits() -> (Sim, Pid) {
     let mut sim = Sim::new(31, Config::default());
     let mut root = Pid(0);
     let outcome = sim.run(|rt| {
-        let mut pager = Pager::create(rt, &split_options()).expect("create");
-        root = BTree::create(&mut pager, OWNER)
-            .expect("create tree")
-            .root();
+        let pager = Pager::create(rt, &split_options()).expect("create");
+        root = BTree::create(&pager, OWNER).expect("create tree").root();
         pager.flush_log();
     });
     assert_eq!(Outcome::Finished, outcome);
     sim.record();
     let outcome = sim.run(|rt| {
-        let (mut pager, _) = Pager::open(rt, &split_options()).expect("open");
+        let (pager, _) = Pager::open(rt, &split_options()).expect("open");
         let tree = BTree::open(root, OWNER);
         for i in 0..SPLIT_ENTRIES {
             let e = split_entry(i * 97 % SPLIT_ENTRIES);
-            assert_eq!(tree.insert(&mut pager, &e), Ok(true));
+            assert_eq!(tree.insert(&pager, &e), Ok(true));
         }
         pager.flush_log();
     });

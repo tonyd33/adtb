@@ -13,7 +13,7 @@ impl Stage {
     }
 
     /// Returns a copy of `pid` as staged, or as the pager holds it when it is not staged.
-    pub fn read<R: Runtime>(&self, pager: &mut Pager<R>, pid: Pid) -> Result<Vec<u8>, PageError> {
+    pub fn read<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<Vec<u8>, PageError> {
         match self.pages.iter().find(|(p, _)| *p == pid) {
             Some((_, bytes)) => Ok(bytes.clone()),
             None => Ok(pager.read(pid)?.to_vec()),
@@ -23,7 +23,7 @@ impl Stage {
     /// Returns the staged copy of `pid`, staging it first if needed.
     pub fn page<R: Runtime>(
         &mut self,
-        pager: &mut Pager<R>,
+        pager: &Pager<R>,
         pid: Pid,
     ) -> Result<&mut Vec<u8>, PageError> {
         let i = match self.pages.iter().position(|(p, _)| *p == pid) {
@@ -45,7 +45,7 @@ impl Stage {
     }
 
     /// Write every staged page back in one pager update, so a crash keeps all of them or none.
-    pub fn commit<R: Runtime>(self, pager: &mut Pager<R>) -> Result<(), PageError> {
+    pub fn commit<R: Runtime>(self, pager: &Pager<R>) -> Result<(), PageError> {
         if self.pages.is_empty() {
             return Ok(());
         }
