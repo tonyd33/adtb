@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 706
 summary: "no migrations, migration_ops, migration_clauses or functions rows, and no version hash"
+branch: adtb-mlog
 depends-on:
   - canonical-term-form
 ---
