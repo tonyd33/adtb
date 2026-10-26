@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use adtb_lang::textual::{Scalar, Textual};
+use adtb_lang::textual::{Elems, Scalar, Textual};
 use adtb_lang::types::Base;
 
 use super::time::zone;
 use super::{F32, F64, Val};
 
 impl Textual for Val {
-    fn scalar(&self) -> Scalar<'_> {
-        match self {
+    fn scalar(&self) -> Option<Scalar<'_>> {
+        Some(match self {
             Val::Int(x) => Scalar::Int(*x),
             Val::Decimal(d) => Scalar::Decimal(*d),
             Val::F32(f) => Scalar::F32(f.get()),
@@ -28,24 +28,34 @@ impl Textual for Val {
                 months: *months,
                 days: *days,
             },
-            v => panic!("expected a scalar, found {v:?}"),
+            _ => return None,
+        })
+    }
+
+    fn ctor(&self) -> Option<u32> {
+        match self {
+            Val::Ctor(c, _) => Some(*c),
+            _ => None,
         }
     }
 
-    fn ctor(&self) -> u32 {
-        Val::ctor_of(self)
+    fn fields(&self) -> Option<impl Iterator<Item = &Val>> {
+        match self {
+            Val::Ctor(_, fs) | Val::Record(fs) => Some(fs.iter()),
+            _ => None,
+        }
     }
 
-    fn fields(&self) -> impl Iterator<Item = &Val> {
-        Val::fields(self).iter()
+    fn key(&self) -> Option<&Val> {
+        Some(self)
     }
 
-    fn key(&self) -> &Val {
-        self
-    }
-
-    fn elems(&self) -> impl Iterator<Item = &Val> {
-        self.as_set().iter()
+    fn elems(&self) -> Option<impl Iterator<Item = &Val>> {
+        match self {
+            Val::Set(s) => Some(Elems::Set(s.iter())),
+            Val::List(xs) => Some(Elems::List(xs.iter())),
+            _ => None,
+        }
     }
 
     fn of_scalar(s: Scalar<'_>, at: Base) -> Val {

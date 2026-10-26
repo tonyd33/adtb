@@ -473,7 +473,7 @@ impl Run<'_, '_> {
                         js.push(Rejected {
                             line,
                             source: source.clone(),
-                            raw: print(it.schema, &p, &ty),
+                            raw: print(it.schema, &p, &ty)?,
                             reason: detail,
                         });
                     }

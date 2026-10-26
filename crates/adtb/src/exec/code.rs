@@ -170,17 +170,17 @@ impl Shared {
 }
 
 /// Returns the rows of `sel` where `value` holds, then the others.
-fn split_bool(sel: &Sel, value: impl Fn(u32) -> bool) -> (Sel, Sel) {
+fn split_bool(sel: &Sel, value: impl Fn(u32) -> Result<bool, Error>) -> Result<(Sel, Sel), Error> {
     let mut t = Vec::new();
     let mut f = Vec::new();
     for &r in sel {
-        if value(r) {
+        if value(r)? {
             t.push(r);
         } else {
             f.push(r);
         }
     }
-    (t, f)
+    Ok((t, f))
 }
 
 impl Code {
@@ -304,10 +304,10 @@ impl Code {
                     let out = self.map(f, regs, sel, catch, |get| {
                         let v = get(*src);
                         let i = match v {
-                            Val::Ctor(..) => at.of(v.ctor_of())?,
+                            Val::Ctor(..) => at.of(v.ctor_of()?)?,
                             _ => at.of(0)?,
                         };
-                        Ok(Ok(v.fields()[i].clone()))
+                        Ok(Ok(v.fields()?[i].clone()))
                     })?;
                     Code::put(regs, len, *dst, out);
                 }
@@ -319,8 +319,8 @@ impl Code {
                 } => {
                     let out = self.map(f, regs, sel, catch, |get| {
                         let v = get(*src);
-                        let c = v.ctor_of();
-                        let fs = v.fields();
+                        let c = v.ctor_of()?;
+                        let fs = v.fields()?;
                         let mut ks: Vec<Val> = at
                             .iter()
                             .map(|a| Ok(fs[a.of(c)?].clone()))
@@ -335,7 +335,7 @@ impl Code {
                 }
                 Ins::Tag { src, dst } => {
                     let out = self.map(f, regs, sel, catch, |get| {
-                        Ok(Ok(Val::tag(get(*src).ctor_of())))
+                        Ok(Ok(Val::tag(get(*src).ctor_of()?)))
                     })?;
                     Code::put(regs, len, *dst, out);
                 }
@@ -347,7 +347,7 @@ impl Code {
                 }
                 Ins::Union { a, b, dst } => {
                     let out = self.map(f, regs, sel, catch, |get| {
-                        let (x, y) = (get(*a).as_set(), get(*b).as_set());
+                        let (x, y) = (get(*a).as_set()?, get(*b).as_set()?);
                         Ok(Ok(if y.is_empty() {
                             get(*a).clone()
                         } else if x.is_empty() {
@@ -360,13 +360,13 @@ impl Code {
                 }
                 Ins::Restrict { src, keep, dst } => {
                     let out = self.map(f, regs, sel, catch, |get| {
-                        let s = get(*src).as_set();
-                        Ok(Ok(Val::set(
-                            s.iter()
-                                .filter(|v| keep[v.ctor_of() as usize])
-                                .cloned()
-                                .collect(),
-                        )))
+                        let mut kept = BTreeSet::new();
+                        for v in get(*src).as_set()? {
+                            if keep[v.ctor_of()? as usize] {
+                                kept.insert(v.clone());
+                            }
+                        }
+                        Ok(Ok(Val::set(kept)))
                     })?;
                     Code::put(regs, len, *dst, out);
                 }
@@ -383,7 +383,7 @@ impl Code {
                     els,
                     dst,
                 } => {
-                    let (mut t, mut e) = split_bool(sel, |r| self.get(*cond, f, regs, r).truth());
+                    let (mut t, mut e) = split_bool(sel, |r| self.get(*cond, f, regs, r).truth())?;
                     let since = catch.faults.len();
                     let mut out = Vec::new();
                     for (blk, s) in [(then, &mut t), (els, &mut e)] {
@@ -399,7 +399,7 @@ impl Code {
                 Ins::Case { scrut, arms, dst } => {
                     let mut by: Vec<Sel> = vec![Vec::new(); arms.len()];
                     for &r in sel.iter() {
-                        let c = self.get(*scrut, f, regs, r).ctor_of();
+                        let c = self.get(*scrut, f, regs, r).ctor_of()?;
                         super::arm(arms, c)?;
                         by[c as usize].push(r);
                     }

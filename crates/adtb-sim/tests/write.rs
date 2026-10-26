@@ -166,7 +166,8 @@ fn engine_error(schema: &Schema, e: &write::Error) -> Failed {
                     ctors: None,
                 };
                 let printed =
-                    adtb_reference::textual::print(schema, &to_ref(schema, &ty, key), &ty);
+                    adtb_reference::textual::print(schema, &to_ref(schema, &ty, key), &ty)
+                        .expect("a key prints");
                 plain(format!(
                     "KeyViolation {} {printed}",
                     schema.relation(*relation).name
@@ -1001,10 +1002,7 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
             .iter()
             .filter(|d| d.op == 0 && d.result.is_ok())
             .count() as i64;
-        let n: Vec<Val> = rows[&(counters, 0)]
-            .iter()
-            .map(|r| r.fields()[1].clone())
-            .collect();
+        let n: Vec<Val> = rows[&(counters, 0)].iter().map(|r| field(r, 1)).collect();
         assert_eq!(
             vec![Val::Int(incs)],
             n,
@@ -1015,7 +1013,7 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
             .get(&(tags, 0))
             .into_iter()
             .flatten()
-            .map(|r| r.fields()[1].clone())
+            .map(|r| field(r, 1))
             .collect();
         let distinct: BTreeSet<&Val> = names.iter().collect();
         assert_eq!(
@@ -1157,10 +1155,10 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
             .into_iter()
             .flatten()
             .map(|r| {
-                let Val::Text(n) = &r.fields()[1] else {
+                let Val::Text(n) = field(r, 1) else {
                     panic!("a name")
                 };
-                (n.to_string(), r.fields()[0].clone())
+                (n.to_string(), field(r, 0))
             })
             .collect();
         for (name, k) in acked.lock().unwrap().iter() {
@@ -1303,4 +1301,8 @@ relation tags : Label key id generate sequence",
         counters = Some(u32::from_le_bytes(n.try_into().expect("4 bytes")));
     });
     assert_eq!(Some(1), counters, "only tags has a counter");
+}
+
+fn field(r: &Val, i: usize) -> Val {
+    r.fields().expect("a row has fields")[i].clone()
 }

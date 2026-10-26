@@ -39,6 +39,7 @@ dependencies = [
 name = "adtb-lang"
 version = "0.1.0"
 dependencies = [
+ "adtb-testkit",
  "regex-syntax",
  "unicode-normalization",
 ]

@@ -9,6 +9,9 @@ use adtb_lang::types::{CtorSet, RelId, Ty};
 use crate::catalog::indexed_fields;
 use crate::plan::{self, Catalog, Facts, Plan, with_children};
 
+#[cfg(test)]
+mod tests;
+
 /// The rows of a constructor set that a delta query reads from the change set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Part {
@@ -131,6 +134,10 @@ pub fn compile(
     } else {
         Err(refused)
     }
+}
+
+fn internal<T>(what: impl Into<String>) -> Result<T, plan::Error> {
+    Err(plan::Error::Internal(what.into()))
 }
 
 /// Returns the qualified name of `r`, with the constructor set `ctors` when it is not every
@@ -385,20 +392,26 @@ impl Compiler<'_> {
         } else {
             for o in &occurrences {
                 let what = format!("changes to {}", self.scope_name(o.rel, &o.ctors));
-                let (t, trigger) = match (&o.at, o.origin) {
+                let made = match (&o.at, o.origin) {
                     (_, Origin::Prior) => continue,
                     (At::Top(f), _) => self.top_delta(q, *f, o),
                     (At::Nested { row, path, guards }, _) => {
                         self.nested_delta(q, o, row, path, guards, &binders)
                     }
                 };
-                terms.push((t, Some(trigger), what));
+                match made {
+                    Ok((t, trigger)) => terms.push((t, Some(trigger), what)),
+                    Err(e) => return Err(vec![format!("{what}: {}", self.refusal(&e))]),
+                }
             }
         }
         let mut deltas = Vec::new();
         let mut why: Vec<String> = Vec::new();
         for (t, trigger, what) in terms {
-            let t = self.priors(t);
+            let t = match self.priors(t) {
+                Ok(t) => t,
+                Err(e) => return Err(vec![format!("{what}: {}", self.refusal(&e))]),
+            };
             for reason in self.shapes(t) {
                 let r = format!("{what}: {reason}");
                 if !why.contains(&r) {
@@ -591,9 +604,9 @@ impl Compiler<'_> {
     /// into its source, and that input.
     ///
     /// Precondition: `f` reads a constructor set in the state after the change.
-    fn top_delta(&mut self, q: Tm, f: Tm, o: &Occurrence) -> (Tm, Var) {
+    fn top_delta(&mut self, q: Tm, f: Tm, o: &Occurrence) -> Result<(Tm, Var), plan::Error> {
         let Kind::For(x, _, body) = self.kind(f) else {
-            panic!("a top level read is the source of a `For`")
+            return internal("a top level read is the source of a `For`");
         };
         let elem = self.terms.var_info(x).ty.clone();
         let d = self.input(o.rel, &o.ctors, Part::Inserted, &elem);
@@ -601,7 +614,7 @@ impl Compiler<'_> {
         let new = self.add(Kind::For(x, set, body), self.ty(f));
         let t = self.replace(q, &HashMap::from([(f, new)]), &mut HashMap::new());
         let (links, tail) = self.chain(t);
-        (self.ordered(links, tail, self.ty(q)), d)
+        Ok((self.ordered(links, tail, self.ty(q)), d))
     }
 
     /// Returns `q` restricted to the bindings of its top level that a changed row of the nested
@@ -614,13 +627,13 @@ impl Compiler<'_> {
         path: &[(Var, Option<Tm>)],
         guards: &[Tm],
         binders: &HashMap<Var, Binder>,
-    ) -> (Tm, Var) {
+    ) -> Result<(Tm, Var), plan::Error> {
         let elem = match row {
             Row::Gen(y) => self.terms.var_info(*y).ty.clone(),
             Row::Deref(_) => self.ty(o.node),
             Row::Bare => match self.ty(o.node) {
                 Ty::Set(e) | Ty::NonEmpty(e) => *e,
-                other => panic!("a read of rows is a set, not {other:?}"),
+                other => return internal(format!("a read of rows is a set, not {other:?}")),
             },
         };
         let input = match (o.origin, self.kind(o.node)) {
@@ -630,7 +643,7 @@ impl Compiler<'_> {
         let input_ty = self.terms.var_info(input).ty.clone();
         let elem = match &input_ty {
             Ty::Set(e) => e.as_ref().clone(),
-            other => panic!("a change set input is a set, not {other:?}"),
+            other => return internal(format!("a change set input is a set, not {other:?}")),
         };
         let d = self.terms.var("%changed", elem);
         let mut sub: HashMap<Var, Var> = HashMap::new();
@@ -718,7 +731,11 @@ impl Compiler<'_> {
                     let body = self.guard(&conds, body, &ty);
                     Kind::Let(x, e, body)
                 }
-                k => panic!("a top level binder is a `For` or a `Let`, not {k:?}"),
+                k => {
+                    return internal(format!(
+                        "a top level binder is a `For` or a `Let`, not {k:?}"
+                    ));
+                }
             };
             let n = self.add(wrapped, self.ty(node));
             map.insert(node, n);
@@ -726,7 +743,7 @@ impl Compiler<'_> {
         let injected = self.replace(q, &map, &mut HashMap::new());
         let (rest, tail) = self.chain(injected);
         links.extend(rest);
-        (self.ordered(links, tail, ty), input)
+        Ok((self.ordered(links, tail, ty), input))
     }
 
     /// Returns the leading generators and conditions of the top level of `q`, and what they
@@ -909,34 +926,39 @@ impl Compiler<'_> {
 
     /// Returns `t` with each read of a `prior` relation replaced by the rows of the state after
     /// the change that it does not insert, with the rows it deletes.
-    fn priors(&mut self, t: Tm) -> Tm {
+    fn priors(&mut self, t: Tm) -> Result<Tm, plan::Error> {
         let mut map = HashMap::new();
         let mut seen = BTreeSet::new();
-        self.find_priors(t, &mut seen, &mut map);
+        self.find_priors(t, &mut seen, &mut map)?;
         if map.is_empty() {
-            return t;
+            return Ok(t);
         }
-        self.replace(t, &map, &mut HashMap::new())
+        Ok(self.replace(t, &map, &mut HashMap::new()))
     }
 
-    fn find_priors(&mut self, t: Tm, seen: &mut BTreeSet<Tm>, map: &mut HashMap<Tm, Tm>) {
+    fn find_priors(
+        &mut self,
+        t: Tm,
+        seen: &mut BTreeSet<Tm>,
+        map: &mut HashMap<Tm, Tm>,
+    ) -> Result<(), plan::Error> {
         if !seen.insert(t) {
-            return;
+            return Ok(());
         }
         if let Kind::For(y, src, body) = self.kind(t)
             && let Some((rel, ctors, Origin::Prior)) = self.source(src)
         {
-            let body = self.priors(body);
+            let body = self.priors(body)?;
             let new = self.prior_for(y, rel, &ctors, body, self.ty(t));
             map.insert(t, new);
-            return;
+            return Ok(());
         }
         if let Kind::Var(_) = self.kind(t)
             && let Some((rel, ctors, Origin::Prior)) = self.source(t)
         {
             let elem = match self.ty(t) {
                 Ty::Set(e) | Ty::NonEmpty(e) => *e,
-                other => panic!("a prior relation is a set, not {other:?}"),
+                other => return internal(format!("a prior relation is a set, not {other:?}")),
             };
             let ty = Ty::Set(Box::new(elem.clone()));
             let y = self.terms.var("%prior", elem.clone());
@@ -944,11 +966,12 @@ impl Compiler<'_> {
             let body = self.add(Kind::Singleton(row), ty.clone());
             let new = self.prior_for(y, rel, &ctors, body, ty);
             map.insert(t, new);
-            return;
+            return Ok(());
         }
         for c in self.terms.children(t) {
-            self.find_priors(c, seen, map);
+            self.find_priors(c, seen, map)?;
         }
+        Ok(())
     }
 
     /// Returns `for y in prior(ctors of rel) do body`, a set term of type `ty`.

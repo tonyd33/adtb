@@ -78,7 +78,8 @@ fn name(n: &str) -> [(&'static str, Ty, Value); 1] {
 
 fn printed(rows: DynRows) -> Vec<String> {
     let form = rows.form().clone();
-    rows.map(|r| print(&r.expect("a row"), &form)).collect()
+    rows.map(|r| print(&r.expect("a row"), &form).expect("a row prints"))
+        .collect()
 }
 
 /// Returns each row of the one result of `text` run in `db`, printed.

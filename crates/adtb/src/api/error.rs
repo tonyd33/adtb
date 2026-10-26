@@ -2,7 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use adtb_lang::schema::Schema;
-use adtb_lang::textual::{Form, print};
+use adtb_lang::textual::{Form, PrintError, print};
 use adtb_lang::types::{Base, RelId, Ty};
 
 use crate::exec::{Exceeded, Val};
@@ -299,7 +299,8 @@ struct Txt<'a>(&'a str);
 
 impl fmt::Debug for Txt<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&print(&Val::Text(self.0.into()), &Form::Base(Base::Text)))
+        let text = print(&Val::Text(self.0.into()), &Form::Base(Base::Text));
+        f.write_str(&text.map_err(|_| fmt::Error)?)
     }
 }
 
@@ -308,7 +309,8 @@ struct Dur(Duration);
 impl fmt::Debug for Dur {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let micros = i64::try_from(self.0.as_micros()).unwrap_or(i64::MAX);
-        f.write_str(&print(&Val::Duration(micros), &Form::Base(Base::Duration)))
+        let text = print(&Val::Duration(micros), &Form::Base(Base::Duration));
+        f.write_str(&text.map_err(|_| fmt::Error)?)
     }
 }
 
@@ -533,9 +535,12 @@ fn rejection(schema: &Schema, r: Rejection) -> RejectReason {
             report: report.into_iter().collect(),
             redacted: 0,
         },
-        Rejection::KeyViolation { relation, key } => RejectReason::KeyViolation {
-            relation: qualified(schema, relation),
-            key: print_key(schema, relation, &key),
+        Rejection::KeyViolation { relation, key } => match print_key(schema, relation, &key) {
+            Ok(key) => RejectReason::KeyViolation {
+                relation: qualified(schema, relation),
+                key,
+            },
+            Err(e) => RejectReason::Internal { what: e.message },
         },
         Rejection::KeyChanged { relation } => RejectReason::KeyChanged {
             relation: qualified(schema, relation),
@@ -562,7 +567,7 @@ fn qualified(schema: &Schema, rel: RelId) -> String {
     format!("{}::{}", schema.module(r.module).name, r.name)
 }
 
-fn print_key(schema: &Schema, rel: RelId, key: &Val) -> String {
+fn print_key(schema: &Schema, rel: RelId, key: &Val) -> Result<String, PrintError> {
     let form = Form::of(schema, &Ty::Key { rel, ctors: None });
     print(key, &form)
 }

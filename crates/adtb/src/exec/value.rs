@@ -3,6 +3,8 @@ use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, LazyLock};
 
+use super::Error;
+
 /// An `F32` with `-0.0` replaced by `0.0` and every NaN by one NaN, ordered with NaN greatest.
 #[derive(Clone, Copy, Debug)]
 pub struct F32(f32);
@@ -187,42 +189,47 @@ impl Val {
 
     /// Returns whether this is `True`.
     ///
-    /// Panics unless it is a `Bool`.
-    pub fn truth(&self) -> bool {
+    /// Fails unless it is a `Bool`.
+    pub fn truth(&self) -> Result<bool, Error> {
         match self {
-            Val::Ctor(c, fs) if fs.is_empty() && *c <= 1 => *c == 1,
-            v => panic!("expected a Bool, found {v:?}"),
+            Val::Ctor(c, fs) if fs.is_empty() && *c <= 1 => Ok(*c == 1),
+            v => Err(mistyped("a Bool", v)),
         }
     }
 
     /// Returns the constructor of a constructor value.
     ///
-    /// Panics unless it is one.
-    pub fn ctor_of(&self) -> u32 {
+    /// Fails unless it is one.
+    pub fn ctor_of(&self) -> Result<u32, Error> {
         match self {
-            Val::Ctor(c, _) => *c,
-            v => panic!("expected a constructor value, found {v:?}"),
+            Val::Ctor(c, _) => Ok(*c),
+            v => Err(mistyped("a constructor value", v)),
         }
     }
 
-    pub fn fields(&self) -> &[Val] {
+    /// Returns the fields of a constructor value or a record.
+    ///
+    /// Fails unless it is one.
+    pub fn fields(&self) -> Result<&[Val], Error> {
         match self {
-            Val::Ctor(_, fs) | Val::Record(fs) => fs,
-            v => panic!("expected a value with fields, found {v:?}"),
+            Val::Ctor(_, fs) | Val::Record(fs) => Ok(fs),
+            v => Err(mistyped("a value with fields", v)),
         }
     }
 
-    pub fn as_set(&self) -> &BTreeSet<Val> {
+    /// Fails unless it is a set.
+    pub fn as_set(&self) -> Result<&BTreeSet<Val>, Error> {
         match self {
-            Val::Set(s) => s,
-            v => panic!("expected a set, found {v:?}"),
+            Val::Set(s) => Ok(s),
+            v => Err(mistyped("a set", v)),
         }
     }
 
-    pub fn int(&self) -> i64 {
+    /// Fails unless it is an integer.
+    pub fn int(&self) -> Result<i64, Error> {
         match self {
-            Val::Int(i) => *i,
-            v => panic!("expected an integer, found {v:?}"),
+            Val::Int(i) => Ok(*i),
+            v => Err(mistyped("an integer", v)),
         }
     }
 
@@ -237,4 +244,8 @@ impl Val {
             _ => 0,
         }
     }
+}
+
+fn mistyped(want: &str, v: &Val) -> Error {
+    Error::Internal(format!("expected {want}, found {v:?}"))
 }

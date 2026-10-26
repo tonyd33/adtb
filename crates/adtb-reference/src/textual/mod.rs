@@ -1,7 +1,7 @@
 //! The textual syntax of values over the reference's `Value`.
 
 use adtb_lang::schema::Schema;
-use adtb_lang::textual::{self as syntax, Form, Scalar, Textual};
+use adtb_lang::textual::{self as syntax, Elems, Form, PrintError, Scalar, Textual};
 use adtb_lang::types::{Base, Ty};
 
 pub use adtb_lang::textual::{Header, ParseError, self_key};
@@ -12,12 +12,14 @@ use crate::zone;
 pub type Document = syntax::Document<Value>;
 
 /// Returns `text(v)` for `v` of type `ty`.
-pub(crate) fn to_text(schema: &Schema, v: &Value, ty: &Ty) -> String {
+pub(crate) fn to_text(schema: &Schema, v: &Value, ty: &Ty) -> Result<String, PrintError> {
     syntax::to_text(v, &Form::of(schema, ty))
 }
 
 /// Returns the textual syntax of `v`, a value of `ty`.
-pub fn print(schema: &Schema, v: &Value, ty: &Ty) -> String {
+///
+/// Fails when `v` is not a value of `ty`.
+pub fn print(schema: &Schema, v: &Value, ty: &Ty) -> Result<String, PrintError> {
     syntax::print(v, &Form::of(schema, ty))
 }
 
@@ -33,7 +35,7 @@ pub fn read_document(schema: &Schema, text: &str) -> Result<Document, ParseError
 }
 
 /// Returns `doc` as text: its header, its `data` line, and one row per line in ascending order.
-pub fn print_document(schema: &Schema, doc: &Document) -> String {
+pub fn print_document(schema: &Schema, doc: &Document) -> Result<String, PrintError> {
     syntax::print_document(schema, doc)
 }
 
@@ -46,8 +48,8 @@ fn named(fs: Vec<(&str, Value)>) -> Vec<(String, Value)> {
 }
 
 impl Textual for Value {
-    fn scalar(&self) -> Scalar<'_> {
-        match self {
+    fn scalar(&self) -> Option<Scalar<'_>> {
+        Some(match self {
             Value::Int(x) => Scalar::Int(*x),
             Value::Decimal(d, _) => Scalar::Decimal(*d),
             Value::F32(f) => Scalar::F32(*f),
@@ -67,35 +69,36 @@ impl Textual for Value {
                 months: *months,
                 days: *days,
             },
-            v => panic!("{v:?} is not a scalar"),
+            _ => return None,
+        })
+    }
+
+    fn ctor(&self) -> Option<u32> {
+        match self {
+            Value::Ctor(c, _) => Some(*c),
+            _ => None,
         }
     }
 
-    fn ctor(&self) -> u32 {
+    fn fields(&self) -> Option<impl Iterator<Item = &Value>> {
         match self {
-            Value::Ctor(c, _) => *c,
-            v => panic!("{v:?} is not a constructor value"),
+            Value::Ctor(_, fs) | Value::Record(fs) => Some(values(fs)),
+            _ => None,
         }
     }
 
-    fn fields(&self) -> impl Iterator<Item = &Value> {
+    fn key(&self) -> Option<&Value> {
         match self {
-            Value::Ctor(_, fs) | Value::Record(fs) => values(fs),
-            v => panic!("{v:?} has no fields"),
+            Value::Key(k) => Some(k),
+            _ => None,
         }
     }
 
-    fn key(&self) -> &Value {
+    fn elems(&self) -> Option<impl Iterator<Item = &Value>> {
         match self {
-            Value::Key(k) => k,
-            v => panic!("{v:?} is not a key"),
-        }
-    }
-
-    fn elems(&self) -> impl Iterator<Item = &Value> {
-        match self {
-            Value::Set(s) => s.iter(),
-            v => panic!("{v:?} is not a set"),
+            Value::Set(s) => Some(Elems::Set(s.iter())),
+            Value::List(xs) => Some(Elems::List(xs.iter())),
+            _ => None,
         }
     }
 

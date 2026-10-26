@@ -77,7 +77,7 @@ impl<R: Runtime> Stmt<'_, R> {
         for ((r, c), rows) in plus {
             for f in &self.rel(*r).ctors[*c as usize].refs {
                 for n in rows {
-                    if let Some(k) = Self::names(f, n)
+                    if let Some(k) = Self::names(f, n)?
                         && !self.reaches(f, &k)?
                     {
                         violate(viol, &self.field_name(*r, *c, f), [n.clone()]);
@@ -88,7 +88,7 @@ impl<R: Runtime> Stmt<'_, R> {
         let mut moved: BTreeMap<RelId, BTreeSet<Val>> = BTreeMap::new();
         for ((r, c), rows) in minus {
             for v in rows {
-                let k = self.key_of(*r, v);
+                let k = self.key_of(*r, v)?;
                 let now = self.by_key(*r, &k)?;
                 if now.is_none_or(|(d, _, _)| d != *c) {
                     moved.entry(*r).or_default().insert(k);
@@ -99,7 +99,7 @@ impl<R: Runtime> Stmt<'_, R> {
         for (r, fields) in self.referrers(&targets) {
             for (c, u) in self.referring(r, &fields, &moved)? {
                 for f in &fields[c as usize] {
-                    if let Some(k) = Self::names(f, &u)
+                    if let Some(k) = Self::names(f, &u)?
                         && moved.get(&f.target).is_some_and(|ks| ks.contains(&k))
                         && !self.reaches(f, &k)?
                     {
@@ -179,7 +179,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     groups
                         .entry(vs)
                         .or_default()
-                        .insert(self.key_of(rel, &row), row);
+                        .insert(self.key_of(rel, &row)?, row);
                 }
             }
             violate(viol, &u.name, pairs(groups.values()));
@@ -201,29 +201,29 @@ impl<R: Runtime> Stmt<'_, R> {
                 TypeDefKind::Newtype { base, .. } => {
                     if let Some((var, body)) = self.db.normal.domains.get(def) {
                         let env: Env = [(*var, v.clone())].into();
-                        if !self.eval(Arena::Program, *body, &env)?.truth() {
+                        if !self.eval(Arena::Program, *body, &env)?.truth()? {
                             violate(viol, &domain_name(schema, *def), [row.clone()]);
                         }
                     }
                     self.check_domains(row, v, &base.subst(args), viol)
                 }
                 TypeDefKind::Sum { .. } => {
-                    let c = v.ctor_of();
+                    let c = v.ctor_of()?;
                     let fields = ctors(schema, ty).expect("a sum")[c as usize].clone();
-                    for ((_, t), x) in fields.iter().zip(v.fields()) {
+                    for ((_, t), x) in fields.iter().zip(v.fields()?) {
                         self.check_domains(row, x, t, viol)?;
                     }
                     Ok(())
                 }
             },
             Ty::Record(fs) => {
-                for ((_, t), x) in fs.iter().zip(v.fields()) {
+                for ((_, t), x) in fs.iter().zip(v.fields()?) {
                     self.check_domains(row, x, t, viol)?;
                 }
                 Ok(())
             }
             Ty::Sum { ctors: cs, .. } => {
-                for ((_, t), x) in cs[v.ctor_of() as usize].1.iter().zip(v.fields()) {
+                for ((_, t), x) in cs[v.ctor_of()? as usize].1.iter().zip(v.fields()?) {
                     self.check_domains(row, x, t, viol)?;
                 }
                 Ok(())

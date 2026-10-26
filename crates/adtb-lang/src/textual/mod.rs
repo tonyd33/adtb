@@ -7,13 +7,13 @@ mod form;
 mod print;
 mod read;
 
-#[cfg(test)]
-mod tests;
-
 pub use document::{Document, Header, print_document, read_document};
 pub use form::{Ctor, Form, KeyForm, key_field_ty, self_key};
-pub use print::{print, to_text};
+pub use print::{PrintError, print, to_text};
 pub use read::{ParseError, parse, parse_uuid};
+
+use std::collections::btree_set;
+use std::slice;
 
 use crate::types::Base;
 
@@ -44,24 +44,26 @@ pub enum Scalar<'a> {
 
 /// A value type the textual syntax reads into and prints from.
 ///
-/// The accessors are called only at the form the value was built for: `scalar` at a base form,
-/// `Uuid` or a newtype's base; `ctor` at a sum or tag; `fields` at a sum, a record, a span or a
-/// composite key's value; `key` at a key; `elems` at a set. Each may panic elsewhere.
+/// Each accessor returns `None` at a value of another shape: `scalar` at anything but a scalar,
+/// `ctor` at anything but a constructor value, `fields` at anything but a constructor value or a
+/// record, `key` at anything but a key when keys are values of their own, `elems` at anything
+/// but a set or an ordered result.
 ///
 /// Postconditions:
 /// - `fields` gives a constructor's fields, header fields first, each in declaration order, and
 ///   a record's or a composite key's fields sorted by name.
-/// - `elems` gives a set's elements once each, ascending by `Ord`.
+/// - `elems` gives a set's elements once each, ascending by `Ord`, and an ordered result's
+///   elements in its order.
 /// - `Ord` is the model's order on ordered types.
-pub trait Textual: Ord + Sized {
-    fn scalar(&self) -> Scalar<'_>;
+pub trait Textual: Ord + Sized + std::fmt::Debug {
+    fn scalar(&self) -> Option<Scalar<'_>>;
     /// Returns the constructor index of a constructor value, in declaration order or, for an
     /// anonymous sum, in name order.
-    fn ctor(&self) -> u32;
-    fn fields(&self) -> impl Iterator<Item = &Self>;
+    fn ctor(&self) -> Option<u32>;
+    fn fields(&self) -> Option<impl Iterator<Item = &Self>>;
     /// Returns the key value of a key.
-    fn key(&self) -> &Self;
-    fn elems(&self) -> impl Iterator<Item = &Self>;
+    fn key(&self) -> Option<&Self>;
+    fn elems(&self) -> Option<impl Iterator<Item = &Self>>;
 
     /// Returns the value of base type `at` that `s` holds.
     fn of_scalar(s: Scalar<'_>, at: Base) -> Self;
@@ -76,4 +78,22 @@ pub trait Textual: Ord + Sized {
 
     /// Returns whether the zone rules name a zone `name`.
     fn zone_exists(name: &str) -> bool;
+}
+
+/// The elements of a set or of an ordered result, as [`Textual::elems`] gives them.
+#[derive(Debug)]
+pub enum Elems<'v, V> {
+    Set(btree_set::Iter<'v, V>),
+    List(slice::Iter<'v, V>),
+}
+
+impl<'v, V> Iterator for Elems<'v, V> {
+    type Item = &'v V;
+
+    fn next(&mut self) -> Option<&'v V> {
+        match self {
+            Elems::Set(i) => i.next(),
+            Elems::List(i) => i.next(),
+        }
+    }
 }

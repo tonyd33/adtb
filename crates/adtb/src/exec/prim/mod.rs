@@ -16,7 +16,7 @@ mod syntax;
 
 /// Returns the canonical printed form of `v`, a value of type `ty`.
 pub(crate) fn print(schema: &Schema, ty: &Ty, v: &Val) -> Result<String, Error> {
-    Ok(textual::print(v, &form(schema, ty)?))
+    Ok(textual::print(v, &form(schema, ty)?)?)
 }
 
 fn form(schema: &Schema, ty: &Ty) -> Result<Form, Error> {
@@ -807,8 +807,7 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
             None => return Ok(Err(Fault::ArithmeticOverflow)),
         },
         Op::Period { months, per } => {
-            let n = x()
-                .int()
+            let n = int(x())?
                 .checked_mul(*per)
                 .and_then(|n| i32::try_from(n).ok());
             match (n, months) {
@@ -872,8 +871,8 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
             Some(b) => Val::Bytes(Arc::from(b)),
             None => return Ok(Err(Fault::InvalidText)),
         },
-        Op::ToText(f) => Val::Text(Arc::from(textual::to_text(x(), f))),
-        Op::Print(f) => Val::Text(Arc::from(textual::print(x(), f))),
+        Op::ToText(f) => Val::Text(Arc::from(textual::to_text(x(), f)?)),
+        Op::Print(f) => Val::Text(Arc::from(textual::print(x(), f)?)),
         Op::Parse(f) => match textual::parse(text(x())?, f) {
             Ok(v) => Val::some(v),
             Err(_) => Val::none(),

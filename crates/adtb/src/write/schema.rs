@@ -4,6 +4,7 @@ use adtb_lang::ast::{CtorSel, Expr, ExprKind};
 use adtb_lang::kernel::{IndexField, Kind, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Generator, OnDelete, Schema};
+use adtb_lang::textual::self_key;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::exec::types::ctors;
@@ -111,14 +112,6 @@ fn path(e: &Expr) -> Option<String> {
         ExprKind::Select(x, CtorSel::One(c)) => Some(format!("{}.{}", path(x)?, c.text)),
         _ => None,
     }
-}
-
-fn self_key(schema: &Schema, rel: RelId, f: &str) -> bool {
-    let r = schema.relation(rel);
-    matches!(
-        schema.ty(r.elem_def).field(0, f).map(|d| &d.ty),
-        Some(Ty::Key { rel: own, .. }) if *own == rel
-    )
 }
 
 fn refs(schema: &Schema, rel: RelId, c: u32, indexes: &[IndexDesc]) -> Vec<RefField> {

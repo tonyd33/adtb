@@ -1,4 +1,5 @@
 use adtb_lang::kernel::Prim;
+use adtb_lang::textual::parse_uuid;
 use adtb_lang::types::{Base, Ty};
 
 use crate::big::Big;
@@ -241,23 +242,6 @@ fn span_of(v: &Value) -> R<(&Value, &Value)> {
     }
 }
 
-pub(crate) fn parse_uuid(t: &str) -> Option<Vec<u8>> {
-    let groups: Vec<&str> = t.split('-').collect();
-    if groups.iter().map(|g| g.len()).collect::<Vec<_>>() != [8, 4, 4, 4, 12] {
-        return None;
-    }
-    let hex: String = groups.concat();
-    (0..16)
-        .map(|i| {
-            let pair = hex.get(2 * i..2 * i + 2)?;
-            pair.chars()
-                .all(|c| c.is_ascii_hexdigit())
-                .then(|| u8::from_str_radix(pair, 16).ok())
-                .flatten()
-        })
-        .collect()
-}
-
 /// Applies primitive `p` to its argument values `vs`, of types `tys`, at the node's type `ty`.
 #[expect(
     clippy::too_many_lines,
@@ -323,8 +307,8 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         Prim::ParseUuid => parse_uuid(text(&v[0])?)
             .map(Bytes)
             .ok_or(Abort::Fault(Fault::InvalidText)),
-        Prim::ToText => Ok(Text(textual::to_text(it.schema, &v[0], &tys[0]))),
-        Prim::Print => Ok(Text(textual::print(it.schema, &v[0], &tys[0]))),
+        Prim::ToText => Ok(Text(textual::to_text(it.schema, &v[0], &tys[0])?)),
+        Prim::Print => Ok(Text(textual::print(it.schema, &v[0], &tys[0])?)),
         Prim::ReadFile { .. } => crate::eval::not_yet("a file scan"),
         Prim::Parse => Ok(
             match textual::parse(it.schema, text(&v[0])?, option_arg(ty)?) {

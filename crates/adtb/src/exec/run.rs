@@ -199,7 +199,7 @@ impl<R: Runtime> Ctx<R> {
                 let vs = c.eval(f, sel, catch, self.sh())?;
                 let (mut t, mut e): (Sel, Sel) = (Vec::new(), Vec::new());
                 for (r, v) in vs {
-                    if v.truth() { t.push(r) } else { e.push(r) }
+                    if v.truth()? { t.push(r) } else { e.push(r) }
                 }
                 let since = catch.faults.len();
                 let mut out = self.eval_rows(a, f, &mut t, catch, par)?;
@@ -211,7 +211,7 @@ impl<R: Runtime> Ctx<R> {
                 let vs = s.eval(f, sel, catch, self.sh())?;
                 let mut by: BTreeMap<u32, Vec<(u32, Val)>> = BTreeMap::new();
                 for (r, v) in vs {
-                    by.entry(v.ctor_of()).or_default().push((r, v));
+                    by.entry(v.ctor_of()?).or_default().push((r, v));
                 }
                 let since = catch.faults.len();
                 let mut out = Vec::new();
@@ -305,7 +305,7 @@ impl<R: Runtime> Ctx<R> {
             return Ok(None);
         };
         let v = self.row(route.heap, &row);
-        let fields = v.fields();
+        let fields = v.fields()?;
         let same = key.iter().zip(&route.key_at).all(|(k, i)| &fields[*i] == k);
         Ok(same.then_some((at, v)))
     }
@@ -338,7 +338,7 @@ impl<R: Runtime> Ctx<R> {
                 .collect::<Result<Vec<_>, _>>()?;
             cur = deltas.clone();
             hold(&cur)?;
-            while deltas.iter().any(|d| !d.as_set().is_empty()) {
+            while any_rows(&deltas)? {
                 rounds += 1;
                 if rounds > limit {
                     return Err(Error::StatementLimit(Exceeded::Rounds { limit }));
@@ -351,9 +351,9 @@ impl<R: Runtime> Ctx<R> {
                     found.push(self.eval_env(step, &inner, par)?);
                 }
                 for (i, s) in found.into_iter().enumerate() {
-                    let old = cur[i].as_set();
+                    let old = cur[i].as_set()?;
                     let new: BTreeSet<Val> = s
-                        .as_set()
+                        .as_set()?
                         .iter()
                         .filter(|x| !old.contains(x))
                         .cloned()
@@ -404,11 +404,11 @@ impl<R: Runtime> Ctx<R> {
             }
             Spine::If(c, a, b) => {
                 let v = c.eval_one(&mut env, self.sh())?;
-                self.spine(if v.truth() { a } else { b }, env, par, out)?;
+                self.spine(if v.truth()? { a } else { b }, env, par, out)?;
             }
             Spine::Case(sc, arms) => {
                 let v = sc.eval_one(&mut env, self.sh())?;
-                let c = v.ctor_of();
+                let c = v.ctor_of()?;
                 let (var, arm) = super::arm(arms, c)?;
                 env.bind_one(*var, v);
                 self.spine(arm, env, par, out)?;
@@ -518,7 +518,7 @@ impl<R: Runtime> Ctx<R> {
             }
             Sink::Top { keys, var, .. } => {
                 let keyed = self.keyed(&set, keys, *var, env)?;
-                let n = count.expect("a top's count").int();
+                let n = count.expect("a top's count").int()?;
                 if n < 0 {
                     return Err(Error::Fault(Fault::NegativeCount));
                 }
@@ -547,17 +547,14 @@ impl<R: Runtime> Ctx<R> {
                     .map(|t| self.eval_env(t, env, false))
                     .transpose()?;
                 let desc: Vec<bool> = keys.iter().map(|(_, d)| *d).collect();
-                let cursor: Option<Vec<Val>> = after.and_then(|a| match a {
-                    Val::Ctor(1, fs) => Some(if keys.len() == 1 {
-                        vec![fs[0].clone()]
-                    } else {
-                        fs[0].fields().to_vec()
-                    }),
+                let cursor: Option<Vec<Val>> = match after {
+                    Some(Val::Ctor(1, fs)) if keys.len() == 1 => Some(vec![fs[0].clone()]),
+                    Some(Val::Ctor(1, fs)) => Some(fs[0].fields()?.to_vec()),
                     _ => None,
-                });
-                let n = match take {
-                    Some(t) if t.int() < 0 => return Err(Error::Fault(Fault::NegativeCount)),
-                    Some(t) => t.int() as usize,
+                };
+                let n = match take.as_ref().map(Val::int).transpose()? {
+                    Some(t) if t < 0 => return Err(Error::Fault(Fault::NegativeCount)),
+                    Some(t) => t as usize,
                     None => usize::MAX,
                 };
                 let listed: Vec<Val> = sorted(keyed, &desc)
@@ -607,11 +604,7 @@ impl<R: Runtime> Ctx<R> {
         let mut sel = f.all();
         for c in &a.filter {
             let vs = self.eval_rows(c, &mut f, &mut sel, &mut Catch::off(), false)?;
-            sel = vs
-                .into_iter()
-                .filter(|(_, v)| v.truth())
-                .map(|(r, _)| r)
-                .collect();
+            sel = holding(vs)?;
         }
         let elems: BTreeSet<Val> = self
             .eval_rows(&a.element, &mut f, &mut sel, &mut Catch::off(), false)?
@@ -806,12 +799,7 @@ impl<R: Runtime> Ctx<R> {
             }
             match step {
                 Step::Filter(code) => {
-                    sel = code
-                        .eval(&mut f, &mut sel, off, self.sh())?
-                        .into_iter()
-                        .filter(|(_, v)| v.truth())
-                        .map(|(r, _)| r)
-                        .collect();
+                    sel = holding(code.eval(&mut f, &mut sel, off, self.sh())?)?;
                 }
                 Step::Bind(x, e) => {
                     let vs = self.eval_rows(e, &mut f, &mut sel, off, false)?;
@@ -821,7 +809,7 @@ impl<R: Runtime> Ctx<R> {
                     let mut from = Vec::new();
                     let mut elems = Vec::new();
                     for (r, v) in s.eval(&mut f, &mut sel, off, self.sh())? {
-                        for e in v.as_set() {
+                        for e in v.as_set()? {
                             from.push(r);
                             elems.push(e.clone());
                         }
@@ -885,7 +873,7 @@ impl<R: Runtime> Ctx<R> {
             End::If(c, a, b) => {
                 let (mut t, mut e) = (Vec::new(), Vec::new());
                 for (r, v) in c.eval(&mut f, &mut sel, off, self.sh())? {
-                    if v.truth() { t.push(r) } else { e.push(r) }
+                    if v.truth()? { t.push(r) } else { e.push(r) }
                 }
                 self.chain(run, a, f.clone(), t, out)?;
                 self.chain(run, b, f, e, out)
@@ -893,7 +881,7 @@ impl<R: Runtime> Ctx<R> {
             End::Case(s, arms) => {
                 let mut by: BTreeMap<u32, Vec<(u32, Val)>> = BTreeMap::new();
                 for (r, v) in s.eval(&mut f, &mut sel, off, self.sh())? {
-                    by.entry(v.ctor_of()).or_default().push((r, v));
+                    by.entry(v.ctor_of()?).or_default().push((r, v));
                 }
                 for (c, rows) in by {
                     let (var, arm) = super::arm(arms, c)?;
@@ -950,4 +938,25 @@ impl<R: Runtime> Ctx<R> {
             }
         }
     }
+}
+
+/// Returns whether any of `sets` holds a row.
+fn any_rows(sets: &[Val]) -> Result<bool, Error> {
+    for s in sets {
+        if !s.as_set()?.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Returns the rows of `vs` whose value is `True`.
+fn holding(vs: Vec<(u32, Val)>) -> Result<Sel, Error> {
+    let mut sel = Vec::new();
+    for (r, v) in vs {
+        if v.truth()? {
+            sel.push(r);
+        }
+    }
+    Ok(sel)
 }

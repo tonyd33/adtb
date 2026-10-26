@@ -481,14 +481,15 @@ and `adtb` for its executor's `Val`.
 ```text
 Form::of(schema, ty) -> Form
 Form::has_syntax(&self) -> bool
-print<V: Textual>(v, form) -> String
-to_text<V: Textual>(v, form) -> String
+print<V: Textual>(v, form) -> Result<String, PrintError>
+to_text<V: Textual>(v, form) -> Result<String, PrintError>
 parse<V: Textual>(text, form) -> Result<V, ParseError>
 read_document<V: Textual>(schema, text) -> Result<Document<V>, ParseError>
-print_document<V: Textual>(schema, doc) -> String
+print_document<V: Textual>(schema, doc) -> Result<String, PrintError>
 Document<V> { header: Option<Header>, relation: RelId, rows: BTreeSet<V> }
 Header { edition: String, version: u64, hash: String }
 ParseError { offset: usize, message: String }
+PrintError { message: String }
 ```
 
 A `Form` is the shape of the values of a type as the syntax needs it,
@@ -517,22 +518,29 @@ build one:
 - `key` is the key value of a key and `of_key` the key of a key value,
   whose type is the key value type of
   [§6](#6-the-schema-a-term-refers-to).
-- `elems` is a set's elements, ascending; `of_set` takes elements in
-  any order, with repeats.
+- `elems` is a set's elements, ascending, or an ordered result's
+  elements in its order; `of_set` takes elements in any order, with
+  repeats.
 - `zone_exists(name)` says whether the consumer's zone rules name the
   zone.
 - `Ord` is the model's order on ordered types
   ([../spec/model.md §10](../spec/model.md#10-order)); the reader
   compares a span's ends with it.
 
-Preconditions: `ty` is a type of `schema`; for `print` and `to_text`,
-`form` has no `Opaque` on the path of `v` and `v` is a value of the
-type `form` was computed from; each accessor is called only at the
-form its value was built for, and may panic elsewhere.
+Preconditions: `ty` is a type of `schema`. Each accessor returns
+`None` at a value of another shape: `scalar` at anything but a
+scalar, `ctor` at anything but a constructor value, `fields` at
+anything but a constructor value or a record, `key` at anything but a
+key when the consumer's keys are values of their own, `elems` at
+anything but a set or an ordered result.
 
 Postconditions:
 
-- `parse(&print(&v, &f), &f) == Ok(v)` for every value `v` of form
+- `print` and `to_text` fail with a `PrintError` when `v` is not a
+  value of the type `form` was computed from, or `form` has `Opaque`
+  on the path of `v`; they never panic. A consumer reports the
+  failure as a broken checker guarantee.
+- `parse(&print(&v, &f)?, &f) == Ok(v)` for every value `v` of form
   `f`, and equal values print identically. Two consumers' values that
   are the same model value print identically.
 - `parse` returns `Ok(v)` only for a value of the form; other text

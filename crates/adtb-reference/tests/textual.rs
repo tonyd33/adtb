@@ -2,13 +2,12 @@
 
 use std::collections::BTreeSet;
 
-use adtb_lang::schema::{Generator, Schema, TypeDefKind};
-use adtb_lang::types::{Base, Ty};
+use adtb_lang::textual::Form;
 use adtb_reference::textual::{self, Document, Header};
 use adtb_reference::{Value, days_from_civil};
 use adtb_testkit::Rng;
+use adtb_testkit::draw::draw;
 use adtb_testkit::fixture::*;
-use unicode_normalization::UnicodeNormalization;
 
 const SCHEMA: &str = r"
 type User = { id: Key users, name: Text }
@@ -34,7 +33,7 @@ fn fixture() -> Fixture {
 }
 
 fn print(f: &Fixture, v: &Value, ty: &str) -> String {
-    textual::print(&f.schema, v, &f.ty(ty))
+    textual::print(&f.schema, v, &f.ty(ty)).unwrap_or_else(|e| panic!("at {ty}: {e}"))
 }
 
 fn parse(f: &Fixture, t: &str, ty: &str) -> Result<Value, textual::ParseError> {
@@ -386,7 +385,7 @@ fn a_document_states_its_edition_and_version() {
     );
     assert_eq!(f.rel("users"), d.relation);
     assert_eq!(2, d.rows.len());
-    let printed = textual::print_document(&f.schema, &d);
+    let printed = textual::print_document(&f.schema, &d).expect("the document prints");
     assert_eq!(
         format!(
             "text 2026-10 pins 42 ({HASH})\ndata users\nUser {{ id: users.key(3), name: \"ann\" }}\nUser {{ id: users.key(4), name: \"bo\" }}\n"
@@ -411,7 +410,7 @@ fn a_document_without_a_header_is_at_the_readers_version() {
             vec![("id".into(), key(1)), ("name".into(), text("a"))],
         )]),
     };
-    let printed = textual::print_document(&f.schema, &d);
+    let printed = textual::print_document(&f.schema, &d).expect("the document prints");
     assert_eq!(
         "data users\nUser { id: users.key(1), name: \"a\" }\n",
         printed
@@ -433,227 +432,6 @@ fn a_malformed_document_is_refused() {
     ] {
         let doc = doc.replace("{HASH}", HASH);
         assert!(textual::read_document(&f.schema, &doc).is_err(), "{doc}");
-    }
-}
-
-/// Returns an `i64` drawn mostly from small magnitudes and the edges of the range.
-fn draw_int(rng: &mut Rng) -> i64 {
-    match rng.below(4) {
-        0 => *rng.pick(&[0, 1, -1, i64::MAX, i64::MIN]),
-        1 => rng.below(1000) as i64 - 500,
-        _ => rng.next_u64() as i64,
-    }
-}
-
-const CHARS: &[&str] = &[
-    "a",
-    "Z",
-    " ",
-    "\"",
-    "\\",
-    "\n",
-    "\r",
-    "\t",
-    "\u{0}",
-    "\u{7f}",
-    "\u{85}",
-    "\u{e9}",
-    "e\u{301}",
-    "\u{1e0b}\u{323}",
-    "\u{1f600}",
-    "\u{ffff}",
-    "\u{10ffff}",
-    "\u{2028}",
-    "{",
-    "]",
-    ",",
-    ":",
-    "\u{fb03}",
-];
-
-const ZONES: &[&str] = &["UTC", "Europe/Paris", "America/New_York", "Asia/Kathmandu"];
-
-fn draw_base(rng: &mut Rng, b: Base) -> Value {
-    let i = draw_int(rng);
-    match b {
-        Base::I8 => int(i64::from(i as i8)),
-        Base::I16 => int(i64::from(i as i16)),
-        Base::I32 => int(i64::from(i as i32)),
-        Base::I64 => int(i),
-        Base::Decimal(s) => {
-            let bound = 10i128.pow(38);
-            let wide = (i128::from(rng.next_u64()) << 64 | i128::from(rng.next_u64())) % bound;
-            let d = match rng.below(3) {
-                0 => wide,
-                1 => *rng.pick(&[0, 1, -1, bound - 1, 1 - bound]),
-                _ => i128::from(i),
-            };
-            Value::Decimal(d, s)
-        }
-        Base::F64 => {
-            let f = match rng.below(3) {
-                0 => *rng.pick(&[0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.1]),
-                1 => i as f64 / 1000.0,
-                _ => f64::from_bits(rng.next_u64()),
-            };
-            Value::F64(if f.is_nan() {
-                f64::NAN
-            } else if f == 0.0 {
-                0.0
-            } else {
-                f
-            })
-        }
-        Base::F32 => {
-            let f = match rng.below(3) {
-                0 => *rng.pick(&[0.0, f32::NAN, f32::INFINITY, f32::MIN_POSITIVE, f32::MAX]),
-                1 => i as f32 / 1000.0,
-                _ => f32::from_bits(rng.next_u64() as u32),
-            };
-            Value::F32(if f.is_nan() {
-                f32::NAN
-            } else if f == 0.0 {
-                0.0
-            } else {
-                f
-            })
-        }
-        Base::Text => {
-            let n = rng.below(6);
-            let s: String = (0..n).map(|_| *rng.pick(CHARS)).collect();
-            Value::Text(s.nfc().collect())
-        }
-        Base::Bytes | Base::SortKey => {
-            let n = rng.below(6);
-            let bs = (0..n).map(|_| rng.next_u64() as u8).collect();
-            if b == Base::Bytes {
-                Value::Bytes(bs)
-            } else {
-                Value::SortKey(bs)
-            }
-        }
-        Base::Instant => Value::Instant(i),
-        Base::DateTime => Value::DateTime(i),
-        Base::Date => Value::Date(i.div_euclid(DAY)),
-        Base::Time => Value::Time(i.rem_euclid(DAY)),
-        Base::ZonedDateTime => Value::Zoned(i, rng.pick(ZONES).to_string()),
-        Base::Duration => Value::Duration(i),
-        Base::Period => Value::Period {
-            months: draw_int(rng) as i32,
-            days: i as i32,
-        },
-    }
-}
-
-fn draw_fields(
-    rng: &mut Rng,
-    schema: &Schema,
-    tys: &[(String, Ty)],
-    depth: u32,
-) -> Vec<(String, Value)> {
-    tys.iter()
-        .map(|(n, t)| (n.clone(), draw(rng, schema, t, depth + 1)))
-        .collect()
-}
-
-fn draw_key_field(
-    rng: &mut Rng,
-    schema: &Schema,
-    rel: adtb_lang::types::RelId,
-    f: &str,
-    depth: u32,
-) -> Value {
-    let r = schema.relation(rel);
-    if textual::self_key(schema, rel, f) {
-        return match r.generate {
-            Some(Generator::Uuidv7) => {
-                Value::Bytes((0..16).map(|_| rng.next_u64() as u8).collect())
-            }
-            _ => int(draw_int(rng)),
-        };
-    }
-    let ty = schema
-        .ty(r.elem_def)
-        .field(0, f)
-        .expect("a key field")
-        .ty
-        .subst(r.elem_args());
-    draw(rng, schema, &ty, depth + 1)
-}
-
-/// Returns a value of `ty` drawn from `rng`.
-fn draw(rng: &mut Rng, schema: &Schema, ty: &Ty, depth: u32) -> Value {
-    match ty {
-        Ty::Base(b) => draw_base(rng, *b),
-        Ty::Data { def, args, ctors } => {
-            let d = schema.ty(*def);
-            match &d.kind {
-                TypeDefKind::Newtype { .. } if d.name == "Uuid" => {
-                    Value::Bytes((0..16).map(|_| rng.next_u64() as u8).collect())
-                }
-                TypeDefKind::Newtype { base, .. } => draw(rng, schema, base, depth),
-                TypeDefKind::Sum {
-                    header, ctors: all, ..
-                } => {
-                    let allowed: Vec<u32> = match ctors {
-                        Some(s) => s.clone(),
-                        None => (0..all.len() as u32).collect(),
-                    };
-                    let c = if depth > 3 {
-                        allowed[0]
-                    } else {
-                        *rng.pick(&allowed)
-                    };
-                    let tys: Vec<(String, Ty)> = header
-                        .iter()
-                        .chain(&all[c as usize].fields)
-                        .map(|f| (f.name.clone(), f.ty.subst(args)))
-                        .collect();
-                    let mut fs = draw_fields(rng, schema, &tys, depth);
-                    if d.name == "Span" && fs[0].1 > fs[1].1 {
-                        let (a, b) = (fs[0].1.clone(), fs[1].1.clone());
-                        fs[0].1 = b;
-                        fs[1].1 = a;
-                    }
-                    Value::Ctor(c, fs)
-                }
-            }
-        }
-        Ty::Sum { ctors, .. } => {
-            let c = rng.below(ctors.len() as u64) as usize;
-            Value::Ctor(c as u32, draw_fields(rng, schema, &ctors[c].1, depth))
-        }
-        Ty::Tag(inner) => {
-            let n = match inner.as_ref() {
-                Ty::Data { def, .. } => schema.ty(*def).ctors().len(),
-                Ty::Sum { ctors, .. } => ctors.len(),
-                t => panic!("a tag of {t:?}"),
-            };
-            Value::Ctor(rng.below(n as u64) as u32, Vec::new())
-        }
-        Ty::Record(tys) => Value::Record(draw_fields(rng, schema, tys, depth)),
-        Ty::Unit => Value::unit(),
-        Ty::Key { rel, .. } => {
-            let r = schema.relation(*rel);
-            match r.key.as_slice() {
-                [f] => Value::key(draw_key_field(rng, schema, *rel, f, depth)),
-                fs => {
-                    let mut names: Vec<&String> = fs.iter().collect();
-                    names.sort();
-                    Value::key(Value::Record(
-                        names
-                            .into_iter()
-                            .map(|f| (f.clone(), draw_key_field(rng, schema, *rel, f, depth)))
-                            .collect(),
-                    ))
-                }
-            }
-        }
-        Ty::Set(t) | Ty::NonEmpty(t) => {
-            let n = if depth > 3 { 0 } else { rng.below(4) };
-            Value::Set((0..n).map(|_| draw(rng, schema, t, depth + 1)).collect())
-        }
-        t => panic!("no values are drawn at {t:?}"),
     }
 }
 
@@ -719,16 +497,18 @@ fn print_then_parse_gives_the_value_back_for_every_type() {
     let mut rng = Rng::new(0x00ad_7b00);
     for name in TYPES {
         let ty = f.ty(name);
-        for _ in 0..300 {
-            let v = draw(&mut rng, &f.schema, &ty, 0);
-            let printed = textual::print(&f.schema, &v, &ty);
-            let back = textual::parse(&f.schema, &printed, &ty)
-                .unwrap_or_else(|e| panic!("`{printed}` does not read back at {name}: {e}"));
-            assert_eq!(v, back, "`{printed}` at {name}");
+        let form = Form::of(&f.schema, &ty);
+        for i in 0..300 {
+            let v: Value = draw(&mut rng, &form);
+            let printed = print(&f, &v, name);
+            let back = textual::parse(&f.schema, &printed, &ty).unwrap_or_else(|e| {
+                panic!("draw {i}: `{printed}` does not read back at {name}: {e}")
+            });
+            assert_eq!(v, back, "draw {i}: `{printed}` at {name}");
             assert_eq!(
                 printed,
-                textual::print(&f.schema, &back, &ty),
-                "equal values print identically"
+                print(&f, &back, name),
+                "draw {i}: equal values print identically"
             );
         }
     }

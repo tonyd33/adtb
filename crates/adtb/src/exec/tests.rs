@@ -1,11 +1,13 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use adtb_lang::check::check_schema;
 use adtb_lang::kernel::{Const, Kind, Terms, Tm};
 use adtb_lang::parse::{Options, parse_schema};
 use adtb_lang::schema::{Schema, build};
 use adtb_lang::span::FileId;
+use adtb_lang::textual::Form;
 use adtb_lang::types::{Base, Ty};
 
 use super::code::{Compiler, Shared};
@@ -510,6 +512,36 @@ fn a_stored_or_key_value_of_another_type_is_an_internal_error() {
 }
 
 #[test]
+fn printing_a_value_not_of_its_form_is_an_internal_error() {
+    let what = broken_op(Op::Print(Arc::new(Form::Base(Base::Text))), &[Val::Int(1)]);
+    assert!(what.contains("is text"), "{what}");
+    let what = broken_op(
+        Op::ToText(Arc::new(Form::Uuid)),
+        &[Val::Bytes(Arc::from([0u8; 3]))],
+    );
+    assert!(what.contains("16 bytes"), "{what}");
+    let set = Form::Set {
+        elem: Box::new(Form::Base(Base::I64)),
+        nonempty: false,
+    };
+    let what = broken_op(Op::Print(Arc::new(set)), &[Val::Int(1)]);
+    assert!(what.contains("is a set"), "{what}");
+}
+
+#[test]
+fn an_ordered_result_prints_its_elements_in_its_order() {
+    let set = Form::Set {
+        elem: Box::new(Form::Base(Base::I64)),
+        nonempty: false,
+    };
+    let listed = Val::List(Arc::from([Val::Int(3), Val::Int(1), Val::Int(2)]));
+    assert_eq!(
+        Ok(Val::text("[3, 1, 2]")),
+        run(Op::Print(Arc::new(set)), &[listed])
+    );
+}
+
+#[test]
 fn an_internal_error_fails_the_statement_and_keeps_the_transaction() {
     let e = crate::write::Error::from(Error::Internal("an invariant".into()));
     assert_eq!(crate::write::Error::Internal("an invariant".into()), e);
@@ -577,4 +609,28 @@ fn a_key_of_a_term_that_is_not_a_key_type_is_an_internal_error() {
     let t = terms.add(Kind::Key(x), Ty::Base(Base::I64));
     let what = broken(eval_term(&schema, &terms, t));
     assert!(what.starts_with("`key` has a key type"), "{what}");
+}
+
+#[test]
+fn an_accessor_of_a_mistyped_value_is_an_internal_error() {
+    let one = Val::Int(1);
+    assert!(broken(one.truth()).contains("a Bool"));
+    assert!(broken(Val::tag(2).truth()).contains("a Bool"));
+    assert!(broken(one.ctor_of()).contains("a constructor value"));
+    assert!(broken(one.fields()).contains("a value with fields"));
+    assert!(broken(one.as_set()).contains("a set"));
+    assert!(broken(Val::text("1").int()).contains("an integer"));
+}
+
+#[test]
+fn a_condition_or_scrutinee_that_is_not_a_constructor_is_an_internal_error() {
+    let schema = empty_schema();
+    let int = Ty::Base(Base::I64);
+    let mut terms = Terms::default();
+    let c = terms.add(Kind::Const(Const::Int(1)), int.clone());
+    let a = terms.add(Kind::Const(Const::Int(2)), int.clone());
+    let t = terms.add(Kind::If(c, a, a), int.clone());
+    assert!(broken(eval_term(&schema, &terms, t)).contains("a Bool"));
+    let tag = terms.add(Kind::Tag(c), int);
+    assert!(broken(eval_term(&schema, &terms, tag)).contains("a constructor value"));
 }

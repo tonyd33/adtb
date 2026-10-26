@@ -45,7 +45,7 @@ impl<R: Runtime> Stmt<'_, R> {
         Ok(self.db.heaps[&heap]
             .row
             .iter()
-            .zip(row.fields())
+            .zip(row.fields()?)
             .map(|(t, v)| to_stored(t, v))
             .collect::<Result<_, _>>()?)
     }
@@ -93,12 +93,12 @@ impl<R: Runtime> Stmt<'_, R> {
         let mut ops: BTreeMap<(RelId, Val), Pair> = BTreeMap::new();
         for ((r, c), rows) in minus {
             for v in rows {
-                ops.entry((*r, self.key_of(*r, v))).or_default().0 = Some((*c, v.clone()));
+                ops.entry((*r, self.key_of(*r, v)?)).or_default().0 = Some((*c, v.clone()));
             }
         }
         for ((r, c), rows) in plus {
             for v in rows {
-                ops.entry((*r, self.key_of(*r, v)))
+                ops.entry((*r, self.key_of(*r, v)?))
                     .or_default()
                     .1
                     .push((*c, v.clone()));
@@ -190,7 +190,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 continue;
             }
             for v in rows {
-                if let Val::Int(k) = self.key_of(*r, v) {
+                if let Val::Int(k) = self.key_of(*r, v)? {
                     self.db.advance_sequence(*r, k)?;
                 }
             }
@@ -240,7 +240,7 @@ impl<R: Runtime> Stmt<'_, R> {
             };
             let stored = &self.db.indexes[id];
             let types = self.store.key_types(*id);
-            let fields = w.row.fields();
+            let fields = w.row.fields()?;
             let key: Vec<Value> = at
                 .iter()
                 .zip(&types)
@@ -289,17 +289,17 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
                 if ix.desc.id == r.key_index {
                     let name = ix.name.as_deref().expect("a key index has a name");
-                    violate_key(viol, name, w.rel, self.key_of(w.rel, &w.row));
+                    violate_key(viol, name, w.rel, self.key_of(w.rel, &w.row)?);
                 } else {
                     let group = groups.entry((w.rel, *id, encoded.clone())).or_default();
-                    group.insert(self.key_of(w.rel, &w.row), w.row.clone());
+                    group.insert(self.key_of(w.rel, &w.row)?, w.row.clone());
                     for (c, heap, tid) in conflicts {
                         let v = self
                             .heap(heap)
                             .read(pager, tid)?
                             .expect("a conflicting version is there");
                         let row = self.row(w.rel, c, &v.row);
-                        group.insert(self.key_of(w.rel, &row), row);
+                        group.insert(self.key_of(w.rel, &row)?, row);
                     }
                 }
                 break latch;

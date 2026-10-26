@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use adtb_lang::kernel::Var;
+use adtb_lang::textual::PrintError;
 
 use crate::batch::{self, Batch, BatchBuilder, Datum};
 use crate::mvcc::SerializationFailure;
@@ -114,6 +115,12 @@ pub enum Error {
 impl From<PageError> for Error {
     fn from(e: PageError) -> Error {
         Error::Page(e)
+    }
+}
+
+impl From<PrintError> for Error {
+    fn from(e: PrintError) -> Error {
+        Error::Internal(e.message)
     }
 }
 
@@ -214,6 +221,7 @@ pub fn batches(v: &Val, schema: &batch::Schema, rows: Rows, per: usize) -> Vec<B
                 let row: Vec<Datum> = match rows {
                     Rows::Fields => e
                         .fields()
+                        .expect("a row of a batch of fields has fields")
                         .iter()
                         .zip(schema.fields())
                         .map(|(x, t)| datum(t, x))

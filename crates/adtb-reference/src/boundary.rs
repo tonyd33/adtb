@@ -462,7 +462,7 @@ impl Run<'_, '_> {
                             rel: r,
                             ctors: None,
                         },
-                    ),
+                    )?,
                 }
             }
             Constraint::Other => Rejection::Violated {

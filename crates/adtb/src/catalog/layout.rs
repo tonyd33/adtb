@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use adtb_lang::schema::{Generator, Schema, TypeDefKind};
+use adtb_lang::schema::{Schema, TypeDefKind};
+use adtb_lang::textual::key_field_ty;
 use adtb_lang::types::{Base, RelId, Ty, TypeId};
 
 use crate::heap::{self, FieldType};
@@ -108,27 +109,20 @@ pub fn is_record(schema: &Schema, ty: &Ty) -> bool {
 
 /// Returns the type of the values of `Key rel`.
 pub fn key_value_ty(schema: &Schema, rel: RelId) -> Ty {
-    let r = schema.relation(rel);
-    let row = &ctors(schema, &r.elem)[0].1;
-    let ty = |n: &str| {
-        row.iter()
-            .find(|(f, _)| f == n)
-            .unwrap_or_else(|| panic!("a row of `{}` has key field `{n}`", r.name))
-            .1
-            .clone()
-    };
-    match r.key.as_slice() {
-        [k] => match ty(k) {
-            Ty::Key { rel: own, .. } if own == rel => match r.generate {
-                Some(Generator::Uuidv7) => Ty::Base(Base::Bytes),
-                _ => Ty::Base(Base::I64),
-            },
-            t => t,
-        },
+    match schema.relation(rel).key.as_slice() {
+        [k] => key_field_ty(schema, rel, k),
         ks => {
             let mut names = ks.to_vec();
             names.sort();
-            Ty::Record(names.iter().map(|n| (n.clone(), ty(n))).collect())
+            Ty::Record(
+                names
+                    .into_iter()
+                    .map(|n| {
+                        let t = key_field_ty(schema, rel, &n);
+                        (n, t)
+                    })
+                    .collect(),
+            )
         }
     }
 }

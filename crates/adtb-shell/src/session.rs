@@ -71,8 +71,12 @@ impl<'db, O: Write, E: Write> Session<'db, O, E> {
         for rows in results {
             let form = rows.form().clone();
             for row in rows {
-                match row {
-                    Ok(v) => writeln!(self.out, "{}", print(&v, &form))?,
+                let printed = match row {
+                    Ok(v) => print(&v, &form),
+                    Err(e) => return self.fail(e),
+                };
+                match printed {
+                    Ok(line) => writeln!(self.out, "{line}")?,
                     Err(e) => return self.fail(e),
                 }
             }

@@ -1,13 +1,18 @@
+//! The textual syntax over a value type of its own: every form prints in its literal syntax
+//! and reads back as printed.
+
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
-use super::*;
-use crate::check::{Checker, Context, check_schema};
-use crate::parse::{Options, parse_schema, parse_type};
-use crate::resolve::Visible;
-use crate::schema::{Schema, ValueDef, build};
-use crate::span::FileId;
-use crate::types::{RelId, Ty};
+use adtb_lang::check::{Checker, Context, check_schema};
+use adtb_lang::parse::{Options, parse_schema, parse_type};
+use adtb_lang::resolve::Visible;
+use adtb_lang::schema::{Schema, ValueDef, build};
+use adtb_lang::span::FileId;
+use adtb_lang::textual::*;
+use adtb_lang::types::{Base, RelId, Ty};
+use adtb_testkit::Rng;
+use adtb_testkit::draw::{ZONES, draw};
 
 const SCHEMA: &str = r"
 module app
@@ -29,8 +34,6 @@ type Money = { amount: Decimal 2, currency: Text }
 type Order = { id: Key orders, total: Money, stage: Stage, note: Option Text }
 relation orders : Order key id generate sequence
 ";
-
-const ZONES: &[&str] = &["UTC", "Europe/Paris", "Asia/Kathmandu"];
 
 /// A float ordered by the IEEE total order, as the model orders floats.
 #[derive(Clone, Copy, Debug)]
@@ -87,11 +90,11 @@ enum Tree {
 }
 
 impl Textual for Tree {
-    fn scalar(&self) -> Scalar<'_> {
+    fn scalar(&self) -> Option<Scalar<'_>> {
         let Tree::Atom(a) = self else {
-            panic!("{self:?} is not a scalar")
+            return None;
         };
-        match a {
+        Some(match a {
             Atom::Int(x) => Scalar::Int(*x),
             Atom::Decimal(d) => Scalar::Decimal(*d),
             Atom::F32(f) => Scalar::F32(f.0),
@@ -111,34 +114,34 @@ impl Textual for Tree {
                 months: *months,
                 days: *days,
             },
+        })
+    }
+
+    fn ctor(&self) -> Option<u32> {
+        match self {
+            Tree::Ctor(c, _) => Some(*c),
+            _ => None,
         }
     }
 
-    fn ctor(&self) -> u32 {
+    fn fields(&self) -> Option<impl Iterator<Item = &Tree>> {
         match self {
-            Tree::Ctor(c, _) => *c,
-            v => panic!("{v:?} is not a constructor value"),
+            Tree::Ctor(_, fs) | Tree::Record(fs) => Some(fs.iter()),
+            _ => None,
         }
     }
 
-    fn fields(&self) -> impl Iterator<Item = &Tree> {
+    fn key(&self) -> Option<&Tree> {
         match self {
-            Tree::Ctor(_, fs) | Tree::Record(fs) => fs.iter(),
-            v => panic!("{v:?} has no fields"),
+            Tree::Key(k) => Some(k),
+            _ => None,
         }
     }
 
-    fn key(&self) -> &Tree {
+    fn elems(&self) -> Option<impl Iterator<Item = &Tree>> {
         match self {
-            Tree::Key(k) => k,
-            v => panic!("{v:?} is not a key"),
-        }
-    }
-
-    fn elems(&self) -> impl Iterator<Item = &Tree> {
-        match self {
-            Tree::Set(s) => s.iter(),
-            v => panic!("{v:?} is not a set"),
+            Tree::Set(s) => Some(s.iter()),
+            _ => None,
         }
     }
 
@@ -212,194 +215,7 @@ fn rel(schema: &Schema, name: &str) -> RelId {
     }
 }
 
-/// A SplitMix64 generator, so every run draws the same values.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
-
-    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
-        &xs[self.below(xs.len() as u64) as usize]
-    }
-
-    /// Returns an `i64` drawn mostly from small magnitudes and the edges of the range.
-    fn int(&mut self) -> i64 {
-        match self.below(4) {
-            0 => *self.pick(&[0, 1, -1, i64::MAX, i64::MIN]),
-            1 => self.below(1000) as i64 - 500,
-            _ => self.next() as i64,
-        }
-    }
-}
-
-const CHARS: &[&str] = &[
-    "a",
-    "Z",
-    " ",
-    "\"",
-    "\\",
-    "\n",
-    "\r",
-    "\t",
-    "\u{0}",
-    "\u{7f}",
-    "\u{85}",
-    "\u{e9}",
-    "\u{1f600}",
-    "\u{ffff}",
-    "\u{10ffff}",
-    "\u{2028}",
-    "{",
-    "]",
-    ",",
-    ":",
-];
-
 const DAY: i64 = 86_400_000_000;
-
-fn canon64(f: f64) -> f64 {
-    if f.is_nan() {
-        f64::NAN
-    } else if f == 0.0 {
-        0.0
-    } else {
-        f
-    }
-}
-
-fn canon32(f: f32) -> f32 {
-    if f.is_nan() {
-        f32::NAN
-    } else if f == 0.0 {
-        0.0
-    } else {
-        f
-    }
-}
-
-fn draw_base<V: Textual>(rng: &mut Rng, b: Base) -> V {
-    let i = rng.int();
-    let text: String;
-    let bytes: Vec<u8>;
-    let s = match b {
-        Base::I8 => Scalar::Int(i64::from(i as i8)),
-        Base::I16 => Scalar::Int(i64::from(i as i16)),
-        Base::I32 => Scalar::Int(i64::from(i as i32)),
-        Base::I64 => Scalar::Int(i),
-        Base::Decimal(_) => {
-            let bound = 10i128.pow(38);
-            let wide = (i128::from(rng.next()) << 64 | i128::from(rng.next())) % bound;
-            Scalar::Decimal(match rng.below(3) {
-                0 => wide,
-                1 => *rng.pick(&[0, 1, -1, bound - 1, 1 - bound]),
-                _ => i128::from(i),
-            })
-        }
-        Base::F64 => Scalar::F64(canon64(match rng.below(3) {
-            0 => *rng.pick(&[0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.1]),
-            1 => i as f64 / 1000.0,
-            _ => f64::from_bits(rng.next()),
-        })),
-        Base::F32 => Scalar::F32(canon32(match rng.below(3) {
-            0 => *rng.pick(&[
-                0.0,
-                f32::NAN,
-                f32::NEG_INFINITY,
-                f32::MIN_POSITIVE,
-                f32::MAX,
-            ]),
-            1 => i as f32 / 1000.0,
-            _ => f32::from_bits(rng.next() as u32),
-        })),
-        Base::Text => {
-            let n = rng.below(6);
-            text = (0..n).map(|_| *rng.pick(CHARS)).collect();
-            Scalar::Text(&text)
-        }
-        Base::Bytes | Base::SortKey => {
-            let n = rng.below(6);
-            bytes = (0..n).map(|_| rng.next() as u8).collect();
-            Scalar::Bytes(&bytes)
-        }
-        Base::Instant => Scalar::Instant(i),
-        Base::DateTime => Scalar::DateTime(i),
-        Base::Date => Scalar::Date(i.div_euclid(DAY)),
-        Base::Time => Scalar::Time(i.rem_euclid(DAY)),
-        Base::ZonedDateTime => Scalar::Zoned {
-            local: i,
-            zone: rng.pick(ZONES),
-        },
-        Base::Duration => Scalar::Duration(i),
-        Base::Period => Scalar::Period {
-            months: rng.int() as i32,
-            days: i as i32,
-        },
-    };
-    V::of_scalar(s, b)
-}
-
-fn draw_fields<'f, V: Textual>(
-    rng: &mut Rng,
-    fs: &'f [(String, Form)],
-    depth: u32,
-) -> Vec<(&'f str, V)> {
-    fs.iter()
-        .map(|(n, f)| (n.as_str(), draw(rng, f, depth + 1)))
-        .collect()
-}
-
-/// Returns a value of form `form` drawn from `rng`, built as a `V`; the same draws build equal
-/// values of any two value types.
-fn draw<V: Textual>(rng: &mut Rng, form: &Form, depth: u32) -> V {
-    match form {
-        Form::Base(b) => draw_base(rng, *b),
-        Form::Uuid => {
-            let b: Vec<u8> = (0..16).map(|_| rng.next() as u8).collect();
-            V::of_scalar(Scalar::Bytes(&b), Base::Bytes)
-        }
-        Form::Newtype { base, .. } => draw(rng, base, depth),
-        Form::Span(point) => {
-            let a: V = draw(rng, point, depth + 1);
-            let b = draw(rng, point, depth + 1);
-            let (start, end) = if a <= b { (a, b) } else { (b, a) };
-            V::of_ctor(0, vec![("start", start), ("end", end)])
-        }
-        Form::Sum { ctors, allowed } => {
-            let allowed: Vec<u32> = match allowed {
-                Some(s) => s.clone(),
-                None => (0..ctors.len() as u32).collect(),
-            };
-            let c = if depth > 3 {
-                allowed[0]
-            } else {
-                *rng.pick(&allowed)
-            };
-            V::of_ctor(c, draw_fields(rng, &ctors[c as usize].fields, depth))
-        }
-        Form::Tag(names) => V::of_ctor(rng.below(names.len() as u64) as u32, Vec::new()),
-        Form::Record(fs) => V::of_record(draw_fields(rng, fs, depth)),
-        Form::Unit => V::of_record(Vec::new()),
-        Form::Key { value, .. } => V::of_key(match value {
-            KeyForm::One(f) => draw(rng, f, depth + 1),
-            KeyForm::Fields(fs) => V::of_record(draw_fields(rng, fs, depth)),
-        }),
-        Form::Set { elem, nonempty } => {
-            let n = if depth > 3 { 0 } else { rng.below(4) } + u64::from(*nonempty);
-            V::of_set((0..n).map(|_| draw(rng, elem, depth + 1)).collect())
-        }
-        Form::Opaque => panic!("no values are drawn at an opaque form"),
-    }
-}
 
 const TYPES: &[&str] = &[
     "I8",
@@ -463,16 +279,21 @@ const TYPES: &[&str] = &[
 #[test]
 fn print_then_parse_gives_the_value_back_for_every_type() {
     let s = schema();
-    let mut rng = Rng(0x00ad_7b00);
+    let mut rng = Rng::new(0x00ad_7b00);
     for name in TYPES {
         let f = form(&s, name);
-        for _ in 0..300 {
-            let v: Tree = draw(&mut rng, &f, 0);
-            let printed = print(&v, &f);
-            let back: Tree = parse(&printed, &f)
-                .unwrap_or_else(|e| panic!("`{printed}` does not read back at {name}: {e}"));
-            assert_eq!(v, back, "`{printed}` at {name}");
-            assert_eq!(printed, print(&back, &f), "equal values print identically");
+        for i in 0..300 {
+            let v: Tree = draw(&mut rng, &f);
+            let printed = print(&v, &f).unwrap_or_else(|e| panic!("draw {i} at {name}: {e}"));
+            let back: Tree = parse(&printed, &f).unwrap_or_else(|e| {
+                panic!("draw {i}: `{printed}` does not read back at {name}: {e}")
+            });
+            assert_eq!(v, back, "draw {i}: `{printed}` at {name}");
+            assert_eq!(
+                Ok(printed),
+                print(&back, &f),
+                "draw {i}: equal values print identically"
+            );
         }
     }
 }
@@ -542,7 +363,11 @@ fn every_value_form_prints_in_its_literal_syntax() {
         ),
     ];
     for (name, v, want) in cases {
-        assert_eq!(want, print(&v, &form(&s, name)), "at {name}");
+        assert_eq!(
+            Ok(want.to_string()),
+            print(&v, &form(&s, name)),
+            "at {name}"
+        );
     }
 }
 
@@ -555,9 +380,9 @@ fn reading_accepts_any_field_order_and_merges_set_elements() {
         &f,
     )
     .expect("the set reads");
-    assert_eq!(1, v.elems().count());
+    assert_eq!(Some(1), v.elems().map(Iterator::count));
     assert_eq!(
-        r#"[Member { user: users.key(1), team: "a" }]"#,
+        Ok(r#"[Member { user: users.key(1), team: "a" }]"#.to_string()),
         print(&v, &f)
     );
 }
@@ -605,17 +430,17 @@ fn to_text_gives_the_bare_form_of_scalars_uuids_and_text_newtypes() {
     let s = schema();
     let uuid = Tree::Atom(Atom::Bytes(vec![0xab; 16]));
     assert_eq!(
-        "abababab-abab-abab-abab-abababababab",
+        Ok("abababab-abab-abab-abab-abababababab".to_string()),
         to_text(&uuid, &form(&s, "Uuid"))
     );
     let email = Tree::Atom(Atom::Text("a@b".into()));
-    assert_eq!("a@b", to_text(&email, &form(&s, "Email")));
+    assert_eq!(Ok("a@b".to_string()), to_text(&email, &form(&s, "Email")));
     assert_eq!(
-        "12",
+        Ok("12".to_string()),
         to_text(&Tree::Atom(Atom::Int(12)), &form(&s, "Cents"))
     );
     assert_eq!(
-        "1970-01-02T00:00:00.000000Z",
+        Ok("1970-01-02T00:00:00.000000Z".to_string()),
         to_text(&Tree::Atom(Atom::Instant(DAY)), &form(&s, "Instant"))
     );
 }
@@ -656,7 +481,7 @@ fn a_document_reads_back_as_printed() {
         }),
         doc.header
     );
-    let printed = print_document(&s, &doc);
+    let printed = print_document(&s, &doc).expect("the document prints");
     assert_eq!(
         format!(
             "text 2026-10 pins 3 ({hash})\ndata members\n{}\n{}\n",
@@ -666,4 +491,37 @@ fn a_document_reads_back_as_printed() {
         printed
     );
     assert_eq!(Ok(doc), read_document(&s, &printed));
+}
+
+#[test]
+fn a_value_not_of_its_form_does_not_print() {
+    let s = schema();
+    let int = || Tree::Atom(Atom::Int(1));
+    let text = || Tree::Atom(Atom::Text("a".into()));
+    let cases = [
+        ("Text", int()),
+        ("F64", int()),
+        ("Decimal 2", int()),
+        ("Bytes", text()),
+        ("Uuid", Tree::Atom(Atom::Bytes(vec![0; 3]))),
+        ("Uuid", int()),
+        ("Email", int()),
+        ("Bool", int()),
+        ("Bool", Tree::Ctor(2, Vec::new())),
+        ("Tag Stage", Tree::Ctor(3, Vec::new())),
+        ("Option I64", Tree::Ctor(1, Vec::new())),
+        ("User", Tree::Record(vec![int()])),
+        ("{ a: I64, b: Text }", int()),
+        ("Span I64", Tree::Ctor(0, vec![int()])),
+        ("Key users", int()),
+        ("Key members", Tree::Key(Box::new(int()))),
+        ("Set I64", int()),
+        ("Set I64", Tree::Set([text()].into_iter().collect())),
+        ("{ f: I64 -> I64 }", Tree::Record(Vec::new())),
+    ];
+    for (name, v) in cases {
+        let f = form(&s, name);
+        assert!(print(&v, &f).is_err(), "{v:?} prints at {name}");
+        assert!(to_text(&v, &f).is_err(), "{v:?} is text at {name}");
+    }
 }

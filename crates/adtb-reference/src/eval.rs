@@ -5,6 +5,7 @@ use std::rc::Rc;
 use adtb_lang::check::Program;
 use adtb_lang::kernel::{Agg, Const, Kind, Terms, Tm, Transition, Var};
 use adtb_lang::schema::{Schema, TypeDefKind};
+use adtb_lang::textual::PrintError;
 use adtb_lang::types::{Base, CtorSet, FnId, RelId, Ty, TypeId};
 
 use crate::big::Big;
@@ -79,6 +80,12 @@ pub enum Abort {
     NotYet(String),
     /// The term or a value breaks the invariant this text names, one the checker guarantees.
     Internal(String),
+}
+
+impl From<PrintError> for Abort {
+    fn from(e: PrintError) -> Abort {
+        Abort::Internal(e.message)
+    }
 }
 
 impl From<Fault> for Abort {

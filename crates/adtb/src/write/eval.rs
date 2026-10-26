@@ -228,7 +228,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             if let Some(v) = self.drawn.borrow().get(&key) {
                 return Ok(v.clone());
             }
-            let occ = p.fields()[0].int();
+            let occ = p.fields()?[0].int()?;
             let (g, r) = occurrences[&occ];
             let v = self.draw(g, r)?;
             self.drawn.borrow_mut().insert(key, v.clone());
@@ -321,7 +321,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 }))
             }
             Kind::If(c, a, b) => {
-                let w = if self.eval(Arena::Statement, c, env)?.truth() {
+                let w = if self.eval(Arena::Statement, c, env)?.truth()? {
                     a
                 } else {
                     b
@@ -330,7 +330,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             }
             Kind::Case { scrutinee, arms } => {
                 let v = self.eval(Arena::Statement, scrutinee, env)?;
-                let c = v.ctor_of();
+                let c = v.ctor_of()?;
                 let (_, x, w) = arms.iter().find(|(d, _, _)| *d == c).ok_or_else(|| {
                     Error::Internal(format!("a case has an arm for constructor {c}"))
                 })?;
@@ -360,7 +360,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 let mut news = BTreeSet::new();
                 for v in self.set(rows, env)? {
                     let n = self.eval(Arena::Statement, body, &bind(env, x, v.clone()))?;
-                    if self.key_of(r, &n) != self.key_of(r, &v) {
+                    if self.key_of(r, &n)? != self.key_of(r, &v)? {
                         return Err(Error::Rejected(Rejection::KeyChanged { relation: r }));
                     }
                     if n != v && self.in_snapshot(r, &v)? {
@@ -430,8 +430,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             Err(Error::Rejected(Rejection::BadInput { .. }) | Error::Fault(_)) => {}
             other => return other,
         }
-        let mut records: Vec<Val> = self.set(src, env)?.into_iter().collect();
-        records.sort_by_cached_key(|p| self.key_of(r0, p));
+        let mut keyed = Vec::new();
+        for p in self.set(src, env)? {
+            keyed.push((self.key_of(r0, &p)?, p));
+        }
+        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+        let records: Vec<Val> = keyed.into_iter().map(|(_, p)| p).collect();
         let source = self.db.schema.relation(r0).name.clone();
         let mut out = BTreeSet::new();
         for (i, p) in records.into_iter().enumerate() {
@@ -473,15 +477,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             .iter()
             .position(|(n, _)| n == "load")
             .expect("`RejectedRow` has a `load`");
-        let held = self
-            .rows(into, None)?
-            .into_iter()
-            .filter_map(|(_, v)| match v.fields()[at] {
-                Val::Int(l) => Some(l),
-                _ => None,
-            })
-            .max()
-            .unwrap_or(0);
+        let mut held = 0;
+        for (_, v) in self.rows(into, None)? {
+            if let Val::Int(l) = v.fields()?[at] {
+                held = held.max(l);
+            }
+        }
         let l = self.db.next_load(held)?;
         self.load.set(Some(l));
         Ok(l)
@@ -534,16 +535,16 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 let mut ew = Effects::new();
                 let inner = bind(&bind(env, old, o.clone()), new, n.clone());
                 self.write(otherwise, &inner, &mut ew)?;
-                let k = self.key_of(rel, &o);
-                let written: Vec<Val> = ew
-                    .iter()
-                    .filter_map(|e| match e {
-                        Eff::Rep(r, _, v) | Eff::Ins(r, v) if *r == rel => Some(v),
-                        _ => None,
-                    })
-                    .filter(|v| self.key_of(rel, v) == k)
-                    .cloned()
-                    .collect();
+                let k = self.key_of(rel, &o)?;
+                let mut written: Vec<Val> = Vec::new();
+                for e in &ew {
+                    if let Eff::Rep(r, _, v) | Eff::Ins(r, v) = e
+                        && *r == rel
+                        && self.key_of(rel, v)? == k
+                    {
+                        written.push(v.clone());
+                    }
+                }
                 if written.is_empty() {
                     bound.insert(o);
                 } else {
@@ -566,7 +567,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     fn conflicts(&self, rel: RelId, on: Conflict, n: &Val) -> Result<Vec<Val>, Error> {
         match on {
             Conflict::Key => {
-                let k = self.key_of(rel, n);
+                let k = self.key_of(rel, n)?;
                 Ok(self
                     .by_key(rel, &k)?
                     .into_iter()
@@ -605,12 +606,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     ) -> Result<Option<Vec<Val>>, Error> {
         let r = self.rel(rel);
         let unique = &r.uniques[u];
-        if !unique.scope.contains(&row.ctor_of()) {
+        if !unique.scope.contains(&row.ctor_of()?) {
             return Ok(None);
         }
         let mut out = Vec::new();
         for (var, f) in &unique.fields {
-            if !self.holds_path(&r.row_ty(row.ctor_of()), row, &f.path)? {
+            if !self.holds_path(&r.row_ty(row.ctor_of()?), row, &f.path)? {
                 return Ok(None);
             }
             let env: Env = [(*var, row.clone())].into();
@@ -629,11 +630,11 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                         Val::Ctor(c, _) => a.of(*c)?,
                         _ => a.of(0)?,
                     };
-                    at = at.fields()[i].clone();
+                    at = at.fields()?[i].clone();
                     ty = t;
                 }
                 PathStep::Ctor(c) => {
-                    if at.ctor_of() != *c {
+                    if at.ctor_of()? != *c {
                         return Ok(false);
                     }
                     ty = match exec::types::repr(&self.db.schema, &ty) {
@@ -655,15 +656,15 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     }
 
     /// Returns the key of `row`, a row of `rel`.
-    pub fn key_of(&self, rel: RelId, row: &Val) -> Val {
+    pub fn key_of(&self, rel: RelId, row: &Val) -> Result<Val, Error> {
         let r = self.rel(rel);
-        let at = &r.ctors[row.ctor_of() as usize].key_at;
-        let fs = row.fields();
-        if r.single_key {
+        let at = &r.ctors[row.ctor_of()? as usize].key_at;
+        let fs = row.fields()?;
+        Ok(if r.single_key {
             fs[at[0]].clone()
         } else {
             Val::record(at.iter().map(|i| fs[*i].clone()).collect())
-        }
+        })
     }
 
     /// Returns the row of `rel` with key `key` the statement's reads see, with its constructor
@@ -675,7 +676,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         } else {
             let mut names = r.key_fields.clone();
             names.sort();
-            let fs = key.fields();
+            let fs = key.fields()?;
             r.key_fields
                 .iter()
                 .map(|n| fs[names.iter().position(|m| m == n).expect("a key field")].clone())
@@ -693,7 +694,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 continue;
             };
             let v = self.row(rel, c, &stored);
-            if self.key_of(rel, &v) == *key {
+            if self.key_of(rel, &v)? == *key {
                 return Ok(Some((c, at, v)));
             }
         }
@@ -733,20 +734,25 @@ impl<'a, R: Runtime> Stmt<'a, R> {
 
     /// Returns whether `v` is a row of `rel` the statement's reads see.
     fn in_snapshot(&self, rel: RelId, v: &Val) -> Result<bool, Error> {
-        let k = self.key_of(rel, v);
+        let k = self.key_of(rel, v)?;
         Ok(self.by_key(rel, &k)?.is_some_and(|(_, _, u)| u == *v))
     }
 
     /// Returns the key a reference field of `row` names, if any.
-    pub fn names(f: &RefField, row: &Val) -> Option<Val> {
-        let v = &row.fields()[f.at];
+    pub fn names(f: &RefField, row: &Val) -> Result<Option<Val>, Error> {
+        let v = &row.fields()?[f.at];
         if !f.optional {
-            return Some(v.clone());
+            return Ok(Some(v.clone()));
         }
-        match v {
+        Ok(match v {
             Val::Ctor(1, fs) => fs.first().cloned(),
             _ => None,
-        }
+        })
+    }
+
+    /// Returns whether reference field `f` of `row` names a key in `gone`.
+    fn names_gone(f: &RefField, row: &Val, gone: &BTreeSet<(RelId, Val)>) -> Result<bool, Error> {
+        Ok(Self::names(f, row)?.is_some_and(|x| gone.contains(&(f.target, x))))
     }
 
     /// Returns the relations with a reference field into one of `targets`, with those fields
@@ -819,8 +825,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                             continue;
                         };
                         let v = self.row(rel, d, &stored);
-                        if Self::names(f, &v).as_ref() == Some(k) {
-                            out.insert(self.key_of(rel, &v), (d, v));
+                        if Self::names(f, &v)?.as_ref() == Some(k) {
+                            out.insert(self.key_of(rel, &v)?, (d, v));
                         }
                     }
                 }
@@ -843,14 +849,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             match e {
                 Eff::Del(r, v) => {
                     minus_written.insert((*r, v.clone()));
-                    removed.insert((*r, self.key_of(*r, v)));
+                    removed.insert((*r, self.key_of(*r, v)?));
                 }
                 Eff::Rep(r, v, n) => {
                     minus_written.insert((*r, v.clone()));
-                    kept_keys.insert((*r, self.key_of(*r, n)));
+                    kept_keys.insert((*r, self.key_of(*r, n)?));
                 }
                 Eff::Ins(r, n) => {
-                    kept_keys.insert((*r, self.key_of(*r, n)));
+                    kept_keys.insert((*r, self.key_of(*r, n)?));
                 }
             }
         }
@@ -868,14 +874,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     continue;
                 }
                 for (c, u) in self.referring(r, &fields, &by_target(&gone))? {
-                    let k = (r, self.key_of(r, &u));
+                    let k = (r, self.key_of(r, &u)?);
                     if minus_written.contains(&(r, u.clone())) || gone.contains(&k) {
                         continue;
                     }
-                    let hit = fields[c as usize].iter().any(|f| {
-                        f.action == OnDelete::Cascade
-                            && Self::names(f, &u).is_some_and(|x| gone.contains(&(f.target, x)))
-                    });
+                    let mut hit = false;
+                    for f in &fields[c as usize] {
+                        hit |= f.action == OnDelete::Cascade && Self::names_gone(f, &u, &gone)?;
+                    }
                     if hit {
                         pre_rows.insert(k.clone(), u.clone());
                         more.push(k);
@@ -893,15 +899,16 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         for (r, fields) in self.referrers(&targets) {
             for (c, u) in self.referring(r, &fields, &gone_keys)? {
                 if minus_written.contains(&(r, u.clone()))
-                    || gone.contains(&(r, self.key_of(r, &u)))
+                    || gone.contains(&(r, self.key_of(r, &u)?))
                 {
                     continue;
                 }
-                let reach: Vec<&RefField> = fields[c as usize]
-                    .iter()
-                    .copied()
-                    .filter(|f| Self::names(f, &u).is_some_and(|x| gone.contains(&(f.target, x))))
-                    .collect();
+                let mut reach: Vec<&RefField> = Vec::new();
+                for f in fields[c as usize].iter().copied() {
+                    if Self::names_gone(f, &u, &gone)? {
+                        reach.push(f);
+                    }
+                }
                 let clears: Vec<&RefField> = reach
                     .iter()
                     .copied()
@@ -929,14 +936,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         for e in &all {
             match e {
                 Eff::Ins(r, v) | Eff::Rep(r, _, v) => {
-                    if !killed.contains(&(*r, self.key_of(*r, v))) {
-                        add(&mut plus, *r, v.clone());
+                    if !killed.contains(&(*r, self.key_of(*r, v)?)) {
+                        add(&mut plus, *r, v.clone())?;
                     }
                 }
                 Eff::Del(..) => {}
             }
             if let Eff::Del(r, v) | Eff::Rep(r, v, _) = e {
-                add(&mut minus, *r, v.clone());
+                add(&mut minus, *r, v.clone())?;
             }
         }
         for (r, k) in &gone {
@@ -945,7 +952,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 None => self.by_key(*r, k)?.map(|(_, _, u)| u),
             };
             if let Some(u) = row {
-                add(&mut minus, *r, u);
+                add(&mut minus, *r, u)?;
             }
         }
         normalise(&mut plus, &mut minus);
@@ -955,7 +962,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         for ((r, _), rows) in &plus {
             for v in rows {
                 by_key
-                    .entry((*r, self.key_of(*r, v)))
+                    .entry((*r, self.key_of(*r, v)?))
                     .or_default()
                     .insert(v.clone());
             }
@@ -1018,9 +1025,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         for ((r, c), rows) in plus {
             let rel = self.rel(*r);
             for v in rows {
-                let pre = self.by_key(*r, &self.key_of(*r, v))?.map(|(_, _, u)| u);
+                let pre = self.by_key(*r, &self.key_of(*r, v)?)?.map(|(_, _, u)| u);
                 if let Some(stage) = closed(schema.stage(*r, *c))
-                    && pre.as_ref().is_none_or(|u| u.ctor_of() != *c)
+                    && pre.as_ref().map(Val::ctor_of).transpose()? != Some(*c)
                 {
                     return Err(Error::Rejected(Rejection::NotOpen {
                         ctor: format!("{}.{}", rel.name, rel.ctors[*c as usize].name),
@@ -1028,7 +1035,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     }));
                 }
                 let mut stored = Vec::new();
-                self.sum_values(v, &rel.elem, &mut Vec::new(), &mut stored);
+                self.sum_values(v, &rel.elem, &mut Vec::new(), &mut stored)?;
                 for (path, def, ctor, value) in stored {
                     let Some(stage) = closed(schema.value_stage(def, ctor)) else {
                         continue;
@@ -1055,7 +1062,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         ty: &Ty,
         path: &mut Vec<usize>,
         out: &mut Vec<(Vec<usize>, adtb_lang::types::TypeId, u32, Val)>,
-    ) {
+    ) -> Result<(), Error> {
         let schema = &self.db.schema;
         let t = exec::types::repr(schema, ty);
         let fields: Vec<Ty> = match (&t, v) {
@@ -1073,13 +1080,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 .iter()
                 .map(|(_, t)| t.clone())
                 .collect(),
-            _ => return,
+            _ => return Ok(()),
         };
-        for (i, (x, t)) in v.fields().iter().zip(fields).enumerate() {
+        for (i, (x, t)) in v.fields()?.iter().zip(fields).enumerate() {
             path.push(i);
-            self.sum_values(x, &t, path, out);
+            self.sum_values(x, &t, path, out)?;
             path.pop();
         }
+        Ok(())
     }
 }
 
@@ -1094,7 +1102,7 @@ fn by_target(rows: &BTreeSet<(RelId, Val)>) -> BTreeMap<RelId, BTreeSet<Val>> {
 
 fn at<'v>(v: &'v Val, path: &[usize]) -> Option<&'v Val> {
     path.iter().try_fold(v, |x, i| match x {
-        Val::Ctor(..) | Val::Record(_) => x.fields().get(*i),
+        Val::Ctor(_, fs) | Val::Record(fs) => fs.get(*i),
         _ => None,
     })
 }
@@ -1105,8 +1113,9 @@ pub fn bind(env: &Env, x: Var, v: Val) -> Env {
     e
 }
 
-pub fn add(rows: &mut Rows, rel: RelId, v: Val) {
-    rows.entry((rel, v.ctor_of())).or_default().insert(v);
+pub fn add(rows: &mut Rows, rel: RelId, v: Val) -> Result<(), Error> {
+    rows.entry((rel, v.ctor_of()?)).or_default().insert(v);
+    Ok(())
 }
 
 fn normalise(plus: &mut Rows, minus: &mut Rows) {

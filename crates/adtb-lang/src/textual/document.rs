@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::read::{ParseError, Reader};
-use super::{Form, Textual, print};
+use super::{Form, PrintError, Textual, print};
 use crate::schema::Schema;
 use crate::types::RelId;
 
@@ -109,7 +109,10 @@ pub fn read_document<V: Textual>(schema: &Schema, text: &str) -> Result<Document
 }
 
 /// Returns `doc` as text: its header, its `data` line, and one row per line in ascending order.
-pub fn print_document<V: Textual>(schema: &Schema, doc: &Document<V>) -> String {
+pub fn print_document<V: Textual>(
+    schema: &Schema,
+    doc: &Document<V>,
+) -> Result<String, PrintError> {
     let r = schema.relation(doc.relation);
     let form = Form::of(schema, &r.elem);
     let mut out = String::new();
@@ -121,8 +124,8 @@ pub fn print_document<V: Textual>(schema: &Schema, doc: &Document<V>) -> String 
     }
     out.push_str(&format!("data {}\n", r.name));
     for row in &doc.rows {
-        out.push_str(&print(row, &form));
+        out.push_str(&print(row, &form)?);
         out.push('\n');
     }
-    out
+    Ok(out)
 }

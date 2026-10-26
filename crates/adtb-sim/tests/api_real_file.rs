@@ -41,7 +41,8 @@ fn names(db: &adtb::Database) -> Vec<String> {
         .expect("the names");
     let rows = out.remove(0);
     let form = rows.form().clone();
-    rows.map(|r| print(&r.expect("a row"), &form)).collect()
+    rows.map(|r| print(&r.expect("a row"), &form).expect("a row prints"))
+        .collect()
 }
 
 #[test]

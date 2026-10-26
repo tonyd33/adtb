@@ -242,6 +242,11 @@ enum Ended {
 }
 
 impl Run {
+    fn show(&self, v: &Value, ty: &Ty) -> String {
+        textual::print(&self.schema, v, ty)
+            .unwrap_or_else(|e| format!("a value that does not print: {e}"))
+    }
+
     fn directive(&mut self, d: &Directive) -> Result<(), Difference> {
         match &d.kind {
             Kind::Schema => unreachable!("handled by the caller"),
@@ -283,7 +288,7 @@ impl Run {
                         d.line,
                         format!(
                             "succeeds with {}, not refused with {reason}",
-                            textual::print(&self.schema, v, ty)
+                            self.show(v, ty)
                         ),
                     )),
                     None => Err(differ(d.line, "no statement")),
@@ -379,13 +384,10 @@ impl Run {
         }
         let shown = || match got {
             Value::List(l) => {
-                let rows: Vec<String> = l
-                    .iter()
-                    .map(|v| textual::print(&self.schema, v, &elem))
-                    .collect();
+                let rows: Vec<String> = l.iter().map(|v| self.show(v, &elem)).collect();
                 format!("in order [{}]", rows.join(", "))
             }
-            v => textual::print(&self.schema, v, ty),
+            v => self.show(v, ty),
         };
         let mismatch = || differ(line, format!("got {}", shown()));
         match got {
@@ -395,10 +397,7 @@ impl Run {
                     return Err(mismatch());
                 }
                 if !rowsort {
-                    let canonical: Vec<String> = want
-                        .iter()
-                        .map(|v| textual::print(&self.schema, v, &elem))
-                        .collect();
+                    let canonical: Vec<String> = want.iter().map(|v| self.show(v, &elem)).collect();
                     if format!("[{}]", canonical.join(", ")) != shown() {
                         return Err(differ(
                             line,

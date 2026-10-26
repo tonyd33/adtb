@@ -405,7 +405,10 @@ fn a_query_past_its_grant_is_rejected_for_its_statement_limit() {
             &[],
         );
         assert_eq!(0, budget.granted(), "every grant returned to the budget");
-        (refused, done.map(|v| v.as_set().len()))
+        (
+            refused,
+            done.map(|v| v.as_set().expect("a result is a set").len()),
+        )
     });
     assert_eq!(
         Err(Error::StatementLimit(Exceeded::Memory { limit: 4096 })),
