@@ -15,6 +15,15 @@ impl<T> Lock<T> {
         Lock(Mutex::new(value))
     }
 
+    /// Returns the guard if no other thread holds the lock, without waiting.
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+        match self.0.try_lock() {
+            Ok(g) => Some(g),
+            Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
     pub fn lock(&self, threads: &impl Threads) -> MutexGuard<'_, T> {
         loop {
             match self.0.try_lock() {

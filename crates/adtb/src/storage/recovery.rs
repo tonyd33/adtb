@@ -42,8 +42,8 @@ fn damaged_at(lsn: Lsn, problem: LogProblem) -> OpenError {
 impl<R: Runtime> Pager<R> {
     pub(crate) fn recover(&self) -> Result<Recovery, OpenError> {
         let img = {
-            let mut log = self.log();
-            self.io(|d| log.load(d))
+            let mut segments = self.segments.lock(&self.rt);
+            self.io(|d| segments.load(d))
         };
         let ck = self.checkpoint_lsn();
         let ck_batch = img
@@ -92,8 +92,8 @@ impl<R: Runtime> Pager<R> {
             self.damage(pid, damage);
         }
         {
-            let mut log = self.log();
-            self.io(|d| log.clear_tail(d, &img, s.end));
+            let mut segments = self.segments.lock(&self.rt);
+            self.io(|d| segments.clear_tail(d, &img, s.end));
         }
         self.flush_pages(usize::MAX);
         assert!(self.meta().dirty.is_empty(), "recovery left a dirty page");

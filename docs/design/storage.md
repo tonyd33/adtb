@@ -178,6 +178,9 @@ pager.abort(xid, &[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, Page
 pager.reserve_xids(next) -> Lsn
 pager.flush_log()
 pager.durable() -> Lsn
+pager.wait_durable(lsn) -> Position                // group commit; the record's commit position
+pager.log_safe_snapshot(position, &snapshot) -> Lsn
+pager.max_threads() -> usize
 PageError { pid, damage: Checksum | Unreadable | Stale { expected, found } }
 ```
 
@@ -192,6 +195,11 @@ Preconditions:
 - The pages latched at once, by every thread together, are fewer than
   the pool's frames. An update that allocates also latches one bitmap
   page per allocation bitmap group it allocates from.
+- A thread latches at most five pages at once (`LATCHES_PER_THREAD`:
+  a B-link operation's four and the bitmap page), and at most
+  `max_threads()` threads latch at once, the pool's frames divided by
+  five. The options state the threads; opening a pool too small for
+  them panics.
 - A thread asks for no latch on a page it holds a guard on, through any
   call: a call that would latch that page again waits forever. In
   debug builds and under the simulator the call panics instead, naming
@@ -240,6 +248,20 @@ Postconditions:
   when an allocation bitmap page is damaged.
 - A failed write or force, including one that grows the file, crashes
   the process ([README.md §4](README.md#4-errors)); no call returns it.
+- `wait_durable(lsn)` returns once the record at `lsn` is durable, with
+  its commit position: the primary epoch and `lsn`. A commit is
+  acknowledged at durability level local only after it returns.
+  Records appended by other threads while a batch is forced are forced
+  together in the next batch, by one of the waiters.
+- A record appended after `wait_durable` returned for another has a
+  later position, so a commit acknowledged before a transaction began
+  has an earlier position than that transaction's commit.
+- `log_safe_snapshot` logs a safe snapshot marker: the snapshot as the
+  transactions layer encodes it, and the commit position up to which
+  it covers commits. Markers are durable like any record; recovery
+  ignores them and `verify` lists them.
+- When every frame stays latched past the options' stall bound, the
+  page-in waiting for a frame panics, reporting a stalled pool.
 - Write-ahead, full-page images and checkpoints (§5.2, §6) are the
   pager's: a layout never writes a page to the file, forces anything
   but the log, or logs a page record itself.
@@ -247,8 +269,8 @@ Postconditions:
 ```text
 let pid = pager.allocate(1, PageKind::HeapSlotted, heap_id)?;
 pager.update(&[pid], |p| slotted::insert(p[0], &row))?;
-pager.commit(xid, &[status_page], |p| set_status(p[0], i, Status::Committed))?;
-pager.flush_log();          // now acknowledge the commit
+let commit = pager.commit(xid, &[status_page], |p| set_status(p[0], i, Status::Committed))?;
+let position = pager.wait_durable(commit);   // now acknowledge the commit, at `position`
 ```
 
 ### 2.4 Latches
@@ -431,7 +453,7 @@ describes a change to one page, or a transaction or system event:
 | xid allocation | the next xid reserved ([mvcc.md §4](mvcc.md#4-transaction-ids-the-commit-log-and-snapshots)) |
 | schema operator | an operator of a migration, and the schema version the migration produces ([schema-change.md §3](schema-change.md#3-log-records)) |
 | stage transition | an online schema state change ([schema-change.md §2](schema-change.md#2-staged-states)) |
-| safe snapshot marker | a snapshot no read-write transaction can make unsafe ([replication.md §2](replication.md#2-safe-snapshot-markers)) |
+| safe snapshot marker | a snapshot no read-write transaction can make unsafe, as the transactions layer encodes it, and the commit position it covers ([replication.md §2](replication.md#2-safe-snapshot-markers)) |
 | logical change | inserted and deleted rows of one constructor relation that has a registered consumer ([replication.md §7](replication.md#7-logical-change-records)) |
 | checkpoint | redo LSN and dirty page table (§6) |
 
@@ -654,10 +676,13 @@ Non-binding.
 ### 10.1 Group commit
 
 A committing transaction appends its commit record and waits until the
-log is durable past it. The first waiter becomes the leader: it writes
-and forces every block up to the latest appended record, then wakes
-every transaction whose commit record is now durable. Others wait for
-the next leader. Under the quorum durability level
+log is durable past it. The first waiter that finds no batch being
+forced becomes the leader: under the flush lock it takes every record
+appended so far as one batch, writes and forces it, and records it
+durable. Appending takes only the log lock, so records keep arriving
+while a batch is forced. Waiters spin through the runtime, checking
+durability between attempts to lead; those the batch covered return
+with it, and the rest take the next batch. Under the quorum durability level
 ([replication.md §5](replication.md#5-commit-acknowledgement)) the
 leader also waits for replica acknowledgements of the batch, so one
 round trip serves the batch.

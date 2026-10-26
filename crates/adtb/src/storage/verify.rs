@@ -6,7 +6,7 @@ use super::block::{LogFinding, Mode, scan};
 use super::page::{self, Verdict};
 use super::pager::{Damage, Pager};
 use super::record::Record;
-use super::{Lsn, Pid};
+use super::{Lsn, Pid, Position};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Finding {
@@ -24,6 +24,8 @@ pub struct Verification {
     pub findings: Vec<Finding>,
     /// The transaction of every commit record in the retained log, in log order.
     pub commits: Vec<u64>,
+    /// Every safe snapshot marker in the retained log, in log order, with its LSN.
+    pub safe_snapshots: Vec<(Lsn, Position, Vec<u8>)>,
 }
 
 impl<R: Runtime> Pager<R> {
@@ -36,12 +38,13 @@ impl<R: Runtime> Pager<R> {
     pub fn verify(&self) -> Verification {
         self.flush_log();
         let img = {
-            let mut log = self.log();
-            self.io(|d| log.load(d))
+            let mut segments = self.segments.lock(&self.rt);
+            self.io(|d| segments.load(d))
         };
         let s = img.first().map(|first| scan(&img, first, Mode::Verify));
         let mut findings: Vec<Finding> = Vec::new();
         let mut commits = Vec::new();
+        let mut safe_snapshots = Vec::new();
         let mut last: BTreeMap<Pid, Lsn> = BTreeMap::new();
         let mut broken: BTreeMap<Pid, Damage> = BTreeMap::new();
         let complete = s
@@ -57,8 +60,12 @@ impl<R: Runtime> Pager<R> {
                     continue;
                 };
                 for (lsn, record) in records {
-                    if let Record::Commit { xid, .. } = record {
-                        commits.push(xid);
+                    match &record {
+                        Record::Commit { xid, .. } => commits.push(*xid),
+                        Record::SafeSnapshot { at, snapshot } => {
+                            safe_snapshots.push((lsn, *at, snapshot.clone()))
+                        }
+                        _ => {}
                     }
                     let Some((pid, prev)) = record.page() else {
                         continue;
@@ -123,7 +130,11 @@ impl<R: Runtime> Pager<R> {
         }
         findings.sort();
         findings.dedup();
-        Verification { findings, commits }
+        Verification {
+            findings,
+            commits,
+            safe_snapshots,
+        }
     }
 
     /// Returns the number of pages the data file spans now.

@@ -7,18 +7,40 @@ use super::block::{LogImage, data_lsn, frame};
 use super::driver::Driver;
 use super::record::Record;
 
-/// The redo log's writer: the segment files and the batch being filled.
+/// The redo log's appender: the batch being filled, behind the log lock.
 #[derive(Debug)]
 pub(crate) struct Log {
-    pub(crate) dir: String,
     pub(crate) block: usize,
-    pub(crate) segment: u64,
     pub(crate) epoch: u32,
-    files: BTreeMap<u64, FileId>,
-    /// The first LSN of the batch being filled; every batch before it is forced.
+    /// The first LSN of the batch being filled.
     start: Lsn,
     seq: u64,
     pending: Vec<u8>,
+    /// Every record below it is forced.
+    durable: Lsn,
+    batches: u64,
+}
+
+/// A batch taken from the appender, to be written and forced by the one flusher.
+#[derive(Debug)]
+pub(crate) struct Batch {
+    pub(crate) start: Lsn,
+    pub(crate) blocks: Vec<u8>,
+}
+
+impl Batch {
+    pub(crate) fn end(&self) -> Lsn {
+        Lsn(self.start.0 + self.blocks.len() as u64)
+    }
+}
+
+/// The log's segment files, behind the flush lock, which one flusher holds at a time.
+#[derive(Debug)]
+pub(crate) struct Segments {
+    pub(crate) dir: String,
+    block: usize,
+    segment: u64,
+    files: BTreeMap<u64, FileId>,
 }
 
 fn segment_name(base: u64) -> String {
@@ -33,21 +55,16 @@ fn parse_segment(path: &str) -> Option<u64> {
 }
 
 impl Log {
-    pub(crate) fn new(dir: String, block: usize, segment: u64, epoch: u32) -> Log {
+    pub(crate) fn new(block: usize, epoch: u32) -> Log {
         Log {
-            dir,
             block,
-            segment,
             epoch,
-            files: BTreeMap::new(),
             start: Lsn(0),
             seq: 1,
             pending: Vec::new(),
+            durable: Lsn(0),
+            batches: 0,
         }
-    }
-
-    fn path(&self, base: u64) -> String {
-        format!("{}/{}", self.dir, segment_name(base))
     }
 
     /// Returns the LSN the next appended record gets.
@@ -55,15 +72,21 @@ impl Log {
         data_lsn(self.start, self.pending.len(), self.block)
     }
 
-    /// Returns the LSN up to which every record is forced.
+    /// Returns the LSN below which every record is forced.
     pub(crate) fn durable(&self) -> Lsn {
-        self.start
+        self.durable
     }
 
-    /// Continue the log at `end` with batch number `seq`.
+    /// Returns the number of batches forced since open.
+    pub(crate) fn batches(&self) -> u64 {
+        self.batches
+    }
+
+    /// Continue the log at `end` with batch number `seq`, everything before it forced.
     pub(crate) fn resume(&mut self, end: Lsn, seq: u64) {
         assert!(self.pending.is_empty());
         self.start = end;
+        self.durable = end;
         self.seq = seq;
     }
 
@@ -71,6 +94,47 @@ impl Log {
         let lsn = self.next_lsn();
         record.encode(&mut self.pending);
         lsn
+    }
+
+    /// Take every record appended so far as the next batch, framed in blocks, and start the batch
+    /// after it.
+    ///
+    /// Preconditions: the caller holds the flush lock, and forces the batch before taking another.
+    pub(crate) fn take(&mut self) -> Option<Batch> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let blocks = frame(self.start, self.seq, self.epoch, &self.pending, self.block);
+        let batch = Batch {
+            start: self.start,
+            blocks,
+        };
+        self.start = batch.end();
+        self.seq += 1;
+        self.pending.clear();
+        Some(batch)
+    }
+
+    /// Record that `batch` is forced.
+    pub(crate) fn forced(&mut self, batch: &Batch) {
+        assert_eq!(self.durable, batch.start, "batches are forced in order");
+        self.durable = batch.end();
+        self.batches += 1;
+    }
+}
+
+impl Segments {
+    pub(crate) fn new(dir: String, block: usize, segment: u64) -> Segments {
+        Segments {
+            dir,
+            block,
+            segment,
+            files: BTreeMap::new(),
+        }
+    }
+
+    fn path(&self, base: u64) -> String {
+        format!("{}/{}", self.dir, segment_name(base))
     }
 
     /// Open the segment starting at `base`, creating and preallocating it if absent.
@@ -91,16 +155,13 @@ impl Log {
         file
     }
 
-    /// Write and force the batch being filled; on return every appended record is durable.
-    pub(crate) fn flush<R: Runtime>(&mut self, drv: &mut Driver<R>) {
-        if self.pending.is_empty() {
-            return;
-        }
-        let bytes = frame(self.start, self.seq, self.epoch, &self.pending, self.block);
+    /// Write and force the blocks of `batch`.
+    pub(crate) fn write<R: Runtime>(&mut self, drv: &mut Driver<R>, batch: &Batch) {
+        let bytes = &batch.blocks;
         let mut writes = Vec::new();
         let mut at = 0;
         while at < bytes.len() {
-            let lsn = self.start.0 + at as u64;
+            let lsn = batch.start.0 + at as u64;
             let base = lsn - lsn % self.segment;
             let room = (base + self.segment - lsn) as usize;
             let n = room.min(bytes.len() - at);
@@ -111,9 +172,6 @@ impl Log {
         let files: Vec<FileId> = writes.iter().map(|w| w.0).collect();
         drv.write_all(writes);
         drv.sync_all(&files);
-        self.start = Lsn(self.start.0 + bytes.len() as u64);
-        self.seq += 1;
-        self.pending.clear();
     }
 
     /// Returns every segment of the log directory as read now.

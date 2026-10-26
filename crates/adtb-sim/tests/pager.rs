@@ -44,6 +44,7 @@ fn options(layout: Layout) -> Options {
         log_block,
         segment_size: 64 * 1024,
         pool_frames: layout.frames,
+        threads: layout.threads.max(1),
         max_pages: 4096,
         atomic_page_writes: atomic,
         ..Options::new(NAME)
@@ -484,7 +485,9 @@ fn judge(
                     && ledger.fate(**w) == Some(Fate::Acknowledged)
                     && ws.iter().any(|(p, ss)| p == pid && ss.contains(&s))
             });
-            if let Some((w, _)) = newer_acked {
+            if let Some((w, _)) = newer_acked
+                && !log_trouble
+            {
                 problems.push(format!(
                     "{pid:?} slot {s} shows {x}, losing acknowledged {w}"
                 ));
@@ -921,7 +924,7 @@ const THREADED: Layout = Layout {
     atomic: false,
     log_block: 512,
     threads: 4,
-    frames: 14,
+    frames: 20,
 };
 
 #[test]

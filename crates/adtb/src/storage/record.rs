@@ -1,4 +1,4 @@
-use super::{Lsn, Pid};
+use super::{Lsn, Pid, Position};
 
 /// Bytes written at `offset` of a page.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +35,11 @@ pub enum Record {
         redo: Lsn,
         dirty: Vec<(Pid, Lsn)>,
     },
+    /// A safe snapshot, as the transactions layer encodes it, and the commit position it covers.
+    SafeSnapshot {
+        at: Position,
+        snapshot: Vec<u8>,
+    },
 }
 
 const CHANGE: u8 = 1;
@@ -43,6 +48,7 @@ const COMMIT: u8 = 3;
 const ABORT: u8 = 4;
 const XID_ALLOCATION: u8 = 5;
 const CHECKPOINT: u8 = 6;
+const SAFE_SNAPSHOT: u8 = 7;
 
 /// The bytes before a record's body: its tag and the body's length.
 const PREFIX: usize = 5;
@@ -137,6 +143,12 @@ impl Record {
                 }
                 CHECKPOINT
             }
+            Record::SafeSnapshot { at, snapshot } => {
+                put_u32(out, at.epoch);
+                put_u64(out, at.lsn.0);
+                out.extend_from_slice(snapshot);
+                SAFE_SNAPSHOT
+            }
         };
         let body = len32(out.len() - start - PREFIX);
         out[start] = tag;
@@ -187,6 +199,14 @@ impl Record {
                     dirty.push((Pid(b.u64()?), Lsn(b.u64()?)));
                 }
                 Record::Checkpoint { redo, dirty }
+            }
+            SAFE_SNAPSHOT => {
+                let epoch = b.u32()?;
+                let lsn = Lsn(b.u64()?);
+                Record::SafeSnapshot {
+                    at: Position { epoch, lsn },
+                    snapshot: std::mem::take(&mut b.bytes).to_vec(),
+                }
             }
             _ => return Err(Malformed),
         };

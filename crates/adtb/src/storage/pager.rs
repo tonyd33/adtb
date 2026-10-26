@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 use std::sync::MutexGuard;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use adtb_sys::pages::{self, PageMemory, PageState};
 
@@ -12,10 +12,10 @@ use super::block::LogFinding;
 use super::driver::Driver;
 use super::evicted::EvictedLsns;
 use super::header::{self, FileHeader, REGION};
-use super::log::Log;
+use super::log::{Log, Segments};
 use super::page::{self, FIRST_EDITABLE, Verdict, valid_page_size};
 use super::record::{Edit, Record};
-use super::{Lsn, Pid};
+use super::{Lsn, Pid, Position};
 use adtb_sys::lock::Lock;
 
 #[derive(Clone, Debug)]
@@ -32,7 +32,17 @@ pub struct Options {
     pub max_pages: u64,
     /// The device writes a whole page atomically, so no full-page images are logged.
     pub atomic_page_writes: bool,
+    /// The threads that may latch pages at once; the pool holds [`LATCHES_PER_THREAD`] frames
+    /// for each.
+    pub threads: usize,
+    /// How long a page-in waits for a frame, with every frame latched, before it reports a
+    /// stalled pool.
+    pub stall_after: Duration,
 }
+
+/// The pages one thread latches at most at once: a B-link operation's four and the allocation
+/// bitmap page.
+pub const LATCHES_PER_THREAD: usize = 5;
 
 impl Options {
     pub fn new(name: &str) -> Options {
@@ -44,6 +54,8 @@ impl Options {
             pool_frames: 1024,
             max_pages: 1 << 24,
             atomic_page_writes: false,
+            threads: 1,
+            stall_after: Duration::from_secs(10),
         }
     }
 }
@@ -103,19 +115,22 @@ pub(crate) struct Meta {
 /// - A page record and its dirty page table entry are made under the log lock, so a checkpoint,
 ///   which snapshots the table under the same lock, never misses a page whose image precedes it.
 ///
-/// Lock order: page latches, then the log lock, then the meta lock. The header, allocation and
-/// driver locks are taken alone.
+/// Lock order: page latches, then the flush lock, then the log lock, then the meta lock. The
+/// header, allocation and driver locks are taken alone.
 pub struct Pager<R: Runtime> {
     pub(crate) rt: R,
     pub(crate) name: String,
     pub(crate) page_size: usize,
     pool_frames: usize,
+    stall_after: Duration,
     pub(crate) data: FileId,
     pub(crate) atomic_page_writes: bool,
     pub(crate) mem: PageMemory,
     drivers: Lock<BTreeMap<ThreadId, Driver<R>>>,
     header: Lock<(FileHeader, u64)>,
     pub(crate) log: Lock<Log>,
+    /// Held by the one thread writing and forcing a batch: the group commit leader.
+    pub(crate) segments: Lock<Segments>,
     pub(crate) meta: Lock<Meta>,
     /// Held across a search for a free page and across marking pages allocated.
     pub(crate) alloc: Lock<super::alloc::AllocState>,
@@ -153,7 +168,14 @@ fn check_options(o: &Options) {
         o.segment_size > 0 && o.segment_size.is_multiple_of(block as u64),
         "segment size must be a positive multiple of the log block"
     );
-    assert!(o.pool_frames >= 2, "the pool holds at least two frames");
+    assert!(o.threads >= 1, "at least one thread uses the pool");
+    let serves = o.pool_frames / LATCHES_PER_THREAD;
+    assert!(
+        serves >= o.threads,
+        "a pool of {} frames serves at most {serves} threads, not {}",
+        o.pool_frames,
+        o.threads
+    );
 }
 
 /// A shared latch on a resident page.
@@ -264,22 +286,24 @@ impl<'a, R: Runtime> PageOptimistic<'a, R> {
 
 impl<R: Runtime> Pager<R> {
     fn assemble(rt: R, o: &Options, header: FileHeader, copy: u64, data: FileId) -> Self {
-        let log = Log::new(
+        let log = Log::new(header.log_block as usize, header.epoch);
+        let segments = Segments::new(
             format!("{}-log", o.name),
             header.log_block as usize,
             header.segment_size,
-            header.epoch,
         );
         Pager {
             name: o.name.clone(),
             page_size: header.page_size as usize,
             pool_frames: o.pool_frames,
+            stall_after: o.stall_after,
             data,
             atomic_page_writes: o.atomic_page_writes,
             mem: PageMemory::reserve(header.page_size as usize, o.max_pages),
             drivers: Lock::new(BTreeMap::new()),
             header: Lock::new((header, copy)),
             log: Lock::new(log),
+            segments: Lock::new(segments),
             meta: Lock::new(Meta {
                 dirty: BTreeMap::new(),
                 changed: BTreeSet::new(),
@@ -360,6 +384,11 @@ impl<R: Runtime> Pager<R> {
 
     pub fn page_size(&self) -> usize {
         self.page_size
+    }
+
+    /// Returns the most threads the pool serves: those that may latch pages at once.
+    pub fn max_threads(&self) -> usize {
+        self.pool_frames / LATCHES_PER_THREAD
     }
 
     /// Returns the pages refused so far, each with what is wrong with it.
@@ -508,7 +537,10 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Count `pid` as resident, first evicting pages by the clock while the pool is full.
+    ///
+    /// Panics when every frame stays latched for longer than the pool's stall bound.
     pub(crate) fn make_room(&self, pid: Pid) {
+        let mut since = None;
         loop {
             let victim = {
                 let mut m = self.meta();
@@ -539,6 +571,14 @@ impl<R: Runtime> Pager<R> {
                         held < self.pool_frames,
                         "this thread latches {held} pages, every frame of the pool"
                     );
+                    let now = self.rt.now();
+                    let start = *since.get_or_insert(now);
+                    assert!(
+                        now.saturating_since(start) <= self.stall_after,
+                        "the pool is stalled: all {} frames have stayed latched for {:?}",
+                        self.pool_frames,
+                        self.stall_after
+                    );
                     self.rt.yield_now();
                 }
             }
@@ -559,10 +599,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Write `bytes`, page `pid` under a latch the caller holds, to the file.
     pub(crate) fn write_out(&self, pid: Pid, bytes: &[u8]) {
-        let lsn = page::lsn(bytes);
-        if lsn >= self.durable() {
-            self.flush_log();
-        }
+        self.wait_durable(page::lsn(bytes));
         let mut staged = AlignedBuf::from_slice(bytes);
         page::seal(pid, &mut staged);
         let offset = pid.0 * self.page_size as u64;
@@ -748,6 +785,16 @@ impl<R: Runtime> Pager<R> {
         })
     }
 
+    /// Log a safe snapshot marker: `snapshot`, as the transactions layer encodes it, covering
+    /// every commit at or before `at`. Returns the marker's LSN; the marker is durable once the
+    /// log is flushed past it.
+    pub fn log_safe_snapshot(&self, at: Position, snapshot: &[u8]) -> Lsn {
+        self.log().append(&Record::SafeSnapshot {
+            at,
+            snapshot: snapshot.to_vec(),
+        })
+    }
+
     /// Log that transaction ids below `next` are reserved.
     pub fn reserve_xids(&self, next: u64) -> Lsn {
         self.log().append(&Record::XidAllocation { next })
@@ -758,11 +805,63 @@ impl<R: Runtime> Pager<R> {
         self.log().durable()
     }
 
-    /// Write and force every record appended so far, as one batch unless another thread's flush
-    /// took some of them first.
+    /// Write and force every record appended so far.
+    ///
+    /// Postcondition: every record appended before the call is durable.
     pub fn flush_log(&self) {
-        let mut log = self.log();
-        self.io(|d| log.flush(d));
+        let lsn = self.log().next_lsn();
+        self.force_below(lsn);
+    }
+
+    /// Wait until the record at `lsn` is durable, and return its commit position.
+    ///
+    /// The first waiter that finds no batch being forced leads: it takes every record appended
+    /// so far as one batch, writes and forces it. Waiters whose record that batch holds return
+    /// with it; the rest wait for the next leader.
+    ///
+    /// Panics if no record was appended at `lsn`.
+    pub fn wait_durable(&self, lsn: Lsn) -> Position {
+        assert!(
+            lsn < self.log().next_lsn(),
+            "no record was appended at {lsn:?}"
+        );
+        self.force_below(Lsn(lsn.0 + 1));
+        self.position(lsn)
+    }
+
+    /// Returns the commit position of the record at `lsn`.
+    pub fn position(&self, lsn: Lsn) -> Position {
+        Position {
+            epoch: self.log().epoch,
+            lsn,
+        }
+    }
+
+    /// Returns the number of log batches forced since the pager opened.
+    pub fn batches(&self) -> u64 {
+        self.log().batches()
+    }
+
+    /// Return once every record below `lsn` is durable, leading a flush when no other thread
+    /// is. A waiter rechecks durability between its attempts to lead.
+    fn force_below(&self, lsn: Lsn) {
+        loop {
+            if self.durable() >= lsn {
+                return;
+            }
+            let Some(mut segments) = self.segments.try_lock() else {
+                self.rt.yield_now();
+                continue;
+            };
+            if self.durable() >= lsn {
+                return;
+            }
+            let Some(batch) = self.log().take() else {
+                return;
+            };
+            self.io(|d| segments.write(d, &batch));
+            self.log().forced(&batch);
+        }
     }
 
     /// Write up to `max` changed pages, oldest first by the LSN that dirtied them, and force the

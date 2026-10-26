@@ -6,7 +6,7 @@ use super::crc::crc32c;
 use super::header::{FileHeader, choose};
 use super::page::{self, Verdict};
 use super::record::{Edit, Record};
-use super::{Lsn, Pid};
+use super::{Lsn, Pid, Position};
 
 const BLOCK: usize = 128;
 const SEGMENT: u64 = 16 * BLOCK as u64;
@@ -114,6 +114,20 @@ fn records_round_trip() {
         Record::Checkpoint {
             redo: Lsn(36),
             dirty: vec![(Pid(2), Lsn(36)), (Pid(7), Lsn(80))],
+        },
+        Record::SafeSnapshot {
+            at: Position {
+                epoch: 3,
+                lsn: Lsn(4096),
+            },
+            snapshot: vec![1, 2, 3, 4, 5],
+        },
+        Record::SafeSnapshot {
+            at: Position {
+                epoch: 1,
+                lsn: Lsn(36),
+            },
+            snapshot: Vec::new(),
         },
     ];
     let mut bytes = Vec::new();
