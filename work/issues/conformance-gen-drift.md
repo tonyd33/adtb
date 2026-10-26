@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 96
 summary: rerunning conformance/gen/queries/build.sh turns a passing case of 06-forms.test back into a stale refusal
+branch: adtb-qtest
 tags:
   - quality
   - test

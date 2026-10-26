@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 696
 summary: "every insert into a relation with an integer key advances a durable counter, though only sequence keys have one"
+branch: adtb-qeng
 tags:
   - quality
   - engine

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 590
 summary: "catalog sim tests check how many reasons a refusal gives, not which"
+branch: adtb-qtest
 tags:
   - quality
   - sim

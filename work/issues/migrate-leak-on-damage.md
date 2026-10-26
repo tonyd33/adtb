@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 697
 summary: "open after a crashed migration keeps its pages when verify is incomplete, and clears the marker so they are never freed"
+branch: adtb-qeng
 tags:
   - quality
   - engine

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 695
 summary: a commit log read that fails during a write panics the process instead of failing the statement
+branch: adtb-qeng
 tags:
   - quality
   - engine

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 95
 summary: quality-metrics counts panics in inline test modules as non-test code
+branch: adtb-qtest
 tags:
   - quality
   - tooling

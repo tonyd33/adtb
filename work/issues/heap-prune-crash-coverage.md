@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 590
 summary: the pruning crash test counts the runs that left entries to settle but never checks the count
+branch: adtb-qtest
 tags:
   - quality
   - sim

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 590
 summary: "the heap thread tests pass without checking that their threads overlapped, and a seed loop omits the seed"
+branch: adtb-qtest
 tags:
   - quality
   - sim

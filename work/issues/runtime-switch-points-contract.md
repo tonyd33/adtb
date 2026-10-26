@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 595
 summary: "runtime.md says the simulator switches threads only at runtime calls, but it also switches inside page memory"
+branch: adtb-qtest
 tags:
   - quality
   - design

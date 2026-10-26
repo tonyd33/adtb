@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 717
 summary: Catalog::open panics on a stored migration or roots row it cannot read
+branch: adtb-qeng
 tags:
   - quality
   - engine
