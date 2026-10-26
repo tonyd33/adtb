@@ -117,11 +117,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1792916754,
-        "narHash": "sha256-reF/7kbSp5QqwoKsqWN6H96msEwBud/30JK1E0sdqac=",
+        "lastModified": 1792966014,
+        "narHash": "sha256-d7tNaKNfNG/Ydy6uzZkmVrVdRAvSxojIRYI+URbLOCE=",
         "owner": "tonyd33",
         "repo": "quandary",
-        "rev": "1764a199c13ec3d5475f3a39ccaafc73e633d4b2",
+        "rev": "09ade30dd93f664fbf3213c74b8839f5163b89a8",
         "type": "github"
       },
       "original": {
