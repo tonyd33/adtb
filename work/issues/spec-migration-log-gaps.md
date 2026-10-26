@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 708
-summary: "six choices in the migration log rows are unstated in the spec"
+summary: six choices in the migration log rows are unstated in the spec
+closed: 2026-10-25
 ---
 
 # Feature: state the migration log choices
@@ -17,3 +18,9 @@ From the migration log track. My rulings; state each in `docs/spec/catalog.md` t
 4. `functions.signature` and `body` are as written; an aggregate's body is everything after `=`.
 5. A language function is `deterministic` only when every function it calls, transitively, is. The code sets true today; change it.
 6. `migrations.applied` is the wall-clock time the migration was applied in its transaction.
+
+## 2026-10-25: resolved
+
+## 2026-10-25: resolved
+
+Point `log-rows` holds the six rulings under `spec/log-rows/`; `docs/spec/catalog.md` 2.3 and 2.4 state them. `Source::functions` computes `deterministic` as a fixpoint over the call graph, counting functions passed as values and aggregates.

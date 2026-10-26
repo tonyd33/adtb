@@ -23,3 +23,7 @@ failure.
 
 Prerequisites: `write-path.md`, `constraint-maintenance.md`,
 `schema-first-migration.md`.
+
+## 2026-10-25: internal errors
+
+Map `write::Error::Internal` to `Rejected { reason: Internal { what } }` at the session boundary.
