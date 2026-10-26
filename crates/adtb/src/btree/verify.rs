@@ -104,12 +104,13 @@ impl BTree {
     }
 
     /// Finish every split whose page lacks its downlink. Returns the number
-    /// finished.
+    /// this pass finished, which leaves out any another thread finished
+    /// first.
     pub fn repair<R: Runtime>(&self, pager: &Pager<R>) -> Result<usize, Error> {
         let height = self.height(pager)?;
         let mut finished = 0;
         for level in (0..height).rev() {
-            let mut next = Some(self.descend(pager, &[], level)?.pid);
+            let mut next = Some(self.descend(pager, self.root(), &[], level)?.pid);
             let mut low: Option<Vec<u8>> = None;
             while let Some(pid) = next {
                 let (incomplete, high, right) = visit(pager, self.owner(), pid, |n| {
@@ -117,11 +118,15 @@ impl BTree {
                 })?;
                 if incomplete {
                     let low = low.ok_or(Error::Malformed(pid))?;
-                    let parent = self.descend(pager, &low, level + 1)?;
-                    let mut stack = parent.stack;
-                    stack.push(parent.pid);
-                    self.finish(pager, Split { pid, low, stack })?;
-                    finished += 1;
+                    let split = Split {
+                        pid,
+                        level,
+                        low,
+                        stack: Vec::new(),
+                    };
+                    if self.finish(pager, split)? {
+                        finished += 1;
+                    }
                 }
                 low = high;
                 next = right;

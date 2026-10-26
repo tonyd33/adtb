@@ -238,18 +238,54 @@ Non-binding.
 Ordered indexes are B+-trees with right-links and high keys (B-link
 trees). Every page but the rightmost of its level carries a high key;
 a descent whose key exceeds a page's high key moves right, so a split
-holds latches on one level at a time. Sequential keys append at the
+never holds a latch while it waits for one on the level above. Sequential keys append at the
 right edge.
 
-Latching is optimistic lock coupling on the page's state word
-([sys.md §3](sys.md#3-page-state-word)): a reader records the version,
-reads, and restarts from the root if the version changed or the page
-was locked; a writer takes the word exclusive and increments the
-version on release. A descent never writes a state word; a scan that
-sets kill bits takes the leaf's word exclusive for the write, as a
-writer does. Optimistic reads load page bytes through atomic loads
-into local copies and bounds-check every length and offset read before
-use; no reference to a page another thread may write is formed.
+Latching is optimistic lock coupling over the pager's latches
+([storage.md §2.4](storage.md#24-latches)). A descent reads each page
+optimistically and uses what it read only once the read validates; a
+read that fails validation is retried on the same page, and after a few
+failures takes the page's shared latch instead. A descent holds no latch
+or version across levels: a page that split after its parent was read
+is reached through its left sibling's right link. A descent never
+writes a page; a scan that sets kill bits takes the leaf's exclusive
+latch for the write, as a writer does. Optimistic reads load page bytes
+through atomic loads into local copies and bounds-check every length
+and offset read before use; no reference to a page another thread may
+write is formed.
+
+Invariants:
+
+- A page id a descent has read stays a page of the same tree, with the
+  same low key and, unless it is the root, whose level only grows, the
+  same level, for as long as the descent may follow it.
+- Latches are taken top-down and left to right. A thread holding a
+  latch on a page takes latches only on its right siblings, on pages
+  of lower levels, and on pages it has just allocated.
+- A tree operation holds at most four latches at once, besides those
+  `allocate` takes for itself.
+
+Postconditions:
+
+- An insert or delete descends optimistically, then takes the
+  exclusive latch on the leaf and moves right, releasing each latch
+  before taking the next, until the leaf's range holds the key. It
+  decides whether the entry is present under that latch, so each
+  insert, delete and lookup takes effect at one instant between its
+  call and its return.
+- A pass that deletes entries by a predicate walks the leaves left to
+  right, judging and changing each under its exclusive latch and
+  releasing it before latching the next. Every entry present when the
+  pass starts and still present when it ends has been judged.
+- A split changes the page, its new right sibling and the page whose
+  downlink it carries in one change under their exclusive latches,
+  releases them, and then latches the parent level from the page its
+  descent passed there, or from the root.
+- A change that adds a downlink latches the parent, then the child,
+  and checks the child's flag under its latch: a clear flag means
+  another thread added the downlink, and nothing is changed. So a
+  split that a crash or another thread left incomplete is finished
+  once, under the same latches as any split.
 
 A leaf stores equal keys once followed by a sorted array of
 `(ctor, tid)` pairs. Deduplication runs lazily, when a leaf would
@@ -295,7 +331,9 @@ Postconditions:
   finishes each flagged page it meets. After recovery and one repair
   pass, every page but the root has its downlink.
 - `verify` refuses a page that lacks a downlink without carrying the
-  flag, or carries the flag and has one.
+  flag, or carries the flag and has one. It reads each page on its own,
+  so it judges the tree only while no writer runs; a repair pass may
+  run beside writers.
 
 Vacuum's index pass walks the leaves left to right by their right
 links and deletes, in one update per leaf, every entry whose

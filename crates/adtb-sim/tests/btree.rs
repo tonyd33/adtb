@@ -32,11 +32,11 @@ fn options() -> Options {
 }
 
 /// Run `body` over a new database in a fresh simulation.
-fn with_pager(seed: u64, body: impl FnOnce(&SimRuntime, &mut Pager<SimRuntime>)) {
+fn with_pager(seed: u64, body: impl FnOnce(&SimRuntime, &Pager<SimRuntime>)) {
     let mut sim = Sim::new(seed, Config::default());
     let outcome = sim.run(|rt| {
-        let mut pager = Pager::create(rt.clone(), &options()).expect("create");
-        body(&rt, &mut pager);
+        let pager = Pager::create(rt.clone(), &options()).expect("create");
+        body(&rt, &pager);
     });
     assert_eq!(Outcome::Finished, outcome);
 }
@@ -85,7 +85,7 @@ fn valid_range(lo: &Bound<Vec<u8>>, hi: &Bound<Vec<u8>>) -> bool {
 }
 
 fn scan(
-    pager: &mut Pager<SimRuntime>,
+    pager: &Pager<SimRuntime>,
     tree: &BTree,
     lo: &Bound<Vec<u8>>,
     hi: &Bound<Vec<u8>>,
@@ -276,7 +276,7 @@ fn model_run(seed: u64, ops: usize, expected_height: u16) {
 }
 
 /// Returns the first `SCAN` entries of `cursor`.
-fn first_scan<R: Runtime>(pager: &mut Pager<R>, mut cursor: Cursor) -> Vec<Vec<u8>> {
+fn first_scan<R: Runtime>(pager: &Pager<R>, mut cursor: Cursor) -> Vec<Vec<u8>> {
     let mut found = Vec::new();
     while found.len() < SCAN
         && let Some(e) = cursor.next(pager).expect("scan")
@@ -548,7 +548,7 @@ fn value_level_sum_fields_index_whole_by_tag_and_by_constructor_field() {
     with_pager(23, |rt, pager| {
         let sum = status();
         let row = CtorId(0);
-        let index_for = |pager: &mut Pager<SimRuntime>, owner: u32, how: SumKey| {
+        let index_for = |pager: &Pager<SimRuntime>, owner: u32, how: SumKey| {
             let schema = KeySchema::new(vec![(how.key_type(&sum), Dir::Asc)]);
             Index::create(pager, owner, schema, [row].into()).unwrap()
         };
@@ -914,12 +914,12 @@ fn recover_and(
     files: BTreeMap<String, Vec<u8>>,
     root: Pid,
     at: usize,
-    body: impl FnOnce(&BTree, &mut Pager<SimRuntime>) -> usize + Send,
+    body: impl FnOnce(&BTree, &Pager<SimRuntime>) -> usize + Send,
 ) -> usize {
     let mut replay = Sim::with_files(at as u64, Config::default(), files);
     let mut found = 0;
     let outcome = replay.run(|rt| {
-        let (mut pager, _) = Pager::open(rt, &split_options()).expect("reopen");
+        let (pager, _) = Pager::open(rt, &split_options()).expect("reopen");
         let tree = BTree::open(root, OWNER);
         let entries = tree.verify(&pager).expect("verify the recovered tree");
         let all: Vec<Vec<u8>> = (0..SPLIT_ENTRIES).map(split_entry).collect();
@@ -927,7 +927,7 @@ fn recover_and(
             entries.iter().all(|e| all.contains(e)),
             "flush boundary {at}"
         );
-        found = body(&tree, &mut pager);
+        found = body(&tree, &pager);
         assert_eq!(tree.repair(&pager), Ok(0), "flush boundary {at}");
         assert_eq!(
             tree.verify(&pager).as_ref(),
@@ -939,13 +939,13 @@ fn recover_and(
     found
 }
 
-fn insert_all(tree: &BTree, pager: &mut Pager<SimRuntime>) {
+fn insert_all(tree: &BTree, pager: &Pager<SimRuntime>) {
     for i in 0..SPLIT_ENTRIES {
         tree.insert(pager, &split_entry(i)).expect("insert");
     }
 }
 
-fn repair_and_insert(tree: &BTree, pager: &mut Pager<SimRuntime>) -> usize {
+fn repair_and_insert(tree: &BTree, pager: &Pager<SimRuntime>) -> usize {
     let n = tree.repair(pager).expect("repair");
     insert_all(tree, pager);
     n
