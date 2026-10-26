@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 701
 summary: "the engine has no catalog: no system relations with fixed ids to open a database from"
-branch: adtb-boot
+closed: 2026-10-25
 depends-on:
   - slotted-heap
   - blink-tree
@@ -31,3 +31,7 @@ Prerequisites: `slotted-heap.md`, `blink-tree.md`,
 
 The catalog bootstrap records the page id of the commit log's root
 (`docs/design/mvcc.md` §4.2). Until then, callers keep it themselves.
+
+## 2026-10-25: resolved
+
+Landed as `feat(catalog): create and reopen the bootstrap catalog from the file header`. The pager gained `catalog_root` and `set_catalog_root` (storage.md §2.3). Follow-ups: `catalog-follow-ups.md`, `spec-catalog-bootstrap-gaps.md`.
