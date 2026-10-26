@@ -182,6 +182,8 @@ pager.durable() -> Lsn
 pager.wait_durable(lsn) -> Position                // group commit; the record's commit position
 pager.log_safe_snapshot(position, &snapshot) -> Lsn
 pager.max_threads() -> usize
+pager.catalog_root() -> Pid
+pager.set_catalog_root(pid)
 PageError { pid, damage: Checksum | Unreadable | Stale { expected, found } }
 ```
 
@@ -262,6 +264,11 @@ Postconditions:
   transactions layer encodes it, and the commit position up to which
   it covers commits. Markers are durable like any record; recovery
   ignores them and `verify` lists them.
+- `catalog_root` returns the page the file header names as the
+  catalog's root (§1.2), `Pid(0)` before one is set.
+  `set_catalog_root(pid)` forces the log, then writes and forces a
+  header copy naming `pid`; a crash keeps the old root or the new
+  one, and the new one only with every record logged before the call.
 - When every frame stays latched past the options' stall bound, the
   page-in waiting for a frame panics, reporting a stalled pool.
 - Write-ahead, full-page images and checkpoints (§5.2, §6) are the

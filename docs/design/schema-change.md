@@ -16,6 +16,47 @@ schema change is a write like any other.
 A schema operator runs in a transaction and commits or rolls back with
 the data writes beside it.
 
+Every relation of the `catalog` and `sys` modules is stored as one
+heap per constructor, with an index for its key and for each of its
+uniques. The file header names the catalog's root page
+([storage.md §1.2](storage.md#12-file-header)), and the root page names
+the commit log's root and the heap that holds the root of every other
+heap and index.
+
+```text
+Catalog::create(rt, &pager) -> Result<(Catalog, Transactions), Error>
+Catalog::open(rt, &pager)   -> Result<(Catalog, Transactions), Error>
+catalog.committed_rows(&pager, &txns, relation) -> Result<[(ctor, row)], PageError>
+catalog.plan() -> plan::Catalog
+catalog.inventory(&commit_log) -> verify::Inventory
+catalog::declared(&schema) -> rows by relation
+```
+
+Preconditions:
+
+- `create` is given the pager of a new file with nothing allocated.
+- `open` is given a recovered pager.
+
+Postconditions:
+
+- After `create` returns, the relations of `catalog` hold, as one
+  committed transaction, the rows `declared` gives for the engine's
+  own declarations: a row of `types`, `constructors`, `fields`,
+  `relations` and `indexes` for each such object with a catalog id,
+  keyed by that id; each index's constructor set in `index_ctors`; and
+  every write state in `ctor_states` and `value_states`. Every other
+  relation is empty.
+- `create` sets the file header's catalog root last. A crash before
+  that leaves a header naming no catalog; `open` of such a file frees
+  every page and creates the catalog again. A crash after it keeps the
+  whole catalog.
+- `open` finds every heap and index from the file header alone.
+- `plan` describes every relation of `catalog` and `sys`: a heap for
+  each constructor, no two with one heap id, and each index by its
+  catalog id, the key index among them.
+- `inventory` names every page the catalog allocated, so `verify` over
+  it after `create` or `open` reports nothing.
+
 Rulings: engine/catalog-relations, engine/transactional-ddl
 
 ## 2. Staged states

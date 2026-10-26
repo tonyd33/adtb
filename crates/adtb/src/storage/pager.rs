@@ -962,6 +962,18 @@ impl<R: Runtime> Pager<R> {
         });
     }
 
+    /// Returns the page the file header names as the catalog's root, `Pid(0)` before one is set.
+    pub fn catalog_root(&self) -> Pid {
+        self.header.lock(&self.rt).0.catalog_root
+    }
+
+    /// Force the log, then write and force a header copy naming `root` as the catalog's root.
+    pub fn set_catalog_root(&self, root: Pid) {
+        self.flush_log();
+        self.header.lock(&self.rt).0.catalog_root = root;
+        self.write_header(None);
+    }
+
     pub(crate) fn checkpoint_lsn(&self) -> Lsn {
         self.header.lock(&self.rt).0.checkpoint
     }
