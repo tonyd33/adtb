@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 555
 summary: "every heap write latches its directory root, a conversion can name many store pages in one update, and log verify is never incremental"
-branch: adtb-heapf
+closed: 2026-10-25
 depends-on:
   - vacuum-concurrent
 tags:
@@ -26,3 +26,7 @@ From the concurrent vacuum:
   (a TODO in `docs/design/verify.md`);
 - the engine harness in `crates/adtb-sim/tests/engine/` still wraps
   each heap in its own lock, which is no longer needed.
+
+## 2026-10-25: resolved
+
+Landed as `feat(heap): latch the directory root only for structural changes and count moved values in bounded updates`. Heap-only updates from 4 threads now latch the root 0 times in 240, against 240 before. Follow-ups: `vm-root-race.md`, `latch-bound-overruns.md`.

@@ -5,6 +5,8 @@ kind: feature
 priority: 500
 summary: "milestone 5 (heaps and indexes) has not exited: no heaps, key encoding, B-link trees, vacuum or verify"
 depends-on:
+  - vm-root-race
+  - latch-bound-overruns
   - blink-test-heights
   - blink-follow-ups
   - heap-concurrency-follow-ups
