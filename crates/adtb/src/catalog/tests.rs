@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::evolve::Source;
 use adtb_lang::schema::Schema;
@@ -7,7 +7,10 @@ use crate::key::Value;
 use crate::storage::Pid;
 
 use super::root::Root;
-use super::{Hash, Rows, applied, declared, engine_schema, indexes, layout, oplog, version_hash};
+use super::{
+    Error, HEAP_ROOT, Hash, MIGRATION, Named, Rows, applied, check_order_keys, declared,
+    engine_schema, fold, indexes, layout, oplog, version_hash,
+};
 
 fn engine_rows(schema: &Schema) -> Rows {
     declared(schema, &Source::default())
@@ -428,4 +431,99 @@ fn the_migrations_row_holds_the_version_its_hash_and_its_text() {
         rows
     );
     assert!(applied(&engine_schema(), &Source::default(), 0).is_empty());
+}
+
+#[test]
+fn a_stored_migration_that_does_not_parse_is_not_accepted() {
+    let texts = BTreeMap::from([(1, FIRST.to_string()), (2, "module app\nadd".to_string())]);
+    let Err(Error::Unaccepted(version, why)) = fold(&texts) else {
+        panic!("the log folds")
+    };
+    assert_eq!(2, version);
+    assert!(!why.is_empty());
+}
+
+#[test]
+fn a_stored_migration_that_does_not_apply_is_not_accepted() {
+    let texts = BTreeMap::from([(1, FIRST.to_string()), (2, FIRST.to_string())]);
+    let Err(Error::Unaccepted(version, why)) = fold(&texts) else {
+        panic!("the log folds")
+    };
+    assert_eq!(2, version);
+    assert!(!why.is_empty());
+}
+
+#[test]
+fn a_stored_log_that_applies_folds() {
+    let texts = BTreeMap::from([(1, FIRST.to_string())]);
+    let (source, _) = fold(&texts).expect("the log folds");
+    assert_eq!(1, source.version);
+}
+
+fn sum(ctor: u32, fields: Vec<Value>) -> Vec<Value> {
+    vec![Value::Sum { ctor, fields }]
+}
+
+#[test]
+fn a_roots_row_of_another_shape_is_corrupt() {
+    let rows = [
+        vec![Value::I64(1)],
+        sum(9, vec![Value::I64(1)]),
+        sum(HEAP_ROOT, vec![Value::I64(1)]),
+        sum(MIGRATION, vec![Value::I64(1), Value::I64(2)]),
+        sum(
+            HEAP_ROOT,
+            vec![Value::I64(1), Value::I64(0), Value::I64(-3), Value::I64(7)],
+        ),
+        sum(
+            HEAP_ROOT,
+            vec![
+                Value::I64(1),
+                Value::I64(0),
+                Value::I64(1 << 40),
+                Value::I64(7),
+            ],
+        ),
+        sum(
+            MIGRATION,
+            vec![Value::Text("1".into()), Value::Text("".into())],
+        ),
+    ];
+    for row in rows {
+        let got = Named::default().add(&row);
+        assert!(matches!(got, Err(Error::Corrupt(_))), "{row:?}: {got:?}");
+    }
+}
+
+#[test]
+fn a_roots_row_names_its_structure() {
+    let mut named = Named::default();
+    let row = sum(
+        HEAP_ROOT,
+        vec![Value::I64(1), Value::I64(0), Value::I64(3), Value::I64(7)],
+    );
+    named.add(&row).expect("the row reads");
+    assert_eq!(Some(&(3, Pid(7))), named.heaps.get(&(1, 0)));
+}
+
+#[test]
+fn stored_order_keys_order_every_declared_sum() {
+    let source = migrated(&Source::default(), FIRST);
+    let schema = source.schema().expect("the schema builds");
+    let keys = layout::new_order_keys(&schema, &layout::OrderKeys::new());
+    assert_eq!(Ok(()), check_order_keys(&schema, &keys));
+    let mut missing = keys.clone();
+    missing.pop_last();
+    let got = check_order_keys(&schema, &missing);
+    assert!(matches!(got, Err(Error::Corrupt(_))), "{got:?}");
+    let mut reversed = keys.clone();
+    let ids: Vec<u64> = layout::declared_sums(&schema)
+        .into_iter()
+        .find(|cs| cs.len() > 1)
+        .expect("a sum of two constructors");
+    let (a, b) = (keys[&ids[0]].clone(), keys[&ids[1]].clone());
+    reversed.insert(ids[0], b);
+    reversed.insert(ids[1], a);
+    let got = check_order_keys(&schema, &reversed);
+    assert!(matches!(got, Err(Error::Corrupt(_))), "{got:?}");
 }

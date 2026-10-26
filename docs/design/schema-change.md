@@ -89,10 +89,16 @@ Postconditions:
   not resolve.
 - After a crash during `migrate`, `open` finds either the whole
   migration or none of it, and frees every page the migration
-  allocated if it did not commit.
+  allocated if it did not commit. When a damaged page keeps it from
+  finding those pages, `open` fails with that damage and frees none
+  of them, and a later `open` over the mended page frees them all.
 - `open` finds every heap and index from the file header alone, and
   the schema by folding the stored migrations from the empty schema.
   Heap ids and index order keys are those stored, never computed again.
+- `open` fails with `Error::Corrupt` when a stored page or row does
+  not read as the catalog writes it, and with `Error::Unaccepted`,
+  naming the version, when a stored migration does not parse or apply
+  under the running engine.
 - `rows` returns the rows a snapshot sees.
 - `plan` describes every relation: a heap for each constructor, no two
   with one heap id, and each index by its catalog id, the key index

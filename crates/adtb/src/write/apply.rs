@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
-use std::convert::Infallible;
 
+use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
 use crate::exec::{Val, to_key, to_stored};
@@ -9,6 +9,7 @@ use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Probe, Status, Write, Xid, check_write, probe_unique};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
+use crate::storage::PageError;
 use crate::vacuum;
 
 use super::eval::{Stmt, Violations, pairs, violate, violate_key};
@@ -36,12 +37,8 @@ impl<R: Runtime> Stmt<'_, R> {
         &self.db.heaps[&id].heap
     }
 
-    fn status(&self, x: Xid) -> Result<Status, Infallible> {
-        Ok(self
-            .db
-            .txns
-            .status(&self.db.pager, x)
-            .expect("the commit log of an open database reads"))
+    fn status(&self, x: Xid) -> Result<Status, PageError> {
+        self.db.txns.status(&self.db.pager, x)
     }
 
     fn stored(&self, heap: HeapId, row: &Val) -> Vec<Value> {
@@ -67,7 +64,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 .read(&self.db.pager, tid)?
                 .expect("a version the statement read is there")
                 .header;
-            let Ok(w) = check_write(xid, header.xmax, |x| self.status(x));
+            let w = check_write(xid, header.xmax, |x| self.status(x))?;
             match w {
                 Write::Proceed => {
                     let id = self.heap(heap).id();
@@ -188,6 +185,10 @@ impl<R: Runtime> Stmt<'_, R> {
             }
         }
         for ((r, _), rows) in plus {
+            let rel = self.rel(*r);
+            if rel.generate != Some(Generator::Sequence) || !rel.single_key {
+                continue;
+            }
             for v in rows {
                 if let Val::Int(k) = self.key_of(*r, v) {
                     self.db.advance_sequence(*r, k)?;
@@ -263,13 +264,13 @@ impl<R: Runtime> Stmt<'_, R> {
                     let c = stored.ctors[&e.ctor];
                     let heap = r.ctors[c as usize].heap;
                     for link in hot_run(pager, e.tid, self.heap(heap).id())? {
-                        let Ok(p) = probe_unique(
+                        let p = probe_unique(
                             xid,
                             &self.tx.snapshot,
                             link.header.xmin,
                             link.header.xmax,
                             |x| self.status(x),
-                        );
+                        )?;
                         match p {
                             Probe::Skip => {}
                             Probe::Conflict => conflicts.push((c, heap, link.tid)),

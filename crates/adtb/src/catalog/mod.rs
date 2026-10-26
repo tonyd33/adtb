@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::SystemTime;
 
 use adtb_lang::ast::OperatorKind;
-use adtb_lang::evolve::{Code, Source};
+use adtb_lang::evolve::{Code, Refusal, Source};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Schema};
 use adtb_lang::types::RelId;
@@ -22,7 +22,7 @@ use crate::mvcc::{self, CommitLog, Scope, Snapshot, Status, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
-use crate::verify::{self, Depth, Inventory, Sum};
+use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 
 pub use layout::OrderKeys;
 pub use oplog::{Hash, version_hash};
@@ -55,6 +55,11 @@ pub enum Error {
     Missing(String),
     /// The migration does not apply; each reason.
     Refused(Vec<String>),
+    /// A stored page or row does not read as the catalog writes it; what is wrong.
+    Corrupt(String),
+    /// A stored migration does not parse or apply under this engine; its version and each
+    /// reason.
+    Unaccepted(u64, Vec<String>),
 }
 
 impl From<PageError> for Error {
@@ -141,10 +146,13 @@ fn int(n: u64) -> Value {
     Value::I64(i64::try_from(n).expect("an id fits 63 bits"))
 }
 
-fn uint(v: &Value) -> u64 {
+fn uint(v: &Value) -> Result<u64, Error> {
     match v {
-        Value::I64(n) => u64::try_from(*n).expect("a stored id is not negative"),
-        other => panic!("a roots row holds ids, not {other:?}"),
+        Value::I64(n) => u64::try_from(*n)
+            .map_err(|_| Error::Corrupt(format!("a roots row holds negative id {n}"))),
+        other => Err(Error::Corrupt(format!(
+            "a roots row holds {other:?} for an id"
+        ))),
     }
 }
 
@@ -225,6 +233,41 @@ struct Named {
     migrations: BTreeMap<u64, String>,
 }
 
+impl Named {
+    /// Add what roots row `row` names.
+    fn add(&mut self, row: &[Value]) -> Result<(), Error> {
+        let [Value::Sum { ctor, fields }] = row else {
+            return Err(Error::Corrupt(format!("a roots row is {row:?}")));
+        };
+        match (*ctor, fields.as_slice()) {
+            (HEAP_ROOT, [rel, c, id, at]) => {
+                let id = uint(id)?;
+                let id = u32::try_from(id)
+                    .map_err(|_| Error::Corrupt(format!("heap id {id} is past 32 bits")))?;
+                self.heaps
+                    .insert((uint(rel)?, uint(c)?), (id, Pid(uint(at)?)));
+            }
+            (INDEX_ROOT, [id, at]) => {
+                self.indexes.insert(uint(id)?, Pid(uint(at)?));
+            }
+            (ORDER_KEY, [c, Value::Bytes(key)]) => {
+                let key = OrderKey::new(key.clone())
+                    .ok_or_else(|| Error::Corrupt(format!("order key {key:?} is not valid")))?;
+                self.keys.insert(uint(c)?, key);
+            }
+            (MIGRATION, [version, Value::Text(text)]) => {
+                self.migrations.insert(uint(version)?, text.clone());
+            }
+            (ctor, fields) => {
+                return Err(Error::Corrupt(format!(
+                    "a roots row of constructor {ctor} holds {fields:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Returns what the rows of `roots` that every committed transaction wrote name.
 fn named<R: Runtime>(
     pager: &Pager<R>,
@@ -236,26 +279,7 @@ fn named<R: Runtime>(
     txns.release(id);
     let mut out = Named::default();
     for row in rows? {
-        let [Value::Sum { ctor, fields }] = row.as_slice() else {
-            panic!("a roots row is one sum value")
-        };
-        match (*ctor, fields.as_slice()) {
-            (HEAP_ROOT, [rel, c, id, at]) => {
-                let id = u32::try_from(uint(id)).expect("a heap id fits 32 bits");
-                out.heaps.insert((uint(rel), uint(c)), (id, Pid(uint(at))));
-            }
-            (INDEX_ROOT, [id, at]) => {
-                out.indexes.insert(uint(id), Pid(uint(at)));
-            }
-            (ORDER_KEY, [c, Value::Bytes(key)]) => {
-                let key = OrderKey::new(key.clone()).expect("a stored order key is valid");
-                out.keys.insert(uint(c), key);
-            }
-            (MIGRATION, [version, Value::Text(text)]) => {
-                out.migrations.insert(uint(version), text.clone());
-            }
-            _ => panic!("a roots row names a heap, an index, an order key or a migration"),
-        }
+        out.add(&row)?;
     }
     Ok(out)
 }
@@ -278,18 +302,68 @@ fn visible<R: Runtime>(
     Ok(out)
 }
 
-/// Returns the source the migrations `texts` fold to, in version order from the empty schema.
-fn fold(texts: &BTreeMap<u64, String>) -> Source {
+/// Returns the source the migrations `texts` fold to, in version order from the empty schema,
+/// and its schema.
+fn fold(texts: &BTreeMap<u64, String>) -> Result<(Source, Schema), Error> {
     let mut source = Source::default();
-    for (version, text) in texts {
+    for (&version, text) in texts {
+        let refused = |why: Vec<String>| Error::Unaccepted(version, why);
         let file = parse_migration(text, Options::default())
             .ok()
-            .unwrap_or_else(|ds| panic!("stored migration {version} does not parse: {ds:?}"));
+            .map_err(|ds| refused(ds.into_iter().map(|d| d.message).collect()))?;
         source = source
             .migrate(&file, text)
-            .unwrap_or_else(|r| panic!("stored migration {version} does not apply: {r:?}"));
+            .map_err(|r| refused(reasons(r)))?;
     }
-    source
+    let schema = source.schema().map_err(|ds| {
+        Error::Unaccepted(
+            source.version,
+            ds.into_iter().map(|d| d.diag.message).collect(),
+        )
+    })?;
+    Ok((source, schema))
+}
+
+/// Returns whether `keys` holds an order key for each constructor of every declared sum of
+/// `schema`, rising in declaration order.
+fn check_order_keys(schema: &Schema, keys: &OrderKeys) -> Result<(), Error> {
+    for cs in layout::declared_sums(schema) {
+        let mut last: Option<&OrderKey> = None;
+        for id in cs {
+            let Some(key) = keys.get(&id) else {
+                return Err(Error::Corrupt(format!(
+                    "constructor {id} has no stored order key"
+                )));
+            };
+            if last.is_some_and(|l| l >= key) {
+                return Err(Error::Corrupt(format!(
+                    "the order key of constructor {id} does not follow the one before it"
+                )));
+            }
+            last = Some(key);
+        }
+    }
+    Ok(())
+}
+
+/// Returns the message of each operator `r` refuses, then of each file its recheck refuses.
+fn reasons(r: Refusal) -> Vec<String> {
+    let ops = r.operators.into_iter().map(|d| d.message);
+    ops.chain(r.recheck.into_iter().map(|d| d.diag.message))
+        .collect()
+}
+
+/// Returns the failure that stops `report` finding every leaked page: the first damaged page,
+/// or else each structure it could not read whole.
+fn unfinished(report: &Report) -> Error {
+    let damaged = report.findings.iter().find_map(|f| match f.problem {
+        Problem::Damaged(damage) => Some(PageError { pid: f.pid, damage }),
+        _ => None,
+    });
+    match damaged {
+        Some(e) => Error::Page(e),
+        None => Error::Corrupt(format!("{:?}", report.findings)),
+    }
 }
 
 /// Returns why the catalog cannot record the last migration of `source`: its operators that do
@@ -412,6 +486,11 @@ impl Catalog {
     /// page freed, and its catalog created again; a file whose header names no catalog has
     /// every page freed first. A schema change that did not commit has every page it allocated
     /// freed.
+    ///
+    /// Fails with [`Error::Corrupt`] if a stored page or row does not read as the catalog writes
+    /// it, and with [`Error::Unaccepted`] if a stored migration does not parse or apply under
+    /// this engine. Fails with the damage found if a schema change that did not commit cannot
+    /// have its pages found, leaving it for the next open to free.
     pub fn open<R: Runtime>(rt: R, pager: &Pager<R>) -> Result<(Catalog, Transactions<R>), Error> {
         let pid = pager.catalog_root();
         if pid == Pid(0) {
@@ -422,11 +501,12 @@ impl Catalog {
         }
         let root = {
             let page = pager.read(pid)?;
-            assert_eq!(
-                (PageKind::Catalog as u16, root::FORMAT),
-                (storage::kind(&page), storage::format(&page)),
-                "the header's catalog root {pid:?} is a catalog root page"
-            );
+            let found = (storage::kind(&page), storage::format(&page));
+            if found != (PageKind::Catalog as u16, root::FORMAT) {
+                return Err(Error::Corrupt(format!(
+                    "the header's catalog root {pid:?} has kind and format {found:?}"
+                )));
+            }
             Root::read(&page)
         };
         let txns = Transactions::open(rt, pager, root.commit_log)?;
@@ -449,8 +529,8 @@ impl Catalog {
         let large = LargeStore::open(root.large.0, root.large.1);
         let roots = Heap::open(pager, root.roots.0, root.roots.1, roots_row(), large)?;
         let named = named(pager, &txns, &roots)?;
-        let source = fold(&named.migrations);
-        let schema = source.schema().expect("a folded log builds");
+        let (source, schema) = fold(&named.migrations)?;
+        check_order_keys(&schema, &named.keys)?;
         let mut heaps = BTreeMap::new();
         for (r, c) in ctor_relations(&schema) {
             let rid = schema.ids.relations[&r];
@@ -491,10 +571,11 @@ impl Catalog {
                     let clog = txns.commit_log();
                     verify::verify_with(pager, &catalog.inventory(&clog), Depth::STRUCTURE)
                 };
-                if report.complete {
-                    for p in report.leaked() {
-                        pager.free(p)?;
-                    }
+                if !report.complete {
+                    return Err(unfinished(&report));
+                }
+                for p in report.leaked() {
+                    pager.free(p)?;
                 }
             }
             update_root(pager, pid, |r| r.changing = 0)?;
@@ -542,13 +623,7 @@ impl Catalog {
         }
         let next = match self.source.migrate(&file, text) {
             Ok(s) => s,
-            Err(r) => {
-                let ops = r.operators.into_iter().map(|d| d.message);
-                return refused(
-                    ops.chain(r.recheck.into_iter().map(|d| d.diag.message))
-                        .collect(),
-                );
-            }
+            Err(r) => return refused(reasons(r)),
         };
         let schema = next.schema().expect("an applied migration builds");
         let over: Vec<String> = schema

@@ -11,6 +11,9 @@ mod common;
 
 mod support;
 
+#[path = "common/mod.rs"]
+mod device;
+
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{self, AssertUnwindSafe};
@@ -1316,4 +1319,114 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
         );
     }
     assert!(crashed > 0, "no run crashed after acknowledging a commit");
+}
+
+/// Begin a transaction, have a second one run `s` and commit, then damage the commit log page
+/// holding the second's status on the device, evict it, and run `s` in the first. Returns the
+/// damaged page and how the first's statement ended.
+fn behind_a_damaged_commit_log(
+    seed: u64,
+    text: &str,
+    over_t: bool,
+) -> (adtb::storage::Pid, Result<(), String>) {
+    use adtb::runtime::Runtime;
+    use adtb::storage::Pid;
+    let f = shop();
+    let catalog = Arc::new(planfix::catalog(&f.schema, &f.program));
+    let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
+    let schema = Arc::new(f.schema.clone());
+    let s = prep(&f, text, over_t);
+    let mut out = None;
+    let mut sim = Sim::new(seed, Config::default());
+    let result = sim.run(|rt| {
+        let world = World {
+            schema: &f.schema,
+            catalog: &catalog,
+            db: &f.db,
+        };
+        let d = Db::load_with(&rt, &world, false);
+        let status = d.txns.commit_log().status_pages()[&0];
+        let db = database(&rt, d, &schema, &normal, &catalog, None, None);
+        let params: Vec<(Var, Val)> = s.t.map(|v| (v, Val::text("x"))).into_iter().collect();
+        let first = db.begin().expect("a transaction");
+        let second = db.begin().expect("a transaction");
+        db.statement(&second, &s.p.terms, s.p.item, &params, 0)
+            .expect("the second statement");
+        db.commit(second).expect("the second commits");
+        let pager = db.pager().clone();
+        pager.flush_log();
+        pager.flush_pages(usize::MAX);
+        for p in 0..4096 {
+            pager.read(Pid(1 << 16 | p)).expect("a page never written");
+        }
+        let mut io = rt.io();
+        let (file, _) = device::open(&rt, &mut io, "app.adt", false).expect("the data file");
+        let at = status.0 * support::PAGE as u64;
+        device::write(&rt, &mut io, file, at, &[0xa5; support::PAGE]).expect("a write");
+        device::sync(&rt, &mut io, file).expect("a sync");
+        let ended = db.statement(&first, &s.p.terms, s.p.item, &params, 0);
+        out = Some((status, ended.map(|_| ()).map_err(|e| format!("{e:?}"))));
+    });
+    assert_eq!(Outcome::Finished, result, "seed {seed}");
+    out.expect("the run finished")
+}
+
+#[test]
+fn a_write_meeting_a_damaged_commit_log_fails_the_statement() {
+    for seed in 0..2 {
+        let (status, ended) = behind_a_damaged_commit_log(seed, INC, false);
+        let e = ended.expect_err("the status does not read");
+        let want = format!("Page(PageError {{ pid: {status:?}");
+        assert!(
+            e.starts_with(&want),
+            "seed {seed}: the update failed by {e}"
+        );
+    }
+}
+
+#[test]
+fn a_unique_probe_meeting_a_damaged_commit_log_fails_the_statement() {
+    for seed in 0..2 {
+        let (status, ended) = behind_a_damaged_commit_log(seed, "insert tags { name: t }", true);
+        let e = ended.expect_err("the status does not read");
+        let want = format!("Page(PageError {{ pid: {status:?}");
+        assert!(
+            e.starts_with(&want),
+            "seed {seed}: the insert failed by {e}"
+        );
+    }
+}
+
+#[test]
+fn only_a_sequence_key_has_a_counter() {
+    use adtb::storage::HEADER_LEN;
+    let f = Fixture::new(
+        "type Item = { id: I64, n: I64 }
+relation items : Item key id
+type Label = { id: Key tags, name: Text }
+relation tags : Label key id generate sequence",
+    );
+    let catalog = Arc::new(planfix::catalog(&f.schema, &f.program));
+    let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
+    let schema = Arc::new(f.schema.clone());
+    let item = prep(&f, "insert items { id: 7, n: 0 }", false);
+    let tag = prep(&f, "insert tags { name: \"a\" }", false);
+    let mut counters = None;
+    let mut sim = Sim::new(0, Config::default());
+    let result = sim.run(|rt| {
+        let world = World {
+            schema: &f.schema,
+            catalog: &catalog,
+            db: &f.db,
+        };
+        let d = Db::load_with(&rt, &world, false);
+        let db = database(&rt, d, &schema, &normal, &catalog, None, None);
+        run_txn(&db, &schema, &item, "").expect("the item commits");
+        run_txn(&db, &schema, &tag, "").expect("the tag commits");
+        let page = db.pager().read(db.sequences_root()).expect("the counters");
+        let n = &page[HEADER_LEN..HEADER_LEN + 4];
+        counters = Some(u32::from_le_bytes(n.try_into().expect("4 bytes")));
+    });
+    assert_eq!(Outcome::Finished, result);
+    assert_eq!(Some(1), counters, "only tags has a counter");
 }

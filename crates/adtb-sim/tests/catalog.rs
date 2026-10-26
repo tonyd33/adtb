@@ -682,3 +682,86 @@ fn a_function_naming_a_wasm_module_no_migration_installs_is_refused() {
     });
     assert_eq!(Outcome::Finished, outcome);
 }
+
+/// Returns `files` with page `pid` of the data file damaged.
+fn damage(mut files: BTreeMap<String, Vec<u8>>, pid: Pid) -> BTreeMap<String, Vec<u8>> {
+    let data = files.get_mut("app.adt").expect("the data file");
+    data[pid.0 as usize * PAGE + PAGE / 2] ^= 0xff;
+    files
+}
+
+/// Returns `files` with page `pid` of the data file as `from` holds it.
+fn restore(
+    mut files: BTreeMap<String, Vec<u8>>,
+    from: &BTreeMap<String, Vec<u8>>,
+    pid: Pid,
+) -> BTreeMap<String, Vec<u8>> {
+    let at = pid.0 as usize * PAGE..(pid.0 as usize + 1) * PAGE;
+    let data = files.get_mut("app.adt").expect("the data file");
+    data[at.clone()].copy_from_slice(&from["app.adt"][at]);
+    files
+}
+
+/// Returns the files of `files` once recovered, with every page written and checkpointed.
+fn recovered(seed: u64, files: BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
+    let mut sim = Sim::with_files(seed, Config::default(), files);
+    let outcome = sim.run(|rt| {
+        let (pager, _) = Pager::open(rt, &options()).expect("reopen");
+        pager.flush_log();
+        pager.flush_pages(usize::MAX);
+        pager.checkpoint();
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    sim.files()
+}
+
+/// Returns whether opening the catalog of `files` frees pages an unfinished migration
+/// allocated, with the root of the key index of `catalog::constructors`, which open does not
+/// read.
+fn frees_a_migration(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, Pid) {
+    let mut sim = Sim::with_files(seed, Config::default(), files);
+    let mut out = None;
+    let outcome = sim.run(|rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+        let before = pager.allocated().expect("the bitmaps").len();
+        let (catalog, _) = Catalog::open(rt, &pager).expect("the catalog opens");
+        let after = pager.allocated().expect("the bitmaps").len();
+        let constructors = rel(&catalog, "catalog", "constructors");
+        let key = catalog.plan().relations[&constructors].key_index;
+        let frees = catalog.source().version == 0 && after < before;
+        out = Some((frees, catalog.index_of(key.0).tree().root()));
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    out.expect("the run finished")
+}
+
+#[test]
+fn an_unfinished_migration_over_a_damaged_page_is_freed_once_the_page_reads() {
+    let seed = 19;
+    let (sim, start) = migrated(seed);
+    let recording = sim.recording();
+    let n = recording.len();
+    for at in (start..n).rev().step_by((n - start).div_ceil(20)) {
+        let files = recovered(seed, recording.images(at, 1, seed).swap_remove(0));
+        let (frees, pid) = frees_a_migration(seed, files.clone());
+        if !frees {
+            continue;
+        }
+        let mut sim = Sim::with_files(seed, Config::default(), damage(files.clone(), pid));
+        let outcome = sim.run(|rt| {
+            let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+            let e = Catalog::open(rt, &pager).expect_err("the migration's pages are not found");
+            let Error::Page(e) = e else {
+                panic!("at {at}: the open failed by {e:?}")
+            };
+            assert_eq!(pid, e.pid, "at {at}");
+        });
+        assert_eq!(Outcome::Finished, outcome, "at {at}");
+        let mended = restore(sim.files(), &files, pid);
+        let mut sim = Sim::with_files(seed, Config::default(), mended);
+        let outcome = sim.run(|rt| assert_eq!((true, 0), check_reopened(rt), "at {at}"));
+        assert_eq!(Outcome::Finished, outcome, "at {at}");
+        return;
+    }
+    panic!("no crash point leaves a migration to free");
+}

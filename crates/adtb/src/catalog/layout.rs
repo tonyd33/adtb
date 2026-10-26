@@ -25,21 +25,31 @@ pub type OrderKeys = BTreeMap<u64, OrderKey>;
 /// Returns order keys spread over the constructors of each declared sum of `schema` that `keys`
 /// holds none for, in declaration order.
 pub fn new_order_keys(schema: &Schema, keys: &OrderKeys) -> OrderKeys {
+    let mut out = OrderKeys::new();
+    for cs in declared_sums(schema) {
+        if cs.iter().any(|id| keys.contains_key(id)) {
+            continue;
+        }
+        out.extend(cs.iter().copied().zip(OrderKey::spread(cs.len())));
+    }
+    out
+}
+
+/// Returns the catalog ids of the constructors of each declared sum of `schema`, in declaration
+/// order.
+pub fn declared_sums(schema: &Schema) -> Vec<Vec<u64>> {
     let mut sums: BTreeMap<TypeId, Vec<(u32, u64)>> = BTreeMap::new();
     for (&(def, k), &id) in &schema.ids.ctors {
         if matches!(schema.ty(def).kind, TypeDefKind::Sum { record: false, .. }) {
             sums.entry(def).or_default().push((k, id));
         }
     }
-    let mut out = OrderKeys::new();
-    for mut cs in sums.into_values() {
-        if cs.iter().any(|(_, id)| keys.contains_key(id)) {
-            continue;
-        }
-        cs.sort_unstable();
-        out.extend(cs.iter().map(|(_, id)| *id).zip(OrderKey::spread(cs.len())));
-    }
-    out
+    sums.into_values()
+        .map(|mut cs| {
+            cs.sort_unstable();
+            cs.into_iter().map(|(_, id)| id).collect()
+        })
+        .collect()
 }
 
 /// Returns the constructors of the sum `ty`, each with its catalog id and its fields, the header
