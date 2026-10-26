@@ -3,6 +3,7 @@ mod check;
 mod eval;
 mod fresh;
 mod schema;
+mod sequence;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -21,11 +22,12 @@ use crate::mvcc::{
 };
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager};
+use crate::storage::{PageError, Pager, Pid};
 
 pub use adtb_lang::schema::Stage;
 
 use schema::Rels;
+use sequence::Sequences;
 
 /// Why a statement was rejected.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,10 +53,16 @@ pub enum Rejection {
     UserError {
         message: String,
     },
+    /// A record of the statement's source failed: record `line` of relation `source`, or `""`
+    /// and 0 when the source is not one relation.
+    BadInput {
+        source: String,
+        line: i64,
+        detail: String,
+    },
 }
 
-/// Why a statement or a commit failed. Every failure of a statement leaves its transaction to be
-/// aborted.
+/// Why a statement or a commit failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Rejected(Rejection),
@@ -67,6 +75,16 @@ pub enum Error {
     Corrupt(String),
     /// The statement needs a form the engine does not run yet.
     Unsupported(String),
+}
+
+impl Error {
+    /// Returns whether the failure ends the transaction: the caller must abort it.
+    pub fn ends_transaction(&self) -> bool {
+        matches!(
+            self,
+            Error::Serialization(_) | Error::Page(_) | Error::Transactions(_) | Error::Corrupt(_)
+        )
+    }
 }
 
 impl From<PageError> for Error {
@@ -116,6 +134,11 @@ impl From<exec::Error> for Error {
             exec::Error::Page(p) => Error::Page(p),
             exec::Error::Corrupt(c) => Error::Corrupt(c),
             exec::Error::Unsupported(u) => Error::Unsupported(u),
+            exec::Error::Rejected(detail) => Error::Rejected(Rejection::BadInput {
+                source: String::new(),
+                line: 0,
+                detail,
+            }),
             exec::Error::NoCaller => Error::Unsupported("`caller` in a statement".into()),
             exec::Error::Cancelled => Error::Unsupported("a cancelled statement".into()),
         }
@@ -180,8 +203,7 @@ pub struct Database<R: Runtime> {
     latches: BTreeMap<IndexId, Lock<()>>,
     rels: Rels,
     denials: Vec<check::Denial>,
-    /// The next value of each relation's `sequence`, once read.
-    sequences: Lock<BTreeMap<RelId, i64>>,
+    sequences: Lock<Sequences>,
     uuids: AtomicU64,
     budget: Arc<Budget>,
     pool: Option<Arc<Scheduler<R>>>,
@@ -213,6 +235,9 @@ pub struct Setup<R: Runtime> {
     pub pool: Option<Arc<Scheduler<R>>>,
     pub options: exec::Options,
     pub limits: Limits,
+    /// The page of the database's generated counters, or `None` to allocate one and start each
+    /// `sequence` past the keys its relation holds.
+    pub sequences: Option<Pid>,
 }
 
 impl<R: Runtime> Database<R> {
@@ -234,23 +259,30 @@ impl<R: Runtime> Database<R> {
             .collect();
         let denials = check::denials(&setup.schema, &setup.normal, &mut program);
         let rels = schema::rels(&setup.schema, &setup.normal, &setup.catalog)?;
-        let mut sequences = BTreeMap::new();
-        for r in rels.values() {
-            if r.generate != Some(adtb_lang::schema::Generator::Sequence) || !r.single_key {
-                continue;
+        let sequences = match setup.sequences {
+            Some(pid) => Sequences::open(&setup.pager, pid)?,
+            None => {
+                let pid = Sequences::create(&setup.pager)?;
+                let mut seqs = Sequences::open(&setup.pager, pid)?;
+                for r in rels.values() {
+                    if r.generate != Some(adtb_lang::schema::Generator::Sequence) || !r.single_key {
+                        continue;
+                    }
+                    let index = &setup.bindings.indexes[&r.key_index].index;
+                    let held = index
+                        .scan_prefix(&setup.pager, &[])?
+                        .into_iter()
+                        .filter_map(|e| match e.key.first() {
+                            Some(crate::key::Value::I64(k)) => Some(*k),
+                            _ => None,
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    seqs.advance(&setup.pager, r.id.0, held)?;
+                }
+                seqs
             }
-            let index = &setup.bindings.indexes[&r.key_index].index;
-            let held = index
-                .scan_prefix(&setup.pager, &[])?
-                .into_iter()
-                .filter_map(|e| match e.key.first() {
-                    Some(crate::key::Value::I64(k)) => Some(*k),
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0);
-            sequences.insert(r.id, held + 1);
-        }
+        };
         let latches = setup
             .bindings
             .indexes
@@ -308,7 +340,8 @@ impl<R: Runtime> Database<R> {
     /// variable of `params` bound to its value. `clock` is the instant, in microseconds, every
     /// `generate clock` of the statement takes.
     ///
-    /// On `Err`, the statement's writes may be partly in its heaps; abort `tx`.
+    /// On an `Err` that [ends the transaction](Error::ends_transaction), abort `tx`. On any other
+    /// `Err` the statement has no effect and `tx` goes on.
     pub fn statement(
         &self,
         tx: &Txn,
@@ -318,7 +351,13 @@ impl<R: Runtime> Database<R> {
         clock: i64,
     ) -> Result<Outcome, Error> {
         let s = eval::Stmt::new(self, tx, terms, t, clock);
-        s.run(params)
+        match s.run(params) {
+            Err(e) if !e.ends_transaction() => {
+                s.undo()?;
+                Err(e)
+            }
+            done => done,
+        }
     }
 
     /// Returns every row of every relation variable the catalog describes, as `tx` reads them.
@@ -373,20 +412,29 @@ impl<R: Runtime> Database<R> {
         self.waits.ended(tx.xid);
     }
 
+    /// Returns the page of the database's generated counters, for [`Setup::sequences`] when
+    /// it is opened again.
+    pub fn sequences_root(&self) -> Pid {
+        self.sequences.lock(&self.rt).root()
+    }
+
     /// Returns the next value of `rel`'s sequence.
-    fn next_sequence(&self, rel: RelId) -> i64 {
-        let mut s = self.sequences.lock(&self.rt);
-        let n = s.entry(rel).or_insert(1);
-        let v = *n;
-        *n += 1;
-        v
+    fn next_sequence(&self, rel: RelId) -> Result<i64, Error> {
+        self.sequences.lock(&self.rt).draw(&self.pager, rel.0, 1)
     }
 
     /// Advance `rel`'s sequence past `held`, a key a row of it holds.
-    fn advance_sequence(&self, rel: RelId, held: i64) {
-        if let Some(n) = self.sequences.lock(&self.rt).get_mut(&rel) {
-            *n = (*n).max(held.saturating_add(1));
-        }
+    fn advance_sequence(&self, rel: RelId, held: i64) -> Result<(), Error> {
+        self.sequences
+            .lock(&self.rt)
+            .advance(&self.pager, rel.0, held)
+    }
+
+    /// Returns a `load` value never issued before and greater than `held`.
+    fn next_load(&self, held: i64) -> Result<i64, Error> {
+        self.sequences
+            .lock(&self.rt)
+            .draw(&self.pager, sequence::LOADS, held.saturating_add(1))
     }
 
     fn store(&self, tx: &Txn) -> Arc<exec::Store<R>> {

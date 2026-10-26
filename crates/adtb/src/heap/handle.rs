@@ -1039,6 +1039,17 @@ impl Heap {
         Ok(())
     }
 
+    /// Clear the deleter of the version at `at`: its `xmax`, `next` and successor flags.
+    ///
+    /// Preconditions: the version's deleter is the caller's running transaction, and the
+    /// successor it wrote, if any, is deleted by that transaction too.
+    pub fn restore<R: Runtime>(&self, pager: &Pager<R>, at: Tid) -> Result<(), Error> {
+        let mut stage = Stage::new();
+        self.supersede(&mut stage, pager, at, 0, None, Flags::NONE)?;
+        stage.commit(pager)?;
+        Ok(())
+    }
+
     /// Move the row whose version is at `at` into heap `to` as `row`, written by `xid`. Returns
     /// the new version's TID.
     ///

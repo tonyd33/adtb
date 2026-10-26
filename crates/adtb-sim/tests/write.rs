@@ -210,7 +210,7 @@ fn at(clock: i64, text: &str) -> Step {
     }
 }
 
-/// A sequence of statements over one database, each its own transaction.
+/// A sequence of statements over one database.
 struct Case {
     name: &'static str,
     fixture: fn() -> Fixture,
@@ -317,6 +317,13 @@ fn engine_error(schema: &Schema, e: &write::Error) -> Failed {
             }
             WRejection::NotOpen { ctor, stage } => plain(format!("NotOpen {ctor} {stage:?}")),
             WRejection::UserError { message } => plain(format!("UserError {message}")),
+            WRejection::BadInput {
+                source,
+                line,
+                detail,
+            } => plain(format!(
+                "BadInput {{ source: {source:?}, line: {line}, detail: {detail:?} }}"
+            )),
         },
         other => plain(format!("{other:?}")),
     }
@@ -379,7 +386,15 @@ fn reference(case: &Case) -> Outcomes {
     (out, erase_db(&f.db))
 }
 
-fn engine(seed: u64, case: &Case, workers: usize) -> Outcomes {
+/// How the engine runs a case: on `workers` morsel workers, or on the calling thread when 0;
+/// each statement its own transaction, or with `one` every statement in one transaction.
+#[derive(Clone, Copy, Debug)]
+struct Mode {
+    workers: usize,
+    one: bool,
+}
+
+fn engine(seed: u64, case: &Case, mode: Mode) -> Outcomes {
     let f = (case.fixture)();
     let catalog = Arc::new(planfix::catalog(&f.schema, &f.program));
     let normal: Arc<NormalProgram> =
@@ -390,7 +405,7 @@ fn engine(seed: u64, case: &Case, workers: usize) -> Outcomes {
     let mut sim = Sim::new(seed, Config::default());
     let result = sim.run(|rt| {
         got = Some(run_engine(
-            &rt, &f, &schema, &normal, &catalog, &prepared, workers,
+            &rt, &f, &schema, &normal, &catalog, &prepared, mode,
         ));
     });
     assert_eq!(Outcome::Finished, result);
@@ -404,7 +419,7 @@ fn run_engine(
     normal: &Arc<NormalProgram>,
     catalog: &Arc<Catalog>,
     prepared: &[Prepared],
-    workers: usize,
+    mode: Mode,
 ) -> Outcomes {
     let world = World {
         schema: &f.schema,
@@ -412,25 +427,33 @@ fn run_engine(
         db: &f.db,
     };
     let d = Db::load_with(rt, &world, false);
-    let pool = (workers > 0).then(|| Scheduler::start(rt.clone(), workers));
-    let db = database(rt, d, schema, normal, catalog, pool.clone());
+    let pool = (mode.workers > 0).then(|| Scheduler::start(rt.clone(), mode.workers));
+    let db = database(rt, d, schema, normal, catalog, pool.clone(), None);
     let mut out = Vec::new();
+    let mut open = None;
     for p in prepared {
-        let tx = db.begin().expect("a transaction");
-        match db.statement(&tx, &p.terms, p.item, &p.params, p.clock) {
-            Ok(o) => {
-                db.commit(tx).expect("a commit");
-                out.push(Ok(Got {
-                    result: o.result,
-                    inserted: o.inserted,
-                    deleted: o.deleted,
-                }));
-            }
-            Err(e) => {
-                db.abort(tx);
-                out.push(Err(engine_error(schema, &e)));
-            }
+        let tx = match open.take() {
+            Some(tx) => tx,
+            None => db.begin().expect("a transaction"),
+        };
+        let got = db.statement(&tx, &p.terms, p.item, &p.params, p.clock);
+        out.push(match &got {
+            Ok(o) => Ok(Got {
+                result: o.result.clone(),
+                inserted: o.inserted.clone(),
+                deleted: o.deleted.clone(),
+            }),
+            Err(e) => Err(engine_error(schema, e)),
+        });
+        match got {
+            Err(e) if e.ends_transaction() => db.abort(tx),
+            _ if mode.one => open = Some(tx),
+            Ok(_) => db.commit(tx).expect("a commit"),
+            Err(_) => db.abort(tx),
         }
+    }
+    if let Some(tx) = open {
+        db.commit(tx).expect("a commit");
     }
     let tx = db.begin().expect("a transaction");
     let rows = db.rows(&tx).expect("the rows");
@@ -448,6 +471,7 @@ fn database(
     normal: &Arc<NormalProgram>,
     catalog: &Arc<Catalog>,
     pool: Option<Arc<Scheduler<SimRuntime>>>,
+    sequences: Option<adtb::storage::Pid>,
 ) -> Database<SimRuntime> {
     let (pager, txns, heaps, indexes) = d.bindings();
     Database::new(
@@ -464,6 +488,7 @@ fn database(
             pool,
             options: exec::Options::default(),
             limits: Limits::default(),
+            sequences,
         },
     )
     .expect("a database over the fixture")
@@ -867,13 +892,13 @@ fn cases() -> Vec<Case> {
     ]
 }
 
-fn check_all(seeds: std::ops::Range<u64>, workers: usize) {
+fn check_all(seeds: std::ops::Range<u64>, mode: Mode) {
     let mut bad = Vec::new();
     let all = cases();
     for case in &all {
         let want = reference(case);
         for seed in seeds.clone() {
-            let got = engine(seed, case, workers);
+            let got = engine(seed, case, mode);
             if let Err(d) = agree(case, &want, &got) {
                 bad.push(format!("seed {seed}: {d}"));
             }
@@ -890,12 +915,35 @@ fn check_all(seeds: std::ops::Range<u64>, workers: usize) {
 
 #[test]
 fn every_write_example_agrees_with_the_reference() {
-    check_all(1..2, 0);
+    check_all(
+        1..2,
+        Mode {
+            workers: 0,
+            one: false,
+        },
+    );
+}
+
+#[test]
+fn write_examples_in_one_transaction_agree_and_failed_statements_leave_no_effect() {
+    check_all(
+        1..2,
+        Mode {
+            workers: 0,
+            one: true,
+        },
+    );
 }
 
 #[test]
 fn write_examples_on_several_workers_agree_for_every_seed() {
-    check_all(0..3, 3);
+    check_all(
+        0..3,
+        Mode {
+            workers: 3,
+            one: false,
+        },
+    );
 }
 
 const SHOP: &str = "type Counter = { id: Key counters, n: I64 }
@@ -914,6 +962,10 @@ const INC: &str =
 const TAG: &str = "transact let x = insert tags { name: t } return key x";
 const UPSERT: &str = "insert tags { name: t } unless conflict on (name) else update old set old";
 const DROP: &str = "delete g in tags where g.name == t";
+const FAILING: &str =
+    "(update c in counters where key c == counters.key(1) set Counter { c with n: c.n + 1 },
+  insert tags { name: \"twice\" },
+  insert tags { name: \"twice\" })";
 
 /// A prepared statement over parameter `t`, if it has one.
 struct Prep {
@@ -946,17 +998,46 @@ fn run_txn(
     s: &Prep,
     name: &str,
 ) -> Result<Val, String> {
+    run_txn_with(db, schema, s, name, None, &mut |_| {})
+}
+
+/// Run `s` over `name` in a transaction, then `failing`, a statement that must fail and leave
+/// the transaction open, then commit. `seen` gets `s`'s result before the commit.
+fn run_txn_with(
+    db: &Database<SimRuntime>,
+    schema: &Schema,
+    s: &Prep,
+    name: &str,
+    failing: Option<&Prep>,
+    seen: &mut dyn FnMut(&Val),
+) -> Result<Val, String> {
+    let fail = |tx, e: &adtb::write::Error| {
+        db.abort(tx);
+        Err(format!("{:?}", engine_error(schema, e)))
+    };
     let tx = db.begin().map_err(|e| format!("{e:?}"))?;
     let params: Vec<(Var, Val)> = s.t.map(|v| (v, Val::text(name))).into_iter().collect();
-    match db.statement(&tx, &s.p.terms, s.p.item, &params, 0) {
-        Ok(o) => db
-            .commit(tx)
-            .map(|()| o.result)
-            .map_err(|e| format!("{:?}", engine_error(schema, &e))),
-        Err(e) => {
-            db.abort(tx);
-            Err(format!("{:?}", engine_error(schema, &e)))
+    let result = match db.statement(&tx, &s.p.terms, s.p.item, &params, 0) {
+        Ok(o) => o.result,
+        Err(e) => return fail(tx, &e),
+    };
+    seen(&result);
+    if let Some(f) = failing {
+        match db.statement(&tx, &f.p.terms, f.p.item, &[], 0) {
+            Ok(_) => panic!("a failing statement succeeded"),
+            Err(e) if e.ends_transaction() => return fail(tx, &e),
+            Err(e) => {
+                let e = format!("{:?}", engine_error(schema, &e));
+                assert!(
+                    e.contains("Violated app::tags.unique(name) in Label"),
+                    "the failing statement failed by {e}"
+                );
+            }
         }
+    }
+    match db.commit(tx) {
+        Ok(()) => Ok(result),
+        Err(e) => Err(format!("{:?}", engine_error(schema, &e))),
     }
 }
 
@@ -976,6 +1057,7 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
         prep(&f, UPSERT),
         prep(&f, DROP),
     ]);
+    let failing = Arc::new(prep(&f, FAILING));
     let mut commits = 0;
     for seed in 0..4 {
         let mut sim = Sim::new(seed, Config::default());
@@ -989,21 +1071,24 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
                 db: &f.db,
             };
             let d = Db::load_with(&rt, &world, false);
-            let db = Arc::new(database(&rt, d, &schema, &normal, &catalog, None));
+            let db = Arc::new(database(&rt, d, &schema, &normal, &catalog, None, None));
             let clients: Vec<_> = (0..4)
                 .map(|c| {
-                    let (db, rt2, preps, done, schema) = (
+                    let (db, rt2, preps, done, schema, failing) = (
                         db.clone(),
                         rt.clone(),
                         preps.clone(),
                         done.clone(),
                         schema.clone(),
+                        failing.clone(),
                     );
                     rt.spawn(&format!("client {c}"), move || {
                         for _ in 0..6 {
                             let op = (rt2.next_u64() % 4) as usize;
                             let name = ["a", "b", "c"][(rt2.next_u64() % 3) as usize].to_string();
-                            let result = run_txn(&db, &schema, &preps[op], &name);
+                            let also = (rt2.next_u64() % 2 == 0).then_some(failing.as_ref());
+                            let result =
+                                run_txn_with(&db, &schema, &preps[op], &name, also, &mut |_| {});
                             done.lock().unwrap().push(Done { op, result });
                         }
                     })
@@ -1085,28 +1170,34 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
                 roots: &Slot<Option<support::Roots>>,
                 acked: &Slot<BTreeMap<String, Val>>,
                 submitted: &Slot<BTreeSet<String>>,
+                drawn: &Slot<BTreeSet<Val>>,
                 started: &Slot<Option<u64>>| {
-        let (d, r) = Db::build(rt, &world, None).expect("a new database");
+        let (d, mut r) = Db::build(rt, &world, None).expect("a new database");
+        let db = Arc::new(database(rt, d, &schema, &normal, &catalog, None, None));
+        r.sequences = Some(db.sequences_root());
         *roots.lock().unwrap() = Some(r);
-        let db = Arc::new(database(rt, d, &schema, &normal, &catalog, None));
         started.lock().unwrap().replace({
             use adtb::runtime::Clock;
             rt.now().as_nanos()
         });
         let clients: Vec<_> = (0..3)
             .map(|c| {
-                let (db, tag, acked, submitted, schema) = (
+                let (db, tag, acked, submitted, schema, drawn) = (
                     db.clone(),
                     tag.clone(),
                     acked.clone(),
                     submitted.clone(),
                     schema.clone(),
+                    drawn.clone(),
                 );
                 rt.spawn(&format!("client {c}"), move || {
                     for i in 0..40 {
                         let name = format!("c{c}-{i}");
                         submitted.lock().unwrap().insert(name.clone());
-                        if let Ok(k) = run_txn(&db, &schema, &tag, &name) {
+                        let mut seen = |k: &Val| {
+                            drawn.lock().unwrap().insert(k.clone());
+                        };
+                        if let Ok(k) = run_txn_with(&db, &schema, &tag, &name, None, &mut seen) {
                             acked.lock().unwrap().insert(name, k);
                         }
                     }
@@ -1127,6 +1218,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
                 &Arc::default(),
                 &Arc::default(),
                 &Arc::default(),
+                &Arc::default(),
                 &started,
             )
         });
@@ -1136,9 +1228,10 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
         let acked: Arc<std::sync::Mutex<BTreeMap<String, Val>>> = Arc::default();
         let submitted: Arc<std::sync::Mutex<BTreeSet<String>>> = Arc::default();
         let roots: Arc<std::sync::Mutex<Option<support::Roots>>> = Arc::default();
+        let drawn: Slot<BTreeSet<Val>> = Arc::default();
         let at = begun + span * (1 + seed) / 6;
         sim.crash_at(adtb::runtime::Instant::from_nanos(at));
-        let first = sim.run(|rt| load(&rt, &roots, &acked, &submitted, &Arc::default()));
+        let first = sim.run(|rt| load(&rt, &roots, &acked, &submitted, &drawn, &Arc::default()));
         if first == Outcome::Crashed && !acked.lock().unwrap().is_empty() {
             crashed += 1;
         }
@@ -1149,7 +1242,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
             let Some((d, _)) = Db::build(&rt, &world, Some(&roots)) else {
                 return;
             };
-            let db = database(&rt, d, &schema, &normal, &catalog, None);
+            let db = database(&rt, d, &schema, &normal, &catalog, None, roots.sequences);
             let tx = db.begin().expect("a transaction");
             let rows = db.rows(&tx).expect("the rows");
             db.abort(tx);
@@ -1187,6 +1280,11 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
         assert!(
             !held.values().any(|k| *k == next),
             "seed {seed}: the key {next:?} drawn after recovery was held"
+        );
+        let last = drawn.lock().unwrap().last().cloned();
+        assert!(
+            last.is_none_or(|d| next > d),
+            "seed {seed}: the key {next:?} drawn after recovery was drawn before the crash"
         );
     }
     assert!(crashed > 0, "no run crashed after acknowledging a commit");

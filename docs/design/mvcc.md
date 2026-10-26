@@ -1115,3 +1115,23 @@ An explicitly supplied value for a `sequence` key advances the
 generator past it: after the change set commits, the generator's state
 is at least one more than the largest value supplied. The advance is
 not undone by a later abort.
+
+Counters are reserved durably, as transaction ids are (§4.1). Each
+counter's reservation is the first value past a block it may draw
+from, held on a counter page whose page id the catalog records.
+Before a counter draws a value at or past its reservation, the write
+path logs the page change that extends the reservation and forces
+the log. An advance past the reservation extends it the same way
+before the statement's change set is checked. After a crash, every
+counter resumes at its reservation.
+
+Postconditions:
+
+- A drawn value is never drawn again, across any number of crashes,
+  whether the transaction that drew it committed, aborted or was
+  running at a crash.
+- After the change set commits, the counter stays past every value it
+  supplied, after any crash.
+
+The `load` values of rejected rows come from one more counter of the
+same page, with the same guarantees.

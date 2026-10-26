@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -11,6 +11,7 @@ use crate::exec::{self, Val, from_stored, to_key};
 use crate::key::Tid;
 use crate::runtime::Runtime;
 
+use super::apply::Undo;
 use super::fresh::{self, Occurrences};
 use super::schema::{RefField, Rel};
 use super::{Database, Error, Outcome, Rejection, Rows, Txn};
@@ -79,6 +80,14 @@ pub fn pairs<'a>(groups: impl IntoIterator<Item = &'a BTreeMap<Val, Val>>) -> BT
     out
 }
 
+/// A record of a source that an insert with `rejects into` rejected.
+pub struct Rejected {
+    line: i64,
+    source: String,
+    raw: String,
+    reason: String,
+}
+
 /// The arena a term belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Arena {
@@ -99,6 +108,8 @@ pub struct Stmt<'a, R: Runtime> {
     clock: i64,
     pub store: Arc<exec::Store<R>>,
     drawn: RefCell<BTreeMap<(Arena, Val), Val>>,
+    load: Cell<Option<i64>>,
+    pub undo: RefCell<Vec<Undo>>,
     plans: RefCell<HashMap<PlanKey, Arc<exec::Program>>>,
 }
 
@@ -116,6 +127,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             clock,
             store: db.store(tx),
             drawn: RefCell::default(),
+            load: Cell::default(),
+            undo: RefCell::default(),
             plans: RefCell::default(),
         }
     }
@@ -131,6 +144,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             clock: 0,
             store: db.store(tx),
             drawn: RefCell::default(),
+            load: Cell::default(),
+            undo: RefCell::default(),
             plans: RefCell::default(),
         }
     }
@@ -197,10 +212,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let bound: Vec<(Var, Val)> = env.iter().map(|(v, x)| (*v, x.clone())).collect();
         let v = exec::execute(self.db.rt.clone(), program, call, &bound)?;
         let ty = self.arena(a).ty(t).clone();
-        Ok(self.fill(a, &ty, v))
+        self.fill(a, &ty, v)
     }
 
-    fn fill(&self, a: Arena, ty: &Ty, v: Val) -> Val {
+    fn fill(&self, a: Arena, ty: &Ty, v: Val) -> Result<Val, Error> {
         let occurrences = match a {
             Arena::Statement => &self.fresh,
             Arena::Program => &self.db.program_fresh,
@@ -208,21 +223,21 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let mut draw = |p: &Val| {
             let key = (a, p.clone());
             if let Some(v) = self.drawn.borrow().get(&key) {
-                return v.clone();
+                return Ok(v.clone());
             }
             let occ = p.fields()[0].int();
             let (g, r) = occurrences[&occ];
-            let v = self.draw(g, r);
+            let v = self.draw(g, r)?;
             self.drawn.borrow_mut().insert(key, v.clone());
-            v
+            Ok(v)
         };
         fresh::fill(&self.db.schema, ty, v, &mut draw)
     }
 
-    fn draw(&self, g: Generator, r: RelId) -> Val {
-        match g {
+    fn draw(&self, g: Generator, r: RelId) -> Result<Val, Error> {
+        Ok(match g {
             Generator::Clock => Val::Instant(self.clock),
-            Generator::Sequence => Val::Int(self.db.next_sequence(r)),
+            Generator::Sequence => Val::Int(self.db.next_sequence(r)?),
             Generator::Uuidv7 => {
                 let ms = self.clock.div_euclid(1000) as u64;
                 let n = self
@@ -238,7 +253,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 b[8] = 0x80 | (b[8] & 0x3f);
                 Val::Bytes(Arc::from(b.as_slice()))
             }
-        }
+        })
     }
 
     fn set(&self, t: Tm, env: &Env) -> Result<BTreeSet<Val>, Error> {
@@ -275,7 +290,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         match self.terms.kind(t).clone() {
             Kind::Skip => Ok(()),
             Kind::Insert(r, rows) => {
-                for v in self.set(rows, env)? {
+                for v in self.records(rows, env, None)? {
                     out.insert(Eff::Ins(r, v));
                 }
                 Ok(())
@@ -288,8 +303,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 }
                 Ok(())
             }
-            Kind::Replace(..) | Kind::Upsert { .. } => self.bind_write(t, env, out).map(drop),
-            Kind::Rejects { .. } => Err(Error::Unsupported("an insert with `rejects into`".into())),
+            Kind::Replace(..) | Kind::Upsert { .. } | Kind::Rejects { .. } => {
+                self.bind_write(t, env, out).map(drop)
+            }
             Kind::Par(ws) => ws.iter().try_for_each(|w| self.write(*w, env, out)),
             Kind::Fail(m) => {
                 let Val::Text(message) = self.eval(Arena::Statement, m, env)? else {
@@ -347,12 +363,130 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 Ok(Val::set(news))
             }
             Kind::Upsert { rows, .. } => {
-                let rows = self.set(rows, env)?;
+                let rows = self.records(rows, env, None)?;
                 self.upsert(t, rows, env, out)
             }
-            Kind::Rejects { .. } => Err(Error::Unsupported("an insert with `rejects into`".into())),
+            Kind::Rejects { into, insert } => {
+                let rows = match self.terms.kind(insert) {
+                    Kind::Insert(_, rows) | Kind::Upsert { rows, .. } => *rows,
+                    k => panic!("`rejects into` wraps an insert or upsert, not {k:?}"),
+                };
+                let mut rejected = Vec::new();
+                let rows = self.records(rows, env, Some(&mut rejected))?;
+                let bound = match self.terms.kind(insert) {
+                    Kind::Insert(r, _) => {
+                        out.extend(rows.iter().map(|v| Eff::Ins(*r, v.clone())));
+                        Val::set(rows)
+                    }
+                    _ => self.upsert(insert, rows, env, out)?,
+                };
+                if !rejected.is_empty() {
+                    let load = self.load(into)?;
+                    for j in rejected {
+                        out.insert(Eff::Ins(into, self.rejected_row(into, load, j)));
+                    }
+                }
+                Ok(bound)
+            }
             k => panic!("{k:?} binds no rows"),
         }
+    }
+
+    /// Returns the rows an insert's `rows` term computes. When `rows` ranges over one source
+    /// relation and its evaluation fails, each record is computed on its own, in the order of
+    /// the source's key: a record whose computation reaches `reject` goes to `rejected`, or
+    /// rejects the statement with `BadInput` naming it when there is none.
+    fn records(
+        &self,
+        rows: Tm,
+        env: &Env,
+        mut rejected: Option<&mut Vec<Rejected>>,
+    ) -> Result<BTreeSet<Val>, Error> {
+        let source = match self.terms.kind(rows) {
+            Kind::For(x, src, body) => match self.terms.kind(*src) {
+                Kind::Rel(r, _) => Some((*x, *r, *src, *body)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((x, r0, src, body)) = source else {
+            return self.set(rows, env);
+        };
+        match self.set(rows, env) {
+            Err(Error::Rejected(Rejection::BadInput { .. }) | Error::Fault(_)) => {}
+            other => return other,
+        }
+        let mut records: Vec<Val> = self.set(src, env)?.into_iter().collect();
+        records.sort_by_cached_key(|p| self.key_of(r0, p));
+        let source = self.db.schema.relation(r0).name.clone();
+        let mut out = BTreeSet::new();
+        for (i, p) in records.into_iter().enumerate() {
+            let line = i as i64 + 1;
+            match self.set(body, &bind(env, x, p.clone())) {
+                Ok(vs) => out.extend(vs),
+                Err(Error::Rejected(Rejection::BadInput { detail, .. })) => match &mut rejected {
+                    Some(js) => {
+                        let ty = self.terms.var_info(x).ty.clone();
+                        js.push(Rejected {
+                            line,
+                            source: source.clone(),
+                            raw: exec::print(&self.db.schema, &ty, &p)?,
+                            reason: detail,
+                        });
+                    }
+                    None => {
+                        return Err(Error::Rejected(Rejection::BadInput {
+                            source,
+                            line,
+                            detail,
+                        }));
+                    }
+                },
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns the `load` of the rows the statement inserts into `into`: one value per
+    /// statement, past every value issued before and every one `into` holds.
+    fn load(&self, into: RelId) -> Result<i64, Error> {
+        if let Some(l) = self.load.get() {
+            return Ok(l);
+        }
+        let at = self.rel(into).ctors[0]
+            .fields
+            .iter()
+            .position(|(n, _)| n == "load")
+            .expect("`RejectedRow` has a `load`");
+        let held = self
+            .rows(into, None)?
+            .into_iter()
+            .filter_map(|(_, v)| match v.fields()[at] {
+                Val::Int(l) => Some(l),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let l = self.db.next_load(held)?;
+        self.load.set(Some(l));
+        Ok(l)
+    }
+
+    fn rejected_row(&self, into: RelId, load: i64, j: Rejected) -> Val {
+        let fields = self.rel(into).ctors[0]
+            .fields
+            .iter()
+            .map(|(n, _)| match n.as_str() {
+                "load" => Val::Int(load),
+                "line" => Val::Int(j.line),
+                "source" => Val::text(&j.source),
+                "raw" => Val::text(&j.raw),
+                "reason" => Val::text(&j.reason),
+                other => panic!("`RejectedRow` has no field `{other}`"),
+            })
+            .collect();
+        Val::ctor(0, fields)
     }
 
     fn upsert(

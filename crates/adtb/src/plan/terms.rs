@@ -234,6 +234,7 @@ impl Facts {
                 | Kind::EmptySet
                 | Kind::Union(..)
                 | Kind::Restrict(..)
+                | Kind::Reject(_)
                 | Kind::Unreachable
         );
         let s = here && terms.children(t).into_iter().all(|c| self.scalar(terms, c));

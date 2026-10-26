@@ -90,6 +90,10 @@ pub enum Ins {
     Caller {
         dst: u32,
     },
+    /// Rejects the statement's input with the text of `msg` at the first selected row.
+    Reject {
+        msg: Opd,
+    },
     Unreachable,
 }
 
@@ -439,6 +443,14 @@ impl Code {
                     let out = sel.iter().map(|&r| (r, c.clone())).collect();
                     Code::put(regs, len, *dst, out);
                 }
+                Ins::Reject { msg } => {
+                    if let Some(&r) = sel.first() {
+                        let Val::Text(t) = self.get(*msg, f, regs, r) else {
+                            panic!("`reject` takes a Text")
+                        };
+                        return Err(Error::Rejected(t.to_string()));
+                    }
+                }
                 Ins::Unreachable => panic!("an evaluation reached `Unreachable`"),
             }
         }
@@ -701,6 +713,11 @@ impl<'a> Compiler<'a> {
                 let dst = e.reg();
                 ins.push(Ins::Caller { dst });
                 Opd::Reg(dst)
+            }
+            Kind::Reject(m) => {
+                let msg = self.expr(e, ins, *m)?;
+                ins.push(Ins::Reject { msg });
+                e.lit(Val::Int(0))
             }
             Kind::Unreachable => {
                 ins.push(Ins::Unreachable);

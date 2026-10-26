@@ -14,6 +14,15 @@ use crate::vacuum;
 use super::eval::{Stmt, Violations, pairs, violate, violate_key};
 use super::{Error, Rows};
 
+/// A heap change a failed statement takes back.
+#[derive(Clone, Copy, Debug)]
+pub enum Undo {
+    /// Delete the version the statement inserted.
+    Kill(HeapId, Tid),
+    /// Clear the deleter the statement gave the version.
+    Restore(HeapId, Tid),
+}
+
 /// A version the statement wrote that needs entries in the indexes over its constructor.
 struct Written {
     rel: RelId,
@@ -107,8 +116,9 @@ impl<R: Runtime> Stmt<'_, R> {
                 (None, None) => {}
                 (Some(_), None) => {
                     let (c, tid) = self.writable(*rel, key)?;
-                    self.heap(r.ctors[c as usize].heap)
-                        .delete(pager, tid, xid.0)?;
+                    let heap = r.ctors[c as usize].heap;
+                    self.heap(heap).delete(pager, tid, xid.0)?;
+                    self.undo.borrow_mut().push(Undo::Restore(heap, tid));
                 }
                 (Some((c, _)), Some((d, n))) if c == d => {
                     let (c, tid) = self.writable(*rel, key)?;
@@ -130,6 +140,9 @@ impl<R: Runtime> Stmt<'_, R> {
                         &row,
                         &indexed,
                     )?;
+                    self.undo
+                        .borrow_mut()
+                        .extend([Undo::Restore(heap, tid), Undo::Kill(heap, up.tid)]);
                     self.inserted_into(heap)?;
                     if !up.heap_only {
                         written.push(Written {
@@ -144,13 +157,13 @@ impl<R: Runtime> Stmt<'_, R> {
                     let (c, tid) = self.writable(*rel, key)?;
                     let to = r.ctors[*d as usize].heap;
                     let row = self.stored(to, n);
-                    let at = self.heap(r.ctors[c as usize].heap).retag(
-                        pager,
-                        tid,
-                        xid.0,
-                        self.heap(to),
-                        &row,
-                    )?;
+                    let from = r.ctors[c as usize].heap;
+                    let at = self
+                        .heap(from)
+                        .retag(pager, tid, xid.0, self.heap(to), &row)?;
+                    self.undo
+                        .borrow_mut()
+                        .extend([Undo::Restore(from, tid), Undo::Kill(to, at)]);
                     self.inserted_into(to)?;
                     written.push(Written {
                         rel: *rel,
@@ -163,6 +176,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     let heap = r.ctors[*d as usize].heap;
                     let row = self.stored(heap, n);
                     let tid = vacuum::insert(pager, &self.db.txns, self.heap(heap), xid, &row)?;
+                    self.undo.borrow_mut().push(Undo::Kill(heap, tid));
                     self.inserted_into(heap)?;
                     written.push(Written {
                         rel: *rel,
@@ -176,7 +190,7 @@ impl<R: Runtime> Stmt<'_, R> {
         for ((r, _), rows) in plus {
             for v in rows {
                 if let Val::Int(k) = self.key_of(*r, v) {
-                    self.db.advance_sequence(*r, k);
+                    self.db.advance_sequence(*r, k)?;
                 }
             }
         }
@@ -190,6 +204,19 @@ impl<R: Runtime> Stmt<'_, R> {
                 && let Some(name) = &indexed.name
             {
                 violate(viol, name, pairs([group]));
+            }
+        }
+        Ok(())
+    }
+
+    /// Take back every heap change the statement made, newest first. Its index entries stay,
+    /// naming versions no snapshot sees.
+    pub fn undo(&self) -> Result<(), Error> {
+        let pager = &self.db.pager;
+        for u in self.undo.borrow_mut().drain(..).rev() {
+            match u {
+                Undo::Kill(heap, tid) => self.heap(heap).delete(pager, tid, self.tx.xid.0)?,
+                Undo::Restore(heap, tid) => self.heap(heap).restore(pager, tid)?,
             }
         }
         Ok(())

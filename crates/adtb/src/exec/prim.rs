@@ -12,6 +12,11 @@ use super::{Error, Fault};
 
 mod num;
 mod textual;
+
+/// Returns the canonical printed form of `v`, a value of type `ty`.
+pub(crate) fn print(schema: &Schema, ty: &Ty, v: &Val) -> Result<String, Error> {
+    Ok(textual::print(v, &textual::Form::of(schema, ty)?))
+}
 mod time;
 mod unicode;
 

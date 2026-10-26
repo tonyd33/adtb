@@ -16,6 +16,7 @@ mod tests;
 
 pub use ir::{Program, compile};
 pub use memory::{Arena, Budget, Grant};
+pub(crate) use prim::print;
 pub use sched::{Scheduler, Task};
 pub use store::{AtSnapshot, Reads, Store, StoredHeap, StoredIndex};
 pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};
@@ -103,6 +104,8 @@ pub enum Error {
     Unsupported(String),
     /// The plan reads `caller` and the statement has none.
     NoCaller,
+    /// The evaluation reached `reject` with this text.
+    Rejected(String),
     Cancelled,
 }
 

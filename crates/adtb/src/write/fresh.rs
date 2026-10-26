@@ -112,10 +112,15 @@ fn walk(
 ///
 /// A placeholder is a record where `ty` holds no record: a base value, or the key of a relation
 /// whose key is one field.
-pub fn fill(schema: &Schema, ty: &Ty, v: Val, draw: &mut dyn FnMut(&Val) -> Val) -> Val {
+pub fn fill<E>(
+    schema: &Schema,
+    ty: &Ty,
+    v: Val,
+    draw: &mut dyn FnMut(&Val) -> Result<Val, E>,
+) -> Result<Val, E> {
     let t = repr(schema, ty);
-    match (&t, v) {
-        (Ty::Base(_), v @ Val::Record(_)) => draw(&v),
+    Ok(match (&t, v) {
+        (Ty::Base(_), v @ Val::Record(_)) => draw(&v)?,
         (Ty::Key { rel, .. }, v) => {
             let r = schema.relation(*rel);
             let row = &ctors(schema, &r.elem).expect("a relation's element is a sum")[0];
@@ -129,10 +134,10 @@ pub fn fill(schema: &Schema, ty: &Ty, v: Val, draw: &mut dyn FnMut(&Val) -> Val)
             match r.key.as_slice() {
                 [k] => match field_ty(k) {
                     Ty::Key { rel: own, .. } if own == *rel => match v {
-                        v @ Val::Record(_) => draw(&v),
+                        v @ Val::Record(_) => draw(&v)?,
                         v => v,
                     },
-                    f => fill(schema, &f, v, draw),
+                    f => fill(schema, &f, v, draw)?,
                 },
                 ks => {
                     let mut names = ks.to_vec();
@@ -140,36 +145,40 @@ pub fn fill(schema: &Schema, ty: &Ty, v: Val, draw: &mut dyn FnMut(&Val) -> Val)
                     let Val::Record(fs) = v else {
                         panic!("a composite key is a record")
                     };
-                    Val::record(
-                        names
-                            .iter()
-                            .zip(fs.iter())
-                            .map(|(n, x)| fill(schema, &field_ty(n), x.clone(), draw))
-                            .collect(),
-                    )
+                    let tys: Vec<Ty> = names.iter().map(|n| field_ty(n)).collect();
+                    Val::record(fill_all(schema, tys.iter().zip(fs.iter()), draw)?)
                 }
             }
         }
-        (Ty::Set(e) | Ty::NonEmpty(e), Val::Set(s)) => {
-            Val::set(s.iter().map(|x| fill(schema, e, x.clone(), draw)).collect())
-        }
-        (Ty::Record(fts), Val::Record(fs)) => Val::record(
-            fts.iter()
-                .zip(fs.iter())
-                .map(|((_, t), x)| fill(schema, t, x.clone(), draw))
+        (Ty::Set(e) | Ty::NonEmpty(e), Val::Set(s)) => Val::set(
+            fill_all(schema, s.iter().map(|x| (e.as_ref(), x)), draw)?
+                .into_iter()
                 .collect(),
         ),
+        (Ty::Record(fts), Val::Record(fs)) => Val::record(fill_all(
+            schema,
+            fts.iter().map(|(_, t)| t).zip(fs.iter()),
+            draw,
+        )?),
         (_, Val::Ctor(c, fs)) => match ctors(schema, &t) {
             Some(cs) => Val::ctor(
                 c,
-                cs[c as usize]
-                    .iter()
-                    .zip(fs.iter())
-                    .map(|((_, t), x)| fill(schema, t, x.clone(), draw))
-                    .collect(),
+                fill_all(
+                    schema,
+                    cs[c as usize].iter().map(|(_, t)| t).zip(fs.iter()),
+                    draw,
+                )?,
             ),
             None => Val::Ctor(c, fs),
         },
         (_, v) => v,
-    }
+    })
+}
+
+fn fill_all<'v, E>(
+    schema: &Schema,
+    vs: impl Iterator<Item = (&'v Ty, &'v Val)>,
+    draw: &mut dyn FnMut(&Val) -> Result<Val, E>,
+) -> Result<Vec<Val>, E> {
+    vs.map(|(t, x)| fill(schema, t, x.clone(), draw)).collect()
 }

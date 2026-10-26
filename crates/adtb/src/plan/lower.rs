@@ -573,7 +573,6 @@ impl Planner<'_> {
             | Kind::Rejects { .. }
             | Kind::Par(_)
             | Kind::Fail(_)
-            | Kind::Reject(_)
             | Kind::Fresh(..)
             | Kind::Only(_)
             | Kind::LetBang(..)

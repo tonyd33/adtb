@@ -34,6 +34,8 @@ pub struct Roots {
     pub larges: BTreeMap<RelId, adtb::storage::Pid>,
     pub heaps: BTreeMap<adtb::plan::HeapId, adtb::storage::Pid>,
     pub indexes: BTreeMap<adtb::plan::IndexId, adtb::storage::Pid>,
+    /// The write path's page of generated counters, once it has one.
+    pub sequences: Option<adtb::storage::Pid>,
 }
 
 /// The schema, catalog and rows a database is loaded from.
