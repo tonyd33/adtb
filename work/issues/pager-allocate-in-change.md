@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 405
 summary: a page allocated by one pager call and linked by the next leaks if a crash falls between them
-branch: pager
+closed: 2026-10-25
 depends-on:
   - pager-and-log
 tags:
@@ -33,3 +33,7 @@ owned by the heap, but not listed in its directory.
 Vacuum unlinks an empty heap page, then frees it, in two calls, and
 allocates visibility map pages before linking them. The same one-batch
 call should free pages as well as allocate them.
+
+## 2026-10-25: resolved
+
+Landed as `feat(storage): allocate and free inside an atomic change, catch self-deadlocks and bound evicted LSNs`.

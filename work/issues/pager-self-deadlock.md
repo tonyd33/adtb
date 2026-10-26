@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 407
 summary: "a page guard held across a later pager call on the same page waits forever, with no diagnosis"
-branch: pager
+closed: 2026-10-25
 depends-on:
   - vmcache
 tags:
@@ -24,3 +24,7 @@ My ruling: state it as a §2.3 precondition, and have the pager detect
 it. In debug builds and under the simulator, a thread that asks for a
 latch it already holds on the same page panics, naming the page,
 instead of waiting.
+
+## 2026-10-25: resolved
+
+Landed as `feat(storage): allocate and free inside an atomic change, catch self-deadlocks and bound evicted LSNs`.
