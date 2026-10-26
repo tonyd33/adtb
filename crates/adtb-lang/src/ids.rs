@@ -664,6 +664,7 @@ pub const TYPES: &[FixedType] = &[
             ("MixedVersions", 345),
             ("MigrationInProgress", 372),
             ("DumpDamaged", 460),
+            ("Internal", 465),
         ],
     ),
     (

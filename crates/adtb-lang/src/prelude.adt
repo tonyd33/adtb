@@ -79,6 +79,7 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | UnknownEdition       { edition: Text }
                   | MigrationInProgress
                   | DumpDamaged          { offset: I64 }
+                  | Internal             { what: Text }
 
 type Limit = Time   { after: Duration }
            | Memory { bytes: I64 }

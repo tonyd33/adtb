@@ -36,8 +36,9 @@ Postconditions:
 - `Err(Abort::Internal(what))`: evaluation reached a value or term the
   preconditions rule out, such as `Unreachable`, a primitive applied to
   operands of another type, or a `case` with no arm for its
-  scrutinee's constructor; `what` names the invariant. `try` does not
-  catch it, and a checked primitive does not turn it into `None`.
+  scrutinee's constructor; `what` names the invariant. The statement
+  is rejected with `Internal { what }`. `try` does not catch it, and a
+  checked primitive does not turn it into `None`.
 
 `caller` denotes the value given by `with_caller`. In a constraint
 body, `inserted`, `deleted` and `prior` read the transition given by

@@ -234,10 +234,11 @@ statements. Constraints hold after every statement. The change sets
 become visible to other transactions only when the commit succeeds; an
 abort, or a failed commit, discards all of them.
 
-A call is atomic. A call that fails, by a constraint violation, a fault
-or a user `fail` in any of its statements, applies none of its
-statements' effects, and the transaction stays open with the effects
-of its earlier calls. A serialization failure aborts the whole
+A call is atomic. A call that fails, by a constraint violation, a
+fault, a user `fail` or an internal error (`Internal`,
+[catalog.md](catalog.md#42-reasons)) in any of its statements, applies
+none of its statements' effects, and the transaction stays open with
+the effects of its earlier calls. A serialization failure aborts the whole
 transaction.
 
 Every statement of a transaction runs at one schema version and one

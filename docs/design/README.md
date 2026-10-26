@@ -95,8 +95,17 @@ Errors split in two:
   transaction hit a serialization failure. Each is handled, and those
   that reach a client are values of the error sums in
   [../spec/catalog.md §4](../spec/catalog.md#4-error-sums).
-- A broken invariant is a bug in the engine. The process crashes and
-  the database recovers from the log.
+- A broken invariant is a bug in the engine. What it does depends on
+  what the invariant is over:
+  - An invariant over engine state (pages, the log, latches, heap and
+    index layout, the stored catalog): the process crashes and the
+    database recovers from the log.
+  - A guarantee the checker makes about a submitted program (the types
+    and normal forms that reach planning, evaluation and write
+    evaluation): the statement fails with an internal error, its
+    effects are discarded, the transaction stays open and the process
+    keeps running. A client receives it as the `Internal` constructor
+    of the statement error sum.
 
 A failed write or `fdatasync` of the log or a page is in the second
 class. It is not retried. The engine crashes and recovers from the log:
@@ -110,9 +119,12 @@ assert!(page.lsn() <= self.flushed_lsn);                        // the engine is
 
 A subsystem may rely on its counterpart never returning a value that
 breaks the counterpart's stated invariants: such a state crashes the
-process before it is returned.
+process, or for a checker guarantee fails the statement, before it is
+returned.
 
-Rulings: project/arch/errors/fatal-split, buffer/fsync-fail/panic-replay
+Rulings: project/arch/errors/fatal-split,
+project/arch/errors/checker-guarantee/fail-statement,
+buffer/fsync-fail/panic-replay
 
 ## 5. Glossary
 

@@ -801,6 +801,7 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | UnknownEdition       { edition: Text }
                   | MigrationInProgress
                   | DumpDamaged          { offset: I64 }
+                  | Internal             { what: Text }
 
 type Limit = Time   { after: Duration }
            | Memory { bytes: I64 }
@@ -865,6 +866,7 @@ wire's 32-bit epoch and 64-bit log position.
 | `UnknownEdition` | a Hello asks for an edition the server does not implement | [wire.md](wire.md#32-hello) |
 | `MigrationInProgress` | a migration set was presented while a staged migration is pending | [evolution.md](evolution.md#23-applying-a-migration-set) |
 | `DumpDamaged` | a restore could not authenticate or decode the dump; `offset` is the byte offset of the first part that fails | [interop.md](interop.md#61-a-logical-dump) |
+| `Internal` | the statement broke a guarantee the engine's checker makes about a program, a bug in the engine; the statement fails and none of its effects are applied, the transaction stays open, and the engine keeps serving; `what` is implementation-defined | [transactions.md](transactions.md#52-meaning) |
 | `Malformed` | a message violates the server protocol | [wire.md](wire.md#113-malformed-messages) |
 | `Quarantined` | the call reads a quarantined constructor relation, or writes a constructor relation a quarantined index covers; `what` names it | §11.2 |
 | `MissingFunction` | the call needs a host function the program did not supply | [embedding.md](embedding.md#10-host-functions) |
@@ -989,7 +991,7 @@ Prelude:
 | 54 | `Report` | 55 (one constructor) |
 | 56 | `Position` | 57 (one constructor) |
 | 58 | `RetryReason` | 59 `Serialization`, 60 `SafePointTimeout`, 61 `Overloaded`, 62 `StreamIdle`, 63 `FileChanged`, 64 `Fenced`, 341 `ReplayConflict` |
-| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase`, 342 `CatalogMismatch`, 343 `EditionLocked`, 344 `UnknownEdition`, 345 `MixedVersions`, 372 `MigrationInProgress`, 460 `DumpDamaged` |
+| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase`, 342 `CatalogMismatch`, 343 `EditionLocked`, 344 `UnknownEdition`, 345 `MixedVersions`, 372 `MigrationInProgress`, 460 `DumpDamaged`, 465 `Internal` |
 | 103 | `FatalReason` | 104 `Malformed`, 105 `Quarantined`, 106 `MissingFunction`, 107 `Storage` |
 | 108 | `Notice` | 109 `LeaseExpiring`, 110 `ShuttingDown`, 111 `ConstructorEnabled`, 112 `BundleRetired`, 113 `BlockingMigration`, 114 `UpgradeRequired` |
 | 115 | `RejectedRow` | 116 (one constructor) |
@@ -1143,20 +1145,21 @@ Module `sys`, relation variables:
 | 371 | `sys::safe_snapshots` |
 
 
-Ids from 341 to 464 are listed in the rows of the types they belong
+Ids from 341 to 465 are listed in the rows of the types they belong
 to. `Person` and the other types of examples are not engine types and
 have no fixed id, nor has a `Principal` the schema declares
 ([security.md](security.md#11-the-principal-sum)). Ids 287 to 290, 306
-to 309 and from 465 to 1023 are unassigned.
+to 309 and from 466 to 1023 are unassigned.
 
 Fields and indexes have fixed ids in their own spaces. In edition
 2026-10 and catalog version 1, the engine's fields take ids from 0:
 for each type of the tables above in id order, its header fields in
 declared order, then each constructor's fields, constructors in listed
-order and fields in declared order. They take ids 0 to 555:
+order and fields in declared order. They take ids 0 to 556:
 `Option.Some.value` 0, `Result.Ok.value` 1, `Result.Err.error` 2,
-`RejectReason.DumpDamaged.offset` 68, the fields of the `catalog` and
-`sys` modules from 87, and `Limit.Rounds.rounds` 555. The engine's indexes take ids from 0: for
+`RejectReason.DumpDamaged.offset` 68, `RejectReason.Internal.what` 69,
+the fields of the `catalog` and `sys` modules from 88, and
+`Limit.Rounds.rounds` 556. The engine's indexes take ids from 0: for
 each relation variable of the tables above in id order, the index of
 its key, then an index for each `unique` clause in written order;
 they end at 60. A field or index that a later edition or catalog
@@ -1165,7 +1168,7 @@ one. The engine declares no named sets, constraints, defaults or
 computed fields. The prelude is not part of a schema: its functions
 and aggregates have no catalog id and no row of `catalog::functions`.
 
-Rulings: project/spec/errors/closed-sum, project/spec/errors/new-kind/coarse, project/spec/errors/new-kind/pinned, spec/evolution/concurrent-apply/refuse, spec/ids/engine-objects/fixed-table, spec/ids/prelude-fns/none, spec/limit-reason/limit-sum, spec/dump-damaged/offset
+Rulings: project/spec/errors/closed-sum, project/spec/errors/new-kind/coarse, project/spec/errors/new-kind/pinned, spec/evolution/concurrent-apply/refuse, spec/ids/engine-objects/fixed-table, spec/ids/prelude-fns/none, spec/limit-reason/limit-sum, spec/dump-damaged/offset, project/arch/errors/checker-guarantee/fail-statement
 
 ## 5. Statistics
 
