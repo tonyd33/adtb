@@ -42,6 +42,8 @@ accept:
   buffer/test/dst-threads/sim-scheduler: {title: A deterministic scheduler replaces the async runtime and OS threads in tests, reason: 'SSI is multi-threaded, so the simulator schedules threads'}
   buffer/test/fault-fs: {title: A fault-injecting file system under the real engine, reason: deterministic simulation with injected storage faults and crash replay}
   constraint/admit/bounded: {title: Refuse a constraint without an index-bounded incremental check, reason: only constraints with an index-bounded incremental check are admitted; the rest are refused at schema time}
+  constraint/admit/reference-index/implied: {title: Each reference field has an implied index on the referring field over the referring constructor set, reason: a reference's target check and delete actions probe an index like every other constraint; the implied index costs nothing where a declared one already leads with the field}
+  constraint/admit/transition-negation/monotone-only: {title: Refuse inserted or deleted under negation or inside an aggregate, reason: 'a change touching nothing a constraint reads must leave it empty, so skipping untouched constraints stays correct'}
   constraint/aggregates/maintained: {title: Admit aggregate constraints whose aggregate the engine maintains per group, reason: a group aggregate maintained from each change set is index-bounded}
   constraint/assertion: {title: Arbitrary database-wide assertions over any query, reason: 'one general form, the assertion, with the other kinds as its common cases'}
   constraint/at-least-one: {title: 'Declarable inclusion from parent into a relationship, checked at commit', reason: same disjunctive inclusion as totality; leaving it out makes users re-emulate what the project removes}

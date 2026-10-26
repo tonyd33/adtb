@@ -632,6 +632,84 @@ impl RelationDef {
     }
 }
 
+/// The index a reference field of a relation variable implies.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ImpliedIndex {
+    /// The constructor whose own field it is; `None` for a header field.
+    pub ctor: Option<u32>,
+    pub field: String,
+    /// The constructors that hold the field.
+    pub ctors: CtorSet,
+}
+
+impl Schema {
+    /// Returns the index each reference field of `rel` implies, header fields first, then each
+    /// constructor's own in declaration order; a field whose constructors a declared key,
+    /// unique or index leading with it covers implies none.
+    pub fn implied_indexes(&self, rel: RelId) -> Vec<ImpliedIndex> {
+        let r = self.relation(rel);
+        let def = self.ty(r.elem_def);
+        let all: CtorSet = (0..def.ctors().len() as u32).collect();
+        let header = def.header().iter().map(|f| (None, f));
+        let own = def
+            .ctors()
+            .iter()
+            .enumerate()
+            .flat_map(|(c, d)| d.fields.iter().map(move |f| (Some(c as u32), f)));
+        header
+            .chain(own)
+            .filter(|(_, f)| self.is_reference(rel, f))
+            .map(|(ctor, f)| ImpliedIndex {
+                ctor,
+                field: f.name.clone(),
+                ctors: ctor.map_or_else(|| all.clone(), |c| vec![c]),
+            })
+            .filter(|i| !self.declared_leading(rel, i))
+            .collect()
+    }
+
+    /// Returns whether field `f` of `rel`'s sum holds a reference: a key of another relation
+    /// variable, or of its own outside its key, or an `Option` of one.
+    fn is_reference(&self, rel: RelId, f: &FieldDef) -> bool {
+        let r = self.relation(rel);
+        let option = self.prelude_type("Option");
+        let key = match f.ty.subst(r.elem_args()) {
+            k @ Ty::Key { .. } => k,
+            Ty::Data { def, mut args, .. } if def == option && args.len() == 1 => {
+                match args.pop() {
+                    Some(k) => k,
+                    None => return false,
+                }
+            }
+            _ => return false,
+        };
+        match key {
+            Ty::Key { rel: target, .. } => !(target == rel && r.key.contains(&f.name)),
+            _ => false,
+        }
+    }
+
+    /// Returns whether a declared key, unique or index of `rel` over every constructor of `i`
+    /// has `i`'s field as its leading field.
+    fn declared_leading(&self, rel: RelId, i: &ImpliedIndex) -> bool {
+        let r = self.relation(rel);
+        if r.key.first() == Some(&i.field) {
+            return true;
+        }
+        r.indexes.iter().any(|ix| {
+            let leads = matches!(
+                ix.fields.first().map(|e| &e.kind),
+                Some(ast::ExprKind::Name(ast::QName { module: None, name })) if name.text == i.field
+            );
+            let covers = ix
+                .scope
+                .as_ref()
+                .is_none_or(|s| i.ctors.iter().all(|c| s.contains(c)));
+            leads && covers
+        })
+    }
+}
+
 /// Where a type expression is written, which decides the forms it may take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeMode {

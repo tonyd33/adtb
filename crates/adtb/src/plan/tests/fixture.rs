@@ -118,7 +118,7 @@ impl Fixture {
     }
 }
 
-/// Returns a catalog with a heap per constructor, the key index, and every index of the schema whose fields are fields of the row.
+/// Returns a catalog with a heap per constructor, the key index, every index of the schema whose fields are fields of the row, and every implied index.
 pub fn catalog(schema: &Schema, program: &Program) -> Catalog {
     let normal = norm::program(schema, program).expect("the schema's bodies normalise");
     let mut out = Catalog::default();
@@ -156,6 +156,15 @@ pub fn catalog(schema: &Schema, program: &Program) -> Catalog {
                 ctors: def.scope.clone().unwrap_or_else(|| all.clone()),
                 fields,
                 unique: def.unique,
+                ordered: true,
+            });
+        }
+        for (k, implied) in schema.implied_indexes(rel).into_iter().enumerate() {
+            indexes.push(IndexDesc {
+                id: IndexId(base + 50 + k as u64),
+                ctors: implied.ctors,
+                fields: vec![implied.field],
+                unique: false,
                 ordered: true,
             });
         }

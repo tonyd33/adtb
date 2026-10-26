@@ -1909,12 +1909,17 @@ fn ids_are_never_reused() {
     let first = ids_of(&s);
     let r = rel(&first, "identities");
     let added = first.ids.indexes[&(r, first.relation(r).indexes.len() - 1)];
+    assert!(first.ids.implied.keys().all(|(i, _, _)| *i != r));
     let s = applies(&s, "module auth\ndrop index (user) in identities");
+    let dropped = ids_of(&s);
+    let r = rel(&dropped, "identities");
+    let implied = dropped.ids.implied[&(r, None, "user".to_string())];
+    assert_eq!(added + 1, implied);
     let s = applies(&s, "module auth\nadd index (user) in identities");
     let again = ids_of(&s);
     let r = rel(&again, "identities");
     let readded = again.ids.indexes[&(r, again.relation(r).indexes.len() - 1)];
-    assert_eq!(added + 1, readded);
+    assert_eq!(implied + 1, readded);
 }
 
 #[test]
@@ -2034,6 +2039,7 @@ fn a_rescoped_index_is_a_new_index() {
         .indexes
         .values()
         .chain(base.ids.keys.values())
+        .chain(base.ids.implied.values())
         .max()
         .copied()
         .unwrap()

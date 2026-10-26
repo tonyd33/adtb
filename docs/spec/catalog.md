@@ -320,7 +320,7 @@ relation named_sets : NamedSet key id
 type SetMember = { set: Key named_sets, ctor: Key constructors }
 relation set_members : SetMember key (set, ctor)
 
-type IndexKind = PrimaryKey | Unique | Plain | Interval
+type IndexKind = PrimaryKey | Unique | Plain | Interval | Implied
 type Index = { id: Key indexes, relation: Key relations, kind: IndexKind, clause: Text,
                dropped: Option Key migrations }
 relation indexes : Index key id
@@ -334,6 +334,15 @@ The relations of `catalog` have kind `Catalog` and those of `sys` kind
 for example `index (user) in (Google | Apple)`; a key's clause is
 written as its `key` clause would be, `key id` or `key (src, dst)`.
 `index_ctors` holds the constructor set it ranges over.
+
+An index of kind `Implied` is the implied index of a reference field
+([constraints.md §2.1](constraints.md#21-keys-uniques-and-references)):
+its `clause` is written as the declaration of an index on the field
+would be, `index (owner)` for a header field and `index (user) in
+Google` for a field of constructor `Google`, and its `index_ctors` are
+the constructors holding the field. It is the index of the reference
+held in the one field its clause names. The relation variables of
+`catalog` and `sys` have no implied indexes.
 
 ### 2.3 Constraints, functions and extensions
 
@@ -1010,7 +1019,7 @@ Module `catalog`, types:
 | 136 | `Relation` | 137 (one constructor) |
 | 138 | `NamedSet` | 139 (one constructor) |
 | 140 | `SetMember` | 141 (one constructor) |
-| 142 | `IndexKind` | 143 `PrimaryKey`, 144 `Unique`, 145 `Plain`, 146 `Interval` |
+| 142 | `IndexKind` | 143 `PrimaryKey`, 144 `Unique`, 145 `Plain`, 146 `Interval`, 466 `Implied` |
 | 147 | `Index` | 148 (one constructor) |
 | 149 | `IndexCtor` | 150 (one constructor) |
 | 151 | `Constraint` | 152 (one constructor) |
@@ -1145,11 +1154,11 @@ Module `sys`, relation variables:
 | 371 | `sys::safe_snapshots` |
 
 
-Ids from 341 to 465 are listed in the rows of the types they belong
+Ids from 341 to 466 are listed in the rows of the types they belong
 to. `Person` and the other types of examples are not engine types and
 have no fixed id, nor has a `Principal` the schema declares
 ([security.md](security.md#11-the-principal-sum)). Ids 287 to 290, 306
-to 309 and from 466 to 1023 are unassigned.
+to 309 and from 467 to 1023 are unassigned.
 
 Fields and indexes have fixed ids in their own spaces. In edition
 2026-10 and catalog version 1, the engine's fields take ids from 0:

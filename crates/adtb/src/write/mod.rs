@@ -3,6 +3,7 @@ mod check;
 mod delta;
 mod eval;
 mod fresh;
+mod polarity;
 mod schema;
 mod sequence;
 

@@ -24,6 +24,9 @@ pub struct RefField {
     /// The field is an `Option` of the key.
     pub optional: bool,
     pub action: OnDelete,
+    /// An index leading with the field over every constructor holding it; `None` only for a
+    /// relation variable of an engine module.
+    pub index: Option<IndexId>,
 }
 
 /// A constructor of a relation variable's sum.
@@ -118,8 +121,9 @@ fn self_key(schema: &Schema, rel: RelId, f: &str) -> bool {
     )
 }
 
-fn refs(schema: &Schema, rel: RelId, c: u32) -> Vec<RefField> {
+fn refs(schema: &Schema, rel: RelId, c: u32, indexes: &[IndexDesc]) -> Vec<RefField> {
     let r = schema.relation(rel);
+    let all = (0..schema.ty(r.elem_def).ctors().len() as u32).collect::<Vec<_>>();
     let def = schema.ty(r.elem_def);
     let header = def.header().iter().map(|f| (f, true));
     let own = def.ctors()[c as usize].fields.iter().map(|f| (f, false));
@@ -144,6 +148,13 @@ fn refs(schema: &Schema, rel: RelId, c: u32) -> Vec<RefField> {
             let Ty::Key { rel: target, ctors } = key else {
                 unreachable!("matched a key type")
             };
+            let holding = if header { &all[..] } else { &[c][..] };
+            let index = indexes
+                .iter()
+                .find(|d| {
+                    d.fields.first() == Some(&f.name) && holding.iter().all(|h| d.ctors.contains(h))
+                })
+                .map(|d| d.id);
             Some(RefField {
                 name: f.name.clone(),
                 at,
@@ -152,6 +163,7 @@ fn refs(schema: &Schema, rel: RelId, c: u32) -> Vec<RefField> {
                 ctors,
                 optional,
                 action: f.on_delete.clone(),
+                index,
             })
         })
         .collect()
@@ -207,7 +219,7 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
                     name: def.ctors()[c as usize].name.clone(),
                     heap: desc.heaps[&c],
                     convs: fields.iter().map(|(_, t)| conv(schema, t)).collect(),
-                    refs: refs(schema, *rel, c),
+                    refs: refs(schema, *rel, c, &desc.indexes),
                     key_at: key_names
                         .iter()
                         .map(|n| pos(n).expect("every constructor has the key fields"))

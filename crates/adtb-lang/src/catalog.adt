@@ -33,7 +33,7 @@ relation named_sets : NamedSet key id
 type SetMember = { set: Key named_sets, ctor: Key constructors }
 relation set_members : SetMember key (set, ctor)
 
-type IndexKind = PrimaryKey | Unique | Plain | Interval
+type IndexKind = PrimaryKey | Unique | Plain | Interval | Implied
 type Index = { id: Key indexes, relation: Key relations, kind: IndexKind, clause: Text,
                dropped: Option Key migrations }
 relation indexes : Index key id

@@ -774,6 +774,61 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             .collect()
     }
 
+    /// Returns each row of `rel` the statement's reads see in which a field of `fields`, by
+    /// constructor, names a key of `keys`, by target, found by probing the field's index.
+    pub fn referring(
+        &self,
+        rel: RelId,
+        fields: &[Vec<&RefField>],
+        keys: &BTreeMap<RelId, BTreeSet<Val>>,
+    ) -> Result<Vec<(u32, Val)>, Error> {
+        let r = self.rel(rel);
+        let mut probed = BTreeSet::new();
+        let mut out = BTreeMap::new();
+        for (c, fs) in fields.iter().enumerate() {
+            for f in fs {
+                let Some(targets) = keys.get(&f.target) else {
+                    continue;
+                };
+                let at = (!f.header).then_some(c);
+                if !probed.insert((at, f.name.as_str())) {
+                    continue;
+                }
+                let index = f.index.ok_or_else(|| {
+                    Error::Internal(format!(
+                        "a reference field has an index: {}.{} has none",
+                        r.qualified, f.name
+                    ))
+                })?;
+                let routes: BTreeSet<u32> = if f.header {
+                    r.all_ctors().into_iter().collect()
+                } else {
+                    [c as u32].into()
+                };
+                let types = self.store.key_types(index);
+                for k in targets {
+                    let value = if f.optional {
+                        Val::some(k.clone())
+                    } else {
+                        k.clone()
+                    };
+                    let prefix = [to_key(&types[0], &value)?];
+                    for (d, tid) in self.store.probe(index, &prefix, &routes)? {
+                        let Some((_, stored)) = self.store.fetch(r.ctors[d as usize].heap, tid)?
+                        else {
+                            continue;
+                        };
+                        let v = self.row(rel, d, &stored);
+                        if Self::names(f, &v).as_ref() == Some(k) {
+                            out.insert(self.key_of(rel, &v), (d, v));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out.into_values().collect())
+    }
+
     /// Derives the delete actions of the written effects, forms the statement's change set,
     /// applies it, and checks it at the statement boundary.
     #[expect(
@@ -812,7 +867,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 {
                     continue;
                 }
-                for (c, u) in self.rows(r, None)? {
+                for (c, u) in self.referring(r, &fields, &by_target(&gone))? {
                     let k = (r, self.key_of(r, &u));
                     if minus_written.contains(&(r, u.clone())) || gone.contains(&k) {
                         continue;
@@ -834,8 +889,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
         let mut all = written;
         let targets: BTreeSet<RelId> = gone.iter().map(|(r, _)| *r).collect();
+        let gone_keys = by_target(&gone);
         for (r, fields) in self.referrers(&targets) {
-            for (c, u) in self.rows(r, None)? {
+            for (c, u) in self.referring(r, &fields, &gone_keys)? {
                 if minus_written.contains(&(r, u.clone()))
                     || gone.contains(&(r, self.key_of(r, &u)))
                 {
@@ -1025,6 +1081,15 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             path.pop();
         }
     }
+}
+
+/// Returns the keys of `rows` by relation.
+fn by_target(rows: &BTreeSet<(RelId, Val)>) -> BTreeMap<RelId, BTreeSet<Val>> {
+    let mut out: BTreeMap<RelId, BTreeSet<Val>> = BTreeMap::new();
+    for (r, k) in rows {
+        out.entry(*r).or_default().insert(k.clone());
+    }
+    out
 }
 
 fn at<'v>(v: &'v Val, path: &[usize]) -> Option<&'v Val> {

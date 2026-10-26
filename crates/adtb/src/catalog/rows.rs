@@ -78,8 +78,8 @@ pub struct IndexSpec {
     clause: String,
 }
 
-/// Returns the key index and the uniques and indexes of every relation of `schema` with
-/// catalog ids, by index id.
+/// Returns the key index, the uniques and indexes and the implied indexes of every relation of
+/// `schema` with catalog ids, by index id.
 ///
 /// Panics if an index is over an expression other than a field.
 pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
@@ -117,6 +117,26 @@ pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
                 (false, true) => "Interval",
                 (false, false) => "Plain",
             },
+        };
+        out.insert(id, spec);
+    }
+    for ((r, ctor, field), &id) in &schema.ids.implied {
+        let ctors = ctor.map_or_else(|| all_ctors(schema, *r), |c| vec![c]);
+        let clause = match ctor {
+            None => format!("index ({field})"),
+            Some(c) => {
+                let td = schema.ty(schema.relation(*r).elem_def);
+                format!("index ({field}) in {}", td.ctors()[*c as usize].name)
+            }
+        };
+        let spec = IndexSpec {
+            id,
+            relation: *r,
+            unique: false,
+            ctors,
+            fields: vec![field.clone()],
+            kind: "Implied",
+            clause,
         };
         out.insert(id, spec);
     }

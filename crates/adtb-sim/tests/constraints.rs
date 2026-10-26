@@ -204,15 +204,28 @@ fn every_admitted_example_of_the_constraints_part_is_admitted() {
 }
 
 #[test]
-fn has_identity_without_the_index_on_identities_is_refused_naming_it() {
+fn has_identity_without_a_declared_index_on_identities_is_admitted_through_the_implied_one() {
     let src = SPEC.replacen("  index (user)\n", "", 1);
     let why = refusals(&format!("{src}\n{}\n", ADMITTED[0].1));
+    assert_eq!(Vec::<(String, String)>::new(), why);
+}
+
+#[test]
+fn a_constraint_joining_on_a_field_no_index_leads_with_is_refused_naming_it() {
+    let src = SPEC.replace(
+        "{ id: Key identities, user: Key users }",
+        "{ id: Key identities, user: Text }",
+    );
+    let decl = "constraint has_identity =
+  from u in users
+  where not exists i in identities where i.user == u.name
+  select u";
+    let why = refusals(&format!("{src}\n{decl}\n"));
     let name = |d: &str| ("app::has_identity".to_string(), d.to_string());
     assert_eq!(
-        vec![
-            name("changes to app::users: index (user) in app::identities is missing"),
-            name("changes to app::identities: index (user) in app::identities is missing"),
-        ],
+        vec![name(
+            "changes to app::identities: index (name) in app::users is missing"
+        ),],
         why
     );
 }
@@ -223,13 +236,14 @@ fn an_inclusion_without_an_index_on_its_source_is_refused_naming_the_index() {
   from a in assignments
   where not exists m in memberships where m.user == a.user and m.org == a.org
   select a";
-    let (c, detail) = refused(&format!("{SPEC}\n{decl}\n"));
+    let spec = SPEC.replace("user: Key users, org", "user: Text, org");
+    let (c, detail) = refused(&format!("{spec}\n{decl}\n"));
     assert_eq!("app::assigned_member", c);
     assert_eq!(
         "changes to app::memberships: index (user, org) in app::assignments is missing",
         detail
     );
-    let indexed = SPEC.replacen(
+    let indexed = spec.replacen(
         "relation assignments : Assignment key id generate sequence",
         "relation assignments : Assignment key id generate sequence index (user, org)",
         1,
@@ -239,11 +253,22 @@ fn an_inclusion_without_an_index_on_its_source_is_refused_naming_the_index() {
 
 #[test]
 fn only_the_relations_whose_changes_are_unbounded_are_named() {
-    let src = SPEC.replacen("  index (user)\n", "", 1);
+    let src = SPEC
+        .replacen("  index (user)\n", "", 1)
+        .replace(
+            "{ id: Key identities, user: Key users }",
+            "{ id: Key identities, user: Text }",
+        )
+        .replace("user: Key users, org", "user: Text, org")
+        .replacen(
+            "relation users : User key id generate sequence",
+            "relation users : User key id generate sequence index (name)",
+            1,
+        );
     let decl = "constraint both =
   from u in users
-  where not exists i in identities where i.user == key u
-    and not exists m in memberships where m.user == key u and m.org == u.name
+  where not exists i in identities where i.user == u.name
+    and not exists m in memberships where m.user == u.name and m.org == u.name
   select u";
     let why = refusals(&format!("{src}\n{decl}\n"));
     let name = |d: &str| ("app::both".to_string(), d.to_string());
@@ -367,21 +392,34 @@ fn migrate(first: &str, second: Option<&str>) -> Vec<Result<(), CatalogError>> {
 
 #[test]
 fn a_migration_declaring_a_constraint_outside_the_bound_is_refused() {
-    let got = migrate(&format!("{RUNNING}{HAS_IDENTITY}"), None);
+    let by_email = "add constraint by_email =
+  from u in users
+  where not exists i in identities.EmailPass where i.email == u.name
+  select u
+";
+    let got = migrate(&format!("{RUNNING}{by_email}"), None);
     let Some(Err(CatalogError::Refused(why))) = got.first() else {
         panic!("the migration is not refused: {got:?}")
     };
     assert_eq!(
         vec![
-            "constraint auth::has_identity is not admitted: changes to auth::users: \
-             index (user) in auth::identities is missing",
-            "constraint auth::has_identity is not admitted: changes to auth::identities: \
-             index (user) in auth::identities is missing",
+            "constraint auth::by_email is not admitted: changes to auth::identities.EmailPass: \
+             index (name) in auth::users is missing",
         ],
         *why
     );
-    let indexed = format!("{RUNNING}  index (user)\n{HAS_IDENTITY}");
-    let got = migrate(&indexed, None);
+    let indexed = RUNNING.replacen(
+        "add relation users : User key id generate sequence\n",
+        "add relation users : User key id generate sequence\n  index (name)\n",
+        1,
+    );
+    let got = migrate(&format!("{indexed}{by_email}"), None);
+    assert!(matches!(got.as_slice(), [Ok(())]), "{got:?}");
+}
+
+#[test]
+fn a_migration_declaring_has_identity_with_no_declared_index_is_admitted() {
+    let got = migrate(&format!("{RUNNING}{HAS_IDENTITY}"), None);
     assert!(matches!(got.as_slice(), [Ok(())]), "{got:?}");
 }
 
@@ -1140,4 +1178,159 @@ fn a_concurrent_delete_and_insert_cannot_jointly_violate_an_inclusion() {
         r#"insert assignments { id: assignments.key(1), user: "u", org: "o1", task: "t" }"#,
         "from a in assignments where not exists m in memberships where m.user == a.user and m.org == a.org select a",
     );
+}
+
+#[test]
+fn a_transition_read_under_negation_is_refused_naming_it() {
+    let decl = "constraint once =
+  from a in accounts
+  where not exists d in inserted(accounts) where key d == key a
+  select a";
+    assert_eq!(
+        (
+            "app::once".to_string(),
+            "`inserted(app::accounts)` is read under negation".to_string()
+        ),
+        refused(&format!("{SPEC}\n{decl}\n"))
+    );
+}
+
+#[test]
+fn a_transition_read_inside_an_aggregate_is_refused_naming_it() {
+    let decl = "constraint burst =
+  from u in users
+  where count(a for a in inserted(accounts) where a.owner == key u) > 1
+  select u";
+    assert_eq!(
+        (
+            "app::burst".to_string(),
+            "`inserted(app::accounts)` is read inside an aggregate".to_string()
+        ),
+        refused(&format!("{SPEC}\n{decl}\n"))
+    );
+}
+
+#[test]
+fn a_deleted_read_of_a_constructor_under_not_is_refused_naming_its_constructor() {
+    let decl = "constraint stays_closed =
+  from a in accounts.Open
+  where not (exists d in deleted(accounts.Closed) where key d == key a)
+  select a";
+    assert_eq!(
+        (
+            "app::stays_closed".to_string(),
+            "`deleted(app::accounts.Closed)` is read under negation".to_string()
+        ),
+        refused(&format!("{SPEC}\n{decl}\n"))
+    );
+}
+
+#[test]
+fn a_transition_read_in_an_if_condition_is_refused() {
+    let decl = "constraint quiet =
+  from u in users
+  where if exists e in inserted(events) where e.body == u.name then false else true
+  select u";
+    let why = refusals(&format!("{SPEC}\n{decl}\n"));
+    assert_eq!(
+        vec![(
+            "app::quiet".to_string(),
+            "`inserted(app::events)` is read under negation".to_string()
+        )],
+        why
+    );
+}
+
+#[test]
+fn two_nots_around_a_transition_read_cancel() {
+    let decl = "constraint no_reopen =
+  from n in inserted(accounts.Open)
+  where not (not (exists o in deleted(accounts.Closed) where key o == key n))
+  select n";
+    let why = refusals(&format!("{SPEC}\n{decl}\n"));
+    assert!(
+        why.iter().all(|(_, d)| !d.contains("under negation")),
+        "{why:?}"
+    );
+}
+
+#[test]
+fn a_prior_read_under_negation_is_admitted() {
+    let decl = "constraint was_there =
+  from n in inserted(accounts)
+  where not exists o in prior(accounts) where key o == key n
+  select n";
+    let why = refusals(&format!("{SPEC}\n{decl}\n"));
+    assert!(why.iter().all(|(_, d)| !d.contains("is read")), "{why:?}");
+}
+
+#[test]
+fn a_migration_declaring_a_transition_read_under_negation_is_refused_naming_the_read() {
+    let once = "add constraint once =
+  from u in users
+  where not exists i in inserted(identities) where i.user == key u
+  select u
+";
+    let got = migrate(&format!("{RUNNING}{once}"), None);
+    let Some(Err(CatalogError::Refused(why))) = got.first() else {
+        panic!("the migration is not refused: {got:?}")
+    };
+    assert_eq!(
+        vec![
+            "constraint auth::once is not admitted: `inserted(auth::identities)` is read under negation",
+        ],
+        *why
+    );
+}
+
+const OWNED: &str = r"
+type User = { id: Key users, name: Text }
+relation users : User key id generate sequence
+type Account = { id: Key accounts, owner: Key users }
+relation accounts : Account key id generate sequence
+type Note = { id: Key notes, about: Key users on delete cascade }
+relation notes : Note key id generate sequence
+";
+
+#[test]
+fn deleting_a_referenced_row_reads_its_referrers_through_the_implied_index() {
+    let setup = r#"transact
+  insert users { id: users.key(1), name: "ann" }
+  insert users { id: users.key(2), name: "bo" }
+  insert users { id: users.key(3), name: "cy" }
+  insert accounts { id: accounts.key(1), owner: users.key(1) }
+  insert accounts { id: accounts.key(3), owner: users.key(3) }
+  insert notes { id: notes.key(2), about: users.key(2) }"#;
+    let a = "delete u in users where key u == users.key(2)";
+    let b = "transact
+  insert accounts from (from u in users where key u == users.key(2)
+                        select { id: accounts.key(10), owner: users.key(1) })
+  insert notes { id: notes.key(10), about: users.key(3) }";
+    for order in ["abAB", "abBA", "aAbB", "baAB", "baBA", "bBaA"] {
+        for seed in 0..2 {
+            let (ra, rb, notes) = with_engine(seed, OWNED, |f, db| {
+                let p = prepare(f, setup);
+                let tx = db.begin().expect("a transaction");
+                db.statement(&tx, &p.terms, p.item, &[], 0)
+                    .unwrap_or_else(|e| panic!("seed {seed}: the setup fails: {e:?}"));
+                db.commit(tx).expect("a commit");
+                let (ra, rb) = interleave(f, db, a, b, order);
+                let q = prepare(f, "from n in notes select n.id");
+                let tx = db.begin().expect("a transaction");
+                let notes = db
+                    .statement(&tx, &q.terms, q.item, &[], 0)
+                    .expect("the query runs")
+                    .result;
+                db.abort(tx).expect("an abort");
+                (ra, rb, notes)
+            });
+            let ctx = format!("order {order}, seed {seed}: {ra:?} {rb:?}");
+            assert!(ra.is_ok() && rb.is_ok(), "{ctx}: a probe conflicts");
+            assert_eq!(
+                Val::set(BTreeSet::from([Val::Int(10)])),
+                notes,
+                "{ctx}: the cascade"
+            );
+        }
+    }
 }

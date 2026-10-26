@@ -233,7 +233,10 @@ fn a_shorter_shipped_log_opens_at_the_file_version() {
 #[test]
 fn a_refused_first_migration_fails_open() {
     once(5, |rt| {
-        let unindexed = SHOP.replace("  index (customer)\n", "");
+        let unindexed = SHOP.replace(
+            "where not exists p in payments where p.customer == key c",
+            "where not exists n in notes where n.body == c.name",
+        );
         let got = Database::open_in(rt, "app.adt", &Log::new([unindexed]), &options());
         match got {
             Err(OpenError::MigrationRefused {

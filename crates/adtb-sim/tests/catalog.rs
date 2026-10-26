@@ -426,6 +426,7 @@ fn a_migrated_catalog_reopens_with_the_running_schema() {
                 (field("email"), vec![0]),
                 (field("gid"), vec![1]),
                 (field("sub"), vec![2]),
+                (field("user"), vec![0, 1, 2]),
             ]),
             uniques
         );
@@ -742,4 +743,84 @@ fn an_unfinished_migration_over_a_damaged_page_is_freed_once_the_page_reads() {
         return;
     }
     panic!("no crash point leaves a migration to free");
+}
+
+/// The kind of an implied index as a row of `catalog::indexes` shows it.
+const IMPLIED: &str = "Sum { ctor: 4, fields: [] }, Text(\"index (";
+
+/// Returns the rows of `catalog::indexes` over `auth::identities` after `migration` applies as
+/// the first migration of a fresh database.
+fn identity_indexes(seed: u64, migration: &str) -> Vec<String> {
+    let mut sim = Sim::new(seed, Config::default());
+    let mut out = Vec::new();
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &small_pool()).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        catalog
+            .migrate(&pager, &txns, migration)
+            .expect("the migration applies");
+        let rows = committed(&pager, &catalog, &txns);
+        let identities = catalog.schema().ids.relations[&rel(&catalog, "auth", "identities")];
+        let relation = format!("I64({identities}), ");
+        out = rows[&rel(&catalog, "catalog", "indexes")]
+            .iter()
+            .filter(|row| row.contains(&relation))
+            .cloned()
+            .collect();
+    });
+    out
+}
+
+#[test]
+fn a_reference_field_with_no_declared_index_has_an_implied_one_listed_in_the_catalog() {
+    let rows = identity_indexes(31, RUNNING);
+    let implied: Vec<&String> = rows
+        .iter()
+        .filter(|r| r.contains("Text(\"index (user)\")"))
+        .collect();
+    assert_eq!(1, implied.len(), "{rows:?}");
+    assert!(implied[0].contains(IMPLIED), "{implied:?}");
+    with_migrated(32, |_, catalog, _| {
+        let plan = catalog.plan();
+        let identities = &plan.relations[&rel(catalog, "auth", "identities")];
+        assert!(
+            identities
+                .indexes
+                .iter()
+                .any(|i| i.fields == ["user"] && i.ctors == [0, 1, 2] && !i.unique),
+            "{:?}",
+            identities.indexes
+        );
+    });
+}
+
+#[test]
+fn a_declared_index_leading_with_a_reference_field_replaces_its_implied_one() {
+    let declared = RUNNING.replacen(
+        "  unique (sub) in Apple\n",
+        "  unique (sub) in Apple\n  index (user, id)\n",
+        1,
+    );
+    let rows = identity_indexes(33, &declared);
+    assert!(rows.iter().all(|r| !r.contains(IMPLIED)), "{rows:?}");
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("Text(\"index (user, id)\")")),
+        "{rows:?}"
+    );
+}
+
+#[test]
+fn a_declared_index_over_fewer_constructors_than_hold_the_field_keeps_the_implied_one() {
+    let declared = RUNNING.replacen(
+        "  unique (sub) in Apple\n",
+        "  unique (sub) in Apple\n  index (user) in Google\n",
+        1,
+    );
+    let rows = identity_indexes(34, &declared);
+    assert_eq!(
+        1,
+        rows.iter().filter(|r| r.contains(IMPLIED)).count(),
+        "{rows:?}"
+    );
 }

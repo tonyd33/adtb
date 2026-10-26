@@ -21,6 +21,9 @@ pub struct CatalogIds {
     pub keys: BTreeMap<RelId, u64>,
     /// Uniques and indexes, by relation and position among `RelationDef::indexes`.
     pub indexes: BTreeMap<(RelId, usize), u64>,
+    /// The index each reference field implies, by relation, constructor (`None` for the
+    /// header) and field.
+    pub implied: BTreeMap<(RelId, Option<u32>, String), u64>,
     /// The default a key's `generate` gives.
     pub generated: BTreeMap<RelId, u64>,
     /// Defaults, one for each field a default clause fills, by relation, position among
@@ -73,6 +76,7 @@ pub enum Slot {
     Set(RelId, String),
     Key(RelId),
     Index(RelId, usize),
+    Implied(RelId, Option<u32>, String),
     Generated(RelId),
     Default(RelId, usize, Option<u32>),
     Computed(RelId, usize),
@@ -107,6 +111,7 @@ impl CatalogIds {
             Slot::Set(r, s) => self.sets.insert((r, s), id),
             Slot::Key(r) => self.keys.insert(r, id),
             Slot::Index(r, i) => self.indexes.insert((r, i), id),
+            Slot::Implied(r, c, f) => self.implied.insert((r, c, f), id),
             Slot::Generated(r) => self.generated.insert(r, id),
             Slot::Default(r, i, c) => self.defaults.insert((r, i, c), id),
             Slot::Computed(r, i) => self.computed.insert((r, i), id),
@@ -290,6 +295,17 @@ pub fn objects(
                         &name,
                         Owner::Relation(rel),
                     );
+                    let def = schema.ty(schema.relation(rel).elem_def);
+                    for i in schema.implied_indexes(rel) {
+                        let at = i.ctor.map_or(String::new(), |c| {
+                            format!("{}.", def.ctors()[c as usize].name)
+                        });
+                        push(
+                            Space::Index,
+                            Slot::Implied(rel, i.ctor, i.field.clone()),
+                            format!("index {name} implied by {at}{}", i.field),
+                        );
+                    }
                 }
                 Decl::Set(s) => {
                     if let Some(&ValueDef::Relation(rel)) = values.get(&s.relation.text) {
@@ -741,6 +757,7 @@ pub const TYPES: &[FixedType] = &[
             ("Unique", 144),
             ("Plain", 145),
             ("Interval", 146),
+            ("Implied", 466),
         ],
     ),
     ("catalog", "Index", 147, &[("Index", 148)]),

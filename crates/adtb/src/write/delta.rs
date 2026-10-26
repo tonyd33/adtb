@@ -82,12 +82,21 @@ pub fn compile(
         );
     let mut transitions = Vec::new();
     let mut found = Vec::new();
+    let mut refused = Vec::new();
     for ((module, name), t) in named {
+        let qualified = format!("{}::{name}", schema.module(module).name);
+        let outside = super::polarity::non_monotone(schema, terms, *t);
+        if !outside.is_empty() {
+            refused.extend(outside.into_iter().map(|detail| Refusal {
+                constraint: qualified.clone(),
+                detail,
+            }));
+            continue;
+        }
         let mut reads = BTreeSet::new();
         let mut own = Vec::new();
         scan(terms, *t, &mut BTreeSet::new(), &mut own, &mut reads);
-        let name = format!("{}::{name}", schema.module(module).name);
-        found.push((name, *t, reads));
+        found.push((qualified, *t, reads));
         transitions.extend(own);
     }
     let mut cx = Compiler {
@@ -103,7 +112,6 @@ pub fn compile(
         inputs: BTreeMap::new(),
     };
     let mut out = Vec::new();
-    let mut refused = Vec::new();
     for (name, t, reads) in found {
         cx.inputs.clear();
         match cx.constraint(t) {
@@ -122,6 +130,25 @@ pub fn compile(
         Ok(out)
     } else {
         Err(refused)
+    }
+}
+
+/// Returns the qualified name of `r`, with the constructor set `ctors` when it is not every
+/// constructor.
+pub fn scope_name(schema: &Schema, r: RelId, ctors: &CtorSet) -> String {
+    let rel = schema.relation(r);
+    let name = format!("{}::{}", schema.module(rel.module).name, rel.name);
+    let def = schema.ty(rel.elem_def);
+    if ctors.len() == def.ctors().len() {
+        return name;
+    }
+    let names: Vec<&str> = ctors
+        .iter()
+        .map(|c| def.ctors()[*c as usize].name.as_str())
+        .collect();
+    match names.as_slice() {
+        [one] => format!("{name}.{one}"),
+        many => format!("{name}.({})", many.join(" | ")),
     }
 }
 
@@ -243,11 +270,6 @@ impl Compiler<'_> {
         self.terms.ty(t).clone()
     }
 
-    fn rel_name(&self, r: RelId) -> String {
-        let rel = self.schema.relation(r);
-        format!("{}::{}", self.schema.module(rel.module).name, rel.name)
-    }
-
     fn all_ctors(&self, r: RelId) -> CtorSet {
         let n = self
             .schema
@@ -261,21 +283,8 @@ impl Compiler<'_> {
         s.clone().unwrap_or_else(|| self.all_ctors(r))
     }
 
-    /// Returns `r` with the constructor set `ctors` when it is not every constructor.
     fn scope_name(&self, r: RelId, ctors: &CtorSet) -> String {
-        let name = self.rel_name(r);
-        if *ctors == self.all_ctors(r) {
-            return name;
-        }
-        let def = self.schema.ty(self.schema.relation(r).elem_def);
-        let names: Vec<&str> = ctors
-            .iter()
-            .map(|c| def.ctors()[*c as usize].name.as_str())
-            .collect();
-        match names.as_slice() {
-            [one] => format!("{name}.{one}"),
-            many => format!("{name}.({})", many.join(" | ")),
-        }
+        scope_name(self.schema, r, ctors)
     }
 
     fn bool_ty(&self) -> Ty {

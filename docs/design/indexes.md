@@ -19,11 +19,18 @@ over `{Google, Apple}`.
 Invariant: a sum's key is always covered by a constructor-set index
 over every constructor of the sum, its key index.
 
+Invariant: every reference field of a relation variable of a user
+module is the leading field of an index over every constructor holding
+the field: a declared key, unique or index, or the field's implied
+index ([../spec/constraints.md §2.1](../spec/constraints.md#21-keys-uniques-and-references)).
+The write path finds the referrers of a deleted or moved target by
+probing it.
+
 Invariant: an index's root page is fixed when the index is created and
 never changes while the index exists, so the catalog names an index by
 its root page id.
 
-Rulings: index/ctor-set
+Rulings: index/ctor-set, constraint/admit/reference-index/implied
 
 ## 2. Entries
 

@@ -130,6 +130,23 @@ r.S` holds when every value it holds is the key of a row of `r.S`.
 Both are declared where [model.md](model.md#7-keys) says and are checked
 at the same boundaries as every other constraint (§4).
 
+Each reference field has an implied index on that field, over the
+constructors of the relation variable that hold the field, unless a
+declared key, unique or index ranging over at least those constructors
+has the field as its leading field. The engine builds and maintains the implied index as it does a
+declared one, and the catalog lists it as implied by its reference
+([catalog.md §2.2](catalog.md#22-relation-variables-named-sets-and-indexes)).
+It is the index through which a reference is within the bound of §5:
+a deleted or moved target finds its referrers by probing it, and so
+does the target's delete action. Dropping the declared index the
+implied one was omitted for brings the implied index back.
+
+```adt fragment
+type Account = { id: Key accounts, owner: Key users }
+relation accounts : Account key id generate sequence
+-- implied: index (owner) on accounts, listed as implied by accounts.owner
+```
+
 A unique over a path into a value-level sum field,
 `unique (status.Paid.ref)`, ranges only over the rows whose `status`
 holds `Paid`: no two of them agree on `ref`, and a row whose `status`
@@ -227,7 +244,7 @@ constraint balanced =
 `Option` ([queries.md](queries.md#10-aggregates)). Admission of
 aggregates is in §5.2.
 
-Rulings: constraint/row-check, constraint/domain, constraint/refine/write-only, constraint/fd, constraint/exclusion, constraint/inclusion, constraint/at-least-one, constraint/cardinality, constraint/assertion, constraint/overlap/range-index, constraint/overlap/equality-prefix, btree/sum-field/ctor-field, spec/tiers/three-tiers
+Rulings: constraint/row-check, constraint/domain, constraint/refine/write-only, constraint/fd, constraint/exclusion, constraint/inclusion, constraint/at-least-one, constraint/cardinality, constraint/assertion, constraint/overlap/range-index, constraint/overlap/equality-prefix, btree/sum-field/ctor-field, spec/tiers/three-tiers, constraint/admit/reference-index/implied
 
 ## 3. Scope
 
@@ -351,7 +368,8 @@ Within the bound, a constraint may use:
 
 - joins, filters and `exists`/`not exists` whose correlations are
   covered by indexes;
-- the transition relations of §6;
+- the transition relations of §6, except `inserted` and `deleted`
+  under negation or inside an aggregate (§6.2);
 - `count`, `sum`, `min` and `max` of a field over the rows that share a
   group key, where the group key is the leading fields of an index.
   `min` and `max` also need an index on the aggregated field within
@@ -415,7 +433,33 @@ the state before the first statement that follows its addition, and
 whenever it is evaluated against existing data (§9.2), the change is
 empty: `inserted` and `deleted` are empty and `prior(R)` is `R`.
 
-Rulings: derived/transition/change-visible, write/primitive/delta
+A constraint in which `inserted(R)` or `deleted(R)` is read under
+negation or inside an aggregate is refused when declared, and the
+migration declaring it is refused at its admission check
+([evolution.md §3.2](evolution.md#32-checks-at-apply)).
+
+A read is under negation when it sits in the operand of a `not` (a `not
+exists` included), in an operand of `==` or `!=`, in the scrutinee of a
+`match`, or in the condition of an `if`. Two `not`s around a read
+cancel. The condition of an `if` whose `else` branch is `false` or
+empty, or whose `then` branch is `true`, is not a negation, which
+covers `where`, `and` and `or`; that of an `if` whose `then` branch is
+`false` or empty, or whose `else` branch is `true`, is one `not`. A
+read is inside an aggregate when it sits in the range or body of an
+aggregate or in the source or key of `group` or `top`
+([queries.md §11.2](queries.md#112-stratified-negation-and-aggregation)).
+The refusal names each such read and where it sits.
+
+```adt fragment
+constraint once =
+  from a in accounts
+  where not exists d in inserted(accounts) where key d == key a
+  select a
+-- refused: constraint app::once is not admitted:
+--   `inserted(app::accounts)` is read under negation
+```
+
+Rulings: derived/transition/change-visible, write/primitive/delta, constraint/admit/transition-negation/monotone-only
 
 ## 7. Checking and violation reports
 

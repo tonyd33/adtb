@@ -97,7 +97,7 @@ impl<R: Runtime> Stmt<'_, R> {
         }
         let targets: BTreeSet<RelId> = moved.keys().copied().collect();
         for (r, fields) in self.referrers(&targets) {
-            for (c, u) in self.rows(r, None)? {
+            for (c, u) in self.referring(r, &fields, &moved)? {
                 for f in &fields[c as usize] {
                     if let Some(k) = Self::names(f, &u)
                         && moved.get(&f.target).is_some_and(|ks| ks.contains(&k))

@@ -30,7 +30,12 @@ The compiler emits only correct checks. A constraint whose query reads
 no constructor relation that `Δ*` touches returns the same set as in
 `D`, which is empty, so skipping it is correct.
 
-Rulings: derived/ivm/delta-rules, constraint/enforce/delta, constraint/admit/bounded
+Admission precondition: no admitted constraint reads `inserted` or
+`deleted` under negation or inside an aggregate. Under an empty change
+such a read could make the query return rows, and the skip above would
+miss them.
+
+Rulings: derived/ivm/delta-rules, constraint/enforce/delta, constraint/admit/bounded, constraint/admit/transition-negation/monotone-only
 
 ## 2. Stored views
 

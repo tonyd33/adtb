@@ -703,18 +703,31 @@ fn a_bounded_plan_refuses_a_read_no_index_reaches() {
     let f = running();
     let e = bounded(
         &f,
-        "from x in xs, p in phones where p.owner == x select p",
-        "Set (Key users)",
+        "from x in xs, p in phones where p.seen == x select p",
+        "Set Instant",
     )
-    .expect_err("phones has no index on owner");
+    .expect_err("phones has no index on seen");
     assert_eq!(
         Error::Unbounded {
             rel: f.rel("phones"),
             ctors: vec![0],
-            fields: vec!["owner".to_string()],
+            fields: vec!["seen".to_string()],
         },
         e
     );
+}
+
+#[test]
+fn a_bounded_plan_probes_the_implied_index_of_a_reference() {
+    let f = running();
+    let p = bounded(
+        &f,
+        "from x in xs, p in phones where p.owner == x select p",
+        "Set (Key users)",
+    )
+    .unwrap_or_else(|e| panic!("no plan: {e}"));
+    let shown = format!("{:?}", p.root);
+    assert!(!shown.contains("Scan {"), "{shown}");
 }
 
 #[test]
