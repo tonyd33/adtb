@@ -468,3 +468,78 @@ and [§5.1](../spec/wire.md#51-call) assign them, so generated code
 agrees with every database built from the same log.
 
 TODO: the API by which `adtb-lang` gives a code generator these ids and ordinals is undecided.
+
+## 9. Textual syntax
+
+`adtb-lang` reads and prints the textual syntax of
+[../spec/interop.md §1](../spec/interop.md#1-textual-value-syntax)
+(`textual`) over any consumer's values. A consumer implements
+`Textual` for its value type; `adtb-reference` does for its `Value`
+and `adtb` for its executor's `Val`.
+
+```text
+Form::of(schema, ty) -> Form
+Form::has_syntax(&self) -> bool
+print<V: Textual>(v, form) -> String
+to_text<V: Textual>(v, form) -> String
+parse<V: Textual>(text, form) -> Result<V, ParseError>
+read_document<V: Textual>(schema, text) -> Result<Document<V>, ParseError>
+print_document<V: Textual>(schema, doc) -> String
+Document<V> { header: Option<Header>, relation: RelId, rows: BTreeSet<V> }
+Header { edition: String, version: u64, hash: String }
+ParseError { offset: usize, message: String }
+```
+
+A `Form` is the shape of the values of a type as the syntax needs it,
+computed once from the schema: constructor and field names, key
+forms, the newtypes and prelude types with forms of their own (`Uuid`,
+`Span`), and `Opaque` for a type parameter, function, group or
+`Change`. It holds no schema reference, so a consumer may keep it in a
+compiled plan. `has_syntax` is false when an `Opaque` form occurs in
+it.
+
+`Textual` gives the printer a value's parts and the reader a way to
+build one:
+
+- `scalar` is a value of a base type as a `Scalar`: every integer an
+  `Int`, a decimal its unscaled digits, `Bytes`, `SortKey` and `Uuid`
+  as `Bytes`, a date in days since 1970-01-01, a time of day in
+  microseconds since midnight, an `Instant` in microseconds since
+  1970-01-01T00:00:00Z, and a civil date-time in microseconds since
+  1970-01-01T00:00:00. `of_scalar(s, b)`
+  builds the value of base type `b` that `s` holds.
+- `ctor` and `fields` are a constructor value's index and fields, its
+  header fields first, each in declaration order; `fields` of a
+  record or a composite key value gives them sorted by name.
+  `of_ctor` and `of_record` take the fields in that order, each with
+  its name; a record with none is the unit value.
+- `key` is the key value of a key and `of_key` the key of a key value,
+  whose type is the key value type of
+  [§6](#6-the-schema-a-term-refers-to).
+- `elems` is a set's elements, ascending; `of_set` takes elements in
+  any order, with repeats.
+- `zone_exists(name)` says whether the consumer's zone rules name the
+  zone.
+- `Ord` is the model's order on ordered types
+  ([../spec/model.md §10](../spec/model.md#10-order)); the reader
+  compares a span's ends with it.
+
+Preconditions: `ty` is a type of `schema`; for `print` and `to_text`,
+`form` has no `Opaque` on the path of `v` and `v` is a value of the
+type `form` was computed from; each accessor is called only at the
+form its value was built for, and may panic elsewhere.
+
+Postconditions:
+
+- `parse(&print(&v, &f), &f) == Ok(v)` for every value `v` of form
+  `f`, and equal values print identically. Two consumers' values that
+  are the same model value print identically.
+- `parse` returns `Ok(v)` only for a value of the form; other text
+  gives a `ParseError` holding the byte offset where reading stopped.
+  At `Opaque` it fails with "this type has no textual syntax".
+- `to_text` is the `ToText` primitive: a number or time value as its
+  literal, a `Uuid` in its 8-4-4-4-12 form, a newtype over `Text` as
+  its text; any other value as `print` gives it.
+- `read_document` of `print_document(doc)` is `Ok(doc)`. A document's
+  header is returned as written; translating a document written at
+  another version is the caller's.

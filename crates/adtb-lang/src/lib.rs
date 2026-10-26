@@ -6,6 +6,7 @@
 
 pub mod analysis;
 pub mod ast;
+pub mod calendar;
 pub mod canon;
 pub mod check;
 pub mod collation;
@@ -18,5 +19,6 @@ pub mod parse;
 pub mod resolve;
 pub mod schema;
 pub mod span;
+pub mod textual;
 pub mod types;
 pub mod visit;

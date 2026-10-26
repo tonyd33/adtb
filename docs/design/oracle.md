@@ -131,23 +131,10 @@ Header { edition: String, version: u64, hash: String }
 
 These read and print the textual syntax of
 [../spec/interop.md §1](../spec/interop.md#1-textual-value-syntax)
-over the values of §2, at the reader's version of `schema`.
-
-Preconditions: `ty` is a type of `schema` with no type parameter,
-function or `Change` in it; for `print`, `v` is a value of `ty`; for
-`print_document`, every row is a row of `doc.relation`.
-
-Postconditions:
-
-- `parse(schema, &print(schema, &v, &ty), &ty) == Ok(v)` for every
-  value `v` of `ty`, and equal values print identically.
-- `parse` returns `Ok(v)` only for a value `v` of `ty`; text that is
-  not the textual syntax of a value of `ty` gives a `ParseError`
-  holding the byte offset where reading stopped.
-- `read_document` of `print_document(doc)` is `Ok(doc)`. A document's
-  header is returned as written: names are read at the reader's
-  version, and translating a document written at another version is
-  the caller's.
+over the values of §2, at the reader's version of `schema`. Each is
+the function of [kernel.md §9](kernel.md#9-textual-syntax) at
+`Form::of(schema, ty)`, or at `schema` for a document, over `Value`,
+and has its preconditions and postconditions.
 
 ### 1.3 Deviations
 

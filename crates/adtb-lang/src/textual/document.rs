@@ -1,11 +1,9 @@
 use std::collections::BTreeSet;
 
-use adtb_lang::schema::Schema;
-use adtb_lang::types::RelId;
-
-use super::print::print;
 use super::read::{ParseError, Reader};
-use crate::value::Value;
+use super::{Form, Textual, print};
+use crate::schema::Schema;
+use crate::types::RelId;
 
 /// The first line of a versioned document: the edition of the textual syntax and the schema
 /// version, with its hash, that its names are written at.
@@ -19,10 +17,10 @@ pub struct Header {
 /// A text document holding rows of one relation variable. A document with no header is written
 /// at the reader's version.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Document {
+pub struct Document<V> {
     pub header: Option<Header>,
     pub relation: RelId,
-    pub rows: BTreeSet<Value>,
+    pub rows: BTreeSet<V>,
 }
 
 impl Reader<'_> {
@@ -70,8 +68,8 @@ impl Reader<'_> {
 
 /// Reads a document: an optional header line `text EDITION pins VERSION (HASH)`, then
 /// `data RELATION`, then the rows of the relation in the textual syntax, in any order.
-pub fn read_document(schema: &Schema, text: &str) -> Result<Document, ParseError> {
-    let mut r = Reader::new(schema, text);
+pub fn read_document<V: Textual>(schema: &Schema, text: &str) -> Result<Document<V>, ParseError> {
+    let mut r = Reader::new(text);
     r.ws();
     let at = r.pos;
     let mut header = None;
@@ -98,10 +96,10 @@ pub fn read_document(schema: &Schema, text: &str) -> Result<Document, ParseError
         return r.fail(format!("no relation `{name}`"));
     };
     let rel = RelId(i as u32);
-    let ty = schema.relation(rel).elem.clone();
+    let form = Form::of(schema, &schema.relation(rel).elem);
     let mut rows = BTreeSet::new();
     while !r.at_end() {
-        rows.insert(r.value(&ty)?);
+        rows.insert(r.value(&form)?);
     }
     Ok(Document {
         header,
@@ -111,8 +109,9 @@ pub fn read_document(schema: &Schema, text: &str) -> Result<Document, ParseError
 }
 
 /// Returns `doc` as text: its header, its `data` line, and one row per line in ascending order.
-pub fn print_document(schema: &Schema, doc: &Document) -> String {
+pub fn print_document<V: Textual>(schema: &Schema, doc: &Document<V>) -> String {
     let r = schema.relation(doc.relation);
+    let form = Form::of(schema, &r.elem);
     let mut out = String::new();
     if let Some(h) = &doc.header {
         out.push_str(&format!(
@@ -122,7 +121,7 @@ pub fn print_document(schema: &Schema, doc: &Document) -> String {
     }
     out.push_str(&format!("data {}\n", r.name));
     for row in &doc.rows {
-        out.push_str(&print(schema, row, &r.elem));
+        out.push_str(&print(row, &form));
         out.push('\n');
     }
     out

@@ -53,8 +53,8 @@ different dependencies, consumers or stability promises:
 
 | Crate | Contents | Depends on |
 | --- | --- | --- |
-| `adtb-lang` | Lexer, parser, type checker, exhaustiveness, desugaring to the kernel; no I/O | standard library, Unicode normalisation and regular expression syntax |
-| `adtb-reference` | The reference interpreter and the textual value syntax ([oracle.md](oracle.md)) | `adtb-lang`, Unicode, collation, regular expression and zone tables |
+| `adtb-lang` | Lexer, parser, type checker, exhaustiveness, desugaring to the kernel, the textual value syntax ([kernel.md §9](kernel.md#9-textual-syntax)); no I/O | standard library, Unicode normalisation and regular expression syntax |
+| `adtb-reference` | The reference interpreter ([oracle.md](oracle.md)) | `adtb-lang`, Unicode, collation, regular expression and zone tables |
 | `adtb-sys` | Every `unsafe` block: page memory, direct I/O buffers, `io_uring`, atomic page reads ([sys.md](sys.md)); the runtime interfaces: I/O, clock, threads, entropy ([runtime.md](runtime.md)) | `libc` and allowlisted system crates |
 | `adtb` | Engine core: catalog, planner, executor, transactions, storage, over the I/O interface of [runtime.md](runtime.md) | `adtb-lang`, `adtb-sys` |
 | `adtb-sim` | Simulated storage, network, clock, randomness and scheduler, fault injection ([runtime.md §5](runtime.md#5-simulated-storage)), and the tests that run the engine over them; nothing depends on it | `adtb` |
@@ -69,6 +69,7 @@ design files of their own.
 | Boundary | Provider | Consumers | Design file |
 | --- | --- | --- | --- |
 | Typed kernel terms | `adtb-lang` | `adtb`, `adtb-reference`, code generators | [kernel.md](kernel.md) |
+| Textual value syntax | `adtb-lang` | `adtb`, `adtb-reference` | [kernel.md §9](kernel.md#9-textual-syntax) |
 | Safe page memory and I/O buffers | `adtb-sys` | `adtb` | [sys.md](sys.md) |
 | I/O, time, threads, randomness | I/O backends, `adtb-sim` | `adtb` | [runtime.md](runtime.md) |
 | File, pages, log, recovery | pager and log | heaps, indexes, replication, backup, verify | [storage.md](storage.md) |
@@ -148,7 +149,7 @@ relation identities : Identity
 
 ## 7. Files
 
-- [kernel.md](kernel.md): the typed kernel terms `adtb-lang` hands to the engine, the reference interpreter and code generators.
+- [kernel.md](kernel.md): the typed kernel terms `adtb-lang` hands to the engine, the reference interpreter and code generators, and the textual value syntax over either's values.
 - [sys.md](sys.md): the safe types `adtb-sys` exposes and the unsafe invariants behind them.
 - [runtime.md](runtime.md): the I/O interface, the worker loop, time, threads, randomness, and the faults simulated storage injects.
 - [storage.md](storage.md): the file, pages, log records and blocks, write-ahead rules, checkpoints, recovery, encryption sealing and format versions.

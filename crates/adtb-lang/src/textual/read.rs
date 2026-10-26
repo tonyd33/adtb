@@ -1,15 +1,9 @@
-use std::collections::BTreeSet;
 use std::fmt;
 
-use adtb_lang::lex;
-use adtb_lang::schema::{Schema, TypeDefKind};
-use adtb_lang::types::{Base, RelId, Ty};
-
-use super::print::{is_prelude, key_field_ty};
-use crate::num::in_range;
-use crate::time::{MICROS_PER_DAY, at_day, date_in_range, days_from_civil, days_in_month};
-use crate::value::{Value, canon32, canon64};
-use crate::zone;
+use super::{Ctor, Form, KeyForm, Scalar, Textual};
+use crate::calendar::{MICROS_PER_DAY, at_day, date_in_range, days_from_civil, days_in_month};
+use crate::lex;
+use crate::types::Base;
 
 /// Why text does not read as a value: the byte offset where reading stopped, and what it
 /// expected there.
@@ -29,16 +23,60 @@ impl std::error::Error for ParseError {}
 
 type P<T> = Result<T, ParseError>;
 
-/// Reads `text`, the textual syntax of one value, at type `ty`.
-pub fn parse(schema: &Schema, text: &str, ty: &Ty) -> P<Value> {
-    let mut r = Reader::new(schema, text);
-    let v = r.value(ty)?;
+/// Reads `text`, the textual syntax of one value, at form `form`.
+pub fn parse<V: Textual>(text: &str, form: &Form) -> P<V> {
+    let mut r = Reader::new(text);
+    let v = r.value(form)?;
     r.end()?;
     Ok(v)
 }
 
+/// Returns the 16 bytes of the UUID `t` writes in the 8-4-4-4-12 form, in either case.
+pub fn parse_uuid(t: &str) -> Option<Vec<u8>> {
+    let b = t.as_bytes();
+    if b.len() != 36 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(16);
+    let mut i = 0;
+    while i < 36 {
+        if matches!(i, 8 | 13 | 18 | 23) {
+            if b[i] != b'-' {
+                return None;
+            }
+            i += 1;
+            continue;
+        }
+        let hi = char::from(b[i]).to_digit(16)?;
+        let lo = char::from(b[i + 1]).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+        i += 2;
+    }
+    Some(out)
+}
+
+/// Returns `f` with `-0.0` made `0.0` and every NaN made the one NaN.
+fn canon64(f: f64) -> f64 {
+    if f.is_nan() {
+        f64::NAN
+    } else if f == 0.0 {
+        0.0
+    } else {
+        f
+    }
+}
+
+fn canon32(f: f32) -> f32 {
+    if f.is_nan() {
+        f32::NAN
+    } else if f == 0.0 {
+        0.0
+    } else {
+        f
+    }
+}
+
 pub(super) struct Reader<'s> {
-    schema: &'s Schema,
     pub(super) src: &'s str,
     pub(super) pos: usize,
 }
@@ -52,12 +90,8 @@ fn is_ident_char(c: u8) -> bool {
 }
 
 impl<'s> Reader<'s> {
-    pub(super) fn new(schema: &'s Schema, src: &'s str) -> Reader<'s> {
-        Reader {
-            schema,
-            src,
-            pos: 0,
-        }
+    pub(super) fn new(src: &'s str) -> Reader<'s> {
+        Reader { src, pos: 0 }
     }
 
     pub(super) fn fail<T>(&self, message: impl Into<String>) -> P<T> {
@@ -174,18 +208,19 @@ impl<'s> Reader<'s> {
         }
     }
 
-    fn integer(&mut self, b: Base) -> P<Value> {
+    fn integer(&mut self, b: Base) -> P<i64> {
         let neg = self.sign();
         let d = self.some_digits()?.trim_start_matches('0');
         let v = d.parse::<i128>().unwrap_or(0);
         let v = if neg { -v } else { v };
-        match (d.len() <= 20).then(|| in_range(v, b)).flatten() {
-            Some(x) => Ok(Value::Int(x)),
+        let in_range = |(lo, hi): (i64, i64)| i128::from(lo) <= v && v <= i128::from(hi);
+        match b.int_range().filter(|r| d.len() <= 20 && in_range(*r)) {
+            Some(_) => Ok(v as i64),
             None => self.fail("an integer out of range of its type"),
         }
     }
 
-    fn decimal(&mut self, s: u8) -> P<Value> {
+    fn decimal(&mut self, s: u8) -> P<i128> {
         let neg = self.sign();
         let whole = self.some_digits()?.trim_start_matches('0');
         let frac = if self.glued(".") {
@@ -202,7 +237,7 @@ impl<'s> Reader<'s> {
             return self.fail("a decimal of more than 38 digits");
         }
         let v = digits.parse::<i128>().unwrap_or(0);
-        Ok(Value::Decimal(if neg { -v } else { v }, s))
+        Ok(if neg { -v } else { v })
     }
 
     fn float(&mut self) -> P<f64> {
@@ -423,7 +458,7 @@ impl<'s> Reader<'s> {
         }
     }
 
-    fn period(&mut self) -> P<Value> {
+    fn period(&mut self) -> P<(i32, i32)> {
         self.ws();
         if !self.glued("P") {
             return self.fail("expected `P`");
@@ -436,10 +471,10 @@ impl<'s> Reader<'s> {
         if !self.glued("D") {
             return self.fail("expected `D`");
         }
-        Ok(Value::Period { months, days })
+        Ok((months, days))
     }
 
-    fn zone(&mut self) -> P<String> {
+    fn zone<V: Textual>(&mut self) -> P<&'s str> {
         if !self.glued("[") {
             return self.fail("expected `[`");
         }
@@ -448,55 +483,73 @@ impl<'s> Reader<'s> {
             return self.fail("expected `]`");
         };
         let name = &self.src[start..start + len];
-        if !zone::exists(name) {
+        if !V::zone_exists(name) {
             return self.fail(format!("no zone `{name}` in the zone rules"));
         }
         self.pos += len + 1;
-        Ok(name.to_string())
+        Ok(name)
     }
 
-    fn base(&mut self, b: Base) -> P<Value> {
-        Ok(match b {
-            Base::I8 | Base::I16 | Base::I32 | Base::I64 => self.integer(b)?,
-            Base::Decimal(s) => self.decimal(s)?,
-            Base::F64 => Value::F64(canon64(self.float()?)),
-            Base::F32 => Value::F32(canon32(self.float32()?)),
-            Base::Text => Value::Text(self.text()?),
-            Base::Bytes => Value::Bytes(self.hex()?),
-            Base::SortKey => Value::SortKey(self.hex()?),
+    fn base<V: Textual>(&mut self, b: Base) -> P<V> {
+        let text;
+        let bytes;
+        let s = match b {
+            Base::I8 | Base::I16 | Base::I32 | Base::I64 => Scalar::Int(self.integer(b)?),
+            Base::Decimal(s) => Scalar::Decimal(self.decimal(s)?),
+            Base::F64 => Scalar::F64(canon64(self.float()?)),
+            Base::F32 => Scalar::F32(canon32(self.float32()?)),
+            Base::Text => {
+                text = self.text()?;
+                Scalar::Text(&text)
+            }
+            Base::Bytes | Base::SortKey => {
+                bytes = self.hex()?;
+                Scalar::Bytes(&bytes)
+            }
             Base::Instant => {
                 let t = self.datetime()?;
                 if !self.glued("Z") {
                     return self.fail("expected `Z`");
                 }
-                Value::Instant(t)
+                Scalar::Instant(t)
             }
-            Base::Date => Value::Date(self.date()?),
-            Base::Time => Value::Time(self.time()?),
-            Base::DateTime => Value::DateTime(self.datetime()?),
+            Base::Date => Scalar::Date(self.date()?),
+            Base::Time => Scalar::Time(self.time()?),
+            Base::DateTime => Scalar::DateTime(self.datetime()?),
             Base::ZonedDateTime => {
-                let t = self.datetime()?;
-                Value::Zoned(t, self.zone()?)
+                let local = self.datetime()?;
+                Scalar::Zoned {
+                    local,
+                    zone: self.zone::<V>()?,
+                }
             }
-            Base::Duration => Value::Duration(self.duration()?),
-            Base::Period => self.period()?,
-        })
+            Base::Duration => Scalar::Duration(self.duration()?),
+            Base::Period => {
+                let (months, days) = self.period()?;
+                Scalar::Period { months, days }
+            }
+        };
+        Ok(V::of_scalar(s, b))
     }
 
-    fn fields(&mut self, tys: &[(String, Ty)]) -> P<Vec<(String, Value)>> {
+    fn fields<'f, V: Textual>(&mut self, forms: &'f [(String, Form)]) -> P<Vec<(&'f str, V)>> {
         self.expect("{")?;
-        self.field_list(tys, "}")
+        self.field_list(forms, "}")
     }
 
-    /// Reads `f: v, ...` up to and including `close`, with every field of `tys` once, in any
-    /// order, and returns the values in the order of `tys`.
-    fn field_list(&mut self, tys: &[(String, Ty)], close: &str) -> P<Vec<(String, Value)>> {
-        let mut got: Vec<Option<Value>> = vec![None; tys.len()];
+    /// Reads `f: v, ...` up to and including `close`, with every field of `forms` once, in any
+    /// order, and returns the values in the order of `forms`.
+    fn field_list<'f, V: Textual>(
+        &mut self,
+        forms: &'f [(String, Form)],
+        close: &str,
+    ) -> P<Vec<(&'f str, V)>> {
+        let mut got: Vec<Option<V>> = (0..forms.len()).map(|_| None).collect();
         if !self.eat(close) {
             loop {
                 let at = self.pos;
                 let name = self.ident()?;
-                let Some(i) = tys.iter().position(|(n, _)| n == name) else {
+                let Some(i) = forms.iter().position(|(n, _)| n == name) else {
                     self.pos = at;
                     return self.fail(format!("no field `{name}`"));
                 };
@@ -505,17 +558,18 @@ impl<'s> Reader<'s> {
                     return self.fail(format!("field `{name}` given twice"));
                 }
                 self.expect(":")?;
-                got[i] = Some(self.value(&tys[i].1)?);
+                got[i] = Some(self.value(&forms[i].1)?);
                 if self.eat(close) {
                     break;
                 }
                 self.expect(",")?;
             }
         }
-        tys.iter()
+        forms
+            .iter()
             .zip(got)
             .map(|((n, _), v)| match v {
-                Some(v) => Ok((n.clone(), v)),
+                Some(v) => Ok((n.as_str(), v)),
                 None => self.fail(format!("field `{n}` is missing")),
             })
             .collect()
@@ -532,61 +586,118 @@ impl<'s> Reader<'s> {
         self.name()
     }
 
-    fn key(&mut self, rel: RelId) -> P<Value> {
-        let schema = self.schema;
-        let r = schema.relation(rel);
+    /// Reads a constructor name and returns its index, which `allowed` must hold.
+    fn ctor_index<'n>(
+        &mut self,
+        names: impl Iterator<Item = &'n str>,
+        allowed: Option<&[u32]>,
+    ) -> P<u32> {
         let at = self.pos;
-        if self.name()? != r.name {
+        let name = self.ctor_name()?;
+        let found = names
+            .enumerate()
+            .find(|(_, n)| *n == name)
+            .map(|(c, _)| c as u32);
+        match found {
+            Some(c) if allowed.is_none_or(|s| s.contains(&c)) => Ok(c),
+            _ => {
+                self.pos = at;
+                self.fail(format!("`{name}` is not a constructor of this type"))
+            }
+        }
+    }
+
+    fn sum<V: Textual>(&mut self, ctors: &[Ctor], allowed: Option<&[u32]>) -> P<V> {
+        let c = self.ctor_index(ctors.iter().map(|c| c.name.as_str()), allowed)?;
+        let fields = &ctors[c as usize].fields;
+        if fields.is_empty() {
+            return Ok(V::of_ctor(c, Vec::new()));
+        }
+        Ok(V::of_ctor(c, self.fields(fields)?))
+    }
+
+    fn key<V: Textual>(&mut self, rel: &str, value: &KeyForm) -> P<V> {
+        let at = self.pos;
+        if self.name()? != rel {
             self.pos = at;
-            return self.fail(format!("expected a key of `{}`", r.name));
+            return self.fail(format!("expected a key of `{rel}`"));
         }
         if !self.glued(".key(") {
             return self.fail("expected `.key(`");
         }
-        let v = match r.key.as_slice() {
-            [f] => {
-                let v = self.value(&key_field_ty(schema, rel, f))?;
+        let v = match value {
+            KeyForm::One(f) => {
+                let v = self.value(f)?;
                 self.expect(")")?;
                 v
             }
-            fs => {
-                let mut tys: Vec<(String, Ty)> = fs
-                    .iter()
-                    .map(|f| (f.clone(), key_field_ty(schema, rel, f)))
-                    .collect();
-                tys.sort_by(|a, b| a.0.cmp(&b.0));
-                Value::Record(self.field_list(&tys, ")")?)
-            }
+            KeyForm::Fields(fs) => V::of_record(self.field_list(fs, ")")?),
         };
-        Ok(Value::key(v))
+        Ok(V::of_key(v))
     }
 
-    fn data(&mut self, ty: &Ty) -> P<Value> {
-        let schema = self.schema;
-        let Ty::Data { def, args, ctors } = ty else {
-            unreachable!()
+    fn uuid<V: Textual>(&mut self) -> P<V> {
+        self.expect("uuid")?;
+        if !self.glued("(") {
+            return self.fail("expected `(`");
+        }
+        let at = self.pos;
+        let t = self.text()?;
+        let Some(b) = parse_uuid(&t) else {
+            self.pos = at;
+            return self.fail("not a UUID in the 8-4-4-4-12 form");
         };
-        let d = schema.ty(*def);
-        match &d.kind {
-            TypeDefKind::Newtype { .. } if is_prelude(schema, ty, "Uuid") => {
-                self.expect("uuid")?;
-                if !self.glued("(") {
-                    return self.fail("expected `(`");
+        self.expect(")")?;
+        Ok(V::of_scalar(Scalar::Bytes(&b), Base::Bytes))
+    }
+
+    fn span<V: Textual>(&mut self, point: &Form) -> P<V> {
+        let at = self.pos;
+        self.expect("span")?;
+        if !self.glued("(") {
+            return self.fail("expected `(`");
+        }
+        let start: V = self.value(point)?;
+        self.expect(",")?;
+        let end = self.value(point)?;
+        self.expect(")")?;
+        if start > end {
+            self.pos = at;
+            return self.fail("a span whose start is after its end");
+        }
+        Ok(V::of_ctor(0, vec![("start", start), ("end", end)]))
+    }
+
+    fn set<V: Textual>(&mut self, elem: &Form, nonempty: bool) -> P<V> {
+        let at = self.pos;
+        self.expect("[")?;
+        let mut out = Vec::new();
+        if !self.eat("]") {
+            loop {
+                out.push(self.value(elem)?);
+                if self.eat("]") {
+                    break;
                 }
-                let at = self.pos;
-                let t = self.text()?;
-                let Some(b) = crate::prim::parse_uuid(&t) else {
-                    self.pos = at;
-                    return self.fail("not a UUID in the 8-4-4-4-12 form");
-                };
-                self.expect(")")?;
-                Ok(Value::Bytes(b))
+                self.expect(",")?;
             }
-            TypeDefKind::Newtype { base, .. } => {
+        }
+        if out.is_empty() && nonempty {
+            self.pos = at;
+            return self.fail("an empty set where a nonempty one is required");
+        }
+        Ok(V::of_set(out))
+    }
+
+    pub(super) fn value<V: Textual>(&mut self, form: &Form) -> P<V> {
+        self.ws();
+        match form {
+            Form::Base(b) => self.base(*b),
+            Form::Uuid => self.uuid(),
+            Form::Newtype { name, base } => {
                 let at = self.pos;
-                if self.name()? != d.name {
+                if self.name()? != name {
                     self.pos = at;
-                    return self.fail(format!("expected `{}(`", d.name));
+                    return self.fail(format!("expected `{name}(`"));
                 }
                 if !self.glued("(") {
                     return self.fail("expected `(`");
@@ -595,118 +706,21 @@ impl<'s> Reader<'s> {
                 self.expect(")")?;
                 Ok(v)
             }
-            TypeDefKind::Sum { .. } if is_prelude(schema, ty, "Span") => {
-                let at = self.pos;
-                self.expect("span")?;
-                if !self.glued("(") {
-                    return self.fail("expected `(`");
-                }
-                let start = self.value(&args[0])?;
-                self.expect(",")?;
-                let end = self.value(&args[0])?;
-                self.expect(")")?;
-                if start > end {
-                    self.pos = at;
-                    return self.fail("a span whose start is after its end");
-                }
-                Ok(Value::Ctor(
-                    0,
-                    vec![("start".into(), start), ("end".into(), end)],
-                ))
+            Form::Span(point) => self.span(point),
+            Form::Sum { ctors, allowed } => self.sum(ctors, allowed.as_deref()),
+            Form::Tag(names) => {
+                let c = self.ctor_index(names.iter().map(String::as_str), None)?;
+                Ok(V::of_ctor(c, Vec::new()))
             }
-            TypeDefKind::Sum {
-                header, ctors: all, ..
-            } => {
-                let at = self.pos;
-                let name = self.ctor_name()?;
-                let c = match d.ctor_index(name) {
-                    Some(c) if ctors.as_ref().is_none_or(|s| s.contains(&c)) => c,
-                    _ => {
-                        self.pos = at;
-                        return self.fail(format!("`{name}` is not a constructor of this type"));
-                    }
-                };
-                let tys: Vec<(String, Ty)> = header
-                    .iter()
-                    .chain(&all[c as usize].fields)
-                    .map(|f| (f.name.clone(), f.ty.subst(args)))
-                    .collect();
-                if tys.is_empty() {
-                    return Ok(Value::Ctor(c, Vec::new()));
-                }
-                Ok(Value::Ctor(c, self.fields(&tys)?))
-            }
-        }
-    }
-
-    pub(super) fn value(&mut self, ty: &Ty) -> P<Value> {
-        self.ws();
-        match ty {
-            Ty::Base(b) => self.base(*b),
-            Ty::Data { .. } => self.data(ty),
-            Ty::Sum { ctors, sel } => {
-                let at = self.pos;
-                let name = self.ctor_name()?;
-                let c = match ctors.iter().position(|(n, _)| n == name) {
-                    Some(c) if sel.as_ref().is_none_or(|s| s.contains(&(c as u32))) => c,
-                    _ => {
-                        self.pos = at;
-                        return self.fail(format!("`{name}` is not a constructor of this type"));
-                    }
-                };
-                let tys = &ctors[c].1;
-                if tys.is_empty() {
-                    return Ok(Value::Ctor(c as u32, Vec::new()));
-                }
-                Ok(Value::Ctor(c as u32, self.fields(tys)?))
-            }
-            Ty::Tag(inner) => {
-                let at = self.pos;
-                let name = self.ctor_name()?;
-                let c = match inner.as_ref() {
-                    Ty::Data { def, .. } => self.schema.ty(*def).ctor_index(name),
-                    Ty::Sum { ctors, .. } => {
-                        ctors.iter().position(|(n, _)| n == name).map(|c| c as u32)
-                    }
-                    _ => None,
-                };
-                match c {
-                    Some(c) => Ok(Value::Ctor(c, Vec::new())),
-                    None => {
-                        self.pos = at;
-                        self.fail(format!("`{name}` is not a constructor of this type"))
-                    }
-                }
-            }
-            Ty::Record(tys) => Ok(Value::Record(self.fields(tys)?)),
-            Ty::Unit => {
+            Form::Record(fs) => Ok(V::of_record(self.fields(fs)?)),
+            Form::Unit => {
                 self.expect("(")?;
                 self.expect(")")?;
-                Ok(Value::unit())
+                Ok(V::of_record(Vec::new()))
             }
-            Ty::Key { rel, .. } => self.key(*rel),
-            Ty::Set(t) | Ty::NonEmpty(t) => {
-                let at = self.pos;
-                self.expect("[")?;
-                let mut out = BTreeSet::new();
-                if !self.eat("]") {
-                    loop {
-                        out.insert(self.value(t)?);
-                        if self.eat("]") {
-                            break;
-                        }
-                        self.expect(",")?;
-                    }
-                }
-                if out.is_empty() && matches!(ty, Ty::NonEmpty(_)) {
-                    self.pos = at;
-                    return self.fail("an empty set where a nonempty one is required");
-                }
-                Ok(Value::Set(out))
-            }
-            Ty::Param(_) | Ty::Group(..) | Ty::Fn(..) | Ty::Change => {
-                self.fail("this type has no textual syntax")
-            }
+            Form::Key { rel, value } => self.key(rel, value),
+            Form::Set { elem, nonempty } => self.set(elem, *nonempty),
+            Form::Opaque => self.fail("this type has no textual syntax"),
         }
     }
 }

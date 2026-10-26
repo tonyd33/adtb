@@ -129,19 +129,9 @@ pub fn float_scaled(f: f64, s: u8, r: Rounding) -> Result<Big, Fault> {
     }
 }
 
-pub fn int_range(b: Base) -> Option<(i64, i64)> {
-    Some(match b {
-        Base::I8 => (i64::from(i8::MIN), i64::from(i8::MAX)),
-        Base::I16 => (i64::from(i16::MIN), i64::from(i16::MAX)),
-        Base::I32 => (i64::from(i32::MIN), i64::from(i32::MAX)),
-        Base::I64 => (i64::MIN, i64::MAX),
-        _ => return None,
-    })
-}
-
 /// Returns `v` when it lies in the range of integer type `b`.
 pub fn in_range(v: i128, b: Base) -> Option<i64> {
-    let (lo, hi) = int_range(b)?;
+    let (lo, hi) = b.int_range()?;
     (i128::from(lo) <= v && v <= i128::from(hi)).then_some(v as i64)
 }
 

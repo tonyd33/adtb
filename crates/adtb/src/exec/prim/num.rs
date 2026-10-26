@@ -271,12 +271,3 @@ pub fn decimal_text(d: i128, s: u8) -> String {
         format!("{sign}{int}.{frac}")
     }
 }
-
-/// Returns the shortest decimal form of `x` that reads back as `x`, or `NaN`, `inf` or `-inf`.
-pub fn f64_text(x: f64) -> String {
-    format!("{x:?}")
-}
-
-pub fn f32_text(x: f32) -> String {
-    format!("{x:?}")
-}

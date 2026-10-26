@@ -67,6 +67,17 @@ impl Base {
             Base::I8 | Base::I16 | Base::I32 | Base::I64 | Base::Decimal(_) | Base::F32 | Base::F64
         )
     }
+
+    /// Returns the least and greatest values of an integer type.
+    pub fn int_range(self) -> Option<(i64, i64)> {
+        Some(match self {
+            Base::I8 => (i64::from(i8::MIN), i64::from(i8::MAX)),
+            Base::I16 => (i64::from(i16::MIN), i64::from(i16::MAX)),
+            Base::I32 => (i64::from(i32::MIN), i64::from(i32::MAX)),
+            Base::I64 => (i64::MIN, i64::MAX),
+            _ => return None,
+        })
+    }
 }
 
 /// Built-in type and bound names; no type or type parameter may take one.

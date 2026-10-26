@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use adtb_lang::kernel::Prim;
 use adtb_lang::schema::Schema;
+use adtb_lang::textual::{self, Form};
 use adtb_lang::types::{Base, Ty};
 
 use super::types::{base, option_arg};
@@ -11,17 +12,24 @@ use super::wide::{Wide, cmp_decimal, rescaled};
 use super::{Error, Fault};
 
 mod num;
-mod textual;
+mod syntax;
 
 /// Returns the canonical printed form of `v`, a value of type `ty`.
 pub(crate) fn print(schema: &Schema, ty: &Ty, v: &Val) -> Result<String, Error> {
-    textual::print(v, &Form::of(schema, ty)?)
+    Ok(textual::print(v, &form(schema, ty)?))
+}
+
+fn form(schema: &Schema, ty: &Ty) -> Result<Form, Error> {
+    let f = Form::of(schema, ty);
+    if !f.has_syntax() {
+        return unsupported(format!("the textual form of {ty:?}"));
+    }
+    Ok(f)
 }
 mod time;
 mod unicode;
 
 use num::Rounding;
-use textual::Form;
 use time::MICROS_PER_DAY;
 use unicode::{Case, Collator, Pattern};
 
@@ -418,12 +426,12 @@ pub fn choose(
             }
         }
         Prim::ParseUuid => Op::ParseUuid,
-        Prim::ToText => Op::ToText(Arc::new(Form::of(schema, &args[0])?)),
-        Prim::Print => Op::Print(Arc::new(Form::of(schema, &args[0])?)),
+        Prim::ToText => Op::ToText(Arc::new(form(schema, &args[0])?)),
+        Prim::Print => Op::Print(Arc::new(form(schema, &args[0])?)),
         Prim::Parse => {
             let t = option_arg(schema, ty)
                 .ok_or_else(|| Error::Internal("`parse` returns an Option".into()))?;
-            Op::Parse(Arc::new(Form::of(schema, &t)?))
+            Op::Parse(Arc::new(form(schema, &t)?))
         }
         Prim::AddPeriod => Op::AddPeriod {
             reject: option_arg(schema, ty).is_some(),
@@ -864,11 +872,11 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
             Some(b) => Val::Bytes(Arc::from(b)),
             None => return Ok(Err(Fault::InvalidText)),
         },
-        Op::ToText(f) => Val::Text(Arc::from(textual::text(x(), f)?)),
-        Op::Print(f) => Val::Text(Arc::from(textual::print(x(), f)?)),
+        Op::ToText(f) => Val::Text(Arc::from(textual::to_text(x(), f))),
+        Op::Print(f) => Val::Text(Arc::from(textual::print(x(), f))),
         Op::Parse(f) => match textual::parse(text(x())?, f) {
-            Some(v) => Val::some(v),
-            None => Val::none(),
+            Ok(v) => Val::some(v),
+            Err(_) => Val::none(),
         },
         Op::AddPeriod { reject } => {
             let (months, days) = period(y())?;
