@@ -126,6 +126,38 @@ pub fn with_children(kind: &Kind, cs: &[Tm]) -> Kind {
     }
 }
 
+/// Returns `kind` with each variable it reads or binds renamed by `f`.
+pub fn with_vars(kind: &Kind, f: &mut impl FnMut(Var) -> Var) -> Kind {
+    let mut kind = kind.clone();
+    match &mut kind {
+        Kind::Var(x)
+        | Kind::Let(x, ..)
+        | Kind::LetBang(x, ..)
+        | Kind::For(x, ..)
+        | Kind::Lam(x, _)
+        | Kind::Agg { var: x, .. }
+        | Kind::Group { var: x, .. }
+        | Kind::Top { var: x, .. }
+        | Kind::Present { var: x, .. } => *x = f(*x),
+        Kind::Upsert { old, new, .. } => {
+            *old = f(*old);
+            *new = f(*new);
+        }
+        Kind::Case { arms, .. } => {
+            for (_, x, _) in arms {
+                *x = f(*x);
+            }
+        }
+        Kind::Fix(binds, _) => {
+            for (x, _) in binds {
+                *x = f(*x);
+            }
+        }
+        _ => {}
+    }
+    kind
+}
+
 /// Returns the variables `t` binds around each of its children, in the order of `Terms::children`.
 fn bound(kind: &Kind, n: usize) -> Vec<Vec<Var>> {
     let mut out = vec![Vec::new(); n];

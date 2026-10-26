@@ -163,6 +163,12 @@ pub enum Sink {
         ty: Ty,
         body_ty: Ty,
     },
+    /// The user-defined aggregate `fold` of `body` over the emitted values, each bound to `var`.
+    Fold {
+        var: Var,
+        body: Eval,
+        fold: Fold,
+    },
     /// One record per distinct value of `by` over the emitted values bound to `var`.
     Group {
         var: Var,
@@ -181,6 +187,21 @@ pub enum Sink {
         take: Option<Eval>,
         after: Option<Eval>,
     },
+}
+
+/// A user-defined aggregate's parts as scalar expressions of the plan's arena.
+#[derive(Clone, Debug)]
+pub struct Fold {
+    /// The state before the first value.
+    pub init: Tm,
+    /// The state after folding `value` into `state`.
+    pub step: Tm,
+    /// The result over `state`.
+    pub finish: Tm,
+    pub state: Var,
+    pub value: Var,
+    /// Set when the result is an `Option`: `None` over no value, `Some` of the finished state otherwise.
+    pub optional: bool,
 }
 
 /// An aggregate computed per group over the group's rows.

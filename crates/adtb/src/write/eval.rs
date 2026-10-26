@@ -196,6 +196,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 let db = self.db;
                 let p = crate::plan::plan(
                     &db.schema,
+                    &db.normal,
                     &db.catalog,
                     self.arena(a),
                     t,

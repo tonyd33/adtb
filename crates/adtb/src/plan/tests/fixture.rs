@@ -5,7 +5,7 @@ use adtb_lang::ast::{BundleItem, ExampleItem};
 use adtb_lang::check::check_query;
 use adtb_lang::check::{Checker, Context, Program, check_adhoc, check_schema};
 use adtb_lang::kernel::{Kind, Tm};
-use adtb_lang::norm::{self, NormalAdhoc, NormalQuery};
+use adtb_lang::norm::{self, NormalAdhoc, NormalProgram, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Schema, ValueDef, build};
@@ -19,6 +19,7 @@ use crate::plan::{Catalog, HeapId, IndexDesc, IndexId, RelationDesc, Rewrites};
 pub struct Fixture {
     pub schema: Schema,
     pub program: Program,
+    pub normal: NormalProgram,
     pub catalog: Catalog,
     pub db: Database,
 }
@@ -33,10 +34,12 @@ impl Fixture {
             .unwrap_or_else(|ds| panic!("the schema does not build: {ds:?}"));
         let program =
             check_schema(&schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
+        let normal = norm::program(&schema, &program).expect("the schema's bodies normalise");
         let catalog = catalog(&schema, &program);
         Fixture {
             schema,
             program,
+            normal,
             catalog,
             db: Database::new(),
         }

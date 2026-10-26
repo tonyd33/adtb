@@ -120,6 +120,7 @@ pub fn compile(
     }
     let mut cx = Compiler {
         schema,
+        normal,
         catalog,
         terms,
         facts: Facts::default(),
@@ -272,6 +273,7 @@ struct Binder {
 
 struct Compiler<'a> {
     schema: &'a Schema,
+    normal: &'a NormalProgram,
     catalog: &'a Catalog,
     terms: &'a mut Terms,
     facts: Facts,
@@ -437,7 +439,14 @@ impl Compiler<'_> {
             }
             let inputs = self.inputs_of(t);
             let params: Vec<Var> = inputs.iter().map(|i| i.var).collect();
-            match plan::plan_bounded(self.schema, self.catalog, self.terms, t, &params) {
+            match plan::plan_bounded(
+                self.schema,
+                self.normal,
+                self.catalog,
+                self.terms,
+                t,
+                &params,
+            ) {
                 Ok(plan) => deltas.push(Delta {
                     inputs,
                     trigger,

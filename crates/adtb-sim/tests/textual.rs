@@ -147,6 +147,7 @@ fn engine(f: &Fixture, text: &str) -> (Ty, Val) {
     let (n, t) = f.normal(text, &[]);
     let p = plan(
         &f.schema,
+        &f.normal,
         &f.catalog,
         &n.terms,
         t,

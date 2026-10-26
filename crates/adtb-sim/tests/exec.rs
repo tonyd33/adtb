@@ -68,6 +68,7 @@ fn cases_of(f: &Fixture, text: &str, params: &[(&str, &str, Value)]) -> Vec<Case
         .map(|(name, rewrites)| {
             let p = plan(
                 &f.schema,
+                &f.normal,
                 &f.catalog,
                 &n.terms,
                 t,
@@ -532,6 +533,7 @@ fn a_call_of_a_wasm_or_host_function_is_refused_before_it_reaches_the_executor()
         let (n, t) = f.normal(q, &[]);
         let got = plan(
             &f.schema,
+            &f.normal,
             &f.catalog,
             &n.terms,
             t,

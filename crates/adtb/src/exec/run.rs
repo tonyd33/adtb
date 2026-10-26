@@ -12,8 +12,8 @@ use crate::runtime::Runtime;
 use super::code::Catch;
 use super::frame::{Frame, Sel};
 use super::ir::{
-    Build, Chain, End, Eval, Expr, Fetch, Fix, GroupAgg, Lookup, Pipeline, Program, Query, Sink,
-    Source, Spine, Step,
+    Build, Chain, End, Eval, Expr, Fetch, Fix, Fold, GroupAgg, Lookup, Pipeline, Program, Query,
+    Sink, Source, Spine, Step,
 };
 use super::memory::{Arena, Grant};
 use super::sched::Scheduler;
@@ -478,6 +478,12 @@ impl<R: Runtime> Ctx<R> {
                 let ms = self.eval_rows(body, &mut f, &mut sel_f, &mut Catch::off(), false)?;
                 aggregate(*op, ms.into_iter().map(|(_, v)| v).collect())?
             }
+            Sink::Fold { var, body, fold } => {
+                let mut f = elems(&set, *var);
+                let mut sel_f = f.all();
+                let ms = self.eval_rows(body, &mut f, &mut sel_f, &mut Catch::off(), false)?;
+                self.fold(fold, ms.into_iter().map(|(_, v)| v), env)?
+            }
             Sink::Group {
                 var,
                 by,
@@ -591,6 +597,28 @@ impl<R: Runtime> Ctx<R> {
             }
         }
         Ok(ks.into_iter().zip(all).collect())
+    }
+
+    /// Returns `fold` over `ms`, folded in turn from its initial state.
+    fn fold(
+        &self,
+        fold: &Fold,
+        ms: impl ExactSizeIterator<Item = Val>,
+        env: &Frame,
+    ) -> Result<Val, Error> {
+        if fold.optional && ms.len() == 0 {
+            return Ok(Val::none());
+        }
+        let mut f = env.clone();
+        let mut state = fold.init.eval_one(&mut f, self.sh())?;
+        for m in ms {
+            f.bind_one(fold.state, state);
+            f.bind_one(fold.value, m);
+            state = fold.step.eval_one(&mut f, self.sh())?;
+        }
+        f.bind_one(fold.state, state);
+        let v = fold.finish.eval_one(&mut f, self.sh())?;
+        Ok(if fold.optional { Val::some(v) } else { v })
     }
 
     fn group_agg(

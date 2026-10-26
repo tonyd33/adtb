@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use adtb_lang::kernel::{Kind, Terms, Tm};
-use adtb_lang::norm;
+use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 
@@ -77,7 +77,7 @@ impl Catalog {
             if existed.contains(&name) && !touched {
                 continue;
             }
-            let found = violating(schema, &catalog, terms, t, &store, &budget, pager)?;
+            let found = violating(schema, &catalog, &normal, t, &store, &budget, pager)?;
             if !found.is_empty() {
                 why.push(format!(
                     "constraint {name} is violated by {}",
@@ -136,15 +136,24 @@ fn transitions(terms: &Terms, t: Tm, reads: &mut BTreeSet<RelId>) -> bool {
 fn violating<R: Runtime>(
     schema: &Schema,
     catalog: &plan::Catalog,
-    terms: &Terms,
+    normal: &NormalProgram,
     t: Tm,
     store: &Arc<Store<R>>,
     budget: &Arc<Budget>,
     pager: &Pager<R>,
 ) -> Result<Vec<String>, Error> {
+    let terms = &normal.terms;
     let internal = Error::Internal;
-    let p = plan::plan(schema, catalog, terms, t, &[], plan::Options::default())
-        .map_err(|e| internal(e.to_string()))?;
+    let p = plan::plan(
+        schema,
+        normal,
+        catalog,
+        terms,
+        t,
+        &[],
+        plan::Options::default(),
+    )
+    .map_err(|e| internal(e.to_string()))?;
     let program = Arc::new(exec::compile(schema, catalog, &p, None).map_err(failed)?);
     let grant = budget
         .admit(VALIDATION_MEMORY)

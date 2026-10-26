@@ -144,6 +144,11 @@ pub enum Sink {
         var: u32,
         body: Eval,
     },
+    Fold {
+        var: u32,
+        body: Eval,
+        fold: Fold,
+    },
     /// `order` lists, for each field of the group records in name order, which value fills it:
     /// `None` for the key, `Some(None)` for the rows, `Some(Some(i))` for aggregate `i`.
     Group {
@@ -164,6 +169,17 @@ pub enum Sink {
         take: Option<Eval>,
         after: Option<Eval>,
     },
+}
+
+/// A user-defined aggregate: `step` over `state` and `value`, `finish` over `state`.
+#[derive(Debug)]
+pub struct Fold {
+    pub init: Expr,
+    pub step: Expr,
+    pub finish: Expr,
+    pub state: u32,
+    pub value: u32,
+    pub optional: bool,
 }
 
 #[derive(Debug)]
@@ -517,6 +533,18 @@ impl Lower<'_> {
                 op: self.agg(*op, ty, body_ty)?,
                 var: var.0,
                 body: self.eval(body)?,
+            },
+            plan::Sink::Fold { var, body, fold } => Sink::Fold {
+                var: var.0,
+                body: self.eval(body)?,
+                fold: Fold {
+                    init: self.expr(fold.init)?,
+                    step: self.expr(fold.step)?,
+                    finish: self.expr(fold.finish)?,
+                    state: fold.state.0,
+                    value: fold.value.0,
+                    optional: fold.optional,
+                },
             },
             plan::Sink::Group {
                 var,

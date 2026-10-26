@@ -266,6 +266,19 @@ impl<'a> Interp<'a> {
                 }
                 self.aggregate(*op, ty, body_ty, ms)
             }
+            Sink::Fold { var, body, fold } => {
+                if fold.optional && out.is_empty() {
+                    return Ok(Value::none());
+                }
+                let mut state = self.expr(fold.init, env)?;
+                for x in out {
+                    let m = self.eval(body, &bind(env, *var, x))?;
+                    let e = bind(&bind(env, fold.state, state), fold.value, m);
+                    state = self.expr(fold.step, &e)?;
+                }
+                let v = self.expr(fold.finish, &bind(env, fold.state, state))?;
+                Ok(if fold.optional { Value::some(v) } else { v })
+            }
             Sink::Group {
                 var,
                 by,

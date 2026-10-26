@@ -2,11 +2,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use adtb_lang::analysis::Totality;
 use adtb_lang::kernel::{Agg, Kind, Prim, Terms, Tm, Var};
+use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use super::catalog::{Catalog, IndexDesc};
-use super::terms::{Facts, with_children};
+use super::terms::{Facts, with_children, with_vars};
 use super::*;
 
 /// The rows the fixed cost model assumes in every heap.
@@ -22,16 +23,18 @@ const SET_ROWS: f64 = 10.0;
 ///
 /// Preconditions:
 /// - `root` is a normal form `adtb_lang::norm` returned for `schema`, in the arena `terms`.
+/// - `normal` is the normal program of `schema`.
 /// - `catalog` describes every relation variable `root` reads.
 pub fn plan(
     schema: &Schema,
+    normal: &NormalProgram,
     catalog: &Catalog,
     terms: &Terms,
     root: Tm,
     params: &[Var],
     options: Options,
 ) -> Result<Plan, Error> {
-    plan_in(schema, catalog, terms, root, params, options, false)
+    plan_in(schema, normal, catalog, terms, root, params, options, false)
 }
 
 /// Returns the plan of `root`, as [`plan`] does, reading every constructor relation only through
@@ -41,6 +44,7 @@ pub fn plan(
 /// [`Error::Outside`] when `root` holds a `fix`.
 pub fn plan_bounded(
     schema: &Schema,
+    normal: &NormalProgram,
     catalog: &Catalog,
     terms: &Terms,
     root: Tm,
@@ -48,6 +52,7 @@ pub fn plan_bounded(
 ) -> Result<Plan, Error> {
     plan_in(
         schema,
+        normal,
         catalog,
         terms,
         root,
@@ -57,8 +62,13 @@ pub fn plan_bounded(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the inputs of `plan` and whether the plan is bounded"
+)]
 fn plan_in(
     schema: &Schema,
+    normal: &NormalProgram,
     catalog: &Catalog,
     terms: &Terms,
     root: Tm,
@@ -68,6 +78,7 @@ fn plan_in(
 ) -> Result<Plan, Error> {
     let mut p = Planner {
         schema,
+        normal,
         catalog,
         rw: options.rewrites,
         bounded,
@@ -89,6 +100,7 @@ fn plan_in(
 
 struct Planner<'a> {
     schema: &'a Schema,
+    normal: &'a NormalProgram,
     catalog: &'a Catalog,
     rw: Rewrites,
     /// Set to read every constructor relation only through an index probe.
@@ -515,6 +527,19 @@ impl Planner<'_> {
                 Ok(wrap_eval(lets, Eval::Lookup(lookup)))
             }
             Kind::Agg {
+                op: Agg::User(a),
+                var,
+                source,
+                body,
+            } => {
+                let sink = Sink::Fold {
+                    var,
+                    body: self.eval(body)?,
+                    fold: self.fold(a, &ty)?,
+                };
+                self.query(source, sink)
+            }
+            Kind::Agg {
                 op,
                 var,
                 source,
@@ -571,7 +596,9 @@ impl Planner<'_> {
                     },
                 )
             }
-            _ if matches!(ty, Ty::Set(_) | Ty::NonEmpty(_)) => self.query(t, Sink::Set),
+            _ if matches!(ty, Ty::Set(_) | Ty::NonEmpty(_)) && self.streams(t) => {
+                self.query(t, Sink::Set)
+            }
             kind => {
                 let cs = self.t.children(t);
                 let mut last = None;
@@ -594,17 +621,28 @@ impl Planner<'_> {
         }
     }
 
+    /// Returns whether a chain reads the set term `t` by its root form, without evaluating it first.
+    fn streams(&self, t: Tm) -> bool {
+        self.rel_source(t).is_some()
+            || matches!(
+                self.t.kind(t),
+                Kind::EmptySet
+                    | Kind::Singleton(_)
+                    | Kind::Union(..)
+                    | Kind::If(..)
+                    | Kind::Case { .. }
+                    | Kind::Let(..)
+                    | Kind::For(..)
+                    | Kind::Restrict(..)
+            )
+    }
+
     /// Refuses a term whose root form a plan does not compute.
     fn refuse(&self, t: Tm) -> Result<(), Error> {
         match self.t.kind(t) {
             Kind::Call { func, .. } => {
                 Err(Error::UserCode(self.schema.function(*func).name.clone()))
             }
-            Kind::Agg {
-                op: Agg::User(a), ..
-            } => Err(Error::UserCode(
-                self.schema.aggregates[*a as usize].name.clone(),
-            )),
             Kind::At { .. } => Err(Error::NotAQuery("a read of history")),
             Kind::Transition(..) => Err(Error::NotAQuery("a read of a statement's transition")),
             Kind::Lam(..) | Kind::App(..) => Err(Error::Internal(
@@ -625,6 +663,64 @@ impl Planner<'_> {
             | Kind::Transact(..) => Err(Error::NotAQuery("a write")),
             _ => Ok(()),
         }
+    }
+
+    /// Returns the parts of user-defined aggregate `a` copied into the plan's arena, for a result of type `ty`.
+    fn fold(&mut self, a: u32, ty: &Ty) -> Result<Fold, Error> {
+        let (schema, normal) = (self.schema, self.normal);
+        let def = &schema.aggregates[a as usize];
+        let refused = || Error::UserCode(def.name.clone());
+        let parts = normal.aggregates[a as usize].as_ref().ok_or_else(refused)?;
+        let (&[st, x], &[fin]) = (parts.step.0.as_slice(), parts.finish.0.as_slice()) else {
+            return Err(Error::Internal(
+                "an aggregate's step takes two values and its finish one".into(),
+            ));
+        };
+        let state = self.import_var(st);
+        let value = self.import_var(x);
+        let mut vars = HashMap::from([(st, state), (x, value), (fin, state)]);
+        let mut memo = HashMap::new();
+        let init = self.import(parts.init, &mut vars, &mut memo);
+        let step = self.import(parts.step.1, &mut vars, &mut memo);
+        let finish = self.import(parts.finish.1, &mut vars, &mut memo);
+        if ![init, step, finish].into_iter().all(|t| self.scalar(t)) {
+            return Err(refused());
+        }
+        Ok(Fold {
+            init,
+            step,
+            finish,
+            state,
+            value,
+            optional: *ty != def.result,
+        })
+    }
+
+    fn import_var(&mut self, v: Var) -> Var {
+        let normal = self.normal;
+        let info = &normal.terms.vars[v.0 as usize];
+        self.t.var(&info.name, info.ty.clone())
+    }
+
+    /// Returns term `t` of the normal program's arena copied into the plan's, each variable renamed by `vars` or to a fresh one.
+    fn import(&mut self, t: Tm, vars: &mut HashMap<Var, Var>, memo: &mut HashMap<Tm, Tm>) -> Tm {
+        if let Some(n) = memo.get(&t) {
+            return *n;
+        }
+        let normal = self.normal;
+        let from = &normal.terms;
+        let cs: Vec<Tm> = from
+            .children(t)
+            .into_iter()
+            .map(|c| self.import(c, vars, memo))
+            .collect();
+        let kind = with_children(from.kind(t), &cs);
+        let kind = with_vars(&kind, &mut |v| {
+            *vars.entry(v).or_insert_with(|| self.import_var(v))
+        });
+        let out = self.add(kind, from.ty(t).clone());
+        memo.insert(t, out);
+        out
     }
 
     fn keys(&mut self, keys: &[(Tm, bool)]) -> Result<Vec<(Eval, bool)>, Error> {
@@ -1155,6 +1251,16 @@ impl Planner<'_> {
             && let Some(c) = self.fused_group(y, var, source, by, body, q, sc)?
         {
             return Ok(c);
+        }
+        if let Kind::Restrict(inner, s) = self.kind(src)
+            && !self.scalar(inner)
+        {
+            let z = self.fresh("%e", self.elem_ty(inner)?);
+            let one = self.var_tm(z);
+            let one = self.add(Kind::Singleton(one), self.ty(inner));
+            let kept = self.add(Kind::Restrict(one, s), self.ty(src));
+            let each = self.add(Kind::For(y, kept, body), self.ty(body));
+            return self.for_chain(z, inner, each, q, sc);
         }
         let (lets, s) = self.lift_here(src, sc)?;
         let mut steps = binds(lets);
@@ -1825,7 +1931,7 @@ fn collect_eval(c: &Catalog, e: &Eval, out: &mut Reads) {
             collect_spine(c, &q.spine, out);
             match &q.sink {
                 Sink::Set | Sink::Exists | Sink::IsEmpty => {}
-                Sink::Agg { body, .. } => collect_eval(c, body, out),
+                Sink::Agg { body, .. } | Sink::Fold { body, .. } => collect_eval(c, body, out),
                 Sink::Group { by, aggs, .. } => {
                     collect_eval(c, by, out);
                     for a in aggs {

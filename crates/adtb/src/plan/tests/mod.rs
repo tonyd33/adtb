@@ -16,7 +16,7 @@ fn plan_with(f: &Fixture, terms: &Terms, t: Tm, params: &[Var], rewrites: Rewrit
         rewrites,
         hiding: false,
     };
-    plan(&f.schema, &f.catalog, terms, t, params, options)
+    plan(&f.schema, &f.normal, &f.catalog, terms, t, params, options)
         .unwrap_or_else(|e| panic!("no plan: {e}"))
 }
 
@@ -621,7 +621,16 @@ fn a_call_of_a_host_function_is_refused() {
          fn slugify (t: Text) -> Text = host \"slugify\" version \"1.0\" deterministic",
     );
     let (n, t) = f.normal("from u in users select slugify(u.name)", &[]);
-    let got = plan(&f.schema, &f.catalog, &n.terms, t, &[], Options::default()).map(|_| ());
+    let got = plan(
+        &f.schema,
+        &f.normal,
+        &f.catalog,
+        &n.terms,
+        t,
+        &[],
+        Options::default(),
+    )
+    .map(|_| ());
     assert_eq!(Err(Error::UserCode("slugify".into())), got);
 }
 
@@ -629,7 +638,16 @@ fn a_call_of_a_host_function_is_refused() {
 fn a_write_is_refused() {
     let f = running();
     let (n, t) = f.normal("delete u in users where u.name == \"cy\"", &[]);
-    let got = plan(&f.schema, &f.catalog, &n.terms, t, &[], Options::default()).map(|_| ());
+    let got = plan(
+        &f.schema,
+        &f.normal,
+        &f.catalog,
+        &n.terms,
+        t,
+        &[],
+        Options::default(),
+    )
+    .map(|_| ());
     assert_eq!(Err(Error::NotAQuery("a write")), got);
 }
 
@@ -644,7 +662,16 @@ fn a_function_value_in_a_normal_form_is_an_internal_error() {
         Kind::Lam(x, body),
         Ty::Fn(Box::new(int.clone()), Box::new(int)),
     );
-    let got = plan(&f.schema, &f.catalog, &terms, t, &[], Options::default()).map(|_| ());
+    let got = plan(
+        &f.schema,
+        &f.normal,
+        &f.catalog,
+        &terms,
+        t,
+        &[],
+        Options::default(),
+    )
+    .map(|_| ());
     assert_eq!(
         Err(Error::Internal(
             "a normal form holds no function value".into()
@@ -666,7 +693,16 @@ fn a_dereference_of_a_value_that_is_not_a_key_is_an_internal_error() {
         },
         f.ty("User"),
     );
-    let got = plan(&f.schema, &f.catalog, &terms, t, &[], Options::default()).map(|_| ());
+    let got = plan(
+        &f.schema,
+        &f.normal,
+        &f.catalog,
+        &terms,
+        t,
+        &[],
+        Options::default(),
+    )
+    .map(|_| ());
     assert_eq!(
         Err(Error::Internal("a dereference follows a key".into())),
         got
@@ -678,6 +714,7 @@ fn bounded(f: &Fixture, text: &str, ty: &str) -> Result<Plan, Error> {
     let (normal, t) = f.normal(text, &[("xs", ty)]);
     plan_bounded(
         &f.schema,
+        &f.normal,
         &f.catalog,
         &normal.terms,
         t,
@@ -737,4 +774,79 @@ fn a_bounded_plan_refuses_a_fixpoint() {
                 in reach";
     let e = bounded(&f, text, "Set (Key users)").expect_err("a fix is outside the bound");
     assert_eq!(Error::Outside("fix"), e);
+}
+
+fn logins() -> Fixture {
+    let mut f = Fixture::new(
+        "type Login { id: Key logins } = Password { email: Text } | Social { sub: Text, provider: Text }
+         relation logins : Login key id generate sequence
+         fn shapes () -> Set (Local { email: Text } | Remote { provider: Text }) =
+           from l in logins select match l
+             | Password p -> Local { email: p.email }
+             | Social s -> Remote { provider: s.provider }",
+    );
+    f.rows(
+        "logins",
+        r#"[Password { id: logins.key(1), email: "a@x" },
+            Social { id: logins.key(2), sub: "s1", provider: "google" },
+            Social { id: logins.key(3), sub: "s2", provider: "google" }]"#,
+        &[],
+    );
+    f
+}
+
+#[test]
+fn a_comprehension_over_a_call_narrowed_to_a_constructor_plans() {
+    let f = logins();
+    for text in [
+        "from r in shapes().Remote select r.provider",
+        "shapes().Remote",
+        "from r in shapes().Local, s in shapes().Remote select { e: r.email, p: s.provider }",
+    ] {
+        agrees(&f, text, &[]);
+    }
+}
+
+fn sales() -> Fixture {
+    let mut f = Fixture::new(
+        "aggregate tally (x: I64) -> I64 =
+           state { n: I64, s: I64 } init { n: 0, s: 0 }
+           step (st, x) -> { n: st.n + 1, s: st.s + x }
+           merge (a, b) -> { n: a.n + b.n, s: a.s + b.s }
+           finish st -> st.n * 1000 + st.s
+         type Sale = { id: Key sales, region: Text, total: I64 }
+         relation sales : Sale key id generate sequence",
+    );
+    f.rows(
+        "sales",
+        r#"[Sale { id: sales.key(1), region: "eu", total: 1 },
+            Sale { id: sales.key(2), region: "eu", total: 1 },
+            Sale { id: sales.key(3), region: "us", total: 4 }]"#,
+        &[],
+    );
+    f
+}
+
+#[test]
+fn a_user_aggregate_folds_once_per_binding() {
+    let f = sales();
+    for text in [
+        "from o in sales group o by o.region into g select { region: g.key, t: tally(x.total for x in g) }",
+        "tally(o.total for o in sales)",
+        "tally(o.total for o in sales where o.total > 10)",
+        "tally(t for t in (from o in sales select o.total))",
+        "from o in sales select { id: o.id, t: tally(p.total for p in sales where p.region == o.region) }",
+        "{ a: tally(o.total for o in sales), b: count(o for o in sales) }",
+    ] {
+        agrees(&f, text, &[]);
+    }
+}
+
+#[test]
+fn a_user_aggregate_over_a_possibly_empty_range_is_an_option() {
+    let f = sales();
+    let got = outcome(&f, "tally(o.total for o in sales where o.total > 10)", &[]);
+    assert_eq!(Ok(Value::none()), got);
+    let got = outcome(&f, "tally(o.total for o in sales)", &[]);
+    assert_eq!(Ok(Value::some(Value::Int(3006))), got);
 }
