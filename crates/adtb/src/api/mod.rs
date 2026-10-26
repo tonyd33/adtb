@@ -141,7 +141,7 @@ impl<R: Runtime> std::fmt::Debug for Engine<R> {
 impl<R: Runtime> Drop for Engine<R> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
-            self.pager.checkpoint();
+            self.pager.close();
         }
     }
 }
@@ -194,8 +194,9 @@ impl<R: Runtime> Database<R> {
         }
     }
 
-    /// Close the handle. The engine closes, taking a checkpoint and releasing the file, once
-    /// no other handle is open.
+    /// Close the handle. The engine closes, writing every changed page, taking a checkpoint,
+    /// closing its files and releasing the lock on the database file, once no other handle is
+    /// open.
     pub fn close(self) -> Result<(), Error> {
         drop(self);
         Ok(())

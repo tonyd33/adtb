@@ -3,8 +3,9 @@ use std::io::{self, ErrorKind};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
+use super::faults::{Faults, Injector};
 use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op};
 
 /// The files one process has open, under its database directory.
@@ -12,6 +13,7 @@ use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op};
 pub(crate) struct Files {
     root: PathBuf,
     open: RwLock<Vec<Option<Arc<File>>>>,
+    faults: Option<Mutex<Injector>>,
 }
 
 pub(crate) type Outcome = (Option<AlignedBuf>, Result<Done, IoError>);
@@ -28,14 +30,15 @@ fn done<T>(r: io::Result<T>, d: impl FnOnce(T) -> Done) -> Result<Done, IoError>
 }
 
 impl Files {
-    pub(crate) fn new(root: PathBuf) -> Files {
+    pub(crate) fn new(root: PathBuf, faults: Option<Faults>) -> Files {
         Files {
             root,
             open: RwLock::new(Vec::new()),
+            faults: faults.map(|f| Mutex::new(Injector::new(f))),
         }
     }
 
-    fn path(&self, relative: &str) -> PathBuf {
+    pub(crate) fn path(&self, relative: &str) -> PathBuf {
         if relative.is_empty() {
             self.root.clone()
         } else {
@@ -43,17 +46,46 @@ impl Files {
         }
     }
 
-    fn file(&self, id: FileId) -> Arc<File> {
+    pub(crate) fn file(&self, id: FileId) -> Arc<File> {
         let open = self.open.read().unwrap_or_else(PoisonError::into_inner);
         open.get(id.0 as usize)
             .and_then(Option::clone)
             .unwrap_or_else(|| panic!("{id:?} is not open in this process"))
     }
 
-    /// Run `op` to completion on the calling thread.
+    /// Run `op` to completion on the calling thread, with the faults injected if there are any.
     ///
     /// Panics on a `Timer`, which no file operation completes.
     pub(crate) fn run(&self, op: Op) -> Outcome {
+        match &self.faults {
+            Some(f) => f
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .run(self, op),
+            None => self.perform(op),
+        }
+    }
+
+    /// Panics if the files inject no faults.
+    fn injector(&self) -> MutexGuard<'_, Injector> {
+        self.faults
+            .as_ref()
+            .expect("the runtime was made with faults")
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Stop the device as a power loss would.
+    pub(crate) fn crash(&self) {
+        self.injector().crash(self);
+    }
+
+    pub(crate) fn set_faults(&self, faults: Faults) {
+        self.injector().set(faults);
+    }
+
+    /// Run `op` to completion on the calling thread.
+    pub(crate) fn perform(&self, op: Op) -> Outcome {
         match op {
             Op::Open { path, create } => (None, self.open(&path, create)),
             Op::Read { file, offset, buf } => self.read(file, offset, buf),

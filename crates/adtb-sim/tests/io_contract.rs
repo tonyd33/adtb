@@ -8,7 +8,10 @@ use std::time::Duration;
 
 use adtb::runtime::{AlignedBuf, Completion, Done, FileId, Io, IoError, Op, Runtime, Ticket};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_sys::os::{Backend, OsRuntime};
+use adtb_sys::os::{Backend, Faults, OsRuntime};
+
+#[path = "io_contract/faults.rs"]
+mod faults;
 
 const BLOCK: usize = 4096;
 
@@ -306,6 +309,15 @@ fn threads_park_join_and_keep_tokens<R: Runtime>(rt: &R) {
     assert_ne!(me, child);
 }
 
+fn unpark_after_exit_does_nothing<R: Runtime>(rt: &R) {
+    let child = rt.spawn("child", || {});
+    rt.join(child);
+    rt.unpark(child);
+    let me = rt.current();
+    rt.unpark(me);
+    rt.park();
+}
+
 fn on_sim(body: fn(&SimRuntime)) {
     for seed in 0..4 {
         let mut sim = Sim::new(seed, Config::default());
@@ -330,6 +342,15 @@ fn on_pool(name: &str, body: fn(&OsRuntime)) {
     body(&rt);
 }
 
+fn on_faulty_pool(name: &str, body: fn(&OsRuntime)) {
+    let rt = OsRuntime::with_faults(
+        scratch(name),
+        Backend::Pool { threads: 4 },
+        Faults::default(),
+    );
+    body(&rt);
+}
+
 macro_rules! contract {
     ($($name:ident),* $(,)?) => {
         mod sim {
@@ -341,6 +362,17 @@ macro_rules! contract {
                 fn $name() {
                     super::on_pool(
                         concat!("pool-", stringify!($name)),
+                        super::$name::<adtb_sys::os::OsRuntime>,
+                    )
+                }
+            )*
+        }
+        mod faulty_pool {
+            $(
+                #[test]
+                fn $name() {
+                    super::on_faulty_pool(
+                        concat!("faulty-", stringify!($name)),
                         super::$name::<adtb_sys::os::OsRuntime>,
                     )
                 }
@@ -364,4 +396,5 @@ contract!(
     clock_never_goes_backwards,
     entropy_varies,
     threads_park_join_and_keep_tokens,
+    unpark_after_exit_does_nothing,
 );

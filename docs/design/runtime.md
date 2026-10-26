@@ -40,6 +40,7 @@ Postconditions every runtime must meet:
 - `park` blocks the calling thread until its wake token is set, then
   clears the token. `unpark` sets a thread's token. A token set before
   the `park` is not lost; `park` may also return spuriously.
+  `unpark` of a thread that has returned does nothing.
 - `join` returns once the thread has returned from its body.
 - A panic in any thread crashes the process
   ([README.md §4](README.md#4-errors)).
@@ -101,6 +102,35 @@ entropy is `getrandom`. A panic in any of its threads, the backend's
 own included, aborts the process. Every file it opens is opened with
 `O_DIRECT`, so a file system without direct I/O fails `Open` with
 `Failed`.
+
+It injects the faults of §3 into the ops on its files when made with
+a fault policy:
+
+```text
+OsRuntime::with_faults(root, backend, Faults {
+  seed, torn_p, corrupt_p, misdirect_p, lost_write_p, latent_p, fail_p,
+  lose_unsynced: true, sector, atomic_unit,
+}) -> OsRuntime
+rt.set_faults(faults)   // from now on; what earlier faults left stays
+rt.crash()
+```
+
+Each `_p` is the chance of its fault per op that can suffer it, as in
+the simulated storage (§5), drawn from `seed` in the order the host
+runs the backend's threads, so a seed does not replay a run.
+
+Postconditions of a runtime with faults:
+
+- A failed `Sync` leaves on the device any subset of the writes it
+  would have forced, and a later `Sync` of the file succeeds without
+  the rest, as ext4, XFS and Btrfs mark pages clean after a failed
+  `fsync`.
+- `crash` leaves the files as a crash stop does (§3): with
+  `lose_unsynced`, any subset of the writes no completed `Sync` covers,
+  each whole or, with `torn_p`, in any subset of its atomic units, and
+  any prefix of the creations and removals no completed `SyncDir`
+  covers. Every op that runs after it completes with `Failed`; a new
+  runtime over the directory is the restart.
 
 Data pages and the log are read and written with direct I/O
 (`O_DIRECT` on Linux): the page pool is the only cache, and write

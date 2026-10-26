@@ -185,6 +185,7 @@ pager.max_threads() -> usize
 pager.catalog_root() -> Pid
 pager.set_catalog_root(pid)
 pager.wall() -> SystemTime
+pager.close()
 PageError { pid, damage: Checksum | Unreadable | Stale { expected, found } }
 ```
 
@@ -212,6 +213,8 @@ Preconditions:
   the page. An optimistic read beside a shared latch of the same
   thread is allowed.
 - They write no byte below offset 12 and none past the page's end.
+- `close` is called once every other call on the pager has returned,
+  and no call follows it.
 - `free` and `reservation.free` name an allocated page that nothing
   refers to once the update is applied.
 
@@ -277,6 +280,11 @@ Postconditions:
   one, and the new one only with every record logged before the call.
 - `wall` returns the wall-clock time of the runtime the pager was
   created or opened with, the clock commit records carry.
+- `close` makes every record logged before it durable, writes every
+  changed page and forces the data file, takes a checkpoint, then
+  closes the data file and every log segment the pager opened. An open
+  after it replays no page record.
+- A `create` or `open` that fails leaves no file of the database open.
 - When every frame stays latched past the options' stall bound, the
   page-in waiting for a frame panics, reporting a stalled pool.
 - Write-ahead, full-page images and checkpoints (§5.2, §6) are the

@@ -1,6 +1,6 @@
 //! The in-process API over a real file under the host's runtime, with no simulator.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use adtb::{CallOptions, CreateOptions, Log, OpenError, OpenOptions, TxnCallOptions, TxnOptions};
 use adtb_lang::textual::print;
@@ -21,6 +21,16 @@ fn scratch(name: &str) -> PathBuf {
     }
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// Returns the files under `dir` this process holds open.
+fn open_under(dir: &Path) -> Vec<PathBuf> {
+    let dir = dir.canonicalize().expect("the directory");
+    std::fs::read_dir("/proc/self/fd")
+        .expect("the process's descriptors")
+        .filter_map(|e| std::fs::read_link(e.expect("a descriptor").path()).ok())
+        .filter(|p| p.starts_with(&dir))
+        .collect()
 }
 
 fn options() -> OpenOptions {
@@ -99,4 +109,25 @@ fn a_missing_file_is_not_found_without_create() {
     let got = adtb::open(&path, &Log::new([SHOP]), &OpenOptions::default());
     assert!(matches!(got, Err(OpenError::NotFound)), "{got:?}");
     assert!(!path.exists(), "open without create made the file");
+}
+
+#[test]
+fn a_closed_database_holds_no_file_open() {
+    let dir = scratch("close");
+    let path = dir.join("shop.adt");
+    let log = Log::new([SHOP]);
+    let db = adtb::open(&path, &log, &options()).expect("create");
+    db.query_text(
+        r#"insert customers { name: "ann" }"#,
+        &[],
+        &CallOptions::default(),
+    )
+    .expect("an insert");
+    let clone = db.clone();
+    db.close().expect("close");
+    assert!(!open_under(&dir).is_empty(), "a clone keeps the files open");
+    clone.close().expect("close");
+    assert_eq!(Vec::<PathBuf>::new(), open_under(&dir));
+    let db = adtb::open(&path, &log, &OpenOptions::default()).expect("reopen");
+    assert_eq!(vec![r#""ann""#], names(&db));
 }

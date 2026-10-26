@@ -164,6 +164,13 @@ impl Segments {
         file
     }
 
+    /// Close every segment file open in this process.
+    pub(crate) fn close<R: Runtime>(&mut self, drv: &mut Driver<R>) {
+        for file in std::mem::take(&mut self.files).into_values() {
+            drv.close(file);
+        }
+    }
+
     /// Write and force the blocks of `batch`.
     pub(crate) fn write<R: Runtime>(&mut self, drv: &mut Driver<R>, batch: &Batch) {
         let bytes = &batch.blocks;

@@ -1,20 +1,25 @@
 //! The runtime over the host: its clocks, threads, entropy and files.
 
+mod faults;
 mod files;
 mod pool;
 mod queue;
 mod timer;
 
-use std::cell::Cell;
-use std::collections::HashMap;
+#[cfg(test)]
+mod tests;
+
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockWriteGuard};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, SystemTime};
 
+pub use self::faults::Faults;
 use self::files::Files;
 use self::pool::Pool;
 use self::queue::{Ring, Waiter};
@@ -48,6 +53,7 @@ impl fmt::Debug for OsRuntime {
 
 #[derive(Debug)]
 struct Shared {
+    files: Arc<Files>,
     pool: Arc<Pool>,
     timers: Arc<Timers>,
 }
@@ -64,15 +70,51 @@ impl OsRuntime {
     ///
     /// Panics if `backend` asks for no threads.
     pub fn new(root: impl Into<PathBuf>, backend: Backend) -> OsRuntime {
-        let files = Arc::new(Files::new(root.into()));
+        OsRuntime::start(Files::new(root.into(), None), backend)
+    }
+
+    /// Returns a runtime whose paths are relative to the directory `root`, injecting `faults`
+    /// into every op on its files.
+    ///
+    /// Panics if `backend` asks for no threads, or if the atomic unit is not a whole number of
+    /// sectors.
+    pub fn with_faults(root: impl Into<PathBuf>, backend: Backend, faults: Faults) -> OsRuntime {
+        OsRuntime::start(Files::new(root.into(), Some(faults)), backend)
+    }
+
+    fn start(files: Files, backend: Backend) -> OsRuntime {
+        let files = Arc::new(files);
         let Backend::Pool { threads } = backend;
         OsRuntime {
             threads: Arc::default(),
             backend: Arc::new(Shared {
-                pool: Pool::start(files, threads),
+                pool: Pool::start(Arc::clone(&files), threads),
+                files,
                 timers: Timers::start(),
             }),
         }
+    }
+
+    /// Stop the files as a power loss would.
+    ///
+    /// Postconditions:
+    ///
+    /// - With `lose_unsynced`, any subset of the writes no completed `Sync` covers is on the
+    ///   device, each whole or, with `torn_p`, in any subset of its atomic units; any prefix of
+    ///   the creations and removals no completed `SyncDir` covers is.
+    /// - Every op that runs after it completes with `Failed`.
+    ///
+    /// Panics unless the runtime was made by [`OsRuntime::with_faults`].
+    pub fn crash(&self) {
+        self.backend.files.crash();
+    }
+
+    /// Inject `faults` from now on, keeping what earlier faults left.
+    ///
+    /// Panics unless the runtime was made by [`OsRuntime::with_faults`], or if the atomic unit
+    /// is not a whole number of sectors.
+    pub fn set_faults(&self, faults: Faults) {
+        self.backend.files.set_faults(faults);
     }
 }
 
@@ -142,33 +184,49 @@ fn abort_on_panic(body: impl FnOnce()) {
 
 static NEXT_THREAD: AtomicU64 = AtomicU64::new(0);
 
+/// Every live thread that has an id, by id.
+///
+/// A thread's entry is inserted before its id is handed out and removed when it exits.
+static LIVE: RwLock<BTreeMap<ThreadId, Thread>> = RwLock::new(BTreeMap::new());
+
+fn live() -> RwLockWriteGuard<'static, BTreeMap<ThreadId, Thread>> {
+    LIVE.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The calling thread's id, which removes the thread from [`LIVE`] when the thread exits.
+struct Current(ThreadId);
+
+impl Drop for Current {
+    fn drop(&mut self) {
+        live().remove(&self.0);
+    }
+}
+
 thread_local! {
-    static CURRENT: Cell<Option<ThreadId>> = const { Cell::new(None) };
+    static CURRENT: OnceCell<Current> = const { OnceCell::new() };
+}
+
+fn fresh_id() -> ThreadId {
+    ThreadId(NEXT_THREAD.fetch_add(1, Ordering::Relaxed))
 }
 
 fn current_id() -> ThreadId {
-    CURRENT.with(|c| match c.get() {
-        Some(id) => id,
-        None => {
-            let id = ThreadId(NEXT_THREAD.fetch_add(1, Ordering::Relaxed));
-            c.set(Some(id));
-            id
-        }
+    CURRENT.with(|c| {
+        c.get_or_init(|| {
+            let id = fresh_id();
+            live().insert(id, thread::current());
+            Current(id)
+        })
+        .0
     })
 }
 
-/// The threads a runtime has seen, by id.
+/// The threads a runtime spawned and has not joined, by id.
 #[derive(Debug, Default)]
-struct Registry(Mutex<HashMap<ThreadId, Entry>>);
-
-#[derive(Debug)]
-struct Entry {
-    thread: Thread,
-    handle: Option<JoinHandle<()>>,
-}
+struct Registry(Mutex<HashMap<ThreadId, JoinHandle<()>>>);
 
 impl Registry {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<ThreadId, Entry>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<ThreadId, JoinHandle<()>>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -178,7 +236,9 @@ impl Threads for OsRuntime {
     where
         F: FnOnce() + Send + 'static,
     {
-        let id = ThreadId(NEXT_THREAD.fetch_add(1, Ordering::Relaxed));
+        let id = fresh_id();
+        // The thread removes its entry under this lock when it exits.
+        let mut live = live();
         #[expect(
             clippy::disallowed_methods,
             reason = "the real runtime's threads are host threads"
@@ -186,27 +246,23 @@ impl Threads for OsRuntime {
         let handle = thread::Builder::new()
             .name(name.to_owned())
             .spawn(move || {
-                CURRENT.with(|c| c.set(Some(id)));
+                CURRENT.with(|c| {
+                    assert!(
+                        c.set(Current(id)).is_ok(),
+                        "a new host thread has no id yet"
+                    );
+                });
                 abort_on_panic(body);
             })
             .expect("the host refused a thread");
-        self.threads.lock().insert(
-            id,
-            Entry {
-                thread: handle.thread().clone(),
-                handle: Some(handle),
-            },
-        );
+        live.insert(id, handle.thread().clone());
+        drop(live);
+        self.threads.lock().insert(id, handle);
         id
     }
 
     fn current(&self) -> ThreadId {
-        let id = current_id();
-        self.threads.lock().entry(id).or_insert_with(|| Entry {
-            thread: thread::current(),
-            handle: None,
-        });
-        id
+        current_id()
     }
 
     fn park(&self) {
@@ -214,12 +270,18 @@ impl Threads for OsRuntime {
     }
 
     fn unpark(&self, thread: ThreadId) {
-        self.threads
-            .lock()
+        assert!(
+            thread.0 < NEXT_THREAD.load(Ordering::Relaxed),
+            "{thread:?} was never handed out"
+        );
+        // An exited thread has no entry.
+        if let Some(t) = LIVE
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(&thread)
-            .unwrap_or_else(|| panic!("{thread:?} was neither spawned nor seen by this runtime"))
-            .thread
-            .unpark();
+        {
+            t.unpark();
+        }
     }
 
     fn yield_now(&self) {
@@ -227,12 +289,10 @@ impl Threads for OsRuntime {
     }
 
     fn join(&self, thread: ThreadId) {
-        let handle = self
-            .threads
-            .lock()
-            .remove(&thread)
-            .and_then(|e| e.handle)
-            .unwrap_or_else(|| panic!("{thread:?} was not spawned by this runtime or is joined"));
+        let handle =
+            self.threads.lock().remove(&thread).unwrap_or_else(|| {
+                panic!("{thread:?} was not spawned by this runtime or is joined")
+            });
         handle
             .join()
             .expect("a panicking thread aborts the process before it is joined");

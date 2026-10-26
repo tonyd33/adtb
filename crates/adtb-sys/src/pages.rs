@@ -148,49 +148,23 @@ struct Region {
     len: usize,
 }
 
-#[cfg(all(target_os = "linux", not(miri)))]
-mod os {
-    use std::ffi::{c_int, c_void};
-
-    pub(super) const PROT_READ: c_int = 1;
-    pub(super) const PROT_WRITE: c_int = 2;
-    pub(super) const MAP_PRIVATE: c_int = 0x02;
-    pub(super) const MAP_ANONYMOUS: c_int = 0x20;
-    pub(super) const MAP_NORESERVE: c_int = 0x4000;
-    pub(super) const MADV_DONTNEED: c_int = 4;
-
-    unsafe extern "C" {
-        pub(super) fn mmap(
-            addr: *mut c_void,
-            len: usize,
-            prot: c_int,
-            flags: c_int,
-            fd: c_int,
-            offset: i64,
-        ) -> *mut c_void;
-        pub(super) fn munmap(addr: *mut c_void, len: usize) -> c_int;
-        pub(super) fn madvise(addr: *mut c_void, len: usize, advice: c_int) -> c_int;
-    }
-}
-
 impl Region {
     #[cfg(all(target_os = "linux", not(miri)))]
     fn reserve(len: usize) -> Region {
-        use os::*;
         // SAFETY: an anonymous private mapping at an address the kernel picks touches no
         // existing memory.
         let raw = unsafe {
-            mmap(
+            libc::mmap(
                 std::ptr::null_mut(),
                 len,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
                 -1,
                 0,
             )
         };
         assert!(
-            raw as isize != -1,
+            raw != libc::MAP_FAILED,
             "the kernel refused to reserve {len} bytes of page memory"
         );
         Region {
@@ -225,7 +199,7 @@ impl Region {
             let start = unsafe { self.ptr.as_ptr().add(offset) };
             // SAFETY: `start..start + len` lies in the mapping; MADV_DONTNEED on a private
             // anonymous mapping only replaces its contents with zeros.
-            let r = unsafe { os::madvise(start.cast(), len, os::MADV_DONTNEED) };
+            let r = unsafe { libc::madvise(start.cast(), len, libc::MADV_DONTNEED) };
             assert_eq!(0, r, "madvise refused to release page memory");
         }
         #[cfg(not(all(target_os = "linux", not(miri))))]
@@ -240,7 +214,7 @@ impl Drop for Region {
         #[cfg(all(target_os = "linux", not(miri)))]
         // SAFETY: the mapping was made by `reserve` with this length and is unmapped once.
         unsafe {
-            os::munmap(self.ptr.as_ptr().cast(), self.len);
+            libc::munmap(self.ptr.as_ptr().cast(), self.len);
         }
         #[cfg(not(all(target_os = "linux", not(miri))))]
         // SAFETY: `ptr` came from `alloc_zeroed` with this layout.

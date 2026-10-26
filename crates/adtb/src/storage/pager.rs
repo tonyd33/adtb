@@ -365,6 +365,7 @@ impl<R: Runtime> Pager<R> {
             .open(&options.name, true)
             .map_err(|_| OpenError::NotFound)?;
         if len > 0 {
+            drv.close(data);
             return Err(OpenError::Exists);
         }
         drv.sync_dir(parent(&options.name));
@@ -387,9 +388,15 @@ impl<R: Runtime> Pager<R> {
             encryption: 0,
         };
         let pager = Pager::assemble(rt, options, header, 1, data);
-        let (new, marks) = pager.reserve_marks()?;
-        pager.format_marks(new, marks)?;
-        pager.header.lock(&pager.rt).0.quarantine = marks;
+        let made = pager.reserve_marks().and_then(|(new, marks)| {
+            pager.format_marks(new, marks)?;
+            pager.header.lock(&pager.rt).0.quarantine = marks;
+            Ok(())
+        });
+        if let Err(e) = made {
+            pager.close_files();
+            return Err(e.into());
+        }
         pager.checkpoint();
         pager.write_header(None);
         Ok(pager)
@@ -416,20 +423,33 @@ impl<R: Runtime> Pager<R> {
                 second = Some(h);
             }
         }
-        let (copy, mut header) = header::choose(first, second).ok_or(OpenError::NoHeader)?;
+        let Some((copy, mut header)) = header::choose(first, second) else {
+            drv.close(data);
+            return Err(OpenError::NoHeader);
+        };
         header.atomic_page_writes = options.atomic_page_writes;
         let pager = Pager::assemble(rt, options, header, copy, data);
-        let recovery = pager.recover()?;
-        let marks = pager.header.lock(&pager.rt).0.quarantine;
-        if marks == Pid(0) {
-            let (new, marks) = pager.reserve_marks()?;
-            pager.format_marks(new, marks)?;
-            pager.header.lock(&pager.rt).0.quarantine = marks;
-            pager.checkpoint();
-        } else {
-            pager.load_marks(marks);
+        match pager.recover_and_mark() {
+            Ok(recovery) => Ok((pager, recovery)),
+            Err(e) => {
+                pager.close_files();
+                Err(e)
+            }
         }
-        Ok((pager, recovery))
+    }
+
+    fn recover_and_mark(&self) -> Result<super::Recovery, OpenError> {
+        let recovery = self.recover()?;
+        let marks = self.header.lock(&self.rt).0.quarantine;
+        if marks == Pid(0) {
+            let (new, marks) = self.reserve_marks()?;
+            self.format_marks(new, marks)?;
+            self.header.lock(&self.rt).0.quarantine = marks;
+            self.checkpoint();
+        } else {
+            self.load_marks(marks);
+        }
+        Ok(recovery)
     }
 
     pub fn page_size(&self) -> usize {
@@ -993,6 +1013,23 @@ impl<R: Runtime> Pager<R> {
         self.io(|d| {
             d.write_all(vec![(self.data, offset, AlignedBuf::from_slice(&bytes))]);
             d.sync_all(&[self.data]);
+        });
+    }
+
+    /// Write every changed page, take a checkpoint, and close the data file and every log segment.
+    ///
+    /// Preconditions: every other call on the pager has returned, and none follows.
+    pub fn close(&self) {
+        self.flush_log();
+        self.flush_pages(usize::MAX);
+        self.checkpoint();
+        self.close_files();
+    }
+
+    fn close_files(&self) {
+        self.io(|d| {
+            self.segments.lock(&self.rt).close(d);
+            d.close(self.data);
         });
     }
 
