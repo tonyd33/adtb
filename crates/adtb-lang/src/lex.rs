@@ -354,9 +354,10 @@ fn lex_text(src: &str, i: &mut usize, diags: &mut Vec<Diag>) -> Tok {
                             }
                         }
                     }
+                    None => {}
                     _ => {
-                        diags.push(Diag::new(Span::new(esc_start, *i + 1), "unknown escape"));
-                        *i += 1;
+                        *i += src[*i..].chars().next().map_or(1, char::len_utf8);
+                        diags.push(Diag::new(Span::new(esc_start, *i), "unknown escape"));
                     }
                 }
             }
@@ -487,6 +488,17 @@ mod tests {
         let src = r#""a\"b\n\u{e9}""#;
         assert_eq!(kinds(src), vec![Tok::Text, Tok::Eof]);
         assert_eq!(decode_text(src), "a\"b\n\u{e9}");
+    }
+
+    #[test]
+    fn a_bad_escape_ends_on_a_character_boundary() {
+        for src in ["\"a\\", "\"a\\\u{e9}\"", "\"\\\u{1f600}", "\"\\"] {
+            let (toks, diags) = lex(src);
+            assert!(!diags.is_empty(), "{src:?}");
+            for t in toks {
+                assert!(src.get(t.span.range()).is_some(), "{src:?}: {t:?}");
+            }
+        }
     }
 
     #[test]

@@ -71,7 +71,8 @@ pub enum TypeKind {
         args: Vec<TypeArg>,
     },
     Var(Ident),
-    Key(RelationRef),
+    /// `Key r`, with the span of the word `Key`.
+    Key(Span, RelationRef),
     Unit,
     Record(Vec<FieldType>),
     Sum(Vec<AnonCtor>),

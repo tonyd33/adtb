@@ -1448,6 +1448,7 @@ impl Checker<'_> {
                     match found.as_slice() {
                         [(def, c)] => (Target::Decl(*def, known_args(*def)), *c),
                         [] if self.adhoc() && path.module.is_none() => {
+                            self.note(path.name.span, Ref::Anonymous);
                             return self.anon_ctor(name, record, span);
                         }
                         [] => {
@@ -1479,8 +1480,12 @@ impl Checker<'_> {
                 }
             }
         };
+        let at = ctor.map_or(path.name.span, |c| c.span);
+        if let Target::Known(_) = &target {
+            self.note(at, Ref::Anonymous);
+        }
         if let Target::Decl(def, _) = &target {
-            self.note(ctor.map_or(path.name.span, |c| c.span), Ref::Ctor(*def, c));
+            self.note(at, Ref::Ctor(*def, c));
             let t = self.schema.ty(*def);
             if *def == self.schema.prelude_type("Span") {
                 return Err(diag(span, "a span is built only by `span(start, end)`"));
@@ -1838,17 +1843,33 @@ impl Checker<'_> {
             }
         };
         let set_ty = Ty::Set(Box::new(elem.clone()));
-        let mut tm = self.add(Kind::EmptySet, set_ty.clone());
-        for o in outs.into_iter().rev() {
-            let o = self.widen(o, &elem);
-            let one = self.add(Kind::Singleton(o.tm), set_ty.clone());
-            tm = self.add(Kind::Union(one, tm), set_ty.clone());
-        }
+        let ones: Vec<Tm> = outs
+            .into_iter()
+            .map(|o| {
+                let o = self.widen(o, &elem);
+                self.add(Kind::Singleton(o.tm), set_ty.clone())
+            })
+            .collect();
+        let tm = self.balanced_union(&ones, &set_ty);
         Ok(Out {
             tm,
             ty: set_ty,
             rows: None,
         })
+    }
+
+    /// Returns the union of `sets` in order, nested to a depth logarithmic in their number.
+    fn balanced_union(&mut self, sets: &[Tm], ty: &Ty) -> Tm {
+        match sets {
+            [] => self.add(Kind::EmptySet, ty.clone()),
+            [one] => *one,
+            _ => {
+                let (left, right) = sets.split_at(sets.len() / 2);
+                let a = self.balanced_union(left, ty);
+                let b = self.balanced_union(right, ty);
+                self.add(Kind::Union(a, b), ty.clone())
+            }
+        }
     }
 
     pub(super) fn if_expr(

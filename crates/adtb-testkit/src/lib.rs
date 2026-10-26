@@ -1,5 +1,6 @@
 pub mod draw;
 pub mod fixture;
+pub mod fuzz;
 pub mod writes;
 
 mod rng;

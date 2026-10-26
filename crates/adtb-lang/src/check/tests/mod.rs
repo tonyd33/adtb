@@ -815,6 +815,15 @@ fn key_values_are_built_by_r_key() {
     accepts("fn f (k: Key follows) -> { dst: Key users, src: Key users } = value(k)");
 }
 
+#[test]
+fn a_prelude_type_before_a_brace_takes_a_record_argument() {
+    accepts(
+        "fn f () -> Set { name: Text, n: I64 } = from u in users
+           select { name: u.name, n: count(i for i in u.<identities.user) }",
+    );
+    accepts("fn f () -> Option { name: Text } = None");
+}
+
 // Navigation and backlinks
 
 #[test]

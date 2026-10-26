@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::analysis::Totality;
 use crate::check::{Adhoc, Program, Query, Txn};
-use crate::kernel::{IndexField, Kind, Node, Terms, Tm, Var};
+use crate::kernel::{Agg, IndexField, Kind, Node, Terms, Tm, Var};
 use crate::schema::Schema;
 use crate::types::*;
 
@@ -527,12 +527,6 @@ impl<'a> Normaliser<'a> {
         ts.iter().map(|t| self.tm(*t, cx)).collect()
     }
 
-    fn fields(&mut self, fs: &[(String, Tm)], cx: &Cx) -> Result<Vec<(String, Tm)>, String> {
-        fs.iter()
-            .map(|(l, t)| Ok((l.clone(), self.tm(*t, cx)?)))
-            .collect()
-    }
-
     /// Normalises `body` with `var` bound to a fresh output variable, returning both.
     fn under(&mut self, var: Var, body: Tm, cx: &Cx) -> Result<(Var, Tm), String> {
         let x = self.fresh(var, cx);
@@ -546,22 +540,11 @@ impl<'a> Normaliser<'a> {
         self.add(Kind::Var(x), ty)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per term kind; each arm would have to be a function"
-    )]
     fn step(&mut self, t: Tm, cx: &Cx) -> Result<Val, String> {
         let node = self.node(cx.arena, t);
         let ty = node.ty.subst(&cx.targs);
-        let tm = |n: &mut Self, kind: Kind| Ok(Val::Tm(n.add(kind, ty.clone())));
         match &node.kind {
-            Kind::Var(v) => match cx.env.get(*v) {
-                Some(val) => Ok(val.clone()),
-                None => {
-                    let x = self.free_var(cx.arena, *v);
-                    Ok(Val::Tm(self.var_tm(x)))
-                }
-            },
+            Kind::Var(v) => Ok(self.var_val(*v, cx)),
             Kind::Const(_)
             | Kind::Caller
             | Kind::Rel(..)
@@ -569,86 +552,10 @@ impl<'a> Normaliser<'a> {
             | Kind::EmptySet
             | Kind::Fresh(..)
             | Kind::Unreachable
-            | Kind::Skip => tm(self, node.kind.clone()),
-            Kind::Prim(p, xs) => {
-                let xs = self.tms(xs, cx)?;
-                tm(self, Kind::Prim(*p, xs))
-            }
-            Kind::Record(fs) => {
-                let fs = self.fields(fs, cx)?;
-                tm(self, Kind::Record(fs))
-            }
-            Kind::Ctor { ctor, fields } => {
-                let fields = self.fields(fields, cx)?;
-                tm(
-                    self,
-                    Kind::Ctor {
-                        ctor: *ctor,
-                        fields,
-                    },
-                )
-            }
-            Kind::Field(x, l) => {
-                let x = self.tm(*x, cx)?;
-                let fs = match self.out.kind(x) {
-                    Kind::Record(fs) | Kind::Ctor { fields: fs, .. } => Some(fs.clone()),
-                    _ => None,
-                };
-                if let Some(fs) = fs
-                    && let Some((_, e)) = fs.iter().find(|(n, _)| n == l)
-                {
-                    let e = *e;
-                    let others: Vec<Tm> =
-                        fs.iter().filter(|(n, _)| n != l).map(|(_, t)| *t).collect();
-                    if others.into_iter().all(|o| self.copyable(o)) {
-                        return Ok(Val::Tm(e));
-                    }
-                }
-                tm(self, Kind::Field(x, l.clone()))
-            }
-            Kind::Case { scrutinee, arms } => {
-                let s = self.tm(*scrutinee, cx)?;
-                if let Some((c, fields)) = self.ctor_value(s)
-                    && fields.into_iter().all(|f| self.copyable(f))
-                    && let Some((_, v, e)) = arms.iter().find(|(a, _, _)| *a == c)
-                {
-                    let cx = cx.with(*v, Val::Tm(s));
-                    return self.norm(*e, &cx);
-                }
-                let mut out = Vec::with_capacity(arms.len());
-                for (c, v, e) in arms {
-                    let x = self.fresh(*v, cx);
-                    let xt = self.var_tm(x);
-                    let cx = cx.with(*v, Val::Tm(xt));
-                    out.push((*c, x, self.norm(*e, &cx)?));
-                }
-                if out.iter().all(|(_, _, v)| matches!(v, Val::Tm(_))) {
-                    let arms = out
-                        .into_iter()
-                        .map(|(c, x, v)| match v {
-                            Val::Tm(t) => (c, x, t),
-                            _ => unreachable!("checked first-order"),
-                        })
-                        .collect();
-                    return tm(self, Kind::Case { scrutinee: s, arms });
-                }
-                Ok(Val::Case(s, Rc::new(out)))
-            }
-            Kind::If(c, a, b) => {
-                let c = self.tm(*c, cx)?;
-                if let Some((k, _)) = self.ctor_value(c)
-                    && self.is_bool(c)
-                {
-                    let branch = if k == 1 { *a } else { *b };
-                    return self.norm(branch, cx);
-                }
-                let a = self.norm(*a, cx)?;
-                let b = self.norm(*b, cx)?;
-                match (a, b) {
-                    (Val::Tm(a), Val::Tm(b)) => tm(self, Kind::If(c, a, b)),
-                    (a, b) => Ok(Val::If(c, Rc::new(a), Rc::new(b))),
-                }
-            }
+            | Kind::Skip => Ok(self.val(node.kind.clone(), ty)),
+            Kind::Field(x, l) => self.field_step(*x, l, ty, cx),
+            Kind::Case { scrutinee, arms } => self.case_step(*scrutinee, arms, ty, cx),
+            Kind::If(c, a, b) => self.if_step(*c, *a, *b, ty, cx),
             Kind::Let(v, a, b) => {
                 let bound = self.norm(*a, cx)?;
                 self.bind(*v, bound, *b, cx, ty)
@@ -658,283 +565,344 @@ impl<'a> Normaliser<'a> {
                 body: *b,
                 cx: cx.clone(),
             }),
-            Kind::App(f, a) => {
-                let f = self.norm(*f, cx)?;
-                let a = self.norm(*a, cx)?;
-                self.then(f, Then::Apply(a, ty))
-            }
+            Kind::App(f, a) => self.app_step(*f, *a, ty, cx),
             Kind::Call {
                 func,
                 type_args,
                 args,
-            } => {
-                let type_args: Vec<Ty> = type_args.iter().map(|t| t.subst(&cx.targs)).collect();
-                let mut vals = Vec::with_capacity(args.len());
-                for a in args {
-                    vals.push(self.norm(*a, cx)?);
-                }
-                let Some(lam) = self.fns.get(func.0 as usize).copied().flatten() else {
-                    let args = vals
-                        .into_iter()
-                        .map(|v| self.first_order(v))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    return tm(
-                        self,
-                        Kind::Call {
-                            func: *func,
-                            type_args,
-                            args,
-                        },
-                    );
-                };
-                if vals.is_empty() {
-                    let unit = self.add(Kind::Record(Vec::new()), Ty::Unit);
-                    vals.push(Val::Tm(unit));
-                }
-                let mut fty = self.node(FNS, lam).ty.subst(&type_args);
-                let mut f = self.norm(lam, &Cx::new(FNS, type_args))?;
-                for a in vals {
-                    let Ty::Fn(_, r) = fty else {
-                        return Err("a call with more arguments than its function takes".into());
-                    };
-                    fty = *r;
-                    f = self.then(f, Then::Apply(a, fty.clone()))?;
-                }
-                Ok(f)
-            }
-            Kind::Key(x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Key(x))
-            }
-            Kind::KeyOf(r, x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::KeyOf(*r, x))
-            }
-            Kind::Deref { key, reference } => {
-                let key = self.tm(*key, cx)?;
-                tm(
-                    self,
-                    Kind::Deref {
-                        key,
-                        reference: *reference,
-                    },
-                )
-            }
-            Kind::Tag(x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Tag(x))
-            }
-            Kind::Try(x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Try(x))
-            }
-            Kind::Restrict(x, s) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Restrict(x, s.clone()))
-            }
-            Kind::Singleton(x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Singleton(x))
-            }
-            Kind::Union(a, b) => {
-                let a = self.tm(*a, cx)?;
-                let b = self.tm(*b, cx)?;
-                tm(self, Kind::Union(a, b))
-            }
+            } => self.call_step(*func, type_args, args, ty, cx),
             Kind::For(v, s, b) => {
                 let s = self.tm(*s, cx)?;
                 Ok(Val::Tm(self.for_over(*v, s, *b, cx, &ty)?))
-            }
-            Kind::IsEmpty(x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::IsEmpty(x))
-            }
-            Kind::Exists(x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Exists(x))
             }
             Kind::Agg {
                 op,
                 var,
                 source,
                 body,
-            } => {
-                let source = self.tm(*source, cx)?;
-                let (var, body) = self.under(*var, *body, cx)?;
-                tm(
-                    self,
-                    Kind::Agg {
-                        op: *op,
-                        var,
-                        source,
-                        body,
-                    },
-                )
-            }
-            Kind::Group { var, source, by } => {
-                let source = self.tm(*source, cx)?;
-                let (var, by) = self.under(*var, *by, cx)?;
-                tm(self, Kind::Group { var, source, by })
-            }
+            } => self.agg_step(*op, *var, *source, *body, ty, cx),
+            Kind::Group { var, source, by } => self.group_step(*var, *source, *by, ty, cx),
             Kind::Top {
                 count,
                 keys,
                 var,
                 source,
-            } => {
-                let count = self.tm(*count, cx)?;
-                let source = self.tm(*source, cx)?;
-                let (var, keys) = self.keys(*var, keys, cx)?;
-                tm(
-                    self,
-                    Kind::Top {
-                        count,
-                        keys,
-                        var,
-                        source,
-                    },
-                )
-            }
+            } => self.top_step(*count, keys, *var, *source, ty, cx),
             Kind::Present {
                 var,
                 source,
                 keys,
                 take,
                 after,
-            } => {
-                let source = self.tm(*source, cx)?;
-                let (var, keys) = self.keys(*var, keys, cx)?;
-                let take = take.map(|t| self.tm(t, cx)).transpose()?;
-                let after = after.map(|t| self.tm(t, cx)).transpose()?;
-                tm(
-                    self,
-                    Kind::Present {
-                        var,
-                        source,
-                        keys,
-                        take,
-                        after,
-                    },
-                )
-            }
-            Kind::Fix(binds, body) => {
-                let mut inner = cx.clone();
-                let mut xs = Vec::with_capacity(binds.len());
-                for (v, _) in binds {
-                    let x = self.fresh(*v, cx);
-                    let xt = self.var_tm(x);
-                    inner = inner.with(*v, Val::Tm(xt));
-                    xs.push(x);
-                }
-                let mut out = Vec::with_capacity(binds.len());
-                for (x, (_, e)) in xs.into_iter().zip(binds) {
-                    out.push((x, self.tm(*e, &inner)?));
-                }
-                match self.norm(*body, &inner)? {
-                    Val::Tm(b) => tm(self, Kind::Fix(out, b)),
-                    v => Ok(Val::Fix(out, Rc::new(v))),
-                }
-            }
-            Kind::Only(x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Only(x))
-            }
-            Kind::At {
-                instant,
-                point,
-                body,
-            } => {
-                let point = self.tm(*point, cx)?;
-                let body = self.tm(*body, cx)?;
-                tm(
-                    self,
-                    Kind::At {
-                        instant: *instant,
-                        point,
-                        body,
-                    },
-                )
-            }
-            Kind::Reject(x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Reject(x))
-            }
-            Kind::Insert(r, x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Insert(*r, x))
-            }
-            Kind::Delete(r, x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Delete(*r, x))
-            }
-            Kind::Replace(r, rows, f) => {
-                let rows = self.tm(*rows, cx)?;
-                let fty = self.node(cx.arena, *f).ty.subst(&cx.targs);
-                let f = self.norm(*f, cx)?;
-                let f = self.eta(f, fty)?;
-                tm(self, Kind::Replace(*r, rows, f))
-            }
-            Kind::Upsert {
-                rel,
-                rows,
-                on,
-                old,
-                new,
-                otherwise,
-                single,
-            } => {
-                let rows = self.tm(*rows, cx)?;
-                let o = self.fresh(*old, cx);
-                let n = self.fresh(*new, cx);
-                let (ot, nt) = (self.var_tm(o), self.var_tm(n));
-                let inner = cx.with(*old, Val::Tm(ot)).with(*new, Val::Tm(nt));
-                let otherwise = self.tm(*otherwise, &inner)?;
-                tm(
-                    self,
-                    Kind::Upsert {
-                        rel: *rel,
-                        rows,
-                        on: *on,
-                        old: o,
-                        new: n,
-                        otherwise,
-                        single: *single,
-                    },
-                )
-            }
-            Kind::Rejects { into, insert } => {
-                let insert = self.tm(*insert, cx)?;
-                tm(
-                    self,
-                    Kind::Rejects {
-                        into: *into,
-                        insert,
-                    },
-                )
-            }
-            Kind::Par(xs) => {
-                let xs = self.tms(xs, cx)?;
-                tm(self, Kind::Par(xs))
-            }
-            Kind::Fail(x) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Fail(x))
-            }
+            } => self.present_step(*var, *source, keys, *take, *after, ty, cx),
+            Kind::Fix(binds, body) => self.fix_step(binds, *body, ty, cx),
+            Kind::Replace(r, rows, f) => self.replace_step(*r, *rows, *f, ty, cx),
+            Kind::Upsert { .. } => self.upsert_step(&node.kind, ty, cx),
             Kind::LetBang(v, a, b) => {
                 let a = self.tm(*a, cx)?;
                 let (x, b) = self.under(*v, *b, cx)?;
-                tm(self, Kind::LetBang(x, a, b))
+                Ok(self.val(Kind::LetBang(x, a, b), ty))
             }
-            Kind::Block(a, b) => {
-                let a = self.tm(*a, cx)?;
-                let b = self.tm(*b, cx)?;
-                tm(self, Kind::Block(a, b))
-            }
-            Kind::Transact(x, opts) => {
-                let x = self.tm(*x, cx)?;
-                tm(self, Kind::Transact(x, *opts))
+            Kind::Prim(..)
+            | Kind::Record(_)
+            | Kind::Ctor { .. }
+            | Kind::Key(_)
+            | Kind::KeyOf(..)
+            | Kind::Deref { .. }
+            | Kind::Tag(_)
+            | Kind::Try(_)
+            | Kind::Restrict(..)
+            | Kind::Singleton(_)
+            | Kind::Union(..)
+            | Kind::IsEmpty(_)
+            | Kind::Exists(_)
+            | Kind::Only(_)
+            | Kind::At { .. }
+            | Kind::Reject(_)
+            | Kind::Insert(..)
+            | Kind::Delete(..)
+            | Kind::Rejects { .. }
+            | Kind::Par(_)
+            | Kind::Fail(_)
+            | Kind::Block(..)
+            | Kind::Transact(..) => self.congruent(&node.kind, ty, cx),
+        }
+    }
+
+    fn val(&mut self, kind: Kind, ty: Ty) -> Val {
+        Val::Tm(self.add(kind, ty))
+    }
+
+    fn var_val(&mut self, v: Var, cx: &Cx) -> Val {
+        match cx.env.get(v) {
+            Some(val) => val.clone(),
+            None => {
+                let x = self.free_var(cx.arena, v);
+                Val::Tm(self.var_tm(x))
             }
         }
+    }
+
+    /// Normalises each child of `kind` in order, binding nothing.
+    fn congruent(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, String> {
+        let cs = self.tms(&kind.children(), cx)?;
+        Ok(self.val(kind.with_children(&cs), ty))
+    }
+
+    fn field_step(&mut self, x: Tm, l: &str, ty: Ty, cx: &Cx) -> Result<Val, String> {
+        let x = self.tm(x, cx)?;
+        let fs = match self.out.kind(x) {
+            Kind::Record(fs) | Kind::Ctor { fields: fs, .. } => Some(fs.clone()),
+            _ => None,
+        };
+        if let Some(fs) = fs
+            && let Some((_, e)) = fs.iter().find(|(n, _)| n == l)
+        {
+            let e = *e;
+            let others: Vec<Tm> = fs.iter().filter(|(n, _)| n != l).map(|(_, t)| *t).collect();
+            if others.into_iter().all(|o| self.copyable(o)) {
+                return Ok(Val::Tm(e));
+            }
+        }
+        Ok(self.val(Kind::Field(x, l.to_string()), ty))
+    }
+
+    fn case_step(
+        &mut self,
+        scrutinee: Tm,
+        arms: &[(u32, Var, Tm)],
+        ty: Ty,
+        cx: &Cx,
+    ) -> Result<Val, String> {
+        let s = self.tm(scrutinee, cx)?;
+        if let Some((c, fields)) = self.ctor_value(s)
+            && fields.into_iter().all(|f| self.copyable(f))
+            && let Some((_, v, e)) = arms.iter().find(|(a, _, _)| *a == c)
+        {
+            let cx = cx.with(*v, Val::Tm(s));
+            return self.norm(*e, &cx);
+        }
+        let mut out = Vec::with_capacity(arms.len());
+        for (c, v, e) in arms {
+            let x = self.fresh(*v, cx);
+            let xt = self.var_tm(x);
+            let cx = cx.with(*v, Val::Tm(xt));
+            out.push((*c, x, self.norm(*e, &cx)?));
+        }
+        if out.iter().all(|(_, _, v)| matches!(v, Val::Tm(_))) {
+            let arms = out
+                .into_iter()
+                .map(|(c, x, v)| match v {
+                    Val::Tm(t) => (c, x, t),
+                    _ => unreachable!("checked first-order"),
+                })
+                .collect();
+            return Ok(self.val(Kind::Case { scrutinee: s, arms }, ty));
+        }
+        Ok(Val::Case(s, Rc::new(out)))
+    }
+
+    fn if_step(&mut self, c: Tm, a: Tm, b: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {
+        let c = self.tm(c, cx)?;
+        if let Some((k, _)) = self.ctor_value(c)
+            && self.is_bool(c)
+        {
+            let branch = if k == 1 { a } else { b };
+            return self.norm(branch, cx);
+        }
+        let a = self.norm(a, cx)?;
+        let b = self.norm(b, cx)?;
+        match (a, b) {
+            (Val::Tm(a), Val::Tm(b)) => Ok(self.val(Kind::If(c, a, b), ty)),
+            (a, b) => Ok(Val::If(c, Rc::new(a), Rc::new(b))),
+        }
+    }
+
+    fn app_step(&mut self, f: Tm, a: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {
+        let f = self.norm(f, cx)?;
+        let a = self.norm(a, cx)?;
+        self.then(f, Then::Apply(a, ty))
+    }
+
+    fn call_step(
+        &mut self,
+        func: FnId,
+        type_args: &[Ty],
+        args: &[Tm],
+        ty: Ty,
+        cx: &Cx,
+    ) -> Result<Val, String> {
+        let type_args: Vec<Ty> = type_args.iter().map(|t| t.subst(&cx.targs)).collect();
+        let mut vals = Vec::with_capacity(args.len());
+        for a in args {
+            vals.push(self.norm(*a, cx)?);
+        }
+        let Some(lam) = self.fns.get(func.0 as usize).copied().flatten() else {
+            let args = vals
+                .into_iter()
+                .map(|v| self.first_order(v))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(self.val(
+                Kind::Call {
+                    func,
+                    type_args,
+                    args,
+                },
+                ty,
+            ));
+        };
+        if vals.is_empty() {
+            let unit = self.add(Kind::Record(Vec::new()), Ty::Unit);
+            vals.push(Val::Tm(unit));
+        }
+        let mut fty = self.node(FNS, lam).ty.subst(&type_args);
+        let mut f = self.norm(lam, &Cx::new(FNS, type_args))?;
+        for a in vals {
+            let Ty::Fn(_, r) = fty else {
+                return Err("a call with more arguments than its function takes".into());
+            };
+            fty = *r;
+            f = self.then(f, Then::Apply(a, fty.clone()))?;
+        }
+        Ok(f)
+    }
+
+    fn agg_step(
+        &mut self,
+        op: Agg,
+        var: Var,
+        source: Tm,
+        body: Tm,
+        ty: Ty,
+        cx: &Cx,
+    ) -> Result<Val, String> {
+        let source = self.tm(source, cx)?;
+        let (var, body) = self.under(var, body, cx)?;
+        Ok(self.val(
+            Kind::Agg {
+                op,
+                var,
+                source,
+                body,
+            },
+            ty,
+        ))
+    }
+
+    fn group_step(&mut self, var: Var, source: Tm, by: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {
+        let source = self.tm(source, cx)?;
+        let (var, by) = self.under(var, by, cx)?;
+        Ok(self.val(Kind::Group { var, source, by }, ty))
+    }
+
+    fn top_step(
+        &mut self,
+        count: Tm,
+        keys: &[(Tm, bool)],
+        var: Var,
+        source: Tm,
+        ty: Ty,
+        cx: &Cx,
+    ) -> Result<Val, String> {
+        let count = self.tm(count, cx)?;
+        let source = self.tm(source, cx)?;
+        let (var, keys) = self.keys(var, keys, cx)?;
+        Ok(self.val(
+            Kind::Top {
+                count,
+                keys,
+                var,
+                source,
+            },
+            ty,
+        ))
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "the fields of `Kind::Present`")]
+    fn present_step(
+        &mut self,
+        var: Var,
+        source: Tm,
+        keys: &[(Tm, bool)],
+        take: Option<Tm>,
+        after: Option<Tm>,
+        ty: Ty,
+        cx: &Cx,
+    ) -> Result<Val, String> {
+        let source = self.tm(source, cx)?;
+        let (var, keys) = self.keys(var, keys, cx)?;
+        let take = take.map(|t| self.tm(t, cx)).transpose()?;
+        let after = after.map(|t| self.tm(t, cx)).transpose()?;
+        Ok(self.val(
+            Kind::Present {
+                var,
+                source,
+                keys,
+                take,
+                after,
+            },
+            ty,
+        ))
+    }
+
+    fn fix_step(&mut self, binds: &[(Var, Tm)], body: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {
+        let mut inner = cx.clone();
+        let mut xs = Vec::with_capacity(binds.len());
+        for (v, _) in binds {
+            let x = self.fresh(*v, cx);
+            let xt = self.var_tm(x);
+            inner = inner.with(*v, Val::Tm(xt));
+            xs.push(x);
+        }
+        let mut out = Vec::with_capacity(binds.len());
+        for (x, (_, e)) in xs.into_iter().zip(binds) {
+            out.push((x, self.tm(*e, &inner)?));
+        }
+        match self.norm(body, &inner)? {
+            Val::Tm(b) => Ok(self.val(Kind::Fix(out, b), ty)),
+            v => Ok(Val::Fix(out, Rc::new(v))),
+        }
+    }
+
+    fn replace_step(&mut self, r: RelId, rows: Tm, f: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {
+        let rows = self.tm(rows, cx)?;
+        let fty = self.node(cx.arena, f).ty.subst(&cx.targs);
+        let f = self.norm(f, cx)?;
+        let f = self.eta(f, fty)?;
+        Ok(self.val(Kind::Replace(r, rows, f), ty))
+    }
+
+    fn upsert_step(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, String> {
+        let Kind::Upsert {
+            rel,
+            rows,
+            on,
+            old,
+            new,
+            otherwise,
+            single,
+        } = kind
+        else {
+            unreachable!("upsert_step is given an upsert")
+        };
+        let rows = self.tm(*rows, cx)?;
+        let o = self.fresh(*old, cx);
+        let n = self.fresh(*new, cx);
+        let (ot, nt) = (self.var_tm(o), self.var_tm(n));
+        let inner = cx.with(*old, Val::Tm(ot)).with(*new, Val::Tm(nt));
+        let otherwise = self.tm(*otherwise, &inner)?;
+        Ok(self.val(
+            Kind::Upsert {
+                rel: *rel,
+                rows,
+                on: *on,
+                old: o,
+                new: n,
+                otherwise,
+                single: *single,
+            },
+            ty,
+        ))
     }
 
     fn keys(

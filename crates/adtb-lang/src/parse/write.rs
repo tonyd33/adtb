@@ -1,4 +1,4 @@
-use super::{PResult, Parser};
+use super::{Attempt, PResult, Parser};
 use crate::ast::*;
 use crate::lex::{Kw, Tok};
 
@@ -13,100 +13,120 @@ impl Parser<'_> {
     }
 
     pub(crate) fn write_expr(&mut self) -> PResult<Write> {
+        self.nested(Self::write_at)
+    }
+
+    fn write_at(&mut self) -> PResult<Write> {
+        match self.tok().tok {
+            Tok::Kw(Kw::Insert) => self.write_of(Self::insert),
+            Tok::Kw(Kw::Update) => self.write_of(Self::update),
+            Tok::Kw(Kw::Delete) => self.write_of(Self::delete),
+            Tok::Kw(Kw::Fail) => self.write_of(Self::fail),
+            Tok::Kw(Kw::Skip) => self.write_of(|p| {
+                p.bump();
+                Ok(WriteKind::Skip)
+            }),
+            Tok::LParen => self.write_of(Self::write_seq),
+            Tok::Kw(Kw::If) => self.write_of(Self::write_if),
+            Tok::Kw(Kw::Match) => self.write_of(Self::write_match),
+            _ => Err(self.error_here("expected a write")),
+        }
+    }
+
+    fn write_of(&mut self, f: impl FnOnce(&mut Self) -> PResult<WriteKind>) -> PResult<Write> {
         let start = self.tok().span;
-        let kind = match self.tok().tok {
-            Tok::Kw(Kw::Insert) => self.insert()?,
-            Tok::Kw(Kw::Update) => {
-                self.bump();
-                let binder = self.lower("a binder name")?;
-                let source = if self.eat_kw(Kw::In) {
-                    Some(self.or_e()?)
-                } else {
-                    None
-                };
-                let filter = if self.eat_kw(Kw::Where) {
-                    Some(self.expr()?)
-                } else {
-                    None
-                };
-                self.expect_kw(Kw::Set)?;
-                let value = self.expr()?;
-                WriteKind::Update {
-                    binder,
-                    source,
-                    filter,
-                    value,
-                }
-            }
-            Tok::Kw(Kw::Delete) => {
-                self.bump();
-                let binder = self.lower("a binder name")?;
-                let source = if self.eat_kw(Kw::In) {
-                    Some(self.or_e()?)
-                } else {
-                    None
-                };
-                let filter = if self.eat_kw(Kw::Where) {
-                    Some(self.expr()?)
-                } else {
-                    None
-                };
-                WriteKind::Delete {
-                    binder,
-                    source,
-                    filter,
-                }
-            }
-            Tok::Kw(Kw::Fail) => {
-                self.bump();
-                WriteKind::Fail(self.or_e()?)
-            }
-            Tok::Kw(Kw::Skip) => {
-                self.bump();
-                WriteKind::Skip
-            }
-            Tok::LParen => {
-                self.bump();
-                let mut writes = vec![self.write_expr()?];
-                while self.eat(Tok::Comma) {
-                    writes.push(self.write_expr()?);
-                }
-                self.expect(Tok::RParen, "`)`")?;
-                WriteKind::Seq(writes)
-            }
-            Tok::Kw(Kw::If) => {
-                self.bump();
-                let c = self.expr()?;
-                self.expect_kw(Kw::Then)?;
-                let a = self.write_expr()?;
-                self.expect_kw(Kw::Else)?;
-                let b = self.write_expr()?;
-                WriteKind::If(c, Box::new(a), Box::new(b))
-            }
-            Tok::Kw(Kw::Match) => {
-                self.bump();
-                let scrutinee = self.or_e()?;
-                if !self.at(Tok::Bar) {
-                    return Err(self.error_here("expected `|` and a match arm"));
-                }
-                let mut arms = Vec::new();
-                while self.eat(Tok::Bar) {
-                    let (patterns, guard) = self.arm_head()?;
-                    let body = self.write_expr()?;
-                    arms.push(WriteArm {
-                        patterns,
-                        guard,
-                        body,
-                    });
-                }
-                WriteKind::Match(scrutinee, arms)
-            }
-            _ => return Err(self.error_here("expected a write")),
-        };
+        let kind = f(self)?;
         Ok(Write {
             kind,
             span: self.span_from(start),
         })
+    }
+
+    fn fail(&mut self) -> PResult<WriteKind> {
+        self.bump();
+        Ok(WriteKind::Fail(self.or_e()?))
+    }
+
+    fn update(&mut self) -> PResult<WriteKind> {
+        self.bump();
+        let binder = self.lower("a binder name")?;
+        let source = if self.eat_kw(Kw::In) {
+            Some(self.or_e()?)
+        } else {
+            None
+        };
+        let filter = if self.eat_kw(Kw::Where) {
+            Some(self.expr()?)
+        } else {
+            None
+        };
+        self.expect_kw(Kw::Set)?;
+        let value = self.expr()?;
+        Ok(WriteKind::Update {
+            binder,
+            source,
+            filter,
+            value,
+        })
+    }
+
+    fn delete(&mut self) -> PResult<WriteKind> {
+        self.bump();
+        let binder = self.lower("a binder name")?;
+        let source = if self.eat_kw(Kw::In) {
+            Some(self.or_e()?)
+        } else {
+            None
+        };
+        let filter = if self.eat_kw(Kw::Where) {
+            Some(self.expr()?)
+        } else {
+            None
+        };
+        Ok(WriteKind::Delete {
+            binder,
+            source,
+            filter,
+        })
+    }
+
+    fn write_seq(&mut self) -> PResult<WriteKind> {
+        self.bump();
+        let mut writes = vec![self.write_expr()?];
+        while self.eat(Tok::Comma) {
+            writes.push(self.write_expr()?);
+        }
+        self.expect(Tok::RParen, "`)`")?;
+        Ok(WriteKind::Seq(writes))
+    }
+
+    fn write_if(&mut self) -> PResult<WriteKind> {
+        self.bump();
+        let c = self.expr()?;
+        self.expect_kw(Kw::Then)?;
+        let a = self.write_expr()?;
+        self.expect_kw(Kw::Else)?;
+        let b = self.write_expr()?;
+        Ok(WriteKind::If(c, Box::new(a), Box::new(b)))
+    }
+
+    fn write_match(&mut self) -> PResult<WriteKind> {
+        self.bump();
+        let scrutinee = self.or_e()?;
+        if !self.at(Tok::Bar) {
+            return Err(self.error_here("expected `|` and a match arm"));
+        }
+        let mut arms = Vec::new();
+        while self.eat(Tok::Bar) {
+            let (patterns, guard) = self.arm_head()?;
+            let body = self.write_expr()?;
+            arms.push(WriteArm {
+                patterns,
+                guard,
+                body,
+            });
+        }
+        Ok(WriteKind::Match(scrutinee, arms))
     }
 
     fn insert(&mut self) -> PResult<WriteKind> {
@@ -207,7 +227,7 @@ impl Parser<'_> {
                 Ok(LetValue::Write(self.write_expr()?))
             }
             Tok::Kw(Kw::If | Kw::Match) | Tok::LParen => {
-                if let Some(w) = self.attempt(Self::write_expr) {
+                if let Some(w) = self.attempt(Attempt::Write, Self::write_expr) {
                     return Ok(LetValue::Write(w));
                 }
                 Ok(LetValue::Expr(self.expr()?))

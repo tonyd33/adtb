@@ -76,6 +76,8 @@ pub enum Ref {
     Type(TypeId),
     /// A type of the prelude with no declaration: a base type, `Key`, `Decimal`, `Set`, `Group` or `Tag`.
     BuiltinType,
+    /// A constructor of an anonymous sum or of a tag type, which no declaration names.
+    Anonymous,
     Relation(RelId),
     Function(FnId),
     Aggregate(u32),

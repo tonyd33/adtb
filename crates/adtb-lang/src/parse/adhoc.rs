@@ -1,4 +1,4 @@
-use super::{PResult, Parser};
+use super::{Attempt, PResult, Parser};
 use crate::ast::*;
 use crate::lex::{Kw, Tok};
 
@@ -11,7 +11,7 @@ impl Parser<'_> {
                 return Ok(AdhocItem::Write(self.write_expr()?));
             }
             Tok::Kw(Kw::If | Kw::Match) | Tok::LParen => {
-                if let Some(w) = self.attempt(Self::write_expr) {
+                if let Some(w) = self.attempt(Attempt::Write, Self::write_expr) {
                     return Ok(AdhocItem::Write(w));
                 }
                 return Ok(AdhocItem::Expr(self.expr()?));

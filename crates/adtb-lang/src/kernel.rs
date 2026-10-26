@@ -326,7 +326,14 @@ impl Terms {
 
     /// Returns the direct subterms of `t`, in evaluation order.
     pub fn children(&self, t: Tm) -> Vec<Tm> {
-        match self.kind(t) {
+        self.kind(t).children()
+    }
+}
+
+impl Kind {
+    /// Returns the direct subterms, in evaluation order.
+    pub fn children(&self) -> Vec<Tm> {
+        match self {
             Kind::Var(_)
             | Kind::Const(_)
             | Kind::Caller
@@ -401,6 +408,131 @@ impl Terms {
                 .chain(take.iter().copied())
                 .chain(after.iter().copied())
                 .collect(),
+        }
+    }
+
+    /// Returns this kind with its children replaced by `cs`, given in the order of [`Kind::children`].
+    pub fn with_children(&self, cs: &[Tm]) -> Kind {
+        let mut it = cs.iter().copied();
+        let mut next = || it.next().expect("one child per child position");
+        match self {
+            Kind::Var(_)
+            | Kind::Const(_)
+            | Kind::Caller
+            | Kind::Rel(..)
+            | Kind::Transition(..)
+            | Kind::EmptySet
+            | Kind::Fresh(..)
+            | Kind::Unreachable
+            | Kind::Skip => self.clone(),
+            Kind::Prim(p, xs) => Kind::Prim(*p, xs.iter().map(|_| next()).collect()),
+            Kind::Par(xs) => Kind::Par(xs.iter().map(|_| next()).collect()),
+            Kind::Record(fs) => Kind::Record(fs.iter().map(|(n, _)| (n.clone(), next())).collect()),
+            Kind::Ctor { ctor, fields } => Kind::Ctor {
+                ctor: *ctor,
+                fields: fields.iter().map(|(n, _)| (n.clone(), next())).collect(),
+            },
+            Kind::Field(_, l) => Kind::Field(next(), l.clone()),
+            Kind::Key(_) => Kind::Key(next()),
+            Kind::KeyOf(r, _) => Kind::KeyOf(*r, next()),
+            Kind::Deref { reference, .. } => Kind::Deref {
+                key: next(),
+                reference: *reference,
+            },
+            Kind::Tag(_) => Kind::Tag(next()),
+            Kind::Try(_) => Kind::Try(next()),
+            Kind::Restrict(_, s) => Kind::Restrict(next(), s.clone()),
+            Kind::Singleton(_) => Kind::Singleton(next()),
+            Kind::IsEmpty(_) => Kind::IsEmpty(next()),
+            Kind::Exists(_) => Kind::Exists(next()),
+            Kind::Only(_) => Kind::Only(next()),
+            Kind::Reject(_) => Kind::Reject(next()),
+            Kind::Insert(r, _) => Kind::Insert(*r, next()),
+            Kind::Delete(r, _) => Kind::Delete(*r, next()),
+            Kind::Fail(_) => Kind::Fail(next()),
+            Kind::Transact(_, o) => Kind::Transact(next(), *o),
+            Kind::Rejects { into, .. } => Kind::Rejects {
+                into: *into,
+                insert: next(),
+            },
+            Kind::Lam(x, _) => Kind::Lam(*x, next()),
+            Kind::Upsert {
+                rel,
+                on,
+                old,
+                new,
+                single,
+                ..
+            } => Kind::Upsert {
+                rel: *rel,
+                rows: next(),
+                on: *on,
+                old: *old,
+                new: *new,
+                otherwise: next(),
+                single: *single,
+            },
+            Kind::Case { arms, .. } => Kind::Case {
+                scrutinee: next(),
+                arms: arms.iter().map(|(c, v, _)| (*c, *v, next())).collect(),
+            },
+            Kind::If(..) => Kind::If(next(), next(), next()),
+            Kind::Let(x, ..) => Kind::Let(*x, next(), next()),
+            Kind::LetBang(x, ..) => Kind::LetBang(*x, next(), next()),
+            Kind::Union(..) => Kind::Union(next(), next()),
+            Kind::For(x, ..) => Kind::For(*x, next(), next()),
+            Kind::Replace(r, ..) => Kind::Replace(*r, next(), next()),
+            Kind::Block(..) => Kind::Block(next(), next()),
+            Kind::App(..) => Kind::App(next(), next()),
+            Kind::Call {
+                func, type_args, ..
+            } => Kind::Call {
+                func: *func,
+                type_args: type_args.clone(),
+                args: cs.to_vec(),
+            },
+            Kind::Agg { op, var, .. } => Kind::Agg {
+                op: *op,
+                var: *var,
+                source: next(),
+                body: next(),
+            },
+            Kind::Group { var, .. } => Kind::Group {
+                var: *var,
+                source: next(),
+                by: next(),
+            },
+            Kind::Top { keys, var, .. } => {
+                let count = next();
+                let source = next();
+                Kind::Top {
+                    count,
+                    keys: keys.iter().map(|(_, d)| (next(), *d)).collect(),
+                    var: *var,
+                    source,
+                }
+            }
+            Kind::Fix(binds, _) => {
+                Kind::Fix(binds.iter().map(|(x, _)| (*x, next())).collect(), next())
+            }
+            Kind::At { instant, .. } => Kind::At {
+                instant: *instant,
+                point: next(),
+                body: next(),
+            },
+            Kind::Present {
+                var,
+                keys,
+                take,
+                after,
+                ..
+            } => Kind::Present {
+                var: *var,
+                source: next(),
+                keys: keys.iter().map(|(_, d)| (next(), *d)).collect(),
+                take: take.map(|_| next()),
+                after: after.map(|_| next()),
+            },
         }
     }
 }

@@ -394,7 +394,7 @@ impl Cx<'_> {
                 };
                 let mut sels: Vec<Vec<ast::Ident>> = Vec::new();
                 each_type(&d, &mut |t| {
-                    if let ast::TypeKind::Key(rr) = &t.kind
+                    if let ast::TypeKind::Key(_, rr) = &t.kind
                         && names_rel(&rr.relation)
                         && let Some(sel) = &rr.sel
                     {

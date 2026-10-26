@@ -371,8 +371,8 @@ Rulings: syntax/module/header, surface/namespace/modules, surface/source/op-log,
 ```ebnf
 type        = sum_type [ "->" type ]
 sum_type    = app_type | anon_ctor { "|" anon_ctor }   (* a lone UPPER is an app_type *)
-anon_ctor   = UPPER [ record_type ]
-app_type    = type_atom { type_arg }
+anon_ctor   = UPPER [ record_type ]                    (* never a prelude type name *)
+app_type    = type_atom [ record_type ] { type_arg }   (* record_type only after a prelude type name *)
 type_arg    = type_atom | INT
 type_atom   = QUPPER [ "." ctor_sel ]
             | LOWER
@@ -412,10 +412,16 @@ ctor_sel    = UPPER | "(" UPPER { "|" UPPER } ")"
   over from the row. Meaning in
   [writes.md](writes.md#7-delete-actions).
 - A record type used as a type argument is parenthesised: `Set ({
-  email: Text })`, `Option ({ at: Instant })`. In a type position,
-  `C { ... }` is therefore always an anonymous constructor, and alone
-  it is a one-constructor anonymous sum: `Set (Found { user: Key users
-  })`.
+  email: Text })`, `Option ({ at: Instant })`, except directly after
+  a prelude type name (§11): a prelude type name followed by `{`
+  begins a type application whose first argument is that record type,
+  so `Set { email: Text }` is `Set ({ email: Text })`. In a type
+  position, `C { ... }` for any other `C` is an anonymous constructor,
+  and alone it is a one-constructor anonymous sum: `Set (Found { user:
+  Key users })`.
+- An anonymous constructor may not be named after a prelude type: an
+  implementation must refuse `Set { a: I64 } | Other` or `Found { a:
+  I64 } | Option`, naming the prelude type.
 - A field type carries no default. Defaults and generated values are
   clauses of a relation variable (§5.2).
 - `A { ... } | B` in a type position is an anonymous sum and `{ f: T
@@ -436,7 +442,7 @@ ctor_sel    = UPPER | "(" UPPER { "|" UPPER } ")"
 - `()` is the unit type, the result of a transaction that returns
   nothing.
 
-Rulings: syntax/reference/key, syntax/record/colon, surface/ref/ref-type, surface/query-scoped, spec/type-args/stop/clause-words, spec/anon-sum/one-ctor/one-ctor
+Rulings: syntax/reference/key, syntax/record/colon, surface/ref/ref-type, surface/query-scoped, spec/type-args/stop/clause-words, spec/anon-sum/one-ctor/one-ctor, spec/anon-sum/prelude-head/type-app
 
 ## 5. Declarations
 

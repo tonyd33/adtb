@@ -1,4 +1,4 @@
-use super::{PResult, Parser};
+use super::{Attempt, PResult, Parser};
 use crate::ast::*;
 use crate::lex::{self, Kw, Tok};
 use crate::span::Span;
@@ -20,107 +20,81 @@ impl Parser<'_> {
     }
 
     pub(crate) fn expr(&mut self) -> PResult<Expr> {
-        let mut lhs = self.or_e()?;
-        while self.eat_kw(Kw::Union) {
-            let rhs = self.or_e()?;
-            lhs = self.binary(BinOp::Union, lhs, rhs);
-        }
-        Ok(lhs)
+        self.operators(Level::Union)
     }
 
     pub(crate) fn or_e(&mut self) -> PResult<Expr> {
-        let mut lhs = self.and_e()?;
-        while self.eat_kw(Kw::Or) {
-            let rhs = self.and_e()?;
-            lhs = self.binary(BinOp::Or, lhs, rhs);
-        }
-        Ok(lhs)
+        self.operators(Level::Or)
     }
 
-    fn and_e(&mut self) -> PResult<Expr> {
-        let mut lhs = self.not_e()?;
-        while self.eat_kw(Kw::And) {
-            let rhs = self.not_e()?;
-            lhs = self.binary(BinOp::And, lhs, rhs);
-        }
-        Ok(lhs)
+    pub(crate) fn add_e(&mut self) -> PResult<Expr> {
+        self.operators(Level::Add)
     }
 
-    fn not_e(&mut self) -> PResult<Expr> {
-        let start = self.tok().span;
-        if self.eat_kw(Kw::Not) {
-            let e = self.not_e()?;
-            return Ok(self.mk(ExprKind::Unary(UnOp::Not, Box::new(e)), start));
-        }
-        self.cmp_e()
-    }
-
-    fn cmp_op(&self) -> Option<BinOp> {
+    fn infix(&self) -> Option<(BinOp, Level)> {
         Some(match self.tok().tok {
-            Tok::EqEq => BinOp::Eq,
-            Tok::NotEq => BinOp::Ne,
-            Tok::Lt => BinOp::Lt,
-            Tok::Le => BinOp::Le,
-            Tok::Gt => BinOp::Gt,
-            Tok::Ge => BinOp::Ge,
+            Tok::Kw(Kw::Union) => (BinOp::Union, Level::Union),
+            Tok::Kw(Kw::Or) => (BinOp::Or, Level::Or),
+            Tok::Kw(Kw::And) => (BinOp::And, Level::And),
+            Tok::EqEq => (BinOp::Eq, Level::Cmp),
+            Tok::NotEq => (BinOp::Ne, Level::Cmp),
+            Tok::Lt => (BinOp::Lt, Level::Cmp),
+            Tok::Le => (BinOp::Le, Level::Cmp),
+            Tok::Gt => (BinOp::Gt, Level::Cmp),
+            Tok::Ge => (BinOp::Ge, Level::Cmp),
+            Tok::Plus => (BinOp::Add, Level::Add),
+            Tok::Minus => (BinOp::Sub, Level::Add),
+            Tok::PlusPlus => (BinOp::Concat, Level::Add),
+            Tok::Star => (BinOp::Mul, Level::Mul),
+            Tok::Slash => (BinOp::Div, Level::Mul),
+            Tok::Percent => (BinOp::Rem, Level::Mul),
             _ => return None,
         })
     }
 
-    fn cmp_e(&mut self) -> PResult<Expr> {
-        let lhs = self.add_e()?;
-        let Some(op) = self.cmp_op() else {
-            return Ok(lhs);
-        };
-        self.bump();
-        let rhs = self.add_e()?;
-        if self.cmp_op().is_some() {
-            return Err(self.error_here("comparisons do not chain; parenthesise one"));
-        }
-        Ok(self.binary(op, lhs, rhs))
+    /// Parses an operand and every infix operator of level `min` or tighter that follows it.
+    fn operators(&mut self, min: Level) -> PResult<Expr> {
+        self.chain(
+            |p| {
+                if min <= Level::Not && p.at_kw(Kw::Not) {
+                    p.not_e()
+                } else {
+                    p.prefix_e()
+                }
+            },
+            |p| p.infix().is_some_and(|(_, level)| level >= min),
+            |p, lhs| {
+                let (op, level) = p.infix().expect("an infix operator follows");
+                p.bump();
+                let rhs = p.operators(level.operand())?;
+                if level == Level::Cmp && matches!(p.infix(), Some((_, Level::Cmp))) {
+                    return Err(p.error_here("comparisons do not chain; parenthesise one"));
+                }
+                Ok(p.binary(op, lhs, rhs))
+            },
+        )
     }
 
-    pub(crate) fn add_e(&mut self) -> PResult<Expr> {
-        let mut lhs = self.mul_e()?;
-        loop {
-            let op = match self.tok().tok {
-                Tok::Plus => BinOp::Add,
-                Tok::Minus => BinOp::Sub,
-                Tok::PlusPlus => BinOp::Concat,
-                _ => return Ok(lhs),
-            };
-            self.bump();
-            let rhs = self.mul_e()?;
-            lhs = self.binary(op, lhs, rhs);
-        }
-    }
-
-    fn mul_e(&mut self) -> PResult<Expr> {
-        let mut lhs = self.prefix_e()?;
-        loop {
-            let op = match self.tok().tok {
-                Tok::Star => BinOp::Mul,
-                Tok::Slash => BinOp::Div,
-                Tok::Percent => BinOp::Rem,
-                _ => return Ok(lhs),
-            };
-            self.bump();
-            let rhs = self.prefix_e()?;
-            lhs = self.binary(op, lhs, rhs);
-        }
+    fn not_e(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        self.expect_kw(Kw::Not)?;
+        let e = self.nested(|p| p.operators(Level::Not))?;
+        Ok(self.mk(ExprKind::Unary(UnOp::Not, Box::new(e)), start))
     }
 
     pub(crate) fn prefix_e(&mut self) -> PResult<Expr> {
-        let start = self.tok().span;
-        let op = match self.tok().tok {
-            Tok::Minus => UnOp::Neg,
-            Tok::Kw(Kw::Key) => UnOp::Key,
-            Tok::Kw(Kw::Try) => UnOp::Try,
-            _ => return self.postfix_e(),
-        };
-        self.bump();
-        let e = self.prefix_e()?;
-        Ok(self.mk(ExprKind::Unary(op, Box::new(e)), start))
+        self.nested(|p| {
+            let start = p.tok().span;
+            let op = match p.tok().tok {
+                Tok::Minus => UnOp::Neg,
+                Tok::Kw(Kw::Key) => UnOp::Key,
+                Tok::Kw(Kw::Try) => UnOp::Try,
+                _ => return p.postfix_e(),
+            };
+            p.bump();
+            let e = p.prefix_e()?;
+            Ok(p.mk(ExprKind::Unary(op, Box::new(e)), start))
+        })
     }
 
     fn at_adjacent_paren(&self) -> bool {
@@ -129,50 +103,71 @@ impl Parser<'_> {
 
     fn postfix_e(&mut self) -> PResult<Expr> {
         let start = self.tok().span;
-        let mut e = self.primary()?;
-        loop {
-            if self.at_ctor_sel_after_dot() {
-                self.bump();
-                let sel = self.ctor_sel()?;
-                e = self.mk(ExprKind::Select(Box::new(e), sel), start);
-            } else if self.at(Tok::Dot) && self.peek(1).tok == Tok::Kw(Kw::Key) && {
-                let p = self.peek(2);
-                p.tok == Tok::LParen && !p.spaced
-            } {
-                self.bump();
-                self.bump();
-                let args = self.key_args()?;
-                e = self.mk(ExprKind::KeyCall(Box::new(e), args), start);
-            } else if self.at(Tok::Dot) && matches!(self.peek(1).tok, Tok::Lower | Tok::Kw(_)) {
-                self.bump();
-                let field = self.field_word()?;
-                if self.at_adjacent_paren() {
-                    return Err(self.error_here(
-                        "`x.f(...)` is a call only as `T.f(...)` on a type or `r.key(...)`",
-                    ));
-                }
-                e = self.mk(ExprKind::Field(Box::new(e), field), start);
-            } else if self.eat(Tok::DotLt) {
-                let rstart = self.tok().span;
-                let relation = self.qlower("a relation name")?;
-                let sel = if self.at_ctor_sel_after_dot() {
-                    self.bump();
-                    Some(self.ctor_sel()?)
-                } else {
-                    None
-                };
-                let rel = RelationRef {
-                    relation,
-                    sel,
-                    span: self.span_from(rstart),
-                };
-                self.expect(Tok::Dot, "`.` and the field of the backlink")?;
-                let field = self.field_word()?;
-                e = self.mk(ExprKind::Backlink(Box::new(e), rel, field), start);
-            } else {
-                return Ok(e);
-            }
+        self.chain(Self::primary, Self::at_postfix, |p, e| p.postfix(e, start))
+    }
+
+    fn at_postfix(&mut self) -> bool {
+        self.at_ctor_sel_after_dot()
+            || self.at(Tok::DotLt)
+            || self.at(Tok::Dot) && matches!(self.peek(1).tok, Tok::Lower | Tok::Kw(_))
+    }
+
+    fn postfix(&mut self, e: Expr, start: Span) -> PResult<Expr> {
+        if self.at_ctor_sel_after_dot() {
+            self.select_postfix(e, start)
+        } else if self.at(Tok::Dot) && self.peek(1).tok == Tok::Kw(Kw::Key) && {
+            let p = self.peek(2);
+            p.tok == Tok::LParen && !p.spaced
+        } {
+            self.key_postfix(e, start)
+        } else if self.at(Tok::Dot) {
+            self.field_postfix(e, start)
+        } else {
+            self.backlink_postfix(e, start)
         }
+    }
+
+    fn select_postfix(&mut self, e: Expr, start: Span) -> PResult<Expr> {
+        self.bump();
+        let sel = self.ctor_sel()?;
+        Ok(self.mk(ExprKind::Select(Box::new(e), sel), start))
+    }
+
+    fn key_postfix(&mut self, e: Expr, start: Span) -> PResult<Expr> {
+        self.bump();
+        self.bump();
+        let args = self.key_args()?;
+        Ok(self.mk(ExprKind::KeyCall(Box::new(e), args), start))
+    }
+
+    fn field_postfix(&mut self, e: Expr, start: Span) -> PResult<Expr> {
+        self.bump();
+        let field = self.field_word()?;
+        if self.at_adjacent_paren() {
+            return Err(self
+                .error_here("`x.f(...)` is a call only as `T.f(...)` on a type or `r.key(...)`"));
+        }
+        Ok(self.mk(ExprKind::Field(Box::new(e), field), start))
+    }
+
+    fn backlink_postfix(&mut self, e: Expr, start: Span) -> PResult<Expr> {
+        self.bump();
+        let rstart = self.tok().span;
+        let relation = self.qlower("a relation name")?;
+        let sel = if self.at_ctor_sel_after_dot() {
+            self.bump();
+            Some(self.ctor_sel()?)
+        } else {
+            None
+        };
+        let rel = RelationRef {
+            relation,
+            sel,
+            span: self.span_from(rstart),
+        };
+        self.expect(Tok::Dot, "`.` and the field of the backlink")?;
+        let field = self.field_word()?;
+        Ok(self.mk(ExprKind::Backlink(Box::new(e), rel, field), start))
     }
 
     fn key_args(&mut self) -> PResult<KeyArgs> {
@@ -202,12 +197,7 @@ impl Parser<'_> {
         }
         let first = self.expr()?;
         if self.eat_kw(Kw::For) {
-            let generators = self.generators()?;
-            let filter = if self.eat_kw(Kw::Where) {
-                Some(Box::new(self.expr()?))
-            } else {
-                None
-            };
+            let (generators, filter) = self.scoped(Self::filtered_generators)?;
             self.expect(Tok::RParen, "`)`")?;
             return Ok(CallArgs::Aggregate {
                 expr: Box::new(first),
@@ -291,7 +281,6 @@ impl Parser<'_> {
     }
 
     fn primary(&mut self) -> PResult<Expr> {
-        let start = self.tok().span;
         let t = self.tok();
         match t.tok {
             Tok::Int
@@ -299,128 +288,31 @@ impl Parser<'_> {
             | Tok::Float
             | Tok::Text
             | Tok::Duration
-            | Tok::Kw(Kw::True | Kw::False) => {
-                let lit = self.lit()?;
-                Ok(self.mk(ExprKind::Lit(lit), start))
-            }
-            Tok::Kw(Kw::From) => {
-                let c = self.comprehension()?;
-                Ok(self.mk(ExprKind::Comprehension(Box::new(c)), start))
-            }
-            Tok::Kw(Kw::Match) => {
-                self.bump();
-                let scrutinee = self.or_e()?;
-                let arms = self.arms()?;
-                Ok(self.mk(ExprKind::Match(Some(Box::new(scrutinee)), arms), start))
-            }
+            | Tok::Kw(Kw::True | Kw::False) => self.lit_expr(),
+            Tok::Kw(Kw::From) => self.comprehension_expr(),
+            Tok::Kw(Kw::Match) => self.match_expr(),
             Tok::Kw(Kw::Fix) => self.fix_expr(),
             Tok::Kw(Kw::Fn) => self.lambda(),
-            Tok::Kw(Kw::Exists) => {
-                self.bump();
-                let gens = self.generators()?;
-                let filter = if self.eat_kw(Kw::Where) {
-                    Some(Box::new(self.expr()?))
-                } else {
-                    None
-                };
-                Ok(self.mk(ExprKind::Exists(gens, filter), start))
-            }
-            Tok::Kw(Kw::Top) => {
-                self.bump();
-                let count = self.add_e()?;
-                self.expect_kw(Kw::By)?;
-                let keys = self.order_keys()?;
-                self.expect(Tok::LParen, "`(` and the operand of `top`")?;
-                if !self.at_kw(Kw::From) {
-                    return Err(self.error_here(
-                        "expected the operand of `top`, a comprehension starting with `from`",
-                    ));
-                }
-                let body = self.comprehension()?;
-                self.expect(Tok::RParen, "`)`")?;
-                Ok(self.mk(
-                    ExprKind::Top {
-                        count: Box::new(count),
-                        keys,
-                        body: Box::new(body),
-                    },
-                    start,
-                ))
-            }
-            Tok::Kw(Kw::If) => {
-                self.bump();
-                let c = self.expr()?;
-                self.expect_kw(Kw::Then)?;
-                let a = self.expr()?;
-                self.expect_kw(Kw::Else)?;
-                let b = self.expr()?;
-                Ok(self.mk(ExprKind::If(Box::new(c), Box::new(a), Box::new(b)), start))
-            }
+            Tok::Kw(Kw::Exists) => self.exists_expr(),
+            Tok::Kw(Kw::Top) => self.top_expr(),
+            Tok::Kw(Kw::If) => self.if_expr(),
             Tok::Lower
                 if self.at_word("at")
                     && (self.peek_word(1, "commit") || self.peek_word(1, "instant")) =>
             {
-                self.bump();
-                let instant = self.bump();
-                let instant = self.is_word(instant, "instant");
-                let point = self.add_e()?;
-                let pins = self.maybe_pins()?;
-                self.expect(Tok::LBrace, "`{`")?;
-                let body = self.expr()?;
-                self.expect(Tok::RBrace, "`}`")?;
-                Ok(self.mk(
-                    ExprKind::At {
-                        instant,
-                        point: Box::new(point),
-                        pins,
-                        body: Box::new(body),
-                    },
-                    start,
-                ))
+                self.at_expr()
             }
             Tok::Lower if self.at_word("reject") && self.peek(1).spaced && self.starts_expr(1) => {
-                self.bump();
-                let e = self.expr()?;
-                Ok(self.mk(ExprKind::Reject(Box::new(e)), start))
+                self.reject_expr()
             }
             Tok::Lower if self.at_qupper() => self.upper_primary(),
-            Tok::Lower => {
-                let name = self.qlower("a name")?;
-                if self.at_adjacent_paren() {
-                    let args = self.call_args()?;
-                    let pins = self.maybe_pins()?;
-                    return Ok(self.mk(
-                        ExprKind::Call {
-                            callee: name,
-                            args,
-                            pins,
-                        },
-                        start,
-                    ));
-                }
-                Ok(self.mk(ExprKind::Name(name), start))
-            }
+            Tok::Lower => self.name_or_call(),
             Tok::Upper => self.upper_primary(),
             Tok::LParen => self.paren_primary(),
-            Tok::LBrace => {
-                let r = self.record_expr()?;
-                Ok(self.mk(ExprKind::Record(r), start))
-            }
-            Tok::LBracket => {
-                self.bump();
-                let mut elems = Vec::new();
-                if !self.at(Tok::RBracket) {
-                    loop {
-                        elems.push(self.expr()?);
-                        if !self.eat(Tok::Comma) {
-                            break;
-                        }
-                    }
-                }
-                self.expect(Tok::RBracket, "`]`")?;
-                Ok(self.mk(ExprKind::Set(elems), start))
-            }
+            Tok::LBrace => self.record_primary(),
+            Tok::LBracket => self.set_literal(),
             Tok::Dot if self.at_elision() => {
+                let start = t.span;
                 self.bump();
                 self.bump();
                 self.bump();
@@ -428,6 +320,146 @@ impl Parser<'_> {
             }
             _ => Err(self.error_here("expected an expression")),
         }
+    }
+
+    fn lit_expr(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        let lit = self.lit()?;
+        Ok(self.mk(ExprKind::Lit(lit), start))
+    }
+
+    fn comprehension_expr(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        let c = self.comprehension()?;
+        Ok(self.mk(ExprKind::Comprehension(Box::new(c)), start))
+    }
+
+    fn match_expr(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        self.bump();
+        let scrutinee = self.or_e()?;
+        let arms = self.arms()?;
+        Ok(self.mk(ExprKind::Match(Some(Box::new(scrutinee)), arms), start))
+    }
+
+    fn exists_expr(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        self.bump();
+        let (gens, filter) = self.scoped(Self::filtered_generators)?;
+        Ok(self.mk(ExprKind::Exists(gens, filter), start))
+    }
+
+    fn filtered_generators(&mut self) -> PResult<(Vec<Generator>, Option<Box<Expr>>)> {
+        let gens = self.generators()?;
+        let filter = if self.eat_kw(Kw::Where) {
+            Some(Box::new(self.expr()?))
+        } else {
+            None
+        };
+        Ok((gens, filter))
+    }
+
+    fn top_expr(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        self.bump();
+        let count = self.add_e()?;
+        self.expect_kw(Kw::By)?;
+        let keys = self.order_keys()?;
+        self.expect(Tok::LParen, "`(` and the operand of `top`")?;
+        if !self.at_kw(Kw::From) {
+            return Err(self.error_here(
+                "expected the operand of `top`, a comprehension starting with `from`",
+            ));
+        }
+        let body = self.comprehension()?;
+        self.expect(Tok::RParen, "`)`")?;
+        Ok(self.mk(
+            ExprKind::Top {
+                count: Box::new(count),
+                keys,
+                body: Box::new(body),
+            },
+            start,
+        ))
+    }
+
+    fn if_expr(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        self.bump();
+        let c = self.expr()?;
+        self.expect_kw(Kw::Then)?;
+        let a = self.expr()?;
+        self.expect_kw(Kw::Else)?;
+        let b = self.expr()?;
+        Ok(self.mk(ExprKind::If(Box::new(c), Box::new(a), Box::new(b)), start))
+    }
+
+    fn at_expr(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        self.bump();
+        let instant = self.bump();
+        let instant = self.is_word(instant, "instant");
+        let point = self.add_e()?;
+        let pins = self.maybe_pins()?;
+        self.expect(Tok::LBrace, "`{`")?;
+        let body = self.expr()?;
+        self.expect(Tok::RBrace, "`}`")?;
+        Ok(self.mk(
+            ExprKind::At {
+                instant,
+                point: Box::new(point),
+                pins,
+                body: Box::new(body),
+            },
+            start,
+        ))
+    }
+
+    fn reject_expr(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        self.bump();
+        let e = self.expr()?;
+        Ok(self.mk(ExprKind::Reject(Box::new(e)), start))
+    }
+
+    fn name_or_call(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        let name = self.qlower("a name")?;
+        if self.at_adjacent_paren() {
+            let args = self.call_args()?;
+            let pins = self.maybe_pins()?;
+            return Ok(self.mk(
+                ExprKind::Call {
+                    callee: name,
+                    args,
+                    pins,
+                },
+                start,
+            ));
+        }
+        Ok(self.mk(ExprKind::Name(name), start))
+    }
+
+    fn record_primary(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        let r = self.record_expr()?;
+        Ok(self.mk(ExprKind::Record(r), start))
+    }
+
+    fn set_literal(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
+        self.bump();
+        let mut elems = Vec::new();
+        if !self.at(Tok::RBracket) {
+            loop {
+                elems.push(self.expr()?);
+                if !self.eat(Tok::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Tok::RBracket, "`]`")?;
+        Ok(self.mk(ExprKind::Set(elems), start))
     }
 
     /// A primary that starts with a type or constructor name.
@@ -492,18 +524,31 @@ impl Parser<'_> {
             self.bump();
             return Ok(self.mk(ExprKind::Unit, start));
         }
-        if self.at_write_start(1) {
-            let w = self.write_expr()?;
-            return Ok(self.mk(ExprKind::Write(Box::new(w)), start));
-        }
-        if matches!(self.peek(1).tok, Tok::Kw(Kw::If | Kw::Match) | Tok::LParen)
-            && let Some(w) = self.attempt(Self::write_expr)
-        {
-            return Ok(self.mk(ExprKind::Write(Box::new(w)), start));
-        }
-        if let Some(e) = self.attempt(Self::paren_type_call) {
+        if let Some(e) = self.paren_write()? {
             return Ok(e);
         }
+        if let Some(e) = self.attempt(Attempt::TypeCall, Self::paren_type_call) {
+            return Ok(e);
+        }
+        self.paren_expr()
+    }
+
+    fn paren_write(&mut self) -> PResult<Option<Expr>> {
+        let start = self.tok().span;
+        let w = if self.at_write_start(1) {
+            self.write_expr()?
+        } else if matches!(self.peek(1).tok, Tok::Kw(Kw::If | Kw::Match) | Tok::LParen)
+            && let Some(w) = self.attempt(Attempt::Write, Self::write_expr)
+        {
+            w
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(self.mk(ExprKind::Write(Box::new(w)), start)))
+    }
+
+    fn paren_expr(&mut self) -> PResult<Expr> {
+        let start = self.tok().span;
         self.bump();
         let inner = self.expr()?;
         self.expect(Tok::RParen, "`)`")?;
@@ -567,9 +612,12 @@ impl Parser<'_> {
         })
     }
 
+    /// Parses generators, each one level deeper until the end of the enclosing
+    /// [`Parser::scoped`].
     pub(crate) fn generators(&mut self) -> PResult<Vec<Generator>> {
         let mut gens = Vec::new();
         loop {
+            self.deeper()?;
             let binder = self.lower("a binder name")?;
             self.expect_kw(Kw::In)?;
             let source = self.or_e()?;
@@ -588,6 +636,9 @@ impl Parser<'_> {
     fn clauses(&mut self) -> PResult<Vec<Clause>> {
         let mut clauses = Vec::new();
         loop {
+            if self.at_kw(Kw::Where) {
+                self.deeper()?;
+            }
             if self.eat_kw(Kw::From) {
                 clauses.push(Clause::From(self.generators()?));
             } else if self.eat_kw(Kw::Where) {
@@ -599,6 +650,10 @@ impl Parser<'_> {
     }
 
     fn comprehension(&mut self) -> PResult<Comprehension> {
+        self.scoped(Self::comprehension_in_scope)
+    }
+
+    fn comprehension_in_scope(&mut self) -> PResult<Comprehension> {
         let clauses = self.clauses()?;
         let group = if self.eat_kw(Kw::Group) {
             let value = self.or_e()?;
@@ -692,6 +747,10 @@ impl Parser<'_> {
     }
 
     pub(crate) fn pattern(&mut self) -> PResult<Pattern> {
+        self.nested(Self::pattern_at)
+    }
+
+    fn pattern_at(&mut self) -> PResult<Pattern> {
         let start = self.tok().span;
         let kind = match self.tok().tok {
             Tok::Underscore => {
@@ -845,6 +904,33 @@ impl Parser<'_> {
             Ok(fields)
         } else {
             Ok(vec![self.field_word()?])
+        }
+    }
+}
+
+/// Binding levels of the infix operators and `not`, from loosest to tightest.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Level {
+    Union,
+    Or,
+    And,
+    Not,
+    Cmp,
+    Add,
+    Mul,
+    Prefix,
+}
+
+impl Level {
+    /// Returns the level of the right operand of a left-associative operator of this level.
+    fn operand(self) -> Level {
+        match self {
+            Level::Union => Level::Or,
+            Level::Or => Level::And,
+            Level::And => Level::Not,
+            Level::Not | Level::Cmp => Level::Add,
+            Level::Add => Level::Mul,
+            Level::Mul | Level::Prefix => Level::Prefix,
         }
     }
 }

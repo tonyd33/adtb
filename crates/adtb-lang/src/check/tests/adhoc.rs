@@ -417,3 +417,116 @@ insert users from (from r in read_csv(\"u.csv\", User) select User { id: r.id, n
 rejects into rejects",
     );
 }
+
+fn long_list(n: i64, row: impl Fn(i64) -> String) -> String {
+    let rows: Vec<String> = (1..=n).map(row).collect();
+    format!("[{}]", rows.join(", "))
+}
+
+fn normalises(text: &str) {
+    let (s, a) = adhoc(&[], text).unwrap_or_else(|e| panic!("does not check: {e:?}"));
+    let p = check_schema(&s).expect("the schema checks");
+    crate::norm::adhoc(&s, &p, &a).unwrap_or_else(|e| panic!("has no normal form: {e:?}"));
+}
+
+#[test]
+fn a_long_list_literal_parses_checks_and_normalises() {
+    let rows = long_list(10_000, |i| format!("Raw {{ id: raws.key({i}), n: {i} }}"));
+    normalises(&format!("insert raws from {rows}"));
+    let records = long_list(10_000, |i| format!("{{ n: {i}, m: {i} + 1 }}"));
+    normalises(&format!("from r in {records} select r.n"));
+}
+
+/// Returns texts of every nesting form, each `n` levels deep.
+fn nested_texts(n: usize) -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "parentheses",
+            format!("{}1{}", "(".repeat(n), ")".repeat(n)),
+        ),
+        ("sets", format!("{}1{}", "[".repeat(n), "]".repeat(n))),
+        ("a sum chain", vec!["1"; n].join(" + ")),
+        ("an or chain", vec!["true"; n].join(" or ")),
+        ("negations", format!("{}true", "not ".repeat(n))),
+        (
+            "conditionals",
+            format!("{}1", "if true then 1 else ".repeat(n)),
+        ),
+        (
+            "records",
+            format!("{}1{}", "{ a: ".repeat(n), " }".repeat(n)),
+        ),
+        (
+            "generators",
+            format!(
+                "from {} select 1",
+                (0..n)
+                    .map(|i| format!("x{i} in raws"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ),
+        (
+            "where clauses",
+            format!("from r in raws {}select r.n", "where true ".repeat(n - 2)),
+        ),
+        (
+            "a field chain",
+            format!(
+                "{}1{}{}",
+                "{ a: ".repeat(n / 2),
+                " }".repeat(n / 2),
+                ".a".repeat(n / 2)
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn nesting_past_the_limit_is_refused() {
+    let n = crate::parse::MAX_DEPTH as usize + 1;
+    for (form, text) in nested_texts(n) {
+        let msg = match parse_adhoc(&text, Options::default()).ok() {
+            Ok(_) => panic!("{form}: {n} levels parse"),
+            Err(ds) => ds[0].message.clone(),
+        };
+        assert!(
+            msg.starts_with("the text nests more than 64 levels deep"),
+            "{form}: {msg}"
+        );
+    }
+}
+
+#[test]
+fn nesting_within_the_limit_checks_and_normalises() {
+    let n = crate::parse::MAX_DEPTH as usize - 2;
+    for (form, text) in nested_texts(n) {
+        let (s, a) = adhoc(&[], &text).unwrap_or_else(|e| panic!("{form}: {e:?}"));
+        let p = check_schema(&s).expect("the schema checks");
+        crate::norm::adhoc(&s, &p, &a).unwrap_or_else(|e| panic!("{form}: {e:?}"));
+    }
+}
+
+#[test]
+fn a_chain_of_nested_chains_counts_its_height() {
+    let mut e = "1".to_string();
+    for _ in 0..2 {
+        e = format!("({e}{})", " + 1".repeat(40));
+    }
+    let msg = match parse_adhoc(&e, Options::default()).ok() {
+        Ok(_) => panic!("{e} parses"),
+        Err(ds) => ds[0].message.clone(),
+    };
+    assert!(msg.starts_with("the text nests more than"), "{msg}");
+}
+
+#[test]
+fn nested_parenthesised_writes_parse_in_linear_attempts() {
+    let n = 18;
+    let text = format!(
+        "{}true{}",
+        "(if ".repeat(n),
+        " then 1 else 2) == 1".repeat(n)
+    );
+    assert!(parse_adhoc(&text, Options::default()).ok().is_ok());
+}

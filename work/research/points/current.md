@@ -584,6 +584,7 @@ accept:
   spec/agg-params/one: {title: Exactly one; several values pass as a record; a declaration with more is refused, reason: an aggregate takes exactly one parameter; several values pass as a record; a declaration with more is refused}
   spec/agg-range/any-set: {title: Any set expression; sum and avg refuse a generator over a select-built set, reason: count distinct must be expressible; only sum and avg lose meaning when duplicates vanish}
   spec/anon-sum/one-ctor/one-ctor: {title: 'C { ... } alone is a one-constructor anonymous sum', reason: 'a record is already a one-constructor sum, so a lone constructor needs no second one'}
+  spec/anon-sum/prelude-head/type-app: {title: 'A prelude type name followed by { begins a type application, and no anonymous constructor takes a prelude type name', reason: 'a prelude type name always means the prelude type, so Set { a: I64 } is the set of records it prints as'}
   spec/anon-sum/row-types/row-types: {title: An anonymous sum has row types T.C and T.(C | D) with the subtyping and joins of a declared sum, reason: 'without row types, q.C and a match binder over a query result would have no type'}
   spec/audit-relation/seq: {title: 'relation catalog::audit : AuditEvent key seq', reason: 'catalog::audit is declared relation audit : AuditEvent key seq'}
   spec/bad-input-source/empty: {title: Defined only for a statement over one source; otherwise source is "" and line is 0, reason: only a one-source statement has one failing record to name}

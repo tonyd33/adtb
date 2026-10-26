@@ -334,3 +334,37 @@ fn a_dropped_unique_resolves_in_the_clause_it_removes() {
         "provider , sub"
     );
 }
+
+#[test]
+fn a_parenthesised_type_resolves_its_names() {
+    let src = auth(&[
+        (
+            "auth",
+            "type Session = { id: Key sessions, user: Option (Key users) }",
+        ),
+        (
+            "auth",
+            "relation sessions : Session key id generate sequence",
+        ),
+        (
+            "auth",
+            "fn owners () -> Set (Key users) = from s in sessions, u in users select key u",
+        ),
+        (
+            "auth",
+            "fn kinds () -> Set (Local { n: I64 } | Remote { m: Text }) = [Local { n: 1 }]",
+        ),
+    ]);
+    assert_eq!(
+        term(&src, 4, "type"),
+        "type auth::Session = { id : Key auth::sessions , user : Option ( Key auth::users ) }"
+    );
+    assert_eq!(
+        term(&src, 6, "fn"),
+        "fn auth::owners ( ) -> Set ( Key auth::users ) = from s in auth::sessions , u in auth::users select key u"
+    );
+    assert_eq!(
+        term(&src, 7, "fn"),
+        "fn auth::kinds ( ) -> Set ( Local { n : I64 } | Remote { m : Text } ) = [ Local { n : 1 } ]"
+    );
+}

@@ -473,6 +473,8 @@ impl Checker<'_> {
                         Some(i) => self.note(name.span, Ref::Ctor(d, i)),
                         None => self.note_sel(d, rows, &ast::CtorSel::One(name.clone())),
                     }
+                } else {
+                    self.note(name.span, Ref::Anonymous);
                 }
                 let row = ty::restrict(self.schema, ty, set.clone());
                 let cols: Vec<(String, Ty)> = if set.len() == 1 {

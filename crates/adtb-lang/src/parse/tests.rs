@@ -253,7 +253,10 @@ fn types() {
     assert!(matches!(rhs.kind, TypeKind::Fn(..)));
     assert!(parse_type("Decimal 2", STRICT).ok().is_ok());
     assert!(matches!(
-        parse_type("Set { email: Text }", STRICT).ok().unwrap().kind,
+        parse_type("Found { email: Text }", STRICT)
+            .ok()
+            .unwrap()
+            .kind,
         TypeKind::Sum(_)
     ));
     assert!(
@@ -261,6 +264,64 @@ fn types() {
             .ok()
             .is_err()
     );
+}
+
+fn type_err(src: &str) -> String {
+    match parse_type(src, STRICT).ok() {
+        Ok(t) => panic!("{src} parsed as {t:?}"),
+        Err(d) => d[0].message.clone(),
+    }
+}
+
+#[test]
+fn prelude_type_before_a_brace_is_applied() {
+    for src in [
+        "Set { a: I64 }",
+        "Option { at: Instant }",
+        "Set { a: Set { b: Text } }",
+    ] {
+        let t = parse_type(src, STRICT).ok().unwrap();
+        let TypeKind::Named { name, args, .. } = &t.kind else {
+            panic!("{src} parsed as {t:?}")
+        };
+        assert!(
+            name.name.text == "Set" || name.name.text == "Option",
+            "{src}"
+        );
+        assert!(
+            matches!(
+                &args[..],
+                [TypeArg::Type(Type {
+                    kind: TypeKind::Record(_),
+                    ..
+                })]
+            ),
+            "{src} parsed as {t:?}"
+        );
+    }
+    assert!(matches!(
+        parse_type("Result { a: I64 } Text", STRICT).ok().unwrap().kind,
+        TypeKind::Named { ref args, .. } if args.len() == 2
+    ));
+}
+
+#[test]
+fn prelude_type_cannot_name_an_anonymous_constructor() {
+    for (src, name) in [
+        ("Set { a: I64 } | Other", "Set"),
+        ("Other | Set { a: I64 }", "Set"),
+        ("Found { a: I64 } | Option", "Option"),
+        ("Bool | Other", "Bool"),
+        ("Uuid { a: I64 } | Other", "Uuid"),
+        ("Text | Other", "Text"),
+    ] {
+        let msg = type_err(src);
+        assert_eq!(
+            msg,
+            format!("`{name}` is a prelude type and cannot name an anonymous constructor"),
+            "{src}"
+        );
+    }
 }
 
 #[test]
@@ -293,6 +354,30 @@ fn display_name (i: Identity) -> Text = match i
 #[test]
 fn schema_file_needs_a_module_header() {
     assert!(parse_schema("type A = B", STRICT).ok().is_err());
+}
+
+#[test]
+fn a_newtype_base_ends_before_the_next_operator() {
+    let src = "module money\nadd type Cents = new I64\nadd type Rate = new I64 where self > 0\nadd relation rates : Rate\n";
+    let file = parse_migration(src, STRICT)
+        .ok()
+        .unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(file.operators.len(), 3);
+}
+
+#[test]
+fn a_newtype_base_ends_before_a_contextual_declaration() {
+    let src = "module money\ntype Cents = new I64\naggregate total (x: I64) -> I64 =\n  state { s: I64 } init { s: 0 }\n  step (st, x) -> { s: st.s + x }\n  merge (a, b) -> { s: a.s + b.s }\n  finish st -> st.s\n";
+    let file = parse_schema(src, STRICT)
+        .ok()
+        .unwrap_or_else(|d| panic!("{d:?}"));
+    assert_eq!(file.decls.len(), 2);
+}
+
+#[test]
+fn a_type_argument_on_its_own_line_continues_the_type() {
+    let t = parse_type("Box\n  a", STRICT).ok().unwrap();
+    assert!(matches!(t.kind, TypeKind::Named { ref args, .. } if args.len() == 1));
 }
 
 #[test]

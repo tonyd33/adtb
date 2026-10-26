@@ -5,6 +5,8 @@ mod op;
 mod ty;
 mod write;
 
+use std::collections::HashSet;
+
 use crate::ast::*;
 use crate::lex::{self, Kw, Tok, Token};
 use crate::span::{Diag, Span};
@@ -25,12 +27,26 @@ pub(crate) struct Fail;
 
 pub(crate) type PResult<T> = Result<T, Fail>;
 
+/// The greatest height a parsed tree may reach, counting each operand, operator of a chain,
+/// postfix, pattern, type, write, generator and `where` clause on the path to a leaf.
+pub const MAX_DEPTH: u32 = 64;
+
+/// A production the parser tries and backtracks from.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Attempt {
+    Write,
+    TypeCall,
+}
+
 pub(crate) struct Parser<'s> {
     src: &'s str,
     toks: Vec<Token>,
     pos: usize,
     diags: Vec<Diag>,
     opts: Options,
+    depth: u32,
+    peak: u32,
+    failed: HashSet<(usize, u32, Attempt)>,
 }
 
 #[derive(Debug)]
@@ -60,6 +76,9 @@ fn run<'s, T>(
         pos: 0,
         diags,
         opts,
+        depth: 0,
+        peak: 0,
+        failed: HashSet::new(),
     };
     let value = f(&mut p).ok();
     let value = match value {
@@ -302,18 +321,85 @@ impl<'s> Parser<'s> {
         }
     }
 
-    /// Runs `f`, rewinding the position and dropping its diagnostics when it fails.
-    fn attempt<T>(&mut self, f: impl FnOnce(&mut Self) -> PResult<T>) -> Option<T> {
-        let pos = self.pos;
+    /// Runs `f` as production `what`, rewinding the position and dropping its diagnostics when
+    /// it fails, and skipping it where it failed before at the same position and depth.
+    fn attempt<T>(&mut self, what: Attempt, f: impl FnOnce(&mut Self) -> PResult<T>) -> Option<T> {
+        let key = (self.pos, self.depth, what);
+        if self.failed.contains(&key) {
+            return None;
+        }
+        let (pos, peak) = (self.pos, self.peak);
         let n = self.diags.len();
         match f(self) {
             Ok(v) => Some(v),
             Err(Fail) => {
                 self.pos = pos;
+                self.peak = peak;
                 self.diags.truncate(n);
+                self.failed.insert(key);
                 None
             }
         }
+    }
+
+    /// Runs `f` and restores the nesting depth it started at.
+    fn scoped<T>(&mut self, f: impl FnOnce(&mut Self) -> PResult<T>) -> PResult<T> {
+        let base = self.depth;
+        let r = f(self);
+        self.depth = base;
+        r
+    }
+
+    /// Runs `f` one level deeper.
+    fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> PResult<T>) -> PResult<T> {
+        self.scoped(|p| {
+            p.deeper()?;
+            f(p)
+        })
+    }
+
+    /// Adds a level of nesting until the end of the enclosing [`Parser::scoped`].
+    fn deeper(&mut self) -> PResult<()> {
+        self.depth += 1;
+        self.reach(self.depth)
+    }
+
+    /// Notes that a leaf lies at `depth`, refusing the text when that is too deep.
+    fn reach(&mut self, depth: u32) -> PResult<()> {
+        self.peak = self.peak.max(depth);
+        if depth > MAX_DEPTH {
+            return Err(
+                self.error_here(format!("the text nests more than {MAX_DEPTH} levels deep"))
+            );
+        }
+        Ok(())
+    }
+
+    /// Parses a left-nested chain: `first`, then `link` while `more` holds, each link taking
+    /// the chain so far.
+    ///
+    /// Postconditions:
+    /// - The chain's height is the greatest height of its parts plus one per link, and the
+    ///   nesting depth is unchanged.
+    fn chain<T>(
+        &mut self,
+        first: impl FnOnce(&mut Self) -> PResult<T>,
+        mut more: impl FnMut(&mut Self) -> bool,
+        mut link: impl FnMut(&mut Self, T) -> PResult<T>,
+    ) -> PResult<T> {
+        let base = self.depth;
+        let outer = self.peak;
+        self.peak = base;
+        let mut acc = first(self)?;
+        let mut height = self.peak - base;
+        while more(self) {
+            self.peak = base;
+            acc = link(self, acc)?;
+            height = height.max(self.peak - base) + 1;
+            self.reach(base + height)?;
+        }
+        self.peak = outer.max(base + height);
+        Ok(acc)
     }
 
     fn ident(&mut self, t: Token) -> Ident {

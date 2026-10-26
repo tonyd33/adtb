@@ -85,6 +85,15 @@ pub const RESERVED_TYPE_NAMES: &[&str] = &["Set", "Key", "Group", "Eq", "Ord", "
 
 pub const BOUNDS: &[&str] = &["Eq", "Ord", "Hash", "Num"];
 
+/// Returns whether `name` names a prelude type: a scalar, a built-in type constructor or a prelude sum.
+pub fn is_prelude_type(name: &str) -> bool {
+    matches!(name, "Set" | "Key" | "Group" | "Decimal" | "Tag")
+        || Base::from_name(name).is_some()
+        || crate::ids::TYPES
+            .iter()
+            .any(|&(module, type_name, _, _)| module == "prelude" && type_name == name)
+}
+
 /// Prelude functions and built-in forms written as calls; no schema or bundle may declare one.
 pub const PRELUDE_FUNCTIONS: &[&str] = &[
     "span",

@@ -257,7 +257,7 @@ fn each_type<'a>(d: &'a Decl, f: &mut dyn FnMut(&'a ast::Type)) {
                 walk(a, f);
                 walk(b, f);
             }
-            ast::TypeKind::Var(_) | ast::TypeKind::Key(_) | ast::TypeKind::Unit => {}
+            ast::TypeKind::Var(_) | ast::TypeKind::Key(..) | ast::TypeKind::Unit => {}
         }
     }
     match d {
@@ -1420,7 +1420,7 @@ impl Cx<'_> {
             };
             let mut here = Vec::new();
             each_type(&d, &mut |t| {
-                if let ast::TypeKind::Key(rr) = &t.kind
+                if let ast::TypeKind::Key(_, rr) = &t.kind
                     && names(&rr.relation)
                 {
                     here.push(rr.relation.name.span);
@@ -1542,7 +1542,7 @@ impl Cx<'_> {
             };
             let mut found: Vec<ast::Ident> = Vec::new();
             each_type(&d, &mut |t| {
-                if let ast::TypeKind::Key(rr) = &t.kind
+                if let ast::TypeKind::Key(_, rr) = &t.kind
                     && names(&rr.relation)
                     && let Some(sel) = &rr.sel
                 {

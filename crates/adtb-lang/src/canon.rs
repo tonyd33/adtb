@@ -15,7 +15,7 @@ mod tests;
 /// The module each schema object name of a text resolves to, by the span of the name's identifier.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Names {
-    /// `None` for a name of the prelude.
+    /// `None` for a name written unqualified: of the prelude, or of an anonymous constructor.
     modules: BTreeMap<(u32, u32), Option<String>>,
 }
 
@@ -33,7 +33,7 @@ impl Names {
             Ref::Relation(r) | Ref::Set(r, _) => schema.relation(*r).module,
             Ref::Function(f) => schema.function(*f).module,
             Ref::Aggregate(a) => schema.aggregates[*a as usize].module,
-            Ref::BuiltinType => PRELUDE,
+            Ref::BuiltinType | Ref::Anonymous => PRELUDE,
             Ref::Field { .. } | Ref::Match(_) => return,
         };
         self.qualify(schema, span, module);
@@ -197,18 +197,21 @@ pub fn type_refs(schema: &Schema, module: ModuleId, t: &ast::Type, out: &mut Vec
                 }
             }
         }
-        ast::TypeKind::Key(r) => {
-            let at = t.span.start as usize;
-            out.push((Span::new(at, at + "Key".len()), Ref::BuiltinType));
+        ast::TypeKind::Key(word, r) => {
+            out.push((*word, Ref::BuiltinType));
             relation_ref_refs(schema, module, r, out);
         }
         ast::TypeKind::Record(fs) => fs
             .iter()
             .for_each(|f| type_refs(schema, module, &f.ty, out)),
-        ast::TypeKind::Sum(cs) => cs
-            .iter()
-            .flat_map(|c| c.record.iter().flatten())
-            .for_each(|f| type_refs(schema, module, &f.ty, out)),
+        ast::TypeKind::Sum(cs) => {
+            for c in cs {
+                out.push((c.name.span, Ref::Anonymous));
+                for f in c.record.iter().flatten() {
+                    type_refs(schema, module, &f.ty, out);
+                }
+            }
+        }
         ast::TypeKind::Fn(a, b) => {
             type_refs(schema, module, a, out);
             type_refs(schema, module, b, out);

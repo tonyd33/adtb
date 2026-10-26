@@ -1010,10 +1010,7 @@ impl Builder<'_> {
             if principal_seen {
                 self.err(file, name.span, "the schema declares `Principal` once");
             }
-        } else if self.schema.module(PRELUDE).types.contains_key(text)
-            || Base::from_name(text).is_some()
-            || matches!(text, "Decimal" | "Tag")
-        {
+        } else if is_prelude_type(text) {
             self.err(file, name.span, format!("`{text}` is a prelude type"));
         }
     }
@@ -2096,7 +2093,7 @@ pub fn resolve_type(
                 sel: None,
             })
         }
-        ast::TypeKind::Key(r) => {
+        ast::TypeKind::Key(_, r) => {
             let rel = schema
                 .lookup_relation(scope.module, &r.relation)
                 .map_err(|e| (r.span, e))?;
