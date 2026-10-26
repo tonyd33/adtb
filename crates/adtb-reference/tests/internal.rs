@@ -1,9 +1,7 @@
-mod common;
-
 use adtb_lang::kernel::{Const, Kind, Prim, Terms, Tm};
 use adtb_lang::types::{Base, Ty};
 use adtb_reference::Abort;
-use common::Fixture;
+use adtb_testkit::fixture::Fixture;
 
 fn int_ty() -> Ty {
     Ty::Base(Base::I64)

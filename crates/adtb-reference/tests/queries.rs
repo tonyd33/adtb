@@ -1,9 +1,8 @@
 //! The query examples of the queries part of the spec, evaluated on a small database.
 
-mod common;
-
 use adtb_reference::{Fault, Value};
-use common::*;
+use adtb_testkit::fixture::*;
+use adtb_testkit::uuid;
 
 const SCHEMA: &str = r#"
 type User = { id: Key users, name: Text }
@@ -63,10 +62,6 @@ fn having (p: Identity -> Bool) -> Set (Key users) =
 
 fn t(micros: i64) -> Value {
     Value::Instant(micros)
-}
-
-fn uuid(n: u8) -> String {
-    format!("identities.key(uuid(\"00000000-0000-7000-8000-0000000000{n:02}\"))")
 }
 
 fn fixture() -> Fixture {

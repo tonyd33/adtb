@@ -1,10 +1,8 @@
 //! Text functions that follow the Unicode tables: normalisation, case, segmentation, regular
 //! expressions and collation.
 
-mod common;
-
 use adtb_reference::Value;
-use common::*;
+use adtb_testkit::fixture::*;
 
 fn fixture() -> Fixture {
     Fixture::new(

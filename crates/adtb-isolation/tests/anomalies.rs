@@ -1,7 +1,30 @@
 mod common;
 
-use adtb_isolation::{Anomaly, Dep, Edge, Expected, Malformed, TxnId, check};
-use common::{append, failed, in_doubt, kinds, ok, read};
+use adtb_isolation::{Anomaly, Dep, Edge, Expected, Malformed, Op, Outcome, Txn, TxnId, check};
+use common::kinds;
+
+fn append(key: i64, elem: i64) -> Op {
+    Op::Append { key, elem }
+}
+
+fn read(key: i64, list: &[i64]) -> Op {
+    Op::Read {
+        key,
+        list: list.to_vec(),
+    }
+}
+
+fn ok(id: u64, ops: Vec<Op>) -> Txn {
+    Txn::new(id, Outcome::Committed, ops)
+}
+
+fn failed(id: u64, ops: Vec<Op>) -> Txn {
+    Txn::new(id, Outcome::Aborted, ops)
+}
+
+fn in_doubt(id: u64, ops: Vec<Op>) -> Txn {
+    Txn::new(id, Outcome::InDoubt, ops)
+}
 
 const X: i64 = 1;
 const Y: i64 = 2;

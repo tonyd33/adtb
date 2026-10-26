@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::panic::{self, AssertUnwindSafe};
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adtb::batch::{Batch, BatchBuilder, Column, Schema};
@@ -14,50 +14,28 @@ use adtb::storage::{self, Options, PageKind, Pager, Pid};
 use adtb::verify::{Inventory, Sum};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 
-mod common;
+#[path = "support/crash.rs"]
+mod crash;
+#[path = "support/harness.rs"]
+mod harness;
+#[path = "support/recovery.rs"]
+mod recovery;
+#[path = "support/rows.rs"]
+mod rows;
+#[path = "support/seeds.rs"]
+mod seeds;
 
-const PAGE: usize = 4096;
-const NAME: &str = "app.adt";
-const FATAL: &str = "fatal I/O error";
+use crash::{crash_after, run_process, silence_fatal_panics};
+use harness::{PAGE, finished, options};
+use recovery::verify_after_crash;
+use rows::{APPLE, EMAIL, HEAP_IDS, LARGE_ID, Live, Op, Rows, key_of, pair, replay, row_type};
+use seeds::{share, sweep};
 
-const EMAIL: usize = 0;
 const GOOGLE: usize = 1;
-const APPLE: usize = 2;
-const HEAP_IDS: [u32; 3] = [10, 11, 12];
-const LARGE_ID: u32 = 9;
-
-fn options() -> Options {
-    Options {
-        page_size: PAGE as u32,
-        log_block: 512,
-        segment_size: 256 * 1024,
-        pool_frames: 32,
-        atomic_page_writes: false,
-        ..Options::new(NAME)
-    }
-}
-
-fn quiet() -> Faults {
-    Faults {
-        lose_unsynced: true,
-        delay_completions: true,
-        ..Faults::default()
-    }
-}
+const FRAMES: usize = 32;
 
 fn scalar(s: Scalar) -> FieldType {
     FieldType::Scalar(s)
-}
-
-fn row_type(heap: usize) -> Vec<FieldType> {
-    match heap {
-        APPLE => vec![scalar(Scalar::I64), scalar(Scalar::I32)],
-        _ => vec![
-            scalar(Scalar::I64),
-            scalar(Scalar::Text),
-            scalar(Scalar::Bytes),
-        ],
-    }
 }
 
 fn blob(r: u64) -> Vec<u8> {
@@ -80,13 +58,6 @@ fn make_row(heap: usize, key: i64, r: u64) -> Vec<Value> {
     }
 }
 
-fn key_of(row: &[Value]) -> i64 {
-    match row[0] {
-        Value::I64(k) => k,
-        ref v => panic!("key field holds {v:?}"),
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 struct Roots {
     large: Pid,
@@ -100,7 +71,7 @@ struct Db {
 
 impl Db {
     fn create(rt: SimRuntime, fanout: u16) -> (Db, Roots) {
-        let pager = Pager::create(rt, &options()).expect("create");
+        let pager = Pager::create(rt, &options(FRAMES)).expect("create");
         let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
         let heaps: Vec<Heap> = (0..3)
             .map(|h| {
@@ -117,7 +88,7 @@ impl Db {
     }
 
     fn open(rt: SimRuntime, roots: Roots) -> Option<Db> {
-        let (pager, _) = Pager::open(rt, &options()).ok()?;
+        let (pager, _) = Pager::open(rt, &options(FRAMES)).ok()?;
         let large = LargeStore::open(LARGE_ID, roots.large);
         let heaps = (0..3)
             .map(|h| Heap::open(&pager, HEAP_IDS[h], roots.heaps[h], row_type(h), large).unwrap())
@@ -125,41 +96,6 @@ impl Db {
         Some(Db { pager, heaps })
     }
 }
-
-fn pair(heaps: &mut [Heap], a: usize, b: usize) -> (&mut Heap, &mut Heap) {
-    assert_ne!(a, b);
-    if a < b {
-        let (l, r) = heaps.split_at_mut(b);
-        (&mut l[a], &mut r[0])
-    } else {
-        let (l, r) = heaps.split_at_mut(a);
-        (&mut r[0], &mut l[b])
-    }
-}
-
-#[derive(Clone, Debug)]
-enum Op {
-    Insert {
-        key: i64,
-        heap: usize,
-        row: Vec<Value>,
-    },
-    Update {
-        key: i64,
-        row: Vec<Value>,
-    },
-    Delete {
-        key: i64,
-    },
-    Retag {
-        key: i64,
-        to: usize,
-        row: Vec<Value>,
-    },
-}
-
-/// Each key's heap, the TID of its live version and its row.
-type Live = BTreeMap<i64, (usize, Tid, Vec<Value>)>;
 
 fn generate(next: &mut impl FnMut() -> u64, live: &Live, next_key: &mut i64) -> Op {
     let r = next();
@@ -219,21 +155,6 @@ fn perform(db: &mut Db, live: &mut Live, op: &Op, xid: u64) -> Result<Option<Upd
             let t = from.retag(pager, tid, xid, into, row)?;
             live.insert(*key, (*to, t, row.clone()));
             Ok(None)
-        }
-    }
-}
-
-fn replay(state: &mut BTreeMap<i64, (usize, Vec<Value>)>, op: &Op) {
-    match op {
-        Op::Insert { key, heap, row } => {
-            state.insert(*key, (*heap, row.clone()));
-        }
-        Op::Update { key, row } => state.get_mut(key).unwrap().1 = row.clone(),
-        Op::Delete { key } => {
-            state.remove(key);
-        }
-        Op::Retag { key, to, row } => {
-            state.insert(*key, (*to, row.clone()));
         }
     }
 }
@@ -300,14 +221,10 @@ fn verify(db: &mut Db) -> Vec<String> {
     problems
 }
 
-fn rows(live: &Live) -> BTreeMap<i64, (usize, Vec<Value>)> {
+fn rows(live: &Live) -> Rows {
     live.iter()
         .map(|(k, (h, _, r))| (*k, (*h, r.clone())))
         .collect()
-}
-
-fn finished(sim: &mut Sim, body: impl FnOnce(SimRuntime)) {
-    assert_eq!(Outcome::Finished, sim.run(body));
 }
 
 #[test]
@@ -956,7 +873,7 @@ fn lengthen(mut row: Vec<Value>) -> Vec<Value> {
 fn tight_options() -> Options {
     Options {
         pool_frames: 8,
-        ..options()
+        ..options(FRAMES)
     }
 }
 
@@ -1010,15 +927,9 @@ fn a_conversion_moving_many_values_out_of_line_fits_a_pool_of_a_few_frames() {
 #[test]
 fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
     silence_fatal_panics();
-    let mut crashes = 0;
+    let (mut crashes, mut left) = (0, 0);
     for step in 0..24u64 {
-        let mut sim = Sim::new(
-            step,
-            Config {
-                faults: quiet(),
-                ..Config::default()
-            },
-        );
+        let mut sim = Sim::new(step, Config::default());
         let mut roots = None;
         finished(&mut sim, |rt| {
             let pager = Pager::create(rt, &tight_options()).unwrap();
@@ -1047,7 +958,9 @@ fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
         let mut problems = Vec::new();
         finished(&mut sim, |rt| {
             let (pager, heap) = open(rt);
-            problems = common::verify_after_crash(&pager, &notes_inventory(&heap));
+            let inventory = notes_inventory(&heap);
+            left += usize::from(!adtb::verify::verify(&pager, &inventory).findings.is_empty());
+            problems = verify_after_crash(&pager, &inventory);
             let mut rows = 0;
             heap.scan(&pager, |v| {
                 rows += 1;
@@ -1060,8 +973,9 @@ fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
         });
         assert!(problems.is_empty(), "step {step}: {problems:#?}");
     }
-    eprintln!("{crashes} of 24 runs crashed");
+    eprintln!("{crashes} of 24 runs crashed, {left} left findings for repair");
     assert!(crashes > 4, "{crashes} crashes");
+    assert!(left > 0, "no crash left a conversion for repair to finish");
 }
 
 /// Returns whether `pager` holds a directory entry promising less than its child holds.
@@ -1143,48 +1057,13 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
                 ..Inventory::default()
             };
             caught += usize::from(unsettled(&db.pager, &inventory));
-            problems = common::verify_after_crash(&db.pager, &inventory);
+            problems = verify_after_crash(&db.pager, &inventory);
         });
         assert!(problems.is_empty(), "step {step}: {problems:#?}");
     }
     eprintln!("{crashes} of 40 runs crashed, {caught} left entries to settle");
     assert!(crashes > 16, "{crashes} crashes");
     assert!(caught > 2, "{caught} runs left entries to settle");
-}
-
-fn silence_fatal_panics() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let default = panic::take_hook();
-        panic::set_hook(Box::new(move |info| {
-            let msg = info
-                .payload()
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| info.payload().downcast_ref::<&str>().copied())
-                .unwrap_or("");
-            if !msg.starts_with(FATAL) {
-                default(info);
-            }
-        }));
-    });
-}
-
-fn run_process<F: FnOnce(SimRuntime)>(sim: &mut Sim, body: F) -> Outcome {
-    match panic::catch_unwind(AssertUnwindSafe(|| sim.run(body))) {
-        Ok(o) => o,
-        Err(payload) => {
-            let msg = payload
-                .downcast_ref::<String>()
-                .cloned()
-                .unwrap_or_default();
-            if msg.starts_with(FATAL) {
-                Outcome::Crashed
-            } else {
-                panic::resume_unwind(payload)
-            }
-        }
-    }
 }
 
 /// What the client knows, kept outside the simulated process so it survives crashes.
@@ -1294,7 +1173,7 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
         }],
         ..Inventory::default()
     };
-    problems.extend(common::verify_after_crash(&db.pager, &inventory));
+    problems.extend(verify_after_crash(&db.pager, &inventory));
     problems
 }
 
@@ -1304,13 +1183,7 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
 )]
 fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
     silence_fatal_panics();
-    let mut sim = Sim::new(
-        seed,
-        Config {
-            faults: quiet(),
-            ..Config::default()
-        },
-    );
+    let mut sim = Sim::new(seed, Config::default());
     let mut roots = None;
     finished(&mut sim, |rt| {
         let (db, r) = Db::create(rt, 3);
@@ -1329,14 +1202,13 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
     let mut crashes = 0;
     for round in 0..rounds {
         sim.set_faults(faults.clone());
-        let at = sim.now()
-            + Duration::from_micros(2000 + (seed * 7919 + round as u64 * 104_729) % 80_000);
+        let at = sim.now() + crash_after(seed, round as u64, 2000, 80_000);
         sim.crash_at(at);
         let w = world.clone();
         if run_process(&mut sim, |rt| workload(rt, &w, 300)) == Outcome::Crashed {
             crashes += 1;
         }
-        sim.set_faults(quiet());
+        sim.set_faults(Faults::default());
         let mut problems = Vec::new();
         let w = world.clone();
         finished(&mut sim, |rt| problems = inspect(rt, &w));
@@ -1358,35 +1230,37 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
 
 #[test]
 fn crashes_with_torn_writes_keep_every_committed_change() {
-    let crashes: usize = (0..8)
+    const SEEDS: Range<u64> = 0..8;
+    let crashes: usize = sweep(SEEDS)
         .map(|seed| {
             crash_loop(
                 seed,
                 Faults {
                     torn_p: 0.5,
-                    ..quiet()
+                    ..Faults::default()
                 },
                 4,
             )
         })
         .sum();
-    assert!(crashes > 10, "{crashes} crashes");
+    assert!(crashes > share(SEEDS, 10), "{crashes} crashes");
 }
 
 #[test]
 fn failed_writes_crash_and_recover_every_committed_change() {
-    let crashes: usize = (100..106)
+    const SEEDS: Range<u64> = 100..106;
+    let crashes: usize = sweep(SEEDS)
         .map(|seed| {
             crash_loop(
                 seed,
                 Faults {
                     torn_p: 0.3,
                     fail_p: 0.003,
-                    ..quiet()
+                    ..Faults::default()
                 },
                 4,
             )
         })
         .sum();
-    assert!(crashes > 5, "{crashes} crashes");
+    assert!(crashes > share(SEEDS, 5), "{crashes} crashes");
 }

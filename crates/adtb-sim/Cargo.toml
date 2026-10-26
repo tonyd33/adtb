@@ -14,6 +14,7 @@ adtb-sys.workspace = true
 adtb-isolation.workspace = true
 adtb-lang.workspace = true
 adtb-reference.workspace = true
+adtb-testkit.workspace = true
 adtb-sys = { workspace = true, features = ["latch-checks"] }
 
 [lints]

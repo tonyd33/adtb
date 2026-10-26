@@ -1,3 +1,4 @@
+#[expect(dead_code, reason = "this binary uses part of the device helpers")]
 mod common;
 
 use std::collections::BTreeSet;
@@ -72,7 +73,7 @@ fn torn_write_lands_some_atomic_units() {
             let old = sector(i as u8 + 1);
             assert!(
                 s == old || s == [0xbb; SECTOR],
-                "sector {i} is neither old nor new"
+                "seed {seed}: sector {i} is neither old nor new"
             );
             new += usize::from(s[0] == 0xbb);
         }
@@ -229,7 +230,7 @@ fn crash_keeps_forced_writes_and_loses_some_unforced() {
         if bytes[SECTOR..] == sector(0xbb)[..] {
             kept = true;
         } else {
-            assert_eq!(sector(2), bytes[SECTOR..]);
+            assert_eq!(sector(2), bytes[SECTOR..], "seed {seed}");
             lost = true;
         }
     }
@@ -254,7 +255,7 @@ fn without_lose_unsynced_completed_writes_survive_a_crash() {
             let (file, _) = open(rt, io, "f", false).unwrap();
             write(rt, io, file, 0, &sector(0xbb)).unwrap();
         });
-        assert_eq!(sector(0xbb), read_all(&mut sim));
+        assert_eq!(sector(0xbb), read_all(&mut sim), "seed {seed}");
     }
 }
 
@@ -286,12 +287,12 @@ fn write_in_flight_at_a_crash_may_land() {
             rt.park();
             unreachable!("the crash comes before the completion");
         });
-        assert_eq!(Outcome::Crashed, outcome);
+        assert_eq!(Outcome::Crashed, outcome, "seed {seed}");
         let bytes = sim.files()["f"].clone();
         if bytes == sector(0xbb) {
             kept = true;
         } else {
-            assert_eq!(sector(1), bytes);
+            assert_eq!(sector(1), bytes, "seed {seed}");
             lost = true;
         }
     }
@@ -334,7 +335,7 @@ fn directory_force_covers_only_its_directory() {
             open(rt, io, "data", true).unwrap();
             sync_dir(rt, io, "").unwrap();
         });
-        assert!(sim.files().contains_key("data"));
+        assert!(sim.files().contains_key("data"), "seed {seed}");
         vanished |= !sim.files().contains_key("log/0");
     }
     assert!(vanished);
@@ -387,9 +388,14 @@ fn removal_needs_a_directory_force() {
         run_then_crash(&mut sim, |rt, io| {
             assert_eq!(
                 Ok(Done::Removed),
-                complete(rt, io, Op::Remove { path: "f".into() }).result
+                complete(rt, io, Op::Remove { path: "f".into() }).result,
+                "seed {seed}"
             );
-            assert_eq!(Err(IoError::NotFound), open(rt, io, "f", false).map(|_| ()));
+            assert_eq!(
+                Err(IoError::NotFound),
+                open(rt, io, "f", false).map(|_| ()),
+                "seed {seed}"
+            );
         });
         back |= sim.files().contains_key("f");
     }
@@ -425,7 +431,7 @@ fn delayed_completions_come_out_of_order() {
     let in_order: Vec<usize> = (0..8).collect();
     assert!((0..8).any(|seed| order(seed, Faults::default()) != in_order));
     for seed in 0..8 {
-        assert_eq!(in_order, order(seed, quiet()));
+        assert_eq!(in_order, order(seed, quiet()), "seed {seed}");
     }
 }
 

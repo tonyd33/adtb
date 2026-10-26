@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adtb::runtime::{Entropy, Threads};
@@ -12,13 +13,19 @@ use adtb_sim::{
     check,
 };
 
+#[path = "support/crash.rs"]
+mod crash;
+#[path = "support/seeds.rs"]
+mod seeds;
+
+use crash::{crash_after, run_process, silence_fatal_panics};
+use seeds::{share, sweep};
+
 const PAGE: usize = 4096;
 const SLOT: usize = 16;
 const SLOTS: usize = (PAGE - HEADER_LEN) / SLOT;
 const PAGES: usize = 24;
 const NAME: &str = "app.adt";
-const FATAL: &str = "fatal I/O error";
-
 /// How the database is laid out on the simulated device.
 #[derive(Clone, Copy, Debug)]
 struct Layout {
@@ -50,14 +57,6 @@ fn options(layout: Layout) -> Options {
         max_pages: 4096,
         atomic_page_writes: atomic,
         ..Options::new(NAME)
-    }
-}
-
-fn quiet() -> Faults {
-    Faults {
-        lose_unsynced: true,
-        delay_completions: true,
-        ..Faults::default()
     }
 }
 
@@ -93,42 +92,6 @@ impl Client {
         Client {
             ledger: Ledger::new(),
             world: Arc::new(Mutex::new(World::default())),
-        }
-    }
-}
-
-fn silence_fatal_panics() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let default = panic::take_hook();
-        panic::set_hook(Box::new(move |info| {
-            let msg = info
-                .payload()
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| info.payload().downcast_ref::<&str>().copied())
-                .unwrap_or("");
-            if !msg.starts_with(FATAL) {
-                default(info);
-            }
-        }));
-    });
-}
-
-/// Run `body` as a process, treating a crash caused by a failed write or force as a crash.
-fn run_process<F: FnOnce(SimRuntime)>(sim: &mut Sim, body: F) -> Outcome {
-    match panic::catch_unwind(AssertUnwindSafe(|| sim.run(body))) {
-        Ok(o) => o,
-        Err(payload) => {
-            let msg = payload
-                .downcast_ref::<String>()
-                .cloned()
-                .unwrap_or_default();
-            if msg.starts_with(FATAL) {
-                Outcome::Crashed
-            } else {
-                panic::resume_unwind(payload)
-            }
         }
     }
 }
@@ -539,7 +502,7 @@ fn crash_loop(
     let mut sim = Sim::new(
         seed,
         Config {
-            faults: quiet(),
+            faults: Faults::default(),
             atomic_unit: if layout.atomic { PAGE as u64 } else { 512 },
             ..Config::default()
         },
@@ -549,8 +512,7 @@ fn crash_loop(
     let mut tally = Tally::default();
     for round in 0..rounds {
         sim.set_faults(faults.clone());
-        let at = sim.now()
-            + Duration::from_micros(500 + (seed * 7919 + round as u64 * 104_729) % 60_000);
+        let at = sim.now() + crash_after(seed, round as u64, 500, 60_000);
         sim.crash_at(at);
         let c = client.clone();
         let body = |rt: SimRuntime| {
@@ -563,7 +525,7 @@ fn crash_loop(
         if run_process(&mut sim, body) == Outcome::Crashed {
             tally.crashes += 1;
         }
-        sim.set_faults(quiet());
+        sim.set_faults(Faults::default());
         let pages = client.world.lock().unwrap().pages.clone();
         let mut report = Report::default();
         let outcome = sim.run(|rt| report = inspect(rt, &pages, layout));
@@ -603,14 +565,9 @@ fn crash_loop(
     clippy::print_stderr,
     reason = "the seed sweep reports its coverage on stderr"
 )]
-fn seeds(
-    range: std::ops::Range<u64>,
-    faults: Faults,
-    layout: Layout,
-    damage_allowed: bool,
-) -> Tally {
+fn seeds(range: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool) -> Tally {
     let mut total = Tally::default();
-    for seed in range {
+    for seed in sweep(range) {
         let t = crash_loop(seed, faults.clone(), layout, damage_allowed, 4);
         total.crashes += t.crashes;
         total.acked += t.acked;
@@ -623,26 +580,28 @@ fn seeds(
 
 #[test]
 fn crashes_with_torn_writes_lose_nothing_and_find_nothing() {
+    const SEEDS: Range<u64> = 0..12;
     let t = seeds(
-        0..12,
+        SEEDS,
         Faults {
             torn_p: 0.5,
-            ..quiet()
+            ..Faults::default()
         },
         PLAIN,
         false,
     );
-    assert!(t.crashes > 20, "{t:?}");
-    assert!(t.acked > 200, "{t:?}");
+    assert!(t.crashes > share(SEEDS, 20), "{t:?}");
+    assert!(t.acked > share(SEEDS, 200), "{t:?}");
 }
 
 #[test]
 fn torn_log_blocks_lose_no_acknowledged_commit() {
+    const SEEDS: Range<u64> = 600..612;
     let t = seeds(
-        600..612,
+        SEEDS,
         Faults {
             torn_p: 1.0,
-            ..quiet()
+            ..Faults::default()
         },
         Layout {
             atomic: false,
@@ -652,17 +611,18 @@ fn torn_log_blocks_lose_no_acknowledged_commit() {
         },
         false,
     );
-    assert!(t.crashes > 20, "{t:?}");
-    assert!(t.acked > 200, "{t:?}");
+    assert!(t.crashes > share(SEEDS, 20), "{t:?}");
+    assert!(t.acked > share(SEEDS, 200), "{t:?}");
 }
 
 #[test]
 fn atomic_page_writes_need_no_images() {
+    const SEEDS: Range<u64> = 100..106;
     let t = seeds(
-        100..106,
+        SEEDS,
         Faults {
             torn_p: 0.5,
-            ..quiet()
+            ..Faults::default()
         },
         Layout {
             atomic: true,
@@ -672,54 +632,60 @@ fn atomic_page_writes_need_no_images() {
         },
         false,
     );
-    assert!(t.crashes > 10, "{t:?}");
+    assert!(t.crashes > share(SEEDS, 10), "{t:?}");
 }
 
 #[test]
 fn bit_rot_and_latent_errors_are_reported_never_returned() {
+    const SEEDS: Range<u64> = 200..212;
     let t = seeds(
-        200..212,
+        SEEDS,
         Faults {
             torn_p: 0.3,
             corrupt_p: 0.004,
             latent_p: 0.002,
-            ..quiet()
+            ..Faults::default()
         },
         PLAIN,
         true,
     );
-    assert!(t.findings > 0, "no seed corrupted anything: {t:?}");
+    assert!(
+        t.findings >= share(SEEDS, 1),
+        "no seed corrupted anything: {t:?}"
+    );
 }
 
 #[test]
 fn misdirected_and_lost_writes_are_reported_never_returned() {
+    const SEEDS: Range<u64> = 300..312;
     let t = seeds(
-        300..312,
+        SEEDS,
         Faults {
             torn_p: 0.3,
             misdirect_p: 0.004,
             lost_write_p: 0.004,
-            ..quiet()
+            ..Faults::default()
         },
         PLAIN,
         true,
     );
-    assert!(t.findings > 0, "no seed lost a write: {t:?}");
+    assert!(t.findings >= share(SEEDS, 1), "no seed lost a write: {t:?}");
 }
 
 #[test]
 fn failed_writes_and_forces_crash_and_recover() {
+    const SEEDS: Range<u64> = 400..412;
     let t = seeds(
-        400..412,
+        SEEDS,
         Faults {
             torn_p: 0.3,
             fail_p: 0.004,
-            ..quiet()
+            ..Faults::default()
         },
         PLAIN,
         false,
     );
-    assert!(t.crashes > 20, "{t:?}");
+    assert!(t.crashes > share(SEEDS, 20), "{t:?}");
 }
 
 #[test]
@@ -733,7 +699,7 @@ fn every_fault_at_once() {
             misdirect_p: 0.002,
             lost_write_p: 0.002,
             fail_p: 0.002,
-            ..quiet()
+            ..Faults::default()
         },
         PLAIN,
         true,
@@ -827,21 +793,21 @@ fn allocations_survive_crashes_and_never_repeat() {
                 faults: Faults {
                     torn_p: 0.5,
                     fail_p: 0.01,
-                    ..quiet()
+                    ..Faults::default()
                 },
                 ..Config::default()
             },
         );
         silence_fatal_panics();
         let client = Client::new();
-        sim.set_faults(quiet());
+        sim.set_faults(Faults::default());
         setup(&mut sim, &client, PLAIN);
         let durable: Arc<Mutex<BTreeSet<Pid>>> = Arc::default();
         for round in 0..4u64 {
             sim.set_faults(Faults {
                 torn_p: 0.5,
                 fail_p: 0.01,
-                ..quiet()
+                ..Faults::default()
             });
             sim.crash_at(sim.now() + Duration::from_micros(300 + (seed * 31 + round * 977) % 9000));
             let d = durable.clone();
@@ -861,7 +827,7 @@ fn allocations_survive_crashes_and_never_repeat() {
                 }
             });
         }
-        sim.set_faults(quiet());
+        sim.set_faults(Faults::default());
         let held = durable.lock().unwrap().clone();
         with_pager(&mut sim, |p| {
             let fresh = p.allocate(1, PageKind::HeapSlotted, 9).expect("allocate");
@@ -935,17 +901,18 @@ const THREADED: Layout = Layout {
 
 #[test]
 fn threads_sharing_a_pager_lose_nothing_across_crashes() {
+    const SEEDS: Range<u64> = 700..710;
     let t = seeds(
-        700..710,
+        SEEDS,
         Faults {
             torn_p: 0.5,
-            ..quiet()
+            ..Faults::default()
         },
         THREADED,
         false,
     );
-    assert!(t.crashes > 10, "{t:?}");
-    assert!(t.acked > 100, "{t:?}");
+    assert!(t.crashes > share(SEEDS, 10), "{t:?}");
+    assert!(t.acked > share(SEEDS, 100), "{t:?}");
 }
 
 #[test]
@@ -959,7 +926,7 @@ fn threads_sharing_a_pager_under_every_fault() {
             misdirect_p: 0.002,
             lost_write_p: 0.002,
             fail_p: 0.002,
-            ..quiet()
+            ..Faults::default()
         },
         THREADED,
         true,
@@ -968,7 +935,7 @@ fn threads_sharing_a_pager_under_every_fault() {
 
 #[test]
 fn threads_finish_and_every_acknowledged_write_stays() {
-    for seed in 900..904 {
+    for seed in sweep(900..904) {
         let mut sim = Sim::new(seed, Config::default());
         let client = Client::new();
         setup(&mut sim, &client, THREADED);
@@ -994,7 +961,7 @@ fn threads_finish_and_every_acknowledged_write_stays() {
         assert_eq!(
             world.writes.len(),
             acked,
-            "every transaction ends acknowledged"
+            "seed {seed}: every transaction ends acknowledged"
         );
     }
 }
@@ -1114,9 +1081,10 @@ fn linked(p: &Pager<SimRuntime>, index: Pid) -> BTreeSet<Pid> {
 
 #[test]
 fn a_crash_never_separates_an_allocation_from_its_link() {
+    const SEEDS: Range<u64> = 0..10;
     silence_fatal_panics();
     let mut leaks_possible_before = 0;
-    for seed in 0..10 {
+    for seed in sweep(SEEDS) {
         let mut sim = Sim::new(seed, Config::default());
         let client = Client::new();
         setup(&mut sim, &client, PLAIN);
@@ -1125,12 +1093,9 @@ fn a_crash_never_separates_an_allocation_from_its_link() {
         for round in 0..4u64 {
             sim.set_faults(Faults {
                 torn_p: 0.5,
-                ..quiet()
+                ..Faults::default()
             });
-            sim.crash_at(
-                sim.now()
-                    + Duration::from_micros(20_000 + (seed * 7919 + round * 104_729) % 80_000),
-            );
+            sim.crash_at(sim.now() + crash_after(seed, round, 20_000, 80_000));
             run_process(&mut sim, |rt| {
                 let Ok((p, _)) = Pager::open(rt, &options(PLAIN)) else {
                     return;
@@ -1151,7 +1116,7 @@ fn a_crash_never_separates_an_allocation_from_its_link() {
                     leaks_possible_before += 1;
                 }
             });
-            sim.set_faults(quiet());
+            sim.set_faults(Faults::default());
             with_pager(&mut sim, |p| {
                 let fresh: BTreeSet<Pid> = allocated(p).difference(&before).copied().collect();
                 let links = linked(p, index);
@@ -1170,7 +1135,7 @@ fn a_crash_never_separates_an_allocation_from_its_link() {
         }
     }
     assert!(
-        leaks_possible_before > 50,
+        leaks_possible_before > share(SEEDS, 50),
         "{leaks_possible_before} allocations"
     );
 }
@@ -1274,10 +1239,10 @@ fn a_lost_write_is_caught_when_the_page_is_read_back() {
         p.flush_log();
         rt.set_faults(Faults {
             lost_write_p: 1.0,
-            ..quiet()
+            ..Faults::default()
         });
         p.flush_pages(usize::MAX);
-        rt.set_faults(quiet());
+        rt.set_faults(Faults::default());
         for _ in 0..3 {
             for &pid in &pages[1..] {
                 drop(p.read(pid).unwrap());
@@ -1294,9 +1259,10 @@ fn a_lost_write_is_caught_when_the_page_is_read_back() {
 
 #[test]
 fn a_crash_never_separates_freeing_from_unlinking() {
+    const SEEDS: Range<u64> = 0..10;
     silence_fatal_panics();
     let mut freed = 0;
-    for seed in 0..10 {
+    for seed in sweep(SEEDS) {
         let mut sim = Sim::new(seed + 50, Config::default());
         let client = Client::new();
         setup(&mut sim, &client, PLAIN);
@@ -1305,12 +1271,9 @@ fn a_crash_never_separates_freeing_from_unlinking() {
         for round in 0..4u64 {
             sim.set_faults(Faults {
                 torn_p: 0.5,
-                ..quiet()
+                ..Faults::default()
             });
-            sim.crash_at(
-                sim.now()
-                    + Duration::from_micros(20_000 + (seed * 7919 + round * 104_729) % 80_000),
-            );
+            sim.crash_at(sim.now() + crash_after(seed, round, 20_000, 80_000));
             run_process(&mut sim, |rt| {
                 let Ok((p, _)) = Pager::open(rt.clone(), &options(PLAIN)) else {
                     return;
@@ -1341,7 +1304,7 @@ fn a_crash_never_separates_freeing_from_unlinking() {
                     }
                 }
             });
-            sim.set_faults(quiet());
+            sim.set_faults(Faults::default());
             with_pager(&mut sim, |p| {
                 let fresh: BTreeSet<Pid> = allocated(p).difference(&before).copied().collect();
                 assert_eq!(
@@ -1352,7 +1315,7 @@ fn a_crash_never_separates_freeing_from_unlinking() {
             });
         }
     }
-    assert!(freed > 50, "{freed} frees");
+    assert!(freed > share(SEEDS, 50), "{freed} frees");
 }
 
 #[test]

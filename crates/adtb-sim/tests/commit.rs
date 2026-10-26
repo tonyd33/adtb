@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -9,24 +8,26 @@ use adtb_sim::{
     Config, Faults, Finding, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, check,
 };
 
-const NAME: &str = "app.adt";
-const FATAL: &str = "fatal I/O error";
+#[path = "support/crash.rs"]
+mod crash;
+#[path = "support/harness.rs"]
+mod harness;
+
+use crash::{crash_after, run_process, silence_fatal_panics};
+use harness::finished;
 
 fn options() -> Options {
     Options {
-        page_size: 4096,
         segment_size: 64 * 1024,
-        pool_frames: 16,
         max_pages: 1024,
-        ..Options::new(NAME)
+        ..harness::options(16)
     }
 }
 
 fn create(sim: &mut Sim) {
-    let outcome = sim.run(|rt| {
+    finished(sim, |rt| {
         Pager::create(rt, &options()).expect("create");
     });
-    assert_eq!(Outcome::Finished, outcome);
 }
 
 /// What the committers saw, outside the simulated process.
@@ -87,14 +88,13 @@ fn concurrent_commits_share_batches() {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let (batches, commits) = {
         let mut out = (0, 0);
-        let outcome = sim.run(|rt| {
+        finished(&mut sim, |rt| {
             let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
             let pager = Arc::new(pager);
             let before = pager.batches();
             committers(&rt, &pager, &ledger, &seen, 8, 25);
             out = (pager.batches() - before, 8 * 25);
         });
-        assert_eq!(Outcome::Finished, outcome);
         out
     };
     assert!(
@@ -109,13 +109,10 @@ fn a_commit_acknowledged_before_another_begins_has_the_earlier_position() {
     create(&mut sim);
     let ledger = Ledger::new();
     let seen = Arc::new(Mutex::new(Seen::default()));
-    assert_eq!(
-        Outcome::Finished,
-        sim.run(|rt| {
-            let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
-            committers(&rt, &Arc::new(pager), &ledger, &seen, 6, 20);
-        })
-    );
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
+        committers(&rt, &Arc::new(pager), &ledger, &seen, 6, 20);
+    });
     let events = &seen.lock().unwrap().events;
     let position = |x: u64| {
         events
@@ -161,6 +158,7 @@ impl Recovered for Reopened {
 
 #[test]
 fn every_acknowledged_commit_survives_a_crash() {
+    silence_fatal_panics();
     for seed in 0..12 {
         let mut sim = Sim::new(
             seed,
@@ -176,40 +174,27 @@ fn every_acknowledged_commit_survives_a_crash() {
         let ledger = Ledger::new();
         let seen = Arc::new(Mutex::new(Seen::default()));
         for round in 0..3u64 {
-            sim.crash_at(
-                sim.now() + Duration::from_micros(500 + (seed * 7919 + round * 104_729) % 20_000),
-            );
+            sim.crash_at(sim.now() + crash_after(seed, round, 500, 20_000));
             let (l, s) = (ledger.clone(), seen.clone());
-            let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
-                sim.run(|rt| {
-                    let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
-                    committers(&rt, &Arc::new(pager), &l, &s, 5, 1000);
-                })
-            }));
-            match outcome {
-                Ok(o) => assert_eq!(Outcome::Crashed, o),
-                Err(p) => {
-                    let msg = p.downcast_ref::<String>().cloned().unwrap_or_default();
-                    assert!(msg.starts_with(FATAL), "{msg}");
-                }
-            }
+            let outcome = run_process(&mut sim, |rt| {
+                let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
+                committers(&rt, &Arc::new(pager), &l, &s, 5, 1000);
+            });
+            assert_eq!(Outcome::Crashed, outcome);
             let mut reopened = Reopened::default();
-            assert_eq!(
-                Outcome::Finished,
-                sim.run(|rt| {
-                    let (pager, _) = Pager::open(rt, &options()).unwrap();
-                    let v = pager.verify();
-                    reopened.commits = v.commits.into_iter().collect();
-                    reopened.findings = v
-                        .findings
-                        .iter()
-                        .map(|f| Finding {
-                            kind: FindingKind::Structure,
-                            at: format!("{f:?}"),
-                        })
-                        .collect();
-                })
-            );
+            finished(&mut sim, |rt| {
+                let (pager, _) = Pager::open(rt, &options()).unwrap();
+                let v = pager.verify();
+                reopened.commits = v.commits.into_iter().collect();
+                reopened.findings = v
+                    .findings
+                    .iter()
+                    .map(|f| Finding {
+                        kind: FindingKind::Structure,
+                        at: format!("{f:?}"),
+                    })
+                    .collect();
+            });
             let violations = check(&ledger, &reopened);
             assert!(
                 violations.is_empty(),
@@ -233,19 +218,16 @@ fn every_acknowledged_commit_survives_a_crash() {
 fn waiting_for_a_record_already_durable_forces_nothing() {
     let mut sim = Sim::new(3, Config::default());
     create(&mut sim);
-    assert_eq!(
-        Outcome::Finished,
-        sim.run(|rt| {
-            let (pager, _) = Pager::open(rt, &options()).unwrap();
-            let lsn = pager.commit(1, &[], |_| {}).unwrap();
-            let first = pager.wait_durable(lsn);
-            let batches = pager.batches();
-            assert_eq!(first, pager.wait_durable(lsn));
-            assert_eq!(batches, pager.batches());
-            assert_eq!(Position { epoch: 1, lsn }, first);
-            assert!(pager.durable() > lsn);
-        })
-    );
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options()).unwrap();
+        let lsn = pager.commit(1, &[], |_| {}).unwrap();
+        let first = pager.wait_durable(lsn);
+        let batches = pager.batches();
+        assert_eq!(first, pager.wait_durable(lsn));
+        assert_eq!(batches, pager.batches());
+        assert_eq!(Position { epoch: 1, lsn }, first);
+        assert!(pager.durable() > lsn);
+    });
 }
 
 #[test]
@@ -287,13 +269,10 @@ fn safe_snapshot_markers_are_logged_in_order_and_survive_a_crash() {
     assert_eq!(Outcome::Crashed, outcome);
     let found = {
         let mut out = Vec::new();
-        assert_eq!(
-            Outcome::Finished,
-            sim.run(|rt| {
-                let (pager, _) = Pager::open(rt, &options()).unwrap();
-                out = pager.verify().safe_snapshots;
-            })
-        );
+        finished(&mut sim, |rt| {
+            let (pager, _) = Pager::open(rt, &options()).unwrap();
+            out = pager.verify().safe_snapshots;
+        });
         out
     };
     assert_eq!(logged, found);
@@ -303,24 +282,21 @@ fn safe_snapshot_markers_are_logged_in_order_and_survive_a_crash() {
 fn a_marker_names_the_position_it_was_given() {
     let mut sim = Sim::new(6, Config::default());
     create(&mut sim);
-    assert_eq!(
-        Outcome::Finished,
-        sim.run(|rt| {
-            let (pager, _) = Pager::open(rt, &options()).unwrap();
-            let at = Position {
-                epoch: 1,
-                lsn: Lsn(0),
-            };
-            let marker = pager.log_safe_snapshot(at, b"none running");
-            pager.flush_log();
-            let v = pager.verify();
-            assert_eq!(
-                vec![(marker, at, b"none running".to_vec())],
-                v.safe_snapshots
-            );
-            assert!(v.commits.is_empty());
-        })
-    );
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options()).unwrap();
+        let at = Position {
+            epoch: 1,
+            lsn: Lsn(0),
+        };
+        let marker = pager.log_safe_snapshot(at, b"none running");
+        pager.flush_log();
+        let v = pager.verify();
+        assert_eq!(
+            vec![(marker, at, b"none running".to_vec())],
+            v.safe_snapshots
+        );
+        assert!(v.commits.is_empty());
+    });
 }
 
 fn sized(threads: usize, pool_frames: usize) -> Options {
@@ -346,13 +322,10 @@ fn a_pool_serves_five_frames_per_thread() {
     assert_eq!(5, adtb::storage::LATCHES_PER_THREAD);
     let mut sim = Sim::new(8, Config::default());
     create(&mut sim);
-    assert_eq!(
-        Outcome::Finished,
-        sim.run(|rt| {
-            let (pager, _) = Pager::open(rt, &sized(4, 20)).unwrap();
-            assert_eq!(4, pager.max_threads());
-        })
-    );
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &sized(4, 20)).unwrap();
+        assert_eq!(4, pager.max_threads());
+    });
 }
 
 #[test]
@@ -426,42 +399,36 @@ fn recovery_and_verify_read_the_log_a_chunk_at_a_time() {
     };
     let mut sim = Sim::new(10, Config::default());
     let b = big.clone();
-    assert_eq!(
-        Outcome::Finished,
-        sim.run(move |rt| {
-            let pager = Pager::create(rt, &b).unwrap();
-            let pid = pager
-                .allocate(1, adtb::storage::PageKind::HeapSlotted, 1)
+    finished(&mut sim, move |rt| {
+        let pager = Pager::create(rt, &b).unwrap();
+        let pid = pager
+            .allocate(1, adtb::storage::PageKind::HeapSlotted, 1)
+            .unwrap();
+        for i in 0..3000u64 {
+            pager
+                .update(&[pid], |p| p[0][100..108].copy_from_slice(&i.to_le_bytes()))
                 .unwrap();
-            for i in 0..3000u64 {
-                pager
-                    .update(&[pid], |p| p[0][100..108].copy_from_slice(&i.to_le_bytes()))
-                    .unwrap();
-                pager.commit(i + 1, &[], |_| {}).unwrap();
-            }
-            pager.flush_log();
-            assert!(
-                pager.durable().0 > 2 * 64 * 1024,
-                "the log spans several chunks"
-            );
-        })
-    );
+            pager.commit(i + 1, &[], |_| {}).unwrap();
+        }
+        pager.flush_log();
+        assert!(
+            pager.durable().0 > 2 * 64 * 1024,
+            "the log spans several chunks"
+        );
+    });
     let before = sim.trace().len();
     let b = big;
-    assert_eq!(
-        Outcome::Finished,
-        sim.run(move |rt| {
-            let (pager, recovery) = Pager::open(rt, &b).unwrap();
-            assert!(
-                recovery.applied > 2000,
-                "recovery replayed {}",
-                recovery.applied
-            );
-            let v = pager.verify();
-            assert_eq!(3000, v.commits.len());
-            assert!(v.findings.is_empty(), "{:?}", v.findings);
-        })
-    );
+    finished(&mut sim, move |rt| {
+        let (pager, recovery) = Pager::open(rt, &b).unwrap();
+        assert!(
+            recovery.applied > 2000,
+            "recovery replayed {}",
+            recovery.applied
+        );
+        let v = pager.verify();
+        assert_eq!(3000, v.commits.len());
+        assert!(v.findings.is_empty(), "{:?}", v.findings);
+    });
     let trace = sim.trace();
     let largest = largest_read(&trace[before..]);
     assert!(largest > 0, "no read was traced");

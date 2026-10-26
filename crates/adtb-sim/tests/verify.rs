@@ -4,22 +4,16 @@ use adtb::btree::{BTree, Index};
 use adtb::heap::{FieldType, Heap, LargeStore};
 use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use adtb::mvcc::Transactions;
-use adtb::storage::{Options, PageKind, Pager, Pid};
+use adtb::storage::{PageKind, Pager, Pid};
 use adtb::verify::{self, Inventory, Problem, Report, Sum};
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
 
-const PAGE: usize = 4096;
+#[path = "support/harness.rs"]
+mod harness;
 
-fn options() -> Options {
-    Options {
-        page_size: PAGE as u32,
-        log_block: 512,
-        segment_size: 256 * 1024,
-        pool_frames: 32,
-        atomic_page_writes: false,
-        ..Options::new("app.adt")
-    }
-}
+use harness::{finished, options};
+
+const FRAMES: usize = 32;
 
 struct Db {
     pager: Pager<SimRuntime>,
@@ -31,7 +25,7 @@ struct Db {
 
 impl Db {
     fn create(rt: SimRuntime) -> Db {
-        let pager = Pager::create(rt.clone(), &options()).expect("create");
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let txns = Transactions::create(rt, &pager).unwrap();
         let large = LargeStore::create(&pager, 9).unwrap();
         let slotted = vec![
@@ -114,8 +108,7 @@ impl Db {
 
 fn run(seed: u64, body: impl FnOnce(&mut Db)) {
     let mut sim = Sim::new(seed, Config::default());
-    let outcome = sim.run(|rt| body(&mut Db::create(rt)));
-    assert_eq!(Outcome::Finished, outcome);
+    finished(&mut sim, |rt| body(&mut Db::create(rt)));
 }
 
 fn problems(report: &Report) -> Vec<(Pid, Problem)> {

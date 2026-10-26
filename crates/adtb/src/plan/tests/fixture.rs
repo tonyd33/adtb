@@ -12,8 +12,9 @@ use adtb_lang::schema::{Schema, ValueDef, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::{RelId, Ty};
 use adtb_reference::{Database, Interpreter, R, Value};
+use adtb_testkit::uuid;
 
-use crate::plan::{Catalog, HeapId, IndexDesc, IndexId, RelationDesc};
+use crate::plan::{Catalog, HeapId, IndexDesc, IndexId, RelationDesc, Rewrites};
 
 pub struct Fixture {
     pub schema: Schema,
@@ -200,10 +201,6 @@ type Session = { id: Key sessions, owner: Option (Key users) }
 relation sessions : Session key id generate sequence
 ";
 
-fn uuid(n: u8) -> String {
-    format!("identities.key(uuid(\"00000000-0000-7000-8000-0000000000{n:02}\"))")
-}
-
 pub fn running() -> Fixture {
     let mut f = Fixture::new(SCHEMA);
     let times: Vec<(&str, &str, Value)> = (1..=5)
@@ -273,4 +270,76 @@ pub fn running() -> Fixture {
         &[],
     );
     f
+}
+
+/// Returns every rewrite on, every rewrite off, and each rewrite turned off alone, by name.
+pub fn variants() -> Vec<(&'static str, Rewrites)> {
+    let all = Rewrites::ALL;
+    vec![
+        ("all", all),
+        ("none", Rewrites::NONE),
+        (
+            "index_scan off",
+            Rewrites {
+                index_scan: false,
+                ..all
+            },
+        ),
+        (
+            "index_join off",
+            Rewrites {
+                index_join: false,
+                ..all
+            },
+        ),
+        (
+            "hash_join off",
+            Rewrites {
+                hash_join: false,
+                ..all
+            },
+        ),
+        (
+            "fuse_probe off",
+            Rewrites {
+                fuse_probe: false,
+                ..all
+            },
+        ),
+        (
+            "static_route off",
+            Rewrites {
+                static_route: false,
+                ..all
+            },
+        ),
+        (
+            "prune off",
+            Rewrites {
+                prune: false,
+                ..all
+            },
+        ),
+        (
+            "unswitch off",
+            Rewrites {
+                unswitch: false,
+                ..all
+            },
+        ),
+        (
+            "group_agg off",
+            Rewrites {
+                group_agg: false,
+                ..all
+            },
+        ),
+        (
+            "semi_naive off",
+            Rewrites {
+                semi_naive: false,
+                ..all
+            },
+        ),
+    ]
 }

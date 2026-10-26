@@ -15,17 +15,23 @@ use adtb::exec::{
 };
 use adtb::heap::FieldType;
 use adtb::key::Value as KValue;
-use adtb::plan::{Error as PlanError, Options as PlanOptions, Rewrites, plan};
+use adtb::plan::{Error as PlanError, Options as PlanOptions, plan};
 use adtb_lang::kernel::Var;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, R, Value};
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_testkit::uuid;
 
-use fixture::{Fixture, running};
+use fixture::{Fixture, running, variants};
 
+#[expect(
+    dead_code,
+    reason = "this binary reads a loaded database and binds none for writes"
+)]
 mod support;
 
+use support::harness::finished;
 use support::*;
 
 fn world(f: &Fixture) -> World<'_> {
@@ -34,77 +40,6 @@ fn world(f: &Fixture) -> World<'_> {
         catalog: &f.catalog,
         db: &f.db,
     }
-}
-
-fn variants() -> Vec<(&'static str, Rewrites)> {
-    let all = Rewrites::ALL;
-    vec![
-        ("all", all),
-        ("none", Rewrites::NONE),
-        (
-            "index_scan off",
-            Rewrites {
-                index_scan: false,
-                ..all
-            },
-        ),
-        (
-            "index_join off",
-            Rewrites {
-                index_join: false,
-                ..all
-            },
-        ),
-        (
-            "hash_join off",
-            Rewrites {
-                hash_join: false,
-                ..all
-            },
-        ),
-        (
-            "fuse_probe off",
-            Rewrites {
-                fuse_probe: false,
-                ..all
-            },
-        ),
-        (
-            "static_route off",
-            Rewrites {
-                static_route: false,
-                ..all
-            },
-        ),
-        (
-            "prune off",
-            Rewrites {
-                prune: false,
-                ..all
-            },
-        ),
-        (
-            "unswitch off",
-            Rewrites {
-                unswitch: false,
-                ..all
-            },
-        ),
-        (
-            "group_agg off",
-            Rewrites {
-                group_agg: false,
-                ..all
-            },
-        ),
-        (
-            "semi_naive off",
-            Rewrites {
-                semi_naive: false,
-                ..all
-            },
-        ),
-    ]
 }
 
 /// One plan to run, with what the reference interpreter says it computes.
@@ -189,7 +124,7 @@ fn with_store<T>(
 ) -> T {
     let mut out = None;
     let mut sim = Sim::new(seed, Config::default());
-    let result = sim.run(|rt| {
+    finished(&mut sim, |rt| {
         let store = Db::load(&rt, &world(f)).store(&rt);
         let pool = (workers > 0).then(|| Scheduler::start(rt.clone(), workers));
         out = Some(body(&rt, &store, pool.as_ref()));
@@ -197,7 +132,6 @@ fn with_store<T>(
             p.shutdown();
         }
     });
-    assert_eq!(Outcome::Finished, result);
     out.expect("the run finished")
 }
 
@@ -275,10 +209,6 @@ fn check(seed: u64, f: &Fixture, cases: &[Case], workers: usize, opts: XOptions)
 
 fn key(i: i64) -> Value {
     Value::key(Value::Int(i))
-}
-
-fn uuid(n: u8) -> String {
-    format!("identities.key(uuid(\"00000000-0000-7000-8000-0000000000{n:02}\"))")
 }
 
 fn ident(f: &Fixture, n: u8) -> Value {

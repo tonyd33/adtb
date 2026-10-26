@@ -9,6 +9,7 @@ dependencies = [
  "adtb-lang",
  "adtb-reference",
  "adtb-sys",
+ "adtb-testkit",
  "blake3",
  "icu_casemap",
  "icu_collator",
@@ -30,6 +31,9 @@ dependencies = [
 [[package]]
 name = "adtb-isolation"
 version = "0.1.0"
+dependencies = [
+ "adtb-testkit",
+]
 
 [[package]]
 name = "adtb-lang"
@@ -44,6 +48,7 @@ name = "adtb-reference"
 version = "0.1.0"
 dependencies = [
  "adtb-lang",
+ "adtb-testkit",
  "icu_casemap",
  "icu_collator",
  "icu_locale_core",
@@ -69,6 +74,7 @@ dependencies = [
  "adtb-lang",
  "adtb-reference",
  "adtb-sys",
+ "adtb-testkit",
 ]
 
 [[package]]
@@ -76,6 +82,14 @@ name = "adtb-sys"
 version = "0.1.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "adtb-testkit"
+version = "0.1.0"
+dependencies = [
+ "adtb-lang",
+ "adtb-reference",
 ]
 
 [[package]]

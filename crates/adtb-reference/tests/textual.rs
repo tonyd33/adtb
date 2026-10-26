@@ -1,14 +1,13 @@
 //! The textual syntax of values: printing, reading at a known type, and versioned documents.
 
-mod common;
-
 use std::collections::BTreeSet;
 
 use adtb_lang::schema::{Generator, Schema, TypeDefKind};
 use adtb_lang::types::{Base, Ty};
 use adtb_reference::textual::{self, Document, Header};
 use adtb_reference::{Value, days_from_civil};
-use common::*;
+use adtb_testkit::Rng;
+use adtb_testkit::fixture::*;
 use unicode_normalization::UnicodeNormalization;
 
 const SCHEMA: &str = r"
@@ -437,33 +436,12 @@ fn a_malformed_document_is_refused() {
     }
 }
 
-/// A SplitMix64 generator, so every run draws the same values.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
-
-    fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
-        &xs[self.below(xs.len() as u64) as usize]
-    }
-
-    /// Returns an `i64` drawn mostly from small magnitudes and the edges of the range.
-    fn int(&mut self) -> i64 {
-        match self.below(4) {
-            0 => *self.pick(&[0, 1, -1, i64::MAX, i64::MIN]),
-            1 => self.below(1000) as i64 - 500,
-            _ => self.next() as i64,
-        }
+/// Returns an `i64` drawn mostly from small magnitudes and the edges of the range.
+fn draw_int(rng: &mut Rng) -> i64 {
+    match rng.below(4) {
+        0 => *rng.pick(&[0, 1, -1, i64::MAX, i64::MIN]),
+        1 => rng.below(1000) as i64 - 500,
+        _ => rng.next_u64() as i64,
     }
 }
 
@@ -496,7 +474,7 @@ const CHARS: &[&str] = &[
 const ZONES: &[&str] = &["UTC", "Europe/Paris", "America/New_York", "Asia/Kathmandu"];
 
 fn draw_base(rng: &mut Rng, b: Base) -> Value {
-    let i = rng.int();
+    let i = draw_int(rng);
     match b {
         Base::I8 => int(i64::from(i as i8)),
         Base::I16 => int(i64::from(i as i16)),
@@ -504,7 +482,7 @@ fn draw_base(rng: &mut Rng, b: Base) -> Value {
         Base::I64 => int(i),
         Base::Decimal(s) => {
             let bound = 10i128.pow(38);
-            let wide = (i128::from(rng.next()) << 64 | i128::from(rng.next())) % bound;
+            let wide = (i128::from(rng.next_u64()) << 64 | i128::from(rng.next_u64())) % bound;
             let d = match rng.below(3) {
                 0 => wide,
                 1 => *rng.pick(&[0, 1, -1, bound - 1, 1 - bound]),
@@ -516,7 +494,7 @@ fn draw_base(rng: &mut Rng, b: Base) -> Value {
             let f = match rng.below(3) {
                 0 => *rng.pick(&[0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.1]),
                 1 => i as f64 / 1000.0,
-                _ => f64::from_bits(rng.next()),
+                _ => f64::from_bits(rng.next_u64()),
             };
             Value::F64(if f.is_nan() {
                 f64::NAN
@@ -530,7 +508,7 @@ fn draw_base(rng: &mut Rng, b: Base) -> Value {
             let f = match rng.below(3) {
                 0 => *rng.pick(&[0.0, f32::NAN, f32::INFINITY, f32::MIN_POSITIVE, f32::MAX]),
                 1 => i as f32 / 1000.0,
-                _ => f32::from_bits(rng.next() as u32),
+                _ => f32::from_bits(rng.next_u64() as u32),
             };
             Value::F32(if f.is_nan() {
                 f32::NAN
@@ -547,7 +525,7 @@ fn draw_base(rng: &mut Rng, b: Base) -> Value {
         }
         Base::Bytes | Base::SortKey => {
             let n = rng.below(6);
-            let bs = (0..n).map(|_| rng.next() as u8).collect();
+            let bs = (0..n).map(|_| rng.next_u64() as u8).collect();
             if b == Base::Bytes {
                 Value::Bytes(bs)
             } else {
@@ -561,7 +539,7 @@ fn draw_base(rng: &mut Rng, b: Base) -> Value {
         Base::ZonedDateTime => Value::Zoned(i, rng.pick(ZONES).to_string()),
         Base::Duration => Value::Duration(i),
         Base::Period => Value::Period {
-            months: rng.int() as i32,
+            months: draw_int(rng) as i32,
             days: i as i32,
         },
     }
@@ -588,8 +566,10 @@ fn draw_key_field(
     let r = schema.relation(rel);
     if textual::self_key(schema, rel, f) {
         return match r.generate {
-            Some(Generator::Uuidv7) => Value::Bytes((0..16).map(|_| rng.next() as u8).collect()),
-            _ => int(rng.int()),
+            Some(Generator::Uuidv7) => {
+                Value::Bytes((0..16).map(|_| rng.next_u64() as u8).collect())
+            }
+            _ => int(draw_int(rng)),
         };
     }
     let ty = schema
@@ -609,7 +589,7 @@ fn draw(rng: &mut Rng, schema: &Schema, ty: &Ty, depth: u32) -> Value {
             let d = schema.ty(*def);
             match &d.kind {
                 TypeDefKind::Newtype { .. } if d.name == "Uuid" => {
-                    Value::Bytes((0..16).map(|_| rng.next() as u8).collect())
+                    Value::Bytes((0..16).map(|_| rng.next_u64() as u8).collect())
                 }
                 TypeDefKind::Newtype { base, .. } => draw(rng, schema, base, depth),
                 TypeDefKind::Sum {
@@ -736,7 +716,7 @@ const TYPES: &[&str] = &[
 #[test]
 fn print_then_parse_gives_the_value_back_for_every_type() {
     let f = fixture();
-    let mut rng = Rng(0x00ad_7b00);
+    let mut rng = Rng::new(0x00ad_7b00);
     for name in TYPES {
         let ty = f.ty(name);
         for _ in 0..300 {

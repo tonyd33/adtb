@@ -1,0 +1,11 @@
+pub mod fixture;
+pub mod writes;
+
+mod rng;
+
+pub use rng::Rng;
+
+/// Returns the expression of the key of identity `n` of the running example.
+pub fn uuid(n: u8) -> String {
+    format!("identities.key(uuid(\"00000000-0000-7000-8000-0000000000{n:02}\"))")
+}

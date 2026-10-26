@@ -1,41 +1,40 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::ops::Bound;
-use std::sync::atomic::AtomicU64;
+use std::ops::{Bound, Range};
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use adtb::btree::{BTree, Entries};
 use adtb::runtime::{Entropy, Threads};
-use adtb::storage::{Options, PageKind, Pager, Pid, kind};
+use adtb::storage::{PageKind, Pager, Pid, kind};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 
-const PAGE: usize = 4096;
+#[path = "support/crash.rs"]
+#[expect(dead_code, reason = "this binary injects no failed writes")]
+mod crash;
+#[path = "support/draw.rs"]
+mod draw;
+#[path = "support/harness.rs"]
+mod harness;
+#[path = "support/seeds.rs"]
+mod seeds;
+
+use crash::crash_after;
+use draw::below;
+use harness::{PAGE, finished, options};
+use seeds::{share, sweep};
+
 const OWNER: u32 = 41;
-const NAME: &str = "app.adt";
 const SCAN: usize = 24;
 
 const SWITCH_RATE: f64 = 0.01;
+const CRASH_SWITCH_RATE: f64 = 0.3;
 
 fn switching() -> Config {
     Config {
         switch_rate: SWITCH_RATE,
         ..Config::default()
     }
-}
-
-fn options(pool_frames: usize) -> Options {
-    Options {
-        page_size: PAGE as u32,
-        log_block: 512,
-        segment_size: 256 * 1024,
-        pool_frames,
-        ..Options::new(NAME)
-    }
-}
-
-fn below(rt: &SimRuntime, n: u64) -> u64 {
-    rt.next_u64() % n
 }
 
 /// Returns the entry of key `id`: its big-endian bytes, so entries order as
@@ -216,10 +215,10 @@ fn worker(rt: &SimRuntime, pager: &Pager<SimRuntime>, tree: BTree, history: &His
     for _ in 0..steps {
         let (id, run) = match how {
             Keys::Hot(hot) if rt.next_u64().is_multiple_of(2) => {
-                (below(rt, u64::from(hot)) as u32, 1)
+                (below(rt, hot as usize) as u32, 1)
             }
-            Keys::Hot(_) => (below(rt, u64::from(keys)) as u32, 1),
-            Keys::Runs(n) => (below(rt, u64::from(keys / n)) as u32 * n, n),
+            Keys::Hot(_) => (below(rt, keys as usize) as u32, 1),
+            Keys::Runs(n) => (below(rt, (keys / n) as usize) as u32 * n, n),
         };
         let e = shape.encode(id);
         let call = history.now();
@@ -280,7 +279,7 @@ fn concurrent_run(
     let history = Arc::new(History::default());
     let h = history.clone();
     let keys = 1500;
-    let outcome = sim.run(move |rt| {
+    finished(&mut sim, move |rt| {
         let pager = Arc::new(Pager::create(rt.clone(), &options(pool)).expect("create"));
         let tree = BTree::create(&pager, OWNER).expect("create tree");
         let workers: Vec<_> = (0..threads)
@@ -315,7 +314,6 @@ fn concurrent_run(
             "seed {seed}: pages allocated outside the tree"
         );
     });
-    assert_eq!(Outcome::Finished, outcome);
     let events = history.events.lock().unwrap();
     let mut total = 0;
     let mut overlaps = 0;
@@ -337,30 +335,42 @@ fn concurrent_run(
 
 #[test]
 fn concurrent_operations_are_linearizable_by_key() {
+    const SEEDS: Range<u64> = 0..3;
     let mut overlaps = 0;
-    for seed in 0..3 {
+    for seed in sweep(SEEDS) {
         overlaps += concurrent_run(seed, 6, 500, 32, Keys::Hot(48), Shape::Whole).1;
     }
-    assert!(overlaps >= 100, "only {overlaps} overlapping pairs");
+    assert!(
+        overlaps >= share(SEEDS, 100),
+        "only {overlaps} overlapping pairs"
+    );
 }
 
 #[test]
 fn leaves_emptied_and_refilled_by_many_threads_stay_linearizable_by_key() {
+    const SEEDS: Range<u64> = 0..3;
     let mut overlaps = 0;
-    for seed in 0..3 {
+    for seed in sweep(SEEDS) {
         overlaps += concurrent_run(seed, 5, 120, 32, Keys::Runs(16), Shape::Whole).1;
     }
-    assert!(overlaps >= 100, "only {overlaps} overlapping pairs");
+    assert!(
+        overlaps >= share(SEEDS, 100),
+        "only {overlaps} overlapping pairs"
+    );
 }
 
 #[test]
 fn postings_changed_by_many_threads_stay_linearizable_by_entry() {
+    const SEEDS: Range<u64> = 0..3;
     let mut overlaps = 0;
-    for seed in 0..3 {
+    for seed in sweep(SEEDS) {
         overlaps += concurrent_run(seed, 5, 120, 32, Keys::Runs(16), Shape::Grouped).1;
         overlaps += concurrent_run(seed + 10, 5, 400, 32, Keys::Hot(48), Shape::Grouped).1;
     }
-    assert!(overlaps >= 100, "only {overlaps} overlapping pairs");
+    assert!(
+        overlaps >= share(SEEDS, 100),
+        "only {overlaps} overlapping pairs"
+    );
 }
 
 #[test]
@@ -428,7 +438,7 @@ fn crash_worker(
                 w.durable[t] = w.ops[t].len();
             }
             3 => {
-                pager.flush_pages(1 + below(rt, 4) as usize);
+                pager.flush_pages(1 + below(rt, 4));
             }
             4 => pager.checkpoint(),
             _ => {}
@@ -447,9 +457,19 @@ fn crash_run(rt: SimRuntime, world: &Arc<Mutex<World>>, shape: Shape) {
             })
         })
         .collect();
+    let done = Arc::new(AtomicBool::new(false));
+    let (p, stop, r) = (pager, done.clone(), rt.clone());
+    let flusher = rt.spawn("flusher", move || {
+        while !stop.load(Relaxed) {
+            p.flush_log();
+            r.yield_now();
+        }
+    });
     for w in workers {
         rt.join(w);
     }
+    done.store(true, Relaxed);
+    rt.join(flusher);
 }
 
 /// Returns the length of the prefix of `ops`, at least `from` long, after
@@ -479,7 +499,8 @@ fn matching_prefix(ops: &[(bool, u32)], from: usize, found: &BTreeSet<u32>) -> O
 }
 
 /// Returns the crashes of `rounds` crashed runs of several threads.
-fn threaded_crash_loop(seed: u64, rounds: usize, shape: Shape) -> usize {
+/// Returns the rounds that crashed and those whose crash left a split for repair to finish.
+fn threaded_crash_loop(seed: u64, rounds: usize, shape: Shape) -> (usize, usize) {
     let mut sim = Sim::new(
         seed,
         Config {
@@ -487,6 +508,7 @@ fn threaded_crash_loop(seed: u64, rounds: usize, shape: Shape) -> usize {
                 torn_p: 0.5,
                 ..Faults::default()
             },
+            switch_rate: CRASH_SWITCH_RATE,
             ..Config::default()
         },
     );
@@ -496,17 +518,15 @@ fn threaded_crash_loop(seed: u64, rounds: usize, shape: Shape) -> usize {
         ..World::default()
     }));
     let w = world.clone();
-    let outcome = sim.run(move |rt| {
+    finished(&mut sim, move |rt| {
         let pager = Pager::create(rt, &options(24)).expect("create");
         let tree = BTree::create(&pager, OWNER).expect("create tree");
         pager.flush_log();
         w.lock().unwrap().root = Some(tree.root());
     });
-    assert_eq!(Outcome::Finished, outcome);
-    let mut crashes = 0;
+    let (mut crashes, mut repaired) = (0, 0);
     for round in 0..rounds {
-        let at = sim.now()
-            + Duration::from_micros(2_000 + (seed * 7919 + round as u64 * 104_729) % 150_000);
+        let at = sim.now() + crash_after(seed, round as u64, 2_000, 150_000);
         sim.crash_at(at);
         let w = world.clone();
         if sim.run(move |rt| crash_run(rt, &w, shape)) == Outcome::Crashed {
@@ -514,13 +534,13 @@ fn threaded_crash_loop(seed: u64, rounds: usize, shape: Shape) -> usize {
         }
         let root = world.lock().unwrap().root.unwrap();
         let mut found = None;
-        let outcome = sim.run(|rt| {
+        finished(&mut sim, |rt| {
             let (pager, _) = Pager::open(rt, &options(24)).expect("reopen");
             let tree = BTree::open(root, OWNER);
             let entries = tree
                 .verify(&pager)
                 .unwrap_or_else(|e| panic!("seed {seed} round {round}: {e:?}"));
-            tree.repair(&pager).expect("repair");
+            repaired += usize::from(tree.repair(&pager).expect("repair") > 0);
             assert_eq!(tree.repair(&pager), Ok(0), "seed {seed} round {round}");
             assert_eq!(tree.verify(&pager).as_ref(), Ok(&entries));
             let pages: BTreeSet<Pid> = tree.pages(&pager).unwrap().into_iter().collect();
@@ -529,7 +549,6 @@ fn threaded_crash_loop(seed: u64, rounds: usize, shape: Shape) -> usize {
             pager.flush_log();
             found = Some(entries);
         });
-        assert_eq!(Outcome::Finished, outcome);
         let ids: Vec<u32> = found.unwrap().iter().map(|e| shape.decode(e)).collect();
         let mut w = world.lock().unwrap();
         for t in 0..THREADS {
@@ -550,22 +569,29 @@ fn threaded_crash_loop(seed: u64, rounds: usize, shape: Shape) -> usize {
             w.durable[t] = kept;
         }
     }
-    crashes
+    (crashes, repaired)
 }
 
 #[test]
 fn threads_crashed_together_recover_a_prefix_of_each_threads_operations() {
-    let crashes: usize = (0..4)
-        .map(|seed| {
-            let shape = if seed % 2 == 0 {
-                Shape::Whole
-            } else {
-                Shape::Grouped
-            };
-            threaded_crash_loop(seed, 5, shape)
-        })
-        .sum();
-    assert!(crashes >= 10, "only {crashes} crashes");
+    const SEEDS: Range<u64> = 0..4;
+    let (mut crashes, mut repaired) = (0, 0);
+    for seed in sweep(SEEDS) {
+        let shape = if seed % 2 == 0 {
+            Shape::Whole
+        } else {
+            Shape::Grouped
+        };
+        let (c, r) = threaded_crash_loop(seed, 5, shape);
+        crashes += c;
+        repaired += r;
+    }
+    eprintln!("{crashes} crashes, {repaired} left a split to finish");
+    assert!(crashes >= share(SEEDS, 10), "only {crashes} crashes");
+    assert!(
+        repaired >= share(SEEDS, 1),
+        "no crash left a split incomplete"
+    );
 }
 
 /// Fill a tree with the even keys below `2 * n`, then run `retain` dropping
@@ -573,7 +599,7 @@ fn threads_crashed_together_recover_a_prefix_of_each_threads_operations() {
 /// split the leaves the walk passes.
 fn retain_beside_inserts(seed: u64, n: u32, inserters: u32) {
     let mut sim = Sim::new(seed, switching());
-    let outcome = sim.run(move |rt| {
+    finished(&mut sim, move |rt| {
         let pager = Arc::new(Pager::create(rt.clone(), &options(32)).expect("create"));
         let tree = BTree::create(&pager, OWNER).expect("create tree");
         for k in 0..n {
@@ -613,7 +639,6 @@ fn retain_beside_inserts(seed: u64, n: u32, inserters: u32) {
         assert_eq!(deleted, (0..n).filter(|k| dropped(2 * k)).count());
         assert!(during > 0, "seed {seed}: no insert ran during the walk");
     });
-    assert_eq!(Outcome::Finished, outcome);
 }
 
 #[test]
@@ -634,12 +659,11 @@ fn leaves(pager: &Pager<SimRuntime>, tree: &BTree) -> usize {
 
 fn with_tree(seed: u64, body: impl FnOnce(&Pager<SimRuntime>, BTree) + Send) {
     let mut sim = Sim::new(seed, Config::default());
-    let outcome = sim.run(|rt| {
+    finished(&mut sim, |rt| {
         let pager = Pager::create(rt, &options(64)).expect("create");
         let tree = BTree::create(&pager, OWNER).expect("create tree");
         body(&pager, tree);
     });
-    assert_eq!(Outcome::Finished, outcome);
 }
 
 fn allocated(pager: &Pager<SimRuntime>) -> BTreeSet<Pid> {

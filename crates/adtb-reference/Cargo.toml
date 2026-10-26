@@ -16,5 +16,8 @@ jiff = { version = "0.2.38", default-features = false, features = ["std", "tzdb-
 regex = { version = "1.13.1", default-features = false, features = ["std", "unicode"] }
 unicode-normalization = { version = "0.1.26", default-features = false }
 
+[dev-dependencies]
+adtb-testkit.workspace = true
+
 [lints]
 workspace = true

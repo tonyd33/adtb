@@ -1,9 +1,15 @@
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use adtb::runtime::{Entropy, Threads};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_sys::pages::PageMemory;
+
+#[path = "support/seeds.rs"]
+mod seeds;
+
+use seeds::{share, sweep};
 
 const PAGE: usize = 4096;
 const PAGES: u64 = 4;
@@ -12,6 +18,7 @@ const CHUNK: usize = 512;
 /// The latch protocol driven with a switch point between every chunk a writer stores or a
 /// reader copies, so optimistic readers meet half-written pages.
 struct Shared {
+    seed: u64,
     mem: PageMemory,
     /// Contents of evicted pages, standing in for the file.
     disk: Mutex<BTreeMap<u64, Vec<u8>>>,
@@ -37,7 +44,7 @@ fn fill_if_evicted(s: &Shared, g: &mut adtb_sys::pages::Exclusive<'_>) {
 
 fn increment(s: &Shared, rt: &SimRuntime, mut g: adtb_sys::pages::Exclusive<'_>) {
     fill_if_evicted(s, &mut g);
-    let n = uniform(&g).expect("a latched page is never torn") + 1;
+    let n = uniform(&g).unwrap_or_else(|| panic!("seed {}: a latched page is torn", s.seed)) + 1;
     for at in (0..PAGE).step_by(CHUNK) {
         g.write(at, &n.to_le_bytes().repeat(CHUNK / 8));
         rt.yield_now();
@@ -66,8 +73,17 @@ fn reader(s: &Shared, rt: &SimRuntime, steps: usize) {
             if let Some(g) = s.mem.lock_shared(pid, rt) {
                 let before = uniform(&g);
                 rt.yield_now();
-                assert_eq!(before, uniform(&g), "a page changed under a shared latch");
-                assert!(before.is_some(), "a shared latch saw a torn page");
+                assert_eq!(
+                    before,
+                    uniform(&g),
+                    "seed {}: a page changed under a shared latch",
+                    s.seed
+                );
+                assert!(
+                    before.is_some(),
+                    "seed {}: a shared latch saw a torn page",
+                    s.seed
+                );
             }
             continue;
         }
@@ -82,7 +98,8 @@ fn reader(s: &Shared, rt: &SimRuntime, steps: usize) {
         if o.validate() {
             assert!(
                 uniform(&copy).is_some(),
-                "a validated read of page {pid} is torn"
+                "seed {}: a validated read of page {pid} is torn",
+                s.seed
             );
             *s.validated.lock().unwrap() += 1;
         }
@@ -105,6 +122,7 @@ fn evictor(s: &Shared, rt: &SimRuntime, steps: usize) {
 fn run(seed: u64) -> (BTreeMap<u64, u64>, u64) {
     let mut sim = Sim::new(seed, Config::default());
     let shared = Arc::new(Shared {
+        seed,
         mem: PageMemory::reserve(PAGE, PAGES),
         disk: Mutex::default(),
         made: Mutex::default(),
@@ -128,10 +146,14 @@ fn run(seed: u64) -> (BTreeMap<u64, u64>, u64) {
             let mut g = s.mem.lock_exclusive(pid, &rt);
             fill_if_evicted(&s, &mut g);
             let made = s.made.lock().unwrap().get(&pid).copied().unwrap_or(0);
-            assert_eq!(Some(made), uniform(&g), "page {pid} lost an increment");
+            assert_eq!(
+                Some(made),
+                uniform(&g),
+                "seed {seed}: page {pid} lost an increment"
+            );
         }
     });
-    assert_eq!(Outcome::Finished, outcome);
+    assert_eq!(Outcome::Finished, outcome, "seed {seed}");
     let made = shared.made.lock().unwrap().clone();
     let validated = *shared.validated.lock().unwrap();
     (made, validated)
@@ -139,12 +161,13 @@ fn run(seed: u64) -> (BTreeMap<u64, u64>, u64) {
 
 #[test]
 fn latches_keep_every_increment_and_validated_reads_whole() {
+    const SEEDS: Range<u64> = 0..40;
     let mut validated = 0;
-    for seed in 0..40 {
+    for seed in sweep(SEEDS) {
         validated += run(seed).1;
     }
     assert!(
-        validated > 100,
+        validated > share(SEEDS, 100) as u64,
         "only {validated} optimistic reads validated"
     );
 }
@@ -191,14 +214,18 @@ fn failed_validations(seed: u64, switch_rate: f64) -> u64 {
         rt.join(writer);
         rt.join(reader);
     });
-    assert_eq!(Outcome::Finished, outcome);
+    assert_eq!(Outcome::Finished, outcome, "seed {seed}");
     *failed.lock().unwrap()
 }
 
 #[test]
 fn switch_points_fail_optimistic_reads_only_when_enabled() {
-    let off: u64 = (0..10).map(|seed| failed_validations(seed, 0.0)).sum();
-    let on: u64 = (0..10).map(|seed| failed_validations(seed, 0.5)).sum();
+    const SEEDS: Range<u64> = 0..10;
+    let off: u64 = sweep(SEEDS).map(|seed| failed_validations(seed, 0.0)).sum();
+    let on: u64 = sweep(SEEDS).map(|seed| failed_validations(seed, 0.5)).sum();
     assert_eq!(off, 0);
-    assert!(on >= 10, "only {on} reads failed validation");
+    assert!(
+        on >= share(SEEDS, 10) as u64,
+        "only {on} reads failed validation"
+    );
 }

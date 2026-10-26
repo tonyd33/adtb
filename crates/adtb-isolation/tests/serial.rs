@@ -1,7 +1,9 @@
 mod common;
+mod memory;
 
 use adtb_isolation::{Outcome, Step, Txn, check, run};
-use common::{Memory, Mode, Rng};
+use adtb_testkit::Rng;
+use memory::{Memory, Mode};
 
 const KEYS: u64 = 4;
 
@@ -47,7 +49,7 @@ fn obscure(history: &mut [Txn], rng: &mut Rng) {
 #[test]
 fn serial_histories_pass() {
     for seed in 0..2000 {
-        let mut rng = Rng(seed);
+        let mut rng = Rng::new(seed);
         let steps = serial_script(&mut rng);
         for mode in [Mode::Optimistic, Mode::Snapshot, Mode::ReadCommitted] {
             let mut history = run(&mut Memory::new(mode), &steps);
@@ -100,7 +102,7 @@ fn interleaved_script(rng: &mut Rng) -> Vec<Step> {
 #[test]
 fn interleavings_under_a_serializable_database_pass() {
     for seed in 0..2000 {
-        let mut rng = Rng(seed);
+        let mut rng = Rng::new(seed);
         let steps = interleaved_script(&mut rng);
         let history = run(&mut Memory::new(Mode::Optimistic), &steps);
         assert_eq!(check(&history), Ok(vec![]), "seed {seed}");
@@ -110,7 +112,7 @@ fn interleavings_under_a_serializable_database_pass() {
 #[test]
 fn interleavings_under_snapshot_isolation_show_only_g2() {
     for seed in 0..2000 {
-        let mut rng = Rng(seed);
+        let mut rng = Rng::new(seed);
         let steps = interleaved_script(&mut rng);
         let history = run(&mut Memory::new(Mode::Snapshot), &steps);
         let found = common::kinds(&history);

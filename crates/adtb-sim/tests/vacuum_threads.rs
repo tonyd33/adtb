@@ -1,49 +1,41 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Bound;
-use std::panic::{self, AssertUnwindSafe};
+use std::ops::{Bound, Range};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Once};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
 use adtb::btree::{BTree, Index};
 use adtb::heap::{FieldType, Flags, Heap, LargeStore, walk};
 use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use adtb::mvcc::{Scope, Snapshot, Status, Transactions, Xid};
 use adtb::runtime::{Entropy, Threads};
-use adtb::storage::{Options, Pager, Pid};
+use adtb::storage::{Pager, Pid};
 use adtb::vacuum::{self, Phase, Progress, Sum};
 use adtb::verify::{self, Inventory};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 
-mod common;
+#[path = "support/crash.rs"]
+mod crash;
+#[path = "support/harness.rs"]
+mod harness;
+#[path = "support/recovery.rs"]
+mod recovery;
+#[path = "support/rows.rs"]
+#[expect(dead_code, reason = "this binary keeps its own row layout")]
+mod rows;
+#[path = "support/seeds.rs"]
+mod seeds;
 
-const PAGE: usize = 4096;
-const NAME: &str = "app.adt";
-const FATAL: &str = "fatal I/O error";
-const HEAP_IDS: [u32; 3] = [10, 11, 12];
-const APPLE: usize = 2;
-const LARGE_ID: u32 = 9;
+use crash::{crash_after, run_process, silence_fatal_panics};
+use harness::{finished, options};
+use recovery::verify_after_crash;
+use rows::{APPLE, HEAP_IDS, LARGE_ID, Live, Op, Rows, key_of, replay};
+use seeds::{share, sweep};
+
+const FRAMES: usize = 96;
+
 const INDEX_ID: u32 = 20;
 const WRITERS: u64 = 3;
-
-fn options() -> Options {
-    Options {
-        page_size: PAGE as u32,
-        log_block: 512,
-        segment_size: 256 * 1024,
-        pool_frames: 96,
-        atomic_page_writes: false,
-        ..Options::new(NAME)
-    }
-}
-
-fn quiet() -> Faults {
-    Faults {
-        lose_unsynced: true,
-        delay_completions: true,
-        ..Faults::default()
-    }
-}
+const CRASH_SWITCH_RATE: f64 = 0.3;
 
 fn row_type(heap: usize) -> Vec<FieldType> {
     match heap {
@@ -73,13 +65,6 @@ fn make_row(heap: usize, key: i64, r: u64) -> Vec<Value> {
     }
 }
 
-fn key_of(row: &[Value]) -> i64 {
-    match row[0] {
-        Value::I64(k) => k,
-        ref v => panic!("key field holds {v:?}"),
-    }
-}
-
 fn schema() -> KeySchema {
     KeySchema::new(vec![(KeyType::Scalar(Scalar::I64), Dir::Asc)])
 }
@@ -106,7 +91,7 @@ struct Db {
 
 impl Db {
     fn create(rt: SimRuntime) -> (Db, Roots) {
-        let pager = Pager::create(rt.clone(), &options()).expect("create");
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let txns = Transactions::create(rt, &pager).expect("commit log");
         let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
         let heaps: Vec<Heap> = (0..3)
@@ -132,7 +117,7 @@ impl Db {
     }
 
     fn open(rt: SimRuntime, roots: Roots) -> Option<Db> {
-        let (pager, _) = Pager::open(rt.clone(), &options()).ok()?;
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).ok()?;
         let txns = Transactions::open(rt, &pager, roots.clog).ok()?;
         let large = LargeStore::open(LARGE_ID, roots.large);
         let heaps = (0..3)
@@ -271,7 +256,7 @@ impl Db {
             }],
             ..Inventory::default()
         };
-        common::verify_after_crash(&self.pager, &inventory)
+        verify_after_crash(&self.pager, &inventory)
     }
 }
 
@@ -279,48 +264,6 @@ impl Db {
 fn pause(rt: &SimRuntime, n: u64) {
     for _ in 0..=(n / 100) {
         rt.yield_now();
-    }
-}
-
-/// Each key's heap and row.
-type Rows = BTreeMap<i64, (usize, Vec<Value>)>;
-
-/// Each key's heap, the TID of its newest version and its row.
-type Live = BTreeMap<i64, (usize, Tid, Vec<Value>)>;
-
-#[derive(Clone, Debug)]
-enum Op {
-    Insert {
-        key: i64,
-        heap: usize,
-        row: Vec<Value>,
-    },
-    Update {
-        key: i64,
-        row: Vec<Value>,
-    },
-    Delete {
-        key: i64,
-    },
-    Retag {
-        key: i64,
-        to: usize,
-        row: Vec<Value>,
-    },
-}
-
-fn replay(state: &mut Rows, op: &Op) {
-    match op {
-        Op::Insert { key, heap, row } => {
-            state.insert(*key, (*heap, row.clone()));
-        }
-        Op::Update { key, row } => state.get_mut(key).unwrap().1 = row.clone(),
-        Op::Delete { key } => {
-            state.remove(key);
-        }
-        Op::Retag { key, to, row } => {
-            state.insert(*key, (*to, row.clone()));
-        }
     }
 }
 
@@ -401,6 +344,9 @@ struct World {
     next_keys: BTreeMap<u64, i64>,
     vacuums: usize,
     reads: usize,
+    vacuuming: bool,
+    /// Crashes that came while a vacuum ran.
+    crashed_vacuuming: usize,
 }
 
 impl World {
@@ -493,8 +439,12 @@ fn vacuumer(
     progress: &Progress,
 ) {
     while !stop.load(Ordering::Relaxed) {
+        world.lock().unwrap().vacuuming = true;
         db.vacuum(64 + (rt.next_u64() % 2048) as usize, progress);
-        world.lock().unwrap().vacuums += 1;
+        let mut w = world.lock().unwrap();
+        w.vacuums += 1;
+        w.vacuuming = false;
+        drop(w);
         assert!(
             progress.rows().is_empty(),
             "a finished vacuum shows progress"
@@ -654,69 +604,31 @@ fn vacuum_runs_beside_writers_and_readers_holding_snapshots() {
     }
 }
 
-fn silence_fatal_panics() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let default = panic::take_hook();
-        panic::set_hook(Box::new(move |info| {
-            let msg = info
-                .payload()
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| info.payload().downcast_ref::<&str>().copied())
-                .unwrap_or("");
-            if !msg.starts_with(FATAL) {
-                default(info);
-            }
-        }));
-    });
-}
-
-fn run_process<F: FnOnce(SimRuntime)>(sim: &mut Sim, body: F) -> Outcome {
-    match panic::catch_unwind(AssertUnwindSafe(|| sim.run(body))) {
-        Ok(o) => o,
-        Err(payload) => {
-            let msg = payload
-                .downcast_ref::<String>()
-                .cloned()
-                .unwrap_or_default();
-            if msg.starts_with(FATAL) {
-                Outcome::Crashed
-            } else {
-                panic::resume_unwind(payload)
-            }
-        }
-    }
-}
-
 #[expect(
     clippy::print_stderr,
     reason = "the crash loop reports its coverage on stderr"
 )]
-fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
+/// Returns the rounds that crashed and those that crashed while a vacuum ran.
+fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
     silence_fatal_panics();
     let mut sim = Sim::new(
         seed,
         Config {
-            faults: quiet(),
+            switch_rate: CRASH_SWITCH_RATE,
             ..Config::default()
         },
     );
     let world = Arc::new(Mutex::new(World::default()));
     let w = world.clone();
-    assert_eq!(
-        Outcome::Finished,
-        sim.run(move |rt| {
-            let (db, roots) = Db::create(rt);
-            db.pager.checkpoint();
-            w.lock().unwrap().roots = Some(roots);
-        })
-    );
+    finished(&mut sim, move |rt| {
+        let (db, roots) = Db::create(rt);
+        db.pager.checkpoint();
+        w.lock().unwrap().roots = Some(roots);
+    });
     let mut crashes = 0;
     for round in 0..rounds {
         sim.set_faults(faults.clone());
-        let at = sim.now()
-            + Duration::from_micros(3000 + (seed * 7919 + round as u64 * 104_729) % 60_000);
+        let at = sim.now() + crash_after(seed, round as u64, 3000, 60_000);
         sim.crash_at(at);
         let w = world.clone();
         let outcome = run_process(&mut sim, move |rt| {
@@ -728,16 +640,18 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
         });
         if outcome == Outcome::Crashed {
             crashes += 1;
+            let mut w = world.lock().unwrap();
+            w.crashed_vacuuming += usize::from(w.vacuuming);
         }
-        sim.set_faults(quiet());
+        world.lock().unwrap().vacuuming = false;
+        sim.set_faults(Faults::default());
         let w = world.clone();
         let mut problems = Vec::new();
-        let finished = sim.run(|rt| {
+        finished(&mut sim, |rt| {
             let roots = w.lock().unwrap().roots.unwrap();
             let db = Db::open(rt, roots).expect("the database reopens");
             problems = inspect(&db, &w.lock().unwrap());
         });
-        assert_eq!(Outcome::Finished, finished);
         assert!(
             problems.is_empty(),
             "seed {seed} round {round}: {problems:#?}"
@@ -745,27 +659,34 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
     }
     let w = world.lock().unwrap();
     eprintln!(
-        "seed {seed}: {crashes} crashes, {} transactions, {} acknowledged, {} vacuums",
+        "seed {seed}: {crashes} crashes, {} during vacuum, {} transactions, {} acknowledged, {} vacuums",
+        w.crashed_vacuuming,
         w.ops.len(),
         w.acked.len(),
         w.vacuums
     );
-    crashes
+    (crashes, w.crashed_vacuuming)
 }
 
 #[test]
 fn crashes_beside_concurrent_vacuum_recover_clean() {
-    let crashes: usize = (0..6)
+    const SEEDS: Range<u64> = 0..6;
+    let (crashes, during): (Vec<usize>, Vec<usize>) = sweep(SEEDS)
         .map(|seed| {
             crash_loop(
                 seed,
                 Faults {
                     torn_p: 0.5,
-                    ..quiet()
+                    ..Faults::default()
                 },
                 3,
             )
         })
-        .sum();
-    assert!(crashes > 8, "{crashes} crashes");
+        .unzip();
+    let (crashes, during): (usize, usize) = (crashes.iter().sum(), during.iter().sum());
+    assert!(crashes > share(SEEDS, 8), "{crashes} crashes");
+    assert!(
+        during >= share(SEEDS, 3),
+        "{during} of {crashes} crashes came during a vacuum"
+    );
 }

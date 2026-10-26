@@ -1,5 +1,8 @@
-mod common;
+use std::ops::Range;
+#[expect(dead_code, reason = "this binary never reopens the engine")]
 mod engine;
+#[path = "support/seeds.rs"]
+mod seeds;
 
 use std::sync::{Arc, Mutex};
 
@@ -64,6 +67,7 @@ fn lost_update_by_appends_aborts_one_side() {
 }
 
 use Step::{Append, Begin, Commit, Read};
+use seeds::{share, sweep};
 
 /// Fekete, O'Neil and O'Neil's read-only anomaly over keys 1 (X) and 2 (Y): 2 reads both and
 /// appends to X; 1 appends to Y and commits; 3 reads both after 1 commits and before 2 does.
@@ -437,8 +441,9 @@ fn random_txn(e: &Engine, rt: &SimRuntime, id: u64) -> iso::Txn {
 
 #[test]
 fn every_committed_history_of_random_clients_is_serializable() {
+    const SEEDS: Range<u64> = 0..24;
     let (mut committed, mut aborted) = (0, 0);
-    for seed in 0..24 {
+    for seed in sweep(SEEDS) {
         let (history, tracked) = random_history(seed, Limits::default(), 4, 6);
         assert_eq!(Ok(vec![]), iso::check(&history), "seed {seed}");
         assert_eq!(0, tracked, "seed {seed} left transactions tracked");
@@ -449,8 +454,14 @@ fn every_committed_history_of_random_clients_is_serializable() {
             }
         }
     }
-    assert!(committed > 200, "only {committed} transactions committed");
-    assert!(aborted > 10, "only {aborted} transactions aborted");
+    assert!(
+        committed > share(SEEDS, 200),
+        "only {committed} transactions committed"
+    );
+    assert!(
+        aborted >= share(SEEDS, 11),
+        "only {aborted} transactions aborted"
+    );
 }
 
 #[test]

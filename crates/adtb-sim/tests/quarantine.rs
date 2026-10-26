@@ -5,37 +5,31 @@ use adtb::runtime::{Clock, Io, Op, Runtime, Threads};
 use adtb::storage::{Options, Pager, Quarantine};
 use adtb_sim::{Config, Outcome, Sim};
 
-const NAME: &str = "app.adt";
-const PAGE: usize = 4096;
+#[path = "support/harness.rs"]
+mod harness;
+
+use harness::{NAME, PAGE, finished};
 
 fn options() -> Options {
     Options {
-        page_size: PAGE as u32,
         segment_size: 64 * 1024,
-        pool_frames: 16,
         max_pages: 1024,
-        ..Options::new(NAME)
+        ..harness::options(16)
     }
 }
 
 fn create(sim: &mut Sim) {
-    assert_eq!(
-        Outcome::Finished,
-        sim.run(|rt| {
-            Pager::create(rt, &options()).unwrap();
-        })
-    );
+    finished(sim, |rt| {
+        Pager::create(rt, &options()).unwrap();
+    });
 }
 
 fn with_pager<T>(sim: &mut Sim, body: impl FnOnce(&Pager<adtb_sim::SimRuntime>) -> T) -> T {
     let mut out = None;
-    assert_eq!(
-        Outcome::Finished,
-        sim.run(|rt| {
-            let (p, _) = Pager::open(rt, &options()).unwrap();
-            out = Some(body(&p));
-        })
-    );
+    finished(sim, |rt| {
+        let (p, _) = Pager::open(rt, &options()).unwrap();
+        out = Some(body(&p));
+    });
     out.unwrap()
 }
 

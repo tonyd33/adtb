@@ -5,9 +5,13 @@ use adtb::heap::{Fate, FieldType, Header, Heap, LargeStore};
 use adtb::key::{Scalar, Tid, Value};
 use adtb::runtime::Threads;
 use adtb::storage::{Options, PageError, PageKind, Pager, Pid};
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
 
-const PAGE: usize = 4096;
+#[path = "support/harness.rs"]
+mod harness;
+
+use harness::{PAGE, finished};
+
 const WRITERS: usize = 4;
 const ROWS: i64 = 480;
 const FANOUT: u16 = 4;
@@ -17,13 +21,8 @@ const DELETER: u64 = 2;
 
 fn options(pool_frames: usize) -> Options {
     Options {
-        page_size: PAGE as u32,
-        log_block: 512,
-        segment_size: 256 * 1024,
-        pool_frames,
         threads: WRITERS + 1,
-        atomic_page_writes: false,
-        ..Options::new("app.adt")
+        ..harness::options(pool_frames)
     }
 }
 
@@ -123,10 +122,6 @@ fn update_all(rt: &SimRuntime, db: &Arc<Db>, kept: &[(i64, Tid)], seed: u64) -> 
         latched: latched.load(Ordering::Relaxed),
         overlapped: overlapped.load(Ordering::Relaxed),
     }
-}
-
-fn finished(sim: &mut Sim, body: impl FnOnce(SimRuntime)) {
-    assert_eq!(Outcome::Finished, sim.run(body));
 }
 
 #[test]

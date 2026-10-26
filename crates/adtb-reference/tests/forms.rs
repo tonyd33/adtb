@@ -1,9 +1,7 @@
 //! Kernel forms, primitives and faults, driven through the front end.
 
-mod common;
-
 use adtb_reference::{Abort, Change, Database, Fault, Limit, Value, days_from_civil};
-use common::*;
+use adtb_testkit::fixture::*;
 
 const SCHEMA: &str = r#"
 type User = { id: Key users, name: Text }

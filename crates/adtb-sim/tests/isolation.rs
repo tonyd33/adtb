@@ -1,5 +1,11 @@
-mod common;
+use std::ops::Range;
+#[expect(
+    dead_code,
+    reason = "this binary drives the engine directly, without workers"
+)]
 mod engine;
+#[path = "support/seeds.rs"]
+mod seeds;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -9,10 +15,12 @@ use adtb::mvcc::Limits;
 use adtb::runtime::{Entropy, Threads};
 use adtb_isolation::{self as iso, Op, Outcome as Ended};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use engine::harness::finished;
 use engine::{Engine, Kind, Roots};
+use seeds::{share, sweep};
 
 /// The seeds one run checks. Milestone 6 exits when every one of them passes.
-const SEEDS: u64 = 32;
+const SEEDS: Range<u64> = 0..32;
 const CLIENTS: usize = 4;
 const TXNS_PER_CLIENT: usize = 6;
 /// Processes per seed that may crash before the last, which runs to the end.
@@ -145,8 +153,9 @@ fn history(seed: u64) -> (Vec<iso::Txn>, u64) {
         },
     );
     let mut roots = None;
-    let made = sim.run(|rt| roots = Some(Engine::create(rt, Limits::default()).roots()));
-    assert_eq!(Outcome::Finished, made);
+    finished(&mut sim, |rt| {
+        roots = Some(Engine::create(rt, Limits::default()).roots());
+    });
     let roots = roots.unwrap();
     let b = Arc::new(Mutex::new(Book::default()));
     let delay = group_commit(seed);
@@ -159,15 +168,14 @@ fn history(seed: u64) -> (Vec<iso::Txn>, u64) {
             crashed += 1;
         }
         let mut problems = Vec::new();
-        let checked = sim.run(|rt| problems = open(rt, roots, None).verify());
-        assert_eq!(Outcome::Finished, checked);
+        finished(&mut sim, |rt| problems = open(rt, roots, None).verify());
         assert!(
             problems.is_empty(),
             "seed {seed} round {round}: {problems:#?}"
         );
     }
     let mut last = Vec::new();
-    let finished = sim.run(|rt| {
+    finished(&mut sim, |rt| {
         let e = open(rt, roots, delay);
         clients(&e, &b);
         let reader = e.begin(Kind::ReadOnly);
@@ -178,7 +186,6 @@ fn history(seed: u64) -> (Vec<iso::Txn>, u64) {
         e.commit(reader).unwrap();
         assert_eq!(0, e.tracked(), "transactions left tracked");
     });
-    assert_eq!(Outcome::Finished, finished);
     let mut txns: Vec<iso::Txn> = std::mem::take(&mut book(&b).txns).into_values().collect();
     txns.push(iso::Txn::new(0, Ended::Committed, last));
     (txns, crashed)
@@ -187,7 +194,7 @@ fn history(seed: u64) -> (Vec<iso::Txn>, u64) {
 #[test]
 fn no_seed_of_random_clients_with_crashes_shows_an_anomaly() {
     let (mut crashed, mut committed, mut in_doubt) = (0, 0, 0);
-    for seed in 0..SEEDS {
+    for seed in sweep(SEEDS) {
         let (txns, c) = history(seed);
         assert_eq!(Ok(vec![]), iso::check(&txns), "seed {seed}");
         crashed += c;
@@ -197,9 +204,16 @@ fn no_seed_of_random_clients_with_crashes_shows_an_anomaly() {
             .count();
         in_doubt += txns.iter().filter(|t| t.outcome == Ended::InDoubt).count();
     }
-    assert!(crashed >= SEEDS, "only {crashed} processes crashed");
-    assert!(committed > 10 * SEEDS as usize, "only {committed} commits");
-    assert!(in_doubt > 0, "no crash interrupted a commit");
+    eprintln!("{crashed} crashes, {committed} commits, {in_doubt} in doubt");
+    assert!(
+        crashed >= share(SEEDS, 32) as u64,
+        "only {crashed} processes crashed"
+    );
+    assert!(committed > share(SEEDS, 320), "only {committed} commits");
+    assert!(
+        in_doubt >= share(SEEDS, 20),
+        "only {in_doubt} crashes interrupted a commit"
+    );
 }
 
 #[test]
@@ -223,8 +237,9 @@ fn unflushed_reads(seed: u64) -> Vec<iso::Txn> {
         },
     );
     let mut roots = None;
-    let made = sim.run(|rt| roots = Some(Engine::create(rt, Limits::default()).roots()));
-    assert_eq!(Outcome::Finished, made);
+    finished(&mut sim, |rt| {
+        roots = Some(Engine::create(rt, Limits::default()).roots());
+    });
     let roots = roots.unwrap();
     let b = Arc::new(Mutex::new(Book::default()));
     sim.crash_at(sim.now() + Duration::from_millis(100));
@@ -273,7 +288,7 @@ fn unflushed_reads(seed: u64) -> Vec<iso::Txn> {
         crashed,
         "seed {seed}: the writer's commit was forced"
     );
-    let finished = sim.run(|rt| {
+    finished(&mut sim, |rt| {
         let e = open(rt, roots, None);
         let id = book(&b).begin();
         let tx = e.begin(Kind::ReadWrite);
@@ -286,7 +301,6 @@ fn unflushed_reads(seed: u64) -> Vec<iso::Txn> {
         t.ops = vec![Op::Append { key: 1, elem }, Op::Read { key: 1, list }];
         t.outcome = Ended::Committed;
     });
-    assert_eq!(Outcome::Finished, finished);
     std::mem::take(&mut book(&b).txns).into_values().collect()
 }
 

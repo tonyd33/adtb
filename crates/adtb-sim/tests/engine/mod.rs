@@ -1,8 +1,3 @@
-#![expect(
-    dead_code,
-    reason = "each test binary uses a different part of the shared module"
-)]
-
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::ops::Bound;
@@ -21,26 +16,27 @@ use adtb::runtime::{Clock, Io, Op, Runtime, ThreadId, Threads};
 use adtb::storage::{Options, Pager, Pid, Position};
 use adtb::verify::{Inventory, Sum};
 use adtb_isolation::{Aborted, Database};
-use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_sys::lock::Lock;
 
-pub const PAGE: usize = 4096;
+#[path = "../support/harness.rs"]
+pub mod harness;
+#[path = "../support/recovery.rs"]
+mod recovery;
+
+use harness::finished;
+use recovery::verify_after_crash;
+
+/// Returns the options of the engine's database file.
+pub fn options() -> Options {
+    harness::options(64)
+}
+
 const ELEMS: u32 = 10;
 const COUNTERS: u32 = 11;
 const LARGE: u32 = 9;
 const ELEM: CtorId = CtorId(1);
 const COUNTER: CtorId = CtorId(2);
-
-pub fn options() -> Options {
-    Options {
-        page_size: PAGE as u32,
-        log_block: 512,
-        segment_size: 256 * 1024,
-        pool_frames: 64,
-        atomic_page_writes: false,
-        ..Options::new("ssi.adt")
-    }
-}
 
 fn i64s(n: usize) -> Vec<FieldType> {
     vec![FieldType::Scalar(Scalar::I64); n]
@@ -259,7 +255,7 @@ impl Engine {
             ],
             ..Inventory::default()
         };
-        crate::common::verify_after_crash(&self.pager, &inventory)
+        verify_after_crash(&self.pager, &inventory)
     }
 
     fn status(&self, x: Xid) -> Result<Status, Infallible> {
@@ -751,33 +747,19 @@ impl Database for Client {
     }
 }
 
-pub fn quiet() -> Faults {
-    Faults {
-        delay_completions: true,
-        ..Faults::default()
-    }
-}
-
 /// Run `body` in a simulated process over a fresh database.
 pub fn simulate<T>(seed: u64, body: impl FnOnce(&Arc<Engine>) -> T) -> T {
     simulate_with(seed, Limits::default(), body)
 }
 
 pub fn simulate_with<T>(seed: u64, limits: Limits, body: impl FnOnce(&Arc<Engine>) -> T) -> T {
-    let mut sim = Sim::new(
-        seed,
-        Config {
-            faults: quiet(),
-            ..Config::default()
-        },
-    );
+    let mut sim = Sim::new(seed, Config::default());
     let mut out = None;
-    let outcome = sim.run(|rt| {
+    finished(&mut sim, |rt| {
         let engine = Arc::new(Engine::create(rt, limits));
         out = Some(body(&engine));
         let problems = engine.verify();
         assert!(problems.is_empty(), "{problems:#?}");
     });
-    assert_eq!(Outcome::Finished, outcome);
     out.unwrap()
 }

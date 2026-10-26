@@ -9,25 +9,19 @@ use adtb::verify::{self, Report};
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 
-const PAGE: usize = 4096;
+#[path = "support/harness.rs"]
+mod harness;
 
-fn options() -> Options {
-    Options {
-        page_size: PAGE as u32,
-        log_block: 512,
-        segment_size: 256 * 1024,
-        pool_frames: 64,
-        atomic_page_writes: false,
-        ..Options::new("app.adt")
-    }
-}
+use harness::{PAGE, finished, options};
+
+const FRAMES: usize = 64;
 
 /// Returns the options of a pager whose pool is small enough that a migration's pages reach the
 /// device before it commits.
 fn small_pool() -> Options {
     Options {
         pool_frames: 16,
-        ..options()
+        ..options(FRAMES)
     }
 }
 
@@ -149,7 +143,7 @@ fn check_whole(pager: &Pager<SimRuntime>, catalog: &Catalog, txns: &Transactions
 /// clean. Returns whether the header named a catalog before it opened, and the version the
 /// catalog opened at.
 fn check_reopened(rt: SimRuntime) -> (bool, u64) {
-    let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+    let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
     let found = pager.catalog_root() != Pid(0);
     let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
     check_whole(&pager, &catalog, &txns);
@@ -162,20 +156,18 @@ fn created(seed: u64) -> (Sim, usize) {
     let mut sim = Sim::new(seed, Config::default());
     sim.record();
     let mut start = 0;
-    let outcome = sim.run(|rt| {
-        let pager = Pager::create(rt.clone(), &options()).expect("create");
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         start = rt.recorded();
         Catalog::create(rt, &pager).expect("the catalog");
     });
-    assert_eq!(Outcome::Finished, outcome);
     (sim, start)
 }
 
 fn reopen(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, u64) {
     let mut sim = Sim::with_files(seed, crash_config(), files);
     let mut found = (false, 0);
-    let outcome = sim.run(|rt| found = check_reopened(rt));
-    assert_eq!(Outcome::Finished, outcome);
+    finished(&mut sim, |rt| found = check_reopened(rt));
     found
 }
 
@@ -227,12 +219,11 @@ fn with_reopened(
     let recording = sim.recording();
     let files = recording.images(recording.len(), 1, seed).swap_remove(0);
     let mut sim = Sim::with_files(seed, Config::default(), files);
-    let outcome = sim.run(|rt| {
-        let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
         let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
         body(&pager, &catalog, &txns);
     });
-    assert_eq!(Outcome::Finished, outcome);
 }
 
 fn rel(catalog: &Catalog, module: &str, name: &str) -> RelId {
@@ -317,13 +308,12 @@ fn a_reopened_catalog_names_the_same_structures() {
     let mut sim = Sim::with_files(6, Config::default(), files);
     let mut seen = Vec::new();
     for _ in 0..2 {
-        let outcome = sim.run(|rt| {
-            let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+        finished(&mut sim, |rt| {
+            let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
             let (catalog, _) = Catalog::open(rt, &pager).expect("the catalog opens");
             seen.push((catalog.root(), format!("{:?}", catalog.plan())));
             pager.checkpoint();
         });
-        assert_eq!(Outcome::Finished, outcome);
     }
     assert_eq!(seen[0], seen[1]);
 }
@@ -331,21 +321,18 @@ fn a_reopened_catalog_names_the_same_structures() {
 #[test]
 fn a_header_naming_no_catalog_is_created_again() {
     let mut sim = Sim::new(7, Config::default());
-    let outcome = sim.run(|rt| {
-        let pager = Pager::create(rt, &options()).expect("create");
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt, &options(FRAMES)).expect("create");
         adtb::heap::LargeStore::create(&pager, 1).expect("a stray page");
         pager.flush_log();
     });
-    assert_eq!(Outcome::Finished, outcome);
-    let outcome = sim.run(|rt| {
-        let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
         assert_eq!(Pid(0), pager.catalog_root());
         drop(Catalog::open(rt, &pager).expect("the catalog is created"));
         assert_ne!(Pid(0), pager.catalog_root());
     });
-    assert_eq!(Outcome::Finished, outcome);
-    let outcome = sim.run(|rt| assert!(check_reopened(rt).0));
-    assert_eq!(Outcome::Finished, outcome);
+    finished(&mut sim, |rt| assert!(check_reopened(rt).0));
 }
 
 /// The running schema, as the first migration of a database.
@@ -383,7 +370,7 @@ fn migrated(seed: u64) -> (Sim, usize) {
     let mut sim = Sim::new(seed, Config::default());
     sim.record();
     let mut start = 0;
-    let outcome = sim.run(|rt| {
+    finished(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &small_pool()).expect("create");
         let (mut catalog, txns) = Catalog::create(rt.clone(), &pager).expect("the catalog");
         start = rt.recorded();
@@ -392,7 +379,6 @@ fn migrated(seed: u64) -> (Sim, usize) {
             .expect("the migration applies");
         check_whole(&pager, &catalog, &txns);
     });
-    assert_eq!(Outcome::Finished, outcome);
     (sim, start)
 }
 
@@ -406,12 +392,11 @@ fn with_migrated(
     let recording = sim.recording();
     let files = recording.images(recording.len(), 1, seed).swap_remove(0);
     let mut sim = Sim::with_files(seed, Config::default(), files);
-    let outcome = sim.run(|rt| {
-        let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
         let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
         body(&pager, &catalog, &txns);
     });
-    assert_eq!(Outcome::Finished, outcome);
 }
 
 #[test]
@@ -490,8 +475,8 @@ fn a_migrated_catalog_reopens_to_the_same_structures() {
     let mut sim = Sim::with_files(13, Config::default(), files);
     let mut seen = Vec::new();
     for _ in 0..2 {
-        let outcome = sim.run(|rt| {
-            let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+        finished(&mut sim, |rt| {
+            let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
             let (catalog, _) = Catalog::open(rt, &pager).expect("the catalog opens");
             seen.push((
                 catalog.order_keys().clone(),
@@ -499,7 +484,6 @@ fn a_migrated_catalog_reopens_to_the_same_structures() {
             ));
             pager.checkpoint();
         });
-        assert_eq!(Outcome::Finished, outcome);
     }
     assert_eq!(seen[0], seen[1]);
 }
@@ -555,8 +539,8 @@ fn a_migration_after_a_crashed_one_applies() {
     for at in (start..n).rev().step_by(step) {
         let files = recording.images(at, 1, seed).swap_remove(0);
         let mut sim = Sim::with_files(seed, Config::default(), files);
-        let outcome = sim.run(|rt| {
-            let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+        finished(&mut sim, |rt| {
+            let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
             let (mut catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
             if catalog.source().version == 0 {
                 catalog
@@ -566,10 +550,8 @@ fn a_migration_after_a_crashed_one_applies() {
                 applied = true;
             }
         });
-        assert_eq!(Outcome::Finished, outcome);
         if applied {
-            let outcome = sim.run(|rt| assert_eq!((true, 1), check_reopened(rt)));
-            assert_eq!(Outcome::Finished, outcome);
+            finished(&mut sim, |rt| assert_eq!((true, 1), check_reopened(rt)));
             return;
         }
     }
@@ -579,8 +561,8 @@ fn a_migration_after_a_crashed_one_applies() {
 #[test]
 fn only_a_first_migration_of_declarations_applies() {
     let mut sim = Sim::new(17, Config::default());
-    let outcome = sim.run(|rt| {
-        let pager = Pager::create(rt.clone(), &options()).expect("create");
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
         let refused = |r: Result<(), Error>| match r {
             Err(Error::Refused(why)) => why,
@@ -607,7 +589,6 @@ fn only_a_first_migration_of_declarations_applies() {
         assert_eq!(1, catalog.source().version);
         check_whole(&pager, &catalog, &txns);
     });
-    assert_eq!(Outcome::Finished, outcome);
 }
 
 #[test]
@@ -648,7 +629,7 @@ fn the_log_rows_survive_a_crash_after_the_migration_commits() {
     {
         let mut sim = Sim::with_files(19, Config::default(), files);
         let outcome = sim.run(|rt| {
-            let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+            let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
             let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
             assert_eq!(1, catalog.source().version, "image {k}");
             check_whole(&pager, &catalog, &txns);
@@ -665,8 +646,8 @@ fn the_log_rows_survive_a_crash_after_the_migration_commits() {
 #[test]
 fn a_function_naming_a_wasm_module_no_migration_installs_is_refused() {
     let mut sim = Sim::new(20, Config::default());
-    let outcome = sim.run(|rt| {
-        let pager = Pager::create(rt.clone(), &options()).expect("create");
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
         let text =
             "module app\nadd module app\ndefine fn f (x: I64) -> I64 = wasm \"m\" export \"f\"\n";
@@ -680,7 +661,6 @@ fn a_function_naming_a_wasm_module_no_migration_installs_is_refused() {
         assert_eq!(0, catalog.source().version);
         check_whole(&pager, &catalog, &txns);
     });
-    assert_eq!(Outcome::Finished, outcome);
 }
 
 /// Returns `files` with page `pid` of the data file damaged.
@@ -705,13 +685,12 @@ fn restore(
 /// Returns the files of `files` once recovered, with every page written and checkpointed.
 fn recovered(seed: u64, files: BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Vec<u8>> {
     let mut sim = Sim::with_files(seed, Config::default(), files);
-    let outcome = sim.run(|rt| {
-        let (pager, _) = Pager::open(rt, &options()).expect("reopen");
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options(FRAMES)).expect("reopen");
         pager.flush_log();
         pager.flush_pages(usize::MAX);
         pager.checkpoint();
     });
-    assert_eq!(Outcome::Finished, outcome);
     sim.files()
 }
 
@@ -721,8 +700,8 @@ fn recovered(seed: u64, files: BTreeMap<String, Vec<u8>>) -> BTreeMap<String, Ve
 fn frees_a_migration(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, Pid) {
     let mut sim = Sim::with_files(seed, Config::default(), files);
     let mut out = None;
-    let outcome = sim.run(|rt| {
-        let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
         let before = pager.allocated().expect("the bitmaps").len();
         let (catalog, _) = Catalog::open(rt, &pager).expect("the catalog opens");
         let after = pager.allocated().expect("the bitmaps").len();
@@ -731,7 +710,6 @@ fn frees_a_migration(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, Pid)
         let frees = catalog.source().version == 0 && after < before;
         out = Some((frees, catalog.index_of(key.0).tree().root()));
     });
-    assert_eq!(Outcome::Finished, outcome);
     out.expect("the run finished")
 }
 
@@ -749,7 +727,7 @@ fn an_unfinished_migration_over_a_damaged_page_is_freed_once_the_page_reads() {
         }
         let mut sim = Sim::with_files(seed, Config::default(), damage(files.clone(), pid));
         let outcome = sim.run(|rt| {
-            let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+            let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
             let e = Catalog::open(rt, &pager).expect_err("the migration's pages are not found");
             let Error::Page(e) = e else {
                 panic!("at {at}: the open failed by {e:?}")

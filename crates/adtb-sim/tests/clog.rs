@@ -1,87 +1,39 @@
-use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, Mutex, Once};
-use std::time::Duration;
+use std::ops::Range;
+use std::sync::{Arc, Mutex};
 
 use adtb::mvcc::{CommitLog, Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
-use adtb::runtime::Entropy;
-use adtb::storage::{Edit, HEADER_LEN, Options, PageKind, Pager, Pid};
+use adtb::storage::{Edit, HEADER_LEN, PageKind, Pager, Pid};
 use adtb::verify::Inventory;
 use adtb_sim::{
     Config, Fate, Faults, Finding, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation, check,
 };
+use adtb_testkit::Rng;
 
-mod common;
+#[path = "support/crash.rs"]
+mod crash;
+#[path = "support/draw.rs"]
+mod draw;
+#[path = "support/harness.rs"]
+mod harness;
+#[path = "support/recovery.rs"]
+mod recovery;
+#[path = "support/seeds.rs"]
+mod seeds;
 
-const PAGE: usize = 4096;
-const NAME: &str = "app.adt";
-const FATAL: &str = "fatal I/O error";
+use crash::{crash_after, run_process, silence_fatal_panics};
+use draw::below;
+use harness::{NAME, PAGE, finished, options};
+use recovery::verify_after_crash;
+use seeds::{share, sweep};
 
-fn options() -> Options {
-    Options {
-        page_size: PAGE as u32,
-        log_block: 512,
-        segment_size: 256 * 1024,
-        pool_frames: 6,
-        atomic_page_writes: false,
-        ..Options::new(NAME)
-    }
-}
-
-fn quiet() -> Faults {
-    Faults {
-        lose_unsynced: true,
-        delay_completions: true,
-        ..Faults::default()
-    }
-}
-
-fn silence_fatal_panics() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let default = panic::take_hook();
-        panic::set_hook(Box::new(move |info| {
-            let msg = info
-                .payload()
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| info.payload().downcast_ref::<&str>().copied())
-                .unwrap_or("");
-            if !msg.starts_with(FATAL) {
-                default(info);
-            }
-        }));
-    });
-}
-
-/// Run `body` as a process, treating a crash caused by a failed write or force as a crash.
-fn run_process<F: FnOnce(SimRuntime)>(sim: &mut Sim, body: F) -> Outcome {
-    match panic::catch_unwind(AssertUnwindSafe(|| sim.run(body))) {
-        Ok(o) => o,
-        Err(payload) => {
-            let msg = payload
-                .downcast_ref::<String>()
-                .cloned()
-                .unwrap_or_default();
-            if msg.starts_with(FATAL) {
-                Outcome::Crashed
-            } else {
-                panic::resume_unwind(payload)
-            }
-        }
-    }
-}
-
-fn below(rt: &SimRuntime, n: usize) -> usize {
-    (rt.next_u64() % n as u64) as usize
-}
+const FRAMES: usize = 6;
 
 /// Create a database with a commit log and `heap_pages` scratch pages, returning their ids.
 fn setup(sim: &mut Sim, heap_pages: usize) -> (Pid, Vec<Pid>) {
     let mut out = None;
-    let outcome = sim.run(|rt| {
-        let pager = Pager::create(rt.clone(), &options()).expect("create");
+    finished(sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let txns = Transactions::create(rt, &pager).expect("commit log");
         let pages = (0..heap_pages)
             .map(|_| {
@@ -93,7 +45,6 @@ fn setup(sim: &mut Sim, heap_pages: usize) -> (Pid, Vec<Pid>) {
         pager.flush_log();
         out = Some((txns.commit_log().root(), pages));
     });
-    assert_eq!(Outcome::Finished, outcome);
     out.unwrap()
 }
 
@@ -103,12 +54,11 @@ fn with_open<T>(
     body: impl FnOnce(&mut Pager<SimRuntime>, &mut Transactions<SimRuntime>) -> T,
 ) -> T {
     let mut out = None;
-    let outcome = sim.run(|rt| {
-        let (mut pager, _) = Pager::open(rt.clone(), &options()).expect("open");
+    finished(sim, |rt| {
+        let (mut pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
         let mut txns = Transactions::open(rt, &pager, root).expect("open the commit log");
         out = Some(body(&mut pager, &mut txns));
     });
-    assert_eq!(Outcome::Finished, outcome);
     out.unwrap()
 }
 
@@ -134,12 +84,18 @@ struct Held {
     scope: Scope,
 }
 
+fn pick(rng: &mut Rng, set: &BTreeSet<Xid>) -> Xid {
+    *set.iter()
+        .nth(rng.below(set.len() as u64) as usize)
+        .unwrap()
+}
+
 #[test]
 fn visibility_through_the_commit_log_matches_a_model() {
     let mut sim = Sim::new(21, Config::default());
     let (root, _) = setup(&mut sim, 0);
     with_open(&mut sim, root, |pager, txns| {
-        let rt = Rng::new(0x1234_5678_9abc_def1);
+        let mut rng = Rng::new(0x1234_5678_9abc_def1);
         let mut model = Model::default();
         let mut versions: Vec<(u64, u64)> = Vec::new();
         let mut held: Vec<Held> = Vec::new();
@@ -147,13 +103,13 @@ fn visibility_through_the_commit_log_matches_a_model() {
         let mut event = 0;
         while txns.next().0 < 3 * txns.commit_log().ids_per_page() {
             event += 1;
-            match rt.below(16) {
+            match rng.below(16) {
                 0..=3 => {
                     txns.begin(pager).expect("begin");
                 }
                 4..=7 if !txns.running().is_empty() => {
-                    let x = rt.pick(&txns.running());
-                    if rt.below(3) == 0 {
+                    let x = pick(&mut rng, &txns.running());
+                    if rng.below(3) == 0 {
                         txns.abort(pager, x).expect("abort");
                         model.ended.insert(x, (event, Status::Aborted));
                     } else {
@@ -162,24 +118,24 @@ fn visibility_through_the_commit_log_matches_a_model() {
                     }
                 }
                 8 if !txns.running().is_empty() => {
-                    let writer = rt.pick(&txns.running());
-                    if versions.is_empty() || rt.below(2) == 0 {
+                    let writer = pick(&mut rng, &txns.running());
+                    if versions.is_empty() || rng.below(2) == 0 {
                         versions.push((writer.0, 0));
                     } else {
-                        let v = rt.below(versions.len() as u64) as usize;
+                        let v = rng.below(versions.len() as u64) as usize;
                         if versions[v].1 == 0 {
                             versions[v].1 = writer.0;
                         }
                     }
                 }
                 9 => {
-                    let scope = if rt.below(3) == 0 {
+                    let scope = if rng.below(3) == 0 {
                         Scope::Every
                     } else {
-                        Scope::Heaps(BTreeSet::from([rt.below(4) as u32]))
+                        Scope::Heaps(BTreeSet::from([rng.below(4) as u32]))
                     };
-                    let reader = (!txns.running().is_empty() && rt.below(2) == 0)
-                        .then(|| rt.pick(&txns.running()));
+                    let reader = (!txns.running().is_empty() && rng.below(2) == 0)
+                        .then(|| pick(&mut rng, &txns.running()));
                     let (id, snapshot) = txns.take(scope.clone()).unwrap();
                     held.push(Held {
                         id,
@@ -190,17 +146,17 @@ fn visibility_through_the_commit_log_matches_a_model() {
                     });
                 }
                 10 | 13 if !held.is_empty() => {
-                    let h = held.swap_remove(rt.below(held.len() as u64) as usize);
+                    let h = held.swap_remove(rng.below(held.len() as u64) as usize);
                     txns.release(h.id);
                 }
-                11 if rt.below(16) == 0 => {
+                11 if rng.below(16) == 0 => {
                     pager.flush_log();
                     pager.flush_pages(2);
                 }
                 12 if !held.is_empty() && !versions.is_empty() => {
-                    let h = &held[rt.below(held.len() as u64) as usize];
+                    let h = &held[rng.below(held.len() as u64) as usize];
                     for _ in 0..8 {
-                        let (xmin, xmax) = versions[rt.below(versions.len() as u64) as usize];
+                        let (xmin, xmax) = versions[rng.below(versions.len() as u64) as usize];
                         let counts =
                             |x: u64| Some(Xid(x)) == h.reader || model.committed_before(x, h.taken);
                         let want = counts(xmin) && (xmax == 0 || !counts(xmax));
@@ -244,30 +200,6 @@ fn visibility_through_the_commit_log_matches_a_model() {
         );
         assert!(checks > 1000, "{checks} checks");
     });
-}
-
-/// A deterministic stream for tests that need no runtime.
-struct Rng(Cell<u64>);
-
-impl Rng {
-    fn new(seed: u64) -> Rng {
-        Rng(Cell::new(seed))
-    }
-
-    fn below(&self, n: u64) -> u64 {
-        let mut x = self.0.get();
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0.set(x);
-        x % n
-    }
-
-    fn pick(&self, set: &BTreeSet<Xid>) -> Xid {
-        *set.iter()
-            .nth(self.below(set.len() as u64) as usize)
-            .unwrap()
-    }
 }
 
 #[test]
@@ -391,7 +323,7 @@ impl Recovered for Report {
 }
 
 fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &Mutex<World>) {
-    let Ok((pager, _)) = Pager::open(rt.clone(), &options()) else {
+    let Ok((pager, _)) = Pager::open(rt.clone(), &options(FRAMES)) else {
         return;
     };
     let txns = Transactions::open(rt.clone(), &pager, root).expect("open the commit log");
@@ -451,7 +383,7 @@ fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &M
 }
 
 fn inspect(rt: SimRuntime, root: Pid, pages: &[Pid], assigned: &[Xid]) -> Report {
-    let (pager, _) = Pager::open(rt.clone(), &options()).expect("open");
+    let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
     let txns = Transactions::open(rt, &pager, root).expect("open the commit log");
     let statuses = assigned
         .iter()
@@ -464,7 +396,7 @@ fn inspect(rt: SimRuntime, root: Pid, pages: &[Pid], assigned: &[Xid]) -> Report
         pages: pages.to_vec(),
         ..Inventory::default()
     };
-    let structure = common::verify_after_crash(&pager, &inventory);
+    let structure = verify_after_crash(&pager, &inventory);
     Report {
         statuses,
         logged: v.commits.into_iter().collect(),
@@ -483,21 +415,17 @@ fn crash_loop(seed: u64, faults: Faults, rounds: u64) -> (usize, usize) {
     let mut crashes = 0;
     for round in 0..rounds {
         sim.set_faults(faults.clone());
-        sim.crash_at(
-            sim.now() + Duration::from_micros(400 + (seed * 7919 + round * 104_729) % 40_000),
-        );
+        sim.crash_at(sim.now() + crash_after(seed, round, 400, 40_000));
         let (l, w) = (ledger.clone(), world.clone());
         if run_process(&mut sim, |rt| workload(rt, root, &pages, &l, &w)) == Outcome::Crashed {
             crashes += 1;
         }
-        sim.set_faults(quiet());
+        sim.set_faults(Faults::default());
         let assigned = world.lock().unwrap().assigned.clone();
         let mut report = Report::default();
-        assert_eq!(
-            Outcome::Finished,
-            sim.run(|rt| report = inspect(rt, root, &pages, &assigned))
-        );
         let at = format!("seed {seed} round {round}");
+        let outcome = sim.run(|rt| report = inspect(rt, root, &pages, &assigned));
+        assert_eq!(Outcome::Finished, outcome, "{at}");
         assert_eq!(Vec::<Violation>::new(), check(&ledger, &report), "{at}");
         for (&x, &s) in &report.statuses {
             assert_ne!(Status::InProgress, s, "{at}: {x:?} is still in progress");
@@ -532,40 +460,45 @@ fn crash_loop(seed: u64, faults: Faults, rounds: u64) -> (usize, usize) {
 
 #[test]
 fn crashes_keep_commits_and_abort_what_was_running() {
+    const SEEDS: Range<u64> = 0..10;
     let mut crashes = 0;
     let mut committed = 0;
-    for seed in 0..10 {
+    for seed in sweep(SEEDS) {
         let (c, n) = crash_loop(
             seed,
             Faults {
                 torn_p: 0.5,
-                ..quiet()
+                ..Faults::default()
             },
             4,
         );
         crashes += c;
         committed += n;
     }
-    assert!(crashes >= 30, "{crashes} crashes");
-    assert!(committed > 300, "{committed} acknowledged commits");
+    assert!(crashes >= share(SEEDS, 30), "{crashes} crashes");
+    assert!(
+        committed > share(SEEDS, 300),
+        "{committed} acknowledged commits"
+    );
 }
 
 #[test]
 fn failed_writes_crash_and_recover_the_commit_log() {
+    const SEEDS: Range<u64> = 100..106;
     let mut crashes = 0;
-    for seed in 100..106 {
+    for seed in sweep(SEEDS) {
         crashes += crash_loop(
             seed,
             Faults {
                 torn_p: 0.5,
                 fail_p: 0.005,
-                ..quiet()
+                ..Faults::default()
             },
             4,
         )
         .0;
     }
-    assert!(crashes >= 18, "{crashes} crashes");
+    assert!(crashes >= share(SEEDS, 18), "{crashes} crashes");
 }
 
 /// Commit a few transactions, write every page to the data file, and return the database's
@@ -573,8 +506,8 @@ fn failed_writes_crash_and_recover_the_commit_log() {
 fn written(seed: u64) -> (BTreeMap<String, Vec<u8>>, Pid, Pid) {
     let mut sim = Sim::new(seed, Config::default());
     let mut out = None;
-    let outcome = sim.run(|rt| {
-        let pager = Pager::create(rt.clone(), &options()).expect("create");
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         let txns = Transactions::create(rt, &pager).expect("commit log");
         for _ in 0..3 {
             let x = txns.begin(&pager).expect("begin");
@@ -586,7 +519,6 @@ fn written(seed: u64) -> (BTreeMap<String, Vec<u8>>, Pid, Pid) {
         let clog = txns.commit_log();
         out = Some((clog.root(), clog.status_pages()[&0]));
     });
-    assert_eq!(Outcome::Finished, outcome);
     let (root, status) = out.unwrap();
     (sim.files(), root, status)
 }
@@ -603,8 +535,8 @@ fn damage(mut files: BTreeMap<String, Vec<u8>>, pid: Pid) -> BTreeMap<String, Ve
 fn a_damaged_status_page_quarantines_the_database() {
     let (files, root, status) = written(1);
     let mut sim = Sim::with_files(1, Config::default(), damage(files, status));
-    let outcome = sim.run(|rt| {
-        let (pager, _) = Pager::open(rt.clone(), &options()).expect("open");
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
         let txns = Transactions::open(rt, &pager, root).expect("the commit log opens");
         let damage = txns.quarantined().expect("the database is quarantined");
         assert_eq!(status, damage.pid);
@@ -624,17 +556,15 @@ fn a_damaged_status_page_quarantines_the_database() {
             "verify reports the damaged status page: {report:?}"
         );
     });
-    assert_eq!(Outcome::Finished, outcome);
 }
 
 #[test]
 fn a_damaged_root_refuses_to_open_the_commit_log() {
     let (files, root, _) = written(2);
     let mut sim = Sim::with_files(2, Config::default(), damage(files, root));
-    let outcome = sim.run(|rt| {
-        let (pager, _) = Pager::open(rt.clone(), &options()).expect("open");
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
         let e = Transactions::open(rt, &pager, root).expect_err("the root is damaged");
         assert_eq!(root, e.pid);
     });
-    assert_eq!(Outcome::Finished, outcome);
 }

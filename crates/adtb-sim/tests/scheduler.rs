@@ -1,3 +1,4 @@
+#[expect(dead_code, reason = "this binary uses part of the device helpers")]
 mod common;
 
 use std::sync::{Arc, Mutex};

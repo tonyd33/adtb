@@ -1,10 +1,12 @@
 mod common;
+mod memory;
 
 use adtb_isolation::{
     ABORTED_READ, CIRCULAR_FLOW, INTERMEDIATE_READ, LOST_UPDATE, Outcome, READ_SKEW, SCENARIOS,
     Scenario, Step, TxnId, WRITE_SKEW, check, run,
 };
-use common::{Memory, Mode, kinds};
+use common::kinds;
+use memory::{Memory, Mode};
 
 fn under(mode: Mode, scenario: Scenario) -> Vec<&'static str> {
     kinds(&run(&mut Memory::new(mode), scenario.steps))

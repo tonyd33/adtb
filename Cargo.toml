@@ -16,6 +16,7 @@ adtb-isolation = { path = "crates/adtb-isolation" }
 adtb-reference = { path = "crates/adtb-reference" }
 adtb-sim = { path = "crates/adtb-sim" }
 adtb-sys = { path = "crates/adtb-sys" }
+adtb-testkit = { path = "crates/adtb-testkit" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

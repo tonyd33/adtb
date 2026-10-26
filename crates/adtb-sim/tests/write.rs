@@ -1,3 +1,4 @@
+use std::ops::Range;
 mod plan {
     pub use adtb::plan::*;
 }
@@ -6,13 +7,14 @@ mod plan {
 #[expect(dead_code, reason = "this binary uses part of the planner fixture")]
 mod planfix;
 
-#[path = "../../adtb-reference/tests/common/mod.rs"]
-mod common;
-
+#[expect(
+    dead_code,
+    reason = "this binary binds databases for writes and loads none for reads"
+)]
 mod support;
 
-#[path = "common/mod.rs"]
-mod device;
+#[expect(dead_code, reason = "this binary uses part of the device helpers")]
+mod common;
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,157 +33,13 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_testkit::fixture::Fixture;
+use adtb_testkit::uuid;
+use adtb_testkit::writes::fixture;
 
-use common::Fixture;
+use support::harness::finished;
+use support::seeds::share;
 use support::{Db, World, to_ref, to_val};
-
-const SCHEMA: &str = r#"
-type User = { id: Key users, name: Text }
-type Identity { id: Key identities, user: Key users }
-  = EmailPass { email: Text, hash: Bytes }
-  | Google    { gid: Text }
-  | Apple     { sub: Text }
-relation users : User key id generate sequence
-relation identities : Identity
-  key id generate uuidv7
-  unique (email) in EmailPass
-  unique (gid) in Google
-  unique (sub) in Apple
-  unique (lower(email)) in EmailPass
-set OAuth of identities = Google | Apple
-constraint login_present =
-  from i in identities
-  where match i
-    | EmailPass e -> scalar_len(e.email) == 0
-    | Google g    -> scalar_len(g.gid) == 0
-    | Apple a     -> scalar_len(a.sub) == 0
-  select i
-
-type Login { id: Key logins, user: Key users on delete cascade }
-  = Active  { identity: Key identities on delete retag Revoked {} }
-  | Revoked { at: Instant }
-relation logins : Login
-  key id generate sequence
-  default Revoked.at = generate clock
-
-type Reset = { id: Key resets, identity: Key identities.EmailPass on delete cascade, token: Bytes }
-relation resets : Reset key id generate sequence
-
-type Badge = { id: Key badges, owner: Key users on delete restrict, label: Text }
-relation badges : Badge key id generate sequence
-
-type Import { id: Key imports } = Email { user: Key users, addr: Text, h: Bytes }
-                                | Oauth { user: Key users, sub: Text }
-relation imports : Import key id generate sequence
-
-type Note = { id: Key notes, author: Option (Key users) on delete clear, body: Text }
-relation notes : Note key id generate sequence
-
-fn lookup (email: Text) -> Text = lower(email)
-fn rehash (h: Bytes) -> Bytes = h
-
-type Address = US { zip: Text, street: Text } | Intl { country: Text, postcode: Text }
-type Customer = { id: Key customers, name: Text, address: Address }
-relation customers : Customer key id generate sequence
-
-type Ticket { id: Key tickets, owner: Option (Key users) on delete clear }
-  = Open { identity: Key identities on delete retag Closed {} }
-  | Closed
-relation tickets : Ticket key id generate sequence
-
-type Raw = { id: Key raws, n: I64 }
-relation raws : Raw key id generate sequence
-relation user_rejects : RejectedRow key (load, line)
-
-type Email = new Text where scalar_len(self) > 3
-type Contact = { id: Key contacts, email: Email }
-relation contacts : Contact key id generate sequence
-
-constraint aa_names = from u in users where u.name == "aa" select u
-constraint zz_names = from u in users where u.name == "zz" select u
-constraint frozen_notes = from n in deleted(notes) where n.body == "frozen" select n
-check name_short on users (scalar_len(name) < 20)
-check divides on raws (10 / n != 0)
-"#;
-
-fn uuid(n: u8) -> String {
-    format!("identities.key(uuid(\"00000000-0000-7000-8000-0000000000{n:02}\"))")
-}
-
-fn fixture() -> Fixture {
-    let mut f = Fixture::new(SCHEMA);
-    f.rows(
-        "users",
-        r#"[User { id: users.key(1), name: "ann" },
-            User { id: users.key(2), name: "bo" },
-            User { id: users.key(3), name: "cy" },
-            User { id: users.key(4), name: "dee" }]"#,
-    );
-    f.rows(
-        "identities",
-        &format!(
-            r#"[EmailPass {{ id: {}, user: users.key(1), email: "ann@example.com", hash: bytes("h1") }},
-                Google {{ id: {}, user: users.key(1), gid: "g-ann" }},
-                Google {{ id: {}, user: users.key(2), gid: "g-bo" }},
-                Google {{ id: {}, user: users.key(1), gid: "s-bo" }},
-                EmailPass {{ id: {}, user: users.key(2), email: "Bo@Example.com", hash: bytes("h2") }}]"#,
-            uuid(1),
-            uuid(2),
-            uuid(3),
-            uuid(4),
-            uuid(5)
-        ),
-    );
-    f.rows_with(
-        "logins",
-        &format!(
-            r"[Active {{ id: logins.key(1), user: users.key(1), identity: {} }},
-                Active {{ id: logins.key(2), user: users.key(2), identity: {} }},
-                Revoked {{ id: logins.key(3), user: users.key(1), at: t }}]",
-            uuid(1),
-            uuid(3)
-        ),
-        &[("t", "Instant", Value::Instant(5))],
-    );
-    f.rows(
-        "resets",
-        r#"from e in identities.EmailPass where e.email == "ann@example.com"
-           select Reset { id: resets.key(1), identity: key e, token: bytes("t") }"#,
-    );
-    f.rows(
-        "badges",
-        r#"[Badge { id: badges.key(1), owner: users.key(3), label: "b3" },
-            Badge { id: badges.key(2), owner: users.key(4), label: "b4" }]"#,
-    );
-    f.rows(
-        "imports",
-        r#"[Oauth { id: imports.key(1), user: users.key(2), sub: "s-bo" },
-            Email { id: imports.key(2), user: users.key(3), addr: "cy@x.org", h: bytes("h3") }]"#,
-    );
-    f.rows(
-        "notes",
-        r#"[Note { id: notes.key(1), author: Some { value: users.key(4) }, body: "n" },
-            Note { id: notes.key(2), author: None, body: "plain" },
-            Note { id: notes.key(3), author: None, body: "frozen" }]"#,
-    );
-    f.rows(
-        "customers",
-        r#"[Customer { id: customers.key(1), name: "c", address: US { zip: "10001", street: "s" } },
-            Customer { id: customers.key(2), name: "d", address: Intl { country: "fr", postcode: "75001" } }]"#,
-    );
-    f.rows(
-        "tickets",
-        &format!(
-            r"[Open {{ id: tickets.key(1), owner: Some {{ value: users.key(4) }}, identity: {} }}]",
-            uuid(2)
-        ),
-    );
-    f.rows(
-        "raws",
-        "[Raw { id: raws.key(1), n: 5 }, Raw { id: raws.key(2), n: -1 }, Raw { id: raws.key(3), n: 7 }]",
-    );
-    f
-}
 
 /// One statement of a case: its text, its parameters as name, type and value, and the clock it
 /// runs at.
@@ -901,7 +759,7 @@ fn cases() -> Vec<Case> {
     ]
 }
 
-fn check_all(seeds: std::ops::Range<u64>, mode: Mode) {
+fn check_all(seeds: Range<u64>, mode: Mode) {
     let mut bad = Vec::new();
     let mut runs = 0;
     for case in &cases() {
@@ -1073,6 +931,7 @@ fn is_expected_failure(e: &str) -> bool {
 
 #[test]
 fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
+    const SEEDS: Range<u64> = 0..4;
     let f = shop();
     let catalog = Arc::new(planfix::catalog(&f.schema, &f.program));
     let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
@@ -1085,7 +944,7 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
     ]);
     let failing = Arc::new(prep(&f, FAILING, false));
     let mut commits = 0;
-    for seed in 0..4 {
+    for seed in support::sweep(SEEDS) {
         let mut sim = Sim::new(seed, Config::default());
         let done: Arc<std::sync::Mutex<Vec<Done>>> = Arc::default();
         let mut finals = None;
@@ -1175,7 +1034,10 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
         );
         commits += done.iter().filter(|d| d.result.is_ok()).count();
     }
-    assert!(commits > 20, "only {commits} transactions committed");
+    assert!(
+        commits > share(SEEDS, 20),
+        "only {commits} transactions committed"
+    );
 }
 
 #[test]
@@ -1223,8 +1085,13 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
                         let mut seen = |k: &Val| {
                             drawn.lock().unwrap().insert(k.clone());
                         };
-                        if let Ok(k) = run_txn_with(&db, &schema, &tag, &name, None, &mut seen) {
-                            acked.lock().unwrap().insert(name, k);
+                        match run_txn_with(&db, &schema, &tag, &name, None, &mut seen) {
+                            Ok(k) => {
+                                acked.lock().unwrap().insert(name, k);
+                            }
+                            Err(_) => {
+                                submitted.lock().unwrap().remove(&name);
+                            }
                         }
                     }
                 })
@@ -1234,7 +1101,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
             rt.join(c);
         }
     };
-    let mut crashed = 0;
+    let (mut crashed, mut lost_draws) = (0, 0);
     for seed in 0..4 {
         let mut dry = Sim::new(seed, Config::default());
         let started: Slot<Option<u64>> = Arc::default();
@@ -1312,13 +1179,19 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
             !held.values().any(|k| *k == next),
             "seed {seed}: the key {next:?} drawn after recovery was held"
         );
-        let last = drawn.lock().unwrap().last().cloned();
+        let drawn = drawn.lock().unwrap();
+        let in_flight = submitted.len() > acked.lock().unwrap().len();
+        lost_draws +=
+            usize::from(in_flight && drawn.iter().any(|k| !held.values().any(|h| h == k)));
+        let last = drawn.last().cloned();
         assert!(
             last.is_none_or(|d| next > d),
             "seed {seed}: the key {next:?} drawn after recovery was drawn before the crash"
         );
     }
+    eprintln!("{crashed} runs crashed after a commit, {lost_draws} lost a key drawn in flight");
     assert!(crashed > 0, "no run crashed after acknowledging a commit");
+    assert!(lost_draws > 0, "no crash lost a key drawn in flight");
 }
 
 /// Begin a transaction, have a second one run `s` and commit, then damage the commit log page
@@ -1360,10 +1233,10 @@ fn behind_a_damaged_commit_log(
             pager.read(Pid(1 << 16 | p)).expect("a page never written");
         }
         let mut io = rt.io();
-        let (file, _) = device::open(&rt, &mut io, "app.adt", false).expect("the data file");
-        let at = status.0 * support::PAGE as u64;
-        device::write(&rt, &mut io, file, at, &[0xa5; support::PAGE]).expect("a write");
-        device::sync(&rt, &mut io, file).expect("a sync");
+        let (file, _) = common::open(&rt, &mut io, "app.adt", false).expect("the data file");
+        let at = status.0 * support::harness::PAGE as u64;
+        common::write(&rt, &mut io, file, at, &[0xa5; support::harness::PAGE]).expect("a write");
+        common::sync(&rt, &mut io, file).expect("a sync");
         let ended = db.statement(&first, &s.p.terms, s.p.item, &params, 0);
         out = Some((status, ended.map(|_| ()).map_err(|e| format!("{e:?}"))));
     });
@@ -1413,7 +1286,7 @@ relation tags : Label key id generate sequence",
     let tag = prep(&f, "insert tags { name: \"a\" }", false);
     let mut counters = None;
     let mut sim = Sim::new(0, Config::default());
-    let result = sim.run(|rt| {
+    finished(&mut sim, |rt| {
         let world = World {
             schema: &f.schema,
             catalog: &catalog,
@@ -1427,6 +1300,5 @@ relation tags : Label key id generate sequence",
         let n = &page[HEADER_LEN..HEADER_LEN + 4];
         counters = Some(u32::from_le_bytes(n.try_into().expect("4 bytes")));
     });
-    assert_eq!(Outcome::Finished, result);
     assert_eq!(Some(1), counters, "only tags has a counter");
 }

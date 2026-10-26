@@ -1,9 +1,14 @@
+#[expect(dead_code, reason = "this binary uses part of the device helpers")]
 mod common;
+#[path = "support/seeds.rs"]
+mod seeds;
 
+use std::ops::Range;
 use std::time::Duration;
 
 use adtb_sim::{Config, Faults, FindingKind, Ledger, Outcome, Sim, Violation, check};
 use common::{Durability, commit_all, recover, run, sleep};
+use seeds::{share, sweep};
 
 fn sim(seed: u64, faults: Faults) -> Sim {
     Sim::new(
@@ -40,14 +45,15 @@ fn crash_and_check(seed: u64, durability: Durability, faults: Faults) -> (Vec<Vi
 
 #[test]
 fn forced_commits_pass_after_any_crash() {
+    const SEEDS: Range<u64> = 0..64;
     let mut partial = 0;
-    for seed in 0..64 {
+    for seed in sweep(SEEDS) {
         let (violations, acked) = crash_and_check(seed, Durability::Forced, Faults::default());
         assert_eq!(Vec::<Violation>::new(), violations, "seed {seed}");
         partial += usize::from(acked > 0 && acked < 8);
     }
     assert!(
-        partial > 16,
+        partial > share(SEEDS, 16),
         "only {partial} crashes fell inside the workload"
     );
 }

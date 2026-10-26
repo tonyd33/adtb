@@ -1,10 +1,10 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Bound;
+use std::ops::{Bound, Range};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use adtb::btree::{BTree, Cursor, Error, Index, SumKey, tag_prefix};
 use adtb::key::{
@@ -17,35 +17,36 @@ use adtb::storage::{Options, Pager, Pid};
 use adtb::verify::Inventory;
 use adtb_sim::{Config, Faults, Outcome, Recording, Sim, SimIo, SimRuntime};
 
-mod common;
+#[path = "support/crash.rs"]
+#[expect(dead_code, reason = "this binary injects no failed writes")]
+mod crash;
+#[path = "support/draw.rs"]
+mod draw;
+#[path = "support/harness.rs"]
+mod harness;
+#[path = "support/recovery.rs"]
+mod recovery;
+#[path = "support/seeds.rs"]
+mod seeds;
 
-const PAGE: usize = 4096;
+use crash::crash_after;
+use draw::below;
+use harness::{PAGE, finished, options};
+use recovery::verify_after_crash;
+use seeds::{share, sweep};
+
+const FRAMES: usize = 64;
+
 const OWNER: u32 = 41;
-const NAME: &str = "app.adt";
 const SCAN: usize = 64;
-
-fn options() -> Options {
-    Options {
-        page_size: PAGE as u32,
-        log_block: 512,
-        segment_size: 256 * 1024,
-        pool_frames: 64,
-        ..Options::new(NAME)
-    }
-}
 
 /// Run `body` over a new database in a fresh simulation.
 fn with_pager(seed: u64, body: impl FnOnce(&SimRuntime, &Pager<SimRuntime>)) {
     let mut sim = Sim::new(seed, Config::default());
-    let outcome = sim.run(|rt| {
-        let pager = Pager::create(rt.clone(), &options()).expect("create");
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
         body(&rt, &pager);
     });
-    assert_eq!(Outcome::Finished, outcome);
-}
-
-fn below(rt: &SimRuntime, n: usize) -> usize {
-    (rt.next_u64() % n as u64) as usize
 }
 
 /// Returns an entry drawn from few bytes, so that entries share long prefixes.
@@ -211,13 +212,13 @@ const WINDOW: usize = 2000;
 /// with the pool far smaller than the tree.
 fn model_run(seed: u64, ops: usize, expected_height: u16) {
     let mut sim = Sim::new(seed, Config::default());
-    let outcome = sim.run(|rt| {
+    finished(&mut sim, |rt| {
         let reads = Arc::new(AtomicUsize::new(0));
         let counted = Counted {
             rt: rt.clone(),
             reads: reads.clone(),
         };
-        let pager = &mut Pager::create(counted, &options()).expect("create");
+        let pager = &mut Pager::create(counted, &options(FRAMES)).expect("create");
         let rt = &rt;
         let tree = BTree::create(pager, OWNER).expect("create tree");
         let max = BTree::max_entry_len(PAGE);
@@ -296,7 +297,6 @@ fn model_run(seed: u64, ops: usize, expected_height: u16) {
             model.len()
         );
     });
-    assert_eq!(Outcome::Finished, outcome);
 }
 
 /// Returns the first `SCAN` entries of `cursor`.
@@ -371,8 +371,8 @@ fn a_tree_reopens_from_its_root() {
     let mut sim = Sim::new(11, Config::default());
     let root = Arc::new(Mutex::new(Pid(0)));
     let r = root.clone();
-    let outcome = sim.run(move |rt| {
-        let pager = Pager::create(rt, &options()).unwrap();
+    finished(&mut sim, move |rt| {
+        let pager = Pager::create(rt, &options(FRAMES)).unwrap();
         let tree = BTree::create(&pager, OWNER).unwrap();
         for i in 0..2000_u32 {
             tree.insert(&pager, &[i.to_be_bytes().as_slice(), &[7; 60]].concat())
@@ -381,10 +381,9 @@ fn a_tree_reopens_from_its_root() {
         pager.flush_log();
         *r.lock().unwrap() = tree.root();
     });
-    assert_eq!(Outcome::Finished, outcome);
     let root = *root.lock().unwrap();
-    let outcome = sim.run(move |rt| {
-        let (pager, _) = Pager::open(rt, &options()).unwrap();
+    finished(&mut sim, move |rt| {
+        let (pager, _) = Pager::open(rt, &options(FRAMES)).unwrap();
         let tree = BTree::open(root, OWNER);
         assert_eq!(tree.verify(&pager).unwrap().len(), 2000);
         assert!(
@@ -394,7 +393,6 @@ fn a_tree_reopens_from_its_root() {
         let other = BTree::open(root, OWNER + 1);
         assert_eq!(other.verify(&pager), Err(Error::Malformed(root)));
     });
-    assert_eq!(Outcome::Finished, outcome);
 }
 
 fn tid(page: u64, slot: u16) -> Tid {
@@ -704,7 +702,7 @@ struct World {
 fn crash_options() -> Options {
     Options {
         pool_frames: 5,
-        ..options()
+        ..options(FRAMES)
     }
 }
 
@@ -766,13 +764,10 @@ fn incomplete_at(recording: &Recording, at: usize, root: Pid, seed: u64) -> usiz
     let files = recording.images(at, 1, seed).swap_remove(0);
     let mut sim = Sim::with_files(seed, Config::default(), files);
     let mut n = 0;
-    assert_eq!(
-        Outcome::Finished,
-        sim.run(|rt| {
-            let (pager, _) = Pager::open(rt, &crash_options()).expect("reopen");
-            n = BTree::open(root, OWNER).repair(&pager).expect("repair");
-        })
-    );
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &crash_options()).expect("reopen");
+        n = BTree::open(root, OWNER).repair(&pager).expect("repair");
+    });
     n
 }
 
@@ -797,10 +792,7 @@ fn crash_at_a_flush(sim: &mut Sim, world: &Arc<Mutex<World>>, seed: u64, seek: b
     };
     sim.record();
     let w = world.clone();
-    assert_eq!(
-        Outcome::Finished,
-        sim.run(move |rt| crash_workload(rt, &w, 600))
-    );
+    finished(sim, move |rt| crash_workload(rt, &w, 600));
     let recording = sim.recording();
     let flushes = recording.flushes();
     let mut w = world.lock().unwrap();
@@ -833,20 +825,18 @@ fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
     let mut sim = Sim::new(seed, crash_config());
     let world = Arc::new(Mutex::new(World::default()));
     let w = world.clone();
-    let outcome = sim.run(move |rt| {
+    finished(&mut sim, move |rt| {
         let pager = Pager::create(rt, &crash_options()).expect("create");
         let tree = BTree::create(&pager, OWNER).expect("create tree");
         pager.flush_log();
         w.lock().unwrap().root = Some(tree.root());
     });
-    assert_eq!(Outcome::Finished, outcome);
     let mut crashes = 0;
     let repaired = Arc::new(Mutex::new(0));
     for round in 0..2 * rounds {
-        let finished = repaired.clone();
+        let repairs = repaired.clone();
         if round % 2 == 0 {
-            let at = sim.now()
-                + Duration::from_micros(2_000 + (seed * 7919 + round as u64 * 104_729) % 200_000);
+            let at = sim.now() + crash_after(seed, round as u64, 2_000, 200_000);
             sim.crash_at(at);
             let w = world.clone();
             if sim.run(move |rt| crash_workload(rt, &w, 600)) == Outcome::Crashed {
@@ -859,19 +849,19 @@ fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
         let root = world.lock().unwrap().root.unwrap();
         let found = Arc::new(Mutex::new(None));
         let f = found.clone();
-        let outcome = sim.run(move |rt| {
+        finished(&mut sim, move |rt| {
             let (pager, _) = Pager::open(rt, &crash_options()).expect("reopen");
             let tree = BTree::open(root, OWNER);
             let recovered = tree.verify(&pager);
             if recovered.is_ok() {
-                *finished.lock().unwrap() += tree.repair(&pager).expect("repair");
+                *repairs.lock().unwrap() += tree.repair(&pager).expect("repair");
                 assert_eq!(tree.repair(&pager), Ok(0), "seed {seed} round {round}");
                 assert_eq!(tree.verify(&pager), recovered);
                 let inventory = Inventory {
                     trees: vec![tree],
                     ..Inventory::default()
                 };
-                let problems = common::verify_after_crash(&pager, &inventory);
+                let problems = verify_after_crash(&pager, &inventory);
                 assert!(
                     problems.is_empty(),
                     "seed {seed} round {round}: {problems:#?}"
@@ -880,7 +870,6 @@ fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
             }
             *f.lock().unwrap() = Some(recovered);
         });
-        assert_eq!(Outcome::Finished, outcome);
         let entries = found
             .lock()
             .unwrap()
@@ -918,15 +907,19 @@ fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
 
 #[test]
 fn a_crashed_tree_recovers_a_prefix_of_its_operations() {
+    const SEEDS: Range<u64> = 0..6;
     let mut crashes = 0;
     let mut repaired = 0;
-    for seed in 0..6 {
+    for seed in sweep(SEEDS) {
         let (c, r) = crash_loop(seed, 6, repaired > 0);
         crashes += c;
         repaired += r;
     }
-    assert!(crashes >= 10, "only {crashes} crashes");
-    assert!(repaired >= 1, "no crash left a split incomplete");
+    assert!(crashes >= share(SEEDS, 10), "only {crashes} crashes");
+    assert!(
+        repaired >= share(SEEDS, 1),
+        "no crash left a split incomplete"
+    );
 }
 
 /// Returns an entry whose first 300 bytes every entry shares, so that
@@ -943,7 +936,7 @@ const SPLIT_ENTRIES: u32 = 200;
 fn split_options() -> Options {
     Options {
         pool_frames: 5,
-        ..options()
+        ..options(FRAMES)
     }
 }
 
@@ -959,7 +952,7 @@ fn recover_and(
 ) -> usize {
     let mut replay = Sim::with_files(at as u64, Config::default(), files);
     let mut found = 0;
-    let outcome = replay.run(|rt| {
+    finished(&mut replay, |rt| {
         let (pager, _) = Pager::open(rt, &split_options()).expect("reopen");
         let tree = BTree::open(root, OWNER);
         let entries = tree.verify(&pager).expect("verify the recovered tree");
@@ -979,10 +972,9 @@ fn recover_and(
             trees: vec![tree],
             ..Inventory::default()
         };
-        let problems = common::verify_after_crash(&pager, &inventory);
+        let problems = verify_after_crash(&pager, &inventory);
         assert!(problems.is_empty(), "flush boundary {at}: {problems:#?}");
     });
-    assert_eq!(Outcome::Finished, outcome);
     found
 }
 
@@ -1003,14 +995,13 @@ fn repair_and_insert(tree: &BTree, pager: &Pager<SimRuntime>) -> usize {
 fn record_splits() -> (Sim, Pid) {
     let mut sim = Sim::new(31, Config::default());
     let mut root = Pid(0);
-    let outcome = sim.run(|rt| {
+    finished(&mut sim, |rt| {
         let pager = Pager::create(rt, &split_options()).expect("create");
         root = BTree::create(&pager, OWNER).expect("create tree").root();
         pager.flush_log();
     });
-    assert_eq!(Outcome::Finished, outcome);
     sim.record();
-    let outcome = sim.run(|rt| {
+    finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt, &split_options()).expect("open");
         let tree = BTree::open(root, OWNER);
         for i in 0..SPLIT_ENTRIES {
@@ -1019,7 +1010,6 @@ fn record_splits() -> (Sim, Pid) {
         }
         pager.flush_log();
     });
-    assert_eq!(Outcome::Finished, outcome);
     (sim, root)
 }
 

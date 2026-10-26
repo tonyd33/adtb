@@ -1,10 +1,8 @@
 //! Zone rules: civil times of instants, civil times in gaps and overlaps, and arithmetic on
 //! zoned date-times.
 
-mod common;
-
 use adtb_reference::{Abort, Fault, Value, days_from_civil};
-use common::*;
+use adtb_testkit::fixture::*;
 
 const HOUR: i64 = 3_600_000_000;
 const DAY: i64 = 24 * HOUR;

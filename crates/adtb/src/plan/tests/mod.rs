@@ -5,81 +5,11 @@ use std::collections::BTreeSet;
 
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 use adtb_reference::{Abort, Fault, R, Value};
+use adtb_testkit::uuid;
 
 use super::*;
-use fixture::{Fixture, running};
+use fixture::{Fixture, running, variants};
 use interp::Interp;
-
-fn variants() -> Vec<(&'static str, Rewrites)> {
-    let all = Rewrites::ALL;
-    vec![
-        ("all", all),
-        ("none", Rewrites::NONE),
-        (
-            "index_scan off",
-            Rewrites {
-                index_scan: false,
-                ..all
-            },
-        ),
-        (
-            "index_join off",
-            Rewrites {
-                index_join: false,
-                ..all
-            },
-        ),
-        (
-            "hash_join off",
-            Rewrites {
-                hash_join: false,
-                ..all
-            },
-        ),
-        (
-            "fuse_probe off",
-            Rewrites {
-                fuse_probe: false,
-                ..all
-            },
-        ),
-        (
-            "static_route off",
-            Rewrites {
-                static_route: false,
-                ..all
-            },
-        ),
-        (
-            "prune off",
-            Rewrites {
-                prune: false,
-                ..all
-            },
-        ),
-        (
-            "unswitch off",
-            Rewrites {
-                unswitch: false,
-                ..all
-            },
-        ),
-        (
-            "group_agg off",
-            Rewrites {
-                group_agg: false,
-                ..all
-            },
-        ),
-        (
-            "semi_naive off",
-            Rewrites {
-                semi_naive: false,
-                ..all
-            },
-        ),
-    ]
-}
 
 fn plan_with(f: &Fixture, terms: &Terms, t: Tm, params: &[Var], rewrites: Rewrites) -> Plan {
     let options = Options {
@@ -144,10 +74,6 @@ fn adhoc_plan(f: &Fixture, text: &str, params: &[(&str, &str)], rw: Rewrites) ->
 
 fn key(i: i64) -> Value {
     Value::key(Value::Int(i))
-}
-
-fn uuid(n: u8) -> String {
-    format!("identities.key(uuid(\"00000000-0000-7000-8000-0000000000{n:02}\"))")
 }
 
 fn ident(f: &Fixture, n: u8) -> Value {

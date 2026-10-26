@@ -8,5 +8,8 @@ publish.workspace = true
 
 [dependencies]
 
+[dev-dependencies]
+adtb-testkit.workspace = true
+
 [lints]
 workspace = true

@@ -1,10 +1,4 @@
-#![expect(
-    dead_code,
-    reason = "each test binary uses a different part of the shared module"
-)]
-
 use std::collections::BTreeMap;
-use std::ops::Range;
 use std::sync::Arc;
 
 use adtb::btree::{BTree, Index};
@@ -16,12 +10,17 @@ use adtb::heap::{FieldType, Heap, LargeStore};
 use adtb::key::{CtorId, Dir, Entry, F32, F64, KeySchema, Tid, Value as KValue};
 use adtb::mvcc::{Access, Limits, Scope, Serializer, Transactions};
 use adtb::plan::Catalog;
-use adtb::storage::{Options, Pager};
+use adtb::storage::Pager;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{Base, RelId, Ty};
 use adtb_reference::{Database, Value};
 use adtb_sim::SimRuntime;
 use adtb_sys::lock::Lock;
+
+pub mod harness;
+pub mod seeds;
+
+pub use seeds::sweep;
 
 /// A database's pager and transactions, with its heaps and indexes as the executor binds them.
 pub type Bound = (
@@ -47,18 +46,6 @@ pub struct World<'a> {
     pub schema: &'a Schema,
     pub catalog: &'a Catalog,
     pub db: &'a Database,
-}
-
-pub const PAGE: usize = 4096;
-
-pub fn options() -> Options {
-    Options {
-        page_size: PAGE as u32,
-        log_block: 512,
-        segment_size: 256 * 1024,
-        pool_frames: 256,
-        ..Options::new("app.adt")
-    }
 }
 
 /// Returns the constructors of a sum type, each with its header and own fields.
@@ -293,8 +280,8 @@ impl Db {
     /// the pager cannot open the file.
     pub fn build(rt: &SimRuntime, f: &World, roots: Option<&Roots>) -> Option<(Db, Roots)> {
         let pager = Arc::new(match roots {
-            None => Pager::create(rt.clone(), &options()).expect("create"),
-            Some(_) => Pager::open(rt.clone(), &options()).ok()?.0,
+            None => Pager::create(rt.clone(), &harness::options(256)).expect("create"),
+            Some(_) => Pager::open(rt.clone(), &harness::options(256)).ok()?.0,
         });
         let txns = Arc::new(match roots {
             None => Transactions::create(rt.clone(), &pager).expect("commit log"),
@@ -609,14 +596,5 @@ impl Db {
                 .map(|(i, (st, _, _))| (i, st))
                 .collect(),
         })
-    }
-}
-
-/// Returns `seeds`, cut to its first seed under the nextest profile `quick`.
-pub fn sweep(seeds: Range<u64>) -> Range<u64> {
-    if std::env::var_os("NEXTEST_PROFILE").is_some_and(|p| p == "quick") {
-        seeds.start..seeds.end.min(seeds.start + 1)
-    } else {
-        seeds
     }
 }

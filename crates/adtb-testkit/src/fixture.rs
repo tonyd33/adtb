@@ -1,8 +1,3 @@
-#![expect(
-    dead_code,
-    reason = "each test binary uses a different part of the shared module"
-)]
-
 use std::collections::BTreeMap;
 
 use adtb_lang::ast::{AdhocItem, BundleItem, ExampleItem};
@@ -18,6 +13,7 @@ use adtb_reference::{
     Abort, Database, Fault, Interpreter, Outcome, Rejection, Stage, Supply, Value,
 };
 
+#[derive(Debug)]
 pub struct Fixture {
     pub schema: Schema,
     pub program: Program,

@@ -6,9 +6,11 @@ mod plan {
 #[expect(dead_code, reason = "this binary uses part of the planner fixture")]
 mod planfix;
 
-#[path = "../../adtb-reference/tests/common/mod.rs"]
-mod common;
-
+#[expect(
+    dead_code,
+    unused_imports,
+    reason = "this binary uses part of the shared support"
+)]
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,7 +30,7 @@ use adtb_lang::schema::Schema;
 use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
-use common::Fixture;
+use adtb_testkit::fixture::Fixture;
 use support::{Db, World};
 
 /// The running schema at version 12, the extension of the constraints part, and its migration
@@ -352,7 +354,7 @@ fn migrate(first: &str, second: Option<&str>) -> Vec<Result<(), CatalogError>> {
     let mut sim = Sim::new(3, Config::default());
     let mut got = Vec::new();
     let outcome = sim.run(|rt| {
-        let pager = Pager::create(rt.clone(), &support::options()).expect("create");
+        let pager = Pager::create(rt.clone(), &support::harness::options(256)).expect("create");
         let (mut catalog, txns) = Stored::create(rt, &pager).expect("the catalog");
         got.push(catalog.migrate(&pager, &txns, first));
         if let Some(text) = second {
