@@ -89,7 +89,7 @@ impl Vm {
     }
 
     /// Returns the leaf covering `pid`, if one exists, as `stage` holds the map.
-    pub(super) fn leaf<'p, R: Runtime>(
+    fn leaf<'p, R: Runtime>(
         &self,
         stage: &Stage<'p, R>,
         pager: &'p Pager<R>,
@@ -133,13 +133,30 @@ impl Vm {
         pid: Pid,
         on: bool,
     ) -> Result<(), PageError> {
-        let Some(leaf) = self.leaf(stage, pager, pid)? else {
-            assert!(!on, "the visibility map has no leaf for {pid:?}");
+        loop {
+            let Some(leaf) = self.leaf(stage, pager, pid)? else {
+                assert!(!on, "the visibility map has no leaf for {pid:?}");
+                return Ok(());
+            };
+            let fresh = !stage.holds(leaf);
+            let node = stage.page(pager, leaf)?;
+            // The root may have grown above the leaf it was when looked up.
+            if level(node) != 0 {
+                if fresh {
+                    stage.unstage(leaf);
+                }
+                continue;
+            }
+            set_bit(node, bit_index(pager.page_size(), pid), on);
             return Ok(());
-        };
-        let i = bit_index(pager.page_size(), pid);
-        set_bit(stage.page(pager, leaf)?, i, on);
-        Ok(())
+        }
+    }
+
+    /// Clear the bit of `pid`, in an update of its own.
+    pub fn clear<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
+        let mut stage = Stage::new();
+        self.put(&mut stage, pager, pid, false)?;
+        stage.commit(pager)
     }
 
     /// Add the map pages the path to `pid` lacks, each under the latch of the page that links

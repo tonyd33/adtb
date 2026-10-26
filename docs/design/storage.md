@@ -202,7 +202,9 @@ Preconditions:
   a B-link operation's four and the bitmap page), and at most
   `max_threads()` threads latch at once, the pool's frames divided by
   five. The options state the threads; opening a pool too small for
-  them panics.
+  them panics. In debug builds and under the simulator, taking a sixth
+  latch panics, naming the count; a latch the pager takes for a page
+  it reads in or allocates counts.
 - A thread asks for no latch on a page it holds a guard on, through any
   call: a call that would latch that page again waits forever. In
   debug builds and under the simulator the call panics instead, naming

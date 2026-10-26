@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use adtb::heap::{Fate, FieldType, Header, Heap, LargeStore};
 use adtb::key::{Scalar, Tid, Value};
 use adtb::runtime::Threads;
-use adtb::storage::{Options, Pager};
+use adtb::storage::{Options, PageError, PageKind, Pager, Pid};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
 const PAGE: usize = 4096;
@@ -133,4 +133,114 @@ fn heap_only_updates_from_many_threads_leave_the_directory_root_unlatched() {
             }
         });
     }
+}
+
+/// The page ids one visibility map leaf of 4096-byte pages covers.
+const VM_SPAN: u64 = (PAGE as u64 - 32) * 8;
+const ROUNDS: usize = 40;
+
+fn all_visible(_: &Pager<SimRuntime>, _: &Header) -> Result<Fate, PageError> {
+    Ok(Fate::AllVisible)
+}
+
+/// Allocate pages until the next one free has an id past the first visibility map leaf, three in
+/// each update. Returns them.
+fn fill_low_ids(pager: &Pager<SimRuntime>) -> Vec<Pid> {
+    let mut filler = Vec::new();
+    while filler.last().is_none_or(|p: &Pid| p.0 < VM_SPAN + 64) {
+        let mut new = pager.reserve();
+        let pids: Vec<Pid> = (0..3)
+            .map(|_| new.page(1, PageKind::HeapSlotted, 999).unwrap())
+            .collect();
+        pager.update_with(new, &pids, |_| {}).unwrap();
+        filler.extend(pids);
+    }
+    filler
+}
+
+/// Make a heap whose visibility map root is a leaf, with all-visible pages below the leaf's span
+/// and one page past it. Returns the heap, the rows on its all-visible pages and the page past
+/// the span.
+fn heap_across_the_span(
+    pager: &Pager<SimRuntime>,
+    large: LargeStore,
+    id: u32,
+    filler: &mut Vec<Pid>,
+) -> (Heap, Vec<Tid>, Pid) {
+    for _ in 0..8 {
+        pager.free(filler.remove(0)).unwrap();
+    }
+    let heap = Heap::create(pager, id, row_type(), large).unwrap();
+    let mut low = Vec::new();
+    let high = loop {
+        let t = heap.insert(pager, 1, &row(low.len() as i64, 0)).unwrap();
+        if t.page() >= VM_SPAN {
+            break Pid(t.page());
+        }
+        low.push(t);
+    };
+    for pid in heap.pages(pager).unwrap() {
+        if pid != high {
+            heap.prune(pager, pid, all_visible, &[], true).unwrap();
+            assert!(heap.all_visible(pager, pid).unwrap());
+        }
+    }
+    (heap, low, high)
+}
+
+#[test]
+fn clearing_bits_while_the_visibility_map_root_grows_keeps_the_map_whole() {
+    let mut sim = Sim::new(
+        5,
+        Config {
+            switch_rate: 0.3,
+            ..Config::default()
+        },
+    );
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(
+            rt.clone(),
+            &Options {
+                atomic_page_writes: true,
+                segment_size: 4 << 20,
+                ..options(64)
+            },
+        )
+        .expect("create");
+        let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
+        let mut filler = fill_low_ids(&pager);
+        let pager = Arc::new(pager);
+        for round in 0..ROUNDS {
+            let (heap, low, high) =
+                heap_across_the_span(&pager, large, 50 + round as u32, &mut filler);
+            let heap = Arc::new(heap);
+            let (p, h) = (pager.clone(), heap.clone());
+            let grower = rt.spawn("grower", move || {
+                h.prune(&p, high, all_visible, &[], true).unwrap();
+            });
+            let (p, h) = (pager.clone(), heap.clone());
+            let clearer = rt.spawn("clearer", move || {
+                for t in low {
+                    h.delete(&p, t, 3).expect("delete");
+                }
+            });
+            rt.join(grower);
+            rt.join(clearer);
+            assert_eq!(
+                Vec::<String>::new(),
+                heap.verify(&pager).unwrap(),
+                "round {round}"
+            );
+            assert_eq!(vec![high], heap_marked(&pager, &heap), "round {round}");
+        }
+    });
+}
+
+/// Returns the pages of `heap` the visibility map marks all-visible.
+fn heap_marked(pager: &Pager<SimRuntime>, heap: &Heap) -> Vec<Pid> {
+    heap.pages(pager)
+        .unwrap()
+        .into_iter()
+        .filter(|&pid| heap.all_visible(pager, pid).unwrap())
+        .collect()
 }

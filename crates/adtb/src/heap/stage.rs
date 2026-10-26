@@ -5,8 +5,8 @@ use crate::storage::{FIRST_EDITABLE, PageError, PageExclusive, Pager, Pid, Reser
 /// staged, written back by one pager update.
 ///
 /// Callers stage pages in the order their structure defines: heap pages in page id order, then
-/// large-value store pages in page id order, then directory pages with the root first, then
-/// visibility map pages in page id order.
+/// large-value store pages in page id order, then directory pages by level, the highest first,
+/// then visibility map pages in page id order.
 pub(super) struct Stage<'p, R: Runtime> {
     pages: Vec<(PageExclusive<'p, R>, Vec<u8>)>,
 }
@@ -33,6 +33,19 @@ impl<'p, R: Runtime> Stage<'p, R> {
         match self.find(pid) {
             Some(i) => Ok(self.pages[i].1.clone()),
             None => Ok(pager.read(pid)?.to_vec()),
+        }
+    }
+
+    pub fn holds(&self, pid: Pid) -> bool {
+        self.find(pid).is_some()
+    }
+
+    /// Release the latch on `pid` and forget its staged copy.
+    ///
+    /// Precondition: the staged copy of `pid` is unchanged.
+    pub fn unstage(&mut self, pid: Pid) {
+        if let Some(i) = self.find(pid) {
+            self.pages.remove(i);
         }
     }
 

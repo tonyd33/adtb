@@ -5,7 +5,7 @@ use crate::key::{Tid, Value};
 use crate::runtime::Runtime;
 use crate::storage::{self, PageError, Pager, Pid};
 
-use super::dir::{Space, category, max_fanout, need_category};
+use super::dir::{Above, Space, category, max_fanout, need_category};
 use super::large::LargeStore;
 use super::page::{self, Arrangement, Slot, align8};
 use super::prune::{self, Fate};
@@ -98,44 +98,46 @@ fn latch_order(a: Pid, b: Pid) -> Vec<Pid> {
     out
 }
 
-/// Finish a change whose heap pages `stage` holds: count each pointer of `gains` once more,
-/// set the directory category of the page of `dir` to its free space, and clear the
-/// all-visible bit of each page of `marks` that has it, latching store pages, then directory
-/// pages, then visibility map pages.
+/// Finish a change whose heap pages `stage` holds: clear the all-visible bit of each page of
+/// `marks` that has it, the map's bit in an update of its own written first, and set the
+/// directory category of the page of `dir` to its free space. Returns the directory entries to
+/// settle once `stage` is written.
 fn finish<'p, R: Runtime>(
     stage: &mut Stage<'p, R>,
     pager: &'p Pager<R>,
-    large: LargeStore,
-    gains: &[Pointer],
     dir: Option<(&Heap, Pid)>,
     marks: &[(&Heap, Pid)],
-) -> Result<(), PageError> {
-    let mut gains = gains.to_vec();
-    gains.sort_by_key(|p| p.first);
-    for p in gains {
-        large.retain(stage, pager, p)?;
-    }
-    let mut leaves = Vec::new();
+) -> Result<Above, PageError> {
     for &(h, pid) in marks {
         let page = stage.page(pager, pid)?;
         if !page::all_visible(page) {
             continue;
         }
         page::set_all_visible(page, false);
-        let vm = h.vm(stage, pager)?;
-        leaves.push((vm.leaf(stage, pager, pid)?, vm, pid));
+        h.vm(stage, pager)?.clear(pager, pid)?;
     }
-    if let Some((h, pid)) = dir {
-        let page = stage.read(pager, pid)?;
-        let cat = category(page::free(&page), h.page_size);
-        h.space
-            .set_category(stage, pager, pid, page::position(&page), cat)?;
-    }
-    leaves.sort_by_key(|(leaf, _, _)| *leaf);
-    for (_, vm, pid) in leaves {
-        vm.put(stage, pager, pid, false)?;
-    }
-    Ok(())
+    let Some((h, pid)) = dir else {
+        return Ok(Above::default());
+    };
+    let page = stage.read(pager, pid)?;
+    let cat = category(page::free(&page), h.page_size);
+    h.space
+        .set_category(stage, pager, pid, page::position(&page), cat)
+}
+
+/// A page's conversion to the newest format, made from `source`, a copy of the page.
+struct Preconverted {
+    source: Vec<u8>,
+    done: Converted,
+}
+
+/// What [`Heap::try_put`] made of a page.
+enum Put {
+    Done(Tid, Converted),
+    /// The page cannot take the version or is no longer a page of the heap.
+    Full,
+    /// The page changed since its conversion was made.
+    Stale,
 }
 
 /// The row versions of one constructor relation.
@@ -565,9 +567,28 @@ impl Heap {
         self.space.names(pager, page::position(page), pid)
     }
 
-    /// Insert `version` on page `pid`, which `stage` holds, converting the page to the newest
-    /// format first. Returns its TID and the pointers conversion changed, or `None`, changing
-    /// nothing, if the page cannot take it or is no longer a page of this heap.
+    /// Returns page `pid` converted to the newest format, the values that move out of line written
+    /// by `xid` while no page is latched, or `None` if the page is in the newest format, is not a
+    /// page of this heap, or its versions would not fit.
+    fn preconvert<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+        xid: u64,
+    ) -> Result<Option<Preconverted>, Error> {
+        let source = pager.read(pid)?.to_vec();
+        if !page::is_heap(&source)
+            || storage::owner(&source) != self.id
+            || storage::format(&source) == self.newest()
+        {
+            return Ok(None);
+        }
+        let done = self.convert(pager, xid, &source)?;
+        Ok(done.map(|done| Preconverted { source, done }))
+    }
+
+    /// Insert `version` on page `pid`, which `stage` holds, taking `pre` as the page in the newest
+    /// format when it is in an older one.
     fn try_put<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
@@ -575,27 +596,38 @@ impl Heap {
         pid: Pid,
         version: &[u8],
         flags: Flags,
-        xid: u64,
-    ) -> Result<Option<(Tid, Converted)>, Error> {
+        pre: Option<Preconverted>,
+    ) -> Result<Put, Error> {
         let mut page = stage.read(pager, pid)?;
         if !self.ours(pager, pid, &page)? {
-            return Ok(None);
+            return Ok(Put::Full);
         }
         let mut converted = Converted::default();
         if storage::format(&page) != self.newest() {
-            match self.convert(pager, xid, &page)? {
-                Some(c) => {
-                    page = c.page.clone();
-                    converted = c;
+            match pre {
+                Some(p) if p.source == page => {
+                    page = p.done.page.clone();
+                    converted = p.done;
                 }
-                None => return Ok(None),
+                Some(_) => return Ok(Put::Stale),
+                None => return Ok(Put::Full),
             }
         }
         let Some(slot) = page::insert(&mut page, version, flags) else {
-            return Ok(None);
+            return Ok(Put::Full);
         };
         stage.put(pager, pid, page)?;
-        Ok(Some((tid(pid, slot), converted)))
+        Ok(Put::Done(tid(pid, slot), converted))
+    }
+
+    /// Count one more version pointing at each of `held` and `gained`, in updates of their own.
+    fn retain_all<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        held: &[Pointer],
+        gained: &[Pointer],
+    ) -> Result<(), PageError> {
+        self.large.retain_apart(pager, &[held, gained].concat())
     }
 
     /// Correct the directory entry of `pid`, which could not take a version: an old-format page
@@ -614,9 +646,11 @@ impl Heap {
         } else {
             0
         };
-        self.space
+        let above = self
+            .space
             .set_category(&mut stage, pager, pid, page::position(&page), cat)?;
-        stage.commit(pager)
+        stage.commit(pager)?;
+        above.settle(pager)
     }
 
     /// Returns a page that may take a version needing `need` bytes: the last page that took an
@@ -806,16 +840,18 @@ impl Heap {
         let flagged = page::all_visible(&page);
         let position = page::position(&page);
         let vm = self.vm(&stage, pager)?;
+        let bit = vm.get(pager, pid)?;
         if page::is_empty(&out) {
             page::set_all_visible(&mut out, false);
-            stage.put(pager, pid, out)?;
-            self.space.vacate(&mut stage, pager, position)?;
-            if flagged {
-                vm.put(&mut stage, pager, pid, false)?;
+            if bit {
+                vm.clear(pager, pid)?;
             }
+            stage.put(pager, pid, out)?;
+            let above = self.space.vacate(&mut stage, pager, pid, position)?;
             let mut gone = pager.reserve();
             gone.free(pid);
             stage.commit_with(pager, gone)?;
+            above.settle(pager)?;
             let _ = self
                 .hint
                 .compare_exchange(pid.0, 0, Ordering::Relaxed, Ordering::Relaxed);
@@ -828,18 +864,24 @@ impl Heap {
                 flagged && !changed
             };
             page::set_all_visible(&mut out, visible);
+            if bit && !visible {
+                vm.clear(pager, pid)?;
+            }
             let roomier = page::free(&out) > page::free(&page);
             let current = storage::format(&out) == self.newest();
             let cat = category(page::free(&out), self.page_size);
             stage.put(pager, pid, out)?;
-            if roomier || current {
+            let above = if roomier || current {
                 self.space
-                    .set_category(&mut stage, pager, pid, position, cat)?;
-            }
-            if visible != flagged {
-                vm.put(&mut stage, pager, pid, visible)?;
+                    .set_category(&mut stage, pager, pid, position, cat)?
+            } else {
+                Above::default()
+            };
+            if visible && !bit {
+                vm.put(&mut stage, pager, pid, true)?;
             }
             stage.commit(pager)?;
+            above.settle(pager)?;
             done.all_visible = visible;
         }
         for p in released {
@@ -873,24 +915,21 @@ impl Heap {
         let version = version_bytes(Header::new(xid), &body);
         loop {
             let pid = self.candidate(pager, version.len())?;
+            let pre = self.preconvert(pager, pid, xid)?;
             let mut stage = Stage::new();
             stage.page(pager, pid)?;
-            if let Some((t, c)) =
-                self.try_put(&mut stage, pager, pid, &version, Flags::NONE, xid)?
-            {
-                self.large.retain_apart(pager, &c.gained)?;
-                finish(
-                    &mut stage,
-                    pager,
-                    self.large,
-                    &held,
-                    Some((self, pid)),
-                    &[(self, pid)],
-                )?;
-                stage.commit(pager)?;
-                self.hint.store(pid.0, Ordering::Relaxed);
-                self.release_all(pager, &c.dropped)?;
-                return Ok(t);
+            match self.try_put(&mut stage, pager, pid, &version, Flags::NONE, pre)? {
+                Put::Done(t, c) => {
+                    self.retain_all(pager, &held, &c.gained)?;
+                    let above = finish(&mut stage, pager, Some((self, pid)), &[(self, pid)])?;
+                    stage.commit(pager)?;
+                    above.settle(pager)?;
+                    self.hint.store(pid.0, Ordering::Relaxed);
+                    self.release_all(pager, &c.dropped)?;
+                    return Ok(t);
+                }
+                Put::Stale => continue,
+                Put::Full => {}
             }
             drop(stage);
             if self.prune_full(pager, pid, judge.as_deref_mut())? {
@@ -968,28 +1007,24 @@ impl Heap {
         let o = Pid(at.page());
         let mut tries = 0;
         while keys_kept && tries < 2 {
-            tries += 1;
+            let pre = self.preconvert(pager, o, xid)?;
             let mut stage = Stage::new();
             stage.page(pager, o)?;
-            if let Some((t, c)) =
-                self.try_put(&mut stage, pager, o, &version, Flags::HEAP_ONLY, xid)?
-            {
-                self.supersede(&mut stage, pager, at, xid, Some(t), Flags::HOT_UPDATED)?;
-                self.large.retain_apart(pager, &c.gained)?;
-                finish(
-                    &mut stage,
-                    pager,
-                    self.large,
-                    &held,
-                    Some((self, o)),
-                    &[(self, o)],
-                )?;
-                stage.commit(pager)?;
-                self.release_all(pager, &c.dropped)?;
-                return Ok(Updated {
-                    tid: t,
-                    heap_only: true,
-                });
+            match self.try_put(&mut stage, pager, o, &version, Flags::HEAP_ONLY, pre)? {
+                Put::Done(t, c) => {
+                    self.supersede(&mut stage, pager, at, xid, Some(t), Flags::HOT_UPDATED)?;
+                    self.retain_all(pager, &held, &c.gained)?;
+                    let above = finish(&mut stage, pager, Some((self, o)), &[(self, o)])?;
+                    stage.commit(pager)?;
+                    above.settle(pager)?;
+                    self.release_all(pager, &c.dropped)?;
+                    return Ok(Updated {
+                        tid: t,
+                        heap_only: true,
+                    });
+                }
+                Put::Stale => continue,
+                Put::Full => tries += 1,
             }
             drop(stage);
             if !self.prune_full(pager, o, judge.as_deref_mut())? {
@@ -998,28 +1033,28 @@ impl Heap {
         }
         loop {
             let n = self.candidate(pager, version.len())?;
+            let pre = self.preconvert(pager, n, xid)?;
             let mut stage = Stage::new();
             for p in latch_order(o, n) {
                 stage.page(pager, p)?;
             }
-            if let Some((t, c)) = self.try_put(&mut stage, pager, n, &version, Flags::NONE, xid)? {
-                self.supersede(&mut stage, pager, at, xid, Some(t), Flags::NONE)?;
-                self.large.retain_apart(pager, &c.gained)?;
-                finish(
-                    &mut stage,
-                    pager,
-                    self.large,
-                    &held,
-                    Some((self, n)),
-                    &[(self, o), (self, n)],
-                )?;
-                stage.commit(pager)?;
-                self.hint.store(n.0, Ordering::Relaxed);
-                self.release_all(pager, &c.dropped)?;
-                return Ok(Updated {
-                    tid: t,
-                    heap_only: false,
-                });
+            match self.try_put(&mut stage, pager, n, &version, Flags::NONE, pre)? {
+                Put::Done(t, c) => {
+                    self.supersede(&mut stage, pager, at, xid, Some(t), Flags::NONE)?;
+                    self.retain_all(pager, &held, &c.gained)?;
+                    let marks = [(self, o), (self, n)];
+                    let above = finish(&mut stage, pager, Some((self, n)), &marks)?;
+                    stage.commit(pager)?;
+                    above.settle(pager)?;
+                    self.hint.store(n.0, Ordering::Relaxed);
+                    self.release_all(pager, &c.dropped)?;
+                    return Ok(Updated {
+                        tid: t,
+                        heap_only: false,
+                    });
+                }
+                Put::Stale => continue,
+                Put::Full => {}
             }
             drop(stage);
             if n != o && self.prune_full(pager, n, judge.as_deref_mut())? {
@@ -1034,8 +1069,9 @@ impl Heap {
         let o = Pid(at.page());
         let mut stage = Stage::new();
         self.supersede(&mut stage, pager, at, xid, None, Flags::NONE)?;
-        finish(&mut stage, pager, self.large, &[], None, &[(self, o)])?;
+        let above = finish(&mut stage, pager, None, &[(self, o)])?;
         stage.commit(pager)?;
+        above.settle(pager)?;
         Ok(())
     }
 
@@ -1077,44 +1113,55 @@ impl Heap {
         let o = Pid(at.page());
         loop {
             let n = to.candidate(pager, version.len())?;
+            let pre = to.preconvert(pager, n, xid)?;
             let mut stage = Stage::new();
             for p in latch_order(o, n) {
                 stage.page(pager, p)?;
             }
-            if let Some((t, c)) =
-                to.try_put(&mut stage, pager, n, &version, Flags::RETAGGED_IN, xid)?
-            {
-                self.supersede(&mut stage, pager, at, xid, Some(t), Flags::MOVED)?;
-                self.large.retain_apart(pager, &c.gained)?;
-                finish(
-                    &mut stage,
-                    pager,
-                    self.large,
-                    &held,
-                    Some((to, n)),
-                    &[(self, o), (to, n)],
-                )?;
-                stage.commit(pager)?;
-                to.hint.store(n.0, Ordering::Relaxed);
-                to.release_all(pager, &c.dropped)?;
-                return Ok(t);
+            match to.try_put(&mut stage, pager, n, &version, Flags::RETAGGED_IN, pre)? {
+                Put::Done(t, c) => {
+                    self.supersede(&mut stage, pager, at, xid, Some(t), Flags::MOVED)?;
+                    self.retain_all(pager, &held, &c.gained)?;
+                    let marks = [(self, o), (to, n)];
+                    let above = finish(&mut stage, pager, Some((to, n)), &marks)?;
+                    stage.commit(pager)?;
+                    above.settle(pager)?;
+                    to.hint.store(n.0, Ordering::Relaxed);
+                    to.release_all(pager, &c.dropped)?;
+                    return Ok(t);
+                }
+                Put::Stale => continue,
+                Put::Full => {}
             }
             drop(stage);
             to.refused(pager, n)?;
         }
     }
 
-    /// Returns what is wrong with the heap's pages, directory and visibility map.
+    /// Returns what is wrong with the heap's pages, directory and visibility map, directory
+    /// entries promising too little included.
     pub fn verify<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<String>, PageError> {
-        Ok(self
-            .check(pager)?
+        let mut problems = self.check(pager)?;
+        problems.extend(self.unsettled(pager)?);
+        Ok(problems
             .into_iter()
             .map(|(pid, what)| format!("{pid:?} {what}"))
             .collect())
     }
 
+    /// Returns each directory page with an entry that promises less than its child holds, with
+    /// what it promises too little. A crash may leave them; [`Heap::settle_directory`] mends them.
+    pub fn unsettled<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
+        Ok(self.space.check(pager)?.unsettled)
+    }
+
+    /// Set every inner directory entry to what its child holds, each in an update of its own.
+    pub fn settle_directory<R: Runtime>(&self, pager: &Pager<R>) -> Result<(), PageError> {
+        self.space.settle(pager)
+    }
+
     /// Returns each page of the heap, its directory or its visibility map found wrong, with what
-    /// is wrong with it.
+    /// is wrong with it, leaving out [`Heap::unsettled`] directory entries.
     pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
@@ -1145,10 +1192,10 @@ impl Heap {
                     format!("has category {cat} in the directory, {actual} on the page"),
                 ));
             }
-            if page::all_visible(&page) != marked.remove(&pid) {
+            if marked.remove(&pid) && !page::all_visible(&page) {
                 problems.push((
                     pid,
-                    "disagrees with the visibility map on being all-visible".into(),
+                    "is all-visible in the visibility map but not on the page".into(),
                 ));
             }
             for slot in 0..page::slot_count(&page) {

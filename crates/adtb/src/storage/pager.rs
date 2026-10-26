@@ -289,7 +289,9 @@ impl<'a, R: Runtime> PageOptimistic<'a, R> {
     /// Take the exclusive latch if no exclusive latch was taken since this read began.
     pub fn upgrade(self) -> Option<PageExclusive<'a, R>> {
         let pager = self.pager;
-        self.o.upgrade().map(|g| PageExclusive { pager, g })
+        let g = self.o.upgrade()?;
+        pager.check_bound();
+        Some(PageExclusive { pager, g })
     }
 }
 
@@ -451,6 +453,7 @@ impl<R: Runtime> Pager<R> {
         loop {
             self.refused(pid)?;
             if let Some(g) = self.mem.lock_shared(pid.0, &self.rt) {
+                self.check_bound();
                 return Ok(PageShared { g });
             }
             if let Some(g) = self.resident(pid)? {
@@ -488,11 +491,22 @@ impl<R: Runtime> Pager<R> {
         self.shared(pid)
     }
 
+    /// Panic, in debug builds and when `latch-checks` is on, if the calling thread latches more
+    /// than [`LATCHES_PER_THREAD`] pages.
+    fn check_bound(&self) {
+        let held = self.mem.latched_here();
+        assert!(
+            held <= LATCHES_PER_THREAD,
+            "this thread latches {held} pages, more than {LATCHES_PER_THREAD}"
+        );
+    }
+
     /// Returns the exclusive latch on `pid` with the page resident, or `None` if it was found
     /// damaged by another thread meanwhile and the caller should look again.
     fn resident(&self, pid: Pid) -> Result<Option<pages::Exclusive<'_>>, PageError> {
         self.refused(pid)?;
         let mut g = self.mem.lock_exclusive(pid.0, &self.rt);
+        self.check_bound();
         if g.resident() {
             return Ok(Some(g));
         }
@@ -589,11 +603,6 @@ impl<R: Runtime> Pager<R> {
             match victim {
                 Some(g) => self.evict(g),
                 None => {
-                    let held = self.mem.latched_here();
-                    assert!(
-                        held < self.pool_frames,
-                        "this thread latches {held} pages, every frame of the pool"
-                    );
                     let now = self.rt.now();
                     let start = *since.get_or_insert(now);
                     assert!(

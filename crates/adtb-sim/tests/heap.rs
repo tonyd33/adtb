@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
@@ -8,7 +9,7 @@ use adtb::heap::{
     CtorType, Error, Fate, FieldType, Flags, Header, Heap, LargeStore, Link, Updated, walk,
 };
 use adtb::key::{CtorId, Scalar, Tid, Value};
-use adtb::runtime::Entropy;
+use adtb::runtime::{Entropy, Threads};
 use adtb::storage::{self, Options, PageKind, Pager, Pid};
 use adtb::verify::{Inventory, Sum};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
@@ -643,6 +644,85 @@ fn an_insert_past_filled_pages_finds_room_under_another_directory_entry() {
     });
 }
 
+/// A row whose text goes out of line.
+fn long_row(key: i64) -> Vec<Value> {
+    vec![
+        Value::I64(key),
+        Value::Text("t".repeat(1500)),
+        Value::Bytes(vec![key as u8; 700]),
+    ]
+}
+
+/// Prune every page of `heap`, removing the versions `gone` deleted and marking the pages
+/// all-visible.
+fn settle_all_visible(db: &Db, heap: usize, gone: u64) {
+    let judge = |_: &Pager<SimRuntime>, h: &Header| {
+        Ok(if h.xmax == gone {
+            Fate::Remove
+        } else {
+            Fate::AllVisible
+        })
+    };
+    let heap = &db.heaps[heap];
+    for pid in heap.pages(&db.pager).unwrap() {
+        heap.prune(&db.pager, pid, judge, &[], true).unwrap();
+    }
+}
+
+#[test]
+fn writes_between_all_visible_pages_of_deep_directories_stay_within_the_latch_bound() {
+    let mut sim = Sim::new(13, Config::default());
+    finished(&mut sim, |rt| {
+        let (db, _) = Db::create(rt, 2);
+        let mut rows = BTreeMap::new();
+        for key in 0..80 {
+            let h = if key % 2 == 0 { EMAIL } else { GOOGLE };
+            let t = db.heaps[h].insert(&db.pager, 1, &long_row(key)).unwrap();
+            rows.insert(key, (h, t));
+        }
+        for key in [1, 3, 5] {
+            db.heaps[GOOGLE].delete(&db.pager, rows[&key].1, 2).unwrap();
+            rows.remove(&key);
+        }
+        settle_all_visible(&db, EMAIL, 2);
+        settle_all_visible(&db, GOOGLE, 2);
+        assert!(db.heaps[EMAIL].pages(&db.pager).unwrap().len() > 4);
+        let (_, at) = rows[&0];
+        let moved = db.heaps[EMAIL]
+            .retag(&db.pager, at, 3, &db.heaps[GOOGLE], &long_row(0))
+            .unwrap();
+        rows.insert(0, (GOOGLE, moved));
+        let (_, at) = rows[&2];
+        let mut changed = long_row(2);
+        changed[0] = Value::I64(102);
+        let u = db.heaps[EMAIL]
+            .update(&db.pager, at, 3, &changed, &[0])
+            .unwrap();
+        assert!(!u.heap_only);
+        rows.insert(2, (EMAIL, u.tid));
+        db.heaps[EMAIL].delete(&db.pager, rows[&4].1, 3).unwrap();
+        rows.remove(&4);
+        for (key, (h, t)) in rows {
+            let v = db.heaps[h].read(&db.pager, t).unwrap().unwrap();
+            assert_eq!(long_row(key)[1..], v.row[1..], "key {key}");
+        }
+        let inventory = Inventory {
+            sums: vec![Sum {
+                heaps: (0..3).map(|h| (CtorId(h as u32), &db.heaps[h])).collect(),
+                indexes: Vec::new(),
+            }],
+            ..Inventory::default()
+        };
+        let report = adtb::verify::verify(&db.pager, &inventory);
+        let wrong: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| !matches!(f.problem, adtb::verify::Problem::Overcounted { .. }))
+            .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    });
+}
+
 #[test]
 fn a_reopened_heap_finds_room_through_its_directory() {
     let mut sim = Sim::new(7, Config::default());
@@ -982,6 +1062,85 @@ fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
     }
     eprintln!("{crashes} of 24 runs crashed");
     assert!(crashes > 4, "{crashes} crashes");
+}
+
+/// Returns whether `pager` holds a directory entry promising less than its child holds.
+fn unsettled(pager: &Pager<SimRuntime>, inventory: &Inventory) -> bool {
+    adtb::verify::verify(pager, inventory)
+        .findings
+        .iter()
+        .any(|f| matches!(f.problem, adtb::verify::Problem::Unsettled(_)))
+}
+
+#[test]
+fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
+    silence_fatal_panics();
+    let mut caught = 0;
+    for step in 0..40u64 {
+        let mut sim = Sim::new(step, Config::default());
+        let mut roots = None;
+        finished(&mut sim, |rt| {
+            let (db, r) = Db::create(rt, 2);
+            let wide = |key: i64| {
+                vec![
+                    Value::I64(key),
+                    Value::Text(String::new()),
+                    Value::Bytes(vec![key as u8; 900]),
+                ]
+            };
+            for key in 0..400 {
+                let t = db.heaps[EMAIL].insert(&db.pager, 1, &wide(key)).unwrap();
+                if key % 4 != 0 {
+                    db.heaps[EMAIL].delete(&db.pager, t, 2).unwrap();
+                }
+            }
+            db.heaps[EMAIL].settle_directory(&db.pager).unwrap();
+            db.pager.checkpoint();
+            roots = Some(r);
+        });
+        let roots = roots.unwrap();
+        sim.crash_at(sim.now() + Duration::from_micros(85_000 + step * 3_500));
+        run_process(&mut sim, |rt| {
+            let db = Arc::new(Db::open(rt.clone(), roots).unwrap());
+            let done = Arc::new(AtomicBool::new(false));
+            let (d, stop, r) = (db.clone(), done.clone(), rt.clone());
+            let flusher = rt.spawn("flusher", move || {
+                while !stop.load(Ordering::Relaxed) {
+                    d.pager.flush_log();
+                    r.yield_now();
+                }
+            });
+            let judge = |_: &Pager<SimRuntime>, h: &Header| {
+                Ok(if h.xmax == 2 {
+                    Fate::Remove
+                } else {
+                    Fate::Keep
+                })
+            };
+            for pid in db.heaps[EMAIL].pages(&db.pager).unwrap() {
+                db.heaps[EMAIL]
+                    .prune(&db.pager, pid, judge, &[], false)
+                    .unwrap();
+            }
+            done.store(true, Ordering::Relaxed);
+            rt.join(flusher);
+        });
+        let mut problems = Vec::new();
+        finished(&mut sim, |rt| {
+            let db = Db::open(rt, roots).unwrap();
+            let inventory = Inventory {
+                sums: vec![Sum {
+                    heaps: (0..3).map(|h| (CtorId(h as u32), &db.heaps[h])).collect(),
+                    indexes: Vec::new(),
+                }],
+                ..Inventory::default()
+            };
+            caught += usize::from(unsettled(&db.pager, &inventory));
+            problems = common::verify_after_crash(&db.pager, &inventory);
+        });
+        assert!(problems.is_empty(), "step {step}: {problems:#?}");
+    }
+    eprintln!("{caught} of 40 runs left entries to settle");
 }
 
 fn silence_fatal_panics() {

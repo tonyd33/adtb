@@ -53,12 +53,18 @@ pub enum Problem {
         count: u32,
         versions: u32,
     },
+    /// A directory page of a heap or a large-value store has an entry that promises less than
+    /// its child holds, as a crash during a change below it may leave.
+    Unsettled(String),
 }
 
 impl Problem {
     /// Returns whether [`repair`] mends the problem.
     pub fn repairable(&self) -> bool {
-        matches!(self, Problem::Leaked | Problem::Overcounted { .. })
+        matches!(
+            self,
+            Problem::Leaked | Problem::Overcounted { .. } | Problem::Unsettled(_)
+        )
     }
 }
 
@@ -205,6 +211,14 @@ impl<R: Runtime> Walk<'_, R> {
             }
             Err(e) => self.damaged(e),
         }
+        match heap.unsettled(self.pager) {
+            Ok(found) => {
+                for (pid, what) in found {
+                    self.found(pid, Problem::Unsettled(format!("{name}: {what}")));
+                }
+            }
+            Err(e) => self.damaged(e),
+        }
         match heap.owned_pages(self.pager) {
             Ok(pages) => self.own(&name, pages),
             Err(e) => self.damaged(e),
@@ -316,6 +330,14 @@ impl<R: Runtime> Walk<'_, R> {
             Ok(problems) => {
                 for (pid, what) in problems {
                     self.structure(pid, format!("{name}: {what}"));
+                }
+            }
+            Err(e) => self.damaged(e),
+        }
+        match large.unsettled(self.pager) {
+            Ok(found) => {
+                for (pid, what) in found {
+                    self.found(pid, Problem::Unsettled(format!("{name}: {what}")));
                 }
             }
             Err(e) => self.damaged(e),
@@ -491,8 +513,9 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
     }
 }
 
-/// Free every page `report` found leaked, and set every head it found overcounted to the
-/// number of versions that point at it. Returns the number of findings mended.
+/// Free every page `report` found leaked, set every head it found overcounted to the number of
+/// versions that point at it, and settle every directory it found unsettled. Returns the number
+/// of findings mended.
 ///
 /// Preconditions: `report` is complete and was made by [`verify`] against `inventory` with no
 /// write since.
@@ -513,8 +536,12 @@ pub fn repair<R: Runtime>(
         .flat_map(|s| s.heaps.iter().map(|(_, h)| h.large()))
         .collect();
     let mut mended = 0;
+    let mut unsettled = BTreeSet::new();
     for f in &report.findings {
         match f.problem {
+            Problem::Unsettled(_) => {
+                unsettled.insert(storage::owner(&pager.read(f.pid)?));
+            }
             Problem::Leaked => {
                 pager.free(f.pid)?;
             }
@@ -530,6 +557,21 @@ pub fn repair<R: Runtime>(
             _ => continue,
         }
         mended += 1;
+    }
+    for owner in unsettled {
+        let heap = inventory
+            .sums
+            .iter()
+            .flat_map(|s| s.heaps.iter().map(|(_, h)| *h))
+            .find(|h| h.id() == owner);
+        match heap {
+            Some(h) => h.settle_directory(pager)?,
+            None => stores
+                .iter()
+                .find(|s| s.id() == owner)
+                .expect("an unsettled directory belongs to a structure of the inventory")
+                .settle_directory(pager)?,
+        }
     }
     Ok(mended)
 }

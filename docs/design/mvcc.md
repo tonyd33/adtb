@@ -42,12 +42,18 @@ Invariants:
   new directory page and lists that page alone, one level up.
 - Every directory page but the last at its level is full, so the path
   to position `p` is the digits of `p` in base `fanout`, from the root.
+  The last may be empty.
   `fanout`, the entries a directory page holds, is fixed when the heap
   is created.
 - An entry with category `c` names a page with at least `c` times the
   page size over 256 bytes free. A level-0 entry of a page in the
-  heap's newest row format has exactly its page's category; an inner
-  entry has at least the greatest category of its child.
+  heap's newest row format has exactly its page's category, and
+  changes only in the update that changes its page.
+- An inner entry has at least the greatest category of its child, and
+  is touched when an entry of its child is, except above a change not
+  yet settled: a crash then may leave the entries above it promising
+  too little. `verify` reports such an entry and `repair` settles the
+  directory ([verify.md](verify.md)).
 - A heap page stays in the directory, at its position, until vacuum
   finds it empty (§10.1) or the heap is dropped. A removed page leaves
   a hole at its position, which the next insert needing room fills
@@ -58,23 +64,28 @@ Postconditions:
 - A scan of the heap reads its pages in position order and each page's
   versions in slot order.
 - Each pager update a heap operation makes
-  ([storage.md §2.3](storage.md#23-page-access)) names at most `h + 6`
-  pages, `h` being the level of the directory's root: the heap and
-  directory pages, and a visibility map page for each heap page whose
-  all-visible bit it clears, and the large-value store pages holding
-  the first chunks of the values the new version points at. The heap
-  and directory pages of one insert, update, delete or retag change in
-  one update; pages it allocates, and the chunks of its out-of-line
-  values, are written by earlier calls. Values a page's conversion
-  ([§12.4](#124-row-format-changes)) moves out of line are counted
-  ([§12.5](#125-large-values)) by earlier updates, each naming at most
-  three store pages.
-- A change that lowers a page's category latches only the level-0
-  directory page holding its entry. A change that adds a page, fills
-  a hole or leaves one, raises a category or changes a touched mark
-  ([§12.5](#125-large-values)) latches the path from the root. A
-  change that corrects an inner entry promising more than its child
-  holds latches that entry's page and then the child.
+  ([storage.md §2.3](storage.md#23-page-access)) latches at most five
+  pages, transient reads included: at most two heap pages, at most one
+  level-0 directory page, and a visibility map page, a bitmap page or
+  further store pages within the bound. An insert, update, delete or
+  retag changes its heap pages and the level-0 entry of the page that
+  takes the version in one update. Before it, in updates of their own:
+  the out-of-line values a page's conversion
+  ([§12.4](#124-row-format-changes)) moves, written while no page is
+  latched; the counts of every value the new version points at
+  ([§12.5](#125-large-values)), at most three store pages each; the
+  bit of each all-visible page it changes, cleared in the visibility
+  map; and the pages it allocates. A crash between them leaves values
+  unpointed at, counts too high or bits clear on all-visible pages,
+  never the reverse.
+- A change to a level-0 entry latches only the directory page holding
+  it. One that raises the category or changes the touched mark then
+  settles the entries above it, the lowest first, each in an update
+  latching that entry's page and reading its child. Adding a page
+  grows the root, adds each directory page the position needs and adds
+  the page, each in an update of its own. A search for room that finds
+  an inner entry promising more than its child holds sets it the same
+  way.
 - Any number of threads read and write one heap at once, and vacuum
   runs beside them. Each page an operation changes is held under its
   exclusive latch ([storage.md §2.4](storage.md#24-latches)) from the
@@ -84,11 +95,8 @@ Postconditions:
 - Latches are taken in one total order: heap pages in page id order,
   then large-value store pages in page id order, then directory pages
   by level, the highest first, and in page id order within a level,
-  then visibility map pages in page id order. One pager update changes
-  at most one existing directory entry with the entries above it, and
-  latches directory pages, other than those it allocates, along one
-  path. No thread holds a latch while it waits for one earlier in the
-  order.
+  then visibility map pages in page id order. No thread holds a latch
+  while it waits for one earlier in the order.
 
 Rulings: storage/table-per-ctor, storage/sum-scan/merge-append, encoding/native-cost/union-index, engine/in-heap, layout/fill/fsm
 
@@ -773,9 +781,12 @@ Invariants:
 - A page's bit is set only while every version on it is visible to
   every snapshot published to its heap, live or taken later, and no
   slot on it is dead.
-- A page's bit is set exactly when the all-visible flag of its page
-  header is set ([storage.md §2.1](storage.md#21-page-header)); both
-  change in one pager update.
+- A page's bit is set only while the all-visible flag of its page
+  header is set ([storage.md §2.1](storage.md#21-page-header)), and
+  the flag only while every version on the page is visible to every
+  snapshot. Setting the bit sets both in one pager update; clearing
+  it clears the bit in an update of its own before the one that
+  clears the flag and changes the page.
 - No bit is set for a page that is not a page of the heap.
 
 The map is keyed by page id, so a lookup reads no heap page.
@@ -1004,8 +1015,9 @@ page. Pruning a version counts it off afterwards, in an update of
 its own; a head left at count 0 marks its page touched.
 
 The directory's level-0 entries carry the touched mark in bit 56, and
-an inner entry carries it when any entry of its child does, so the
-sweep descends only into touched subtrees. The sweep frees each head of
+an inner entry carries it when any entry of its child does (§1), so
+the sweep descends only into touched subtrees. The sweep settles the
+store's directory first, then frees each head of
 count 0 on a touched page whose writer has resolved, one chunk per
 update, making the next chunk a head of count 0 as it goes, and
 unmarks a page left with no head of count 0. A crash anywhere leaves a

@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
 use adtb::runtime::{Entropy, Threads};
-use adtb::storage::{Damage, Edit, Finding, HEADER_LEN, OpenError, Options, PageKind, Pager, Pid};
+use adtb::storage::{
+    Damage, Edit, Finding, HEADER_LEN, LATCHES_PER_THREAD, OpenError, Options, PageKind, Pager, Pid,
+};
 use adtb_sim::{
     Config, Fate, Faults, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation,
     check,
@@ -1379,18 +1381,18 @@ fn a_reservation_dropped_unused_frees_nothing() {
 }
 
 #[test]
-#[should_panic(expected = "every frame of the pool")]
-fn latching_every_frame_from_one_thread_panics() {
+#[should_panic(expected = "this thread latches 6 pages, more than 5")]
+fn latching_more_than_the_bound_from_one_thread_panics() {
     let mut sim = Sim::new(37, Config::default());
     let client = Client::new();
     setup(&mut sim, &client, PLAIN);
     let pages = client.world.lock().unwrap().pages.clone();
     with_pager(&mut sim, |p| {
-        let held: Vec<_> = pages[..PLAIN.frames]
+        let held: Vec<_> = pages[..LATCHES_PER_THREAD]
             .iter()
             .map(|&pid| p.exclusive(pid).unwrap())
             .collect();
-        drop(p.read(pages[PLAIN.frames]));
+        drop(p.read(pages[LATCHES_PER_THREAD]));
         drop(held);
     });
 }

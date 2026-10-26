@@ -71,6 +71,7 @@ Report {
 | `Unallocated` | a structure refers to the page, and the bitmap marks it free |
 | `Leaked` | the bitmap marks the page allocated, and nothing in the inventory refers to it |
 | `Overcounted { slot, count, versions }` | the head of an out-of-line value in `slot` counts `count` versions and only `versions` point at it |
+| `Unsettled(what)` | a directory page of a heap or a large-value store has an inner entry promising less than its child holds ([mvcc.md §1](mvcc.md#1-one-heap-per-constructor)); `what` names the structure and the entry |
 
 Besides each structure's own invariants, the checks cover:
 
@@ -102,17 +103,19 @@ Postconditions:
 
 `repair(pager, inventory, report)` frees every page the report found
 `Leaked`, sets every head it found `Overcounted` to the number of
-versions that point at it, and returns how many findings it mended.
+versions that point at it, settles every directory it found
+`Unsettled`, and returns how many findings it mended.
 
 Preconditions: the report is complete and was made against `inventory`
 with no write since. `repair` panics on an incomplete report.
 
-Postcondition: a `verify` right after reports no `Leaked` page and no
-`Overcounted` head.
+Postcondition: a `verify` right after reports no `Leaked` page, no
+`Overcounted` head and no `Unsettled` directory page.
 
 A crash between pruning a version and counting it off its values
 leaves a head counting too many versions
-([mvcc.md §12.5](mvcc.md#125-large-values)). After every crash and
+([mvcc.md §12.5](mvcc.md#125-large-values)), and a crash during a
+change to a directory may leave the entries above it unsettled. After every crash and
 recovery, `verify` finds nothing that `repair` does not mend, and after
 `repair` nothing at all.
 

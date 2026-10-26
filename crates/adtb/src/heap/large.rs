@@ -4,7 +4,7 @@ use crate::key::Tid;
 use crate::runtime::Runtime;
 use crate::storage::{self, LATCHES_PER_THREAD, PageError, Pager, Pid};
 
-use super::dir::{Space, category, max_fanout, need_category};
+use super::dir::{Above, Space, category, max_fanout, need_category};
 use super::page::{self, Arrangement, Slot};
 use super::row::Pointer;
 use super::slotted;
@@ -194,9 +194,11 @@ impl LargeStore {
                 let mut fix = Stage::new();
                 let page = fix.page(pager, pid)?;
                 let (position, cat) = (page::position(page), category(page::free(page), size));
-                self.space
+                let above = self
+                    .space
                     .set_category(&mut fix, pager, pid, position, cat)?;
                 fix.commit(pager)?;
+                above.settle(pager)?;
                 continue;
             };
             let position = page::position(page);
@@ -205,10 +207,11 @@ impl LargeStore {
                 let page = stage.page(pager, Pid(t.page()))?;
                 update_chunk(page, usize::from(t.slot()), |c| c.head = false);
             }
-            self.space.touch(&mut stage, pager, pid, position, true)?;
-            self.space
-                .set_category(&mut stage, pager, pid, position, cat)?;
+            let above =
+                self.space
+                    .set_entry(&mut stage, pager, pid, position, Some(cat), Some(true))?;
             stage.commit(pager)?;
+            above.settle(pager)?;
             return Ok(tid(pid, slot));
         }
     }
@@ -298,16 +301,18 @@ impl LargeStore {
             c.count -= 1;
             left = c.count;
         });
+        let mut above = Above::default();
         if left == 0 {
             let position = page::position(page);
-            self.space.touch(&mut stage, pager, pid, position, true)?;
+            above = self.space.touch(&mut stage, pager, pid, position, true)?;
         }
-        stage.commit(pager)
+        stage.commit(pager)?;
+        above.settle(pager)
     }
 
-    /// Free every value whose head on a touched page has count 0 and whose writer `resolved`
-    /// accepts, and unmark each touched page left with no head of count 0. Returns the number of
-    /// chunks freed.
+    /// Settle the store's directory, then free every value whose head on a touched page has count
+    /// 0 and whose writer `resolved` accepts, and unmark each touched page left with no head of
+    /// count 0. Returns the number of chunks freed.
     ///
     /// Each step frees one chunk and makes the next one a head of count 0, in one update, so a
     /// crash leaves the rest of the value for the next sweep.
@@ -318,6 +323,7 @@ impl LargeStore {
         pager: &Pager<R>,
         mut resolved: impl FnMut(u64) -> Result<bool, PageError>,
     ) -> Result<usize, PageError> {
+        self.space.settle(pager)?;
         let mut freed = 0;
         for (position, pid) in self.space.touched(pager)? {
             let page = pager.read(pid)?.to_vec();
@@ -388,14 +394,15 @@ impl LargeStore {
                 });
             }
             let mut gone = pager.reserve();
-            if empty {
-                self.space.vacate(&mut stage, pager, position)?;
+            let above = if empty {
                 gone.free(here);
+                self.space.vacate(&mut stage, pager, here, position)?
             } else {
                 self.space
-                    .set_category(&mut stage, pager, here, position, cat)?;
-            }
+                    .set_category(&mut stage, pager, here, position, cat)?
+            };
             stage.commit_with(pager, gone)?;
+            above.settle(pager)?;
             freed += 1;
             match next {
                 Some(n) => at = n,
@@ -408,8 +415,9 @@ impl LargeStore {
     fn touch_page<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
         let mut stage = Stage::new();
         let position = page::position(stage.page(pager, pid)?);
-        self.space.touch(&mut stage, pager, pid, position, true)?;
-        stage.commit(pager)
+        let above = self.space.touch(&mut stage, pager, pid, position, true)?;
+        stage.commit(pager)?;
+        above.settle(pager)
     }
 
     /// Count one more version pointing at each of `pointers`, in updates of their own, each
@@ -455,8 +463,9 @@ impl LargeStore {
             .filter_map(|s| chunk_at(page, s))
             .any(|c| c.head && c.count == 0);
         if !waiting {
-            self.space.touch(&mut stage, pager, pid, position, false)?;
+            let above = self.space.touch(&mut stage, pager, pid, position, false)?;
             stage.commit(pager)?;
+            above.settle(pager)?;
         }
         Ok(())
     }
@@ -477,12 +486,15 @@ impl LargeStore {
             assert!(c.head, "{head:?} is not the head of a value");
             c.count = count;
         });
+        let mut above = Above::default();
         if count == 0 {
             let position = page::position(page);
-            self.space
+            above = self
+                .space
                 .touch(&mut stage, pager, Pid(head.page()), position, true)?;
         }
-        stage.commit(pager)
+        stage.commit(pager)?;
+        above.settle(pager)
     }
 
     /// Returns what is wrong with the store's chunks, `versions` being the number of versions
@@ -495,12 +507,7 @@ impl LargeStore {
         pager: &Pager<R>,
         versions: &BTreeMap<Tid, u32>,
     ) -> Result<ChunkCheck, PageError> {
-        let touched: BTreeSet<Pid> = self
-            .space
-            .touched(pager)?
-            .into_iter()
-            .map(|(_, p)| p)
-            .collect();
+        let touched: BTreeSet<Pid> = self.space.check(pager)?.touched.into_iter().collect();
         let mut chunks = BTreeMap::new();
         for pid in self.space.pages(pager)? {
             let page = pager.read(pid)?;
@@ -576,16 +583,31 @@ impl LargeStore {
         Ok(out)
     }
 
-    /// Returns what is wrong with the store's directory and pages.
+    /// Returns what is wrong with the store's directory and pages, directory entries promising
+    /// too little included.
     pub fn verify<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<String>, PageError> {
-        Ok(self
-            .check(pager)?
+        let mut problems = self.check(pager)?;
+        problems.extend(self.unsettled(pager)?);
+        Ok(problems
             .into_iter()
             .map(|(pid, what)| format!("{pid:?} {what}"))
             .collect())
     }
 
-    /// Returns each page of the store found wrong, with what is wrong with it.
+    /// Returns each directory page with an entry that promises less than its child holds, with
+    /// what it promises too little. A crash may leave them; [`LargeStore::settle_directory`]
+    /// mends them.
+    pub fn unsettled<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
+        Ok(self.space.check(pager)?.unsettled)
+    }
+
+    /// Set every inner directory entry to what its child holds, each in an update of its own.
+    pub fn settle_directory<R: Runtime>(&self, pager: &Pager<R>) -> Result<(), PageError> {
+        self.space.settle(pager)
+    }
+
+    /// Returns each page of the store found wrong, with what is wrong with it, leaving out
+    /// [`LargeStore::unsettled`] directory entries.
     pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
