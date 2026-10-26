@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 290
 summary: "fix binder types come only from base operands, not the least solution"
+branch: adtb-chk
 depends-on:
   - conformance-checker-findings
 ---
