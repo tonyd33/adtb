@@ -35,7 +35,7 @@ const FRAMES: usize = 96;
 
 const INDEX_ID: u32 = 20;
 const WRITERS: u64 = 3;
-const CRASH_SWITCH_RATE: f64 = 0.3;
+const SWITCH_RATE: f64 = 0.3;
 
 fn row_type(heap: usize) -> Vec<FieldType> {
     match heap {
@@ -569,7 +569,13 @@ fn inspect(db: &Db, world: &World) -> Vec<String> {
 #[test]
 fn vacuum_runs_beside_writers_and_readers_holding_snapshots() {
     for seed in 0..4 {
-        let mut sim = Sim::new(seed, Config::default());
+        let mut sim = Sim::new(
+            seed,
+            Config {
+                switch_rate: SWITCH_RATE,
+                ..Config::default()
+            },
+        );
         let world = Arc::new(Mutex::new(World::default()));
         let w = world.clone();
         let outcome = sim.run(move |rt| {
@@ -589,7 +595,7 @@ fn vacuum_runs_beside_writers_and_readers_holding_snapshots() {
             assert!(problems.is_empty(), "seed {seed}: {problems:#?}");
             assert!(
                 seen.load(Ordering::Relaxed) > 0,
-                "no progress past scanning was seen"
+                "seed {seed}: no progress past scanning was seen"
             );
         });
         assert_eq!(Outcome::Finished, outcome);
@@ -614,7 +620,7 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
     let mut sim = Sim::new(
         seed,
         Config {
-            switch_rate: CRASH_SWITCH_RATE,
+            switch_rate: SWITCH_RATE,
             ..Config::default()
         },
     );

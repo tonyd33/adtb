@@ -237,7 +237,10 @@ Postconditions:
   allocation gets, and marks nothing; it fails when an allocation
   bitmap page it reads is damaged, and a free page found damaged is
   refused and skipped. Dropping a reservation unused gives its pages
-  back, with nothing logged.
+  back, with nothing logged. A caller may hold the latch of a free
+  page, one it found by a stale read, while it allocates or frees:
+  `reservation.page` waits for a free page's latch only after other
+  allocations can proceed.
 - `update_with` and `update_all_with` take a reservation whose every
   page is among the pages they change. In the batch that holds the
   change, each reserved page is marked in the allocation bitmap and

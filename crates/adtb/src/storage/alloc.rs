@@ -74,6 +74,24 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns a free page no allocator or reservation holds, and holds it.
     fn reserve_page(&self) -> Result<(Pid, Lsn), PageError> {
+        loop {
+            let pid = self.hold_free_page()?;
+            // Latch outside the allocation lock: a free page can be latched by a thread waiting
+            // for that lock.
+            match self.exclusive(pid) {
+                Ok(g) => return Ok((pid, page::lsn(&g))),
+                Err(e) => {
+                    self.alloc.lock(&self.rt).reserved.remove(&pid);
+                    if e.pid != pid {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns a free page no allocator or reservation holds, held as reserved.
+    fn hold_free_page(&self) -> Result<Pid, PageError> {
         let span = self.bitmap_span();
         let mut state = self.alloc.lock(&self.rt);
         let mut g = state.group;
@@ -94,15 +112,8 @@ impl<R: Runtime> Pager<R> {
                 continue;
             };
             state.group = g;
-            let pid = Pid(pid);
-            match self.exclusive(pid) {
-                Ok(g) => {
-                    state.reserved.insert(pid);
-                    return Ok((pid, page::lsn(&g)));
-                }
-                Err(e) if e.pid == pid => continue,
-                Err(e) => return Err(e),
-            }
+            state.reserved.insert(Pid(pid));
+            return Ok(Pid(pid));
         }
     }
 

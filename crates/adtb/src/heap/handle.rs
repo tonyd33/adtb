@@ -1272,7 +1272,8 @@ pub fn header_at<R: Runtime>(pager: &Pager<R>, tid: Tid) -> Result<Option<Header
 /// the first version `stop` accepts. Returns `None` when the chain ends first.
 ///
 /// The chain ends at a slot holding no version, at a page that is not a heap page, or at a
-/// version whose `xmin` is not the `xmax` of the version before it.
+/// version whose `xmin` is not the `xmax` of the version before it. The versions of one stretch
+/// of the chain on one page are read from one copy of that page.
 pub fn walk<R: Runtime>(
     pager: &Pager<R>,
     start: Tid,
@@ -1280,8 +1281,16 @@ pub fn walk<R: Runtime>(
 ) -> Result<Option<Link>, PageError> {
     let mut at = start;
     let mut prior = None;
+    let mut copy: Option<(u64, Vec<u8>)> = None;
     loop {
-        let page = &pager.read(Pid(at.page()))?.to_vec();
+        let page = match copy {
+            Some((pid, ref page)) if pid == at.page() => page,
+            _ => {
+                &copy
+                    .insert((at.page(), pager.read(Pid(at.page()))?.to_vec()))
+                    .1
+            }
+        };
         if !page::is_heap(page) {
             return Ok(None);
         }

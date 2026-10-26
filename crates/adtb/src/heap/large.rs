@@ -189,6 +189,13 @@ impl LargeStore {
                 stage.page(pager, p)?;
             }
             let page = stage.page(pager, pid)?;
+            // A page found by an unlatched search may have been freed since.
+            if !page::is_heap(page)
+                || storage::owner(page) != self.id()
+                || !self.space.names(pager, page::position(page), pid)?
+            {
+                continue;
+            }
             let Some(slot) = page::insert(page, tuple, Flags::NONE) else {
                 drop(stage);
                 let mut fix = Stage::new();

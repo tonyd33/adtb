@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use adtb::heap::{Fate, FieldType, Header, Heap, LargeStore};
+use adtb::heap::{Fate, FieldType, Header, Heap, LargeStore, walk};
 use adtb::key::{Scalar, Tid, Value};
 use adtb::runtime::Threads;
 use adtb::storage::{Options, PageError, PageKind, Pager, Pid};
@@ -295,4 +295,149 @@ fn heap_marked(pager: &Pager<SimRuntime>, heap: &Heap) -> Vec<Pid> {
         .into_iter()
         .filter(|&pid| heap.all_visible(pager, pid).unwrap())
         .collect()
+}
+
+const HOT_ROUNDS: u64 = 400;
+
+fn dead_once_deleted(_: &Pager<SimRuntime>, h: &Header) -> Result<Fate, PageError> {
+    Ok(if h.xmax == 0 {
+        Fate::Keep
+    } else {
+        Fate::Remove
+    })
+}
+
+#[test]
+fn a_walk_beside_pruning_reaches_the_newest_version_of_its_row_and_no_other_row() {
+    for seed in 0..4 {
+        let mut sim = Sim::new(
+            seed,
+            Config {
+                switch_rate: 0.3,
+                ..Config::default()
+            },
+        );
+        finished(&mut sim, |rt| {
+            let pager = Pager::create(rt.clone(), &options(64)).expect("create");
+            let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
+            let heap =
+                Heap::create_with_fanout(&pager, HEAP_ID, row_type(), large, FANOUT).unwrap();
+            let head = heap.insert(&pager, 2, &row(0, 0)).expect("insert");
+            let db = Arc::new(Db { pager, heap });
+            let stop = Arc::new(AtomicBool::new(false));
+            let walks = Arc::new(AtomicUsize::new(0));
+            let reader = {
+                let (db, stop, walks) = (db.clone(), stop.clone(), walks.clone());
+                rt.spawn("reader", move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let newest = walk(&db.pager, head, |l| {
+                            assert!(
+                                l.header.xmin.is_multiple_of(2),
+                                "seed {seed}: the walk from {head:?} reached {:?}, written by filler {}",
+                                l.tid,
+                                l.header.xmin
+                            );
+                            l.header.xmax == 0
+                        })
+                        .unwrap();
+                        assert!(
+                            newest.is_some(),
+                            "seed {seed}: the walk from {head:?} ended before the newest version"
+                        );
+                        walks.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            };
+            let page = Pid(head.page());
+            let mut at = head;
+            for r in 1..=HOT_ROUNDS {
+                let u = db
+                    .heap
+                    .update(&db.pager, at, 2 * r + 2, &row(0, r as u8), &[0])
+                    .unwrap();
+                assert!(
+                    u.heap_only,
+                    "seed {seed}: round {r} moved the row off its page"
+                );
+                at = u.tid;
+                db.heap
+                    .prune(&db.pager, page, dead_once_deleted, &[], false)
+                    .unwrap();
+                let filler = db.heap.insert(&db.pager, 2 * r + 3, &row(1, 0)).unwrap();
+                db.heap.delete(&db.pager, filler, 2 * r + 3).unwrap();
+                rt.yield_now();
+            }
+            stop.store(true, Ordering::Relaxed);
+            rt.join(reader);
+            assert!(
+                walks.load(Ordering::Relaxed) > 100,
+                "seed {seed}: {} walks",
+                walks.load(Ordering::Relaxed)
+            );
+        });
+    }
+}
+
+const KEPT_LARGE: usize = 60;
+
+fn large_row(key: i64) -> Vec<Value> {
+    vec![Value::I64(key), Value::Bytes(vec![key as u8; 6000])]
+}
+
+#[test]
+fn large_values_written_beside_a_sweep_freeing_store_pages_stay_whole() {
+    for seed in 0..4 {
+        let mut sim = Sim::new(
+            seed,
+            Config {
+                switch_rate: 0.3,
+                ..Config::default()
+            },
+        );
+        finished(&mut sim, |rt| {
+            let pager = Pager::create(rt.clone(), &options(256)).expect("create");
+            let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
+            let heap =
+                Heap::create_with_fanout(&pager, HEAP_ID, row_type(), large, FANOUT).unwrap();
+            let db = Arc::new(Db { pager, heap });
+            let stop = Arc::new(AtomicBool::new(false));
+            let freed = Arc::new(AtomicUsize::new(0));
+            let churner = {
+                let (db, stop, freed) = (db.clone(), stop.clone(), freed.clone());
+                rt.spawn("churner", move || {
+                    let mut xid = 1;
+                    while !stop.load(Ordering::Relaxed) {
+                        let tid = db.heap.insert(&db.pager, xid, &large_row(-1)).unwrap();
+                        db.heap.delete(&db.pager, tid, xid).unwrap();
+                        db.heap
+                            .prune(&db.pager, Pid(tid.page()), dead_once_deleted, &[], false)
+                            .unwrap();
+                        let n = large
+                            .sweep(&db.pager, |x| Ok(!x.is_multiple_of(2)))
+                            .unwrap();
+                        freed.fetch_add(n, Ordering::Relaxed);
+                        xid += 2;
+                    }
+                })
+            };
+            let kept: Vec<(i64, Tid)> = (0..KEPT_LARGE as i64)
+                .map(|key| {
+                    let tid = db.heap.insert(&db.pager, 2, &large_row(key)).unwrap();
+                    rt.yield_now();
+                    (key, tid)
+                })
+                .collect();
+            stop.store(true, Ordering::Relaxed);
+            rt.join(churner);
+            assert!(
+                freed.load(Ordering::Relaxed) > KEPT_LARGE,
+                "seed {seed}: the sweep freed {} chunks",
+                freed.load(Ordering::Relaxed)
+            );
+            for (key, tid) in kept {
+                let v = db.heap.read(&db.pager, tid).unwrap().unwrap();
+                assert_eq!(large_row(key), v.row, "seed {seed}: row {key}");
+            }
+        });
+    }
 }
