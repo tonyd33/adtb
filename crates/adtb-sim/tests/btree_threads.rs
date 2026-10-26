@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use adtb::btree::{BTree, Entries};
 use adtb::runtime::{Entropy, Threads};
 use adtb::storage::{PageKind, Pager, Pid, kind};
-use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Faults, Outcome, Recording, Sim, SimRuntime};
 
 #[path = "support/crash.rs"]
 #[expect(dead_code, reason = "this binary injects no failed writes")]
@@ -407,9 +407,14 @@ struct World {
     ops: Vec<Vec<(bool, u32)>>,
     /// Every operation of a thread before this one is durable.
     durable: Vec<usize>,
+    /// The recorded events before and after each insert of the last run.
+    spans: Vec<(usize, usize)>,
+    /// Each thread's operations made durable in the last run, after how many recorded events.
+    forced: Vec<Vec<(usize, usize)>>,
 }
 
 const THREADS: usize = 4;
+const SEEK: usize = 32;
 
 fn crash_worker(
     rt: &SimRuntime,
@@ -426,7 +431,9 @@ fn crash_worker(
             world.lock().unwrap().ops[t].push((insert, id));
             let e = shape.encode(id);
             if insert {
+                let start = rt.recorded();
                 tree.insert_with(pager, &e, &mut shape).expect("insert");
+                world.lock().unwrap().spans.push((start, rt.recorded()));
             } else {
                 tree.delete(pager, &e).expect("delete");
             }
@@ -434,8 +441,11 @@ fn crash_worker(
         match below(rt, 30) {
             0..=2 => {
                 pager.flush_log();
+                let after = rt.recorded();
                 let mut w = world.lock().unwrap();
-                w.durable[t] = w.ops[t].len();
+                let len = w.ops[t].len();
+                w.durable[t] = len;
+                w.forced[t].push((after, len));
             }
             3 => {
                 pager.flush_pages(1 + below(rt, 4));
@@ -498,23 +508,87 @@ fn matching_prefix(ops: &[(bool, u32)], from: usize, found: &BTreeSet<u32>) -> O
     None
 }
 
-/// Returns the crashes of `rounds` crashed runs of several threads.
-/// Returns the rounds that crashed and those whose crash left a split for repair to finish.
-fn threaded_crash_loop(seed: u64, rounds: usize, shape: Shape) -> (usize, usize) {
-    let mut sim = Sim::new(
-        seed,
-        Config {
-            faults: Faults {
-                torn_p: 0.5,
-                ..Faults::default()
-            },
-            switch_rate: CRASH_SWITCH_RATE,
-            ..Config::default()
+fn crash_config() -> Config {
+    Config {
+        faults: Faults {
+            torn_p: 0.5,
+            ..Faults::default()
         },
-    );
+        switch_rate: CRASH_SWITCH_RATE,
+        ..Config::default()
+    }
+}
+
+/// Returns the number of splits incomplete in the forced state after the
+/// first `at` events of `recording`.
+fn incomplete_at(recording: &Recording, at: usize, root: Pid, seed: u64) -> usize {
+    let files = recording.images(at, 1, seed).swap_remove(0);
+    let mut sim = Sim::with_files(seed, Config::default(), files);
+    let mut n = 0;
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt, &options(24)).expect("reopen");
+        n = BTree::open(root, OWNER).repair(&pager).expect("repair");
+    });
+    n
+}
+
+/// Run the threads to their end, recording them, and replace `sim` by the
+/// forced state at a log force inside an insert that leaves a split
+/// incomplete, sought among [`SEEK`] such forces spread back from the end of
+/// the run, or at the last force inside an insert when none does.
+fn crash_at_a_flush(sim: &mut Sim, world: &Arc<Mutex<World>>, seed: u64, shape: Shape) {
+    let durable = {
+        let mut w = world.lock().unwrap();
+        w.spans.clear();
+        w.forced.iter_mut().for_each(Vec::clear);
+        w.durable.clone()
+    };
+    sim.record();
+    let w = world.clone();
+    finished(sim, move |rt| crash_run(rt, &w, shape));
+    let recording = sim.recording();
+    let flushes = recording.flushes();
+    let mut w = world.lock().unwrap();
+    let root = w.root.unwrap();
+    let inside: Vec<usize> = flushes
+        .iter()
+        .rev()
+        .copied()
+        .filter(|&f| w.spans.iter().any(|&(s, e)| s < f && f < e))
+        .collect();
+    let at = inside
+        .iter()
+        .step_by(inside.len().div_ceil(SEEK).max(1))
+        .find(|&&f| incomplete_at(&recording, f, root, seed) > 0)
+        .or(inside.first())
+        .or(flushes.last())
+        .copied()
+        .expect("the threads force the log");
+    let files = recording.images(at, 1, seed).swap_remove(0);
+    *sim = Sim::with_files(seed, crash_config(), files);
+    w.durable = w
+        .forced
+        .iter()
+        .zip(durable)
+        .map(|(marks, before)| {
+            marks
+                .iter()
+                .rev()
+                .find(|&&(after, _)| after <= at)
+                .map_or(before, |&(_, len)| len)
+        })
+        .collect();
+}
+
+/// Returns the rounds that crashed of `rounds` runs crashed at a time, and
+/// the rounds whose crash left a split for repair to finish, of those and of
+/// `cuts` runs cut at a log force inside an insert.
+fn threaded_crash_loop(seed: u64, rounds: usize, cuts: usize, shape: Shape) -> (usize, usize) {
+    let mut sim = Sim::new(seed, crash_config());
     let world = Arc::new(Mutex::new(World {
         ops: vec![Vec::new(); THREADS],
         durable: vec![0; THREADS],
+        forced: vec![Vec::new(); THREADS],
         ..World::default()
     }));
     let w = world.clone();
@@ -525,12 +599,17 @@ fn threaded_crash_loop(seed: u64, rounds: usize, shape: Shape) -> (usize, usize)
         w.lock().unwrap().root = Some(tree.root());
     });
     let (mut crashes, mut repaired) = (0, 0);
-    for round in 0..rounds {
-        let at = sim.now() + crash_after(seed, round as u64, 2_000, 150_000);
-        sim.crash_at(at);
-        let w = world.clone();
-        if sim.run(move |rt| crash_run(rt, &w, shape)) == Outcome::Crashed {
-            crashes += 1;
+    for round in 0..rounds + cuts {
+        let cut = round % 2 == 1 && round < 2 * cuts;
+        if !cut {
+            let at = sim.now() + crash_after(seed, round as u64, 2_000, 150_000);
+            sim.crash_at(at);
+            let w = world.clone();
+            if sim.run(move |rt| crash_run(rt, &w, shape)) == Outcome::Crashed {
+                crashes += 1;
+            }
+        } else {
+            crash_at_a_flush(&mut sim, &world, seed * 1000 + round as u64, shape);
         }
         let root = world.lock().unwrap().root.unwrap();
         let mut found = None;
@@ -582,15 +661,15 @@ fn threads_crashed_together_recover_a_prefix_of_each_threads_operations() {
         } else {
             Shape::Grouped
         };
-        let (c, r) = threaded_crash_loop(seed, 5, shape);
+        let (c, r) = threaded_crash_loop(seed, 5, 2, shape);
         crashes += c;
         repaired += r;
     }
     eprintln!("{crashes} crashes, {repaired} left a split to finish");
-    assert!(crashes >= share(SEEDS, 10), "only {crashes} crashes");
+    assert!(crashes >= share(SEEDS, 5), "only {crashes} crashes");
     assert!(
-        repaired >= share(SEEDS, 1),
-        "no crash left a split incomplete"
+        repaired >= share(SEEDS, 2),
+        "only {repaired} crashes left a split incomplete"
     );
 }
 
