@@ -15,7 +15,7 @@ depends-on:
 `queries/11-fix:40` is refused: the checker types a `fix` binder only
 from a `union` operand that does not read it (option
 `spec/fix/typing/from-base`), but typing.md §2.2 gives each binder the
-least element type at which every body checks. Waits for Tony to adopt
-`spec/fix/typing/least` (point `impl1`). Then check the body with the
+least element type at which every body checks, ruled as
+`spec/fix/typing/least`. Check the body with the
 binder at an unknown element type solved from its `select` or the
 expected type.
