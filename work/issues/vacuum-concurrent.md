@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 560
 summary: "vacuum requires that no write to the sum runs during it, and its orphan chunk sweep scans every version"
-branch: adtb-vac2
+closed: 2026-10-25
 depends-on:
   - vacuum
   - ssi-integration
@@ -24,3 +24,7 @@ in progress. Expected:
 - the sweep is bounded by what changed since the last one;
 - on-access pruning (`vacuum::prune`) is called by writers;
 - progress shows as `docs/spec/catalog.md` §11.5 states.
+
+## 2026-10-25: resolved
+
+Landed as `feat(vacuum): vacuum beside writers, sweep large values by reference count and verify deeper`. Follow-ups are in `heap-concurrency-follow-ups.md`.

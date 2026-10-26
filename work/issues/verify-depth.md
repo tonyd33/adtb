@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 570
 summary: "verify rereads the whole log on every call, checks only commit log page kinds, and skips cross-heap moved chains"
-branch: adtb-vac2
+closed: 2026-10-25
 depends-on:
   - verify-structural
 tags:
@@ -25,3 +25,7 @@ From the structural verify:
 - Cross-heap `moved` chains are not validated, because per-heap
   watermarks let them dangle. State in `docs/design/mvcc.md` which
   dangling chains are allowed, and check the rest.
+
+## 2026-10-25: resolved
+
+Landed as `feat(vacuum): vacuum beside writers, sweep large values by reference count and verify deeper`. Follow-ups are in `heap-concurrency-follow-ups.md`.
