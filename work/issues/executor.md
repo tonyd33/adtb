@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 720
 summary: no executor runs a physical plan over batches
-branch: adtb-exec
+closed: 2026-10-25
 depends-on:
   - planner
   - batches
@@ -27,3 +27,7 @@ naming them.
 
 Prerequisites: `planner.md`, `batches.md`, `slotted-heap.md`,
 `blink-tree.md`, `key-encoding.md`.
+
+## 2026-10-25: resolved
+
+Landed as `feat(exec): run physical plans as bytecode pipelines over morsels at a snapshot`. 47 running-schema queries under 11 rewrite variants match the reference over real heaps and indexes. Follow-ups: `exec-primitives.md`, `exec-follow-ups.md`, `spec-memory-limit.md`.
