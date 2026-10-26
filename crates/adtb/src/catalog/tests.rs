@@ -7,7 +7,7 @@ use crate::key::Value;
 use crate::storage::Pid;
 
 use super::root::Root;
-use super::{Rows, declared, engine_schema, indexes, layout};
+use super::{Hash, Rows, applied, declared, engine_schema, indexes, layout, oplog, version_hash};
 
 fn engine_rows(schema: &Schema) -> Rows {
     declared(schema, &Source::default())
@@ -172,4 +172,260 @@ add relation shapes : Shape key id generate sequence default label = \"none\"
     let ids: BTreeSet<String> = defaults.iter().map(|row| format!("{:?}", row[0])).collect();
     let fields: BTreeSet<String> = defaults.iter().map(|row| format!("{:?}", row[2])).collect();
     assert_eq!((3, 3), (ids.len(), fields.len()));
+}
+
+const FIRST: &str = "module app
+add module app
+add type Shape { id: Key shapes }
+  = Circle { r: I64 }
+  | Square { s: I64 }
+add relation shapes : Shape key id generate sequence
+add set Round of shapes = Circle
+add unique (r) in shapes.Circle
+define fn area (x: Shape) -> I64 = match x
+  | Circle c -> 3 * c.r * c.r
+  | Square q -> q.s * q.s
+define fn stamp (t: Text) -> Text = host \"stamp\" version \"1.2\"
+";
+
+fn migrated(from: &Source, text: &str) -> Source {
+    let file = adtb_lang::parse::parse_migration(text, adtb_lang::parse::Options::default())
+        .ok()
+        .expect("the migration parses");
+    from.migrate(&file, text)
+        .unwrap_or_else(|r| panic!("the migration applies: {r:?}"))
+}
+
+/// Returns the rows of `catalog::{name}` that `declared` gives for `source`.
+fn catalog_rows(source: &Source, name: &str) -> Vec<(u32, Vec<Value>)> {
+    let schema = source.schema().expect("it builds");
+    let m = schema.module_named("catalog").expect("the catalog module");
+    let Some(&adtb_lang::schema::ValueDef::Relation(r)) = schema.module(m).values.get(name) else {
+        panic!("the catalog declares `{name}`")
+    };
+    declared(&schema, source).remove(&r).unwrap_or_default()
+}
+
+fn hash_of(source: &Source) -> Hash {
+    version_hash(&source.schema().expect("it builds"), source)
+}
+
+#[test]
+fn the_hash_of_version_zero_is_32_zero_bytes() {
+    assert_eq!([0; 32], hash_of(&Source::default()));
+    assert_eq!([0; 32], version_hash(&engine_schema(), &Source::default()));
+}
+
+#[test]
+fn the_hash_of_a_version_chains_on_the_one_before() {
+    let one = migrated(&Source::default(), FIRST);
+    let two = migrated(&one, "module app\nadd type Label = { name: Text }\n");
+    let schema = two.schema().expect("it builds");
+    let step = |before: Hash, number: u64| {
+        let mut input = before.to_vec();
+        input.extend(oplog::encoded(
+            &schema,
+            &oplog::operators(&schema, &two, number),
+        ));
+        *blake3::hash(&input).as_bytes()
+    };
+    let h1 = step([0; 32], 1);
+    assert_eq!(h1, hash_of(&one));
+    assert_eq!(step(h1, 2), hash_of(&two));
+    assert_ne!(hash_of(&one), hash_of(&two));
+}
+
+#[test]
+fn a_migration_encodes_its_operator_count_then_each_operator_and_its_clauses() {
+    let src = migrated(&Source::default(), "module app\nadd module app\n");
+    let schema = src.schema().expect("it builds");
+    let bytes = oplog::encoded(&schema, &oplog::operators(&schema, &src, 1));
+    assert_eq!(
+        vec![0x01, 0xfd, 0x02, 0x03, b'a', b'p', b'p', 0x00],
+        bytes,
+        "one operator, AddModule (381), \"app\", no clauses"
+    );
+}
+
+#[test]
+fn a_member_clause_is_encoded_after_its_operator() {
+    let src = migrated(
+        &Source::default(),
+        "module app\nadd module app\nadd type S { id: Key ss } = P | Q\nadd relation ss : S key id\nadd set Ps of ss = P\n",
+    );
+    let schema = src.schema().expect("it builds");
+    let ops = oplog::operators(&schema, &src, 1);
+    let set = &ops[3];
+    assert_eq!(1, set.1.len(), "{set:?}");
+    let p = src.ids["ctor app::S.P"];
+    let mut tail = vec![0x01];
+    tail.extend([0xba, 0x03]);
+    tail.extend(p.to_le_bytes());
+    let bytes = oplog::encoded(&schema, &ops);
+    assert!(
+        bytes.ends_with(&tail),
+        "the set's one Member clause (442) holds P's id {p}: {bytes:02x?}"
+    );
+}
+
+#[test]
+fn the_printed_text_of_a_migration_is_not_hashed() {
+    let spaced = FIRST
+        .replace(
+            "add relation shapes : Shape key id generate sequence",
+            "add relation shapes : Shape   -- every shape\n  key id generate sequence",
+        )
+        .replace("3 * c.r * c.r", "3*c.r*c.r");
+    assert_ne!(FIRST, spaced);
+    assert_eq!(
+        hash_of(&migrated(&Source::default(), FIRST)),
+        hash_of(&migrated(&Source::default(), &spaced))
+    );
+}
+
+#[test]
+fn a_changed_operand_changes_the_hash() {
+    let other = FIRST.replace("3 * c.r * c.r", "4 * c.r * c.r");
+    assert_ne!(
+        hash_of(&migrated(&Source::default(), FIRST)),
+        hash_of(&migrated(&Source::default(), &other))
+    );
+}
+
+#[test]
+fn every_operator_has_a_migration_ops_row_by_ordinal_from_one() {
+    let src = migrated(&Source::default(), FIRST);
+    let rows = catalog_rows(&src, "migration_ops");
+    let keys: Vec<(Value, Value)> = rows
+        .iter()
+        .map(|(_, row)| (row[0].clone(), row[1].clone()))
+        .collect();
+    let want: Vec<(Value, Value)> = (1..=7).map(|k| (Value::I64(1), Value::I32(k))).collect();
+    assert_eq!(want, keys);
+    let schema = src.schema().expect("it builds");
+    let ops = oplog::operators(&schema, &src, 1);
+    let stored: Vec<&Value> = rows.iter().map(|(_, row)| &row[2]).collect();
+    let resolved: Vec<&Value> = ops.iter().map(|(op, _)| op).collect();
+    assert_eq!(resolved, stored);
+}
+
+#[test]
+fn every_member_clause_has_a_migration_clauses_row() {
+    let src = migrated(&Source::default(), FIRST);
+    let rows = catalog_rows(&src, "migration_clauses");
+    let circle = Value::I64(i64::try_from(src.ids["ctor app::Shape.Circle"]).expect("an id"));
+    let keys: Vec<(Value, Value, Value)> = rows
+        .iter()
+        .map(|(_, row)| (row[0].clone(), row[1].clone(), row[2].clone()))
+        .collect();
+    assert_eq!(
+        vec![
+            (Value::I64(1), Value::I32(4), Value::I32(1)),
+            (Value::I64(1), Value::I32(5), Value::I32(1)),
+        ],
+        keys
+    );
+    for (_, row) in &rows {
+        let Value::Sum { fields, .. } = &row[3] else {
+            panic!("a clause body is a sum: {row:?}")
+        };
+        assert_eq!(&vec![circle.clone()], fields);
+    }
+}
+
+/// Returns the row of `catalog::functions` for function `name`, with its constructor's name.
+fn function_row(source: &Source, name: &str) -> (String, Vec<Value>) {
+    let schema = source.schema().expect("it builds");
+    let m = schema.module_named("catalog").expect("the catalog module");
+    let def = schema.module(m).types["Function"];
+    catalog_rows(source, "functions")
+        .into_iter()
+        .find(|(_, row)| row[2] == Value::Text(name.into()))
+        .map(|(c, row)| (schema.ty(def).ctors()[c as usize].name.clone(), row))
+        .unwrap_or_else(|| panic!("a functions row for `{name}`"))
+}
+
+#[test]
+fn a_language_function_is_hashed_over_its_body_in_canonical_form() {
+    let src = migrated(&Source::default(), FIRST);
+    let (ctor, row) = function_row(&src, "area");
+    assert_eq!("Language", ctor);
+    let canonical = "match x | app::Circle c -> 3 * c . r * c . r | app::Square q -> q . s * q . s";
+    assert_eq!(
+        vec![
+            Value::I64(i64::try_from(src.ids["fn app::area"]).expect("an id")),
+            Value::Text("app".into()),
+            Value::Text("area".into()),
+            Value::Text("(x: Shape) -> I64".into()),
+            Value::Sum {
+                ctor: 1,
+                fields: Vec::new()
+            },
+            Value::Bytes(blake3::hash(canonical.as_bytes()).as_bytes().to_vec()),
+            Value::Sum {
+                ctor: 0,
+                fields: Vec::new()
+            },
+            Value::Text("match x\n  | Circle c -> 3 * c.r * c.r\n  | Square q -> q.s * q.s".into()),
+        ],
+        row
+    );
+}
+
+#[test]
+fn a_function_hash_is_stable_across_whitespace_and_comments() {
+    let respaced = FIRST.replace(
+        "match x\n  | Circle c -> 3 * c.r * c.r",
+        "-- by kind\n  match x | Circle c ->\n      3*c.r*c.r  -- pi, roughly",
+    );
+    assert_ne!(FIRST, respaced);
+    let hash = |text: &str| function_row(&migrated(&Source::default(), text), "area").1[5].clone();
+    assert_eq!(hash(FIRST), hash(&respaced));
+    assert_ne!(hash(FIRST), hash(&FIRST.replace("3 * c.r", "4 * c.r")));
+}
+
+#[test]
+fn a_host_function_is_hashed_over_its_declared_version() {
+    let src = migrated(&Source::default(), FIRST);
+    let (ctor, row) = function_row(&src, "stamp");
+    assert_eq!("Host", ctor);
+    assert_eq!(
+        Value::Bytes(blake3::hash(b"1.2").as_bytes().to_vec()),
+        row[5]
+    );
+    assert_eq!(
+        &[Value::Text("stamp".into()), Value::Text("1.2".into())],
+        &row[7..]
+    );
+    assert_eq!(
+        Value::Sum {
+            ctor: 0,
+            fields: Vec::new()
+        },
+        row[4],
+        "not declared deterministic"
+    );
+}
+
+#[test]
+fn the_migrations_row_holds_the_version_its_hash_and_its_text() {
+    let src = migrated(&Source::default(), FIRST);
+    let schema = src.schema().expect("it builds");
+    let rows: Vec<(u32, Vec<Value>)> = applied(&schema, &src, 1_767_225_600_000_000)
+        .into_values()
+        .flatten()
+        .collect();
+    assert_eq!(
+        vec![(
+            0,
+            vec![
+                Value::I64(1),
+                Value::Bytes(hash_of(&src).to_vec()),
+                Value::Text(FIRST.into()),
+                Value::Instant(1_767_225_600_000_000),
+            ]
+        )],
+        rows
+    );
+    assert!(applied(&engine_schema(), &Source::default(), 0).is_empty());
 }

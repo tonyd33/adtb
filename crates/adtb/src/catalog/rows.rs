@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ast::{self, Decl, ExprKind, QName, RelationClause, RelationDecl};
-use adtb_lang::evolve::Source;
+use adtb_lang::evolve::{Code, Source};
 use adtb_lang::lex::lex;
 use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, ValueDef};
 use adtb_lang::span::Span;
@@ -9,7 +9,7 @@ use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::key::Value;
 
-use super::layout;
+use super::{layout, oplog};
 
 /// Rows of relations, each with its constructor index and as a heap of that constructor holds it.
 pub type Rows = BTreeMap<RelId, Vec<(u32, Vec<Value>)>>;
@@ -37,6 +37,31 @@ pub fn declared(schema: &Schema, source: &Source) -> Rows {
     b.defaults();
     b.ctor_states();
     b.value_states();
+    b.functions();
+    b.log();
+    b.rows
+}
+
+/// Returns the row of `catalog::migrations` for the last migration of `source`, applied at
+/// `applied` microseconds since 1970-01-01T00:00:00Z, or no row if the log is empty.
+pub fn applied(schema: &Schema, source: &Source, applied: i64) -> Rows {
+    let mut b = Builder {
+        schema,
+        source,
+        rows: Rows::new(),
+    };
+    if let Some(m) = source.log.last() {
+        let fields = vec![
+            ("version", key(m.number)),
+            (
+                "hash",
+                Value::Bytes(oplog::version_hash(schema, source).to_vec()),
+            ),
+            ("text", Value::Text(m.text.clone())),
+            ("applied", Value::Instant(applied)),
+        ];
+        b.push("migrations", "Migration", fields);
+    }
     b.rows
 }
 
@@ -470,6 +495,91 @@ impl Builder<'_> {
                     ("stage", self.stage(self.schema.stage(r, c))),
                 ];
                 self.push("ctor_states", "CtorState", fields);
+            }
+        }
+    }
+
+    fn functions(&mut self) {
+        let functions = self
+            .source
+            .functions()
+            .unwrap_or_else(|ds| panic!("the functions of a checked source resolve: {ds:?}"));
+        for f in functions {
+            let (ctor, deterministic, hashed, own) = match &f.code {
+                Code::Language { body, canonical } => (
+                    "Language",
+                    true,
+                    canonical,
+                    vec![("body", Value::Text(body.clone()))],
+                ),
+                Code::Aggregate { body, canonical } => (
+                    "Aggregate",
+                    true,
+                    canonical,
+                    vec![("body", Value::Text(body.clone()))],
+                ),
+                Code::Host {
+                    symbol,
+                    version,
+                    deterministic,
+                } => (
+                    "Host",
+                    *deterministic,
+                    version,
+                    vec![
+                        ("symbol", Value::Text(symbol.clone())),
+                        ("version", Value::Text(version.clone())),
+                    ],
+                ),
+                Code::Wasm { module, .. } => {
+                    panic!(
+                        "function `{}` names Wasm module `{module}`, which no migration installs",
+                        f.name
+                    )
+                }
+            };
+            let mut fields = vec![
+                ("id", key(f.id)),
+                ("module", Value::Text(f.module)),
+                ("name", Value::Text(f.name)),
+                ("signature", Value::Text(f.signature)),
+                ("deterministic", self.boolean(deterministic)),
+                (
+                    "hash",
+                    Value::Bytes(blake3::hash(hashed.as_bytes()).as_bytes().to_vec()),
+                ),
+                ("dropped", self.none()),
+            ];
+            fields.extend(own);
+            self.push("functions", ctor, fields);
+        }
+    }
+
+    /// Add the rows of `migration_ops` and `migration_clauses` for every migration of the log.
+    fn log(&mut self) {
+        for l in &self.source.log {
+            let number = key(l.number);
+            for (k, (op, clauses)) in oplog::operators(self.schema, self.source, l.number)
+                .into_iter()
+                .enumerate()
+            {
+                let ordinal = Value::I32(i32::try_from(k + 1).expect("an ordinal fits 31 bits"));
+                for (j, body) in clauses.into_iter().enumerate() {
+                    let clause = Value::I32(i32::try_from(j + 1).expect("a clause fits 31 bits"));
+                    let fields = vec![
+                        ("migration", number.clone()),
+                        ("ordinal", ordinal.clone()),
+                        ("clause", clause),
+                        ("body", body),
+                    ];
+                    self.push("migration_clauses", "OpClause", fields);
+                }
+                let fields = vec![
+                    ("migration", number.clone()),
+                    ("ordinal", ordinal),
+                    ("op", op),
+                ];
+                self.push("migration_ops", "MigrationOp", fields);
             }
         }
     }

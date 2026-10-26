@@ -13,6 +13,10 @@ allow = [
     "MIT",
     # The licence of the Unicode data tables and of the ICU4X crates.
     "Unicode-3.0",
+    # BLAKE3 and its constant-time comparison are offered under Apache-2.0 among others.
+    "Apache-2.0",
+    # The licence of arrayref, a BLAKE3 dependency.
+    "BSD-2-Clause",
 ]
 confidence-threshold = 0.9
 
@@ -80,6 +84,21 @@ allow = [
     # Atomics jiff uses on targets without native ones.
     "portable-atomic",
     "portable-atomic-util",
+    # BLAKE3-256 for the version hash of the operator log and the content hash of functions.
+    "blake3",
+    # Fixed-size array views and stack arrays BLAKE3 uses.
+    "arrayref",
+    "arrayvec",
+    "constant_time_eq",
+    "cfg-if",
+    # Runtime CPU feature detection for BLAKE3's SIMD paths.
+    "cpufeatures",
+    # The system interface cpufeatures reads CPU features through on some targets.
+    "libc",
+    # Build-time compiler driver for BLAKE3's assembly, and what it uses.
+    "cc",
+    "find-msvc-tools",
+    "shlex",
 ]
 
 [sources]

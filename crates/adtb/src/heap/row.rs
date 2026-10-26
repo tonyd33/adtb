@@ -306,7 +306,7 @@ fn ctor_of(ctors: &[CtorType], b: &[u8]) -> u32 {
     }
 }
 
-fn put_uvarint(mut n: u64, out: &mut Vec<u8>) {
+pub(crate) fn put_uvarint(mut n: u64, out: &mut Vec<u8>) {
     while n >= 0x80 {
         out.push(n as u8 | 0x80);
         n >>= 7;

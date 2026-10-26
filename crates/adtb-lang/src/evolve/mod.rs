@@ -19,6 +19,7 @@ mod ctor;
 mod field;
 mod ids;
 mod names;
+mod resolved;
 mod revert;
 mod text;
 
@@ -30,6 +31,7 @@ use text::*;
 mod tests;
 
 pub use crate::schema::Stage;
+pub use resolved::{Clause, Code, Function, Resolved, ResolvedOp};
 
 /// A stage and the version whose migration set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

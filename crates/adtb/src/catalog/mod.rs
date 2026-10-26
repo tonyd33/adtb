@@ -1,4 +1,5 @@
 pub mod layout;
+mod oplog;
 mod root;
 mod rows;
 
@@ -6,9 +7,10 @@ mod rows;
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::SystemTime;
 
 use adtb_lang::ast::OperatorKind;
-use adtb_lang::evolve::Source;
+use adtb_lang::evolve::{Code, Source};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Schema};
 use adtb_lang::types::RelId;
@@ -23,7 +25,8 @@ use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
 use crate::verify::{self, Depth, Inventory, Sum};
 
 pub use layout::OrderKeys;
-pub use rows::{IndexSpec, Rows, declared, indexed_fields, indexes};
+pub use oplog::{Hash, version_hash};
+pub use rows::{IndexSpec, Rows, applied, declared, indexed_fields, indexes};
 
 use root::Root;
 
@@ -289,6 +292,34 @@ fn fold(texts: &BTreeMap<u64, String>) -> Source {
     source
 }
 
+/// Returns why the catalog cannot record the last migration of `source`: its operators that do
+/// not resolve, and its functions whose names do not resolve or whose code it does not hold.
+fn recordable(source: &Source) -> Result<(), Vec<String>> {
+    let mut why = Vec::new();
+    if let Err(ds) = source.resolved(source.version) {
+        why.extend(ds.into_iter().map(|d| d.message));
+    }
+    match source.functions() {
+        Err(ds) => why.extend(ds.into_iter().map(|d| d.diag.message)),
+        Ok(fs) => why.extend(fs.iter().filter_map(|f| match &f.code {
+            Code::Wasm { module, .. } => Some(format!(
+                "function `{}` names Wasm module `{module}`, which no migration installs",
+                f.name
+            )),
+            _ => None,
+        })),
+    }
+    if why.is_empty() { Ok(()) } else { Err(why) }
+}
+
+/// Returns `t` in microseconds since 1970-01-01T00:00:00Z, saturating.
+fn micros(t: SystemTime) -> i64 {
+    match t.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_micros()).unwrap_or(i64::MAX),
+        Err(e) => i64::try_from(e.duration().as_micros()).map_or(i64::MIN, |n| -n),
+    }
+}
+
 /// Returns whether a first migration may hold `op`: it declares an object and needs no data.
 fn declares(op: &OperatorKind) -> bool {
     matches!(
@@ -530,6 +561,9 @@ impl Catalog {
         if !over.is_empty() {
             return refused(over);
         }
+        if let Err(why) = recordable(&next) {
+            return refused(why);
+        }
         let x = txns.begin(pager)?;
         let added = ctor_relations(&schema)
             .into_iter()
@@ -615,6 +649,11 @@ impl Catalog {
                 if !before.contains(&(c, row.clone())) {
                     self.insert(pager, x, r, c, &row)?;
                 }
+            }
+        }
+        for (r, rows) in applied(&self.schema, &self.source, micros(pager.wall())) {
+            for (c, row) in rows {
+                self.insert(pager, x, r, c, &row)?;
             }
         }
         Ok(())

@@ -983,6 +983,11 @@ impl<R: Runtime> Pager<R> {
         self.write_header(None);
     }
 
+    /// Returns the wall-clock time of the runtime the pager runs on.
+    pub fn wall(&self) -> SystemTime {
+        self.rt.wall()
+    }
+
     pub(crate) fn checkpoint_lsn(&self) -> Lsn {
         self.header.lock(&self.rt).0.checkpoint
     }

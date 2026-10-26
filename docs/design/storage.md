@@ -184,6 +184,7 @@ pager.log_safe_snapshot(position, &snapshot) -> Lsn
 pager.max_threads() -> usize
 pager.catalog_root() -> Pid
 pager.set_catalog_root(pid)
+pager.wall() -> SystemTime
 PageError { pid, damage: Checksum | Unreadable | Stale { expected, found } }
 ```
 
@@ -271,6 +272,8 @@ Postconditions:
   `set_catalog_root(pid)` forces the log, then writes and forces a
   header copy naming `pid`; a crash keeps the old root or the new
   one, and the new one only with every record logged before the call.
+- `wall` returns the wall-clock time of the runtime the pager was
+  created or opened with, the clock commit records carry.
 - When every frame stays latched past the options' stall bound, the
   page-in waiting for a frame panics, reporting a stalled pool.
 - Write-ahead, full-page images and checkpoints (§5.2, §6) are the

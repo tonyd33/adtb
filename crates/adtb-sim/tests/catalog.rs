@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::catalog::{Catalog, Error, declared};
+use adtb::catalog::{Catalog, Error, applied, declared, version_hash};
 use adtb::key::{CtorId, Value};
 use adtb::mvcc::{Scope, Transactions};
 use adtb::plan::IndexId;
@@ -80,12 +80,46 @@ fn committed(
     out
 }
 
+/// Returns the rows of `catalog::migrations` every committed transaction wrote.
+fn migration_rows(
+    pager: &Pager<SimRuntime>,
+    catalog: &Catalog,
+    txns: &Transactions<SimRuntime>,
+) -> Vec<(u32, Vec<Value>)> {
+    let (id, snapshot) = txns.take(Scope::Every).expect("a snapshot");
+    let rows = catalog
+        .rows(
+            pager,
+            txns,
+            &snapshot,
+            rel(catalog, "catalog", "migrations"),
+        )
+        .expect("the rows read");
+    txns.release(id);
+    rows
+}
+
+/// Returns `rows` of `catalog::migrations` without their `applied` field, checking that it is
+/// an instant.
+fn unapplied(rows: &[(u32, Vec<Value>)]) -> Vec<String> {
+    rows.iter()
+        .map(|(c, row)| {
+            assert!(matches!(row[3], Value::Instant(_)), "{row:?}");
+            format!("{:?}", (c, &row[..3]))
+        })
+        .collect()
+}
+
 /// Check that the catalog of `pager` holds the rows its schema declares, that no transaction
 /// committed twice, and that it verifies clean.
 fn check_whole(pager: &Pager<SimRuntime>, catalog: &Catalog, txns: &Transactions<SimRuntime>) {
     let schema = catalog.schema();
     let got = committed(pager, catalog, txns);
+    let migrations = rel(catalog, "catalog", "migrations");
     for (r, want) in declared(schema, catalog.source()) {
+        if r == migrations {
+            continue;
+        }
         assert_eq!(
             sorted(&want),
             got[&r],
@@ -93,6 +127,17 @@ fn check_whole(pager: &Pager<SimRuntime>, catalog: &Catalog, txns: &Transactions
             schema.relation(r).name
         );
     }
+    let want: Vec<String> = applied(schema, catalog.source(), 0)
+        .remove(&migrations)
+        .unwrap_or_default()
+        .iter()
+        .map(|(c, row)| format!("{:?}", (c, &row[..3])))
+        .collect();
+    assert_eq!(
+        want,
+        unapplied(&migration_rows(pager, catalog, txns)),
+        "rows of migrations"
+    );
     let report = verify_catalog(pager, catalog, txns);
     assert!(report.is_clean() && report.complete, "{report:#?}");
     let commits: BTreeSet<u64> = report.commits.iter().copied().collect();
@@ -550,6 +595,76 @@ fn only_a_first_migration_of_declarations_applies() {
             refused(catalog.migrate(&pager, &txns, "module auth\nadd type T = { id: I64 }\n"));
         assert_eq!(1, why.len(), "{why:?}");
         assert_eq!(1, catalog.source().version);
+        check_whole(&pager, &catalog, &txns);
+    });
+    assert_eq!(Outcome::Finished, outcome);
+}
+
+#[test]
+fn a_migrated_catalog_reopens_with_its_log_rows_and_version_hash() {
+    with_migrated(18, |pager, catalog, txns| {
+        let schema = catalog.schema();
+        let rows = migration_rows(pager, catalog, txns);
+        let [(_, row)] = rows.as_slice() else {
+            panic!("one migrations row: {rows:?}")
+        };
+        assert_eq!(Value::I64(1), row[0]);
+        let hash = version_hash(schema, catalog.source());
+        assert_ne!([0; 32], hash);
+        assert_eq!(Value::Bytes(hash.to_vec()), row[1]);
+        assert_eq!(Value::Text(RUNNING.into()), row[2]);
+        let got = committed(pager, catalog, txns);
+        let ops = &got[&rel(catalog, "catalog", "migration_ops")];
+        assert_eq!(8, ops.len(), "{ops:?}");
+        let clauses = &got[&rel(catalog, "catalog", "migration_clauses")];
+        assert_eq!(2, clauses.len(), "the two members of OAuth: {clauses:?}");
+        let functions = &got[&rel(catalog, "catalog", "functions")];
+        assert_eq!(1, functions.len(), "{functions:?}");
+        assert!(
+            functions[0].contains("Text(\"display_name\")"),
+            "{functions:?}"
+        );
+    });
+}
+
+#[test]
+fn the_log_rows_survive_a_crash_after_the_migration_commits() {
+    let (sim, _) = migrated(19);
+    let recording = sim.recording();
+    for (k, files) in recording
+        .images(recording.len(), 4, 19)
+        .into_iter()
+        .enumerate()
+    {
+        let mut sim = Sim::with_files(19, Config::default(), files);
+        let outcome = sim.run(|rt| {
+            let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+            let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+            assert_eq!(1, catalog.source().version, "image {k}");
+            check_whole(&pager, &catalog, &txns);
+            assert_eq!(
+                1,
+                migration_rows(&pager, &catalog, &txns).len(),
+                "image {k}"
+            );
+        });
+        assert_eq!(Outcome::Finished, outcome, "image {k}");
+    }
+}
+
+#[test]
+fn a_function_naming_a_wasm_module_no_migration_installs_is_refused() {
+    let mut sim = Sim::new(20, Config::default());
+    let outcome = sim.run(|rt| {
+        let pager = Pager::create(rt.clone(), &options()).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        let text =
+            "module app\nadd module app\ndefine fn f (x: I64) -> I64 = wasm \"m\" export \"f\"\n";
+        match catalog.migrate(&pager, &txns, text) {
+            Err(Error::Refused(why)) => assert_eq!(1, why.len(), "{why:?}"),
+            other => panic!("not refused: {other:?}"),
+        }
+        assert_eq!(0, catalog.source().version);
         check_whole(&pager, &catalog, &txns);
     });
     assert_eq!(Outcome::Finished, outcome);

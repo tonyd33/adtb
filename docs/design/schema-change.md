@@ -36,6 +36,8 @@ catalog.order_keys() -> order key by constructor id
 catalog.plan() -> plan::Catalog
 catalog.inventory(&commit_log) -> verify::Inventory
 catalog::declared(&schema, &source) -> rows by relation
+catalog::applied(&schema, &source, applied) -> rows by relation
+catalog::version_hash(&schema, &source) -> Hash
 ```
 
 Preconditions:
@@ -62,8 +64,29 @@ Postconditions:
 - `migrate` applies the first migration of the file, holding only
   operators that declare objects, as one transaction: it creates the
   heaps and indexes of every relation it declares, writes the rows
-  `declared` gives for every object it declares, and returns once the
-  migration is durable. A refused migration changes nothing.
+  `declared` gives for every object it declares and for the migration,
+  and the row `applied` gives at the pager's wall-clock time, and
+  returns once the migration is durable. It refuses a migration whose
+  operators do not resolve (§4.1) or that defines a function over a
+  Wasm module no migration installs. A refused migration changes
+  nothing.
+- `declared` gives, beyond the rows of each object, a row of
+  `functions` for each function and aggregate of the user modules,
+  and for each migration of the log a row of `migration_ops` for each
+  of its operators and of `migration_clauses` for each of their
+  clauses, as `Source::resolved` gives them, `Operator` and
+  `ClauseBody` constructors taking their catalog ids as tags. A
+  function's hash is the BLAKE3-256 hash of the canonical token form of
+  its body (of everything after `=`, for an aggregate), or of the
+  declared version of a host function.
+- `applied(schema, source, t)` gives the row of `migrations` for the
+  last migration of `source`, applied at `t` microseconds since
+  1970-01-01T00:00:00Z, and nothing for an empty log.
+- `version_hash` returns the hash of the version `source` is at: 32
+  zero bytes at version 0, and at version `n` the BLAKE3-256 hash of
+  the hash at `n - 1` followed by migration `n`'s resolved operators
+  in the wire value encoding. It panics if a migration of the log does
+  not resolve.
 - After a crash during `migrate`, `open` finds either the whole
   migration or none of it, and frees every page the migration
   allocated if it did not commit.
@@ -260,6 +283,8 @@ The catalog writes each operand written in the language as a `Term`
 | `Source::names()` | for each declaration `i`, the `Names` of file `i` of `Source::files()`, by span |
 | `Logged::names()` | the `Names` of the migration's text, by span; or the operands whose names it cannot resolve |
 | `canon::canonical_term(text, span, names)` | the canonical token form of the term at `span` of `text` |
+| `Source::resolved(n)` | the operators of migration `n` of the log in ordinal order, each a `Resolved` with its `Clause`s; or the operators with no resolved form, or the operands whose names do not resolve |
+| `Source::functions()` | every function and aggregate of the user modules: its id, module, name, signature as written, and its `Code` |
 
 Postconditions of `Source::names()` and `Logged::names()`:
 
@@ -277,6 +302,38 @@ Postconditions of `Source::names()` and `Logged::names()`:
   unique or index as in the clause before the operator; a fill or a
   routing as its operator checks it. It holds no names for a `script`
   write, a grant or revoke target, or a `revert` fill.
+
+Precondition of `Source::resolved(n)`: the log holds migration `n`.
+
+Postconditions of `Source::resolved(n)`:
+
+- Every object an operator creates or names is its catalog id in the
+  source after migration `n`; a unique or index an operator adds is the
+  clause it appends to its relation.
+- Every operand written in the language is its canonical token form,
+  names resolved as `Logged::names()` resolves them: the declaration
+  after the verb for `add type`, `add relation`, `define fn`,
+  `define aggregate`, `add constraint` and `add check`, and the field
+  list without its parentheses for `add unique` and `add index`.
+- A named set has a `Member` clause for each constructor it lists, in
+  order, and a unique or index written with `in r.C` one for each
+  constructor of its scope. No other operator has clauses.
+- Operators other than those that declare an object (`add module`,
+  `add type`, `add relation`, `add set`, `add unique`, `add index`,
+  `define fn`, `define aggregate`, `add constraint`, `add check`) have
+  no resolved form yet, and are refused at their spans.
+- The result depends on the migration's tokens and names, not its
+  whitespace or comments.
+
+Postconditions of `Source::functions()`:
+
+- A function written in the language has `Code::Language` with its
+  body as written and in canonical token form; an aggregate has
+  `Code::Aggregate` with everything after the `=` of its declaration;
+  `wasm` and `host` bodies give their module and export, or their
+  symbol, version and whether they are declared deterministic.
+- The canonical form depends on the body's tokens and names, not its
+  whitespace or comments.
 
 Postcondition of `canonical_term`: a name with a module is spelled
 `module::name`, a qualifier written before it dropped; a name of the

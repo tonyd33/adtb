@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 adtb-lang.workspace = true
 adtb-sys.workspace = true
+blake3 = { version = "1.8.3", default-features = false }
 icu_casemap = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
 icu_collator = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
 icu_locale_core = { version = "2.4.0", default-features = false }
