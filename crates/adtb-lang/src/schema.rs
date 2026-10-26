@@ -246,6 +246,9 @@ pub struct Schema {
     pub stages: BTreeMap<(RelId, u32), Stage>,
     /// The write state of each value-level constructor that is not enabled.
     pub value_stages: BTreeMap<(TypeId, u32), Stage>,
+    /// The relation variables a later operator of the migration being applied adds, by module and
+    /// name: each is a relation with no element type that only a `Key r` type resolves to.
+    pub ahead: BTreeMap<(ModuleId, String), RelId>,
 }
 
 /// The write state of a constructor in a relation variable, or of a value-level constructor.
@@ -361,6 +364,15 @@ impl Schema {
                 Some(m) => format!("module `{}` declares no `{text}`", m.text),
                 None => format!("no `{text}` in scope"),
             })
+    }
+
+    /// Returns the relation variable `name` names among those a later operator adds.
+    fn relation_ahead(&self, module: ModuleId, name: &ast::QName) -> Option<RelId> {
+        let m = match &name.module {
+            Some(m) => self.module_named(&m.text)?,
+            None => module,
+        };
+        self.ahead.get(&(m, name.name.text.clone())).copied()
     }
 
     pub fn lookup_relation(&self, module: ModuleId, name: &ast::QName) -> Result<RelId, String> {
@@ -732,10 +744,20 @@ struct Builder<'a> {
     files: &'a [(FileId, ast::SchemaFile)],
     /// Spans of `Span a` uses whose argument must be ordered, checked once every type is known.
     ordered_args: Vec<(Ty, FileId, Span)>,
+    ahead: &'a [(String, String)],
 }
 
 /// Builds the schema the given module files declare, over the prelude.
 pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Schema, Vec<FileDiag>> {
+    build_ahead(files, &[])
+}
+
+/// Builds the schema as `build` does, where a `Key r` type may also name each relation variable
+/// `ahead` lists by module and name that the files do not declare.
+pub fn build_ahead(
+    files: &[(FileId, ast::SchemaFile)],
+    ahead: &[(String, String)],
+) -> Result<Schema, Vec<FileDiag>> {
     let prelude = parse::parse_schema(PRELUDE_SRC, Options::default())
         .ok()
         .expect("the prelude parses");
@@ -755,9 +777,11 @@ pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Schema, Vec<FileDiag
             ids: crate::ids::CatalogIds::default(),
             stages: BTreeMap::new(),
             value_stages: BTreeMap::new(),
+            ahead: BTreeMap::new(),
         },
         diags: Vec::new(),
         files: &all,
+        ahead,
         ordered_args: Vec::new(),
     };
     b.run();
@@ -972,6 +996,7 @@ impl Builder<'_> {
                 }
             }
         }
+        self.declare_ahead();
         self.schema.principal = principal.unwrap_or_else(|| self.schema.prelude_type("Principal"));
 
         for &(file, module, id, r) in &rel_decls {
@@ -1000,6 +1025,34 @@ impl Builder<'_> {
         self.check_recursion();
         self.check_references();
         self.check_ordered();
+    }
+
+    fn declare_ahead(&mut self) {
+        for (m, name) in self.ahead {
+            let Some(module) = self.schema.module_named(m) else {
+                continue;
+            };
+            if self.schema.module(module).values.contains_key(name) {
+                continue;
+            }
+            let id = RelId(self.schema.relations.len() as u32);
+            self.schema.relations.push(RelationDef {
+                name: name.clone(),
+                module,
+                elem: Ty::Unit,
+                elem_def: TypeId(u32::MAX),
+                key: Vec::new(),
+                generate: None,
+                indexes: Vec::new(),
+                defaults: Vec::new(),
+                computed: Vec::new(),
+                sets: Vec::new(),
+                volatile: false,
+                file: FileId(u32::MAX - 3),
+                span: Span::default(),
+            });
+            self.schema.ahead.insert((module, name.clone()), id);
+        }
     }
 
     fn check_type_name(&mut self, file: FileId, name: &ast::Ident, principal_seen: bool) {
@@ -2096,9 +2149,19 @@ pub fn resolve_type(
         ast::TypeKind::Key(_, r) => {
             let rel = schema
                 .lookup_relation(scope.module, &r.relation)
+                .or_else(|e| schema.relation_ahead(scope.module, &r.relation).ok_or(e))
                 .map_err(|e| (r.span, e))?;
             let ctors = match &r.sel {
                 None => None,
+                Some(_) if schema.relation(rel).elem_def.0 == u32::MAX => {
+                    return Err((
+                        r.span,
+                        format!(
+                            "`{}` is added by a later operator, so only `Key {}` may name it",
+                            r.relation.name.text, r.relation.name.text
+                        ),
+                    ));
+                }
                 Some(sel) => {
                     let set = schema.relation_sel(rel, sel).map_err(|e| (r.span, e))?;
                     schema.normalize_ctors(schema.relation(rel).elem_def, set)

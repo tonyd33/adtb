@@ -252,7 +252,7 @@ every failure, not only the first:
 
 | Check | Refused when |
 | --- | --- |
-| Typing | an operator does not type against the schema produced by the operators before it in the migration |
+| Typing | an operator does not type against the schema produced by the operators before it in the migration, except that a reference type `Key r` in a declaration may name a relation variable a later operator of the same migration adds |
 | Recheck of schema objects | a schema function, constraint, stored view, default or computed field no longer type checks or is no longer exhaustive at the new version |
 | Constraint carrying | a constraint touched by a structural operator, including one whose drop is pending, has no image under it (§6.2, §6.4) |
 | Constraint validation | an added constraint has violating rows in the migration's final state (§6.3) |
@@ -263,6 +263,11 @@ every failure, not only the first:
 | Lifecycle | a `remove` meets a constructor that is not deprecated or not empty (§4.4); a `disable` meets one that has rows or a live writer, or a `deprecate` one that is not enabled (§4.3); a `drop field` meets a field of an old key whose drop is pending (§4.10) |
 | Code identity | a host function is redefined while a live bundle pins a version with a different code for it (§7.1) |
 | Privilege | the principal may not append the operators ([security.md](security.md#3-grants)) |
+
+A reference cycle is declared within one migration: each type of the
+cycle may name, as `Key r`, a relation variable added after it. Any
+other name, including a type named by a field, must be declared by an
+operator before the one that uses it.
 
 A failure of a schema object always refuses the migration: schema
 objects exist only at the current version, so the migration must
@@ -344,7 +349,7 @@ that version is older than the current version, its reads and writes
 are translated through the operators between the two (§7). A staged
 migration runs while bundles pinned earlier keep being served.
 
-Rulings: engine/transactional-ddl, engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version, evolution/breaks/recompile, evolution/breaks/invisible/registered, surface/registration/on-change/refuse, spec/schema-siread/version-item, spec/evolution/migration-statement/one-statement, spec/evolution/preconditions/predicate-read, spec/evolution/staged-meaning/one-transaction, spec/txn/one-version/one-pair
+Rulings: engine/transactional-ddl, engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version, evolution/breaks/recompile, evolution/breaks/invisible/registered, surface/registration/on-change/refuse, spec/schema-siread/version-item, spec/evolution/migration-statement/one-statement, spec/evolution/preconditions/predicate-read, spec/evolution/staged-meaning/one-transaction, spec/txn/one-version/one-pair, spec/evolution/forward-refs/later-key
 
 ## 4. Operators
 
@@ -665,12 +670,14 @@ is refused (§3.2).
 The routing is invertible when each arm's pattern binds every field of
 the old constructor, or fixes it to a literal or a nullary constructor, and its result uses each
 bound variable exactly once as a whole field value with no other
-computation. A field access `g.f` on a constructor binder `g` counts
-as binding field `f` and carrying it whole. The engine then derives the
-inverse merge. A split whose
-routing is not invertible is a declared loss and has no inverse: it is
+computation, and every product is the result of some arm. A field
+access `g.f` on a constructor binder `g` counts as binding field `f`
+and carrying it whole. The engine then derives the inverse merge. A
+split whose routing is not invertible is a declared loss and has no
+inverse: it is
 refused while a live bundle pinned before it reads or writes the old
-constructor (§7.2), and a `revert` of it is refused.
+constructor (§7.2), and a `revert` of it is refused. A refusal for a
+product that no arm reaches names that product.
 
 ### 4.7 Merge constructors
 
@@ -913,7 +920,7 @@ inverse: `revert` of a migration containing one is refused. A restore
 replays schema operators and skips scripts, since the restored data
 is the state after them ([interop.md](interop.md#6-dump-and-restore)).
 
-Rulings: evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/remove-rows/deprecate, evolution/log-ops, evolution/scripted, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, derived/defaults/backfill/separate, spec/evolution/deprecated-value/same-path, spec/evolution/product-state/source-state, spec/evolution/new-ids/listed-order, spec/evolution/ctor-order/placed, spec/evolution/arm-target/scrutinee-set, spec/evolution/product-position/first-source, spec/late-relation-state/type-state, spec/record-add-ctor/allowed
+Rulings: evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/remove-rows/deprecate, evolution/log-ops, evolution/scripted, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, derived/defaults/backfill/separate, spec/evolution/deprecated-value/same-path, spec/evolution/product-state/source-state, spec/evolution/new-ids/listed-order, spec/evolution/ctor-order/placed, spec/evolution/arm-target/scrutinee-set, spec/evolution/product-position/first-source, spec/late-relation-state/type-state, spec/record-add-ctor/allowed, spec/evolution/split-inverse/every-product
 
 ## 5. Inverses and revert
 

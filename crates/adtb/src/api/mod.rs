@@ -321,7 +321,13 @@ impl<R: Runtime> Engine<R> {
         log: &Log,
         options: &OpenOptions,
     ) -> Result<Engine<R>, OpenError> {
+        let query_memory = options
+            .query_memory_bytes
+            .map_or(DEFAULT_QUERY_MEMORY, |b| {
+                usize::try_from(b).unwrap_or(usize::MAX)
+            });
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
+        catalog.set_query_memory(query_memory);
         migrate(&mut catalog, &pager, &txns, log)?;
         let (schema, program) = catalog
             .source()
@@ -333,11 +339,6 @@ impl<R: Runtime> Engine<R> {
         let sequences = catalog.sequences();
         let (heaps, indexes) = catalog.bindings();
         let schema = Arc::new(schema);
-        let query_memory = options
-            .query_memory_bytes
-            .map_or(DEFAULT_QUERY_MEMORY, |b| {
-                usize::try_from(b).unwrap_or(usize::MAX)
-            });
         let defaults = exec::Options::default();
         if sequences.is_none() {
             Catalog::naming_sequences(&pager, root).map_err(corrupt)?;

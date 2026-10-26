@@ -73,17 +73,35 @@ pub struct IndexSpec {
     pub unique: bool,
     /// Constructor indexes, in order.
     pub ctors: Vec<u32>,
+    /// Each a field, or a path through a field's value-level sum, as `login.Google.gid`.
     pub fields: Vec<String>,
     kind: &'static str,
     /// The clause as the catalog writes it.
     pub clause: String,
 }
 
-/// Returns the key index, the uniques and indexes and the implied indexes of every relation of
-/// `schema` with catalog ids, by index id.
+impl IndexSpec {
+    /// Returns whether a B-tree holds the index: every element is a field.
+    pub fn stored(&self) -> bool {
+        !self.fields.iter().any(|f| f.contains('.'))
+    }
+}
+
+/// Returns the key index and the uniques and indexes over fields of every relation of `schema`
+/// with catalog ids, and the implied indexes: those a B-tree holds, by index id.
 ///
-/// Panics if an index is over an expression other than a field.
+/// Panics if an index is over an expression other than a field path.
 pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
+    let mut out = listed(schema);
+    out.retain(|_, s| s.stored());
+    out
+}
+
+/// Returns every index of the relations of `schema` with catalog ids, those over field paths
+/// included, by index id.
+///
+/// Panics if an index is over an expression other than a field path.
+pub fn listed(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
     let mut out = BTreeMap::new();
     for (&r, &id) in &schema.ids.keys {
         let rel = schema.relation(r);
@@ -105,7 +123,7 @@ pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
     }
     for (&(r, i), &id) in &schema.ids.indexes {
         let def = &schema.relation(r).indexes[i];
-        let fields = indexed_fields(def).expect("every index of the schema is over fields");
+        let fields = indexed_paths(def).expect("every index of the schema is over field paths");
         let spec = IndexSpec {
             id,
             relation: r,
@@ -154,6 +172,110 @@ pub fn indexed_fields(def: &IndexDef) -> Option<Vec<String>> {
             _ => None,
         })
         .collect()
+}
+
+/// Returns the field paths an index's clause names, each written `f.C.g`, or `None` if one of
+/// its expressions is not a field path.
+pub fn indexed_paths(def: &IndexDef) -> Option<Vec<String>> {
+    def.fields.iter().map(field_path).collect()
+}
+
+/// Returns the field path `e` is, written `f.C.g`.
+pub fn field_path(e: &ast::Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Name(QName { module: None, name }) => Some(name.text.clone()),
+        ExprKind::Field(x, f) => Some(format!("{}.{}", field_path(x)?, f.text)),
+        ExprKind::Select(x, ast::CtorSel::One(c)) => Some(format!("{}.{}", field_path(x)?, c.text)),
+        _ => None,
+    }
+}
+
+/// One step of a field path through a row: a field by its position, or the constructor by its
+/// position that the value the steps before it reach must hold.
+#[derive(Clone, Copy, Debug)]
+pub enum Step {
+    Field(usize),
+    Ctor(u32),
+}
+
+/// Returns the steps of field path `path` through a row of constructor `c` of `r`, and the type
+/// of the value it reaches.
+///
+/// Panics if `path` names no field or constructor at a step.
+pub fn path_steps(schema: &Schema, r: RelId, c: u32, path: &str) -> (Vec<Step>, Ty) {
+    let mut names = path.split('.');
+    let first = names.next().expect("a path names a field");
+    let row = layout::row(schema, r, c);
+    let at = row
+        .iter()
+        .position(|(n, _)| n == first)
+        .unwrap_or_else(|| panic!("a row holds indexed field `{first}`"));
+    let mut steps = vec![Step::Field(at)];
+    let mut ty = row[at].1.clone();
+    let mut fields: Option<Vec<(String, Ty)>> = None;
+    for name in names {
+        let fs = match fields.take() {
+            Some(fs) => fs,
+            None => match layout::repr(schema, &ty) {
+                Ty::Record(fs) => fs,
+                t if layout::is_record(schema, &t) => layout::ctors(schema, &t).swap_remove(0).1,
+                t => {
+                    let k = ctor_names(schema, &t)
+                        .iter()
+                        .position(|n| n == name)
+                        .unwrap_or_else(|| {
+                            panic!("the sum of path `{path}` has constructor `{name}`")
+                        });
+                    steps.push(Step::Ctor(k as u32));
+                    fields = Some(layout::ctors(schema, &t).swap_remove(k).1);
+                    continue;
+                }
+            },
+        };
+        let at = fs
+            .iter()
+            .position(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("a value of path `{path}` has field `{name}`"));
+        steps.push(Step::Field(at));
+        ty = fs[at].1.clone();
+    }
+    (steps, ty)
+}
+
+fn ctor_names(schema: &Schema, ty: &Ty) -> Vec<String> {
+    match ty {
+        Ty::Data { def, .. } => schema
+            .ty(*def)
+            .ctors()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect(),
+        Ty::Sum { ctors, .. } => ctors.iter().map(|(n, _)| n.clone()).collect(),
+        t => panic!("{t:?} is not a sum"),
+    }
+}
+
+/// Returns the value `steps` reach in `row`, or `None` when a value on the way holds another
+/// constructor than a step names.
+pub fn at_path<'v>(row: &'v [Value], steps: &[Step]) -> Option<&'v Value> {
+    let (first, rest) = steps.split_first()?;
+    let Step::Field(i) = first else {
+        panic!("a path starts at a field");
+    };
+    let mut at = &row[*i];
+    for step in rest {
+        at = match (step, at) {
+            (Step::Ctor(k), Value::Sum { ctor, .. }) => {
+                if ctor != k {
+                    return None;
+                }
+                at
+            }
+            (Step::Field(i), Value::Sum { fields, .. } | Value::Record(fields)) => &fields[*i],
+            (s, v) => panic!("path step {s:?} meets {v:?}"),
+        };
+    }
+    Some(at)
 }
 
 fn all_ctors(schema: &Schema, r: RelId) -> Vec<u32> {
@@ -485,7 +607,7 @@ impl Builder<'_> {
     }
 
     fn indexes(&mut self) {
-        for (id, spec) in indexes(self.schema) {
+        for (id, spec) in listed(self.schema) {
             let fields = vec![
                 ("id", key(id)),
                 ("relation", key(self.schema.ids.relations[&spec.relation])),

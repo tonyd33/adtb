@@ -211,6 +211,7 @@ not this function's.
 | `Source::migrate(m, text)` | the source after migration `m`, whose spans index `text`, numbered `version + 1` and appended to `log`; or a `Refusal` |
 | `Source::check()` | the built `Schema` and its `Program` ([kernel.md](kernel.md)) |
 | `Source::steps(module, op, text)` | applies operator `op` as `Source::apply` does, and returns its steps: each the source after it and the `RowMap`s that move rows beyond what each kept field and constructor carries by id |
+| `Source::expecting(module, ops)`, `Source::settled()` | prepare a source for the operators `ops` of one migration applied one at a time by `apply` or `steps`, and end it |
 
 A `Source` holds the declaration texts of every user module, the
 modules that hold nothing, the installed extensions, the write state
@@ -228,9 +229,10 @@ Preconditions of `migrate`:
 Postconditions of `migrate`:
 
 - Each operator applies to the source the operators before it in `m`
-  produce. A refused operator leaves that source unchanged; the others
-  still apply, so the `Refusal` names every failing operator, each at
-  its span.
+  produce, where a `Key r` type may also name a relation variable that
+  a later `add relation` of `m` adds. A refused operator leaves that
+  source unchanged; the others still apply, so the `Refusal` names
+  every failing operator, each at its span.
 - On success the result checks: `result.check()` succeeds. Otherwise
   `Refusal.recheck` names every schema object of the result that fails
   to build or check, and `Refusal.result` is that result.
@@ -281,7 +283,12 @@ whose element type is the operator's type.
 | `grant`, `revoke` | each relation names a relation variable of a user module; each function a schema function; no capability or bundle call privilege | the source is unchanged |
 | `adopt tzdb` | none | the source is unchanged |
 | `script w` | `w` checks as ad hoc text against the schema the operators before it produce | the source is unchanged |
-| `revert n` | `n` is in the log and holds no `script`; no later migration names an object `n` creates; each inverse that adds a field the log holds no value for has a `fill` | the inverses of `n`'s operators, last first, apply as the table states, computed against the source before each; an added constructor goes with its arms, a removed one comes back at its place with its states and its constraints' arms, a split or merge is inverted when its routing binds or fixes every field and carries each binding whole, else refused |
+| `revert n` | `n` is in the log and holds no `script`; no later migration names an object `n` creates; each inverse that adds a field the log holds no value for has a `fill` | the inverses of `n`'s operators, last first, apply as the table states, computed against the source before each; an added constructor goes with its arms, a removed one comes back at its place with its states and its constraints' arms, a split or merge is inverted when its routing binds or fixes every field and carries each binding whole and, for a split, routes some row to every product, else refused, a split naming each product no arm reaches |
+
+Preconditions of `apply` and `steps` for the operators of one migration
+applied one at a time: `expecting` was called with all of them on the
+source before the first, and `settled` is called after the last before
+the source is checked or migrated again.
 
 Postconditions of `steps`:
 

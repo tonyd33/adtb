@@ -8,12 +8,14 @@ use adtb_lang::types::{RelId, Ty, TypeId};
 use crate::exec::{self, Conv, Scalar, Val, conv, from_stored, to_stored};
 use crate::key::Value;
 
-use super::change::{self, Data, Field, Fill, Moved, convert, fields, relation};
-use super::{ctor_id, layout, oplog};
+use super::change::{self, Data, Failed, Field, Fill, Moved, convert, fields, relation};
+use super::{Error, ctor_id, layout, oplog};
 
 /// Returns what `maps`, the row maps of one step from schema `a` to schema `b`, give the rows of
 /// `data`, which are in `a`'s layout.
-pub fn moved(a: &Schema, b: &Schema, maps: &[RowMap], data: &Data) -> Result<Moved, Vec<String>> {
+///
+/// Fails with `Error::Refused` naming each map the data refuses, or with `Error::Internal`.
+pub fn moved(a: &Schema, b: &Schema, maps: &[RowMap], data: &Data) -> Result<Moved, Error> {
     let mut out = Moved::default();
     let mut why = Vec::new();
     for map in maps {
@@ -41,11 +43,17 @@ pub fn moved(a: &Schema, b: &Schema, maps: &[RowMap], data: &Data) -> Result<Mov
             RowMap::Unnest { def, from } => unnest(a, b, *def, *from, data, &mut out),
             RowMap::Rekey { relation } => rekey(a, b, *relation, data, &mut out),
         };
-        if let Err(e) = got {
-            why.push(e);
+        match got {
+            Ok(()) => {}
+            Err(Failed::Refused(e)) => why.push(e),
+            Err(Failed::Internal(e)) => return Err(Error::Internal(e)),
         }
     }
-    if why.is_empty() { Ok(out) } else { Err(why) }
+    if why.is_empty() {
+        Ok(out)
+    } else {
+        Err(Error::Refused(why))
+    }
 }
 
 /// Each relation of `a` whose element type is `def`, with its catalog id and the same relation
@@ -86,24 +94,24 @@ fn ctor_name(schema: &Schema, def: TypeId, c: u32) -> &str {
     &schema.ty(def).ctors()[c as usize].name
 }
 
-fn field_named<'f>(fs: &'f [Field], name: &str) -> Result<&'f Field, String> {
+fn field_named<'f>(fs: &'f [Field], name: &str) -> Result<&'f Field, Failed> {
     fs.iter()
         .find(|f| f.name == name)
-        .ok_or_else(|| format!("no field `{name}`"))
+        .ok_or_else(|| format!("no field `{name}`").into())
 }
 
-fn compiled(f: &RowFn) -> Result<Scalar, String> {
+fn compiled(f: &RowFn) -> Result<Scalar, Failed> {
     let [var] = f.query.params.as_slice() else {
         return Err("a fill or routing takes the row".into());
     };
     Scalar::new(&f.schema, &f.query.terms, *var, f.query.body).map_err(shown)
 }
 
-fn shown(e: exec::Error) -> String {
+fn shown(e: exec::Error) -> Failed {
     match e {
-        exec::Error::Fault(f) => format!("the map faults with {}", f.name()),
-        exec::Error::Rejected(why) => format!("the map rejects: {why}"),
-        other => format!("{other:?}"),
+        exec::Error::Fault(f) => Failed::Refused(format!("the map faults with {}", f.name())),
+        exec::Error::Rejected(why) => Failed::Refused(format!("the map rejects: {why}")),
+        other => Failed::Internal(format!("a data map fails: {other:?}")),
     }
 }
 
@@ -115,7 +123,7 @@ fn fills(
     field: &str,
     fill: &RowFn,
     out: &mut Moved,
-) -> Result<(), String> {
+) -> Result<(), Failed> {
     let f = Arc::new(compiled(fill)?);
     for (ra, rid, rb) in relations_of(a, b, def) {
         for &c in ctors {
@@ -125,7 +133,7 @@ fn fills(
             };
             let to = fields(b, rb, cb);
             let Some(id) = field_named(&to, field)?.id else {
-                return Err(format!("field `{field}` has no catalog id"));
+                return Err(format!("field `{field}` has no catalog id").into());
             };
             let ty = field_named(&to, field)?.ty.clone();
             let convs = row_convs(&fill.schema, ra, c);
@@ -136,6 +144,70 @@ fn fills(
             });
             out.fills.insert((rid, ctor_id(b, rb, cb), id), fill);
         }
+    }
+    held_fills(a, b, def, ctors, field, fill, &f, out)
+}
+
+/// Adds to `out.values` the fill `f`, compiled from `fill`, of field `field` that constructors
+/// `ctors` of type `def` gain, for the values of `def` other rows hold.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the operator's fill, compiled and as written, and where it goes"
+)]
+fn held_fills(
+    a: &Schema,
+    b: &Schema,
+    def: TypeId,
+    ctors: &[u32],
+    field: &str,
+    fill: &RowFn,
+    f: &Arc<Scalar>,
+    out: &mut Moved,
+) -> Result<(), Failed> {
+    let Some(&tid) = a.ids.types.get(&def) else {
+        return Ok(());
+    };
+    let Some((&db, _)) = b.ids.types.iter().find(|&(_, &id)| id == tid) else {
+        return Ok(());
+    };
+    let value = |def| Ty::Data {
+        def,
+        args: Vec::new(),
+        ctors: None,
+    };
+    if !b.ty(db).params.is_empty() {
+        return Ok(());
+    }
+    let after = layout::ctors(b, &value(db));
+    let before = layout::ctors(&fill.schema, &value(def));
+    for &c in ctors {
+        let Some(cb) = b.ty(db).ctor_index(ctor_name(a, def, c)) else {
+            continue;
+        };
+        let (cid, to) = &after[cb as usize];
+        let Some(ty) = to.iter().find(|(n, _)| n == field).map(|(_, t)| t) else {
+            continue;
+        };
+        let Some(&id) = b
+            .ids
+            .fields
+            .get(&(db, None, field.to_string()))
+            .or_else(|| b.ids.fields.get(&(db, Some(cb), field.to_string())))
+        else {
+            return Err(format!("field `{field}` has no catalog id").into());
+        };
+        let ty = layout::field_type(b, ty);
+        let convs: Vec<Conv> = before[c as usize]
+            .1
+            .iter()
+            .map(|(_, t)| conv(&fill.schema, t))
+            .collect();
+        let f = f.clone();
+        let fill: Box<Fill<'static>> = Box::new(move |_, vals| {
+            let v = f.eval(row_val(c, &convs, vals)).map_err(shown)?;
+            to_stored(&ty, &v).map_err(shown)
+        });
+        out.values.insert((tid, u64::from(*cid), id), fill);
     }
     Ok(())
 }
@@ -156,7 +228,7 @@ fn copies(a: &Schema, b: &Schema, def: TypeId, ctors: &[u32], field: &str, out: 
                     .iter()
                     .position(|f| f.name == name)
                     .ok_or_else(|| format!("the row has no field `{name}` to move"))?;
-                convert(&from[at].ty, &to.ty, &row[at])
+                Ok(convert(&from[at].ty, &to.ty, &row[at])?)
             });
             out.fills.insert((rid, ctor_id(b, rb, cb), id), fill);
         }
@@ -164,7 +236,7 @@ fn copies(a: &Schema, b: &Schema, def: TypeId, ctors: &[u32], field: &str, out: 
 }
 
 /// Returns `vals`, the fields of a value named `names`, as a row of fields `to`.
-fn by_name(names: &[String], vals: &[Val], to: &[Field]) -> Result<Vec<Value>, String> {
+fn by_name(names: &[String], vals: &[Val], to: &[Field]) -> Result<Vec<Value>, Failed> {
     to.iter()
         .map(|t| {
             let at = names
@@ -184,7 +256,7 @@ fn route(
     routing: &RowFn,
     data: &Data,
     out: &mut Moved,
-) -> Result<(), String> {
+) -> Result<(), Failed> {
     let f = compiled(routing)?;
     for (ra, rid, rb) in relations_of(a, b, def) {
         let Some(rows) = data.get(&rid) else { continue };
@@ -215,16 +287,16 @@ fn route(
 }
 
 /// Returns the field of `row`, with fields `from`, named as `to`, stored as `to` stores it.
-fn carried(from: &[Field], row: &[Value], to: &Field) -> Result<Value, String> {
+fn carried(from: &[Field], row: &[Value], to: &Field) -> Result<Value, Failed> {
     let at = from
         .iter()
         .position(|f| f.name == to.name)
         .ok_or_else(|| format!("field `{}` has no counterpart", to.name))?;
-    convert(&from[at].ty, &to.ty, &row[at])
+    Ok(convert(&from[at].ty, &to.ty, &row[at])?)
 }
 
 /// The declared type of the last field of constructor `c` of relation `r`.
-fn last_field_def(schema: &Schema, r: RelId, c: u32) -> Result<TypeId, String> {
+fn last_field_def(schema: &Schema, r: RelId, c: u32) -> Result<TypeId, Failed> {
     match layout::row(schema, r, c).last() {
         Some((_, Ty::Data { def, .. })) => Ok(*def),
         _ => Err("the constructor's last field holds no declared sum".into()),
@@ -244,7 +316,7 @@ fn merge(
     discriminator: &str,
     data: &Data,
     out: &mut Moved,
-) -> Result<(), String> {
+) -> Result<(), Failed> {
     for (ra, rid, rb) in relations_of(a, b, def) {
         let Some(rows) = data.get(&rid) else { continue };
         let cb = ctor_named(b, rb, into).ok_or_else(|| format!("no constructor `{into}`"))?;
@@ -295,14 +367,14 @@ fn nest(
     into: &str,
     data: &Data,
     out: &mut Moved,
-) -> Result<(), String> {
+) -> Result<(), Failed> {
     let header = a.ty(def).header().len();
     for (ra, rid, rb) in relations_of(a, b, def) {
         let Some(rows) = data.get(&rid) else { continue };
         let cb = ctor_named(b, rb, into).ok_or_else(|| format!("no constructor `{into}`"))?;
         let to = fields(b, rb, cb);
         let Some((held, outer)) = to.split_last() else {
-            return Err(format!("`{into}` has no field"));
+            return Err(format!("`{into}` has no field").into());
         };
         let s = last_field_def(b, rb, cb)?;
         for &c in from {
@@ -343,7 +415,7 @@ fn unnest(
     from: u32,
     data: &Data,
     out: &mut Moved,
-) -> Result<(), String> {
+) -> Result<(), Failed> {
     for (ra, rid, rb) in relations_of(a, b, def) {
         let Some(rows) = data.get(&rid) else { continue };
         let cid = ctor_id(a, ra, from);
@@ -387,7 +459,7 @@ fn key_value(
     row: &[Value],
     k: &Schema,
     keyed: RelId,
-) -> Result<Value, String> {
+) -> Result<Value, Failed> {
     let from = fields(a, r, c);
     let kc = ctor_named(k, keyed, ctor_name(a, a.relation(r).elem_def, c))
         .ok_or_else(|| "the keyed constructor is gone".to_string())?;
@@ -404,7 +476,7 @@ fn key_value(
     })
 }
 
-fn rekey(a: &Schema, b: &Schema, ra: RelId, data: &Data, out: &mut Moved) -> Result<(), String> {
+fn rekey(a: &Schema, b: &Schema, ra: RelId, data: &Data, out: &mut Moved) -> Result<(), Failed> {
     let rid = a.ids.relations[&ra];
     let rb = relation(b, rid).ok_or_else(|| "the rekeyed relation is gone".to_string())?;
     let old_ty = layout::field_type(a, &layout::key_value_ty(a, ra));
@@ -440,7 +512,7 @@ fn rekey(a: &Schema, b: &Schema, ra: RelId, data: &Data, out: &mut Moved) -> Res
                     oplog::encode(&old_ty, &row[at], &mut enc);
                     keys.get(&enc)
                         .cloned()
-                        .ok_or_else(|| format!("field `{}` references no row", f.name))
+                        .ok_or_else(|| format!("field `{}` references no row", f.name).into())
                 });
                 out.fills.insert((x, ctor_id(b, xb, c), id), fill);
             }

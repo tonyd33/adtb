@@ -15,9 +15,6 @@ use crate::storage::Pager;
 
 use super::{Catalog, Error};
 
-/// The query memory one constraint's validation may hold.
-const VALIDATION_MEMORY: usize = 1 << 30;
-
 impl Catalog {
     /// Returns, for each constraint and check of this catalog that `old` lacks or that reads a
     /// relation whose catalog id is in `rewritten`, why the rows transaction `x` sees at
@@ -56,7 +53,7 @@ impl Catalog {
             heaps,
             indexes,
         });
-        let budget = Budget::new(VALIDATION_MEMORY);
+        let budget = Budget::new(self.query_memory);
         let terms = &normal.terms;
         let named = qualified(schema)
             .into_iter()
@@ -156,7 +153,7 @@ fn violating<R: Runtime>(
     .map_err(|e| internal(e.to_string()))?;
     let program = Arc::new(exec::compile(schema, catalog, &p, None).map_err(failed)?);
     let grant = budget
-        .admit(VALIDATION_MEMORY)
+        .admit(budget.limit())
         .expect("one validation runs at a time");
     let call = Call {
         store: store.clone(),
@@ -171,6 +168,11 @@ fn violating<R: Runtime>(
             return Ok(vec![format!("its query faults with {}", f.name())]);
         }
         Err(exec::Error::Rejected(why)) => return Ok(vec![format!("its query rejects: {why}")]),
+        Err(exec::Error::StatementLimit(exec::Exceeded::Memory { limit })) => {
+            return Ok(vec![format!(
+                "its validation needs more than the query memory of {limit} bytes"
+            )]);
+        }
         Err(e) => return Err(failed(e)),
     };
     let Val::Set(rows) = &v else {

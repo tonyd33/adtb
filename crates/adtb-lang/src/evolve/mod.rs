@@ -84,6 +84,9 @@ pub struct Source {
     pub next: BTreeMap<crate::ids::Space, u64>,
     /// Where operators copied the text of the migration [`Logged::names`] replays; `None` otherwise.
     pub marks: Option<Marks>,
+    /// The relation variables, by module and name, that the operators of the migration being
+    /// applied add.
+    pub ahead: Vec<(String, String)>,
 }
 
 /// Text of the migration being replayed that an operator copied into a declaration.
@@ -409,7 +412,28 @@ impl Source {
                 files.push((FileId(u32::MAX - 2), empty));
             }
         }
-        schema::build(&files)
+        schema::build_ahead(&files, &self.ahead)
+    }
+
+    /// Prepares the source for the operators `ops` of a migration of `module`, applied one at a
+    /// time: a `Key r` type may name a relation variable that a later one of them adds.
+    ///
+    /// Call `settled` after the last of them.
+    pub fn expecting(&mut self, module: &str, ops: &[Operator]) {
+        self.ahead = ops
+            .iter()
+            .filter_map(|op| match &op.kind {
+                OperatorKind::AddRelation(r) => {
+                    Some((module.to_string(), r.name.name.text.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+    }
+
+    /// Ends the migration `expecting` prepared the source for.
+    pub fn settled(&mut self) {
+        self.ahead.clear();
     }
 
     /// Builds and type checks the schema.
@@ -559,6 +583,7 @@ impl Source {
     pub fn migrate(&self, m: &MigrationFile, text: &str) -> Result<Source, Refusal> {
         let mut next = self.clone();
         next.version += 1;
+        next.expecting(&m.module.text, &m.operators);
         let mut refusal = Refusal::default();
         let mut rekeyed = Vec::new();
         for op in &m.operators {
@@ -574,6 +599,7 @@ impl Source {
                 refusal.operators.push(d);
             }
         }
+        next.settled();
         if let Err(ds) = next.check() {
             let reported: BTreeSet<String> = refusal
                 .operators

@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
-use adtb_lang::ast::{CtorSel, Expr, ExprKind};
 use adtb_lang::kernel::{IndexField, Kind, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Generator, OnDelete, Schema};
 use adtb_lang::textual::self_key;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
+use crate::catalog::field_path;
 use crate::exec::types::ctors;
 use crate::exec::{Conv, conv};
 use crate::plan::{Catalog, HeapId, IndexDesc, IndexId};
@@ -105,15 +105,6 @@ impl Rel {
 }
 
 /// Returns the field path an index field is written as, if it is one.
-fn path(e: &Expr) -> Option<String> {
-    match &e.kind {
-        ExprKind::Name(q) if q.module.is_none() => Some(q.name.text.clone()),
-        ExprKind::Field(x, f) => Some(format!("{}.{}", path(x)?, f.text)),
-        ExprKind::Select(x, CtorSel::One(c)) => Some(format!("{}.{}", path(x)?, c.text)),
-        _ => None,
-    }
-}
-
 fn refs(schema: &Schema, rel: RelId, c: u32, indexes: &[IndexDesc]) -> Vec<RefField> {
     let r = schema.relation(rel);
     let all = (0..schema.ty(r.elem_def).ctors().len() as u32).collect::<Vec<_>>();
@@ -172,7 +163,7 @@ fn unique_name(schema: &Schema, rel: RelId, i: usize) -> String {
     let r = schema.relation(rel);
     let def = schema.ty(r.elem_def);
     let ix = &r.indexes[i];
-    let paths: Option<Vec<String>> = ix.fields.iter().map(path).collect();
+    let paths: Option<Vec<String>> = ix.fields.iter().map(field_path).collect();
     let Some(paths) = paths else {
         let id = schema.ids.indexes[&(rel, i)];
         return format!("{name}.unique#{id}");

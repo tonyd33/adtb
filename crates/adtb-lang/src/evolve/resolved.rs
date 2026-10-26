@@ -291,8 +291,14 @@ impl Source {
             before: &logged.before.schema().map_err(unbuilt)?,
             names: &names,
             indexes: BTreeMap::new(),
+            at: 0,
         };
-        logged.operators.iter().map(|op| r.operator(op)).collect()
+        (0..logged.operators.len())
+            .map(|k| {
+                r.at = k;
+                r.operator(&logged.operators[k])
+            })
+            .collect()
     }
 
     /// Returns every function and aggregate of the user modules, in declaration order.
@@ -476,6 +482,8 @@ struct Resolver<'a> {
     names: &'a Names,
     /// The position among the relation's uniques and indexes the next one added takes.
     indexes: BTreeMap<RelId, usize>,
+    /// The ordinal of the operator being resolved.
+    at: usize,
 }
 
 impl Resolver<'_> {
@@ -815,7 +823,7 @@ impl Resolver<'_> {
                 target: self.target(t)?,
             },
             OperatorKind::AddField { path, ty, fill } => Resolved::AddField {
-                field: self.field_in(after, path, &path.field.text)?,
+                field: self.field_in(after, path, &self.renamed_later(path))?,
                 decl: term(path.field.span.to(ty.span)),
                 fill: term(fill_span(fill)?),
             },
@@ -1069,6 +1077,22 @@ impl Resolver<'_> {
         let def = self.type_def(schema, ty)?;
         let c = schema.ty(def).ctor_index(ctor)?;
         schema.ids.ctors.get(&(def, c)).copied()
+    }
+
+    /// Returns the name the field at `path` has after the renames of the operators after this one.
+    fn renamed_later(&self, path: &ast::FieldPath) -> String {
+        let mut name = path.field.text.clone();
+        for op in &self.logged.operators[self.at + 1..] {
+            if let OperatorKind::RenameField(p, to) = &op.kind
+                && self.module_of(&p.ty) == self.module_of(&path.ty)
+                && p.ty.name.text == path.ty.name.text
+                && p.ctor.as_ref().map(|c| &c.text) == path.ctor.as_ref().map(|c| &c.text)
+                && p.field.text == name
+            {
+                name.clone_from(&to.text);
+            }
+        }
+        name
     }
 
     fn field_in(&self, schema: &Schema, path: &ast::FieldPath, name: &str) -> Option<u64> {

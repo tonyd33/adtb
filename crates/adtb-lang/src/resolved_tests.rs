@@ -606,3 +606,24 @@ fn a_rekey_lists_its_carried_fields_and_a_revert_its_fills() {
     let src = migrated(&src, text);
     assert_eq!(vec![Clause::Carry { field: user }], ops(&src, 5)[0].clauses);
 }
+
+#[test]
+fn a_field_added_then_renamed_resolves_to_one_id() {
+    let src = migrated(
+        &first(),
+        "module auth\nadd field User.nick: Text fill \"\"\nrename field User.nick to handle\n",
+    );
+    let got: Vec<Resolved> = ops(&src, 2).into_iter().map(|o| o.op).collect();
+    let field = id(&src, "field auth::User.User.handle");
+    match got.as_slice() {
+        [
+            Resolved::AddField { field: a, .. },
+            Resolved::RenameField { field: b, name },
+        ] => {
+            assert_eq!(field, *a);
+            assert_eq!(field, *b);
+            assert_eq!("handle", name);
+        }
+        other => panic!("an add field and a rename: {other:?}"),
+    }
+}

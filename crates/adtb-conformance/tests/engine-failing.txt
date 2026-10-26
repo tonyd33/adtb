@@ -1,5 +1,2 @@
 # Files the reference interpreter passes and the engine fails: a path under conformance/, then why.
-constraints/02-reference-cycle.test a migration refuses a type whose key reference names a relation a later operator adds, so a reference cycle has no order
-constraints/02-unique-on-sum-path.test an index or unique over an expression is refused
-model/08-cycles.test a migration refuses a type whose key reference names a relation a later operator adds, so a reference cycle has no order
 writes/06-upsert-expression-unique.test an index or unique over an expression is refused

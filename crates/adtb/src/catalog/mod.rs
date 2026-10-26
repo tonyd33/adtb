@@ -31,7 +31,7 @@ use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 
 pub use layout::OrderKeys;
 pub use oplog::{Hash, version_hash};
-pub use rows::{IndexSpec, Rows, applied, declared, indexed_fields, indexes};
+pub use rows::{IndexSpec, Rows, applied, declared, field_path, indexed_fields, indexes};
 
 use change::Data;
 use root::{NAMING_SEQUENCES, Root};
@@ -107,7 +107,12 @@ pub struct Catalog {
     keys: OrderKeys,
     next_heap: u32,
     sequences: Pid,
+    /// The memory a migration's validation of its constraints may hold.
+    query_memory: usize,
 }
+
+/// The memory a migration's validation may hold until [`Catalog::set_query_memory`] sets it.
+const DEFAULT_QUERY_MEMORY: usize = 256 << 20;
 
 impl std::fmt::Debug for Catalog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -173,16 +178,12 @@ fn row_type(schema: &Schema, r: RelId, ctor: u32) -> Vec<FieldType> {
 }
 
 fn key_schema(schema: &Schema, keys: &OrderKeys, spec: &IndexSpec) -> KeySchema {
-    let row = layout::row(schema, spec.relation, spec.ctors[0]);
     KeySchema::new(
         spec.fields
             .iter()
             .map(|f| {
-                let (_, t) = row
-                    .iter()
-                    .find(|(n, _)| n == f)
-                    .unwrap_or_else(|| panic!("a row holds indexed field `{f}`"));
-                (layout::key_type(schema, keys, t), Dir::Asc)
+                let (_, t) = rows::path_steps(schema, spec.relation, spec.ctors[0], f);
+                (layout::key_type(schema, keys, &t), Dir::Asc)
             })
             .collect(),
     )
@@ -492,6 +493,7 @@ impl Catalog {
             keys: OrderKeys::new(),
             next_heap: FIRST_HEAP,
             sequences: Pid(0),
+            query_memory: DEFAULT_QUERY_MEMORY,
         };
         let x = txns.begin(pager)?;
         let every = empty.schema.ids.relations.values().copied().collect();
@@ -606,6 +608,7 @@ impl Catalog {
             keys: named.keys,
             next_heap: root.next_heap,
             sequences: root.sequences,
+            query_memory: DEFAULT_QUERY_MEMORY,
         };
         if root.changing != 0 {
             catalog.free_leaked(pager, &txns)?;
@@ -651,8 +654,8 @@ impl Catalog {
             .relations
             .iter()
             .flat_map(|r| &r.indexes)
-            .filter(|d| indexed_fields(d).is_none())
-            .map(|_| "an index over an expression other than a field".to_string())
+            .filter(|d| rows::indexed_paths(d).is_none())
+            .map(|_| "an index over an expression other than a field path".to_string())
             .collect();
         if !over.is_empty() {
             return refused(over);
@@ -761,6 +764,7 @@ impl Catalog {
         let module = &file.module.text;
         let mut at = self.source.clone();
         at.version += 1;
+        at.expecting(module, &file.operators);
         let mut before = self.schema.clone();
         let mut why = Vec::new();
         for op in &file.operators {
@@ -778,13 +782,16 @@ impl Catalog {
                 };
                 let moved = match moved::moved(&before, &schema, &step.maps, &data) {
                     Ok(m) => m,
-                    Err(w) => {
+                    Err(Error::Refused(w)) => {
                         why.extend(w);
                         change::Moved::default()
                     }
+                    Err(e) => return Err(e),
                 };
-                if let Err(w) = change::step(&before, &schema, &mut data, moved) {
-                    why.extend(w);
+                match change::step(&before, &schema, &mut data, moved) {
+                    Ok(()) => {}
+                    Err(Error::Refused(w)) => why.extend(w),
+                    Err(e) => return Err(e),
                 }
                 before = schema;
             }
@@ -896,6 +903,7 @@ impl Catalog {
             keys,
             next_heap: self.next_heap,
             sequences: self.sequences,
+            query_memory: self.query_memory,
         };
         if let Err(why) = duplicates(&next.schema, &next.keys, b.data, b.rewritten) {
             return Err(Error::Refused(why));
@@ -1053,6 +1061,12 @@ impl Catalog {
             pager.free(p)?;
         }
         Ok(())
+    }
+
+    /// Set the memory a migration's validation of its constraints may hold: the query memory
+    /// budget of the open database.
+    pub fn set_query_memory(&mut self, bytes: usize) {
+        self.query_memory = bytes;
     }
 
     pub fn schema(&self) -> &Schema {
@@ -1236,7 +1250,7 @@ impl Catalog {
             if spec.relation != r || !spec.ctors.contains(&c) {
                 continue;
             }
-            let key = index_key(&self.schema, spec, c, row);
+            let key = index_key(&self.schema, spec, c, row).expect("a stored index is over fields");
             let fresh = index.insert(pager, &Entry { key, ctor, tid })?;
             assert!(fresh, "a new row's entry is not in its index yet");
         }
@@ -1297,17 +1311,14 @@ fn delete_rows<R: Runtime>(
     Ok(())
 }
 
-/// Returns the key `row`, of constructor `c`, has in index `spec`.
-fn index_key(schema: &Schema, spec: &IndexSpec, c: u32, row: &[Value]) -> Vec<Value> {
-    let names = layout::row(schema, spec.relation, c);
+/// Returns the key `row`, of constructor `c`, has in index `spec`, or `None` when a value on a
+/// field path holds another constructor than the path names.
+fn index_key(schema: &Schema, spec: &IndexSpec, c: u32, row: &[Value]) -> Option<Vec<Value>> {
     spec.fields
         .iter()
         .map(|f| {
-            let at = names
-                .iter()
-                .position(|(n, _)| n == f)
-                .unwrap_or_else(|| panic!("a row holds indexed field `{f}`"));
-            row[at].clone()
+            let (steps, _) = rows::path_steps(schema, spec.relation, c, f);
+            rows::at_path(row, &steps).cloned()
         })
         .collect()
 }
@@ -1321,7 +1332,7 @@ fn duplicates(
     rewritten: &BTreeSet<u64>,
 ) -> Result<(), Vec<String>> {
     let mut why = Vec::new();
-    for spec in indexes(schema).values() {
+    for spec in rows::listed(schema).values() {
         let rid = schema.ids.relations[&spec.relation];
         let Some(ctors) = data
             .get(&rid)
@@ -1334,7 +1345,8 @@ fn duplicates(
         let shared = spec.ctors.iter().any(|&c| {
             ctors[&ctor_id(schema, spec.relation, c)]
                 .iter()
-                .any(|row| !seen.insert(ks.encode(&index_key(schema, spec, c, row))))
+                .filter_map(|row| index_key(schema, spec, c, row))
+                .any(|key| !seen.insert(ks.encode(&key)))
         });
         if shared {
             why.push(format!(

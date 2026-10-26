@@ -549,3 +549,41 @@ fn stored_order_keys_order_every_declared_sum() {
     let got = check_order_keys(&schema, &reversed);
     assert!(matches!(got, Err(Error::Corrupt(_))), "{got:?}");
 }
+
+#[test]
+fn a_fill_that_fails_internally_fails_the_step_as_internal() {
+    let a = migrated(
+        &Source::default(),
+        "module m\nadd module m\nadd type T = { id: Key ts }\nadd relation ts : T key id\n",
+    );
+    let b = migrated(&a, "module m\nadd field T.n: I64 fill 0\n");
+    let (sa, sb) = (
+        a.schema().expect("it builds"),
+        b.schema().expect("it builds"),
+    );
+    let r = *sa
+        .ids
+        .relations
+        .keys()
+        .find(|&&r| sa.relation(r).name == "ts")
+        .expect("ts");
+    let rid = sa.ids.relations[&r];
+    let cid = super::ctor_id(&sa, r, 0);
+    let mut data = super::change::Data::new();
+    data.insert(rid, [(cid, vec![vec![Value::I64(1)]])].into());
+    let rb = super::change::relation(&sb, rid).expect("ts after");
+    let fid = super::change::fields(&sb, rb, 0)
+        .iter()
+        .find(|f| f.name == "n")
+        .and_then(|f| f.id)
+        .expect("n has an id");
+    let mut moved = super::change::Moved::default();
+    moved.fills.insert(
+        (rid, cid, fid),
+        Box::new(|_, _| Err(super::change::Failed::Internal("broken".into()))),
+    );
+    match super::change::step(&sa, &sb, &mut data, moved) {
+        Err(Error::Internal(why)) => assert_eq!("broken", why),
+        other => panic!("not an internal failure: {other:?}"),
+    }
+}

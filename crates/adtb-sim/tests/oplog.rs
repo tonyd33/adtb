@@ -1085,3 +1085,194 @@ fn a_crash_at_every_flush_of_a_revert_with_a_fill_reopens_to_the_revert_with_its
         });
     }
 }
+
+const UNIQUE_LAST4: &str = "module shop\nadd unique (last4) in payments.Card\n";
+
+fn violated(e: &Error) -> String {
+    match e {
+        Error::Rejected {
+            reason: RejectReason::Violated { constraint, .. },
+        } => constraint.clone(),
+        other => panic!("not a violation: {other:?}"),
+    }
+}
+
+#[test]
+fn a_nest_carries_a_unique_as_a_unique_over_the_path_into_the_nested_value() {
+    after_invoice(70, &[UNIQUE_LAST4, NEST], |db| {
+        let db = db.expect("the nest of a unique constructor applies");
+        let e = fails(
+            &db,
+            r#"transact
+  let c = insert customers { name: "dup" }
+  insert payments.Held { customer: key c, method: Card { last4: "4242" } }"#,
+        );
+        assert_eq!(
+            "shop::payments.unique(method.Card.last4) in Held",
+            violated(&e)
+        );
+        write(
+            &db,
+            r#"transact
+  let c = insert customers { name: "inv" }
+  insert payments.Held { customer: key c, method: Invoice { due: "2027-01" } }"#,
+        );
+        assert_eq!(3, query(&db, "from p in payments select p.id").len());
+    });
+}
+
+#[test]
+fn an_unnest_of_a_path_unique_gives_back_the_unique_over_the_field() {
+    let unnest = "module shop\nunnest constructor Payment.Held\n";
+    after_invoice(71, &[UNIQUE_LAST4, NEST, unnest], |db| {
+        let db = db.expect("the unnest applies");
+        let e = fails(
+            &db,
+            r#"transact
+  let c = insert customers { name: "dup" }
+  insert payments.Card { customer: key c, last4: "4242" }"#,
+        );
+        assert_eq!("shop::payments.unique(last4) in Card", violated(&e));
+    });
+}
+
+#[test]
+fn an_added_path_unique_validates_the_rows() {
+    let dup = r#"transact
+  let c = insert customers { name: "dup" }
+  insert payments.Held { customer: key c, method: Card { last4: "4242" } }"#;
+    let add = "module shop\nadd unique (method.Card.last4) in payments.Held\n";
+    let mut sim = Sim::new(72, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP]);
+        write(&db, CUSTOMERS);
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP, NEST]);
+        write(&db, dup);
+    });
+    run(&mut sim, |rt| {
+        let (version, detail) = refusal(open(&rt, &[SHOP, NEST, add]));
+        assert_eq!(3, version);
+        assert!(detail.contains("method.Card.last4"), "{detail}");
+    });
+}
+
+#[test]
+fn a_path_index_applies_and_leaves_query_results_unchanged() {
+    let add = "module shop\nadd index (method.Invoice.due) in payments.Held\n";
+    after_invoice(73, &[NEST, add], |db| {
+        let db = db.expect("the path index applies");
+        assert_eq!(
+            vec![r#"Invoice { due: "2027-01" }"#],
+            query(
+                &db,
+                "from p in payments.Held where match p.method | Invoice i -> i.due == \"2027-01\" | Card c -> false select p.method"
+            )
+        );
+    });
+}
+
+const TAGGED: &str = r"module shop
+add type Badge = { code: Text, label: Text }
+add relation tags : Badge key code
+add type Item = { id: Key items, tag: Key tags }
+add relation items : Item key id generate sequence
+";
+
+#[test]
+fn a_revert_of_a_rekey_carries_every_reference_back_to_the_old_key() {
+    let rekey = "module shop\nrekey relation tags key label\n  carry Item.tag\n";
+    let revert = "module shop\nrevert 0003\n";
+    let mut sim = Sim::new(74, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP, TAGGED]);
+        write(
+            &db,
+            r#"transact
+  let a = insert tags { code: "a", label: "alpha" }
+  let b = insert tags { code: "b", label: "beta" }
+  insert items { tag: key a }
+  insert items { tag: key b }
+  insert items { tag: key b }"#,
+        );
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP, TAGGED, rekey, revert]);
+        assert_eq!(
+            vec![r#""a""#, r#""b""#],
+            query(
+                &db,
+                "from i in items, t in tags where i.tag == key t select t.code"
+            )
+        );
+        assert_eq!(
+            3,
+            query(
+                &db,
+                "from i in items, t in tags where i.tag == key t select { item: i.id, code: t.code }"
+            )
+            .len()
+        );
+        write(&db, r#"insert tags { code: "c", label: "alpha" }"#);
+    });
+}
+
+#[test]
+fn a_field_added_then_renamed_in_one_migration_applies() {
+    let m = "module shop\nadd field Customer.nick: Text fill \"\"\nrename field Customer.nick to handle\n";
+    after(75, &[m], |db| {
+        let db = db.expect("the migration applies");
+        assert_eq!(
+            vec![r#""""#],
+            query(&db, "from c in customers select c.handle")
+        );
+    });
+}
+
+const SHIPPING: &str = r"module shop
+add type Address = { street: Text }
+add type Shipment = { id: Key shipments, to: Address }
+add relation shipments : Shipment key id generate sequence
+";
+
+#[test]
+fn a_field_added_to_a_type_held_as_a_value_fills_every_stored_value() {
+    let add = "module shop\nadd field Address.zip: Text fill \"none\"\n";
+    let mut sim = Sim::new(76, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP, SHIPPING]);
+        write(&db, r#"insert shipments { to: { street: "main" } }"#);
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP, SHIPPING, add]);
+        assert_eq!(
+            vec![r#"Address { street: "main", zip: "none" }"#],
+            query(&db, "from s in shipments select s.to")
+        );
+    });
+}
+
+#[test]
+fn a_migration_validates_its_constraints_within_the_query_memory_of_the_open() {
+    let check =
+        "module shop\nadd constraint named = from c in customers where c.name == \"\" select c\n";
+    let mut sim = Sim::new(77, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP]);
+        write(&db, CUSTOMERS);
+    });
+    run(&mut sim, |rt| {
+        let tight = OpenOptions {
+            query_memory_bytes: Some(1),
+            ..options()
+        };
+        let got = Database::open_in(rt, "app.adt", &Log::new([SHOP, check]), &tight);
+        let (version, detail) = refusal(got);
+        assert_eq!(2, version);
+        assert!(detail.contains("query memory of 1 bytes"), "{detail}");
+    });
+    run(&mut sim, |rt| {
+        opened(&rt, &[SHOP, check]);
+    });
+}

@@ -1645,6 +1645,27 @@ split constructor Identity.OAuth into Google { gid: Text } | Apple { sub: Text }
 }
 
 #[test]
+fn revert_of_a_split_with_a_product_no_arm_reaches_is_refused_naming_it() {
+    let base = source(
+        "module pay
+type Payment { id: Key payments } = Cash { amount: I64 } | Card { last4: Text }
+relation payments : Payment key id generate sequence",
+    );
+    let s = applies(
+        &base,
+        "module pay
+split constructor Payment.Card into Visa { last4: Text } | Other { note: Text }
+  by match
+    | Card { last4 } -> Visa { last4: last4 }",
+    );
+    refuses(
+        &s,
+        "module pay\nrevert 0001",
+        "the split of `Card` routes no row to `Other`, so it is lossy and has no inverse",
+    );
+}
+
+#[test]
 fn revert_of_a_nest_unnests() {
     let s = applies(
         &running(),
@@ -2218,4 +2239,124 @@ fn the_names_of_a_revert_fill_resolve() {
     let s = applies(&s, "module auth\ndrop field User.name");
     let s = applies(&s, "module auth\nrevert 0002\n  fill User.name = blank()");
     assert_eq!("auth::blank ( )", logged_term(&s, "blank()"));
+}
+
+#[test]
+fn a_reference_cycle_is_declared_within_one_migration() {
+    let s = applies(
+        &running(),
+        "module auth
+add type Team = { id: Key teams, name: Text, lead: Key members }
+add relation teams : Team key id generate sequence
+add type Member = { id: Key members, team: Key teams }
+add relation members : Member key id generate sequence",
+    );
+    assert!(s.check().is_ok());
+}
+
+#[test]
+fn only_a_key_type_names_a_relation_a_later_operator_adds() {
+    refuses(
+        &running(),
+        "module auth
+add relation teams : Team key id generate sequence
+add type Team = { id: Key teams, name: Text }",
+        "Team",
+    );
+    refuses(
+        &running(),
+        "module auth
+add type Team = { id: Key teams, lead: Key members.Admin }
+add relation teams : Team key id generate sequence
+add type Member { id: Key members } = Plain { name: Text } | Admin { level: I32 }
+add relation members : Member key id generate sequence",
+        "only `Key members` may name it",
+    );
+}
+
+#[test]
+fn a_name_outside_a_key_type_types_against_the_operators_before_it() {
+    refuses(
+        &running(),
+        "module auth
+add type Pair = { left: Later, right: Text }
+add type Later = { n: I64 }",
+        "Later",
+    );
+    refuses(
+        &running(),
+        "module auth
+define fn team_count () -> I64 = count(t for t in teams)
+add type Team = { id: Key teams }
+add relation teams : Team key id generate sequence
+add unique (id) in teams",
+        "teams",
+    );
+}
+
+#[test]
+fn declarations_in_any_order_give_the_same_schema() {
+    let decls = [
+        "add type Team = { id: Key teams, name: Text, lead: Key members }",
+        "add relation teams : Team key id generate sequence",
+        "add type Member = { id: Key members, team: Key teams }",
+        "add relation members : Member key id generate sequence",
+    ];
+    let orders: [[usize; 4]; 4] = [[0, 1, 2, 3], [2, 3, 0, 1], [0, 2, 1, 3], [2, 0, 3, 1]];
+    let mut printed = Vec::new();
+    for order in orders {
+        let text = std::iter::once("module auth")
+            .chain(order.iter().map(|&i| decls[i]))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let s = applies(&running(), &text);
+        let mut ds: Vec<String> = ["Team", "Member"]
+            .iter()
+            .map(|t| decl(&s, "type", t))
+            .chain(["teams", "members"].iter().map(|r| decl(&s, "relation", r)))
+            .collect();
+        ds.sort();
+        printed.push((order, ds));
+    }
+    for (order, ds) in &printed[1..] {
+        assert_eq!(&printed[0].1, ds, "order {order:?}");
+    }
+}
+
+#[test]
+fn revert_of_a_reference_cycle_drops_both_relations() {
+    let s = applies(
+        &running(),
+        "module auth
+add type Team = { id: Key teams, name: Text, lead: Key members }
+add relation teams : Team key id generate sequence
+add type Member = { id: Key members, team: Key teams }
+add relation members : Member key id generate sequence",
+    );
+    let s = applies(&s, "module auth\nrevert 0001");
+    assert!(s.find("type", "auth", "Team").is_none());
+    assert!(s.find("relation", "auth", "members").is_none());
+}
+
+#[test]
+fn unnest_rescopes_a_unique_written_with_its_relation() {
+    let base = source(
+        "module auth
+type Customer = { id: Key customers }
+relation customers : Customer key id generate sequence
+type Payment { id: Key payments, customer: Key customers } = Card { last4: Text } | Invoice { due: Text }
+relation payments : Payment key id generate sequence",
+    );
+    let s = applies(&base, "module auth\nadd unique (last4) in payments.Card");
+    let s = applies(
+        &s,
+        "module auth
+add type Method = Card { last4: Text } | Invoice { due: Text }
+nest constructor Payment.(Card | Invoice) into Held { method: Method }",
+    );
+    let r = flat(&decl(&s, "relation", "payments"));
+    assert!(r.contains("unique (method.Card.last4) in Held"), "{r}");
+    let s = applies(&s, "module auth\nunnest constructor Payment.Held");
+    let r = flat(&decl(&s, "relation", "payments"));
+    assert!(r.contains("unique (last4) in Card"), "{r}");
 }

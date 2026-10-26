@@ -299,6 +299,7 @@ impl Cx<'_> {
         }
         let mut state = (*logged.before).clone();
         state.version = logged.number;
+        state.expecting(&logged.module, &logged.operators);
         let mut steps = Vec::new();
         for op in &logged.operators {
             steps.push(self.inverse(&state, &logged, op, fills)?);
@@ -1112,6 +1113,24 @@ impl Cx<'_> {
                 ),
             )]
         };
+        let reached: BTreeSet<&str> = arms
+            .iter()
+            .filter_map(|a| match &a.body.kind {
+                ast::ExprKind::Ctor { path, ctor, .. } => {
+                    Some(ctor.as_ref().unwrap_or(&path.name).text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        if let Some(d) = into
+            .iter()
+            .find(|d| !reached.contains(d.name.text.as_str()))
+        {
+            return self.err(format!(
+                "the split of `{}` routes no row to `{}`, so it is lossy and has no inverse",
+                path.ctor.text, d.name.text
+            ));
+        }
         let (c_text, c_fields) = self.before_ctor(before, &path.ty, &path.ctor.text)?;
         let text = |s: Span| logged.text[s.range()].to_string();
         let mut inverse_arms = Vec::new();
@@ -1644,6 +1663,7 @@ impl Cx<'_> {
                 Ok(())
             }
             Inverse::Replay(l) => {
+                self.src.expecting(&l.module, &l.operators);
                 for op in &l.operators {
                     match self.steps {
                         Some(steps) => {
@@ -1653,6 +1673,7 @@ impl Cx<'_> {
                         None => self.src.apply(&l.module, op, &l.text)?,
                     }
                 }
+                self.src.settled();
                 Ok(())
             }
         }

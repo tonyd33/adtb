@@ -1812,8 +1812,9 @@ impl Cx<'_> {
         )?;
         let mut clause_edits: Edits = BTreeMap::new();
         let header: BTreeSet<&str> = td.header().iter().map(|f| f.name.as_str()).collect();
+        let every: Vec<u32> = (0..td.ctors().len() as u32).collect();
         for cl in self.scoped_clauses(&schema, def)? {
-            let Some(scope) = &cl.scope else { continue };
+            let scope = cl.scope.as_ref().unwrap_or(&every);
             if !scope.contains(&c) {
                 continue;
             }
@@ -1839,8 +1840,9 @@ impl Cx<'_> {
             }
             let td_names = |x: u32| td.ctors()[x as usize].name.clone();
             let names: Vec<String> = match &target {
-                Some(p) if scope.len() == 1 => vec![p.clone()],
+                Some(p) if scope.len() == 1 || cl.scope.is_none() => vec![p.clone()],
                 Some(_) => return self.err(format!("`{shown}` has no image under the unnest")),
+                None if cl.scope.is_none() => continue,
                 None => scope
                     .iter()
                     .flat_map(|&x| {

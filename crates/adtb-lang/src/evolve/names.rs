@@ -6,21 +6,32 @@ impl Source {
     /// at index `i`.
     pub fn names(&self) -> Result<Vec<Names>, Vec<FileDiag>> {
         let schema = self.schema()?;
+        Ok(self.names_in(&schema))
+    }
+
+    /// Returns the names of each declaration as `names` does, or `None` while a `Key r` type names
+    /// a relation variable a later operator adds.
+    fn names_settled(&self) -> Option<Vec<Names>> {
+        let schema = self.schema().ok()?;
+        schema.ahead.is_empty().then(|| self.names_in(&schema))
+    }
+
+    fn names_in(&self, schema: &Schema) -> Vec<Names> {
         let mut out = vec![Names::default(); self.decls.len()];
-        for (file, f) in self.files()? {
+        for (file, f) in self.files().expect("a source whose schema builds parses") {
             let module = schema
                 .module_named(&f.module.text)
                 .unwrap_or(schema::PRELUDE);
             for d in &f.decls {
-                canon::decl_names(&schema, module, d, &mut out[file.0 as usize]);
+                canon::decl_names(schema, module, d, &mut out[file.0 as usize]);
             }
         }
-        for (file, span, r) in check::schema_refs(&schema) {
+        for (file, span, r) in check::schema_refs(schema) {
             if let Some(names) = out.get_mut(file.0 as usize) {
-                names.note(&schema, span, &r);
+                names.note(schema, span, &r);
             }
         }
-        Ok(out)
+        out
     }
 }
 
@@ -35,6 +46,7 @@ impl Logged {
     pub fn names(&self) -> Result<Names, Vec<Diag>> {
         let mut src = (*self.before).clone();
         src.version += 1;
+        src.expecting(&self.module, &self.operators);
         src.marks = Some(Marks::default());
         let mut names = Names::default();
         let mut late = Vec::new();
@@ -55,9 +67,9 @@ impl Logged {
                 let before = prior.names().map_err(unbuilt)?;
                 copy_marked(&mut names, &before, &prior, &read);
             }
-            match src.names() {
-                Ok(after) => copy_marked(&mut names, &after, &src, &written),
-                Err(_) => late.extend(written.into_iter().map(|m| m.from)),
+            match src.names_settled() {
+                Some(after) => copy_marked(&mut names, &after, &src, &written),
+                None => late.extend(written.into_iter().map(|m| m.from)),
             }
         }
         if late.is_empty() {
