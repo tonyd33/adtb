@@ -11,6 +11,8 @@ adtb.workspace = true
 
 [dev-dependencies]
 adtb-isolation.workspace = true
+adtb-lang.workspace = true
+adtb-reference.workspace = true
 adtb-sys = { workspace = true, features = ["latch-checks"] }
 
 [lints]

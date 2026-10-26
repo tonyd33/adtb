@@ -419,6 +419,24 @@ compilation pays.
 
 TODO: the code generator backend is deferred.
 
+The interpreter is `adtb::exec`. `exec::compile` turns a plan into a
+program: each scalar expression becomes register instructions, each
+primitive an operation chosen for its operand types, and each field
+access or key a position in the row. An instruction runs over every
+selected row of a frame, which holds one column per variable; `if`,
+`case` and `try` split the selection, run each arm over its rows and
+write the results back to their positions. A plan that uses a primitive
+or a form the interpreter lacks is refused when it is compiled, and an
+operation it lacks for some values only, such as normalizing a
+concatenation to NFC, fails the statement when it meets them.
+
+A morsel is a batch of at most `morsel_rows` rows of one heap that the
+call's snapshot sees, in the batch layout of §2; its rows become the
+column of the scan's variable. An index probe or lookup walks each
+entry's version chain to the version the snapshot sees, and drops it
+when it lies in another heap or its key fields no longer equal the
+probe's.
+
 Parallelism is morsel-driven: worker threads take (pipeline, morsel)
 tasks from a dispatcher, steal work, and write to thread-local output
 areas. A morsel never spans heaps; several small constructor heaps' arm
@@ -426,9 +444,25 @@ pipelines are packed into one task that runs them in turn. Calls from
 the server become tasks on the same scheduler
 ([server.md §1](server.md#1-calls-as-tasks)).
 
+`exec::Scheduler` starts its workers through the runtime, so the
+simulator schedules them. They take tasks from one shared queue, and a
+call's own thread runs queued tasks while it waits for its query; no
+worker keeps a queue of its own to steal from yet. The pipelines of a
+query evaluated once per statement become tasks: the scan of a heap is
+one task that submits a task per morsel after the first, and pipelines
+with no source or over heaps of at most `pack_pages` pages run in turn
+in one task. Each task emits into its own set, merged into the query's
+when the task ends. A query evaluated per row of a pipeline runs on that
+row's thread. The first task that probes a build makes it, while the
+others wait for it.
+
 The engine checks for cancellation at morsel boundaries, so a call
 stops within one morsel per worker. A result stream with no credit
 stops its executing pipeline when the pipeline's output buffer is full.
+The executor checks a call's cancel flag before each morsel and each
+round of a fixpoint, and once one task of a query fails, the query's
+tasks not yet started do not run. Results are formed whole; no credit
+reaches a pipeline yet.
 
 Rulings: exec/model/adaptive, exec/parallel/morsel, exec/parallel/small-heaps/pack
 
@@ -566,8 +600,20 @@ generated per process and never stored
 ([../spec/security.md §9.1](../spec/security.md#91-what-is-encrypted)).
 
 ```text
-let arena = budget.arena(query_id, limit)?;
-let table: HashTable<'_, K, V> = HashTable::new_in(&arena);
+let grant = budget.admit(bytes)?;   // None when the running grants leave too little
+let mut arena = grant.take(n)?;     // StatementLimit past the grant
+arena.grow(m)?;
 ```
+
+`exec::Budget` is the query memory of the process. `Budget::admit`
+grants a call its bytes, or admits nothing when the grants of running
+calls and this one together would exceed the budget; the grant returns
+to the budget when the call's last holder drops it. A call takes arenas
+from its grant for what it holds: the rows of each morsel while the
+morsel runs, the values its sinks collect, build tables, group records
+and the sets of each fixpoint round. Each arena returns to the grant
+when dropped. Nothing spills yet, and plans carry no grant estimate: an
+arena request past the grant rejects the statement with
+`StatementLimit`, which `try` does not catch.
 
 Rulings: buffer/memory/split, project/arch/alloc/budgeted
