@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 730
 summary: "the engine cannot apply a change set: no inserts, deletes, retag, delete actions, upsert, key generation or defaults"
-branch: adtb-write
+closed: 2026-10-25
 depends-on:
   - executor
   - unique-checks
@@ -27,3 +27,7 @@ outcome is the oracle.
 
 Prerequisites: `executor.md`, `unique-checks.md`, `ssi.md`,
 `commit-path.md`, `schema-first-migration.md`.
+
+## 2026-10-25: resolved
+
+Landed as `feat(write): apply change sets to heaps and indexes with delete actions, uniques, retag and generated keys`. 72 of 74 write examples agree with the reference; the two left are `rejects into`, in `write-path-follow-ups.md`.

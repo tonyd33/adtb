@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 731
 summary: "the write path lacks rejects into, statement rollback and persistent sequences"
+branch: adtb-write
 depends-on:
   - write-path
 tags:
