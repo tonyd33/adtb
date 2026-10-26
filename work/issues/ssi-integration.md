@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 625
 summary: "the transaction layer runs only behind one latch: the heap is not Send, the commit log takes &mut Pager, and SSI lacks a few pieces"
-branch: adtb-txn
+closed: 2026-10-25
 depends-on:
   - ssi
 tags:
@@ -32,3 +32,7 @@ Also missing:
   lock in `adtb-sys`, and use it in both places.
 
 Retag end to end waits for the executor (`write-path.md`).
+
+## 2026-10-25: resolved
+
+Landed as `feat(mvcc): run the transaction layer without a global latch and check random workloads for anomalies`. `crates/adtb-sim/tests/isolation.rs` runs 32 seeds of random clients with crashes and finds no anomaly. A transaction is acknowledged only once the log is durable past every commit it read (`Transactions::read_upto`).
