@@ -178,6 +178,25 @@ impl Vm {
         }
     }
 
+    /// Returns every page of the map, the root first.
+    pub fn pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
+        let size = pager.page_size();
+        let mut out = Vec::new();
+        let mut todo = vec![self.root];
+        while let Some(at) = todo.pop() {
+            out.push(at);
+            let node = &pager.read(at)?.to_vec();
+            if level(node) > 0 {
+                todo.extend(
+                    (0..fanout(size) as usize)
+                        .rev()
+                        .filter_map(|i| child(node, i)),
+                );
+            }
+        }
+        Ok(out)
+    }
+
     /// Returns every page id whose bit is set, in order.
     pub fn marked<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
         let size = pager.page_size();

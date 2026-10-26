@@ -85,6 +85,14 @@ pub fn is_heap(page: &[u8]) -> bool {
     )
 }
 
+/// Returns what is wrong with the slots of heap page `page`.
+pub fn check(page: &[u8]) -> Vec<String> {
+    match arrangement(page) {
+        Arrangement::Fixed { .. } => fixed::check(page),
+        Arrangement::Slotted => slotted::check(page),
+    }
+}
+
 /// Returns the arrangement of a heap page.
 ///
 /// Panics if `page` is not a heap page.

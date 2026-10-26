@@ -237,3 +237,30 @@ pub fn run<T, F: FnOnce(&SimRuntime, &mut SimIo) -> T>(sim: &mut adtb_sim::Sim, 
     assert_eq!(adtb_sim::Outcome::Finished, outcome);
     out.unwrap()
 }
+
+/// Returns what `verify` finds wrong with the file after a crash: every finding but a leaked page,
+/// then, once the leaked pages are freed, every finding of a second pass.
+pub fn verify_after_crash(
+    pager: &adtb::storage::Pager<SimRuntime>,
+    inventory: &adtb::verify::Inventory,
+) -> Vec<String> {
+    let report = adtb::verify::verify(pager, inventory);
+    let mut problems: Vec<String> = report
+        .besides_leaks()
+        .iter()
+        .map(|f| format!("{f:?}"))
+        .collect();
+    problems.extend(report.log.iter().map(|l| format!("{l:?}")));
+    if !problems.is_empty() {
+        return problems;
+    }
+    adtb::verify::repair(pager, &report).expect("repair");
+    let again = adtb::verify::verify(pager, inventory);
+    let mut problems: Vec<String> = again
+        .findings
+        .iter()
+        .map(|f| format!("after repair: {f:?}"))
+        .collect();
+    problems.extend(again.log.iter().map(|l| format!("after repair: {l:?}")));
+    problems
+}

@@ -1,3 +1,4 @@
+mod common;
 mod engine;
 
 use std::collections::BTreeMap;
@@ -145,6 +146,13 @@ fn history(seed: u64) -> (Vec<iso::Txn>, u64) {
         if outcome == Outcome::Crashed {
             crashed += 1;
         }
+        let mut problems = Vec::new();
+        let checked = sim.run(|rt| problems = open(rt, roots).verify());
+        assert_eq!(Outcome::Finished, checked);
+        assert!(
+            problems.is_empty(),
+            "seed {seed} round {round}: {problems:#?}"
+        );
     }
     let mut last = Vec::new();
     let finished = sim.run(|rt| {

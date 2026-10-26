@@ -7,9 +7,12 @@ use std::time::Duration;
 use adtb::mvcc::{CommitLog, Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
 use adtb::runtime::Entropy;
 use adtb::storage::{Edit, HEADER_LEN, Options, PageKind, Pager, Pid};
+use adtb::verify::Inventory;
 use adtb_sim::{
     Config, Fate, Faults, Finding, Ledger, Outcome, Recovered, Sim, SimRuntime, Violation, check,
 };
+
+mod common;
 
 const PAGE: usize = 4096;
 const NAME: &str = "app.adt";
@@ -360,6 +363,8 @@ struct Report {
     statuses: BTreeMap<Xid, Status>,
     logged: BTreeSet<u64>,
     findings: Vec<adtb::storage::Finding>,
+    /// What the whole-file `verify` finds, leaked pages freed first.
+    structure: Vec<String>,
     next: Option<Xid>,
 }
 
@@ -375,9 +380,11 @@ impl Recovered for Report {
     fn verify(&self) -> Vec<Finding> {
         self.findings
             .iter()
-            .map(|f| Finding {
+            .map(|f| format!("{f:?}"))
+            .chain(self.structure.iter().cloned())
+            .map(|at| Finding {
                 kind: adtb_sim::FindingKind::Structure,
-                at: format!("{f:?}"),
+                at,
             })
             .collect()
     }
@@ -443,7 +450,7 @@ fn workload(rt: SimRuntime, root: Pid, pages: &[Pid], ledger: &Ledger, world: &M
     }
 }
 
-fn inspect(rt: SimRuntime, root: Pid, assigned: &[Xid]) -> Report {
+fn inspect(rt: SimRuntime, root: Pid, pages: &[Pid], assigned: &[Xid]) -> Report {
     let (pager, _) = Pager::open(rt, &options()).expect("open");
     let txns = Transactions::open(&pager, root).expect("open the commit log");
     let statuses = assigned
@@ -451,10 +458,17 @@ fn inspect(rt: SimRuntime, root: Pid, assigned: &[Xid]) -> Report {
         .map(|&x| (x, txns.status(&pager, x).expect("status")))
         .collect();
     let v = pager.verify();
+    let inventory = Inventory {
+        commit_log: Some(txns.commit_log()),
+        pages: pages.to_vec(),
+        ..Inventory::default()
+    };
+    let structure = common::verify_after_crash(&pager, &inventory);
     Report {
         statuses,
         logged: v.commits.into_iter().collect(),
         findings: v.findings,
+        structure,
         next: Some(txns.next()),
     }
 }
@@ -480,7 +494,7 @@ fn crash_loop(seed: u64, faults: Faults, rounds: u64) -> (usize, usize) {
         let mut report = Report::default();
         assert_eq!(
             Outcome::Finished,
-            sim.run(|rt| report = inspect(rt, root, &assigned))
+            sim.run(|rt| report = inspect(rt, root, &pages, &assigned))
         );
         let at = format!("seed {seed} round {round}");
         assert_eq!(Vec::<Violation>::new(), check(&ledger, &report), "{at}");

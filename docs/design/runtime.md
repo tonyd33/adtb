@@ -213,71 +213,11 @@ the commits it reports and the findings of `verify`.
 
 Rulings: buffer/test/dst, buffer/test/dst-threads/sim-scheduler
 
-## 6. Notes for the implementation
+## 6. Isolation histories
 
-Non-binding.
-
-### 6.1 Dependency allowlist
-
-Dependencies come from a short audited allowlist, each entry with a
-written justification. The no-ambient rule of §1 is checked by lints:
-
-```toml
-# clippy.toml
-disallowed-methods = ["std::time::Instant::now", "std::time::SystemTime::now",
-                      "std::thread::spawn", "rand::thread_rng"]
-```
-
-Dev-dependencies (property testing, Loom, fuzz targets) are
-allowlisted separately.
-
-Rulings: project/arch/deps/allowlist
-
-### 6.2 Fault injection under the real engine
-
-A fault-injecting file system runs beneath the real binary and
-reproduces how ext4, XFS and Btrfs behave after a failed `fsync`,
-including pages marked clean after the failure. It tests the real I/O
-backends, which the simulator replaces.
-
-### 6.3 Crash replay
-
-The block-level stream of writes and flushes between the engine and
-the device is recorded. For each flush boundary, and each subset of
-the writes issued since the last flush, a disk image is built and
-recovery runs on it; the checks of §5 must hold for every image.
-
-### 6.4 Isolation checking
-
-Histories of concurrent transactions are checked for Adya's phenomena.
-The promise is serializability, so any G0, G1 or G2 cycle in a history
-is a bug. The checker is the crate `adtb-isolation`. It follows Elle's
-list-append workload: each key holds a list, transactions append
-elements unique per key and read whole lists, so every read shows
-which appends are visible and in which order they were installed. The
-workload stores one row per element at its position in the list:
-
-```adt
-type Elem = { id: Key elems, k: I64, pos: I64, e: I64 }
-relation elems : Elem
-  key id generate sequence
-  unique (k, e)
-  unique (k, pos)
-
-txn append (k: I64, e: I64) -> Key elems =
-  transact
-    let n = count(x for x in elems where x.k == k)
-    let x = insert elems { k: k, pos: n, e: e }
-    return key x
-query read_elems (k: I64) -> Set { pos: I64, e: I64 } =
-  from x in elems where x.k == k select { pos: x.pos, e: x.e }
-```
-
-A client transaction runs a sequence of these appends and reads as one
-transaction. Two transactions appending to one key both write position
-`n`, so at most one of them commits.
-
-#### History format
+The test harness and the checker crate `adtb-isolation` meet at a
+history of list-append transactions
+([§7.4](#74-isolation-checking) describes the workload).
 
 The test harness hands the checker a history: a sequence of
 `adtb_isolation::Txn` values, whose order carries no meaning.
@@ -334,6 +274,70 @@ an engine whose inserts wait on a conflicting writer never blocks one.
 A serializable database runs each scenario with no anomaly; for write
 skew that means one side aborts.
 
+## 7. Notes for the implementation
+
+Non-binding.
+
+### 7.1 Dependency allowlist
+
+Dependencies come from a short audited allowlist, each entry with a
+written justification. The no-ambient rule of §1 is checked by lints:
+
+```toml
+# clippy.toml
+disallowed-methods = ["std::time::Instant::now", "std::time::SystemTime::now",
+                      "std::thread::spawn", "rand::thread_rng"]
+```
+
+Dev-dependencies (property testing, Loom, fuzz targets) are
+allowlisted separately.
+
+Rulings: project/arch/deps/allowlist
+
+### 7.2 Fault injection under the real engine
+
+A fault-injecting file system runs beneath the real binary and
+reproduces how ext4, XFS and Btrfs behave after a failed `fsync`,
+including pages marked clean after the failure. It tests the real I/O
+backends, which the simulator replaces.
+
+### 7.3 Crash replay
+
+The block-level stream of writes and flushes between the engine and
+the device is recorded. For each flush boundary, and each subset of
+the writes issued since the last flush, a disk image is built and
+recovery runs on it; the checks of §5 must hold for every image.
+
+### 7.4 Isolation checking
+
+Histories of concurrent transactions are checked for Adya's phenomena.
+The promise is serializability, so any G0, G1 or G2 cycle in a history
+is a bug. The checker is the crate `adtb-isolation`. It follows Elle's
+list-append workload: each key holds a list, transactions append
+elements unique per key and read whole lists, so every read shows
+which appends are visible and in which order they were installed. The
+workload stores one row per element at its position in the list:
+
+```adt
+type Elem = { id: Key elems, k: I64, pos: I64, e: I64 }
+relation elems : Elem
+  key id generate sequence
+  unique (k, e)
+  unique (k, pos)
+
+txn append (k: I64, e: I64) -> Key elems =
+  transact
+    let n = count(x for x in elems where x.k == k)
+    let x = insert elems { k: k, pos: n, e: e }
+    return key x
+query read_elems (k: I64) -> Set { pos: I64, e: I64 } =
+  from x in elems where x.k == k select { pos: x.pos, e: x.e }
+```
+
+A client transaction runs a sequence of these appends and reads as one
+transaction. Two transactions appending to one key both write position
+`n`, so at most one of them commits.
+
 Histories come from two places:
 
 - Simulated clients inside the simulator run registered transactions;
@@ -342,7 +346,7 @@ Histories come from two places:
   drive them over the wire protocol, which finds what the simulation
   does not model.
 
-### 6.5 Memory model
+### 7.5 Memory model
 
 The simulated scheduler interleaves threads at yield points but runs on
 the host's memory ordering, so weak-memory reorderings are tested
@@ -358,7 +362,7 @@ fn olc_reader_sees_consistent_or_restarts() {
 }
 ```
 
-### 6.6 The scheduler
+### 7.6 The scheduler
 
 Each simulated thread is a host thread, and one baton passes between
 them: only the thread holding it runs. Every call into the interfaces

@@ -8,7 +8,10 @@ use adtb::heap::{CtorType, Error, FieldType, Flags, Heap, LargeStore, Link, Upda
 use adtb::key::{CtorId, Scalar, Tid, Value};
 use adtb::runtime::Entropy;
 use adtb::storage::{self, Options, PageKind, Pager, Pid};
+use adtb::verify::{Inventory, Sum};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+
+mod common;
 
 const PAGE: usize = 4096;
 const NAME: &str = "app.adt";
@@ -937,6 +940,14 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
         }
     }
     problems.extend(verify(&mut db));
+    let inventory = Inventory {
+        sums: vec![Sum {
+            heaps: (0..3).map(|h| (CtorId(h as u32), &db.heaps[h])).collect(),
+            indexes: Vec::new(),
+        }],
+        ..Inventory::default()
+    };
+    problems.extend(common::verify_after_crash(&db.pager, &inventory));
     problems
 }
 

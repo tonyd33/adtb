@@ -142,7 +142,7 @@ Covers [design/storage.md](design/storage.md).
 - Redo-only log with batch framing, segments in `app.adt-log/`,
   full-page images on the first change after a checkpoint, checkpoints,
   recovery.
-- Crash replay harness ([design/runtime.md §6.3](design/runtime.md#63-crash-replay)).
+- Crash replay harness ([design/runtime.md §7.3](design/runtime.md#73-crash-replay)).
 
 Exit: random page-write workloads under simulated crashes and every
 injected fault lose no acknowledged write and report every detectable
@@ -174,7 +174,7 @@ semantics.md §8.
 - SSI: SIREAD locks on heaps and next-key ranges, rw-antidependency
   tracking, safe snapshots, serialization failures at snapshot edges.
 - Commit path with group commit; durability level local.
-- Isolation checker ([design/runtime.md §6.4](design/runtime.md#64-isolation-checking)) on the append workload.
+- Isolation checker ([design/runtime.md §6](design/runtime.md#6-isolation-histories)) on the append workload.
 
 Exit: no G0, G1 or G2 cycle over a fixed number of seeds per run;
 the write-skew tests abort one side.
@@ -243,7 +243,7 @@ backup), [design/storage.md](design/storage.md) §8 and §10.5,
 - Zone rules and collations in the catalog.
 - Dump, restore, online backup, point-in-time restore.
 - Fault-injecting file system tests on the real backends
-  ([design/runtime.md §6.2](design/runtime.md#62-fault-injection-under-the-real-engine)).
+  ([design/runtime.md §7.2](design/runtime.md#72-fault-injection-under-the-real-engine)).
 - Benchmarks against SQLite on the embedded OLTP workloads.
 
 Exit: the suite and every test method pass; benchmarks are published

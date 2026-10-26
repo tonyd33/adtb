@@ -14,7 +14,10 @@ use adtb::runtime::{
     Clock, Completion, Entropy, Instant, Io, Op, Runtime, ThreadId, Threads, Ticket,
 };
 use adtb::storage::{Options, Pager, Pid};
+use adtb::verify::Inventory;
 use adtb_sim::{Config, Faults, Outcome, Recording, Sim, SimIo, SimRuntime};
+
+mod common;
 
 const PAGE: usize = 4096;
 const OWNER: u32 = 41;
@@ -838,6 +841,15 @@ fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
                 *finished.lock().unwrap() += tree.repair(&pager).expect("repair");
                 assert_eq!(tree.repair(&pager), Ok(0), "seed {seed} round {round}");
                 assert_eq!(tree.verify(&pager), recovered);
+                let inventory = Inventory {
+                    trees: vec![tree],
+                    ..Inventory::default()
+                };
+                let problems = common::verify_after_crash(&pager, &inventory);
+                assert!(
+                    problems.is_empty(),
+                    "seed {seed} round {round}: {problems:#?}"
+                );
                 pager.flush_log();
             }
             *f.lock().unwrap() = Some(recovered);
@@ -934,6 +946,12 @@ fn recover_and(
             Ok(&all),
             "flush boundary {at}"
         );
+        let inventory = Inventory {
+            trees: vec![tree],
+            ..Inventory::default()
+        };
+        let problems = common::verify_after_crash(&pager, &inventory);
+        assert!(problems.is_empty(), "flush boundary {at}: {problems:#?}");
     });
     assert_eq!(Outcome::Finished, outcome);
     found

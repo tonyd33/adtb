@@ -85,7 +85,8 @@ pub fn need_category(need: usize, page_size: usize) -> u16 {
 /// What [`Space::check`] found.
 #[derive(Debug, Default)]
 pub struct Check {
-    pub problems: Vec<String>,
+    /// Each page found wrong, with what is wrong with it.
+    pub problems: Vec<(Pid, String)>,
     /// Each position of the space with its page and its entry's category, or `None` for a hole.
     pub leaves: Vec<Option<(Pid, u8)>>,
 }
@@ -178,6 +179,20 @@ impl Space {
         Ok(out)
     }
 
+    /// Returns every directory page of the space, the root first.
+    pub fn nodes<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
+        let mut out = Vec::new();
+        let mut todo = vec![self.root];
+        while let Some(pid) = todo.pop() {
+            out.push(pid);
+            let node = &pager.read(pid)?.to_vec();
+            if level(node) > 0 {
+                todo.extend((0..count(node)).rev().map(|i| entry(node, i).0));
+            }
+        }
+        Ok(out)
+    }
+
     /// Returns what is wrong with the directory, and its level-0 entries in position order, a hole
     /// as `None`.
     pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Check, PageError> {
@@ -204,21 +219,19 @@ impl Space {
         if storage::kind(&node) != PageKind::FreeSpaceMap as u16
             || storage::owner(&node) != self.owner
         {
-            problems.push(format!("{pid:?} is not a directory page of {}", self.owner));
+            problems.push((pid, format!("is not a directory page of {}", self.owner)));
             return Ok(0);
         }
         if level(&node) != want.level || capacity(&node) != want.capacity {
-            problems.push(format!("{pid:?} has the wrong level or capacity"));
+            problems.push((pid, "has the wrong level or capacity".into()));
             return Ok(0);
         }
         let n = count(&node);
         if !want.rightmost && n as u64 != want.capacity {
-            problems.push(format!(
-                "{pid:?} is not full but is not the last at its level"
-            ));
+            problems.push((pid, "is not full but is not the last at its level".into()));
         }
         if want.level > 0 && n == 0 {
-            problems.push(format!("inner directory page {pid:?} is empty"));
+            problems.push((pid, "is an empty inner directory page".into()));
         }
         for i in 0..n {
             let (child, cat) = entry(&node, i);
@@ -227,7 +240,7 @@ impl Space {
                 if child == HOLE && cat != HOLE_CATEGORY {
                     found
                         .problems
-                        .push(format!("{pid:?} entry {i} is a hole of category {cat}"));
+                        .push((pid, format!("entry {i} is a hole of category {cat}")));
                 }
                 continue;
             }
@@ -238,8 +251,9 @@ impl Space {
             };
             let top = self.check_node(pager, child, below, found)?;
             if top != cat {
-                found.problems.push(format!(
-                    "{pid:?} entry {i} has category {cat}, its child's greatest is {top}"
+                found.problems.push((
+                    pid,
+                    format!("entry {i} has category {cat}, its child's greatest is {top}"),
                 ));
             }
         }

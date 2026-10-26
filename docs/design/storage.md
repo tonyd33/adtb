@@ -166,6 +166,7 @@ pager.update(&[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, PageErro
 pager.change(&[(pid, vec![Edit { offset, bytes }]), ...]) -> Result<Lsn, PageError>
 pager.allocate(format, kind, owner) -> Result<Pid, PageError>
 pager.free(pid) -> Result<Lsn, PageError>
+pager.allocated() -> Result<Vec<Pid>, PageError>
 pager.commit(xid, &[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, PageError>
 pager.abort(xid, &[pid, ...], |pages: &mut [&mut [u8]]| ...) -> Result<Lsn, PageError>
 pager.reserve_xids(next) -> Lsn
@@ -211,6 +212,9 @@ Postconditions:
   transaction that made it aborts. It fails, allocating nothing, when
   an allocation bitmap page it reads is damaged; a free page found
   damaged is marked allocated and never handed out.
+- `allocated` returns, in order, every page the allocation bitmap marks
+  allocated, leaving out pages 0 and 1 and the bitmap pages. It fails
+  when an allocation bitmap page is damaged.
 - A failed write or force, including one that grows the file, crashes
   the process ([README.md §4](README.md#4-errors)); no call returns it.
 - Write-ahead, full-page images and checkpoints (§5.2, §6) are the

@@ -135,3 +135,31 @@ impl BTree {
         Ok(finished)
     }
 }
+
+impl BTree {
+    /// Returns every page of the tree: each level from the root down, left to right by its
+    /// right links.
+    pub fn pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, Error> {
+        let mut out = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut leftmost = Some(self.root());
+        while let Some(start) = leftmost.take() {
+            let mut at = Some(start);
+            while let Some(pid) = at {
+                if !seen.insert(pid) {
+                    return Err(Error::Malformed(pid));
+                }
+                out.push(pid);
+                let (right, down) = visit(pager, self.owner(), pid, |n| {
+                    let down = if n.is_leaf() { None } else { Some(n.child(0)?) };
+                    Ok((n.right(), down))
+                })?;
+                if pid == start {
+                    leftmost = down;
+                }
+                at = right;
+            }
+        }
+        Ok(out)
+    }
+}

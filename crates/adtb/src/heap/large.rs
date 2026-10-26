@@ -175,8 +175,24 @@ impl LargeStore {
         Ok(freed)
     }
 
+    /// Returns every page of the store's directory and every page it names.
+    pub fn owned_pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
+        let mut out = self.space.nodes(pager)?;
+        out.extend(self.space.pages(pager)?);
+        Ok(out)
+    }
+
     /// Returns what is wrong with the store's directory and pages.
     pub fn verify<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<String>, PageError> {
+        Ok(self
+            .check(pager)?
+            .into_iter()
+            .map(|(pid, what)| format!("{pid:?} {what}"))
+            .collect())
+    }
+
+    /// Returns each page of the store found wrong, with what is wrong with it.
+    pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
         for (position, leaf) in check.leaves.into_iter().enumerate() {
@@ -184,17 +200,24 @@ impl LargeStore {
                 continue;
             };
             let page = &pager.read(pid)?.to_vec();
-            if storage::owner(page) != self.id() || page::position(page) as usize != position {
-                problems.push(format!(
-                    "{pid:?} is not page {position} of store {}",
-                    self.id()
+            let ours = page::is_heap(page) && storage::owner(page) == self.id();
+            if !ours || page::position(page) as usize != position {
+                problems.push((
+                    pid,
+                    format!("is not page {position} of store {}", self.id()),
                 ));
+                continue;
+            }
+            let layout = page::check(page);
+            if !layout.is_empty() {
+                problems.extend(layout.into_iter().map(|what| (pid, what)));
                 continue;
             }
             let actual = category(page::free(page), pager.page_size());
             if cat != actual {
-                problems.push(format!(
-                    "{pid:?} has category {cat} in the directory, {actual} on the page"
+                problems.push((
+                    pid,
+                    format!("has category {cat} in the directory, {actual} on the page"),
                 ));
             }
         }

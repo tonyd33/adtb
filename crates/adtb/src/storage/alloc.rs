@@ -129,4 +129,28 @@ impl<R: Runtime> Pager<R> {
         *hint = (*hint).min(g);
         Ok(lsn)
     }
+
+    /// Returns every page the allocation bitmap marks allocated, in order, the bitmap's own
+    /// pages and the file header copies left out.
+    ///
+    /// Fails if an allocation bitmap page is damaged.
+    pub fn allocated(&self) -> Result<Vec<Pid>, PageError> {
+        let span = self.bitmap_span();
+        let mut out = Vec::new();
+        for g in 0.. {
+            let map = self.bitmap_page(g);
+            let page = self.read(map)?.to_vec();
+            if page::kind(&page) != PageKind::AllocationBitmap as u16 {
+                break;
+            }
+            let bits = &page[HEADER_LEN..];
+            out.extend(
+                (0..span)
+                    .filter(|&i| bits[(i / 8) as usize] >> (i % 8) & 1 == 1)
+                    .map(|i| Pid(g * span + i))
+                    .filter(|&p| p != map && p >= Pid::FIRST_DATA),
+            );
+        }
+        Ok(out)
+    }
 }

@@ -795,6 +795,16 @@ impl Heap {
 
     /// Returns what is wrong with the heap's pages, directory and visibility map.
     pub fn verify<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<String>, PageError> {
+        Ok(self
+            .check(pager)?
+            .into_iter()
+            .map(|(pid, what)| format!("{pid:?} {what}"))
+            .collect())
+    }
+
+    /// Returns each page of the heap, its directory or its visibility map found wrong, with what
+    /// is wrong with it.
+    pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(Pid, String)>, PageError> {
         let check = self.space.check(pager)?;
         let mut problems = check.problems;
         let vm = self.vm(&Stage::new(), pager)?;
@@ -804,26 +814,30 @@ impl Heap {
                 continue;
             };
             let page = pager.read(pid)?.to_vec();
-            if storage::owner(&page) != self.id {
-                problems.push(format!("{pid:?} is not owned by heap {}", self.id));
+            if !page::is_heap(&page) || storage::owner(&page) != self.id {
+                problems.push((pid, format!("is not a page of heap {}", self.id)));
+                continue;
+            }
+            let layout = page::check(&page);
+            if !layout.is_empty() {
+                problems.extend(layout.into_iter().map(|what| (pid, what)));
                 continue;
             }
             if page::position(&page) as usize != position {
-                problems.push(format!(
-                    "{pid:?} records position {}",
-                    page::position(&page)
-                ));
+                problems.push((pid, format!("records position {}", page::position(&page))));
             }
             let actual = category(page::free(&page), self.page_size);
             let current = storage::format(&page) == self.newest();
             if cat > actual || current && cat != actual {
-                problems.push(format!(
-                    "{pid:?} has category {cat} in the directory, {actual} on the page"
+                problems.push((
+                    pid,
+                    format!("has category {cat} in the directory, {actual} on the page"),
                 ));
             }
             if page::all_visible(&page) != marked.remove(&pid) {
-                problems.push(format!(
-                    "{pid:?} disagrees with the visibility map on being all-visible"
+                problems.push((
+                    pid,
+                    "disagrees with the visibility map on being all-visible".into(),
                 ));
             }
             for slot in 0..page::slot_count(&page) {
@@ -831,21 +845,55 @@ impl Heap {
                     Slot::Redirect(to)
                         if !matches!(page::get(&page, usize::from(to)), Slot::Normal { .. }) =>
                     {
-                        problems.push(format!("{pid:?} slot {slot} redirects to an empty slot"));
+                        problems.push((pid, format!("slot {slot} redirects to an empty slot")));
                     }
                     Slot::Dead if page::all_visible(&page) => {
-                        problems.push(format!("all-visible {pid:?} has dead slot {slot}"));
+                        problems.push((pid, format!("is all-visible and has dead slot {slot}")));
+                    }
+                    Slot::Normal { flags, at } if flags.contains(Flags::HOT_UPDATED) => {
+                        let header = Header::read(&page[at]);
+                        let successor = header
+                            .next
+                            .filter(|n| n.page() == pid.0)
+                            .map(|n| page::get(&page, usize::from(n.slot())));
+                        let linked = match successor {
+                            Some(Slot::Normal { flags, at }) => {
+                                flags.contains(Flags::HEAP_ONLY)
+                                    && Header::read(&page[at]).xmin == header.xmax
+                            }
+                            _ => false,
+                        };
+                        if !linked {
+                            problems.push((
+                                pid,
+                                format!(
+                                    "slot {slot} is hot-updated but names no heap-only successor"
+                                ),
+                            ));
+                        }
                     }
                     _ => {}
                 }
             }
         }
         for pid in marked {
-            problems.push(format!(
-                "the visibility map marks {pid:?}, not a page of the heap"
+            problems.push((
+                pid,
+                format!(
+                    "is marked all-visible but is not a page of heap {}",
+                    self.id
+                ),
             ));
         }
         Ok(problems)
+    }
+
+    /// Returns every page the heap owns: its directory's, its own and its visibility map's.
+    pub fn owned_pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, PageError> {
+        let mut out = self.space.nodes(pager)?;
+        out.extend(self.space.pages(pager)?);
+        out.extend(self.vm(&Stage::new(), pager)?.pages(pager)?);
+        Ok(out)
     }
 }
 

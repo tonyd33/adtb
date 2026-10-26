@@ -1,5 +1,5 @@
 use super::page::{CONTENTS, Slot, align8, u16_at, u64_at};
-use super::version::Flags;
+use super::version::{Flags, HEADER_LEN};
 
 const WIDTH: usize = 28;
 const COUNT: usize = 30;
@@ -104,4 +104,16 @@ pub fn release(page: &mut [u8], slot: usize) {
 pub fn insert(page: &mut [u8], version: &[u8], flags: Flags) -> Option<usize> {
     let slot = (0..count(page)).find(|&s| !used(page, s))?;
     put(page, slot, version, flags).then_some(slot)
+}
+
+/// Returns what is wrong with the slot table of a fixed-slot page.
+pub fn check(page: &[u8]) -> Vec<String> {
+    let (n, w) = (count(page), width(page));
+    if w < HEADER_LEN || !w.is_multiple_of(8) || n == 0 || n != capacity(page.len(), w) {
+        return vec![format!("has {n} fixed slots of width {w}")];
+    }
+    (0..n)
+        .filter(|&s| !used(page, s) && u16_at(page, flags_at(n, s)) != 0)
+        .map(|s| format!("unused slot {s} has flags"))
+        .collect()
 }

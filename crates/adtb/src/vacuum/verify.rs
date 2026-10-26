@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
-use std::ops::Bound;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::heap::Heap;
 use crate::key::CtorId;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
+use crate::verify::{self, entries};
 
 use super::run::{Error, Sum};
 
@@ -14,16 +14,15 @@ pub fn verify<R: Runtime>(pager: &Pager<R>, sum: &Sum) -> Result<Vec<String>, Er
     let heaps: BTreeMap<CtorId, &Heap> = sum.heaps.iter().map(|(c, h)| (*c, &**h)).collect();
     let mut problems = Vec::new();
     for (i, index) in sum.indexes.iter().enumerate() {
-        for e in index.range(pager, Bound::Unbounded, Bound::Unbounded)? {
-            match heaps.get(&e.ctor) {
-                None => problems.push(format!("index {i} has an entry of {:?}", e.ctor)),
-                Some(h) if !h.holds(pager, e.tid)? => problems.push(format!(
-                    "index {i} entry {:?} names {:?}, which holds nothing",
-                    e.key, e.tid
-                )),
-                Some(_) => {}
-            }
-        }
+        let found = entries(pager, &heaps, index, &BTreeSet::new()).map_err(|e| match e {
+            verify::Error::Page(e) => Error::Page(e),
+            verify::Error::Index(e) => Error::Index(e),
+        })?;
+        problems.extend(
+            found
+                .into_iter()
+                .map(|(pid, what)| format!("index {i} at {pid:?}: {what}")),
+        );
     }
     Ok(problems)
 }

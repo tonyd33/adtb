@@ -8,5 +8,6 @@ pub mod mvcc;
 pub mod plan;
 pub mod storage;
 pub mod vacuum;
+pub mod verify;
 
 pub use adtb_sys::runtime;

@@ -230,3 +230,51 @@ pub fn insert(page: &mut [u8], version: &[u8], flags: Flags) -> Option<usize> {
     }
     put(page, slot, Content::Version(version, flags)).then_some(slot)
 }
+
+/// Returns what is wrong with the line pointers and tuples of a slotted page.
+pub fn check(page: &[u8]) -> Vec<String> {
+    let n = count(page);
+    let lower = POINTERS + POINTER * n;
+    let top = upper(page);
+    if lower > page.len() || top < lower || top > page.len() {
+        return vec![format!("has {n} line pointers and tuples from {top}")];
+    }
+    let mut problems = Vec::new();
+    let mut tuples = Vec::new();
+    for s in 0..n {
+        let p = pointer(page, s);
+        match p.state {
+            NORMAL => {
+                if p.offset < top
+                    || !p.offset.is_multiple_of(8)
+                    || p.len == 0
+                    || p.offset + p.len > page.len()
+                {
+                    problems.push(format!(
+                        "slot {s} holds bytes {}..{}",
+                        p.offset,
+                        p.offset + p.len
+                    ));
+                } else {
+                    tuples.push((
+                        p.offset,
+                        p.offset + align8(p.len).min(page.len() - p.offset),
+                        s,
+                    ));
+                }
+            }
+            REDIRECT if p.offset >= n => {
+                problems.push(format!("slot {s} redirects past the slots"))
+            }
+            UNUSED | DEAD | REDIRECT => {}
+            state => problems.push(format!("slot {s} has state {state}")),
+        }
+    }
+    tuples.sort();
+    for w in tuples.windows(2) {
+        if w[0].1 > w[1].0 {
+            problems.push(format!("slots {} and {} overlap", w[0].2, w[1].2));
+        }
+    }
+    problems
+}

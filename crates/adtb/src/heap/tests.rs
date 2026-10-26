@@ -715,3 +715,22 @@ fn every_page_id_has_its_own_path_and_bit_in_the_visibility_map() {
         );
     }
 }
+
+#[test]
+fn a_page_check_finds_overlapping_tuples_and_bad_states() {
+    let mut p = heap_page(Arrangement::Slotted, 0);
+    page::insert(&mut p, &version(1, &[7; 16]), Flags::NONE).unwrap();
+    page::insert(&mut p, &version(2, &[8; 16]), Flags::NONE).unwrap();
+    assert!(page::check(&p).is_empty());
+    let first = u16::from_le_bytes([p[40], p[41]]);
+    p[48..50].copy_from_slice(&first.to_le_bytes());
+    assert_eq!(vec!["slots 0 and 1 overlap".to_owned()], page::check(&p));
+    p[44] = 9;
+    assert!(page::check(&p).contains(&"slot 0 has state 9".to_owned()));
+    let mut f = heap_page(Arrangement::Fixed { width: 40 }, 0);
+    page::insert(&mut f, &version(1, &[0; 16]), Flags::NONE).unwrap();
+    assert!(page::check(&f).is_empty());
+    page::release(&mut f, 0, &Slot::Unused);
+    page::set_flags(&mut f, 0, Flags::MOVED);
+    assert_eq!(vec!["unused slot 0 has flags".to_owned()], page::check(&f));
+}

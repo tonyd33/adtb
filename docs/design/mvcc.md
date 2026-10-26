@@ -68,6 +68,38 @@ Postconditions:
 
 Rulings: storage/table-per-ctor, storage/sum-scan/merge-append, encoding/native-cost/union-index, engine/in-heap, layout/fill/fsm
 
+### 1.1 Rows
+
+A heap is created with its row type, a list of `heap::FieldType`: the
+constructor's fields in declaration order, the sum's header fields
+first. A field type is a scalar, a record of field types in
+declaration order, or a sum, listed as its constructors in declaration
+order, each a `heap::CtorType` with its constructor id and its fields,
+the sum's header fields first.
+
+A heap reads and writes a row as `Vec<adtb::key::Value>`, one value per
+field of the row type, in its order. Consumers rely on this row type:
+
+- A field of a declared record type is a `Value::Record` of its fields
+  in declaration order.
+- A field of a sum type is a `Value::Sum { ctor, fields }`, `ctor`
+  indexing the sum's constructors in declaration order, as the row type
+  lists them. A one-constructor sum's value is `ctor` 0.
+- A newtype is its representation and a reference its target's key.
+
+Preconditions: every row a caller writes has a value of each field's
+type; the heap panics on a row that does not.
+
+Postconditions:
+
+- Every row a heap returns is in the heap's newest row format, whatever
+  format its page holds ([§12.4](#124-row-format-changes)).
+- A row read back equals the row written, after each newer format's
+  conversion.
+- How a row is laid out in its page, which fields go out of line and
+  in what order fields are stored is the heap's
+  ([§12.2](#122-row-body)); no consumer depends on it.
+
 ## 2. TIDs
 
 A TID is 64 bits: a 48-bit page id and a 16-bit slot. In an index
@@ -765,18 +797,7 @@ Rulings: layout/slots/by-schema
 
 ### 12.2 Row body
 
-A heap reads and writes a row as `Vec<adtb::key::Value>`: the
-constructor's fields in declaration order, the sum's header fields
-first. Consumers rely on this row type:
-
-- A field of a declared record type is a `Value::Record` of its fields
-  in declaration order.
-- A field of a sum type is a `Value::Sum { ctor, fields }`, `ctor`
-  indexing the sum's constructors in declaration order, as the heap's
-  row type (`heap::FieldType::Sum`) lists them with their constructor
-  ids. A one-constructor sum's value is `ctor` 0.
-- A newtype is its representation and a reference its target's key.
-- Every row a heap returns is in the heap's newest row format.
+The row type a heap returns is stated in §1.1; this is its byte layout.
 
 Fields are placed by the engine, not in declaration order: fixed-width
 fields are ordered by decreasing alignment to remove padding, ties in

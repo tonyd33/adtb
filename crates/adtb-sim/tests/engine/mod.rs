@@ -14,6 +14,7 @@ use adtb::mvcc::{
 };
 use adtb::runtime::{ThreadId, Threads};
 use adtb::storage::{Options, Pager, Pid};
+use adtb::verify::{Inventory, Sum};
 use adtb_isolation::{Aborted, Database};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 use adtb_sys::lock::Lock;
@@ -170,6 +171,33 @@ impl Engine {
 
     pub fn roots(&self) -> Roots {
         self.roots
+    }
+
+    /// Returns what the whole-file `verify` finds, freeing leaked pages first.
+    ///
+    /// Precondition: no transaction is running.
+    pub fn verify(&self) -> Vec<String> {
+        let by_pos = self.by_pos.lock(&self.rt);
+        let by_elem = self.by_elem.lock(&self.rt);
+        let by_id = self.by_id.lock(&self.rt);
+        let elems = self.elems.lock(&self.rt);
+        let counters = self.counters.lock(&self.rt);
+        let txns = self.txns.lock(&self.rt);
+        let inventory = Inventory {
+            commit_log: Some(txns.commit_log()),
+            sums: vec![
+                Sum {
+                    heaps: vec![(ELEM, &*elems)],
+                    indexes: vec![&*by_pos, &*by_elem],
+                },
+                Sum {
+                    heaps: vec![(COUNTER, &*counters)],
+                    indexes: vec![&*by_id],
+                },
+            ],
+            ..Inventory::default()
+        };
+        crate::common::verify_after_crash(&self.pager, &inventory)
     }
 
     fn status(&self, x: Xid) -> Result<Status, Infallible> {
@@ -669,7 +697,12 @@ pub fn simulate_with<T>(seed: u64, limits: Limits, body: impl FnOnce(&Arc<Engine
         },
     );
     let mut out = None;
-    let outcome = sim.run(|rt| out = Some(body(&Arc::new(Engine::create(rt, limits)))));
+    let outcome = sim.run(|rt| {
+        let engine = Arc::new(Engine::create(rt, limits));
+        out = Some(body(&engine));
+        let problems = engine.verify();
+        assert!(problems.is_empty(), "{problems:#?}");
+    });
     assert_eq!(Outcome::Finished, outcome);
     out.unwrap()
 }

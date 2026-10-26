@@ -11,7 +11,11 @@ use adtb::mvcc::{Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
 use adtb::runtime::Entropy;
 use adtb::storage::{Options, Pager, Pid};
 use adtb::vacuum::{self, Report, Sum};
+use adtb::verify;
+use adtb::verify::Inventory;
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+
+mod common;
 
 const PAGE: usize = 4096;
 const NAME: &str = "app.adt";
@@ -259,6 +263,24 @@ impl Db {
         };
         problems.extend(vacuum::verify(pager, &sum).expect("vacuum verify"));
         problems
+    }
+
+    /// Returns what the whole-file `verify` finds, freeing leaked pages first.
+    fn verify_file(&mut self) -> Vec<String> {
+        let inventory = Inventory {
+            commit_log: Some(self.txns.commit_log()),
+            sums: vec![verify::Sum {
+                heaps: self
+                    .heaps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, h)| (CtorId(i as u32), h))
+                    .collect(),
+                indexes: self.indexes.iter().collect(),
+            }],
+            ..Inventory::default()
+        };
+        common::verify_after_crash(&self.pager, &inventory)
     }
 
     fn index(&mut self, heap: usize, row: &[Value], tid: Tid) {
@@ -770,7 +792,8 @@ fn vacuum_keeps_what_live_snapshots_see_and_cleans_the_rest() {
                 client.finish(&mut db, run, true);
             }
             let last = db.vacuum(usize::MAX);
-            let problems = check(&mut db, &[], &client);
+            let mut problems = check(&mut db, &[], &client);
+            problems.extend(db.verify_file());
             assert!(problems.is_empty(), "seed {seed} at the end: {problems:#?}");
             let mut writers = Vec::new();
             for heap in &db.heaps {
@@ -1195,6 +1218,11 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
     let expected = client.expected(|x| committed.contains(&x));
     for round in ["recovered", "vacuumed"] {
         problems.extend(db.verify().into_iter().map(|p| format!("{round}: {p}")));
+        problems.extend(
+            db.verify_file()
+                .into_iter()
+                .map(|p| format!("{round}: {p}")),
+        );
         let (scan, index) = db.fresh_visible();
         if scan.rows() != &expected || !scan.twice.is_empty() {
             problems.push(format!(
