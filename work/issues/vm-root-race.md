@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 556
 summary: "Vm::put can set a bit on what has just become an inner page when the visibility map's root grows"
-branch: adtb-heapg
+closed: 2026-10-25
 tags:
   - engine
 ---
@@ -21,3 +21,9 @@ validates, under the leaf's latch, that the page is still the leaf for
 its position (as heap pages are rechecked with `Space::names`), and
 retries from the root when not. Add a threaded test with the root
 growing beside writers.
+
+## 2026-10-25: resolved
+
+## Resolution
+
+`Vm::put` rechecks that the latched page is still a leaf and looks it up again if the root grew. The switch-rate test in heap_threads.rs fails on the old code at round 15.

@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: open
 kind: feature
 priority: 703
 summary: "catalog reads bypass snapshots, heap ids and order keys are not persisted, and a redone create reuses xids"
-branch: adtb-mig2
 depends-on:
   - bootstrap-catalog
 tags:
@@ -27,3 +26,7 @@ tags:
   next xid across the redo.
 - `catalog/layout.rs` duplicates the type conversion in
   `crates/adtb-sim/tests/exec.rs`; make the test use the catalog's.
+
+## Progress
+
+Done on main: catalog reads go through snapshots, the next heap id is stored, and kept order keys are read back rather than respread. Unverified: the next xid across a redone create, and the type conversion duplicated between `catalog/layout.rs` and the sim exec tests.

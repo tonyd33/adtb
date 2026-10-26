@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 294
 summary: "catalog positions, the Tag type's row, value_states coverage, key clause text and relation kinds are unstated"
-branch: adtb-mig2
+closed: 2026-10-25
 tags:
   - spec
 ---
@@ -26,3 +26,9 @@ From the bootstrap catalog. My rulings:
    `Volatile`.
 
 State each in `catalog.md`.
+
+## 2026-10-25: resolved
+
+## Resolution
+
+All five rulings are stated in `docs/spec/catalog.md` and the catalog rows follow them.

@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 557
 summary: "some heap updates latch more than the per-thread bound of 5, which the pager does not enforce"
-branch: adtb-heapg
+closed: 2026-10-25
 tags:
   - engine
 ---
@@ -23,3 +23,9 @@ exceed it:
 Expected: under the simulator and in debug builds, the pager panics
 when a thread holds more than the bound, and both paths are split into
 updates that compose crash-safely within it.
+
+## 2026-10-25: resolved
+
+## Resolution
+
+The pager panics on a sixth latch in debug builds and under `latch-checks`. Directory corrections, page adds, map bit clears and value count updates now run as separate updates, so every write latches at most five pages.
