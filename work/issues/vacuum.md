@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 520
 summary: "no vacuum: dead versions are never pruned, index entries never cleaned, and no visibility map exists"
-branch: adtb-vacuum
+closed: 2026-10-25
 depends-on:
   - slotted-heap
   - blink-tree
@@ -34,3 +34,7 @@ Vacuum also has to:
   crashed, which are garbage nothing refers to.
 
 The visibility map (§11) is not built.
+
+## 2026-10-25: resolved
+
+Landed as `feat(vacuum): add vacuum, pruning, index cleanup and the visibility map`. Follow-ups are `vacuum-concurrent.md` and `history-heaps.md`.
