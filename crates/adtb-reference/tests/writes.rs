@@ -942,7 +942,11 @@ fn an_upsert_on_a_unique_over_expressions() {
     let (name, _) = violated(f.rejected(
         r#"insert identities.EmailPass { user: users.key(3), email: "ANN@example.com", hash: bytes("h") }"#,
     ));
-    assert!(name.starts_with("app::identities.unique#"), "{name}");
+    let r = f.rel("identities");
+    let by_id = f.schema.ids.indexes.iter().any(|(&(at, _), id)| {
+        at == r && *id >= 1024 && name == format!("app::identities.unique#{id}")
+    });
+    assert!(by_id, "{name} is named by the unique's catalog id");
 }
 
 #[test]
@@ -1151,6 +1155,42 @@ fn a_value_level_constructor_not_open_refuses_new_values_only() {
     );
     f.ok(
         r#"update c in customers where c.id == customers.key(2) set Customer { c with name: "e" }"#,
+    );
+}
+
+#[test]
+fn the_schema_states_which_constructor_relations_refuse_writes() {
+    let mut f = fixture();
+    let (_, apple) = f.ctor("Identity", "Apple");
+    let identities = f.rel("identities");
+    f.schema
+        .stages
+        .insert((identities, apple), adtb_lang::schema::Stage::Deprecated);
+    assert_eq!(
+        Rejection::NotOpen {
+            ctor: "identities.Apple".into(),
+            stage: Stage::Deprecated
+        },
+        f.rejected(r#"insert identities.Apple { user: users.key(4), sub: "a-dee" }"#)
+    );
+}
+
+#[test]
+fn the_schema_states_which_value_level_constructors_refuse_new_values() {
+    let mut f = fixture();
+    let (address, intl) = f.ctor("Address", "Intl");
+    f.schema
+        .value_stages
+        .insert((address, intl), adtb_lang::schema::Stage::Declared);
+    assert_eq!(
+        Rejection::NotOpen {
+            ctor: "Address.Intl".into(),
+            stage: Stage::Declared
+        },
+        f.rejected(
+            r#"update c in customers where c.id == customers.key(1)
+               set Customer { c with address: Intl { country: "de", postcode: "1" } }"#
+        )
     );
 }
 

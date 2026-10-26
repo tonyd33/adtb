@@ -60,9 +60,21 @@ select { name: c.name, id: key c }
 ### 1.2 Identity of catalog objects
 
 Every catalog relation whose key is one field has a key field typed
-`Key catalog::r` for its own relation, filled by the engine. The key
-value of a row of `catalog::types`, `catalog::constructors` or
+`Key catalog::r` for its own relation, filled by the engine, except
+`catalog::wasm_modules`, keyed by the hash of a module's bytes (§2.3).
+The key value of a row of `catalog::types`, `catalog::constructors` or
 `catalog::relations` is the object's id.
+
+`r.key(v)` of a `catalog::` or `sys::` relation takes the relation's
+declared key type: an `I64` for a key field typed `Key r` of its own
+relation, which holds a catalog id or another engine-assigned number,
+and the field's type otherwise, `Bytes` for `catalog::wasm_modules`:
+
+```adt
+-- given h: Bytes
+from c in catalog::constructors where key c == catalog::constructors.key(1052) select c.name
+from w in catalog::wasm_modules where key w == catalog::wasm_modules.key(h) select w.bytes
+```
 
 Every schema object has a catalog id, the key of its row: types,
 constructors, relation variables, fields, named sets, indexes and
@@ -218,7 +230,7 @@ by the position it follows. `at commit p` reads the greatest row of
 or before the latest commit whose `at` is at or before `t`. Rows leave
 both relations as the window passes them.
 
-Rulings: engine/catalog-relations, ops/expose/relations, ops/expose/volatile/volatile-kind, ops/conflicts/leak/admin-only, project/spec/normative/catalog, spec/ctor-ids/log-order, spec/evolution/new-ids/listed-order, spec/evolution/object-ids/every-object
+Rulings: engine/catalog-relations, ops/expose/relations, ops/expose/volatile/volatile-kind, ops/conflicts/leak/admin-only, project/spec/normative/catalog, spec/ctor-ids/log-order, spec/evolution/new-ids/listed-order, spec/evolution/object-ids/every-object, spec/catalog-key-values/declared
 
 ## 2. Catalog relations
 
@@ -314,7 +326,7 @@ type Function { id: Key functions, module: Text, name: Text, signature: Text,
   | Aggregate { body: Text }
 relation functions : Function key id
 
-type WasmModule = { hash: Key wasm_modules, bytes: Bytes }
+type WasmModule = { hash: Bytes, bytes: Bytes }
 relation wasm_modules : WasmModule key hash
 
 type Extension = { id: Key extensions, name: Text, version: Text, hash: Bytes, module: Text }
@@ -347,79 +359,79 @@ by the hash of its bytes.
 type Migration = { version: Key migrations, hash: Bytes, text: Text, applied: Instant }
 relation migrations : Migration key version
 
-type CtorTarget = InRelation { relation: Key relations, ctor: Key constructors }
-                | OfType     { ctor: Key constructors }
-type Place = Last | Before { ctor: Key constructors } | After { ctor: Key constructors }
+type CtorTarget = InRelation { relation: I64, ctor: I64 }
+                | OfType     { ctor: I64 }
+type Place = Last | Before { ctor: I64 } | After { ctor: I64 }
 
 type Operator
   = AddModule         { module: Text }
   | DropModule        { module: Text }
   | Install           { module: Text, version: Text, package: Bytes }
   | Uninstall         { module: Text }
-  | AddType           { sum: Key types, decl: Term }
-  | DropType          { sum: Key types }
-  | AddRelation       { relation: Key relations, decl: Term }
-  | DropRelation      { relation: Key relations }
-  | AddSet            { set: Key named_sets, relation: Key relations, name: Text }
-  | DropSet           { set: Key named_sets }
-  | AddConstructor    { ctor: Key constructors, sum: Key types, decl: Term, place: Place }
-  | RemoveConstructor { ctor: Key constructors }
+  | AddType           { sum: I64, decl: Term }
+  | DropType          { sum: I64 }
+  | AddRelation       { relation: I64, decl: Term }
+  | DropRelation      { relation: I64 }
+  | AddSet            { set: I64, relation: I64, name: Text }
+  | DropSet           { set: I64 }
+  | AddConstructor    { ctor: I64, sum: I64, decl: Term, place: Place }
+  | RemoveConstructor { ctor: I64 }
   | Enable            { target: CtorTarget }
   | Disable           { target: CtorTarget }
   | Deprecate         { target: CtorTarget }
-  | RenameConstructor { ctor: Key constructors, name: Text }
-  | RenameType        { sum: Key types, name: Text }
-  | RenameRelation    { relation: Key relations, name: Text }
-  | RenameSet         { set: Key named_sets, name: Text }
-  | RenameField       { field: Key fields, name: Text }
-  | Split             { ctor: Key constructors, decl: Term, routing: Term }
-  | Merge             { ctor: Key constructors, decl: Term, routing: Option Term }
-  | Nest              { ctor: Key constructors, decl: Term }
-  | Unnest            { ctor: Key constructors }
-  | AddField          { field: Key fields, decl: Term, fill: Term }
-  | DropField         { field: Key fields }
-  | MoveField         { field: Key fields, header: Bool, fill: Option Term }
-  | AddUnique         { index: Key indexes, relation: Key relations, fields: Term }
-  | DropUnique        { index: Key indexes }
-  | Rekey             { relation: Key relations, key: Key indexes, fields: Term }
-  | AddIndex          { index: Key indexes, relation: Key relations, interval: Bool, fields: Term }
-  | DropIndex         { index: Key indexes }
-  | AddDefault        { default: Key defaults, relation: Key relations, field: Key fields,
+  | RenameConstructor { ctor: I64, name: Text }
+  | RenameType        { sum: I64, name: Text }
+  | RenameRelation    { relation: I64, name: Text }
+  | RenameSet         { set: I64, name: Text }
+  | RenameField       { field: I64, name: Text }
+  | Split             { ctor: I64, decl: Term, routing: Term }
+  | Merge             { ctor: I64, decl: Term, routing: Option Term }
+  | Nest              { ctor: I64, decl: Term }
+  | Unnest            { ctor: I64 }
+  | AddField          { field: I64, decl: Term, fill: Term }
+  | DropField         { field: I64 }
+  | MoveField         { field: I64, header: Bool, fill: Option Term }
+  | AddUnique         { index: I64, relation: I64, fields: Term }
+  | DropUnique        { index: I64 }
+  | Rekey             { relation: I64, key: I64, fields: Term }
+  | AddIndex          { index: I64, relation: I64, interval: Bool, fields: Term }
+  | DropIndex         { index: I64 }
+  | AddDefault        { default: I64, relation: I64, field: I64,
                         value: Term }
-  | DropDefault       { default: Key defaults }
-  | DefineFn          { function: Key functions, decl: Term }
-  | RedefineFn        { function: Key functions, decl: Term }
-  | DropFn            { function: Key functions }
-  | DefineAggregate   { function: Key functions, decl: Term }
-  | DropAggregate     { function: Key functions }
-  | AddConstraint     { constraint: Key constraints, body: Term }
-  | DropConstraint    { constraint: Key constraints }
-  | AddCheck          { constraint: Key constraints, body: Term }
-  | DropCheck         { constraint: Key constraints }
-  | Store             { view: Key relations, function: Key functions, decl: Term }
-  | Unstore           { view: Key relations }
-  | AddComputed       { computed: Key computed, relation: Key relations, name: Text,
+  | DropDefault       { default: I64 }
+  | DefineFn          { function: I64, decl: Term }
+  | RedefineFn        { function: I64, decl: Term }
+  | DropFn            { function: I64 }
+  | DefineAggregate   { function: I64, decl: Term }
+  | DropAggregate     { function: I64 }
+  | AddConstraint     { constraint: I64, body: Term }
+  | DropConstraint    { constraint: I64 }
+  | AddCheck          { constraint: I64, body: Term }
+  | DropCheck         { constraint: I64 }
+  | Store             { view: I64, function: I64, decl: Term }
+  | Unstore           { view: I64 }
+  | AddComputed       { computed: I64, relation: I64, name: Text,
                         decl: Term }
-  | RedefineComputed  { computed: Key computed, decl: Term }
-  | DropComputed      { computed: Key computed }
+  | RedefineComputed  { computed: I64, decl: Term }
+  | DropComputed      { computed: I64 }
   | Grant             { privilege: Text, target: Option Term, grantee: Text, grant_option: Bool }
   | Revoke            { privilege: Text, target: Option Term, grantee: Text }
   | AdoptTzdb         { release: Text, data: Bytes }
   | Script            { write: Term }
-  | Revert            { migration: Key migrations }
+  | Revert            { migration: I64 }
 type Term = new Text
 type MigrationOp = { migration: Key migrations, ordinal: I32, op: Operator }
 relation migration_ops : MigrationOp key (migration, ordinal)
 
-type ArmTarget = OfFn         { function: Key functions }
-               | OfConstraint { constraint: Key constraints }
-               | OfComputed   { computed: Key computed }
-type ClauseBody = Joins       { set: Key named_sets }
-                | Member      { ctor: Key constructors }
+type ArmTarget = OfFn         { function: I64 }
+               | OfConstraint { constraint: I64 }
+               | OfComputed   { computed: I64 }
+type ClauseBody = Joins       { set: I64 }
+                | Member      { ctor: I64 }
                 | Arm         { target: ArmTarget, arm: Term }
-                | Replacement { index: Key indexes, kind: IndexKind, fields: Term }
-                | Carry       { field: Key fields }
-                | Fill        { field: Key fields, fill: Term }
+                | Replacement { index: I64, kind: IndexKind, fields: Term }
+                | Carry       { field: I64 }
+                | Fill        { field: I64, fill: Term }
 type OpClause = { migration: Key migrations, ordinal: I32, clause: I32, body: ClauseBody }
 relation migration_clauses : OpClause key (migration, ordinal, clause)
 
@@ -457,7 +469,22 @@ operator, `ordinal` its position in the migration from 1. Each
 `Operator` constructor is one operator of
 [evolution.md §4](evolution.md#4-operators), and names every object it
 touches by its catalog id: the object it creates takes the id of
-§1.2. `Bytes` operands of `Install` and `AdoptTzdb` hold the BLAKE3-256
+§1.2. `Operator`, `Place`, `CtorTarget`, `ArmTarget` and `ClauseBody`
+are value-level sums, which hold no references
+([model.md §8.2](model.md#82-where-references-may-occur)), so each of
+their fields that names an object holds the object's catalog id as an
+`I64`. The engine keeps every such id naming a row of its relation, and
+a reader joins on it:
+
+```adt
+from o in catalog::migration_ops, c in catalog::constructors
+where match o.op
+  | AddConstructor a -> catalog::constructors.key(a.ctor) == key c
+  | _                -> false
+select { migration: o.migration, ctor: c.name }
+```
+
+`Bytes` operands of `Install` and `AdoptTzdb` hold the BLAKE3-256
 hash of the package or release data, which the log stores beside it.
 `header` is set when a `move field` moves the field to the header. An
 operand written in the language (a declaration, a fill, a routing
@@ -562,7 +589,7 @@ deletes the row. A row of `peer_mappings` is one rule of a listener's
 peer mapping ([security.md](security.md#22-sources)), tried in
 `ordinal` order.
 
-Rulings: engine/catalog-relations, project/spec/normative/catalog, spec/evolution/product-state/source-state, spec/evolution/operator-type/catalog-sum, spec/evolution/version-hash/value-encoding, spec/evolution/term-encoding/canonical-tokens, spec/evolution/object-ids/every-object
+Rulings: engine/catalog-relations, project/spec/normative/catalog, spec/evolution/product-state/source-state, spec/evolution/operator-type/catalog-sum, spec/evolution/version-hash/value-encoding, spec/evolution/term-encoding/canonical-tokens, spec/evolution/object-ids/every-object, spec/catalog-refs/key-value
 
 ## 3. Zone rules and collations
 

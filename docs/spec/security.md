@@ -589,6 +589,7 @@ type AuditEvent { seq: Key catalog::audit, at: Instant, role: Text, principal: T
   | Denied   { origin: Origin }
   | Commit   { position: Position, origin: Origin, changes: Bytes }
   | Truncate { through: I64, digest: Bytes }
+relation catalog::audit : AuditEvent key seq
 type Origin = Registered { bundle: Text, query: I32 }
             | Function   { name: Text }
             | AdHoc      { text: Bytes }
@@ -667,7 +668,7 @@ $ adt ledger verify app.adt --digest digests/2026-10.txt
 Tamper evidence detects a change to history before the last exported
 digest; it does not prevent one.
 
-Rulings: security/audit/auth, security/audit/ops, security/audit/calls, security/audit/writes, security/audit-store/relation, security/tamper/ledger
+Rulings: security/audit/auth, security/audit/ops, security/audit/calls, security/audit/writes, security/audit-store/relation, security/tamper/ledger, spec/audit-relation/seq
 
 ## 9. Encryption at rest
 

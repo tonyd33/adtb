@@ -15,6 +15,7 @@ use crate::types::*;
 
 mod ctor;
 mod field;
+mod ids;
 mod revert;
 mod text;
 
@@ -25,23 +26,7 @@ use text::*;
 #[path = "../evolve_tests.rs"]
 mod tests;
 
-/// The write state of a constructor in a relation variable, or of a value-level constructor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stage {
-    Declared,
-    Enabled,
-    Deprecated,
-}
-
-impl Stage {
-    fn name(self) -> &'static str {
-        match self {
-            Stage::Declared => "declared",
-            Stage::Enabled => "enabled",
-            Stage::Deprecated => "deprecated",
-        }
-    }
-}
+pub use crate::schema::Stage;
 
 /// A stage and the version whose migration set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +69,10 @@ pub struct Source {
     pub value_states: BTreeMap<StateKey, State>,
     pub version: u64,
     pub log: Vec<Logged>,
+    /// The catalog id of each object of the user modules, by its path (`ids::Object::path`).
+    pub ids: BTreeMap<String, u64>,
+    /// The next id of each space.
+    pub next: BTreeMap<crate::ids::Space, u64>,
 }
 
 /// Why a migration is refused: the operators that do not apply, at their spans in the migration's text,
@@ -240,8 +229,9 @@ impl Source {
             decls,
             ..Source::default()
         };
-        let schema = src.schema()?;
+        let schema = src.built()?;
         src.states = Source::all_states(&schema, Stage::Enabled);
+        src.reconcile_ids();
         for t in &schema.types {
             if schema.module(t.module).engine {
                 continue;
@@ -306,7 +296,15 @@ impl Source {
         format!("{}{}", header(&d.module), d.text)
     }
 
+    /// Builds the schema, with the catalog ids and write states the source holds.
     pub fn schema(&self) -> Result<Schema, Vec<FileDiag>> {
+        let mut schema = self.built()?;
+        self.annotate(&mut schema);
+        Ok(schema)
+    }
+
+    /// Builds the schema the declarations state, its ids those of declaration order.
+    fn built(&self) -> Result<Schema, Vec<FileDiag>> {
         let mut files = self.files()?;
         for m in &self.modules {
             if !files.iter().any(|(_, f)| f.module.text == *m) {
@@ -425,8 +423,12 @@ impl Source {
             span: op.span,
         }
         .operator(&op.kind);
-        if r.is_err() {
-            *self = before;
+        match r {
+            Ok(()) => {
+                self.rename_ids(&before, module, &op.kind);
+                self.reconcile_ids();
+            }
+            Err(_) => *self = before,
         }
         r
     }

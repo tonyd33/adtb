@@ -6,6 +6,7 @@ pub mod ast;
 pub mod check;
 pub mod collation;
 pub mod evolve;
+pub mod ids;
 pub mod kernel;
 pub mod lex;
 pub mod norm;

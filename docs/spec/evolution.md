@@ -445,6 +445,15 @@ name freed by a split or a remove may name a new
 constructor, and documents that name constructors map names through
 the log ([interop.md](interop.md)).
 
+A record is a sum with one constructor named after the type
+([model.md §2.2](model.md#22-records)), and `add constructor` applies
+to it as to any sum: `add constructor Point.Polar { r: F64, theta: F64 }`
+makes `Point` the sum `Point { x: I64, y: I64 } | Polar { r: F64, theta: F64 }`,
+the record's fields remaining those of its constructor `Point`. Every
+schema object is rechecked (§3.2), and so is every registered query
+and transaction of a live bundle; the migration is refused if one
+fails.
+
 Clauses:
 
 - `joins r.S, ...` names, for each relation variable, the named
@@ -511,7 +520,11 @@ transaction that can write into it, or while a delete action in the
 schema retags into it. `deprecate` applies only to an enabled
 constructor.
 
-Constructors created by `add type` start enabled. Products of `split`
+Constructors created by `add type` start enabled. A relation variable
+added after its type gained a constructor takes, for that constructor,
+the constructor's state in its type, kept in `catalog::value_states`:
+`add relation r : T` after `add constructor T.C`, with no `enable T.C`
+between them, starts `r.C` declared. Products of `split`
 and `unnest` take their source's state, per relation variable,
 deprecated included. Products of `merge` and `nest` start enabled when
 every source constructor is enabled, and declared when some source is
@@ -900,7 +913,7 @@ inverse: `revert` of a migration containing one is refused. A restore
 replays schema operators and skips scripts, since the restored data
 is the state after them ([interop.md](interop.md#6-dump-and-restore)).
 
-Rulings: evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/remove-rows/deprecate, evolution/log-ops, evolution/scripted, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, derived/defaults/backfill/separate, spec/evolution/deprecated-value/same-path, spec/evolution/product-state/source-state, spec/evolution/new-ids/listed-order, spec/evolution/ctor-order/placed, spec/evolution/arm-target/scrutinee-set, spec/evolution/product-position/first-source
+Rulings: evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/remove-rows/deprecate, evolution/log-ops, evolution/scripted, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, derived/defaults/backfill/separate, spec/evolution/deprecated-value/same-path, spec/evolution/product-state/source-state, spec/evolution/new-ids/listed-order, spec/evolution/ctor-order/placed, spec/evolution/arm-target/scrutinee-set, spec/evolution/product-position/first-source, spec/late-relation-state/type-state, spec/record-add-ctor/allowed
 
 ## 5. Inverses and revert
 

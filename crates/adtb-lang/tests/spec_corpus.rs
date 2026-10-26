@@ -247,6 +247,89 @@ fn engine_source_declares_every_fixed_id() {
     assert!(missing.is_empty(), "not declared:\n{}", missing.join("\n"));
 }
 
+#[test]
+fn engine_ids_are_the_fixed_ids_of_the_spec() {
+    let catalog = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/spec/catalog.md"),
+    )
+    .unwrap();
+    let schema = build(&[]).expect("the engine's declarations build");
+    let mut module: Option<(String, bool)> = None;
+    let mut failures = Vec::new();
+    let mut seen = 0;
+    for line in catalog.lines() {
+        if line.starts_with("Prelude:") {
+            module = Some(("prelude".to_string(), true));
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("Module `") {
+            let (m, kind) = rest.split_once("`, ").expect("Module `m`, kind:");
+            module = Some((m.to_string(), kind.starts_with("types")));
+            continue;
+        }
+        if line.starts_with('#') {
+            module = None;
+        }
+        let Some((m, types)) = &module else { continue };
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        let Some(Ok(id)) = cells.get(1).map(|c| c.parse::<u64>()) else {
+            continue;
+        };
+        seen += 1;
+        let name = cells[2].split(',').next().unwrap().trim_matches('`');
+        let name = name.rsplit("::").next().unwrap();
+        let mid = schema.module_named(m).expect("an engine module");
+        if !types {
+            let got = match schema.module(mid).values.get(name) {
+                Some(&adtb_lang::schema::ValueDef::Relation(r)) => schema.ids.relations.get(&r),
+                _ => None,
+            };
+            if got != Some(&id) {
+                failures.push(format!("relation {m}::{name}: {got:?}, not {id}"));
+            }
+            continue;
+        }
+        let Some(&t) = schema.module(mid).types.get(name) else {
+            if name != "Tag" {
+                failures.push(format!("no type {m}::{name}"));
+            }
+            continue;
+        };
+        if schema.ids.types.get(&t) != Some(&id) {
+            failures.push(format!(
+                "type {m}::{name}: {:?}, not {id}",
+                schema.ids.types.get(&t)
+            ));
+        }
+        let td = schema.ty(t);
+        let ctors: Vec<(String, u64)> = if cells[3].contains("one constructor") {
+            vec![(
+                name.to_string(),
+                cells[3].split_whitespace().next().unwrap().parse().unwrap(),
+            )]
+        } else {
+            cells[3]
+                .split(',')
+                .filter_map(|p| {
+                    let mut w = p.split_whitespace();
+                    let id = w.next()?.parse().ok()?;
+                    Some((w.next()?.trim_matches('`').to_string(), id))
+                })
+                .collect()
+        };
+        for (c, cid) in ctors {
+            let newtype = matches!(td.kind, adtb_lang::schema::TypeDefKind::Newtype { .. });
+            let index = if newtype { Some(0) } else { td.ctor_index(&c) };
+            let got = index.and_then(|k| schema.ids.ctors.get(&(t, k)));
+            if got != Some(&cid) {
+                failures.push(format!("constructor {m}::{name}.{c}: {got:?}, not {cid}"));
+            }
+        }
+    }
+    assert!(seen > 100, "the id tables were not found");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// The ad hoc parameters a block's `-- given` header declares, as name and type text.
 fn given(b: &Block) -> Vec<(String, String)> {
     let Some(header) = b

@@ -476,3 +476,103 @@ fn stores_name_parameterless_functions() {
         "no parameters",
     );
 }
+
+fn type_id(s: &Schema, name: &str) -> TypeId {
+    TypeId(s.types.iter().position(|t| t.name == name).expect("a type") as u32)
+}
+
+fn rel_id(s: &Schema, module: &str, name: &str) -> RelId {
+    let m = s.module_named(module).expect("a module");
+    match s.module(m).values.get(name) {
+        Some(&ValueDef::Relation(r)) => r,
+        _ => panic!("no relation `{module}::{name}`"),
+    }
+}
+
+#[test]
+fn declarations_take_ids_in_declaration_order_from_1024() {
+    let s = build_src(&[RUNNING]).unwrap();
+    let user = type_id(&s, "User");
+    let identity = type_id(&s, "Identity");
+    let users = rel_id(&s, "auth", "users");
+    let identities = rel_id(&s, "auth", "identities");
+    assert_eq!(Some(&1024), s.ids.types.get(&user));
+    assert_eq!(Some(&1025), s.ids.ctors.get(&(user, 0)));
+    assert_eq!(Some(&1026), s.ids.types.get(&identity));
+    assert_eq!(Some(&1027), s.ids.ctors.get(&(identity, 0)));
+    assert_eq!(Some(&1028), s.ids.ctors.get(&(identity, 1)));
+    assert_eq!(Some(&1029), s.ids.relations.get(&users));
+    assert_eq!(Some(&1030), s.ids.relations.get(&identities));
+    let field = |t, c, f: &str| s.ids.fields.get(&(t, c, f.to_string())).copied();
+    assert_eq!(Some(1024), field(user, Some(0), "id"));
+    assert_eq!(Some(1025), field(user, Some(0), "name"));
+    assert_eq!(Some(1026), field(identity, None, "id"));
+    assert_eq!(Some(1027), field(identity, None, "user"));
+    assert_eq!(Some(1028), field(identity, Some(0), "email"));
+    assert_eq!(Some(1030), field(identity, Some(1), "gid"));
+    assert_eq!(Some(&1024), s.ids.keys.get(&users));
+    assert_eq!(Some(&1025), s.ids.keys.get(&identities));
+    assert_eq!(Some(&1026), s.ids.indexes.get(&(identities, 0)));
+    assert_eq!(Some(&1027), s.ids.indexes.get(&(identities, 1)));
+    assert_eq!(Some(&1024), s.ids.generated.get(&users));
+    assert_eq!(Some(&1025), s.ids.generated.get(&identities));
+    assert_eq!(
+        Some(&1024),
+        s.ids.sets.get(&(identities, "OAuth".to_string()))
+    );
+    assert_eq!(Some(&1024), s.ids.functions.get(&FnId(0)));
+}
+
+#[test]
+fn engine_types_constructors_and_relations_take_their_fixed_ids() {
+    let s = build_src(&[]).unwrap();
+    let bool_ = s.prelude_type("Bool");
+    assert_eq!(Some(&0), s.ids.types.get(&bool_));
+    assert_eq!(Some(&2), s.ids.ctors.get(&(bool_, 1)));
+    let fault = s.prelude_type("RejectReason");
+    let mig = s.ty(fault).ctor_index("MigrationInProgress").unwrap();
+    assert_eq!(Some(&372), s.ids.ctors.get(&(fault, mig)));
+    assert_eq!(
+        Some(&219),
+        s.ids.relations.get(&rel_id(&s, "catalog", "types"))
+    );
+    assert_eq!(
+        Some(&340),
+        s.ids.relations.get(&rel_id(&s, "sys", "format"))
+    );
+    assert_eq!(
+        Some(&241),
+        s.ids.relations.get(&rel_id(&s, "catalog", "audit"))
+    );
+    for (i, t) in s.types.iter().enumerate() {
+        if s.module(t.module).engine {
+            assert!(
+                s.ids.types.contains_key(&TypeId(i as u32)),
+                "no id for `{}`",
+                t.name
+            );
+            for c in 0..t.ctors().len() as u32 {
+                assert!(
+                    s.ids.ctors.contains_key(&(TypeId(i as u32), c)),
+                    "no id for a constructor of `{}`",
+                    t.name
+                );
+            }
+        }
+    }
+    for (i, r) in s.relations.iter().enumerate() {
+        assert!(
+            s.ids.relations.contains_key(&RelId(i as u32)),
+            "no id for `{}`",
+            r.name
+        );
+    }
+}
+
+#[test]
+fn every_constructor_is_enabled_in_a_schema_built_from_declarations() {
+    let s = build_src(&[RUNNING]).unwrap();
+    let identities = rel_id(&s, "auth", "identities");
+    assert_eq!(Stage::Enabled, s.stage(identities, 1));
+    assert_eq!(Stage::Enabled, s.value_stage(type_id(&s, "Identity"), 1));
+}

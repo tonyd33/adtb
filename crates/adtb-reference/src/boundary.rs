@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::schema::{OnDelete, TypeDefKind};
+use adtb_lang::schema::{OnDelete, Stage as SchemaStage, TypeDefKind};
 use adtb_lang::types::{CtorSet, RelId, Ty, TypeId};
 
 use crate::eval::{Abort, Arena, Change, Database, Env, Interpreter, R, Run, bool_of, into_set};
-use crate::stmt::{Eff, Effects, Outcome, Rejection};
+use crate::stmt::{Eff, Effects, Outcome, Rejection, Stage};
 use crate::textual::print;
 use crate::value::Value;
 
@@ -290,9 +290,21 @@ impl Interpreter<'_> {
     /// value of a value-level constructor not open for writes that the pre-state row of its key
     /// does not hold at the same path.
     fn check_open(&self, plus: &Database) -> R<()> {
-        if self.closed.is_empty() {
+        let schema = self.schema;
+        if self.closed.is_empty() && schema.stages.is_empty() && schema.value_stages.is_empty() {
             return Ok(());
         }
+        let closed = |t: TypeId, c: u32, at: Option<RelId>| -> Option<Stage> {
+            let stage = match at {
+                Some(r) => schema.stage(r, c),
+                None => schema.value_stage(t, c),
+            };
+            match stage {
+                SchemaStage::Declared => Some(Stage::Declared),
+                SchemaStage::Deprecated => Some(Stage::Deprecated),
+                SchemaStage::Enabled => self.closed.get(&(t, c)).copied(),
+            }
+        };
         for ((r, c), rows) in plus {
             let rel = self.schema.relation(*r);
             let def = self.schema.ty(rel.elem_def);
@@ -302,24 +314,24 @@ impl Interpreter<'_> {
                     .rows(self.db, *r, &None)
                     .into_iter()
                     .find(|u| self.key_of(*r, u) == k);
-                if let Some(stage) = self.closed.get(&(rel.elem_def, *c))
+                if let Some(stage) = closed(rel.elem_def, *c, Some(*r))
                     && pre.as_ref().is_none_or(|u| u.tag() != Some(*c))
                 {
                     return Err(Abort::Reject(Rejection::NotOpen {
                         ctor: format!("{}.{}", rel.name, def.ctors()[*c as usize].name),
-                        stage: *stage,
+                        stage,
                     }));
                 }
                 let mut stored = Vec::new();
                 self.sum_values(v, &rel.elem, &mut Vec::new(), &mut stored);
                 for w in stored {
-                    if let Some(stage) = self.closed.get(&(w.sum, w.ctor))
+                    if let Some(stage) = closed(w.sum, w.ctor, None)
                         && pre.as_ref().and_then(|u| at(u, &w.path)) != Some(&w.value)
                     {
                         let sum = self.schema.ty(w.sum);
                         return Err(Abort::Reject(Rejection::NotOpen {
                             ctor: format!("{}.{}", sum.name, sum.ctors()[w.ctor as usize].name),
-                            stage: *stage,
+                            stage,
                         }));
                     }
                 }
@@ -619,7 +631,8 @@ impl Interpreter<'_> {
         let ix = &r.indexes[i];
         let paths: Option<Vec<String>> = ix.fields.iter().map(path).collect();
         let Some(paths) = paths else {
-            return format!("{name}.unique#{i}");
+            let id = self.schema.ids.indexes[&(rel, i)];
+            return format!("{name}.unique#{id}");
         };
         let all: CtorSet = (0..def.ctors().len() as u32).collect();
         let mut ctors: Vec<&str> = ix

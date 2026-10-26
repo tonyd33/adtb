@@ -128,16 +128,29 @@ impl Cx<'_> {
         joins: &[ast::RelationRef],
         arms: &[ast::ArmClause],
     ) -> R<()> {
-        let (i, t) = self.type_decl(&path.ty)?;
+        let (i, mut t) = self.type_decl(&path.ty)?;
         let name = &path.ctor.text;
-        let tname = &t.name.text;
+        let tname = &t.name.text.clone();
         match &t.body {
             ast::TypeBody::Ctors(_) => {}
-            ast::TypeBody::Record(_) => {
+            ast::TypeBody::Record(_) if name == tname => {
                 return self.err_at(
-                    path.ty.span(),
-                    format!("`{tname}` is a record: its one constructor is the type itself"),
+                    path.ctor.span,
+                    format!("`{name}` is already a constructor of `{tname}`"),
                 );
+            }
+            ast::TypeBody::Record(_) => {
+                let h = header(&self.src.decls[i].module).len();
+                let text = self.src.decls[i].text.clone();
+                let Some(braces) = field_braces(&text, h, &t, None) else {
+                    return self.err_at(
+                        path.ty.span(),
+                        format!("record `{tname}` has no fields to keep"),
+                    );
+                };
+                self.src
+                    .edit(i, vec![(braces.start..braces.start, format!("{tname} "))]);
+                t = self.type_decl(&path.ty)?.1;
             }
             ast::TypeBody::New(..) => {
                 return self.err_at(

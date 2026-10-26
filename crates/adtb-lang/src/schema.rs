@@ -237,6 +237,29 @@ pub struct Schema {
     pub aggregates: Vec<AggregateDef>,
     /// The `Principal` every module resolves: the schema's own, else the prelude's.
     pub principal: TypeId,
+    pub ids: crate::ids::CatalogIds,
+    /// The write state of each constructor relation that is not enabled.
+    pub stages: BTreeMap<(RelId, u32), Stage>,
+    /// The write state of each value-level constructor that is not enabled.
+    pub value_stages: BTreeMap<(TypeId, u32), Stage>,
+}
+
+/// The write state of a constructor in a relation variable, or of a value-level constructor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Declared,
+    Enabled,
+    Deprecated,
+}
+
+impl Stage {
+    pub fn name(self) -> &'static str {
+        match self {
+            Stage::Declared => "declared",
+            Stage::Enabled => "enabled",
+            Stage::Deprecated => "deprecated",
+        }
+    }
 }
 
 pub const PRELUDE: ModuleId = ModuleId(0);
@@ -244,6 +267,19 @@ pub const PRELUDE: ModuleId = ModuleId(0);
 impl Schema {
     pub fn module(&self, id: ModuleId) -> &ModuleDef {
         &self.modules[id.0 as usize]
+    }
+
+    /// Returns the write state of constructor `c` in relation variable `r`.
+    pub fn stage(&self, r: RelId, c: u32) -> Stage {
+        self.stages.get(&(r, c)).copied().unwrap_or(Stage::Enabled)
+    }
+
+    /// Returns the write state of constructor `c` of `t` as a value stored in a field.
+    pub fn value_stage(&self, t: TypeId, c: u32) -> Stage {
+        self.value_stages
+            .get(&(t, c))
+            .copied()
+            .unwrap_or(Stage::Enabled)
     }
 
     pub fn module_named(&self, name: &str) -> Option<ModuleId> {
@@ -632,6 +668,9 @@ pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Schema, Vec<FileDiag
             checks: Vec::new(),
             aggregates: Vec::new(),
             principal: TypeId(0),
+            ids: crate::ids::CatalogIds::default(),
+            stages: BTreeMap::new(),
+            value_stages: BTreeMap::new(),
         },
         diags: Vec::new(),
         files: &all,
@@ -643,6 +682,7 @@ pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Schema, Vec<FileDiag
     }
     let names = crate::resolve::check_schema(&b.schema);
     if names.is_empty() {
+        b.schema.ids = crate::ids::declared(&b.schema, &all);
         Ok(b.schema)
     } else {
         Err(names)
@@ -1681,10 +1721,6 @@ impl Builder<'_> {
                 }
                 let mut inner = Vec::new();
                 collect_defs(&f.ty, &mut inner);
-                // The engine's declarations may hold references inside value-level sums.
-                if t.file.is_engine() {
-                    inner.clear();
-                }
                 for d in inner {
                     if has_refs[d.0 as usize] {
                         errs.push((

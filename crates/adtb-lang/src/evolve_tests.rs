@@ -562,11 +562,6 @@ fn add_constructor_refuses_what_it_cannot_add() {
     );
     refuses(
         &running(),
-        "module auth\nadd constructor User.Admin",
-        "`User` is a record",
-    );
-    refuses(
-        &running(),
         "module auth\nadd constructor Identity.Corp joins users.Nope",
         "`users` is not a relation variable of `Identity`",
     );
@@ -1757,5 +1752,233 @@ fn revert_of_a_dropped_record_field_puts_it_back_in_place() {
     assert_eq!(
         "type User = { id: Key users, name: Text }",
         decl(&s, "type", "User")
+    );
+}
+
+#[test]
+fn a_record_gains_a_constructor_as_any_sum() {
+    let s = applies(
+        &running(),
+        "module auth\nadd type Point = { x: I64, y: I64 }",
+    );
+    let s = applies(
+        &s,
+        "module auth\nadd constructor Point.Polar { r: F64, theta: F64 }",
+    );
+    assert_eq!(
+        "type Point = Point { x: I64, y: I64 }\n  | Polar { r: F64, theta: F64 }",
+        decl(&s, "type", "Point")
+    );
+    refuses(
+        &s,
+        "module auth\nadd constructor Point.Point",
+        "`Point` is already a constructor of `Point`",
+    );
+}
+
+#[test]
+fn a_record_keyed_by_its_fields_needs_its_key_in_a_header_once_it_has_two_constructors() {
+    refuses(
+        &running(),
+        "module auth\nadd constructor User.Admin { level: I32 }",
+        "key field `id` is not a header field",
+    );
+}
+
+#[test]
+fn a_relation_added_later_takes_the_type_state_of_a_constructor() {
+    let s = applies(
+        &with_badges(),
+        "module auth\nadd constructor Badge.Emoji { glyph: Text }\nadd relation team_badges : Badge key name",
+    );
+    assert_eq!(Stage::Declared, stage(&s, "team_badges", "Emoji"));
+    assert_eq!(Stage::Enabled, stage(&s, "team_badges", "Plain"));
+    let s = applies(
+        &s,
+        "module auth\nenable Badge.Emoji\nadd relation more_badges : Badge key name",
+    );
+    assert_eq!(Stage::Enabled, stage(&s, "more_badges", "Emoji"));
+}
+
+fn ids_of(s: &Source) -> Schema {
+    s.schema().unwrap_or_else(|e| panic!("builds: {e:?}"))
+}
+
+fn ty(schema: &Schema, name: &str) -> TypeId {
+    TypeId(
+        schema
+            .types
+            .iter()
+            .position(|t| t.name == name)
+            .expect("a type") as u32,
+    )
+}
+
+fn rel(schema: &Schema, name: &str) -> RelId {
+    let m = schema.module_named("auth").unwrap();
+    match schema.module(m).values.get(name) {
+        Some(&ValueDef::Relation(r)) => r,
+        _ => panic!("no relation `{name}`"),
+    }
+}
+
+#[test]
+fn an_added_constructor_takes_the_next_shared_id() {
+    let base = ids_of(&running());
+    let next = base
+        .ids
+        .relations
+        .values()
+        .chain(base.ids.types.values())
+        .chain(base.ids.ctors.values())
+        .copied()
+        .max()
+        .unwrap()
+        + 1;
+    let s = applies(
+        &running(),
+        "module auth
+add constructor Identity.Corp { domain: Text }
+  arm display_name: Corp c -> c.domain
+  arm login_present: Corp c -> false",
+    );
+    let schema = ids_of(&s);
+    let identity = ty(&schema, "Identity");
+    let corp = schema.ty(identity).ctor_index("Corp").unwrap();
+    assert_eq!(Some(&next), schema.ids.ctors.get(&(identity, corp)));
+    let apple = schema.ty(identity).ctor_index("Apple").unwrap();
+    assert_eq!(
+        base.ids.ctors.get(&(identity, apple)),
+        schema.ids.ctors.get(&(identity, apple))
+    );
+}
+
+#[test]
+fn a_rename_keeps_every_id() {
+    let base = ids_of(&running());
+    let s = applies(
+        &running(),
+        "module auth
+rename constructor Identity.Google to Gmail
+rename type Identity to Login
+rename relation identities to logins
+rename set OAuth of logins to Federated
+rename field Login.Gmail.gid to subject",
+    );
+    let schema = ids_of(&s);
+    let (old_t, new_t) = (ty(&base, "Identity"), ty(&schema, "Login"));
+    assert_eq!(base.ids.types.get(&old_t), schema.ids.types.get(&new_t));
+    let g = base.ty(old_t).ctor_index("Google").unwrap();
+    let gm = schema.ty(new_t).ctor_index("Gmail").unwrap();
+    assert_eq!(
+        base.ids.ctors.get(&(old_t, g)),
+        schema.ids.ctors.get(&(new_t, gm))
+    );
+    assert_eq!(
+        base.ids.fields.get(&(old_t, Some(g), "gid".to_string())),
+        schema
+            .ids
+            .fields
+            .get(&(new_t, Some(gm), "subject".to_string()))
+    );
+    let (old_r, new_r) = (rel(&base, "identities"), rel(&schema, "logins"));
+    assert_eq!(
+        base.ids.relations.get(&old_r),
+        schema.ids.relations.get(&new_r)
+    );
+    assert_eq!(
+        base.ids.sets.get(&(old_r, "OAuth".to_string())),
+        schema.ids.sets.get(&(new_r, "Federated".to_string()))
+    );
+    let gid_unique = |s: &Schema, r: RelId| {
+        (0..s.relation(r).indexes.len()).find(|&i| s.relation(r).indexes[i].scope == Some(vec![1]))
+    };
+    let (i, j) = (
+        gid_unique(&base, old_r).unwrap(),
+        gid_unique(&schema, new_r).unwrap(),
+    );
+    assert_eq!(
+        base.ids.indexes.get(&(old_r, i)),
+        schema.ids.indexes.get(&(new_r, j))
+    );
+}
+
+#[test]
+fn ids_are_never_reused() {
+    let s = applies(&running(), "module auth\nadd index (user) in identities");
+    let first = ids_of(&s);
+    let r = rel(&first, "identities");
+    let added = first.ids.indexes[&(r, first.relation(r).indexes.len() - 1)];
+    let s = applies(&s, "module auth\ndrop index (user) in identities");
+    let s = applies(&s, "module auth\nadd index (user) in identities");
+    let again = ids_of(&s);
+    let r = rel(&again, "identities");
+    let readded = again.ids.indexes[&(r, again.relation(r).indexes.len() - 1)];
+    assert_eq!(added + 1, readded);
+}
+
+#[test]
+fn a_dropped_unique_leaves_the_others_their_ids() {
+    let base = ids_of(&running());
+    let r = rel(&base, "identities");
+    let sub = base.ids.indexes[&(r, 2)];
+    let s = applies(
+        &running(),
+        "module auth\ndrop unique (email) in identities.EmailPass",
+    );
+    let schema = ids_of(&s);
+    assert_eq!(
+        Some(&sub),
+        schema.ids.indexes.get(&(rel(&schema, "identities"), 1))
+    );
+}
+
+#[test]
+fn a_constructor_put_back_by_revert_takes_a_new_id() {
+    let base = ids_of(&running());
+    let s = applies(&running(), "module auth\ndeprecate identities.Apple");
+    let s = applies(
+        &s,
+        "module auth
+remove constructor Identity.Apple
+redefine fn display_name (i: Identity) -> Text = match i
+  | EmailPass e -> e.email
+  | Google g    -> g.gid",
+    );
+    let s = applies(&s, "module auth\nrevert 0002");
+    let schema = ids_of(&s);
+    let t = ty(&schema, "Identity");
+    let apple = schema.ty(t).ctor_index("Apple").unwrap();
+    assert_ne!(
+        base.ids.ctors.get(&(t, apple)),
+        schema.ids.ctors.get(&(t, apple))
+    );
+}
+
+#[test]
+fn the_schema_carries_write_states() {
+    let s = applies(
+        &with_badges(),
+        "module auth
+add constructor Badge.Emoji { glyph: Text }
+enable post_badges.Emoji",
+    );
+    let schema = ids_of(&s);
+    let badge = ty(&schema, "Badge");
+    let emoji = schema.ty(badge).ctor_index("Emoji").unwrap();
+    assert_eq!(
+        Stage::Enabled,
+        schema.stage(rel(&schema, "post_badges"), emoji)
+    );
+    assert_eq!(
+        Stage::Declared,
+        schema.stage(rel(&schema, "user_badges"), emoji)
+    );
+    assert_eq!(Stage::Declared, schema.value_stage(badge, emoji));
+    let s = applies(&s, "module auth\ndeprecate post_badges.Emoji");
+    let schema = ids_of(&s);
+    assert_eq!(
+        Stage::Deprecated,
+        schema.stage(rel(&schema, "post_badges"), emoji)
     );
 }

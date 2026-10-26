@@ -115,8 +115,10 @@ not this function's.
 A `Source` holds the declaration texts of every user module, the
 modules that hold nothing, the installed extensions, the write state
 of each (relation variable, constructor) and of each value-level
-(type, constructor) with the version that set it, and the log of the
-migrations applied to it with the source before each.
+(type, constructor) with the version that set it, the catalog id of
+each object with the next id of each space, and the log of the
+migrations applied to it with the source before each. `Source::new`
+numbers its objects as `schema::build` does.
 
 Preconditions of `migrate`:
 
@@ -134,6 +136,14 @@ Postconditions of `migrate`:
   to build or check, and `Refusal.result` is that result.
 - The result's declarations are the operators' rewrite of the source's
   text. A declaration no operator touches keeps its text.
+- Every object keeps its catalog id across the migration, a renamed
+  one included. An object the migration creates takes the next id of
+  its space, in the order its operators create objects, and an id is
+  never given twice. A unique or index whose fields or constructors a
+  split, merge, nest or unnest rewrites, and a field `move field`
+  moves, is a new object.
+- `result.schema()` carries the result's ids and write states
+  ([kernel.md §6](kernel.md#6-the-schema-a-term-refers-to)).
 
 Every operator resolves the names it writes in the migration's
 module, or the module that qualifies them. Each row states what the
@@ -153,7 +163,7 @@ whose element type is the operator's type.
 | `drop relation r` | no field outside `r`'s own type references `r`; no body names `r` | `r`, its named sets and its states are gone |
 | `drop fn`, `drop aggregate`, `drop constraint`, `drop check`, `unstore`, `drop set` | the object exists | it is gone; dependents are left to the recheck |
 | `rename type`, `relation`, `set`, `constructor`, `field` | the new name is free in its scope: the module, the relation variable's constructors and sets, or the constructor and header | every declaration that names the object names it by the new name, a punned field `{ f }` becoming `{ g: f }`; write states follow the name |
-| `add constructor T.C` | `T` is a sum with constructors; `C` is no constructor of `T` and no named set of its relations; a `before`/`after` constructor exists; each `joins r.S` names a named set of one of its relations; each `arm` target has exactly one match whose scrutinee holds `C` at the new version | `C` is in `T` at its place; each joined set holds it; each arm ends its match; `C` is `Declared` in each of its relations and value-level |
+| `add constructor T.C` | `T` is a sum, a record included, not a newtype; `C` is no constructor of `T` and no named set of its relations; a `before`/`after` constructor exists; each `joins r.S` names a named set of one of its relations; each `arm` target has exactly one match whose scrutinee holds `C` at the new version | a record `T = { ... }` becomes `T = T { ... } \| C`; `C` is in `T` at its place; each joined set holds it; each arm ends its match; `C` is `Declared` in each of its relations and value-level |
 | `remove constructor T.C` | `C` is `Deprecated` in each of its relations (value-level, when it has none) since an earlier migration; no reference type names a constructor set holding `C` but the whole sum; no named set is `C` alone; no check ranges over `C` alone | `C` is gone from `T`, every named set and listed scope; a unique, index or default over `C` alone is gone; constraints lose their arms for `C`; its states are gone |
 | `enable`, `disable`, `deprecate` | `r.C` or `T.C` names one constructor; `enable` meets one not `Enabled`; `disable` and `deprecate` meet one `Enabled` | its state is `Enabled`, `Declared` or `Deprecated` since this version |
 | `split constructor T.C into ...` | the products are no constructors of `T`; the routing is a match over rows of `C`, exhaustive, reading only the row, each arm a product's value, omitted header fields carried; a unique or index over `C` alone with a field no product keeps has replacements stated | the products replace `C` at its place; a scope over `C` alone moves to each product that keeps all its fields, under their new names, and the stated replacements are added; listed scopes, named sets and reference types over `C` list the products; arm clauses replace `C`'s arms; products take `C`'s states |

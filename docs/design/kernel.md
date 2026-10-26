@@ -321,9 +321,24 @@ A term names declarations by id; a consumer reads them from the
   and `Uuid` with `generate uuidv7`; the field's type for one other
   key field; and for several, the record of their types, sorted by
   name. `key` of a row whose one key field is a `Key r` of `r` itself
-  is that field's value.
+  is that field's value. For a `catalog::` or `sys::` relation whose
+  one key field is a `Key r` of `r` itself, with no generator, it is
+  `I64`.
 - Prelude types are found with `Schema::prelude_type`; their
   constructors are in the prelude's declaration order.
+- `Schema::ids` holds the catalog id of each object
+  ([../spec/catalog.md §1.2](../spec/catalog.md#12-identity-of-catalog-objects)):
+  every object of a user module has one, and the engine's types,
+  constructors and relation variables have their fixed ids
+  ([../spec/catalog.md §4.6](../spec/catalog.md#46-constructor-ids-of-engine-defined-sums));
+  the engine's other objects have none. A schema `schema::build`
+  returns numbers its user objects as one migration declaring its
+  files' declarations in order would; one `Source::schema` returns
+  carries the ids of its log ([schema-change.md §4](schema-change.md#4-the-schema-transition)).
+- `Schema::stage(r, c)` is the write state of constructor `c` in
+  relation `r`, and `Schema::value_stage(t, c)` that of `c` as a value
+  of `t` stored in a field; both are `Enabled` in a schema
+  `schema::build` returns.
 
 ## 7. Normal forms
 

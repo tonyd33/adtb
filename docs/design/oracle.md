@@ -82,9 +82,12 @@ Constraint checking is naive: every key, unique, reference, domain,
 check and declared constraint of the schema is evaluated over the
 whole transition at every statement boundary.
 
-`with_closed` gives the constructors not open for writes, each by its
-sum and constructor index with its stage, `Declared` or `Deprecated`.
-Stages are deployment state the schema does not carry.
+A constructor relation or value-level constructor whose stage in the
+schema ([kernel.md §6](kernel.md#6-the-schema-a-term-refers-to)) is
+`Declared` or `Deprecated` refuses writes. `with_closed` closes more
+constructors, each by its sum and constructor index with its stage,
+for every relation of the sum and as a value; it never opens one the
+schema closes.
 
 `supply` is the context's supply of generated values, kept by the
 caller across statements:
