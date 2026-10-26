@@ -121,8 +121,10 @@ fn digit(position: u64, level: u32, capacity: u64) -> usize {
 /// - Pages are numbered by position in the order they were added. Every node but the last at
 ///   each level is full, so the path to position `p` is the digits of `p` in base `capacity`.
 /// - Each page records its own position.
-/// - A level-0 entry's category never exceeds the category of its page's free space; an inner
-///   entry's category is the greatest category of its child.
+/// - A level-0 entry's category never exceeds the category of its page's free space, and
+///   changes only under its page's exclusive latch. An inner entry's category is at least the
+///   greatest category of its child.
+/// - An inner entry is touched exactly when an entry of its child is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Space {
     owner: u32,
@@ -260,7 +262,7 @@ impl Space {
                 rightmost: want.rightmost && i == n - 1,
             };
             let top = self.check_node(pager, child, below, found)?;
-            if top != cat {
+            if top > cat {
                 found.problems.push((
                     pid,
                     format!("entry {i} has category {cat}, its child's greatest is {top}"),
@@ -273,7 +275,8 @@ impl Space {
     /// Returns a page whose entry has category `need` or more, if there is one.
     ///
     /// A hole found first gets a new empty page in `arrangement` and row format `format`, written
-    /// with its entry in one update of its own.
+    /// with its entry in one update of its own. An inner entry found to promise more than its
+    /// child holds is set to its child's greatest category, in one update of its own.
     ///
     /// Precondition: `stage` holds no page of the directory.
     pub fn find<'p, R: Runtime>(
@@ -285,17 +288,25 @@ impl Space {
         format: u16,
     ) -> Result<Option<Pid>, PageError> {
         'search: loop {
-            let mut node = stage.read(pager, self.root)?;
+            let mut here = self.root;
+            let mut node = stage.read(pager, here)?;
             let cap = capacity(&node);
             let mut position = 0;
+            let mut above = None;
             loop {
                 let Some(i) = (0..count(&node)).find(|&i| u16::from(entry(&node, i).1) >= need)
                 else {
-                    return Ok(None);
+                    let Some((parent, j)) = above else {
+                        return Ok(None);
+                    };
+                    self.repair(pager, parent, j, here)?;
+                    continue 'search;
                 };
                 position += i as u64 * cap.pow(level(&node));
                 let child = entry(&node, i).0;
                 if level(&node) > 0 {
+                    above = Some((here, i));
+                    here = child;
                     node = stage.read(pager, child)?;
                 } else if child == HOLE {
                     match self.fill(pager, position as u32, arrangement, format)? {
@@ -306,6 +317,51 @@ impl Space {
                     return Ok(Some(child));
                 }
             }
+        }
+    }
+
+    /// Set entry `i` of directory page `parent` to the greatest category of `child`, in an update
+    /// of its own, if the entry still names `child`.
+    fn repair<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        parent: Pid,
+        i: usize,
+        child: Pid,
+    ) -> Result<(), PageError> {
+        let mut stage = Stage::new();
+        let node = stage.page(pager, parent)?;
+        if level(node) == 0 || i >= count(node) || entry(node, i).0 != child {
+            return Ok(());
+        }
+        let below = stage.read(pager, child)?;
+        let (top, any) = (max_category(&below), any_touched(&below));
+        set_word(stage.page(pager, parent)?, i, child, top, any);
+        stage.commit(pager)
+    }
+
+    /// Returns the level-0 directory page holding the entry at `position` and the entry's index,
+    /// if that entry names `page`, read without holding a latch across pages.
+    fn leaf_of<'p, R: Runtime>(
+        &self,
+        stage: &Stage<'p, R>,
+        pager: &'p Pager<R>,
+        position: u32,
+        page: Pid,
+    ) -> Result<Option<(Pid, usize, Vec<u8>)>, PageError> {
+        let mut pid = self.root;
+        let mut node = stage.read(pager, pid)?;
+        let cap = capacity(&node);
+        loop {
+            let i = digit(u64::from(position), level(&node), cap);
+            if i >= count(&node) {
+                return Ok(None);
+            }
+            if level(&node) == 0 {
+                return Ok((entry(&node, i).0 == page).then_some((pid, i, node)));
+            }
+            pid = entry(&node, i).0;
+            node = stage.read(pager, pid)?;
         }
     }
 
@@ -420,25 +476,53 @@ impl Space {
         Ok(total + count(&node) as u64)
     }
 
-    /// Set the category of the entry at `position` in `stage`, and the categories above it.
+    /// Set the category of the entry at `position`, which names `page`, in `stage`.
+    ///
+    /// Lowering a category latches only the level-0 directory page holding the entry. Raising one
+    /// latches the path from the root and sets each entry above it to its child's greatest
+    /// category.
+    ///
+    /// Precondition: `stage` holds `page`, and holds a directory page only if it holds the path
+    /// to `position`.
     pub fn set_category<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
+        page: Pid,
         position: u32,
         category: u8,
     ) -> Result<(), PageError> {
+        if let Some((leaf, i, node)) = self.leaf_of(stage, pager, position, page)?
+            && entry(&node, i).1 >= category
+        {
+            let node = stage.page(pager, leaf)?;
+            if level(node) == 0 && i < count(node) && entry(node, i).0 == page {
+                let mark = touched(node, i);
+                set_word(node, i, page, category, mark);
+                return Ok(());
+            }
+        }
         self.write_entry(stage, pager, position, None, Some(category), None)
     }
 
-    /// Mark or unmark the entry at `position` in `stage` as touched, and the entries above it.
+    /// Mark or unmark the entry at `position`, which names `page`, as touched in `stage`, and the
+    /// entries above it. An entry already as asked is left alone, latching nothing.
+    ///
+    /// Precondition: `stage` holds `page`, and holds a directory page only if it holds the path
+    /// to `position`.
     pub fn touch<'p, R: Runtime>(
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
+        page: Pid,
         position: u32,
         on: bool,
     ) -> Result<(), PageError> {
+        if let Some((_, i, node)) = self.leaf_of(stage, pager, position, page)?
+            && touched(&node, i) == on
+        {
+            return Ok(());
+        }
         self.write_entry(stage, pager, position, None, None, Some(on))
     }
 
@@ -574,13 +658,8 @@ impl Space {
         push(stage.page(pager, parent)?, page, 0);
         let fresh_page = stage.page(pager, page)?;
         arrangement.init(fresh_page, position32);
-        let free = page::free(fresh_page);
-        self.set_category(
-            &mut stage,
-            pager,
-            position32,
-            category(free, pager.page_size()),
-        )?;
+        let cat = category(page::free(fresh_page), pager.page_size());
+        self.write_entry(&mut stage, pager, position32, None, Some(cat), None)?;
         stage.commit_with(pager, new)?;
         Ok(page)
     }

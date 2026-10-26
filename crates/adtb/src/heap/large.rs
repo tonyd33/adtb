@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::key::Tid;
 use crate::runtime::Runtime;
-use crate::storage::{self, PageError, Pager, Pid};
+use crate::storage::{self, LATCHES_PER_THREAD, PageError, Pager, Pid};
 
 use super::dir::{Space, category, max_fanout, need_category};
 use super::page::{self, Arrangement, Slot};
@@ -16,6 +16,10 @@ const XMIN: usize = 8;
 const COUNT: usize = 16;
 const ROLE: usize = 20;
 const BYTES: usize = 24;
+
+/// The store pages one update of [`LargeStore::retain_apart`] latches, beside the two heap pages
+/// an update or a retag holds.
+const COUNTED_PAGES: usize = LATCHES_PER_THREAD - 2;
 
 const HEAD: u32 = 0;
 const TAIL: u32 = 1;
@@ -190,7 +194,8 @@ impl LargeStore {
                 let mut fix = Stage::new();
                 let page = fix.page(pager, pid)?;
                 let (position, cat) = (page::position(page), category(page::free(page), size));
-                self.space.set_category(&mut fix, pager, position, cat)?;
+                self.space
+                    .set_category(&mut fix, pager, pid, position, cat)?;
                 fix.commit(pager)?;
                 continue;
             };
@@ -200,8 +205,9 @@ impl LargeStore {
                 let page = stage.page(pager, Pid(t.page()))?;
                 update_chunk(page, usize::from(t.slot()), |c| c.head = false);
             }
-            self.space.set_category(&mut stage, pager, position, cat)?;
-            self.space.touch(&mut stage, pager, position, true)?;
+            self.space.touch(&mut stage, pager, pid, position, true)?;
+            self.space
+                .set_category(&mut stage, pager, pid, position, cat)?;
             stage.commit(pager)?;
             return Ok(tid(pid, slot));
         }
@@ -294,7 +300,7 @@ impl LargeStore {
         });
         if left == 0 {
             let position = page::position(page);
-            self.space.touch(&mut stage, pager, position, true)?;
+            self.space.touch(&mut stage, pager, pid, position, true)?;
         }
         stage.commit(pager)
     }
@@ -354,6 +360,9 @@ impl LargeStore {
                     _ => return Ok(freed),
                 }
             };
+            if let Some(n) = next {
+                self.touch_page(pager, Pid(n.page()))?;
+            }
             let mut stage = Stage::new();
             let mut pids = vec![here];
             pids.extend(next.map(|n| Pid(n.page())));
@@ -377,15 +386,14 @@ impl LargeStore {
                     c.head = true;
                     c.count = 0;
                 });
-                let p = page::position(page);
-                self.space.touch(&mut stage, pager, p, true)?;
             }
             let mut gone = pager.reserve();
             if empty {
                 self.space.vacate(&mut stage, pager, position)?;
                 gone.free(here);
             } else {
-                self.space.set_category(&mut stage, pager, position, cat)?;
+                self.space
+                    .set_category(&mut stage, pager, here, position, cat)?;
             }
             stage.commit_with(pager, gone)?;
             freed += 1;
@@ -394,6 +402,38 @@ impl LargeStore {
                 None => return Ok(freed),
             }
         }
+    }
+
+    /// Mark store page `pid` touched, in an update of its own.
+    fn touch_page<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
+        let mut stage = Stage::new();
+        let position = page::position(stage.page(pager, pid)?);
+        self.space.touch(&mut stage, pager, pid, position, true)?;
+        stage.commit(pager)
+    }
+
+    /// Count one more version pointing at each of `pointers`, in updates of their own, each
+    /// latching at most [`COUNTED_PAGES`] store pages in page id order.
+    ///
+    /// Precondition: the versions pointing at `pointers` are written by a later update.
+    pub(super) fn retain_apart<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pointers: &[Pointer],
+    ) -> Result<(), PageError> {
+        let mut heads = pointers.to_vec();
+        heads.sort_by_key(|p| (p.first.page(), p.first.slot()));
+        let by_page: Vec<&[Pointer]> = heads
+            .chunk_by(|a, b| a.first.page() == b.first.page())
+            .collect();
+        for pages in by_page.chunks(COUNTED_PAGES) {
+            let mut stage = Stage::new();
+            for &p in pages.iter().copied().flatten() {
+                self.retain(&mut stage, pager, p)?;
+            }
+            stage.commit(pager)?;
+        }
+        Ok(())
     }
 
     /// Unmark touched page `pid` at `position` if it holds no head of count 0.
@@ -415,7 +455,7 @@ impl LargeStore {
             .filter_map(|s| chunk_at(page, s))
             .any(|c| c.head && c.count == 0);
         if !waiting {
-            self.space.touch(&mut stage, pager, position, false)?;
+            self.space.touch(&mut stage, pager, pid, position, false)?;
             stage.commit(pager)?;
         }
         Ok(())
@@ -439,7 +479,8 @@ impl LargeStore {
         });
         if count == 0 {
             let position = page::position(page);
-            self.space.touch(&mut stage, pager, position, true)?;
+            self.space
+                .touch(&mut stage, pager, Pid(head.page()), position, true)?;
         }
         stage.commit(pager)
     }

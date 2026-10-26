@@ -101,8 +101,8 @@ pub struct Roots {
 /// The transactions layer over the workload `elems { id, k, pos, e }` with `unique (k, pos)`
 /// and `unique (k, e)`, and `counters { id, n }` keyed by `id`.
 ///
-/// Each index, heap and the serializer has its own lock, taken in that order; `Transactions`
-/// locks itself and takes no other. Taking a snapshot and recording a commit both run under the
+/// Each index and the serializer has its own lock, taken in that order; `Transactions` locks
+/// itself and takes no other. Taking a snapshot and recording a commit both run under the
 /// serializer's lock. No lock is held across a wait.
 pub struct Engine {
     pub rt: SimRuntime,
@@ -111,8 +111,8 @@ pub struct Engine {
     by_pos: Lock<Index>,
     by_elem: Lock<Index>,
     by_id: Lock<Index>,
-    elems: Lock<Heap>,
-    counters: Lock<Heap>,
+    elems: Heap,
+    counters: Heap,
     txns: Transactions<SimRuntime>,
     ser: Lock<Serializer>,
     waits: Waits<SimRuntime>,
@@ -168,8 +168,8 @@ impl Engine {
             by_pos: Lock::new(index(roots.by_pos, ELEMS, 2, ELEM)),
             by_elem: Lock::new(index(roots.by_elem, ELEMS, 2, ELEM)),
             by_id: Lock::new(index(roots.by_id, COUNTERS, 1, COUNTER)),
-            elems: Lock::new(heap(ELEMS, roots.elems, 4)),
-            counters: Lock::new(heap(COUNTERS, roots.counters, 2)),
+            elems: heap(ELEMS, roots.elems, 4),
+            counters: heap(COUNTERS, roots.counters, 2),
             txns,
             group_commit: None,
             readers: Lock::default(),
@@ -241,18 +241,16 @@ impl Engine {
         let by_pos = self.by_pos.lock(&self.rt);
         let by_elem = self.by_elem.lock(&self.rt);
         let by_id = self.by_id.lock(&self.rt);
-        let elems = self.elems.lock(&self.rt);
-        let counters = self.counters.lock(&self.rt);
         let clog = self.txns.commit_log();
         let inventory = Inventory {
             commit_log: Some(&clog),
             sums: vec![
                 Sum {
-                    heaps: vec![(ELEM, &*elems)],
+                    heaps: vec![(ELEM, &self.elems)],
                     indexes: vec![&*by_pos, &*by_elem],
                 },
                 Sum {
-                    heaps: vec![(COUNTER, &*counters)],
+                    heaps: vec![(COUNTER, &self.counters)],
                     indexes: vec![&*by_id],
                 },
             ],
@@ -326,9 +324,9 @@ impl Engine {
     /// Returns the elements of `k` at `tx`'s snapshot, ordered by position.
     pub fn read(&self, tx: &Tx, k: i64) -> Result<Vec<i64>, Failure> {
         let by_pos = self.by_pos.lock(&self.rt);
-        let heap = self.elems.lock(&self.rt);
+        let heap = &self.elems;
         Ok(self
-            .scan(tx, k, &by_pos, &heap)?
+            .scan(tx, k, &by_pos, heap)?
             .into_iter()
             .map(|(_, e)| e)
             .collect())
@@ -378,14 +376,14 @@ impl Engine {
         loop {
             let by_pos = self.by_pos.lock(&self.rt);
             let by_elem = self.by_elem.lock(&self.rt);
-            let heap = self.elems.lock(&self.rt);
-            let n = self.scan(tx, k, &by_pos, &heap)?.len() as i64;
+            let heap = &self.elems;
+            let n = self.scan(tx, k, &by_pos, heap)?.len() as i64;
             let keys = [
                 (&*by_pos, vec![Value::I64(k), Value::I64(n)]),
                 (&*by_elem, vec![Value::I64(k), Value::I64(e)]),
             ];
-            if let Some(x) = self.probe(tx, xid, &heap, &keys)? {
-                drop((heap, by_elem, by_pos));
+            if let Some(x) = self.probe(tx, xid, heap, &keys)? {
+                drop((by_elem, by_pos));
                 self.waits.wait(Some(xid), x)?;
                 continue;
             }
@@ -449,11 +447,11 @@ impl Engine {
         let xid = tx.xid.expect("a read-only transaction writes");
         loop {
             let by_id = self.by_id.lock(&self.rt);
-            let heap = self.counters.lock(&self.rt);
+            let heap = &self.counters;
             self.ser.lock(&self.rt).check(tx.sid)?;
             let keys = [(&*by_id, vec![Value::I64(id)])];
-            if let Some(x) = self.probe(tx, xid, &heap, &keys)? {
-                drop((heap, by_id));
+            if let Some(x) = self.probe(tx, xid, heap, &keys)? {
+                drop(by_id);
                 self.waits.wait(Some(xid), x)?;
                 continue;
             }
@@ -513,8 +511,8 @@ impl Engine {
 
     pub fn get_counter(&self, tx: &Tx, id: i64) -> Result<Option<i64>, Failure> {
         let by_id = self.by_id.lock(&self.rt);
-        let heap = self.counters.lock(&self.rt);
-        Ok(self.find_counter(tx, id, &by_id, &heap)?.map(|(_, _, n)| n))
+        let heap = &self.counters;
+        Ok(self.find_counter(tx, id, &by_id, heap)?.map(|(_, _, n)| n))
     }
 
     /// Add one to counter `id`. Returns the new value.
@@ -522,15 +520,15 @@ impl Engine {
         let xid = tx.xid.expect("a read-only transaction writes");
         loop {
             let by_id = self.by_id.lock(&self.rt);
-            let heap = self.counters.lock(&self.rt);
+            let heap = &self.counters;
             let (tid, xmax, n) = self
-                .find_counter(tx, id, &by_id, &heap)?
+                .find_counter(tx, id, &by_id, heap)?
                 .expect("the counter exists");
             let Ok(write) = check_write(xid, xmax, |x| self.status(x));
             match write {
                 Write::Proceed => {}
                 Write::Wait(x) => {
-                    drop((heap, by_id));
+                    drop(by_id);
                     self.waits.wait(Some(xid), x)?;
                     continue;
                 }

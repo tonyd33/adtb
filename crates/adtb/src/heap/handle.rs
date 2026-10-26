@@ -99,7 +99,7 @@ fn latch_order(a: Pid, b: Pid) -> Vec<Pid> {
 }
 
 /// Finish a change whose heap pages `stage` holds: count each pointer of `gains` once more,
-/// set the directory category of each page of `dirs` to its free space, and clear the
+/// set the directory category of the page of `dir` to its free space, and clear the
 /// all-visible bit of each page of `marks` that has it, latching store pages, then directory
 /// pages, then visibility map pages.
 fn finish<'p, R: Runtime>(
@@ -107,19 +107,13 @@ fn finish<'p, R: Runtime>(
     pager: &'p Pager<R>,
     large: LargeStore,
     gains: &[Pointer],
-    dirs: &[(&Heap, Pid)],
+    dir: Option<(&Heap, Pid)>,
     marks: &[(&Heap, Pid)],
 ) -> Result<(), PageError> {
     let mut gains = gains.to_vec();
     gains.sort_by_key(|p| p.first);
     for p in gains {
         large.retain(stage, pager, p)?;
-    }
-    for &(h, pid) in dirs {
-        let page = stage.read(pager, pid)?;
-        let cat = category(page::free(&page), h.page_size);
-        h.space
-            .set_category(stage, pager, page::position(&page), cat)?;
     }
     let mut leaves = Vec::new();
     for &(h, pid) in marks {
@@ -130,6 +124,12 @@ fn finish<'p, R: Runtime>(
         page::set_all_visible(page, false);
         let vm = h.vm(stage, pager)?;
         leaves.push((vm.leaf(stage, pager, pid)?, vm, pid));
+    }
+    if let Some((h, pid)) = dir {
+        let page = stage.read(pager, pid)?;
+        let cat = category(page::free(&page), h.page_size);
+        h.space
+            .set_category(stage, pager, pid, page::position(&page), cat)?;
     }
     leaves.sort_by_key(|(leaf, _, _)| *leaf);
     for (_, vm, pid) in leaves {
@@ -615,7 +615,7 @@ impl Heap {
             0
         };
         self.space
-            .set_category(&mut stage, pager, page::position(&page), cat)?;
+            .set_category(&mut stage, pager, pid, page::position(&page), cat)?;
         stage.commit(pager)
     }
 
@@ -805,12 +805,13 @@ impl Heap {
         };
         let flagged = page::all_visible(&page);
         let position = page::position(&page);
+        let vm = self.vm(&stage, pager)?;
         if page::is_empty(&out) {
             page::set_all_visible(&mut out, false);
             stage.put(pager, pid, out)?;
             self.space.vacate(&mut stage, pager, position)?;
             if flagged {
-                self.vm(&stage, pager)?.put(&mut stage, pager, pid, false)?;
+                vm.put(&mut stage, pager, pid, false)?;
             }
             let mut gone = pager.reserve();
             gone.free(pid);
@@ -832,11 +833,11 @@ impl Heap {
             let cat = category(page::free(&out), self.page_size);
             stage.put(pager, pid, out)?;
             if roomier || current {
-                self.space.set_category(&mut stage, pager, position, cat)?;
+                self.space
+                    .set_category(&mut stage, pager, pid, position, cat)?;
             }
             if visible != flagged {
-                self.vm(&stage, pager)?
-                    .put(&mut stage, pager, pid, visible)?;
+                vm.put(&mut stage, pager, pid, visible)?;
             }
             stage.commit(pager)?;
             done.all_visible = visible;
@@ -877,13 +878,13 @@ impl Heap {
             if let Some((t, c)) =
                 self.try_put(&mut stage, pager, pid, &version, Flags::NONE, xid)?
             {
-                let gains: Vec<Pointer> = held.iter().chain(&c.gained).copied().collect();
+                self.large.retain_apart(pager, &c.gained)?;
                 finish(
                     &mut stage,
                     pager,
                     self.large,
-                    &gains,
-                    &[(self, pid)],
+                    &held,
+                    Some((self, pid)),
                     &[(self, pid)],
                 )?;
                 stage.commit(pager)?;
@@ -974,13 +975,13 @@ impl Heap {
                 self.try_put(&mut stage, pager, o, &version, Flags::HEAP_ONLY, xid)?
             {
                 self.supersede(&mut stage, pager, at, xid, Some(t), Flags::HOT_UPDATED)?;
-                let gains: Vec<Pointer> = held.iter().chain(&c.gained).copied().collect();
+                self.large.retain_apart(pager, &c.gained)?;
                 finish(
                     &mut stage,
                     pager,
                     self.large,
-                    &gains,
-                    &[(self, o)],
+                    &held,
+                    Some((self, o)),
                     &[(self, o)],
                 )?;
                 stage.commit(pager)?;
@@ -1003,13 +1004,13 @@ impl Heap {
             }
             if let Some((t, c)) = self.try_put(&mut stage, pager, n, &version, Flags::NONE, xid)? {
                 self.supersede(&mut stage, pager, at, xid, Some(t), Flags::NONE)?;
-                let gains: Vec<Pointer> = held.iter().chain(&c.gained).copied().collect();
+                self.large.retain_apart(pager, &c.gained)?;
                 finish(
                     &mut stage,
                     pager,
                     self.large,
-                    &gains,
-                    &[(self, n)],
+                    &held,
+                    Some((self, n)),
                     &[(self, o), (self, n)],
                 )?;
                 stage.commit(pager)?;
@@ -1033,7 +1034,7 @@ impl Heap {
         let o = Pid(at.page());
         let mut stage = Stage::new();
         self.supersede(&mut stage, pager, at, xid, None, Flags::NONE)?;
-        finish(&mut stage, pager, self.large, &[], &[], &[(self, o)])?;
+        finish(&mut stage, pager, self.large, &[], None, &[(self, o)])?;
         stage.commit(pager)?;
         Ok(())
     }
@@ -1073,13 +1074,13 @@ impl Heap {
                 to.try_put(&mut stage, pager, n, &version, Flags::RETAGGED_IN, xid)?
             {
                 self.supersede(&mut stage, pager, at, xid, Some(t), Flags::MOVED)?;
-                let gains: Vec<Pointer> = held.iter().chain(&c.gained).copied().collect();
+                self.large.retain_apart(pager, &c.gained)?;
                 finish(
                     &mut stage,
                     pager,
                     self.large,
-                    &gains,
-                    &[(to, n)],
+                    &held,
+                    Some((to, n)),
                     &[(self, o), (to, n)],
                 )?;
                 stage.commit(pager)?;

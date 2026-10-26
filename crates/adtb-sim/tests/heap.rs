@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
 use adtb::batch::{Batch, BatchBuilder, Column, Schema};
-use adtb::heap::{CtorType, Error, FieldType, Flags, Heap, LargeStore, Link, Updated, walk};
+use adtb::heap::{
+    CtorType, Error, Fate, FieldType, Flags, Header, Heap, LargeStore, Link, Updated, walk,
+};
 use adtb::key::{CtorId, Scalar, Tid, Value};
 use adtb::runtime::Entropy;
 use adtb::storage::{self, Options, PageKind, Pager, Pid};
@@ -593,6 +595,55 @@ fn the_directory_splits_and_its_root_stays() {
 }
 
 #[test]
+fn an_insert_past_filled_pages_finds_room_under_another_directory_entry() {
+    let mut sim = Sim::new(12, Config::default());
+    finished(&mut sim, |rt| {
+        let (db, _) = Db::create(rt, 2);
+        let heap = &db.heaps[EMAIL];
+        let wide = |key: i64| {
+            vec![
+                Value::I64(key),
+                Value::Text(String::new()),
+                Value::Bytes(vec![key as u8; 900]),
+            ]
+        };
+        let mut tids = Vec::new();
+        for key in 0.. {
+            tids.push(heap.insert(&db.pager, 1, &wide(key)).unwrap());
+            if heap.pages(&db.pager).unwrap().len() == 8 {
+                break;
+            }
+        }
+        let pages = heap.pages(&db.pager).unwrap();
+        let on = |pid: Pid| tids.iter().filter(move |t| t.page() == pid.0).copied();
+        let mut gone: Vec<Tid> = on(pages[7]).collect();
+        gone.extend(on(pages[0]).take(2));
+        gone.extend(on(pages[5]).take(2));
+        for &t in &gone {
+            heap.delete(&db.pager, t, 2).unwrap();
+        }
+        let judge = |_: &Pager<SimRuntime>, h: &Header| {
+            Ok(if h.xmax == 2 {
+                Fate::Remove
+            } else {
+                Fate::Keep
+            })
+        };
+        for pid in [pages[0], pages[5], pages[7]] {
+            let dead = heap.dead_slots(&db.pager, pid, judge).unwrap();
+            heap.prune(&db.pager, pid, judge, &dead, false).unwrap();
+        }
+        assert_eq!(&pages[..7], &heap.pages(&db.pager).unwrap()[..]);
+        let landed: Vec<u64> = (100..104)
+            .map(|key| heap.insert(&db.pager, 3, &wide(key)).unwrap().page())
+            .collect();
+        assert_eq!(vec![pages[0].0, pages[0].0, pages[5].0, pages[5].0], landed);
+        assert_eq!(&pages[..7], &heap.pages(&db.pager).unwrap()[..]);
+        assert_eq!(Vec::<String>::new(), heap.verify(&db.pager).unwrap());
+    });
+}
+
+#[test]
 fn a_reopened_heap_finds_room_through_its_directory() {
     let mut sim = Sim::new(7, Config::default());
     finished(&mut sim, |rt| {
@@ -803,6 +854,134 @@ fn a_page_whose_rows_outgrow_it_keeps_its_format_and_takes_no_insert() {
         assert_eq!(1, storage::format(&pager.read(first).unwrap()));
         assert!(heap.verify(pager).unwrap().is_empty());
     });
+}
+
+const NOTES_ID: u32 = 40;
+const NOTES: i64 = 40;
+const NOTE_LEN: usize = 1100;
+
+fn note_type() -> Vec<FieldType> {
+    vec![scalar(Scalar::I64), scalar(Scalar::Bytes)]
+}
+
+fn long_note(row: &[Value]) -> Vec<u8> {
+    vec![key_of(row) as u8; NOTE_LEN]
+}
+
+fn lengthen(mut row: Vec<Value>) -> Vec<Value> {
+    row[1] = Value::Bytes(long_note(&row));
+    row
+}
+
+fn tight_options() -> Options {
+    Options {
+        pool_frames: 8,
+        ..options()
+    }
+}
+
+/// Create a store and a heap of [`NOTES`] short notes on one page, and return their TIDs.
+fn write_notes(pager: &Pager<SimRuntime>) -> (LargeStore, Heap, Vec<Tid>) {
+    let large = LargeStore::create(pager, LARGE_ID).unwrap();
+    let heap = Heap::create(pager, NOTES_ID, note_type(), large).unwrap();
+    let tids: Vec<Tid> = (0..NOTES)
+        .map(|k| {
+            let row = [Value::I64(k), Value::Bytes(vec![1; 8])];
+            heap.insert(pager, 1, &row).unwrap()
+        })
+        .collect();
+    assert!(tids.iter().all(|t| t.page() == tids[0].page()));
+    (large, heap, tids)
+}
+
+fn notes_inventory(heap: &Heap) -> Inventory<'_> {
+    Inventory {
+        sums: vec![Sum {
+            heaps: vec![(CtorId(0), heap)],
+            indexes: Vec::new(),
+        }],
+        ..Inventory::default()
+    }
+}
+
+#[test]
+fn a_conversion_moving_many_values_out_of_line_fits_a_pool_of_a_few_frames() {
+    let mut sim = Sim::new(11, Config::default());
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt, &tight_options()).unwrap();
+        let (_, mut heap, tids) = write_notes(&pager);
+        heap.add_format(note_type(), Box::new(lengthen)).unwrap();
+        let fresh = [Value::I64(NOTES), Value::Bytes(vec![2; 8])];
+        let t = heap.insert(&pager, 2, &fresh).unwrap();
+        assert_eq!(tids[0].page(), t.page());
+        for (k, tid) in tids.iter().enumerate() {
+            let v = heap.read(&pager, *tid).unwrap().unwrap();
+            assert_eq!(Value::Bytes(long_note(&v.row)), v.row[1], "note {k}");
+        }
+        assert_eq!(
+            NOTES as usize,
+            heap.out_of_line(&pager).unwrap().unwrap().len()
+        );
+        let report = adtb::verify::verify(&pager, &notes_inventory(&heap));
+        assert!(report.findings.is_empty(), "{:#?}", report.findings);
+    });
+}
+
+#[test]
+fn a_crash_while_a_conversion_counts_its_values_leaves_no_count_too_low() {
+    silence_fatal_panics();
+    let mut crashes = 0;
+    for step in 0..24u64 {
+        let mut sim = Sim::new(
+            step,
+            Config {
+                faults: quiet(),
+                ..Config::default()
+            },
+        );
+        let mut roots = None;
+        finished(&mut sim, |rt| {
+            let pager = Pager::create(rt, &tight_options()).unwrap();
+            let (large, heap, _) = write_notes(&pager);
+            pager.checkpoint();
+            roots = Some((large.root(), heap.root()));
+        });
+        let (store, root) = roots.unwrap();
+        let open = |rt: SimRuntime| {
+            let (pager, _) = Pager::open(rt, &tight_options()).unwrap();
+            let large = LargeStore::open(LARGE_ID, store);
+            let mut heap = Heap::open(&pager, NOTES_ID, root, note_type(), large).unwrap();
+            heap.add_format(note_type(), Box::new(lengthen)).unwrap();
+            (pager, heap)
+        };
+        sim.crash_at(sim.now() + Duration::from_micros(9_000 + step * 1100));
+        let outcome = run_process(&mut sim, |rt| {
+            let (pager, heap) = open(rt);
+            let fresh = [Value::I64(NOTES), Value::Bytes(vec![2; 8])];
+            heap.insert(&pager, 2, &fresh).unwrap();
+            pager.flush_log();
+        });
+        if outcome == Outcome::Crashed {
+            crashes += 1;
+        }
+        let mut problems = Vec::new();
+        finished(&mut sim, |rt| {
+            let (pager, heap) = open(rt);
+            problems = common::verify_after_crash(&pager, &notes_inventory(&heap));
+            let mut rows = 0;
+            heap.scan(&pager, |v| {
+                rows += 1;
+                if key_of(&v.row) < NOTES {
+                    assert_eq!(Value::Bytes(long_note(&v.row)), v.row[1]);
+                }
+            })
+            .unwrap();
+            assert!(rows >= NOTES as usize, "step {step}: {rows} rows");
+        });
+        assert!(problems.is_empty(), "step {step}: {problems:#?}");
+    }
+    eprintln!("{crashes} of 24 runs crashed");
+    assert!(crashes > 4, "{crashes} crashes");
 }
 
 fn silence_fatal_panics() {

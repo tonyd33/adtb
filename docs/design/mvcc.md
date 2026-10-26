@@ -47,7 +47,7 @@ Invariants:
 - An entry with category `c` names a page with at least `c` times the
   page size over 256 bytes free. A level-0 entry of a page in the
   heap's newest row format has exactly its page's category; an inner
-  entry has the greatest category of its child.
+  entry has at least the greatest category of its child.
 - A heap page stays in the directory, at its position, until vacuum
   finds it empty (§10.1) or the heap is dropped. A removed page leaves
   a hole at its position, which the next insert needing room fills
@@ -65,18 +65,30 @@ Postconditions:
   the first chunks of the values the new version points at. The heap
   and directory pages of one insert, update, delete or retag change in
   one update; pages it allocates, and the chunks of its out-of-line
-  values, are written by earlier calls.
+  values, are written by earlier calls. Values a page's conversion
+  ([§12.4](#124-row-format-changes)) moves out of line are counted
+  ([§12.5](#125-large-values)) by earlier updates, each naming at most
+  three store pages.
+- A change that lowers a page's category latches only the level-0
+  directory page holding its entry. A change that adds a page, fills
+  a hole or leaves one, raises a category or changes a touched mark
+  ([§12.5](#125-large-values)) latches the path from the root. A
+  change that corrects an inner entry promising more than its child
+  holds latches that entry's page and then the child.
 - Any number of threads read and write one heap at once, and vacuum
   runs beside them. Each page an operation changes is held under its
   exclusive latch ([storage.md §2.4](storage.md#24-latches)) from the
   read that decides the change to the update that makes it. A reader
   decodes a version, out-of-line values included, under its page's
   shared latch.
-- Latches are taken in one order: heap pages in page id order, then
-  large-value store pages in page id order, then directory pages with
-  the root first, then visibility map pages in page id order. Every
-  change to a directory latches its root first. No thread holds a
-  latch of a later class while it waits for one of an earlier class.
+- Latches are taken in one total order: heap pages in page id order,
+  then large-value store pages in page id order, then directory pages
+  by level, the highest first, and in page id order within a level,
+  then visibility map pages in page id order. One pager update changes
+  at most one existing directory entry with the entries above it, and
+  latches directory pages, other than those it allocates, along one
+  path. No thread holds a latch while it waits for one earlier in the
+  order.
 
 Rulings: storage/table-per-ctor, storage/sum-scan/merge-append, encoding/native-cost/union-index, engine/in-heap, layout/fill/fsm
 
@@ -986,7 +998,9 @@ tail, before the version that points at them; each is written as a
 head of count 0 on a page its update marks touched. The update that
 writes a version counts it once more in the head of every value it
 points at, so a value shared by an update or a retag counts each
-version. Pruning a version counts it off afterwards, in an update of
+version. A page's conversion counts the values it moves out of line in
+updates of their own before the update that writes the converted
+page. Pruning a version counts it off afterwards, in an update of
 its own; a head left at count 0 marks its page touched.
 
 The directory's level-0 entries carry the touched mark in bit 56, and
