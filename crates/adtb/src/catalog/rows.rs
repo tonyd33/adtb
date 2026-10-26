@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::ast::{Expr, ExprKind, QName};
+use adtb_lang::ast::{ExprKind, QName};
+use adtb_lang::evolve::Source;
 use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, ValueDef};
 use adtb_lang::types::{RelId, Ty, TypeId};
 
@@ -11,11 +12,12 @@ use super::layout;
 /// Rows of relations, each with its constructor index and as a heap of that constructor holds it.
 pub type Rows = BTreeMap<RelId, Vec<(u32, Vec<Value>)>>;
 
-/// Returns the rows `catalog::` relations hold for the objects of `schema` that have catalog
-/// ids, with every relation of `schema` present.
-pub fn declared(schema: &Schema) -> Rows {
+/// Returns the rows `catalog::` relations hold for the objects of `schema`, built from `source`,
+/// that have catalog ids, with every relation of `schema` present.
+pub fn declared(schema: &Schema, source: &Source) -> Rows {
     let mut b = Builder {
         schema,
+        source,
         rows: schema
             .ids
             .relations
@@ -27,7 +29,9 @@ pub fn declared(schema: &Schema) -> Rows {
     b.ctors();
     b.fields();
     b.relations();
+    b.sets();
     b.indexes();
+    b.constraints();
     b.ctor_states();
     b.value_states();
     b.rows
@@ -48,6 +52,8 @@ pub struct IndexSpec {
 
 /// Returns the key index and the uniques and indexes of every relation of `schema` with
 /// catalog ids, by index id.
+///
+/// Panics if an index is over an expression other than a field.
 pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
     let mut out = BTreeMap::new();
     for (&r, &id) in &schema.ids.keys {
@@ -70,7 +76,7 @@ pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
     }
     for (&(r, i), &id) in &schema.ids.indexes {
         let def = &schema.relation(r).indexes[i];
-        let fields: Vec<String> = def.fields.iter().map(field_name).collect();
+        let fields = indexed_fields(def).expect("every index of the schema is over fields");
         let spec = IndexSpec {
             id,
             relation: r,
@@ -89,14 +95,16 @@ pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
     out
 }
 
-/// Returns the field an index clause names.
-///
-/// Panics on an indexed expression other than a field.
-fn field_name(e: &Expr) -> String {
-    match &e.kind {
-        ExprKind::Name(QName { module: None, name }) => name.text.clone(),
-        other => panic!("an indexed expression {other:?} is not a field"),
-    }
+/// Returns the fields an index's clause names, or `None` if one of its expressions is not a
+/// field.
+pub fn indexed_fields(def: &IndexDef) -> Option<Vec<String>> {
+    def.fields
+        .iter()
+        .map(|e| match &e.kind {
+            ExprKind::Name(QName { module: None, name }) => Some(name.text.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn all_ctors(schema: &Schema, r: RelId) -> Vec<u32> {
@@ -127,6 +135,7 @@ fn clause(schema: &Schema, r: RelId, def: &IndexDef, fields: &[String]) -> Strin
 
 struct Builder<'s> {
     schema: &'s Schema,
+    source: &'s Source,
     rows: Rows,
 }
 
@@ -242,7 +251,7 @@ impl Builder<'_> {
                 ("id", key(id)),
                 ("sum", key(self.schema.ids.types[&def])),
                 ("name", Value::Text(name)),
-                ("position", Value::I32(k as i32)),
+                ("position", Value::I32(k as i32 + 1)),
                 ("dropped", self.none()),
             ];
             self.push("constructors", "Constructor", fields);
@@ -265,7 +274,7 @@ impl Builder<'_> {
                 ("id", key(id)),
                 ("name", Value::Text(name.clone())),
                 ("field_type", Value::Text(field_type)),
-                ("position", Value::I32(position as i32)),
+                ("position", Value::I32(position as i32 + 1)),
                 ("dropped", self.none()),
             ];
             let ctor = match ctor {
@@ -298,6 +307,63 @@ impl Builder<'_> {
                 ("dropped", self.none()),
             ];
             self.push("relations", "Relation", fields);
+        }
+    }
+
+    fn sets(&mut self) {
+        for (&(r, ref name), &id) in &self.schema.ids.sets {
+            let rel = key(self.schema.ids.relations[&r]);
+            let fields = vec![
+                ("id", key(id)),
+                ("relation", rel),
+                ("name", Value::Text(name.clone())),
+                ("dropped", self.none()),
+            ];
+            self.push("named_sets", "NamedSet", fields);
+            let def = self.schema.relation(r).elem_def;
+            let set = self
+                .schema
+                .relation(r)
+                .sets
+                .iter()
+                .find(|s| &s.name == name)
+                .unwrap_or_else(|| panic!("relation {r:?} declares set `{name}`"));
+            for c in &set.ctors {
+                let ctor = key(self.schema.ids.ctors[&(def, *c)]);
+                self.push(
+                    "set_members",
+                    "SetMember",
+                    vec![("set", key(id)), ("ctor", ctor)],
+                );
+            }
+        }
+    }
+
+    fn constraints(&mut self) {
+        let declared = self.schema.ids.constraints.iter().map(|(&i, &id)| {
+            let c = &self.schema.constraints[i];
+            (id, c.module, c.name.clone(), c.file)
+        });
+        let checks = self.schema.ids.checks.iter().map(|(&i, &id)| {
+            let c = &self.schema.checks[i];
+            (id, c.module, c.name.clone(), c.file)
+        });
+        let all: Vec<_> = declared.chain(checks).collect();
+        for (id, module, name, file) in all {
+            let fields = vec![
+                ("id", key(id)),
+                (
+                    "module",
+                    Value::Text(self.schema.module(module).name.clone()),
+                ),
+                ("name", Value::Text(name)),
+                (
+                    "text",
+                    Value::Text(self.source.decls[file.0 as usize].text.clone()),
+                ),
+                ("dropped", self.none()),
+            ];
+            self.push("constraints", "Constraint", fields);
         }
     }
 

@@ -686,10 +686,29 @@ pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Schema, Vec<FileDiag
     }
     let names = crate::resolve::check_schema(&b.schema);
     if names.is_empty() {
+        b.schema.types.push(tag_former());
         b.schema.ids = crate::ids::declared(&b.schema, &all);
         Ok(b.schema)
     } else {
         Err(names)
+    }
+}
+
+/// Returns the prelude's declaration of the type former `Tag`, with no constructors of its own.
+/// No module scope holds it: the name `Tag` resolves to the former, never to this declaration.
+fn tag_former() -> TypeDef {
+    TypeDef {
+        name: "Tag".to_string(),
+        module: PRELUDE,
+        params: vec!["a".to_string()],
+        ordered: false,
+        kind: TypeDefKind::Sum {
+            header: Vec::new(),
+            ctors: Vec::new(),
+            record: false,
+        },
+        file: FileId::PRELUDE,
+        span: Span::default(),
     }
 }
 

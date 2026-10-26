@@ -280,8 +280,12 @@ relation fields : Field key id
 ```
 
 `field_type` is the field's type printed in the notation of
-[syntax.md](syntax.md#4-types). `position` is the declaration order; a
-record is a `SumType` with one constructor. A constructor's
+[syntax.md](syntax.md#4-types). `position` is the declaration order,
+counted from 1 within the sum for a constructor and within the header
+or the constructor for a field; a record is a `SumType` with one
+constructor. Every type the engine declares has a row, `Tag` among
+them: `Tag` is a `SumType` of one parameter with no constructors of
+its own. A constructor's
 `dropped` is set by `remove constructor`; its name may then be reused
 by a later constructor, which gets a new id.
 
@@ -295,8 +299,9 @@ product of a merge or nest is `Enabled` when every source is enabled
 and `Declared` when some source is declared
 ([evolution.md §4.3](evolution.md#43-enable-and-deprecate)).
 
-Each constructor of a sum used as a field type has one row of
-`value_states`, kept per type, with the same stages and the same
+Each constructor of a declared sum that a field of any declared type
+can hold, at any depth, has one row of `value_states`, prelude sums
+included, kept per type, with the same stages and the same
 operators naming the type (`enable T.C`, `disable T.C`, `deprecate
 T.C`). Its stage gates storing a value of the constructor in any
 field, at any depth.
@@ -324,9 +329,11 @@ relation index_ctors : IndexCtor key (index, ctor)
 ```
 
 `Stored` is a stored view ([derived.md](derived.md#2-stored-views)).
-An index's `clause` is its declaration clause as written, for example
-`index (user) in (Google | Apple)`; `index_ctors` holds the
-constructor set it ranges over.
+The relations of `catalog` have kind `Catalog` and those of `sys` kind
+`Volatile`. An index's `clause` is its declaration clause as written,
+for example `index (user) in (Google | Apple)`; a key's clause is
+written as its `key` clause would be, `key id` or `key (src, dst)`.
+`index_ctors` holds the constructor set it ranges over.
 
 ### 2.3 Constraints, functions and extensions
 

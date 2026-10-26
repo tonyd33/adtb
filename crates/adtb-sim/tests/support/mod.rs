@@ -4,16 +4,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adtb::btree::{BTree, Index};
-use adtb::exec::{self, AtSnapshot, Store, StoredHeap, StoredIndex, Val};
-use adtb::heap::{CtorType, FieldType, Heap, LargeStore};
-use adtb::key::{
-    AnonRecordType, AnonSumType, CtorId, Dir, Entry, F32, F64, KeySchema, KeyType, OrderKey,
-    Scalar, SumType, Tid, Value as KValue,
+pub use adtb::catalog::layout::{
+    field_type, is_record, key_type, key_value_ty, new_order_keys, repr,
 };
+use adtb::exec::{self, AtSnapshot, Store, StoredHeap, StoredIndex, Val};
+use adtb::heap::{FieldType, Heap, LargeStore};
+use adtb::key::{CtorId, Dir, Entry, F32, F64, KeySchema, Tid, Value as KValue};
 use adtb::mvcc::{Access, Limits, Scope, Serializer, Transactions};
 use adtb::plan::Catalog;
 use adtb::storage::{Options, Pager};
-use adtb_lang::schema::{Generator, Schema, TypeDefKind};
+use adtb_lang::schema::Schema;
 use adtb_lang::types::{Base, RelId, Ty};
 use adtb_reference::{Database, Value};
 use adtb_sim::SimRuntime;
@@ -55,17 +55,6 @@ pub fn options() -> Options {
     }
 }
 
-pub fn repr(schema: &Schema, ty: &Ty) -> Ty {
-    let mut t = ty.clone();
-    while let Ty::Data { def, args, .. } = &t {
-        match &schema.ty(*def).kind {
-            TypeDefKind::Newtype { base, .. } => t = base.subst(args),
-            TypeDefKind::Sum { .. } => break,
-        }
-    }
-    t
-}
-
 /// Returns the constructors of a sum type, each with its header and own fields.
 pub fn ctors_of(schema: &Schema, ty: &Ty) -> Vec<(String, Vec<(String, Ty)>)> {
     match repr(schema, ty) {
@@ -91,138 +80,6 @@ pub fn ctors_of(schema: &Schema, ty: &Ty) -> Vec<(String, Vec<(String, Ty)>)> {
             .map(|(n, _)| (n, Vec::new()))
             .collect(),
         t => panic!("{t:?} is not a sum"),
-    }
-}
-
-pub fn is_record(schema: &Schema, ty: &Ty) -> bool {
-    match repr(schema, ty) {
-        Ty::Data { def, .. } => {
-            matches!(schema.ty(def).kind, TypeDefKind::Sum { record: true, .. })
-        }
-        _ => false,
-    }
-}
-
-/// Returns the type of the values of `Key rel`.
-pub fn key_value_ty(schema: &Schema, rel: RelId) -> Ty {
-    let r = schema.relation(rel);
-    let row = &ctors_of(schema, &r.elem)[0].1;
-    let ty = |n: &str| row.iter().find(|(f, _)| f == n).unwrap().1.clone();
-    match r.key.as_slice() {
-        [k] => match ty(k) {
-            Ty::Key { rel: own, .. } if own == rel => match r.generate {
-                Some(Generator::Uuidv7) => Ty::Base(Base::Bytes),
-                _ => Ty::Base(Base::I64),
-            },
-            t => t,
-        },
-        ks => {
-            let mut names = ks.to_vec();
-            names.sort();
-            Ty::Record(names.iter().map(|n| (n.clone(), ty(n))).collect())
-        }
-    }
-}
-
-pub fn scalar_of(b: Base) -> Scalar {
-    match b {
-        Base::I8 => Scalar::I8,
-        Base::I16 => Scalar::I16,
-        Base::I32 => Scalar::I32,
-        Base::I64 => Scalar::I64,
-        Base::Decimal(s) => Scalar::Decimal(s),
-        Base::F32 => Scalar::F32,
-        Base::F64 => Scalar::F64,
-        Base::Text => Scalar::Text,
-        Base::Bytes => Scalar::Bytes,
-        Base::SortKey => Scalar::SortKey,
-        Base::Instant => Scalar::Instant,
-        Base::Date => Scalar::Date,
-        Base::Time => Scalar::Time,
-        Base::DateTime => Scalar::DateTime,
-        Base::ZonedDateTime => Scalar::ZonedDateTime,
-        Base::Duration => Scalar::Duration,
-        Base::Period => Scalar::Period,
-    }
-}
-
-pub fn field_type(schema: &Schema, ty: &Ty) -> FieldType {
-    match repr(schema, ty) {
-        Ty::Base(b) => FieldType::Scalar(scalar_of(b)),
-        Ty::Key { rel, .. } => field_type(schema, &key_value_ty(schema, rel)),
-        Ty::Record(fs) => {
-            FieldType::Record(fs.iter().map(|(_, t)| field_type(schema, t)).collect())
-        }
-        t if is_record(schema, &t) => FieldType::Record(
-            ctors_of(schema, &t)[0]
-                .1
-                .iter()
-                .map(|(_, f)| field_type(schema, f))
-                .collect(),
-        ),
-        t => FieldType::Sum(
-            ctors_of(schema, &t)
-                .iter()
-                .enumerate()
-                .map(|(i, (_, fs))| CtorType {
-                    id: CtorId(i as u32),
-                    fields: fs.iter().map(|(_, f)| field_type(schema, f)).collect(),
-                })
-                .collect(),
-        ),
-    }
-}
-
-pub fn key_type(schema: &Schema, ty: &Ty) -> KeyType {
-    match repr(schema, ty) {
-        Ty::Base(b) => KeyType::Scalar(scalar_of(b)),
-        Ty::Key { rel, .. } => key_type(schema, &key_value_ty(schema, rel)),
-        Ty::Record(fs) => KeyType::AnonRecord(
-            AnonRecordType::new(
-                fs.iter()
-                    .map(|(n, t)| (n.clone(), key_type(schema, t)))
-                    .collect(),
-            )
-            .unwrap(),
-        ),
-        Ty::Sum { ctors, .. } => KeyType::AnonSum(
-            AnonSumType::new(
-                ctors
-                    .iter()
-                    .map(|(n, fs)| {
-                        let r = fs
-                            .iter()
-                            .map(|(f, t)| (f.clone(), key_type(schema, t)))
-                            .collect();
-                        (n.clone(), AnonRecordType::new(r).unwrap())
-                    })
-                    .collect(),
-            )
-            .unwrap(),
-        ),
-        t if is_record(schema, &t) => KeyType::Record(
-            ctors_of(schema, &t)[0]
-                .1
-                .iter()
-                .map(|(_, f)| key_type(schema, f))
-                .collect(),
-        ),
-        t => {
-            let cs = ctors_of(schema, &t);
-            let keys = OrderKey::spread(cs.len());
-            KeyType::Sum(
-                SumType::new(
-                    cs.iter()
-                        .zip(keys)
-                        .map(|((_, fs), order_key)| adtb::key::CtorType {
-                            order_key,
-                            fields: fs.iter().map(|(_, f)| key_type(schema, f)).collect(),
-                        })
-                        .collect(),
-                )
-                .unwrap(),
-            )
-        }
     }
 }
 
@@ -444,6 +301,7 @@ impl Db {
         let mut heaps = BTreeMap::new();
         let mut rows = BTreeMap::new();
         let mut indexes = BTreeMap::new();
+        let keys = new_order_keys(f.schema, &Default::default());
         for (r, d) in &f.catalog.relations {
             let rel = f.schema.relation(*r);
             let large = match roots {
@@ -476,7 +334,7 @@ impl Db {
                     .iter()
                     .map(|n| {
                         let t = &first.iter().find(|(f, _)| f == n).unwrap().1;
-                        (key_type(f.schema, t), Dir::Asc)
+                        (key_type(f.schema, &keys, t), Dir::Asc)
                     })
                     .collect();
                 let ids: BTreeMap<CtorId, u32> =

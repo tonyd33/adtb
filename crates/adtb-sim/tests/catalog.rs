@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::catalog::{Catalog, declared, engine_schema};
+use adtb::catalog::{Catalog, Error, declared};
 use adtb::key::{CtorId, Value};
-use adtb::mvcc::Transactions;
+use adtb::mvcc::{Scope, Transactions};
 use adtb::plan::IndexId;
 use adtb::storage::{Options, Pager, Pid};
 use adtb::verify::{self, Report};
@@ -19,6 +19,15 @@ fn options() -> Options {
         pool_frames: 64,
         atomic_page_writes: false,
         ..Options::new("app.adt")
+    }
+}
+
+/// Returns the options of a pager whose pool is small enough that a migration's pages reach the
+/// device before it commits.
+fn small_pool() -> Options {
+    Options {
+        pool_frames: 16,
+        ..options()
     }
 }
 
@@ -48,28 +57,58 @@ fn verify_catalog(
     verify::verify(pager, &catalog.inventory(&clog))
 }
 
-/// Check that the catalog of `pager` opens, holds the rows the engine declares, and verifies
-/// clean. Returns whether the header named a catalog before it opened.
-fn check_reopened(rt: SimRuntime) -> bool {
-    let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
-    let found = pager.catalog_root() != Pid(0);
-    let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
-    let schema = engine_schema();
-    for (r, want) in declared(&schema) {
-        let got = catalog
-            .committed_rows(&pager, &txns, r)
-            .expect("the rows read");
+/// Returns the rows of every relation of `catalog` that every committed transaction wrote.
+fn committed(
+    pager: &Pager<SimRuntime>,
+    catalog: &Catalog,
+    txns: &Transactions<SimRuntime>,
+) -> BTreeMap<RelId, Vec<String>> {
+    let (id, snapshot) = txns.take(Scope::Every).expect("a snapshot");
+    let out = catalog
+        .schema()
+        .ids
+        .relations
+        .keys()
+        .map(|&r| {
+            let rows = catalog
+                .rows(pager, txns, &snapshot, r)
+                .expect("the rows read");
+            (r, sorted(&rows))
+        })
+        .collect();
+    txns.release(id);
+    out
+}
+
+/// Check that the catalog of `pager` holds the rows its schema declares, that no transaction
+/// committed twice, and that it verifies clean.
+fn check_whole(pager: &Pager<SimRuntime>, catalog: &Catalog, txns: &Transactions<SimRuntime>) {
+    let schema = catalog.schema();
+    let got = committed(pager, catalog, txns);
+    for (r, want) in declared(schema, catalog.source()) {
         assert_eq!(
             sorted(&want),
-            sorted(&got),
+            got[&r],
             "rows of {}",
             schema.relation(r).name
         );
     }
-    let report = verify_catalog(&pager, &catalog, &txns);
+    let report = verify_catalog(pager, catalog, txns);
     assert!(report.is_clean() && report.complete, "{report:#?}");
+    let commits: BTreeSet<u64> = report.commits.iter().copied().collect();
+    assert_eq!(commits.len(), report.commits.len(), "{:?}", report.commits);
     assert_eq!(catalog.root(), pager.catalog_root());
-    found
+}
+
+/// Check that the catalog of `pager` opens, holds the rows its schema declares, and verifies
+/// clean. Returns whether the header named a catalog before it opened, and the version the
+/// catalog opened at.
+fn check_reopened(rt: SimRuntime) -> (bool, u64) {
+    let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+    let found = pager.catalog_root() != Pid(0);
+    let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+    check_whole(&pager, &catalog, &txns);
+    (found, catalog.source().version)
 }
 
 /// Create a database and its catalog in a fresh simulation, recording what reaches the device.
@@ -87,9 +126,9 @@ fn created(seed: u64) -> (Sim, usize) {
     (sim, start)
 }
 
-fn reopen(seed: u64, files: BTreeMap<String, Vec<u8>>) -> bool {
+fn reopen(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, u64) {
     let mut sim = Sim::with_files(seed, crash_config(), files);
-    let mut found = false;
+    let mut found = (false, 0);
     let outcome = sim.run(|rt| found = check_reopened(rt));
     assert_eq!(Outcome::Finished, outcome);
     found
@@ -100,7 +139,7 @@ fn a_created_catalog_reopens_with_the_rows_the_engine_declares() {
     let (sim, _) = created(1);
     let recording = sim.recording();
     let files = recording.images(recording.len(), 1, 1).swap_remove(0);
-    assert!(reopen(1, files));
+    assert_eq!((true, 0), reopen(1, files));
 }
 
 #[test]
@@ -117,7 +156,7 @@ fn a_crash_at_every_flush_during_create_reopens_to_a_whole_catalog() {
     let mut found = BTreeSet::new();
     for at in flushes {
         let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
-        found.insert(reopen(seed + at as u64, files));
+        found.insert(reopen(seed + at as u64, files).0);
     }
     assert_eq!(BTreeSet::from([false, true]), found);
 }
@@ -260,6 +299,256 @@ fn a_header_naming_no_catalog_is_created_again() {
         assert_ne!(Pid(0), pager.catalog_root());
     });
     assert_eq!(Outcome::Finished, outcome);
-    let outcome = sim.run(|rt| assert!(check_reopened(rt)));
+    let outcome = sim.run(|rt| assert!(check_reopened(rt).0));
+    assert_eq!(Outcome::Finished, outcome);
+}
+
+/// The running schema, as the first migration of a database.
+const RUNNING: &str = r#"module auth
+add module auth
+add type User = { id: Key users, name: Text }
+add relation users : User key id generate sequence
+add type Identity { id: Key identities, user: Key users }
+  = EmailPass { email: Text, hash: Bytes }
+  | Google    { gid: Text }
+  | Apple     { sub: Text }
+add relation identities : Identity
+  key id generate uuidv7
+  unique (email) in EmailPass
+  unique (gid) in Google
+  unique (sub) in Apple
+add set OAuth of identities = Google | Apple
+define fn display_name (i: Identity) -> Text = match i
+  | EmailPass e -> e.email
+  | Google g    -> g.gid
+  | Apple a     -> a.sub
+add constraint login_present =
+  from i in identities
+  where match i
+    | EmailPass e -> scalar_len(e.email) == 0
+    | Google g    -> scalar_len(g.gid) == 0
+    | Apple a     -> scalar_len(a.sub) == 0
+  select i
+"#;
+
+/// Create a database, its catalog and the running schema as its first migration in a fresh
+/// simulation, recording what reaches the device. Returns the simulation and the number of
+/// events recorded when the migration started.
+fn migrated(seed: u64) -> (Sim, usize) {
+    let mut sim = Sim::new(seed, Config::default());
+    sim.record();
+    let mut start = 0;
+    let outcome = sim.run(|rt| {
+        let pager = Pager::create(rt.clone(), &small_pool()).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt.clone(), &pager).expect("the catalog");
+        start = rt.recorded();
+        catalog
+            .migrate(&pager, &txns, RUNNING)
+            .expect("the migration applies");
+        check_whole(&pager, &catalog, &txns);
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    (sim, start)
+}
+
+/// Run `body` over a catalog migrated to the running schema and then reopened from its durable
+/// state.
+fn with_migrated(
+    seed: u64,
+    body: impl FnOnce(&Pager<SimRuntime>, &Catalog, &Transactions<SimRuntime>),
+) {
+    let (sim, _) = migrated(seed);
+    let recording = sim.recording();
+    let files = recording.images(recording.len(), 1, seed).swap_remove(0);
+    let mut sim = Sim::with_files(seed, Config::default(), files);
+    let outcome = sim.run(|rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+        let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+        body(&pager, &catalog, &txns);
+    });
+    assert_eq!(Outcome::Finished, outcome);
+}
+
+#[test]
+fn a_migrated_catalog_reopens_with_the_running_schema() {
+    with_migrated(11, |pager, catalog, txns| {
+        assert_eq!(1, catalog.source().version);
+        check_whole(pager, catalog, txns);
+        let plan = catalog.plan();
+        assert_eq!(catalog.schema().ids.relations.len(), plan.relations.len());
+        let users = &plan.relations[&rel(catalog, "auth", "users")];
+        assert_eq!(1, users.heaps.len());
+        assert_eq!(1, users.indexes.len());
+        let identities = &plan.relations[&rel(catalog, "auth", "identities")];
+        assert_eq!(
+            vec![0, 1, 2],
+            identities.heaps.keys().copied().collect::<Vec<_>>()
+        );
+        let uniques: BTreeSet<(Vec<String>, Vec<u32>)> = identities
+            .indexes
+            .iter()
+            .filter(|i| i.id != identities.key_index)
+            .map(|i| (i.fields.clone(), i.ctors.clone()))
+            .collect();
+        let field = |f: &str| vec![f.to_string()];
+        assert_eq!(
+            BTreeSet::from([
+                (field("email"), vec![0]),
+                (field("gid"), vec![1]),
+                (field("sub"), vec![2]),
+            ]),
+            uniques
+        );
+        let key = identities
+            .indexes
+            .iter()
+            .find(|i| i.id == identities.key_index)
+            .expect("the key index");
+        assert_eq!(
+            (field("id"), vec![0, 1, 2], true),
+            (key.fields.clone(), key.ctors.clone(), key.unique)
+        );
+        let mut heaps = BTreeSet::new();
+        for d in plan.relations.values() {
+            heaps.extend(d.heaps.values().copied());
+        }
+        let count: usize = plan.relations.values().map(|d| d.heaps.len()).sum();
+        assert_eq!(count, heaps.len(), "heap ids are distinct");
+    });
+}
+
+#[test]
+fn a_migrated_catalog_names_its_objects() {
+    with_migrated(12, |pager, catalog, txns| {
+        let rows = committed(pager, catalog, txns);
+        let has = |rel_name: &str, text: &str| {
+            let r = rel(catalog, "catalog", rel_name);
+            rows[&r].iter().any(|row| row.contains(text))
+        };
+        assert!(has("types", "Text(\"Identity\")"));
+        assert!(has("constructors", "Text(\"Apple\")"));
+        assert!(has("fields", "Text(\"gid\")"));
+        assert!(has("relations", "Text(\"identities\")"));
+        assert!(has("indexes", "Text(\"unique (sub) in Apple\")"));
+        assert!(has("named_sets", "Text(\"OAuth\")"));
+        assert!(has("constraints", "Text(\"login_present\")"));
+    });
+}
+
+#[test]
+fn a_migrated_catalog_reopens_to_the_same_structures() {
+    let (sim, _) = migrated(13);
+    let recording = sim.recording();
+    let files = recording.images(recording.len(), 1, 13).swap_remove(0);
+    let mut sim = Sim::with_files(13, Config::default(), files);
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let outcome = sim.run(|rt| {
+            let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+            let (catalog, _) = Catalog::open(rt, &pager).expect("the catalog opens");
+            seen.push((
+                catalog.order_keys().clone(),
+                format!("{:?}", catalog.plan()),
+            ));
+            pager.checkpoint();
+        });
+        assert_eq!(Outcome::Finished, outcome);
+    }
+    assert_eq!(seen[0], seen[1]);
+}
+
+#[test]
+fn a_crash_at_every_flush_during_the_first_migration_reopens_to_all_or_none_of_it() {
+    let seed = 14;
+    let (sim, start) = migrated(seed);
+    let recording = sim.recording();
+    let flushes: Vec<usize> = recording
+        .flushes()
+        .into_iter()
+        .filter(|&f| f >= start)
+        .collect();
+    assert!(flushes.len() > 2, "{} flushes", flushes.len());
+    let mut versions = Vec::new();
+    for at in flushes {
+        let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
+        let (found, version) = reopen(seed + at as u64, files);
+        assert!(found);
+        versions.push(version);
+    }
+    assert_eq!(Some(&0), versions.first());
+    assert_eq!(Some(&1), versions.last());
+}
+
+#[test]
+fn a_crash_between_flushes_of_the_first_migration_reopens_to_all_or_none_of_it() {
+    let seed = 15;
+    let (sim, start) = migrated(seed);
+    let recording = sim.recording();
+    let n = recording.len();
+    let mut versions = BTreeSet::new();
+    for at in (start..n).step_by((n - start).div_ceil(20)) {
+        let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
+        versions.insert(reopen(seed + at as u64, files).1);
+    }
+    assert_eq!(BTreeSet::from([0, 1]), versions);
+}
+
+#[test]
+fn a_migration_after_a_crashed_one_applies() {
+    let seed = 16;
+    let (sim, start) = migrated(seed);
+    let recording = sim.recording();
+    let n = recording.len();
+    let step = (n - start).div_ceil(20);
+    let mut applied = false;
+    for at in (start..n).rev().step_by(step) {
+        let files = recording.images(at, 1, seed).swap_remove(0);
+        let mut sim = Sim::with_files(seed, Config::default(), files);
+        let outcome = sim.run(|rt| {
+            let (pager, _) = Pager::open(rt.clone(), &options()).expect("reopen");
+            let (mut catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+            if catalog.source().version == 0 {
+                catalog
+                    .migrate(&pager, &txns, RUNNING)
+                    .expect("the migration applies");
+                check_whole(&pager, &catalog, &txns);
+                applied = true;
+            }
+        });
+        assert_eq!(Outcome::Finished, outcome);
+        if applied {
+            let outcome = sim.run(|rt| assert_eq!((true, 1), check_reopened(rt)));
+            assert_eq!(Outcome::Finished, outcome);
+            return;
+        }
+    }
+    panic!("no crash point reopens before the migration");
+}
+
+#[test]
+fn only_a_first_migration_of_declarations_applies() {
+    let mut sim = Sim::new(17, Config::default());
+    let outcome = sim.run(|rt| {
+        let pager = Pager::create(rt.clone(), &options()).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        let refused = |r: Result<(), Error>| match r {
+            Err(Error::Refused(why)) => why,
+            other => panic!("not refused: {other:?}"),
+        };
+        let why = refused(catalog.migrate(&pager, &txns, "module auth\ndrop module auth\n"));
+        assert_eq!(1, why.len(), "{why:?}");
+        let why =
+            refused(catalog.migrate(&pager, &txns, "module auth\nadd type T = { id: I64 }\n"));
+        assert!(!why.is_empty());
+        assert_eq!(0, catalog.source().version);
+        catalog
+            .migrate(&pager, &txns, RUNNING)
+            .expect("the migration applies");
+        let why =
+            refused(catalog.migrate(&pager, &txns, "module auth\nadd type T = { id: I64 }\n"));
+        assert_eq!(1, why.len(), "{why:?}");
+        assert_eq!(1, catalog.source().version);
+        check_whole(&pager, &catalog, &txns);
+    });
     assert_eq!(Outcome::Finished, outcome);
 }

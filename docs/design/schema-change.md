@@ -16,20 +16,26 @@ schema change is a write like any other.
 A schema operator runs in a transaction and commits or rolls back with
 the data writes beside it.
 
-Every relation of the `catalog` and `sys` modules is stored as one
-heap per constructor, with an index for its key and for each of its
-uniques. The file header names the catalog's root page
+Every relation of the `catalog` and `sys` modules, and every relation
+a migration declares, is stored as one heap per constructor, with an
+index for its key and for each of its uniques and indexes. The file
+header names the catalog's root page
 ([storage.md §1.2](storage.md#12-file-header)), and the root page names
 the commit log's root and the heap that holds the root of every other
-heap and index.
+heap and index, the order key of every constructor of a declared sum
+and the text of every migration.
 
 ```text
 Catalog::create(rt, &pager) -> Result<(Catalog, Transactions), Error>
 Catalog::open(rt, &pager)   -> Result<(Catalog, Transactions), Error>
-catalog.committed_rows(&pager, &txns, relation) -> Result<[(ctor, row)], PageError>
+catalog.migrate(&pager, &txns, text) -> Result<(), Error>
+catalog.rows(&pager, &txns, &snapshot, relation) -> Result<[(ctor, row)], PageError>
+catalog.schema() -> Schema
+catalog.source() -> evolve::Source
+catalog.order_keys() -> order key by constructor id
 catalog.plan() -> plan::Catalog
 catalog.inventory(&commit_log) -> verify::Inventory
-catalog::declared(&schema) -> rows by relation
+catalog::declared(&schema, &source) -> rows by relation
 ```
 
 Preconditions:
@@ -46,16 +52,30 @@ Postconditions:
   keyed by that id; each index's constructor set in `index_ctors`; and
   every write state in `ctor_states` and `value_states`. Every other
   relation is empty.
-- `create` sets the file header's catalog root last. A crash before
-  that leaves a header naming no catalog; `open` of such a file frees
-  every page and creates the catalog again. A crash after it keeps the
-  whole catalog.
-- `open` finds every heap and index from the file header alone.
-- `plan` describes every relation of `catalog` and `sys`: a heap for
-  each constructor, no two with one heap id, and each index by its
-  catalog id, the key index among them.
+- `create` sets the file header's catalog root before its transaction
+  begins, and names the roots heap in the root page once that
+  transaction commits. `open` of a file whose header names no catalog
+  frees every page and creates the catalog again; `open` of one whose
+  root page names no roots heap frees every page but the commit log's
+  and the root page, and creates the catalog again with the same commit
+  log, so no transaction id is assigned twice.
+- `migrate` applies the first migration of the file, holding only
+  operators that declare objects, as one transaction: it creates the
+  heaps and indexes of every relation it declares, writes the rows
+  `declared` gives for every object it declares, and returns once the
+  migration is durable. A refused migration changes nothing.
+- After a crash during `migrate`, `open` finds either the whole
+  migration or none of it, and frees every page the migration
+  allocated if it did not commit.
+- `open` finds every heap and index from the file header alone, and
+  the schema by folding the stored migrations from the empty schema.
+  Heap ids and index order keys are those stored, never computed again.
+- `rows` returns the rows a snapshot sees.
+- `plan` describes every relation: a heap for each constructor, no two
+  with one heap id, and each index by its catalog id, the key index
+  among them.
 - `inventory` names every page the catalog allocated, so `verify` over
-  it after `create` or `open` reports nothing.
+  it after `create`, `migrate` or `open` reports nothing.
 
 Rulings: engine/catalog-relations, engine/transactional-ddl
 

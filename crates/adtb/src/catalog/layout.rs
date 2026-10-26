@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
+
 use adtb_lang::schema::{Generator, Schema, TypeDefKind};
-use adtb_lang::types::{Base, RelId, Ty};
+use adtb_lang::types::{Base, RelId, Ty, TypeId};
 
 use crate::heap::{self, FieldType};
 use crate::key::{self, AnonRecordType, AnonSumType, CtorId, KeyType, OrderKey, Scalar, SumType};
@@ -17,10 +19,38 @@ pub fn repr(schema: &Schema, ty: &Ty) -> Ty {
     t
 }
 
+/// The order key of each constructor of a declared sum, by the constructor's catalog id.
+pub type OrderKeys = BTreeMap<u64, OrderKey>;
+
+/// Returns order keys spread over the constructors of each declared sum of `schema` that `keys`
+/// holds none for, in declaration order.
+pub fn new_order_keys(schema: &Schema, keys: &OrderKeys) -> OrderKeys {
+    let mut sums: BTreeMap<TypeId, Vec<(u32, u64)>> = BTreeMap::new();
+    for (&(def, k), &id) in &schema.ids.ctors {
+        if matches!(schema.ty(def).kind, TypeDefKind::Sum { record: false, .. }) {
+            sums.entry(def).or_default().push((k, id));
+        }
+    }
+    let mut out = OrderKeys::new();
+    for mut cs in sums.into_values() {
+        if cs.iter().any(|(_, id)| keys.contains_key(id)) {
+            continue;
+        }
+        cs.sort();
+        out.extend(cs.iter().map(|(_, id)| *id).zip(OrderKey::spread(cs.len())));
+    }
+    out
+}
+
 /// Returns the constructors of the sum `ty`, each with its catalog id and its fields, the header
-/// fields first. An anonymous sum's constructors have their positions for ids.
+/// fields first. An anonymous sum's constructors have their positions for ids. The constructors
+/// of `Tag T` are those of `T` without fields.
 pub fn ctors(schema: &Schema, ty: &Ty) -> Vec<(u32, Vec<(String, Ty)>)> {
     match repr(schema, ty) {
+        Ty::Tag(t) => ctors(schema, &t)
+            .into_iter()
+            .map(|(id, _)| (id, Vec::new()))
+            .collect(),
         Ty::Data { def, args, .. } => {
             let d = schema.ty(def);
             let header: Vec<(String, Ty)> = d
@@ -56,7 +86,8 @@ pub fn ctor_id(id: u64) -> u32 {
     u32::try_from(id).expect("a constructor id fits 32 bits")
 }
 
-fn is_record(schema: &Schema, ty: &Ty) -> bool {
+/// Returns whether `ty`, a type no newtype wraps, is a declared record.
+pub fn is_record(schema: &Schema, ty: &Ty) -> bool {
     match ty {
         Ty::Data { def, .. } => {
             matches!(schema.ty(*def).kind, TypeDefKind::Sum { record: true, .. })
@@ -141,15 +172,16 @@ pub fn field_type(schema: &Schema, ty: &Ty) -> FieldType {
     }
 }
 
-/// Returns the type of an index key component of type `ty`.
-pub fn key_type(schema: &Schema, ty: &Ty) -> KeyType {
+/// Returns the type of an index key component of type `ty`, each declared sum's constructors
+/// encoded by their order keys in `keys`.
+pub fn key_type(schema: &Schema, keys: &OrderKeys, ty: &Ty) -> KeyType {
     match repr(schema, ty) {
         Ty::Base(b) => KeyType::Scalar(scalar(b)),
-        Ty::Key { rel, .. } => key_type(schema, &key_value_ty(schema, rel)),
+        Ty::Key { rel, .. } => key_type(schema, keys, &key_value_ty(schema, rel)),
         Ty::Record(fs) => KeyType::AnonRecord(
             AnonRecordType::new(
                 fs.iter()
-                    .map(|(n, t)| (n.clone(), key_type(schema, t)))
+                    .map(|(n, t)| (n.clone(), key_type(schema, keys, t)))
                     .collect(),
             )
             .expect("a record's fields have distinct names"),
@@ -161,7 +193,7 @@ pub fn key_type(schema: &Schema, ty: &Ty) -> KeyType {
                     .map(|(n, fs)| {
                         let r = fs
                             .iter()
-                            .map(|(f, t)| (f.clone(), key_type(schema, t)))
+                            .map(|(f, t)| (f.clone(), key_type(schema, keys, t)))
                             .collect();
                         let r = AnonRecordType::new(r).expect("fields have distinct names");
                         (n.clone(), r)
@@ -174,25 +206,24 @@ pub fn key_type(schema: &Schema, ty: &Ty) -> KeyType {
             ctors(schema, &t)[0]
                 .1
                 .iter()
-                .map(|(_, f)| key_type(schema, f))
+                .map(|(_, f)| key_type(schema, keys, f))
                 .collect(),
         ),
-        t => {
-            let cs = ctors(schema, &t);
-            let keys = OrderKey::spread(cs.len());
-            KeyType::Sum(
-                SumType::new(
-                    cs.iter()
-                        .zip(keys)
-                        .map(|((_, fs), order_key)| key::CtorType {
-                            order_key,
-                            fields: fs.iter().map(|(_, f)| key_type(schema, f)).collect(),
-                        })
-                        .collect(),
-                )
-                .expect("spread order keys increase"),
+        t => KeyType::Sum(
+            SumType::new(
+                ctors(schema, &t)
+                    .into_iter()
+                    .map(|(id, fs)| key::CtorType {
+                        order_key: keys
+                            .get(&u64::from(id))
+                            .unwrap_or_else(|| panic!("constructor {id} has an order key"))
+                            .clone(),
+                        fields: fs.iter().map(|(_, f)| key_type(schema, keys, f)).collect(),
+                    })
+                    .collect(),
             )
-        }
+            .expect("order keys follow declaration order"),
+        ),
     }
 }
 

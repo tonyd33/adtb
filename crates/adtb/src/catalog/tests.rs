@@ -1,10 +1,29 @@
 use std::collections::BTreeSet;
 
+use adtb_lang::evolve::Source;
+use adtb_lang::schema::Schema;
+
 use crate::key::Value;
 use crate::storage::Pid;
 
 use super::root::Root;
-use super::{declared, engine_schema, indexes};
+use super::{Rows, declared, engine_schema, indexes, layout};
+
+fn engine_rows(schema: &Schema) -> Rows {
+    declared(schema, &Source::default())
+}
+
+/// Returns the rows of the catalog relation whose id is `id`.
+fn rows_of(schema: &Schema, rows: &Rows, id: u64) -> Vec<Vec<Value>> {
+    let r = *schema
+        .ids
+        .relations
+        .iter()
+        .find(|(_, i)| **i == id)
+        .unwrap()
+        .0;
+    rows[&r].iter().map(|(_, row)| row.clone()).collect()
+}
 
 #[test]
 fn the_root_page_round_trips() {
@@ -12,6 +31,8 @@ fn the_root_page_round_trips() {
         commit_log: Pid(7),
         large: (1, Pid(3)),
         roots: (2, Pid(9)),
+        next_heap: 70,
+        changing: 1025,
     };
     let mut page = vec![0; 4096];
     root.write(&mut page);
@@ -22,7 +43,7 @@ fn the_root_page_round_trips() {
 #[test]
 fn every_engine_object_with_an_id_has_a_row() {
     let schema = engine_schema();
-    let rows = declared(&schema);
+    let rows = engine_rows(&schema);
     let count = |rel: u64| {
         let r = *schema
             .ids
@@ -45,7 +66,7 @@ fn every_engine_object_with_an_id_has_a_row() {
 #[test]
 fn the_constructors_relation_names_its_own_row() {
     let schema = engine_schema();
-    let rows = declared(&schema);
+    let rows = engine_rows(&schema);
     let r = *schema
         .ids
         .relations
@@ -60,7 +81,50 @@ fn the_constructors_relation_names_its_own_row() {
     let names: Vec<&Value> = own.1.iter().collect();
     assert_eq!(&Value::I64(120), names[1]);
     assert_eq!(&Value::Text("Constructor".into()), names[2]);
-    assert_eq!(&Value::I32(0), names[3]);
+    assert_eq!(&Value::I32(1), names[3]);
+}
+
+#[test]
+fn positions_count_from_one() {
+    let schema = engine_schema();
+    let rows = engine_rows(&schema);
+    let positions = |id| -> BTreeSet<i32> {
+        rows_of(&schema, &rows, id)
+            .into_iter()
+            .map(|row| match row[3] {
+                Value::I32(p) => p,
+                ref v => panic!("a position is an I32, not {v:?}"),
+            })
+            .collect()
+    };
+    assert_eq!(Some(&1), positions(220).first());
+    assert_eq!(Some(&1), positions(222).first());
+}
+
+#[test]
+fn tag_has_a_types_row_of_one_parameter() {
+    let schema = engine_schema();
+    let rows = engine_rows(&schema);
+    let tag = rows_of(&schema, &rows, 219)
+        .into_iter()
+        .find(|row| row[0] == Value::I64(9))
+        .expect("a row for Tag");
+    assert_eq!(Value::Text("prelude".into()), tag[1]);
+    assert_eq!(Value::Text("Tag".into()), tag[2]);
+    assert_eq!(Value::I32(1), tag[3]);
+}
+
+#[test]
+fn order_keys_follow_declaration_order_and_are_spread_once() {
+    let schema = engine_schema();
+    let keys = layout::new_order_keys(&schema, &Default::default());
+    assert!(keys[&1] < keys[&2], "False sorts below True");
+    assert!(keys[&4] < keys[&5], "None sorts below Some");
+    assert!(
+        !keys.contains_key(&34),
+        "a newtype's constructor has no order key"
+    );
+    assert!(layout::new_order_keys(&schema, &keys).is_empty());
 }
 
 #[test]
