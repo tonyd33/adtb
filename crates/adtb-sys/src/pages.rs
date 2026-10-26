@@ -1,5 +1,6 @@
 #[cfg(not(all(target_os = "linux", not(miri))))]
 use std::alloc::{self, Layout};
+use std::cell::RefCell;
 use std::fmt;
 use std::ops::Deref;
 use std::ptr::NonNull;
@@ -72,6 +73,44 @@ mod held {
     pub(super) fn count(_: usize) -> usize {
         0
     }
+}
+
+thread_local! {
+    static SWITCH: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// Call `hook` at every switch point the calling thread passes in page memory, until the
+/// returned guard drops: before it starts an optimistic read, takes a latch or upgrades to one,
+/// halfway through an optimistic copy, and before it validates an optimistic read.
+pub fn switch_points(hook: impl Fn() + 'static) -> SwitchPoints {
+    let previous = SWITCH.with(|s| s.borrow_mut().replace(Box::new(hook)));
+    SwitchPoints { previous }
+}
+
+/// The hook [`switch_points`] installed; dropping it restores the one before.
+pub struct SwitchPoints {
+    previous: Option<Box<dyn Fn()>>,
+}
+
+impl fmt::Debug for SwitchPoints {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SwitchPoints").finish_non_exhaustive()
+    }
+}
+
+impl Drop for SwitchPoints {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        let _ = SWITCH.try_with(|s| *s.borrow_mut() = previous);
+    }
+}
+
+fn switch_point() {
+    let _ = SWITCH.try_with(|s| {
+        if let Some(hook) = &*s.borrow() {
+            hook();
+        }
+    });
 }
 
 fn word(tag: u64, version: u64) -> u64 {
@@ -353,6 +392,7 @@ impl PageMemory {
     /// Panics, in debug builds, if the calling thread holds a latch on `pid` already.
     pub fn lock_exclusive(&self, pid: u64, threads: &impl Threads) -> Exclusive<'_> {
         held::refuse(self.id(), pid, false);
+        switch_point();
         loop {
             let s = self.load(pid, Ordering::Acquire);
             if matches!(tag(s), UNLOCKED | MARKED | EVICTED)
@@ -366,6 +406,7 @@ impl PageMemory {
 
     /// Take the exclusive latch on resident, unlatched `pid` if no one holds a latch on it.
     pub fn try_lock_exclusive(&self, pid: u64) -> Option<Exclusive<'_>> {
+        switch_point();
         let s = self.load(pid, Ordering::Acquire);
         match tag(s) {
             UNLOCKED | MARKED => self.exclusive_from(pid, s),
@@ -379,6 +420,7 @@ impl PageMemory {
     /// Panics, in debug builds, if the calling thread holds a latch on `pid` already.
     pub fn lock_shared(&self, pid: u64, threads: &impl Threads) -> Option<Shared<'_>> {
         held::refuse(self.id(), pid, false);
+        switch_point();
         loop {
             let s = self.load(pid, Ordering::Acquire);
             let next = match tag(s) {
@@ -402,6 +444,7 @@ impl PageMemory {
     /// Panics, in debug builds, if the calling thread holds the exclusive latch on `pid`.
     pub fn optimistic(&self, pid: u64) -> Option<Optimistic<'_>> {
         held::refuse(self.id(), pid, true);
+        switch_point();
         let s = self.load(pid, Ordering::Acquire);
         match tag(s) {
             EXCLUSIVE | EVICTED => None,
@@ -598,8 +641,18 @@ impl<'a> Optimistic<'a> {
     ///
     /// Panics if the range runs past the end of the page.
     pub fn read(&self, offset: usize, out: &mut [u8]) {
+        assert!(
+            offset + out.len() <= self.mem.page_size,
+            "read past the end of the page"
+        );
+        let (first, second) = out.split_at_mut(out.len() / 2);
+        self.copy(offset, first);
+        switch_point();
+        self.copy(offset + first.len(), second);
+    }
+
+    fn copy(&self, offset: usize, out: &mut [u8]) {
         let end = offset + out.len();
-        assert!(end <= self.mem.page_size, "read past the end of the page");
         let words = self.mem.words(self.pid);
         let mut at = offset;
         while at < end {
@@ -615,6 +668,7 @@ impl<'a> Optimistic<'a> {
     /// Returns whether no exclusive latch was taken, and no eviction happened, since the read
     /// began.
     pub fn validate(&self) -> bool {
+        switch_point();
         fence(Ordering::Acquire);
         let s = self.mem.load(self.pid, Ordering::Relaxed);
         !matches!(tag(s), EXCLUSIVE | EVICTED) && version(s) == self.version
@@ -622,6 +676,7 @@ impl<'a> Optimistic<'a> {
 
     /// Take the exclusive latch if the page is unlatched and unchanged since the read began.
     pub fn upgrade(self) -> Option<Exclusive<'a>> {
+        switch_point();
         for t in [UNLOCKED, MARKED] {
             if let Some(g) = self.mem.exclusive_from(self.pid, word(t, self.version)) {
                 return Some(g);
@@ -807,6 +862,27 @@ mod tests {
         let other = memory();
         let _held = m.lock_exclusive(3, &Alone);
         drop(other.lock_exclusive(3, &Alone));
+    }
+
+    #[test]
+    fn switch_points_call_the_hook_until_the_guard_drops() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let m = memory();
+        m.lock_exclusive(1, &Alone).write(0, &[1]);
+        let calls = Rc::new(Cell::new(0));
+        let c = calls.clone();
+        let guard = super::switch_points(move || c.set(c.get() + 1));
+        drop(m.lock_shared(1, &Alone));
+        let r = m.optimistic(1).unwrap();
+        r.read(0, &mut [0; 64]);
+        assert!(r.validate());
+        assert!(r.upgrade().is_some());
+        assert_eq!(5, calls.get());
+        drop(guard);
+        drop(m.lock_exclusive(1, &Alone));
+        assert_eq!(5, calls.get());
     }
 
     #[test]

@@ -153,3 +153,52 @@ fn latches_keep_every_increment_and_validated_reads_whole() {
 fn a_seed_replays_the_same_interleaving() {
     assert_eq!(run(3), run(3));
 }
+
+/// Returns the optimistic reads that failed validation as one reader and one writer share a
+/// page, each yielding only between its operations, with page memory switching at
+/// `switch_rate`.
+fn failed_validations(seed: u64, switch_rate: f64) -> u64 {
+    let config = Config {
+        switch_rate,
+        ..Config::default()
+    };
+    let mut sim = Sim::new(seed, config);
+    let mem = Arc::new(PageMemory::reserve(PAGE, 1));
+    let failed = Arc::new(Mutex::new(0));
+    let f = failed.clone();
+    let outcome = sim.run(move |rt| {
+        mem.lock_exclusive(0, &rt).write(0, &[0; PAGE]);
+        let (m, rt2) = (mem.clone(), rt.clone());
+        let writer = rt.spawn("writer", move || {
+            for n in 0..100u64 {
+                m.lock_exclusive(0, &rt2).write(0, &n.to_le_bytes());
+                rt2.yield_now();
+            }
+        });
+        let (m, rt2) = (mem.clone(), rt.clone());
+        let reader = rt.spawn("reader", move || {
+            let mut copy = vec![0; PAGE];
+            for _ in 0..100 {
+                if let Some(o) = m.optimistic(0) {
+                    o.read(0, &mut copy);
+                    if !o.validate() {
+                        *f.lock().unwrap() += 1;
+                    }
+                }
+                rt2.yield_now();
+            }
+        });
+        rt.join(writer);
+        rt.join(reader);
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    *failed.lock().unwrap()
+}
+
+#[test]
+fn switch_points_fail_optimistic_reads_only_when_enabled() {
+    let off: u64 = (0..10).map(|seed| failed_validations(seed, 0.0)).sum();
+    let on: u64 = (0..10).map(|seed| failed_validations(seed, 0.5)).sum();
+    assert_eq!(off, 0);
+    assert!(on >= 10, "only {on} reads failed validation");
+}

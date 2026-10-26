@@ -15,6 +15,15 @@ const OWNER: u32 = 41;
 const NAME: &str = "app.adt";
 const SCAN: usize = 24;
 
+const SWITCH_RATE: f64 = 0.01;
+
+fn switching() -> Config {
+    Config {
+        switch_rate: SWITCH_RATE,
+        ..Config::default()
+    }
+}
+
 fn options(pool_frames: usize) -> Options {
     Options {
         page_size: PAGE as u32,
@@ -267,7 +276,7 @@ fn concurrent_run(
     how: Keys,
     shape: Shape,
 ) -> (usize, usize) {
-    let mut sim = Sim::new(seed, Config::default());
+    let mut sim = Sim::new(seed, switching());
     let history = Arc::new(History::default());
     let h = history.clone();
     let keys = 1500;
@@ -563,7 +572,7 @@ fn threads_crashed_together_recover_a_prefix_of_each_threads_operations() {
 /// the even multiples of three beside threads inserting the odd keys, which
 /// split the leaves the walk passes.
 fn retain_beside_inserts(seed: u64, n: u32, inserters: u32) {
-    let mut sim = Sim::new(seed, Config::default());
+    let mut sim = Sim::new(seed, switching());
     let outcome = sim.run(move |rt| {
         let pager = Arc::new(Pager::create(rt.clone(), &options(32)).expect("create"));
         let tree = BTree::create(&pager, OWNER).expect("create tree");

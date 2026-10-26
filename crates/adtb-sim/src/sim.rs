@@ -10,6 +10,7 @@ use adtb::runtime::{
     AlignedBuf, Clock, Completion, Done, Entropy, FileId, Instant, Io, Op, Runtime, ThreadId,
     Threads, Ticket,
 };
+use adtb_sys::pages;
 
 use crate::disk::{Ctx, Disk, Faults, Geometry, InFlight, Ino, Recording};
 use crate::rng::Rng;
@@ -27,6 +28,9 @@ pub struct Config {
     pub latency: (Duration, Duration),
     /// The most simulated time one scheduling step takes.
     pub jitter: Duration,
+    /// The chance that a thread offers the processor to another at each switch point it passes
+    /// in page memory.
+    pub switch_rate: f64,
 }
 
 impl Default for Config {
@@ -37,6 +41,7 @@ impl Default for Config {
             atomic_unit: 512,
             latency: (Duration::from_micros(1), Duration::from_micros(500)),
             jitter: Duration::from_micros(1),
+            switch_rate: 0.0,
         }
     }
 }
@@ -85,6 +90,7 @@ struct State {
     sched: Rng,
     faults: Rng,
     entropy: Rng,
+    switches: Rng,
     now: u64,
     disk: Disk,
     trace: String,
@@ -166,6 +172,7 @@ impl Sim {
             sched: root.split(),
             faults: root.split(),
             entropy: root.split(),
+            switches: root.split(),
             now: 0,
             disk: Disk::default(),
             trace: String::new(),
@@ -236,7 +243,10 @@ impl Sim {
             shared: self.shared.clone(),
             process,
         };
-        let result = panic::catch_unwind(AssertUnwindSafe(|| body(rt.clone())));
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            let _switches = rt.switch_points();
+            body(rt.clone())
+        }));
         settle(&self.shared, 0, result);
         {
             let st = lock(&self.shared.state);
@@ -527,6 +537,22 @@ impl SimRuntime {
         Some(st)
     }
 
+    /// Install the calling thread's switch points in page memory if the configuration switches
+    /// there.
+    fn switch_points(&self) -> Option<pages::SwitchPoints> {
+        let rate = lock(&self.shared.state).config.switch_rate;
+        let rt = self.clone();
+        (rate > 0.0).then(|| pages::switch_points(move || rt.switch_point()))
+    }
+
+    fn switch_point(&self) {
+        let Some(mut st) = self.enter() else { return };
+        let rate = st.config.switch_rate;
+        if st.switches.chance(rate) {
+            drop(self.reschedule(st));
+        }
+    }
+
     fn reschedule<'a>(&'a self, st: Guard<'a>) -> Guard<'a> {
         let me = st.current;
         match switch(&self.shared, st, me) {
@@ -584,6 +610,11 @@ impl Threads for SimRuntime {
         let now = st.now;
         let _ = writeln!(st.trace, "t={now} spawn {id} {name:?}");
         let shared = self.shared.clone();
+        let rt = self.clone();
+        let body = move || {
+            let _switches = rt.switch_points();
+            body()
+        };
         #[allow(
             clippy::disallowed_methods,
             reason = "each simulated thread runs on a host thread"
