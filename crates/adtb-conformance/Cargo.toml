@@ -7,8 +7,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+adtb.workspace = true
 adtb-lang.workspace = true
 adtb-reference.workspace = true
+
+[dev-dependencies]
+adtb-sim.workspace = true
 
 [lints]
 workspace = true

@@ -1,4 +1,5 @@
-//! The conformance runner: reads test scripts and runs them against the reference interpreter.
+//! The conformance runner: reads test scripts and runs them against the reference interpreter
+//! or the engine.
 //!
 //! A script is a sequence of directives. A directive line starts in the first column; its body
 //! is the lines below it indented by two spaces. The rows of a `query` follow a `----` line, one
@@ -7,6 +8,9 @@
 
 #![forbid(unsafe_code)]
 
+mod engine;
+
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
@@ -20,6 +24,8 @@ use adtb_lang::schema::{Schema, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, Database, Interpreter, Rejection, Supply, Value, textual};
+
+pub use engine::run_engine;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -389,11 +395,14 @@ impl Run {
             }
             v => self.show(v, ty),
         };
+        if let Some(d) = repeated(line, &want) {
+            return Err(d);
+        }
         let mismatch = || differ(line, format!("got {}", shown()));
         match got {
             Value::Set(s) => {
                 let want_set: std::collections::BTreeSet<Value> = want.iter().cloned().collect();
-                if want_set.len() != want.len() || &want_set != s {
+                if &want_set != s {
                     return Err(mismatch());
                 }
                 if !rowsort {
@@ -490,12 +499,10 @@ pub fn run_file(path: &Path) -> Vec<String> {
     };
     let found = match parse(&text) {
         Ok(s) => panic::catch_unwind(|| run_reference(&s)).unwrap_or_else(|p| {
-            let why = p
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| p.downcast_ref::<&str>().map(ToString::to_string))
-                .unwrap_or_default();
-            vec![differ(0, format!("the interpreter panics: {why}"))]
+            vec![differ(
+                0,
+                format!("the interpreter panics: {}", panic_message(&*p)),
+            )]
         }),
         Err(d) => vec![d],
     };
@@ -503,4 +510,30 @@ pub fn run_file(path: &Path) -> Vec<String> {
         .into_iter()
         .map(|d| format!("{shown}:{}: {}", d.line, d.message))
         .collect()
+}
+
+/// Returns the script error of an expected row that repeats an earlier one.
+fn repeated<V: Ord>(line: usize, want: &[V]) -> Option<Difference> {
+    let mut seen = BTreeMap::new();
+    want.iter().enumerate().find_map(|(i, v)| {
+        seen.insert(v, i).map(|first| {
+            differ(
+                line,
+                format!(
+                    "expected row {} repeats row {}; a result holds each row once",
+                    i + 1,
+                    first + 1
+                ),
+            )
+        })
+    })
+}
+
+/// Returns the message of a panic's payload, or the empty string when it holds none.
+pub fn panic_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(ToString::to_string))
+        .unwrap_or_default()
 }

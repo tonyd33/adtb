@@ -24,8 +24,10 @@ dependencies = [
 name = "adtb-conformance"
 version = "0.1.0"
 dependencies = [
+ "adtb",
  "adtb-lang",
  "adtb-reference",
+ "adtb-sim",
 ]
 
 [[package]]

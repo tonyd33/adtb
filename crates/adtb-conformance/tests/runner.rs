@@ -137,3 +137,153 @@ fn nothing_an_error_directive_runs_commits() {
     );
     assert_eq!(Vec::<String>::new(), found);
 }
+
+fn refused(script: &str) -> (usize, String) {
+    let d = parse(script).expect_err("the script does not read");
+    (d.line, d.message)
+}
+
+#[test]
+fn an_indented_line_outside_a_body_does_not_read() {
+    assert_eq!(
+        (2, "an indented line outside a directive's body".to_string()),
+        refused("# a comment\n  insert ts { id: 1, n: 2 }\n")
+    );
+}
+
+#[test]
+fn an_unknown_directive_does_not_read() {
+    for line in ["querry", "query sorted", "error", "error A B", "run now"] {
+        assert_eq!(
+            (1, format!("`{line}` is not a directive")),
+            refused(&format!("{line}\n  1\n")),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_query_without_its_rule_does_not_read() {
+    assert_eq!(
+        (1, "a query's rows follow `----`".to_string()),
+        refused("query\n  1\n1\n")
+    );
+}
+
+#[test]
+fn a_directive_with_no_body_does_not_read() {
+    assert_eq!(
+        (1, "a directive with no body".to_string()),
+        refused("run\nquery\n  1\n----\n1\n")
+    );
+    assert_eq!(
+        (1, "a directive with no body".to_string()),
+        refused("query\n----\n1\n")
+    );
+}
+
+#[test]
+fn a_body_holds_blank_lines_and_rows_end_at_a_comment() {
+    let s = parse("run\n  insert ts { id: 1, n: 2 }\n\n  insert ts { id: 2, n: 3 }\nquery\n  1\n----\n1\n# a comment\nquery\n  2\n----\n\nquery\n  3\n----\n3\n").expect("the script reads");
+    assert_eq!(4, s.directives.len());
+    assert_eq!(
+        "insert ts { id: 1, n: 2 }\n\ninsert ts { id: 2, n: 3 }\n",
+        s.directives[0].body
+    );
+    let rows = |i: usize| match &s.directives[i].kind {
+        Kind::Query { rows, .. } => rows.clone(),
+        k => panic!("directive {i} is {k:?}"),
+    };
+    assert_eq!(vec!["1".to_string()], rows(1));
+    assert_eq!(Vec::<String>::new(), rows(2));
+    assert_eq!(vec!["3".to_string()], rows(3));
+}
+
+#[test]
+fn a_schema_after_another_directive_differs() {
+    let found = differences("schema\n  module other\n  type U = { id: I64 }\n");
+    assert_eq!(vec!["`schema` is the first directive".to_string()], found);
+}
+
+#[test]
+fn a_refused_schema_differs() {
+    let script = parse("schema\n  module test\n  type T = { id: Key nowhere }\n").unwrap();
+    let found = run_reference(&script);
+    assert_eq!(1, found.len());
+    assert!(
+        found[0].message.starts_with("the schema is refused"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_script_without_a_schema_holds_the_prelude() {
+    let script = parse("query\n  Some { value: 1 }\n----\nSome { value: 1 }\n").unwrap();
+    assert_eq!(
+        Vec::<String>::new(),
+        run_reference(&script)
+            .into_iter()
+            .map(|d| d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn an_expected_row_that_does_not_read_differs() {
+    let found = differences("query rowsort\n  from t in ts select t.n\n----\n1\n\"two\"\n");
+    assert_eq!(1, found.len());
+    assert!(
+        found[0].starts_with("expected row 2 `\"two\"` does not read"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_set_result_with_a_repeated_expected_row_differs_as_a_script_error() {
+    for head in ["query", "query rowsort"] {
+        let found = differences(&format!(
+            "{head}\n  from t in ts select t.n\n----\n1\n2\n2\n"
+        ));
+        assert_eq!(
+            vec!["expected row 3 repeats row 2; a result holds each row once".to_string()],
+            found,
+            "{head}"
+        );
+    }
+}
+
+#[test]
+fn a_query_of_two_statements_differs() {
+    let found = differences("query\n  count(t for t in ts)\n  (count(t for t in ts))\n----\n2\n");
+    assert_eq!(vec!["a query holds one statement".to_string()], found);
+}
+
+#[test]
+fn an_error_whose_text_does_not_parse_is_refused_as_invalid() {
+    assert_eq!(
+        Vec::<String>::new(),
+        differences("error Invalid\n  from t in ) ts\n")
+    );
+}
+
+#[test]
+fn a_query_with_no_rows_is_the_empty_set() {
+    assert_eq!(
+        Vec::<String>::new(),
+        differences("query\n  from t in ts where t.n > 5 select t.n\n----\n\n")
+    );
+}
+
+#[test]
+fn an_ordered_result_with_a_repeated_expected_row_differs_as_a_script_error() {
+    for head in ["query", "query rowsort"] {
+        let found = differences(&format!(
+            "{head}\n  from t in ts select t.n order by t.n desc\n----\n2\n1\n1\n"
+        ));
+        assert_eq!(
+            vec!["expected row 3 repeats row 2; a result holds each row once".to_string()],
+            found,
+            "{head}"
+        );
+    }
+}

@@ -1,0 +1,60 @@
+# Files the reference interpreter passes and the engine fails: a path under conformance/, then why.
+constraints/02-reference-cycle.test a migration refuses a type whose key reference names a relation a later operator adds, so a reference cycle has no order
+constraints/02-reference-option.test a declaration naming a type in parentheses panics in canonical printing
+constraints/02-unique-on-sum-path.test an index or unique over an expression is refused
+constraints/07-least-name-across-modules.test a schema of several modules is several migrations, and only a first migration applies
+model/01-anonymous-sums.test a declaration naming a type in parentheses panics in canonical printing; in release the planner then overflows the stack on a comprehension over a function's result narrowed to a constructor
+model/04-newtypes.test the migration parser reads the next operator into a newtype declared without a where clause
+model/06-result-sums.test a declaration naming a type in parentheses panics in canonical printing; in release the planner then overflows the stack on a comprehension over a function's result narrowed to a constructor
+model/08-cycles.test a migration refuses a type whose key reference names a relation a later operator adds, so a reference cycle has no order
+model/08-reference-positions.test a declaration naming a type in parentheses panics in canonical printing
+model/08-widening-narrowing.test a declaration naming a type in parentheses panics in canonical printing
+model/09-equality-types.test the migration parser reads the next operator into a newtype declared without a where clause
+model/10-newtype-key-order.test the migration parser reads the next operator into a newtype declared without a where clause
+model/10-unordered.test a declaration naming a type in parentheses panics in canonical printing
+queries/01-equality.test a declaration naming a type in parentheses panics in canonical printing
+queries/01-pure.test a declaration naming a type in parentheses panics in canonical printing
+queries/02-key-of.test a declaration naming a type in parentheses panics in canonical printing
+queries/02-key-values.test a declaration naming a type in parentheses panics in canonical printing
+queries/02-relation-expressions.test a declaration naming a type in parentheses panics in canonical printing
+queries/02-set-expressions.test a declaration naming a type in parentheses panics in canonical printing; in release the planner then overflows the stack on a comprehension over a function's result narrowed to a constructor
+queries/03-comprehension.test a declaration naming a type in parentheses panics in canonical printing
+queries/03-exists.test a declaration naming a type in parentheses panics in canonical printing
+queries/03-sets.test a declaration naming a type in parentheses panics in canonical printing
+queries/03-union.test a declaration naming a type in parentheses panics in canonical printing
+queries/04-anonymous-records.test a declaration naming a type in parentheses panics in canonical printing
+queries/04-arm-types.test a declaration naming a type in parentheses panics in canonical printing
+queries/04-result-sums.test a declaration naming a type in parentheses panics in canonical printing; in release the planner then overflows the stack on a comprehension over a function's result narrowed to a constructor
+queries/05-adhoc-wildcards.test a declaration naming a type in parentheses panics in canonical printing
+queries/05-binders.test a declaration naming a type in parentheses panics in canonical printing
+queries/05-exhaustiveness.test a declaration naming a type in parentheses panics in canonical printing
+queries/05-key-scrutinee.test a declaration naming a type in parentheses panics in canonical printing
+queries/05-match-meaning.test a declaration naming a type in parentheses panics in canonical printing
+queries/05-no-null.test a declaration naming a type in parentheses panics in canonical printing
+queries/05-scrutinees.test a declaration naming a type in parentheses panics in canonical printing
+queries/05-union-of-arms.test a declaration naming a type in parentheses panics in canonical printing
+queries/06-forms.test a declaration naming a type in parentheses panics in canonical printing
+queries/06-guards.test a declaration naming a type in parentheses panics in canonical printing
+queries/06-literals.test a declaration naming a type in parentheses panics in canonical printing
+queries/06-named-set.test a declaration naming a type in parentheses panics in canonical printing
+queries/06-nested.test a declaration naming a type in parentheses panics in canonical printing
+queries/06-or-patterns.test a declaration naming a type in parentheses panics in canonical printing
+queries/06-record-patterns.test a declaration naming a type in parentheses panics in canonical printing
+queries/06-unreachable.test a declaration naming a type in parentheses panics in canonical printing
+queries/07-backlinks.test a declaration naming a type in parentheses panics in canonical printing
+queries/07-joins.test a declaration naming a type in parentheses panics in canonical printing
+queries/07-paths.test a declaration naming a type in parentheses panics in canonical printing
+queries/08-nested-results.test a declaration naming a type in parentheses panics in canonical printing
+queries/09-group-scope.test a declaration naming a type in parentheses panics in canonical printing
+queries/10-user-aggregate.test a plan does not run a user-defined aggregate
+queries/11-fix-stratified.test a declaration naming a type in parentheses panics in canonical printing
+queries/12-higher-order.test a declaration naming a type in parentheses panics in canonical printing
+queries/13-optional-filters.test a declaration naming a type in parentheses panics in canonical printing
+queries/13-parameters.test a declaration naming a type in parentheses panics in canonical printing
+queries/16-adhoc-names.test a schema of several modules is several migrations, and only a first migration applies
+writes/01-transact-options.test a read_only deferrable block does not run
+writes/06-upsert-expression-unique.test an index or unique over an expression is refused
+writes/07-actions-compose.test a declaration naming a type in parentheses panics in canonical printing
+writes/07-clear.test a declaration naming a type in parentheses panics in canonical printing
+writes/07-gone-keys.test a declaration naming a type in parentheses panics in canonical printing
+writes/07-own-writes-win.test a declaration naming a type in parentheses panics in canonical printing
