@@ -27,6 +27,6 @@ tags:
 - `catalog/layout.rs` duplicates the type conversion in
   `crates/adtb-sim/tests/exec.rs`; make the test use the catalog's.
 
-## Progress
+## 2026-10-25: progress
 
 Done on main: catalog reads go through snapshots, the next heap id is stored, and kept order keys are read back rather than respread. Unverified: the next xid across a redone create, and the type conversion duplicated between `catalog/layout.rs` and the sim exec tests.

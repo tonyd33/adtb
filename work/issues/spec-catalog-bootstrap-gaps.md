@@ -29,6 +29,6 @@ State each in `catalog.md`.
 
 ## 2026-10-25: resolved
 
-## Resolution
+## 2026-10-25: resolution
 
 All five rulings are stated in `docs/spec/catalog.md` and the catalog rows follow them.

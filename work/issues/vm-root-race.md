@@ -24,6 +24,6 @@ growing beside writers.
 
 ## 2026-10-25: resolved
 
-## Resolution
+## 2026-10-25: resolution
 
 `Vm::put` rechecks that the latched page is still a leaf and looks it up again if the root grew. The switch-rate test in heap_threads.rs fails on the old code at round 15.

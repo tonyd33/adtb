@@ -26,6 +26,6 @@ updates that compose crash-safely within it.
 
 ## 2026-10-25: resolved
 
-## Resolution
+## 2026-10-25: resolution
 
 The pager panics on a sixth latch in debug builds and under `latch-checks`. Directory corrections, page adds, map bit clears and value count updates now run as separate updates, so every write latches at most five pages.

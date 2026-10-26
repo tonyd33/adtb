@@ -21,6 +21,6 @@ literal spellings of §2.9, tested against syntax.md's examples.
 
 ## 2026-10-25: resolved
 
-## Resolution
+## 2026-10-25: resolution
 
 `canon::canonical_term(text, span, &Names)` prints an operand; `Source::names` and `Logged::names` resolve its names. Binding occurrences are qualified too (`type auth::Identity = ...`): the form is an identity for hashing and comparison, not re-parseable source. Names are resolved by rerunning the schema lookups over the built declaration; constructors resolved by expected type come from the checker.
