@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 503
 summary: "the B-link tree is single-threaded: no optimistic lock coupling over the latches"
-branch: adtb-olc
+closed: 2026-10-25
 depends-on:
   - vmcache
   - page-buffer-contract
@@ -35,3 +35,7 @@ constructor-set indexes, value-level sum field indexes, and `verify`,
 over the single-threaded pager. What remains is optimistic lock
 coupling over the latches of `docs/design/storage.md` §2.4, once
 `vmcache.md` lands, with its tests.
+
+## 2026-10-25: resolved
+
+Landed as `feat(btree): search and change B-link trees from many threads by optimistic lock coupling`. Searches, scans, inserts, deletes, `repair` and `retain` run from many threads, linearizable by key. Follow-ups: `sim-optimistic-switch-points.md`, `pool-size-precondition.md`, `blink-page-deletion.md`, `real-thread-stress.md`.
