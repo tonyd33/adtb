@@ -9,6 +9,13 @@ dependencies = [
  "adtb-lang",
  "adtb-reference",
  "adtb-sys",
+ "icu_casemap",
+ "icu_collator",
+ "icu_locale_core",
+ "icu_segmenter",
+ "jiff",
+ "regex",
+ "unicode-normalization",
 ]
 
 [[package]]

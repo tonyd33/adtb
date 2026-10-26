@@ -544,7 +544,14 @@ impl<'a> Compiler<'a> {
             }
             Kind::Prim(p, xs) => {
                 let tys: Vec<Ty> = xs.iter().map(|x| self.terms.ty(*x).clone()).collect();
-                let op = prim::choose(self.schema, *p, &tys, ty)?;
+                let consts = xs
+                    .iter()
+                    .map(|x| match self.terms.kind(*x) {
+                        Kind::Const(c) => self.constant(c, self.terms.ty(*x)).map(Some),
+                        _ => Ok(None),
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?;
+                let op = prim::choose(self.schema, *p, &tys, &consts, ty)?;
                 let args = xs
                     .iter()
                     .map(|x| self.expr(e, ins, *x))

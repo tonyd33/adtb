@@ -10,7 +10,15 @@ use super::value::{F32, F64, Val};
 use super::wide::{Wide, cmp_decimal, rescaled};
 use super::{Error, Fault};
 
-const MICROS_PER_DAY: i64 = 86_400_000_000;
+mod num;
+mod textual;
+mod time;
+mod unicode;
+
+use num::Rounding;
+use textual::Form;
+use time::MICROS_PER_DAY;
+use unicode::{Case, Collator, Pattern};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Width {
@@ -51,60 +59,8 @@ pub enum Arith {
     Rem,
 }
 
-/// A rounding mode of the prelude's `Rounding`, by constructor position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Rounding {
-    HalfEven,
-    HalfUp,
-    HalfDown,
-    Up,
-    Down,
-    Ceiling,
-    Floor,
-}
-
-impl Rounding {
-    fn of(v: &Val) -> Rounding {
-        match v.ctor_of() {
-            0 => Rounding::HalfEven,
-            1 => Rounding::HalfUp,
-            2 => Rounding::HalfDown,
-            3 => Rounding::Up,
-            4 => Rounding::Down,
-            5 => Rounding::Ceiling,
-            6 => Rounding::Floor,
-            c => panic!("constructor {c} is not a Rounding"),
-        }
-    }
-
-    /// Returns `n / d` rounded, `d > 0`.
-    fn div(self, n: i128, d: i128) -> i128 {
-        let (q, r) = (n / d, n % d);
-        if r == 0 {
-            return q;
-        }
-        let away = if n < 0 { q - 1 } else { q + 1 };
-        let twice = r.unsigned_abs() * 2;
-        let half = twice.cmp(&d.unsigned_abs());
-        let up = match self {
-            Rounding::Down => false,
-            Rounding::Up => true,
-            Rounding::Ceiling => n > 0,
-            Rounding::Floor => n < 0,
-            Rounding::HalfUp => half != Ordering::Less,
-            Rounding::HalfDown => half == Ordering::Greater,
-            Rounding::HalfEven => match half {
-                Ordering::Less => false,
-                Ordering::Greater => true,
-                Ordering::Equal => q % 2 != 0,
-            },
-        };
-        if up { away } else { q }
-    }
-}
-
 /// A primitive operation, chosen for its operand types when the plan is compiled.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Op {
     Int(Arith, Width),
     IntNeg(Width),
@@ -188,14 +144,65 @@ pub enum Op {
         months: bool,
         per: i64,
     },
+    /// Decimals of scales `s` and `t` divided to scale `u`.
+    DecDiv {
+        s: u8,
+        t: u8,
+        u: u8,
+    },
+    /// A decimal of scale `s` rounded to an integer.
+    DecToInt(u8, Width),
+    FloatToInt(Width),
+    /// A float rounded to a decimal of this scale.
+    FloatToDec(u8),
+    /// A decimal of scale `s` at the nearest float, an `F32` when `single`.
+    DecToFloat {
+        s: u8,
+        single: bool,
+    },
+    ZonedShift {
+        sub: bool,
+    },
+    GraphemeLen,
+    Case(Case),
+    Matches(Arc<Pattern>),
+    Collate(Arc<Collator>),
+    ParseUuid,
+    ToText(Arc<Form>),
+    Print(Arc<Form>),
+    Parse(Arc<Form>),
+    /// `add_period` on a `Date`, `DateTime` or `ZonedDateTime`, giving an `Option` when `reject`.
+    AddPeriod {
+        reject: bool,
+    },
+    Zoned {
+        reject: bool,
+    },
+    InZone,
+    ToInstant,
+    Span,
+    Start,
+    End,
+    Overlaps,
+    /// `covers` of a span, or of a point when `point`.
+    Covers {
+        point: bool,
+    },
 }
 
 fn unsupported<T>(what: impl std::fmt::Display) -> Result<T, Error> {
     Err(Error::Unsupported(what.to_string()))
 }
 
-/// Chooses the operation `p` performs on operands of types `args` with result type `ty`.
-pub fn choose(schema: &Schema, p: Prim, args: &[Ty], ty: &Ty) -> Result<Op, Error> {
+/// Chooses the operation `p` performs on operands of types `args` with result type `ty`; `consts`
+/// holds the value of each operand that is a literal.
+pub fn choose(
+    schema: &Schema,
+    p: Prim,
+    args: &[Ty],
+    consts: &[Option<Val>],
+    ty: &Ty,
+) -> Result<Op, Error> {
     let b = |t: &Ty| base(schema, t);
     let arg = |i: usize| args.get(i).and_then(b);
     let arith = match p {
@@ -255,6 +262,11 @@ pub fn choose(schema: &Schema, p: Prim, args: &[Ty], ty: &Ty) -> Result<Op, Erro
                     Arith::Add => Op::PointShift { sub: false },
                     Arith::Sub => Op::PointShift { sub: true },
                     _ => return unsupported(format!("{p:?} on a point in time")),
+                },
+                (Some(Base::ZonedDateTime), Some(Base::Duration)) => match a {
+                    Arith::Add => Op::ZonedShift { sub: false },
+                    Arith::Sub => Op::ZonedShift { sub: true },
+                    _ => return unsupported(format!("{p:?} on a zoned date-time")),
                 },
                 (Some(Base::Instant), Some(Base::Instant))
                 | (Some(Base::DateTime), Some(Base::DateTime))
@@ -344,6 +356,17 @@ pub fn choose(schema: &Schema, p: Prim, args: &[Ty], ty: &Ty) -> Result<Op, Erro
                 (Some(x), Some(Base::F64)) if Width::of(x).is_some() => Op::IntToF64,
                 (Some(Base::F32), Some(Base::F64)) => Op::F32ToF64,
                 (Some(Base::F64), Some(Base::F32)) => Op::F64ToF32,
+                (Some(Base::Decimal(s)), Some(y)) if Width::of(y).is_some() => {
+                    Op::DecToInt(s, Width::of(y).unwrap())
+                }
+                (Some(Base::F32 | Base::F64), Some(y)) if Width::of(y).is_some() => {
+                    Op::FloatToInt(Width::of(y).unwrap())
+                }
+                (Some(Base::F32 | Base::F64), Some(Base::Decimal(s))) => Op::FloatToDec(s),
+                (Some(Base::Decimal(s)), Some(y @ (Base::F32 | Base::F64))) => Op::DecToFloat {
+                    s,
+                    single: y == Base::F32,
+                },
                 (x, y) => return unsupported(format!("a conversion from {x:?} to {y:?}")),
             };
             if c {
@@ -358,6 +381,48 @@ pub fn choose(schema: &Schema, p: Prim, args: &[Ty], ty: &Ty) -> Result<Op, Erro
         Prim::Round => match (arg(0), b(ty)) {
             (Some(Base::Decimal(from)), Some(Base::Decimal(to))) => Op::Round { from, to },
             _ => return unsupported("`round` off decimals"),
+        },
+        Prim::DecimalDiv => match (arg(0), arg(1), b(ty)) {
+            (Some(Base::Decimal(s)), Some(Base::Decimal(t)), Some(Base::Decimal(u))) => {
+                Op::DecDiv { s, t, u }
+            }
+            _ => return unsupported("`div` off decimals"),
+        },
+        Prim::GraphemeLen => Op::GraphemeLen,
+        Prim::Lower => Op::Case(Case::Lower),
+        Prim::Upper => Op::Case(Case::Upper),
+        Prim::Fold => Op::Case(Case::Fold),
+        Prim::Matches | Prim::Collate => {
+            let Some(Some(Val::Text(c))) = consts.get(1) else {
+                return unsupported(format!("{p:?} with an operand that is not a literal"));
+            };
+            if p == Prim::Matches {
+                Op::Matches(Arc::new(Pattern::new(c).map_err(Error::Unsupported)?))
+            } else {
+                Op::Collate(Arc::new(Collator::new(c).map_err(Error::Unsupported)?))
+            }
+        }
+        Prim::ParseUuid => Op::ParseUuid,
+        Prim::ToText => Op::ToText(Arc::new(Form::of(schema, &args[0])?)),
+        Prim::Print => Op::Print(Arc::new(Form::of(schema, &args[0])?)),
+        Prim::Parse => {
+            let t = option_arg(schema, ty).expect("`parse` returns an Option");
+            Op::Parse(Arc::new(Form::of(schema, &t)?))
+        }
+        Prim::AddPeriod => Op::AddPeriod {
+            reject: option_arg(schema, ty).is_some(),
+        },
+        Prim::Zoned => Op::Zoned {
+            reject: option_arg(schema, ty).is_some(),
+        },
+        Prim::InZone => Op::InZone,
+        Prim::ToInstant => Op::ToInstant,
+        Prim::Span => Op::Span,
+        Prim::Start => Op::Start,
+        Prim::End => Op::End,
+        Prim::Overlaps => Op::Overlaps,
+        Prim::Covers => Op::Covers {
+            point: args[1] != args[0],
         },
         Prim::BytesLen => Op::BytesLen,
         Prim::ScalarLen => Op::ScalarLen,
@@ -449,12 +514,6 @@ fn float_like(like: &Val, x: f64) -> Val {
         Val::F32(_) => Val::F32(F32::new(x as f32)),
         _ => Val::F64(F64::new(x)),
     }
-}
-
-/// Returns whether NFC texts `a` and `b` have an NFC concatenation, judged from `b` alone: true
-/// when `b` is empty or starts with ASCII, false when unknown.
-fn concat_is_nfc(b: &str) -> bool {
-    b.chars().next().is_none_or(|c| c.is_ascii())
 }
 
 fn digits38(v: i128) -> Option<i128> {
@@ -631,12 +690,13 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
         }
         Op::ConcatText => {
             let (a, b) = (text(x()), text(y()));
-            if !concat_is_nfc(b) {
-                return Err(Error::Unsupported(
-                    "normalizing a concatenation to NFC".into(),
-                ));
+            let joined = format!("{a}{b}");
+            // NFC text followed by NFC text that starts with ASCII is NFC.
+            if b.chars().next().is_none_or(|c| c.is_ascii()) {
+                Val::Text(Arc::from(joined))
+            } else {
+                Val::Text(Arc::from(unicode::nfc(&joined)))
             }
-            Val::Text(Arc::from(format!("{a}{b}")))
         }
         Op::ConcatBytes => {
             let mut out = bytes(x()).to_vec();
@@ -691,10 +751,7 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
         Op::Contains => Val::bool(text(x()).contains(text(y()))),
         Op::ToBytes => Val::Bytes(Arc::from(text(x()).as_bytes())),
         Op::Utf8 => match std::str::from_utf8(bytes(x())) {
-            Ok(t) if t.is_ascii() => Val::some(Val::text(t)),
-            Ok(_) => {
-                return Err(Error::Unsupported("normalizing decoded text to NFC".into()));
-            }
+            Ok(t) => Val::some(Val::text(&unicode::nfc(t))),
             Err(_) => Val::none(),
         },
         Op::Duration(per) => match x().int().checked_mul(*per) {
@@ -712,6 +769,170 @@ pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
                 (Some(n), false) => Val::Period { months: 0, days: n },
             }
         }
+        Op::DecDiv { s, t, u } => {
+            match num::decimal_div(dec(x()), *s, dec(y()), *t, *u, Rounding::of(xs[3])) {
+                Ok(v) => Val::Decimal(v),
+                Err(f) => return Ok(Err(f)),
+            }
+        }
+        Op::DecToInt(s, w) => {
+            let r = Rounding::of(y()).div(dec(x()), 10i128.pow(u32::from(*s)));
+            match w.fit(r) {
+                Some(v) => Val::Int(v),
+                None => return Ok(Err(Fault::OutOfRange)),
+            }
+        }
+        Op::FloatToInt(w) => match num::float_to_int(float(x()), Rounding::of(y()), *w) {
+            Ok(v) => Val::Int(v),
+            Err(f) => return Ok(Err(f)),
+        },
+        Op::FloatToDec(s) => match num::float_to_decimal(float(x()), *s, Rounding::of(xs[2])) {
+            Ok(v) => Val::Decimal(v),
+            Err(f) => return Ok(Err(f)),
+        },
+        Op::DecToFloat { s, single } => {
+            let t = num::decimal_text(dec(x()), *s);
+            if *single {
+                Val::F32(F32::new(t.parse().expect("a decimal reads as a float")))
+            } else {
+                Val::F64(F64::new(t.parse().expect("a decimal reads as a float")))
+            }
+        }
+        Op::ZonedShift { sub } => {
+            let (local, name) = zoned(x());
+            let d = duration(y());
+            let r = time::zone(name).and_then(|z| {
+                let i = time::to_instant(local, &z)?;
+                let i = if *sub {
+                    i.checked_sub(d)
+                } else {
+                    i.checked_add(d)
+                }
+                .ok_or(Fault::ArithmeticOverflow)?;
+                time::in_zone(i, &z)
+            });
+            match r {
+                Ok(local) => zoned_val(local, x()),
+                Err(f) => return Ok(Err(f)),
+            }
+        }
+        Op::GraphemeLen => Val::Int(unicode::graphemes(text(x())) as i64),
+        Op::Case(c) => Val::Text(Arc::from(unicode::case(text(x()), *c))),
+        Op::Matches(p) => Val::bool(p.is_match(text(x()))),
+        Op::Collate(c) => Val::SortKey(Arc::from(c.key(text(x())))),
+        Op::ParseUuid => match textual::parse_uuid(text(x())) {
+            Some(b) => Val::Bytes(Arc::from(b)),
+            None => return Ok(Err(Fault::InvalidText)),
+        },
+        Op::ToText(f) => Val::Text(Arc::from(textual::text(x(), f))),
+        Op::Print(f) => Val::Text(Arc::from(textual::print(x(), f))),
+        Op::Parse(f) => match textual::parse(text(x()), f) {
+            Some(v) => Val::some(v),
+            None => Val::none(),
+        },
+        Op::AddPeriod { reject } => {
+            let (months, days) = period(y());
+            let r = match x() {
+                Val::Date(d) => {
+                    time::add_period_date(*d, months, days, *reject).map(|o| o.map(Val::Date))
+                }
+                Val::DateTime(t) => time::add_period_datetime(*t, months, days, *reject)
+                    .map(|o| o.map(Val::DateTime)),
+                z @ Val::Zoned { .. } => {
+                    let (local, name) = zoned(z);
+                    time::zone(name).and_then(|zone| {
+                        let Some(moved) = time::add_period_datetime(local, months, days, *reject)?
+                        else {
+                            return Ok(None);
+                        };
+                        Ok(time::resolve(moved, &zone, *reject)?.map(|l| zoned_val(l, z)))
+                    })
+                }
+                other => panic!("`add_period` of {other:?}"),
+            };
+            match (r, reject) {
+                (Ok(Some(v)), false) => v,
+                (Ok(Some(v)), true) => Val::some(v),
+                (Ok(None), _) => Val::none(),
+                (Err(f), _) => return Ok(Err(f)),
+            }
+        }
+        Op::Zoned { reject } => {
+            let Val::DateTime(local) = x() else {
+                panic!("`zoned` of {:?}", x())
+            };
+            let name = text(y());
+            let r = time::zone(name).and_then(|z| time::resolve(*local, &z, *reject));
+            let made = |l: i64| Val::Zoned {
+                local: l,
+                zone: Arc::from(name),
+            };
+            match (r, reject) {
+                (Ok(Some(l)), false) => made(l),
+                (Ok(Some(l)), true) => Val::some(made(l)),
+                (Ok(None), _) => Val::none(),
+                (Err(f), _) => return Ok(Err(f)),
+            }
+        }
+        Op::InZone => {
+            let Val::Instant(i) = x() else {
+                panic!("`in_zone` of {:?}", x())
+            };
+            let name = text(y());
+            match time::zone(name).and_then(|z| time::in_zone(*i, &z)) {
+                Ok(local) => Val::Zoned {
+                    local,
+                    zone: Arc::from(name),
+                },
+                Err(f) => return Ok(Err(f)),
+            }
+        }
+        Op::ToInstant => {
+            let (local, name) = zoned(x());
+            match time::zone(name).and_then(|z| time::to_instant(local, &z)) {
+                Ok(i) => Val::Instant(i),
+                Err(f) => return Ok(Err(f)),
+            }
+        }
+        Op::Span => {
+            if x() > y() {
+                return Ok(Err(Fault::InvalidSpan));
+            }
+            Val::ctor(0, vec![x().clone(), y().clone()])
+        }
+        Op::Start => x().fields()[0].clone(),
+        Op::End => x().fields()[1].clone(),
+        Op::Overlaps => {
+            let (a, b) = (x().fields(), y().fields());
+            Val::bool(a[0] < b[1] && b[0] < a[1])
+        }
+        Op::Covers { point } => {
+            let a = x().fields();
+            if *point {
+                Val::bool(a[0] <= *y() && *y() < a[1])
+            } else {
+                let b = y().fields();
+                Val::bool(a[0] <= b[0] && b[1] <= a[1])
+            }
+        }
     };
     Ok(Ok(v))
+}
+
+fn zoned(v: &Val) -> (i64, &str) {
+    match v {
+        Val::Zoned { local, zone } => (*local, zone),
+        other => panic!("expected a zoned date-time, found {other:?}"),
+    }
+}
+
+/// Returns civil time `local` in the zone of `like`.
+fn zoned_val(local: i64, like: &Val) -> Val {
+    match like {
+        Val::Zoned { zone, .. } => Val::Zoned {
+            local,
+            zone: zone.clone(),
+        },
+        other => panic!("expected a zoned date-time, found {other:?}"),
+    }
 }

@@ -174,9 +174,11 @@ fn text_compares_by_scalar_values() {
 }
 
 #[test]
-fn a_concatenation_needing_normalization_is_not_run_yet() {
-    let r = apply(&Op::ConcatText, &[&Val::text("e"), &Val::text("\u{301}")]);
-    assert!(matches!(r, Err(Error::Unsupported(_))));
+fn a_concatenation_is_normalized_to_nfc() {
+    assert_eq!(
+        Ok(Ok(Val::text("\u{e9}"))),
+        apply(&Op::ConcatText, &[&Val::text("e"), &Val::text("\u{301}")])
+    );
     assert_eq!(
         Ok(Ok(Val::text("ab"))),
         apply(&Op::ConcatText, &[&Val::text("a"), &Val::text("b")])
@@ -221,4 +223,131 @@ fn a_frame_gathers_rows_and_keeps_constant_columns() {
     let r = f.row(2);
     assert_eq!(1, r.len());
     assert_eq!(&Val::Int(12), r.get(1, 0));
+}
+
+#[test]
+fn decimal_division_rounds_the_exact_quotient() {
+    let third = |mode: u32| {
+        run(
+            Op::DecDiv { s: 0, t: 0, u: 38 },
+            &[
+                Val::Decimal(2),
+                Val::Decimal(3),
+                Val::Int(38),
+                Val::tag(mode),
+            ],
+        )
+    };
+    let sixes = (10i128.pow(38) - 1) / 9 * 6;
+    assert_eq!(Ok(Val::Decimal(sixes + 1)), third(1));
+    assert_eq!(Ok(Val::Decimal(sixes)), third(4));
+    assert_eq!(
+        Err(Fault::ArithmeticOverflow),
+        run(
+            Op::DecDiv { s: 0, t: 0, u: 38 },
+            &[Val::Decimal(1), Val::Decimal(1), Val::Int(38), Val::tag(0)],
+        )
+    );
+    assert_eq!(
+        Err(Fault::DivisionByZero),
+        run(
+            Op::DecDiv { s: 2, t: 1, u: 2 },
+            &[Val::Decimal(1), Val::Decimal(0), Val::Int(2), Val::tag(0)],
+        )
+    );
+    assert_eq!(
+        Ok(Val::Decimal(-3)),
+        run(
+            Op::DecDiv { s: 6, t: 0, u: 0 },
+            &[
+                Val::Decimal(-2_500_000),
+                Val::Decimal(1),
+                Val::Int(0),
+                Val::tag(6)
+            ],
+        )
+    );
+}
+
+#[test]
+fn floats_round_to_integers_and_decimals_exactly() {
+    let to_int = |x: f64, mode: u32| {
+        run(
+            Op::FloatToInt(Width::I64),
+            &[Val::F64(F64::new(x)), Val::tag(mode)],
+        )
+    };
+    assert_eq!(Ok(Val::Int(2)), to_int(2.5, 0));
+    assert_eq!(Ok(Val::Int(-2)), to_int(-2.5, 0));
+    assert_eq!(Ok(Val::Int(-3)), to_int(-2.5, 1));
+    assert_eq!(Ok(Val::Int(2)), to_int(2.5, 2));
+    assert_eq!(Ok(Val::Int(-3)), to_int(-2.1, 3));
+    assert_eq!(Err(Fault::NotFinite), to_int(f64::NAN, 0));
+    assert_eq!(Err(Fault::OutOfRange), to_int(9.3e18, 0));
+    let to_dec = |x: f64, s: u8, mode: u32| {
+        run(
+            Op::FloatToDec(s),
+            &[
+                Val::F64(F64::new(x)),
+                Val::Int(i64::from(s)),
+                Val::tag(mode),
+            ],
+        )
+    };
+    assert_eq!(
+        Ok(Val::Decimal(10_000_000_000_000_000_555)),
+        to_dec(0.1, 20, 0)
+    );
+    assert_eq!(
+        Ok(Val::Decimal(10_000_000_000_000_000_556)),
+        to_dec(0.1, 20, 3)
+    );
+    assert_eq!(Ok(Val::Decimal(-1)), to_dec(-1e-300, 2, 6));
+    assert_eq!(Ok(Val::Decimal(0)), to_dec(-1e-300, 2, 5));
+    assert_eq!(Err(Fault::OutOfRange), to_dec(1e39, 0, 0));
+}
+
+#[test]
+fn a_period_adds_months_then_days_and_clamps_or_rejects() {
+    let jan31 = 19_753;
+    let add = |months: i32, days: i32, reject: bool| {
+        run(
+            Op::AddPeriod { reject },
+            &[
+                Val::Date(jan31),
+                Val::Period { months, days },
+                Val::tag(u32::from(reject)),
+            ],
+        )
+    };
+    assert_eq!(Ok(Val::Date(jan31 + 29)), add(1, 0, false));
+    assert_eq!(Ok(Val::none()), add(1, 0, true));
+    assert_eq!(Ok(Val::some(Val::Date(jan31 + 60))), add(2, 0, true));
+    assert_eq!(Ok(Val::Date(jan31 + 30)), add(1, 1, false));
+    assert_eq!(Ok(Val::Date(jan31 - 365 - 31)), add(-13, 0, false));
+    assert_eq!(Err(Fault::ArithmeticOverflow), add(i32::MAX, 0, false));
+}
+
+#[test]
+fn zone_rules_repeat_past_the_range_they_are_tabled_for() {
+    let cycle = 146_097 * 86_400_000_000i64;
+    let summer = 1_782_864_000_000_000;
+    let lisbon = |i: i64| {
+        let v = run(Op::InZone, &[Val::Instant(i), Val::text("Europe/Lisbon")]).unwrap();
+        let Val::Zoned { local, .. } = v else {
+            panic!("{v:?} is not zoned")
+        };
+        local - i
+    };
+    assert_eq!(3_600_000_000, lisbon(summer));
+    assert_eq!(3_600_000_000, lisbon(summer + 25 * cycle));
+    assert_eq!(0, lisbon(summer + 25 * cycle + 180 * 86_400_000_000));
+    assert_eq!(
+        lisbon(-400_000_000_000_000_000),
+        lisbon(-400_000_000_000_000_000 + cycle)
+    );
+    assert_eq!(
+        Err(Fault::UnknownZone),
+        run(Op::InZone, &[Val::Instant(0), Val::text("europe/lisbon")])
+    );
 }
