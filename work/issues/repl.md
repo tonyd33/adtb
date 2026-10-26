@@ -8,7 +8,6 @@ depends-on:
   - in-process-api
   - textual-syntax-in-engine
   - real-runtime
-  - io-backends
 tags:
   - engine
 ---

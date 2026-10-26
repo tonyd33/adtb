@@ -26,3 +26,7 @@ Prerequisites: `check-migration-operators.md`,
 ## 2026-10-25: constraint operators
 
 `crates/adtb-sim/tests/constraints.rs` `dropping_an_index_an_admitted_constraint_needs_is_refused_naming_the_constraint` fails until the engine applies migrations after the first; add constraint, drop index and drop constraint need it, with constraint validation and pending drops (`docs/spec/constraints.md` 9.2 and 9.3).
+
+## 2026-10-25: second migration at open
+
+`crates/adtb-sim/tests/api.rs` `a_second_migration_applies_at_open` fails until the catalog applies migrations after the first.
