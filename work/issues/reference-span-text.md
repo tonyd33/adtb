@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 241
 summary: "the reference prints a Span as Span { start, end } and cannot read span(a, b), against interop.md §1.3"
-branch: adtb-ref2
+closed: 2026-10-25
 tags:
   - reference
 ---
@@ -21,3 +21,7 @@ cases of `every_primitive_agrees_with_the_reference` fail.
 The reference also reads and prints dates and times past the `Instant`
 range (`+292278-12-31`), which looks like i64 overflow; `model.md`
 bounds them. Refuse them.
+
+## 2026-10-25: resolved
+
+Landed as `fix(reference): print spans as span(a, b) and keep dates at the lower edge of Instant`. It also fixed an overflow at the lower bound of `Instant`, in both the executor and the reference.
