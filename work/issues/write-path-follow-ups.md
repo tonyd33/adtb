@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 731
 summary: "the write path lacks rejects into, statement rollback and persistent sequences"
-branch: adtb-write
+closed: 2026-10-25
 depends-on:
   - write-path
 tags:
@@ -26,3 +26,13 @@ My rulings:
    `docs/design/mvcc.md` §12.10 says so.
 4. Plans are cached across statements, keyed by the normalised term
    and the schema version.
+
+## 2026-10-25: resolved
+
+Items 1 to 3 landed: `reject` and `rejects into` with per-record
+retry, statement rollback through an undo log and `Heap::restore`,
+and durable sequence reservations stated in `docs/design/mvcc.md`
+§12.10. Item 4 moved to [`plan-cache.md`](plan-cache.md).
+Follow-ups: [`rolled-back-key-conflicts.md`](rolled-back-key-conflicts.md),
+[`sequence-page-in-catalog.md`](sequence-page-in-catalog.md),
+[`try-reject-totality.md`](try-reject-totality.md).

@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 705
 summary: "a database cannot be created from a schema's declarations"
-branch: adtb-mig2
+closed: 2026-10-25
 depends-on:
   - bootstrap-catalog
 tags:
@@ -21,3 +21,9 @@ catalog relations of `bootstrap-catalog.md` and creating a heap per
 constructor and the declared indexes.
 
 Prerequisite: `bootstrap-catalog.md`.
+
+## 2026-10-25: resolved
+
+A schema's declarations apply as the first migration and the catalog
+state survives crashes. The migration log rows and their hashes moved
+to [`catalog-migration-log-rows.md`](catalog-migration-log-rows.md).

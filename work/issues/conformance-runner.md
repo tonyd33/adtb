@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 230
 summary: "no runner for the script format of docs/spec/conformance.md, and no conformance suite"
-branch: adtb-conf
+closed: 2026-10-25
 tags:
   - reference
   - test
@@ -19,3 +19,11 @@ Nothing runs the script format of `docs/spec/conformance.md`. Milestone
 and the first suite: one script directory per spec part, starting with
 model, queries, writes and constraints. The milestone exits when that
 suite passes on the interpreter.
+
+## 2026-10-25: resolved
+
+`adtb-conformance` runs the script format (point `spec5`) over the
+reference interpreter, with suites for model, queries, writes and
+constraints and the generator templates under `conformance/gen/`. The
+14 failing directives are
+[`conformance-checker-findings.md`](conformance-checker-findings.md).
