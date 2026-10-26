@@ -28,3 +28,7 @@ From the first planner:
 
 Constraints, transition reads and writes are planned by
 `write-path.md` and `constraint-maintenance.md`.
+
+## 2026-10-26: user aggregates
+
+A user aggregate folds sequentially: its `merge` part is unused, so no parallel fold, and it skips the fused group-aggregate rewrite in `crates/adtb/src/plan/lower.rs` (about line 1769). `exec/ir.rs` `agg()` keeps an unreachable `Agg::User` arm. `docs/design/planner.md` does not exist, though the planner is a boundary other subsystems call.
