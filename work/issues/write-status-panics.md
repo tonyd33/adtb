@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 695
 summary: a commit log read that fails during a write panics the process instead of failing the statement
-branch: adtb-qeng
+closed: 2026-10-25
 tags:
   - quality
   - engine
@@ -19,3 +19,9 @@ tags:
 Repro: in the simulator, quarantine the database (fail a commit log page read), then run a statement that deletes or replaces a row whose version another transaction deleted, or inserts into a unique index holding an equal key.
 
 Fix: `check_write` and `probe_unique` are generic over the error; pass `PageError` through and map it with `?`. No other change needed.
+
+## 2026-10-25: resolved
+
+## 2026-10-25: resolution
+
+`Stmt::status` returns the commit log error and statements fail with `Error::Page`.
