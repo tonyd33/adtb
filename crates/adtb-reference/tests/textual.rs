@@ -126,6 +126,34 @@ fn years_outside_four_digits_print_expanded() {
 }
 
 #[test]
+fn dates_and_times_stop_at_the_range_of_instant() {
+    let f = fixture();
+    let date = |y, m, d| Value::Date(days_from_civil(y, m, d));
+    assert_eq!(date(294_247, 1, 10), reads(&f, "+294247-01-10", "Date"));
+    assert_eq!(date(-290_308, 12, 21), reads(&f, "-290308-12-21", "Date"));
+    refused(&f, "+294247-01-11", "Date");
+    refused(&f, "-290308-12-20", "Date");
+    assert_eq!(
+        Value::Instant(i64::MAX),
+        reads(&f, "+294247-01-10T04:00:54.775807Z", "Instant")
+    );
+    assert_eq!(
+        Value::Instant(i64::MIN),
+        reads(&f, "-290308-12-21T19:59:05.224192Z", "Instant")
+    );
+    refused(&f, "+294247-01-10T04:00:54.775808Z", "Instant");
+    refused(&f, "-290308-12-21T19:59:05.224191Z", "Instant");
+    assert_eq!(
+        "-290308-12-21T19:59:05.224192",
+        print(&f, &Value::DateTime(i64::MIN), "DateTime")
+    );
+    assert_eq!(
+        "+294247-01-10T04:00:54.775807",
+        print(&f, &Value::DateTime(i64::MAX), "DateTime")
+    );
+}
+
+#[test]
 fn constructors_records_keys_and_sets_print_as_the_spec_states() {
     let f = fixture();
     let ann = Value::Ctor(0, vec![("id".into(), key(1)), ("name".into(), text("ann"))]);
@@ -156,6 +184,9 @@ fn constructors_records_keys_and_sets_print_as_the_spec_states() {
     assert_eq!("{}", print(&f, &Value::record([]), "{}"));
     assert_eq!("Email(\"a@b\")", print(&f, &text("a@b"), "Email"));
     assert_eq!("Sent", print(&f, &Value::Ctor(1, vec![]), "Tag Stage"));
+    let span = Value::Ctor(0, vec![("start".into(), int(3)), ("end".into(), int(7))]);
+    assert_eq!("span(3, 7)", print(&f, &span, "Span I64"));
+    assert_eq!(span, reads(&f, " span( 3 ,7 ) ", "Span I64"));
     let social = Value::Ctor(
         1,
         vec![
@@ -274,7 +305,8 @@ fn a_reader_refuses_what_is_not_a_value_of_the_type() {
         ("Email(1)", "Email"),
         (r#"Mail("a@b")"#, "Email"),
         (r#"uuid("0190a4b2")"#, "Uuid"),
-        ("Span { start: 2, end: 1 }", "Span I64"),
+        ("span(2, 1)", "Span I64"),
+        ("Span { start: 1, end: 2 }", "Span I64"),
         ("[1, 2", "Set I64"),
         ("[1,, 2]", "Set I64"),
         ("Unknown", "Tag Stage"),

@@ -173,6 +173,11 @@ pub fn print(schema: &Schema, v: &Value, ty: &Ty) -> String {
         (Value::Bytes(b), _) if is_prelude(schema, ty, "Uuid") => {
             format!("uuid(\"{}\")", uuid(b))
         }
+        (Value::Ctor(_, fs), Ty::Data { args, .. }) if is_prelude(schema, ty, "Span") => format!(
+            "span({}, {})",
+            print(schema, &fs[0].1, &args[0]),
+            print(schema, &fs[1].1, &args[0])
+        ),
         (Value::Ctor(c, fs), Ty::Data { def, args, .. }) => {
             let d = schema.ty(*def);
             let TypeDefKind::Sum { header, ctors, .. } = &d.kind else {

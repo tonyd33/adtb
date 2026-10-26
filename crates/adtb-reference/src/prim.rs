@@ -7,7 +7,7 @@ use crate::num::{
     Rounding, dec_add, dec_div, dec_mul, dec_rescale, dec_round, digits38, float_scaled, in_range,
 };
 use crate::textual;
-use crate::time::{MICROS_PER_DAY, add_period, date_in_range};
+use crate::time::{MICROS_PER_DAY, add_period, at_day, date_in_range};
 use crate::value::{Value, canon32, canon64};
 use crate::{unicode, zone};
 
@@ -400,10 +400,7 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
                 DateTime(t) => {
                     let (d, rest) = (t.div_euclid(MICROS_PER_DAY), t.rem_euclid(MICROS_PER_DAY));
                     match shifted(d)? {
-                        Some(nd) => Some(DateTime(i64_or(
-                            nd.checked_mul(MICROS_PER_DAY)
-                                .and_then(|x| x.checked_add(rest)),
-                        )?)),
+                        Some(nd) => Some(DateTime(i64_or(at_day(nd, rest))?)),
                         None => None,
                     }
                 }
@@ -411,10 +408,7 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
                     let (d, rest) = (c.div_euclid(MICROS_PER_DAY), c.rem_euclid(MICROS_PER_DAY));
                     match shifted(d)? {
                         Some(nd) => {
-                            let civil = i64_or(
-                                nd.checked_mul(MICROS_PER_DAY)
-                                    .and_then(|x| x.checked_add(rest)),
-                            )?;
+                            let civil = i64_or(at_day(nd, rest))?;
                             zone::resolve(civil, z, !reject)?.map(|(c, _)| Zoned(c, z.clone()))
                         }
                         None => None,

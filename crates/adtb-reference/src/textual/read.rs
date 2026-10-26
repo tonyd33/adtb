@@ -7,7 +7,7 @@ use adtb_lang::types::{Base, RelId, Ty};
 
 use super::print::{is_prelude, key_field_ty};
 use crate::num::in_range;
-use crate::time::{MICROS_PER_DAY, date_in_range, days_from_civil, days_in_month};
+use crate::time::{MICROS_PER_DAY, at_day, date_in_range, days_from_civil, days_in_month};
 use crate::value::{Value, canon32, canon64};
 use crate::zone;
 
@@ -381,9 +381,9 @@ impl<'s> Reader<'s> {
             return self.fail("expected `T`");
         }
         let t = self.time()?;
-        match i64::try_from(days as i128 * MICROS_PER_DAY as i128 + t as i128) {
-            Ok(v) => Ok(v),
-            Err(_) => self.fail("a date and time out of range"),
+        match at_day(days, t) {
+            Some(v) => Ok(v),
+            None => self.fail("a date and time out of range"),
         }
     }
 
@@ -595,6 +595,25 @@ impl<'s> Reader<'s> {
                 self.expect(")")?;
                 Ok(v)
             }
+            TypeDefKind::Sum { .. } if is_prelude(schema, ty, "Span") => {
+                let at = self.pos;
+                self.expect("span")?;
+                if !self.glued("(") {
+                    return self.fail("expected `(`");
+                }
+                let start = self.value(&args[0])?;
+                self.expect(",")?;
+                let end = self.value(&args[0])?;
+                self.expect(")")?;
+                if start > end {
+                    self.pos = at;
+                    return self.fail("a span whose start is after its end");
+                }
+                Ok(Value::Ctor(
+                    0,
+                    vec![("start".into(), start), ("end".into(), end)],
+                ))
+            }
             TypeDefKind::Sum {
                 header, ctors: all, ..
             } => {
@@ -615,12 +634,7 @@ impl<'s> Reader<'s> {
                 if tys.is_empty() {
                     return Ok(Value::Ctor(c, Vec::new()));
                 }
-                let fs = self.fields(&tys)?;
-                if is_prelude(schema, ty, "Span") && fs[0].1 > fs[1].1 {
-                    self.pos = at;
-                    return self.fail("a span whose start is after its end");
-                }
-                Ok(Value::Ctor(c, fs))
+                Ok(Value::Ctor(c, self.fields(&tys)?))
             }
         }
     }

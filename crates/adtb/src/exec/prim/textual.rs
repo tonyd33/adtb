@@ -9,8 +9,8 @@ use super::super::Error;
 use super::super::types::{ctor_set, ctors, repr};
 use super::num::{decimal_text, f32_text, f64_text};
 use super::time::{
-    DAY_MAX, DAY_MIN, MICROS_PER_DAY, UNITS, date_text, datetime_text, days_from_civil,
-    days_in_month, duration_text, time_text, zone,
+    DAY_MAX, DAY_MIN, UNITS, at_day, date_text, datetime_text, days_from_civil, days_in_month,
+    duration_text, time_text, zone,
 };
 use super::unicode::nfc;
 use super::{F32, F64, Val, Width};
@@ -678,7 +678,7 @@ impl<'a> Reader<'a> {
         let d = self.date()?;
         self.eat("T").then_some(())?;
         let t = self.time()?;
-        d.checked_mul(MICROS_PER_DAY)?.checked_add(t)
+        at_day(d, t)
     }
 
     fn duration(&mut self) -> Option<i64> {

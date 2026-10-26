@@ -92,10 +92,12 @@ pub fn add_period_datetime(
     let Some(d) = add_to_date(date, months, days, reject)? else {
         return Ok(None);
     };
-    d.checked_mul(MICROS_PER_DAY)
-        .and_then(|m| m.checked_add(tod))
-        .map(Some)
-        .ok_or(Fault::ArithmeticOverflow)
+    at_day(d, tod).map(Some).ok_or(Fault::ArithmeticOverflow)
+}
+
+/// Returns the microseconds of time of day `tod` on day `days`, or `None` outside an `I64`.
+pub fn at_day(days: i64, tod: i64) -> Option<i64> {
+    i64::try_from(i128::from(days) * i128::from(MICROS_PER_DAY) + i128::from(tod)).ok()
 }
 
 /// Returns the zone `name` spells exactly.

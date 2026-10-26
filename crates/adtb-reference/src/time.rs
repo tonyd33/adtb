@@ -52,6 +52,11 @@ pub fn add_period(date: i64, months: i32, days: i32, clamp: bool) -> Option<i64>
     Some(days_from_civil(ny, nm, nd) + days as i64)
 }
 
+/// Returns the microseconds of time of day `tod` on day `days`, or `None` outside an `I64`.
+pub fn at_day(days: i64, tod: i64) -> Option<i64> {
+    i64::try_from(i128::from(days) * i128::from(MICROS_PER_DAY) + i128::from(tod)).ok()
+}
+
 /// Returns whether a count of days names a date within the range of `Instant`.
 pub fn date_in_range(days: i64) -> bool {
     let lo = i64::MIN.div_euclid(MICROS_PER_DAY);

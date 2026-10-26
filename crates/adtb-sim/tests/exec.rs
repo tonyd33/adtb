@@ -22,7 +22,7 @@ use adtb::key::{
     Scalar, SumType, Tid, Value as KValue,
 };
 use adtb::mvcc::{Access, Limits, Scope, Serializer, Transactions};
-use adtb::plan::{Options as PlanOptions, Rewrites, plan};
+use adtb::plan::{Error as PlanError, Options as PlanOptions, Rewrites, plan};
 use adtb::storage::{Options, Pager};
 use adtb_lang::kernel::Var;
 use adtb_lang::schema::{Generator, Schema, TypeDefKind};
@@ -1209,26 +1209,31 @@ fn a_set_of_rows_comes_back_as_batches_of_the_heap_schema() {
 }
 
 #[test]
-fn a_plan_with_a_primitive_the_executor_lacks_is_refused_at_compile_time() {
-    let f = running();
-    let (n, t) = f.normal("from u in users select lower(u.name)", &[]);
-    let p = plan(
-        &f.schema,
-        &f.catalog,
-        &n.terms,
-        t,
-        &[],
-        PlanOptions::default(),
-    )
-    .unwrap();
-    assert!(matches!(
-        exec::compile(&f.schema, &f.catalog, &p, None),
-        Err(Error::Unsupported(_))
-    ));
+fn a_call_of_a_wasm_or_host_function_is_refused_before_it_reaches_the_executor() {
+    let f = Fixture::new(
+        "type User = { id: Key users, name: Text }
+         relation users : User key id generate sequence
+         fn slugify (t: Text) -> Text = host \"slugify\" version \"1.0\" deterministic
+         fn shout (t: Text) -> Text = wasm \"text.wasm\" export \"shout\"",
+    );
+    for (q, name) in [
+        ("from u in users select slugify(u.name)", "slugify"),
+        ("from u in users select shout(u.name)", "shout"),
+    ] {
+        let (n, t) = f.normal(q, &[]);
+        let got = plan(
+            &f.schema,
+            &f.catalog,
+            &n.terms,
+            t,
+            &[],
+            PlanOptions::default(),
+        )
+        .map(|_| ());
+        assert_eq!(Err(PlanError::UserCode(name.into())), got, "{q}");
+    }
 }
 
-/// Primitives of the prelude the executor does not run yet. Each must agree with the
-/// reference interpreter once it does.
 #[test]
 fn every_primitive_agrees_with_the_reference() {
     let f = running();
@@ -1355,6 +1360,25 @@ fn every_primitive_agrees_with_the_reference() {
         "from o in orders select covers(span(0, 100), span(o.qty, o.total))",
         "from o in orders select print(span(o.qty, o.total))",
         "from o in orders select (Span I64).parse(\"span(\" ++ text(o.qty) ++ \", 3)\")",
+        "from o in orders select (Span Date).parse(\"span(2024-01-0\" ++ text(o.qty + 1) ++ \", 2024-01-04)\")",
+        "from p in posts select (Span Instant).parse(print(span(p.created_at, p.created_at + 1h)))",
+        "from o in orders select Date.parse(\"+294247-01-\" ++ text(o.qty + 8))",
+        "from o in orders select Date.parse(\"-290308-12-\" ++ text(o.qty + 19))",
+        "from o in orders select Instant.parse(\"+294247-01-10T04:00:54.77580\" ++ text(o.qty + 5) ++ \"Z\")",
+        "from o in orders select Instant.parse(\"-290308-12-21T19:59:05.22419\" ++ text(o.qty) ++ \"Z\")",
+        "from o in orders select DateTime.parse(\"+294247-01-10T04:00:5\" ++ text(o.qty) ++ \".775807\")",
+        "from o in orders select DateTime.parse(\"-290308-12-21T19:59:0\" ++ text(o.qty + 3) ++ \".224192\")",
+        "from o in orders select ZonedDateTime.parse(\"+294247-01-10T04:00:5\" ++ text(o.qty) ++ \"[UTC]\")",
+        "from o in orders select match Date.parse(\"+294247-01-10\") | None -> \"none\" | Some d -> print(add_period(d.value, days(o.qty - 2), Clamp))",
+        "from o in orders select match Date.parse(\"-290308-12-21\") | None -> \"none\" | Some d -> print(add_period(d.value, -months(o.qty), Clamp))",
+        "from o in orders select match DateTime.parse(\"+294247-01-09T05:00:00\") | None -> \"none\" | Some d -> print(add_period(d.value, days(o.qty), Clamp))",
+        "from o in orders select match DateTime.parse(\"-290308-12-22T20:00:00\") | None -> \"none\" | Some d -> print(add_period(d.value, -days(o.qty), Clamp))",
+        "from o in orders select match DateTime.parse(\"-290308-12-22T19:00:00\") | None -> \"none\" | Some d -> print(add_period(d.value, -days(o.qty), Clamp))",
+        "from o in orders select match Instant.parse(\"+294247-01-10T04:00:54.775807Z\") | None -> \"none\" | Some i -> print(i.value - micros(o.qty))",
+        "from o in orders select match Instant.parse(\"+294247-01-10T04:00:54.775807Z\") | None -> \"none\" | Some i -> print(i.value + micros(o.qty))",
+        "from o in orders select match Instant.parse(\"-290308-12-21T19:59:05.224192Z\") | None -> \"none\" | Some i -> text(i.value + micros(o.qty - 2))",
+        "from o in orders select match Instant.parse(\"+294247-01-10T04:00:54.775807Z\") | None -> \"none\" | Some i -> print(in_zone(i.value - micros(o.qty), \"Asia/Kolkata\"))",
+        "from o in orders select match Instant.parse(\"-290308-12-21T19:59:05.224192Z\") | None -> \"none\" | Some i -> print(in_zone(i.value, \"America/New_York\") + micros(o.qty))",
     ] {
         match std::panic::catch_unwind(|| cases_of(&f, q, &[])) {
             Ok(cs) => cases.extend(cs),
