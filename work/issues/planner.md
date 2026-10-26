@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 715
 summary: no planner turns a normalised kernel term into a physical plan
-branch: adtb-planner
+closed: 2026-10-25
 tags:
   - engine
 ---
@@ -22,3 +22,7 @@ tests switch off.
 
 No storage prerequisite: the plan names heaps and indexes by catalog
 id.
+
+## 2026-10-25: resolved
+
+Landed as `feat(plan): plan normalised queries into pipelines over constructor heaps and indexes`, in `crates/adtb/src/plan/`. The plan contract is `docs/design/execution.md` §1. Follow-ups are in `planner-follow-ups.md`.

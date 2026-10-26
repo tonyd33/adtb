@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 720
 summary: no executor runs a physical plan over batches
+branch: adtb-exec
 depends-on:
   - planner
   - batches
