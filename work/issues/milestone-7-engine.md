@@ -5,6 +5,7 @@ kind: feature
 priority: 700
 summary: "milestone 7 (engine, single version) has not exited: no catalog, planner, executor, write path, constraints or in-process API"
 depends-on:
+  - exec-refusal-test-subject
   - catalog-follow-ups
   - exec-primitives
   - exec-follow-ups

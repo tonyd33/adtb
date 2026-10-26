@@ -5,6 +5,8 @@ kind: feature
 priority: 200
 summary: "milestone 2 (reference interpreter and conformance runner) has not exited: no runner and no first suite"
 depends-on:
+  - reference-span-text
+  - spec-regex-classes
   - spec-catalog-bootstrap-gaps
   - spec-lang4-gaps
   - lang-reference-gaps

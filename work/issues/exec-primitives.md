@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 721
 summary: "the executor lacks the Unicode, regex, zone, period, span, parse and decimal division primitives"
-branch: adtb-prim
+closed: 2026-10-25
 depends-on:
   - executor
 tags:
@@ -27,3 +27,7 @@ The executor refuses at compile time, or fails at run time:
 already allowlisted for `adtb-reference`: `unicode-normalization`,
 ICU4X, `regex`, `jiff`. Keep the implementations independent of
 `adtb-reference`'s.
+
+## 2026-10-25: resolved
+
+Landed as `feat(exec): run every prelude primitive in the executor`. 1298 of 1320 cases agree; the 22 left are the reference's `Span` text form (`reference-span-text.md`).
