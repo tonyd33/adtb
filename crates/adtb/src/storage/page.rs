@@ -30,6 +30,7 @@ pub enum PageKind {
     AllocationBitmap = 8,
     CommitLog = 9,
     Catalog = 10,
+    Quarantine = 11,
 }
 
 impl PageKind {
@@ -46,6 +47,7 @@ impl PageKind {
             8 => AllocationBitmap,
             9 => CommitLog,
             10 => Catalog,
+            11 => Quarantine,
             _ => return None,
         })
     }

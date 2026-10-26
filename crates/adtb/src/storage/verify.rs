@@ -37,27 +37,24 @@ impl<R: Runtime> Pager<R> {
     /// of it does not continue from the one before.
     pub fn verify(&self) -> Verification {
         self.flush_log();
-        let img = {
+        let mut img = {
             let mut segments = self.segments.lock(&self.rt);
             self.io(|d| segments.load(d))
         };
-        let s = img.first().map(|first| scan(&img, first, Mode::Verify));
         let mut findings: Vec<Finding> = Vec::new();
         let mut commits = Vec::new();
         let mut safe_snapshots = Vec::new();
         let mut last: BTreeMap<Pid, Lsn> = BTreeMap::new();
         let mut broken: BTreeMap<Pid, Damage> = BTreeMap::new();
-        let complete = s
-            .as_ref()
-            .is_some_and(|s| s.resumed.is_empty() && img.first() == Some(Lsn(0)));
-        if let Some(s) = &s {
-            findings.extend(s.findings.iter().map(|f| Finding::Log(*f)));
-            for (i, batch) in s.batches.iter().enumerate() {
-                if s.resumed.contains(&i) {
+        let block = img.block;
+        let first = img.first();
+        let s = first.map(|first| {
+            scan(&mut img, first, Mode::Verify, |batch, after_gap| {
+                if after_gap {
                     last.clear();
                 }
-                let Ok(records) = batch.records(img.block) else {
-                    continue;
+                let Ok(records) = batch.records(block) else {
+                    return;
                 };
                 for (lsn, record) in records {
                     match &record {
@@ -77,7 +74,13 @@ impl<R: Runtime> Pager<R> {
                         });
                     }
                 }
-            }
+            })
+        });
+        let complete = s
+            .as_ref()
+            .is_some_and(|s| s.resumed == 0 && first == Some(Lsn(0)));
+        if let Some(s) = &s {
+            findings.extend(s.findings.iter().map(|f| Finding::Log(*f)));
         }
         let file_pages = self.file_pages();
         let logged = last.keys().next_back().map_or(0, |p| p.0 + 1);

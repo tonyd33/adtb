@@ -7,6 +7,7 @@ mod header;
 mod log;
 mod page;
 mod pager;
+mod quarantine;
 mod record;
 mod recovery;
 mod verify;
@@ -25,12 +26,13 @@ pub use pager::{
     Damage, LATCHES_PER_THREAD, OpenError, Options, PageError, PageExclusive, PageOptimistic,
     PageShared, Pager,
 };
+pub use quarantine::Quarantine;
 pub use record::Edit;
 pub use recovery::Recovery;
 pub use verify::{Finding, Verification};
 
 /// A page id: the page's index in the data file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pid(pub u64);
 
 impl Pid {

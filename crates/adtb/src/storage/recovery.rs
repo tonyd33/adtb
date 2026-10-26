@@ -5,7 +5,7 @@ use adtb_sys::pages;
 
 use crate::runtime::Runtime;
 
-use super::block::{LogFinding, LogProblem, Mode, scan};
+use super::block::{LogFinding, LogProblem, Mode, batch_at, scan};
 use super::page::{self, Verdict};
 use super::pager::{Damage, OpenError, Pager};
 use super::record::{Edit, Record};
@@ -41,7 +41,7 @@ fn damaged_at(lsn: Lsn, problem: LogProblem) -> OpenError {
 
 impl<R: Runtime> Pager<R> {
     pub(crate) fn recover(&self) -> Result<Recovery, OpenError> {
-        let img = {
+        let mut img = {
             let mut segments = self.segments.lock(&self.rt);
             self.io(|d| segments.load(d))
         };
@@ -49,11 +49,7 @@ impl<R: Runtime> Pager<R> {
         let ck_batch = img
             .batch_start(ck)
             .ok_or(damaged_at(ck, LogProblem::Damaged))?;
-        let ck_scan = scan(&img, ck_batch, Mode::Recovery);
-        let redo = ck_scan
-            .batches
-            .first()
-            .filter(|b| b.start == ck_batch)
+        let redo = batch_at(&mut img, ck_batch)
             .and_then(|b| b.records(img.block).ok())
             .and_then(|rs| {
                 rs.into_iter().find_map(|(lsn, r)| match r {
@@ -65,11 +61,11 @@ impl<R: Runtime> Pager<R> {
         let from = img
             .batch_start(redo)
             .ok_or(damaged_at(redo, LogProblem::Damaged))?;
-        let s = scan(&img, from, Mode::Recovery);
+        let s = scan(&mut img, from, Mode::Recovery, |_, _| {});
         if let Some(f) = s.fatal {
             return Err(OpenError::Log(f));
         }
-        if s.batches.first().is_none_or(|b| b.start != from) || s.end <= ck {
+        if s.first != Some(from) || s.end <= ck {
             return Err(damaged_at(from, LogProblem::Gap));
         }
         self.log()
@@ -80,20 +76,25 @@ impl<R: Runtime> Pager<R> {
             unverified: BTreeMap::new(),
             applied: 0,
         };
-        for batch in &s.batches {
+        let block = img.block;
+        let end = s.end;
+        scan(&mut img, from, Mode::Recovery, |batch, _| {
+            if batch.start >= end {
+                return;
+            }
             let records = batch
-                .records(img.block)
-                .map_err(|_| damaged_at(batch.start, LogProblem::Malformed))?;
+                .records(block)
+                .expect("the first scan found every batch whole");
             for (lsn, record) in records {
                 self.replay(&mut replay, lsn, record);
             }
-        }
+        });
         for (pid, damage) in std::mem::take(&mut replay.unverified) {
             self.damage(pid, damage);
         }
         {
             let mut segments = self.segments.lock(&self.rt);
-            self.io(|d| segments.clear_tail(d, &img, s.end));
+            self.io(|d| segments.clear_tail(d, &mut img, s.end));
         }
         self.flush_pages(usize::MAX);
         assert!(self.meta().dirty.is_empty(), "recovery left a dirty page");

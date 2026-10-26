@@ -77,7 +77,7 @@ offset  size  field
 62      2     flags: bit 0 page writes are atomic on the device
 64      8     LSN of the last checkpoint record
 72      8     page id of the catalog root, 0 before the catalog exists
-80      8     reserved, zero
+80      8     page id of the quarantine marks (§8), 0 before the page exists
 88      4     current primary epoch
 92      4     encryption scheme, 0 for a plaintext file
 96            encryption parameters; zero in a plaintext file
@@ -118,6 +118,7 @@ offset  size  field
 | allocation bitmap | 8 |
 | commit log | 9 |
 | catalog | 10 |
+| quarantine marks | 11 |
 
 A page whose bytes are all zero was never written: it reads as zeros
 with LSN 0, and verifies.
@@ -244,7 +245,8 @@ Postconditions:
   changes nothing else, and `free` one freed the same way. An
   allocation is not undone when the transaction that made it aborts.
 - `allocated` returns, in order, every page the allocation bitmap marks
-  allocated, leaving out pages 0 and 1 and the bitmap pages. It fails
+  allocated, leaving out the pager's own: pages 0 and 1, the bitmap
+  pages and the quarantine marks' page (§8). It fails
   when an allocation bitmap page is damaged.
 - A failed write or force, including one that grows the file, crashes
   the process ([README.md §4](README.md#4-errors)); no call returns it.
@@ -634,8 +636,28 @@ every transaction is refused with the corruption fault, and the
 database opens for `verify` and repair only
 ([mvcc.md §4.2](mvcc.md#42-the-commit-log)).
 
-Quarantine is a mark the storage layer sets on one heap or one index.
-The planner and the transactions layer rely on it as follows
+Quarantine is a mark the storage layer sets on one heap, one index or
+the whole database, and keeps until the object is repaired:
+
+```text
+pager.quarantine(Quarantine::Heap(id) | Index(id) | Database) -> Result<(), PageError>
+pager.release(object) -> Result<(), PageError>    // once repaired
+pager.is_quarantined(object) -> bool              // its own mark or the database's
+pager.quarantined() -> BTreeSet<Quarantine>
+```
+
+The marks live on one page of the file, of kind quarantine marks,
+whose id the file header records (§1.2); the database's creation
+allocates it. A mark or release is a logged change of that page,
+durable when the call returns, so the marks survive a crash and a
+restart and are read back at open. A heap or index stays quarantined
+across restarts until `release`. A marks page that fails verification
+at open quarantines the database, and `quarantine` and `release` then
+fail with its damage.
+
+The pager reports a damaged page to its caller (§2.3); the caller maps
+the page to its heap or index and marks that. The planner and the
+transactions layer read the marks and rely on them as follows
 ([execution.md §6](execution.md#6-quarantine)):
 
 - a call whose read set
@@ -725,12 +747,11 @@ page memory under one lock. The pager remembers the LSN a page had
 when it was evicted, to catch a lost write when the page is read back,
 in a direct-mapped table of four slots per frame: a later eviction of
 a page sharing the slot replaces the entry, and the page it displaced
-is no longer checked until it is evicted again. `flush_log` is a lock held across the write and force,
-so a caller that waits for it finds its records durable already;
-group commit (§10.1) has no leader yet. Pages in flight for a read are
-held exclusive; writes go out under a shared latch. Recovery reads
-whole segments into memory, and `verify` reads the whole retained log;
-both stream once segments are large.
+is no longer checked until it is evicted again. Group commit is §10.1.
+Pages in flight for a read are held exclusive; writes go out under a
+shared latch. Recovery and `verify` read the log in chunks of 64 KiB,
+holding one chunk and one batch at a time; recovery reads it twice,
+once to find the end and once to replay.
 
 Rulings: buffer/cache/vmcache, buffer/cache/vm-reserve/global-pid
 

@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use super::alloc::diff;
-use super::block::{BlockState, LogImage, LogProblem, Mode, frame, read_block, scan};
+use super::block::{
+    Batch, BlockState, InMemory, LogImage, LogProblem, Mode, Scan, frame, read_block, scan,
+};
 use super::crc::crc32c;
 use super::header::{FileHeader, choose};
 use super::page::{self, Verdict};
@@ -54,6 +56,7 @@ fn header(seq: u64) -> FileHeader {
         atomic_page_writes: true,
         checkpoint: Lsn(1234),
         catalog_root: Pid(9),
+        quarantine: Pid(11),
         epoch: 3,
         encryption: 0,
     }
@@ -168,7 +171,7 @@ fn records(n: usize) -> Vec<u8> {
 
 /// Returns a one-segment log holding batches of `sizes` commit records each, numbered from 1,
 /// and the first LSN of each batch followed by the end.
-fn image(sizes: &[usize]) -> (LogImage, Vec<Lsn>) {
+fn image(sizes: &[usize]) -> (LogImage<InMemory>, Vec<Lsn>) {
     let mut seg = vec![0; SEGMENT as usize];
     let mut at = 0;
     let mut starts = Vec::new();
@@ -179,16 +182,27 @@ fn image(sizes: &[usize]) -> (LogImage, Vec<Lsn>) {
         at += b.len();
     }
     starts.push(Lsn(at as u64));
-    let img = LogImage {
-        block: BLOCK,
-        segment: SEGMENT,
-        segments: BTreeMap::from([(0, Some(seg))]),
-    };
+    let img = LogImage::in_memory(BLOCK, SEGMENT, BTreeMap::from([(0, Some(seg))]));
     (img, starts)
 }
 
-fn seg(img: &mut LogImage) -> &mut Vec<u8> {
-    img.segments.get_mut(&0).unwrap().as_mut().unwrap()
+fn seg(img: &mut LogImage<InMemory>) -> &mut Vec<u8> {
+    img.source.0.get_mut(&0).unwrap().as_mut().unwrap()
+}
+
+/// Scan `img` and return the scan with every batch it accepted and the index of each batch that
+/// follows a gap.
+fn scanned(img: &mut LogImage<InMemory>, mode: Mode) -> (Scan, Vec<Batch>, Vec<usize>) {
+    let mut batches = Vec::new();
+    let mut resumed = Vec::new();
+    let s = scan(img, Lsn(0), mode, |b, after_gap| {
+        if after_gap {
+            resumed.push(batches.len());
+        }
+        batches.push(b.clone());
+    });
+    assert_eq!(s.batches, batches.len());
+    (s, batches, resumed)
 }
 
 #[test]
@@ -205,14 +219,13 @@ fn frames_verify_where_they_lie() {
 
 #[test]
 fn scan_accepts_every_whole_batch() {
-    let (img, starts) = image(&[3, 9, 1]);
-    let s = scan(&img, Lsn(0), Mode::Recovery);
-    assert_eq!(3, s.batches.len());
+    let (mut img, starts) = image(&[3, 9, 1]);
+    let (s, batches, _) = scanned(&mut img, Mode::Recovery);
+    assert_eq!(3, batches.len());
     assert_eq!(starts[3], s.end);
     assert_eq!(Some(3), s.last_seq);
     assert!(s.findings.is_empty() && s.fatal.is_none());
-    let counts: Vec<usize> = s
-        .batches
+    let counts: Vec<usize> = batches
         .iter()
         .map(|b| b.records(BLOCK).unwrap().len())
         .collect();
@@ -224,8 +237,8 @@ fn a_partly_written_last_batch_ends_the_log_quietly() {
     let (mut img, starts) = image(&[3, 9]);
     let second_block = starts[1].0 as usize + BLOCK;
     seg(&mut img)[second_block..second_block + BLOCK].fill(0);
-    let s = scan(&img, Lsn(0), Mode::Recovery);
-    assert_eq!(1, s.batches.len());
+    let (s, batches, _) = scanned(&mut img, Mode::Recovery);
+    assert_eq!(1, batches.len());
     assert_eq!(starts[1], s.end);
     assert!(s.findings.is_empty(), "{:?}", s.findings);
 }
@@ -235,7 +248,7 @@ fn a_torn_block_past_the_end_ends_the_log_quietly() {
     let (mut img, starts) = image(&[3, 9]);
     let second_block = starts[1].0 as usize + BLOCK;
     seg(&mut img)[second_block + 50] ^= 4;
-    let s = scan(&img, Lsn(0), Mode::Recovery);
+    let (s, _, _) = scanned(&mut img, Mode::Recovery);
     assert_eq!(starts[1], s.end);
     assert!(s.findings.is_empty(), "{:?}", s.findings);
     assert!(s.fatal.is_none());
@@ -246,7 +259,7 @@ fn verify_reports_a_damaged_block_past_the_end() {
     let (mut img, starts) = image(&[3, 9]);
     let second_block = starts[1].0 as usize + BLOCK;
     seg(&mut img)[second_block + 50] ^= 4;
-    let s = scan(&img, Lsn(0), Mode::Verify);
+    let (s, _, _) = scanned(&mut img, Mode::Verify);
     assert_eq!(starts[1], s.end);
     assert_eq!(LogProblem::Damaged, s.findings[0].problem);
 }
@@ -256,7 +269,7 @@ fn a_later_batch_after_a_bad_one_is_a_fatal_gap() {
     let (mut img, starts) = image(&[3, 9, 2]);
     let at = starts[1].0 as usize + 40;
     seg(&mut img)[at] ^= 1;
-    let s = scan(&img, Lsn(0), Mode::Recovery);
+    let (s, _, _) = scanned(&mut img, Mode::Recovery);
     assert_eq!(starts[1], s.end);
     assert_eq!(Some(LogProblem::Gap), s.fatal.map(|f| f.problem));
 }
@@ -266,10 +279,10 @@ fn verify_resumes_after_a_gap() {
     let (mut img, starts) = image(&[3, 9, 2]);
     let at = starts[1].0 as usize + 40;
     seg(&mut img)[at] ^= 1;
-    let s = scan(&img, Lsn(0), Mode::Verify);
-    assert_eq!(2, s.batches.len());
-    assert_eq!(vec![1], s.resumed);
-    assert_eq!(starts[2], s.batches[1].start);
+    let (s, batches, resumed) = scanned(&mut img, Mode::Verify);
+    assert_eq!(2, batches.len());
+    assert_eq!(vec![1], resumed);
+    assert_eq!(starts[2], batches[1].start);
     assert!(s.findings.iter().any(|f| f.problem == LogProblem::Gap));
 }
 
@@ -284,13 +297,9 @@ fn a_stale_block_of_an_older_batch_is_never_a_continuation() {
     seg(&mut img)[at..at + rewritten.len()].copy_from_slice(&rewritten);
     let at = at + BLOCK;
     seg(&mut img)[at..at + newer.len()].copy_from_slice(&newer);
-    let s = scan(&img, Lsn(0), Mode::Recovery);
-    assert_eq!(3, s.batches.len());
-    assert!(
-        s.batches
-            .iter()
-            .all(|b| b.records(BLOCK).unwrap().len() < 3)
-    );
+    let (s, batches, _) = scanned(&mut img, Mode::Recovery);
+    assert_eq!(3, batches.len());
+    assert!(batches.iter().all(|b| b.records(BLOCK).unwrap().len() < 3));
     assert!(!s.findings.is_empty());
     assert!(
         s.findings.iter().all(|f| f.problem == LogProblem::Stale),
@@ -305,16 +314,17 @@ fn batch_numbers_must_follow_on() {
     let wrong = frame(starts[1], 7, 1, &records(2), BLOCK);
     let at = starts[1].0 as usize;
     seg(&mut img)[at..at + wrong.len()].copy_from_slice(&wrong);
-    let s = scan(&img, Lsn(0), Mode::Recovery);
-    assert_eq!(1, s.batches.len());
+    let (s, batches, _) = scanned(&mut img, Mode::Recovery);
+    assert_eq!(1, batches.len());
     assert_eq!(Some(LogProblem::Gap), s.fatal.map(|f| f.problem));
 }
 
 #[test]
 fn an_unreadable_segment_stops_recovery() {
     let (mut img, _) = image(&[2]);
-    img.segments.insert(SEGMENT, None);
-    let s = scan(&img, Lsn(0), Mode::Recovery);
+    img.source.0.insert(SEGMENT, None);
+    img.bases.push(SEGMENT);
+    let (s, _, _) = scanned(&mut img, Mode::Recovery);
     assert_eq!(Some(LogProblem::Unreadable), s.fatal.map(|f| f.problem));
 }
 

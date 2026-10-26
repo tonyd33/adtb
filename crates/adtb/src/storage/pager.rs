@@ -86,6 +86,14 @@ pub enum OpenError {
     NoHeader,
     /// The log is damaged where recovery needs it.
     Log(LogFinding),
+    /// A page opening needs, an allocation bitmap page or the quarantine marks', is damaged.
+    Page(PageError),
+}
+
+impl From<PageError> for OpenError {
+    fn from(e: PageError) -> OpenError {
+        OpenError::Page(e)
+    }
 }
 
 /// What the pool knows of its pages beyond their memory and state words.
@@ -134,6 +142,7 @@ pub struct Pager<R: Runtime> {
     pub(crate) meta: Lock<Meta>,
     /// Held across a search for a free page and across marking pages allocated.
     pub(crate) alloc: Lock<super::alloc::AllocState>,
+    pub(crate) marks: Lock<super::quarantine::Marks>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Pager<R> {
@@ -314,6 +323,7 @@ impl<R: Runtime> Pager<R> {
                 hand: 0,
             }),
             alloc: Lock::new(Default::default()),
+            marks: Lock::new(Default::default()),
             rt,
         }
     }
@@ -345,10 +355,14 @@ impl<R: Runtime> Pager<R> {
             atomic_page_writes: options.atomic_page_writes,
             checkpoint: Lsn(0),
             catalog_root: Pid(0),
+            quarantine: Pid(0),
             epoch: 1,
             encryption: 0,
         };
         let pager = Pager::assemble(rt, options, header, 1, data);
+        let (new, marks) = pager.reserve_marks()?;
+        pager.format_marks(new, marks)?;
+        pager.header.lock(&pager.rt).0.quarantine = marks;
         pager.checkpoint();
         pager.write_header(None);
         Ok(pager)
@@ -379,6 +393,15 @@ impl<R: Runtime> Pager<R> {
         header.atomic_page_writes = options.atomic_page_writes;
         let pager = Pager::assemble(rt, options, header, copy, data);
         let recovery = pager.recover()?;
+        let marks = pager.header.lock(&pager.rt).0.quarantine;
+        if marks == Pid(0) {
+            let (new, marks) = pager.reserve_marks()?;
+            pager.format_marks(new, marks)?;
+            pager.header.lock(&pager.rt).0.quarantine = marks;
+            pager.checkpoint();
+        } else {
+            pager.load_marks(marks);
+        }
         Ok((pager, recovery))
     }
 

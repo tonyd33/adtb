@@ -243,12 +243,14 @@ impl<R: Runtime> Pager<R> {
         self.update_with(new, &[], |_| {})
     }
 
-    /// Returns every page the allocation bitmap marks allocated, in order, the bitmap's own
-    /// pages and the file header copies left out.
+    /// Returns every page the allocation bitmap marks allocated, in order, leaving out the pages
+    /// the pager owns itself: the file header copies, the bitmap's pages and the quarantine
+    /// marks' page.
     ///
     /// Fails if an allocation bitmap page is damaged.
     pub fn allocated(&self) -> Result<Vec<Pid>, PageError> {
         let span = self.bitmap_span();
+        let marks = self.quarantine_page();
         let mut out = Vec::new();
         for g in 0.. {
             let map = self.bitmap_page(g);
@@ -261,7 +263,7 @@ impl<R: Runtime> Pager<R> {
                 (0..span)
                     .filter(|&i| bits[(i / 8) as usize] >> (i % 8) & 1 == 1)
                     .map(|i| Pid(g * span + i))
-                    .filter(|&p| p != map && p >= Pid::FIRST_DATA),
+                    .filter(|&p| p != map && p != marks && p >= Pid::FIRST_DATA),
             );
         }
         Ok(out)

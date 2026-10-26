@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::runtime::{AlignedBuf, FileId, Runtime};
 
 use super::Lsn;
-use super::block::{LogImage, data_lsn, frame};
+use super::block::{LogImage, LogSource, Slot, data_lsn, frame};
 use super::driver::Driver;
 use super::record::Record;
 
@@ -174,8 +174,9 @@ impl Segments {
         drv.sync_all(&files);
     }
 
-    /// Returns every segment of the log directory as read now.
-    pub(crate) fn load<R: Runtime>(&mut self, drv: &mut Driver<R>) -> LogImage {
+    /// Returns the log as its segment files hold it now, read block by block on its own I/O
+    /// queue.
+    pub(crate) fn load<R: Runtime>(&mut self, drv: &mut Driver<R>) -> LogImage<FileSource<R>> {
         let mut bases: Vec<u64> = drv
             .list(&self.dir)
             .iter()
@@ -183,52 +184,108 @@ impl Segments {
             .filter(|b| b % self.segment == 0)
             .collect();
         bases.sort_unstable();
-        let mut segments = BTreeMap::new();
+        let mut files = BTreeMap::new();
         for base in bases {
-            let path = self.path(base);
             let file = match self.files.get(&base) {
                 Some(&f) => Some(f),
-                None => drv.open(&path, false).ok().map(|(f, _)| f),
+                None => drv.open(&self.path(base), false).ok().map(|(f, _)| f),
             };
-            let Some(file) = file else { continue };
-            self.files.insert(base, file);
-            let bytes = drv
-                .read(file, 0, self.segment as usize)
-                .ok()
-                .map(|b| b.to_vec());
-            segments.insert(base, bytes);
+            if let Some(file) = file {
+                self.files.insert(base, file);
+                files.insert(base, file);
+            }
         }
         LogImage {
             block: self.block,
             segment: self.segment,
-            segments,
+            bases: files.keys().copied().collect(),
+            source: FileSource {
+                drv: Driver::new(drv.rt.clone()),
+                files,
+                segment: self.segment,
+                chunk: None,
+            },
         }
     }
 
-    /// Zero every nonzero byte of the log past `end` and remove later segments, then force both.
-    pub(crate) fn clear_tail<R: Runtime>(&mut self, drv: &mut Driver<R>, img: &LogImage, end: Lsn) {
+    /// Zero every nonzero block of the log past `end` and remove later segments, then force both.
+    pub(crate) fn clear_tail<R: Runtime, S: LogSource>(
+        &mut self,
+        drv: &mut Driver<R>,
+        img: &mut LogImage<S>,
+        end: Lsn,
+    ) {
         let base = end.0 - end.0 % self.segment;
-        if let Some(Some(bytes)) = img.segments.get(&base) {
-            let from = (end.0 - base) as usize;
-            if let Some(last) = bytes[from..].iter().rposition(|&b| b != 0) {
-                let to = (from + last + 1).next_multiple_of(self.block);
-                let file = self.segment_file(drv, base);
-                drv.write_all(vec![(file, from as u64, AlignedBuf::zeroed(to - from))]);
-                drv.sync_all(&[file]);
+        let present = img.bases.contains(&base);
+        if present {
+            let mut last = None;
+            let mut at = end.0;
+            while at < base + self.segment {
+                if let Slot::Bytes(b) = img.slot(Lsn(at))
+                    && b.iter().any(|&x| x != 0)
+                {
+                    last = Some(at);
+                }
+                at += self.block as u64;
             }
-        }
-        if img.segments.contains_key(&base) {
             let file = self.segment_file(drv, base);
+            if let Some(last) = last {
+                let from = end.0 - base;
+                let to = last + self.block as u64 - base;
+                drv.write_all(vec![(file, from, AlignedBuf::zeroed((to - from) as usize))]);
+            }
             drv.allocate(file, self.segment);
             drv.sync_all(&[file]);
         }
-        let later: Vec<u64> = img.segments.keys().copied().filter(|&b| b > base).collect();
+        let later: Vec<u64> = img.bases.iter().copied().filter(|&b| b > base).collect();
         for b in &later {
             drv.remove(&self.path(*b));
             self.files.remove(b);
         }
         if !later.is_empty() {
             drv.sync_dir(&self.dir);
+        }
+    }
+}
+
+/// The bytes of a log read from its segment files, one chunk at a time.
+pub(crate) const CHUNK: usize = 64 * 1024;
+
+/// Reads a log's blocks from its segment files, holding one chunk of one segment at a time.
+pub(crate) struct FileSource<R: Runtime> {
+    drv: Driver<R>,
+    files: BTreeMap<u64, FileId>,
+    segment: u64,
+    /// The LSN the cached chunk starts at, and its bytes; `None` bytes where the read failed.
+    chunk: Option<(u64, Option<AlignedBuf>)>,
+}
+
+impl<R: Runtime> std::fmt::Debug for FileSource<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileSource")
+            .field("files", &self.files)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R: Runtime> LogSource for FileSource<R> {
+    fn block(&mut self, base: u64, at: Lsn, block: usize) -> Slot {
+        let Some(&file) = self.files.get(&base) else {
+            return Slot::Missing;
+        };
+        let chunk = (CHUNK as u64).min(self.segment);
+        let start = base + (at.0 - base) / chunk * chunk;
+        if self.chunk.as_ref().is_none_or(|(s, _)| *s != start) {
+            let len = chunk.min(base + self.segment - start) as usize;
+            let bytes = self.drv.read(file, start - base, len).ok();
+            self.chunk = Some((start, bytes));
+        }
+        match &self.chunk {
+            Some((_, Some(bytes))) => {
+                let off = (at.0 - start) as usize;
+                Slot::Bytes(bytes[off..off + block].to_vec())
+            }
+            _ => Slot::Unreadable,
         }
     }
 }

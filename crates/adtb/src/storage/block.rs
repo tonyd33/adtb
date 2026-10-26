@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::collections::BTreeMap;
 
 use super::Lsn;
@@ -87,53 +88,87 @@ pub fn read_block(at: Lsn, b: &[u8]) -> BlockState<'_> {
     )
 }
 
-/// The log as read from its segment files.
-#[derive(Debug)]
-pub struct LogImage {
-    pub block: usize,
-    pub segment: u64,
-    /// Segment contents by first LSN, zero-filled to the segment size; `None` where a read failed.
-    pub segments: BTreeMap<u64, Option<Vec<u8>>>,
+/// Where a log image reads its blocks from.
+pub trait LogSource {
+    /// Returns the block at `at` of the segment starting at `base`, `block` bytes.
+    fn block(&mut self, base: u64, at: Lsn, block: usize) -> Slot;
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Slot<'a> {
+pub enum Slot {
     Missing,
     Unreadable,
-    Bytes(&'a [u8]),
+    Bytes(Vec<u8>),
 }
 
-impl LogImage {
-    fn slot(&self, at: Lsn) -> Slot<'_> {
-        let base = at.0 - at.0 % self.segment;
-        match self.segments.get(&base) {
+/// Segments held in memory whole, zero-filled to the segment size; `None` where a read failed.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub struct InMemory(pub BTreeMap<u64, Option<Vec<u8>>>);
+
+#[cfg(test)]
+impl LogSource for InMemory {
+    fn block(&mut self, base: u64, at: Lsn, block: usize) -> Slot {
+        match self.0.get(&base) {
             None => Slot::Missing,
             Some(None) => Slot::Unreadable,
             Some(Some(bytes)) => {
                 let off = (at.0 - base) as usize;
-                Slot::Bytes(&bytes[off..off + self.block])
+                Slot::Bytes(bytes[off..off + block].to_vec())
             }
         }
     }
+}
+
+/// The log's segments, read block by block from a source.
+#[derive(Debug)]
+pub struct LogImage<S> {
+    pub block: usize,
+    pub segment: u64,
+    /// The first LSN of every segment present, in order.
+    pub bases: Vec<u64>,
+    pub source: S,
+}
+
+#[cfg(test)]
+impl LogImage<InMemory> {
+    pub fn in_memory(block: usize, segment: u64, segments: BTreeMap<u64, Option<Vec<u8>>>) -> Self {
+        LogImage {
+            block,
+            segment,
+            bases: segments.keys().copied().collect(),
+            source: InMemory(segments),
+        }
+    }
+}
+
+impl<S: LogSource> LogImage<S> {
+    pub fn slot(&mut self, at: Lsn) -> Slot {
+        let base = at.0 - at.0 % self.segment;
+        if self.bases.binary_search(&base).is_err() {
+            return Slot::Missing;
+        }
+        self.source.block(base, at, self.block)
+    }
 
     /// Returns the first LSN of every block at or after `from`, in every segment present.
-    fn blocks_from(&self, from: Lsn) -> impl Iterator<Item = Lsn> + '_ {
-        let block = self.block as u64;
-        self.segments.keys().flat_map(move |&base| {
-            let first = from.0.max(base).next_multiple_of(block);
-            (first..base + self.segment).step_by(self.block).map(Lsn)
+    pub fn blocks_from(&self, from: Lsn) -> impl Iterator<Item = Lsn> + use<S> {
+        let (block, segment) = (self.block, self.segment);
+        self.bases.clone().into_iter().flat_map(move |base| {
+            let first = from.0.max(base).next_multiple_of(block as u64);
+            (first..base + segment).step_by(block).map(Lsn)
         })
     }
 
     pub fn first(&self) -> Option<Lsn> {
-        self.segments.keys().next().map(|&b| Lsn(b))
+        self.bases.first().map(|&b| Lsn(b))
     }
 
     /// Returns the first LSN of the batch holding the block at `at`, if that block verifies.
-    pub fn batch_start(&self, at: Lsn) -> Option<Lsn> {
+    pub fn batch_start(&mut self, at: Lsn) -> Option<Lsn> {
         let block = Lsn(at.0 - at.0 % self.block as u64);
         match self.slot(block) {
-            Slot::Bytes(b) => match read_block(block, b) {
+            Slot::Bytes(b) => match read_block(block, &b) {
                 BlockState::Valid(h, _) => {
                     Some(Lsn(block.0 - u64::from(h.index) * self.block as u64))
                 }
@@ -201,15 +236,23 @@ pub enum Mode {
 
 #[derive(Debug)]
 pub struct Scan {
-    pub batches: Vec<Batch>,
+    /// The first LSN of the first batch accepted, if any.
+    pub first: Option<Lsn>,
+    /// The number of batches accepted.
+    pub batches: usize,
     /// The LSN after the last batch accepted before the first gap.
     pub end: Lsn,
     pub last_seq: Option<u64>,
     pub findings: Vec<LogFinding>,
     /// The first finding that stops recovery.
     pub fatal: Option<LogFinding>,
-    /// The index into `batches` of each batch that follows a gap.
-    pub resumed: Vec<usize>,
+    /// The number of gaps a verify scan continued past.
+    pub resumed: usize,
+}
+
+/// Returns the batch whose first block is at `start`, if it is whole and verifies.
+pub fn batch_at<S: LogSource>(img: &mut LogImage<S>, start: Lsn) -> Option<Batch> {
+    accept(img, start, None).ok()
 }
 
 enum Refusal {
@@ -217,15 +260,20 @@ enum Refusal {
     NotAccepted,
 }
 
-fn accept(img: &LogImage, pos: Lsn, prev: Option<u64>) -> Result<Batch, Refusal> {
+fn accept<S: LogSource>(
+    img: &mut LogImage<S>,
+    pos: Lsn,
+    prev: Option<u64>,
+) -> Result<Batch, Refusal> {
     let block = img.block as u64;
-    let first = match img.slot(pos) {
-        Slot::Bytes(b) => match read_block(pos, b) {
-            BlockState::Valid(h, data) => (h, data),
-            _ => return Err(Refusal::NotAccepted),
-        },
+    let first_block = match img.slot(pos) {
+        Slot::Bytes(b) => b,
         Slot::Missing => return Err(Refusal::NotAccepted),
         Slot::Unreadable => return Err(Refusal::Unreadable(pos)),
+    };
+    let first = match read_block(pos, &first_block) {
+        BlockState::Valid(h, data) => (h, data),
+        _ => return Err(Refusal::NotAccepted),
     };
     let (h0, d0) = first;
     if h0.index != 0 || prev.is_some_and(|p| h0.seq != p + 1) {
@@ -236,13 +284,14 @@ fn accept(img: &LogImage, pos: Lsn, prev: Option<u64>) -> Result<Batch, Refusal>
     let mut last_used = usize::from(h0.used);
     for i in 1..h0.count {
         let at = Lsn(pos.0 + u64::from(i) * block);
-        let (h, d) = match img.slot(at) {
-            Slot::Bytes(b) => match read_block(at, b) {
-                BlockState::Valid(h, d) => (h, d),
-                _ => return Err(Refusal::NotAccepted),
-            },
+        let bytes = match img.slot(at) {
+            Slot::Bytes(b) => b,
             Slot::Missing => return Err(Refusal::NotAccepted),
             Slot::Unreadable => return Err(Refusal::Unreadable(at)),
+        };
+        let (h, d) = match read_block(at, &bytes) {
+            BlockState::Valid(h, d) => (h, d),
+            _ => return Err(Refusal::NotAccepted),
         };
         let agrees = h.seq == h0.seq && h.count == h0.count && h.epoch == h0.epoch && h.index == i;
         if !agrees || last_used != full {
@@ -264,15 +313,25 @@ fn accept(img: &LogImage, pos: Lsn, prev: Option<u64>) -> Result<Batch, Refusal>
 }
 
 /// Read the batches of `img` from the batch starting at `from`, and classify what lies past them.
-pub fn scan(img: &LogImage, from: Lsn, mode: Mode) -> Scan {
+///
+/// Each accepted batch goes to `visit` as it is read, with whether it is the first after a gap,
+/// so the scan holds one batch at a time.
+pub fn scan<S: LogSource>(
+    img: &mut LogImage<S>,
+    from: Lsn,
+    mode: Mode,
+    mut visit: impl FnMut(&Batch, bool),
+) -> Scan {
     let mut out = Scan {
-        batches: Vec::new(),
+        first: None,
+        batches: 0,
         end: from,
         last_seq: None,
         findings: Vec::new(),
         fatal: None,
-        resumed: Vec::new(),
+        resumed: 0,
     };
+    let mut after_gap = false;
     let mut pos = from;
     let mut prev = None;
     let mut gapped = false;
@@ -288,7 +347,9 @@ pub fn scan(img: &LogImage, from: Lsn, mode: Mode) -> Scan {
                             problem: LogProblem::Malformed,
                         });
                     }
-                    out.batches.push(b);
+                    out.first.get_or_insert(b.start);
+                    out.batches += 1;
+                    visit(&b, std::mem::take(&mut after_gap));
                 }
                 Err(Refusal::Unreadable(at)) => {
                     out.findings.push(LogFinding {
@@ -312,7 +373,7 @@ pub fn scan(img: &LogImage, from: Lsn, mode: Mode) -> Scan {
                     lsn: Lsn(at.0 - at.0 % img.segment),
                     problem: LogProblem::Unreadable,
                 }),
-                Slot::Bytes(b) => match read_block(at, b) {
+                Slot::Bytes(b) => match read_block(at, &b) {
                     BlockState::Zero => {}
                     BlockState::Invalid if mode == Mode::Recovery => {}
                     BlockState::Invalid => out.findings.push(LogFinding {
@@ -350,7 +411,8 @@ pub fn scan(img: &LogImage, from: Lsn, mode: Mode) -> Scan {
                 gapped = true;
                 pos = at;
                 prev = None;
-                out.resumed.push(out.batches.len());
+                out.resumed += 1;
+                after_gap = true;
             }
             None => break,
         }

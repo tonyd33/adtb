@@ -374,13 +374,23 @@ fn a_pool_every_frame_of_which_stays_latched_reports_a_stall() {
                     .unwrap()
             })
             .collect();
-        let (p, first, rt2) = (pager.clone(), pages[..3].to_vec(), rt.clone());
+        let latched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (p, first, rt2, flag) = (
+            pager.clone(),
+            pages[..3].to_vec(),
+            rt.clone(),
+            latched.clone(),
+        );
         let holder = rt.spawn("holder", move || {
             let _held: Vec<_> = first.iter().map(|&pid| p.exclusive(pid).unwrap()).collect();
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
             for _ in 0..100_000 {
                 rt2.yield_now();
             }
         });
+        while !latched.load(std::sync::atomic::Ordering::SeqCst) {
+            rt.yield_now();
+        }
         let _held: Vec<_> = pages[3..5]
             .iter()
             .map(|&pid| pager.exclusive(pid).unwrap())
@@ -388,4 +398,75 @@ fn a_pool_every_frame_of_which_stays_latched_reports_a_stall() {
         let _ = pager.read(pages[5]);
         rt.join(holder);
     });
+}
+
+/// Returns the largest buffer any `Read` op of `trace` carries.
+fn largest_read(trace: &str) -> usize {
+    trace
+        .lines()
+        .filter(|l| l.contains(" Read {"))
+        .filter_map(|l| {
+            let at = l.find("len: ")? + 5;
+            l[at..]
+                .split(|c: char| !c.is_ascii_digit())
+                .next()?
+                .parse()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+fn recovery_and_verify_read_the_log_a_chunk_at_a_time() {
+    const SEGMENT: u64 = 4 << 20;
+    let big = Options {
+        segment_size: SEGMENT,
+        ..options()
+    };
+    let mut sim = Sim::new(10, Config::default());
+    let b = big.clone();
+    assert_eq!(
+        Outcome::Finished,
+        sim.run(move |rt| {
+            let pager = Pager::create(rt, &b).unwrap();
+            let pid = pager
+                .allocate(1, adtb::storage::PageKind::HeapSlotted, 1)
+                .unwrap();
+            for i in 0..3000u64 {
+                pager
+                    .update(&[pid], |p| p[0][100..108].copy_from_slice(&i.to_le_bytes()))
+                    .unwrap();
+                pager.commit(i + 1, &[], |_| {}).unwrap();
+            }
+            pager.flush_log();
+            assert!(
+                pager.durable().0 > 2 * 64 * 1024,
+                "the log spans several chunks"
+            );
+        })
+    );
+    let before = sim.trace().len();
+    let b = big.clone();
+    assert_eq!(
+        Outcome::Finished,
+        sim.run(move |rt| {
+            let (pager, recovery) = Pager::open(rt, &b).unwrap();
+            assert!(
+                recovery.applied > 2000,
+                "recovery replayed {}",
+                recovery.applied
+            );
+            let v = pager.verify();
+            assert_eq!(3000, v.commits.len());
+            assert!(v.findings.is_empty(), "{:?}", v.findings);
+        })
+    );
+    let trace = sim.trace();
+    let largest = largest_read(&trace[before..]);
+    assert!(largest > 0, "no read was traced");
+    assert!(
+        largest <= 64 * 1024,
+        "a read of {largest} bytes, against log segments of {SEGMENT}"
+    );
 }
