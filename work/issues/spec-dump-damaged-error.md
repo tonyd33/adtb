@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 296
 summary: "the spec says a wrong passphrase fails as a damaged dump does, but names no error for a damaged dump"
+branch: adtb-spec3
 tags:
   - spec
 ---

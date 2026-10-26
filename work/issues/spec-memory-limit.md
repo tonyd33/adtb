@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 298
-summary: "no StatementLimit reason names a memory limit; the only one carries a Duration"
+summary: no StatementLimit reason names a memory limit; the only one carries a Duration
+branch: adtb-spec3
 tags:
   - spec
 ---

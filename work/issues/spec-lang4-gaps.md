@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 293
 summary: "spec gaps from file scans, temp relations, aggregates and id assignment"
+branch: adtb-spec3
 tags:
   - spec
 ---

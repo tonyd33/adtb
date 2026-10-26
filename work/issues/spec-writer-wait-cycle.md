@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 297
-summary: "transactions.md §6.3 does not say what happens when two writers wait on each other"
+summary: transactions.md §6.3 does not say what happens when two writers wait on each other
+branch: adtb-spec3
 tags:
   - spec
 ---

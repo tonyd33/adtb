@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 542
 summary: "a parent's first child is never unlinked, dead-entry cleanup is not wired to heap visibility, and fence keys cost space"
+branch: adtb-blink5
 depends-on:
   - blink-space-reuse
 tags:

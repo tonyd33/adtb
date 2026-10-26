@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 555
 summary: "every heap write latches its directory root, a conversion can name many store pages in one update, and log verify is never incremental"
+branch: adtb-heapf
 depends-on:
   - vacuum-concurrent
 tags:
