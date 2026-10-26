@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 610
 summary: a damaged commit log page leaves its transactions running; nothing defines what it stops
-branch: adtb-txn3
+closed: 2026-10-25
 depends-on:
   - commit-log-snapshots
 tags:
@@ -26,3 +26,7 @@ commit log page quarantines the whole database. It opens for `verify`
 and repair only, and every transaction is refused with the corruption
 fault. State it in mvcc.md §4.2 and storage.md §8, and test it under
 the simulator.
+
+## 2026-10-25: resolved
+
+Landed as `feat(mvcc): quarantine the database on a damaged commit log page and refuse transactions when xids run out`.

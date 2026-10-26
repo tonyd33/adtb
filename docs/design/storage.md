@@ -628,6 +628,12 @@ heap page fails verification, the heap is quarantined. An index page
 holds entries of several constructors, so a bad index page quarantines
 the whole index.
 
+A commit log page that fails verification quarantines the whole
+database, since the visibility of every relation reads the commit log:
+every transaction is refused with the corruption fault, and the
+database opens for `verify` and repair only
+([mvcc.md §4.2](mvcc.md#42-the-commit-log)).
+
 Quarantine is a mark the storage layer sets on one heap or one index.
 The planner and the transactions layer rely on it as follows
 ([execution.md §6](execution.md#6-quarantine)):

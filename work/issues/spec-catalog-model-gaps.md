@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 292
 summary: "the catalog breaks the model's reference rule, catalog::audit is undeclared, and catalog keys and evolution corner cases are unstated"
-branch: adtb-cat
+closed: 2026-10-25
 tags:
   - spec
 ---
@@ -34,3 +34,7 @@ operators. My rulings:
    record is a one-constructor sum. Registered queries are rechecked,
    and the migration is refused if one fails. State it in evolution.md;
    the checker refuses it today (`evolve-record-add-ctor.md`).
+
+## 2026-10-25: resolved
+
+Landed as `feat(lang): give schemas catalog ids and constructor stages and fix the catalog's references`. Rulings in point `spec3`, for Tony to adopt.

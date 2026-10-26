@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 409
 summary: nothing enforces that all threads together latch fewer pages than the pool has frames; running short stalls
-branch: pager
+closed: 2026-10-25
 tags:
   - engine
 ---
@@ -19,3 +19,7 @@ operation latches up to four pages plus those `allocate` takes, so the
 pool needs more than about four frames per thread. Running short stalls
 in `make_room`. Expected: the engine sizes its thread count against the
 pool at open, and `make_room` reports a stall instead of spinning.
+
+## 2026-10-25: resolved
+
+Landed as `feat(storage): commit through a group-commit leader, log safe snapshots and size threads to the pool`.

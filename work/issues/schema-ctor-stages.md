@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 165
 summary: "constructor stages (declared, deprecated) are not in Schema, so NotOpen is tested only through the interpreter's with_closed"
-branch: adtb-cat
+closed: 2026-10-25
 tags:
   - lang
 ---
@@ -17,3 +17,7 @@ tags:
 deprecated). `NotOpen` is tested only through the interpreter's
 `with_closed`, which closes constructors by hand. The engine's bootstrap
 catalog and the write path need the stage from the schema.
+
+## 2026-10-25: resolved
+
+Landed as `feat(lang): give schemas catalog ids and constructor stages and fix the catalog's references`. Rulings in point `spec3`, for Tony to adopt.

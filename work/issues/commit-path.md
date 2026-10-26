@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 620
 summary: "no commit path: commits are not made durable, grouped or given commit positions"
-branch: pager
+closed: 2026-10-25
 depends-on:
   - commit-log-snapshots
   - pager-and-log
@@ -21,3 +21,7 @@ Implement the commit path: `docs/design/storage.md` §6 and §10.1
 durability level local and §8 commit positions.
 
 Prerequisites: `commit-log-snapshots.md`, `pager-and-log.md`.
+
+## 2026-10-25: resolved
+
+Landed as `feat(storage): commit through a group-commit leader, log safe snapshots and size threads to the pool`.
