@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 640
 summary: no simulator driver runs random multi-transaction workloads per seed and checks their histories
-branch: adtb-txn2
+closed: 2026-10-25
 depends-on:
   - ssi
   - isolation-checker
@@ -35,3 +35,7 @@ read-write commit flushes at once, so a reader rarely sees an unflushed
 commit before a crash. A unit test covers the rule, but the driver
 should catch it too. Delay commit flushes in some seeds, so a reader
 can see a commit that is not yet durable.
+
+## 2026-10-25: resolved
+
+Landed as `feat(mvcc): lock Transactions internally and catch reads of unflushed commits`. The targeted test `a_reader_of_an_unflushed_commit_is_acknowledged_only_once_it_is_durable` fails on every seed when `read_upto` is ignored.
