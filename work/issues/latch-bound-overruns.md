@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 557
 summary: "some heap updates latch more than the per-thread bound of 5, which the pager does not enforce"
+branch: adtb-heapg
 tags:
   - engine
 ---

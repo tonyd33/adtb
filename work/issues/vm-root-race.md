@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 556
 summary: "Vm::put can set a bit on what has just become an inner page when the visibility map's root grows"
+branch: adtb-heapg
 tags:
   - engine
 ---
