@@ -71,11 +71,32 @@ fn gen_entry(rt: &SimRuntime, max_len: usize) -> Vec<u8> {
     e
 }
 
+const STEM: usize = 280;
+
+/// Returns an entry of `gen_entry`, or, two times in three, one whose first
+/// `STEM` bytes repeat its first 3 and whose last at least 8 are random.
+fn gen_stemmed(rt: &SimRuntime, max_len: usize) -> Vec<u8> {
+    let mut e = gen_entry(rt, max_len);
+    if rt.next_u64().is_multiple_of(3) || e.len() < 3 {
+        return e;
+    }
+    let len = e.len().max(STEM + 8).min(max_len);
+    e.resize(len, 0);
+    for i in 3..len {
+        e[i] = if i < STEM {
+            e[i % 3]
+        } else {
+            rt.next_u64() as u8
+        };
+    }
+    e
+}
+
 fn gen_bound(rt: &SimRuntime, max_len: usize) -> Bound<Vec<u8>> {
     match below(rt, 3) {
         0 => Bound::Unbounded,
-        1 => Bound::Included(gen_entry(rt, max_len)),
-        _ => Bound::Excluded(gen_entry(rt, max_len)),
+        1 => Bound::Included(gen_stemmed(rt, max_len)),
+        _ => Bound::Excluded(gen_stemmed(rt, max_len)),
     }
 }
 
@@ -206,18 +227,18 @@ fn model_run(seed: u64, ops: usize, expected_height: u16) {
             let before = reads.load(Relaxed);
             match below(rt, 20) {
                 0..=11 => {
-                    let e = gen_entry(rt, max);
+                    let e = gen_stemmed(rt, max);
                     let fresh = !model.contains(&e);
                     assert_eq!(tree.insert(pager, &e), Ok(fresh), "insert {e:x?}");
                     model.insert(e);
                 }
                 12..=15 => {
                     let e = if !model.is_empty() && rt.next_u64().is_multiple_of(4) {
-                        let lo = gen_entry(rt, max);
+                        let lo = gen_stemmed(rt, max);
                         let first = model.range(lo..).next().or(model.iter().next());
                         first.cloned().unwrap()
                     } else {
-                        gen_entry(rt, max)
+                        gen_stemmed(rt, max)
                     };
                     let present = model.remove(&e);
                     assert_eq!(tree.delete(pager, &e), Ok(present), "delete {e:x?}");
@@ -250,7 +271,7 @@ fn model_run(seed: u64, ops: usize, expected_height: u16) {
                     assert_eq!(found, expected, "prefix {p:x?}");
                 }
                 _ => {
-                    let e = gen_entry(rt, max);
+                    let e = gen_stemmed(rt, max);
                     assert_eq!(tree.contains(pager, &e), Ok(model.contains(&e)));
                 }
             }
@@ -291,13 +312,13 @@ fn first_scan<R: Runtime>(pager: &Pager<R>, mut cursor: Cursor) -> Vec<Vec<u8>> 
 
 #[test]
 fn random_operations_match_a_btreemap() {
-    model_run(1, 12_000, 2);
+    model_run(1, 12_000, 3);
 }
 
 #[test]
 fn random_operations_match_a_btreemap_on_other_seeds() {
     for seed in 2..5 {
-        model_run(seed, 5_000, 1);
+        model_run(seed, 5_000, 2);
     }
 }
 
@@ -307,7 +328,8 @@ fn ascending_and_descending_inserts_split_cleanly() {
         let up = BTree::create(pager, OWNER).unwrap();
         let down = BTree::create(pager, OWNER + 1).unwrap();
         let entry = |i: u32| {
-            let mut e = i.to_be_bytes().to_vec();
+            let mut e = vec![0xAB; 112];
+            e.extend_from_slice(&i.to_be_bytes());
             e.resize(120, 0xAB);
             e
         };
@@ -318,7 +340,7 @@ fn ascending_and_descending_inserts_split_cleanly() {
         let all: Vec<Vec<u8>> = (0..3000).map(entry).collect();
         assert_eq!(up.verify(pager).unwrap(), all);
         assert_eq!(down.verify(pager).unwrap(), all);
-        assert!(up.height(pager).unwrap() >= 1);
+        assert!(up.height(pager).unwrap() >= 2);
         for i in (0..3000).step_by(2) {
             assert_eq!(up.delete(pager, &entry(i)), Ok(true));
         }
