@@ -359,70 +359,78 @@ fn scalar(v: &Value) -> Val {
 }
 
 /// Returns `v` as a heap stores a field of type `t`.
-pub fn to_stored(t: &FieldType, v: &Val) -> Value {
-    match (t, v) {
-        (FieldType::Scalar(s), v) => scalar_key(*s, v),
+pub fn to_stored(t: &FieldType, v: &Val) -> Result<Value, Error> {
+    Ok(match (t, v) {
+        (FieldType::Scalar(s), v) => scalar_key(*s, v)?,
         (FieldType::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => Value::Record(
             ts.iter()
                 .zip(fs.iter())
                 .map(|(t, v)| to_stored(t, v))
-                .collect(),
+                .collect::<Result<_, _>>()?,
         ),
         (FieldType::Sum(cs), Val::Ctor(c, fs)) => Value::Sum {
             ctor: *c,
-            fields: cs[*c as usize]
+            fields: cs
+                .get(*c as usize)
+                .ok_or_else(|| not_stored(v, t))?
                 .fields
                 .iter()
                 .zip(fs.iter())
                 .map(|(t, v)| to_stored(t, v))
-                .collect(),
+                .collect::<Result<_, _>>()?,
         },
-        (t, v) => panic!("{v:?} is not a stored value of {t:?}"),
-    }
+        (t, v) => return Err(not_stored(v, t)),
+    })
 }
 
 /// Returns `v` as a value of key type `t`.
-pub fn to_key(t: &KeyType, v: &Val) -> Value {
-    match (t, v) {
-        (KeyType::Scalar(s), v) => scalar_key(*s, v),
+pub fn to_key(t: &KeyType, v: &Val) -> Result<Value, Error> {
+    Ok(match (t, v) {
+        (KeyType::Scalar(s), v) => scalar_key(*s, v)?,
         (KeyType::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => Value::Record(
             ts.iter()
                 .zip(fs.iter())
                 .map(|(t, v)| to_key(t, v))
-                .collect(),
+                .collect::<Result<_, _>>()?,
         ),
         (KeyType::AnonRecord(r), Val::Record(fs)) => Value::Record(
             r.fields()
                 .iter()
                 .zip(fs.iter())
                 .map(|((_, t), v)| to_key(t, v))
-                .collect(),
+                .collect::<Result<_, _>>()?,
         ),
         (KeyType::Sum(s), Val::Ctor(c, fs)) => Value::Sum {
             ctor: *c,
-            fields: s.ctors()[*c as usize]
+            fields: s
+                .ctors()
+                .get(*c as usize)
+                .ok_or_else(|| not_stored(v, t))?
                 .fields
                 .iter()
                 .zip(fs.iter())
                 .map(|(t, v)| to_key(t, v))
-                .collect(),
+                .collect::<Result<_, _>>()?,
         },
         (KeyType::AnonSum(s), Val::Ctor(c, fs)) => Value::Sum {
             ctor: *c,
-            fields: s.ctors()[*c as usize]
+            fields: s
+                .ctors()
+                .get(*c as usize)
+                .ok_or_else(|| not_stored(v, t))?
                 .1
                 .fields()
                 .iter()
                 .zip(fs.iter())
                 .map(|((_, t), v)| to_key(t, v))
-                .collect(),
+                .collect::<Result<_, _>>()?,
         },
-        (t, v) => panic!("{v:?} is not a key value of {t:?}"),
-    }
+        (t, v) => return Err(not_stored(v, t)),
+    })
 }
 
-fn scalar_key(s: Scalar, v: &Val) -> Value {
-    match (s, v) {
+fn scalar_key(s: Scalar, v: &Val) -> Result<Value, Error> {
+    Ok(match (s, v) {
         (Scalar::I8, Val::Int(x)) => Value::I8(*x as i8),
         (Scalar::I16, Val::Int(x)) => Value::I16(*x as i16),
         (Scalar::I32, Val::Int(x)) => Value::I32(*x as i32),
@@ -446,6 +454,10 @@ fn scalar_key(s: Scalar, v: &Val) -> Value {
             months: *months,
             days: *days,
         },
-        (s, v) => panic!("{v:?} is not a key value of {s:?}"),
-    }
+        (s, v) => return Err(not_stored(v, s)),
+    })
+}
+
+fn not_stored(v: &Val, t: impl std::fmt::Debug) -> Error {
+    Error::Internal(format!("{v:?} is not a value of {t:?}"))
 }

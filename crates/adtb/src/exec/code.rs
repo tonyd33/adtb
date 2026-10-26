@@ -304,8 +304,8 @@ impl Code {
                     let out = self.map(f, regs, sel, catch, |get| {
                         let v = get(*src);
                         let i = match v {
-                            Val::Ctor(..) => at.of(v.ctor_of()),
-                            _ => at.of(0),
+                            Val::Ctor(..) => at.of(v.ctor_of())?,
+                            _ => at.of(0)?,
                         };
                         Ok(Ok(v.fields()[i].clone()))
                     })?;
@@ -321,7 +321,10 @@ impl Code {
                         let v = get(*src);
                         let c = v.ctor_of();
                         let fs = v.fields();
-                        let mut ks: Vec<Val> = at.iter().map(|a| fs[a.of(c)].clone()).collect();
+                        let mut ks: Vec<Val> = at
+                            .iter()
+                            .map(|a| Ok(fs[a.of(c)?].clone()))
+                            .collect::<Result<_, Error>>()?;
                         Ok(Ok(if *single {
                             ks.pop().expect("a key has a field")
                         } else {
@@ -396,7 +399,9 @@ impl Code {
                 Ins::Case { scrut, arms, dst } => {
                     let mut by: Vec<Sel> = vec![Vec::new(); arms.len()];
                     for &r in sel.iter() {
-                        by[self.get(*scrut, f, regs, r).ctor_of() as usize].push(r);
+                        let c = self.get(*scrut, f, regs, r).ctor_of();
+                        super::arm(arms, c)?;
+                        by[c as usize].push(r);
                     }
                     let since = catch.faults.len();
                     let mut out = Vec::new();
@@ -404,9 +409,7 @@ impl Code {
                         if s.is_empty() {
                             continue;
                         }
-                        let (var, blk) = arms[c]
-                            .as_ref()
-                            .unwrap_or_else(|| panic!("a case has an arm for constructor {c}"));
+                        let (var, blk) = super::arm(arms, c as u32)?;
                         let vals: Vec<(u32, Val)> = s
                             .iter()
                             .map(|&r| (r, self.get(*scrut, f, regs, r).clone()))
@@ -450,12 +453,16 @@ impl Code {
                 Ins::Reject { msg } => {
                     if let Some(&r) = sel.first() {
                         let Val::Text(t) = self.get(*msg, f, regs, r) else {
-                            panic!("`reject` takes a Text")
+                            return Err(Error::Internal("`reject` takes a Text".into()));
                         };
                         return Err(Error::Rejected(t.to_string()));
                     }
                 }
-                Ins::Unreachable => panic!("an evaluation reached `Unreachable`"),
+                Ins::Unreachable => {
+                    return Err(Error::Internal(
+                        "an evaluation reaches no `Unreachable`".into(),
+                    ));
+                }
             }
         }
         Ok(())
@@ -534,13 +541,14 @@ impl<'a> Compiler<'a> {
         Ok(match (c, b) {
             (Const::Int(i), Some(Base::Decimal(s))) => Val::Decimal(
                 i.checked_mul(10i128.pow(u32::from(s)))
-                    .expect("a decimal literal fits its type"),
+                    .ok_or_else(|| Error::Internal("a decimal literal fits its type".into()))?,
             ),
             (Const::Int(i), Some(Base::F32)) => Val::F32(F32::new(*i as f32)),
             (Const::Int(i), Some(Base::F64)) => Val::F64(F64::new(*i as f64)),
-            (Const::Int(i), _) => {
-                Val::Int(i64::try_from(*i).expect("an integer literal fits its type"))
-            }
+            (Const::Int(i), _) => Val::Int(
+                i64::try_from(*i)
+                    .map_err(|_| Error::Internal("an integer literal fits its type".into()))?,
+            ),
             (Const::Decimal(d), _) => Val::Decimal(*d),
             (Const::Float(x), Some(Base::F32)) => Val::F32(F32::new(*x as f32)),
             (Const::Float(x), _) => Val::F64(F64::new(*x)),
@@ -596,7 +604,7 @@ impl<'a> Compiler<'a> {
                     .collect::<Result<_, Error>>()?;
                 let order = match repr(self.schema, ty) {
                     Ty::Data { .. } => ctors(self.schema, ty)
-                        .expect("a constructor's type is a sum")
+                        .ok_or_else(|| Error::Internal("a constructor's type is a sum".into()))?
                         .swap_remove(*ctor as usize)
                         .into_iter()
                         .map(|(n, _)| n)
@@ -609,10 +617,12 @@ impl<'a> Compiler<'a> {
                         given
                             .iter()
                             .find(|(g, _)| g == n)
-                            .unwrap_or_else(|| panic!("constructor field `{n}` is given"))
-                            .1
+                            .map(|(_, o)| *o)
+                            .ok_or_else(|| {
+                                Error::Internal(format!("constructor field `{n}` is given"))
+                            })
                     })
-                    .collect();
+                    .collect::<Result<_, Error>>()?;
                 let dst = e.reg();
                 ins.push(Ins::Ctor {
                     ctor: *ctor,
@@ -630,7 +640,9 @@ impl<'a> Compiler<'a> {
             }
             Kind::Key(x) => {
                 let Ty::Key { rel, .. } = ty else {
-                    panic!("`key` has a key type, found {ty:?}")
+                    return Err(Error::Internal(format!(
+                        "`key` has a key type, found {ty:?}"
+                    )));
                 };
                 let (at, single) = key_fields(self.schema, *rel, self.terms.ty(*x))?;
                 let src = self.expr(e, ins, *x)?;
@@ -666,7 +678,7 @@ impl<'a> Compiler<'a> {
             }
             Kind::Restrict(x, set) => {
                 let elem = super::types::elem(self.schema, self.terms.ty(*x))
-                    .expect("a restriction is of a set");
+                    .ok_or_else(|| Error::Internal("a restriction is of a set".into()))?;
                 let n = ctors(self.schema, &elem).map_or(0, |c| c.len());
                 let mut keep = vec![false; n];
                 for c in set {

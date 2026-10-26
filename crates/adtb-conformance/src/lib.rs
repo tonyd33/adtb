@@ -450,6 +450,7 @@ fn refusal(a: Abort) -> (String, String) {
             "NotYet".into(),
             format!("the interpreter does not evaluate {form}"),
         ),
+        Abort::Internal(what) => ("Internal".into(), what),
     }
 }
 

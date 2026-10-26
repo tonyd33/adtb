@@ -274,6 +274,8 @@ pub enum Error {
     UserCode(String),
     /// The term is a write, a block, a transition read or a history read.
     NotAQuery(&'static str),
+    /// The term breaks the invariant this text names, one the checker or normaliser guarantees.
+    Internal(String),
 }
 
 impl std::fmt::Display for Error {
@@ -281,6 +283,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::UserCode(name) => write!(f, "a plan cannot run user-defined code yet: `{name}`"),
             Error::NotAQuery(what) => write!(f, "a plan computes a query, not {what}"),
+            Error::Internal(what) => write!(f, "a broken invariant: {what}"),
         }
     }
 }

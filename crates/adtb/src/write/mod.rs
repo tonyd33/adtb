@@ -75,6 +75,8 @@ pub enum Error {
     Corrupt(String),
     /// The statement needs a form the engine does not run yet.
     Unsupported(String),
+    /// The plan or a value breaks the invariant this text names, one the checker guarantees.
+    Internal(String),
 }
 
 impl Error {
@@ -141,6 +143,7 @@ impl From<exec::Error> for Error {
             }),
             exec::Error::NoCaller => Error::Unsupported("`caller` in a statement".into()),
             exec::Error::Cancelled => Error::Unsupported("a cancelled statement".into()),
+            exec::Error::Internal(what) => Error::Internal(what),
         }
     }
 }

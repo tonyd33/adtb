@@ -5,10 +5,10 @@ use adtb_lang::kernel::{Conflict, Kind, PathStep, Prim, Terms, Tm, Var};
 use adtb_lang::schema::Generator;
 use adtb_lang::types::{RelId, Ty};
 
-use crate::eval::bool_of;
 use crate::eval::{
     Abort, Arena, Change, Database, Env, Here, Interpreter, R, Run, case_arm, not_yet,
 };
+use crate::eval::{bool_of, internal};
 use crate::textual::print;
 use crate::value::Value;
 
@@ -325,12 +325,12 @@ impl Run<'_, '_> {
             Kind::Par(ws) => ws.iter().try_for_each(|w| self.write(h, *w, env, out)),
             Kind::Fail(m) => {
                 let Value::Text(message) = self.eval(h, *m, env)? else {
-                    panic!("`fail` takes a Text")
+                    return internal("`fail` takes a Text");
                 };
                 Err(Abort::Reject(Rejection::UserError { message }))
             }
             Kind::If(c, a, b) => {
-                let w = if bool_of(&self.eval(h, *c, env)?) {
+                let w = if bool_of(&self.eval(h, *c, env)?)? {
                     *a
                 } else {
                     *b
@@ -339,15 +339,15 @@ impl Run<'_, '_> {
             }
             Kind::Case { scrutinee, arms } => {
                 let v = self.eval(h, *scrutinee, env)?;
-                let (x, w) = case_arm(arms, &v);
+                let (x, w) = case_arm(arms, &v)?;
                 self.write(h, w, &env.bind(x, v), out)
             }
             Kind::Let(x, e, w) => {
                 let v = self.eval(h, *e, env)?;
                 self.write(h, *w, &env.bind(*x, v), out)
             }
-            Kind::Unreachable => panic!("evaluation reached a position exhaustiveness excludes"),
-            k => panic!("{k:?} is not a write"),
+            Kind::Unreachable => internal("evaluation reached a position exhaustiveness excludes"),
+            k => internal(format!("{k:?} is not a write")),
         }
     }
 
@@ -380,7 +380,11 @@ impl Run<'_, '_> {
             Kind::Rejects { into, insert } => {
                 let rows = match terms.kind(*insert) {
                     Kind::Insert(_, rows) | Kind::Upsert { rows, .. } => *rows,
-                    k => panic!("`rejects into` wraps an insert or upsert, not {k:?}"),
+                    k => {
+                        return internal(format!(
+                            "`rejects into` wraps an insert or upsert, not {k:?}"
+                        ));
+                    }
                 };
                 let mut rejected = Vec::new();
                 let rows = self.records(h, rows, env, Some(&mut rejected))?;
@@ -397,7 +401,7 @@ impl Run<'_, '_> {
                 }
                 Ok(bound)
             }
-            k => panic!("{k:?} binds no rows"),
+            k => internal(format!("{k:?} binds no rows")),
         }
     }
 

@@ -1,11 +1,24 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
+use adtb_lang::check::check_schema;
+use adtb_lang::kernel::{Const, Kind, Terms, Tm};
+use adtb_lang::parse::{Options, parse_schema};
+use adtb_lang::schema::{Schema, build};
+use adtb_lang::span::FileId;
+use adtb_lang::types::{Base, Ty};
+
+use super::code::{Compiler, Shared};
 use super::frame::Frame;
+use super::ir::AggOp;
 use super::prim::{Arith, Op, Width, apply};
+use super::sink::aggregate;
+use super::types::At;
 use super::value::{F32, F64, Val};
 use super::wide::{Wide, cmp_decimal};
-use super::{Budget, Error, Exceeded, Fault};
+use super::{Budget, Error, Exceeded, Fault, arm, to_key, to_stored};
+use crate::heap::FieldType;
+use crate::key::{KeyType, Scalar};
 
 fn run(op: Op, xs: &[Val]) -> Result<Val, Fault> {
     let refs: Vec<&Val> = xs.iter().collect();
@@ -350,4 +363,218 @@ fn zone_rules_repeat_past_the_range_they_are_tabled_for() {
         Err(Fault::UnknownZone),
         run(Op::InZone, &[Val::Instant(0), Val::text("europe/lisbon")])
     );
+}
+
+fn broken<T: std::fmt::Debug>(r: Result<T, Error>) -> String {
+    match r {
+        Err(Error::Internal(what)) => what,
+        other => panic!("{other:?} is not an internal error"),
+    }
+}
+
+fn broken_op(op: Op, xs: &[Val]) -> String {
+    let refs: Vec<&Val> = xs.iter().collect();
+    broken(apply(&op, &refs))
+}
+
+#[test]
+fn a_primitive_of_mistyped_operands_is_an_internal_error() {
+    let day = Val::Duration(86_400_000_000);
+    let cases = [
+        (Op::ConcatText, vec![Val::Int(1), Val::Int(2)], "text"),
+        (
+            Op::ConcatBytes,
+            vec![Val::text("a"), Val::text("b")],
+            "bytes",
+        ),
+        (
+            Op::Int(Arith::Add, Width::I64),
+            vec![Val::text("a"), Val::Int(1)],
+            "an integer",
+        ),
+        (Op::DecMul, vec![Val::Int(1), Val::Int(2)], "a decimal"),
+        (Op::DurAdd, vec![Val::Int(1), Val::Int(2)], "a duration"),
+        (Op::PeriodNeg, vec![Val::Int(1)], "a period"),
+        (Op::FloatNeg, vec![Val::Int(1)], "a float"),
+        (
+            Op::PointShift { sub: false },
+            vec![Val::text("a"), day],
+            "an instant or a date-time",
+        ),
+        (
+            Op::PointDiff,
+            vec![Val::Instant(0), Val::DateTime(0)],
+            "two instants or two date-times",
+        ),
+        (Op::DateDiff, vec![Val::Int(1), Val::Int(2)], "two dates"),
+        (Op::ToInstant, vec![Val::Instant(0)], "a zoned date-time"),
+        (
+            Op::Zoned { reject: false },
+            vec![Val::Date(0), Val::text("UTC"), Val::tag(0)],
+            "a date-time",
+        ),
+        (
+            Op::InZone,
+            vec![Val::Date(0), Val::text("UTC")],
+            "an instant",
+        ),
+        (Op::Start, vec![Val::Int(1)], "values with fields"),
+        (
+            Op::AddPeriod { reject: false },
+            vec![Val::Int(1), Val::Period { months: 1, days: 0 }, Val::tag(0)],
+            "a date, a date-time or a zoned date-time",
+        ),
+        (
+            Op::Round { from: 2, to: 0 },
+            vec![Val::Decimal(150), Val::Int(0), Val::Int(0)],
+            "a Rounding",
+        ),
+    ];
+    for (op, xs, want) in cases {
+        let what = broken_op(op.clone(), &xs);
+        assert!(
+            what.starts_with(&format!("a primitive's operands are {want}, found ")),
+            "{op:?} of {xs:?}: {what}"
+        );
+    }
+}
+
+#[test]
+fn a_checked_primitive_of_mistyped_operands_is_an_internal_error_not_none() {
+    let op = Op::Checked(Box::new(Op::Int(Arith::Div, Width::I64)));
+    let what = broken_op(op, &[Val::text("a"), Val::Int(0)]);
+    assert!(what.contains("an integer"), "{what}");
+}
+
+#[test]
+fn an_aggregate_over_mistyped_members_is_an_internal_error() {
+    let cases = [
+        (AggOp::SumInt(Base::I64), vec![Val::text("a")]),
+        (AggOp::SumDecimal, vec![Val::Int(1)]),
+        (AggOp::SumF32, vec![Val::Int(1)]),
+        (AggOp::SumF64, vec![Val::Int(1)]),
+        (AggOp::AvgF64 { wrap: true }, vec![Val::Int(1)]),
+    ];
+    for (op, ms) in cases {
+        let what = broken(aggregate(op, ms.clone()));
+        assert!(
+            what.starts_with("an aggregate's range binds "),
+            "{op:?} over {ms:?}: {what}"
+        );
+    }
+}
+
+#[test]
+fn an_aggregate_that_is_not_an_option_over_no_members_is_an_internal_error() {
+    for op in [
+        AggOp::Min { wrap: false },
+        AggOp::Max { wrap: false },
+        AggOp::AvgF64 { wrap: false },
+    ] {
+        assert_eq!(
+            "an aggregate that is not an Option ranges over a nonempty range",
+            broken(aggregate(op, Vec::new())),
+            "{op:?}"
+        );
+    }
+    assert_eq!(
+        Ok(Val::none()),
+        aggregate(AggOp::Min { wrap: true }, Vec::new())
+    );
+}
+
+#[test]
+fn a_field_of_a_constructor_without_it_is_an_internal_error() {
+    let at = At::ByCtor(vec![Some(0), None]);
+    assert_eq!(Ok(0), at.of(0));
+    assert_eq!("constructor 1 of the type has the field", broken(at.of(1)));
+    assert_eq!("constructor 7 of the type has the field", broken(at.of(7)));
+}
+
+#[test]
+fn a_case_without_an_arm_for_the_scrutinee_is_an_internal_error() {
+    let arms = [Some('a'), None];
+    assert_eq!(Ok(&'a'), arm(&arms, 0));
+    assert_eq!("a case has an arm for constructor 1", broken(arm(&arms, 1)));
+    assert_eq!("a case has an arm for constructor 9", broken(arm(&arms, 9)));
+}
+
+#[test]
+fn a_stored_or_key_value_of_another_type_is_an_internal_error() {
+    let what = broken(to_key(&KeyType::Scalar(Scalar::I64), &Val::text("a")));
+    assert!(what.contains("is not a value of"), "{what}");
+    let what = broken(to_stored(&FieldType::Scalar(Scalar::Text), &Val::Int(1)));
+    assert!(what.contains("is not a value of"), "{what}");
+    let what = broken(to_stored(&FieldType::Sum(Vec::new()), &Val::tag(3)));
+    assert!(what.contains("is not a value of"), "{what}");
+}
+
+#[test]
+fn an_internal_error_fails_the_statement_and_keeps_the_transaction() {
+    let e = crate::write::Error::from(Error::Internal("an invariant".into()));
+    assert_eq!(crate::write::Error::Internal("an invariant".into()), e);
+    assert!(!e.ends_transaction());
+}
+
+fn empty_schema() -> Schema {
+    let file = parse_schema("module app\n", Options::default())
+        .ok()
+        .unwrap_or_else(|ds| panic!("the schema does not parse: {ds:?}"));
+    let schema = build(&[(FileId(0), file)])
+        .unwrap_or_else(|ds| panic!("the schema does not build: {ds:?}"));
+    check_schema(&schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
+    schema
+}
+
+fn eval_term(schema: &Schema, terms: &Terms, t: Tm) -> Result<Val, Error> {
+    let code = Compiler::new(schema, terms).code(t)?;
+    let shared = Shared {
+        caller: None,
+        fault_ctors: Vec::new(),
+    };
+    code.eval_one(&mut Frame::unit(terms.vars.len()), &shared)
+}
+
+#[test]
+fn evaluating_unreachable_is_an_internal_error() {
+    let schema = empty_schema();
+    let mut terms = Terms::default();
+    let t = terms.add(Kind::Unreachable, Ty::Base(Base::I64));
+    assert_eq!(
+        "an evaluation reaches no `Unreachable`",
+        broken(eval_term(&schema, &terms, t))
+    );
+}
+
+#[test]
+fn a_reject_of_a_value_that_is_not_text_is_an_internal_error() {
+    let schema = empty_schema();
+    let mut terms = Terms::default();
+    let m = terms.add(Kind::Const(Const::Int(1)), Ty::Base(Base::I64));
+    let t = terms.add(Kind::Reject(m), Ty::Base(Base::I64));
+    assert_eq!(
+        "`reject` takes a Text",
+        broken(eval_term(&schema, &terms, t))
+    );
+}
+
+#[test]
+fn a_literal_outside_its_type_is_an_internal_error() {
+    let schema = empty_schema();
+    let mut terms = Terms::default();
+    let t = terms.add(Kind::Const(Const::Int(i128::MAX)), Ty::Base(Base::I64));
+    assert_eq!(
+        "an integer literal fits its type",
+        broken(eval_term(&schema, &terms, t))
+    );
+}
+
+#[test]
+fn a_key_of_a_term_that_is_not_a_key_type_is_an_internal_error() {
+    let schema = empty_schema();
+    let mut terms = Terms::default();
+    let x = terms.add(Kind::Const(Const::Int(1)), Ty::Base(Base::I64));
+    let t = terms.add(Kind::Key(x), Ty::Base(Base::I64));
+    let what = broken(eval_term(&schema, &terms, t));
+    assert!(what.starts_with("`key` has a key type"), "{what}");
 }

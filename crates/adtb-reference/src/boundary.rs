@@ -590,7 +590,7 @@ impl Interpreter<'_> {
                     let mut bad = false;
                     self.newtype_values(x, elem, *n, &mut |y| {
                         let ok = run.eval(&h, *p, &Env::default().bind(*var, y.clone()))?;
-                        bad |= !bool_of(&ok);
+                        bad |= !bool_of(&ok)?;
                         Ok(())
                     })?;
                     if bad {
@@ -619,7 +619,7 @@ impl Interpreter<'_> {
                     .zip(&self.program.checks),
             );
         for ((module, name), tm) in named {
-            let report = into_set(run.eval(&h, *tm, &Env::default())?);
+            let report = into_set(run.eval(&h, *tm, &Env::default())?)?;
             found(self.qualified(module, name), Constraint::Other, report);
         }
         Ok(out)

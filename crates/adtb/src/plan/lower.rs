@@ -380,29 +380,33 @@ impl Planner<'_> {
     }
 
     /// Returns scalar `t` with each case over a variable of fixed constructor replaced by its arm, when static routing is on.
-    fn here(&mut self, t: Tm, sc: &Scope) -> Tm {
+    fn here(&mut self, t: Tm, sc: &Scope) -> Result<Tm, Error> {
         if !self.rw.static_route || sc.known.is_empty() {
-            return t;
+            return Ok(t);
         }
         self.specialise(t, &sc.known, &mut HashMap::new())
     }
 
-    fn specialise(&mut self, t: Tm, known: &BTreeMap<Var, u32>, memo: &mut HashMap<Tm, Tm>) -> Tm {
+    fn specialise(
+        &mut self,
+        t: Tm,
+        known: &BTreeMap<Var, u32>,
+        memo: &mut HashMap<Tm, Tm>,
+    ) -> Result<Tm, Error> {
         if let Some(n) = memo.get(&t) {
-            return *n;
+            return Ok(*n);
         }
         let out = match self.kind(t) {
             Kind::Case { scrutinee, arms }
                 if let Kind::Var(v) = self.kind(scrutinee)
                     && let Some(c) = known.get(&v) =>
             {
-                let (_, x, arm) = arms
-                    .into_iter()
-                    .find(|(d, _, _)| d == c)
-                    .expect("a case names the constructor its scrutinee holds");
+                let (_, x, arm) = arms.into_iter().find(|(d, _, _)| d == c).ok_or_else(|| {
+                    Error::Internal("a case names the constructor its scrutinee holds".into())
+                })?;
                 let mut inner = known.clone();
                 inner.insert(x, *c);
-                let arm = self.specialise(arm, &inner, &mut HashMap::new());
+                let arm = self.specialise(arm, &inner, &mut HashMap::new())?;
                 self.add(Kind::Let(x, scrutinee, arm), self.ty(t))
             }
             kind => {
@@ -410,7 +414,7 @@ impl Planner<'_> {
                 let new: Vec<Tm> = cs
                     .iter()
                     .map(|c| self.specialise(*c, known, memo))
-                    .collect();
+                    .collect::<Result<_, _>>()?;
                 if new == cs {
                     t
                 } else {
@@ -419,13 +423,13 @@ impl Planner<'_> {
             }
         };
         memo.insert(t, out);
-        out
+        Ok(out)
     }
 
     /// Returns `t` as a scalar expression at a point of a chain, with the bindings that compute what it reads.
     fn lift_here(&mut self, t: Tm, sc: &Scope) -> Result<(Vec<(Var, Eval)>, Tm), Error> {
         let (lets, t) = self.lift_eval(t)?;
-        Ok((lets, self.here(t, sc)))
+        Ok((lets, self.here(t, sc)?))
     }
 
     /// Returns how many conditions from the first are scalar and total.
@@ -468,7 +472,7 @@ impl Planner<'_> {
             Kind::Try(e) => Ok(Eval::Try(Box::new(self.eval(e)?))),
             Kind::Deref { key, .. } => {
                 let (lets, k) = self.lift_eval(key)?;
-                let lookup = self.lookup(k, &ty);
+                let lookup = self.lookup(k, &ty)?;
                 Ok(wrap_eval(lets, Eval::Lookup(lookup)))
             }
             Kind::Agg {
@@ -564,7 +568,9 @@ impl Planner<'_> {
             )),
             Kind::At { .. } => Err(Error::NotAQuery("a read of history")),
             Kind::Transition(..) => Err(Error::NotAQuery("a read of a statement's transition")),
-            Kind::Lam(..) | Kind::App(..) => panic!("a normal form holds no function value"),
+            Kind::Lam(..) | Kind::App(..) => Err(Error::Internal(
+                "a normal form holds no function value".into(),
+            )),
             Kind::Skip
             | Kind::Insert(..)
             | Kind::Delete(..)
@@ -606,16 +612,16 @@ impl Planner<'_> {
         })))
     }
 
-    fn lookup(&mut self, key: Tm, row_ty: &Ty) -> Lookup {
+    fn lookup(&mut self, key: Tm, row_ty: &Ty) -> Result<Lookup, Error> {
         let Ty::Key { rel, ctors } = self.ty(key) else {
-            panic!("a dereference follows a key")
+            return Err(Error::Internal("a dereference follows a key".into()));
         };
         let ctors = match row_ty {
             Ty::Data { ctors: Some(s), .. } => s.clone(),
             _ => self.ctors_of(rel, &ctors),
         };
         let desc = self.catalog.relation(rel);
-        Lookup {
+        Ok(Lookup {
             index: desc.key_index,
             key: self
                 .key_values(rel, key)
@@ -626,7 +632,7 @@ impl Planner<'_> {
                 .iter()
                 .map(|c| (*c, self.catalog.heap(rel, *c)))
                 .collect(),
-        }
+        })
     }
 
     /// Returns the value of each key field of `rel` in the key `k`.
@@ -953,10 +959,9 @@ impl Planner<'_> {
                 && let Kind::Var(v) = self.kind(scrutinee)
                 && let Some(&k) = sc.known.get(&v)
             {
-                let (_, x, arm) = arms
-                    .into_iter()
-                    .find(|(d, _, _)| *d == k)
-                    .expect("a case names the constructor its scrutinee holds");
+                let (_, x, arm) = arms.into_iter().find(|(d, _, _)| *d == k).ok_or_else(|| {
+                    Error::Internal("a case names the constructor its scrutinee holds".into())
+                })?;
                 steps.push(Step::Bind(x, Eval::Expr(scrutinee)));
                 sc = sc.bind_known(x, Some(k));
                 c = arm;
@@ -1028,11 +1033,15 @@ impl Planner<'_> {
                     && let Kind::Var(v) = self.kind(scrutinee)
                     && let Some(&c) = sc.known.get(&v)
                 {
-                    let (_, x, body) = arms
-                        .iter()
-                        .find(|(d, _, _)| *d == c)
-                        .cloned()
-                        .expect("a case names the constructor its scrutinee holds");
+                    let (_, x, body) =
+                        arms.iter()
+                            .find(|(d, _, _)| *d == c)
+                            .cloned()
+                            .ok_or_else(|| {
+                                Error::Internal(
+                                    "a case names the constructor its scrutinee holds".into(),
+                                )
+                            })?;
                     let rest = self.chain(body, q, &sc.bind_known(x, Some(c)))?;
                     return Ok(prepend(vec![Step::Bind(x, Eval::Expr(scrutinee))], rest));
                 }
@@ -1050,7 +1059,7 @@ impl Planner<'_> {
             }
             Kind::For(y, src, body) => self.for_chain(y, src, body, q, sc),
             _ => {
-                let y = self.fresh("%e", self.elem_ty(t));
+                let y = self.fresh("%e", self.elem_ty(t)?);
                 let body = self.var_tm(y);
                 let body = self.add(Kind::Singleton(body), self.ty(t));
                 self.for_chain(y, t, body, q, sc)
@@ -1058,10 +1067,12 @@ impl Planner<'_> {
         }
     }
 
-    fn elem_ty(&self, set: Tm) -> Ty {
+    fn elem_ty(&self, set: Tm) -> Result<Ty, Error> {
         match self.t.ty(set) {
-            Ty::Set(e) | Ty::NonEmpty(e) => (**e).clone(),
-            other => panic!("a comprehension ranges over a set, not {other:?}"),
+            Ty::Set(e) | Ty::NonEmpty(e) => Ok((**e).clone()),
+            other => Err(Error::Internal(format!(
+                "a comprehension ranges over a set, not {other:?}"
+            ))),
         }
     }
 
@@ -1106,7 +1117,7 @@ impl Planner<'_> {
         let mut conds = Vec::new();
         for (i, c) in all.iter().enumerate() {
             if i < n && !self.mentions(*c, &[y]) {
-                pre.push(Step::Filter(self.here(*c, sc)));
+                pre.push(Step::Filter(self.here(*c, sc)?));
             } else {
                 conds.push(*c);
             }
@@ -1179,7 +1190,10 @@ impl Planner<'_> {
                     .collect();
                 let inner = sc.clone().times(rows);
                 let routes = self.routes(r, ctors, &index.ctors, y, &left, rest, q, &inner)?;
-                let key = key.into_iter().map(|k| self.here(k, sc)).collect();
+                let key = key
+                    .into_iter()
+                    .map(|k| self.here(k, sc))
+                    .collect::<Result<_, _>>()?;
                 let mut ends = self.index_ends(&index, key, y, routes);
                 Ok(match ends.len() {
                     0 if pre.is_empty() => nothing(),
@@ -1205,7 +1219,10 @@ impl Planner<'_> {
                 let known = (ctors.len() == 1).then(|| ctors[0]);
                 let inner = sc.bind_known(y, known).times(rows);
                 let rest = self.filtered(&left, rest, q, &inner)?;
-                let probe = probe.into_iter().map(|k| self.here(k, sc)).collect();
+                let probe = probe
+                    .into_iter()
+                    .map(|k| self.here(k, sc))
+                    .collect::<Result<_, _>>()?;
                 pre.push(Step::Probe {
                     build,
                     key: probe,
@@ -1484,14 +1501,16 @@ impl Planner<'_> {
             fused.retain(|(_, t)| *t);
         }
         let Ty::Record(group_fields) = self.t.var_info(g).ty.clone() else {
-            panic!("a group is a record of its key and rows")
+            return Err(Error::Internal(
+                "a group is a record of its key and rows".into(),
+            ));
         };
         let field_ty = |name: &str| {
             group_fields
                 .iter()
                 .find(|(n, _)| n == name)
                 .map(|(_, t)| t.clone())
-                .expect("a group has a key and rows")
+                .ok_or_else(|| Error::Internal("a group has a key and rows".into()))
         };
         loop {
             if fused.is_empty() {
@@ -1505,9 +1524,9 @@ impl Planner<'_> {
                 .zip(&names)
                 .map(|((a, _), n)| (n.clone(), self.ty(*a)))
                 .collect();
-            fields.push(("key".into(), field_ty("key")));
+            fields.push(("key".into(), field_ty("key")?));
             if rows_used {
-                fields.push(("rows".into(), field_ty("rows")));
+                fields.push(("rows".into(), field_ty("rows")?));
             }
             fields.sort_by(|a, b| a.0.cmp(&b.0));
             let rec_ty = Ty::Record(fields);

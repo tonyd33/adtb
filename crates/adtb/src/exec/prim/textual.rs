@@ -131,7 +131,8 @@ impl Form {
                     },
                     _ => unreachable!(),
                 };
-                let fields = ctors(schema, &t).expect("a sum has constructors");
+                let fields = ctors(schema, &t)
+                    .ok_or_else(|| Error::Internal(format!("{t:?} has constructors")))?;
                 let allowed = ctor_set(schema, &t);
                 let mut out = Vec::with_capacity(names.len());
                 for (i, (name, fs)) in names.into_iter().zip(fields).enumerate() {
@@ -172,7 +173,7 @@ fn key_form(schema: &Schema, rel: RelId) -> Result<Form, Error> {
     let field = |name: &str| -> Result<Form, Error> {
         let f = def
             .field(0, name)
-            .unwrap_or_else(|| panic!("`{}` has key field `{name}`", r.name));
+            .ok_or_else(|| Error::Internal(format!("`{}` has key field `{name}`", r.name)))?;
         match &f.ty {
             Ty::Key { rel: own, .. } if *own == rel => match r.generate {
                 Some(Generator::Uuidv7) => Ok(Form::Uuid),
@@ -243,11 +244,15 @@ pub fn parse_uuid(t: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn bytes(v: &Val) -> &[u8] {
+fn bytes(v: &Val) -> Result<&[u8], Error> {
     match v {
-        Val::Bytes(b) | Val::SortKey(b) => b,
-        other => panic!("expected bytes, found {other:?}"),
+        Val::Bytes(b) | Val::SortKey(b) => Ok(b),
+        other => Err(not_of_form(other, &Form::Bytes)),
     }
+}
+
+fn not_of_form(v: &Val, f: &Form) -> Error {
+    Error::Internal(format!("{v:?} is not a value of form {f:?}"))
 }
 
 fn quote(out: &mut String, t: &str) {
@@ -269,28 +274,28 @@ fn quote(out: &mut String, t: &str) {
 }
 
 /// Returns `text(v)` for a value of a number, a time type, `Uuid` or a newtype over `Text`.
-pub fn text(v: &Val, f: &Form) -> String {
+pub fn text(v: &Val, f: &Form) -> Result<String, Error> {
     match (f, v) {
         (Form::Newtype(_, base), v) if matches!(**base, Form::Text) => match v {
-            Val::Text(t) => t.to_string(),
-            other => panic!("expected text, found {other:?}"),
+            Val::Text(t) => Ok(t.to_string()),
+            other => Err(not_of_form(other, base)),
         },
-        (Form::Uuid, v) => uuid_text(bytes(v)),
+        (Form::Uuid, v) => Ok(uuid_text(bytes(v)?)),
         _ => print(v, f),
     }
 }
 
 /// Returns the canonical printed form of `v`.
-pub fn print(v: &Val, f: &Form) -> String {
+pub fn print(v: &Val, f: &Form) -> Result<String, Error> {
     let mut out = String::new();
-    write_val(&mut out, v, f);
-    out
+    write_val(&mut out, v, f)?;
+    Ok(out)
 }
 
-fn write_fields(out: &mut String, fields: &[(String, Form)], vs: &[Val]) {
+fn write_fields(out: &mut String, fields: &[(String, Form)], vs: &[Val]) -> Result<(), Error> {
     if fields.is_empty() {
         out.push_str("{}");
-        return;
+        return Ok(());
     }
     out.push_str("{ ");
     for (i, ((n, f), v)) in fields.iter().zip(vs).enumerate() {
@@ -299,12 +304,13 @@ fn write_fields(out: &mut String, fields: &[(String, Form)], vs: &[Val]) {
         }
         out.push_str(n);
         out.push_str(": ");
-        write_val(out, v, f);
+        write_val(out, v, f)?;
     }
     out.push_str(" }");
+    Ok(())
 }
 
-fn write_val(out: &mut String, v: &Val, f: &Form) {
+fn write_val(out: &mut String, v: &Val, f: &Form) -> Result<(), Error> {
     match (f, v) {
         (Form::Int(_), Val::Int(i)) => {
             write!(out, "{i}").expect("a String accepts every write");
@@ -313,7 +319,7 @@ fn write_val(out: &mut String, v: &Val, f: &Form) {
         (Form::F32, Val::F32(x)) => out.push_str(&f32_text(x.get())),
         (Form::F64, Val::F64(x)) => out.push_str(&f64_text(x.get())),
         (Form::Text, Val::Text(t)) => quote(out, t),
-        (Form::Bytes | Form::SortKey, v) => hex(out, bytes(v)),
+        (Form::Bytes | Form::SortKey, v) => hex(out, bytes(v)?),
         (Form::Instant, Val::Instant(i)) => {
             out.push_str(&datetime_text(*i));
             out.push('Z');
@@ -328,40 +334,43 @@ fn write_val(out: &mut String, v: &Val, f: &Form) {
         (Form::Period, Val::Period { months, days }) => {
             write!(out, "P{months}M{days}D").expect("a String accepts every write");
         }
-        (Form::Bool, v) => out.push_str(if v.truth() { "True" } else { "False" }),
+        (Form::Bool, Val::Ctor(0, fs)) if fs.is_empty() => out.push_str("False"),
+        (Form::Bool, Val::Ctor(1, fs)) if fs.is_empty() => out.push_str("True"),
         (Form::Uuid, v) => {
-            write!(out, "uuid(\"{}\")", uuid_text(bytes(v))).expect("a String accepts every write");
+            write!(out, "uuid(\"{}\")", uuid_text(bytes(v)?))
+                .expect("a String accepts every write");
         }
         (Form::Newtype(name, base), v) => {
             out.push_str(name);
             out.push('(');
-            write_val(out, v, base);
+            write_val(out, v, base)?;
             out.push(')');
         }
         (Form::Sum(cs), Val::Ctor(c, vs)) => {
-            let ctor = cs[*c as usize]
-                .as_ref()
-                .expect("a value's constructor is one of its type's");
+            let ctor = cs
+                .get(*c as usize)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| not_of_form(v, f))?;
             out.push_str(&ctor.name);
             if !ctor.fields.is_empty() {
                 out.push(' ');
-                write_fields(out, &ctor.fields, vs);
+                write_fields(out, &ctor.fields, vs)?;
             }
         }
-        (Form::Record(fs), Val::Record(vs)) => write_fields(out, fs, vs),
+        (Form::Record(fs), Val::Record(vs)) => write_fields(out, fs, vs)?,
         (Form::Key { rel, value, .. }, v) => {
             out.push_str(rel);
             out.push_str(".key(");
             match value {
-                KeyForm::One(f) => write_val(out, v, f),
+                KeyForm::One(f) => write_val(out, v, f)?,
                 KeyForm::Fields(fs) => {
-                    for (i, ((n, f), x)) in fs.iter().zip(v.fields()).enumerate() {
+                    for (i, ((n, f), x)) in fs.iter().zip(super::fields(v)?).enumerate() {
                         if i > 0 {
                             out.push_str(", ");
                         }
                         out.push_str(n);
                         out.push_str(": ");
-                        write_val(out, x, f);
+                        write_val(out, x, f)?;
                     }
                 }
             }
@@ -373,20 +382,21 @@ fn write_val(out: &mut String, v: &Val, f: &Form) {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                write_val(out, x, elem);
+                write_val(out, x, elem)?;
             }
             out.push(']');
         }
         (Form::Span(a), v) => {
-            let fs = v.fields();
+            let fs = super::fields(v)?;
             out.push_str("span(");
-            write_val(out, &fs[0], a);
+            write_val(out, &fs[0], a)?;
             out.push_str(", ");
-            write_val(out, &fs[1], a);
+            write_val(out, &fs[1], a)?;
             out.push(')');
         }
-        (f, v) => panic!("{v:?} is not a value of form {f:?}"),
+        (f, v) => return Err(not_of_form(v, f)),
     }
+    Ok(())
 }
 
 /// Returns the value text `t` reads as at form `f`, or `None` when it does not read as one.

@@ -17,65 +17,88 @@ fn fits(b: Base, v: i128) -> Option<i64> {
     (lo..=hi).contains(&v).then_some(v as i64)
 }
 
-fn float(v: &Val) -> f64 {
+fn mistyped(want: &str, v: &Val) -> Error {
+    Error::Internal(format!("an aggregate's range binds {want}, found {v:?}"))
+}
+
+fn float(v: &Val) -> Result<f64, Error> {
     match v {
-        Val::F32(x) => f64::from(x.get()),
-        Val::F64(x) => x.get(),
-        other => panic!("expected a float, found {other:?}"),
+        Val::F32(x) => Ok(f64::from(x.get())),
+        Val::F64(x) => Ok(x.get()),
+        other => Err(mistyped("floats", other)),
     }
+}
+
+fn sum_f32(ms: &[Val]) -> Result<f32, Error> {
+    ms.iter().map(|m| Ok(float(m)? as f32)).sum()
+}
+
+fn sum_f64(ms: &[Val]) -> Result<f64, Error> {
+    ms.iter().map(float).sum()
 }
 
 /// Returns aggregate `op` of `ms`, one value per binding of its range.
 pub fn aggregate(op: AggOp, ms: Vec<Val>) -> Result<Val, Error> {
     let wrap = |w: bool, v: Option<Val>| match (w, v) {
-        (true, Some(v)) => Val::some(v),
-        (true, None) => Val::none(),
-        (false, Some(v)) => v,
-        (false, None) => panic!("an aggregate over a nonempty range saw no binding"),
+        (true, Some(v)) => Ok(Val::some(v)),
+        (true, None) => Ok(Val::none()),
+        (false, Some(v)) => Ok(v),
+        (false, None) => Err(Error::Internal(
+            "an aggregate that is not an Option ranges over a nonempty range".into(),
+        )),
     };
-    Ok(match op {
-        AggOp::Count => Val::Int(ms.len() as i64),
+    let n = ms.len();
+    match op {
+        AggOp::Count => Ok(Val::Int(n as i64)),
         AggOp::SumInt(b) => {
-            let total: i128 = ms.iter().map(|m| i128::from(m.int())).sum();
-            Val::Int(fits(b, total).ok_or(Error::Fault(Fault::ArithmeticOverflow))?)
+            let mut total: i128 = 0;
+            for m in &ms {
+                let Val::Int(i) = m else {
+                    return Err(mistyped("integers", m));
+                };
+                total += i128::from(*i);
+            }
+            Ok(Val::Int(
+                fits(b, total).ok_or(Error::Fault(Fault::ArithmeticOverflow))?,
+            ))
         }
         AggOp::SumDecimal => {
             let mut total = Wide::ZERO;
             for m in &ms {
                 let Val::Decimal(d) = m else {
-                    panic!("`sum` at a decimal type over {m:?}")
+                    return Err(mistyped("decimals", m));
                 };
                 total = total
                     .add(Wide::from_i128(*d))
                     .ok_or(Error::Fault(Fault::ArithmeticOverflow))?;
             }
-            Val::Decimal(
+            Ok(Val::Decimal(
                 total
                     .digits38()
                     .ok_or(Error::Fault(Fault::ArithmeticOverflow))?,
-            )
+            ))
         }
-        AggOp::SumF32 => Val::F32(F32::new(ms.iter().map(|m| float(m) as f32).sum())),
-        AggOp::SumF64 => Val::F64(F64::new(ms.iter().map(float).sum())),
+        AggOp::SumF32 => Ok(Val::F32(F32::new(sum_f32(&ms)?))),
+        AggOp::SumF64 => Ok(Val::F64(F64::new(sum_f64(&ms)?))),
         AggOp::Min { wrap: w } => wrap(w, ms.into_iter().min()),
         AggOp::Max { wrap: w } => wrap(w, ms.into_iter().max()),
         AggOp::AvgF32 { wrap: w } => {
-            let n = ms.len();
-            let v = (n > 0).then(|| {
-                let s: f32 = ms.iter().map(|m| float(m) as f32).sum();
-                Val::F32(F32::new(s / n as f32))
-            });
+            let v = if n > 0 {
+                Some(Val::F32(F32::new(sum_f32(&ms)? / n as f32)))
+            } else {
+                None
+            };
             wrap(w, v)
         }
         AggOp::AvgF64 { wrap: w } => {
-            let n = ms.len();
-            let v = (n > 0).then(|| {
-                let s: f64 = ms.iter().map(float).sum();
-                Val::F64(F64::new(s / n as f64))
-            });
+            let v = if n > 0 {
+                Some(Val::F64(F64::new(sum_f64(&ms)? / n as f64)))
+            } else {
+                None
+            };
             wrap(w, v)
         }
-    })
+    }
 }
 
 /// Returns the order of two key lists under directions `desc`.

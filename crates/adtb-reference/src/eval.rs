@@ -77,6 +77,8 @@ pub enum Abort {
     Reject(Rejection),
     /// A form the interpreter does not evaluate yet.
     NotYet(String),
+    /// The term or a value breaks the invariant this text names, one the checker guarantees.
+    Internal(String),
 }
 
 impl From<Fault> for Abort {
@@ -89,6 +91,10 @@ pub type R<T> = Result<T, Abort>;
 
 pub(crate) fn not_yet<T>(what: &str) -> R<T> {
     Err(Abort::NotYet(what.to_string()))
+}
+
+pub(crate) fn internal<T>(what: impl Into<String>) -> R<T> {
+    Err(Abort::Internal(what.into()))
 }
 
 /// The transition a constraint body reads: the state before the statement and the rows it
@@ -315,35 +321,36 @@ pub(crate) struct Run<'r, 'a> {
     pub(crate) stmt: Option<&'r Stmt>,
 }
 
-fn int(v: &Value) -> i64 {
+fn int(v: &Value) -> R<i64> {
     match v {
-        Value::Int(i) => *i,
-        other => panic!("expected an integer, found {other:?}"),
+        Value::Int(i) => Ok(*i),
+        other => internal(format!("expected an integer, found {other:?}")),
     }
 }
 
-pub(crate) fn bool_of(v: &Value) -> bool {
-    v.as_bool()
-        .unwrap_or_else(|| panic!("expected a Bool, found {v:?}"))
+pub(crate) fn bool_of(v: &Value) -> R<bool> {
+    match v.as_bool() {
+        Some(b) => Ok(b),
+        None => internal(format!("expected a Bool, found {v:?}")),
+    }
 }
 
-pub(crate) fn into_set(v: Value) -> BTreeSet<Value> {
+pub(crate) fn into_set(v: Value) -> R<BTreeSet<Value>> {
     match v {
-        Value::Set(s) => s,
-        other => panic!("expected a set, found {other:?}"),
+        Value::Set(s) => Ok(s),
+        other => internal(format!("expected a set, found {other:?}")),
     }
 }
 
 /// Returns the variable and body of the arm of a `Case` that the scrutinee's value takes.
-pub(crate) fn case_arm(arms: &[(u32, Var, Tm)], v: &Value) -> (Var, Tm) {
-    let c = v
-        .tag()
-        .unwrap_or_else(|| panic!("a case scrutinee is a constructor value: {v:?}"));
-    let (_, x, body) = arms
-        .iter()
-        .find(|(d, _, _)| *d == c)
-        .unwrap_or_else(|| panic!("a case names constructor {c} of its scrutinee"));
-    (*x, *body)
+pub(crate) fn case_arm(arms: &[(u32, Var, Tm)], v: &Value) -> R<(Var, Tm)> {
+    let Some(c) = v.tag() else {
+        return internal(format!("a case scrutinee is a constructor value: {v:?}"));
+    };
+    match arms.iter().find(|(d, _, _)| *d == c) {
+        Some((_, x, body)) => Ok((*x, *body)),
+        None => internal(format!("a case names constructor {c} of its scrutinee")),
+    }
 }
 
 /// Compares two lists of ordering values, each key ascending unless its flag says descending.
@@ -383,7 +390,7 @@ impl Run<'_, '_> {
     }
 
     pub(crate) fn set(&self, h: &Here, t: Tm, env: &Env) -> R<BTreeSet<Value>> {
-        Ok(into_set(self.eval(h, t, env)?))
+        into_set(self.eval(h, t, env)?)
     }
 
     fn eval_all(&self, h: &Here, ts: &[Tm], env: &Env) -> R<Vec<Value>> {
@@ -392,7 +399,7 @@ impl Run<'_, '_> {
 
     pub(crate) fn apply(&self, f: Value, arg: Value) -> R<Value> {
         let Value::Fn(c) = f else {
-            panic!("applied a value that is not a function: {f:?}")
+            return internal(format!("applied a value that is not a function: {f:?}"));
         };
         self.eval(&c.here, c.body, &c.env.bind(c.var, arg))
     }
@@ -452,7 +459,7 @@ impl Run<'_, '_> {
         let it = self.it;
         match terms.kind(t) {
             Kind::Var(v) => Ok(env.get(*v).clone()),
-            Kind::Const(c) => Ok(constant(c, &self.ty(h, t))),
+            Kind::Const(c) => constant(c, &self.ty(h, t)),
             Kind::Prim(p, args) => {
                 let vs = self.eval_all(h, args, env)?;
                 let tys: Vec<Ty> = args.iter().map(|a| self.ty(h, *a)).collect();
@@ -469,7 +476,7 @@ impl Run<'_, '_> {
                 let v = self.eval(h, *x, env)?;
                 match v.field(name) {
                     Some(f) => Ok(f.clone()),
-                    None => panic!("{v:?} has no field `{name}`"),
+                    None => internal(format!("{v:?} has no field `{name}`")),
                 }
             }
             Kind::Ctor { ctor, fields } => {
@@ -481,24 +488,23 @@ impl Run<'_, '_> {
                     Some(order) => order
                         .into_iter()
                         .map(|n| {
-                            let i = given
-                                .iter()
-                                .position(|(g, _)| *g == n)
-                                .unwrap_or_else(|| panic!("constructor field `{n}` is given"));
-                            given.swap_remove(i)
+                            let Some(i) = given.iter().position(|(g, _)| *g == n) else {
+                                return internal(format!("constructor field `{n}` is given"));
+                            };
+                            Ok(given.swap_remove(i))
                         })
-                        .collect(),
+                        .collect::<R<_>>()?,
                     None => given,
                 };
                 Ok(Value::Ctor(*ctor, given))
             }
             Kind::Case { scrutinee, arms } => {
                 let v = self.eval(h, *scrutinee, env)?;
-                let (x, body) = case_arm(arms, &v);
+                let (x, body) = case_arm(arms, &v)?;
                 self.eval(h, body, &env.bind(x, v))
             }
             Kind::If(c, a, b) => {
-                if bool_of(&self.eval(h, *c, env)?) {
+                if bool_of(&self.eval(h, *c, env)?)? {
                     self.eval(h, *a, env)
                 } else {
                     self.eval(h, *b, env)
@@ -535,7 +541,7 @@ impl Run<'_, '_> {
             Kind::Key(x) => {
                 let row = self.eval(h, *x, env)?;
                 let Ty::Key { rel, .. } = self.ty(h, t) else {
-                    panic!("`key` has a key type")
+                    return internal("`key` has a key type");
                 };
                 Ok(it.key_of(rel, &row))
             }
@@ -543,7 +549,7 @@ impl Run<'_, '_> {
             Kind::Deref { key, .. } => {
                 let k = self.eval(h, *key, env)?;
                 let Ty::Key { rel, ctors } = self.ty(h, *key) else {
-                    panic!("`deref` follows a key")
+                    return internal("`deref` follows a key");
                 };
                 let ctors = match self.ty(h, t) {
                     Ty::Data { ctors: Some(s), .. } => Some(s),
@@ -556,7 +562,9 @@ impl Run<'_, '_> {
             }
             Kind::Tag(x) => {
                 let v = self.eval(h, *x, env)?;
-                let c = v.tag().expect("`tag` takes a constructor value");
+                let Some(c) = v.tag() else {
+                    return internal("`tag` takes a constructor value");
+                };
                 Ok(Value::Ctor(c, Vec::new()))
             }
             Kind::Try(x) => match self.eval(h, *x, env) {
@@ -634,7 +642,7 @@ impl Run<'_, '_> {
                 var,
                 source,
             } => {
-                let c = int(&self.eval(h, *count, env)?);
+                let c = int(&self.eval(h, *count, env)?)?;
                 let a = self.set(h, *source, env)?;
                 let sorted = self.ordered(h, a, keys, *var, env)?;
                 if c < 0 {
@@ -654,21 +662,27 @@ impl Run<'_, '_> {
                 let a = self.set(h, *source, env)?;
                 let sorted = self.ordered(h, a, keys, *var, env)?;
                 let take = match take {
-                    Some(n) => Some(int(&self.eval(h, *n, env)?)),
+                    Some(n) => Some(int(&self.eval(h, *n, env)?)?),
                     None => None,
                 };
                 let cursor = match after {
                     Some(c) => match self.eval(h, *c, env)? {
                         Value::Ctor(0, _) => None,
                         Value::Ctor(1, mut fs) => {
-                            let v = fs.pop().expect("`Some` has a value").1;
+                            let Some((_, v)) = fs.pop() else {
+                                return internal("`Some` has a value");
+                            };
                             Some(match (keys.len(), v) {
                                 (1, v) => vec![v],
                                 (_, Value::Record(fs)) => fs.into_iter().map(|(_, v)| v).collect(),
-                                (_, v) => panic!("a compound cursor is a record, found {v:?}"),
+                                (_, v) => {
+                                    return internal(format!(
+                                        "a compound cursor is a record, found {v:?}"
+                                    ));
+                                }
                             })
                         }
-                        v => panic!("a cursor is an `Option`, found {v:?}"),
+                        v => return internal(format!("a cursor is an `Option`, found {v:?}")),
                     },
                     None => None,
                 };
@@ -709,7 +723,7 @@ impl Run<'_, '_> {
                 }
             }
             Kind::At { .. } => not_yet("`at` reads history, and this database value has none"),
-            Kind::Unreachable => panic!("evaluation reached a position exhaustiveness excludes"),
+            Kind::Unreachable => internal("evaluation reached a position exhaustiveness excludes"),
             Kind::Fresh(g, r) => {
                 let stmt = self
                     .stmt
@@ -718,11 +732,14 @@ impl Run<'_, '_> {
             }
             Kind::Only(x) => {
                 let mut s = self.set(h, *x, env)?.into_iter();
-                Ok(s.next().expect("`only` takes a set of one element"))
+                match s.next() {
+                    Some(v) => Ok(v),
+                    None => internal("`only` takes a set of one element"),
+                }
             }
             Kind::Reject(m) => {
                 let Value::Text(detail) = self.eval(h, *m, env)? else {
-                    panic!("`reject` takes a Text")
+                    return internal("`reject` takes a Text");
                 };
                 Err(Abort::Reject(Rejection::BadInput {
                     source: String::new(),
@@ -741,7 +758,7 @@ impl Run<'_, '_> {
             | Kind::LetBang(..)
             | Kind::Block(..)
             | Kind::Transact(..) => {
-                panic!("a write or block is evaluated by `Interpreter::run`, never as a query")
+                internal("a write or block is evaluated by `Interpreter::run`, never as a query")
             }
         }
     }
@@ -770,8 +787,8 @@ impl Run<'_, '_> {
     }
 }
 
-fn constant(c: &Const, ty: &Ty) -> Value {
-    match (c, ty) {
+fn constant(c: &Const, ty: &Ty) -> R<Value> {
+    Ok(match (c, ty) {
         (Const::Int(i), Ty::Base(Base::Decimal(s))) => {
             Value::Decimal(i * 10i128.pow(u32::from(*s)), *s)
         }
@@ -779,12 +796,12 @@ fn constant(c: &Const, ty: &Ty) -> Value {
         (Const::Int(i), Ty::Base(Base::F64)) => Value::F64(*i as f64),
         (Const::Int(i), _) => Value::Int(*i as i64),
         (Const::Decimal(d), Ty::Base(Base::Decimal(s))) => Value::Decimal(*d, *s),
-        (Const::Decimal(d), t) => panic!("decimal constant {d} at {t:?}"),
+        (Const::Decimal(d), t) => return internal(format!("decimal constant {d} at {t:?}")),
         (Const::Float(f), Ty::Base(Base::F32)) => Value::F32(canon32(*f as f32)),
         (Const::Float(f), _) => Value::F64(canon64(*f)),
         (Const::Text(s), _) => Value::Text(s.clone()),
         (Const::Duration(d), _) => Value::Duration(*d),
-    }
+    })
 }
 
 /// Returns the value of an aggregate over the body values of its bindings, at the node's type
@@ -804,29 +821,31 @@ fn aggregate(op: Agg, ms: Vec<Value>, ty: &Ty, body: &Ty) -> R<Value> {
             };
             match m {
                 Some(v) => Ok(wrap(v)),
-                None if direct => panic!("an aggregate over a nonempty range saw no binding"),
+                None if direct => internal("an aggregate over a nonempty range saw no binding"),
                 None => Ok(Value::none()),
             }
         }
         Agg::Avg => {
             if ms.is_empty() {
-                assert!(!direct, "an aggregate over a nonempty range saw no binding");
+                if direct {
+                    return internal("an aggregate over a nonempty range saw no binding");
+                }
                 return Ok(Value::none());
             }
             let n = ms.len();
             let v = match &ms[0] {
                 Value::F32(_) => {
-                    let s = ms.iter().fold(0f32, |a, m| match m {
-                        Value::F32(x) => a + x,
-                        _ => panic!("`avg` over F32"),
-                    });
+                    let s = ms.iter().try_fold(0f32, |a, m| match m {
+                        Value::F32(x) => Ok(a + x),
+                        _ => internal("`avg` over F32"),
+                    })?;
                     Value::F32(canon32(s / n as f32))
                 }
                 _ => {
-                    let s = ms.iter().fold(0f64, |a, m| match m {
-                        Value::F64(x) => a + x,
-                        _ => panic!("`avg` over F64"),
-                    });
+                    let s = ms.iter().try_fold(0f64, |a, m| match m {
+                        Value::F64(x) => Ok(a + x),
+                        _ => internal("`avg` over F64"),
+                    })?;
                     Value::F64(canon64(s / n as f64))
                 }
             };
@@ -839,9 +858,9 @@ fn aggregate(op: Agg, ms: Vec<Value>, ty: &Ty, body: &Ty) -> R<Value> {
 fn sum(ms: Vec<Value>, ty: &Ty) -> R<Value> {
     match ty {
         Ty::Base(b @ (Base::I8 | Base::I16 | Base::I32 | Base::I64)) => {
-            let total = ms.iter().fold(Big::zero(), |a, m| {
-                a.add(&Big::from_i128(i128::from(int(m))))
-            });
+            let total = ms.iter().try_fold(Big::zero(), |a, m| {
+                Ok::<_, Abort>(a.add(&Big::from_i128(i128::from(int(m)?))))
+            })?;
             total
                 .to_i128()
                 .and_then(|v| in_range(v, *b))
@@ -849,22 +868,28 @@ fn sum(ms: Vec<Value>, ty: &Ty) -> R<Value> {
                 .ok_or(Abort::Fault(Fault::ArithmeticOverflow))
         }
         Ty::Base(Base::Decimal(s)) => {
-            let total = ms.iter().fold(Big::zero(), |a, m| match m {
-                Value::Decimal(d, t) if t == s => a.add(&Big::from_i128(*d)),
-                other => panic!("`sum` at Decimal {s} over {other:?}"),
-            });
+            let total = ms.iter().try_fold(Big::zero(), |a, m| match m {
+                Value::Decimal(d, t) if t == s => Ok(a.add(&Big::from_i128(*d))),
+                other => internal(format!("`sum` at Decimal {s} over {other:?}")),
+            })?;
             digits38(&total)
                 .map(|d| Value::Decimal(d, *s))
                 .ok_or(Abort::Fault(Fault::ArithmeticOverflow))
         }
-        Ty::Base(Base::F32) => Ok(Value::F32(canon32(ms.iter().fold(0f32, |a, m| match m {
-            Value::F32(x) => a + x,
-            _ => panic!("`sum` over F32"),
-        })))),
-        Ty::Base(Base::F64) => Ok(Value::F64(canon64(ms.iter().fold(0f64, |a, m| match m {
-            Value::F64(x) => a + x,
-            _ => panic!("`sum` over F64"),
-        })))),
-        t => panic!("`sum` at {t:?}"),
+        Ty::Base(Base::F32) => {
+            let s = ms.iter().try_fold(0f32, |a, m| match m {
+                Value::F32(x) => Ok(a + x),
+                _ => internal("`sum` over F32"),
+            })?;
+            Ok(Value::F32(canon32(s)))
+        }
+        Ty::Base(Base::F64) => {
+            let s = ms.iter().try_fold(0f64, |a, m| match m {
+                Value::F64(x) => Ok(a + x),
+                _ => internal("`sum` over F64"),
+            })?;
+            Ok(Value::F64(canon64(s)))
+        }
+        t => internal(format!("`sum` at {t:?}")),
     }
 }

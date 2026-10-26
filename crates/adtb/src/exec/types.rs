@@ -64,10 +64,12 @@ pub enum At {
 }
 
 impl At {
-    pub fn of(&self, ctor: u32) -> usize {
+    pub fn of(&self, ctor: u32) -> Result<usize, Error> {
         match self {
-            At::Fixed(i) => *i,
-            At::ByCtor(at) => at[ctor as usize].expect("a constructor of the type has the field"),
+            At::Fixed(i) => Ok(*i),
+            At::ByCtor(at) => at.get(ctor as usize).copied().flatten().ok_or_else(|| {
+                Error::Internal(format!("constructor {ctor} of the type has the field"))
+            }),
         }
     }
 }
@@ -75,10 +77,9 @@ impl At {
 /// Returns where field `name` of a value of type `ty` lies, and the field's type.
 pub fn field(schema: &Schema, ty: &Ty, name: &str) -> Result<(At, Ty), Error> {
     if let Ty::Record(fs) = repr(schema, ty) {
-        let i = fs
-            .iter()
-            .position(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("a record of type {ty:?} has field `{name}`"));
+        let i = fs.iter().position(|(n, _)| n == name).ok_or_else(|| {
+            Error::Internal(format!("a record of type {ty:?} has field `{name}`"))
+        })?;
         return Ok((At::Fixed(i), fs[i].1.clone()));
     }
     let cs = ctors(schema, ty)
@@ -90,13 +91,15 @@ pub fn field(schema: &Schema, ty: &Ty, name: &str) -> Result<(At, Ty), Error> {
         let i = cs[c as usize]
             .iter()
             .position(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("constructor {c} of {ty:?} has field `{name}`"));
+            .ok_or_else(|| {
+                Error::Internal(format!("constructor {c} of {ty:?} has field `{name}`"))
+            })?;
         at[c as usize] = Some(i);
         field_ty.get_or_insert_with(|| cs[c as usize][i].1.clone());
     }
     let first = set.first().and_then(|&c| at[c as usize]);
     let fixed = set.iter().all(|&c| at[c as usize] == first);
-    let ty = field_ty.expect("a row type names a constructor");
+    let ty = field_ty.ok_or_else(|| Error::Internal(format!("{ty:?} names a constructor")))?;
     match (fixed, first) {
         (true, Some(i)) => Ok((At::Fixed(i), ty)),
         _ => Ok((At::ByCtor(at), ty)),

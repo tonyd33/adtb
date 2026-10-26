@@ -2,7 +2,7 @@ use adtb_lang::kernel::Prim;
 use adtb_lang::types::{Base, Ty};
 
 use crate::big::Big;
-use crate::eval::{Abort, Fault, Interpreter, R};
+use crate::eval::{Abort, Fault, Interpreter, R, internal};
 use crate::num::{
     Rounding, dec_add, dec_div, dec_mul, dec_rescale, dec_round, digits38, float_scaled, in_range,
 };
@@ -15,15 +15,15 @@ fn fault<T>(f: Fault) -> R<T> {
     Err(Abort::Fault(f))
 }
 
-fn int_base(ty: &Ty) -> Base {
+fn int_base(ty: &Ty) -> R<Base> {
     match ty {
-        Ty::Base(b @ (Base::I8 | Base::I16 | Base::I32 | Base::I64)) => *b,
-        t => panic!("an integer operation at {t:?}"),
+        Ty::Base(b @ (Base::I8 | Base::I16 | Base::I32 | Base::I64)) => Ok(*b),
+        t => internal(format!("an integer operation at {t:?}")),
     }
 }
 
 fn int_at(v: i128, ty: &Ty) -> R<Value> {
-    in_range(v, int_base(ty))
+    in_range(v, int_base(ty)?)
         .map(Value::Int)
         .ok_or(Abort::Fault(Fault::ArithmeticOverflow))
 }
@@ -44,22 +44,25 @@ fn i32_or(v: Option<i32>) -> R<i32> {
     v.ok_or(Abort::Fault(Fault::ArithmeticOverflow))
 }
 
-fn text(v: &Value) -> &str {
+fn text(v: &Value) -> R<&str> {
     match v {
-        Value::Text(t) => t,
-        other => panic!("expected text, found {other:?}"),
+        Value::Text(t) => Ok(t),
+        other => internal(format!("expected text, found {other:?}")),
     }
 }
 
-fn rounding(v: &Value) -> Rounding {
-    Rounding::from_ctor(v.tag().expect("a `Rounding` constructor"))
+fn rounding(v: &Value) -> R<Rounding> {
+    match v.tag() {
+        Some(c) => Rounding::from_ctor(c),
+        None => internal(format!("a `Rounding` is a constructor value, found {v:?}")),
+    }
 }
 
 /// The type an `Option` type holds.
-fn option_arg(ty: &Ty) -> &Ty {
+fn option_arg(ty: &Ty) -> R<&Ty> {
     match ty {
-        Ty::Data { args, .. } if args.len() == 1 => &args[0],
-        t => panic!("expected an `Option` type, found {t:?}"),
+        Ty::Data { args, .. } if args.len() == 1 => Ok(&args[0]),
+        t => internal(format!("expected an `Option` type, found {t:?}")),
     }
 }
 
@@ -78,7 +81,7 @@ fn arith(p: Prim, a: &Value, b: &Value, ty: &Ty) -> R<Value> {
                 }
                 Prim::Div | Prim::CheckedDiv => int_at(x / y, ty),
                 Prim::Rem | Prim::CheckedRem => int_at(x % y, ty),
-                _ => panic!("{p:?} on integers"),
+                _ => internal(format!("{p:?} on integers")),
             }
         }
         (Decimal(x, s), Decimal(y, t)) => {
@@ -86,7 +89,7 @@ fn arith(p: Prim, a: &Value, b: &Value, ty: &Ty) -> R<Value> {
                 Prim::Add | Prim::CheckedAdd => dec_add(*x, *s, *y, *t, false)?,
                 Prim::Sub | Prim::CheckedSub => dec_add(*x, *s, *y, *t, true)?,
                 Prim::Mul | Prim::CheckedMul => dec_mul(*x, *s, *y, *t)?,
-                _ => panic!("{p:?} on decimals"),
+                _ => return internal(format!("{p:?} on decimals")),
             };
             Ok(Decimal(v, u))
         }
@@ -95,14 +98,14 @@ fn arith(p: Prim, a: &Value, b: &Value, ty: &Ty) -> R<Value> {
             Prim::Sub => x - y,
             Prim::Mul => x * y,
             Prim::Div => x / y,
-            _ => panic!("{p:?} on floats"),
+            _ => return internal(format!("{p:?} on floats")),
         }))),
         (F32(x), F32(y)) => Ok(F32(canon32(match p {
             Prim::Add => x + y,
             Prim::Sub => x - y,
             Prim::Mul => x * y,
             Prim::Div => x / y,
-            _ => panic!("{p:?} on floats"),
+            _ => return internal(format!("{p:?} on floats")),
         }))),
         (Duration(x), Duration(y)) => Ok(Duration(i64_or(match p {
             Prim::Add => x.checked_add(*y),
@@ -150,7 +153,7 @@ fn arith(p: Prim, a: &Value, b: &Value, ty: &Ty) -> R<Value> {
             })?;
             Ok(Zoned(zone::in_zone(moved, z)?, z.clone()))
         }
-        _ => panic!("{p:?} on {a:?} and {b:?}"),
+        _ => internal(format!("{p:?} on {a:?} and {b:?}")),
     }
 }
 
@@ -166,20 +169,20 @@ fn neg(v: &Value, ty: &Ty) -> R<Value> {
             months: i32_or(months.checked_neg())?,
             days: i32_or(days.checked_neg())?,
         }),
-        _ => panic!("`-` on {v:?}"),
+        _ => internal(format!("`-` on {v:?}")),
     }
 }
 
-fn to_float64(v: &Value) -> f64 {
-    match v {
+fn to_float64(v: &Value) -> R<f64> {
+    Ok(match v {
         Value::Int(x) => *x as f64,
         Value::Decimal(d, s) => format!("{d}e-{s}")
             .parse()
             .expect("a decimal reads as a float"),
         Value::F32(f) => f64::from(*f),
         Value::F64(f) => *f,
-        other => panic!("`f64` of {other:?}"),
-    }
+        other => return internal(format!("`f64` of {other:?}")),
+    })
 }
 
 /// Converts `v` to numeric type `to`; `args` are the conversion's further arguments.
@@ -189,12 +192,12 @@ fn convert(v: &Value, args: &[Value], to: &Ty) -> R<Value> {
         Ty::Base(b @ (Base::I8 | Base::I16 | Base::I32 | Base::I64)) => {
             let wide: i128 = match v {
                 Value::Int(x) => i128::from(*x),
-                Value::Decimal(d, s) => range(dec_round(*d, *s, 0, rounding(&args[0])).to_i128())?,
+                Value::Decimal(d, s) => range(dec_round(*d, *s, 0, rounding(&args[0])?).to_i128())?,
                 Value::F32(f) => {
-                    range(float_scaled(f64::from(*f), 0, rounding(&args[0]))?.to_i128())?
+                    range(float_scaled(f64::from(*f), 0, rounding(&args[0])?)?.to_i128())?
                 }
-                Value::F64(f) => range(float_scaled(*f, 0, rounding(&args[0]))?.to_i128())?,
-                other => panic!("an integer conversion of {other:?}"),
+                Value::F64(f) => range(float_scaled(*f, 0, rounding(&args[0])?)?.to_i128())?,
+                other => return internal(format!("an integer conversion of {other:?}")),
             };
             in_range(wide, *b)
                 .map(Value::Int)
@@ -203,13 +206,13 @@ fn convert(v: &Value, args: &[Value], to: &Ty) -> R<Value> {
         Ty::Base(Base::Decimal(s)) => {
             let d = match v {
                 Value::Int(x) => Big::from_i128(i128::from(*x)).mul(&Big::pow10(u32::from(*s))),
-                Value::F32(f) => float_scaled(f64::from(*f), *s, rounding(&args[1]))?,
-                Value::F64(f) => float_scaled(*f, *s, rounding(&args[1]))?,
-                other => panic!("a decimal conversion of {other:?}"),
+                Value::F32(f) => float_scaled(f64::from(*f), *s, rounding(&args[1])?)?,
+                Value::F64(f) => float_scaled(*f, *s, rounding(&args[1])?)?,
+                other => return internal(format!("a decimal conversion of {other:?}")),
             };
             range(digits38(&d)).map(|d| Value::Decimal(d, *s))
         }
-        Ty::Base(Base::F64) => Ok(Value::F64(canon64(to_float64(v)))),
+        Ty::Base(Base::F64) => Ok(Value::F64(canon64(to_float64(v)?))),
         Ty::Base(Base::F32) => {
             let f = match v {
                 Value::Int(x) => *x as f32,
@@ -223,19 +226,19 @@ fn convert(v: &Value, args: &[Value], to: &Ty) -> R<Value> {
                     }
                     g
                 }
-                other => panic!("`f32` of {other:?}"),
+                other => return internal(format!("`f32` of {other:?}")),
             };
             Ok(Value::F32(canon32(f)))
         }
-        t => panic!("a numeric conversion to {t:?}"),
+        t => internal(format!("a numeric conversion to {t:?}")),
     }
 }
 
-fn span_of(v: &Value) -> (&Value, &Value) {
-    (
-        v.field("start").expect("a span has a start"),
-        v.field("end").expect("a span has an end"),
-    )
+fn span_of(v: &Value) -> R<(&Value, &Value)> {
+    match (v.field("start"), v.field("end")) {
+        (Some(s), Some(e)) => Ok((s, e)),
+        _ => internal(format!("a span has a start and an end, found {v:?}")),
+    }
 }
 
 pub(crate) fn parse_uuid(t: &str) -> Option<Vec<u8>> {
@@ -269,9 +272,9 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         | Prim::CheckedSub
         | Prim::CheckedMul
         | Prim::CheckedDiv
-        | Prim::CheckedRem => checked(arith(p, &v[0], &v[1], option_arg(ty))),
+        | Prim::CheckedRem => checked(arith(p, &v[0], &v[1], option_arg(ty)?)),
         Prim::Neg => neg(&v[0], ty),
-        Prim::CheckedNeg => checked(neg(&v[0], option_arg(ty))),
+        Prim::CheckedNeg => checked(neg(&v[0], option_arg(ty)?)),
         Prim::Eq => Ok(Value::bool(v[0] == v[1])),
         Prim::Ne => Ok(Value::bool(v[0] != v[1])),
         Prim::Lt => Ok(Value::bool(v[0] < v[1])),
@@ -281,25 +284,25 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         Prim::Concat => match (&v[0], &v[1]) {
             (Text(a), Text(b)) => Ok(Text(unicode::nfc(&format!("{a}{b}")))),
             (Bytes(a), Bytes(b)) => Ok(Bytes([a.as_slice(), b].concat())),
-            _ => panic!("`++` on {v:?}"),
+            _ => internal(format!("`++` on {v:?}")),
         },
         Prim::DecimalDiv => {
             let (Decimal(a, s), Decimal(b, t), Ty::Base(Base::Decimal(u))) = (&v[0], &v[1], ty)
             else {
-                panic!("`div` on decimals")
+                return internal("`div` on decimals");
             };
-            Ok(Decimal(dec_div(*a, *s, *b, *t, *u, rounding(&v[3]))?, *u))
+            Ok(Decimal(dec_div(*a, *s, *b, *t, *u, rounding(&v[3])?)?, *u))
         }
         Prim::Round => {
             let (Decimal(a, s), Ty::Base(Base::Decimal(u))) = (&v[0], ty) else {
-                panic!("`round` on a decimal")
+                return internal("`round` on a decimal");
             };
-            let r = dec_round(*a, *s, *u, rounding(&v[2]));
+            let r = dec_round(*a, *s, *u, rounding(&v[2])?);
             Ok(Decimal(r.to_i128().expect("rounding narrows"), *u))
         }
         Prim::Rescale => {
             let (Decimal(a, s), Ty::Base(Base::Decimal(u))) = (&v[0], ty) else {
-                panic!("`rescale` on a decimal")
+                return internal("`rescale` on a decimal");
             };
             Ok(Decimal(dec_rescale(*a, *s, *u)?, *u))
         }
@@ -308,23 +311,23 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
             Decimal(x, s) => Ok(Decimal(x.abs(), *s)),
             F64(x) => Ok(F64(x.abs())),
             F32(x) => Ok(F32(x.abs())),
-            other => panic!("`abs` of {other:?}"),
+            other => internal(format!("`abs` of {other:?}")),
         },
         Prim::Convert { checked: false } => convert(&v[0], &v[1..], ty),
-        Prim::Convert { checked: true } => checked(convert(&v[0], &v[1..], option_arg(ty))),
+        Prim::Convert { checked: true } => checked(convert(&v[0], &v[1..], option_arg(ty)?)),
         Prim::Wrap | Prim::Unwrap => Ok(v[0].clone()),
         Prim::KeyValue => match &v[0] {
             Key(k) => Ok((**k).clone()),
-            other => panic!("`value` of {other:?}"),
+            other => internal(format!("`value` of {other:?}")),
         },
-        Prim::ParseUuid => parse_uuid(text(&v[0]))
+        Prim::ParseUuid => parse_uuid(text(&v[0])?)
             .map(Bytes)
             .ok_or(Abort::Fault(Fault::InvalidText)),
         Prim::ToText => Ok(Text(textual::to_text(it.schema, &v[0], &tys[0]))),
         Prim::Print => Ok(Text(textual::print(it.schema, &v[0], &tys[0]))),
         Prim::ReadFile { .. } => crate::eval::not_yet("a file scan"),
         Prim::Parse => Ok(
-            match textual::parse(it.schema, text(&v[0]), option_arg(ty)) {
+            match textual::parse(it.schema, text(&v[0])?, option_arg(ty)?) {
                 Ok(x) => Value::some(x),
                 Err(_) => Value::none(),
             },
@@ -332,26 +335,26 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         Prim::BytesLen => match &v[0] {
             Text(t) => Ok(Int(t.len() as i64)),
             Bytes(b) => Ok(Int(b.len() as i64)),
-            other => panic!("`bytes_len` of {other:?}"),
+            other => internal(format!("`bytes_len` of {other:?}")),
         },
-        Prim::ScalarLen => Ok(Int(text(&v[0]).chars().count() as i64)),
-        Prim::GraphemeLen => Ok(Int(unicode::grapheme_len(text(&v[0])) as i64)),
-        Prim::StartsWith => Ok(Value::bool(text(&v[0]).starts_with(text(&v[1])))),
-        Prim::EndsWith => Ok(Value::bool(text(&v[0]).ends_with(text(&v[1])))),
-        Prim::Contains => Ok(Value::bool(text(&v[0]).contains(text(&v[1])))),
-        Prim::Matches => Ok(Value::bool(it.compiled.matches(text(&v[0]), text(&v[1])))),
-        Prim::Lower => Ok(Text(unicode::lower(text(&v[0])))),
-        Prim::Upper => Ok(Text(unicode::upper(text(&v[0])))),
-        Prim::Fold => Ok(Text(unicode::fold(text(&v[0])))),
-        Prim::Collate => Ok(SortKey(it.compiled.collate(text(&v[0]), text(&v[1])))),
+        Prim::ScalarLen => Ok(Int(text(&v[0])?.chars().count() as i64)),
+        Prim::GraphemeLen => Ok(Int(unicode::grapheme_len(text(&v[0])?) as i64)),
+        Prim::StartsWith => Ok(Value::bool(text(&v[0])?.starts_with(text(&v[1])?))),
+        Prim::EndsWith => Ok(Value::bool(text(&v[0])?.ends_with(text(&v[1])?))),
+        Prim::Contains => Ok(Value::bool(text(&v[0])?.contains(text(&v[1])?))),
+        Prim::Matches => Ok(Value::bool(it.compiled.matches(text(&v[0])?, text(&v[1])?))),
+        Prim::Lower => Ok(Text(unicode::lower(text(&v[0])?))),
+        Prim::Upper => Ok(Text(unicode::upper(text(&v[0])?))),
+        Prim::Fold => Ok(Text(unicode::fold(text(&v[0])?))),
+        Prim::Collate => Ok(SortKey(it.compiled.collate(text(&v[0])?, text(&v[1])?))),
         Prim::Utf8 => match &v[0] {
             Bytes(b) => Ok(match String::from_utf8(b.clone()) {
                 Ok(t) => Value::some(Text(unicode::nfc(&t))),
                 Err(_) => Value::none(),
             }),
-            other => panic!("`utf8` of {other:?}"),
+            other => internal(format!("`utf8` of {other:?}")),
         },
-        Prim::Bytes => Ok(Bytes(text(&v[0]).as_bytes().to_vec())),
+        Prim::Bytes => Ok(Bytes(text(&v[0])?.as_bytes().to_vec())),
         Prim::Micros | Prim::Millis | Prim::Seconds | Prim::Minutes | Prim::Hours => {
             let unit: i64 = match p {
                 Prim::Micros => 1,
@@ -361,13 +364,13 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
                 _ => 3_600_000_000,
             };
             let Int(n) = v[0] else {
-                panic!("a length of time from an integer")
+                return internal("a length of time from an integer");
             };
             Ok(Duration(i64_or(n.checked_mul(unit))?))
         }
         Prim::Days | Prim::Weeks | Prim::Months | Prim::Years => {
             let Int(n) = v[0] else {
-                panic!("a period from an integer")
+                return internal("a period from an integer");
             };
             let count = |k: i128| {
                 i32::try_from(i128::from(n) * k).map_err(|_| Abort::Fault(Fault::OutOfRange))
@@ -393,7 +396,7 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         }
         Prim::AddPeriod => {
             let Period { months, days } = v[1] else {
-                panic!("`add_period` adds a period")
+                return internal("`add_period` adds a period");
             };
             let reject = v[2].tag() == Some(1);
             let shifted = |date: i64| -> R<Option<i64>> {
@@ -422,7 +425,7 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
                         None => None,
                     }
                 }
-                other => panic!("`add_period` on {other:?}"),
+                other => return internal(format!("`add_period` on {other:?}")),
             };
             Ok(match (reject, out) {
                 (true, Some(x)) => Value::some(x),
@@ -433,9 +436,9 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         }
         Prim::Zoned => {
             let DateTime(c) = v[0] else {
-                panic!("`zoned` of a date and time")
+                return internal("`zoned` of a date and time");
             };
-            let z = text(&v[1]);
+            let z = text(&v[1])?;
             let reject = v[2].tag() == Some(1);
             let r = zone::resolve(c, z, !reject)?.map(|(c, _)| Zoned(c, z.to_string()));
             Ok(match (reject, r) {
@@ -447,14 +450,14 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         }
         Prim::InZone => {
             let Instant(i) = v[0] else {
-                panic!("`in_zone` of an instant")
+                return internal("`in_zone` of an instant");
             };
-            let z = text(&v[1]);
+            let z = text(&v[1])?;
             Ok(Zoned(zone::in_zone(i, z)?, z.to_string()))
         }
         Prim::ToInstant => match &v[0] {
             Zoned(c, z) => Ok(Instant(zone::to_instant(*c, z)?)),
-            other => panic!("`to_instant` of {other:?}"),
+            other => internal(format!("`to_instant` of {other:?}")),
         },
         Prim::Span => {
             if v[0] > v[1] {
@@ -465,16 +468,16 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
                 vec![("start".into(), v[0].clone()), ("end".into(), v[1].clone())],
             ))
         }
-        Prim::Start => Ok(span_of(&v[0]).0.clone()),
-        Prim::End => Ok(span_of(&v[0]).1.clone()),
+        Prim::Start => Ok(span_of(&v[0])?.0.clone()),
+        Prim::End => Ok(span_of(&v[0])?.1.clone()),
         Prim::Overlaps => {
-            let ((xs, xe), (ys, ye)) = (span_of(&v[0]), span_of(&v[1]));
+            let ((xs, xe), (ys, ye)) = (span_of(&v[0])?, span_of(&v[1])?);
             Ok(Value::bool(xs < ye && ys < xe))
         }
         Prim::Covers => {
-            let (xs, xe) = span_of(&v[0]);
+            let (xs, xe) = span_of(&v[0])?;
             if it.is_prelude(&tys[1], "Span") {
-                let (ys, ye) = span_of(&v[1]);
+                let (ys, ye) = span_of(&v[1])?;
                 Ok(Value::bool(xs <= ys && ye <= xe))
             } else {
                 Ok(Value::bool(*xs <= v[1] && v[1] < *xe))

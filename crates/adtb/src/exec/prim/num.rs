@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 
-use super::super::Fault;
-use super::Width;
+use super::super::{Error, Fault};
+use super::{Val, Width, mistyped};
 
 const DIGITS38: u128 = 10u128.pow(38);
 
@@ -18,17 +18,17 @@ pub enum Rounding {
 }
 
 impl Rounding {
-    pub fn of(v: &super::Val) -> Rounding {
-        match v.ctor_of() {
-            0 => Rounding::HalfEven,
-            1 => Rounding::HalfUp,
-            2 => Rounding::HalfDown,
-            3 => Rounding::Up,
-            4 => Rounding::Down,
-            5 => Rounding::Ceiling,
-            6 => Rounding::Floor,
-            c => panic!("constructor {c} is not a Rounding"),
-        }
+    pub fn of(v: &Val) -> Result<Rounding, Error> {
+        Ok(match v {
+            Val::Ctor(0, _) => Rounding::HalfEven,
+            Val::Ctor(1, _) => Rounding::HalfUp,
+            Val::Ctor(2, _) => Rounding::HalfDown,
+            Val::Ctor(3, _) => Rounding::Up,
+            Val::Ctor(4, _) => Rounding::Down,
+            Val::Ctor(5, _) => Rounding::Ceiling,
+            Val::Ctor(6, _) => Rounding::Floor,
+            other => return Err(mistyped("a Rounding", other)),
+        })
     }
 
     /// Returns whether an inexact quotient's magnitude moves away from zero, given its sign, whether

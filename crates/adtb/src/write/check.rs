@@ -175,7 +175,11 @@ impl<R: Runtime> Stmt<'_, R> {
             }
             match self.eval(Arena::Program, d.term, &env)? {
                 Val::Set(report) => violate(viol, &d.name, report.iter().cloned()),
-                other => panic!("a denial query returns a set, found {other:?}"),
+                other => {
+                    return Err(Error::Internal(format!(
+                        "a denial query returns a set, found {other:?}"
+                    )));
+                }
             }
         }
         Ok(())

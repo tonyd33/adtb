@@ -363,7 +363,7 @@ impl Lower<'_> {
         let row = self.row_type(rel, ctor);
         let key_at = fields
             .iter()
-            .map(|f| field(self.schema(), &row, f).map(|(at, _)| at.of(ctor)))
+            .map(|f| field(self.schema(), &row, f).and_then(|(at, _)| at.of(ctor)))
             .collect::<Result<_, _>>()?;
         Ok(Fetch { ctor, heap, key_at })
     }

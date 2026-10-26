@@ -202,7 +202,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     &params,
                     crate::plan::Options::default(),
                 )
-                .map_err(|e| Error::Unsupported(e.to_string()))?;
+                .map_err(|e| match e {
+                    crate::plan::Error::Internal(what) => Error::Internal(what),
+                    e => Error::Unsupported(e.to_string()),
+                })?;
                 let x = Arc::new(exec::compile(&db.schema, &db.catalog, &p, None)?);
                 self.plans.borrow_mut().insert(key, x.clone());
                 x
@@ -259,7 +262,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     fn set(&self, t: Tm, env: &Env) -> Result<BTreeSet<Val>, Error> {
         match self.eval(Arena::Statement, t, env)? {
             Val::Set(s) => Ok(s.as_ref().clone()),
-            other => panic!("a write's rows are a set, found {other:?}"),
+            other => Err(Error::Internal(format!(
+                "a write's rows are a set, found {other:?}"
+            ))),
         }
     }
 
@@ -309,7 +314,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             Kind::Par(ws) => ws.iter().try_for_each(|w| self.write(*w, env, out)),
             Kind::Fail(m) => {
                 let Val::Text(message) = self.eval(Arena::Statement, m, env)? else {
-                    panic!("`fail` takes a Text")
+                    return Err(Error::Internal("`fail` takes a Text".into()));
                 };
                 Err(Error::Rejected(Rejection::UserError {
                     message: message.to_string(),
@@ -326,18 +331,21 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             Kind::Case { scrutinee, arms } => {
                 let v = self.eval(Arena::Statement, scrutinee, env)?;
                 let c = v.ctor_of();
-                let (_, x, w) = arms
-                    .iter()
-                    .find(|(d, _, _)| *d == c)
-                    .expect("an arm per constructor");
+                let (_, x, w) = arms.iter().find(|(d, _, _)| *d == c).ok_or_else(|| {
+                    Error::Internal(format!("a case has an arm for constructor {c}"))
+                })?;
                 self.write(*w, &bind(env, *x, v), out)
             }
             Kind::Let(x, e, w) => {
                 let v = self.eval(Arena::Statement, e, env)?;
                 self.write(w, &bind(env, x, v), out)
             }
-            Kind::Unreachable => panic!("evaluation reached a position exhaustiveness excludes"),
-            k => panic!("{k:?} is not a write"),
+            Kind::Unreachable => Err(Error::Internal(
+                "evaluation reaches no position exhaustiveness excludes".into(),
+            )),
+            k => Err(Error::Internal(format!(
+                "a write term is a write, found {k:?}"
+            ))),
         }
     }
 
@@ -347,7 +355,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         match self.terms.kind(t).clone() {
             Kind::Replace(r, rows, f) => {
                 let Kind::Lam(x, body) = *self.terms.kind(f) else {
-                    panic!("a replace's new value is a `Lam`")
+                    return Err(Error::Internal("a replace's new value is a `Lam`".into()));
                 };
                 let mut news = BTreeSet::new();
                 for v in self.set(rows, env)? {
@@ -369,7 +377,11 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             Kind::Rejects { into, insert } => {
                 let rows = match self.terms.kind(insert) {
                     Kind::Insert(_, rows) | Kind::Upsert { rows, .. } => *rows,
-                    k => panic!("`rejects into` wraps an insert or upsert, not {k:?}"),
+                    k => {
+                        return Err(Error::Internal(format!(
+                            "`rejects into` wraps an insert or upsert, not {k:?}"
+                        )));
+                    }
                 };
                 let mut rejected = Vec::new();
                 let rows = self.records(rows, env, Some(&mut rejected))?;
@@ -388,7 +400,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 }
                 Ok(bound)
             }
-            k => panic!("{k:?} binds no rows"),
+            k => Err(Error::Internal(format!(
+                "a bound write is a replace, an upsert or `rejects into`, found {k:?}"
+            ))),
         }
     }
 
@@ -612,8 +626,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 PathStep::Field(f) => {
                     let (a, t) = field(&self.db.schema, &ty, f)?;
                     let i = match &at {
-                        Val::Ctor(c, _) => a.of(*c),
-                        _ => a.of(0),
+                        Val::Ctor(c, _) => a.of(*c)?,
+                        _ => a.of(0)?,
                     };
                     at = at.fields()[i].clone();
                     ty = t;
@@ -672,7 +686,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             .iter()
             .zip(&parts)
             .map(|(t, v)| to_key(t, v))
-            .collect();
+            .collect::<Result<_, _>>()?;
         let all: BTreeSet<u32> = r.all_ctors().into_iter().collect();
         for (c, tid) in self.store.probe(r.key_index, &prefix, &all)? {
             let Some((at, stored)) = self.store.fetch(r.ctors[c as usize].heap, tid)? else {

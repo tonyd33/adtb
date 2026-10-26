@@ -107,12 +107,21 @@ pub enum Error {
     /// The evaluation reached `reject` with this text.
     Rejected(String),
     Cancelled,
+    /// The plan or a value breaks the invariant this text names, one the checker guarantees.
+    Internal(String),
 }
 
 impl From<PageError> for Error {
     fn from(e: PageError) -> Error {
         Error::Page(e)
     }
+}
+
+/// Returns the arm of `arms` for a scrutinee of constructor `c`.
+fn arm<T>(arms: &[Option<T>], c: u32) -> Result<&T, Error> {
+    arms.get(c as usize)
+        .and_then(Option::as_ref)
+        .ok_or_else(|| Error::Internal(format!("a case has an arm for constructor {c}")))
 }
 
 /// Bounds and sizes of one statement's execution.
@@ -220,7 +229,10 @@ pub fn batches(v: &Val, schema: &batch::Schema, rows: Rows, per: usize) -> Vec<B
 
 fn datum(t: &batch::Type, v: &Val) -> Datum {
     match (t, v) {
-        (batch::Type::Scalar(s), v) => Datum::Scalar(to_key(&crate::key::KeyType::Scalar(*s), v)),
+        (batch::Type::Scalar(s), v) => match to_key(&crate::key::KeyType::Scalar(*s), v) {
+            Ok(k) => Datum::Scalar(k),
+            Err(_) => panic!("{v:?} is not a value of batch type {t:?}"),
+        },
         (batch::Type::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => {
             Datum::Record(ts.iter().zip(fs.iter()).map(|(t, x)| datum(t, x)).collect())
         }

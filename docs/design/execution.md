@@ -64,6 +64,11 @@ Postconditions:
   yet (§5).
 - `Err(NotAQuery(_))` when `root` is or holds a write, a block, a read
   of a statement's transition, or `at`.
+- `Err(Internal(what))` when `root` breaks an invariant the
+  preconditions guarantee, such as a function value or a dereference of
+  a term that is not a key; `what` names the invariant. The caller fails
+  the statement with it as it fails one on a fault, and the transaction
+  stays open.
 
 ### 1.2 Plan structure
 

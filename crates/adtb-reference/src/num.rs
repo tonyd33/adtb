@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use adtb_lang::types::Base;
 
 use crate::big::Big;
-use crate::eval::Fault;
+use crate::eval::{Fault, R, internal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rounding {
@@ -18,8 +18,8 @@ pub enum Rounding {
 
 impl Rounding {
     /// Returns the mode of a constructor of the prelude sum `Rounding`.
-    pub fn from_ctor(c: u32) -> Rounding {
-        match c {
+    pub fn from_ctor(c: u32) -> R<Rounding> {
+        Ok(match c {
             0 => Rounding::HalfEven,
             1 => Rounding::HalfUp,
             2 => Rounding::HalfDown,
@@ -27,8 +27,8 @@ impl Rounding {
             4 => Rounding::Down,
             5 => Rounding::Ceiling,
             6 => Rounding::Floor,
-            _ => panic!("`Rounding` has seven constructors, given {c}"),
-        }
+            _ => return internal(format!("`Rounding` has seven constructors, given {c}")),
+        })
     }
 }
 

@@ -41,13 +41,13 @@ impl<R: Runtime> Stmt<'_, R> {
         self.db.txns.status(&self.db.pager, x)
     }
 
-    fn stored(&self, heap: HeapId, row: &Val) -> Vec<Value> {
-        self.db.heaps[&heap]
+    fn stored(&self, heap: HeapId, row: &Val) -> Result<Vec<Value>, Error> {
+        Ok(self.db.heaps[&heap]
             .row
             .iter()
             .zip(row.fields())
             .map(|(t, v)| to_stored(t, v))
-            .collect()
+            .collect::<Result<_, _>>()?)
     }
 
     /// Returns the TID of the version of `rel`'s row with key `key` the statement read, once no
@@ -127,7 +127,7 @@ impl<R: Runtime> Stmt<'_, R> {
                         .flatten()
                         .copied()
                         .collect();
-                    let row = self.stored(heap, n);
+                    let row = self.stored(heap, n)?;
                     let up = vacuum::update(
                         pager,
                         &self.db.txns,
@@ -153,7 +153,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 (Some(_), Some((d, n))) => {
                     let (c, tid) = self.writable(*rel, key)?;
                     let to = r.ctors[*d as usize].heap;
-                    let row = self.stored(to, n);
+                    let row = self.stored(to, n)?;
                     let from = r.ctors[c as usize].heap;
                     let at = self
                         .heap(from)
@@ -171,7 +171,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
                 (None, Some((d, n))) => {
                     let heap = r.ctors[*d as usize].heap;
-                    let row = self.stored(heap, n);
+                    let row = self.stored(heap, n)?;
                     let tid = vacuum::insert(pager, &self.db.txns, self.heap(heap), xid, &row)?;
                     self.undo.borrow_mut().push(Undo::Kill(heap, tid));
                     self.inserted_into(heap)?;
@@ -245,7 +245,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 .iter()
                 .zip(&types)
                 .map(|(i, t)| to_key(t, &fields[*i]))
-                .collect();
+                .collect::<Result<_, _>>()?;
             let ctor_id = *stored
                 .ctors
                 .iter()

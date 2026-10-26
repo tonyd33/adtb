@@ -216,9 +216,7 @@ impl<R: Runtime> Ctx<R> {
                 let since = catch.faults.len();
                 let mut out = Vec::new();
                 for (c, rows) in by {
-                    let (var, arm) = arms[c as usize]
-                        .as_ref()
-                        .unwrap_or_else(|| panic!("a case has an arm for constructor {c}"));
+                    let (var, arm) = super::arm(arms, c)?;
                     let mut s: Sel = rows.iter().map(|(r, _)| *r).collect();
                     f.bind(*var, rows);
                     out.extend(self.eval_rows(arm, f, &mut s, catch, par)?);
@@ -285,7 +283,11 @@ impl<R: Runtime> Ctx<R> {
     /// Returns the row whose key index entry has key `key`, from the heap of its constructor.
     fn lookup(&self, l: &Lookup, key: &[Val]) -> Result<Val, Error> {
         let types = self.store.key_types(l.index);
-        let k: Vec<Value> = types.iter().zip(key).map(|(t, v)| to_key(t, v)).collect();
+        let k: Vec<Value> = types
+            .iter()
+            .zip(key)
+            .map(|(t, v)| to_key(t, v))
+            .collect::<Result<_, _>>()?;
         let routes: BTreeSet<u32> = l.routes.iter().map(|r| r.ctor).collect();
         for (c, tid) in self.store.probe(l.index, &k, &routes)? {
             let route = l.routes.iter().find(|r| r.ctor == c).expect("a route");
@@ -407,9 +409,7 @@ impl<R: Runtime> Ctx<R> {
             Spine::Case(sc, arms) => {
                 let v = sc.eval_one(&mut env, self.sh())?;
                 let c = v.ctor_of();
-                let (var, arm) = arms[c as usize]
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("a spine case has an arm for constructor {c}"));
+                let (var, arm) = super::arm(arms, c)?;
                 env.bind_one(*var, v);
                 self.spine(arm, env, par, out)?;
             }
@@ -896,9 +896,7 @@ impl<R: Runtime> Ctx<R> {
                     by.entry(v.ctor_of()).or_default().push((r, v));
                 }
                 for (c, rows) in by {
-                    let (var, arm) = arms[c as usize]
-                        .as_ref()
-                        .unwrap_or_else(|| panic!("a case has an arm for constructor {c}"));
+                    let (var, arm) = super::arm(arms, c)?;
                     let s: Sel = rows.iter().map(|(r, _)| *r).collect();
                     let mut g = f.clone();
                     g.bind(*var, rows);
@@ -919,8 +917,11 @@ impl<R: Runtime> Ctx<R> {
                     vec![(Vec::new(), Vec::new()); routes.len()];
                 for &r in &sel {
                     let k = &keys[&r];
-                    let prefix: Vec<Value> =
-                        types.iter().zip(k).map(|(t, v)| to_key(t, v)).collect();
+                    let prefix: Vec<Value> = types
+                        .iter()
+                        .zip(k)
+                        .map(|(t, v)| to_key(t, v))
+                        .collect::<Result<_, _>>()?;
                     let mut seen = BTreeSet::new();
                     for (c, tid) in self.store.probe(*index, &prefix, &ctors)? {
                         let i = routes
