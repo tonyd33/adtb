@@ -250,7 +250,19 @@ fn compare(
     if let Some(d) = repeated(line, &want) {
         return Err(d);
     }
-    let printed: Vec<String> = got.iter().map(|v| textual::print(v, form)).collect();
+    let printed = match got
+        .iter()
+        .map(|v| textual::print(v, form))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(differ(
+                line,
+                format!("a result row does not print: {}", e.message),
+            ));
+        }
+    };
     if rowsort {
         got.sort();
         want.sort();
