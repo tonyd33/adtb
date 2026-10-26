@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: bug
 priority: 60
 summary: "the installed quandary has no lock or unlock command, so agents edit the design space without the edit lock"
-tags: [tooling]
+closed: 2026-10-25
+tags:
+  - tooling
 ---
 
 # The installed quandary has no edit lock
@@ -19,3 +21,9 @@ can read a transient state.
 
 Expected: the installed quandary is updated to a version with `lock`
 and `unlock`.
+
+## 2026-10-25: resolved
+
+## 2026-10-25: resolved
+
+The quandary in devenv.lock now has `lock` and `unlock`. Agents that edit the design space wrap the edit in `quandary lock REASON` and `quandary unlock`.
