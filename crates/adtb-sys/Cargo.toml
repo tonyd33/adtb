@@ -11,6 +11,7 @@ publish.workspace = true
 latch-checks = []
 
 [dependencies]
+libc = "0.2.186"
 
 [lints]
 workspace = true

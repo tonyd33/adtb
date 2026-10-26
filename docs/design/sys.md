@@ -30,7 +30,9 @@ Invariants:
 
 `adtb-sys` also defines the runtime interfaces of
 [runtime.md §1](runtime.md#1-time-threads-and-randomness) and
-[§2](runtime.md#2-io-interface) as its module `runtime`.
+[§2](runtime.md#2-io-interface) as its module `runtime`. Its module
+`os` holds the real runtime over the host
+([runtime.md §2](runtime.md#2-io-interface)).
 
 Page memory is `pages::PageMemory`, with three guards in place of
 `Frame` and `PageRef`:
@@ -106,6 +108,11 @@ Rulings: project/arch/unsafe/confined
   loads into local copies; no reference to such a page is formed.
 - Every length or offset read optimistically is bounds-checked before
   use.
+- A file descriptor handed to the kernel belongs to a file that stays
+  open until the call returns: an op holds its file while it runs, so a
+  `Close` releases the descriptor only after the last op on it.
+- Memory the kernel writes into outside I/O, a clock reading or random
+  bytes, is a live, writable buffer of the length the call is given.
 
 ## 3. Page state word
 

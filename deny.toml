@@ -93,7 +93,8 @@ allow = [
     "cfg-if",
     # Runtime CPU feature detection for BLAKE3's SIMD paths.
     "cpufeatures",
-    # The system interface cpufeatures reads CPU features through on some targets.
+    # The host's clocks, entropy and file system calls for adtb-sys's real runtime, and the
+    # system interface cpufeatures reads CPU features through on some targets.
     "libc",
     # Build-time compiler driver for BLAKE3's assembly, and what it uses.
     "cc",

@@ -90,6 +90,18 @@ The interface has three implementations:
 The simulator controls every thread and every completion through this
 interface.
 
+The real runtime is `adtb_sys::os::OsRuntime` (Linux):
+
+```text
+OsRuntime::new(root, Backend::Pool { threads }) -> OsRuntime   // paths are relative to root
+```
+
+Its threads are host threads, its clock is `CLOCK_MONOTONIC` and its
+entropy is `getrandom`. A panic in any of its threads, the backend's
+own included, aborts the process. Every file it opens is opened with
+`O_DIRECT`, so a file system without direct I/O fails `Open` with
+`Failed`.
+
 Data pages and the log are read and written with direct I/O
 (`O_DIRECT` on Linux): the page pool is the only cache, and write
 errors return from the write itself. A commit still forces the device
@@ -108,26 +120,32 @@ enum Op {
   Open     { path, create }          // -> Opened { file, len }
   Read     { file, offset, buf }     // -> Read(n); n < buf.len() past the end of the file
   Write    { file, offset, buf }     // -> Written; the whole buffer
+  Size     { file }                  // -> Size(len)
   Allocate { file, len }             // -> Allocated; the file is at least len bytes, new bytes zero
   Sync     { file }                  // -> Synced; fdatasync
   SyncDir  { dir }                   // -> Synced; fsync of the directory
-  List     { dir }                   // -> Listed(paths), in no particular order
+  List     { dir }                   // -> Listed(paths) of its files, in no particular order
   Remove   { path }                  // -> Removed
+  CreateDir { dir }                  // -> Created; also when it exists already
+  Close    { file }                  // -> Closed
   Timer    { at }                    // -> Fired, once now() >= at
 }
 struct Completion { ticket, buf: Option<AlignedBuf>, result: Result<Done, IoError> }
 enum IoError { NotFound, Failed }
 ```
 
-Paths are relative to the database directory, separated by `/`. A
+Paths are relative to the database directory, separated by `/`; the
+empty path is the database directory itself, which always exists. A
 `FileId` names a file opened by this process and stays valid after the
-file is removed.
+file is removed, until it is closed.
 
 Preconditions:
 
 - The offset and length of a `Read` or `Write` are multiples of the
   device's logical block size, and its buffer is an `AlignedBuf`
   ([sys.md §1](sys.md#1-safe-types)).
+- `Close` is submitted with no other op on the file in flight, and the
+  `FileId` is never used after it.
 
 Postconditions every backend must meet:
 
@@ -143,8 +161,18 @@ Postconditions every backend must meet:
   `Sync` was submitted; `SyncDir` forces every creation and removal in
   the directory that completed before it was submitted. Nothing else
   is forced by them.
+- `Open` with `create` and `CreateDir` complete with `NotFound` when
+  the parent directory is absent; `Open` without `create`, `List` and
+  `Remove` do when their path is absent.
+- `Size`, like `len` at `Open`, counts every write and allocation to
+  the file that completed before the op was submitted.
+- `List` returns the full paths of the files in the directory, not its
+  subdirectories.
+- A crash that loses the creation of a directory loses every file and
+  directory under it, whatever forces they had.
+- `Close` forces nothing; the file's data and name stay as they were.
 
-TODO: closing a file, file sizes other than at `Open`, and renames are undecided.
+TODO: renames are undecided.
 
 Rulings: project/arch/runtime/own-loop, buffer/io-path/direct, buffer/async/uring-fallback, buffer/platform/linux-first
 

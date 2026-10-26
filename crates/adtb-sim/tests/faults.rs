@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use adtb::runtime::{AlignedBuf, Done, Io, IoError, Op, Runtime, Threads};
-use adtb_sim::{Config, Faults, Outcome, Sim};
+use adtb_sim::{Config, Faults, Outcome, Sim, SimIo, SimRuntime};
 use common::{SECTOR, complete, open, read, run, run_then_crash, sector, sync, sync_dir, write};
 
 fn quiet() -> Faults {
@@ -34,6 +34,13 @@ fn setup(sim: &mut Sim, sectors: u8) {
         sync(rt, io, file).unwrap();
         sync_dir(rt, io, "").unwrap();
     });
+}
+
+fn create_dir(rt: &SimRuntime, io: &mut SimIo, dir: &str) {
+    assert_eq!(
+        Ok(Done::Created),
+        complete(rt, io, Op::CreateDir { dir: dir.into() }).result
+    );
 }
 
 fn read_all(sim: &mut Sim) -> Vec<u8> {
@@ -322,6 +329,7 @@ fn directory_force_covers_only_its_directory() {
     for seed in 0..32 {
         let mut sim = sim(seed, quiet());
         run_then_crash(&mut sim, |rt, io| {
+            create_dir(rt, io, "log");
             open(rt, io, "log/0", true).unwrap();
             open(rt, io, "data", true).unwrap();
             sync_dir(rt, io, "").unwrap();
@@ -330,6 +338,44 @@ fn directory_force_covers_only_its_directory() {
         vanished |= !sim.files().contains_key("log/0");
     }
     assert!(vanished);
+}
+
+#[test]
+fn unforced_directory_takes_its_files_at_a_crash() {
+    let mut vanished = false;
+    for seed in 0..32 {
+        let mut sim = sim(seed, quiet());
+        run_then_crash(&mut sim, |rt, io| {
+            create_dir(rt, io, "log");
+            open(rt, io, "log/0", true).unwrap();
+            sync_dir(rt, io, "log").unwrap();
+        });
+        let files = sim.files();
+        vanished |= !files.contains_key("log/0");
+        let survived = run(&mut sim, |rt, io| {
+            complete(rt, io, Op::List { dir: "log".into() }).result
+        });
+        assert_eq!(
+            files.contains_key("log/0"),
+            survived.is_ok(),
+            "seed {seed}: the file outlives its directory or the reverse"
+        );
+    }
+    assert!(vanished);
+}
+
+#[test]
+fn directory_force_keeps_the_directory_and_its_files() {
+    for seed in 0..16 {
+        let mut sim = sim(seed, quiet());
+        run_then_crash(&mut sim, |rt, io| {
+            create_dir(rt, io, "log");
+            sync_dir(rt, io, "").unwrap();
+            open(rt, io, "log/0", true).unwrap();
+            sync_dir(rt, io, "log").unwrap();
+        });
+        assert!(sim.files().contains_key("log/0"), "seed {seed}");
+    }
 }
 
 #[test]
@@ -388,6 +434,7 @@ fn listing_order_varies() {
     let list = |seed| {
         let mut sim = sim(seed, quiet());
         run(&mut sim, |rt, io| {
+            create_dir(rt, io, "d");
             for name in ["d/a", "d/b", "d/c", "d/d", "e"] {
                 open(rt, io, name, true).unwrap();
             }

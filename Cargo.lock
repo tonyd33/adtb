@@ -74,6 +74,9 @@ dependencies = [
 [[package]]
 name = "adtb-sys"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "aho-corasick"

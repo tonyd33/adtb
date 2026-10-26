@@ -101,7 +101,7 @@ struct State {
     current: usize,
     events: BTreeMap<(u64, u64), Event>,
     rings: Vec<VecDeque<Completion>>,
-    handles: Vec<Ino>,
+    handles: Vec<Option<Ino>>,
     next_ticket: u64,
 }
 
@@ -407,10 +407,11 @@ impl State {
     }
 
     fn ino(&self, file: FileId) -> Ino {
-        *self
-            .handles
+        self.handles
             .get(file.0 as usize)
-            .unwrap_or_else(|| panic!("{file:?} was not opened by this process"))
+            .copied()
+            .flatten()
+            .unwrap_or_else(|| panic!("{file:?} is not open in this process"))
     }
 
     fn deliver(&mut self, event: Event) {
@@ -426,7 +427,7 @@ impl State {
         let (buf, result) = match op {
             Op::Open { path, create } => {
                 let r = self.disk.open(&path, create).map(|(ino, len)| {
-                    self.handles.push(ino);
+                    self.handles.push(Some(ino));
                     Done::Opened {
                         file: FileId((self.handles.len() - 1) as u32),
                         len,
@@ -450,6 +451,7 @@ impl State {
                 let r = disk.write(ino, offset, &buf, cx).map(|()| Done::Written);
                 (Some(buf), r)
             }
+            Op::Size { file } => (None, Ok(Done::Size(self.disk.size(self.ino(file))))),
             Op::Allocate { file, len } => {
                 let ino = self.ino(file);
                 self.disk.allocate(ino, len, self.config.sector);
@@ -466,9 +468,14 @@ impl State {
             }
             Op::List { dir } => (
                 None,
-                Ok(Done::Listed(self.disk.list(&dir, &mut self.faults))),
+                self.disk.list(&dir, &mut self.faults).map(Done::Listed),
             ),
             Op::Remove { path } => (None, self.disk.remove(&path).map(|()| Done::Removed)),
+            Op::CreateDir { dir } => (None, self.disk.create_dir(&dir).map(|()| Done::Created)),
+            Op::Close { file } => {
+                self.close(file);
+                (None, Ok(Done::Closed))
+            }
             Op::Timer { .. } => (None, Ok(Done::Fired)),
         };
         trace!(self.trace, "  {result:?}");
@@ -478,6 +485,21 @@ impl State {
             result,
         });
         self.unpark(submitter);
+    }
+
+    fn close(&mut self, file: FileId) {
+        self.ino(file);
+        let busy = self.events.values().any(|e| match &e.op {
+            Op::Read { file: f, .. }
+            | Op::Write { file: f, .. }
+            | Op::Size { file: f }
+            | Op::Allocate { file: f, .. }
+            | Op::Sync { file: f }
+            | Op::Close { file: f } => *f == file,
+            _ => false,
+        });
+        assert!(!busy, "{file:?} is closed with an op on it in flight");
+        self.handles[file.0 as usize] = None;
     }
 
     fn unpark(&mut self, t: usize) {

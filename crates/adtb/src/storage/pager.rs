@@ -157,7 +157,7 @@ impl<R: Runtime> std::fmt::Debug for Pager<R> {
 /// Slots of the evicted-page LSN table per pool frame.
 const EVICTED_PER_FRAME: usize = 4;
 
-fn parent(path: &str) -> &str {
+pub(super) fn parent(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 

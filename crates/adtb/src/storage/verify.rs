@@ -142,9 +142,7 @@ impl<R: Runtime> Pager<R> {
 
     /// Returns the number of pages the data file spans now.
     fn file_pages(&self) -> u64 {
-        let len = self
-            .io(|d| d.open(&self.name, false))
-            .map_or(0, |(_, len)| len);
+        let len = self.io(|d| d.size(self.data));
         len.div_ceil(self.page_size as u64)
     }
 }

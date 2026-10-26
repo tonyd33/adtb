@@ -116,6 +116,28 @@ impl<R: Runtime> Driver<R> {
         }
     }
 
+    /// Create the directory `dir` if it is absent.
+    pub(crate) fn create_dir(&mut self, dir: &str) {
+        let dir = dir.to_owned();
+        if let Err(e) = self.run(Op::CreateDir { dir }).result {
+            fatal("create directory", e);
+        }
+    }
+
+    pub(crate) fn size(&mut self, file: FileId) -> u64 {
+        match self.run(Op::Size { file }).result {
+            Ok(Done::Size(len)) => len,
+            Ok(other) => unreachable!("size completed as {other:?}"),
+            Err(e) => fatal("size", e),
+        }
+    }
+
+    pub(crate) fn close(&mut self, file: FileId) {
+        if let Err(e) = self.run(Op::Close { file }).result {
+            fatal("close", e);
+        }
+    }
+
     pub(crate) fn remove(&mut self, path: &str) {
         let path = path.to_owned();
         match self.run(Op::Remove { path }).result {

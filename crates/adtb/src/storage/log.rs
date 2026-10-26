@@ -5,6 +5,7 @@ use crate::runtime::{AlignedBuf, FileId, Runtime};
 use super::Lsn;
 use super::block::{LogImage, LogSource, Slot, data_lsn, frame};
 use super::driver::Driver;
+use super::pager::parent;
 use super::record::Record;
 
 /// The redo log's appender: the batch being filled, behind the log lock.
@@ -41,6 +42,8 @@ pub(crate) struct Segments {
     block: usize,
     segment: u64,
     files: BTreeMap<u64, FileId>,
+    /// The directory exists and its creation is forced.
+    made: bool,
 }
 
 fn segment_name(base: u64) -> String {
@@ -130,6 +133,7 @@ impl Segments {
             block,
             segment,
             files: BTreeMap::new(),
+            made: false,
         }
     }
 
@@ -141,6 +145,11 @@ impl Segments {
     fn segment_file<R: Runtime>(&mut self, drv: &mut Driver<R>, base: u64) -> FileId {
         if let Some(&f) = self.files.get(&base) {
             return f;
+        }
+        if !self.made {
+            drv.create_dir(&self.dir);
+            drv.sync_dir(parent(&self.dir));
+            self.made = true;
         }
         let path = self.path(base);
         let (file, len) = drv
@@ -240,7 +249,9 @@ impl Segments {
         let later: Vec<u64> = img.bases.iter().copied().filter(|&b| b > base).collect();
         for b in &later {
             drv.remove(&self.path(*b));
-            self.files.remove(b);
+            if let Some(file) = self.files.remove(b) {
+                drv.close(file);
+            }
         }
         if !later.is_empty() {
             drv.sync_dir(&self.dir);

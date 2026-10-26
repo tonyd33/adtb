@@ -114,6 +114,11 @@ pub enum Op {
         offset: u64,
         buf: AlignedBuf,
     },
+    /// Returns the file's length, counting every write and allocation completed before this op
+    /// was submitted.
+    Size {
+        file: FileId,
+    },
     /// Extend the file to at least `len` bytes, the new bytes zero.
     Allocate {
         file: FileId,
@@ -123,7 +128,8 @@ pub enum Op {
     Sync {
         file: FileId,
     },
-    /// Force to the device every creation and removal of a file in `dir` completed before this op was submitted.
+    /// Force to the device every creation and removal of a file or directory in `dir` completed
+    /// before this op was submitted.
     SyncDir {
         dir: String,
     },
@@ -133,6 +139,14 @@ pub enum Op {
     },
     Remove {
         path: String,
+    },
+    /// Create the directory `dir` if it is absent; its parent must exist.
+    CreateDir {
+        dir: String,
+    },
+    /// Release `file`. No op on it may be in flight, and its id is never used again.
+    Close {
+        file: FileId,
     },
     /// Complete once the clock has reached `at`.
     Timer {
@@ -145,10 +159,13 @@ pub enum Done {
     Opened { file: FileId, len: u64 },
     Read(usize),
     Written,
+    Size(u64),
     Allocated,
     Synced,
     Listed(Vec<String>),
     Removed,
+    Created,
+    Closed,
     Fired,
 }
 

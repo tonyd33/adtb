@@ -68,12 +68,13 @@ struct Inode {
 enum NameOp {
     Create(String, Ino),
     Remove(String),
+    MakeDir(String),
 }
 
 impl NameOp {
     fn path(&self) -> &str {
         match self {
-            NameOp::Create(p, _) | NameOp::Remove(p) => p,
+            NameOp::Create(p, _) | NameOp::Remove(p) | NameOp::MakeDir(p) => p,
         }
     }
 }
@@ -90,6 +91,8 @@ pub(crate) struct Disk {
     inodes: Vec<Inode>,
     names: BTreeMap<String, Ino>,
     durable_names: BTreeMap<String, Ino>,
+    dirs: BTreeSet<String>,
+    durable_dirs: BTreeSet<String>,
     pending_names: Vec<(u64, NameOp)>,
     seq: u64,
     recording: Option<Recording>,
@@ -112,6 +115,10 @@ enum Event {
         path: String,
         seq: u64,
     },
+    MakeDir {
+        path: String,
+        seq: u64,
+    },
     Sync {
         ino: Ino,
         upto: u64,
@@ -127,6 +134,7 @@ enum Event {
 pub struct Recording {
     base_inodes: Vec<Vec<u8>>,
     base_names: BTreeMap<String, Ino>,
+    base_dirs: BTreeSet<String>,
     events: Vec<Event>,
 }
 
@@ -139,6 +147,22 @@ pub(crate) struct Ctx<'a> {
 
 fn parent(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(dir, _)| dir)
+}
+
+fn dir_exists(dirs: &BTreeSet<String>, dir: &str) -> bool {
+    dir.is_empty() || dirs.contains(dir)
+}
+
+/// Keep only the directories and files whose every ancestor directory is kept.
+fn prune(dirs: &mut BTreeSet<String>, names: &mut BTreeMap<String, Ino>) {
+    let mut kept = BTreeSet::new();
+    for d in std::mem::take(dirs) {
+        if dir_exists(&kept, parent(&d)) {
+            kept.insert(d);
+        }
+    }
+    names.retain(|p, _| dir_exists(&kept, parent(p)));
+    *dirs = kept;
 }
 
 fn put(bytes: &mut Vec<u8>, offset: u64, data: &[u8]) {
@@ -161,7 +185,15 @@ impl Disk {
                 ..Inode::default()
             });
         }
+        for path in disk.names.keys() {
+            let mut dir = parent(path);
+            while !dir.is_empty() {
+                disk.dirs.insert(dir.to_owned());
+                dir = parent(dir);
+            }
+        }
         disk.durable_names = disk.names.clone();
+        disk.durable_dirs = disk.dirs.clone();
         disk
     }
 
@@ -170,6 +202,7 @@ impl Disk {
         self.recording = Some(Recording {
             base_inodes: self.inodes.iter().map(|i| i.visible.clone()).collect(),
             base_names: self.names.clone(),
+            base_dirs: self.dirs.clone(),
             events: Vec::new(),
         });
     }
@@ -208,7 +241,7 @@ impl Disk {
         if let Some(&ino) = self.names.get(path) {
             return Ok((ino, self.inodes[ino].visible.len() as u64));
         }
-        if !create {
+        if !create || !dir_exists(&self.dirs, parent(path)) {
             return Err(IoError::NotFound);
         }
         let ino = self.inodes.len();
@@ -239,7 +272,32 @@ impl Disk {
         Ok(())
     }
 
-    pub(crate) fn list(&self, dir: &str, rng: &mut Rng) -> Vec<String> {
+    pub(crate) fn create_dir(&mut self, dir: &str) -> Result<(), IoError> {
+        if dir_exists(&self.dirs, dir) {
+            return Ok(());
+        }
+        if !dir_exists(&self.dirs, parent(dir)) {
+            return Err(IoError::NotFound);
+        }
+        self.dirs.insert(dir.to_owned());
+        self.pending_names
+            .push((self.seq, NameOp::MakeDir(dir.to_owned())));
+        self.note(Event::MakeDir {
+            path: dir.to_owned(),
+            seq: self.seq,
+        });
+        self.seq += 1;
+        Ok(())
+    }
+
+    pub(crate) fn size(&self, ino: Ino) -> u64 {
+        self.inodes[ino].visible.len() as u64
+    }
+
+    pub(crate) fn list(&self, dir: &str, rng: &mut Rng) -> Result<Vec<String>, IoError> {
+        if !dir_exists(&self.dirs, dir) {
+            return Err(IoError::NotFound);
+        }
         let mut out: Vec<String> = self
             .names
             .keys()
@@ -250,7 +308,7 @@ impl Disk {
             let j = rng.below(i as u64 + 1) as usize;
             out.swap(i, j);
         }
-        out
+        Ok(out)
     }
 
     pub(crate) fn read(
@@ -421,7 +479,7 @@ impl Disk {
             .partition(|(seq, op)| *seq < upto && parent(op.path()) == dir);
         self.pending_names = kept;
         for (_, op) in forced {
-            apply_name(&mut self.durable_names, op);
+            apply_name(&mut self.durable_names, &mut self.durable_dirs, op);
         }
         self.note(Event::SyncDir {
             dir: dir.to_owned(),
@@ -488,19 +546,24 @@ impl Disk {
             pending.len()
         );
         for (_, op) in pending.into_iter().take(keep) {
-            apply_name(&mut self.durable_names, op);
+            apply_name(&mut self.durable_names, &mut self.durable_dirs, op);
         }
+        prune(&mut self.durable_dirs, &mut self.durable_names);
         self.names = self.durable_names.clone();
+        self.dirs = self.durable_dirs.clone();
     }
 }
 
-fn apply_name(names: &mut BTreeMap<String, Ino>, op: NameOp) {
+fn apply_name(names: &mut BTreeMap<String, Ino>, dirs: &mut BTreeSet<String>, op: NameOp) {
     match op {
         NameOp::Create(path, ino) => {
             names.insert(path, ino);
         }
         NameOp::Remove(path) => {
             names.remove(&path);
+        }
+        NameOp::MakeDir(path) => {
+            dirs.insert(path);
         }
     }
 }
@@ -535,7 +598,9 @@ impl Recording {
                 Event::Write { ino, seq, .. } => later.iter().any(|e| {
                     matches!(e, Event::Sync { ino: j, upto } if j == ino && upto > seq)
                 }),
-                Event::Create { path, seq, .. } | Event::Remove { path, seq } => {
+                Event::Create { path, seq, .. }
+                | Event::Remove { path, seq }
+                | Event::MakeDir { path, seq } => {
                     later.iter().any(|e| {
                         matches!(e, Event::SyncDir { dir, upto } if dir == parent(path) && upto > seq)
                     })
@@ -575,6 +640,7 @@ impl Recording {
     fn image(&self, events: &[Event], keep: &[bool]) -> BTreeMap<String, Vec<u8>> {
         let mut inodes = self.base_inodes.clone();
         let mut names = self.base_names.clone();
+        let mut dirs = self.base_dirs.clone();
         for (e, &k) in events.iter().zip(keep) {
             if !k {
                 continue;
@@ -594,9 +660,13 @@ impl Recording {
                 Event::Remove { path, .. } => {
                     names.remove(path);
                 }
+                Event::MakeDir { path, .. } => {
+                    dirs.insert(path.clone());
+                }
                 Event::Sync { .. } | Event::SyncDir { .. } => {}
             }
         }
+        prune(&mut dirs, &mut names);
         names
             .into_iter()
             .map(|(path, ino)| (path, inodes.get(ino).cloned().unwrap_or_default()))
