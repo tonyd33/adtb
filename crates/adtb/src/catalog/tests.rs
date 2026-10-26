@@ -143,3 +143,33 @@ fn engine_indexes_are_the_keys_then_the_uniques() {
     assert_eq!(7, uniques.len(), "{uniques:?}");
     assert!(uniques.iter().all(|(_, f)| f.len() <= 2));
 }
+
+#[test]
+fn a_default_of_several_constructors_has_a_row_per_field() {
+    let text = "module app
+add module app
+add type Shape { id: Key shapes }
+  = Circle { r: I64, label: Text }
+  | Square { s: I64, label: Text }
+add relation shapes : Shape key id generate sequence default label = \"none\"
+";
+    let file = adtb_lang::parse::parse_migration(text, adtb_lang::parse::Options::default())
+        .ok()
+        .expect("the migration parses");
+    let source = Source::default().migrate(&file, text).expect("it applies");
+    let schema = source.schema().expect("it builds");
+    let rows = declared(&schema, &source);
+    let defaults = rows_of(&schema, &rows, 456);
+    let texts: Vec<&Value> = defaults.iter().map(|row| &row[3]).collect();
+    assert_eq!(
+        vec![
+            &Value::Text("generate sequence".into()),
+            &Value::Text("\"none\"".into()),
+            &Value::Text("\"none\"".into()),
+        ],
+        texts
+    );
+    let ids: BTreeSet<String> = defaults.iter().map(|row| format!("{:?}", row[0])).collect();
+    let fields: BTreeSet<String> = defaults.iter().map(|row| format!("{:?}", row[2])).collect();
+    assert_eq!((3, 3), (ids.len(), fields.len()));
+}

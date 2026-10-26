@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::ast::{ExprKind, QName};
+use adtb_lang::ast::{self, Decl, ExprKind, QName, RelationClause, RelationDecl};
 use adtb_lang::evolve::Source;
+use adtb_lang::lex::lex;
 use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, ValueDef};
+use adtb_lang::span::Span;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::key::Value;
@@ -32,6 +34,7 @@ pub fn declared(schema: &Schema, source: &Source) -> Rows {
     b.sets();
     b.indexes();
     b.constraints();
+    b.defaults();
     b.ctor_states();
     b.value_states();
     b.rows
@@ -339,6 +342,74 @@ impl Builder<'_> {
         }
     }
 
+    /// Returns the declaration of relation `r` as `source` holds it, and the text of its file.
+    fn relation_decl(&self, r: RelId) -> (RelationDecl, String) {
+        let file = self.schema.relation(r).file;
+        let files = self.source.files().expect("the source parses");
+        let (_, f) = files
+            .into_iter()
+            .find(|(id, _)| *id == file)
+            .unwrap_or_else(|| panic!("the source holds the file of relation {r:?}"));
+        match f.decls.into_iter().next() {
+            Some(Decl::Relation(d)) => (d, self.source.file_text(file)),
+            _ => panic!("the file of relation {r:?} declares it"),
+        }
+    }
+
+    /// Returns the id of field `name` of constructor `ctor` of relation `r`'s rows, `None`
+    /// naming the header.
+    fn field_id(&self, r: RelId, ctor: Option<u32>, name: &str) -> u64 {
+        let def = self.schema.relation(r).elem_def;
+        self.schema.ids.fields[&(def, ctor, name.to_string())]
+    }
+
+    fn defaults(&mut self) {
+        let mut rows = Vec::new();
+        for (&r, &id) in &self.schema.ids.generated {
+            let (decl, text) = self.relation_decl(r);
+            let (field, generator) = decl
+                .clauses
+                .iter()
+                .find_map(|c| match c {
+                    RelationClause::Key(fs, Some(g)) => Some((fs[0].text.clone(), g.span)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("relation {r:?} generates its key"));
+            let written = generate_text(&text, generator);
+            let def = self.schema.relation(r).elem_def;
+            let header = self.schema.ty(def).header().iter().any(|f| f.name == field);
+            let ctor = if header { None } else { Some(0) };
+            rows.push((id, r, self.field_id(r, ctor, &field), written));
+        }
+        for (&(r, i, ctor), &id) in &self.schema.ids.defaults {
+            let (decl, text) = self.relation_decl(r);
+            let (field, value) = decl
+                .clauses
+                .iter()
+                .filter_map(|c| match c {
+                    RelationClause::Default { field, value, .. } => Some((field, value)),
+                    _ => None,
+                })
+                .nth(i)
+                .unwrap_or_else(|| panic!("relation {r:?} declares default {i}"));
+            let written = match value {
+                ast::DefaultValue::Generate(g) => generate_text(&text, g.span),
+                ast::DefaultValue::Expr(e) => text[e.span.range()].to_string(),
+            };
+            rows.push((id, r, self.field_id(r, ctor, &field.text), written));
+        }
+        for (id, r, field, text) in rows {
+            let fields = vec![
+                ("id", key(id)),
+                ("relation", key(self.schema.ids.relations[&r])),
+                ("field", key(field)),
+                ("text", Value::Text(text)),
+                ("dropped", self.none()),
+            ];
+            self.push("defaults", "Default", fields);
+        }
+    }
+
     fn constraints(&mut self) {
         let declared = self.schema.ids.constraints.iter().map(|(&i, &id)| {
             let c = &self.schema.constraints[i];
@@ -428,6 +499,18 @@ impl Builder<'_> {
             }
         }
     }
+}
+
+/// Returns the text of `text` from the `generate` before the generator at `generator` to the
+/// generator's end.
+fn generate_text(text: &str, generator: Span) -> String {
+    let (tokens, _) = lex(text);
+    let word = tokens
+        .iter()
+        .rev()
+        .find(|t| t.span.end <= generator.start && &text[t.span.range()] == "generate")
+        .expect("a generator follows `generate`");
+    text[word.span.start as usize..generator.end as usize].to_string()
 }
 
 fn key(id: u64) -> Value {

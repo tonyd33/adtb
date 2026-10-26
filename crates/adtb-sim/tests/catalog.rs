@@ -432,6 +432,8 @@ fn a_migrated_catalog_names_its_objects() {
         assert!(has("indexes", "Text(\"unique (sub) in Apple\")"));
         assert!(has("named_sets", "Text(\"OAuth\")"));
         assert!(has("constraints", "Text(\"login_present\")"));
+        assert!(has("defaults", "Text(\"generate sequence\")"));
+        assert!(has("defaults", "Text(\"generate uuidv7\")"));
     });
 }
 

@@ -23,8 +23,9 @@ pub struct CatalogIds {
     pub indexes: BTreeMap<(RelId, usize), u64>,
     /// The default a key's `generate` gives.
     pub generated: BTreeMap<RelId, u64>,
-    /// Defaults, by relation and position among `RelationDef::defaults`.
-    pub defaults: BTreeMap<(RelId, usize), u64>,
+    /// Defaults, one for each field a default clause fills, by relation, position among
+    /// `RelationDef::defaults`, and the field's constructor (`None` for the header).
+    pub defaults: BTreeMap<(RelId, usize, Option<u32>), u64>,
     /// Computed fields, by relation and position among `RelationDef::computed`.
     pub computed: BTreeMap<(RelId, usize), u64>,
     pub functions: BTreeMap<FnId, u64>,
@@ -73,7 +74,7 @@ pub enum Slot {
     Key(RelId),
     Index(RelId, usize),
     Generated(RelId),
-    Default(RelId, usize),
+    Default(RelId, usize, Option<u32>),
     Computed(RelId, usize),
     Function(FnId),
     Aggregate(usize),
@@ -107,7 +108,7 @@ impl CatalogIds {
             Slot::Key(r) => self.keys.insert(r, id),
             Slot::Index(r, i) => self.indexes.insert((r, i), id),
             Slot::Generated(r) => self.generated.insert(r, id),
-            Slot::Default(r, i) => self.defaults.insert((r, i), id),
+            Slot::Default(r, i, c) => self.defaults.insert((r, i, c), id),
             Slot::Computed(r, i) => self.computed.insert((r, i), id),
             Slot::Function(f) => self.functions.insert(f, id),
             Slot::Aggregate(i) => self.aggregates.insert(i, id),
@@ -278,6 +279,7 @@ pub fn objects(
                     let name = format!("{m}::{rn}");
                     clause_objects(
                         &mut push,
+                        schema,
                         *file,
                         text,
                         &r.clauses,
@@ -352,7 +354,15 @@ pub fn objects(
                         }
                     }
                     let name = format!("{m}::{vn}");
-                    clause_objects(&mut push, *file, text, &s.clauses, &name, Owner::View(f));
+                    clause_objects(
+                        &mut push,
+                        schema,
+                        *file,
+                        text,
+                        &s.clauses,
+                        &name,
+                        Owner::View(f),
+                    );
                 }
             }
         }
@@ -392,6 +402,32 @@ fn anonymous_row(
     }
 }
 
+/// Returns the fields of relation `r` a default of `field`, of constructor `ctor` when one is
+/// named, fills, each by its constructor: `None` for the header's field, else each constructor
+/// with the field in declaration order.
+fn default_fields(
+    schema: &Schema,
+    r: RelId,
+    ctor: Option<&ast::Ident>,
+    field: &str,
+) -> Vec<Option<u32>> {
+    let def = schema.relation(r).elem_def;
+    if def.0 == u32::MAX {
+        return Vec::new();
+    }
+    let td = schema.ty(def);
+    if td.header().iter().any(|f| f.name == field) {
+        return vec![None];
+    }
+    td.ctors()
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| ctor.is_none_or(|n| n.text == c.name))
+        .filter(|(_, c)| c.fields.iter().any(|f| f.name == field))
+        .map(|(k, _)| Some(k as u32))
+        .collect()
+}
+
 /// What declares a run of clauses.
 #[derive(Clone, Copy)]
 enum Owner {
@@ -402,6 +438,7 @@ enum Owner {
 /// The objects a relation's or a stored view's clauses create, in written order.
 fn clause_objects(
     push: &mut dyn FnMut(Space, Slot, String),
+    schema: &Schema,
     file: FileId,
     text: &dyn Fn(FileId, Span) -> String,
     clauses: &[RelationClause],
@@ -459,14 +496,17 @@ fn clause_objects(
                 ix += 1;
             }
             (RelationClause::Default { ctor, field, .. }, Owner::Relation(r)) => {
-                let at = ctor
-                    .as_ref()
-                    .map_or(String::new(), |c| format!("{}.", c.text));
-                push(
-                    Space::Default,
-                    Slot::Default(r, dx),
-                    format!("default {name} {at}{}", field.text),
-                );
+                for c in default_fields(schema, r, ctor.as_ref(), &field.text) {
+                    let at = c.map_or(String::new(), |k| {
+                        let td = schema.ty(schema.relation(r).elem_def);
+                        format!("{}.", td.ctors()[k as usize].name)
+                    });
+                    push(
+                        Space::Default,
+                        Slot::Default(r, dx, c),
+                        format!("default {name} {at}{}", field.text),
+                    );
+                }
                 dx += 1;
             }
             (RelationClause::Computed(n, _, _), Owner::Relation(r)) => {

@@ -95,7 +95,7 @@ within an operator in this order:
 | Operator | Objects created, in order |
 | --- | --- |
 | `add type` | the type, then its constructors in listed order (a record or newtype has one); the header fields in declared order, then each constructor's fields, constructors in listed order and fields in declared order |
-| `add relation` | the relation variable; then, for its clauses in written order, an index for the key and for each `unique` and `index`, a default for the key's `generate` and for each `default`, and a computed field for each `computed` |
+| `add relation` | the relation variable; then, for its clauses in written order, an index for the key and for each `unique` and `index`, a default for the key's `generate` and, for each `default`, one for each field it fills (the header's field, or each constructor's field in declared order), and a computed field for each `computed` |
 | `add set` | the named set |
 | `add constructor` | the constructor, then its fields in declared order |
 | `split`, `merge`, `nest`, `unnest` | the new constructors in listed order (for `unnest`, in the order of the field's sum), each followed by its fields in declared order; then, for each relation variable of the type in id order, an index for each unique and index the operator re-scopes or a split's `unique` and `index` clauses add, in the order of the relation variable's clauses after the operator |
@@ -103,7 +103,7 @@ within an operator in this order:
 | `move field` | for a move down, a field for each listed constructor but the first, in declaration order |
 | `add unique`, `add index`, `add interval index` | the index |
 | `rekey` | an index for the new key |
-| `add default` | the default |
+| `add default` | the default, one for each field it fills, as for a `default` clause |
 | `define fn`, `define aggregate` | the function |
 | `add constraint`, `add check` | the constraint |
 | `store f` | the relation variable of the view; then, when the view's element type is anonymous, a type for it with one constructor, then that constructor's fields when the element type is a record, in the order the function's result type writes them; then an index for its key and for each `unique` and `index` clause, in written order |
@@ -149,7 +149,7 @@ other objects get `dropped: Some { value: v }` with
 the schema version `v` that dropped them). A key held in a `sys::` row or in a stored plan
 therefore always resolves.
 
-Rulings: spec/ids/operator-ids/implied, spec/ids/rescoped-index/new, spec/ids/rescope/named, spec/ids/moved-field/keeps, spec/ids/move-down/first-declared, spec/ids/view-type/anonymous-only, spec/ids/package/as-operators
+Rulings: spec/ids/operator-ids/implied, spec/ids/rescoped-index/new, spec/ids/rescope/named, spec/ids/moved-field/keeps, spec/ids/move-down/first-declared, spec/ids/view-type/anonymous-only, spec/ids/package/as-operators, spec/default-field-rows/per-field
 
 ### 1.3 Volatile relations
 
@@ -366,7 +366,10 @@ relation computed : Computed key id
 ```
 
 A row of `defaults` is one default or generated value of a relation
-variable's field ([derived.md](derived.md#4-defaults)), and a row of
+variable's field ([derived.md](derived.md#4-defaults)); a `default`
+clause that fills the field of several constructors has one row per
+field, each with the clause's text. A generated key's `text` is its
+`generate` clause as written, for example `generate sequence`. A row of
 `computed` one computed field
 ([derived.md](derived.md#5-computed-fields)); `text` is the
 expression as written. A stored view is a row of `relations` of kind
@@ -613,7 +616,7 @@ deletes the row. A row of `peer_mappings` is one rule of a listener's
 peer mapping ([security.md](security.md#22-sources)), tried in
 `ordinal` order.
 
-Rulings: engine/catalog-relations, project/spec/normative/catalog, spec/evolution/product-state/source-state, spec/evolution/operator-type/catalog-sum, spec/evolution/version-hash/value-encoding, spec/evolution/term-encoding/canonical-tokens, spec/evolution/object-ids/every-object, spec/catalog-refs/key-value
+Rulings: engine/catalog-relations, project/spec/normative/catalog, spec/evolution/product-state/source-state, spec/evolution/operator-type/catalog-sum, spec/evolution/version-hash/value-encoding, spec/evolution/term-encoding/canonical-tokens, spec/evolution/object-ids/every-object, spec/catalog-refs/key-value, spec/default-field-rows/per-field
 
 ## 3. Zone rules and collations
 
