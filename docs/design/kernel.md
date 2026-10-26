@@ -208,6 +208,11 @@ from. Each form below is stated against that desugaring.
   of an `Insert`, the value bound by a `Let` and the new-value function
   of a `Replace` exactly as often as the term structure says, and no
   more.
+- A `Fresh(g, r)` node may be a child of several parents (§2). Each
+  path from the root to it is its own occurrence and draws its own
+  value on each evaluation: two rows of one `Insert` that share a
+  `Fresh` child receive two values. A consumer must not draw once per
+  node.
 - `Fresh(g, r)` occurs only in fills. `Only` is never produced: a
   single-row upsert's binding is `Upsert { single: true, .. }`.
 - Fills are explicit. A row handed to `Insert`, `Upsert` or a

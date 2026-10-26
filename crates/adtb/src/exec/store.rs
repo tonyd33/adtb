@@ -152,14 +152,15 @@ impl<R: Runtime> Store<R> {
     /// Returns the visible rows of heap `id` as batches of at most `rows` rows each.
     pub fn scan(&self, id: HeapId, rows: usize) -> Result<Vec<Batch>, Error> {
         let h = self.heap(id);
+        let heap = &h.heap;
         self.reads
-            .scanned(h.heap.id())
+            .scanned(heap.id())
             .map_err(Error::Serialization)?;
         let schema = BatchSchema::of_heap(&h.row);
         let mut out = Vec::new();
         let mut b = BatchBuilder::new(schema.clone());
         let mut failed = None;
-        h.heap.scan(&self.pager, |v| {
+        heap.scan(&self.pager, |v| {
             if failed.is_some() {
                 return;
             }
@@ -186,7 +187,7 @@ impl<R: Runtime> Store<R> {
 
     /// Returns the version of heap `id` visible from the chain starting at `tid`, with its TID.
     pub fn fetch(&self, id: HeapId, tid: Tid) -> Result<Option<(Tid, Vec<Value>)>, Error> {
-        let h = self.heap(id);
+        let heap = &self.heap(id).heap;
         let mut failed = None;
         let link = walk(&self.pager, tid, |l| match self.reads.sees(&l.header) {
             Ok(seen) => seen,
@@ -198,14 +199,13 @@ impl<R: Runtime> Store<R> {
         if let Some(e) = failed {
             return Err(Error::Page(e));
         }
-        let Some(link) = link.filter(|l| l.heap == h.heap.id()) else {
+        let Some(link) = link.filter(|l| l.heap == heap.id()) else {
             return Ok(None);
         };
         self.reads
             .fetched(link.heap, link.tid)
             .map_err(Error::Serialization)?;
-        let v = h
-            .heap
+        let v = heap
             .read(&self.pager, link.tid)?
             .expect("a walked version is there");
         Ok(Some((link.tid, v.row)))
@@ -355,6 +355,29 @@ fn scalar(v: &Value) -> Val {
             days: *days,
         },
         other => panic!("a scalar conversion of {other:?}"),
+    }
+}
+
+/// Returns `v` as a heap stores a field of type `t`.
+pub fn to_stored(t: &FieldType, v: &Val) -> Value {
+    match (t, v) {
+        (FieldType::Scalar(s), v) => scalar_key(*s, v),
+        (FieldType::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => Value::Record(
+            ts.iter()
+                .zip(fs.iter())
+                .map(|(t, v)| to_stored(t, v))
+                .collect(),
+        ),
+        (FieldType::Sum(cs), Val::Ctor(c, fs)) => Value::Sum {
+            ctor: *c,
+            fields: cs[*c as usize]
+                .fields
+                .iter()
+                .zip(fs.iter())
+                .map(|(t, v)| to_stored(t, v))
+                .collect(),
+        },
+        (t, v) => panic!("{v:?} is not a stored value of {t:?}"),
     }
 }
 

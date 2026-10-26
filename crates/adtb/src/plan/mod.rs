@@ -7,6 +7,7 @@ mod tests;
 
 pub use catalog::{Catalog, HeapId, IndexDesc, IndexId, RelationDesc};
 pub use lower::plan;
+pub(crate) use terms::with_children;
 
 use std::collections::BTreeSet;
 

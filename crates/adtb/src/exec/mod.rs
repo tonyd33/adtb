@@ -7,7 +7,7 @@ mod run;
 mod sched;
 mod sink;
 mod store;
-mod types;
+pub(crate) mod types;
 mod value;
 mod wide;
 
@@ -18,6 +18,7 @@ pub use ir::{Program, compile};
 pub use memory::{Arena, Budget, Grant};
 pub use sched::{Scheduler, Task};
 pub use store::{AtSnapshot, Reads, Store, StoredHeap, StoredIndex};
+pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};
 pub use value::{F32, F64, Val};
 
 use std::sync::Arc;

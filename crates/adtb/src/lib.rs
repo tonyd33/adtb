@@ -11,5 +11,6 @@ pub mod plan;
 pub mod storage;
 pub mod vacuum;
 pub mod verify;
+pub mod write;
 
 pub use adtb_sys::runtime;
