@@ -595,6 +595,10 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per expression kind; the larger arms would have to be functions"
+    )]
     fn expr(&mut self, e: &Expr) {
         match &e.kind {
             ExprKind::Lit(_) | ExprKind::Unit | ExprKind::Elided => {}
@@ -640,12 +644,14 @@ impl<'a> Resolver<'a> {
                     self.expr(x);
                 }
             }
-            ExprKind::Unary(_, x) | ExprKind::Reject(x) => self.expr(x),
+            ExprKind::Unary(_, x)
+            | ExprKind::Reject(x)
+            | ExprKind::Field(x, _)
+            | ExprKind::Select(x, _) => self.expr(x),
             ExprKind::Binary(_, a, b) => {
                 self.expr(a);
                 self.expr(b);
             }
-            ExprKind::Field(x, _) | ExprKind::Select(x, _) => self.expr(x),
             ExprKind::Backlink(x, rel, field) => {
                 self.expr(x);
                 if let Some(r) = self.relation(rel) {

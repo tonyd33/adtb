@@ -131,7 +131,7 @@ fn starts_directive(line: &str) -> bool {
     line.starts_with('#')
         || matches!(
             words.as_slice(),
-            ["schema"] | ["run"] | ["query"] | ["query", "rowsort"]
+            ["schema" | "run" | "query"] | ["query", "rowsort"]
         )
         || matches!(words.as_slice(), ["error", c] if c.chars().all(char::is_alphanumeric))
 }
@@ -493,7 +493,7 @@ pub fn run_file(path: &Path) -> Vec<String> {
             let why = p
                 .downcast_ref::<String>()
                 .cloned()
-                .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                .or_else(|| p.downcast_ref::<&str>().map(ToString::to_string))
                 .unwrap_or_default();
             vec![differ(0, format!("the interpreter panics: {why}"))]
         }),

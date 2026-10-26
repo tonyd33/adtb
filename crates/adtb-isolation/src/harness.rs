@@ -32,11 +32,7 @@ pub enum Step {
 impl Step {
     fn txn(self) -> u64 {
         match self {
-            Step::Begin(t)
-            | Step::Append(t, ..)
-            | Step::Read(t, _)
-            | Step::Commit(t)
-            | Step::Abort(t) => t,
+            Begin(t) | Append(t, ..) | Read(t, _) | Commit(t) | Abort(t) => t,
         }
     }
 }
@@ -54,7 +50,7 @@ pub fn run<D: Database>(db: &mut D, steps: &[Step]) -> Vec<Txn> {
     for &step in steps {
         let t = step.txn();
         let found = history.iter().position(|x| x.id.0 == t);
-        if let Step::Begin(_) = step {
+        if let Begin(_) = step {
             assert!(found.is_none(), "transaction {t} begun twice");
             history.push(Txn::new(t, Outcome::InDoubt, vec![]));
             open.push(Some(db.begin()));
@@ -66,26 +62,26 @@ pub fn run<D: Database>(db: &mut D, steps: &[Step]) -> Vec<Txn> {
             continue;
         };
         let ended = match step {
-            Step::Begin(_) => unreachable!(),
-            Step::Append(_, key, elem) => match db.append(txn, key, elem) {
+            Begin(_) => unreachable!(),
+            Append(_, key, elem) => match db.append(txn, key, elem) {
                 Ok(()) => {
                     record.ops.push(Op::Append { key, elem });
                     None
                 }
                 Err(Aborted) => Some(Outcome::Aborted),
             },
-            Step::Read(_, key) => match db.read(txn, key) {
+            Read(_, key) => match db.read(txn, key) {
                 Ok(list) => {
                     record.ops.push(Op::Read { key, list });
                     None
                 }
                 Err(Aborted) => Some(Outcome::Aborted),
             },
-            Step::Commit(_) => match db.commit(open[i].take().expect("open")) {
+            Commit(_) => match db.commit(open[i].take().expect("open")) {
                 Ok(()) => Some(Outcome::Committed),
                 Err(Aborted) => Some(Outcome::Aborted),
             },
-            Step::Abort(_) => {
+            Abort(_) => {
                 db.abort(open[i].take().expect("open"));
                 Some(Outcome::Aborted)
             }

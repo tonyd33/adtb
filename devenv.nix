@@ -25,6 +25,15 @@ in
     cargo fmt --all --check
     cargo nextest run --workspace --no-tests=pass
     cargo deny check
+    size-check
+  '';
+
+  scripts.size-check.exec = ''
+    "$DEVENV_ROOT/work/tools/size-check.sh"
+  '';
+
+  scripts.quality-metrics.exec = ''
+    "$DEVENV_ROOT/work/tools/quality-metrics.sh" "$@"
   '';
 
   enterTest = "check";

@@ -7,7 +7,7 @@ use crate::schema::build;
 mod adhoc;
 mod writes;
 
-const RUNNING: &str = r#"
+const RUNNING: &str = r"
 module auth
 type User = { id: Key users, name: Text }
 type Identity { id: Key identities, user: Key users }
@@ -49,7 +49,7 @@ type Session = { id: Key sessions, owner: Option (Key users) }
 relation sessions : Session key id generate sequence
 type Sale = { id: Key sales, qty: I32, unit_cents: I64 }
 relation sales : Sale key id generate sequence
-"#;
+";
 
 fn source(extra: &str) -> String {
     format!("{RUNNING}\n{extra}")
@@ -377,7 +377,7 @@ fn anonymous_sum_constructors_are_numbered_in_name_order() {
 }
 
 /// Each anonymous constructor reachable from `t`: the constructors of its node's type, its name there, and the field names it is given.
-fn anon_ctors(terms: &crate::kernel::Terms, t: Tm) -> Vec<(Vec<String>, String, Vec<String>)> {
+fn anon_ctors(terms: &Terms, t: Tm) -> Vec<(Vec<String>, String, Vec<String>)> {
     let mut out = Vec::new();
     let mut stack = vec![t];
     while let Some(t) = stack.pop() {
@@ -1752,7 +1752,7 @@ fn aggregates_over_a_group_are_nonempty() {
 }
 
 /// The aggregates reachable from `t`, each with whether its source has the nonempty type.
-fn agg_sources(terms: &crate::kernel::Terms, t: Tm) -> Vec<(crate::kernel::Agg, bool)> {
+fn agg_sources(terms: &Terms, t: Tm) -> Vec<(crate::kernel::Agg, bool)> {
     let mut out = Vec::new();
     let mut stack = vec![t];
     while let Some(t) = stack.pop() {
@@ -2316,7 +2316,7 @@ fn matches_takes_a_valid_constant_pattern() {
     accepts(r#"fn f (t: Text) -> Bool = matches(t, "^[^@]+@[^@]+$")"#);
     accepts(r#"fn f (t: Text) -> Bool = matches(t, "(?i)\\p{L}+")"#);
     refuses(
-        r#"fn f (t: Text, p: Text) -> Bool = matches(t, p)"#,
+        r"fn f (t: Text, p: Text) -> Bool = matches(t, p)",
         "this argument is a constant",
     );
     refuses(
@@ -2776,7 +2776,7 @@ fn a_declared_type_never_holds_an_anonymous_sum() {
     );
 }
 
-const MEAN: &str = r#"
+const MEAN: &str = r"
 aggregate mean (x: F64) -> F64 =
   state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
   step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
@@ -2784,7 +2784,7 @@ aggregate mean (x: F64) -> F64 =
   finish st -> st.s / st.n
 type Reading = { id: Key readings, at: Text, v: F64 }
 relation readings : Reading key id generate sequence
-"#;
+";
 
 #[test]
 fn user_defined_aggregates_check() {
@@ -2821,27 +2821,27 @@ fn user_defined_aggregate_parts_are_typed() {
         "",
     );
     refuses(
-        r#"aggregate bad (x: F64) -> F64 =
+        r"aggregate bad (x: F64) -> F64 =
   state { s: F64 } init { s: 0.0 }
   step (st, x) -> { s: st.s + x, n: 1.0 }
   merge (a, b) -> { s: a.s + b.s }
-  finish st -> st.s"#,
+  finish st -> st.s",
         "",
     );
     refuses(
-        r#"aggregate bad (x: F64) -> Text =
+        r"aggregate bad (x: F64) -> Text =
   state { s: F64 } init { s: 0.0 }
   step (st, x) -> { s: st.s + x }
   merge (a, b) -> { s: a.s + b.s }
-  finish st -> st.s"#,
+  finish st -> st.s",
         "Text",
     );
     refuses(
-        r#"aggregate bad (x: F64) -> F64 =
+        r"aggregate bad (x: F64) -> F64 =
   state { s: F64, s: F64 } init { s: 0.0 }
   step (st, x) -> { s: st.s + x }
   merge (a, b) -> { s: a.s + b.s }
-  finish st -> st.s"#,
+  finish st -> st.s",
         "declared twice",
     );
 }
@@ -2849,22 +2849,22 @@ fn user_defined_aggregate_parts_are_typed() {
 #[test]
 fn a_user_defined_aggregate_takes_exactly_one_parameter() {
     refuses(
-        r#"aggregate two (x: F64, w: F64) -> F64 =
+        r"aggregate two (x: F64, w: F64) -> F64 =
   state { s: F64 } init { s: 0.0 }
   step (st, x) -> { s: st.s + x }
   merge (a, b) -> { s: a.s + b.s }
-  finish st -> st.s"#,
+  finish st -> st.s",
         "an aggregate takes exactly one parameter",
     );
     accepts(
-        r#"aggregate wmean (p: { x: F64, w: F64 }) -> F64 =
+        r"aggregate wmean (p: { x: F64, w: F64 }) -> F64 =
   state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
   step (st, p) -> { s: st.s + p.x * p.w, n: st.n + p.w }
   merge (a, b) -> { s: a.s + b.s, n: a.n + b.n }
   finish st -> st.s / st.n
 type Weighted = { id: Key weighted, x: F64, w: F64 }
 relation weighted : Weighted key id generate sequence
-fn wm () -> Option F64 = wmean({ x: r.x, w: r.w } for r in weighted)"#,
+fn wm () -> Option F64 = wmean({ x: r.x, w: r.w } for r in weighted)",
     );
 }
 

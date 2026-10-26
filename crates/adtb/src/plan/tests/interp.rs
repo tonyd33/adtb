@@ -420,13 +420,7 @@ impl<'a> Interp<'a> {
         }
     }
 
-    fn aggregate(
-        &self,
-        op: adtb_lang::kernel::Agg,
-        ty: &Ty,
-        body_ty: &Ty,
-        ms: Vec<Value>,
-    ) -> R<Value> {
+    fn aggregate(&self, op: Agg, ty: &Ty, body_ty: &Ty, ms: Vec<Value>) -> R<Value> {
         let mut t = self.terms.borrow_mut();
         let elem = Ty::Record(vec![
             ("i".into(), Ty::Base(Base::I64)),

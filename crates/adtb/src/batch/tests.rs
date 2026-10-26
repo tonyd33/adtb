@@ -403,7 +403,7 @@ fn widest(t: &Type) -> usize {
 
 fn random_schema(rng: &mut Rng, lists: bool) -> Schema {
     Schema::new(
-        (0..1 + rng.below(4))
+        (0..=rng.below(4))
             .map(|_| random_type(rng, 0, lists))
             .collect(),
     )
@@ -489,7 +489,7 @@ fn a_buffer_stays_aligned_and_padded_as_it_grows() {
     let mut b = Buffer::new();
     assert!(b.padded().is_empty());
     for i in 0..1000u32 {
-        b.extend(&i.to_le_bytes()[..1 + (i % 4) as usize]);
+        b.extend(&i.to_le_bytes()[..=((i % 4) as usize)]);
         check_buffer(&b);
     }
     let len = b.len();
@@ -718,7 +718,7 @@ fn a_type_id_names_the_constructor_at_its_schema_position() {
             fields: Vec::new(),
         },
     ];
-    let t = Type::Sum(cs.clone());
+    let t = Type::Sum(cs);
     let batch = build(t, &[sv(1, vec![Value::Text("g".into())])]);
     let Column::Union { type_ids, .. } = &batch.columns()[0] else {
         panic!("not a union");

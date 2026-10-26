@@ -337,7 +337,7 @@ fn opening_with_too_small_a_pool_for_its_threads_panics() {
     let mut sim = Sim::new(7, Config::default());
     create(&mut sim);
     sim.run(|rt| {
-        let _ = Pager::open(rt, &sized(4, 19));
+        Pager::open(rt, &sized(4, 19)).unwrap();
     });
 }
 
@@ -395,7 +395,7 @@ fn a_pool_every_frame_of_which_stays_latched_reports_a_stall() {
             .iter()
             .map(|&pid| pager.exclusive(pid).unwrap())
             .collect();
-        let _ = pager.read(pages[5]);
+        pager.read(pages[5]).unwrap();
         rt.join(holder);
     });
 }
@@ -447,7 +447,7 @@ fn recovery_and_verify_read_the_log_a_chunk_at_a_time() {
         })
     );
     let before = sim.trace().len();
-    let b = big.clone();
+    let b = big;
     assert_eq!(
         Outcome::Finished,
         sim.run(move |rt| {

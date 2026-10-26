@@ -46,7 +46,7 @@ impl Strata<'_> {
                 terms.var_info(*v).name
             )),
             (Kind::Var(_), _) => Ok(()),
-            (Kind::Union(a, b), Pos::Positive) | (Kind::For(_, a, b), Pos::Positive) => {
+            (Kind::Union(a, b) | Kind::For(_, a, b), Pos::Positive) => {
                 self.walk(*a, pos)?;
                 self.walk(*b, pos)
             }
@@ -105,7 +105,7 @@ impl Strata<'_> {
 
     /// Returns whether `t`, a term of type `Bool`, is the literal `value`.
     fn is_bool(&self, t: Tm, value: bool) -> bool {
-        matches!(self.terms.kind(t), Kind::Ctor { ctor, fields } if fields.is_empty() && *ctor == value as u32)
+        matches!(self.terms.kind(t), Kind::Ctor { ctor, fields } if fields.is_empty() && *ctor == u32::from(value))
     }
 }
 

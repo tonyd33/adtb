@@ -708,7 +708,7 @@ impl<R: Runtime> Ctx<R> {
         let (cx, run) = (self.clone(), run.clone());
         pool.submit(Box::new(move || {
             if !run.failed.load(Ordering::Acquire) {
-                let r = cx.check_cancel().and_then(|_| task(&cx, &run));
+                let r = cx.check_cancel().and_then(|()| task(&cx, &run));
                 if let Err(e) = r {
                     run.fail(&cx.rt, e);
                 }

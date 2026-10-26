@@ -8,9 +8,9 @@ const KEYS: u64 = 4;
 fn serial_script(rng: &mut Rng) -> Vec<Step> {
     let mut next_elem = [0; KEYS as usize];
     let mut steps = Vec::new();
-    for t in 0..1 + rng.below(12) {
+    for t in 0..=rng.below(12) {
         steps.push(Step::Begin(t));
-        for _ in 0..1 + rng.below(6) {
+        for _ in 0..=rng.below(6) {
             let key = rng.below(KEYS);
             if rng.below(2) == 0 {
                 next_elem[key as usize] += 1;
@@ -67,7 +67,7 @@ fn interleaved_script(rng: &mut Rng) -> Vec<Step> {
     let mut pending: Vec<Vec<Step>> = (0..2 + rng.below(6))
         .map(|t| {
             let mut ops = vec![Step::Begin(t)];
-            for _ in 0..1 + rng.below(5) {
+            for _ in 0..=rng.below(5) {
                 let key = rng.below(KEYS);
                 ops.push(if rng.below(2) == 0 {
                     next_elem[key as usize] += 1;

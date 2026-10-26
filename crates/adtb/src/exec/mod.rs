@@ -220,9 +220,7 @@ pub fn batches(v: &Val, schema: &batch::Schema, rows: Rows, per: usize) -> Vec<B
 
 fn datum(t: &batch::Type, v: &Val) -> Datum {
     match (t, v) {
-        (batch::Type::Scalar(s), v) => {
-            Datum::Scalar(store::to_key(&crate::key::KeyType::Scalar(*s), v))
-        }
+        (batch::Type::Scalar(s), v) => Datum::Scalar(to_key(&crate::key::KeyType::Scalar(*s), v)),
         (batch::Type::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => {
             Datum::Record(ts.iter().zip(fs.iter()).map(|(t, x)| datum(t, x)).collect())
         }

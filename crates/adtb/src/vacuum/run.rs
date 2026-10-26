@@ -176,7 +176,9 @@ impl Progress {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u32, Step>> {
-        self.rows.lock().unwrap_or_else(|e| e.into_inner())
+        self.rows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn set(&self, heap: u32, f: impl FnOnce(&mut Step)) {
@@ -353,7 +355,7 @@ fn clean<R: Runtime>(
             report.all_visible += usize::from(done.all_visible);
             report.removed += usize::from(done.removed);
             progress.set(id, |s| {
-                s.dead_versions = s.dead_versions.saturating_sub(slots.len())
+                s.dead_versions = s.dead_versions.saturating_sub(slots.len());
             });
         }
         progress.set(id, |s| s.phase = Phase::Scan);

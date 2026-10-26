@@ -2,7 +2,7 @@ use super::*;
 use crate::parse::{Options, parse_adhoc, parse_schema};
 use crate::schema::build;
 
-const RUNNING: &str = r#"
+const RUNNING: &str = r"
 module auth
 type User = { id: Key users, name: Text }
 type Identity { id: Key identities, user: Key users }
@@ -17,7 +17,7 @@ set OAuth of identities = Google
 fn display_name (i: Identity) -> Text = match i
   | EmailPass e -> e.email
   | Google g    -> g.gid
-"#;
+";
 
 fn schema_errors(extra: &str) -> Vec<String> {
     let src = format!("{RUNNING}\n{extra}");

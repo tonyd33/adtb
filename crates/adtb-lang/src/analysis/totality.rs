@@ -85,17 +85,58 @@ impl<'s> Totality<'s> {
             | InZone
             | Span
             | AddPeriod
-            | ReadFile { .. } => true,
+            | ReadFile { .. }
+            | Micros
+            | Millis
+            | Seconds
+            | Minutes
+            | Hours
+            | Days
+            | Weeks
+            | Months
+            | Years => true,
             Neg => !matches!(result, Ty::Base(Base::Decimal(_) | Base::F32 | Base::F64)),
             Abs => !matches!(result, Ty::Base(Base::Decimal(_) | Base::F32 | Base::F64)),
-            Convert { checked: true } => false,
             Convert { checked: false } => !args.first().is_some_and(|a| widens(a, result)),
-            Micros | Millis | Seconds | Minutes | Hours | Days | Weeks | Months | Years => true,
-            Concat | Eq | Ne | Lt | Le | Gt | Ge | CheckedAdd | CheckedSub | CheckedMul
-            | CheckedDiv | CheckedRem | CheckedNeg | Round | Wrap | Unwrap | KeyValue | ToText
-            | BytesLen | ScalarLen | GraphemeLen | StartsWith | EndsWith | Contains | Matches
-            | Lower | Upper | Fold | Collate | Utf8 | Bytes | ToInstant | Start | End
-            | Overlaps | Covers | Parse | Print => false,
+            Convert { checked: true }
+            | Concat
+            | Eq
+            | Ne
+            | Lt
+            | Le
+            | Gt
+            | Ge
+            | CheckedAdd
+            | CheckedSub
+            | CheckedMul
+            | CheckedDiv
+            | CheckedRem
+            | CheckedNeg
+            | Round
+            | Wrap
+            | Unwrap
+            | KeyValue
+            | ToText
+            | BytesLen
+            | ScalarLen
+            | GraphemeLen
+            | StartsWith
+            | EndsWith
+            | Contains
+            | Matches
+            | Lower
+            | Upper
+            | Fold
+            | Collate
+            | Utf8
+            | Bytes
+            | ToInstant
+            | Start
+            | End
+            | Overlaps
+            | Covers
+            | Parse
+            | Print => false,
         }
     }
 }
@@ -125,13 +166,13 @@ fn widens(from: &Ty, to: &Ty) -> bool {
         return false;
     };
     match (int_digits(*f), *t) {
-        (Some(d), Base::Decimal(s)) => d + s as u32 <= 38,
+        (Some(d), Base::Decimal(s)) => d + u32::from(s) <= 38,
         (Some(_), Base::F32 | Base::F64) => true,
         (Some(_), t) => match (f, t) {
             (Base::I8, _) => int_digits(t).is_some(),
-            (Base::I16, Base::I16 | Base::I32 | Base::I64) => true,
-            (Base::I32, Base::I32 | Base::I64) => true,
-            (Base::I64, Base::I64) => true,
+            (Base::I16, Base::I16 | Base::I32 | Base::I64)
+            | (Base::I32, Base::I32 | Base::I64)
+            | (Base::I64, Base::I64) => true,
             _ => false,
         },
         (None, Base::F64) => matches!(f, Base::Decimal(_) | Base::F32 | Base::F64),

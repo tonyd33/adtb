@@ -303,7 +303,7 @@ fn dedup_keeps_each_run_of_one_key_once_under_the_cap() {
 fn a_posting_with_no_remainders_or_in_an_inner_page_is_malformed() {
     let p = leaf_of(&[posting(b"k", &[b"1"])]);
     let at = usize::from(u16::from_le_bytes([p[42], p[43]]));
-    let mut empty = p.clone();
+    let mut empty = p;
     empty[at + 3..at + 5].copy_from_slice(&0_u16.to_le_bytes());
     assert_eq!(Node::new(&empty).unwrap().rest(0), Err(Malformed));
     let mut inner = blank(PageKind::IndexInner);

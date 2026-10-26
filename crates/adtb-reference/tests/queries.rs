@@ -108,15 +108,15 @@ fn fixture() -> Fixture {
     );
     f.rows_with(
         "phones",
-        r#"[Phone { id: phones.key(1), owner: users.key(1), seen: t1 },
-            Phone { id: phones.key(2), owner: users.key(1), seen: t2 }]"#,
+        r"[Phone { id: phones.key(1), owner: users.key(1), seen: t1 },
+            Phone { id: phones.key(2), owner: users.key(1), seen: t2 }]",
         &times,
     );
     f.rows(
         "follows",
-        r#"[Follow { src: users.key(1), dst: users.key(2) },
+        r"[Follow { src: users.key(1), dst: users.key(2) },
             Follow { src: users.key(2), dst: users.key(3) },
-            Follow { src: users.key(3), dst: users.key(2) }]"#,
+            Follow { src: users.key(3), dst: users.key(2) }]",
     );
     f.rows(
         "employees",
@@ -125,10 +125,10 @@ fn fixture() -> Fixture {
     );
     f.rows(
         "orders",
-        r#"[Order { id: orders.key(1), user: users.key(1), total: 100, qty: 2 },
+        r"[Order { id: orders.key(1), user: users.key(1), total: 100, qty: 2 },
             Order { id: orders.key(2), user: users.key(1), total: 100, qty: 0 },
             Order { id: orders.key(3), user: users.key(2), total: 30, qty: 3 },
-            Order { id: orders.key(4), user: users.key(1), total: 50, qty: 5 }]"#,
+            Order { id: orders.key(4), user: users.key(1), total: 50, qty: 5 }]",
     );
     f.rows(
         "resets",
@@ -140,15 +140,15 @@ fn fixture() -> Fixture {
     );
     f.rows_with(
         "invoices",
-        r#"[Invoice { id: invoices.key(1), status: Draft, issued: t1 },
+        r"[Invoice { id: invoices.key(1), status: Draft, issued: t1 },
             Invoice { id: invoices.key(2), status: Sent { at: t1 }, issued: t2 },
-            Invoice { id: invoices.key(3), status: Draft, issued: t3 }]"#,
+            Invoice { id: invoices.key(3), status: Draft, issued: t3 }]",
         &times,
     );
     f.rows(
         "sessions",
-        r#"[Session { id: sessions.key(1), owner: Some { value: users.key(1) } },
-            Session { id: sessions.key(2), owner: None }]"#,
+        r"[Session { id: sessions.key(1), owner: Some { value: users.key(1) } },
+            Session { id: sessions.key(2), owner: None }]",
     );
     f
 }
@@ -812,7 +812,7 @@ fn adhoc_anonymous_constructors_are_numbered_in_their_joined_sum() {
         f.value("[Zed { n: 1 }] union [Alpha]")
     );
     assert_eq!(
-        set([zed(1), alpha.clone()]),
+        set([zed(1), alpha]),
         f.value("fix a = [Zed { n: 1 }] union (from x in a select Alpha) in a")
     );
     assert_eq!(Value::Ctor(0, Vec::new()), f.value("Zed == Alpha"));
@@ -827,7 +827,7 @@ fn adhoc_anonymous_constructors_are_numbered_in_their_joined_sum() {
 #[test]
 fn a_user_defined_aggregate_folds_its_inputs() {
     let mut f = Fixture::new(
-        r#"
+        r"
 aggregate mean (x: F64) -> F64 =
   state { s: F64, n: F64 } init { s: 0.0, n: 0.0 }
   step (st, x) -> { s: st.s + x, n: st.n + 1.0 }
@@ -835,7 +835,7 @@ aggregate mean (x: F64) -> F64 =
   finish st -> st.s / st.n
 type Sale = { id: Key sales, region: Text, total: F64 }
 relation sales : Sale key id generate sequence
-"#,
+",
     );
     f.rows(
         "sales",

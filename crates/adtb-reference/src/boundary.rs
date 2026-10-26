@@ -80,7 +80,7 @@ fn apply(d: &Database, delta: &Delta) -> Database {
 }
 
 fn normalise(mut delta: Delta) -> Delta {
-    for (rc, plus) in delta.plus.iter_mut() {
+    for (rc, plus) in &mut delta.plus {
         if let Some(minus) = delta.minus.get_mut(rc) {
             let both: Vec<Value> = plus.intersection(minus).cloned().collect();
             for v in both {

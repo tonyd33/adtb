@@ -36,7 +36,7 @@ pub fn new_order_keys(schema: &Schema, keys: &OrderKeys) -> OrderKeys {
         if cs.iter().any(|(_, id)| keys.contains_key(id)) {
             continue;
         }
-        cs.sort();
+        cs.sort_unstable();
         out.extend(cs.iter().map(|(_, id)| *id).zip(OrderKey::spread(cs.len())));
     }
     out

@@ -214,7 +214,7 @@ fn a_tree_page_of_another_owner_breaks_the_tree_and_hides_no_leak() {
         let leaf = *pages.last().unwrap();
         db.pager
             .update(&[leaf], |p| {
-                p[0][16..20].copy_from_slice(&31u32.to_le_bytes())
+                p[0][16..20].copy_from_slice(&31u32.to_le_bytes());
             })
             .unwrap();
         let report = db.verify();
@@ -235,7 +235,7 @@ fn repair_refuses_an_incomplete_report() {
         let leaf = *db.tree.pages(&db.pager).unwrap().last().unwrap();
         db.pager
             .update(&[leaf], |p| {
-                p[0][16..20].copy_from_slice(&31u32.to_le_bytes())
+                p[0][16..20].copy_from_slice(&31u32.to_le_bytes());
             })
             .unwrap();
         let report = db.verify();

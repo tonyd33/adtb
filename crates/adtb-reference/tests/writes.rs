@@ -108,9 +108,9 @@ fn fixture() -> Fixture {
     f.rows_with(
         "logins",
         &format!(
-            r#"[Active {{ id: logins.key(1), user: users.key(1), identity: {} }},
+            r"[Active {{ id: logins.key(1), user: users.key(1), identity: {} }},
                 Active {{ id: logins.key(2), user: users.key(2), identity: {} }},
-                Revoked {{ id: logins.key(3), user: users.key(1), at: t }}]"#,
+                Revoked {{ id: logins.key(3), user: users.key(1), at: t }}]",
             uuid(1),
             uuid(3)
         ),
@@ -145,7 +145,7 @@ fn fixture() -> Fixture {
     f.rows(
         "tickets",
         &format!(
-            r#"[Open {{ id: tickets.key(1), owner: Some {{ value: users.key(4) }}, identity: {} }}]"#,
+            r"[Open {{ id: tickets.key(1), owner: Some {{ value: users.key(4) }}, identity: {} }}]",
             uuid(2)
         ),
     );
@@ -1284,9 +1284,9 @@ fn an_upsert_on_a_value_level_path_meets_only_rows_holding_the_constructor() {
     };
     f.ok(&upsert(2));
     assert_eq!(1, count(&f, "invoices"));
-    assert_eq!(int(11), f.one(r#"from i in invoices select i.n"#));
-    f.ok(r#"insert invoices { status: Draft, n: 5 }
+    assert_eq!(int(11), f.one(r"from i in invoices select i.n"));
+    f.ok(r"insert invoices { status: Draft, n: 5 }
             unless conflict on (status.Paid.ref)
-            else update old set Invoice { old with n: 0 }"#);
+            else update old set Invoice { old with n: 0 }");
     assert_eq!(2, count(&f, "invoices"));
 }

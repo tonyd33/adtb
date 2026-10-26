@@ -504,14 +504,16 @@ fn the_identities_key_index_reads_one_key_as_one_range() {
 fn an_entry_of_a_constructor_outside_the_set_is_refused() {
     with_pager(22, |_, pager| {
         let index = Index::create(pager, OWNER, i64_schema(), [CtorId(1)].into()).unwrap();
-        let _ = index.insert(
-            pager,
-            &Entry {
-                key: vec![Value::I64(1)],
-                ctor: CtorId(2),
-                tid: tid(1, 1),
-            },
-        );
+        index
+            .insert(
+                pager,
+                &Entry {
+                    key: vec![Value::I64(1)],
+                    ctor: CtorId(2),
+                    tid: tid(1, 1),
+                },
+            )
+            .unwrap();
     });
 }
 

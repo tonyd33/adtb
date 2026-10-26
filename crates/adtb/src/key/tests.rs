@@ -171,7 +171,7 @@ fn gen_type(rng: &mut Rng, depth: usize, ordered: bool) -> KeyType {
 const NAMES: [&str; 5] = ["a", "b", "ab", "z", "\u{e9}"];
 
 fn gen_names(rng: &mut Rng, n: usize) -> Vec<String> {
-    let mut names: Vec<String> = NAMES.iter().map(|n| n.to_string()).collect();
+    let mut names: Vec<String> = NAMES.iter().map(ToString::to_string).collect();
     while names.len() > n {
         names.remove(rng.below(names.len()));
     }
@@ -190,7 +190,7 @@ fn gen_anon_record(rng: &mut Rng, depth: usize, ordered: bool) -> AnonRecordType
 
 fn gen_schema(rng: &mut Rng, ordered: bool) -> KeySchema {
     KeySchema::new(
-        (0..1 + rng.below(3))
+        (0..=rng.below(3))
             .map(|_| {
                 let dir = if rng.chance(2) { Dir::Asc } else { Dir::Desc };
                 (gen_type(rng, 3, ordered), dir)
@@ -978,7 +978,7 @@ fn decoding_refuses_malformed_entries() {
         schema.decode_entry(&bytes[..bytes.len() - 1]),
         Err(DecodeError::UnexpectedEnd)
     );
-    let mut long = bytes.clone();
+    let mut long = bytes;
     long.push(0);
     assert_eq!(schema.decode_entry(&long), Err(DecodeError::TrailingBytes));
     assert_eq!(

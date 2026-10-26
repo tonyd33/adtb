@@ -28,7 +28,7 @@ struct Book {
 }
 
 fn book(b: &Mutex<Book>) -> MutexGuard<'_, Book> {
-    b.lock().unwrap_or_else(|e| e.into_inner())
+    b.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Book {
@@ -62,7 +62,7 @@ fn client(e: &Engine, rt: &SimRuntime, b: &Mutex<Book>) {
         let id = book(b).begin();
         let tx = e.begin(kind);
         let mut failed = false;
-        for _ in 0..1 + rt.next_u64() % 4 {
+        for _ in 0..=(rt.next_u64() % 4) {
             rt.yield_now();
             let key = (rt.next_u64() % KEYS as u64) as i64;
             let op = if kind != Kind::ReadWrite || rt.next_u64().is_multiple_of(2) {

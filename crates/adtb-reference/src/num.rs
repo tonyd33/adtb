@@ -65,7 +65,7 @@ pub fn digits38(b: &Big) -> Option<i128> {
 }
 
 fn scaled(a: i128, from: u8, to: u8) -> Big {
-    Big::from_i128(a).mul(&Big::pow10((to - from) as u32))
+    Big::from_i128(a).mul(&Big::pow10(u32::from(to - from)))
 }
 
 pub fn dec_add(a: i128, s: u8, b: i128, t: u8, sub: bool) -> Result<(i128, u8), Fault> {
@@ -89,14 +89,14 @@ pub fn dec_div(a: i128, s: u8, b: i128, t: u8, u: u8, r: Rounding) -> Result<i12
     if b == 0 {
         return Err(Fault::DivisionByZero);
     }
-    let n = Big::from_i128(a).mul(&Big::pow10(u as u32 + t as u32));
-    let d = Big::from_i128(b).mul(&Big::pow10(s as u32));
+    let n = Big::from_i128(a).mul(&Big::pow10(u32::from(u) + u32::from(t)));
+    let d = Big::from_i128(b).mul(&Big::pow10(u32::from(s)));
     digits38(&round_div(&n, &d, r)).ok_or(Fault::ArithmeticOverflow)
 }
 
 /// `a` at scale `s` rounded to scale `u <= s`.
 pub fn dec_round(a: i128, s: u8, u: u8, r: Rounding) -> Big {
-    round_div(&Big::from_i128(a), &Big::pow10((s - u) as u32), r)
+    round_div(&Big::from_i128(a), &Big::pow10(u32::from(s - u)), r)
 }
 
 pub fn dec_rescale(a: i128, s: u8, u: u8) -> Result<i128, Fault> {
@@ -121,7 +121,7 @@ pub fn float_scaled(f: f64, s: u8, r: Rounding) -> Result<Big, Fault> {
     };
     let m = Big::from_u64(m);
     let m = if f < 0.0 { m.neg() } else { m };
-    let n = m.mul(&Big::pow10(s as u32));
+    let n = m.mul(&Big::pow10(u32::from(s)));
     if e >= 0 {
         Ok(n.mul(&Big::pow2(e as u32)))
     } else {
@@ -131,9 +131,9 @@ pub fn float_scaled(f: f64, s: u8, r: Rounding) -> Result<Big, Fault> {
 
 pub fn int_range(b: Base) -> Option<(i64, i64)> {
     Some(match b {
-        Base::I8 => (i8::MIN as i64, i8::MAX as i64),
-        Base::I16 => (i16::MIN as i64, i16::MAX as i64),
-        Base::I32 => (i32::MIN as i64, i32::MAX as i64),
+        Base::I8 => (i64::from(i8::MIN), i64::from(i8::MAX)),
+        Base::I16 => (i64::from(i16::MIN), i64::from(i16::MAX)),
+        Base::I32 => (i64::from(i32::MIN), i64::from(i32::MAX)),
         Base::I64 => (i64::MIN, i64::MAX),
         _ => return None,
     })
@@ -142,7 +142,7 @@ pub fn int_range(b: Base) -> Option<(i64, i64)> {
 /// Returns `v` when it lies in the range of integer type `b`.
 pub fn in_range(v: i128, b: Base) -> Option<i64> {
     let (lo, hi) = int_range(b)?;
-    (lo as i128 <= v && v <= hi as i128).then_some(v as i64)
+    (i128::from(lo) <= v && v <= i128::from(hi)).then_some(v as i64)
 }
 
 #[cfg(test)]

@@ -154,7 +154,7 @@ fn engine(schema: &Schema) -> CatalogIds {
         let def = TypeId(i as u32);
         ids.types.insert(def, *id);
         let newtype = matches!(t.kind, TypeDefKind::Newtype { .. });
-        for (c, cid) in ctors.iter() {
+        for (c, cid) in *ctors {
             match t.ctor_index(c) {
                 Some(k) => {
                     ids.ctors.insert((def, k), *cid);
@@ -207,6 +207,10 @@ fn engine(schema: &Schema) -> CatalogIds {
 
 /// Every object the user modules of `files` declare, in creation order, `text` giving the source
 /// text of a span of a file for the paths of uniques and indexes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per declaration kind; each arm would have to be a function"
+)]
 pub fn objects(
     schema: &Schema,
     files: &[(FileId, ast::SchemaFile)],

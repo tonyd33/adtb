@@ -5,8 +5,8 @@ pub fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
-    let mp = (m as i64 + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let mp = (i64::from(m) + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
 }
@@ -38,7 +38,7 @@ pub fn days_in_month(y: i64, m: u32) -> u32 {
 /// arithmetic lands on a day the month lacks and `clamp` is false.
 pub fn add_period(date: i64, months: i32, days: i32, clamp: bool) -> Option<i64> {
     let (y, m, d) = civil_from_days(date);
-    let total = y * 12 + (m as i64 - 1) + months as i64;
+    let total = y * 12 + (i64::from(m) - 1) + i64::from(months);
     let (ny, nm) = (total.div_euclid(12), total.rem_euclid(12) as u32 + 1);
     let last = days_in_month(ny, nm);
     let nd = if d > last {
@@ -49,7 +49,7 @@ pub fn add_period(date: i64, months: i32, days: i32, clamp: bool) -> Option<i64>
     } else {
         d
     };
-    Some(days_from_civil(ny, nm, nd) + days as i64)
+    Some(days_from_civil(ny, nm, nd) + i64::from(days))
 }
 
 /// Returns the microseconds of time of day `tod` on day `days`, or `None` outside an `I64`.

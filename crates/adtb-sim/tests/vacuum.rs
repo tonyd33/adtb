@@ -621,7 +621,7 @@ impl Client {
             ops: Vec::new(),
         };
         let locked = self.locked();
-        for _ in 0..1 + next() % n {
+        for _ in 0..=(next() % n) {
             let op = generate(next, &run.live, &locked, &mut self.next_key);
             perform(db, &mut run.live, &op, xid);
             run.keys.insert(op.key());
@@ -1299,6 +1299,10 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
 }
 
 /// Returns the number of crashes, and of those that fell during a vacuum.
+#[expect(
+    clippy::print_stderr,
+    reason = "the crash loop reports its coverage on stderr"
+)]
 fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
     silence_fatal_panics();
     let mut sim = Sim::new(

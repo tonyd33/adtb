@@ -38,7 +38,7 @@ fn into_window(micros: i64) -> i64 {
 }
 
 fn seconds(o: jiff::tz::Offset) -> i64 {
-    o.seconds() as i64 * MICROS_PER_SECOND
+    i64::from(o.seconds()) * MICROS_PER_SECOND
 }
 
 /// Returns the offset of zone `tz` at instant `micros`, in microseconds.

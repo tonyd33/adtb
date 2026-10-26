@@ -70,7 +70,7 @@ impl Ord for F32 {
 
 impl Hash for F32 {
     fn hash<H: Hasher>(&self, h: &mut H) {
-        self.0.to_bits().hash(h)
+        self.0.to_bits().hash(h);
     }
 }
 
@@ -96,7 +96,7 @@ impl Ord for F64 {
 
 impl Hash for F64 {
     fn hash<H: Hasher>(&self, h: &mut H) {
-        self.0.to_bits().hash(h)
+        self.0.to_bits().hash(h);
     }
 }
 
@@ -228,7 +228,7 @@ impl Val {
 
     /// Returns an estimate of the bytes the value occupies, its shared parts counted whole.
     pub fn size(&self) -> usize {
-        const WORD: usize = std::mem::size_of::<Val>();
+        const WORD: usize = size_of::<Val>();
         WORD + match self {
             Val::Text(t) | Val::Zoned { zone: t, .. } => t.len(),
             Val::Bytes(b) | Val::SortKey(b) => b.len(),

@@ -204,7 +204,7 @@ fn key_form(schema: &Schema, rel: RelId) -> Result<Form, Error> {
 fn hex(out: &mut String, b: &[u8]) {
     out.push_str("0x");
     for x in b {
-        let _ = write!(out, "{x:02x}");
+        write!(out, "{x:02x}").expect("a String accepts every write");
     }
 }
 
@@ -214,7 +214,7 @@ fn uuid_text(b: &[u8]) -> String {
         if matches!(i, 4 | 6 | 8 | 10) {
             s.push('-');
         }
-        let _ = write!(s, "{x:02x}");
+        write!(s, "{x:02x}").expect("a String accepts every write");
     }
     s
 }
@@ -260,7 +260,7 @@ fn quote(out: &mut String, t: &str) {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c if c.is_control() => {
-                let _ = write!(out, "\\u{{{:x}}}", c as u32);
+                write!(out, "\\u{{{:x}}}", c as u32).expect("a String accepts every write");
             }
             c => out.push(c),
         }
@@ -307,7 +307,7 @@ fn write_fields(out: &mut String, fields: &[(String, Form)], vs: &[Val]) {
 fn write_val(out: &mut String, v: &Val, f: &Form) {
     match (f, v) {
         (Form::Int(_), Val::Int(i)) => {
-            let _ = write!(out, "{i}");
+            write!(out, "{i}").expect("a String accepts every write");
         }
         (Form::Decimal(s), Val::Decimal(d)) => out.push_str(&decimal_text(*d, *s)),
         (Form::F32, Val::F32(x)) => out.push_str(&f32_text(x.get())),
@@ -322,15 +322,15 @@ fn write_val(out: &mut String, v: &Val, f: &Form) {
         (Form::Time, Val::Time(t)) => out.push_str(&time_text(*t)),
         (Form::DateTime, Val::DateTime(t)) => out.push_str(&datetime_text(*t)),
         (Form::Zoned, Val::Zoned { local, zone }) => {
-            let _ = write!(out, "{}[{zone}]", datetime_text(*local));
+            write!(out, "{}[{zone}]", datetime_text(*local)).expect("a String accepts every write");
         }
         (Form::Duration, Val::Duration(d)) => out.push_str(&duration_text(*d)),
         (Form::Period, Val::Period { months, days }) => {
-            let _ = write!(out, "P{months}M{days}D");
+            write!(out, "P{months}M{days}D").expect("a String accepts every write");
         }
         (Form::Bool, v) => out.push_str(if v.truth() { "True" } else { "False" }),
         (Form::Uuid, v) => {
-            let _ = write!(out, "uuid(\"{}\")", uuid_text(bytes(v)));
+            write!(out, "uuid(\"{}\")", uuid_text(bytes(v))).expect("a String accepts every write");
         }
         (Form::Newtype(name, base), v) => {
             out.push_str(name);
@@ -738,6 +738,10 @@ impl<'a> Reader<'a> {
         Some(())
     }
 
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "one arm per form; the newtype, sum and record arms would have to be functions"
+    )]
     fn value(&mut self, f: &Form) -> Option<Val> {
         Some(match f {
             Form::Int(w) => Val::Int(self.int(*w)?),

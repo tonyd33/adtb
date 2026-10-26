@@ -86,10 +86,10 @@ const SCALES: [i128; 39] = {
 
 fn int_range(b: Base) -> Option<(i128, i128)> {
     Some(match b {
-        Base::I8 => (i8::MIN as i128, i8::MAX as i128),
-        Base::I16 => (i16::MIN as i128, i16::MAX as i128),
-        Base::I32 => (i32::MIN as i128, i32::MAX as i128),
-        Base::I64 => (i64::MIN as i128, i64::MAX as i128),
+        Base::I8 => (i128::from(i8::MIN), i128::from(i8::MAX)),
+        Base::I16 => (i128::from(i16::MIN), i128::from(i16::MAX)),
+        Base::I32 => (i128::from(i32::MIN), i128::from(i32::MAX)),
+        Base::I64 => (i128::from(i64::MIN), i128::from(i64::MAX)),
         _ => return None,
     })
 }
@@ -148,7 +148,7 @@ impl Checker<'_> {
     }
 
     pub(super) fn subsume(&self, out: Out, expected: &Ty, span: Span) -> R<Out> {
-        if ty::subtype(self.schema, &out.ty, expected) {
+        if subtype(self.schema, &out.ty, expected) {
             Ok(out)
         } else {
             Err(diag(
@@ -166,7 +166,7 @@ impl Checker<'_> {
         if self.adhoc() {
             ty::join_adhoc(self.schema, a, b)
         } else {
-            ty::join(self.schema, a, b)
+            join(self.schema, a, b)
         }
     }
 
@@ -253,7 +253,7 @@ impl Checker<'_> {
                             Err(())
                         }
                     })
-                    .map_err(|_| diag(e.span, "integer literal out of range"))?;
+                    .map_err(|()| diag(e.span, "integer literal out of range"))?;
                 let value = if neg { -value } else { value };
                 self.number(value, 0, &ty, e.span)
             }
@@ -286,7 +286,7 @@ impl Checker<'_> {
                             Err(())
                         }
                     })
-                    .map_err(|_| diag(e.span, "decimal literal out of range"))?;
+                    .map_err(|()| diag(e.span, "decimal literal out of range"))?;
                 let value = if neg { -value } else { value };
                 self.number(value, scale as u8, &ty, e.span)
             }
@@ -301,7 +301,7 @@ impl Checker<'_> {
                         Ok(self.out(Kind::Const(Const::Float(v)), ty))
                     }
                     Ty::Base(Base::F32) if (v as f32).is_finite() => {
-                        Ok(self.out(Kind::Const(Const::Float(v as f32 as f64)), ty))
+                        Ok(self.out(Kind::Const(Const::Float(f64::from(v as f32))), ty))
                     }
                     Ty::Base(Base::F32 | Base::F64) => Err(diag(
                         e.span,
@@ -825,12 +825,12 @@ impl Checker<'_> {
             (Ty::Base(Decimal(s)), Ty::Base(Decimal(t))) => match op {
                 BinOp::Add | BinOp::Sub => Decimal((*s).max(*t)),
                 BinOp::Mul => {
-                    if *s as u32 + *t as u32 > 38 {
+                    if u32::from(*s) + u32::from(*t) > 38 {
                         return Err(diag(
                             span,
                             format!(
                                 "`*` of `Decimal {s}` and `Decimal {t}` has scale {} above 38; rescale an operand first",
-                                *s as u32 + *t as u32
+                                u32::from(*s) + u32::from(*t)
                             ),
                         ));
                     }
@@ -1056,7 +1056,7 @@ impl Checker<'_> {
                         })?;
                     out.push(i as u32);
                 }
-                out.sort();
+                out.sort_unstable();
                 out.dedup();
                 out
             }
@@ -1581,6 +1581,10 @@ impl Checker<'_> {
     }
 
     /// Builds constructor `c` of `target` from `record`, giving every field.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "resolving the target, checking the given fields and filling the elided ones would each have to be a function"
+    )]
     pub(super) fn build_ctor(
         &mut self,
         target: Target,
@@ -1632,7 +1636,7 @@ impl Checker<'_> {
             Some(RecordExpr::Elided(s)) => {
                 return Err(diag(*s, "an elided record cannot be checked"));
             }
-            Some(RecordExpr::Fields(fs, _)) | Some(RecordExpr::With(_, fs, _)) => {
+            Some(RecordExpr::Fields(fs, _) | RecordExpr::With(_, fs, _)) => {
                 for (name, e) in fs {
                     if named.iter().any(|(n, _)| *n == name.text) {
                         return Err(diag(
@@ -1925,7 +1929,7 @@ impl Checker<'_> {
                 for p in params {
                     let t = self.resolve_type(&p.ty)?;
                     if let Some(Ty::Fn(a, r)) = &want {
-                        if !ty::subtype(self.schema, a, &t) {
+                        if !subtype(self.schema, a, &t) {
                             return Err(diag(
                                 p.ty.span,
                                 format!(
@@ -2085,7 +2089,7 @@ impl Checker<'_> {
             let by = self.over_record(&labels, xt, key.tm);
             let rows_ty = Ty::NonEmpty(Box::new(rec_ty));
             let zeta_ty = Ty::Record(vec![
-                ("key".into(), key.ty.clone()),
+                ("key".into(), key.ty),
                 ("rows".into(), rows_ty.clone()),
             ]);
             let group_tm = self.add(
@@ -2267,8 +2271,9 @@ impl Checker<'_> {
         match (&na.kind, &nb.kind) {
             (Kind::Var(x), Kind::Var(y)) => x == y,
             (Kind::Field(x, f), Kind::Field(y, g)) => f == g && self.same_term(*x, *y),
-            (Kind::Key(x), Kind::Key(y)) | (Kind::Tag(x), Kind::Tag(y)) => self.same_term(*x, *y),
-            (Kind::Deref { key: x, .. }, Kind::Deref { key: y, .. }) => self.same_term(*x, *y),
+            (Kind::Key(x), Kind::Key(y))
+            | (Kind::Tag(x), Kind::Tag(y))
+            | (Kind::Deref { key: x, .. }, Kind::Deref { key: y, .. }) => self.same_term(*x, *y),
             (Kind::Const(x), Kind::Const(y)) => x == y,
             (Kind::Prim(p, xs), Kind::Prim(q, ys)) => {
                 p == q
@@ -2387,7 +2392,7 @@ impl Checker<'_> {
         }
         for ((name, fty), (k, _)) in fields.iter().zip(keys) {
             let kty = self.terms.ty(*k).clone();
-            if !ty::subtype(self.schema, fty, &kty) {
+            if !subtype(self.schema, fty, &kty) {
                 return Err(diag(
                     span,
                     format!(
@@ -2514,7 +2519,7 @@ impl Checker<'_> {
                     };
                     if tys[i]
                         .as_ref()
-                        .is_none_or(|t| !ty::subtype(self.schema, &next, t))
+                        .is_none_or(|t| !subtype(self.schema, &next, t))
                     {
                         tys[i] = Some(next);
                         changed = true;
@@ -3109,7 +3114,7 @@ fn unify(c: &Checker, pattern: &Ty, actual: &Ty, sol: &mut [Option<Ty>]) {
             }
         }
         (Ty::Set(p) | Ty::NonEmpty(p), Ty::Set(a) | Ty::NonEmpty(a)) | (Ty::Tag(p), Ty::Tag(a)) => {
-            unify(c, p, a, sol)
+            unify(c, p, a, sol);
         }
         (Ty::Fn(p1, r1), Ty::Fn(p2, r2)) => {
             unify(c, p1, p2, sol);

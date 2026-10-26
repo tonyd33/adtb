@@ -727,7 +727,7 @@ fn writes_between_all_visible_pages_of_deep_directories_stay_within_the_latch_bo
 fn a_reopened_heap_finds_room_through_its_directory() {
     let mut sim = Sim::new(7, Config::default());
     finished(&mut sim, |rt| {
-        let (db, roots) = Db::create(rt.clone(), 3);
+        let (db, roots) = Db::create(rt, 3);
         for key in 0..40 {
             let row = vec![
                 Value::I64(key),
@@ -1289,6 +1289,10 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
     problems
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the crash loop reports its coverage on stderr"
+)]
 fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
     silence_fatal_panics();
     let mut sim = Sim::new(

@@ -293,7 +293,7 @@ fn concurrent_run(
                         shape,
                         steps,
                     };
-                    worker(&rt2, &pager, tree, &h, work)
+                    worker(&rt2, &pager, tree, &h, work);
                 })
             })
             .collect();
@@ -443,7 +443,7 @@ fn crash_run(rt: SimRuntime, world: &Arc<Mutex<World>>, shape: Shape) {
         .map(|t| {
             let (pager, rt2, w) = (pager.clone(), rt.clone(), world.clone());
             rt.spawn(&format!("worker {t}"), move || {
-                crash_worker(&rt2, &pager, &w, t, shape)
+                crash_worker(&rt2, &pager, &w, t, shape);
             })
         })
         .collect();
@@ -597,7 +597,7 @@ fn retain_beside_inserts(seed: u64, n: u32, inserters: u32) {
             })
             .collect();
         let deleted = Arc::new(Mutex::new((0, 0)));
-        let (p, d, i) = (pager.clone(), deleted.clone(), inserted.clone());
+        let (p, d, i) = (pager.clone(), deleted.clone(), inserted);
         threads.push(rt.spawn("retain", move || {
             let before = i.load(Relaxed);
             let n = tree.retain(&p, |e| !dropped(id_of(e))).expect("retain");

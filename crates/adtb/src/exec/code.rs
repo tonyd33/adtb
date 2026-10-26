@@ -248,6 +248,10 @@ impl Code {
         Ok(out)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per instruction; each arm would have to be a function"
+    )]
     fn run(
         &self,
         b: &Block,
@@ -545,6 +549,10 @@ impl<'a> Compiler<'a> {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per term kind; each arm would have to be its own emitter"
+    )]
     fn expr(&self, e: &mut Emit, ins: &mut Vec<Ins>, t: Tm) -> Result<Opd, Error> {
         let ty = self.terms.ty(t);
         let kind = self.terms.kind(t);

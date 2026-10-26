@@ -46,7 +46,7 @@ fn seeds_explore_interleavings() {
 fn every_thread_runs_to_completion() {
     let mut log = interleaving(3);
     assert_eq!(20, log.len());
-    log.sort();
+    log.sort_unstable();
     let expected: Vec<_> = (0..4).flat_map(|w| (0..5).map(move |s| (w, s))).collect();
     assert_eq!(expected, log);
 }

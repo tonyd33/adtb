@@ -523,8 +523,10 @@ impl Schema {
                 | Ty::Key { .. }
                 | Ty::Set(_)
                 | Ty::NonEmpty(_)
-                | Ty::Tag(_) => false,
-                Ty::Group(..) | Ty::Fn(..) | Ty::Sum { .. } => false,
+                | Ty::Tag(_)
+                | Ty::Group(..)
+                | Ty::Fn(..)
+                | Ty::Sum { .. } => false,
                 _ => true,
             };
             if simple { s } else { format!("({s})") }
@@ -756,6 +758,10 @@ impl Builder<'_> {
         ModuleId(self.schema.modules.len() as u32 - 1)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "collecting names and each later pass would have to be a function"
+    )]
     fn run(&mut self) {
         let files = self.files;
         let mut principal = None;
@@ -1311,6 +1317,10 @@ impl Builder<'_> {
         self.schema.types[id.0 as usize].kind = kind;
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the key, the sets and each clause kind would have to be resolved by their own functions"
+    )]
     fn relation_body(&mut self, file: FileId, module: ModuleId, id: RelId, r: &ast::RelationDecl) {
         let elem_def = self.schema.relation(id).elem_def;
         if elem_def.0 == u32::MAX {
@@ -1747,7 +1757,7 @@ impl Builder<'_> {
         for t in 0..n {
             visit(&self.schema, t, &mut state, &mut errs);
         }
-        errs.sort();
+        errs.sort_unstable();
         errs.dedup();
         for t in errs {
             let def = &self.schema.types[t];
@@ -1914,6 +1924,10 @@ fn collect_defs(ty: &Ty, out: &mut Vec<TypeId>) {
 }
 
 /// Resolves a written type in `scope`, recording `Span` arguments whose order is checked later.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per type form; each arm would have to be a function"
+)]
 pub fn resolve_type(
     schema: &Schema,
     scope: &TypeScope,

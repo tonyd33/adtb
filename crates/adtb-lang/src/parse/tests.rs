@@ -6,7 +6,7 @@ const EXAMPLES: Options = Options { elisions: true };
 fn expr(src: &str) -> Expr {
     match parse_expr(src, STRICT).ok() {
         Ok(e) => e,
-        Err(d) => panic!("{src}: {:?}", d),
+        Err(d) => panic!("{src}: {d:?}"),
     }
 }
 
@@ -20,7 +20,7 @@ fn expr_err(src: &str) -> String {
 fn adhoc(src: &str) -> Vec<AdhocItem> {
     match parse_adhoc(src, STRICT).ok() {
         Ok(v) => v,
-        Err(d) => panic!("{src}: {:?}", d),
+        Err(d) => panic!("{src}: {d:?}"),
     }
 }
 
@@ -34,7 +34,7 @@ fn adhoc_err(src: &str) -> String {
 fn example(src: &str) -> Vec<ExampleItem> {
     match parse_example(src, EXAMPLES).ok() {
         Ok(v) => v,
-        Err(d) => panic!("{src}: {:?}", d),
+        Err(d) => panic!("{src}: {d:?}"),
     }
 }
 
@@ -297,7 +297,7 @@ fn schema_file_needs_a_module_header() {
 
 #[test]
 fn migration_operators() {
-    let src = r#"
+    let src = r"
 module auth
 add constructor Identity.Apple { sub: Text }
   joins identities.OAuth
@@ -318,7 +318,7 @@ add default identities.EmailPass.verified = false
 grant read identities.EmailPass (user, email) to support
 revert 0016
 enable Provider.Okta
-"#;
+";
     let file = parse_migration(src, STRICT).ok().unwrap();
     assert_eq!(file.operators.len(), 9);
     let OperatorKind::SplitConstructor { clauses, arms, .. } = &file.operators[2].kind else {
@@ -405,9 +405,9 @@ fn transact_blocks_and_let_bound_writes() {
 #[test]
 fn upsert() {
     let items = adhoc(
-        r#"insert identities.Google from (from x in imports select { user: x.user, gid: x.sub })
+        r"insert identities.Google from (from x in imports select { user: x.user, gid: x.sub })
 unless conflict on (gid) in Google
-else update old set Google { old with user: new.user }"#,
+else update old set Google { old with user: new.user }",
     );
     let [
         AdhocItem::Write(Write {
@@ -496,7 +496,7 @@ Rejected { reason: KeyChanged {..} }"#,
 fn operators(src: &str) -> Vec<OperatorKind> {
     match parse_migration(&format!("module m\n{src}"), STRICT).ok() {
         Ok(f) => f.operators.into_iter().map(|o| o.kind).collect(),
-        Err(d) => panic!("{src}: {:?}", d),
+        Err(d) => panic!("{src}: {d:?}"),
     }
 }
 
@@ -678,9 +678,9 @@ rejects into google_rejects"#,
             if r.name.text == "google_rejects"
     ));
     let items = adhoc(
-        r#"insert identities.Google from (from r in staged select Google { user: r.user, gid: r.gid })
+        r"insert identities.Google from (from r in staged select Google { user: r.user, gid: r.gid })
 unless conflict on (gid) in Google else skip
-rejects into auth::google_rejects"#,
+rejects into auth::google_rejects",
     );
     assert!(matches!(
         &items[0],
@@ -692,11 +692,11 @@ rejects into auth::google_rejects"#,
 #[test]
 fn let_and_options_that_typing_refuses_still_parse() {
     let items = adhoc(
-        r#"transact read_only durability local
+        r"transact read_only durability local
   let s = skip
   let w = (insert users { name: n }, skip)
   let u = insert users { name: n }
-  update u set User { u with name: m }"#,
+  update u set User { u with name: m }",
     );
     let [AdhocItem::Transact(b)] = items.as_slice() else {
         panic!("{items:?}")

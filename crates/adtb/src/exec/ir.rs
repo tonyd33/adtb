@@ -327,7 +327,7 @@ impl Lower<'_> {
                 Box::new(self.eval(b)?),
             ),
             plan::Eval::Case(s, arms) => {
-                Eval::Case(self.expr(*s)?, self.arms(*s, arms, |l, a| l.eval(a))?)
+                Eval::Case(self.expr(*s)?, self.arms(*s, arms, Lower::eval)?)
             }
             plan::Eval::Try(a) => Eval::Try(Box::new(self.eval(a)?)),
             plan::Eval::Lookup(lk) => Eval::Lookup(Lookup {
@@ -403,7 +403,7 @@ impl Lower<'_> {
                 Box::new(self.spine(b)?),
             ),
             plan::Spine::Case(sc, arms) => {
-                Spine::Case(self.expr(*sc)?, self.arms(*sc, arms, |l, a| l.spine(a))?)
+                Spine::Case(self.expr(*sc)?, self.arms(*sc, arms, Lower::spine)?)
             }
             plan::Spine::Let(v, e, b) => Spine::Let(v.0, self.eval(e)?, Box::new(self.spine(b)?)),
         })
@@ -459,7 +459,7 @@ impl Lower<'_> {
                 Box::new(self.chain(b)?),
             ),
             plan::End::Case(s, arms) => {
-                End::Case(self.expr(*s)?, self.arms(*s, arms, |l, a| l.chain(a))?)
+                End::Case(self.expr(*s)?, self.arms(*s, arms, Lower::chain)?)
             }
             plan::End::Index {
                 index,

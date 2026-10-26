@@ -3,7 +3,7 @@ mod plan {
 }
 
 #[path = "../../adtb/src/plan/tests/fixture.rs"]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "this binary uses part of the planner fixture")]
 mod planfix;
 
 #[path = "../../adtb-reference/tests/common/mod.rs"]
@@ -130,9 +130,9 @@ fn fixture() -> Fixture {
     f.rows_with(
         "logins",
         &format!(
-            r#"[Active {{ id: logins.key(1), user: users.key(1), identity: {} }},
+            r"[Active {{ id: logins.key(1), user: users.key(1), identity: {} }},
                 Active {{ id: logins.key(2), user: users.key(2), identity: {} }},
-                Revoked {{ id: logins.key(3), user: users.key(1), at: t }}]"#,
+                Revoked {{ id: logins.key(3), user: users.key(1), at: t }}]",
             uuid(1),
             uuid(3)
         ),
@@ -167,7 +167,7 @@ fn fixture() -> Fixture {
     f.rows(
         "tickets",
         &format!(
-            r#"[Open {{ id: tickets.key(1), owner: Some {{ value: users.key(4) }}, identity: {} }}]"#,
+            r"[Open {{ id: tickets.key(1), owner: Some {{ value: users.key(4) }}, identity: {} }}]",
             uuid(2)
         ),
     );
@@ -446,10 +446,10 @@ fn run_engine(
             Err(e) => Err(engine_error(schema, e)),
         });
         match got {
-            Err(e) if e.ends_transaction() => db.abort(tx),
+            Err(e) if e.ends_transaction() => db.abort(tx).expect("an abort"),
             _ if mode.one => open = Some(tx),
             Ok(_) => db.commit(tx).expect("a commit"),
-            Err(_) => db.abort(tx),
+            Err(_) => db.abort(tx).expect("an abort"),
         }
     }
     if let Some(tx) = open {
@@ -457,7 +457,7 @@ fn run_engine(
     }
     let tx = db.begin().expect("a transaction");
     let rows = db.rows(&tx).expect("the rows");
-    db.abort(tx);
+    db.abort(tx).expect("an abort");
     if let Some(p) = pool {
         p.shutdown();
     }
@@ -678,6 +678,10 @@ fn declared_intl() -> Fixture {
 }
 
 /// The write examples of the reference interpreter's tests, as statements.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the write examples would have to be split by statement kind"
+)]
 fn cases() -> Vec<Case> {
     let u = |i: i64| ("u", "Key users", key(i));
     let ik = |n: u8| ("k", "Key identities", identity_key(n));
@@ -885,9 +889,9 @@ fn cases() -> Vec<Case> {
             step(r#"insert invoices { status: Paid { ref: "r1" }, n: 2 }
                unless conflict on (status.Paid.ref)
                else update old set Invoice { old with n: old.n + 10 }"#),
-            step(r#"insert invoices { status: Draft, n: 5 }
+            step(r"insert invoices { status: Draft, n: 5 }
             unless conflict on (status.Paid.ref)
-            else update old set Invoice { old with n: 0 }"#),
+            else update old set Invoice { old with n: 0 }"),
         ] },
     ]
 }
@@ -897,7 +901,7 @@ fn check_all(seeds: std::ops::Range<u64>, mode: Mode) {
     let all = cases();
     for case in &all {
         let want = reference(case);
-        for seed in seeds.clone() {
+        for seed in support::sweep(seeds.clone()) {
             let got = engine(seed, case, mode);
             if let Err(d) = agree(case, &want, &got) {
                 bad.push(format!("seed {seed}: {d}"));
@@ -1011,8 +1015,8 @@ fn run_txn_with(
     failing: Option<&Prep>,
     seen: &mut dyn FnMut(&Val),
 ) -> Result<Val, String> {
-    let fail = |tx, e: &adtb::write::Error| {
-        db.abort(tx);
+    let fail = |tx, e: &write::Error| {
+        db.abort(tx).expect("an abort");
         Err(format!("{:?}", engine_error(schema, e)))
     };
     let tx = db.begin().map_err(|e| format!("{e:?}"))?;
@@ -1099,7 +1103,7 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
             }
             let tx = db.begin().expect("a transaction");
             finals = Some(db.rows(&tx).expect("the rows"));
-            db.abort(tx);
+            db.abort(tx).expect("an abort");
         });
         assert_eq!(Outcome::Finished, result, "seed {seed}");
         let rows = finals.expect("the run finished");
@@ -1220,7 +1224,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
                 &Arc::default(),
                 &Arc::default(),
                 &started,
-            )
+            );
         });
         let begun = started.lock().unwrap().expect("the clients started");
         let span = dry.now().as_nanos() - begun;
@@ -1245,7 +1249,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
             let db = database(&rt, d, &schema, &normal, &catalog, None, roots.sequences);
             let tx = db.begin().expect("a transaction");
             let rows = db.rows(&tx).expect("the rows");
-            db.abort(tx);
+            db.abort(tx).expect("an abort");
             let next = run_txn(&db, &schema, &tag, "after").expect("an insert after recovery");
             after = Some((rows, next));
         });

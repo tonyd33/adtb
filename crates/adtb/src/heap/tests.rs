@@ -429,7 +429,7 @@ fn every_value(n: i64) -> Vec<Value> {
         Value::I64(i64::MIN + n),
         Value::F32(F32::new(-0.0)),
         Value::F64(F64::new(f64::NAN)),
-        Value::Decimal(-(n as i128) * 10_000_000_000_000_000),
+        Value::Decimal(-i128::from(n) * 10_000_000_000_000_000),
         Value::Text("x".repeat(n as usize)),
         Value::Bytes(vec![0xab; 2 * n as usize]),
         Value::SortKey(vec![1, 2, 3]),
@@ -448,7 +448,7 @@ fn every_value(n: i64) -> Vec<Value> {
         },
         Value::Record(vec![
             Value::I8(1),
-            Value::Decimal(n as i128),
+            Value::Decimal(i128::from(n)),
             Value::Sum {
                 ctor: (n % 2) as u32,
                 fields: vec![],

@@ -342,7 +342,7 @@ fn concurrent(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
         .map(|i| {
             let (pager, rt2, client) = (pager.clone(), rt.clone(), client.clone());
             rt.spawn(&format!("worker {i}"), move || {
-                worker(&pager, &rt2, &client, steps)
+                worker(&pager, &rt2, &client, steps);
             })
         })
         .collect();
@@ -599,6 +599,10 @@ fn crash_loop(
     tally
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the seed sweep reports its coverage on stderr"
+)]
 fn seeds(
     range: std::ops::Range<u64>,
     faults: Faults,
@@ -1038,7 +1042,7 @@ fn an_optimistic_read_of_a_page_held_exclusive_panics() {
     let pid = client.world.lock().unwrap().pages[0];
     with_pager(&mut sim, |p| {
         let held = p.exclusive(pid).unwrap();
-        let _ = p.optimistic(pid);
+        p.optimistic(pid).unwrap();
         drop(held);
     });
 }
@@ -1054,7 +1058,7 @@ fn the_panic_names_the_page() {
             let held = p.read(pid).unwrap();
             drop(p.exclusive(pid));
             drop(held);
-        })
+        });
     }));
     let payload = caught.expect_err("asking again for a held latch returned");
     let msg = payload
@@ -1236,7 +1240,7 @@ fn an_update_must_change_every_page_it_allocates() {
     with_pager(&mut sim, |p| {
         let mut new = p.reserve();
         new.page(1, PageKind::HeapSlotted, 1).unwrap();
-        let _ = p.update_with(new, &[index], |_| {});
+        p.update_with(new, &[index], |_| {}).unwrap();
     });
 }
 
@@ -1362,7 +1366,7 @@ fn freeing_a_free_page_panics() {
         p.free(pid).unwrap();
         let mut new = p.reserve();
         new.free(pid);
-        let _ = p.update_with(new, &[], |_| {});
+        p.update_with(new, &[], |_| {}).unwrap();
     });
 }
 

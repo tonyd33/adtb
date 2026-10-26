@@ -20,8 +20,8 @@ impl Checker<'_> {
                 Ok(None)
             }
             AdhocItem::Role(r, _) => self.role_stmt(r).map(|()| None),
-            AdhocItem::Peer(PeerStmt::Map { .. } | PeerStmt::Unmap { .. }, _) => Ok(None),
-            AdhocItem::Temp(_) => Ok(None),
+            AdhocItem::Peer(PeerStmt::Map { .. } | PeerStmt::Unmap { .. }, _)
+            | AdhocItem::Temp(_) => Ok(None),
         }
     }
 

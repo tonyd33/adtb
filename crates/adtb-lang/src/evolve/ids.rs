@@ -106,6 +106,10 @@ impl Source {
     }
 
     /// Renames the paths of the ids a rename operator's object and its parts have.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per rename operator; each arm would have to be a function"
+    )]
     pub(super) fn rename_ids(&mut self, before: &Source, module: &str, op: &OperatorKind) {
         let q = |n: &QName| {
             n.module

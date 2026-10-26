@@ -1480,7 +1480,7 @@ pub(super) fn delete_actions(
             diags.push(FileDiag {
                 file: t.file,
                 diag: diag(span, msg),
-            })
+            });
         };
         let mut first: Option<(u32, Payload, Option<RecordExpr>)> = None;
         let fields = header.iter().map(|f| (None, f)).chain(

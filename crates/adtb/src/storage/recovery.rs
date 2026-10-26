@@ -160,7 +160,7 @@ impl<R: Runtime> Pager<R> {
         match record {
             Record::Image { page, .. } => self.install_image(st, &mut g, lsn, &page),
             Record::Change { edits, .. } if have == prev => {
-                self.redo_change(st, &mut g, lsn, &edits)
+                self.redo_change(st, &mut g, lsn, &edits);
             }
             _ => {
                 drop(g);

@@ -71,7 +71,7 @@ fn float(f: f64) -> String {
 
 fn float32(f: f32) -> String {
     if f.is_nan() || f.is_infinite() {
-        float(f as f64)
+        float(f64::from(f))
     } else {
         format!("{f:?}")
     }

@@ -25,7 +25,7 @@ fn add_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
     let mut out = Vec::with_capacity(a.len().max(b.len()) + 1);
     let mut carry = 0u64;
     for i in 0..a.len().max(b.len()) {
-        let s = *a.get(i).unwrap_or(&0) as u64 + *b.get(i).unwrap_or(&0) as u64 + carry;
+        let s = u64::from(*a.get(i).unwrap_or(&0)) + u64::from(*b.get(i).unwrap_or(&0)) + carry;
         out.push(s as u32);
         carry = s >> 32;
     }
@@ -38,7 +38,7 @@ fn sub_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
     let mut out = Vec::with_capacity(a.len());
     let mut borrow = 0i64;
     for (i, &x) in a.iter().enumerate() {
-        let mut d = x as i64 - *b.get(i).unwrap_or(&0) as i64 - borrow;
+        let mut d = i64::from(x) - i64::from(*b.get(i).unwrap_or(&0)) - borrow;
         borrow = 0;
         if d < 0 {
             d += 1 << 32;
@@ -54,7 +54,7 @@ fn mul_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
     for (i, &x) in a.iter().enumerate() {
         let mut carry = 0u64;
         for (j, &y) in b.iter().enumerate() {
-            let t = out[i + j] as u64 + x as u64 * y as u64 + carry;
+            let t = u64::from(out[i + j]) + u64::from(x) * u64::from(y) + carry;
             out[i + j] = t as u32;
             carry = t >> 32;
         }
@@ -68,7 +68,7 @@ fn bit(a: &[u32], i: usize) -> bool {
 }
 
 fn shl1_or(a: &mut Vec<u32>, low: bool) {
-    let mut carry = low as u32;
+    let mut carry = u32::from(low);
     for limb in a.iter_mut() {
         let next = *limb >> 31;
         *limb = *limb << 1 | carry;
@@ -130,7 +130,7 @@ impl Big {
         }
         let mut m: u128 = 0;
         for &limb in self.mag.iter().rev() {
-            m = m << 32 | limb as u128;
+            m = m << 32 | u128::from(limb);
         }
         if self.neg {
             if m <= i128::MAX as u128 + 1 {
@@ -240,7 +240,7 @@ mod tests {
             -7,
             1 << 40,
             -(1 << 70),
-            i64::MAX as i128,
+            i128::from(i64::MAX),
             12345678901234567890,
         ];
         for &a in &xs {

@@ -11,7 +11,7 @@ use adtb_reference::{Value, days_from_civil};
 use common::*;
 use unicode_normalization::UnicodeNormalization;
 
-const SCHEMA: &str = r#"
+const SCHEMA: &str = r"
 type User = { id: Key users, name: Text }
 relation users : User key id generate sequence
 type Member = { user: Key users, team: Text }
@@ -26,7 +26,7 @@ type Profile = { user: Key users, email: Email }
 relation profiles : Profile key user
 type Stage ordered = Draft | Sent { at: I64 } | Paid { at: I64, ref: Text }
 type Pair a = { left: a, right: a }
-"#;
+";
 
 const DAY: i64 = 86_400_000_000;
 
@@ -299,7 +299,7 @@ fn a_reader_refuses_what_is_not_a_value_of_the_type() {
         ("Draft { at: 1 }", "Stage"),
         ("Sent { at: 1, at: 2 }", "Stage"),
         ("Sent { at: 1, ref: \"a\" }", "Stage"),
-        (r#"User { id: users.key(1) }"#, "User"),
+        (r"User { id: users.key(1) }", "User"),
         ("orders.key(1)", "Key users"),
         ("members.key(user: users.key(1))", "Key members"),
         ("Email(1)", "Email"),
@@ -498,17 +498,17 @@ const ZONES: &[&str] = &["UTC", "Europe/Paris", "America/New_York", "Asia/Kathma
 fn draw_base(rng: &mut Rng, b: Base) -> Value {
     let i = rng.int();
     match b {
-        Base::I8 => int(i as i8 as i64),
-        Base::I16 => int(i as i16 as i64),
-        Base::I32 => int(i as i32 as i64),
+        Base::I8 => int(i64::from(i as i8)),
+        Base::I16 => int(i64::from(i as i16)),
+        Base::I32 => int(i64::from(i as i32)),
         Base::I64 => int(i),
         Base::Decimal(s) => {
             let bound = 10i128.pow(38);
-            let wide = ((rng.next() as i128) << 64 | rng.next() as i128) % bound;
+            let wide = (i128::from(rng.next()) << 64 | i128::from(rng.next())) % bound;
             let d = match rng.below(3) {
                 0 => wide,
                 1 => *rng.pick(&[0, 1, -1, bound - 1, 1 - bound]),
-                _ => i as i128,
+                _ => i128::from(i),
             };
             Value::Decimal(d, s)
         }

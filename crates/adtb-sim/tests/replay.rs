@@ -25,17 +25,17 @@ fn worker(rt: &SimRuntime, w: u64) {
     let Ok((file, _)) = open(rt, &mut io, "data", true) else {
         return;
     };
-    let _ = sync_dir(rt, &mut io, "");
+    sync_dir(rt, &mut io, "").ok();
     for i in 0..10 {
         let slot = w * 16 + i;
         let mut rec = record(slot);
         rec.extend(record(slot + 1000));
-        let _ = write(rt, &mut io, file, slot * 2 * SECTOR as u64, &rec);
+        write(rt, &mut io, file, slot * 2 * SECTOR as u64, &rec).ok();
         if rt.next_u64().is_multiple_of(2) {
-            let _ = sync(rt, &mut io, file);
+            sync(rt, &mut io, file).ok();
         }
         let other = rt.next_u64() % 64;
-        let _ = read(rt, &mut io, file, other * 2 * SECTOR as u64, 2 * SECTOR);
+        read(rt, &mut io, file, other * 2 * SECTOR as u64, 2 * SECTOR).ok();
         sleep(rt, &mut io, Duration::from_micros(rt.next_u64() % 200));
     }
 }
@@ -70,7 +70,7 @@ fn scenario(seed: u64) -> (String, BTreeMap<String, Vec<u8>>) {
         let mut io = rt.io();
         if let Ok((file, len)) = open(&rt, &mut io, "data", false) {
             for offset in (0..len).step_by(SECTOR) {
-                let _ = read(&rt, &mut io, file, offset, SECTOR);
+                read(&rt, &mut io, file, offset, SECTOR).ok();
             }
         }
     });

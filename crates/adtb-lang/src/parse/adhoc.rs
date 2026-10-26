@@ -11,7 +11,7 @@ impl Parser<'_> {
                 return Ok(AdhocItem::Write(self.write_expr()?));
             }
             Tok::Kw(Kw::If | Kw::Match) | Tok::LParen => {
-                if let Some(w) = self.attempt(|p| p.write_expr()) {
+                if let Some(w) = self.attempt(Self::write_expr) {
                     return Ok(AdhocItem::Write(w));
                 }
                 return Ok(AdhocItem::Expr(self.expr()?));
@@ -126,6 +126,11 @@ impl Parser<'_> {
     }
 
     /// A command, recognised by its leading words; `None` when the text is not one.
+    #[expect(
+        clippy::too_many_lines,
+        clippy::cognitive_complexity,
+        reason = "one arm per command's leading words; each command would need its own parser"
+    )]
     fn command(&mut self) -> PResult<Option<Command>> {
         if self.tok().tok != Tok::Lower {
             return Ok(None);

@@ -1,0 +1,6 @@
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+# For iteration: one seed per `support::sweep` sweep, and no crash sweeps.
+[profile.quick]
+default-filter = "not test(/crash/)"

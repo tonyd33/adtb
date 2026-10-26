@@ -72,6 +72,10 @@ pub(super) fn judge<E>(
 /// entries are gone.
 ///
 /// Panics if a slot `cleaned` accepts still leads to a live version.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "finding the chain heads and walking each chain would have to be separate functions"
+)]
 pub(super) fn plan(
     page: &[u8],
     pid: u64,

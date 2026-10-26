@@ -877,7 +877,10 @@ impl Planner<'_> {
     }
 
     /// Returns one route per constructor an index probe reaches, each continuing with `conds` then `rest`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the probe's relation, constructor sets, binder and continuation would have to travel as one struct"
+    )]
     fn routes(
         &mut self,
         r: RelId,
@@ -1446,7 +1449,10 @@ impl Planner<'_> {
     }
 
     /// Returns the chain for `for g in group (var in source by by) do body` whose aggregates over `g`'s rows are computed by the group's sink, when there is one to compute.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the group's binders and terms would have to travel as one struct"
+    )]
     fn fused_group(
         &mut self,
         g: Var,

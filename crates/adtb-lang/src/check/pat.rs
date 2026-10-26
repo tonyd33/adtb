@@ -324,8 +324,8 @@ impl Checker<'_> {
         for (bs, p) in bound.iter().zip(patterns).skip(1) {
             let mut names: Vec<&str> = bs.iter().map(|b| b.name.as_str()).collect();
             let mut want = first.clone();
-            names.sort();
-            want.sort();
+            names.sort_unstable();
+            want.sort_unstable();
             if names != want {
                 return Err(diag(
                     p.span,
@@ -496,7 +496,7 @@ impl Checker<'_> {
                     }
                     Some(Payload::Wildcard) => {}
                     Some(Payload::Bind(x)) => {
-                        bind(x, row.clone(), rows, out)?;
+                        bind(x, row, rows, out)?;
                         binder = Some(x.text.clone());
                     }
                     Some(Payload::Record(fs)) => {

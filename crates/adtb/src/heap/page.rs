@@ -183,10 +183,10 @@ pub fn release(page: &mut [u8], slot: usize, content: &Slot) {
         (Arrangement::Fixed { .. }, Slot::Unused) => fixed::release(page, slot),
         (Arrangement::Slotted, Slot::Unused) => slotted::release(page, slot, None),
         (Arrangement::Slotted, Slot::Dead) => {
-            slotted::release(page, slot, Some(slotted::Content::Dead))
+            slotted::release(page, slot, Some(slotted::Content::Dead));
         }
         (Arrangement::Slotted, Slot::Redirect(to)) => {
-            slotted::release(page, slot, Some(slotted::Content::Redirect(*to)))
+            slotted::release(page, slot, Some(slotted::Content::Redirect(*to)));
         }
         (a, c) => panic!("a {a:?} page cannot release a slot to {c:?}"),
     }
@@ -199,7 +199,6 @@ pub fn put(page: &mut [u8], slot: usize, content: &Slot, version: &[u8]) -> bool
         (Arrangement::Fixed { .. }, Slot::Normal { flags, .. }) => {
             fixed::put(page, slot, version, *flags)
         }
-        (Arrangement::Fixed { .. }, Slot::Unused) => true,
         (Arrangement::Fixed { .. }, Slot::Dead | Slot::Redirect(_)) => false,
         (Arrangement::Slotted, Slot::Normal { flags, .. }) => {
             slotted::put(page, slot, slotted::Content::Version(version, *flags))
@@ -208,6 +207,6 @@ pub fn put(page: &mut [u8], slot: usize, content: &Slot, version: &[u8]) -> bool
         (Arrangement::Slotted, Slot::Redirect(to)) => {
             slotted::put(page, slot, slotted::Content::Redirect(*to))
         }
-        (Arrangement::Slotted, Slot::Unused) => true,
+        (Arrangement::Fixed { .. } | Arrangement::Slotted, Slot::Unused) => true,
     }
 }

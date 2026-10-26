@@ -194,7 +194,7 @@ impl<R: Runtime> Pager<R> {
                 copy[HEADER_LEN..].fill(0);
             }
         }
-        let mut views: Vec<&mut [u8]> = copies.iter_mut().map(|c| c.as_mut_slice()).collect();
+        let mut views: Vec<&mut [u8]> = copies.iter_mut().map(Vec::as_mut_slice).collect();
         f(&mut views);
         let mut edits: Vec<Vec<Edit>> = guards
             .iter()
@@ -228,7 +228,7 @@ impl<R: Runtime> Pager<R> {
         for g in guards.iter_mut() {
             all.push(g);
         }
-        for m in maps.iter_mut() {
+        for m in &mut maps {
             all.push(m.inner());
         }
         Ok(self.apply(&mut all, edits, None))

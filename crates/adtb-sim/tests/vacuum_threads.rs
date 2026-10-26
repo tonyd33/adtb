@@ -277,7 +277,7 @@ impl Db {
 
 /// Let other threads run for about `n` switches.
 fn pause(rt: &SimRuntime, n: u64) {
-    for _ in 0..n / 100 + 1 {
+    for _ in 0..=(n / 100) {
         rt.yield_now();
     }
 }
@@ -431,7 +431,7 @@ fn writer(rt: &SimRuntime, db: &Db, world: &Mutex<World>, w: u64, mut live: Live
         let xid = db.txns.begin(&db.pager).expect("begin");
         let mut mine = live.clone();
         let mut ops = Vec::new();
-        for _ in 0..1 + rt.next_u64() % 3 {
+        for _ in 0..=(rt.next_u64() % 3) {
             let op = generate(rt, &mine, &mut next_key);
             perform(db, &mut mine, &op, xid);
             ops.push(op);
@@ -556,7 +556,7 @@ fn process(
             let (rt2, db, world) = (rt.clone(), db.clone(), world.clone());
             let live = lives.remove(&w).unwrap_or_default();
             rt.spawn(&format!("writer {w}"), move || {
-                writer(&rt2, &db, &world, w, live, steps)
+                writer(&rt2, &db, &world, w, live, steps);
             })
         })
         .collect();
@@ -632,7 +632,7 @@ fn vacuum_runs_beside_writers_and_readers_holding_snapshots() {
                 let (rt2, p, s, n) = (rt.clone(), progress.clone(), stop.clone(), seen.clone());
                 rt.spawn("watcher", move || watcher(&rt2, &p, &s, &n))
             };
-            process(rt.clone(), db.clone(), w.clone(), 120, progress.clone());
+            process(rt.clone(), db.clone(), w.clone(), 120, progress);
             stop.store(true, Ordering::Relaxed);
             rt.join(watch);
             let problems = inspect(&db, &w.lock().unwrap());
@@ -689,6 +689,10 @@ fn run_process<F: FnOnce(SimRuntime)>(sim: &mut Sim, body: F) -> Outcome {
     }
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "the crash loop reports its coverage on stderr"
+)]
 fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
     silence_fatal_panics();
     let mut sim = Sim::new(

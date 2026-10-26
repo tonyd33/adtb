@@ -3,7 +3,7 @@ mod plan {
 }
 
 #[path = "../../adtb/src/plan/tests/fixture.rs"]
-#[allow(dead_code)]
+#[expect(dead_code, reason = "this binary uses part of the planner fixture")]
 mod fixture;
 
 use std::sync::Arc;
@@ -245,6 +245,10 @@ fn run_all(
 
 /// Checks that every case's outcome under the simulator is the reference interpreter's. Returns
 /// how many tasks the workers ran.
+#[expect(
+    clippy::print_stderr,
+    reason = "EXEC_SHOW prints a sample of results on stderr"
+)]
 fn check(seed: u64, f: &Fixture, cases: &[Case], workers: usize, opts: XOptions) -> usize {
     let (got, ran) = run_all(seed, f, cases, workers, opts);
     if std::env::var("EXEC_SHOW").is_ok() {
@@ -376,18 +380,20 @@ fn morsels_on_several_workers_agree_for_every_seed() {
         pack_pages: 0,
         ..XOptions::default()
     };
-    let ran: usize = (0..4).map(|seed| check(seed, &f, &cases, 3, opts)).sum();
+    let ran: usize = sweep(0..4)
+        .map(|seed| check(seed, &f, &cases, 3, opts))
+        .sum();
     assert!(ran > 0, "no worker ran a task");
 }
 
-const STOCK: &str = r#"
+const STOCK: &str = r"
 type Item = { id: Key stock, g: I64, v: I64, name: Text }
 relation stock : Item key id generate sequence
   index (g)
 type Note = { id: Key notes, item: Key stock, label: Text }
 relation notes : Note key id generate sequence
   index (item)
-"#;
+";
 
 /// Returns a fixture whose heaps span many pages.
 fn stock() -> Fixture {
@@ -441,7 +447,9 @@ fn morsels_of_heaps_of_many_pages_agree_for_every_seed() {
         morsel_rows: 16,
         ..XOptions::default()
     };
-    let ran: usize = (0..4).map(|seed| check(seed, &f, &cases, 4, opts)).sum();
+    let ran: usize = sweep(0..4)
+        .map(|seed| check(seed, &f, &cases, 4, opts))
+        .sum();
     assert!(ran > 0, "no worker ran a task");
 }
 
@@ -556,7 +564,10 @@ fn a_set_of_rows_comes_back_as_batches_of_the_heap_schema() {
     })
     .expect("a value");
     let bs = exec::batches(&v, &schema, Rows::Fields, 2);
-    assert_eq!(vec![2, 1], bs.iter().map(|b| b.len()).collect::<Vec<_>>());
+    assert_eq!(
+        vec![2, 1],
+        bs.iter().map(batch::Batch::len).collect::<Vec<_>>()
+    );
     let got: Vec<Vec<KValue>> = bs
         .iter()
         .flat_map(|b| (0..b.len()).map(|i| b.row(i)))
@@ -600,6 +611,10 @@ fn a_call_of_a_wasm_or_host_function_is_refused_before_it_reaches_the_executor()
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the query of every primitive is listed inline; the list would have to be its own function"
+)]
 fn every_primitive_agrees_with_the_reference() {
     let f = running();
     let mut cases = Vec::new();

@@ -1,5 +1,11 @@
 #![forbid(unsafe_code)]
 
+macro_rules! trace {
+    ($trace:expr, $($line:tt)+) => {
+        writeln!($trace, $($line)+).expect("a String accepts every write")
+    };
+}
+
 mod check;
 mod disk;
 mod rng;

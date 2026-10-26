@@ -443,6 +443,10 @@ impl Run<'_, '_> {
         self.apply_all(g, args)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per term kind; each arm would have to be a function"
+    )]
     pub(crate) fn eval(&self, h: &Here, t: Tm, env: &Env) -> R<Value> {
         let terms = self.terms(h.arena);
         let it = self.it;
@@ -769,7 +773,7 @@ impl Run<'_, '_> {
 fn constant(c: &Const, ty: &Ty) -> Value {
     match (c, ty) {
         (Const::Int(i), Ty::Base(Base::Decimal(s))) => {
-            Value::Decimal(i * 10i128.pow(*s as u32), *s)
+            Value::Decimal(i * 10i128.pow(u32::from(*s)), *s)
         }
         (Const::Int(i), Ty::Base(Base::F32)) => Value::F32(*i as f32),
         (Const::Int(i), Ty::Base(Base::F64)) => Value::F64(*i as f64),
@@ -835,9 +839,9 @@ fn aggregate(op: Agg, ms: Vec<Value>, ty: &Ty, body: &Ty) -> R<Value> {
 fn sum(ms: Vec<Value>, ty: &Ty) -> R<Value> {
     match ty {
         Ty::Base(b @ (Base::I8 | Base::I16 | Base::I32 | Base::I64)) => {
-            let total = ms
-                .iter()
-                .fold(Big::zero(), |a, m| a.add(&Big::from_i128(int(m) as i128)));
+            let total = ms.iter().fold(Big::zero(), |a, m| {
+                a.add(&Big::from_i128(i128::from(int(m))))
+            });
             total
                 .to_i128()
                 .and_then(|v| in_range(v, *b))

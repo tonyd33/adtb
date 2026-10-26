@@ -278,7 +278,7 @@ impl Disk {
             let last = (end - 1) / sector;
             let s = cx.rng.between(first, last);
             inode.bad.insert(s);
-            let _ = writeln!(cx.trace, "fault latent ino {ino} {path:?} sector {s}");
+            trace!(cx.trace, "fault latent ino {ino} {path:?} sector {s}");
         }
         if inode
             .bad
@@ -286,7 +286,7 @@ impl Disk {
             .next()
             .is_some()
         {
-            let _ = writeln!(cx.trace, "read ino {ino} @{offset} hits a bad sector");
+            trace!(cx.trace, "read ino {ino} @{offset} hits a bad sector");
             return Err(IoError::Failed);
         }
         if cx.rng.chance(cx.faults.corrupt_p) {
@@ -296,7 +296,7 @@ impl Disk {
             if let Some(b) = inode.durable.get_mut(at) {
                 *b ^= bit;
             }
-            let _ = writeln!(
+            trace!(
                 cx.trace,
                 "fault corrupt ino {ino} {path:?} byte {at} bit {bit:#04x}"
             );
@@ -329,20 +329,20 @@ impl Disk {
                     landed.push(i);
                 }
             }
-            let _ = writeln!(
+            trace!(
                 cx.trace,
                 "fault fail write ino {ino} {path:?} @{offset} landed sectors {landed:?}"
             );
             return Err(IoError::Failed);
         }
         if cx.rng.chance(cx.faults.lost_write_p) {
-            let _ = writeln!(cx.trace, "fault lost write ino {ino} {path:?} @{offset}");
+            trace!(cx.trace, "fault lost write ino {ino} {path:?} @{offset}");
             return Ok(());
         }
         let mut target = offset;
         if cx.rng.chance(cx.faults.misdirect_p) {
             target = self.misdirect(ino, offset, data.len() as u64, sector, cx.rng);
-            let _ = writeln!(
+            trace!(
                 cx.trace,
                 "fault misdirect ino {ino} {path:?} @{offset} to @{target}"
             );
@@ -397,7 +397,7 @@ impl Disk {
     pub(crate) fn sync(&mut self, ino: Ino, upto: u64, cx: Ctx<'_>) -> Result<(), IoError> {
         if cx.rng.chance(cx.faults.fail_p) {
             let path = self.path_of(ino);
-            let _ = writeln!(cx.trace, "fault fail sync ino {ino} {path:?}");
+            trace!(cx.trace, "fault fail sync ino {ino} {path:?}");
             return Err(IoError::Failed);
         }
         let inode = &mut self.inodes[ino];
@@ -412,7 +412,7 @@ impl Disk {
 
     pub(crate) fn sync_dir(&mut self, dir: &str, upto: u64, cx: Ctx<'_>) -> Result<(), IoError> {
         if cx.rng.chance(cx.faults.fail_p) {
-            let _ = writeln!(cx.trace, "fault fail sync dir {dir:?}");
+            trace!(cx.trace, "fault fail sync dir {dir:?}");
             return Err(IoError::Failed);
         }
         let (forced, kept): (Vec<_>, Vec<_>) = self
@@ -465,12 +465,12 @@ impl Disk {
                     }
                     mask.push(lands);
                 }
-                let _ = writeln!(trace, "crash torn ino {ino} @{offset} units {mask:?}");
+                trace!(trace, "crash torn ino {ino} @{offset} units {mask:?}");
             } else if rng.coin() {
                 put(durable, offset, &data);
-                let _ = writeln!(trace, "crash landed ino {ino} @{offset}");
+                trace!(trace, "crash landed ino {ino} @{offset}");
             } else {
-                let _ = writeln!(trace, "crash lost ino {ino} @{offset}");
+                trace!(trace, "crash lost ino {ino} @{offset}");
             }
         }
         for inode in &mut self.inodes {
@@ -482,7 +482,7 @@ impl Disk {
         } else {
             pending.len()
         };
-        let _ = writeln!(
+        trace!(
             trace,
             "crash keeps {keep} of {} name changes",
             pending.len()

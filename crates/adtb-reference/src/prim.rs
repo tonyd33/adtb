@@ -68,14 +68,15 @@ fn arith(p: Prim, a: &Value, b: &Value, ty: &Ty) -> R<Value> {
     use Value::*;
     match (a, b) {
         (Int(x), Int(y)) => {
-            let (x, y) = (*x as i128, *y as i128);
+            let (x, y) = (i128::from(*x), i128::from(*y));
             match p {
                 Prim::Add | Prim::CheckedAdd => int_at(x + y, ty),
                 Prim::Sub | Prim::CheckedSub => int_at(x - y, ty),
                 Prim::Mul | Prim::CheckedMul => int_at(x * y, ty),
-                Prim::Div | Prim::CheckedDiv if y == 0 => fault(Fault::DivisionByZero),
+                Prim::Div | Prim::CheckedDiv | Prim::Rem | Prim::CheckedRem if y == 0 => {
+                    fault(Fault::DivisionByZero)
+                }
                 Prim::Div | Prim::CheckedDiv => int_at(x / y, ty),
-                Prim::Rem | Prim::CheckedRem if y == 0 => fault(Fault::DivisionByZero),
                 Prim::Rem | Prim::CheckedRem => int_at(x % y, ty),
                 _ => panic!("{p:?} on integers"),
             }
@@ -123,7 +124,7 @@ fn arith(p: Prim, a: &Value, b: &Value, ty: &Ty) -> R<Value> {
             })
         }
         (Period { months, days }, Int(n)) => {
-            let by = |c: i32| i32_or(i32::try_from(c as i128 * *n as i128).ok());
+            let by = |c: i32| i32_or(i32::try_from(i128::from(c) * i128::from(*n)).ok());
             Ok(Period {
                 months: by(*months)?,
                 days: by(*days)?,
@@ -156,7 +157,7 @@ fn arith(p: Prim, a: &Value, b: &Value, ty: &Ty) -> R<Value> {
 fn neg(v: &Value, ty: &Ty) -> R<Value> {
     use Value::*;
     match v {
-        Int(x) => int_at(-(*x as i128), ty),
+        Int(x) => int_at(-i128::from(*x), ty),
         Decimal(x, s) => Ok(Decimal(-x, *s)),
         F64(x) => Ok(F64(canon64(-x))),
         F32(x) => Ok(F32(canon32(-x))),
@@ -175,7 +176,7 @@ fn to_float64(v: &Value) -> f64 {
         Value::Decimal(d, s) => format!("{d}e-{s}")
             .parse()
             .expect("a decimal reads as a float"),
-        Value::F32(f) => *f as f64,
+        Value::F32(f) => f64::from(*f),
         Value::F64(f) => *f,
         other => panic!("`f64` of {other:?}"),
     }
@@ -187,9 +188,11 @@ fn convert(v: &Value, args: &[Value], to: &Ty) -> R<Value> {
     match to {
         Ty::Base(b @ (Base::I8 | Base::I16 | Base::I32 | Base::I64)) => {
             let wide: i128 = match v {
-                Value::Int(x) => *x as i128,
+                Value::Int(x) => i128::from(*x),
                 Value::Decimal(d, s) => range(dec_round(*d, *s, 0, rounding(&args[0])).to_i128())?,
-                Value::F32(f) => range(float_scaled(*f as f64, 0, rounding(&args[0]))?.to_i128())?,
+                Value::F32(f) => {
+                    range(float_scaled(f64::from(*f), 0, rounding(&args[0]))?.to_i128())?
+                }
                 Value::F64(f) => range(float_scaled(*f, 0, rounding(&args[0]))?.to_i128())?,
                 other => panic!("an integer conversion of {other:?}"),
             };
@@ -199,8 +202,8 @@ fn convert(v: &Value, args: &[Value], to: &Ty) -> R<Value> {
         }
         Ty::Base(Base::Decimal(s)) => {
             let d = match v {
-                Value::Int(x) => Big::from_i128(*x as i128).mul(&Big::pow10(*s as u32)),
-                Value::F32(f) => float_scaled(*f as f64, *s, rounding(&args[1]))?,
+                Value::Int(x) => Big::from_i128(i128::from(*x)).mul(&Big::pow10(u32::from(*s))),
+                Value::F32(f) => float_scaled(f64::from(*f), *s, rounding(&args[1]))?,
                 Value::F64(f) => float_scaled(*f, *s, rounding(&args[1]))?,
                 other => panic!("a decimal conversion of {other:?}"),
             };
@@ -253,6 +256,10 @@ pub(crate) fn parse_uuid(t: &str) -> Option<Vec<u8>> {
 }
 
 /// Applies primitive `p` to its argument values `vs`, of types `tys`, at the node's type `ty`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per primitive; each family of primitives would have to be a function"
+)]
 pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> R<Value> {
     use Value::*;
     let v = &vs;
@@ -274,7 +281,7 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
         Prim::Concat => match (&v[0], &v[1]) {
             (Text(a), Text(b)) => Ok(Text(unicode::nfc(&format!("{a}{b}")))),
             (Bytes(a), Bytes(b)) => Ok(Bytes([a.as_slice(), b].concat())),
-            _ => panic!("`++` on {:?}", v),
+            _ => panic!("`++` on {v:?}"),
         },
         Prim::DecimalDiv => {
             let (Decimal(a, s), Decimal(b, t), Ty::Base(Base::Decimal(u))) = (&v[0], &v[1], ty)
@@ -297,7 +304,7 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
             Ok(Decimal(dec_rescale(*a, *s, *u)?, *u))
         }
         Prim::Abs => match &v[0] {
-            Int(x) => int_at((*x as i128).abs(), ty),
+            Int(x) => int_at(i128::from(*x).abs(), ty),
             Decimal(x, s) => Ok(Decimal(x.abs(), *s)),
             F64(x) => Ok(F64(x.abs())),
             F32(x) => Ok(F32(x.abs())),
@@ -362,8 +369,9 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
             let Int(n) = v[0] else {
                 panic!("a period from an integer")
             };
-            let count =
-                |k: i128| i32::try_from(n as i128 * k).map_err(|_| Abort::Fault(Fault::OutOfRange));
+            let count = |k: i128| {
+                i32::try_from(i128::from(n) * k).map_err(|_| Abort::Fault(Fault::OutOfRange))
+            };
             Ok(match p {
                 Prim::Days => Period {
                     months: 0,

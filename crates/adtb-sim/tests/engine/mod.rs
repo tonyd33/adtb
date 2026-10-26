@@ -1,4 +1,7 @@
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "each test binary uses a different part of the shared module"
+)]
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -366,7 +369,7 @@ impl Engine {
                 out.push((int(&v.row[2]), int(&v.row[3])));
             }
         }
-        out.sort();
+        out.sort_unstable();
         Ok(out)
     }
 

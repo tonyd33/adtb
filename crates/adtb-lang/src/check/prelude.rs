@@ -103,6 +103,11 @@ impl Checker<'_> {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        clippy::cognitive_complexity,
+        reason = "one arm per prelude function; each family of arms would have to be its own checker"
+    )]
     pub(super) fn prelude_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Out> {
         let text = Ty::Base(Base::Text);
         let i64t = Ty::Base(Base::I64);
@@ -233,7 +238,7 @@ impl Checker<'_> {
                     (s, t) if Self::is_integer(s) && s == t => s.clone(),
                     (Ty::Base(Base::Decimal(s)), Ty::Base(Base::Decimal(t))) => {
                         if name == "checked_mul" {
-                            if *s as u32 + *t as u32 > 38 {
+                            if u32::from(*s) + u32::from(*t) > 38 {
                                 return Err(diag(span, "the product's scale is above 38"));
                             }
                             Ty::Base(Base::Decimal(s + t))
@@ -310,7 +315,7 @@ impl Checker<'_> {
                 if scale > 38 {
                     return Err(diag(args[1].span, "a decimal scale is at most 38"));
                 }
-                if name == "round" && scale >= s as u64 {
+                if name == "round" && scale >= u64::from(s) {
                     return Err(diag(
                         args[1].span,
                         format!(
@@ -318,7 +323,7 @@ impl Checker<'_> {
                         ),
                     ));
                 }
-                if name == "rescale" && scale < s as u64 {
+                if name == "rescale" && scale < u64::from(s) {
                     return Err(diag(
                         args[1].span,
                         format!(
@@ -398,7 +403,7 @@ impl Checker<'_> {
                 match r {
                     None if Self::is_integer(&xo.ty) => {}
                     Some(r) if Self::is_float(&xo.ty) => {
-                        tms.push(self.check(r, &self.named_ty("Rounding"))?.tm)
+                        tms.push(self.check(r, &self.named_ty("Rounding"))?.tm);
                     }
                     _ => return Err(self.wrong(name, &[&xo.ty], span)),
                 }
@@ -746,9 +751,8 @@ impl Checker<'_> {
             },
             _ => return Err(diag(e.span, "expected a relation")),
         };
-        let rel = match self.lookup_value(q) {
-            Ok(ValueDef::Relation(r)) => r,
-            _ => return Err(diag(e.span, format!("`{}` is not a relation", q.name.text))),
+        let Ok(ValueDef::Relation(rel)) = self.lookup_value(q) else {
+            return Err(diag(e.span, format!("`{}` is not a relation", q.name.text)));
         };
         let ctors = match sel {
             None => None,

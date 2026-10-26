@@ -221,7 +221,7 @@ impl<R: Runtime> std::fmt::Debug for Database<R> {
 }
 
 /// What a database runs its statements with.
-#[allow(missing_debug_implementations)]
+#[derive(Debug)]
 pub struct Setup<R: Runtime> {
     pub schema: Arc<Schema>,
     pub normal: Arc<NormalProgram>,
@@ -396,20 +396,26 @@ impl<R: Runtime> Database<R> {
                 Ok(())
             }
             Err(e) => {
-                self.abort(tx);
+                self.abort(tx)?;
                 Err(e)
             }
         }
     }
 
-    pub fn abort(&self, tx: Txn) {
-        {
+    /// Abort `tx` and release what it holds.
+    ///
+    /// Fails if the database is quarantined, leaving `tx`'s id running in the commit log.
+    pub fn abort(&self, tx: Txn) -> Result<(), Error> {
+        let aborted = {
             let mut ser = self.ser.lock(&self.rt);
-            let _ = self.txns.abort(&self.pager, tx.xid);
+            let aborted = self.txns.abort(&self.pager, tx.xid);
             ser.aborted(tx.sid);
             self.txns.release(tx.hold);
-        }
+            aborted
+        };
         self.waits.ended(tx.xid);
+        aborted?;
+        Ok(())
     }
 
     /// Returns the page of the database's generated counters, for [`Setup::sequences`] when

@@ -235,7 +235,7 @@ pub(super) fn named(op: &OperatorKind, module: &str, schema: &Schema) -> Vec<Str
         }
         OperatorKind::RedefineFn(f) => out.push(format!("fn {module}::{}", f.name.text)),
         OperatorKind::DropFn(f) | OperatorKind::DropAggregate(f) => {
-            out.push(format!("fn {}::{}", q(f), f.name.text))
+            out.push(format!("fn {}::{}", q(f), f.name.text));
         }
         OperatorKind::DropConstraint(c) | OperatorKind::DropCheck(c) => {
             out.push(format!("constraint {}::{}", q(c), c.name.text));
@@ -253,7 +253,7 @@ pub(super) fn named(op: &OperatorKind, module: &str, schema: &Schema) -> Vec<Str
             ));
         }
         OperatorKind::DropModule(m) | OperatorKind::Uninstall(m) => {
-            out.push(format!("module {}", m.text))
+            out.push(format!("module {}", m.text));
         }
         _ => {}
     }
@@ -339,6 +339,10 @@ impl Cx<'_> {
     }
 
     /// The inverse of `op` of migration `logged`, computed against `before`, the schema before it.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per operator kind; each arm would have to be a function"
+    )]
     pub(super) fn inverse(
         &self,
         before: &Source,
@@ -684,7 +688,7 @@ impl Cx<'_> {
                     out.push(Inverse::KeyClause {
                         relation: QName {
                             module: Some(ast::Ident {
-                                text: m.clone(),
+                                text: m,
                                 span: op.span,
                             }),
                             name: relation.name.clone(),
@@ -1317,7 +1321,7 @@ impl Cx<'_> {
                 into.name.text,
                 m_fields
                     .iter()
-                    .map(|g| g.as_str())
+                    .map(String::as_str)
                     .collect::<Vec<_>>()
                     .join(", "),
                 given
@@ -1390,6 +1394,10 @@ impl Cx<'_> {
     }
 
     /// Applies one step of an inverse to the source.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per inverse kind; each arm would have to be a function"
+    )]
     pub(super) fn undo(&mut self, inv: Inverse) -> R<()> {
         let span = self.span;
         let wrap = |ds: Vec<Diag>, what: &str| -> Vec<Diag> {

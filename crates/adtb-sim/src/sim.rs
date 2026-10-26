@@ -114,7 +114,7 @@ struct Shared {
 type Guard<'a> = MutexGuard<'a, State>;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn nanos(d: Duration) -> u64 {
@@ -236,7 +236,7 @@ impl Sim {
             st.rings.clear();
             st.handles.clear();
             let (now, process) = (st.now, st.process);
-            let _ = writeln!(st.trace, "t={now} process {process} starts");
+            trace!(st.trace, "t={now} process {process} starts");
             process
         };
         let rt = SimRuntime {
@@ -245,7 +245,7 @@ impl Sim {
         };
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             let _switches = rt.switch_points();
-            body(rt.clone())
+            body(rt.clone());
         }));
         settle(&self.shared, 0, result);
         {
@@ -258,7 +258,9 @@ impl Sim {
         }
         let handles = std::mem::take(&mut *lock(&self.shared.os));
         for h in handles {
-            let _ = h.join();
+            if let Err(payload) = h.join() {
+                panic::resume_unwind(payload);
+            }
         }
         let mut st = lock(&self.shared.state);
         st.crash_at = None;
@@ -345,7 +347,7 @@ fn switch<'a>(shared: &'a Shared, mut st: Guard<'a>, me: usize) -> Result<Guard<
     };
     if next != me {
         let now = st.now;
-        let _ = writeln!(st.trace, "t={now} run {next}");
+        trace!(st.trace, "t={now} run {next}");
     }
     st.current = next;
     shared.turn.notify_all();
@@ -357,7 +359,7 @@ fn switch<'a>(shared: &'a Shared, mut st: Guard<'a>, me: usize) -> Result<Guard<
         .wait_while(st, |st| {
             matches!(st.phase, Phase::Running) && st.current != me
         })
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if matches!(st.phase, Phase::Running) {
         Ok(st)
     } else {
@@ -420,7 +422,7 @@ impl State {
             upto,
         } = event;
         let now = self.now;
-        let _ = writeln!(self.trace, "t={now} complete {ticket}");
+        trace!(self.trace, "t={now} complete {ticket}");
         let (buf, result) = match op {
             Op::Open { path, create } => {
                 let r = self.disk.open(&path, create).map(|(ino, len)| {
@@ -469,7 +471,7 @@ impl State {
             Op::Remove { path } => (None, self.disk.remove(&path).map(|()| Done::Removed)),
             Op::Timer { .. } => (None, Ok(Done::Fired)),
         };
-        let _ = writeln!(self.trace, "  {result:?}");
+        trace!(self.trace, "  {result:?}");
         self.rings[ring].push_back(Completion {
             ticket: Ticket(ticket),
             buf,
@@ -489,7 +491,7 @@ impl State {
 
     fn crash(&mut self) {
         let now = self.now;
-        let _ = writeln!(self.trace, "t={now} crash");
+        trace!(self.trace, "t={now} crash");
         let events = std::mem::take(&mut self.events);
         let in_flight = events
             .into_values()
@@ -573,7 +575,7 @@ impl SimRuntime {
         lock(&self.shared.state)
             .disk
             .recording()
-            .map_or(0, |r| r.len())
+            .map_or(0, Recording::len)
     }
 }
 
@@ -608,14 +610,14 @@ impl Threads for SimRuntime {
             token: false,
         });
         let now = st.now;
-        let _ = writeln!(st.trace, "t={now} spawn {id} {name:?}");
+        trace!(st.trace, "t={now} spawn {id} {name:?}");
         let shared = self.shared.clone();
         let rt = self.clone();
         let body = move || {
             let _switches = rt.switch_points();
-            body()
+            body();
         };
-        #[allow(
+        #[expect(
             clippy::disallowed_methods,
             reason = "each simulated thread runs on a host thread"
         )]
@@ -675,7 +677,7 @@ fn thread_main<F: FnOnce()>(shared: &Shared, id: usize, body: F) {
             .wait_while(st, |st| {
                 matches!(st.phase, Phase::Running) && st.current != id
             })
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !matches!(st.phase, Phase::Running) {
             return;
         }
@@ -720,10 +722,9 @@ impl Io for SimIo {
             }
             _ => now,
         };
-        let _ = writeln!(
+        trace!(
             st.trace,
-            "t={now} submit {ticket} ring {} due {due} {op:?}",
-            self.ring
+            "t={now} submit {ticket} ring {} due {due} {op:?}", self.ring
         );
         let upto = st.disk.seq();
         let submitter = st.current;

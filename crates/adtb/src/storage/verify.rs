@@ -60,7 +60,7 @@ impl<R: Runtime> Pager<R> {
                     match &record {
                         Record::Commit { xid, .. } => commits.push(*xid),
                         Record::SafeSnapshot { at, snapshot } => {
-                            safe_snapshots.push((lsn, *at, snapshot.clone()))
+                            safe_snapshots.push((lsn, *at, snapshot.clone()));
                         }
                         _ => {}
                     }

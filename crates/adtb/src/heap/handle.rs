@@ -852,9 +852,9 @@ impl Heap {
             gone.free(pid);
             stage.commit_with(pager, gone)?;
             above.settle(pager)?;
-            let _ = self
-                .hint
-                .compare_exchange(pid.0, 0, Ordering::Relaxed, Ordering::Relaxed);
+            self.hint
+                .compare_exchange(pid.0, 0, Ordering::Relaxed, Ordering::Relaxed)
+                .ok();
             done.removed = true;
         } else {
             let changed = out != page;

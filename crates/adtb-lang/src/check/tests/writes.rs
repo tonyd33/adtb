@@ -291,11 +291,11 @@ fn a_default_expression_is_elaborated_into_the_row() {
     };
     assert_eq!(
         a.terms.kind(field(&a.terms, *row, "n")),
-        &Kind::Const(crate::kernel::Const::Int(0))
+        &Kind::Const(Const::Int(0))
     );
     assert_eq!(
         a.terms.kind(field(&a.terms, *row, "label")),
-        &Kind::Const(crate::kernel::Const::Text("x".into()))
+        &Kind::Const(Const::Text("x".into()))
     );
 }
 
@@ -552,7 +552,7 @@ fn update_x_where_p_reads_the_row_in_p() {
     assert!(!mentions_var(&a.terms, *p, *x));
 }
 
-fn mentions_var(terms: &crate::kernel::Terms, t: Tm, v: crate::kernel::Var) -> bool {
+fn mentions_var(terms: &Terms, t: Tm, v: Var) -> bool {
     matches!(terms.kind(t), Kind::Var(w) if *w == v)
         || terms
             .children(t)

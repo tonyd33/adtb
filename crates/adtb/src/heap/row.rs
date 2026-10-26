@@ -178,7 +178,7 @@ fn put_scalar(s: Scalar, v: &Value, out: &mut [u8]) {
         (Scalar::I8, Value::I8(x)) => out.copy_from_slice(&x.to_le_bytes()),
         (Scalar::I16, Value::I16(x)) => out.copy_from_slice(&x.to_le_bytes()),
         (Scalar::I32, Value::I32(x)) | (Scalar::Date, Value::Date(x)) => {
-            out.copy_from_slice(&x.to_le_bytes())
+            out.copy_from_slice(&x.to_le_bytes());
         }
         (Scalar::I64, Value::I64(x))
         | (Scalar::Instant, Value::Instant(x))

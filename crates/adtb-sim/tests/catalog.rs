@@ -332,7 +332,7 @@ fn a_reopened_catalog_names_the_same_structures() {
 fn a_header_naming_no_catalog_is_created_again() {
     let mut sim = Sim::new(7, Config::default());
     let outcome = sim.run(|rt| {
-        let pager = Pager::create(rt.clone(), &options()).expect("create");
+        let pager = Pager::create(rt, &options()).expect("create");
         adtb::heap::LargeStore::create(&pager, 1).expect("a stray page");
         pager.flush_log();
     });
@@ -349,7 +349,7 @@ fn a_header_naming_no_catalog_is_created_again() {
 }
 
 /// The running schema, as the first migration of a database.
-const RUNNING: &str = r#"module auth
+const RUNNING: &str = r"module auth
 add module auth
 add type User = { id: Key users, name: Text }
 add relation users : User key id generate sequence
@@ -374,7 +374,7 @@ add constraint login_present =
     | Google g    -> scalar_len(g.gid) == 0
     | Apple a     -> scalar_len(a.sub) == 0
   select i
-"#;
+";
 
 /// Create a database, its catalog and the running schema as its first migration in a fresh
 /// simulation, recording what reaches the device. Returns the simulation and the number of

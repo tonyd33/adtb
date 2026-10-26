@@ -1,7 +1,7 @@
 use super::*;
 use crate::parse::parse_schema;
 
-const RUNNING: &str = r#"
+const RUNNING: &str = r"
 module auth
 type User = { id: Key users, name: Text }
 type Identity { id: Key identities, user: Key users }
@@ -16,7 +16,7 @@ set OAuth of identities = Google
 fn display_name (i: Identity) -> Text = match i
   | EmailPass e -> e.email
   | Google g    -> g.gid
-"#;
+";
 
 fn build_src(srcs: &[&str]) -> Result<Schema, Vec<String>> {
     let files: Vec<(FileId, ast::SchemaFile)> = srcs

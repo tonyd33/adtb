@@ -546,6 +546,10 @@ impl<'a> Normaliser<'a> {
         self.add(Kind::Var(x), ty)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per term kind; each arm would have to be a function"
+    )]
     fn step(&mut self, t: Tm, cx: &Cx) -> Result<Val, String> {
         let node = self.node(cx.arena, t);
         let ty = node.ty.subst(&cx.targs);

@@ -25,12 +25,13 @@ devenv.local.yaml
 
 /target
 
-# Design space, knowledge base and tickets are tracked; other work/ files are not
+# Design space, knowledge base, tickets and tools are tracked; other work/ files are not
 !/work/
 /work/*
 !/work/research/
 !/work/kb/
 !/work/issues/
+!/work/tools/
 /work/research/.quandary/
 
 # Generated editor config
@@ -38,3 +39,8 @@ devenv.local.yaml
 
 # Project instructions are tracked despite the global ignore
 !/CLAUDE.md
+
+# Project skills are tracked despite the global ignore
+!/.claude/
+/.claude/*
+!/.claude/skills/

@@ -447,7 +447,7 @@ fn unaligned_write_is_a_bug() {
     let mut sim = sim(8, quiet());
     run(&mut sim, |rt, io| {
         let (file, _) = open(rt, io, "f", true).unwrap();
-        let _ = write(rt, io, file, 100, &sector(1));
+        write(rt, io, file, 100, &sector(1)).unwrap();
     });
 }
 

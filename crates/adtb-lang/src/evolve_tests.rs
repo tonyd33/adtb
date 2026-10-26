@@ -1,7 +1,7 @@
 use super::*;
 use crate::parse::parse_migration;
 
-const RUNNING: &str = r#"
+const RUNNING: &str = r"
 module auth
 type User = { id: Key users, name: Text }
 type Identity { id: Key identities, user: Key users }
@@ -26,7 +26,7 @@ constraint login_present =
     | Google g    -> scalar_len(g.gid) == 0
     | Apple a     -> scalar_len(a.sub) == 0
   select i
-"#;
+";
 
 /// The source of a schema text: one module header, then declarations.
 fn source(text: &str) -> Source {
@@ -118,13 +118,13 @@ fn stage(src: &Source, relation: &str, ctor: &str) -> Stage {
     src.states[&("auth".to_string(), relation.to_string(), ctor.to_string())].stage
 }
 
-const BADGES: &str = r#"
+const BADGES: &str = r"
 module auth
 type Badge { name: Text } = Plain | Color { rgb: I32 }
 relation post_badges : Badge key name
 relation user_badges : Badge key name
 set Simple of post_badges = Plain
-"#;
+";
 
 fn with_badges() -> Source {
     source(&format!(
@@ -232,7 +232,7 @@ fn extensions_install_and_uninstall() {
         "module auth\nuninstall geo",
         "`geo` is not an installed extension",
     );
-    let mut used = s.clone();
+    let mut used = s;
     used.decls.push(SourceDecl {
         module: "auth".into(),
         text: "fn near (x: F64) -> F64 = geo::scale(x)".into(),
@@ -2081,13 +2081,12 @@ store per_user
   key user",
     );
     let schema = ids_of(&s);
-    let f = match schema
+    let Some(&ValueDef::Function(f)) = schema
         .module(schema.module_named("auth").unwrap())
         .values
         .get("per_user")
-    {
-        Some(&ValueDef::Function(f)) => f,
-        _ => panic!("no view"),
+    else {
+        panic!("no view");
     };
     let view = schema.ids.views[&f];
     assert_eq!(Some(&(view + 1)), schema.ids.view_types.get(&f));
@@ -2138,13 +2137,12 @@ store named
   key id",
     );
     let schema = ids_of(&s);
-    let f = match schema
+    let Some(&ValueDef::Function(f)) = schema
         .module(schema.module_named("auth").unwrap())
         .values
         .get("named")
-    {
-        Some(&ValueDef::Function(f)) => f,
-        _ => panic!("no view"),
+    else {
+        panic!("no view");
     };
     assert!(schema.ids.views.contains_key(&f));
     assert_eq!(None, schema.ids.view_types.get(&f));

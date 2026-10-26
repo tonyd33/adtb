@@ -262,7 +262,7 @@ pub fn decl_names(schema: &Schema, module: ModuleId, d: &Decl, names: &mut Names
     let mut refs = Vec::new();
     let own = |names: &mut Names, span: Span| names.qualify(schema, span, module);
     let tys = |ts: &mut dyn Iterator<Item = &ast::Type>, refs: &mut Vec<(Span, Ref)>| {
-        ts.for_each(|t| type_refs(schema, module, t, refs))
+        ts.for_each(|t| type_refs(schema, module, t, refs));
     };
     match d {
         Decl::Type(t) => {
@@ -374,7 +374,7 @@ fn clause_refs(
         }
         match c {
             RelationClause::Default { ctor: Some(c), .. } => {
-                rel_sel_refs(schema, rel, std::slice::from_ref(c), out)
+                rel_sel_refs(schema, rel, std::slice::from_ref(c), out);
             }
             RelationClause::Computed(_, t, _) => type_refs(schema, module, t, out),
             _ => {}

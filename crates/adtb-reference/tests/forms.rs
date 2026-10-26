@@ -40,10 +40,10 @@ fn fixture() -> Fixture {
     );
     f.rows(
         "orders",
-        r#"[Order { id: orders.key(1), user: users.key(1), total: 9223372036854775807 },
+        r"[Order { id: orders.key(1), user: users.key(1), total: 9223372036854775807 },
             Order { id: orders.key(2), user: users.key(1), total: 1 },
             Order { id: orders.key(3), user: users.key(2), total: -1 },
-            Order { id: orders.key(4), user: users.key(2), total: 0 }]"#,
+            Order { id: orders.key(4), user: users.key(2), total: 0 }]",
     );
     f.rows(
         "prices",
@@ -412,7 +412,7 @@ fn print_gives_the_textual_syntax() {
         Ok(text(r#"User { id: users.key(1), name: "a\"b" }"#)),
         f.eval(r#"print(User { id: users.key(1), name: "a\"b" })"#)
     );
-    assert_eq!(Ok(text(r#"[2, 10]"#)), f.eval("print([10, 2, 10])"));
+    assert_eq!(Ok(text(r"[2, 10]")), f.eval("print([10, 2, 10])"));
     assert_eq!(
         Ok(text(r#"members.key(team: "x", user: users.key(1))"#)),
         f.eval(r#"print(members.key(user: users.key(1), team: "x"))"#)

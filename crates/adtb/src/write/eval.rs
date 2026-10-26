@@ -622,7 +622,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     if at.ctor_of() != *c {
                         return Ok(false);
                     }
-                    ty = match crate::exec::types::repr(&self.db.schema, &ty) {
+                    ty = match exec::types::repr(&self.db.schema, &ty) {
                         Ty::Data { def, args, .. } => Ty::Data {
                             def,
                             args,
@@ -762,6 +762,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
 
     /// Derives the delete actions of the written effects, forms the statement's change set,
     /// applies it, and checks it at the statement boundary.
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "deriving the deletes, forming the change set and checking it would have to be separate functions"
+    )]
     fn boundary(&self, written: Effects, result: Val) -> Result<Outcome, Error> {
         let mut minus_written: BTreeSet<(RelId, Val)> = BTreeSet::new();
         let mut kept_keys: BTreeSet<(RelId, Val)> = BTreeSet::new();
@@ -983,7 +987,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         out: &mut Vec<(Vec<usize>, adtb_lang::types::TypeId, u32, Val)>,
     ) {
         let schema = &self.db.schema;
-        let t = crate::exec::types::repr(schema, ty);
+        let t = exec::types::repr(schema, ty);
         let fields: Vec<Ty> = match (&t, v) {
             (Ty::Record(fs), Val::Record(_)) => fs.iter().map(|(_, t)| t.clone()).collect(),
             (Ty::Data { def, .. }, Val::Ctor(c, _)) => {

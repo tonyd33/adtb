@@ -69,13 +69,12 @@ impl Parser<'_> {
                 next_word,
                 Some("type" | "relation" | "set" | "constructor" | "field")
             ),
-            "remove" | "split" | "nest" | "unnest" => next_word == Some("constructor"),
-            "merge" => next_word == Some("constructor"),
+            "remove" | "split" | "nest" | "unnest" | "merge" => next_word == Some("constructor"),
             "move" => next_word == Some("field"),
             "rekey" => next_word == Some("relation"),
             "define" => matches!(next_word, Some("fn" | "aggregate")),
             "redefine" => matches!(next_word, Some("fn" | "computed")),
-            "unstore" | "uninstall" => next.tok == Tok::Lower,
+            "unstore" | "uninstall" | "install" => next.tok == Tok::Lower,
             "enable" | "disable" | "deprecate" => {
                 matches!(next.tok, Tok::Lower | Tok::Upper)
             }
@@ -86,7 +85,6 @@ impl Parser<'_> {
                     Kw::Insert | Kw::Update | Kw::Delete | Kw::Fail | Kw::Skip | Kw::If | Kw::Match
                 ) | Tok::LParen
             ),
-            "install" => next.tok == Tok::Lower,
             "adopt" => next_word == Some("tzdb"),
             "grant" | "revoke" => true,
             _ => false,
@@ -102,6 +100,10 @@ impl Parser<'_> {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per operator verb; each operator would need its own parser"
+    )]
     fn operator_kind(&mut self) -> PResult<OperatorKind> {
         if self.at_word("store") {
             return Ok(OperatorKind::Store(self.store_decl()?));

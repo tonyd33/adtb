@@ -264,13 +264,13 @@ pub fn check(page: &[u8]) -> Vec<String> {
                 }
             }
             REDIRECT if p.offset >= n => {
-                problems.push(format!("slot {s} redirects past the slots"))
+                problems.push(format!("slot {s} redirects past the slots"));
             }
             UNUSED | DEAD | REDIRECT => {}
             state => problems.push(format!("slot {s} has state {state}")),
         }
     }
-    tuples.sort();
+    tuples.sort_unstable();
     for w in tuples.windows(2) {
         if w[0].1 > w[1].0 {
             problems.push(format!("slots {} and {} overlap", w[0].2, w[1].2));

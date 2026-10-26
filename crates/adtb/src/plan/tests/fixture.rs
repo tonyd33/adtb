@@ -142,7 +142,7 @@ pub fn catalog(schema: &Schema, program: &Program) -> Catalog {
                     Kind::Field(x, name)
                         if f.path.is_empty() && matches!(normal.terms.kind(*x), Kind::Var(_)) =>
                     {
-                        fields.push(name.clone())
+                        fields.push(name.clone());
                     }
                     _ => break,
                 }
@@ -161,7 +161,10 @@ pub fn catalog(schema: &Schema, program: &Program) -> Catalog {
         out.relations.insert(
             rel,
             RelationDesc {
-                heaps: all.iter().map(|c| (*c, HeapId(base + *c as u64))).collect(),
+                heaps: all
+                    .iter()
+                    .map(|c| (*c, HeapId(base + u64::from(*c))))
+                    .collect(),
                 key_index,
                 indexes,
             },
@@ -170,7 +173,7 @@ pub fn catalog(schema: &Schema, program: &Program) -> Catalog {
     out
 }
 
-pub const SCHEMA: &str = r#"
+pub const SCHEMA: &str = r"
 type User = { id: Key users, name: Text }
 type Identity { id: Key identities, user: Key users }
   = EmailPass { email: Text, hash: Bytes }
@@ -195,7 +198,7 @@ relation follows : Follow key (src, dst)
 relation orders : Order key id generate sequence
 type Session = { id: Key sessions, owner: Option (Key users) }
 relation sessions : Session key id generate sequence
-"#;
+";
 
 fn uuid(n: u8) -> String {
     format!("identities.key(uuid(\"00000000-0000-7000-8000-0000000000{n:02}\"))")
@@ -244,29 +247,29 @@ pub fn running() -> Fixture {
     );
     f.rows(
         "phones",
-        r#"[Phone { id: phones.key(1), owner: users.key(1), seen: t1 },
-            Phone { id: phones.key(2), owner: users.key(1), seen: t2 }]"#,
+        r"[Phone { id: phones.key(1), owner: users.key(1), seen: t1 },
+            Phone { id: phones.key(2), owner: users.key(1), seen: t2 }]",
         &times,
     );
     f.rows(
         "sessions",
-        r#"[Session { id: sessions.key(1), owner: Some { value: users.key(1) } },
-            Session { id: sessions.key(2), owner: None }]"#,
+        r"[Session { id: sessions.key(1), owner: Some { value: users.key(1) } },
+            Session { id: sessions.key(2), owner: None }]",
         &[],
     );
     f.rows(
         "follows",
-        r#"[Follow { src: users.key(1), dst: users.key(2) },
+        r"[Follow { src: users.key(1), dst: users.key(2) },
             Follow { src: users.key(2), dst: users.key(3) },
-            Follow { src: users.key(3), dst: users.key(2) }]"#,
+            Follow { src: users.key(3), dst: users.key(2) }]",
         &[],
     );
     f.rows(
         "orders",
-        r#"[Order { id: orders.key(1), user: users.key(1), total: 100, qty: 2 },
+        r"[Order { id: orders.key(1), user: users.key(1), total: 100, qty: 2 },
             Order { id: orders.key(2), user: users.key(1), total: 100, qty: 0 },
             Order { id: orders.key(3), user: users.key(2), total: 30, qty: 3 },
-            Order { id: orders.key(4), user: users.key(1), total: 50, qty: 5 }]"#,
+            Order { id: orders.key(4), user: users.key(1), total: 50, qty: 5 }]",
         &[],
     );
     f

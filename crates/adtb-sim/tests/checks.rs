@@ -108,7 +108,7 @@ fn rotted_record_is_a_structure_finding() {
     let mut sim = sim(4, Faults::default());
     let ledger = Ledger::new();
     run(&mut sim, |rt, _| {
-        commit_all(rt, &ledger, &[0, 1, 2], Durability::Forced)
+        commit_all(rt, &ledger, &[0, 1, 2], Durability::Forced);
     });
     sim.set_faults(Faults {
         corrupt_p: 1.0,

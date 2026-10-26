@@ -47,7 +47,8 @@ mod held {
     }
 
     pub(super) fn take(mem: usize, pid: u64, exclusive: bool) {
-        let _ = HELD.try_with(|h| h.borrow_mut().push((mem, pid, exclusive)));
+        HELD.try_with(|h| h.borrow_mut().push((mem, pid, exclusive)))
+            .unwrap_or(());
     }
 
     pub(super) fn count(mem: usize) -> usize {
@@ -56,12 +57,13 @@ mod held {
     }
 
     pub(super) fn release(mem: usize, pid: u64) {
-        let _ = HELD.try_with(|h| {
+        HELD.try_with(|h| {
             let mut h = h.borrow_mut();
             if let Some(i) = h.iter().position(|&(m, p, _)| m == mem && p == pid) {
                 h.swap_remove(i);
             }
-        });
+        })
+        .unwrap_or(());
     }
 }
 
@@ -101,16 +103,20 @@ impl fmt::Debug for SwitchPoints {
 impl Drop for SwitchPoints {
     fn drop(&mut self) {
         let previous = self.previous.take();
-        let _ = SWITCH.try_with(|s| *s.borrow_mut() = previous);
+        SWITCH
+            .try_with(|s| *s.borrow_mut() = previous)
+            .unwrap_or(());
     }
 }
 
 fn switch_point() {
-    let _ = SWITCH.try_with(|s| {
-        if let Some(hook) = &*s.borrow() {
-            hook();
-        }
-    });
+    SWITCH
+        .try_with(|s| {
+            if let Some(hook) = &*s.borrow() {
+                hook();
+            }
+        })
+        .unwrap_or(());
 }
 
 fn word(tag: u64, version: u64) -> u64 {
@@ -215,11 +221,11 @@ impl Region {
     fn release(&self, offset: usize, len: usize) {
         #[cfg(all(target_os = "linux", not(miri)))]
         {
-            // SAFETY: the range lies in the mapping; MADV_DONTNEED on a private anonymous
-            // mapping only replaces its contents with zeros.
-            let r = unsafe {
-                os::madvise(self.ptr.as_ptr().add(offset).cast(), len, os::MADV_DONTNEED)
-            };
+            // SAFETY: `offset` lies in the mapping.
+            let start = unsafe { self.ptr.as_ptr().add(offset) };
+            // SAFETY: `start..start + len` lies in the mapping; MADV_DONTNEED on a private
+            // anonymous mapping only replaces its contents with zeros.
+            let r = unsafe { os::madvise(start.cast(), len, os::MADV_DONTNEED) };
             assert_eq!(0, r, "madvise refused to release page memory");
         }
         #[cfg(not(all(target_os = "linux", not(miri))))]

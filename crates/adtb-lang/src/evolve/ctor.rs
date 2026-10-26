@@ -185,7 +185,7 @@ impl Cx<'_> {
                 let at = ctors.last().map_or(text.trim_end().len(), |c| c.2);
                 (at..at, format!("\n  | {ctor_text}"))
             }
-            Some(CtorPlace::Before(c)) | Some(CtorPlace::After(c)) => {
+            Some(CtorPlace::Before(c) | CtorPlace::After(c)) => {
                 let Some(k) = ctors.iter().position(|x| x.0 == c.text) else {
                     return self.err_at(
                         c.span,
@@ -217,11 +217,8 @@ impl Cx<'_> {
                     ),
                 );
             }
-            let set = match &j.sel {
-                Some(CtorSel::One(s)) => s,
-                _ => {
-                    return self.err_at(j.span, "`joins` names a named set: `r.S`");
-                }
+            let Some(CtorSel::One(set)) = &j.sel else {
+                return self.err_at(j.span, "`joins` names a named set: `r.S`");
             };
             let (k, sd) = self.set_decl(set, &j.relation)?;
             let at = sd.span.end as usize - header(&self.src.decls[k].module).len();
@@ -472,6 +469,10 @@ impl Cx<'_> {
 
     /// Removes a constructor; as the inverse of `add constructor` it skips the lifecycle check and removes
     /// the constructor's arms from every match.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the edits to relations, types, sets, checks and match arms would each have to be a step"
+    )]
     pub(super) fn remove_ctor(&mut self, path: &ast::CtorPath, inverse: bool) -> R<()> {
         let schema = self.schema()?;
         let (i, t, def, c) = self.ctor_of(&schema, path)?;
@@ -757,7 +758,7 @@ impl Cx<'_> {
         {
             self.src
                 .value_states
-                .insert((tm, t.name.text.clone(), to.text.clone()), v);
+                .insert((tm, t.name.text, to.text.clone()), v);
         }
         Ok(())
     }
@@ -1056,7 +1057,7 @@ impl Cx<'_> {
             .into_iter()
             .map(|(_, m, r)| (m, r, true))
             .collect();
-        keys.push((type_module.to_string(), tname.clone(), false));
+        keys.push((type_module.to_string(), tname, false));
         for (m, r, relation) in keys {
             let map = if relation {
                 &mut self.src.states
@@ -1070,24 +1071,21 @@ impl Cx<'_> {
                         .map_or(Stage::Enabled, |s| s.stage)
                 })
                 .collect();
-            let stage = match combine(stages) {
-                Ok(s) => s,
-                Err(_) => {
-                    let which = sources
-                        .iter()
-                        .find(|c| {
-                            map.get(&(m.clone(), r.clone(), (*c).clone()))
-                                .is_some_and(|s| s.stage == Stage::Deprecated)
-                        })
-                        .cloned()
-                        .unwrap_or_default();
-                    return Err(vec![Diag::new(
-                        self.span,
-                        format!(
-                            "merging or nesting a deprecated constructor is refused: `{r}.{which}` is deprecated"
-                        ),
-                    )]);
-                }
+            let Ok(stage) = combine(stages) else {
+                let which = sources
+                    .iter()
+                    .find(|c| {
+                        map.get(&(m.clone(), r.clone(), (*c).clone()))
+                            .is_some_and(|s| s.stage == Stage::Deprecated)
+                    })
+                    .cloned()
+                    .unwrap_or_default();
+                return Err(vec![Diag::new(
+                    self.span,
+                    format!(
+                        "merging or nesting a deprecated constructor is refused: `{r}.{which}` is deprecated"
+                    ),
+                )]);
             };
             for c in sources {
                 map.remove(&(m.clone(), r.clone(), c.clone()));
@@ -1114,7 +1112,7 @@ impl Cx<'_> {
                 }
             }
         }
-        ix.sort();
+        ix.sort_unstable();
         ix.dedup();
         Ok(ix
             .iter()
@@ -1150,6 +1148,10 @@ impl Cx<'_> {
         base
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "routing the arms, choosing the discriminator and rewriting checks and clauses would each have to be a step"
+    )]
     pub(super) fn merge(
         &mut self,
         ty: &QName,
@@ -1252,7 +1254,7 @@ impl Cx<'_> {
                     for f in sf {
                         match mfields.iter().find(|g| g.name == f.name && g.name != disc) {
                             Some(g) if g.ty == f.ty => {
-                                c.push((s.clone(), f.name.clone(), m.clone(), f.name.clone()))
+                                c.push((s.clone(), f.name.clone(), m.clone(), f.name.clone()));
                             }
                             _ => {
                                 return self.err(format!(
@@ -1395,6 +1397,10 @@ impl Cx<'_> {
 }
 
 impl Cx<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "rewriting the clauses, products and images of the split would each have to be a step"
+    )]
     pub(super) fn split(
         &mut self,
         path: &ast::CtorPath,

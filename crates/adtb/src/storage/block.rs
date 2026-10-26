@@ -289,9 +289,8 @@ fn accept<S: LogSource>(
             Slot::Missing => return Err(Refusal::NotAccepted),
             Slot::Unreadable => return Err(Refusal::Unreadable(at)),
         };
-        let (h, d) = match read_block(at, &bytes) {
-            BlockState::Valid(h, d) => (h, d),
-            _ => return Err(Refusal::NotAccepted),
+        let BlockState::Valid(h, d) = read_block(at, &bytes) else {
+            return Err(Refusal::NotAccepted);
         };
         let agrees = h.seq == h0.seq && h.count == h0.count && h.epoch == h0.epoch && h.index == i;
         if !agrees || last_used != full {

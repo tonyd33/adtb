@@ -497,11 +497,11 @@ impl Parser<'_> {
             return Ok(self.mk(ExprKind::Write(Box::new(w)), start));
         }
         if matches!(self.peek(1).tok, Tok::Kw(Kw::If | Kw::Match) | Tok::LParen)
-            && let Some(w) = self.attempt(|p| p.write_expr())
+            && let Some(w) = self.attempt(Self::write_expr)
         {
             return Ok(self.mk(ExprKind::Write(Box::new(w)), start));
         }
-        if let Some(e) = self.attempt(|p| p.paren_type_call()) {
+        if let Some(e) = self.attempt(Self::paren_type_call) {
             return Ok(e);
         }
         self.bump();

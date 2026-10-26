@@ -47,7 +47,7 @@ pub enum Value {
 
 impl Value {
     pub fn bool(b: bool) -> Value {
-        Value::Ctor(b as u32, Vec::new())
+        Value::Ctor(u32::from(b), Vec::new())
     }
 
     pub fn unit() -> Value {
@@ -143,8 +143,8 @@ pub fn cmp_decimal(a: i128, s: u8, b: i128, t: u8) -> Ordering {
     if s == t {
         return a.cmp(&b);
     }
-    let x = Big::from_i128(a).mul(&Big::pow10(t as u32));
-    let y = Big::from_i128(b).mul(&Big::pow10(s as u32));
+    let x = Big::from_i128(a).mul(&Big::pow10(u32::from(t)));
+    let y = Big::from_i128(b).mul(&Big::pow10(u32::from(s)));
     x.cmp(&y)
 }
 
@@ -160,14 +160,14 @@ impl Ord for Value {
     fn cmp(&self, o: &Value) -> Ordering {
         use Value::*;
         match (self, o) {
-            (Int(a), Int(b)) => a.cmp(b),
             (Decimal(a, s), Decimal(b, t)) => cmp_decimal(*a, *s, *b, *t),
             // A canonical float has one NaN, positive, which the IEEE total order puts last.
             (F32(a), F32(b)) => a.total_cmp(b),
             (F64(a), F64(b)) => a.total_cmp(b),
             (Text(a), Text(b)) => a.cmp(b),
             (Bytes(a), Bytes(b)) | (SortKey(a), SortKey(b)) => a.cmp(b),
-            (Instant(a), Instant(b))
+            (Int(a), Int(b))
+            | (Instant(a), Instant(b))
             | (Date(a), Date(b))
             | (Time(a), Time(b))
             | (DateTime(a), DateTime(b))

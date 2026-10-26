@@ -44,7 +44,7 @@ fn union(
     match (a, b) {
         (Some(a), Some(b)) => {
             let mut u: CtorSet = a.iter().chain(b.iter()).copied().collect();
-            u.sort();
+            u.sort_unstable();
             u.dedup();
             schema.normalize_ctors(def, u)
         }
@@ -70,7 +70,7 @@ pub fn sum_sel(ctors: &Ctors, names: &[&str]) -> Option<CtorSet> {
         .filter(|(_, (c, _))| names.contains(&c.as_str()))
         .map(|(i, _)| i as u32)
         .collect();
-    set.sort();
+    set.sort_unstable();
     (set.len() != ctors.len()).then_some(set)
 }
 

@@ -48,7 +48,11 @@ impl<T> Parsed<T> {
     }
 }
 
-fn run<T>(src: &str, opts: Options, f: impl FnOnce(&mut Parser) -> PResult<T>) -> Parsed<T> {
+fn run<'s, T>(
+    src: &'s str,
+    opts: Options,
+    f: impl FnOnce(&mut Parser<'s>) -> PResult<T>,
+) -> Parsed<T> {
     let (toks, diags) = lex::lex(src);
     let mut p = Parser {
         src,
@@ -75,7 +79,7 @@ fn run<T>(src: &str, opts: Options, f: impl FnOnce(&mut Parser) -> PResult<T>) -
 pub fn parse_schema(src: &str, opts: Options) -> Parsed<SchemaFile> {
     run(src, opts, |p| {
         let module = p.module_header()?;
-        let decls = p.items(|p| p.decl())?;
+        let decls = p.items(Parser::decl)?;
         Ok(SchemaFile { module, decls })
     })
 }
@@ -83,7 +87,7 @@ pub fn parse_schema(src: &str, opts: Options) -> Parsed<SchemaFile> {
 pub fn parse_migration(src: &str, opts: Options) -> Parsed<MigrationFile> {
     run(src, opts, |p| {
         let module = p.module_header()?;
-        let operators = p.items(|p| p.operator())?;
+        let operators = p.items(Parser::operator)?;
         Ok(MigrationFile { module, operators })
     })
 }
@@ -95,7 +99,7 @@ pub fn parse_bundle(src: &str, opts: Options) -> Parsed<BundleFile> {
         while p.at_kw(Kw::Import) {
             imports.push(p.import()?);
         }
-        let items = p.items(|p| p.bundle_item())?;
+        let items = p.items(Parser::bundle_item)?;
         Ok(BundleFile {
             header,
             imports,
@@ -145,11 +149,11 @@ pub fn parse_example(src: &str, opts: Options) -> Parsed<Vec<ExampleItem>> {
 }
 
 pub fn parse_expr(src: &str, opts: Options) -> Parsed<Expr> {
-    run(src, opts, |p| p.expr())
+    run(src, opts, Parser::expr)
 }
 
 pub fn parse_type(src: &str, opts: Options) -> Parsed<Type> {
-    run(src, opts, |p| p.ty())
+    run(src, opts, Parser::ty)
 }
 
 /// Words that may start a top-level item, used to resynchronise after an error.

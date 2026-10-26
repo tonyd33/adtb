@@ -15,7 +15,7 @@ mod textual;
 
 /// Returns the canonical printed form of `v`, a value of type `ty`.
 pub(crate) fn print(schema: &Schema, ty: &Ty, v: &Val) -> Result<String, Error> {
-    Ok(textual::print(v, &textual::Form::of(schema, ty)?))
+    Ok(textual::print(v, &Form::of(schema, ty)?))
 }
 mod time;
 mod unicode;
@@ -201,6 +201,11 @@ fn unsupported<T>(what: impl std::fmt::Display) -> Result<T, Error> {
 
 /// Chooses the operation `p` performs on operands of types `args` with result type `ty`; `consts`
 /// holds the value of each operand that is a literal.
+#[expect(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    reason = "the choice for each family of primitives would have to be a function"
+)]
 pub fn choose(
     schema: &Schema,
     p: Prim,
@@ -527,6 +532,10 @@ fn digits38(v: i128) -> Option<i128> {
 
 /// Returns `op` of `xs`, or the fault it raises. Fails with `Unsupported` for values it cannot
 /// compute yet.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per operation; each family of operations would have to be a function"
+)]
 pub fn apply(op: &Op, xs: &[&Val]) -> Result<Result<Val, Fault>, Error> {
     let x = || xs[0];
     let y = || xs[1];

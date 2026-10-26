@@ -1000,7 +1000,7 @@ where
 {
     let originals: Vec<&[u8]> = pages.collect();
     let mut copies: Vec<Vec<u8>> = originals.iter().map(|p| p.to_vec()).collect();
-    let mut views: Vec<&mut [u8]> = copies.iter_mut().map(|c| c.as_mut_slice()).collect();
+    let mut views: Vec<&mut [u8]> = copies.iter_mut().map(Vec::as_mut_slice).collect();
     f(&mut views);
     originals
         .iter()

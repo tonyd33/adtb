@@ -913,9 +913,8 @@ impl Cx<'_> {
     fn add_type(&mut self, t: &ast::TypeDecl) -> R<()> {
         self.add_decl("type", &t.name.text, t.span)?;
         let names: Vec<String> = match &t.body {
-            ast::TypeBody::Record(_) => vec![t.name.text.clone()],
+            ast::TypeBody::Record(_) | ast::TypeBody::New(..) => vec![t.name.text.clone()],
             ast::TypeBody::Ctors(cs) => cs.iter().map(|c| c.name.text.clone()).collect(),
-            ast::TypeBody::New(..) => vec![t.name.text.clone()],
         };
         let since = self.src.version;
         for c in names {
@@ -1136,7 +1135,7 @@ impl Cx<'_> {
             .collect();
         let mut drop = sets;
         drop.push(i);
-        drop.sort();
+        drop.sort_unstable();
         for j in drop.into_iter().rev() {
             self.src.decls.remove(j);
         }

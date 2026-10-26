@@ -207,7 +207,7 @@ impl Parser<'_> {
                 Ok(LetValue::Write(self.write_expr()?))
             }
             Tok::Kw(Kw::If | Kw::Match) | Tok::LParen => {
-                if let Some(w) = self.attempt(|p| p.write_expr()) {
+                if let Some(w) = self.attempt(Self::write_expr) {
                     return Ok(LetValue::Write(w));
                 }
                 Ok(LetValue::Expr(self.expr()?))

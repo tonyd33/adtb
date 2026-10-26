@@ -1,4 +1,7 @@
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "each test binary uses a different part of the shared module"
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 

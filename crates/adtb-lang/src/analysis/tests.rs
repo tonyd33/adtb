@@ -10,7 +10,7 @@ use crate::resolve::Visible;
 use crate::schema::build;
 use crate::types::Ty;
 
-const BASE: &str = r#"
+const BASE: &str = r"
 module auth
 type User = { id: Key users, name: Text }
 type Follow = { src: Key users, dst: Key users }
@@ -26,7 +26,7 @@ relation readings : Reading key id generate sequence
 relation shapes : Shape key id generate sequence
 type Session = { id: Key sessions, owner: Option (Key users) }
 relation sessions : Session key id generate sequence
-"#;
+";
 
 fn schema(extra: &str) -> Schema {
     let src = format!("{BASE}\n{extra}");

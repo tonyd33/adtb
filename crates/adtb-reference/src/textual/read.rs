@@ -327,7 +327,7 @@ impl<'s> Reader<'s> {
                 };
                 if c == b'-' { -y } else { y }
             }
-            _ => self.fixed_digits(4)? as i64,
+            _ => i64::from(self.fixed_digits(4)?),
         };
         if !self.glued("-") {
             return self.fail("expected `-`");
@@ -372,7 +372,7 @@ impl<'s> Reader<'s> {
             }
             micros = format!("{f:0<6}").parse::<i64>().expect("digits");
         }
-        Ok(((h as i64 * 60 + m as i64) * 60 + s as i64) * 1_000_000 + micros)
+        Ok(((i64::from(h) * 60 + i64::from(m)) * 60 + i64::from(s)) * 1_000_000 + micros)
     }
 
     fn datetime(&mut self) -> P<i64> {
@@ -406,7 +406,7 @@ impl<'s> Reader<'s> {
             return self.fail("expected a unit of time");
         };
         let n = d.parse::<i128>().unwrap_or(0);
-        let v = if neg { -n } else { n } * unit as i128;
+        let v = if neg { -n } else { n } * i128::from(unit);
         match (d.len() <= 20).then(|| i64::try_from(v).ok()).flatten() {
             Some(v) => Ok(v),
             None => self.fail("a duration out of range"),

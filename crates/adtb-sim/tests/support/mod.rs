@@ -1,6 +1,10 @@
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "each test binary uses a different part of the shared module"
+)]
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::sync::Arc;
 
 use adtb::btree::{BTree, Index};
@@ -605,5 +609,14 @@ impl Db {
                 .map(|(i, (st, _, _))| (i, st))
                 .collect(),
         })
+    }
+}
+
+/// Returns `seeds`, cut to its first seed under the nextest profile `quick`.
+pub fn sweep(seeds: Range<u64>) -> Range<u64> {
+    if std::env::var_os("NEXTEST_PROFILE").is_some_and(|p| p == "quick") {
+        seeds.start..seeds.end.min(seeds.start + 1)
+    } else {
+        seeds
     }
 }

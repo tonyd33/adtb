@@ -40,9 +40,8 @@ pub(super) fn item_end(text: &str, at: usize) -> usize {
     for (k, c) in text[at..].char_indices() {
         match c {
             '{' | '(' => depth += 1,
-            '}' | ')' if depth == 0 => return at + k,
+            '}' | ')' | ',' if depth == 0 => return at + k,
             '}' | ')' => depth -= 1,
-            ',' if depth == 0 => return at + k,
             _ => {}
         }
     }
@@ -242,8 +241,8 @@ pub(super) fn decl_exprs(d: &Decl) -> Vec<&Expr> {
                 RelationClause::Default {
                     value: ast::DefaultValue::Expr(e),
                     ..
-                } => vec![e],
-                RelationClause::Computed(_, _, e) => vec![e],
+                }
+                | RelationClause::Computed(_, _, e) => vec![e],
                 _ => Vec::new(),
             })
             .collect(),

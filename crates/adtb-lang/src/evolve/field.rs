@@ -57,8 +57,7 @@ impl Cx<'_> {
         let clash = decl_fields(t).into_iter().any(|(c, f)| {
             f.name.text == name.text
                 && match (part, c) {
-                    (Part::Header, _) => true,
-                    (_, None) => true,
+                    (Part::Header, _) | (_, None) => true,
                     (Part::Ctor(p), Some(c)) => p == c,
                 }
         });
@@ -499,12 +498,12 @@ impl Cx<'_> {
         let same = |a: &[String], b: &[String]| {
             a.len() == b.len()
                 && a.iter().zip(b).all(|(x, y)| {
-                    crate::lex::lex(x)
+                    lex(x)
                         .0
                         .iter()
                         .map(|t| &x[t.span.range()])
                         .collect::<Vec<_>>()
-                        == crate::lex::lex(y)
+                        == lex(y)
                             .0
                             .iter()
                             .map(|t| &y[t.span.range()])

@@ -49,7 +49,7 @@ fn blocks() -> Vec<Block> {
                             line: i + 1,
                             info: info.trim().to_string(),
                             text: String::new(),
-                        })
+                        });
                     }
                 }
             } else if let Some(b) = current.as_mut() {
@@ -121,7 +121,7 @@ fn normalized_decls(src: &str) -> Vec<(String, String)> {
                     .map(|l| l.split("--").next().unwrap())
                     .flat_map(str::split_whitespace)
                     .collect();
-                Some((t.name.text.clone(), words.join(" ")))
+                Some((t.name.text, words.join(" ")))
             }
             _ => None,
         })

@@ -67,7 +67,7 @@ fn header_copy_round_trips_and_binds_its_copy_number() {
     let bytes = header(4).encode(1);
     assert_eq!(Some(header(4)), FileHeader::decode(1, &bytes));
     assert_eq!(None, FileHeader::decode(0, &bytes));
-    let mut torn = bytes.clone();
+    let mut torn = bytes;
     torn[70] ^= 0x10;
     assert_eq!(None, FileHeader::decode(1, &torn));
 }

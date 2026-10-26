@@ -203,7 +203,7 @@ impl Column {
             (Scalar::I8, Value::I8(x)) => self.push_fixed(&x.to_le_bytes()),
             (Scalar::I16, Value::I16(x)) => self.push_fixed(&x.to_le_bytes()),
             (Scalar::I32, Value::I32(x)) | (Scalar::Date, Value::Date(x)) => {
-                self.push_fixed(&x.to_le_bytes())
+                self.push_fixed(&x.to_le_bytes());
             }
             (Scalar::I64, Value::I64(x))
             | (Scalar::Instant, Value::Instant(x))
@@ -215,7 +215,7 @@ impl Column {
             (Scalar::Decimal(_), Value::Decimal(x)) => self.push_fixed(&x.to_le_bytes()),
             (Scalar::Text, Value::Text(x)) => self.push_binary(x.as_bytes()),
             (Scalar::Bytes, Value::Bytes(x)) | (Scalar::SortKey, Value::SortKey(x)) => {
-                self.push_binary(x)
+                self.push_binary(x);
             }
             (Scalar::ZonedDateTime, Value::ZonedDateTime { local, zone }) => {
                 let [l, z] = self.children_mut() else {

@@ -251,7 +251,7 @@ impl<'a> Checker<'a> {
         let ty = self.bool_ty();
         self.add(
             Kind::Ctor {
-                ctor: value as u32,
+                ctor: u32::from(value),
                 fields: Vec::new(),
             },
             ty,
@@ -485,6 +485,10 @@ pub fn schema_refs(schema: &Schema) -> Vec<(FileId, Span, Ref)> {
     refs
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "checking function bodies, relation defaults, computed fields and index fields would each have to be a pass"
+)]
 fn bodies(
     schema: &Schema,
     order: &[FnId],

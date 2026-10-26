@@ -1,6 +1,10 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+#[expect(
+    clippy::print_stdout,
+    reason = "the runner reports its findings on stdout"
+)]
 fn main() -> ExitCode {
     let mut failed = false;
     for arg in std::env::args().skip(1) {
