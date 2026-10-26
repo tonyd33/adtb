@@ -2028,6 +2028,33 @@ fn fix_binder_types_come_from_base_operands() {
 }
 
 #[test]
+fn fix_binder_types_come_from_a_select_that_reads_no_binder() {
+    assert_eq!(
+        "Set (Key users)",
+        adhoc_ty(
+            &[],
+            "fix x = from r in x, f in follows where f.src == r select f.dst in x"
+        )
+    );
+    accepts(
+        "fn f () -> Set (Key users) =
+           fix a = from x in b, f in follows where f.src == x select f.dst,
+               b = from y in a select y
+           in b",
+    );
+    accepts(
+        "fn f () -> Set (Key users) =
+           fix a = (from x in a, f in follows where f.src == x select f.dst)
+                 union [users.key(1)]
+           in a",
+    );
+    refuses(
+        "fn f () -> Set (Key users) = fix a = from x in a, f in follows where f.src == x select x in a",
+        "the type of `a` is not known",
+    );
+}
+
+#[test]
 fn fix_binder_types_widen_across_iterations() {
     accepts(
         "fn f () -> Set (Key identities.(Google | Apple)) =

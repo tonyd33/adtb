@@ -2459,6 +2459,7 @@ impl Checker<'_> {
     fn fix(&mut self, binds: &[(ast::Ident, Expr)], body: &Expr, expected: Option<&Ty>) -> R<Out> {
         let names: Vec<String> = binds.iter().map(|(n, _)| n.text.clone()).collect();
         let mut tys: Vec<Option<Ty>> = vec![None; binds.len()];
+        let mut from_select = false;
         loop {
             let mut changed = false;
             for (i, (_, e)) in binds.iter().enumerate() {
@@ -2471,7 +2472,8 @@ impl Checker<'_> {
                         .filter(|(_, t)| t.is_none())
                         .map(|(n, _)| n.as_str())
                         .collect();
-                    if mentions_names(op, &unknown) {
+                    let reads_unknown = mentions_names(op, &unknown);
+                    if reads_unknown && !from_select {
                         continue;
                     }
                     self.scope.push();
@@ -2480,14 +2482,21 @@ impl Checker<'_> {
                             self.bind(n, Ty::Set(Box::new(t.clone())), None);
                         }
                     }
-                    let r = self.synth(op);
+                    let el = if reads_unknown {
+                        self.select_bound(op, &unknown)
+                    } else {
+                        self.synth(op).and_then(|o| {
+                            self.elem_ty(&o.ty).map(Some).ok_or_else(|| {
+                                diag(
+                                    op.span,
+                                    format!("a `fix` binder is a set, found {}", self.show(&o.ty)),
+                                )
+                            })
+                        })
+                    };
                     self.scope.pop();
-                    let o = r?;
-                    let Some(el) = self.elem_ty(&o.ty) else {
-                        return Err(diag(
-                            op.span,
-                            format!("a `fix` binder is a set, found {}", self.show(&o.ty)),
-                        ));
+                    let Some(el) = el? else {
+                        continue;
                     };
                     let next = match &tys[i] {
                         None => el,
@@ -2512,7 +2521,10 @@ impl Checker<'_> {
                 }
             }
             if !changed {
-                break;
+                if from_select || tys.iter().all(Option::is_some) {
+                    break;
+                }
+                from_select = true;
             }
         }
         if let Some((n, _)) = binds
@@ -2524,7 +2536,7 @@ impl Checker<'_> {
             return Err(diag(
                 n.span,
                 format!(
-                    "the type of `{}` is not known: give it a `union` operand that does not read the `fix` binders",
+                    "the type of `{}` is not known: give it a `union` operand whose `select` does not read the `fix` binders",
                     n.text
                 ),
             ));
@@ -2552,6 +2564,45 @@ impl Checker<'_> {
         let mut o = self.out(Kind::Fix(bound, b.tm), ty);
         o.rows = b.rows;
         Ok(o)
+    }
+
+    /// Returns the type of the `select` of comprehension `op` when it reads none of `unknown`, its
+    /// generators over sources that read none of them bound and its other clauses left out.
+    fn select_bound(&mut self, op: &Expr, unknown: &[&str]) -> R<Option<Ty>> {
+        let ExprKind::Comprehension(c) = &op.kind else {
+            return Ok(None);
+        };
+        if c.group.is_some() {
+            return Ok(None);
+        }
+        let mut unknown = unknown.to_vec();
+        let mut kept = Vec::new();
+        for clause in &c.clauses {
+            let ast::Clause::From(gens) = clause else {
+                continue;
+            };
+            for g in gens {
+                if mentions_names(&g.source, &unknown) {
+                    unknown.push(&g.binder.text);
+                } else {
+                    kept.push(g.clone());
+                }
+            }
+        }
+        if mentions_names(&c.select, &unknown) {
+            return Ok(None);
+        }
+        if kept.is_empty() {
+            return self.synth(&c.select).map(|o| Some(o.ty));
+        }
+        let reduced = ast::Comprehension {
+            clauses: vec![ast::Clause::From(kept)],
+            group: None,
+            select: c.select.clone(),
+            order: None,
+        };
+        let o = self.comprehension(&reduced, None, op.span)?;
+        Ok(self.elem_ty(&o.ty))
     }
 
     pub(super) fn call(
