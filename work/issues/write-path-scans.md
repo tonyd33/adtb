@@ -21,3 +21,7 @@ The write path finds rows by scanning whole constructor heaps where an index wou
 - `Stmt::load` (eval.rs:453) scans `into` for the largest `load`.
 
 A delete of one row in a relation referenced by a large one costs a full scan per statement. Fix: probe an index over each reference field, probe the unique's index in `conflicts`, and drop the `load` scan, since the `LOADS` counter already never reissues a value. Overlaps constraint-maintenance only for the reference check.
+
+## 2026-10-25: from constraint maintenance
+
+The native "moved target" reference check and delete-action cascades scan every referrer row, which breaks the large change set bound of `docs/design/maintenance.md` section 6. Moving them onto the delta compiler waits on `reference-index-rule`. Loads build no index from sorted runs either, so uniqueness at build does not apply yet.

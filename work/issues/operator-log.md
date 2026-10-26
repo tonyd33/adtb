@@ -22,3 +22,7 @@ and revert.
 
 Prerequisites: `check-migration-operators.md`,
 `schema-first-migration.md`.
+
+## 2026-10-25: constraint operators
+
+`crates/adtb-sim/tests/constraints.rs` `dropping_an_index_an_admitted_constraint_needs_is_refused_naming_the_constraint` fails until the engine applies migrations after the first; add constraint, drop index and drop constraint need it, with constraint validation and pending drops (`docs/spec/constraints.md` 9.2 and 9.3).
