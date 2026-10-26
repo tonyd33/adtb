@@ -43,6 +43,9 @@ struct State {
     holds: Holds,
     /// The LSN of the latest commit record logged since the commit log was opened.
     last_commit: Option<Lsn>,
+    /// The log was durable below this LSN when the commit log was opened, every commit before
+    /// the open among it.
+    opened: Lsn,
     /// The `last_commit` of each held snapshot when it was taken.
     reads: BTreeMap<SnapshotId, Option<Lsn>>,
 }
@@ -68,7 +71,7 @@ pub struct Transactions<R: Runtime> {
 
 impl<R: Runtime> Transactions<R> {
     pub fn create(rt: R, pager: &Pager<R>) -> Result<Transactions<R>, PageError> {
-        Ok(Transactions::over(rt, CommitLog::create(pager)?))
+        Ok(Transactions::over(rt, pager, CommitLog::create(pager)?))
     }
 
     /// Open the commit log rooted at `root` in a recovered pager.
@@ -84,19 +87,20 @@ impl<R: Runtime> Transactions<R> {
     pub fn open(rt: R, pager: &Pager<R>, root: Pid) -> Result<Transactions<R>, PageError> {
         let mut clog = CommitLog::load(pager, root)?;
         let unresolved = clog.abort_unresolved(pager);
-        let txns = Transactions::over(rt, clog);
+        let txns = Transactions::over(rt, pager, clog);
         if let Err(e) = unresolved {
             txns.damaged(e);
         }
         Ok(txns)
     }
 
-    fn over(rt: R, clog: CommitLog) -> Transactions<R> {
+    fn over(rt: R, pager: &Pager<R>, clog: CommitLog) -> Transactions<R> {
         let state = State {
             next: clog.reserved(),
             running: BTreeSet::new(),
             holds: Holds::default(),
             last_commit: None,
+            opened: pager.durable(),
             reads: BTreeMap::new(),
         };
         Transactions {
@@ -241,6 +245,23 @@ impl<R: Runtime> Transactions<R> {
             .reads
             .get(&id)
             .unwrap_or_else(|| panic!("{id:?} is not held"))
+    }
+
+    /// Log a safe snapshot marker for `snapshot`, held as `id`, covering every commit it reads.
+    /// Returns the marker's LSN.
+    ///
+    /// Precondition: the serializer found the snapshot safe.
+    ///
+    /// Panics if `id` is not held.
+    pub fn log_safe_snapshot(&self, pager: &Pager<R>, id: SnapshotId, snapshot: &Snapshot) -> Lsn {
+        let st = self.state.lock(&self.rt);
+        let read = st
+            .reads
+            .get(&id)
+            .unwrap_or_else(|| panic!("{id:?} is not held"));
+        let at = pager.position(read.unwrap_or(st.opened));
+        drop(st);
+        pager.log_safe_snapshot(at, &snapshot.encode())
     }
 
     /// Returns whether the version whose header holds `xmin` and `xmax` is visible to `reader`

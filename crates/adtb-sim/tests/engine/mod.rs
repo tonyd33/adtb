@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::ops::Bound;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use adtb::mvcc::{
     SnapshotId, Status, Transactions, Waits, Write, Xid, check_write, probe_unique, read_before,
 };
 use adtb::runtime::{Clock, Io, Op, Runtime, ThreadId, Threads};
-use adtb::storage::{Options, Pager, Pid};
+use adtb::storage::{Options, Pager, Pid, Position};
 use adtb::verify::{Inventory, Sum};
 use adtb_isolation::{Aborted, Database};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
@@ -116,10 +117,11 @@ pub struct Engine {
     ser: Lock<Serializer>,
     waits: Waits<SimRuntime>,
     next_id: AtomicI64,
-    /// The interval of group commit, when a flusher forces the log and commits wait for it
-    /// instead of forcing it themselves.
+    /// How long a read-write commit stays visible before it waits to be durable.
     group_commit: Option<Duration>,
-    stop_flusher: AtomicBool,
+    /// The snapshot of each running read-only transaction, by which its safe snapshot marker
+    /// is logged. Taken after the serializer's lock.
+    readers: Lock<BTreeMap<SerialId, (SnapshotId, Snapshot)>>,
 }
 
 fn index(root: Pid, owner: u32, columns: usize, ctor: CtorId) -> Index {
@@ -170,7 +172,7 @@ impl Engine {
             counters: Lock::new(heap(COUNTERS, roots.counters, 2)),
             txns,
             group_commit: None,
-            stop_flusher: AtomicBool::new(false),
+            readers: Lock::default(),
             ser: Lock::new(Serializer::new(limits)),
             waits: Waits::new(rt.clone()),
             next_id: AtomicI64::new(1),
@@ -180,31 +182,42 @@ impl Engine {
         })
     }
 
-    /// Force the log only from a flusher every `interval`, so a commit is visible for up to
-    /// that long before it is durable. [`Engine::flusher`] must run while transactions commit.
-    pub fn with_group_commit(mut self, interval: Duration) -> Engine {
-        self.group_commit = Some(interval);
+    /// Make every read-write commit wait `delay` between becoming visible and waiting for the
+    /// pager's group commit, so other transactions read commits a crash may still lose.
+    pub fn with_group_commit(mut self, delay: Duration) -> Engine {
+        self.group_commit = Some(delay);
         self
     }
 
-    /// Start the group commit flusher, if the engine has one, until [`Engine::stop`].
-    pub fn flusher(self: &Arc<Engine>) -> Option<ThreadId> {
-        let interval = self.group_commit?;
-        let e = self.clone();
-        Some(self.rt.spawn("flusher", move || {
-            while !e.stop_flusher.load(Ordering::Relaxed) {
-                e.sleep(interval);
-                e.pager.flush_log();
-            }
-        }))
+    /// Log a safe snapshot marker for every read-only transaction `ser` has found safe.
+    fn log_safe(&self, ser: &mut Serializer) {
+        let readers = self.readers.lock(&self.rt);
+        for sid in ser.take_safe() {
+            let (hold, snapshot) = &readers[&sid];
+            self.txns.log_safe_snapshot(&self.pager, *hold, snapshot);
+        }
     }
 
-    /// Stop the flusher and wait for it.
-    pub fn stop(&self, flusher: Option<ThreadId>) {
-        self.stop_flusher.store(true, Ordering::Relaxed);
-        if let Some(t) = flusher {
-            self.rt.join(t);
-        }
+    /// Returns the safe snapshot markers in the log, with the commit positions they cover.
+    pub fn safe_snapshots(&self) -> Vec<(Position, Snapshot)> {
+        self.pager.flush_log();
+        self.pager
+            .verify()
+            .safe_snapshots
+            .into_iter()
+            .map(|(_, at, bytes)| (at, Snapshot::decode(&bytes).expect("a marker's snapshot")))
+            .collect()
+    }
+
+    /// Returns the commit position up to which `tx`'s snapshot reads.
+    pub fn read_position(&self, tx: &Tx) -> Option<Position> {
+        self.txns
+            .read_upto(tx.hold)
+            .map(|lsn| self.pager.position(lsn))
+    }
+
+    pub fn snapshot(tx: &Tx) -> &Snapshot {
+        &tx.snapshot
     }
 
     fn sleep(&self, d: Duration) {
@@ -279,6 +292,12 @@ impl Engine {
                     (Kind::Deferrable, None) => Access::Deferrable,
                     (_, None) => Access::ReadOnly,
                 });
+                if xid.is_none() {
+                    self.readers
+                        .lock(&self.rt)
+                        .insert(sid, (hold, snapshot.clone()));
+                }
+                self.log_safe(&mut ser);
                 Tx {
                     xid,
                     sid,
@@ -541,6 +560,8 @@ impl Engine {
                 Ok(()) => {
                     let own = tx.xid.map(|x| self.txns.commit(&self.pager, x).unwrap());
                     ser.committed(tx.sid);
+                    self.log_safe(&mut ser);
+                    self.readers.lock(&self.rt).remove(&tx.sid);
                     let read = self.txns.read_upto(tx.hold);
                     self.txns.release(tx.hold);
                     Ok((own, read))
@@ -554,16 +575,13 @@ impl Engine {
                 return Err(f.into());
             }
         };
+        if let Some(delay) = self.group_commit
+            && tx.xid.is_some()
+        {
+            self.sleep(delay);
+        }
         if let Some(lsn) = durable_past {
-            match self.group_commit {
-                None if self.pager.durable() <= lsn => self.pager.flush_log(),
-                None => {}
-                Some(interval) => {
-                    while self.pager.durable() <= lsn {
-                        self.sleep(interval / 4);
-                    }
-                }
-            }
+            self.pager.wait_durable(lsn);
         }
         if let Some(x) = tx.xid {
             self.waits.ended(x);
@@ -578,6 +596,8 @@ impl Engine {
                 self.txns.abort(&self.pager, x).unwrap();
             }
             ser.aborted(tx.sid);
+            self.log_safe(&mut ser);
+            self.readers.lock(&self.rt).remove(&tx.sid);
             self.txns.release(tx.hold);
         }
         if let Some(x) = tx.xid {

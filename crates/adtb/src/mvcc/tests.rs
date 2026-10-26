@@ -763,3 +763,31 @@ fn begin_reserves_at_the_end_of_a_reservation_and_refuses_once_ids_are_spent() {
     assert_eq!(Assign::Next, assign(Xid(u64::MAX - 1), Xid(u64::MAX)));
     assert_eq!(Assign::Exhausted, assign(Xid(u64::MAX), Xid(u64::MAX)));
 }
+
+#[test]
+fn a_snapshot_round_trips_through_its_marker_encoding() {
+    let s = Snapshot::new(Xid(5), Xid(9), vec![Xid(5), Xid(7)]);
+    assert_eq!(32, s.encode().len());
+    assert_eq!(Some(s.clone()), Snapshot::decode(&s.encode()));
+    assert_eq!(None, Snapshot::decode(&s.encode()[..20]));
+    let unsorted = Snapshot::new(Xid(5), Xid(9), vec![Xid(5), Xid(7)]).encode();
+    let mut swapped = unsorted.clone();
+    swapped[16..24].copy_from_slice(&unsorted[24..32]);
+    swapped[24..32].copy_from_slice(&unsorted[16..24]);
+    assert_eq!(None, Snapshot::decode(&swapped));
+}
+
+#[test]
+fn the_serializer_reports_each_snapshot_it_finds_safe_once() {
+    let mut s = Serializer::default();
+    let at_once = s.begin(Access::ReadOnly);
+    assert_eq!(vec![at_once], s.take_safe());
+    let (t1, t2) = (rw(&mut s, 1), rw(&mut s, 2));
+    let pending = s.begin(Access::Deferrable);
+    assert!(s.take_safe().is_empty());
+    commit(&mut s, t1).unwrap();
+    assert!(s.take_safe().is_empty());
+    commit(&mut s, t2).unwrap();
+    assert_eq!(vec![pending], s.take_safe());
+    assert!(s.take_safe().is_empty());
+}

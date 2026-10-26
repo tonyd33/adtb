@@ -100,7 +100,6 @@ fn client(e: &Engine, rt: &SimRuntime, b: &Mutex<Book>) {
 
 fn clients(e: &Arc<Engine>, b: &Arc<Mutex<Book>>) {
     let rt = &e.rt;
-    let flusher = e.flusher();
     let threads: Vec<_> = (0..CLIENTS)
         .map(|_| {
             let (e, b, rt2) = (e.clone(), b.clone(), rt.clone());
@@ -110,7 +109,6 @@ fn clients(e: &Arc<Engine>, b: &Arc<Mutex<Book>>) {
     for t in threads {
         rt.join(t);
     }
-    e.stop(flusher);
 }
 
 fn faults() -> Faults {
@@ -124,14 +122,14 @@ fn faults() -> Faults {
 fn open(rt: SimRuntime, roots: Roots, group_commit: Option<Duration>) -> Arc<Engine> {
     let e = Engine::open(rt, roots, Limits::default()).expect("the database reopens");
     Arc::new(match group_commit {
-        Some(interval) => e.with_group_commit(interval),
+        Some(delay) => e.with_group_commit(delay),
         None => e,
     })
 }
 
-/// Returns the group commit interval of `seed`: none for even seeds, whose commits force the
-/// log themselves, and up to two milliseconds for odd ones, so transactions read commits a
-/// crash may still lose.
+/// Returns how long read-write commits of `seed` stay visible before they wait to be durable:
+/// not at all for even seeds, and up to two milliseconds for odd ones, so transactions read
+/// commits a crash may still lose.
 fn group_commit(seed: u64) -> Option<Duration> {
     (!seed.is_multiple_of(2)).then(|| Duration::from_micros(100 + (seed * 2_654_435_761) % 1900))
 }
@@ -212,9 +210,9 @@ fn a_seed_replays_the_same_history() {
 /// Seeds of the targeted durability test.
 const DURABILITY_SEEDS: u64 = 16;
 
-/// Under a long group commit interval, a writer appends to key 1 and waits for its commit to
-/// become durable, readers read the commit while it is visible and not yet durable, and the
-/// process crashes before the flusher forces the log. A recovered process then appends to key 1
+/// A writer appends to key 1 and holds its visible commit for a second before waiting for it
+/// to be durable, readers read the commit meanwhile, and the process crashes before the
+/// writer's commit is forced. A recovered process then appends to key 1
 /// again and reads it.
 fn unflushed_reads(seed: u64) -> Vec<iso::Txn> {
     let mut sim = Sim::new(
@@ -232,7 +230,6 @@ fn unflushed_reads(seed: u64) -> Vec<iso::Txn> {
     sim.crash_at(sim.now() + Duration::from_millis(100));
     let crashed = sim.run(|rt| {
         let e = open(rt, roots, Some(Duration::from_secs(1)));
-        let flusher = e.flusher();
         let rt = &e.rt;
         let (e2, b2) = (e.clone(), b.clone());
         let writer = rt.spawn("writer", move || {
@@ -270,12 +267,11 @@ fn unflushed_reads(seed: u64) -> Vec<iso::Txn> {
         for t in readers.into_iter().chain([writer]) {
             rt.join(t);
         }
-        e.stop(flusher);
     });
     assert_eq!(
         Outcome::Crashed,
         crashed,
-        "seed {seed}: the flusher forced the log"
+        "seed {seed}: the writer's commit was forced"
     );
     let finished = sim.run(|rt| {
         let e = open(rt, roots, None);

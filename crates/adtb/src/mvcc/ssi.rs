@@ -147,6 +147,8 @@ pub struct Serializer {
     indexes: BTreeMap<Pid, BTreeMap<SerialId, BTreeSet<CtorId>>>,
     /// SIREAD locks held, each range and index lock counted once.
     held: usize,
+    /// Read-only transactions found safe since [`Serializer::take_safe`] last ran.
+    found_safe: Vec<SerialId>,
 }
 
 impl Serializer {
@@ -177,6 +179,9 @@ impl Serializer {
             BTreeSet::new()
         };
         let safe = read_only && pending.is_empty();
+        if safe {
+            self.found_safe.push(id);
+        }
         if let Some(x) = xid {
             assert!(
                 self.by_xid.insert(x, id).is_none(),
@@ -813,7 +818,14 @@ impl Serializer {
                 }
             }
             self.get_mut(ro).safe = true;
+            self.found_safe.push(ro);
         }
+    }
+
+    /// Returns the read-only transactions whose snapshots were found safe since the last call,
+    /// in the order they were found. The caller logs a safe snapshot marker for each.
+    pub fn take_safe(&mut self) -> Vec<SerialId> {
+        std::mem::take(&mut self.found_safe)
     }
 
     fn release_locks(&mut self, id: SerialId) {

@@ -546,6 +546,15 @@ snapshot is decided, and takes a new snapshot when it is unsafe. Any
 read-only transaction whose snapshot becomes safe drops its SIREAD
 locks and records nothing more.
 
+The marker is logged when the serializer finds a snapshot safe, at the
+start of a read-only transaction with no concurrent read-write one or
+when the last of them ends, and never for an unsafe snapshot. It covers
+every commit at or before the commit position of the latest commit the
+snapshot reads (§4.2), or, when it reads only commits from before the
+commit log was opened, the position the log was durable to then. The
+snapshot is encoded as `xmin` and `xmax`, then each in-progress id in
+order, each a little-endian `u64`.
+
 ### 8.4 Dangerous structures
 
 Two transactions are concurrent when neither committed before the

@@ -135,6 +135,12 @@ fn a_deferrable_reader_waits_for_a_safe_snapshot_and_never_fails() {
                 rt.join(t);
             }
             let seen = seen.lock().unwrap().take().unwrap();
+            let markers = e.safe_snapshots();
+            assert_eq!(
+                1,
+                markers.len(),
+                "only the retaken snapshot is safe: {markers:?}"
+            );
             (end2, seen)
         });
         assert_eq!(Ok(vec![]), ends, "seed {seed}");
@@ -498,5 +504,28 @@ fn a_snapshot_reads_up_to_the_last_commit_before_it() {
         assert_eq!(None, txns.read_upto(during));
         assert_eq!(Some(lsn), txns.read_upto(after));
         assert!(pager.durable() <= lsn, "the commit was forced");
+    });
+}
+
+#[test]
+fn every_snapshot_found_safe_logs_a_marker() {
+    simulate(10, |e| {
+        let w = e.begin(Kind::ReadWrite);
+        e.append(&w, 1, 1).unwrap();
+        let pending = e.begin(Kind::ReadOnly);
+        assert!(
+            e.safe_snapshots().is_empty(),
+            "a pending snapshot logged a marker"
+        );
+        e.commit(w).unwrap();
+        let after = e.begin(Kind::ReadOnly);
+        let markers = e.safe_snapshots();
+        assert_eq!(2, markers.len(), "{markers:?}");
+        assert_eq!(Engine::snapshot(&pending), &markers[0].1);
+        assert_eq!(Engine::snapshot(&after), &markers[1].1);
+        assert_eq!(e.read_position(&after), Some(markers[1].0));
+        assert!(markers[0].0 < markers[1].0, "{markers:?}");
+        e.commit(pending).unwrap();
+        e.commit(after).unwrap();
     });
 }
