@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 335
 summary: "the simulator never switches threads between an optimistic read and its validation, or before an exclusive latch"
+branch: adtb-sw
 tags:
   - sim
 ---
