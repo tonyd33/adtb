@@ -548,6 +548,7 @@ impl Cx<'_> {
                     module: module.clone(),
                     text: &logged.text,
                     span: op.span,
+                    noted: None,
                 };
                 let (relation, key, _) = cx.stage_key(t)?;
                 let prior = if relation {
@@ -1054,6 +1055,7 @@ impl Cx<'_> {
             module: self.module.clone(),
             text: self.text,
             span: self.span,
+            noted: None,
         };
         let Ok(clauses) = cx.scoped_clauses(&schema, def) else {
             return Vec::new();
@@ -1417,6 +1419,7 @@ impl Cx<'_> {
                         module: self.module.clone(),
                         text: &full,
                         span: op.span,
+                        noted: None,
                     };
                     sub.operator(&op.kind)
                         .map_err(|ds| wrap(ds, &full[op.span.range()]))?;

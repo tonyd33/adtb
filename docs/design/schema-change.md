@@ -248,3 +248,38 @@ Write states are the source's, not the catalog's: evolution writes
 `catalog::ctor_states` and `catalog::value_states` from them. A
 refusal of evolution's own checks (data, bundles, readers-first) is
 evolution's to report.
+
+### 4.1 Names of operands
+
+The catalog writes each operand written in the language as a `Term`
+([../spec/syntax.md §2.9](../spec/syntax.md#29-canonical-token-form)).
+`adtb-lang` provides the resolution of its names and the spelling:
+
+| Entry point | Returns |
+| --- | --- |
+| `Source::names()` | for each declaration `i`, the `Names` of file `i` of `Source::files()`, by span |
+| `Logged::names()` | the `Names` of the migration's text, by span; or the operands whose names it cannot resolve |
+| `canon::canonical_term(text, span, names)` | the canonical token form of the term at `span` of `text` |
+
+Postconditions of `Source::names()` and `Logged::names()`:
+
+- A `Names` holds, at the span of each identifier that names a type,
+  constructor, named set, relation variable, function, aggregate,
+  constraint or check, the module of the object it resolves to: the
+  object it denotes where it is checked, a constructor resolved by its
+  expected type included. A declared name resolves to the declaring
+  module.
+- `Logged::names()` resolves an operand written into a declaration
+  (a declaration, a constructor, a field type, an arm, a unique or index
+  field, a default, a computed field) as it resolves in that
+  declaration of the source after its operator, or of the migration's
+  result when that source does not build; the fields of a dropped
+  unique or index as in the clause before the operator; a fill or a
+  routing as its operator checks it. It holds no names for a `script`
+  write, a grant or revoke target, or a `revert` fill.
+
+Postcondition of `canonical_term`: a name with a module is spelled
+`module::name`, a qualifier written before it dropped; a name of the
+prelude, and every other token, as the canonical token form states.
+Precondition: `span` lies on token boundaries and `names` resolves
+every name in it.

@@ -176,14 +176,7 @@ impl Cx<'_> {
                 );
             }
         }
-        let start = path.ctor.span.start as usize;
-        let end = if has_record {
-            braces_at(self.text, path.ctor.span.end as usize)
-                .map_or(path.ctor.span.end as usize, |b| b.end)
-        } else {
-            path.ctor.span.end as usize
-        };
-        let ctor_text = self.text[start..end].to_string();
+        let ctor_text = self.text[ctor_extent(self.text, &path.ctor, has_record)].to_string();
         let h = header(&self.src.decls[i].module).len();
         let text = self.src.decls[i].text.clone();
         let ctors = ctor_extents(&text, h, &t);
@@ -804,13 +797,7 @@ pub(super) type Carries = Vec<(String, String, String, String)>;
 
 impl Cx<'_> {
     pub(super) fn ctor_def_text(&self, d: &ast::CtorDef) -> String {
-        let start = d.name.span.start as usize;
-        let end = match &d.record {
-            Some(_) => braces_at(self.text, d.name.span.end as usize)
-                .map_or(d.name.span.end as usize, |b| b.end),
-            None => d.name.span.end as usize,
-        };
-        self.text[start..end].to_string()
+        self.text[ctor_extent(self.text, &d.name, d.record.is_some())].to_string()
     }
 
     /// Every unique and index clause of a relation of `def`.
@@ -887,6 +874,7 @@ impl Cx<'_> {
             .unwrap_or(schema::PRELUDE);
         let row = Self::row_ty(&schema, def, Some(src_ix));
         let expected = Self::row_ty(&schema, def, Some(prod_ix));
+        let mut refs = Vec::new();
         check::check_row(
             &schema,
             &program,
@@ -894,8 +882,10 @@ impl Cx<'_> {
             &row,
             RowBody::Match(arms, self.span),
             Some(&expected),
+            Some(&mut refs),
         )
         .map_err(|d| vec![d])?;
+        self.note(&schema, &refs);
         let mut carries = Vec::new();
         for a in arms {
             let Some(p) = a.patterns.first() else {

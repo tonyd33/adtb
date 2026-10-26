@@ -3,6 +3,7 @@
 
 pub mod analysis;
 pub mod ast;
+pub mod canon;
 pub mod check;
 pub mod collation;
 pub mod evolve;

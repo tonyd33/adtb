@@ -73,8 +73,10 @@ pub struct AggregateTerms {
 /// A schema object a body names, as [`schema_refs`] reports it at the span that names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ref {
+    Type(TypeId),
     Relation(RelId),
     Function(FnId),
+    Aggregate(u32),
     Ctor(TypeId, u32),
     Set(RelId, String),
     /// A field of constructor `ctor`, or of the header when `ctor` is `None`; `pun` when the name is also the bound or given value.
@@ -274,6 +276,9 @@ impl<'a> Checker<'a> {
         let mut ordered = Vec::new();
         let ty = crate::schema::resolve_type(self.schema, &scope, t, &mut ordered, FileId(0))
             .map_err(|(span, msg)| diag(span, msg))?;
+        if let Some(refs) = &self.refs {
+            crate::canon::type_refs(self.schema, self.module(), t, &mut refs.borrow_mut());
+        }
         for (arg, _, span) in ordered {
             if !self.ordered(&arg) {
                 return Err(diag(span, "`Span a` needs an ordered `a`"));
@@ -296,6 +301,7 @@ impl<'a> Checker<'a> {
         match v {
             Ok(ValueDef::Relation(r)) => self.note(name.name.span, Ref::Relation(r)),
             Ok(ValueDef::Function(f)) => self.note(name.name.span, Ref::Function(f)),
+            Ok(ValueDef::Aggregate(a)) => self.note(name.name.span, Ref::Aggregate(a)),
             _ => {}
         }
         v
@@ -695,7 +701,8 @@ pub enum RowBody<'e> {
 ///
 /// A constructor of the row's type that a `match` body builds takes the row's header fields it omits.
 /// Returns its terms, its term and its type. Refuses a body that reads anything but the row: a relation,
-/// a reference, a generated key, `caller`, or a function that reads one of them.
+/// a reference, a generated key, `caller`, or a function that reads one of them. With `record`, appends
+/// the schema objects the body names, as [`schema_refs`] reports them.
 pub fn check_row(
     schema: &Schema,
     program: &Program,
@@ -703,8 +710,26 @@ pub fn check_row(
     row: &Ty,
     body: RowBody,
     expected: Option<&Ty>,
+    record: Option<&mut Vec<(Span, Ref)>>,
 ) -> Result<(Terms, Tm, Ty), Diag> {
     let mut c = Checker::new(schema, Visible::module(module), Context::Schema);
+    if record.is_some() {
+        c.refs = Some(RefCell::new(Vec::new()));
+    }
+    let checked = row_body(&mut c, program, row, body, expected);
+    if let (Some(out), Some(refs)) = (record, c.refs.take()) {
+        out.extend(refs.into_inner());
+    }
+    checked.map(|(tm, ty)| (c.terms, tm, ty))
+}
+
+fn row_body(
+    c: &mut Checker<'_>,
+    program: &Program,
+    row: &Ty,
+    body: RowBody,
+    expected: Option<&Ty>,
+) -> Result<(Tm, Ty), Diag> {
     c.scope.push();
     let (out, span) = match body {
         RowBody::Match(arms, span) => {
@@ -738,7 +763,7 @@ pub fn check_row(
             "a fill or a routing reads only its row; this reads a relation, a reference, a generated key, `caller` or a function that does",
         ));
     }
-    Ok((c.terms, out.tm, out.ty))
+    Ok((out.tm, out.ty))
 }
 
 /// The name a row body binds its row to, which no source text can spell.

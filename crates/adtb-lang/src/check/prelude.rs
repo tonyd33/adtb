@@ -724,6 +724,7 @@ impl Checker<'_> {
             Ok(_) => return Err(refused()),
             Err(m) => return Err(diag(e.span, m)),
         };
+        self.note(path.name.span, Ref::Type(def));
         let td = self.schema.ty(def);
         if matches!(td.kind, TypeDefKind::Newtype { .. }) || !td.params.is_empty() {
             return Err(refused());

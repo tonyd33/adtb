@@ -23,6 +23,17 @@ pub(super) fn braces_at(text: &str, at: usize) -> Option<Range<usize>> {
     None
 }
 
+/// The range of a constructor written at `name`, through its record's braces when it has one.
+pub(super) fn ctor_extent(text: &str, name: &ast::Ident, record: bool) -> Range<usize> {
+    let start = name.span.start as usize;
+    let end = name.span.end as usize;
+    if record {
+        start..braces_at(text, end).map_or(end, |b| b.end)
+    } else {
+        start..end
+    }
+}
+
 /// The end of the comma-separated item that starts at `at`: the first `,`, `}` or `)` outside brackets.
 pub(super) fn item_end(text: &str, at: usize) -> usize {
     let mut depth = 0;

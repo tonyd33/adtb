@@ -1391,6 +1391,7 @@ impl Checker<'_> {
                 }
                 Err(e) => return Err(diag(path.span(), e)),
             };
+            self.note(path.name.span, Ref::Type(def));
             let c = self.schema.ty(def).ctor_index(name).ok_or_else(|| {
                 diag(
                     span,
@@ -2698,6 +2699,7 @@ impl Checker<'_> {
             }
             Err(e) => return Err(diag(callee.span(), e)),
         };
+        self.note(callee.name.span, Ref::Type(def));
         let TypeDefKind::Newtype { base, .. } = &self.schema.ty(def).kind else {
             return Err(diag(
                 callee.span(),

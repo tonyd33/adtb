@@ -466,6 +466,9 @@ impl Checker<'_> {
                     _ => None,
                 };
                 if let Some(d) = def {
+                    if ctor.is_some() {
+                        self.note(path.name.span, Ref::Type(d));
+                    }
                     match self.schema.ty(d).ctor_index(&name.text) {
                         Some(i) => self.note(name.span, Ref::Ctor(d, i)),
                         None => self.note_sel(d, rows, &ast::CtorSel::One(name.clone())),

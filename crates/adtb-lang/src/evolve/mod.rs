@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::rc::Rc;
@@ -6,6 +7,7 @@ use crate::ast::{
     self, CtorPlace, CtorSel, CtorTarget, Decl, Expr, Fill, MigrationFile, Operator, OperatorKind,
     QName, RelationClause,
 };
+use crate::canon::Names;
 use crate::check::{self, Program, Ref, RowBody};
 use crate::lex::{Tok, lex};
 use crate::parse::{Options, parse_schema};
@@ -16,6 +18,7 @@ use crate::types::*;
 mod ctor;
 mod field;
 mod ids;
+mod names;
 mod revert;
 mod text;
 
@@ -415,12 +418,23 @@ impl Source {
     ///
     /// On a refusal the source is left as it was.
     pub fn apply(&mut self, module: &str, op: &Operator, text: &str) -> Result<(), Vec<Diag>> {
+        self.apply_noting(module, op, text, None)
+    }
+
+    fn apply_noting(
+        &mut self,
+        module: &str,
+        op: &Operator,
+        text: &str,
+        noted: Option<&RefCell<Names>>,
+    ) -> Result<(), Vec<Diag>> {
         let before = self.clone();
         let r = Cx {
             src: self,
             module: module.to_string(),
             text,
             span: op.span,
+            noted,
         }
         .operator(&op.kind);
         match r {
@@ -493,6 +507,8 @@ struct Cx<'a> {
     module: String,
     text: &'a str,
     span: Span,
+    /// Where a fill or routing records the names it resolves, when replaying for them.
+    noted: Option<&'a RefCell<Names>>,
 }
 
 type R<T> = Result<T, Vec<Diag>>;
@@ -514,6 +530,16 @@ impl Cx<'_> {
 
     fn slice(&self, span: Span) -> &str {
         &self.text[span.range()]
+    }
+
+    /// Records the names a fill or routing of this operator resolves, when replaying for them.
+    fn note(&self, schema: &Schema, refs: &[(Span, Ref)]) {
+        if let Some(noted) = self.noted {
+            let mut noted = noted.borrow_mut();
+            for (span, r) in refs {
+                noted.note(schema, *span, r);
+            }
+        }
     }
 
     fn module_of(&self, q: &QName) -> String {

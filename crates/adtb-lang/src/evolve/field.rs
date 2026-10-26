@@ -102,9 +102,19 @@ impl Cx<'_> {
             Fill::Match(arms) => RowBody::Match(arms, self.span),
             Fill::Expr(e) => RowBody::Expr(e),
         };
-        check::check_row(&schema, &program, module, &row, body, Some(field_ty))
-            .map(|_| ())
-            .map_err(|d| vec![d])
+        let mut refs = Vec::new();
+        check::check_row(
+            &schema,
+            &program,
+            module,
+            &row,
+            body,
+            Some(field_ty),
+            Some(&mut refs),
+        )
+        .map_err(|d| vec![d])?;
+        self.note(&schema, &refs);
+        Ok(())
     }
 
     pub(super) fn add_field(
