@@ -5,6 +5,8 @@ kind: feature
 priority: 800
 summary: "milestone 8 (evolution and bundles, the embedded alpha) has not exited: no operator log, write states, bundles, embedded open or code generation"
 depends-on:
+  - evolve-record-add-ctor
+  - evolve-follow-ups
   - history-heaps
   - milestone-7-engine
   - operator-log

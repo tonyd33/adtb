@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 170
 summary: "migration operators are not type checked, so 10 spec blocks fail"
-branch: adtb-lang3
+closed: 2026-10-25
 tags:
   - lang
 ---
@@ -34,3 +34,7 @@ evolution.md:749:
 ```
 
 Expected: every block checks.
+
+## 2026-10-25: resolved
+
+Landed as `feat(lang): check the engine catalog modules and every migration operator`. The corpus went from 56 to 13 failing blocks. The spec gaps it found are in `spec-catalog-model-gaps.md`.

@@ -5,6 +5,8 @@ kind: feature
 priority: 600
 summary: "milestone 6 (transactions) has not exited: no commit log, snapshots, SSI, commit path or isolation checker"
 depends-on:
+  - pager-safe-snapshot-record
+  - txn-interior-locking
   - vacuum-concurrent
   - ssi-integration
   - isolation-driver

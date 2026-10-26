@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 160
 summary: "the checker has no catalog:: or sys:: modules and refuses engine declarations, so 30 spec blocks fail"
-branch: adtb-lang3
+closed: 2026-10-25
 tags:
   - lang
 ---
@@ -38,3 +38,7 @@ security.md:578:
 
 Expected: every block checks against the engine's declarations of
 `catalog.md`.
+
+## 2026-10-25: resolved
+
+Landed as `feat(lang): check the engine catalog modules and every migration operator`. The corpus went from 56 to 13 failing blocks. The spec gaps it found are in `spec-catalog-model-gaps.md`.
