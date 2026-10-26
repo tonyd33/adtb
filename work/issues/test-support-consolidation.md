@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 95
-summary: "about 1000 lines of test scaffolding are copied across test files and crates"
-tags: [quality]
+summary: about 1000 lines of test scaffolding are copied across test files and crates
+closed: 2026-10-25
+tags:
+  - quality
 ---
 
 # Feature: one test-support module
@@ -16,3 +18,9 @@ Copied per file: silence_fatal_panics x5, run_process x5, quiet x6, options() x1
 ## 2026-10-25: progress
 
 The nextest profiles landed with lint-ratchet. Still open: the helper moves, and seed sweeps whose coverage thresholds scale with the seed count, so `quick` can cut them (`support::sweep` cuts only sweeps with no such threshold).
+
+## 2026-10-25: resolved
+
+## 2026-10-25: resolved
+
+`crates/adtb-testkit` holds the reference `Fixture`, the write `SCHEMA` and `fixture`, `uuid` and `Rng`; sim tests share `support/{crash,harness,draw,rows,recovery,seeds}.rs` by `#[path]`, and the module-level `dead_code` expects are gone. `variants()` lives in `crates/adtb/src/plan/tests/fixture.rs`, since a dev-dependency sees a different `Rewrites`. The 22 sim binaries stay separate: one binary built slower (18.7s against 15.8s clean, 2.2s against 1.05s incremental). `support::seeds::share` scales coverage thresholds so `quick` cuts every sweep but the boolean ones in `faults.rs`.
