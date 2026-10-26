@@ -311,7 +311,9 @@ fn run_engine(
         match got {
             Err(e) if e.ends_transaction() => db.abort(tx).expect("an abort"),
             _ if mode.one => open = Some(tx),
-            Ok(_) => db.commit(tx).expect("a commit"),
+            Ok(_) => {
+                db.commit(tx).expect("a commit");
+            }
             Err(_) => db.abort(tx).expect("an abort"),
         }
     }
@@ -920,7 +922,7 @@ fn run_txn_with(
         }
     }
     match db.commit(tx) {
-        Ok(()) => Ok(result),
+        Ok(_) => Ok(result),
         Err(e) => Err(format!("{:?}", engine_error(schema, &e))),
     }
 }

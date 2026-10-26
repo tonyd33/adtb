@@ -16,6 +16,8 @@ pub struct Root {
     pub next_heap: u32,
     /// The transaction of the schema change in progress, 0 when none is.
     pub changing: u64,
+    /// The write path's page of generated counters, `Pid(0)` until it has one.
+    pub sequences: Pid,
 }
 
 const COMMIT_LOG: usize = HEADER_LEN;
@@ -25,6 +27,7 @@ const LARGE_ROOT: usize = ROOTS_ID + 4;
 const ROOTS_ROOT: usize = LARGE_ROOT + 8;
 const NEXT_HEAP: usize = ROOTS_ROOT + 8;
 const CHANGING: usize = NEXT_HEAP + 8;
+const SEQUENCES: usize = CHANGING + 8;
 
 fn u32_at(page: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(page[at..at + 4].try_into().unwrap())
@@ -42,7 +45,8 @@ impl Root {
         page[LARGE_ROOT..ROOTS_ROOT].copy_from_slice(&self.large.1.0.to_le_bytes());
         page[ROOTS_ROOT..NEXT_HEAP].copy_from_slice(&self.roots.1.0.to_le_bytes());
         page[NEXT_HEAP..NEXT_HEAP + 4].copy_from_slice(&self.next_heap.to_le_bytes());
-        page[CHANGING..CHANGING + 8].copy_from_slice(&self.changing.to_le_bytes());
+        page[CHANGING..SEQUENCES].copy_from_slice(&self.changing.to_le_bytes());
+        page[SEQUENCES..SEQUENCES + 8].copy_from_slice(&self.sequences.0.to_le_bytes());
     }
 
     pub fn read(page: &[u8]) -> Root {
@@ -52,6 +56,7 @@ impl Root {
             roots: (u32_at(page, ROOTS_ID), Pid(u64_at(page, ROOTS_ROOT))),
             next_heap: u32_at(page, NEXT_HEAP),
             changing: u64_at(page, CHANGING),
+            sequences: Pid(u64_at(page, SEQUENCES)),
         }
     }
 }

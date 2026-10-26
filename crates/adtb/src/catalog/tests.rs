@@ -36,6 +36,7 @@ fn the_root_page_round_trips() {
         roots: (2, Pid(9)),
         next_heap: 70,
         changing: 1025,
+        sequences: Pid(77),
     };
     let mut page = vec![0; 4096];
     root.write(&mut page);

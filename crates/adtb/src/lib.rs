@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod api;
 pub mod batch;
 pub mod btree;
 pub mod catalog;
@@ -14,3 +15,12 @@ pub mod verify;
 pub mod write;
 
 pub use adtb_sys::runtime;
+
+#[cfg(target_os = "linux")]
+pub use api::open;
+pub use api::{
+    AdHocTransaction, CallOptions, Committed, CreateOptions, Database, DynRows, Error, FatalReason,
+    Fault, Limit, Log, OpenError, OpenOptions, Position, RejectReason, RetryReason, TxnCallOptions,
+    TxnOptions,
+};
+pub use exec::Val as Value;

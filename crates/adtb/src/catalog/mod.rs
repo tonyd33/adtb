@@ -7,6 +7,7 @@ mod rows;
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use adtb_lang::ast::OperatorKind;
@@ -16,6 +17,7 @@ use adtb_lang::schema::{self, Schema};
 use adtb_lang::types::RelId;
 
 use crate::btree::{self, BTree, Index};
+use crate::exec::{StoredHeap, StoredIndex};
 use crate::heap::{self, FieldType, Heap, LargeStore};
 use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Value};
 use crate::mvcc::{self, CommitLog, Scope, Snapshot, Status, Transactions, Xid};
@@ -98,6 +100,7 @@ pub struct Catalog {
     indexes: BTreeMap<u64, (IndexSpec, Index)>,
     keys: OrderKeys,
     next_heap: u32,
+    sequences: Pid,
 }
 
 impl std::fmt::Debug for Catalog {
@@ -471,6 +474,7 @@ impl Catalog {
             roots: (0, Pid(0)),
             next_heap: FIRST_HEAP,
             changing: 0,
+            sequences: Pid(0),
         };
         pager.update(&[pid], |p| root.write(p[0]))?;
         pager.set_catalog_root(pid);
@@ -498,6 +502,7 @@ impl Catalog {
             indexes: BTreeMap::new(),
             keys: OrderKeys::new(),
             next_heap: FIRST_HEAP,
+            sequences: Pid(0),
         };
         let x = txns.begin(pager)?;
         let engine = catalog.source.clone();
@@ -597,6 +602,7 @@ impl Catalog {
             indexes: stored,
             keys: named.keys,
             next_heap: root.next_heap,
+            sequences: root.sequences,
         };
         if root.changing != 0 {
             if txns.status(pager, Xid(root.changing))? != Status::Committed {
@@ -832,6 +838,58 @@ impl Catalog {
             .1
     }
 
+    /// Returns the write path's page of generated counters, once one is named.
+    pub fn sequences(&self) -> Option<Pid> {
+        (self.sequences != Pid(0)).then_some(self.sequences)
+    }
+
+    /// Name `pid` as the write path's page of generated counters in the catalog whose root page
+    /// is `root`. Returns once the naming is durable.
+    pub fn name_sequences<R: Runtime>(
+        pager: &Pager<R>,
+        root: Pid,
+        pid: Pid,
+    ) -> Result<(), PageError> {
+        let lsn = update_root(pager, root, |r| r.sequences = pid)?;
+        pager.wait_durable(lsn);
+        Ok(())
+    }
+
+    /// Returns the heap of every constructor relation and every index, as the executor and the
+    /// write path bind them.
+    pub fn into_bindings(self) -> (BTreeMap<HeapId, StoredHeap>, BTreeMap<IndexId, StoredIndex>) {
+        let schema = &self.schema;
+        let heaps = self
+            .heaps
+            .into_iter()
+            .map(|((r, c), heap)| {
+                let stored = StoredHeap {
+                    row: row_type(schema, r, c),
+                    heap: Arc::new(heap),
+                };
+                (HeapId(u64::from(stored.heap.id())), stored)
+            })
+            .collect();
+        let indexes = self
+            .indexes
+            .into_values()
+            .map(|(spec, index)| {
+                let ctors = spec
+                    .ctors
+                    .iter()
+                    .map(|&c| {
+                        (
+                            CtorId(layout::ctor_id(ctor_id(schema, spec.relation, c))),
+                            c,
+                        )
+                    })
+                    .collect();
+                (IndexId(spec.id), StoredIndex { index, ctors })
+            })
+            .collect();
+        (heaps, indexes)
+    }
+
     /// Returns the order key of each constructor of every declared sum.
     pub fn order_keys(&self) -> &OrderKeys {
         &self.keys
@@ -892,7 +950,7 @@ impl Catalog {
             commit_log: Some(clog),
             sums,
             trees: Vec::new(),
-            pages: vec![self.root],
+            pages: std::iter::once(self.root).chain(self.sequences()).collect(),
         }
     }
 

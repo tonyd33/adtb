@@ -23,7 +23,7 @@ use crate::mvcc::{
 };
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager, Pid};
+use crate::storage::{PageError, Pager, Pid, Position};
 
 pub use adtb_lang::schema::Stage;
 
@@ -177,6 +177,13 @@ pub struct Outcome {
     /// The normalised change set.
     pub inserted: Rows,
     pub deleted: Rows,
+}
+
+/// The item of a [`Database::statements`] call that failed, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failed {
+    pub item: usize,
+    pub error: Error,
 }
 
 /// A read-write transaction.
@@ -372,14 +379,46 @@ impl<R: Runtime> Database<R> {
         params: &[(Var, Val)],
         clock: i64,
     ) -> Result<Outcome, Error> {
-        let s = eval::Stmt::new(self, tx, terms, t, clock);
-        match s.run(params) {
-            Err(e) if !e.ends_transaction() => {
-                s.undo()?;
-                Err(e)
-            }
-            done => done,
+        match self.statements(tx, terms, &[t], params, clock) {
+            Ok(mut done) => Ok(done.remove(0)),
+            Err(f) => Err(f.error),
         }
+    }
+
+    /// Run terms `items` of `terms` in order as statements of `tx`, each reading the change sets
+    /// of the ones before it, as [`statement`](Database::statement) runs one. Returns each
+    /// one's outcome.
+    ///
+    /// On an `Err` that [ends the transaction](Error::ends_transaction), abort `tx`. On any other
+    /// `Err` none of the items has an effect and `tx` goes on.
+    pub fn statements(
+        &self,
+        tx: &Txn,
+        terms: &Terms,
+        items: &[Tm],
+        params: &[(Var, Val)],
+        clock: i64,
+    ) -> Result<Vec<Outcome>, Failed> {
+        let mut ran = Vec::with_capacity(items.len());
+        let mut out = Vec::with_capacity(items.len());
+        for (item, t) in items.iter().enumerate() {
+            let s = eval::Stmt::new(self, tx, terms, *t, clock);
+            match s.run(params) {
+                Ok(o) => {
+                    out.push(o);
+                    ran.push(s);
+                }
+                Err(error) => {
+                    if !error.ends_transaction() {
+                        for s in std::iter::once(&s).chain(ran.iter().rev()) {
+                            s.undo().map_err(|error| Failed { item, error })?;
+                        }
+                    }
+                    return Err(Failed { item, error });
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Returns every row of every relation variable the catalog describes, as `tx` reads them.
@@ -394,8 +433,9 @@ impl<R: Runtime> Database<R> {
         Ok(out)
     }
 
-    /// Commit `tx`. Returns once the log is durable past its commit and every commit it read.
-    pub fn commit(&self, tx: Txn) -> Result<(), Error> {
+    /// Commit `tx`. Returns its commit position once the log is durable past its commit and
+    /// every commit it read.
+    pub fn commit(&self, tx: Txn) -> Result<Position, Error> {
         let done = {
             let mut ser = self.ser.lock(&self.rt);
             match ser.precommit(tx.sid) {
@@ -406,16 +446,16 @@ impl<R: Runtime> Database<R> {
                         ser.committed(tx.sid);
                         let read = self.txns.read_upto(tx.hold);
                         self.txns.release(tx.hold);
-                        Ok(read.map_or(own, |r| r.max(own)))
+                        Ok((own, read.map_or(own, |r| r.max(own))))
                     }
                 },
             }
         };
         match done {
-            Ok(lsn) => {
-                self.pager.wait_durable(lsn);
+            Ok((own, wait)) => {
+                self.pager.wait_durable(wait);
                 self.waits.ended(tx.xid);
-                Ok(())
+                Ok(self.pager.position(own))
             }
             Err(e) => {
                 self.abort(tx)?;
