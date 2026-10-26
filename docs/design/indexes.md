@@ -244,6 +244,13 @@ level above. When a page that is the rightmost of its level splits for
 an item that goes after all of its others, its left half keeps all but
 its last item, so sequential keys fill the pages they leave behind.
 
+A leaf split's separator, which becomes the left half's high key, the
+right half's low key and the downlink's key in the parent, is the
+shortest prefix of the right half's first entry that is above the left
+half's last. An inner split's separator is the first key of its right
+half, unshortened, since it is the low key of the right half's first
+child.
+
 Latching is optimistic lock coupling over the pager's latches
 ([storage.md §2.4](storage.md#24-latches)). A descent reads each page
 optimistically and uses what it read only once the read validates; a
@@ -372,13 +379,17 @@ is unlinked as below.
 Underfull pages are never merged. A leaf that a delete or a predicate
 pass empties is unlinked and freed in one change, the freeing logged in
 the same batch as the unlink: its downlink leaves the parent, and its
-range goes to its left sibling, whose high key becomes the leaf's, or,
-when the left sibling has no room for that key, to its right sibling,
-whose low key and separator become the leaf's. The change latches the
-parent, then the left sibling, then the leaf and its right sibling. A
-leaf is left in place when it is the rightmost of its level, the first
-child of its parent, lacks its downlink, or neither sibling can take
-its range; inner pages are never unlinked, so height never shrinks.
+range goes to its left sibling under the same parent, whose high key
+becomes the leaf's, or, when there is none or it has no room for that
+key, to its right sibling, whose low key and separator become the
+leaf's. A parent's first child goes to its right sibling; its left
+sibling, under the parent before, only takes its right link, and is
+found by a descent to the keys just below the leaf's low key. The
+change latches the parent, then the left sibling, then the leaf and its
+right sibling. A leaf is left in place when it is the rightmost of its
+level, its parent's only child, lacks its downlink, or neither sibling
+can take its range; inner pages are never unlinked, so height never
+shrinks.
 
 The page is freed at once rather than after every reader that may hold
 its id has finished, because no reader trusts an id it holds: the fence
@@ -387,6 +398,6 @@ reader back to the root. An epoch or snapshot horizon would add a
 registry that every descent writes to, which the fence keys make
 unnecessary.
 
-TODO: split point choice and key compression are deferred.
+TODO: split point choice and prefix compression are deferred.
 
 Rulings: btree/structure/blink, btree/latch/olc, btree/latch/racy/atomic-reads, btree/posting/posting-pairs, btree/cleanup/kill-bit, btree/cleanup/bottom-up, btree/merge/empty-only

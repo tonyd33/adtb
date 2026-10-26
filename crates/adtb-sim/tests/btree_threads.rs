@@ -400,7 +400,7 @@ fn crash_worker(
     mut shape: Shape,
 ) {
     let tree = BTree::open(world.lock().unwrap().root.unwrap(), OWNER);
-    for _ in 0..60 {
+    for _ in 0..80 {
         let insert = below(rt, 10) < 6;
         let first = ((t as u32) << 24) | (below(rt, 25) as u32 * 16);
         for id in first..first + 16 {
@@ -647,7 +647,7 @@ fn ascending_inserts_fill_the_leaves_they_leave_behind() {
         let bytes: usize = (0..n).map(|id| entry(id).len() + 4).sum();
         let full = bytes.div_ceil(PAGE - 64);
         let got = leaves(pager, &tree);
-        assert!(got * 10 <= full * 13, "{got} leaves hold what {full} could");
+        assert!(got * 10 <= full * 12, "{got} leaves hold what {full} could");
         let all: Vec<Vec<u8>> = (0..n).map(entry).collect();
         assert_eq!(tree.verify(pager), Ok(all));
     });
@@ -755,5 +755,52 @@ fn an_insert_into_a_full_leaf_deletes_dead_entries_before_splitting() {
         for k in 0..5 {
             assert_eq!(tree.contains(pager, &fixed(2 * k + 1, 1)), Ok(true));
         }
+    });
+}
+
+#[test]
+fn a_parents_first_child_is_unlinked_when_it_empties() {
+    with_tree(34, |pager, tree| {
+        let n = 400;
+        for id in 0..n {
+            assert_eq!(tree.insert(pager, &entry(id)), Ok(true));
+        }
+        assert_eq!(tree.height(pager), Ok(1));
+        assert!(leaves(pager, &tree) > 20);
+        for id in 0..n - 1 {
+            assert_eq!(tree.delete(pager, &entry(id)), Ok(true));
+        }
+        assert_eq!(tree.verify(pager), Ok(vec![entry(n - 1)]));
+        assert_eq!(leaves(pager, &tree), 1);
+        let pages: BTreeSet<Pid> = tree.pages(pager).unwrap().into_iter().collect();
+        assert_eq!(allocated(pager), pages);
+    });
+}
+
+#[test]
+fn first_children_unlink_across_parents() {
+    with_tree(35, |pager, tree| {
+        let long = |id: u32| {
+            let mut e = vec![7; 300];
+            e.extend_from_slice(&id.to_be_bytes());
+            e
+        };
+        let n = 3000;
+        for id in 0..n {
+            assert_eq!(tree.insert(pager, &long(id)), Ok(true));
+        }
+        assert!(tree.height(pager).unwrap() >= 2);
+        for id in 0..n - 1 {
+            assert_eq!(tree.delete(pager, &long(id)), Ok(true));
+        }
+        assert_eq!(tree.verify(pager), Ok(vec![long(n - 1)]));
+        let pages: BTreeSet<Pid> = tree.pages(pager).unwrap().into_iter().collect();
+        assert_eq!(allocated(pager), pages);
+        let inner = pages.len() - leaves(pager, &tree);
+        assert!(
+            leaves(pager, &tree) < inner,
+            "{} leaves under {inner} inner pages",
+            leaves(pager, &tree)
+        );
     });
 }

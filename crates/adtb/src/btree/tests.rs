@@ -2,7 +2,7 @@ use std::ops::Bound;
 
 use super::leaf;
 use super::node::{self, Item, Malformed, Node};
-use super::tree::prefix_end;
+use super::tree::{prefix_end, separator};
 use super::{BTree, FORMAT};
 use crate::storage::{FIRST_EDITABLE, HEADER_LEN, PageKind, Pid, header_edit};
 
@@ -316,4 +316,29 @@ fn a_posting_with_no_remainders_or_in_an_inner_page_is_malformed() {
     let at = usize::from(u16::from_le_bytes([inner[42], inner[43]]));
     inner[at + 1] |= 0x80;
     assert_eq!(Node::new(&inner).unwrap().child(0), Err(Malformed));
+}
+
+#[test]
+fn a_separator_is_the_shortest_prefix_of_the_right_key_above_the_left() {
+    assert_eq!(separator(b"apple", b"apricot"), b"apr");
+    assert_eq!(separator(b"ab", b"abc"), b"abc");
+    assert_eq!(separator(b"ab", b"abcd"), b"abc");
+    assert_eq!(separator(b"a", b"b"), b"b");
+    assert_eq!(separator(b"", b"x"), b"x");
+    for (l, r) in [
+        (&b"apple"[..], &b"apricot"[..]),
+        (b"ab", b"abcd"),
+        (b"\x00", b"\x00\x00"),
+    ] {
+        let s = separator(l, r);
+        assert!(l < s.as_slice() && s.as_slice() <= r);
+    }
+}
+
+#[test]
+fn a_page_of_another_format_is_not_a_node() {
+    let mut p = vec![0; PAGE];
+    p[FIRST_EDITABLE..HEADER_LEN].copy_from_slice(&header_edit(1, PageKind::IndexLeaf, 9, 0));
+    assert_eq!(FORMAT, 2);
+    assert_eq!(Node::new(&p).err(), Some(Malformed));
 }

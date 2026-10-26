@@ -62,6 +62,13 @@ impl Entries for Whole {
     }
 }
 
+/// Which keys a descent seeks: the key itself, or those just below it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    At,
+    Before,
+}
+
 enum Step {
     Right(Pid, Vec<u8>),
     Down(Pid),
@@ -155,6 +162,14 @@ fn complete(pages: &mut [&mut [u8]], at: usize) {
     }
 }
 
+/// Returns the shortest prefix of `right` above `left`.
+///
+/// Preconditions: `left` is below `right`.
+pub(super) fn separator(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let common = left.iter().zip(right).take_while(|(a, b)| a == b).count();
+    right[..(common + 1).min(right.len())].to_vec()
+}
+
 /// Returns the slot that splits `items` into two halves, each holding at
 /// least one item: of about equal bytes, or, when the new item at slot `at`
 /// lands past every other on the rightmost page of its level, just before
@@ -218,17 +233,35 @@ impl BTree {
         key: &[u8],
         level: u16,
     ) -> Result<Descent, Error> {
-        Ok(self.descend_to(pager, from, key, level, |_| Ok(()))?.0)
+        Ok(self
+            .descend_to(pager, from, key, level, Side::At, |_| Ok(()))?
+            .0)
     }
 
-    /// Returns the descent [`BTree::descend`] makes, and what `f` makes of
-    /// the page it ends at, from the same read.
+    /// Returns the page at `level` whose range holds the keys just below
+    /// `key`: the one whose high key is `key`, if a page's low key is.
+    fn descend_before<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        key: &[u8],
+        level: u16,
+    ) -> Result<Pid, Error> {
+        Ok(self
+            .descend_to(pager, self.root, key, level, Side::Before, |_| Ok(()))?
+            .0
+            .pid)
+    }
+
+    /// Returns the descent [`BTree::descend`] makes, or for `Side::Before`
+    /// the one to the keys just below `key`, and what `f` makes of the page
+    /// it ends at, from the same read.
     fn descend_to<R: Runtime, T>(
         &self,
         pager: &Pager<R>,
         from: Pid,
         key: &[u8],
         level: u16,
+        side: Side,
         f: impl Fn(&Node) -> Result<T, Malformed>,
     ) -> Result<(Descent, T), Error> {
         let mut start = from;
@@ -242,22 +275,31 @@ impl BTree {
             loop {
                 let read = observe(pager, self.owner, pid, |n| {
                     let at = n.level();
-                    if n.deleted()
-                        || at < level
-                        || expected.is_some_and(|e| e != at)
-                        || !n.above_low(key)?
-                    {
+                    let (from_low, past_high) = match side {
+                        Side::At => (n.above_low(key)?, n.beyond(key)?),
+                        Side::Before => (
+                            n.low()?.is_none_or(|l| l < key),
+                            n.high()?.is_some_and(|h| h < key),
+                        ),
+                    };
+                    if n.deleted() || at < level || expected.is_some_and(|e| e != at) || !from_low {
                         return Ok(None);
                     }
                     let mut found = None;
-                    let step = if n.beyond(key)? {
+                    let step = if past_high {
                         let high = n.high()?.ok_or(Malformed)?.to_vec();
                         Step::Right(n.right().ok_or(Malformed)?, high)
                     } else if at == level {
                         found = Some(f(n)?);
                         Step::Here
                     } else {
-                        Step::Down(n.child_for(key)?)
+                        let child = match side {
+                            Side::At => n.child_for(key)?,
+                            Side::Before => {
+                                n.child(n.search(key, true)?.checked_sub(1).ok_or(Malformed)?)?
+                            }
+                        };
+                        Step::Down(child)
                     };
                     Ok(Some((step, n.incomplete(), at, found)))
                 });
@@ -395,7 +437,7 @@ impl BTree {
         key: &[u8],
         f: impl Fn(&Node) -> Result<T, Malformed>,
     ) -> Result<T, Error> {
-        Ok(self.descend_to(pager, self.root, key, 0, f)?.1)
+        Ok(self.descend_to(pager, self.root, key, 0, Side::At, f)?.1)
     }
 
     pub fn contains<R: Runtime>(&self, pager: &Pager<R>, entry: &[u8]) -> Result<bool, Error> {
@@ -542,8 +584,8 @@ impl BTree {
         let emptied = last.then(|| n.low().map(|l| l.map(<[u8]>::to_vec)));
         g.update(|p| leaf::remove(p, place));
         drop(g);
-        if let Some(Some(low)) = emptied.transpose().map_err(malformed)? {
-            self.unlink(pager, &low)?;
+        if let Some(low) = emptied.transpose().map_err(malformed)? {
+            self.unlink(pager, low.as_deref())?;
         }
         self.finish_all(pager, passed)?;
         Ok(true)
@@ -577,8 +619,8 @@ impl BTree {
                 deleted += gone;
             }
             drop(g);
-            if emptied && let Some(low) = &low {
-                self.unlink(pager, low)?;
+            if emptied {
+                self.unlink(pager, low.as_deref())?;
             }
             match high {
                 Some(h) => from = h,
@@ -587,22 +629,25 @@ impl BTree {
         }
     }
 
-    /// Unlink the empty leaf whose low key is `low` from its parent and its
-    /// siblings, and free it, in one change. Returns whether it did.
+    /// Unlink the empty leaf whose low key is `low`, `None` for the leftmost,
+    /// from its parent and its siblings, and free it, in one change. Returns
+    /// whether it did.
     ///
-    /// The leaf's range goes to its left sibling, whose high key becomes the
-    /// leaf's, or, if the left sibling has no room for that key, to its right
-    /// sibling, whose low key and separator in the parent become the leaf's.
-    /// Latches the parent, then the left sibling, moving right to the page
-    /// whose right link names the leaf, then the leaf and its right sibling.
-    /// Does nothing if the leaf is no longer empty, has no left sibling under
-    /// the same parent, is the rightmost of its level or lacks its downlink,
-    /// or if neither sibling can take its range.
-    fn unlink<R: Runtime>(&self, pager: &Pager<R>, low: &[u8]) -> Result<bool, Error> {
+    /// The leaf's range goes to its left sibling under the same parent,
+    /// whose high key becomes the leaf's. If there is none, or it has no room
+    /// for that key, the range goes to the right sibling, whose low key and
+    /// separator in the parent become the leaf's; the left sibling, under
+    /// this parent or the one before, then only takes the leaf's right link.
+    /// Latches the parent, then the left sibling, then the leaf and its right
+    /// sibling. Does nothing if the leaf is no longer empty, is the rightmost
+    /// of its level, lacks its downlink, or is its parent's only child, or if
+    /// neither sibling can take its range.
+    fn unlink<R: Runtime>(&self, pager: &Pager<R>, low: Option<&[u8]>) -> Result<bool, Error> {
         if self.height(pager)? == 0 {
             return Ok(false);
         }
-        let (mut parent, passed) = self.latch(pager, self.root, low, 1)?;
+        let key = low.unwrap_or_default();
+        let (mut parent, passed) = self.latch(pager, self.root, key, 1)?;
         let done = self.unlink_under(pager, &mut parent, low);
         drop(parent);
         self.finish_all(pager, passed)?;
@@ -613,13 +658,17 @@ impl BTree {
         &self,
         pager: &'p Pager<R>,
         parent: &mut PageExclusive<'p, R>,
-        low: &[u8],
+        low: Option<&[u8]>,
     ) -> Result<bool, Error> {
+        let key = low.unwrap_or_default();
         let ppid = parent.pid();
         let pm = |Malformed| Error::Malformed(ppid);
         let pn = latched(parent, ppid, self.owner)?;
-        let j = pn.search(low, true).map_err(pm)?;
-        if j == 0 || j >= pn.count() || pn.key(j).map_err(pm)? != low {
+        let j = pn.search(key, true).map_err(pm)?;
+        if j >= pn.count() || pn.key(j).map_err(pm)? != key {
+            return Ok(false);
+        }
+        if low.is_none() && pn.low().map_err(pm)?.is_some() {
             return Ok(false);
         }
         let lpid = pn.child(j).map_err(pm)?;
@@ -631,18 +680,14 @@ impl BTree {
         } else {
             None
         };
-        let mut left = pager.exclusive(pn.child(j - 1).map_err(pm)?)?;
-        loop {
-            let xpid = left.pid();
-            let xn = latched(&left, xpid, self.owner)?;
-            match xn.right() {
-                Some(r) if r == lpid => break,
-                Some(r) if xn.high().map_err(|Malformed| Error::Malformed(xpid))? < Some(low) => {
-                    left = pager.exclusive(r)?;
-                }
-                _ => return Err(Error::Malformed(xpid)),
-            }
-        }
+        let first = j == 0;
+        let mut left = match low {
+            None => None,
+            Some(low) => match self.left_of(pager, (ppid, &pn), j, lpid, low)? {
+                Some(x) => Some(x),
+                None => return Ok(false),
+            },
+        };
         let mut leaf = pager.exclusive(lpid)?;
         let ln = latched(&leaf, lpid, self.owner)?;
         let lf = node::fences(&ln).map_err(|Malformed| Error::Malformed(lpid))?;
@@ -652,26 +697,28 @@ impl BTree {
         if ln.count() > 0 || ln.incomplete() {
             return Ok(false);
         }
-        let xpid = left.pid();
-        let xm = |Malformed| Error::Malformed(xpid);
-        let xn = latched(&left, xpid, self.owner)?;
-        let xf = node::fences(&xn).map_err(xm)?;
-        let shrinks = xf.high.as_ref().map_or(0, Vec::len);
-        let x_items = xn.items().map_err(xm)?;
         let mut freed = pager.reserve();
         freed.free(lpid);
-        if xn.room().map_err(xm)? + shrinks >= lhigh.len() {
-            pager.update_all_with(freed, &mut [parent, &mut left, &mut leaf], |p| {
-                node::remove(p[0], j);
-                let bounds = Bounds {
-                    high: Some(&lhigh),
-                    right: Some(rpid),
-                    ..xf.bounds()
-                };
-                node::build(p[1], 0, &x_items, bounds);
-                node::set_deleted(p[2]);
-            })?;
-            return Ok(true);
+        if let Some(x) = left.as_mut().filter(|_| !first) {
+            let xpid = x.pid();
+            let xm = |Malformed| Error::Malformed(xpid);
+            let xn = latched(x, xpid, self.owner)?;
+            let xf = node::fences(&xn).map_err(xm)?;
+            let shrinks = xf.high.as_ref().map_or(0, Vec::len);
+            if xn.room().map_err(xm)? + shrinks >= lhigh.len() {
+                let x_items = xn.items().map_err(xm)?;
+                pager.update_all_with(freed, &mut [parent, x, &mut leaf], |p| {
+                    node::remove(p[0], j);
+                    let bounds = Bounds {
+                        high: Some(&lhigh),
+                        right: Some(rpid),
+                        ..xf.bounds()
+                    };
+                    node::build(p[1], 0, &x_items, bounds);
+                    node::set_deleted(p[2]);
+                })?;
+                return Ok(true);
+            }
         }
         let Some((next, sep)) = next_link.filter(|(c, k)| *c == rpid && *k == lhigh) else {
             return Ok(false);
@@ -679,36 +726,82 @@ impl BTree {
         let mut right = pager.exclusive(next)?;
         let rn = latched(&right, next, self.owner)?;
         let rm = |Malformed| Error::Malformed(next);
-        let grows = low.len().saturating_sub(sep.len());
+        let grows = key.len().saturating_sub(sep.len());
         if rn.incomplete() || rn.room().map_err(rm)? < grows {
             return Ok(false);
         }
         let r_items = rn.items().map_err(rm)?;
         let rf = node::fences(&rn).map_err(rm)?;
-        pager.update_all_with(
-            freed,
-            &mut [parent, &mut left, &mut leaf, &mut right],
-            |p| {
-                node::remove(p[0], j + 1);
-                let mut items = Node::new(p[0])
-                    .and_then(|n| n.items())
-                    .expect("a parent is a node");
-                items[j].child = Some(next);
-                node::rebuild(p[0], &items);
+        let x_page = match &left {
+            Some(x) => {
+                let xpid = x.pid();
+                let xn = latched(x, xpid, self.owner)?;
+                let xm = |Malformed| Error::Malformed(xpid);
+                Some((xn.items().map_err(xm)?, node::fences(&xn).map_err(xm)?))
+            }
+            None => None,
+        };
+        let mut pages: Vec<&mut PageExclusive<'p, R>> = vec![parent, &mut leaf, &mut right];
+        pages.extend(left.as_mut());
+        pager.update_all_with(freed, &mut pages, |p| {
+            node::remove(p[0], j + 1);
+            let mut items = Node::new(p[0])
+                .and_then(|n| n.items())
+                .expect("a parent is a node");
+            items[j].child = Some(next);
+            node::rebuild(p[0], &items);
+            node::set_deleted(p[1]);
+            let r_bounds = Bounds { low, ..rf.bounds() };
+            node::build(p[2], 0, &r_items, r_bounds);
+            if let Some((x_items, xf)) = &x_page {
                 let x_bounds = Bounds {
                     right: Some(next),
                     ..xf.bounds()
                 };
-                node::build(p[1], 0, &x_items, x_bounds);
-                node::set_deleted(p[2]);
-                let r_bounds = Bounds {
-                    low: Some(low),
-                    ..rf.bounds()
-                };
-                node::build(p[3], 0, &r_items, r_bounds);
-            },
-        )?;
+                node::build(p[3], 0, x_items, x_bounds);
+            }
+        })?;
         Ok(true)
+    }
+
+    /// Returns the exclusive latch on the leaf whose right link names `lpid`,
+    /// the child at slot `j` of the latched `parent`, given by page id and
+    /// node, with low key `low`, or `None` if the leaf at the parent's first
+    /// slot has no such left neighbour now.
+    ///
+    /// For a later slot, walks right from the child before it under the same
+    /// parent; for the first, finds the neighbour under the parent's left
+    /// sibling by a descent to the keys just below `low`.
+    fn left_of<'p, R: Runtime>(
+        &self,
+        pager: &'p Pager<R>,
+        parent: (Pid, &Node),
+        j: usize,
+        lpid: Pid,
+        low: &[u8],
+    ) -> Result<Option<PageExclusive<'p, R>>, Error> {
+        let (ppid, pn) = parent;
+        let pm = |Malformed| Error::Malformed(ppid);
+        if j == 0 {
+            let start = self.descend_before(pager, low, 0)?;
+            let x = pager.exclusive(start)?;
+            let xn = latched(&x, start, self.owner)?;
+            let high = xn.high().map_err(|Malformed| Error::Malformed(start))?;
+            let linked = !xn.deleted() && xn.level() == 0 && xn.right() == Some(lpid);
+            return Ok((linked && high == Some(low)).then_some(x));
+        }
+        let mut x = pager.exclusive(pn.child(j - 1).map_err(pm)?)?;
+        loop {
+            let xpid = x.pid();
+            let xn = latched(&x, xpid, self.owner)?;
+            match xn.right() {
+                Some(r) if r == lpid => return Ok(Some(x)),
+                Some(r) if xn.high().map_err(|Malformed| Error::Malformed(xpid))? < Some(low) => {
+                    x = pager.exclusive(r)?;
+                }
+                _ => return Err(Error::Malformed(xpid)),
+            }
+        }
     }
 
     /// Insert the downlink `item` into inner page `g` at `level`, which holds
@@ -793,7 +886,11 @@ impl BTree {
         let n = latched(g, pid, self.owner)?;
         let f = node::fences(&n).map_err(|Malformed| Error::Malformed(pid))?;
         let s = split_point(items, at, f.right.is_none());
-        let sep = items[s].first();
+        let sep = if level == 0 {
+            separator(&items[s - 1].last(), &items[s].first())
+        } else {
+            items[s].first()
+        };
         let (left, upper) = items.split_at(s);
         if pid == self.root {
             let mut new = pager.reserve();

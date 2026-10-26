@@ -1,8 +1,10 @@
 use std::cmp::Ordering;
 
-use crate::storage::{FIRST_EDITABLE, HEADER_LEN, PageKind, Pid, flags, header_edit, kind, owner};
+use crate::storage::{
+    FIRST_EDITABLE, HEADER_LEN, PageKind, Pid, flags, format, header_edit, kind, owner,
+};
 
-pub const FORMAT: u16 = 1;
+pub const FORMAT: u16 = 2;
 
 const RIGHT: usize = HEADER_LEN;
 const COUNT: usize = 32;
@@ -87,7 +89,10 @@ impl<'a> Node<'a> {
         let count = usize::from(u16_at(page, COUNT));
         let level = u16_at(page, LEVEL);
         let used = usize::from(u16_at(page, USED));
-        if kind(page) != kind_of(level) as u16 || SLOTS + count * SLOT + used > page.len() {
+        if format(page) != FORMAT
+            || kind(page) != kind_of(level) as u16
+            || SLOTS + count * SLOT + used > page.len()
+        {
             return Err(Malformed);
         }
         Ok(Node { page, count, level })
@@ -352,6 +357,13 @@ impl Item {
             .iter()
             .map(|r| [&self.key[..], r].concat())
             .collect()
+    }
+
+    pub fn last(&self) -> Vec<u8> {
+        match self.rest.last() {
+            Some(r) => [&self.key[..], r].concat(),
+            None => self.key.clone(),
+        }
     }
 
     pub fn first(&self) -> Vec<u8> {
