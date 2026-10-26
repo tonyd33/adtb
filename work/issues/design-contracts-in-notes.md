@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 905
 summary: "two contracts consumers rely on sit in non-binding notes: the heap row type and the isolation history format"
+branch: adtb-verify
 tags:
   - design
 ---

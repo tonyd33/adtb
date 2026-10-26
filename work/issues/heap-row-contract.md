@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 545
 summary: "the heap's row type, a contract its consumers rely on, is stated only in a non-binding note"
+branch: adtb-verify
 depends-on:
   - slotted-heap
 tags:

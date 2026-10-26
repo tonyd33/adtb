@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 530
 summary: "verify does not exist, so a heap or tree corrupted by a crash goes unnoticed"
+branch: adtb-verify
 depends-on:
   - slotted-heap
   - blink-tree
