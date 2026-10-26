@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 199
 summary: totality analysis treats try as total though try of reject aborts
+branch: adtb-chk
 ---
 
 # Bug: totality treats try as total

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 199
 summary: "the checker misorders constructor fields, loses view rows in ad hoc text and misjudges aggregates, nested inserts and update where"
+branch: adtb-chk
 ---
 
 # Bug: checker findings from the conformance suite
