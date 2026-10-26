@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 590
 summary: a panic in the write agreement sweep names neither the seed nor the case
-branch: adtb-qtest
+closed: 2026-10-25
 tags:
   - quality
   - sim
@@ -20,3 +20,9 @@ tags:
 `prep` (`:980`) decides whether a statement takes parameter `t` by matching ` t `, a trailing ` t` or `t }` in its text (`:981`), which a statement mentioning a field ending in `t` before `}` would also match.
 
 Fix: catch the run's panic in `check_all` and record it with seed and case beside the disagreements (or pass both into `engine`'s messages); count the runs actually made; declare `t` explicitly per statement.
+
+## 2026-10-25: resolved
+
+## 2026-10-25: resolution
+
+Fixed on the qtest track; the test asserts what it claims and its messages name the seed.

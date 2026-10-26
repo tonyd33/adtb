@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 590
 summary: "the heap thread tests pass without checking that their threads overlapped, and a seed loop omits the seed"
-branch: adtb-qtest
+closed: 2026-10-25
 tags:
   - quality
   - sim
@@ -20,3 +20,9 @@ tags:
 `clearing_bits_while_the_visibility_map_root_grows_keeps_the_map_whole` (`:192`) runs one seed at `switch_rate: 0.3` and has no count showing that a clearer's bit clear ever ran while the grower was mid-growth, so a change to the schedule can make all 40 rounds sequential without the test noticing.
 
 Fix: run the first test with a nonzero `switch_rate` and put the seed in every message; in both, record that the threads interleaved (a clear between the grower's start and end, an update begun while another writer's is in flight) and assert the count.
+
+## 2026-10-25: resolved
+
+## 2026-10-25: resolution
+
+Fixed on the qtest track; the test asserts what it claims and its messages name the seed.

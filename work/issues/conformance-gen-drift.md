@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 96
 summary: rerunning conformance/gen/queries/build.sh turns a passing case of 06-forms.test back into a stale refusal
-branch: adtb-qtest
+closed: 2026-10-25
 tags:
   - quality
   - test
@@ -19,3 +19,9 @@ tags:
 Repro: copy `conformance/gen/queries` to a scratch tree with a sibling `queries/`, run `build.sh`, and diff against `conformance/queries/`.
 
 Fix: apply the edit to `bodies/06-forms.test.in`, and add a test in `adtb-conformance` that expands every body (in Rust, or by running `build.sh` into a temp dir) and fails when a generated file differs, naming the file.
+
+## 2026-10-25: resolved
+
+## 2026-10-25: resolution
+
+Fixed: the body file matches, and `generated_queries_match_their_bodies` fails on any drift.
