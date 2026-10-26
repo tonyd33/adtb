@@ -30,3 +30,7 @@ Prerequisites: `check-migration-operators.md`,
 ## 2026-10-25: second migration at open
 
 `crates/adtb-sim/tests/api.rs` `a_second_migration_applies_at_open` fails until the catalog applies migrations after the first.
+
+## 2026-10-26: stage 1 landed
+
+Landed as nsmmrnqx: migrations after the first apply at open and through the API, with version hashes and a generic per-operator data map. Fills, routings, nest and unnest, rekey carries, constraint checks on the final state, and revert of a drop field are left; seven failing tests in `crates/adtb-sim/tests/oplog.rs` are their spec. The drop-index constraint test now drops a non-reference index, since the implied reference index returns when a declared one is dropped.
