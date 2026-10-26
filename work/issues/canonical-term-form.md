@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 704
 summary: adtb-lang has no canonical token form and records no name resolutions
+branch: adtb-canon
 ---
 
 # Feature: canonical token form of terms

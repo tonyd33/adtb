@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: bug
 priority: 199
 summary: "the checker misorders constructor fields, loses view rows in ad hoc text and misjudges aggregates, nested inserts and update where"
-branch: adtb-chk
+closed: 2026-10-25
 ---
 
 # Bug: checker findings from the conformance suite
@@ -41,3 +41,7 @@ wrong. Fix each and keep the directive:
    row and say so in `docs/spec/interop.md` §1.1.
 
 `queries/11-fix:40` is [`fix-least-typing.md`](fix-least-typing.md).
+
+## 2026-10-25: resolved
+
+All seven fixed; the conformance suite passes on the interpreter.
