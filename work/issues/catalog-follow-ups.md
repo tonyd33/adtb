@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 703
 summary: "catalog reads bypass snapshots, heap ids and order keys are not persisted, and a redone create reuses xids"
-branch: adtb-mig
+branch: adtb-mig2
 depends-on:
   - bootstrap-catalog
 tags:

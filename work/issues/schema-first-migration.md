@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 705
 summary: "a database cannot be created from a schema's declarations"
-branch: adtb-mig
+branch: adtb-mig2
 depends-on:
   - bootstrap-catalog
 tags:

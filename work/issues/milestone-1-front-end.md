@@ -5,6 +5,7 @@ kind: feature
 priority: 100
 summary: "milestone 1, the front end: the spec corpus does not yet pass and no fuzzer has run"
 depends-on:
+  - migration-forward-refs
   - anon-sum-join-fix-writes
   - norm-fresh-let-substitution
   - unique-value-level-path

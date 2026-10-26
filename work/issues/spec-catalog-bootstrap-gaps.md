@@ -4,7 +4,7 @@ status: in-progress
 kind: bug
 priority: 294
 summary: "catalog positions, the Tag type's row, value_states coverage, key clause text and relation kinds are unstated"
-branch: adtb-mig
+branch: adtb-mig2
 tags:
   - spec
 ---
