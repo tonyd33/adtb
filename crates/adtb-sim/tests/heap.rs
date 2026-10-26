@@ -1075,9 +1075,15 @@ fn unsettled(pager: &Pager<SimRuntime>, inventory: &Inventory) -> bool {
 #[test]
 fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
     silence_fatal_panics();
-    let mut caught = 0;
+    let (mut crashes, mut caught) = (0, 0);
     for step in 0..40u64 {
-        let mut sim = Sim::new(step, Config::default());
+        let mut sim = Sim::new(
+            step,
+            Config {
+                switch_rate: 0.3,
+                ..Config::default()
+            },
+        );
         let mut roots = None;
         finished(&mut sim, |rt| {
             let (db, r) = Db::create(rt, 2);
@@ -1100,7 +1106,7 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
         });
         let roots = roots.unwrap();
         sim.crash_at(sim.now() + Duration::from_micros(85_000 + step * 3_500));
-        run_process(&mut sim, |rt| {
+        let outcome = run_process(&mut sim, |rt| {
             let db = Arc::new(Db::open(rt.clone(), roots).unwrap());
             let done = Arc::new(AtomicBool::new(false));
             let (d, stop, r) = (db.clone(), done.clone(), rt.clone());
@@ -1125,6 +1131,7 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
             done.store(true, Ordering::Relaxed);
             rt.join(flusher);
         });
+        crashes += usize::from(outcome == Outcome::Crashed);
         let mut problems = Vec::new();
         finished(&mut sim, |rt| {
             let db = Db::open(rt, roots).unwrap();
@@ -1140,7 +1147,9 @@ fn a_crash_while_pruning_raises_entries_leaves_what_repair_mends() {
         });
         assert!(problems.is_empty(), "step {step}: {problems:#?}");
     }
-    eprintln!("{caught} of 40 runs left entries to settle");
+    eprintln!("{crashes} of 40 runs crashed, {caught} left entries to settle");
+    assert!(crashes > 16, "{crashes} crashes");
+    assert!(caught > 2, "{caught} runs left entries to settle");
 }
 
 fn silence_fatal_panics() {

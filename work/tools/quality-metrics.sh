@@ -12,6 +12,9 @@ if ((${#heads[@]} != 1)); then
   exit 2
 fi
 head=${heads[0]}
+mapfile -t bases < <(jj log --no-graph -r "roots($rev)-" -T 'commit_id ++ "\n"')
+base=""
+if ((${#bases[@]} == 1)); then base=${bases[0]}; fi
 diff=$(jj diff --git -r "$rev")
 
 # The new-side lines a diff adds, as `path<TAB>line<TAB>text`.
@@ -24,16 +27,31 @@ added() {
   ' <<<"$diff"
 }
 
-# The old-side lines a diff removes, as `path<TAB>text`.
+# The old-side lines a diff removes, as `path<TAB>line<TAB>text`.
 removed() {
   awk '
     /^--- / { file = ($2 == "/dev/null") ? "" : substr($2, 3); next }
-    /^-/ && file != "" { print file "\t" substr($0, 2) }
+    /^@@ / { split($2, h, ","); line = substr(h[1], 2); next }
+    /^-/ { if (file != "") print file "\t" line "\t" substr($0, 2); line++; next }
+    /^ / { line++ }
   ' <<<"$diff"
 }
 
+declare -A test_start
+# Succeed when line `line` of `path` at revision `rev` is test code: a file under a tests
+# path, or a line from a top-level `#[cfg(test)] mod` onward. An empty `rev` checks the
+# path only.
 is_test() {
-  [[ $1 == */tests/* || $1 == */tests.rs || $1 == *_tests.rs ]]
+  local rev=$1 path=$2 line=$3 key="$1:$2"
+  [[ $path == */tests/* || $path == */tests.rs || $path == *_tests.rs ]] && return 0
+  [[ -n $rev ]] || return 1
+  if [[ -z ${test_start[$key]+set} ]]; then
+    test_start[$key]=$(jj file show -r "$rev" "$path" 2>/dev/null | awk '
+      cfg && /^(pub(\([a-z]+\))? )?mod / { print cfg; exit }
+      { cfg = /^#\[cfg\(test\)\]/ ? NR : 0 }
+    ' || true)
+  fi
+  [[ -n ${test_start[$key]} ]] && ((line >= test_start[$key]))
 }
 
 crate_of() {
@@ -99,19 +117,21 @@ added | awk -F'\t' '
 echo "-- panic!/unwrap/expect in non-test code, added and removed per crate"
 pattern='panic!\(|\.unwrap\(\)|\.expect\("'
 {
-  added | while IFS=$'\t' read -r path _ text; do
-    if [[ $path == crates/*.rs ]] && ! is_test "$path" && [[ $text =~ $pattern ]]; then
+  added | while IFS=$'\t' read -r path line text; do
+    if [[ $path == crates/*.rs && $text =~ $pattern ]] && ! is_test "$head" "$path" "$line"; then
       echo "$(crate_of "$path") +"
     fi
   done
-  removed | while IFS=$'\t' read -r path text; do
-    if [[ $path == crates/*.rs ]] && ! is_test "$path" && [[ $text =~ $pattern ]]; then
+  removed | while IFS=$'\t' read -r path line text; do
+    if [[ $path == crates/*.rs && $text =~ $pattern ]] && ! is_test "$base" "$path" "$line"; then
       echo "$(crate_of "$path") -"
     fi
   done
 } | sort | uniq -c | awk '{ c[$2] = c[$2] " " $3 $1 } END { for (k in c) print k ":" c[k] }' | sort | capped 8
 
 echo "-- new pub items in non-test code"
-added | awk -F'\t' '$1 ~ /\.rs$/ && $1 !~ /\/tests\/|\/tests\.rs$|_tests\.rs$/ && $3 ~ /^ *pub (fn|struct|enum|trait|type|const|static|mod|use|unsafe fn|async fn) / {
-  sub(/^ */, "", $3); sub(/ *\{$/, "", $3); print $1 ":" $2 " " substr($3, 1, 80)
-}' | capped 10
+added | awk -F'\t' '$1 ~ /\.rs$/ && $3 ~ /^ *pub (fn|struct|enum|trait|type|const|static|mod|use|unsafe fn|async fn) / {
+  sub(/^ */, "", $3); sub(/ *\{$/, "", $3); print $1 "\t" $2 "\t" substr($3, 1, 80)
+}' | while IFS=$'\t' read -r path line text; do
+  if ! is_test "$head" "$path" "$line"; then echo "$path:$line $text"; fi
+done | capped 10

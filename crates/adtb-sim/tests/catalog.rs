@@ -524,6 +524,10 @@ fn a_crash_at_every_flush_during_the_first_migration_reopens_to_all_or_none_of_i
     }
     assert_eq!(Some(&0), versions.first());
     assert_eq!(Some(&1), versions.last());
+    assert!(
+        versions.is_sorted(),
+        "the version goes back to 0 after a later flush: {versions:?}"
+    );
 }
 
 #[test]
@@ -583,17 +587,23 @@ fn only_a_first_migration_of_declarations_applies() {
             other => panic!("not refused: {other:?}"),
         };
         let why = refused(catalog.migrate(&pager, &txns, "module auth\ndrop module auth\n"));
-        assert_eq!(1, why.len(), "{why:?}");
+        assert_eq!(vec!["`drop module auth` declares nothing"], why);
         let why =
             refused(catalog.migrate(&pager, &txns, "module auth\nadd type T = { id: I64 }\n"));
-        assert!(!why.is_empty());
+        assert_eq!(
+            vec!["no module `auth`; a migration of a new module starts with `add module auth`"],
+            why
+        );
         assert_eq!(0, catalog.source().version);
         catalog
             .migrate(&pager, &txns, RUNNING)
             .expect("the migration applies");
         let why =
             refused(catalog.migrate(&pager, &txns, "module auth\nadd type T = { id: I64 }\n"));
-        assert_eq!(1, why.len(), "{why:?}");
+        assert_eq!(
+            vec!["the schema is at version 1; only a first migration applies"],
+            why
+        );
         assert_eq!(1, catalog.source().version);
         check_whole(&pager, &catalog, &txns);
     });
@@ -661,7 +671,10 @@ fn a_function_naming_a_wasm_module_no_migration_installs_is_refused() {
         let text =
             "module app\nadd module app\ndefine fn f (x: I64) -> I64 = wasm \"m\" export \"f\"\n";
         match catalog.migrate(&pager, &txns, text) {
-            Err(Error::Refused(why)) => assert_eq!(1, why.len(), "{why:?}"),
+            Err(Error::Refused(why)) => assert_eq!(
+                vec!["function `f` names Wasm module `m`, which no migration installs"],
+                why
+            ),
             other => panic!("not refused: {other:?}"),
         }
         assert_eq!(0, catalog.source().version);

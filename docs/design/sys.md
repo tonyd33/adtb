@@ -50,6 +50,19 @@ optimistic.read(offset, out) / optimistic.validate() / optimistic.upgrade()
 `threads.yield_now`. Only `adtb`'s pager uses these types; consumers
 see pages as [storage.md §2.3](storage.md#23-page-access) states.
 
+Page memory has switch points: before `lock_exclusive`,
+`try_lock_exclusive`, `lock_shared`, `optimistic`, `upgrade` and
+`validate`, and halfway through `optimistic.read`.
+`pages::switch_points(hook)` calls the hook at each one the calling
+thread passes until the returned guard drops; the simulator installs
+one that may switch threads or unwind on a crash.
+
+Preconditions:
+
+- The caller leaves no in-memory structure half-updated across a page
+  memory call, as for a call into the runtime
+  ([runtime.md §1](runtime.md#1-time-threads-and-randomness)).
+
 `lock::Lock<T>` is the mutex every in-memory structure of `adtb`
 shared between threads sits behind:
 
@@ -66,7 +79,8 @@ rw.write(threads) -> RwLockWriteGuard<T>
 Invariants:
 
 - A waiter spins only through `yield_now`, so a scheduler that switches
-  threads only at runtime calls runs the holder.
+  threads only at runtime calls and page memory switch points runs the
+  holder.
 - A lock whose holder panicked is handed to the next caller as it was
   left; it is never refused.
 

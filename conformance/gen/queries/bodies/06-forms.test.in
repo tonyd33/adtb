@@ -40,9 +40,12 @@ query rowsort
 ----
 0
 1
-# A nullary constructor pattern takes no payload form other than itself.
-error Invalid
+# A nullary constructor also takes the payload forms.
+query rowsort
   from p in parcels select match p.state | Pending x -> 0 | Shipped _ -> 1
+----
+0
+1
 # A constructor with a payload is not matched by its bare name.
 error Invalid
   from p in parcels select match p.state | Pending -> 0 | Shipped -> 1

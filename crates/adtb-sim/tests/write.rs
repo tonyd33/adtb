@@ -11,7 +11,9 @@ mod common;
 
 mod support;
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 
 use adtb::exec::{self, Budget, Scheduler, Val};
@@ -408,8 +410,8 @@ fn engine(seed: u64, case: &Case, mode: Mode) -> Outcomes {
             &rt, &f, &schema, &normal, &catalog, &prepared, mode,
         ));
     });
-    assert_eq!(Outcome::Finished, result);
-    got.expect("the run finished")
+    assert_eq!(Outcome::Finished, result, "seed {seed}, case {}", case.name);
+    got.unwrap_or_else(|| panic!("seed {seed}, case {}: the run gave no outcomes", case.name))
 }
 
 fn run_engine(
@@ -898,23 +900,39 @@ fn cases() -> Vec<Case> {
 
 fn check_all(seeds: std::ops::Range<u64>, mode: Mode) {
     let mut bad = Vec::new();
-    let all = cases();
-    for case in &all {
+    let mut runs = 0;
+    for case in &cases() {
         let want = reference(case);
         for seed in support::sweep(seeds.clone()) {
-            let got = engine(seed, case, mode);
-            if let Err(d) = agree(case, &want, &got) {
-                bad.push(format!("seed {seed}: {d}"));
+            runs += 1;
+            match panic::catch_unwind(AssertUnwindSafe(|| engine(seed, case, mode))) {
+                Ok(got) => {
+                    if let Err(d) = agree(case, &want, &got) {
+                        bad.push(format!("seed {seed}: {d}"));
+                    }
+                }
+                Err(payload) => bad.push(format!(
+                    "seed {seed}: {}: panicked: {}",
+                    case.name,
+                    panic_text(&*payload)
+                )),
             }
         }
     }
     assert!(
         bad.is_empty(),
-        "{} of {} runs differ from the reference:\n{}",
+        "{} of {runs} runs differ from the reference:\n{}",
         bad.len(),
-        all.len() * seeds.count(),
         bad.join("\n")
     );
+}
+
+fn panic_text(payload: &(dyn Any + Send)) -> &str {
+    payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("a panic without a message")
 }
 
 #[test]
@@ -977,8 +995,9 @@ struct Prep {
     t: Option<Var>,
 }
 
-fn prep(f: &Fixture, text: &str) -> Prep {
-    let params = if text.contains(" t ") || text.ends_with(" t") || text.contains("t }") {
+/// Prepare `text`, a statement over parameter `t` of type `Text` when `over_t`.
+fn prep(f: &Fixture, text: &str, over_t: bool) -> Prep {
+    let params = if over_t {
         vec![("t", "Text", Value::text(""))]
     } else {
         Vec::new()
@@ -1056,12 +1075,12 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
     let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
     let schema = Arc::new(f.schema.clone());
     let preps = Arc::new([
-        prep(&f, INC),
-        prep(&f, TAG),
-        prep(&f, UPSERT),
-        prep(&f, DROP),
+        prep(&f, INC, false),
+        prep(&f, TAG, true),
+        prep(&f, UPSERT, true),
+        prep(&f, DROP, true),
     ]);
-    let failing = Arc::new(prep(&f, FAILING));
+    let failing = Arc::new(prep(&f, FAILING, false));
     let mut commits = 0;
     for seed in 0..4 {
         let mut sim = Sim::new(seed, Config::default());
@@ -1163,7 +1182,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
     let catalog = Arc::new(planfix::catalog(&f.schema, &f.program));
     let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
     let schema = Arc::new(f.schema.clone());
-    let tag = Arc::new(prep(&f, TAG));
+    let tag = Arc::new(prep(&f, TAG, true));
     let world = World {
         schema: &f.schema,
         catalog: &catalog,
@@ -1240,12 +1259,17 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
             crashed += 1;
         }
         let roots = roots.lock().unwrap().clone();
-        let Some(roots) = roots else { continue };
+        let Some(roots) = roots else {
+            assert!(
+                acked.lock().unwrap().is_empty(),
+                "seed {seed}: commits were acknowledged before the roots were recorded"
+            );
+            continue;
+        };
         let mut after = None;
         let result = sim.run(|rt| {
-            let Some((d, _)) = Db::build(&rt, &world, Some(&roots)) else {
-                return;
-            };
+            let (d, _) = Db::build(&rt, &world, Some(&roots))
+                .unwrap_or_else(|| panic!("seed {seed}: the database does not reopen"));
             let db = database(&rt, d, &schema, &normal, &catalog, None, roots.sequences);
             let tx = db.begin().expect("a transaction");
             let rows = db.rows(&tx).expect("the rows");
@@ -1254,7 +1278,7 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
             after = Some((rows, next));
         });
         assert_eq!(Outcome::Finished, result, "seed {seed}");
-        let Some((rows, next)) = after else { continue };
+        let (rows, next) = after.unwrap_or_else(|| panic!("seed {seed}: recovery read no rows"));
         let tags = f.rel("tags");
         let held: BTreeMap<String, Val> = rows
             .get(&(tags, 0))

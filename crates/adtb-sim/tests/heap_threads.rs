@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use adtb::heap::{Fate, FieldType, Header, Heap, LargeStore};
 use adtb::key::{Scalar, Tid, Value};
@@ -76,23 +76,39 @@ fn build(rt: SimRuntime, pool_frames: usize) -> (Db, Vec<(i64, Tid)>) {
     (Db { pager, heap }, kept)
 }
 
+/// Counts of what happened while [`update_all`] ran.
+struct Updates {
+    /// Updates during which the directory root was latched exclusively or evicted.
+    latched: usize,
+    /// Updates begun while another writer's update was in flight.
+    overlapped: usize,
+}
+
 /// Update every row of `kept` once, writer `w` taking the `w`th quarter of them, so the writers
-/// work on pages under different directory leaves. Returns the number of updates during which
-/// the directory root was latched exclusively or evicted.
-fn update_all(rt: &SimRuntime, db: &Arc<Db>, kept: &[(i64, Tid)]) -> usize {
+/// work on pages under different directory leaves.
+fn update_all(rt: &SimRuntime, db: &Arc<Db>, kept: &[(i64, Tid)], seed: u64) -> Updates {
     let latched = Arc::new(AtomicUsize::new(0));
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let overlapped = Arc::new(AtomicUsize::new(0));
     let share = kept.len().div_ceil(WRITERS);
     let writers: Vec<_> = kept
         .chunks(share)
         .enumerate()
         .map(|(w, rows)| {
-            let (db, rows, latched) = (db.clone(), rows.to_vec(), latched.clone());
+            let (db, rows) = (db.clone(), rows.to_vec());
+            let (latched, in_flight, overlapped) =
+                (latched.clone(), in_flight.clone(), overlapped.clone());
             rt.spawn(&format!("writer {w}"), move || {
                 for (key, tid) in rows {
                     let root = db.pager.optimistic(db.heap.root()).unwrap();
                     let xid = 10 + w as u64;
+                    if in_flight.fetch_add(1, Ordering::Relaxed) > 0 {
+                        overlapped.fetch_add(1, Ordering::Relaxed);
+                    }
                     let u = db.heap.update(&db.pager, tid, xid, &row(key, 1), &[]);
-                    assert!(u.expect("update").heap_only, "row {key} moved off its page");
+                    in_flight.fetch_sub(1, Ordering::Relaxed);
+                    let u = u.unwrap_or_else(|e| panic!("seed {seed}: update of row {key}: {e:?}"));
+                    assert!(u.heap_only, "seed {seed}: row {key} moved off its page");
                     if !root.validate() {
                         latched.fetch_add(1, Ordering::Relaxed);
                     }
@@ -103,7 +119,10 @@ fn update_all(rt: &SimRuntime, db: &Arc<Db>, kept: &[(i64, Tid)]) -> usize {
     for w in writers {
         rt.join(w);
     }
-    latched.load(Ordering::Relaxed)
+    Updates {
+        latched: latched.load(Ordering::Relaxed),
+        overlapped: overlapped.load(Ordering::Relaxed),
+    }
 }
 
 fn finished(sim: &mut Sim, body: impl FnOnce(SimRuntime)) {
@@ -113,23 +132,46 @@ fn finished(sim: &mut Sim, body: impl FnOnce(SimRuntime)) {
 #[test]
 fn heap_only_updates_from_many_threads_leave_the_directory_root_unlatched() {
     for seed in 0..4 {
-        let mut sim = Sim::new(seed, Config::default());
+        let mut sim = Sim::new(
+            seed,
+            Config {
+                switch_rate: 0.3,
+                ..Config::default()
+            },
+        );
         finished(&mut sim, |rt| {
             let (db, kept) = build(rt.clone(), 1024);
             let db = Arc::new(db);
             let pages = db.heap.pages(&db.pager).unwrap();
-            let latched = update_all(&rt, &db, &kept);
+            let updates = update_all(&rt, &db, &kept, seed);
+            eprintln!(
+                "seed {seed}: {} of {} updates overlapped another",
+                updates.overlapped,
+                kept.len()
+            );
+            assert!(
+                updates.overlapped > 100,
+                "seed {seed}: {} updates overlapped another",
+                updates.overlapped
+            );
             assert_eq!(
-                0, latched,
+                0, updates.latched,
                 "seed {seed}: a write that adds no page latched the root"
             );
-            assert_eq!(pages, db.heap.pages(&db.pager).unwrap());
-            assert_eq!(Vec::<String>::new(), db.heap.verify(&db.pager).unwrap());
+            assert_eq!(pages, db.heap.pages(&db.pager).unwrap(), "seed {seed}");
+            assert_eq!(
+                Vec::<String>::new(),
+                db.heap.verify(&db.pager).unwrap(),
+                "seed {seed}"
+            );
             for (key, tid) in kept {
                 let v = db.heap.read(&db.pager, tid).unwrap().unwrap();
-                let next = v.header.next.expect("an updated row has a successor");
+                let next = v
+                    .header
+                    .next
+                    .unwrap_or_else(|| panic!("seed {seed}: updated row {key} has no successor"));
                 let after = db.heap.read(&db.pager, next).unwrap().unwrap();
-                assert_eq!(row(key, 1), after.row);
+                assert_eq!(row(key, 1), after.row, "seed {seed}: row {key}");
             }
         });
     }
@@ -210,22 +252,32 @@ fn clearing_bits_while_the_visibility_map_root_grows_keeps_the_map_whole() {
         let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
         let mut filler = fill_low_ids(&pager);
         let pager = Arc::new(pager);
+        let mut overlapped = 0;
         for round in 0..ROUNDS {
             let (heap, low, high) =
                 heap_across_the_span(&pager, large, 50 + round as u32, &mut filler);
             let heap = Arc::new(heap);
-            let (p, h) = (pager.clone(), heap.clone());
+            let growing = Arc::new(AtomicBool::new(false));
+            let during = Arc::new(AtomicUsize::new(0));
+            let (p, h, g) = (pager.clone(), heap.clone(), growing.clone());
             let grower = rt.spawn("grower", move || {
+                g.store(true, Ordering::Relaxed);
                 h.prune(&p, high, all_visible, &[], true).unwrap();
+                g.store(false, Ordering::Relaxed);
             });
-            let (p, h) = (pager.clone(), heap.clone());
+            let (p, h, g, d) = (pager.clone(), heap.clone(), growing.clone(), during.clone());
             let clearer = rt.spawn("clearer", move || {
                 for t in low {
+                    let before = g.load(Ordering::Relaxed);
                     h.delete(&p, t, 3).expect("delete");
+                    if before && g.load(Ordering::Relaxed) {
+                        d.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             });
             rt.join(grower);
             rt.join(clearer);
+            overlapped += usize::from(during.load(Ordering::Relaxed) > 0);
             assert_eq!(
                 Vec::<String>::new(),
                 heap.verify(&pager).unwrap(),
@@ -233,6 +285,11 @@ fn clearing_bits_while_the_visibility_map_root_grows_keeps_the_map_whole() {
             );
             assert_eq!(vec![high], heap_marked(&pager, &heap), "round {round}");
         }
+        eprintln!("{overlapped} of {ROUNDS} rounds cleared a bit while the root grew");
+        assert!(
+            overlapped > 10,
+            "{overlapped} rounds cleared a bit while the root grew"
+        );
     });
 }
 

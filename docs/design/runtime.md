@@ -49,7 +49,14 @@ Preconditions on the engine:
 - A thread that waits on memory another thread writes, a spin on a
   latch among them, calls `yield_now` or `park` on every iteration.
   The simulator switches threads only inside calls to these
-  interfaces, so a wait that never calls them never ends there.
+  interfaces and, when its configuration enables them, at the switch
+  points of page memory ([sys.md §1](sys.md#1-safe-types)), so a wait
+  that never calls them never ends there.
+- Every call into these interfaces, and every page memory switch
+  point, may hand the processor to another thread or unwind the
+  calling thread on a crash. The engine leaves no in-memory structure
+  half-updated across one: another thread may observe it there, and a
+  crash may stop the thread there with only its destructors run.
 - No destructor blocks on these interfaces. A crash stops every thread
   wherever it is; the simulator unwinds them and runs destructors, and
   a destructor that waits for a completion cannot be answered.
@@ -371,6 +378,10 @@ scheduler advances the clock by a random step, delivers the completions
 due, and hands the baton to a random runnable thread. When no thread is
 runnable the clock jumps to the next completion. A crash makes every
 thread unwind from its switch point.
+
+`Config::switch_rate` adds the switch points of page memory: at each
+one a simulated thread passes, the scheduler switches with that
+chance. At 0, the default, page memory never switches.
 
 Miri runs these tests as they are, since they are plain threads,
 mutexes and the one allocation of `AlignedBuf`; it needs the nightly
