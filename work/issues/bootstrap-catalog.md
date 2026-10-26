@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 701
 summary: "the engine has no catalog: no system relations with fixed ids to open a database from"
+branch: adtb-boot
 depends-on:
   - slotted-heap
   - blink-tree

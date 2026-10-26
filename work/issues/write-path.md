@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 730
 summary: "the engine cannot apply a change set: no inserts, deletes, retag, delete actions, upsert, key generation or defaults"
+branch: adtb-write
 depends-on:
   - executor
   - unique-checks

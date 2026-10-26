@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 721
 summary: "the executor lacks the Unicode, regex, zone, period, span, parse and decimal division primitives"
+branch: adtb-prim
 depends-on:
   - executor
 tags:
