@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 294
 summary: "catalog positions, the Tag type's row, value_states coverage, key clause text and relation kinds are unstated"
+branch: adtb-mig
 tags:
   - spec
 ---

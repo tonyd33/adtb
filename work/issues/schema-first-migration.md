@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 705
 summary: "a database cannot be created from a schema's declarations"
+branch: adtb-mig
 depends-on:
   - bootstrap-catalog
 tags:
