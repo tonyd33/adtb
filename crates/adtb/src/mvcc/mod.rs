@@ -46,6 +46,15 @@ impl Status {
     }
 }
 
+/// Why the transactions layer refuses a call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// A commit log page failed verification, the one named, and the database is quarantined.
+    Corrupt(crate::storage::PageError),
+    /// Every transaction id is spent; no read-write transaction can start.
+    Exhausted,
+}
+
 /// The transaction must abort, and may be retried at a new snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SerializationFailure {

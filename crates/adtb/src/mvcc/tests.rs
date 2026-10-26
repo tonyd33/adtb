@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use std::ops::Bound;
 
 use super::clog::{Directory, Root, directory_capacity, locate, per_page, set_status, status_at};
-use super::txn::extend;
+use super::txn::{Assign, assign, extend};
 use super::{
     Access, Cause, Holds, Limits, Probe, RESERVATION, Safety, Scope, SerialId,
     SerializationFailure, Serializer, Snapshot, Status, Write, Xid, check_write, probe_unique,
@@ -747,4 +747,19 @@ fn a_failure_names_the_other_transactions_of_its_conflict() {
     s.insert_entry(t3, INDEX, &key(2), E).unwrap();
     commit(&mut s, t3).unwrap();
     assert_eq!(Err(dangerous(&[1, 3])), commit(&mut s, t2));
+}
+
+#[test]
+fn begin_reserves_at_the_end_of_a_reservation_and_refuses_once_ids_are_spent() {
+    assert_eq!(Assign::Next, assign(Xid(5), Xid(1025)));
+    assert_eq!(
+        Assign::Reserve(Xid(1025 + RESERVATION)),
+        assign(Xid(1025), Xid(1025))
+    );
+    assert_eq!(
+        Assign::Reserve(Xid(u64::MAX)),
+        assign(Xid(u64::MAX - 3), Xid(u64::MAX - 3))
+    );
+    assert_eq!(Assign::Next, assign(Xid(u64::MAX - 1), Xid(u64::MAX)));
+    assert_eq!(Assign::Exhausted, assign(Xid(u64::MAX), Xid(u64::MAX)));
 }

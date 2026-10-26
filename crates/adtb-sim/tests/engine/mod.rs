@@ -273,7 +273,7 @@ impl Engine {
                     Kind::ReadOnly | Kind::Deferrable => None,
                 };
                 let mut ser = self.ser.lock(&self.rt);
-                let (hold, snapshot) = self.txns.take(Scope::Every);
+                let (hold, snapshot) = self.txns.take(Scope::Every).unwrap();
                 let sid = ser.begin(match (kind, xid) {
                     (_, Some(x)) => Access::ReadWrite(x),
                     (Kind::Deferrable, None) => Access::Deferrable,

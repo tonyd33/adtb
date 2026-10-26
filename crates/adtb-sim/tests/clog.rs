@@ -180,7 +180,7 @@ fn visibility_through_the_commit_log_matches_a_model() {
                     };
                     let reader = (!txns.running().is_empty() && rt.below(2) == 0)
                         .then(|| rt.pick(&txns.running()));
-                    let (id, snapshot) = txns.take(scope.clone());
+                    let (id, snapshot) = txns.take(scope.clone()).unwrap();
                     held.push(Held {
                         id,
                         taken: event,
@@ -566,4 +566,75 @@ fn failed_writes_crash_and_recover_the_commit_log() {
         .0;
     }
     assert!(crashes >= 18, "{crashes} crashes");
+}
+
+/// Commit a few transactions, write every page to the data file, and return the database's
+/// files with the root page of the commit log and its first status page.
+fn written(seed: u64) -> (BTreeMap<String, Vec<u8>>, Pid, Pid) {
+    let mut sim = Sim::new(seed, Config::default());
+    let mut out = None;
+    let outcome = sim.run(|rt| {
+        let pager = Pager::create(rt.clone(), &options()).expect("create");
+        let txns = Transactions::create(rt, &pager).expect("commit log");
+        for _ in 0..3 {
+            let x = txns.begin(&pager).expect("begin");
+            txns.commit(&pager, x).expect("commit");
+        }
+        pager.flush_log();
+        pager.flush_pages(usize::MAX);
+        pager.checkpoint();
+        let clog = txns.commit_log();
+        out = Some((clog.root(), clog.status_pages()[&0]));
+    });
+    assert_eq!(Outcome::Finished, outcome);
+    let (root, status) = out.unwrap();
+    (sim.files(), root, status)
+}
+
+/// Returns `files` with page `pid` of the data file damaged.
+fn damage(mut files: BTreeMap<String, Vec<u8>>, pid: Pid) -> BTreeMap<String, Vec<u8>> {
+    let data = files.get_mut(NAME).expect("the data file");
+    let at = pid.0 as usize * PAGE + PAGE / 2;
+    data[at] ^= 0xff;
+    files
+}
+
+#[test]
+fn a_damaged_status_page_quarantines_the_database() {
+    let (files, root, status) = written(1);
+    let mut sim = Sim::with_files(1, Config::default(), damage(files, status));
+    let outcome = sim.run(|rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options()).expect("open");
+        let txns = Transactions::open(rt, &pager, root).expect("the commit log opens");
+        let damage = txns.quarantined().expect("the database is quarantined");
+        assert_eq!(status, damage.pid);
+        let refused = adtb::mvcc::Error::Corrupt(damage);
+        assert_eq!(Err(refused), txns.begin(&pager));
+        assert_eq!(Some(refused), txns.take(Scope::Every).err());
+        assert_eq!(Err(damage), txns.status(&pager, Xid(1)));
+        assert_eq!(root, txns.commit_log().root());
+        let clog = txns.commit_log();
+        let inventory = Inventory {
+            commit_log: Some(&clog),
+            ..Inventory::default()
+        };
+        let report = adtb::verify::verify(&pager, &inventory);
+        assert!(
+            !report.is_clean(),
+            "verify reports the damaged status page: {report:?}"
+        );
+    });
+    assert_eq!(Outcome::Finished, outcome);
+}
+
+#[test]
+fn a_damaged_root_refuses_to_open_the_commit_log() {
+    let (files, root, _) = written(2);
+    let mut sim = Sim::with_files(2, Config::default(), damage(files, root));
+    let outcome = sim.run(|rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options()).expect("open");
+        let e = Transactions::open(rt, &pager, root).expect_err("the root is damaged");
+        assert_eq!(root, e.pid);
+    });
+    assert_eq!(Outcome::Finished, outcome);
 }

@@ -214,6 +214,13 @@ impl CommitLog {
     ///
     /// Postcondition: every id below [`CommitLog::reserved`] has resolved.
     pub fn open<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<CommitLog, PageError> {
+        let mut clog = CommitLog::load(pager, root)?;
+        clog.abort_unresolved(pager)?;
+        Ok(clog)
+    }
+
+    /// Read the commit log rooted at `root`: its root and directories, and no status page.
+    pub(crate) fn load<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<CommitLog, PageError> {
         let page = pager.read(root)?;
         check_role(root, &page, ROOT_PAGE);
         let state = Root::read(&page);
@@ -231,19 +238,21 @@ impl CommitLog {
             .iter()
             .flat_map(|d| d.entries.iter().copied())
             .collect();
-        let mut clog = CommitLog {
+        Ok(CommitLog {
             root_pid: root,
             root: state,
             per_page: per_page(pager.page_size()),
             directory_capacity: directory_capacity(pager.page_size()),
             directories,
             pages,
-        };
-        clog.abort_unresolved(pager)?;
-        Ok(clog)
+        })
     }
 
-    fn abort_unresolved<R: Runtime>(&mut self, pager: &Pager<R>) -> Result<(), PageError> {
+    /// Record as aborted every reserved id still in progress.
+    pub(crate) fn abort_unresolved<R: Runtime>(
+        &mut self,
+        pager: &Pager<R>,
+    ) -> Result<(), PageError> {
         let from = self.root.resolved.max(self.root.bound);
         let to = self.root.reserved;
         if from >= to {

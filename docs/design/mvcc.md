@@ -171,9 +171,10 @@ Postconditions:
 
 - An id is never assigned twice, across any number of crashes, whether
   its transaction committed, aborted or was running at a crash.
-- Assigning ids never exhausts them: at one id per nanosecond the 64-bit
-  space lasts over 500 years. A process that spends the last id
-  crashes.
+- Assigning ids never exhausts them in practice: at one id per
+  nanosecond the 64-bit space lasts over 500 years. Once the last id
+  is spent, starting a read-write transaction is refused; snapshots
+  and reads go on. The id `2^64 - 1` is never assigned.
 
 ### 4.2 The commit log
 
@@ -197,6 +198,15 @@ record. A transaction, read-only included, is acknowledged only once
 the log is durable past its own commit record and past the commit
 record of every commit its snapshot reads; `Transactions::read_upto`
 gives the last of those for a snapshot.
+
+A commit log page that fails verification quarantines the whole
+database, since every relation's visibility reads the commit log. From
+then on every transaction is refused with the corruption fault: no
+transaction starts, takes a snapshot, commits or aborts, and status
+lookups fail naming the damaged page. The database opens for `verify`
+and repair only: the commit log's root and directories stay readable
+for them. If the root or a directory page itself is damaged, the
+commit log does not open.
 
 Any number of threads share the transactions layer's commit log.
 A status lookup waits for no commit or abort: only for a reservation

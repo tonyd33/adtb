@@ -363,7 +363,7 @@ impl Db {
     /// Returns what is wrong with the all-visible bits: a page marked all-visible holding a
     /// version some snapshot of `held`, or a fresh one, does not see.
     fn check_visibility_map(&mut self, held: &[Held]) -> Vec<String> {
-        let (fresh_id, fresh) = self.txns.take(Scope::Every);
+        let (fresh_id, fresh) = self.txns.take(Scope::Every).unwrap();
         let mut problems = Vec::new();
         for h in 0..3 {
             let mut versions = Vec::new();
@@ -399,7 +399,7 @@ impl Db {
     }
 
     fn fresh_visible(&mut self) -> (Visible, Visible) {
-        let (id, s) = self.txns.take(Scope::Every);
+        let (id, s) = self.txns.take(Scope::Every).unwrap();
         let scan = self.scan_visible(&s, &[0, 1, 2]);
         let index = self.index_visible(&s, &[0, 1, 2]);
         self.txns.release(id);
@@ -695,7 +695,7 @@ fn take(db: &mut Db, next: &mut impl FnMut() -> u64) -> Held {
     } else {
         Scope::Heaps(heaps.iter().map(|&h| HEAP_IDS[h]).collect())
     };
-    let (id, snapshot) = db.txns.take(scope);
+    let (id, snapshot) = db.txns.take(scope).unwrap();
     let expected = db.scan_visible(&snapshot, &heaps).rows;
     Held {
         id,
@@ -1068,7 +1068,8 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         db.txns.commit(&db.pager, x).unwrap();
         let (old_id, _) = db
             .txns
-            .take(Scope::Heaps(BTreeSet::from([HEAP_IDS[APPLE]])));
+            .take(Scope::Heaps(BTreeSet::from([HEAP_IDS[APPLE]])))
+            .unwrap();
         let x = db.txns.begin(&db.pager).unwrap();
         let (apple, email) = pair(&mut db.heaps, APPLE, EMAIL);
         let moved_row = vec![Value::I64(1), Value::Text("m".into()), Value::Bytes(vec![])];

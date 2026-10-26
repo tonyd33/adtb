@@ -489,11 +489,11 @@ fn a_snapshot_reads_up_to_the_last_commit_before_it() {
     sim.run(|rt| {
         let pager = adtb::storage::Pager::create(rt.clone(), &engine::options()).unwrap();
         let txns = adtb::mvcc::Transactions::create(rt, &pager).unwrap();
-        let (before, _) = txns.take(adtb::mvcc::Scope::Every);
+        let (before, _) = txns.take(adtb::mvcc::Scope::Every).unwrap();
         let x = txns.begin(&pager).unwrap();
-        let (during, _) = txns.take(adtb::mvcc::Scope::Every);
+        let (during, _) = txns.take(adtb::mvcc::Scope::Every).unwrap();
         let lsn = txns.commit(&pager, x).unwrap();
-        let (after, _) = txns.take(adtb::mvcc::Scope::Every);
+        let (after, _) = txns.take(adtb::mvcc::Scope::Every).unwrap();
         assert_eq!(None, txns.read_upto(before));
         assert_eq!(None, txns.read_upto(during));
         assert_eq!(Some(lsn), txns.read_upto(after));
