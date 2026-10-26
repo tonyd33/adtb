@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 640
 summary: no simulator driver runs random multi-transaction workloads per seed and checks their histories
+branch: adtb-txn2
 depends-on:
   - ssi
   - isolation-checker

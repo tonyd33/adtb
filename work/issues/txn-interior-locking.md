@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 627
 summary: "Transactions takes &mut self, so every commit log status lookup goes through one lock"
+branch: adtb-txn2
 tags:
   - engine
 ---
