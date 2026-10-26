@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 166
 summary: "the canonical name m::r.unique#n uses a catalog id the front-end schema does not carry, so the interpreter uses the unique's position"
+branch: adtb-cat
 tags:
   - lang
 ---

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 702
 summary: "the spec gives no catalog ids to several engine-defined and re-scoped objects, and three operators carry only their first id"
+branch: adtb-cat
 tags:
   - spec
 ---

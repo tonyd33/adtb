@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: bug
 priority: 292
 summary: "the catalog breaks the model's reference rule, catalog::audit is undeclared, and catalog keys and evolution corner cases are unstated"
+branch: adtb-cat
 tags:
   - spec
 ---

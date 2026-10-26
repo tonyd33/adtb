@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 165
 summary: "constructor stages (declared, deprecated) are not in Schema, so NotOpen is tested only through the interpreter's with_closed"
+branch: adtb-cat
 tags:
   - lang
 ---
