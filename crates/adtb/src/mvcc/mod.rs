@@ -1,5 +1,6 @@
 mod clog;
 mod conflict;
+mod past;
 mod snapshot;
 mod ssi;
 mod txn;
@@ -11,9 +12,10 @@ mod tests;
 
 pub use clog::{CommitLog, PAGE_FORMAT};
 pub use conflict::{Probe, Write, check_write, probe_unique, read_before};
+pub use past::{Marker, Past};
 pub use snapshot::Snapshot;
 pub use ssi::{Access, Limits, Safety, SerialId, Serializer};
-pub use txn::{RESERVATION, Transactions};
+pub use txn::{PastError, RESERVATION, Transactions};
 pub use wait::Waits;
 pub use watermark::{Holds, Scope, SnapshotId};
 
@@ -53,6 +55,8 @@ pub enum Error {
     Corrupt(crate::storage::PageError),
     /// Every transaction id is spent; no read-write transaction can start.
     Exhausted,
+    /// A page of the record of the retention window is damaged.
+    History(crate::btree::Error),
 }
 
 /// The transaction must abort, and may be retried at a new snapshot.

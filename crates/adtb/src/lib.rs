@@ -6,6 +6,7 @@ pub mod btree;
 pub mod catalog;
 pub mod exec;
 pub mod heap;
+pub mod history;
 pub mod key;
 pub mod mvcc;
 pub mod plan;

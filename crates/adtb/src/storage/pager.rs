@@ -840,6 +840,20 @@ impl<R: Runtime> Pager<R> {
         self.resolve(self.commit_record(xid), pids, f)
     }
 
+    /// Commit as [`Pager::commit`] does, the commit record recording `wall_nanos`.
+    pub fn commit_at<F>(
+        &self,
+        xid: u64,
+        wall_nanos: u64,
+        pids: &[Pid],
+        f: F,
+    ) -> Result<Lsn, PageError>
+    where
+        F: FnOnce(&mut [&mut [u8]]),
+    {
+        self.resolve(Record::Commit { xid, wall_nanos }, pids, f)
+    }
+
     /// Change `pids` through `f` and log the abort record of transaction `xid`, as
     /// [`Pager::commit`] does.
     pub fn abort<F>(&self, xid: u64, pids: &[Pid], f: F) -> Result<Lsn, PageError>

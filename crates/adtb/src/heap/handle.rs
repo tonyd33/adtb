@@ -946,10 +946,38 @@ impl Heap {
         pager: &Pager<R>,
         xid: u64,
         row: &[Value],
+        judge: Option<&mut Judge<'_, R>>,
+    ) -> Result<Tid, Error> {
+        self.put_version(pager, Header::new(xid), row, judge)
+    }
+
+    /// Insert `row` as a version whose header is `header`, with no successor, as
+    /// [`Heap::insert`] does. Returns its TID.
+    ///
+    /// Panics if `row` is not a row of the newest format.
+    pub fn insert_version<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        header: Header,
+        row: &[Value],
+    ) -> Result<Tid, Error> {
+        let header = Header {
+            next: None,
+            ..header
+        };
+        self.put_version(pager, header, row, None)
+    }
+
+    fn put_version<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        header: Header,
+        row: &[Value],
         mut judge: Option<&mut Judge<'_, R>>,
     ) -> Result<Tid, Error> {
+        let xid = header.xmin;
         let (body, held) = self.body(pager, xid, row, &[])?;
-        let version = version_bytes(Header::new(xid), &body);
+        let version = version_bytes(header, &body);
         loop {
             let pid = self.candidate(pager, version.len())?;
             let pre = self.preconvert(pager, pid, xid)?;
@@ -1281,6 +1309,33 @@ impl Heap {
             ));
         }
         Ok(problems)
+    }
+
+    /// Returns the number of positions of the heap's directory that name no page.
+    pub fn holes<R: Runtime>(&self, pager: &Pager<R>) -> Result<usize, PageError> {
+        let check = self.space.check(pager)?;
+        Ok(check.leaves.iter().filter(|l| l.is_none()).count())
+    }
+
+    /// Returns whether the heap has no page left: every version it held was freed.
+    pub fn is_empty<R: Runtime>(&self, pager: &Pager<R>) -> Result<bool, PageError> {
+        Ok(self.space.pages(pager)?.is_empty())
+    }
+
+    /// Free every page the heap owns in one pager update, and with it the heap.
+    ///
+    /// Preconditions: the heap has no page left, and nothing refers to it once the update is
+    /// applied.
+    ///
+    /// Panics if the heap has a page left.
+    pub fn drop_empty<R: Runtime>(self, pager: &Pager<R>) -> Result<(), PageError> {
+        assert!(self.is_empty(pager)?, "heap {} has pages left", self.id);
+        let mut gone = pager.reserve();
+        for pid in self.owned_pages(pager)? {
+            gone.free(pid);
+        }
+        pager.update_with(gone, &[], |_| {})?;
+        Ok(())
     }
 
     /// Returns every page the heap owns: its directory's, its own and its visibility map's.

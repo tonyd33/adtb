@@ -1,11 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{OnceLock, RwLockReadGuard};
+use std::time::SystemTime;
 
 use adtb_sys::lock::{Lock, RwLock};
 
+use crate::btree;
 use crate::runtime::Runtime;
-use crate::storage::{Lsn, PageError, Pager, Pid};
+use crate::storage::{Lsn, PageError, Pager, Pid, Position};
 
+use super::past::{Marker, Past};
 use super::{CommitLog, Error, Holds, Scope, Snapshot, SnapshotId, Status, Xid};
 
 /// The number of ids one xid allocation record reserves.
@@ -43,11 +46,31 @@ struct State {
     holds: Holds,
     /// The LSN of the latest commit record logged since the commit log was opened.
     last_commit: Option<Lsn>,
+    /// The recorded time of the latest commit, in nanoseconds since the Unix epoch.
+    last_time: u64,
     /// The log was durable below this LSN when the commit log was opened, every commit before
     /// the open among it.
     opened: Lsn,
-    /// The `last_commit` of each held snapshot when it was taken.
-    reads: BTreeMap<SnapshotId, Option<Lsn>>,
+    /// The `last_commit` and `last_time` of each held snapshot when it was taken.
+    reads: BTreeMap<SnapshotId, (Option<Lsn>, u64)>,
+    /// The time of each marker a read of the past reads at, with the number of reads at it.
+    pins: BTreeMap<u64, usize>,
+}
+
+/// Why a read of the past is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PastError {
+    /// The position is outside the retention window or after the reader's snapshot. `oldest` is
+    /// the oldest position a read may name, if any.
+    Unavailable { oldest: Option<Position> },
+    /// A page of the record of the window is damaged.
+    Damaged(btree::Error),
+}
+
+/// Returns `t` in nanoseconds since the Unix epoch.
+fn nanos(t: SystemTime) -> u64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
 }
 
 /// The transactions of one database: id assignment, the commit log, running transactions and
@@ -87,6 +110,9 @@ pub struct Shared<R: Runtime> {
     clog: RwLock<CommitLog>,
     state: Lock<State>,
     quarantine: OnceLock<PageError>,
+    history: OnceLock<Past>,
+    /// The first damage found keeping a marker; every read of the past fails with it after.
+    lost: OnceLock<btree::Error>,
 }
 
 impl<R: Runtime> Transactions<R> {
@@ -120,14 +146,18 @@ impl<R: Runtime> Transactions<R> {
             running: BTreeSet::new(),
             holds: Holds::default(),
             last_commit: None,
+            last_time: 0,
             opened: pager.durable(),
             reads: BTreeMap::new(),
+            pins: BTreeMap::new(),
         };
         Transactions(std::sync::Arc::new(Shared {
             rt,
             clog: RwLock::new(clog),
             state: Lock::new(state),
             quarantine: OnceLock::new(),
+            history: OnceLock::new(),
+            lost: OnceLock::new(),
         }))
     }
 
@@ -187,20 +217,27 @@ impl<R: Runtime> Transactions<R> {
         Ok(x)
     }
 
-    /// Commit `x`: record it in the commit log, then log its commit record. The commit is durable
-    /// once the log is durable past the returned LSN.
+    /// Commit `x`: record its commit time in the record of the window when history is kept,
+    /// record it in the commit log, then log its commit record with the same time. The commit is
+    /// durable once the log is durable past the returned LSN.
     ///
-    /// Fails, leaving `x` running, if the database is quarantined.
+    /// Fails, leaving `x` running, if the database is quarantined or the record of the window is
+    /// damaged.
     ///
     /// Panics if `x` is not running.
     pub fn commit(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, Error> {
         self.admit()?;
         let mut st = self.state.lock(&self.rt);
         assert!(st.running.contains(&x), "{x:?} is not running");
-        let committed = self.clog.read(&self.rt).commit(pager, x);
+        let time = nanos(self.rt.wall()).max(st.last_time);
+        if let Some(past) = self.history.get() {
+            past.record_commit(pager, x, time).map_err(Error::History)?;
+        }
+        let committed = self.clog.read(&self.rt).commit_at(pager, x, time);
         let lsn = self.checked(committed)?;
         st.running.remove(&x);
         st.last_commit = Some(lsn);
+        st.last_time = time;
         Ok(lsn)
     }
 
@@ -241,7 +278,7 @@ impl<R: Runtime> Transactions<R> {
         let xmin = in_progress.first().copied().unwrap_or(st.next);
         let snapshot = Snapshot::new(xmin, st.next, in_progress);
         let id = st.holds.hold(xmin, scope);
-        let read = st.last_commit;
+        let read = (st.last_commit, st.last_time);
         st.reads.insert(id, read);
         Ok((id, snapshot))
     }
@@ -259,12 +296,12 @@ impl<R: Runtime> Transactions<R> {
     ///
     /// Panics if `id` is not held.
     pub fn read_upto(&self, id: SnapshotId) -> Option<Lsn> {
-        *self
-            .state
+        self.state
             .lock(&self.rt)
             .reads
             .get(&id)
             .unwrap_or_else(|| panic!("{id:?} is not held"))
+            .0
     }
 
     /// Log a safe snapshot marker for `snapshot`, held as `id`, covering every commit it reads.
@@ -279,9 +316,21 @@ impl<R: Runtime> Transactions<R> {
             .reads
             .get(&id)
             .unwrap_or_else(|| panic!("{id:?} is not held"));
-        let at = pager.position(read.unwrap_or(st.opened));
+        let at = pager.position(read.0.unwrap_or(st.opened));
+        let time = read.1;
         drop(st);
-        pager.log_safe_snapshot(at, &snapshot.encode())
+        let lsn = pager.log_safe_snapshot(at, &snapshot.encode());
+        if let Some(past) = self.history.get() {
+            let marker = Marker {
+                at,
+                time,
+                snapshot: snapshot.clone(),
+            };
+            if let Err(e) = past.record_marker(pager, &marker) {
+                self.lost.get_or_init(|| e);
+            }
+        }
+        lsn
     }
 
     /// Returns whether the version whose header holds `xmin` and `xmax` is visible to `reader`
@@ -324,5 +373,135 @@ impl<R: Runtime> Transactions<R> {
         );
         let truncated = self.clog.write(&self.rt).truncate(pager, bound);
         self.checked(truncated)
+    }
+    /// Keep history in `past` from now on: record the time of every commit and keep every safe
+    /// snapshot marker logged.
+    ///
+    /// Panics if history is kept already.
+    pub fn keep_history(&self, past: Past) {
+        assert!(self.history.set(past).is_ok(), "history is kept already");
+    }
+
+    /// Returns the record of the retention window, if history is kept.
+    pub fn history(&self) -> Option<&Past> {
+        self.history.get()
+    }
+
+    /// Returns the least commit time the retention window keeps now: the window's length before
+    /// the latest of now and the latest commit, or the time of the oldest marker a read of the
+    /// past reads at, whichever is less. Returns `None` if history is not kept.
+    pub fn cutoff(&self) -> Option<u64> {
+        let past = self.history.get()?;
+        let st = self.state.lock(&self.rt);
+        Some(self.cutoff_in(&st, past))
+    }
+
+    fn cutoff_in(&self, st: &State, past: &Past) -> u64 {
+        let now = nanos(self.rt.wall()).max(st.last_time);
+        let window = u64::try_from(past.window().as_nanos()).unwrap_or(u64::MAX);
+        let edge = now.saturating_sub(window);
+        st.pins.keys().next().map_or(edge, |&p| p.min(edge))
+    }
+
+    /// Returns whether the retention window bounded by `cutoff` keeps the versions `xmax`
+    /// deleted: `xmax` committed at or after `cutoff`. A record found malformed keeps them, and
+    /// every read of the past fails after.
+    pub fn retains(
+        &self,
+        pager: &Pager<R>,
+        xmax: Xid,
+        cutoff: Option<u64>,
+    ) -> Result<bool, PageError> {
+        let (Some(past), Some(cutoff)) = (self.history.get(), cutoff) else {
+            return Ok(false);
+        };
+        match past.committed_at(pager, xmax) {
+            Ok(t) => Ok(t.is_some_and(|t| t >= cutoff)),
+            Err(btree::Error::Page(e)) => Err(e),
+            Err(e) => {
+                self.lost.get_or_init(|| e);
+                Ok(true)
+            }
+        }
+    }
+
+    /// Returns the marker a read of the past at `at` reads, held so that what it sees stays until
+    /// [`Transactions::unpin`]: the latest marker at or before `at`.
+    ///
+    /// Fails with [`PastError::Unavailable`] when `at` is after `upto` or no marker within the
+    /// window is at or before it, and with [`PastError::Damaged`] when the record is damaged or
+    /// a marker could not be kept.
+    pub fn pin(&self, pager: &Pager<R>, at: Position, upto: Position) -> Result<Marker, PastError> {
+        let found = self.pin_with(|past| {
+            if at > upto {
+                return Ok(None);
+            }
+            past.marker_at(pager, at)
+        });
+        found?.map_or_else(|| Err(self.unavailable(pager)), Ok)
+    }
+
+    /// Returns the marker a read of the past at `time` reads, held as [`Transactions::pin`] holds
+    /// one: the latest marker whose time is at or before `time`.
+    pub fn pin_time(
+        &self,
+        pager: &Pager<R>,
+        time: SystemTime,
+        upto: Position,
+    ) -> Result<Marker, PastError> {
+        let found = self.pin_with(|past| {
+            let m = past.marker_by_time(pager, nanos(time))?;
+            Ok(m.filter(|m| m.at <= upto))
+        });
+        found?.map_or_else(|| Err(self.unavailable(pager)), Ok)
+    }
+
+    fn pin_with(
+        &self,
+        find: impl FnOnce(&Past) -> Result<Option<Marker>, btree::Error>,
+    ) -> Result<Option<Marker>, PastError> {
+        let Some(past) = self.history.get() else {
+            return Ok(None);
+        };
+        if let Some(e) = self.lost.get() {
+            return Err(PastError::Damaged(*e));
+        }
+        let found = find(past).map_err(PastError::Damaged)?;
+        let mut st = self.state.lock(&self.rt);
+        let Some(m) = found.filter(|m| m.time >= self.cutoff_in(&st, past)) else {
+            return Ok(None);
+        };
+        *st.pins.entry(m.time).or_default() += 1;
+        Ok(Some(m))
+    }
+
+    fn unavailable(&self, pager: &Pager<R>) -> PastError {
+        let Some(past) = self.history.get() else {
+            return PastError::Unavailable { oldest: None };
+        };
+        let Some(cutoff) = self.cutoff() else {
+            return PastError::Unavailable { oldest: None };
+        };
+        match past.markers(pager) {
+            Ok(ms) => PastError::Unavailable {
+                oldest: ms.iter().rev().find(|m| m.time >= cutoff).map(|m| m.at),
+            },
+            Err(e) => PastError::Damaged(e),
+        }
+    }
+
+    /// Release the hold [`Transactions::pin`] took on `marker`.
+    ///
+    /// Panics if `marker` is not held.
+    pub fn unpin(&self, marker: &Marker) {
+        let mut st = self.state.lock(&self.rt);
+        let n = st
+            .pins
+            .get_mut(&marker.time)
+            .unwrap_or_else(|| panic!("no read of the past holds the marker at {:?}", marker.at));
+        *n -= 1;
+        if *n == 0 {
+            st.pins.remove(&marker.time);
+        }
     }
 }

@@ -645,6 +645,7 @@ impl<R: Runtime> Database<R> {
             .map_err(|e| match e {
                 vacuum::Error::Page(p) => Error::Page(p),
                 vacuum::Error::Index(i) => Error::from(i),
+                vacuum::Error::Heap(h) => Error::Internal(format!("vacuum wrote history: {h:?}")),
             })?;
             out.push((id, report));
         }

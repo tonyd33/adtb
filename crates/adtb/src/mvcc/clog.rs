@@ -413,6 +413,20 @@ impl CommitLog {
         pager.commit(x.0, &[pid], |p| set_status(p[0], i, Status::Committed))
     }
 
+    /// Commit `x` as [`CommitLog::commit`] does, its commit record recording `time`, in
+    /// nanoseconds since the Unix epoch.
+    pub fn commit_at<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        x: Xid,
+        time: u64,
+    ) -> Result<Lsn, PageError> {
+        let (pid, i) = self.slot(x);
+        pager.commit_at(x.0, time, &[pid], |p| {
+            set_status(p[0], i, Status::Committed);
+        })
+    }
+
     /// Record that `x` aborted and log its abort record, in one batch.
     pub fn abort<R: Runtime>(&self, pager: &Pager<R>, x: Xid) -> Result<Lsn, PageError> {
         let (pid, i) = self.slot(x);

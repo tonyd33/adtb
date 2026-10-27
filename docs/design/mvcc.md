@@ -756,31 +756,64 @@ With a time-travel window
 version deleted within the window and dead to every running snapshot
 is moved by vacuum into a history heap of its constructor instead of
 being freed, so current heaps and indexes do not hold history. Each
-history heap has a key index whose entries are `(key, commit position,
-tid)`, the commit position being that of the version's inserter.
+sum's history heaps have one key index whose entries are `(key, ctor,
+tid)`.
 
-A read `at commit p` reads at the latest safe snapshot marker at or
-before `p`, a function of `p` listed in `sys::safe_snapshots`
-([../spec/catalog.md §1.5](../spec/catalog.md#15-commit-times-and-safe-snapshots)),
-and takes no SIREAD locks. It reads the current and history heaps of
-the constructors it reads, probing the history key index by key where
-the current read would probe the key index, and counts a version's
-writer as committed when the writer's commit position is at or before
-the marker. Versions past the window are removed from history heaps.
+The record of the window lives beside the commit log: the commit time
+of every transaction committed within the window, and the safe
+snapshot markers taken within it, each with the position of the latest
+commit it reads and that commit's time. Commit times never decrease
+along positions. At most one marker is kept per position.
 
-For every xid committed within the window a commit position map beside
-the commit log gives its commit position, and the commit records'
-wall-clock times map a time to a position.
+A version is kept by the window when its inserter committed, another
+transaction deleted it, and the deleter committed at or after the
+window's cutoff: the window's length before now, or the time of the
+oldest marker a read of the past holds, whichever is earlier.
+
+A read `at commit p` reads at the latest marker at or before `p`
+within the window, a function of `p` listed in `sys::safe_snapshots`
+([../spec/catalog.md §1.5](../spec/catalog.md#15-commit-times-and-safe-snapshots));
+`at instant t` reads at the latest marker whose time is at or before
+`t`. A read holds its marker while it runs and takes no SIREAD locks.
+It reads the current heap of each constructor it reads and then its
+history heap, probing the history key index by key where the current
+read would probe the key index, and judges each version by the
+marker's snapshot. Versions the window no longer keeps are removed
+from history heaps.
+
+Invariants:
+
+- Every version of a history heap had a committed inserter and a
+  committed deleter, and every history key index entry names a version
+  of its heap.
+- No pruning, vacuum or expiry frees a version a held marker sees, or
+  a version kept by the window, without first copying it to its
+  history heap.
+
+Postconditions:
+
+- A read at a marker returns each row the marker's snapshot saw when
+  the marker was taken, once, however vacuum moves versions meanwhile.
+- A read naming a position after the reader's snapshot, or before the
+  oldest marker within the window, is refused with the oldest position
+  a read may name.
+- A crash while vacuum moves versions leaves each version in its
+  current heap, its history heap, or both; a later vacuum copies none
+  twice and frees it from the current heap.
 
 ### 10.4 Removing a constructor
 
 Removing a constructor applies only to a constructor with no live
 row, but older snapshots, the time-travel window and index entries may
 still name its versions. The remove keeps the heap as history; vacuum
-removes its dead versions and their index entries in its batched pass.
-The heap is dropped and its pages freed once it holds no version any
-snapshot or the time-travel retention window can see. Older snapshots
-and `at commit` reads keep seeing the constructor's rows until then.
+removes its dead versions and their index entries in its batched pass,
+moving the versions the window keeps to the constructor's history
+heap. The heap is dropped and its pages freed once it holds no version
+any snapshot or the time-travel retention window can see: once vacuum
+leaves it no page, its remaining pages are freed in one pager update,
+applied only once nothing names the heap.
+Older snapshots and `at commit` reads keep seeing the constructor's
+rows until then, the latter from its history heap after the drop.
 
 Rulings: mvcc/background, mvcc/on-access, union-index/vacuum/batched, derived/time-travel/retention/history-heap, union-index/drop-ctor/after-vacuum
 

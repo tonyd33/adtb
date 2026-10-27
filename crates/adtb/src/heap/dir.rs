@@ -61,6 +61,21 @@ fn push(node: &mut [u8], pid: Pid, category: u8) {
     node[COUNT..COUNT + 2].copy_from_slice(&(n as u16 + 1).to_le_bytes());
 }
 
+/// Drop the holes that end level-0 node `node` when it is not full.
+///
+/// Only the last node of a level is not full, so the positions dropped are the last of the space.
+fn trim(node: &mut [u8]) {
+    let mut n = count(node);
+    if level(node) != 0 || n as u64 >= capacity(node) {
+        return;
+    }
+    while n > 0 && entry(node, n - 1).0 == HOLE {
+        n -= 1;
+        set_word(node, n, HOLE, 0, false);
+    }
+    node[COUNT..COUNT + 2].copy_from_slice(&(n as u16).to_le_bytes());
+}
+
 fn init(node: &mut [u8], level: u32, capacity: u64) {
     let vm = u64_at(node, VM);
     node[CONTENTS..].fill(0);
@@ -440,7 +455,8 @@ impl Space {
     }
 
     /// Replace the entry at `position`, which names `pid`, by a hole, in `stage`. The page it named
-    /// is no longer part of the space.
+    /// is no longer part of the space. When the level-0 directory page holding the entry is not
+    /// full, the holes that end it leave it.
     ///
     /// Precondition: `stage` holds `pid` and no directory page.
     pub fn vacate<'p, R: Runtime>(
@@ -455,8 +471,13 @@ impl Space {
             category: Some(HOLE_CATEGORY),
             mark: Some(false),
         };
-        let changed = self.change(stage, pager, position, pid, hole)?;
-        Ok(changed.unwrap_or_default())
+        let Some(changed) = self.change(stage, pager, position, pid, hole)? else {
+            return Ok(Above::default());
+        };
+        if let Some((path, _)) = self.path(stage, pager, position)? {
+            trim(stage.page(pager, *path.last().unwrap())?);
+        }
+        Ok(changed)
     }
 
     /// Returns the number of positions, holes included.
