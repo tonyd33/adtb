@@ -292,8 +292,118 @@ fn operator(schema: &Schema, ty: &Ty, op: &ResolvedOp) -> Value {
                 ("fill", optional(schema, ty, "MoveField", "fill", fill)),
             ],
         ),
-        Resolved::Revert { migration } => one("Revert", "migration", *migration),
+        other => derived(schema, ty, other),
     }
+}
+
+/// Returns the value of the operator sum `ty` of a revert, or of an operator on defaults, computed
+/// fields, stored views, grants, extensions, zone rules or data.
+fn derived(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
+    let v = |ctor: &str, fields: &[(&str, Value)]| sum(schema, ty, ctor, fields);
+    let one = |ctor: &str, name: &str, object: u64| v(ctor, &[(name, id(object))]);
+    match op {
+        Resolved::AddDefault {
+            default,
+            relation,
+            field,
+            value,
+        } => v(
+            "AddDefault",
+            &[
+                ("default", id(*default)),
+                ("relation", id(*relation)),
+                ("field", id(*field)),
+                ("value", text(value)),
+            ],
+        ),
+        Resolved::Revert { migration } => one("Revert", "migration", *migration),
+        Resolved::DropDefault { default } => one("DropDefault", "default", *default),
+        Resolved::Store {
+            view,
+            function,
+            decl,
+        } => v(
+            "Store",
+            &[
+                ("view", id(*view)),
+                ("function", id(*function)),
+                ("decl", text(decl)),
+            ],
+        ),
+        Resolved::Unstore { view } => one("Unstore", "view", *view),
+        Resolved::AddComputed {
+            computed,
+            relation,
+            name,
+            decl,
+        } => v(
+            "AddComputed",
+            &[
+                ("computed", id(*computed)),
+                ("relation", id(*relation)),
+                ("name", text(name)),
+                ("decl", text(decl)),
+            ],
+        ),
+        Resolved::RedefineComputed { computed, decl } => v(
+            "RedefineComputed",
+            &[("computed", id(*computed)), ("decl", text(decl))],
+        ),
+        Resolved::DropComputed { computed } => one("DropComputed", "computed", *computed),
+        Resolved::Grant { .. } | Resolved::Revoke { .. } => granted(schema, ty, op),
+        Resolved::Install {
+            module,
+            version,
+            package,
+        } => v(
+            "Install",
+            &[
+                ("module", text(module)),
+                ("version", text(version)),
+                ("package", hashed(package)),
+            ],
+        ),
+        Resolved::Uninstall { module } => v("Uninstall", &[("module", text(module))]),
+        Resolved::AdoptTzdb { release, data } => v(
+            "AdoptTzdb",
+            &[("release", text(release)), ("data", hashed(data))],
+        ),
+        Resolved::Script { write } => v("Script", &[("write", text(write))]),
+        _ => {
+            panic!("{op:?} is a revert or an operator on derived data, grants, extensions or data")
+        }
+    }
+}
+
+/// Returns the BLAKE3-256 hash of `data` as a `Bytes` value.
+fn hashed(data: &str) -> Value {
+    Value::Bytes(blake3::hash(data.as_bytes()).as_bytes().to_vec())
+}
+
+/// Returns the `Grant` or `Revoke` value of the operator sum `ty`: the privilege list, with no
+/// separate target.
+fn granted(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
+    let (ctor, privileges, grantee, grant_option) = match op {
+        Resolved::Grant {
+            privileges,
+            grantee,
+            grant_option,
+        } => ("Grant", privileges, grantee, Some(*grant_option)),
+        Resolved::Revoke {
+            privileges,
+            grantee,
+        } => ("Revoke", privileges, grantee, None),
+        _ => panic!("{op:?} is a grant or a revoke"),
+    };
+    let mut fields = vec![
+        ("privilege", text(privileges)),
+        ("target", optional(schema, ty, ctor, "target", &None)),
+        ("grantee", text(grantee)),
+    ];
+    if let Some(g) = grant_option {
+        fields.push(("grant_option", boolean(schema, g)));
+    }
+    sum(schema, ty, ctor, &fields)
 }
 
 /// Returns the value of field `target` of constructor `ctor` of the operator sum `ty`.

@@ -1,6 +1,8 @@
 use super::*;
 use crate::canon::canonical_term;
 
+#[path = "derived.rs"]
+mod derived;
 #[cfg(test)]
 #[path = "../resolved_tests.rs"]
 mod tests;
@@ -166,6 +168,63 @@ pub enum Resolved {
     Revert {
         migration: u64,
     },
+    /// One for each field the default fills, the first of them named.
+    AddDefault {
+        default: u64,
+        relation: u64,
+        field: u64,
+        value: String,
+    },
+    DropDefault {
+        default: u64,
+    },
+    Store {
+        view: u64,
+        function: u64,
+        decl: String,
+    },
+    Unstore {
+        view: u64,
+    },
+    AddComputed {
+        computed: u64,
+        relation: u64,
+        name: String,
+        decl: String,
+    },
+    RedefineComputed {
+        computed: u64,
+        decl: String,
+    },
+    DropComputed {
+        computed: u64,
+    },
+    Grant {
+        privileges: String,
+        grantee: String,
+        grant_option: bool,
+    },
+    Revoke {
+        privileges: String,
+        grantee: String,
+    },
+    /// `package` is the package's contents.
+    Install {
+        module: String,
+        version: String,
+        package: String,
+    },
+    Uninstall {
+        module: String,
+    },
+    /// `data` is the release's data.
+    AdoptTzdb {
+        release: String,
+        data: String,
+    },
+    Script {
+        write: String,
+    },
 }
 
 /// The constructor relation, or the constructor of a type, a write state operator names.
@@ -268,8 +327,8 @@ impl Source {
     /// Returns the operators of migration `number` of the log in ordinal order, resolved against the
     /// source after it.
     ///
-    /// Fails with the operators that have no resolved form, at their spans, or with the operands whose
-    /// names do not resolve. Panics if the log holds no migration `number`.
+    /// Fails with the operators whose data the source lacks, at their spans, or with the operands
+    /// whose names do not resolve. Panics if the log holds no migration `number`.
     pub fn resolved(&self, number: u64) -> Result<Vec<ResolvedOp>, Vec<Diag>> {
         let i = self
             .log
@@ -278,14 +337,21 @@ impl Source {
             .unwrap_or_else(|| panic!("the log holds migration {number}"));
         let logged = &self.log[i];
         let after = self.log.get(i + 1).map_or(self, |l| &*l.before);
-        let unresolvable: Vec<Diag> = logged
+        let unavailable: Vec<Diag> = logged
             .operators
             .iter()
-            .filter(|op| !resolvable(&op.kind))
-            .map(|op| Diag::new(op.span, "this operator has no resolved form yet"))
+            .filter_map(|op| match &op.kind {
+                OperatorKind::AdoptTzdb { from, .. } if !self.packages.contains_key(from) => {
+                    Some(Diag::new(
+                        op.span,
+                        format!("the release data `{from}` is not available"),
+                    ))
+                }
+                _ => None,
+            })
             .collect();
-        if !unresolvable.is_empty() {
-            return Err(unresolvable);
+        if !unavailable.is_empty() {
+            return Err(unavailable);
         }
         let names = logged.names()?;
         let unbuilt = |ds: Vec<FileDiag>| ds.into_iter().map(|d| d.diag).collect::<Vec<_>>();
@@ -429,53 +495,6 @@ fn after_eq(text: &str, from: u32, end: u32) -> Span {
         .and_then(|i| toks.get(i + 1))
         .map_or(end as usize, |(_, r)| from as usize + r.start);
     Span::new(at, end as usize)
-}
-
-fn resolvable(op: &OperatorKind) -> bool {
-    matches!(
-        op,
-        OperatorKind::AddModule(_)
-            | OperatorKind::DropModule(_)
-            | OperatorKind::AddType(_)
-            | OperatorKind::DropType(_)
-            | OperatorKind::RenameType(..)
-            | OperatorKind::AddRelation(_)
-            | OperatorKind::DropRelation(_)
-            | OperatorKind::RenameRelation(..)
-            | OperatorKind::AddSet(_)
-            | OperatorKind::DropSet(..)
-            | OperatorKind::RenameSet(..)
-            | OperatorKind::AddConstructor { .. }
-            | OperatorKind::RemoveConstructor(_)
-            | OperatorKind::RenameConstructor(..)
-            | OperatorKind::SplitConstructor { .. }
-            | OperatorKind::MergeConstructor { .. }
-            | OperatorKind::NestConstructor { .. }
-            | OperatorKind::UnnestConstructor(..)
-            | OperatorKind::AddField { .. }
-            | OperatorKind::AlterField { .. }
-            | OperatorKind::DropField(_)
-            | OperatorKind::RenameField(..)
-            | OperatorKind::MoveField { .. }
-            | OperatorKind::AddUnique(..)
-            | OperatorKind::DropUnique(..)
-            | OperatorKind::AddIndex { .. }
-            | OperatorKind::DropIndex { .. }
-            | OperatorKind::Rekey { .. }
-            | OperatorKind::DefineFn(_)
-            | OperatorKind::RedefineFn(_)
-            | OperatorKind::DropFn(_)
-            | OperatorKind::DefineAggregate(_)
-            | OperatorKind::DropAggregate(_)
-            | OperatorKind::AddConstraint(_)
-            | OperatorKind::DropConstraint(_)
-            | OperatorKind::AddCheck(_)
-            | OperatorKind::DropCheck(_)
-            | OperatorKind::Enable(_)
-            | OperatorKind::Disable(_)
-            | OperatorKind::Deprecate(_)
-            | OperatorKind::Revert { .. }
-    )
 }
 
 struct Resolver<'a> {
@@ -962,7 +981,7 @@ impl Resolver<'_> {
                     ctor: self.type_ctor(before, &path.ty, &path.ctor.text)?,
                 }
             }
-            _ => return None,
+            kind => return self.derived(kind),
         })
     }
 

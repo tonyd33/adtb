@@ -461,7 +461,7 @@ fn a_migration_declaring_a_constraint_outside_the_bound_is_refused() {
 }
 
 #[test]
-#[ignore = "the engine has no stored views yet"]
+#[ignore = "the engine stores no view, so it admits every `store`"]
 fn storing_a_view_with_no_index_bounded_maintenance_is_refused_naming_the_index() {
     let view = "define fn by_name () -> Set ({ user: Key users, n: I64 }) =
   from u in users

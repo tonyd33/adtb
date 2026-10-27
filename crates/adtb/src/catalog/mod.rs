@@ -22,7 +22,7 @@ use std::time::SystemTime;
 
 use adtb_lang::ast::MigrationFile;
 use adtb_lang::check::Program;
-use adtb_lang::evolve::{Code, Refusal, RowMap, Source};
+use adtb_lang::evolve::{Code, Refusal, Resolved, RowMap, Source};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Schema, Stage};
@@ -490,11 +490,16 @@ fn unfinished(report: &Report) -> Error {
 }
 
 /// Returns why the catalog cannot record the last migration of `source`: its operators that do
-/// not resolve, and its functions whose names do not resolve or whose code it does not hold.
+/// not resolve, a script it holds, and its functions whose names do not resolve or whose code it
+/// does not hold.
 fn recordable(source: &Source) -> Result<(), Vec<String>> {
     let mut why = Vec::new();
-    if let Err(ds) = source.resolved(source.version) {
-        why.extend(ds.into_iter().map(|d| d.message));
+    match source.resolved(source.version) {
+        Err(ds) => why.extend(ds.into_iter().map(|d| d.message)),
+        Ok(ops) if ops.iter().any(|o| matches!(o.op, Resolved::Script { .. })) => {
+            why.push("the engine does not run a `script` yet".to_string());
+        }
+        Ok(_) => {}
     }
     match source.functions() {
         Err(ds) => why.extend(ds.into_iter().map(|d| d.diag.message)),

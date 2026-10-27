@@ -437,7 +437,7 @@ The catalog writes each operand written in the language as a `Term`
 | `Source::names()` | for each declaration `i`, the `Names` of file `i` of `Source::files()`, by span |
 | `Logged::names()` | the `Names` of the migration's text, by span; or the operands whose names it cannot resolve |
 | `canon::canonical_term(text, span, names)` | the canonical token form of the term at `span` of `text` |
-| `Source::resolved(n)` | the operators of migration `n` of the log in ordinal order, each a `Resolved` with its `Clause`s; or the operators with no resolved form, or the operands whose names do not resolve |
+| `Source::resolved(n)` | the operators of migration `n` of the log in ordinal order, each a `Resolved` with its `Clause`s; or the operators whose data the source lacks, or the operands whose names do not resolve |
 | `Source::functions()` | every function and aggregate of the user modules: its id, module, name, signature as written, whether it is deterministic, and its `Code` |
 
 Postconditions of `Source::names()` and `Logged::names()`:
@@ -496,10 +496,16 @@ Postconditions of `Source::resolved(n)`:
   name through its type; a fill or routing is its expression or its
   arms from the first pattern to the last body; `rekey`'s is its key
   fields.
-- `install`, `uninstall`, `add default`, `drop default`, `store`,
-  `unstore`, the computed field operators, `grant`, `revoke`,
-  `adopt tzdb` and `script` have no resolved form yet, and are refused
-  at their spans.
+- `add default` names the first default its clause creates, in
+  constructor order, and the field that default fills; `value` is
+  everything after the `=`. A computed field operator's `decl` is the
+  field from its name through its expression. A grant's or revoke's
+  `privileges` is its privilege list, from the token after the verb to
+  the token before `to` or `from`.
+- `install` holds the package's contents and `adopt tzdb` the
+  release's data, each read from `Source::packages` by the file it
+  names; the catalog stores their BLAKE3-256 hashes. An `adopt tzdb`
+  whose file `Source::packages` lacks is refused at its span.
 - The result depends on the migration's tokens and names, not its
   whitespace or comments.
 

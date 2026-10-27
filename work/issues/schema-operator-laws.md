@@ -41,3 +41,7 @@ Open:
 ## 2026-10-27: landed
 
 Landed with the laws track. The laws hold for every settled operator; broken ones are pinned in `spec-split-merge-invertibility-names`, `move-down-several-revert` and `resolved-operators`; other gaps are in `operator-law-follow-ups`, and the pinned query laws in `version-translation`.
+
+## 2026-10-27: resolved forms
+
+Every operator now has a resolved form (resops track). `store` writes catalog rows and the view is computed on read; `script`, `install` and `adopt tzdb` are still refused, see `script-in-engine` and `extensions-and-tzdb-rows`.

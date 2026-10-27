@@ -156,14 +156,14 @@ fn a_shipped_migration_differing_only_in_layout_has_the_same_hash() {
 }
 
 #[test]
-fn a_shipped_migration_with_an_operator_of_no_resolved_form_diverges() {
+fn a_shipped_migration_that_does_not_resolve_diverges() {
     let mut sim = Sim::new(53, Config::default());
     run(&mut sim, |rt| drop(opened(&rt, &[SHOP, TAGS])));
-    let defaulted = "module shop\nadd default customers.name = \"anon\"\n";
-    run(&mut sim, |rt| match open(&rt, &[SHOP, defaulted]) {
+    let adopted = "module shop\nadopt tzdb \"2026b\" from \"tz-2026b.tzif\"\n";
+    run(&mut sim, |rt| match open(&rt, &[SHOP, adopted]) {
         Err(OpenError::Diverged { version }) => assert_eq!(2, version),
         got => panic!(
-            "a migration 2 of no resolved form does not diverge: {:?}",
+            "a migration 2 that does not resolve does not diverge: {:?}",
             got.err()
         ),
     });
@@ -1395,7 +1395,6 @@ fn reverting_a_move_down_to_two_constructors_keeps_their_values_and_fills_the_ot
 }
 
 #[test]
-#[ignore = "add default has no resolved form, so the migration is refused"]
 fn an_added_default_fills_a_later_insert_and_its_revert_drops_it() {
     let default = "module shop\nadd default customers.name = \"anon\"\n";
     let revert = "module shop\nrevert 0002\n";
@@ -1427,4 +1426,216 @@ fn reverting_a_move_down_moves_the_field_back_and_takes_the_fill_in_the_others()
             query(&db, "from p in payments select p.note")
         );
     });
+}
+
+const SHOUT: &str = "module shop\nadd computed customers.shout: Text = self.name ++ \"!\"\n";
+
+#[test]
+fn a_dropped_default_no_longer_fills_an_insert_and_its_revert_restores_it() {
+    let default = "module shop\nadd default customers.name = \"anon\"\n";
+    let drop = "module shop\ndrop default customers.name\n";
+    let revert = "module shop\nrevert 0003\n";
+    after(77, &[default, drop], |db| {
+        let db = db.expect("the drop applies");
+        let got = fails(&db, "insert customers {}");
+        assert!(matches!(got, Error::Rejected { .. }), "{got:?}");
+    });
+    after(78, &[default, drop, revert], |db| {
+        let db = db.expect("the revert applies");
+        write(&db, "insert customers {}");
+        assert_eq!(
+            vec![r#""ann""#, r#""anon""#, r#""bob""#],
+            query(&db, "from c in customers select c.name")
+        );
+    });
+}
+
+#[test]
+fn an_added_computed_field_reads_from_each_row() {
+    after(79, &[SHOUT], |db| {
+        let db = db.expect("the computed field applies");
+        assert_eq!(
+            vec![r#""ann!""#, r#""bob!""#],
+            query(&db, "from c in customers select c.shout")
+        );
+    });
+}
+
+#[test]
+fn a_redefined_computed_field_reads_its_new_expression_and_a_dropped_one_is_gone() {
+    let redefine = "module shop\nredefine computed customers.shout: Text = self.name ++ \"?\"\n";
+    after(80, &[SHOUT, redefine], |db| {
+        let db = db.expect("the redefinition applies");
+        assert_eq!(
+            vec![r#""ann?""#, r#""bob?""#],
+            query(&db, "from c in customers select c.shout")
+        );
+    });
+    let drop = "module shop\ndrop computed customers.shout\n";
+    after(81, &[SHOUT, drop], |db| {
+        let db = db.expect("the drop applies");
+        fails(&db, "from c in customers select c.shout");
+    });
+}
+
+#[test]
+fn reverting_an_added_computed_field_drops_it() {
+    after(82, &[SHOUT, "module shop\nrevert 0002\n"], |db| {
+        let db = db.expect("the revert applies");
+        fails(&db, "from c in customers select c.shout");
+    });
+}
+
+#[test]
+fn a_computed_field_has_a_catalog_row_with_its_type_and_expression() {
+    after(83, &[SHOUT], |db| {
+        let db = db.expect("the computed field applies");
+        assert_eq!(
+            vec![r#"{ field_type: "Text", name: "shout", text: "self.name ++ \"!\"" }"#],
+            query(
+                &db,
+                "from c in catalog::computed select { name: c.name, field_type: c.field_type, text: c.text }"
+            )
+        );
+    });
+}
+
+const NAMED: &str = "module shop
+define fn named () -> Set { id: Key customers, name: Text } =
+  from c in customers select { id: c.id, name: c.name }
+store named key id
+";
+
+#[test]
+fn a_stored_view_reads_as_its_query_after_later_writes() {
+    after(84, &[NAMED], |db| {
+        let db = db.expect("the store applies");
+        write(&db, "insert customers { name: \"cy\" }");
+        assert_eq!(
+            vec![r#""ann""#, r#""bob""#, r#""cy""#],
+            query(&db, "from n in named() select n.name")
+        );
+    });
+}
+
+#[test]
+fn a_stored_view_is_a_relation_of_kind_stored_and_a_base_relation_of_kind_base() {
+    after(85, &[NAMED], |db| {
+        let db = db.expect("the store applies");
+        let kind = |name: &str| {
+            query(
+                &db,
+                &format!(
+                    "from r in catalog::relations where r.name == \"{name}\" select match r.kind
+  | Base -> \"base\"
+  | Stored -> \"stored\"
+  | Catalog -> \"catalog\"
+  | Volatile -> \"volatile\""
+                ),
+            )
+        };
+        assert_eq!(vec![r#""stored""#], kind("named"));
+        assert_eq!(vec![r#""base""#], kind("customers"));
+        assert_eq!(vec![r#""catalog""#], kind("migrations"));
+    });
+}
+
+#[test]
+fn unstoring_or_reverting_a_store_keeps_the_view_readable_and_drops_its_relation() {
+    for (seed, last) in [
+        (86, "module shop\nunstore named\n"),
+        (87, "module shop\nrevert 0002\n"),
+    ] {
+        after(seed, &[NAMED, last], |db| {
+            let db = db.unwrap_or_else(|e| panic!("seed {seed}: `{last}` applies: {e:?}"));
+            assert_eq!(
+                Vec::<String>::new(),
+                query(
+                    &db,
+                    "from r in catalog::relations where r.name == \"named\" select r.name"
+                ),
+                "seed {seed}"
+            );
+        });
+    }
+    after(88, &[NAMED, "module shop\nunstore named\n"], |db| {
+        let db = db.expect("the unstore applies");
+        assert_eq!(
+            vec![r#""ann""#, r#""bob""#],
+            query(&db, "from n in named() select n.name")
+        );
+    });
+}
+
+#[test]
+fn a_grant_and_its_revert_apply_and_log_the_grant() {
+    let grant = "module shop\ngrant read customers to support with grant option\n";
+    after(89, &[grant, "module shop\nrevert 0002\n"], |db| {
+        let db = db.expect("the grant and its revert apply");
+        assert_eq!(
+            vec![r#""read shop::customers support True""#],
+            query(
+                &db,
+                "from o in catalog::migration_ops where o.migration == catalog::migrations.key(2)
+  select match o.op
+    | Grant g -> g.privilege ++ \" \" ++ g.grantee ++ \" \" ++ print(g.grant_option)
+    | _ -> \"\""
+            )
+        );
+    });
+}
+
+#[test]
+#[ignore = "the engine does not run a script yet"]
+fn a_script_writes_on_the_state_the_operators_before_it_produce() {
+    let script = "module shop
+add field Customer.vip: Bool fill False
+script
+  update c in customers where c.name == \"ann\" set { c with vip: True }
+";
+    after(90, &[script], |db| {
+        let db = db.expect("the script applies");
+        assert_eq!(
+            vec![
+                r#"{ name: "ann", vip: True }"#,
+                r#"{ name: "bob", vip: False }"#
+            ],
+            query(
+                &db,
+                "from c in customers select { name: c.name, vip: c.vip }"
+            )
+        );
+    });
+}
+
+#[test]
+fn a_crash_at_every_flush_of_a_migration_of_derived_operators_reopens_to_all_or_none_of_it() {
+    let seed = 91;
+    let derived = "module shop
+add default customers.name = \"anon\"
+add computed customers.shout: Text = self.name ++ \"!\"
+define fn named () -> Set { id: Key customers, name: Text } =
+  from c in customers select { id: c.id, name: c.name }
+store named key id
+grant read customers to support
+";
+    let (sim, start) = second_migration(seed, derived);
+    let recording = sim.recording();
+    let flushes: Vec<usize> = recording
+        .flushes()
+        .into_iter()
+        .filter(|&f| f >= start)
+        .collect();
+    assert!(flushes.len() > 2, "{} flushes", flushes.len());
+    let mut versions = Vec::new();
+    for at in flushes {
+        let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
+        versions.push(reopened(seed + at as u64, files));
+    }
+    assert_eq!(Some(&1), versions.first());
+    assert_eq!(Some(&2), versions.last());
+    assert!(
+        versions.is_sorted(),
+        "the version goes back after a later flush: {versions:?}"
+    );
 }

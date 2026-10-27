@@ -62,3 +62,7 @@ Still open:
 ## 2026-10-26: landed
 
 Landed with the evof track: merge carries checks, install reads its package, log grants are stored in the source, feeds follow the volatility rule, and recheck errors are located in copied text. Stored-view admission moved to `stored-views`; other follow-ups are in `install-package-bytes`, `migration-checker-follow-ups` and `spec-evolve-gaps`.
+
+## 2026-10-27: resolved forms
+
+Every operator now has a resolved form (resops track). `store` writes catalog rows and the view is computed on read; `script`, `install` and `adopt tzdb` are still refused, see `script-in-engine` and `extensions-and-tzdb-rows`.

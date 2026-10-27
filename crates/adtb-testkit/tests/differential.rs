@@ -748,9 +748,6 @@ const STAGED: [Operator; 3] = [
     Operator::DropCheck,
 ];
 
-/// The operators the engine refuses, having no resolved form for them.
-const UNRESOLVED: [Operator; 2] = [Operator::AddDefault, Operator::DropDefault];
-
 /// Returns the first query of `case` on which `db` disagrees with the reference, named by
 /// where in the walk it runs.
 fn walk_check(seed: u64, db: &Database<SimRuntime>, case: &Case, at: &str) -> Option<String> {
@@ -924,24 +921,12 @@ fn sweep_seeds(
 
 #[test]
 fn schema_walks_keep_engine_equal_to_reference() {
-    sweep_walks(
-        "schema walk",
-        WALKS,
-        STEPS,
-        &[&STAGED[..], &UNRESOLVED].concat(),
-        walked,
-    );
+    sweep_walks("schema walk", WALKS, STEPS, &STAGED, walked);
 }
 
 #[test]
 fn schema_operators_keep_their_laws() {
-    sweep_walks(
-        "operator laws",
-        LAW_WALKS,
-        STEPS,
-        &[&STAGED[..], &UNRESOLVED].concat(),
-        laws,
-    );
+    sweep_walks("operator laws", LAW_WALKS, STEPS, &STAGED, laws);
 }
 
 #[test]

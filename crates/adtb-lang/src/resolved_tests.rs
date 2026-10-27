@@ -259,16 +259,190 @@ fn a_later_migration_resolves_against_the_source_after_it() {
 }
 
 #[test]
-fn an_operator_with_no_resolved_form_is_refused_at_its_span() {
-    let text = "module auth\nadd default users.name = \"anon\"\n";
+fn an_added_default_names_its_relation_field_and_value() {
+    let src = migrated(&first(), "module auth\nadd default users.name = \"anon\"\n");
+    assert_eq!(
+        Resolved::AddDefault {
+            default: id(&src, "default auth::users User.name"),
+            relation: id(&src, "relation auth::users"),
+            field: id(&src, "field auth::User.User.name"),
+            value: "\"anon\"".into(),
+        },
+        ops(&src, 2)[0].op
+    );
+}
+
+#[test]
+fn a_default_over_several_constructors_names_its_first_default() {
+    let text = "module auth\nadd field Identity.Google.verified: Bool fill False\nadd field Identity.Apple.verified: Bool fill False\nadd default identities.verified = True\n";
     let src = migrated(&first(), text);
-    let ds = src
-        .resolved(2)
-        .expect_err("a default has no resolved form yet");
+    assert_eq!(
+        Resolved::AddDefault {
+            default: id(&src, "default auth::identities Google.verified"),
+            relation: id(&src, "relation auth::identities"),
+            field: id(&src, "field auth::Identity.Google.verified"),
+            value: "True".into(),
+        },
+        ops(&src, 2)[2].op
+    );
+}
+
+#[test]
+fn a_generated_default_keeps_its_generate() {
+    let text = "module auth\nadd type Stamp = { id: Key stamps, at: Instant }\nadd relation stamps : Stamp key id\nadd default stamps.at = generate clock\n";
+    let src = migrated(&first(), text);
+    let Resolved::AddDefault { value, .. } = &ops(&src, 2)[2].op else {
+        panic!("an added default")
+    };
+    assert_eq!("generate clock", value);
+}
+
+#[test]
+fn a_dropped_default_names_the_default_it_drops() {
+    let src = migrated(&first(), "module auth\nadd default users.name = \"anon\"\n");
+    let added = id(&src, "default auth::users User.name");
+    let src = migrated(&src, "module auth\ndrop default users.name\n");
+    assert_eq!(Resolved::DropDefault { default: added }, ops(&src, 3)[0].op);
+}
+
+#[test]
+fn computed_fields_resolve_to_their_ids_and_declarations() {
+    let text = "module auth\nadd computed users.shout: Text = self.name ++ \"!\"\n";
+    let src = migrated(&first(), text);
+    let computed = id(&src, "computed auth::users.shout");
+    assert_eq!(
+        Resolved::AddComputed {
+            computed,
+            relation: id(&src, "relation auth::users"),
+            name: "shout".into(),
+            decl: "shout : Text = self . name ++ \"!\"".into(),
+        },
+        ops(&src, 2)[0].op
+    );
+    let text = "module auth\nredefine computed users.shout: Text = self.name\n";
+    let src = migrated(&src, text);
+    assert_eq!(
+        Resolved::RedefineComputed {
+            computed,
+            decl: "shout : Text = self . name".into(),
+        },
+        ops(&src, 3)[0].op
+    );
+    let src = migrated(&src, "module auth\ndrop computed users.shout\n");
+    assert_eq!(Resolved::DropComputed { computed }, ops(&src, 4)[0].op);
+}
+
+#[test]
+fn a_stored_view_resolves_to_its_relation_and_function() {
+    let text = "module auth\ndefine fn named () -> Set { id: Key users, name: Text } = from u in users select { id: u.id, name: u.name }\nstore named key id\n";
+    let src = migrated(&first(), text);
+    let view = id(&src, "relation auth::named");
+    let got = ops(&src, 2);
+    assert_eq!(
+        Resolved::Store {
+            view,
+            function: id(&src, "fn auth::named"),
+            decl: "store auth::named key id".into(),
+        },
+        got[1].op
+    );
+    let src = migrated(&src, "module auth\nunstore named\n");
+    assert_eq!(Resolved::Unstore { view }, ops(&src, 3)[0].op);
+}
+
+#[test]
+fn grants_and_revokes_hold_their_privileges_in_canonical_form() {
+    let text = "module auth\ngrant read identities.(EmailPass | Google) (user), call fn display_name\n  to support with grant option\nrevoke call fn display_name from support\n";
+    let src = migrated(&first(), text);
+    let got = ops(&src, 2);
+    assert_eq!(
+        Resolved::Grant {
+            privileges: "read auth::identities . ( auth::EmailPass | auth::Google ) ( user ) , call fn auth::display_name".into(),
+            grantee: "support".into(),
+            grant_option: true,
+        },
+        got[0].op
+    );
+    assert_eq!(
+        Resolved::Revoke {
+            privileges: "call fn auth::display_name".into(),
+            grantee: "support".into(),
+        },
+        got[1].op
+    );
+}
+
+#[test]
+fn an_install_holds_its_package_and_an_uninstall_its_module() {
+    let mut src = first();
+    src.packages.insert(
+        "geo-1.2.adtx".into(),
+        "type Cell = { lat: F64, lon: F64 }".into(),
+    );
+    let src = migrated(
+        &src,
+        "module auth\ninstall geo \"1.2\" from \"geo-1.2.adtx\"\n",
+    );
+    assert_eq!(
+        Resolved::Install {
+            module: "geo".into(),
+            version: "1.2".into(),
+            package: "type Cell = { lat: F64, lon: F64 }".into(),
+        },
+        ops(&src, 2)[0].op
+    );
+    let src = migrated(&src, "module auth\nuninstall geo\n");
+    assert_eq!(
+        Resolved::Uninstall {
+            module: "geo".into()
+        },
+        ops(&src, 3)[0].op
+    );
+}
+
+#[test]
+fn an_adopted_release_holds_its_data() {
+    let mut src = first();
+    src.packages.insert("tz-2026b.tzif".into(), "zones".into());
+    let src = migrated(
+        &src,
+        "module auth\nadopt tzdb \"2026b\" from \"tz-2026b.tzif\"\n",
+    );
+    assert_eq!(
+        Resolved::AdoptTzdb {
+            release: "2026b".into(),
+            data: "zones".into(),
+        },
+        ops(&src, 2)[0].op
+    );
+}
+
+#[test]
+fn an_adopted_release_whose_data_is_missing_is_refused_at_its_span() {
+    let text = "module auth\nadopt tzdb \"2026b\" from \"tz-2026b.tzif\"\n";
+    let src = migrated(&first(), text);
+    let ds = src.resolved(2).expect_err("the release data is missing");
     assert_eq!(1, ds.len(), "{ds:?}");
     assert_eq!(
-        "add default users.name = \"anon\"",
+        "the release data `tz-2026b.tzif` is not available",
+        ds[0].message
+    );
+    assert_eq!(
+        "adopt tzdb \"2026b\" from \"tz-2026b.tzif\"",
         &text[ds[0].span.range()]
+    );
+}
+
+#[test]
+fn a_script_holds_its_write_in_canonical_form() {
+    let text = "module auth\nscript\n  update u in users where u.name == \"\" set { u with name: \"anon\" }\n";
+    let src = migrated(&first(), text);
+    assert_eq!(
+        Resolved::Script {
+            write: "update u in auth::users where u . name == \"\" set { u with name : \"anon\" }"
+                .into(),
+        },
+        ops(&src, 2)[0].op
     );
 }
 

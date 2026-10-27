@@ -38,6 +38,7 @@ pub fn declared(schema: &Schema, source: &Source) -> Rows {
     b.indexes();
     b.constraints();
     b.defaults();
+    b.computed();
     b.ctor_states();
     b.value_states();
     b.functions();
@@ -527,21 +528,75 @@ impl Builder<'_> {
     }
 
     fn relations(&mut self) {
+        let mut rows = Vec::new();
         for (&r, &id) in &self.schema.ids.relations {
             let rel = self.schema.relation(r);
-            let kind = if rel.volatile { "Volatile" } else { "Catalog" };
+            let module = &self.schema.module(rel.module).name;
+            let kind = match (rel.volatile, module.as_str()) {
+                (true, _) => "Volatile",
+                (false, "catalog") => "Catalog",
+                (false, _) => "Base",
+            };
+            let sum = self.schema.ids.types[&rel.elem_def];
+            rows.push((id, module.clone(), rel.name.clone(), sum, kind));
+        }
+        for (&f, &id) in &self.schema.ids.views {
+            let view = &self.schema.functions[f.0 as usize];
+            let sum = match &view.result {
+                Ty::Set(elem) => match &**elem {
+                    Ty::Data { def, .. } => self.schema.ids.types.get(def).copied(),
+                    _ => self.schema.ids.view_types.get(&f).copied(),
+                },
+                _ => None,
+            }
+            .unwrap_or_else(|| panic!("the rows of stored view `{}` have a type id", view.name));
+            let module = self.schema.module(view.module).name.clone();
+            rows.push((id, module, view.name.clone(), sum, "Stored"));
+        }
+        for (id, module, name, sum, kind) in rows {
             let fields = vec![
                 ("id", key(id)),
-                (
-                    "module",
-                    Value::Text(self.schema.module(rel.module).name.clone()),
-                ),
-                ("name", Value::Text(rel.name.clone())),
-                ("sum", key(self.schema.ids.types[&rel.elem_def])),
+                ("module", Value::Text(module)),
+                ("name", Value::Text(name)),
+                ("sum", key(sum)),
                 ("kind", self.tag("catalog", "RelKind", kind)),
                 ("dropped", self.none()),
             ];
             self.push("relations", "Relation", fields);
+        }
+    }
+
+    fn computed(&mut self) {
+        let mut rows = Vec::new();
+        for (&(r, i), &id) in &self.schema.ids.computed {
+            let (decl, text) = self.relation_decl(r);
+            let (name, ty, expr) = decl
+                .clauses
+                .iter()
+                .filter_map(|c| match c {
+                    RelationClause::Computed(name, ty, expr) => Some((name, ty, expr)),
+                    _ => None,
+                })
+                .nth(i)
+                .unwrap_or_else(|| panic!("relation {r:?} declares computed field {i}"));
+            rows.push((
+                id,
+                r,
+                name.text.clone(),
+                text[ty.span.range()].to_string(),
+                text[expr.span.range()].to_string(),
+            ));
+        }
+        for (id, r, name, field_type, text) in rows {
+            let fields = vec![
+                ("id", key(id)),
+                ("relation", key(self.schema.ids.relations[&r])),
+                ("name", Value::Text(name)),
+                ("field_type", Value::Text(field_type)),
+                ("text", Value::Text(text)),
+                ("dropped", self.none()),
+            ];
+            self.push("computed", "Computed", fields);
         }
     }
 
