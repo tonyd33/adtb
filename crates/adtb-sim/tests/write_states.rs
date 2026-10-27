@@ -765,7 +765,6 @@ fn a_value_enable_is_refused_while_a_reader_pinned_before_it_reads_a_field_reach
     let cases = [
         reader("field", 1, vec![field("auth::accounts", "provider")]),
         reader("option", 1, vec![field("auth::profiles", "backup")]),
-        reader("rows", 1, vec![whole("auth::accounts")]),
         Reader {
             hides_new: true,
             ..reader("hiding", 1, vec![field("auth::accounts", "provider")])
@@ -782,6 +781,7 @@ fn a_value_enable_is_refused_while_a_reader_pinned_before_it_reads_a_field_reach
 fn a_value_enable_applies_beside_readers_of_no_field_reaching_the_type() {
     let cases = [
         reader("notes", 1, vec![field("auth::accounts", "note")]),
+        reader("ranges", 1, vec![whole("auth::accounts")]),
         reader("pinned-after", 2, vec![whole("auth::accounts")]),
     ];
     for (seed, r) in (70..).zip(cases) {

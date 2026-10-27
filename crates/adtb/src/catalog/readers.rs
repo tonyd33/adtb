@@ -5,7 +5,7 @@ use std::sync::Arc;
 use adtb_lang::ast::{CtorTarget, MigrationFile, OperatorKind, QName};
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_lang::schema::{Schema, TypeDefKind, ValueDef};
+use adtb_lang::schema::{Schema, Stage, TypeDefKind, ValueDef};
 use adtb_lang::types::{RelId, Ty, TypeId};
 
 use super::{Catalog, Checked, Error, targeted};
@@ -28,7 +28,8 @@ pub struct Reader {
 /// One thing a reader reads, its relations qualified as `module::name`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
-    /// A query ranges over the whole relation variable, or a feed names it whole.
+    /// A query ranges over the whole relation variable, or a feed names it whole. A feed or a
+    /// query that reads its rows whole also reads each of their fields.
     Relation(String),
     /// A query follows a reference `Key relation`, or `Key relation.set` for a named set.
     Reference {
@@ -155,6 +156,58 @@ impl Catalog {
             self.readers.enforced = Some(Rc::new(checked(source).map_err(Error::Internal)?));
         }
         Ok(())
+    }
+
+    /// Returns the source of version `v` of the log, `None` when the log holds no version `v`.
+    pub fn source_at(&self, v: u64) -> Option<Source> {
+        source_at(&self.source, v)
+    }
+
+    /// Returns the constructor `reader` would read that is enabled now and absent at its
+    /// version, as `relation.Ctor` or `Type.Ctor`, under the rules by which a live reader blocks
+    /// its enable.
+    ///
+    /// Fails with [`Error::Refused`] when the reader's version is not one of the log's or a name
+    /// it reads or writes does not resolve at its version.
+    pub fn stale(&self, reader: &Reader) -> Result<Option<String>, Error> {
+        let refused = |why: String| Error::Refused(vec![why]);
+        let schema = schema_at(&self.source, reader.version).ok_or_else(|| {
+            refused(format!(
+                "bundle {} is pinned at version {}, which the log does not hold",
+                reader.bundle, reader.version
+            ))
+        })?;
+        let p = pinned(&schema, reader).map_err(refused)?;
+        let now = &self.schema;
+        if !p.hides_new {
+            for (&r, &rid) in &now.ids.relations {
+                let rel = now.relation(r);
+                for (c, ctor) in now.ty(rel.elem_def).ctors().iter().enumerate() {
+                    let c = u32::try_from(c).expect("a sum has fewer than 2^32 constructors");
+                    let cid = now.ids.ctors[&(rel.elem_def, c)];
+                    if p.ctors.contains(&cid) || now.stage(r, c) == Stage::Declared {
+                        continue;
+                    }
+                    let follows = p
+                        .references
+                        .iter()
+                        .any(|&(to, set)| to == rid && set.is_none_or(|s| in_set(now, r, s, c)));
+                    if p.whole.contains(&rid) || follows {
+                        return Ok(Some(format!("{}.{}", rel.name, ctor.name)));
+                    }
+                }
+            }
+        }
+        for (&(def, c), cid) in &now.ids.ctors {
+            if p.ctors.contains(cid) || now.value_stage(def, c) == Stage::Declared {
+                continue;
+            }
+            if read_fields(now, &p).any(|t| reaches(now, t, def, &mut BTreeSet::new())) {
+                let t = now.ty(def);
+                return Ok(Some(format!("{}.{}", t.name, t.ctors()[c as usize].name)));
+            }
+        }
+        Ok(None)
     }
 
     /// Returns the drops live readers hold back, in the order they applied.
@@ -427,14 +480,19 @@ fn blocked(op: &str, bundle: &str, p: &Pinned, reads: &str) -> String {
 
 /// Returns the schema of the version `v` of `source`'s log.
 fn schema_at(source: &Source, v: u64) -> Option<Schema> {
+    source_at(source, v)?.schema().ok()
+}
+
+/// Returns the source of the version `v` of `source`'s log.
+fn source_at(source: &Source, v: u64) -> Option<Source> {
     if v == 0 || v > source.version {
         return None;
     }
     if v == source.version {
-        return source.schema().ok();
+        return Some(source.clone());
     }
     let after = source.log.iter().find(|l| l.number == v + 1)?;
-    after.before.schema().ok()
+    Some((*after.before).clone())
 }
 
 /// Returns `reader` with its names resolved in `schema`, the schema of its version.
@@ -536,21 +594,13 @@ fn in_set(schema: &Schema, r: RelId, set: u64, c: u32) -> bool {
         .any(|s| schema.ids.sets.get(&(r, s.name.clone())) == Some(&set) && s.ctors.contains(&c))
 }
 
-/// Returns the type, in `schema`, of each field `p` reads, those of the relations it reads whole
-/// included.
+/// Returns the type, in `schema`, of each field `p` reads.
 fn read_fields<'s>(schema: &'s Schema, p: &'s Pinned) -> impl Iterator<Item = &'s Ty> {
-    let whole: BTreeSet<TypeId> = schema
-        .ids
-        .relations
-        .iter()
-        .filter(|(_, id)| p.whole.contains(id))
-        .map(|(&r, _)| schema.relation(r).elem_def)
-        .collect();
     schema
         .ids
         .fields
         .iter()
-        .filter(move |((def, _, _), id)| whole.contains(def) || p.fields.contains(id))
+        .filter(move |(_, id)| p.fields.contains(id))
         .filter_map(|((def, c, name), _)| field_type(schema, *def, *c, name))
 }
 

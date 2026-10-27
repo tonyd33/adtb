@@ -1,4 +1,5 @@
 mod change;
+mod deploy;
 mod ids;
 mod keying;
 pub mod layout;
@@ -34,6 +35,7 @@ use crate::runtime::Runtime;
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
 use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 
+pub use deploy::Rewrite;
 pub use keying::{IndexKeys, element_types};
 pub use layout::OrderKeys;
 pub use oplog::{Hash, version_hash};

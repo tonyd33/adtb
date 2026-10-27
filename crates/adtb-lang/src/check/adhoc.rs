@@ -11,6 +11,11 @@ pub struct Bundles {
     queries: BTreeMap<(String, String), BTreeMap<String, Vec<Ty>>>,
 }
 
+/// The bundles of a checker that knows none.
+pub(super) static NO_BUNDLES: Bundles = Bundles {
+    queries: BTreeMap::new(),
+};
+
 impl Bundles {
     /// Records that bundle `family-version` registers query `name` over parameters of types `params`.
     pub fn insert(&mut self, family: &str, version: &str, name: &str, params: Vec<Ty>) {
@@ -20,18 +25,12 @@ impl Bundles {
             .insert(name.to_string(), params);
     }
 
-    /// Returns the parameter types of registered query `query` of `bundle`, `None` knowing no bundle.
-    fn params<'b>(
-        bundles: Option<&'b Bundles>,
-        bundle: &BundleName,
-        query: &str,
-    ) -> Result<&'b [Ty], String> {
+    /// Returns the parameter types of registered query `query` of `bundle`.
+    fn params(&self, bundle: &BundleName, query: &str) -> Result<&[Ty], String> {
         let name = format!("{}-{}", bundle.family, bundle.version);
-        let queries = bundles
-            .and_then(|b| {
-                b.queries
-                    .get(&(bundle.family.clone(), bundle.version.clone()))
-            })
+        let queries = self
+            .queries
+            .get(&(bundle.family.clone(), bundle.version.clone()))
             .ok_or_else(|| format!("bundle `{name}` is not registered"))?;
         queries
             .get(query)
@@ -479,7 +478,9 @@ impl Checker<'_> {
         query: &ast::Ident,
         args: &CallArgs,
     ) -> R<Explained> {
-        let params = Bundles::params(self.bundles, bundle, &query.text)
+        let params = self
+            .bundles
+            .params(bundle, &query.text)
             .map_err(|e| diag(bundle.span.to(query.span), e))?;
         let CallArgs::List(es) = args else {
             return Err(diag(

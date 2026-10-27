@@ -181,15 +181,61 @@ valid `D_m`, with `⟦q⟧^{n}` as
 [../spec/semantics.md §9.6](../spec/semantics.md#96-version-translation)
 defines it.
 
-TODO: the contract of the recheck pipeline for registered queries is undecided.
+Registered queries are rechecked by the subsystem that registers them,
+not by `Catalog::migrate`, over these calls:
+
+```text
+catalog.source_at(v) -> Option<Source>
+catalog.stale(&reader) -> Result<Option<ctor>, Error>
+catalog.committed_rows(&pager, &txns, relation) -> [(ctor, row)]
+catalog.deploy(&pager, &txns, &[Rewrite { relation, deleted, inserted }]) -> Result<(), Error>
+```
+
+Preconditions:
+
+- Every relation `deploy` writes is deployment state, such as
+  `catalog::bundles` and `catalog::registered`, whose rows no migration
+  writes; every row it deletes is a row the latest commit holds.
+
+Postconditions:
+
+- `source_at(v)` returns the source of version `v` of the log, `None`
+  for version 0 and for a version past the catalog's.
+- `stale(reader)` returns a constructor, written `r.C` for a
+  constructor relation or `T.C` for a value-level sum, that is enabled
+  at the catalog's version, absent at the reader's, and that the reader
+  would read under the rules by which a live reader blocks its `enable`
+  (§2.1); `None` when there is none. It refuses a reader `register`
+  refuses for its version or names.
+- `committed_rows` returns the rows of the relation the latest commit
+  holds.
+- `deploy` deletes and inserts its rows as one transaction and returns
+  once that transaction is durable.
+
+Obligations of the registrant, for every bundle it serves:
+
+- It checks each query and transaction at the bundle's pinned version,
+  the source `source_at` returns, and refuses the bundle when the
+  pinned hash differs from `version_hash` of that source or when
+  `stale` names a constructor.
+- A live bundle is a reader of the catalog (`Catalog::register`)
+  whenever `migrate` runs, except one the running open recorded and has
+  not yet registered, and it is released once the bundle is retired,
+  superseded or expired.
+- A call of a bundle pinned at `v` while the catalog is at `m > v`
+  runs only through a translation of the callable from `v` to `m`; a
+  callable with no translation is refused `Untranslatable` and never
+  runs over `Σ_m` as checked at `v`.
 
 ### 2.1 Readers
 
 The catalog holds its live readers, each a `catalog::Reader`: a
 bundle, its pinned version, whether it hides new constructors, the
-relations it reads whole, the references it follows, the fields it
-reads and the constructor relations it can write into, all named as at
-its version. `Catalog::register` records one and `Catalog::release`
+relations it ranges over whole, the references it follows, the fields
+it reads and the constructor relations it can write into, all named as
+at its version. Ranging over a relation reads none of its fields: a
+reader that returns, compares or passes on whole rows states each of
+their fields as read. `Catalog::register` records one and `Catalog::release`
 releases it. Whoever registers bundles states their readers through
 these calls; the catalog derives nothing from `catalog::bundles`.
 

@@ -41,44 +41,60 @@ TODO: how the server binds a connection to a bundle through `adtb` ([../spec/wir
 ## 4. Registrations
 
 `adtb` registers queries, transactions and imported schema functions in
-units called registrations. A bundle carries one registration: the
-imports and items of its file, without the header. The bundle layer
-and the server call through these entry points:
+units called registrations. A bundle carries one registration: its file,
+header included. The bundle layer and the server call through these
+entry points:
 
 | Entry point | Meaning |
 | --- | --- |
-| `Registration::new(name, text)` | a registration named `name`; `text` holds the imports and items of a bundle file with no header |
-| `OpenOptions::registrations` | the registrations open checks and registers once its migrations apply |
-| `Database::registered(name)` | the handle of registration `name`, else `UnknownBundle` |
+| `Registration::bundle(text)` | the registration of the bundle file `text`, named by its header; `Invalid` when the file does not parse or its header states a clause the engine does not run |
+| `Registration::new(name, text)` | a registration named `name` that is no bundle; `text` holds the imports and items of a bundle file with no header |
+| `OpenOptions::registrations` | the registrations open records, checks and registers once its migrations apply |
+| `Database::registered(name)` | the handle of registration `name`, bound to it; else `Retired`, `BundleSuperseded`, `BundleExpired` or `UnknownBundle` |
 | `Registered::call(ordinal, args, opts)` | runs callable `ordinal` with `args` as a transaction of its own: rows for a query or function, `Committed` for a transaction |
 | `AdHocTransaction::call(reg, ordinal, args, opts)` | runs callable `ordinal` of `reg` as one call of the transaction: rows, or `Pending` for a transaction |
+| `retire bundle B`, `supersede bundle B by B2` | commands of ad hoc text, returning the bundle's row of `catalog::bundles` |
 
 Preconditions:
 
 - `args` holds one value per declared parameter, in order, each a value
-  of its parameter's type.
+  of its parameter's type at the version the registration is checked
+  at.
 - `opts.assert`, and `TxnOptions::assert`, is a value of the schema's
   `Principal`.
 
 Postconditions:
 
-- Open registers every given registration or none. A refused one fails
-  open with `RegistrationRefused` naming it; the reason is `Invalid`
-  and names the callable and the failure.
-- Every query, transaction and bundle function is checked and
-  normalised at the schema version open leaves the file at. A call
-  never parses or type checks.
-- Ordinals are declaration order: each `import fn` in import order,
-  then each query and transaction in item order. A bundle function
-  takes no ordinal and is visible only to its registration.
+- Open records every given bundle in `catalog::bundles` and marks every
+  other active bundle superseded, as one durable commit before its
+  first migration. It then registers every given registration or none.
+  A refused one fails open with `RegistrationRefused` naming it.
+- A bundle's queries, transactions and functions are checked and
+  normalised at the version its header pins, and one that is no
+  bundle's at the version open leaves the file at. A call never parses
+  or type checks.
+- A bundle pinned at the version the database is at runs its calls. A
+  call of one pinned earlier is refused `Untranslatable`, naming
+  `bundle::query`, until version translation serves it.
+- Ordinals are declaration order from 1: each `import fn` in import
+  order, then each query and transaction in item order. A bundle
+  function takes no ordinal and is visible only to its registration.
+- Binding a bundle and every call on it refuse a retired, superseded or
+  expired bundle, and renew its lease when an eighth of the lease has
+  passed since the renewal `catalog::bundles` records.
 - A call runs for `opts.assert`, else for `Service { name: "owner" }`,
   the schema-owner role the handle acts as. Asserting a `Service` value
   is refused with `Denied`. A schema function a call reaches sees the
   call's `caller`.
-- A registration lives as long as the handle that opened with it. Open
-  registers only what it is given.
+- A bundle's registration, its calls in `catalog::registered` and its
+  lease survive the handle; a registration that is no bundle's lives as
+  long as the handle that opened with it.
 
-TODO: how a bundle's pin, translation and lease reach a registration is undecided.
+A code generator emits, for each bundle, its file's text and the
+ordinals it computes from that file; the embedded open of
+[../spec/embedding.md](../spec/embedding.md#21-open) passes each
+generated bundle to open as `Registration::bundle` of that text, so
+its ordinals are those `Registered::ordinal` returns.
 
 ## 5. Notes for the implementation
 

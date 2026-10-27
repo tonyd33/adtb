@@ -575,6 +575,9 @@ identical content runs checks 3 to 5 of
 refused with `BundleStale` or `BundleExpired`; a `Retired` one is
 retired for good.
 
+`text` is the declaration as the bundle file writes it, followed by
+each bundle function the file declares, and for an imported function
+its `import fn` line; `signature` is its parameters and result type.
 `ordinal` is the call's position in declaration order in the bundle
 file, from 1, so code generation computes it from the file
 ([wire.md](wire.md#51-call)); queries, transactions, imported
@@ -1530,7 +1533,9 @@ select p.text
 
 `explain` and `explain analyze` also take a registered call with its
 arguments. The statement is checked and planned at the bundle's pinned
-version, with its stored plan, exactly as a call of it runs:
+version, with its stored plan, exactly as a call of it runs, each
+argument typed at its parameter's type at the pinned version
+([applications.md §5](applications.md#5-binding-a-connection)):
 
 ```adt
 explain analyze web-2.4::login_key(users.key(3))

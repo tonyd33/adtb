@@ -1,11 +1,14 @@
+mod bundle;
 mod command;
 mod error;
 #[cfg(target_os = "linux")]
 mod file;
+mod reads;
 mod registered;
 mod text;
 mod txn;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,6 +20,7 @@ use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
+use adtb_sys::lock::Lock;
 
 use crate::catalog::{self, Catalog};
 use crate::exec::{self, Budget, Val};
@@ -169,6 +173,8 @@ struct Engine<R: Runtime> {
     /// The registered queries of the live bundles, which `explain B::q(args)` names.
     bundles: Bundles,
     registered: Vec<registered::Checked>,
+    /// The rows of `catalog::bundles`, by bundle name, as the latest commit holds them.
+    deployed: Lock<BTreeMap<String, bundle::Row>>,
     pager: Pager<R>,
     db: write::Database<R>,
     #[cfg(target_os = "linux")]
@@ -326,6 +332,19 @@ impl<R: Runtime> Engine<R> {
             });
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
         catalog.set_query_memory(query_memory);
+        diverged(&catalog, log)?;
+        let regs = &options.registrations;
+        registered::downgrade(&catalog, regs)?;
+        let mut stored = bundle::stored(&catalog, &pager, &txns)?;
+        let headers: Vec<&bundle::Header> = regs.iter().filter_map(Registration::header).collect();
+        bundle::record(
+            &catalog,
+            &pager,
+            &txns,
+            &mut stored,
+            &headers,
+            micros(pager.wall()),
+        )?;
         migrate(&mut catalog, &pager, &txns, log)?;
         let schema = catalog.schema().clone();
         let program = catalog.program().clone();
@@ -336,8 +355,17 @@ impl<R: Runtime> Engine<R> {
         let sequences = catalog.sequences();
         let (heaps, indexes) = catalog.bindings();
         let schema = Arc::new(schema);
-        let registered =
-            registered::register(catalog.source(), &schema, &program, &options.registrations)?;
+        let now = micros(pager.wall());
+        let registered = registered::register(&catalog, &schema, &program, regs, &stored, now)?;
+        let bundled: Vec<_> = registered
+            .iter()
+            .filter_map(registered::Checked::bundle)
+            .collect();
+        let deployed = bundle::register(&catalog, &pager, &txns, stored, &bundled, now)?;
+        let mut bundles = Bundles::default();
+        for c in &registered {
+            c.explained(&mut bundles);
+        }
         let defaults = exec::Options::default();
         if sequences.is_none() {
             Catalog::naming_sequences(&pager, root).map_err(corrupt)?;
@@ -371,8 +399,9 @@ impl<R: Runtime> Engine<R> {
             rt,
             schema,
             program,
-            bundles: Bundles::default(),
+            bundles,
             registered,
+            deployed: Lock::new(deployed),
             pager,
             db,
             #[cfg(target_os = "linux")]
@@ -410,18 +439,29 @@ impl<R: Runtime> Engine<R> {
             caller: Some(p.caller()),
         };
         let mut ran: Vec<(usize, DynRows)> = Vec::new();
+        let mut refused: Option<Error> = None;
         let mut between = |at: usize, local: &mut Local| -> Result<(), write::Error> {
             for c in p.commands().iter().filter(|c| c.at == at) {
-                ran.push((at, self.command(tx, p, &c.command, local, bounds)?));
+                match self.deployment_command(&c.command) {
+                    Some(Ok(rows)) => ran.push((at, rows)),
+                    Some(Err(e)) => {
+                        refused = Some(e);
+                        return Err(write::Error::Internal(
+                            "a deployment command was refused".into(),
+                        ));
+                    }
+                    None => ran.push((at, self.command(tx, p, &c.command, local, bounds)?)),
+                }
             }
             Ok(())
         };
-        match self
+        let done = self
             .db
-            .statements_with(tx, text, local, bounds, &mut between)
-        {
-            Ok(outcomes) => p.results(schema, outcomes, ran).map_err(|e| (e, true)),
-            Err(f) => {
+            .statements_with(tx, text, local, bounds, &mut between);
+        match (done, refused) {
+            (Err(_), Some(e)) => Err((e, false)),
+            (Ok(outcomes), _) => p.results(schema, outcomes, ran).map_err(|e| (e, true)),
+            (Err(f), None) => {
                 let ends = f.error.ends_transaction();
                 Err((Error::of_write(schema, id, f.error), ends))
             }
@@ -457,11 +497,7 @@ impl<R: Runtime> Engine<R> {
 
     /// Returns the instant every `generate clock` of a statement starting now takes.
     fn clock(&self) -> i64 {
-        let micros = |d: Duration| i64::try_from(d.as_micros()).unwrap_or(i64::MAX);
-        match self.pager.wall().duration_since(UNIX_EPOCH) {
-            Ok(d) => micros(d),
-            Err(e) => -micros(e.duration()),
-        }
+        micros(self.pager.wall())
     }
 
     /// Run `p` as one transaction of its own under `opts`: read-only when `p` only reads, else
@@ -563,24 +599,39 @@ impl<R: Runtime> Engine<R> {
     }
 }
 
+/// Returns `t` in microseconds since 1970-01-01T00:00:00Z.
+fn micros(t: SystemTime) -> i64 {
+    let micros = |d: Duration| i64::try_from(d.as_micros()).unwrap_or(i64::MAX);
+    match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => micros(d),
+        Err(e) => -micros(e.duration()),
+    }
+}
+
+/// Refuses a log whose migrations at or below the file's version differ from the file's by
+/// hash, naming the first that does.
+fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
+    let stored = &catalog.source().log;
+    match stored
+        .iter()
+        .zip(&log.migrations)
+        .find(|(m, shipped)| &m.text != *shipped && !same_hash(m, shipped))
+    {
+        Some((m, _)) => Err(OpenError::Diverged { version: m.number }),
+        None => Ok(()),
+    }
+}
+
 /// Apply the migrations of `log` beyond the file's own, each as its own schema change, stopping
-/// at the first refused one. Refuses a log whose migrations at or below the file's version differ
-/// from the file's by hash, naming the first that does.
+/// at the first refused one.
 fn migrate<R: Runtime>(
     catalog: &mut Catalog,
     pager: &Pager<R>,
     txns: &crate::mvcc::Transactions<R>,
     log: &Log,
 ) -> Result<(), OpenError> {
-    let stored = &catalog.source().log;
-    if let Some((m, _)) = stored
-        .iter()
-        .zip(&log.migrations)
-        .find(|(m, shipped)| &m.text != *shipped && !same_hash(m, shipped))
-    {
-        return Err(OpenError::Diverged { version: m.number });
-    }
-    for text in log.migrations.iter().skip(stored.len()) {
+    let stored = catalog.source().log.len();
+    for text in log.migrations.iter().skip(stored) {
         let version = catalog.source().version + 1;
         catalog.migrate(pager, txns, text).map_err(|e| match e {
             catalog::Error::Refused(why) => refused(

@@ -156,6 +156,20 @@ pub enum Lit {
     Bool(bool),
 }
 
+/// Returns the microseconds one `unit` of a duration literal stands for, `None` for a word that
+/// is no duration unit.
+pub fn duration_unit(unit: &str) -> Option<i64> {
+    match unit {
+        "us" => Some(1),
+        "ms" => Some(1_000),
+        "s" => Some(1_000_000),
+        "min" => Some(60_000_000),
+        "h" => Some(3_600_000_000),
+        "d" => Some(86_400_000_000),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExprKind {
     Lit(Lit),

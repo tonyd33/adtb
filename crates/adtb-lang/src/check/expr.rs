@@ -315,14 +315,8 @@ impl Checker<'_> {
             }
             Lit::Text(t) => Ok(self.out(Kind::Const(Const::Text(t.clone())), Ty::Base(Base::Text))),
             Lit::Duration { amount, unit } => {
-                let per: i64 = match unit.as_str() {
-                    "us" => 1,
-                    "ms" => 1_000,
-                    "s" => 1_000_000,
-                    "min" => 60_000_000,
-                    "h" => 3_600_000_000,
-                    "d" => 86_400_000_000,
-                    _ => return Err(diag(e.span, format!("`{unit}` is not a duration unit"))),
+                let Some(per) = ast::duration_unit(unit) else {
+                    return Err(diag(e.span, format!("`{unit}` is not a duration unit")));
                 };
                 let micros = i64::try_from(*amount)
                     .ok()

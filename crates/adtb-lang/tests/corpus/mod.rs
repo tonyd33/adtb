@@ -455,15 +455,21 @@ pub fn given_types(b: &Block, schema: &Schema) -> (BTreeMap<String, Ty>, Vec<Str
     (params, errs)
 }
 
-/// Returns the bundles of the `registered` queries whose parameter types resolve in `schema`.
-pub fn bundles(schema: &Schema, registered: &[Registered]) -> Bundles {
+/// Returns the bundles of the `registered` queries, their parameter types resolved in `schema`,
+/// and an error for each query whose parameter type does not resolve.
+pub fn bundles(schema: &Schema, registered: &[Registered]) -> (Bundles, Vec<String>) {
     let c = Checker::new(schema, Visible::all(schema), Context::Adhoc);
     let mut bundles = Bundles::default();
+    let mut errs = Vec::new();
     for (family, version, q) in registered {
         let params: Result<Vec<_>, _> = q.params.iter().map(|p| c.resolve_type(&p.ty)).collect();
-        if let Ok(params) = params {
-            bundles.insert(family, version, &q.name.text, params);
+        match params {
+            Ok(params) => bundles.insert(family, version, &q.name.text, params),
+            Err(d) => errs.push(format!(
+                "registered {family}-{version}::{}: {}",
+                q.name.text, d.message
+            )),
         }
     }
-    bundles
+    (bundles, errs)
 }

@@ -381,7 +381,8 @@ fn check_block(
     }
     let (params, mut unresolved) = given_types(b, &schema);
     errs.append(&mut unresolved);
-    let bundles = bundles(&schema, registered);
+    let (bundles, mut unresolved) = bundles(&schema, registered);
+    errs.append(&mut unresolved);
     if !adhoc.is_empty()
         && let Err(ds) = check_adhoc_recording(&schema, &program, &adhoc, &params, &bundles, None)
     {

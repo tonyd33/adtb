@@ -395,6 +395,11 @@ A bound connection:
 - runs every call at the bundle's pinned version, translated to the
   current version where they differ
   ([evolution.md §3.5](evolution.md#35-pinned-versions));
+- takes the arguments of every call as values of its parameter types
+  at the pinned version; where the pinned version is not the current
+  one, the arguments map forward to the current version as the values
+  of a translated write do
+  ([evolution.md §7.1](evolution.md#71-serving-a-pinned-version));
 - receives every result of its bundle's calls encoded at the pinned
   version: constructor
   wire tags are the catalog ids of that version, and constructors of an

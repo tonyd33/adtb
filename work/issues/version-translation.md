@@ -19,3 +19,7 @@ tags:
 Ruling for `spec-registered-explain-pin`: a registered call's parameters are typed at the bundle's pinned version, and its argument values map forward to the current version as written values do; its results are encoded at the pinned version.
 
 The schema operator law of `oracle.md` section 5.7 for queries pinned to a version are untested until this lands; add them to `schema_operators_keep_their_laws` in `crates/adtb-testkit/tests/differential.rs`.
+
+## 2026-10-27: bundles landed
+
+A bundle pinned before the current version registers and is checked at its pin, and its calls are refused `Untranslatable`. A migration is not yet refused for a live bundle whose query has no translation (section 7.2).

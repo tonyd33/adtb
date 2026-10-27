@@ -15,6 +15,14 @@ use crate::write::{self, Bounds, Local, Outcome, Text, Txn};
 use super::text::{DynRows, Prepared, rows};
 use super::{Engine, Error, unsupported};
 
+/// The rows [`Engine::swap_row`] replaces.
+pub(super) enum Old {
+    /// Every row of the constructor.
+    Ctor(u32),
+    /// The one row.
+    Row(Val),
+}
+
 /// What `explain analyze` adds to its result: a member of the document, also a line of the text.
 struct Added {
     name: &'static str,
@@ -31,7 +39,9 @@ pub(super) fn runs(c: &Command) -> Result<(), Error> {
         }
         | Command::Vacuum(_)
         | Command::Reindex { .. }
-        | Command::SetSetting { .. } => Ok(()),
+        | Command::SetSetting { .. }
+        | Command::RetireBundle(_)
+        | Command::SupersedeBundle(..) => Ok(()),
         other => Err(unsupported(&format!("`{}`", word(other)))),
     }
 }
@@ -333,7 +343,7 @@ impl<R: Runtime> Engine<R> {
             fields.push((*v).clone());
         }
         let row = Val::ctor(setting, fields);
-        self.replace_row(schema, settings, setting, row.clone())?;
+        self.swap_row(schema, settings, Old::Ctor(setting), row.clone())?;
         let elem = Ty::Data {
             def,
             args: Vec::new(),
@@ -342,12 +352,12 @@ impl<R: Runtime> Engine<R> {
         Ok(rows(schema, elem, vec![row]))
     }
 
-    /// Replaces every row of constructor `ctor` of `rel` by `row`, in a transaction of its own.
-    fn replace_row(
+    /// Replaces the rows `old` names of `rel` by `row`, in a transaction of its own.
+    pub(super) fn swap_row(
         &self,
         schema: &Schema,
         rel: RelId,
-        ctor: u32,
+        old: Old,
         row: Val,
     ) -> Result<(), write::Error> {
         let elem = Ty::Data {
@@ -358,8 +368,16 @@ impl<R: Runtime> Engine<R> {
         let set = Ty::Set(Box::new(elem));
         let mut terms = Terms::default();
         let x = terms.var("row·", set.clone());
-        let old = terms.add(Kind::Rel(rel, Some(vec![ctor])), set.clone());
-        let del = terms.add(Kind::Delete(rel, old), Ty::Change);
+        let mut params = vec![(x, Val::set([row].into()))];
+        let gone = match old {
+            Old::Ctor(c) => terms.add(Kind::Rel(rel, Some(vec![c])), set.clone()),
+            Old::Row(v) => {
+                let y = terms.var("old·", set.clone());
+                params.push((y, Val::set([v].into())));
+                terms.add(Kind::Var(y), set.clone())
+            }
+        };
+        let del = terms.add(Kind::Delete(rel, gone), Ty::Change);
         let new = terms.add(Kind::Var(x), set);
         let ins = terms.add(Kind::Insert(rel, new), Ty::Change);
         let both = terms.add(Kind::Par(vec![del, ins]), Ty::Change);
@@ -368,7 +386,7 @@ impl<R: Runtime> Engine<R> {
             schema,
             terms: &terms,
             items: &[both],
-            params: &[(x, Val::set([row].into()))],
+            params: &params,
             clock: self.clock(),
             caller: None,
         };

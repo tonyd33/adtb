@@ -397,7 +397,7 @@ fn spec_corpus_results_inhabit_their_types() {
         if unresolved.is_empty() && !adhoc.is_empty() {
             let given = Given {
                 params,
-                bundles: bundles(&fx.schema, &registered),
+                bundles: bundles(&fx.schema, &registered).0,
             };
             statements(
                 &mut fx,

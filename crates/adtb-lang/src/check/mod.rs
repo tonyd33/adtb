@@ -164,7 +164,7 @@ pub struct Checker<'a> {
     /// The checked schema, which ad hoc text names the index fields of.
     program: Option<&'a Program>,
     /// The registered queries ad hoc text may explain.
-    bundles: Option<&'a Bundles>,
+    bundles: &'a Bundles,
 }
 
 impl std::fmt::Debug for Checker<'_> {
@@ -200,7 +200,7 @@ impl<'a> Checker<'a> {
             row_fields: BTreeMap::new(),
             hidden: BTreeSet::new(),
             program: None,
-            bundles: None,
+            bundles: &adhoc::NO_BUNDLES,
         }
     }
 
@@ -887,7 +887,7 @@ pub fn check_adhoc_recording(
     let checked = temps.as_ref().map_or(schema, |(s, _)| s);
     let mut c = Checker::new(checked, Visible::all(checked), Context::Adhoc);
     c.program = Some(program);
-    c.bundles = Some(bundles);
+    c.bundles = bundles;
     if record.is_some() {
         c.refs = Some(RefCell::new(Vec::new()));
     }

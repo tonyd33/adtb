@@ -36,7 +36,7 @@ define fn whose () -> Text = match caller
   | Anonymous -> "nobody"
 "#;
 
-/// The calls of the shop, in ordinal order: `method` 0, `whose` 1, then the declarations.
+/// The calls of the shop, in ordinal order: `method` 1, `whose` 2, then the declarations.
 const APP: &str = r"import shop
 import fn method
 import fn whose
@@ -58,13 +58,13 @@ query mine () -> Set Text =
   select c.name
 ";
 
-const METHOD: u32 = 0;
-const WHOSE: u32 = 1;
-const NAMES: u32 = 2;
-const METHODS: u32 = 3;
-const SIGN_UP: u32 = 4;
-const ME: u32 = 5;
-const MINE: u32 = 6;
+const METHOD: u32 = 1;
+const WHOSE: u32 = 2;
+const NAMES: u32 = 3;
+const METHODS: u32 = 4;
+const SIGN_UP: u32 = 5;
+const ME: u32 = 6;
+const MINE: u32 = 7;
 
 /// The value the schema owner's handle runs as.
 const OWNER: &str = r#"Service { name: "owner" }"#;
@@ -227,7 +227,7 @@ fn ordinals_follow_declaration_order() {
         ];
         for (i, name) in order.iter().enumerate() {
             assert_eq!(
-                Some(u32::try_from(i).expect("few calls")),
+                Some(u32::try_from(i + 1).expect("few calls")),
                 app.ordinal(name),
                 "{name}"
             );
@@ -651,7 +651,7 @@ fn a_bundle_function_is_called_by_its_queries() {
             helpers.ordinal("shout"),
             "a client may not call a bundle function"
         );
-        match helpers.call(0, &[], &CallOptions::default()) {
+        match helpers.call(1, &[], &CallOptions::default()) {
             Ok(Called::Rows(r)) => assert_eq!(vec![r#""ann!""#], printed(r)),
             other => panic!("loud returns no rows: {other:?}"),
         }
@@ -755,7 +755,7 @@ fn a_declared_principal_is_what_calls_run_for() {
         .expect("ann's key")
         .expect("a key");
         let club = db.registered("club").expect("club is registered");
-        let me = |opts: &CallOptions| match club.call(0, &[], opts) {
+        let me = |opts: &CallOptions| match club.call(1, &[], opts) {
             Ok(Called::Rows(r)) => printed(r),
             other => panic!("me returns no rows: {other:?}"),
         };
@@ -766,7 +766,7 @@ fn a_declared_principal_is_what_calls_run_for() {
             .ctor_index("EndUser")
             .expect("the declared principal has an end user");
         let asserted = asserting(Value::ctor(end_user, vec![ann]));
-        match club.call(1, &[], &asserted) {
+        match club.call(2, &[], &asserted) {
             Ok(Called::Rows(r)) => assert_eq!(vec![r#""ann""#], printed(r)),
             other => panic!("my_name returns no rows: {other:?}"),
         }
