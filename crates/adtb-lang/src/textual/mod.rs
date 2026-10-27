@@ -8,7 +8,7 @@ mod print;
 mod read;
 
 pub use document::{Document, Header, print_document, read_document};
-pub use form::{Ctor, Form, KeyForm, key_field_ty, self_key};
+pub use form::{Ctor, Form, KeyForm, key_field_ty};
 pub use print::{PrintError, print, to_text};
 pub use read::{ParseError, parse, parse_uuid};
 

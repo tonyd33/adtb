@@ -200,6 +200,11 @@ from. Each form below is stated against that desugaring.
   `Case`, `Let` and `Unreachable` at type `Change` are the write-level
   `if`, `case` and `let` of the calculus; `Let(v, e, w)` evaluates `e`
   once and evaluates `w` with `v` bound.
+- `Kind::is_write` holds for `Insert`, `Delete`, `Replace`, `Upsert`,
+  `Rejects` and `Fail`, and for no other kind. `Terms::writes(t)` holds
+  when `t` or a subterm of it is one of these. A term for which
+  `Terms::writes` fails produces no effect and never rejects its
+  statement with `UserError`.
 - Every read inside a write reads the statement's snapshot `D`. No
   write sees another write's effects, except through a variable bound
   by `Let` before a `Block` or by `LetBang` (§4.4).
@@ -352,6 +357,21 @@ A term names declarations by id; a consumer reads them from the
   `I64`.
 - Prelude types are found with `Schema::prelude_type`; their
   constructors are in the prelude's declaration order.
+- `Schema::self_key(r, f)` holds when key field `f` of `r` is a `Key r`
+  of `r` itself.
+- `Schema::reference_fields(r)` returns every field of `r`'s sum whose
+  type is `Key t` or `Option (Key t)`, except a key field of `r` whose
+  target `t` is `r`, header fields first, then each constructor's own in
+  declaration order. Each names its holding constructors, its position
+  in their rows, its target and constructor selection, whether it is an
+  `Option`, its delete action, and the index that leads with it over
+  every holding constructor: the key when it is `r`'s first key field,
+  else the first declared key, unique or index of `r` that does, else
+  its implied index. `Schema::implied_indexes(r)` returns exactly the
+  fields whose index is the implied one, and `Schema::ids` holds the id
+  of the index each names: `keys`, `indexes` or `implied`, for every
+  relation of a user module. A consumer decides which fields of a row
+  are references only by `reference_fields`.
 - `Schema::ids` holds the catalog id of each object
   ([../spec/catalog.md §1.2](../spec/catalog.md#12-identity-of-catalog-objects)):
   every object of a user module has one, and the engine's types,

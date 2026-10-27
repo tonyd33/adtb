@@ -10,22 +10,6 @@ pub fn reads_volatile(schema: &Schema, terms: &Terms, t: Tm) -> bool {
     })
 }
 
-fn is_write(k: &Kind) -> bool {
-    matches!(
-        k,
-        Kind::Insert(..)
-            | Kind::Delete(..)
-            | Kind::Replace(..)
-            | Kind::Upsert { .. }
-            | Kind::Rejects { .. }
-            | Kind::Fail(_)
-    )
-}
-
-fn has_write(terms: &Terms, t: Tm) -> bool {
-    terms.any(t, is_write)
-}
-
 fn mentions(terms: &Terms, t: Tm, vars: &BTreeSet<Var>) -> bool {
     terms.any(t, |k| matches!(k, Kind::Var(v) if vars.contains(v)))
 }
@@ -60,7 +44,7 @@ fn visit(schema: &Schema, terms: &Terms, t: Tm, tainted: &mut BTreeSet<Var>) -> 
         reads_volatile(schema, terms, x) || mentions(terms, x, tainted)
     };
     let kind = terms.kind(t);
-    if is_write(kind) {
+    if kind.is_write() {
         return if dirty(t, tainted) {
             Visit::Depends
         } else {
@@ -70,7 +54,7 @@ fn visit(schema: &Schema, terms: &Terms, t: Tm, tainted: &mut BTreeSet<Var>) -> 
     match kind {
         Kind::Let(x, e, body) | Kind::For(x, e, body) => {
             if dirty(*e, tainted) {
-                if has_write(terms, *body) && matches!(kind, Kind::For(..)) {
+                if terms.writes(*body) && matches!(kind, Kind::For(..)) {
                     return Visit::Depends;
                 }
                 tainted.insert(*x);
@@ -78,14 +62,14 @@ fn visit(schema: &Schema, terms: &Terms, t: Tm, tainted: &mut BTreeSet<Var>) -> 
             Visit::Into(vec![*e, *body])
         }
         Kind::If(c, a, b) => {
-            if dirty(*c, tainted) && (has_write(terms, *a) || has_write(terms, *b)) {
+            if dirty(*c, tainted) && (terms.writes(*a) || terms.writes(*b)) {
                 return Visit::Depends;
             }
             Visit::Into(vec![*a, *b])
         }
         Kind::Case { scrutinee, arms } => {
             if dirty(*scrutinee, tainted) {
-                if arms.iter().any(|(_, _, b)| has_write(terms, *b)) {
+                if arms.iter().any(|(_, _, b)| terms.writes(*b)) {
                     return Visit::Depends;
                 }
                 tainted.extend(arms.iter().map(|(_, v, _)| *v));

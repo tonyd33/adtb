@@ -543,6 +543,30 @@ fn a_read_only_transaction_refuses_writes() {
 }
 
 #[test]
+fn a_read_only_transaction_refuses_a_fail_as_a_write() {
+    once(0, |rt| {
+        let db = open(&rt);
+        let opts = TxnOptions {
+            read_only: true,
+            ..TxnOptions::default()
+        };
+        let mut t = db.begin(&opts).expect("begin");
+        let got = t.query_text(
+            "if count(n for n in notes) == 0 then fail \"empty\" else skip",
+            &[],
+            &TxnCallOptions::default(),
+        );
+        let refused = Error::Rejected {
+            reason: RejectReason::Invalid {
+                detail: "a read-only transaction does not write".into(),
+            },
+        };
+        assert_eq!(Some(&refused), got.as_ref().err());
+        t.commit(None).expect("commit");
+    });
+}
+
+#[test]
 fn a_deferrable_read_only_transaction_reads_and_commits() {
     once(0, |rt| {
         let db = open(&rt);
@@ -829,8 +853,8 @@ fn a_write_skew_between_interactive_transactions_does_not_commit_both() {
             let count = "count(n for n in notes)";
             let mut a = db.begin(&TxnOptions::default()).expect("begin a");
             let mut b = db.begin(&TxnOptions::default()).expect("begin b");
-            assert_eq!(vec!["0"], in_txn(&mut a, count));
-            assert_eq!(vec!["0"], in_txn(&mut b, count));
+            assert_eq!(vec!["0"], in_txn(&mut a, count), "seed {seed}");
+            assert_eq!(vec!["0"], in_txn(&mut b, count), "seed {seed}");
             let wa = a.query_text(
                 r#"insert notes { body: "a" }"#,
                 &[],

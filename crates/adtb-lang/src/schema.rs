@@ -654,71 +654,137 @@ pub struct ImpliedIndex {
     pub ctors: CtorSet,
 }
 
+/// A field of a relation variable's sum holding a reference: a key of another relation
+/// variable, or of its own outside its key, or an `Option` of one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferenceField {
+    /// The constructor whose own field it is; `None` for a header field.
+    pub ctor: Option<u32>,
+    pub field: String,
+    /// Its position in a row of each constructor that holds it.
+    pub at: usize,
+    /// The constructors that hold the field.
+    pub ctors: CtorSet,
+    pub target: RelId,
+    /// The constructors of `target` it may name; `None` for every one.
+    pub target_ctors: Option<CtorSet>,
+    /// The field is an `Option` of the key.
+    pub optional: bool,
+    pub on_delete: OnDelete,
+    pub index: ReferenceIndex,
+}
+
+/// The index of a relation variable that leads with a reference field over every constructor
+/// holding it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceIndex {
+    Key,
+    /// The declared index at this position among the relation's indexes.
+    Declared(usize),
+    /// The field's implied index.
+    Implied,
+}
+
 impl Schema {
+    /// Returns each reference field of `rel`, header fields first, then each constructor's own
+    /// in declaration order.
+    pub fn reference_fields(&self, rel: RelId) -> Vec<ReferenceField> {
+        let r = self.relation(rel);
+        let def = self.ty(r.elem_def);
+        let all: CtorSet = (0..def.ctors().len() as u32).collect();
+        let header = def.header().iter().enumerate().map(|(at, f)| (None, at, f));
+        let own = def.ctors().iter().enumerate().flat_map(|(c, d)| {
+            d.fields
+                .iter()
+                .enumerate()
+                .map(move |(at, f)| (Some(c as u32), def.header().len() + at, f))
+        });
+        header
+            .chain(own)
+            .filter_map(|(ctor, at, f)| {
+                let (target, target_ctors, optional) = self.reference(rel, f)?;
+                let ctors = ctor.map_or_else(|| all.clone(), |c| vec![c]);
+                let index = self.leading(rel, &f.name, &ctors);
+                Some(ReferenceField {
+                    ctor,
+                    field: f.name.clone(),
+                    at,
+                    ctors,
+                    target,
+                    target_ctors,
+                    optional,
+                    on_delete: f.on_delete.clone(),
+                    index,
+                })
+            })
+            .collect()
+    }
+
     /// Returns the index each reference field of `rel` implies, header fields first, then each
     /// constructor's own in declaration order; a field whose constructors a declared key,
     /// unique or index leading with it covers implies none.
     pub fn implied_indexes(&self, rel: RelId) -> Vec<ImpliedIndex> {
-        let r = self.relation(rel);
-        let def = self.ty(r.elem_def);
-        let all: CtorSet = (0..def.ctors().len() as u32).collect();
-        let header = def.header().iter().map(|f| (None, f));
-        let own = def
-            .ctors()
-            .iter()
-            .enumerate()
-            .flat_map(|(c, d)| d.fields.iter().map(move |f| (Some(c as u32), f)));
-        header
-            .chain(own)
-            .filter(|(_, f)| self.is_reference(rel, f))
-            .map(|(ctor, f)| ImpliedIndex {
-                ctor,
-                field: f.name.clone(),
-                ctors: ctor.map_or_else(|| all.clone(), |c| vec![c]),
+        self.reference_fields(rel)
+            .into_iter()
+            .filter(|f| f.index == ReferenceIndex::Implied)
+            .map(|f| ImpliedIndex {
+                ctor: f.ctor,
+                field: f.field,
+                ctors: f.ctors,
             })
-            .filter(|i| !self.declared_leading(rel, i))
             .collect()
     }
 
-    /// Returns whether field `f` of `rel`'s sum holds a reference: a key of another relation
-    /// variable, or of its own outside its key, or an `Option` of one.
-    fn is_reference(&self, rel: RelId, f: &FieldDef) -> bool {
+    /// Returns whether key field `f` of `rel` is a `Key` of `rel` itself.
+    pub fn self_key(&self, rel: RelId, f: &str) -> bool {
+        let r = self.relation(rel);
+        matches!(
+            self.ty(r.elem_def).field(0, f).map(|d| &d.ty),
+            Some(Ty::Key { rel: own, .. }) if *own == rel
+        )
+    }
+
+    /// Returns the target, its constructor selection and whether the field is optional, if
+    /// field `f` of `rel`'s sum holds a reference.
+    fn reference(&self, rel: RelId, f: &FieldDef) -> Option<(RelId, Option<CtorSet>, bool)> {
         let r = self.relation(rel);
         let option = self.prelude_type("Option");
-        let key = match f.ty.subst(r.elem_args()) {
-            k @ Ty::Key { .. } => k,
+        let (key, optional) = match f.ty.subst(r.elem_args()) {
+            k @ Ty::Key { .. } => (k, false),
             Ty::Data { def, mut args, .. } if def == option && args.len() == 1 => {
-                match args.pop() {
-                    Some(k) => k,
-                    None => return false,
-                }
+                (args.pop()?, true)
             }
-            _ => return false,
+            _ => return None,
         };
         match key {
-            Ty::Key { rel: target, .. } => !(target == rel && r.key.contains(&f.name)),
-            _ => false,
+            Ty::Key { rel: target, ctors } if !(target == rel && r.key.contains(&f.name)) => {
+                Some((target, ctors, optional))
+            }
+            _ => None,
         }
     }
 
-    /// Returns whether a declared key, unique or index of `rel` over every constructor of `i`
-    /// has `i`'s field as its leading field.
-    fn declared_leading(&self, rel: RelId, i: &ImpliedIndex) -> bool {
+    /// Returns the key, else the first declared key, unique or index of `rel` that has `field`
+    /// as its leading field and covers every constructor of `ctors`, else the implied index.
+    fn leading(&self, rel: RelId, field: &str, ctors: &CtorSet) -> ReferenceIndex {
         let r = self.relation(rel);
-        if r.key.first() == Some(&i.field) {
-            return true;
+        if r.key.first().is_some_and(|k| k == field) {
+            return ReferenceIndex::Key;
         }
-        r.indexes.iter().any(|ix| {
-            let leads = matches!(
-                ix.fields.first().map(|e| &e.kind),
-                Some(ast::ExprKind::Name(ast::QName { module: None, name })) if name.text == i.field
-            );
-            let covers = ix
-                .scope
-                .as_ref()
-                .is_none_or(|s| i.ctors.iter().all(|c| s.contains(c)));
-            leads && covers
-        })
+        r.indexes
+            .iter()
+            .position(|ix| {
+                let leads = matches!(
+                    ix.fields.first().map(|e| &e.kind),
+                    Some(ast::ExprKind::Name(ast::QName { module: None, name })) if name.text == field
+                );
+                let covers = ix
+                    .scope
+                    .as_ref()
+                    .is_none_or(|s| ctors.iter().all(|c| s.contains(c)));
+                leads && covers
+            })
+            .map_or(ReferenceIndex::Implied, ReferenceIndex::Declared)
     }
 }
 

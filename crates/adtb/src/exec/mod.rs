@@ -239,57 +239,75 @@ pub enum Rows {
 
 /// Returns the elements of the set or list `v` as batches of `schema`, at most `per` rows each.
 ///
-/// Panics if an element is not of the schema's types.
-pub fn batches(v: &Val, schema: &batch::Schema, rows: Rows, per: usize) -> Vec<Batch> {
+/// Returns `Error::Internal` if `v` is not a set or list or an element is not of the schema's
+/// types.
+pub fn batches(
+    v: &Val,
+    schema: &batch::Schema,
+    rows: Rows,
+    per: usize,
+) -> Result<Vec<Batch>, Error> {
     let elems: Vec<&Val> = match v {
         Val::Set(s) => s.iter().collect(),
         Val::List(xs) => xs.iter().collect(),
-        other => panic!("a result in batches is a set or a list, found {other:?}"),
+        other => {
+            return Err(Error::Internal(format!(
+                "a result in batches is a set or a list, found {other:?}"
+            )));
+        }
     };
     elems
         .chunks(per.max(1))
         .map(|chunk| {
             let mut b = BatchBuilder::new(schema.clone());
             for e in chunk {
-                let row: Vec<Datum> = match rows {
-                    Rows::Fields => e
-                        .fields()
-                        .expect("a row of a batch of fields has fields")
-                        .iter()
-                        .zip(schema.fields())
-                        .map(|(x, t)| datum(t, x))
-                        .collect(),
-                    Rows::Whole => vec![datum(&schema.fields()[0], e)],
+                let row = match rows {
+                    Rows::Fields => data(schema.fields(), e.fields()?)?,
+                    Rows::Whole => vec![datum(&schema.fields()[0], e)?],
                 };
                 b.push_datums(&row);
             }
-            b.finish()
+            Ok(b.finish())
         })
         .collect()
 }
 
-fn datum(t: &batch::Type, v: &Val) -> Datum {
-    match (t, v) {
-        (batch::Type::Scalar(s), v) => match to_key(&crate::key::KeyType::Scalar(*s), v) {
-            Ok(k) => Datum::Scalar(k),
-            Err(_) => panic!("{v:?} is not a value of batch type {t:?}"),
-        },
+fn mistyped(v: &Val, t: &batch::Type) -> Error {
+    value::mistyped(&format!("a value of batch type {t:?}"), v)
+}
+
+fn data(ts: &[batch::Type], vs: &[Val]) -> Result<Vec<Datum>, Error> {
+    if ts.len() != vs.len() {
+        return Err(Error::Internal(format!(
+            "{vs:?} has {} fields, its batch type {ts:?} has {}",
+            vs.len(),
+            ts.len()
+        )));
+    }
+    ts.iter().zip(vs).map(|(t, x)| datum(t, x)).collect()
+}
+
+fn datum(t: &batch::Type, v: &Val) -> Result<Datum, Error> {
+    Ok(match (t, v) {
+        (batch::Type::Scalar(s), v) => {
+            Datum::Scalar(to_key(&crate::key::KeyType::Scalar(*s), v).map_err(|_| mistyped(v, t))?)
+        }
         (batch::Type::Record(ts), Val::Ctor(_, fs) | Val::Record(fs)) => {
-            Datum::Record(ts.iter().zip(fs.iter()).map(|(t, x)| datum(t, x)).collect())
+            Datum::Record(data(ts, fs)?)
         }
         (batch::Type::Sum(cs), Val::Ctor(c, fs)) => Datum::Sum {
             ctor: *c,
-            fields: cs[*c as usize]
-                .fields
-                .iter()
-                .zip(fs.iter())
-                .map(|(t, x)| datum(t, x))
-                .collect(),
+            fields: data(
+                &cs.get(*c as usize).ok_or_else(|| mistyped(v, t))?.fields,
+                fs,
+            )?,
         },
-        (batch::Type::List(e), Val::Set(s)) => Datum::List(s.iter().map(|x| datum(e, x)).collect()),
-        (batch::Type::List(e), Val::List(xs)) => {
-            Datum::List(xs.iter().map(|x| datum(e, x)).collect())
+        (batch::Type::List(e), Val::Set(s)) => {
+            Datum::List(s.iter().map(|x| datum(e, x)).collect::<Result<_, _>>()?)
         }
-        (t, v) => panic!("{v:?} is not a value of batch type {t:?}"),
-    }
+        (batch::Type::List(e), Val::List(xs)) => {
+            Datum::List(xs.iter().map(|x| datum(e, x)).collect::<Result<_, _>>()?)
+        }
+        (t, v) => return Err(mistyped(v, t)),
+    })
 }

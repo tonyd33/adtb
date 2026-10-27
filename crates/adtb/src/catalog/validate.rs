@@ -41,10 +41,10 @@ impl Catalog {
         let catalog = self.plan();
         let (heaps, indexes) = self.bindings();
         let store = Arc::new(Store {
-            pager: Arc::new(pager.clone()),
+            pager: pager.clone(),
             reads: Arc::new(AtSnapshot {
                 rt: pager.rt.clone(),
-                pager: Arc::new(pager.clone()),
+                pager: pager.clone(),
                 txns: Arc::new(txns.clone()),
                 snapshot: snapshot.clone(),
                 reader: Some(x),

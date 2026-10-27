@@ -342,9 +342,27 @@ impl Terms {
         }
         false
     }
+
+    /// Returns whether `t` or a subterm of it is a write term.
+    pub fn writes(&self, t: Tm) -> bool {
+        self.any(t, Kind::is_write)
+    }
 }
 
 impl Kind {
+    /// Returns whether this is a write term, `fail` included.
+    pub fn is_write(&self) -> bool {
+        matches!(
+            self,
+            Kind::Insert(..)
+                | Kind::Delete(..)
+                | Kind::Replace(..)
+                | Kind::Upsert { .. }
+                | Kind::Rejects { .. }
+                | Kind::Fail(_)
+        )
+    }
+
     /// Returns the direct subterms, in evaluation order.
     pub fn children(&self) -> Vec<Tm> {
         match self {

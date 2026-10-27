@@ -246,7 +246,6 @@ fn clearing_bits_while_the_visibility_map_root_grows_keeps_the_map_whole() {
         .expect("create");
         let large = LargeStore::create(&pager, LARGE_ID).expect("large store");
         let mut filler = fill_low_ids(&pager);
-        let pager = Arc::new(pager);
         let mut overlapped = 0;
         for round in 0..ROUNDS {
             let (heap, low, high) =

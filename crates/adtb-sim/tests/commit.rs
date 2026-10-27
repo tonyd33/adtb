@@ -42,7 +42,7 @@ struct Seen {
 /// `wait_durable` returns.
 fn committers(
     rt: &SimRuntime,
-    pager: &Arc<Pager<SimRuntime>>,
+    pager: &Pager<SimRuntime>,
     ledger: &Ledger,
     seen: &Arc<Mutex<Seen>>,
     threads: usize,
@@ -90,7 +90,6 @@ fn concurrent_commits_share_batches() {
         let mut out = (0, 0);
         finished(&mut sim, |rt| {
             let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
-            let pager = Arc::new(pager);
             let before = pager.batches();
             committers(&rt, &pager, &ledger, &seen, 8, 25);
             out = (pager.batches() - before, 8 * 25);
@@ -111,7 +110,7 @@ fn a_commit_acknowledged_before_another_begins_has_the_earlier_position() {
     let seen = Arc::new(Mutex::new(Seen::default()));
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
-        committers(&rt, &Arc::new(pager), &ledger, &seen, 6, 20);
+        committers(&rt, &pager, &ledger, &seen, 6, 20);
     });
     let events = &seen.lock().unwrap().events;
     let position = |x: u64| {
@@ -178,7 +177,7 @@ fn every_acknowledged_commit_survives_a_crash() {
             let (l, s) = (ledger.clone(), seen.clone());
             let outcome = run_process(&mut sim, |rt| {
                 let (pager, _) = Pager::open(rt.clone(), &options()).unwrap();
-                committers(&rt, &Arc::new(pager), &l, &s, 5, 1000);
+                committers(&rt, &pager, &l, &s, 5, 1000);
             });
             assert_eq!(Outcome::Crashed, outcome);
             let mut reopened = Reopened::default();
@@ -339,7 +338,6 @@ fn a_pool_every_frame_of_which_stays_latched_reports_a_stall() {
     };
     sim.run(move |rt| {
         let (pager, _) = Pager::open(rt.clone(), &options).unwrap();
-        let pager = Arc::new(pager);
         let pages: Vec<_> = (0..6)
             .map(|_| {
                 pager

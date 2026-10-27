@@ -2,8 +2,7 @@ use std::collections::BTreeMap;
 
 use adtb_lang::kernel::{IndexField, Kind, Var};
 use adtb_lang::norm::NormalProgram;
-use adtb_lang::schema::{Generator, OnDelete, Schema};
-use adtb_lang::textual::self_key;
+use adtb_lang::schema::{Generator, OnDelete, ReferenceIndex, Schema};
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::catalog::field_path;
@@ -106,49 +105,29 @@ impl Rel {
 
 /// Returns the field path an index field is written as, if it is one.
 fn refs(schema: &Schema, rel: RelId, c: u32, indexes: &[IndexDesc]) -> Vec<RefField> {
-    let r = schema.relation(rel);
-    let all = (0..schema.ty(r.elem_def).ctors().len() as u32).collect::<Vec<_>>();
-    let def = schema.ty(r.elem_def);
-    let header = def.header().iter().map(|f| (f, true));
-    let own = def.ctors()[c as usize].fields.iter().map(|f| (f, false));
-    let option = schema.prelude_type("Option");
-    header
-        .chain(own)
-        .enumerate()
-        .filter_map(|(at, (f, header))| {
-            if r.key.contains(&f.name) && self_key(schema, rel, &f.name) {
-                return None;
+    let ids = &schema.ids;
+    schema
+        .reference_fields(rel)
+        .into_iter()
+        .filter(|f| f.ctor.is_none_or(|own| own == c))
+        .map(|f| {
+            let index = match f.index {
+                ReferenceIndex::Key => ids.keys.get(&rel),
+                ReferenceIndex::Declared(i) => ids.indexes.get(&(rel, i)),
+                ReferenceIndex::Implied => ids.implied.get(&(rel, f.ctor, f.field.clone())),
+            };
+            RefField {
+                at: f.at,
+                header: f.ctor.is_none(),
+                target: f.target,
+                ctors: f.target_ctors,
+                optional: f.optional,
+                action: f.on_delete,
+                index: index
+                    .map(|id| IndexId(*id))
+                    .filter(|id| indexes.iter().any(|d| d.id == *id)),
+                name: f.field,
             }
-            let (key, optional) = match f.ty.subst(r.elem_args()) {
-                k @ Ty::Key { .. } => (k, false),
-                Ty::Data { def, mut args, .. } if def == option && args.len() == 1 => {
-                    match args.pop() {
-                        Some(k @ Ty::Key { .. }) => (k, true),
-                        _ => return None,
-                    }
-                }
-                _ => return None,
-            };
-            let Ty::Key { rel: target, ctors } = key else {
-                unreachable!("matched a key type")
-            };
-            let holding = if header { &all[..] } else { &[c][..] };
-            let index = indexes
-                .iter()
-                .find(|d| {
-                    d.fields.first() == Some(&f.name) && holding.iter().all(|h| d.ctors.contains(h))
-                })
-                .map(|d| d.id);
-            Some(RefField {
-                name: f.name.clone(),
-                at,
-                header,
-                target,
-                ctors,
-                optional,
-                action: f.on_delete.clone(),
-                index,
-            })
         })
         .collect()
 }

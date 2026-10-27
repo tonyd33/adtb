@@ -130,7 +130,8 @@ pub fn catalog(schema: &Schema, program: &Program) -> Catalog {
         let base = 100 * i as u64;
         let n = schema.ty(r.elem_def).ctors().len() as u32;
         let all: Vec<u32> = (0..n).collect();
-        let key_index = IndexId(base);
+        let ids = &schema.ids;
+        let key_index = IndexId(ids.keys[&rel]);
         let mut indexes = vec![IndexDesc {
             id: key_index,
             ctors: all.clone(),
@@ -155,16 +156,23 @@ pub fn catalog(schema: &Schema, program: &Program) -> Catalog {
                 continue;
             }
             indexes.push(IndexDesc {
-                id: IndexId(base + 1 + j as u64),
+                id: IndexId(ids.indexes[&(rel, j)]),
                 ctors: def.scope.clone().unwrap_or_else(|| all.clone()),
                 fields,
                 unique: def.unique,
                 ordered: true,
             });
         }
-        for (k, implied) in schema.implied_indexes(rel).into_iter().enumerate() {
+        for implied in schema.implied_indexes(rel) {
+            let Some(&id) = ids.implied.get(&(rel, implied.ctor, implied.field.clone())) else {
+                assert!(
+                    schema.module(r.module).engine,
+                    "every implied index of a user relation has an id"
+                );
+                continue;
+            };
             indexes.push(IndexDesc {
-                id: IndexId(base + 50 + k as u64),
+                id: IndexId(id),
                 ctors: implied.ctors,
                 fields: vec![implied.field],
                 unique: false,

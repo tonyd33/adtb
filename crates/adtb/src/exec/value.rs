@@ -246,6 +246,6 @@ impl Val {
     }
 }
 
-fn mistyped(want: &str, v: &Val) -> Error {
+pub(crate) fn mistyped(want: &str, v: &Val) -> Error {
     Error::Internal(format!("expected {want}, found {v:?}"))
 }

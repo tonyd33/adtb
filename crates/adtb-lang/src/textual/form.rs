@@ -50,20 +50,11 @@ pub enum KeyForm {
     Fields(Vec<(String, Form)>),
 }
 
-/// Returns whether key field `f` of `rel` is a `Key` of `rel` itself.
-pub fn self_key(schema: &Schema, rel: RelId, f: &str) -> bool {
-    let r = schema.relation(rel);
-    matches!(
-        schema.ty(r.elem_def).field(0, f).map(|d| &d.ty),
-        Some(Ty::Key { rel: own, .. }) if *own == rel
-    )
-}
-
 /// Returns the type of key field `f` of `rel`, where a key field that is a key of `rel` itself
 /// has the type of the value its generator draws.
 pub fn key_field_ty(schema: &Schema, rel: RelId, f: &str) -> Ty {
     let r = schema.relation(rel);
-    if self_key(schema, rel, f) {
+    if schema.self_key(rel, f) {
         return match r.generate {
             Some(Generator::Uuidv7) => Ty::Data {
                 def: schema.prelude_type("Uuid"),

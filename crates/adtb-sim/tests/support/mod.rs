@@ -24,7 +24,7 @@ pub use seeds::sweep;
 
 /// A database's pager and transactions, with its heaps and indexes as the executor binds them.
 pub type Bound = (
-    Arc<Pager<SimRuntime>>,
+    Pager<SimRuntime>,
     Arc<Transactions<SimRuntime>>,
     BTreeMap<adtb::plan::HeapId, StoredHeap>,
     BTreeMap<adtb::plan::IndexId, StoredIndex>,
@@ -264,7 +264,7 @@ pub fn mutated(schema: &Schema, rel: RelId, row: &Value) -> Option<Value> {
 }
 
 pub struct Db {
-    pub pager: Arc<Pager<SimRuntime>>,
+    pub pager: Pager<SimRuntime>,
     pub heaps: BTreeMap<adtb::plan::HeapId, Heap>,
     pub rows: BTreeMap<adtb::plan::HeapId, Vec<FieldType>>,
     pub indexes: BTreeMap<adtb::plan::IndexId, (StoredIndex, Vec<String>, RelId)>,
@@ -279,10 +279,10 @@ impl Db {
     /// Create the database of `f`, or reopen it at `roots` after recovery. Returns `None` when
     /// the pager cannot open the file.
     pub fn build(rt: &SimRuntime, f: &World, roots: Option<&Roots>) -> Option<(Db, Roots)> {
-        let pager = Arc::new(match roots {
+        let pager = match roots {
             None => Pager::create(rt.clone(), &harness::options(256)).expect("create"),
             Some(_) => Pager::open(rt.clone(), &harness::options(256)).ok()?.0,
-        });
+        };
         let txns = Arc::new(match roots {
             None => Transactions::create(rt.clone(), &pager).expect("commit log"),
             Some(r) => Transactions::open(rt.clone(), &pager, r.clog).expect("commit log"),

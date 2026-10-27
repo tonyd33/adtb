@@ -23,6 +23,8 @@ Invariant: every reference field of a relation variable of a user
 module is the leading field of an index over every constructor holding
 the field: a declared key, unique or index, or the field's implied
 index ([../spec/constraints.md §2.1](../spec/constraints.md#21-keys-uniques-and-references)).
+The reference fields and the index serving each are those
+`Schema::reference_fields` returns ([kernel.md §6](kernel.md#6-the-schema-a-term-refers-to)).
 The write path finds the referrers of a deleted or moved target by
 probing it.
 

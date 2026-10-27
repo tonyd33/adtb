@@ -4,7 +4,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::textual::{self as syntax, Elems, Form, PrintError, Scalar, Textual};
 use adtb_lang::types::{Base, Ty};
 
-pub use adtb_lang::textual::{Header, ParseError, self_key};
+pub use adtb_lang::textual::{Header, ParseError};
 
 use crate::value::Value;
 use crate::zone;

@@ -96,7 +96,7 @@ impl Prepared {
         let mut retry: Option<u64> = None;
         let mut deferrable = false;
         for t in &normal.items {
-            writes |= has_write(&normal.terms, *t);
+            writes |= normal.terms.writes(*t);
             if let Kind::Transact(_, o) = normal.terms.kind(*t) {
                 if let Some(n) = o.retry {
                     retry = Some(retry.map_or(n, |r| r.min(n)));
@@ -164,15 +164,4 @@ fn elements(v: Val) -> Result<Vec<Val>, Error> {
 
 fn messages<'a>(ms: impl Iterator<Item = &'a String>) -> String {
     ms.map(String::as_str).collect::<Vec<_>>().join("\n")
-}
-
-fn has_write(terms: &Terms, t: Tm) -> bool {
-    matches!(
-        terms.kind(t),
-        Kind::Insert(..)
-            | Kind::Delete(..)
-            | Kind::Replace(..)
-            | Kind::Upsert { .. }
-            | Kind::Rejects { .. }
-    ) || terms.children(t).into_iter().any(|c| has_write(terms, c))
 }

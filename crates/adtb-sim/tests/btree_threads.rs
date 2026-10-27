@@ -280,7 +280,7 @@ fn concurrent_run(
     let h = history.clone();
     let keys = 1500;
     finished(&mut sim, move |rt| {
-        let pager = Arc::new(Pager::create(rt.clone(), &options(pool)).expect("create"));
+        let pager = Pager::create(rt.clone(), &options(pool)).expect("create");
         let tree = BTree::create(&pager, OWNER).expect("create tree");
         let workers: Vec<_> = (0..threads)
             .map(|i| {
@@ -458,7 +458,6 @@ fn crash_worker(
 
 fn crash_run(rt: SimRuntime, world: &Arc<Mutex<World>>, shape: Shape) {
     let (pager, _) = Pager::open(rt.clone(), &options(24)).expect("open");
-    let pager = Arc::new(pager);
     let workers: Vec<_> = (0..THREADS)
         .map(|t| {
             let (pager, rt2, w) = (pager.clone(), rt.clone(), world.clone());
@@ -679,7 +678,7 @@ fn threads_crashed_together_recover_a_prefix_of_each_threads_operations() {
 fn retain_beside_inserts(seed: u64, n: u32, inserters: u32) {
     let mut sim = Sim::new(seed, switching());
     finished(&mut sim, move |rt| {
-        let pager = Arc::new(Pager::create(rt.clone(), &options(32)).expect("create"));
+        let pager = Pager::create(rt.clone(), &options(32)).expect("create");
         let tree = BTree::create(&pager, OWNER).expect("create tree");
         for k in 0..n {
             assert_eq!(tree.insert(&pager, &entry(2 * k)), Ok(true));

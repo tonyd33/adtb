@@ -150,7 +150,7 @@ struct Engine<R: Runtime> {
     rt: R,
     schema: Arc<Schema>,
     program: Program,
-    pager: Arc<Pager<R>>,
+    pager: Pager<R>,
     db: write::Database<R>,
     #[cfg(target_os = "linux")]
     held: Option<file::Held>,
@@ -309,7 +309,6 @@ impl<R: Runtime> Engine<R> {
             Err(storage::OpenError::NotFound) => return Err(OpenError::NotFound),
             Err(e) => return Err(corrupt(e)),
         };
-        let pager = Arc::new(pager);
         Engine::on(rt, pager.clone(), log, options).inspect_err(|_| pager.close())
     }
 
@@ -317,7 +316,7 @@ impl<R: Runtime> Engine<R> {
     /// file's own, and bind the write path to it.
     fn on(
         rt: R,
-        pager: Arc<Pager<R>>,
+        pager: Pager<R>,
         log: &Log,
         options: &OpenOptions,
     ) -> Result<Engine<R>, OpenError> {

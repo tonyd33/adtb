@@ -60,7 +60,7 @@ fn writer_of(h: &Header, seen: bool) -> Option<Xid> {
 /// is given.
 pub struct AtSnapshot<R: Runtime> {
     pub rt: R,
-    pub pager: Arc<Pager<R>>,
+    pub pager: Pager<R>,
     pub txns: Arc<Transactions<R>>,
     pub snapshot: Snapshot,
     pub reader: Option<Xid>,
@@ -149,7 +149,7 @@ pub struct StoredIndex {
 ///
 /// Invariant: `heaps` and `indexes` hold every heap and index of the plan's `Reads`.
 pub struct Store<R: Runtime> {
-    pub pager: Arc<Pager<R>>,
+    pub pager: Pager<R>,
     pub reads: Arc<dyn Reads>,
     pub heaps: BTreeMap<HeapId, StoredHeap>,
     pub indexes: BTreeMap<IndexId, StoredIndex>,

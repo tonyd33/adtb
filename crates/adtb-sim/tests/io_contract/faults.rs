@@ -296,17 +296,21 @@ fn a_crash_keeps_a_prefix_of_unforced_creations_and_removals() {
             },
         );
         let mut io = rt.io();
-        assert_eq!(Ok(Done::Created), super::create_dir(&rt, &mut io, "d"));
+        assert_eq!(
+            Ok(Done::Created),
+            super::create_dir(&rt, &mut io, "d"),
+            "seed {seed}"
+        );
         let root = Op::SyncDir { dir: String::new() };
-        assert_eq!(Ok(Done::Synced), done(&rt, &mut io, root));
+        assert_eq!(Ok(Done::Synced), done(&rt, &mut io, root), "seed {seed}");
         open(&rt, &mut io, "d/kept", true).unwrap();
         let d = Op::SyncDir { dir: "d".into() };
-        assert_eq!(Ok(Done::Synced), done(&rt, &mut io, d));
+        assert_eq!(Ok(Done::Synced), done(&rt, &mut io, d), "seed {seed}");
         open(&rt, &mut io, "d/a", true).unwrap();
         let remove = Op::Remove {
             path: "d/kept".into(),
         };
-        assert_eq!(Ok(Done::Removed), done(&rt, &mut io, remove));
+        assert_eq!(Ok(Done::Removed), done(&rt, &mut io, remove), "seed {seed}");
         open(&rt, &mut io, "d/b", true).unwrap();
         rt.crash();
         let rt = plain(&dir);
@@ -339,12 +343,20 @@ fn a_crash_that_loses_a_directory_loses_its_files() {
             },
         );
         let mut io = rt.io();
-        assert_eq!(Ok(Done::Created), super::create_dir(&rt, &mut io, "d"));
+        assert_eq!(
+            Ok(Done::Created),
+            super::create_dir(&rt, &mut io, "d"),
+            "seed {seed}"
+        );
         let (file, _) = open(&rt, &mut io, "d/f", true).unwrap();
         write(&rt, &mut io, file, 0, &block(1));
-        assert_eq!(Ok(Done::Synced), done(&rt, &mut io, Op::Sync { file }));
+        assert_eq!(
+            Ok(Done::Synced),
+            done(&rt, &mut io, Op::Sync { file }),
+            "seed {seed}"
+        );
         let d = Op::SyncDir { dir: "d".into() };
-        assert_eq!(Ok(Done::Synced), done(&rt, &mut io, d));
+        assert_eq!(Ok(Done::Synced), done(&rt, &mut io, d), "seed {seed}");
         rt.crash();
         let rt = plain(&dir);
         let mut io = rt.io();

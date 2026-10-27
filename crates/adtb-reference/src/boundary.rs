@@ -119,38 +119,17 @@ impl Interpreter<'_> {
 
     /// Returns the reference fields of constructor `c` of `rel`, header fields first.
     fn ref_fields(&self, rel: RelId, c: u32) -> Vec<RefField> {
-        let r = self.schema.relation(rel);
-        let def = self.schema.ty(r.elem_def);
-        let header = def.header().iter().map(|f| (f, true));
-        let own = def.ctors()[c as usize].fields.iter().map(|f| (f, false));
-        let option = self.schema.prelude_type("Option");
-        header
-            .chain(own)
-            .filter_map(|(f, header)| {
-                if r.key.contains(&f.name) && self.self_key(rel, &f.name) {
-                    return None;
-                }
-                let (key, optional) = match f.ty.subst(r.elem_args()) {
-                    k @ Ty::Key { .. } => (k, false),
-                    Ty::Data { def, mut args, .. } if def == option && args.len() == 1 => {
-                        match args.pop() {
-                            Some(k @ Ty::Key { .. }) => (k, true),
-                            _ => return None,
-                        }
-                    }
-                    _ => return None,
-                };
-                let Ty::Key { rel: target, ctors } = key else {
-                    unreachable!("matched a key type")
-                };
-                Some(RefField {
-                    name: f.name.clone(),
-                    header,
-                    target,
-                    ctors,
-                    optional,
-                    action: f.on_delete.clone(),
-                })
+        self.schema
+            .reference_fields(rel)
+            .into_iter()
+            .filter(|f| f.ctor.is_none_or(|own| own == c))
+            .map(|f| RefField {
+                header: f.ctor.is_none(),
+                target: f.target,
+                ctors: f.target_ctors,
+                optional: f.optional,
+                action: f.on_delete,
+                name: f.field,
             })
             .collect()
     }

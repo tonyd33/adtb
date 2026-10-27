@@ -273,15 +273,10 @@ impl<'a> Interpreter<'a> {
                 .clone()
         };
         match r.key.as_slice() {
-            [f] if self.self_key(rel, f) => field(f),
+            [f] if self.schema.self_key(rel, f) => field(f),
             [f] => Value::key(field(f)),
             fs => Value::key(Value::record(fs.iter().map(|f| (f.as_str(), field(f))))),
         }
-    }
-
-    /// Returns whether key field `f` of `rel` is a `Key` of `rel` itself.
-    pub(crate) fn self_key(&self, rel: RelId, f: &str) -> bool {
-        crate::textual::self_key(self.schema, rel, f)
     }
 
     fn ctors(&self, rel: RelId, set: &Option<CtorSet>) -> CtorSet {

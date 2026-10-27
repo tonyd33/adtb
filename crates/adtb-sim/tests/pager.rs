@@ -300,7 +300,6 @@ fn concurrent(rt: SimRuntime, client: &Client, layout: Layout, steps: usize) {
     let Ok((pager, _)) = Pager::open(rt.clone(), &options(layout)) else {
         return;
     };
-    let pager = Arc::new(pager);
     let workers: Vec<_> = (0..layout.threads)
         .map(|i| {
             let (pager, rt2, client) = (pager.clone(), rt.clone(), client.clone());

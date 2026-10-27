@@ -497,7 +497,7 @@ fn a_set_of_rows_comes_back_as_batches_of_the_heap_schema() {
         )
     })
     .expect("a value");
-    let bs = exec::batches(&v, &schema, Rows::Fields, 2);
+    let bs = exec::batches(&v, &schema, Rows::Fields, 2).expect("the users fill the batches");
     assert_eq!(
         vec![2, 1],
         bs.iter().map(batch::Batch::len).collect::<Vec<_>>()
@@ -516,6 +516,33 @@ fn a_set_of_rows_comes_back_as_batches_of_the_heap_schema() {
         })
         .collect();
     assert_eq!(want, got);
+}
+
+#[test]
+fn a_mistyped_value_is_an_internal_error_in_batches() {
+    let f = running();
+    let users = f.rel("users");
+    let row: Vec<FieldType> = Db::row_ty(&world(&f), users, 0)
+        .iter()
+        .map(|(_, t)| field_type(&f.schema, t))
+        .collect();
+    let schema = batch::Schema::of_heap(&row);
+    let text = |t: &str| Val::Text(t.into());
+    let set = |xs: Vec<Val>| Val::Set(Arc::new(xs.into_iter().collect()));
+    for v in [
+        Val::Int(1),
+        set(vec![Val::Int(1)]),
+        set(vec![Val::Record(Arc::from([]))]),
+        set(vec![Val::Record(vec![text("a"); row.len()].into())]),
+    ] {
+        assert!(
+            matches!(
+                exec::batches(&v, &schema, Rows::Fields, 2),
+                Err(Error::Internal(_))
+            ),
+            "{v:?}"
+        );
+    }
 }
 
 #[test]

@@ -243,7 +243,7 @@ pub struct Database<R: Runtime> {
     /// Each `on delete retag` new value over the referrer's row, in `program`.
     retags: BTreeMap<RelId, (Var, Tm)>,
     catalog: Arc<Catalog>,
-    pager: Arc<Pager<R>>,
+    pager: Pager<R>,
     txns: Arc<Transactions<R>>,
     ser: Arc<Lock<Serializer>>,
     waits: Waits<R>,
@@ -277,7 +277,7 @@ pub struct Setup<R: Runtime> {
     pub schema: Arc<Schema>,
     pub normal: Arc<NormalProgram>,
     pub catalog: Arc<Catalog>,
-    pub pager: Arc<Pager<R>>,
+    pub pager: Pager<R>,
     pub txns: Arc<Transactions<R>>,
     pub bindings: Bindings,
     pub budget: Arc<Budget>,
@@ -368,7 +368,7 @@ impl<R: Runtime> Database<R> {
         })
     }
 
-    pub fn pager(&self) -> &Arc<Pager<R>> {
+    pub fn pager(&self) -> &Pager<R> {
         &self.pager
     }
 

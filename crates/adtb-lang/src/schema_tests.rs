@@ -657,3 +657,103 @@ fn the_engine_fields_of_catalog_and_sys_start_after_the_prelude() {
         .min();
     assert_eq!(Some(88), catalog_min);
 }
+
+fn relation(s: &Schema, name: &str) -> RelId {
+    let m = s.module_named("m").unwrap();
+    match s.module(m).values[name] {
+        ValueDef::Relation(r) => r,
+        other => panic!("`{name}` is a relation, found {other:?}"),
+    }
+}
+
+#[test]
+fn reference_fields_name_their_holders_targets_and_leading_indexes() {
+    let s = build_src(&[&module(
+        "type U = { id: Key us }
+relation us : U key id generate sequence
+type N { id: Key ns, owner: Key us }
+  = A { parent: Option (Key ns), by: Key us }
+  | B { tag: Text, other: Key us }
+relation ns : N key id generate sequence
+  index (by) in A
+type M = { u: Key us, n: I64 }
+relation ms : M key u",
+    )])
+    .unwrap();
+    let (us, ns, ms) = (relation(&s, "us"), relation(&s, "ns"), relation(&s, "ms"));
+    let got: Vec<_> = s
+        .reference_fields(ns)
+        .into_iter()
+        .map(|f| {
+            (
+                f.ctor,
+                f.field,
+                f.at,
+                f.ctors,
+                f.target,
+                f.target_ctors,
+                f.optional,
+                f.index,
+            )
+        })
+        .collect();
+    assert_eq!(
+        vec![
+            (
+                None,
+                "owner".to_string(),
+                1,
+                vec![0, 1],
+                us,
+                None,
+                false,
+                ReferenceIndex::Implied
+            ),
+            (
+                Some(0),
+                "parent".to_string(),
+                2,
+                vec![0],
+                ns,
+                None,
+                true,
+                ReferenceIndex::Implied
+            ),
+            (
+                Some(0),
+                "by".to_string(),
+                3,
+                vec![0],
+                us,
+                None,
+                false,
+                ReferenceIndex::Declared(0)
+            ),
+            (
+                Some(1),
+                "other".to_string(),
+                3,
+                vec![1],
+                us,
+                None,
+                false,
+                ReferenceIndex::Implied
+            ),
+        ],
+        got
+    );
+    assert_eq!(
+        vec!["owner", "parent", "other"],
+        s.implied_indexes(ns)
+            .iter()
+            .map(|i| i.field.as_str())
+            .collect::<Vec<_>>()
+    );
+    let keyed = s.reference_fields(ms);
+    assert_eq!(1, keyed.len());
+    assert_eq!(
+        ("u", ReferenceIndex::Key),
+        (keyed[0].field.as_str(), keyed[0].index)
+    );
+    assert!(s.reference_fields(us).is_empty());
+}
