@@ -667,3 +667,21 @@ fn an_added_field_resolves_with_its_delete_action() {
         other => panic!("an add field: {other:?}"),
     }
 }
+
+#[test]
+fn a_principal_declared_by_the_first_migration_resolves_to_its_type() {
+    let src = migrated(
+        &Source::default(),
+        "module auth\nadd module auth\nadd type User = { id: Key users, name: Text }\n\
+         add relation users : User key id generate sequence\n\
+         add type Principal = EndUser { user: Key users } | Service { name: Text } | Anonymous\n",
+    );
+    let schema = src.schema().expect("the schema builds");
+    let principal = schema.ids.types[&schema.principal];
+    assert!(
+        ops(&src, 1)
+            .iter()
+            .any(|op| matches!(op.op, Resolved::AddType { sum, .. } if sum == principal)),
+        "the operator names the schema's principal"
+    );
+}

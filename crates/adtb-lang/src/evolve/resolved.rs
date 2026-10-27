@@ -611,8 +611,15 @@ impl Resolver<'_> {
 
     fn type_id(&self, q: &QName) -> Option<u64> {
         let m = self.schema.module_named(&self.module_of(q))?;
-        let def = self.schema.module(m).types.get(&q.name.text)?;
-        self.schema.ids.types.get(def).copied()
+        let principal = self.schema.principal;
+        let def = match self.schema.module(m).types.get(&q.name.text) {
+            Some(def) => *def,
+            None if q.name.text == "Principal" && self.schema.ty(principal).module == m => {
+                principal
+            }
+            None => return None,
+        };
+        self.schema.ids.types.get(&def).copied()
     }
 
     fn relation(&self, q: &QName) -> Option<RelId> {

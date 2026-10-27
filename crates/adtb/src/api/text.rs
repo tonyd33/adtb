@@ -47,11 +47,13 @@ impl Iterator for DynRows {
 /// Ad hoc text checked and normalised against one schema, its parameters bound.
 pub(super) struct Prepared {
     /// The schema checked against, extended with the temp relations the text declares.
-    schema: Arc<Schema>,
-    terms: Terms,
-    items: Vec<Tm>,
-    commands: Vec<AdhocCommand>,
-    params: Vec<(Var, Val)>,
+    pub schema: Arc<Schema>,
+    pub terms: Arc<Terms>,
+    pub items: Vec<Tm>,
+    pub commands: Vec<AdhocCommand>,
+    pub params: Vec<(Var, Val)>,
+    /// The principal the text runs for.
+    pub caller: Val,
     /// Whether an item writes.
     pub writes: bool,
     /// The least `retry n` a `transact` block of the text states.
@@ -62,13 +64,14 @@ pub(super) struct Prepared {
 
 impl Prepared {
     /// Returns `text` checked against `program` of `schema`, each free name typed and bound by
-    /// `params`.
+    /// `params`, run for `caller`.
     pub fn new(
         schema: &Arc<Schema>,
         program: &Program,
         bundles: &Bundles,
         text: &str,
         params: &[(&str, Ty, Val)],
+        caller: Val,
     ) -> Result<Prepared, Error> {
         let items = parse_adhoc(text, Options::default())
             .ok()
@@ -127,10 +130,11 @@ impl Prepared {
         }
         Ok(Prepared {
             schema: adhoc.temps.map_or_else(|| schema.clone(), Arc::new),
-            terms: normal.terms,
+            terms: Arc::new(normal.terms),
             items: normal.items,
             commands: normal.commands,
             params: bound,
+            caller,
             writes,
             retry,
             deferrable,
@@ -156,6 +160,10 @@ impl Prepared {
 
     pub fn params(&self) -> &[(Var, Val)] {
         &self.params
+    }
+
+    pub fn caller(&self) -> &Val {
+        &self.caller
     }
 
     /// Returns the rows of each item of `outcomes`, one outcome per item, that yields a result,

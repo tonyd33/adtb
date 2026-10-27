@@ -248,6 +248,8 @@ pub struct Text<'a> {
     pub params: &'a [(Var, Val)],
     /// The instant, in microseconds, every `generate clock` of the statements takes.
     pub clock: i64,
+    /// The principal `caller` denotes, `None` where nothing may read it.
+    pub caller: Option<&'a Val>,
 }
 
 /// What runs between the statements of a call: given the number of statements run so far,
@@ -508,6 +510,7 @@ impl<R: Runtime> Database<R> {
             items: &[t],
             params,
             clock,
+            caller: None,
         };
         match self.statements(tx, text, &mut Local::default(), Bounds::default()) {
             Ok(mut done) => Ok(done.remove(0)),
@@ -653,7 +656,7 @@ impl<R: Runtime> Database<R> {
             fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
             ..self.options
         };
-        eval::Stmt::new(self, tx, text.schema, text.terms, t, text.clock, options)
+        eval::Stmt::new(self, tx, text, t, options)
     }
 
     /// Undoes the effects of `ran` on the file, the last first.

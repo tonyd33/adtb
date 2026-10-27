@@ -24,3 +24,7 @@ a schema change. Settle `schema-change.md:75`, the recheck contract.
 
 Prerequisites: `operator-log.md`, `write-states.md`,
 `registered-calls.md`.
+
+## 2026-10-27: registrations landed
+
+Registered calls landed without persistence: registrations live in `OpenOptions::registrations` for one open and are not written to `catalog::bundles` or `catalog::registered`, and a registration is checked at the version open leaves with no pin or translation. `Registration::new(name, text)` takes a bundle file without its header; wrap it with the header here. `docs/design/server.md` section 4 has a TODO for how a pin, translation and lease reach a registration. Start from `checked` in `crates/adtb/src/api/registered.rs`.

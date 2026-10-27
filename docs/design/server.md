@@ -38,7 +38,49 @@ states. Postconditions the engine provides to the server:
 
 TODO: how the server binds a connection to a bundle through `adtb` ([../spec/wire.md §3.4](../spec/wire.md#34-binding-and-ready)) is undecided.
 
-## 4. Notes for the implementation
+## 4. Registrations
+
+`adtb` registers queries, transactions and imported schema functions in
+units called registrations. A bundle carries one registration: the
+imports and items of its file, without the header. The bundle layer
+and the server call through these entry points:
+
+| Entry point | Meaning |
+| --- | --- |
+| `Registration::new(name, text)` | a registration named `name`; `text` holds the imports and items of a bundle file with no header |
+| `OpenOptions::registrations` | the registrations open checks and registers once its migrations apply |
+| `Database::registered(name)` | the handle of registration `name`, else `UnknownBundle` |
+| `Registered::call(ordinal, args, opts)` | runs callable `ordinal` with `args` as a transaction of its own: rows for a query or function, `Committed` for a transaction |
+| `AdHocTransaction::call(reg, ordinal, args, opts)` | runs callable `ordinal` of `reg` as one call of the transaction: rows, or `Pending` for a transaction |
+
+Preconditions:
+
+- `args` holds one value per declared parameter, in order, each a value
+  of its parameter's type.
+- `opts.assert`, and `TxnOptions::assert`, is a value of the schema's
+  `Principal`.
+
+Postconditions:
+
+- Open registers every given registration or none. A refused one fails
+  open with `RegistrationRefused` naming it; the reason is `Invalid`
+  and names the callable and the failure.
+- Every query, transaction and bundle function is checked and
+  normalised at the schema version open leaves the file at. A call
+  never parses or type checks.
+- Ordinals are declaration order: each `import fn` in import order,
+  then each query and transaction in item order. A bundle function
+  takes no ordinal and is visible only to its registration.
+- A call runs for `opts.assert`, else for `Service { name: "owner" }`,
+  the schema-owner role the handle acts as. Asserting a `Service` value
+  is refused with `Denied`. A schema function a call reaches sees the
+  call's `caller`.
+- A registration lives as long as the handle that opened with it. Open
+  registers only what it is given.
+
+TODO: how a bundle's pin, translation and lease reach a registration is undecided.
+
+## 5. Notes for the implementation
 
 Non-binding.
 

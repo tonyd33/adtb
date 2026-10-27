@@ -2,6 +2,7 @@ mod command;
 mod error;
 #[cfg(target_os = "linux")]
 mod file;
+mod registered;
 mod text;
 mod txn;
 
@@ -25,10 +26,14 @@ use crate::storage::{self, LATCHES_PER_THREAD, Pager};
 use crate::write::{self, Bindings, Bounds, Local, Setup, Text, Txn};
 
 pub use error::{Error, FatalReason, Fault, Limit, OpenError, RejectReason, RetryReason};
+pub use registered::{Called, InTxn, Registered, Registration};
 pub use text::DynRows;
 pub use txn::{AdHocTransaction, Committed, TxnCallOptions, TxnOptions};
 
 use text::Prepared;
+
+/// The schema-owner role an in-process handle acts as.
+const OWNER_ROLE: &str = "owner";
 
 /// The reruns of ad hoc text that writes, and of a `transact` block run in process, after a
 /// serialization failure when the text states no `retry n`.
@@ -72,6 +77,8 @@ pub struct OpenOptions {
     /// The directory a file scan resolves a relative path against; the working directory when
     /// `None`.
     pub file_root: Option<PathBuf>,
+    /// What open registers once its migrations apply, all or none.
+    pub registrations: Vec<Registration>,
 }
 
 impl OpenOptions {
@@ -133,6 +140,9 @@ pub struct CallOptions {
     /// The most reruns of text that writes on a serialization failure, in place of its
     /// `retry n` or the retry limit.
     pub retry: Option<u32>,
+    /// An end-user or anonymous principal the call runs for, a value of the schema's
+    /// `Principal`.
+    pub assert: Option<Val>,
     /// The rounds a fixpoint of the call may take, else the limit the database was opened with.
     pub fix_rounds: Option<usize>,
 }
@@ -158,6 +168,7 @@ struct Engine<R: Runtime> {
     program: Arc<Program>,
     /// The registered queries of the live bundles, which `explain B::q(args)` names.
     bundles: Bundles,
+    registered: Vec<registered::Checked>,
     pager: Pager<R>,
     db: write::Database<R>,
     #[cfg(target_os = "linux")]
@@ -213,30 +224,10 @@ impl<R: Runtime> Database<R> {
         params: &[(&str, Ty, Val)],
         opts: &CallOptions,
     ) -> Result<Vec<DynRows>, Error> {
-        if opts.deadline.is_some() || opts.limit.is_some() {
-            return Err(unsupported("a deadline or statement limit on a call"));
-        }
         let e = &*self.engine;
-        e.reads_after(opts.after)?;
-        let p = Prepared::new(&e.schema, &e.program, &e.bundles, text, params)?;
-        let bounds = Bounds {
-            fix_rounds: opts.fix_rounds,
-        };
-        if !p.writes {
-            let id = e.txn_id();
-            let tx = e.begin_read(id, p.deferrable)?;
-            return e.run(id, tx, &p, bounds);
-        }
-        let reruns = opts.retry.map_or(p.retry.unwrap_or(RETRY_LIMIT), u64::from);
-        let mut ran = 0;
-        loop {
-            let id = e.txn_id();
-            let tx = e.begin(id)?;
-            match e.run(id, tx, &p, bounds) {
-                Err(err) if err.is_serialization() && ran < reruns => ran += 1,
-                done => return done,
-            }
-        }
+        let caller = e.principal(opts.assert.as_ref())?;
+        let p = Prepared::new(&e.schema, &e.program, &e.bundles, text, params, caller)?;
+        e.call(&p, opts).map(|done| done.value)
     }
 
     /// Close the handle. The engine closes, writing every changed page, taking a checkpoint,
@@ -338,12 +329,15 @@ impl<R: Runtime> Engine<R> {
         migrate(&mut catalog, &pager, &txns, log)?;
         let schema = catalog.schema().clone();
         let program = catalog.program().clone();
+
         let normal = norm::program(&schema, &program).map_err(corrupt)?;
         let plan = catalog.plan();
         let root = catalog.root();
         let sequences = catalog.sequences();
         let (heaps, indexes) = catalog.bindings();
         let schema = Arc::new(schema);
+        let registered =
+            registered::register(catalog.source(), &schema, &program, &options.registrations)?;
         let defaults = exec::Options::default();
         if sequences.is_none() {
             Catalog::naming_sequences(&pager, root).map_err(corrupt)?;
@@ -378,6 +372,7 @@ impl<R: Runtime> Engine<R> {
             schema,
             program,
             bundles: Bundles::default(),
+            registered,
             pager,
             db,
             #[cfg(target_os = "linux")]
@@ -412,6 +407,7 @@ impl<R: Runtime> Engine<R> {
             items: p.items(),
             params: p.params(),
             clock: self.clock(),
+            caller: Some(p.caller()),
         };
         let mut ran: Vec<(usize, DynRows)> = Vec::new();
         let mut between = |at: usize, local: &mut Local| -> Result<(), write::Error> {
@@ -468,21 +464,101 @@ impl<R: Runtime> Engine<R> {
         }
     }
 
+    /// Run `p` as one transaction of its own under `opts`: read-only when `p` only reads, else
+    /// rerun on a serialization failure up to `opts.retry`, else `p`'s `retry n`, else the retry
+    /// limit. Returns the rows of each item that yields a result, with the commit position and
+    /// the attempts made.
+    fn call(&self, p: &Prepared, opts: &CallOptions) -> Result<Committed<Vec<DynRows>>, Error> {
+        if opts.deadline.is_some() || opts.limit.is_some() {
+            return Err(unsupported("a deadline or statement limit on a call"));
+        }
+        self.reads_after(opts.after)?;
+        let bounds = Bounds {
+            fix_rounds: opts.fix_rounds,
+        };
+        if !p.writes {
+            let id = self.txn_id();
+            let tx = self.begin_read(id, p.deferrable)?;
+            return self
+                .run(id, tx, p, bounds)
+                .map(|(value, position)| Committed {
+                    value,
+                    position,
+                    attempts: 1,
+                });
+        }
+        let reruns = opts.retry.map_or(p.retry.unwrap_or(RETRY_LIMIT), u64::from);
+        let mut attempts = 1;
+        loop {
+            let id = self.txn_id();
+            let tx = self.begin(id)?;
+            match self.run(id, tx, p, bounds) {
+                Err(err) if err.is_serialization() && u64::from(attempts) <= reruns => {
+                    attempts += 1;
+                }
+                done => {
+                    return done.map(|(value, position)| Committed {
+                        value,
+                        position,
+                        attempts,
+                    });
+                }
+            }
+        }
+    }
+
     /// Run `p` in `tx`, the transaction `id`, bounded by `bounds`, and commit it, or abort it on
-    /// any failure.
-    fn run(&self, id: TxnId, tx: Txn, p: &Prepared, bounds: Bounds) -> Result<Vec<DynRows>, Error> {
+    /// any failure. Returns the rows of each item that yields a result and the commit position.
+    fn run(
+        &self,
+        id: TxnId,
+        tx: Txn,
+        p: &Prepared,
+        bounds: Bounds,
+    ) -> Result<(Vec<DynRows>, Position), Error> {
         let rows = self
             .statements(id, &tx, p, &mut Local::default(), bounds)
             .map_err(|(e, _)| e);
         match rows {
             Ok(rows) => {
-                self.db.commit(tx).map_err(|e| self.write_error(id, e))?;
-                Ok(rows)
+                let at = self.db.commit(tx).map_err(|e| self.write_error(id, e))?;
+                Ok((rows, Position::from(at)))
             }
             Err(e) => {
                 self.abort(id, tx)?;
                 Err(e)
             }
+        }
+    }
+
+    /// Returns the principal a call runs for: `assert`, an end user or the anonymous
+    /// principal, else the schema owner's service principal. Refuses a service principal with
+    /// `Denied` and a value of another type as invalid.
+    fn principal(&self, assert: Option<&Val>) -> Result<Val, Error> {
+        let def = &self.schema.types[self.schema.principal.0 as usize];
+        let service = def
+            .ctor_index("Service")
+            .expect("the schema's `Principal` has a `Service` constructor");
+        let Some(v) = assert else {
+            return Ok(Val::ctor(service, vec![Val::text(OWNER_ROLE)]));
+        };
+        let arity = match v {
+            Val::Ctor(c, fields) => def
+                .ctors()
+                .get(*c as usize)
+                .filter(|ctor| ctor.fields.len() == fields.len())
+                .map(|_| *c),
+            _ => None,
+        };
+        match arity {
+            Some(c) if c == service => Err(Error::rejected(RejectReason::Denied {
+                detail: "a service principal is the role the handle acts as; it is never asserted"
+                    .into(),
+            })),
+            Some(_) => Ok(v.clone()),
+            None => Err(Error::invalid(
+                "an asserted principal is a value of the schema's `Principal`",
+            )),
         }
     }
 }

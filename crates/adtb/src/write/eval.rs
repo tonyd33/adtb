@@ -126,6 +126,7 @@ pub struct Stmt<'a, R: Runtime> {
     fresh: Occurrences,
     root: Tm,
     clock: i64,
+    caller: Option<Val>,
     pub options: exec::Options,
     pub store: Arc<exec::Store<R>>,
     drawn: RefCell<BTreeMap<(Arena, Val), Val>>,
@@ -138,13 +139,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     pub fn new(
         db: &'a Database<R>,
         tx: &'a Txn,
-        schema: &'a Schema,
-        terms: &Terms,
+        text: super::Text<'a>,
         root: Tm,
-        clock: i64,
         options: exec::Options,
     ) -> Self {
-        let mut terms = terms.clone();
+        let schema = text.schema;
+        let mut terms = text.terms.clone();
         let mut fresh = Occurrences::new();
         let root = fresh::rewrite(&mut terms, root, &[], &mut fresh);
         let inputs = input::rewrite(schema, &mut terms, root);
@@ -159,7 +159,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             local: RefCell::default(),
             fresh,
             root,
-            clock,
+            clock: text.clock,
+            caller: text.caller.cloned(),
             options,
             store: db.store(tx),
             drawn: RefCell::default(),
@@ -183,6 +184,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             fresh: Occurrences::new(),
             root: Tm(0),
             clock: 0,
+            caller: None,
             options: db.options,
             store: db.store(tx),
             drawn: RefCell::default(),
@@ -334,7 +336,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             None => {
                 let db = self.db;
                 let p = self.plan_in(a, t, &params)?;
-                let x = Arc::new(exec::compile(self.schema, &db.catalog, &p, None)?);
+                let x = Arc::new(exec::compile(
+                    self.schema,
+                    &db.catalog,
+                    &p,
+                    self.caller.clone(),
+                )?);
                 self.plans.borrow_mut().insert(key, x.clone());
                 x
             }

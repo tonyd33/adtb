@@ -1625,7 +1625,17 @@ pub fn check_txn(
     module: ModuleId,
     t: &ast::TxnDecl,
 ) -> Result<Txn, Diag> {
-    let mut c = Checker::new(schema, Visible::module(module), Context::Function);
+    check_txn_in(schema, program, Visible::module(module), t)
+}
+
+/// Type checks a registered transaction of a bundle that reads the modules of `vis`, as [`check_txn`] does.
+pub fn check_txn_in(
+    schema: &Schema,
+    program: &Program,
+    vis: Visible,
+    t: &ast::TxnDecl,
+) -> Result<Txn, Diag> {
+    let mut c = Checker::new(schema, vis, Context::Function);
     let term = c.txn(t)?;
     let txn = Txn {
         terms: c.terms,

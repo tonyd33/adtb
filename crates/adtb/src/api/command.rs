@@ -179,6 +179,7 @@ impl<R: Runtime> Engine<R> {
             items,
             params: p.params(),
             clock: self.clock(),
+            caller: Some(p.caller()),
         }
     }
 
@@ -369,6 +370,7 @@ impl<R: Runtime> Engine<R> {
             items: &[both],
             params: &[(x, Val::set([row].into()))],
             clock: self.clock(),
+            caller: None,
         };
         let ran = self
             .db

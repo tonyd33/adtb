@@ -24,7 +24,7 @@ mod tests;
 
 pub use adhoc::{AdhocCommand, Bundles, Command, Explained, RestorePoint};
 pub use ty::{join, subtype};
-pub use write::{Txn, check_txn};
+pub use write::{Txn, check_txn, check_txn_in};
 
 type R<T> = Result<T, Diag>;
 
@@ -963,7 +963,17 @@ pub fn check_query(
     module: ModuleId,
     q: &ast::QueryDecl,
 ) -> Result<Query, Diag> {
-    let mut c = Checker::new(schema, Visible::module(module), Context::Function);
+    check_query_in(schema, program, Visible::module(module), q)
+}
+
+/// Type checks a registered query of a bundle that reads the modules of `vis`, as [`check_query`] does.
+pub fn check_query_in(
+    schema: &Schema,
+    program: &Program,
+    vis: Visible,
+    q: &ast::QueryDecl,
+) -> Result<Query, Diag> {
+    let mut c = Checker::new(schema, vis, Context::Function);
     let term = c.query(q)?;
     let query = Query {
         terms: c.terms,

@@ -21,6 +21,7 @@ terms and share nothing else.
 | `check_query(schema, program, module, q)` | `Query`: an arena with the term of one registered query |
 | `check_txn(schema, program, module, t)` | `Txn`: an arena with the term of one registered transaction |
 | `check_feed(schema, module, f)` | the relation variable a feed names and the constructors it streams; refused when the relation is volatile |
+| `check_query_in(schema, program, vis, q)`, `check_txn_in(schema, program, vis, t)` | as `check_query` and `check_txn`, for a bundle that reads every module of `vis` |
 
 `program` is the result of `check_schema(schema)`.
 

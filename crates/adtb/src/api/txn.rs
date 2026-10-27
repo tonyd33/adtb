@@ -25,6 +25,9 @@ pub struct TxnOptions {
     pub durability: Durability,
     /// Read no snapshot older than this commit position.
     pub after: Option<Position>,
+    /// An end-user or anonymous principal every call of the transaction runs for, a value of
+    /// the schema's `Principal`.
+    pub assert: Option<Val>,
 }
 
 /// The options of one call inside an interactive transaction.
@@ -55,9 +58,11 @@ enum State {
 /// An interactive transaction of ad hoc text. Dropping it without a commit rolls it back.
 #[derive(Debug)]
 pub struct AdHocTransaction<'a, R: Runtime = adtb_sys::os::OsRuntime> {
-    engine: &'a Engine<R>,
+    pub(super) engine: &'a Engine<R>,
     id: TxnId,
-    read_only: bool,
+    pub(super) read_only: bool,
+    /// The principal every call of the transaction runs for.
+    pub(super) caller: Val,
     state: State,
     /// The schema extended with the temp relations the transaction's texts declared, once one
     /// has.
@@ -79,6 +84,7 @@ impl<R: Runtime> Database<R> {
             ));
         }
         let e = &*self.engine;
+        let caller = e.principal(opts.assert.as_ref())?;
         e.reads_after(opts.after)?;
         let id = e.txn_id();
         let tx = if opts.read_only {
@@ -90,6 +96,7 @@ impl<R: Runtime> Database<R> {
             engine: e,
             id,
             read_only: opts.read_only,
+            caller,
             state: State::Open(tx),
             temps: None,
             local: Local::default(),
@@ -144,16 +151,15 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         opts: &TxnCallOptions,
     ) -> Result<Vec<DynRows>, Error> {
         let e = self.engine;
-        let tx = match &self.state {
-            State::Open(tx) => tx,
-            State::Ended(err) => return Err(err.clone()),
-            State::Closed => unreachable!("a transaction is closed only as it is consumed"),
-        };
-        if opts.deadline.is_some() || opts.limit.is_some() {
-            return Err(unsupported("a deadline or statement limit on a call"));
-        }
         let schema = self.temps.as_ref().unwrap_or(&e.schema);
-        let p = Prepared::new(schema, &e.program, &e.bundles, text, params)?;
+        let p = Prepared::new(
+            schema,
+            &e.program,
+            &e.bundles,
+            text,
+            params,
+            self.caller.clone(),
+        )?;
         if p.deferrable {
             return Err(Error::invalid(
                 "a read_only deferrable block does not run inside an interactive transaction",
@@ -165,11 +171,32 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         let bounds = Bounds {
             fix_rounds: opts.fix_rounds,
         };
-        let (err, ends) = match e.statements(self.id, tx, &p, &mut self.local, bounds) {
-            Ok(rows) => {
-                self.temps = Some(p.schema().clone());
-                return Ok(rows);
-            }
+        let rows = self.run(&p, opts, bounds)?;
+        self.temps = Some(p.schema().clone());
+        Ok(rows)
+    }
+
+    /// Runs the items of `p` as one call of the transaction. Returns the rows of each item that
+    /// yields a result, in item order.
+    pub(super) fn run(
+        &mut self,
+        p: &Prepared,
+        opts: &TxnCallOptions,
+        bounds: Bounds,
+    ) -> Result<Vec<DynRows>, Error> {
+        let tx = match &self.state {
+            State::Open(tx) => tx,
+            State::Ended(err) => return Err(err.clone()),
+            State::Closed => unreachable!("a transaction is closed only as it is consumed"),
+        };
+        if opts.deadline.is_some() || opts.limit.is_some() {
+            return Err(unsupported("a deadline or statement limit on a call"));
+        }
+        let (err, ends) = match self
+            .engine
+            .statements(self.id, tx, p, &mut self.local, bounds)
+        {
+            Ok(rows) => return Ok(rows),
             Err(failed) => failed,
         };
         if ends {
