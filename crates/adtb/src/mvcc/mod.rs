@@ -12,7 +12,7 @@ mod tests;
 
 pub use clog::{CommitLog, PAGE_FORMAT};
 pub use conflict::{Probe, Write, check_write, probe_unique, read_before};
-pub use past::{Marker, Past};
+pub use past::{Commit, Marker, Past};
 pub use snapshot::Snapshot;
 pub use ssi::{Access, Limits, Safety, SerialId, Serializer};
 pub use txn::{PastError, RESERVATION, Transactions};

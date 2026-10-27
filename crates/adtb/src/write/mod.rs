@@ -799,6 +799,9 @@ impl<R: Runtime> Database<R> {
                     Err(e) => Err(e.into()),
                     Ok(own) => {
                         ser.committed(tx.sid);
+                        if let (Some(xid), Some(lsn)) = (tx.xid, own) {
+                            self.txns.publish_commit(&self.pager, xid, lsn);
+                        }
                         self.log_safe(&mut ser);
                         self.readers.lock(&self.rt).remove(&tx.sid);
                         let read = self.txns.read_upto(tx.hold);
@@ -810,6 +813,9 @@ impl<R: Runtime> Database<R> {
         };
         match done {
             Ok(wait) => {
+                if tx.xid.is_some() && self.txns.history().is_some() {
+                    self.pager.flush_below(self.pager.appended());
+                }
                 let wait = wait.unwrap_or_else(|| self.pager.durable());
                 self.pager.wait_durable(wait);
                 if let Some(x) = tx.xid {

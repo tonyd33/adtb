@@ -8,7 +8,7 @@ use crate::btree;
 use crate::runtime::Runtime;
 use crate::storage::{Lsn, PageError, Pager, Pid, Position};
 
-use super::past::{Marker, Past};
+use super::past::{Commit, Marker, Past};
 use super::{CommitLog, Error, Holds, Scope, Snapshot, SnapshotId, Status, Xid};
 
 /// The number of ids one xid allocation record reserves.
@@ -44,7 +44,7 @@ struct State {
     next: Xid,
     running: BTreeSet<Xid>,
     holds: Holds,
-    /// The LSN of the latest commit record logged since the commit log was opened.
+    /// The LSN of the latest commit record, including retained commits recovered at open.
     last_commit: Option<Lsn>,
     /// The recorded time of the latest commit, in nanoseconds since the Unix epoch.
     last_time: u64,
@@ -223,9 +223,7 @@ impl<R: Runtime> Transactions<R> {
         Ok(x)
     }
 
-    /// Commit `x`: record its commit time in the record of the window when history is kept,
-    /// record it in the commit log, then log its commit record with the same time. The commit is
-    /// durable once the log is durable past the returned LSN.
+    /// Commit `x` and record its time when history is kept.
     ///
     /// Fails, leaving `x` running, if the database is quarantined or the record of the window is
     /// damaged.
@@ -235,7 +233,7 @@ impl<R: Runtime> Transactions<R> {
         self.admit()?;
         let mut st = self.state.lock(&self.rt);
         assert!(st.running.contains(&x), "{x:?} is not running");
-        let time = nanos(self.rt.wall()).max(st.last_time);
+        let time = (nanos(self.rt.wall()) / 1000 * 1000).max(st.last_time);
         if let Some(past) = self.history.get() {
             past.record_commit(pager, x, time).map_err(Error::History)?;
         }
@@ -296,9 +294,8 @@ impl<R: Runtime> Transactions<R> {
     }
 
     /// Returns the LSN of the commit record of the latest commit snapshot `id` may read, or
-    /// `None` when it reads only commits made before the commit log was opened, which recovery
-    /// made durable. A transaction reading at `id` is acknowledged only once the log is durable
-    /// past this LSN.
+    /// `None` when no commit position is known. A transaction reading at `id` is acknowledged
+    /// only once the log is durable past this LSN.
     ///
     /// Panics if `id` is not held.
     pub fn read_upto(&self, id: SnapshotId) -> Option<Lsn> {
@@ -326,19 +323,65 @@ impl<R: Runtime> Transactions<R> {
         let time = read.1;
         drop(st);
         let lsn = pager.log_safe_snapshot(at, &snapshot.encode());
-        if let Some(past) = self.history.get() {
+        if self.history.get().is_some() {
             let marker = Marker {
                 at,
                 time,
                 snapshot: snapshot.clone(),
             };
-            let mut end = self.marked.lock(&self.rt);
-            if let Err(e) = past.record_marker(pager, &marker) {
-                self.lost.get_or_init(|| e);
-            }
-            *end = pager.appended();
+            self.record_marker(pager, &marker);
         }
         lsn
+    }
+
+    /// Publish a retained commit position and a safe snapshot when no writer is running.
+    ///
+    /// Precondition: `xid` committed at `lsn` and no later commit has run.
+    pub fn publish_commit(&self, pager: &Pager<R>, xid: Xid, lsn: Lsn) {
+        let st = self.state.lock(&self.rt);
+        let Some(past) = self.history.get() else {
+            return;
+        };
+        assert_eq!(
+            Some(lsn),
+            st.last_commit,
+            "the published commit is the latest commit"
+        );
+        let at = pager.position(lsn);
+        if let Err(e) = past.record_position(
+            pager,
+            Commit {
+                xid,
+                at,
+                time: st.last_time,
+            },
+        ) {
+            self.lost.get_or_init(|| e);
+        }
+        if st.window.is_zero() || !st.running.is_empty() {
+            return;
+        }
+        // A snapshot with no running writers is safe from future serialization conflicts.
+        let marker = Marker {
+            at,
+            time: st.last_time,
+            snapshot: Snapshot::new(st.next, st.next, Vec::new()),
+        };
+        pager.log_safe_snapshot(marker.at, &marker.snapshot.encode());
+        self.record_marker(pager, &marker);
+    }
+
+    fn record_marker(&self, pager: &Pager<R>, marker: &Marker) {
+        let mut end = self.marked.lock(&self.rt);
+        if let Err(e) = self
+            .history
+            .get()
+            .expect("history is kept")
+            .record_marker(pager, marker)
+        {
+            self.lost.get_or_init(|| e);
+        }
+        *end = pager.appended();
     }
 
     /// Returns whether the version whose header holds `xmin` and `xmax` is visible to `reader`
@@ -398,7 +441,11 @@ impl<R: Runtime> Transactions<R> {
         window: Duration,
     ) -> Result<(), Error> {
         let latest = past.latest_commit(pager).map_err(Error::History)?;
+        let commits = past.commits(pager).map_err(Error::History)?;
         let mut st = self.state.lock(&self.rt);
+        if st.last_commit.is_none() {
+            st.last_commit = commits.last().map(|c| c.at.lsn);
+        }
         st.last_time = st.last_time.max(latest);
         st.window = window;
         assert!(self.history.set(past).is_ok(), "history is kept already");

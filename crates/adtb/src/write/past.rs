@@ -6,6 +6,8 @@ use std::ops::Bound;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use adtb_lang::types::RelId;
+
 use crate::btree::Index;
 use crate::exec::{self, Histories, PastReads, Reads, Store, StoredHeap, StoredIndex, Val};
 use crate::heap::{Header, HeapNo};
@@ -19,6 +21,9 @@ use crate::vacuum;
 
 use super::schema::Rel;
 use super::{Database, Error};
+
+const COMMIT_TIMES: u64 = 370;
+const SAFE_SNAPSHOTS: u64 = 371;
 
 /// The structures a database keeps history in, and the schema version each heap and each
 /// migration's transaction belongs to.
@@ -238,6 +243,39 @@ impl<R: Runtime> PastReads<R> for Pasts<R> {
 }
 
 impl<R: Runtime> Database<R> {
+    pub(super) fn volatile_rows(&self, rel: RelId) -> Result<BTreeSet<Val>, Error> {
+        let id = self.schema.ids.relations[&rel];
+        if id != COMMIT_TIMES && id != SAFE_SNAPSHOTS {
+            return Ok(self.volatile.get(&rel).cloned().unwrap_or_default());
+        }
+        let (Some(past), Some(cutoff)) = (self.txns.history(), self.txns.cutoff()) else {
+            return Ok(BTreeSet::new());
+        };
+        if id == COMMIT_TIMES {
+            Ok(past
+                .commits(&self.pager)?
+                .into_iter()
+                .filter(|c| c.time >= cutoff)
+                .map(|c| {
+                    Val::ctor(
+                        0,
+                        vec![
+                            position_value(c.at),
+                            Val::Instant(i64::try_from(c.time / 1000).expect("commit time fits")),
+                        ],
+                    )
+                })
+                .collect())
+        } else {
+            Ok(past
+                .markers(&self.pager)?
+                .into_iter()
+                .filter(|m| m.time >= cutoff)
+                .map(|m| Val::ctor(0, vec![position_value(m.at)]))
+                .collect())
+        }
+    }
+
     /// Vacuum the heaps of `sum`, of constructors of `rel`, moving each version the retention
     /// window keeps to its history heap when history is kept, and then expire the history heaps
     /// of the same constructors. Returns what the vacuum of the current heaps did.
@@ -329,4 +367,14 @@ impl<R: Runtime> Database<R> {
             _ => Ok(()),
         }
     }
+}
+
+fn position_value(at: Position) -> Val {
+    Val::ctor(
+        0,
+        vec![
+            Val::Int(i64::from(at.epoch)),
+            Val::Int(i64::try_from(at.lsn.0).expect("commit LSN fits")),
+        ],
+    )
 }

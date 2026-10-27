@@ -168,6 +168,164 @@ fn with_history<T>(
 }
 
 #[test]
+fn a_just_committed_position_is_readable_without_an_intervening_read() {
+    api::once(24, |rt| {
+        let db = open(&rt);
+        keep(&db, "1h");
+        let first = commit(
+            &db,
+            r#"insert items.Closed { id: items.key(1), name: "ann" }"#,
+        );
+        assert_eq!(names(&["ann"]), rows(&db, &past_names(first)));
+        let second = commit(
+            &db,
+            r#"insert items.Closed { id: items.key(2), name: "bo" }"#,
+        );
+        db.close().expect("close");
+        let db = open(&rt);
+        assert_eq!(names(&["ann"]), rows(&db, &past_names(first)));
+        assert_eq!(names(&["ann", "bo"]), rows(&db, &past_names(second)));
+    });
+}
+
+#[test]
+fn commit_times_and_safe_snapshots_describe_each_quiescent_commit() {
+    api::once(25, |rt| {
+        let db = open(&rt);
+        keep(&db, "1h");
+        let first = commit(
+            &db,
+            r#"insert items.Closed { id: items.key(1), name: "ann" }"#,
+        );
+        let second = commit(
+            &db,
+            r#"insert items.Closed { id: items.key(2), name: "bo" }"#,
+        );
+        assert_eq!(
+            vec![
+                format!("{{ lsn: {} }}", first.lsn),
+                format!("{{ lsn: {} }}", second.lsn)
+            ],
+            rows(
+                &db,
+                "from c in sys::commit_times select { lsn: c.position.lsn }"
+            )
+        );
+        assert_eq!(
+            rows(&db, "from c in sys::commit_times select c.position"),
+            rows(&db, "from s in sys::safe_snapshots select s.position")
+        );
+        let q = "from c in sys::commit_times, n in (at instant c.at { from i in items select i.name }) select { lsn: c.position.lsn, name: n }";
+        let expected = rows(&db, q);
+        assert_eq!(
+            vec![
+                format!("{{ lsn: {}, name: \"ann\" }}", first.lsn),
+                format!("{{ lsn: {}, name: \"ann\" }}", second.lsn),
+                format!("{{ lsn: {}, name: \"bo\" }}", second.lsn),
+            ],
+            expected
+        );
+        db.close().expect("close");
+        let db = open(&rt);
+        assert_eq!(expected, rows(&db, q));
+    });
+}
+
+#[test]
+fn rolled_back_and_failed_writes_publish_no_commit_time_or_marker() {
+    api::once(26, |rt| {
+        let db = open(&rt);
+        keep(&db, "1h");
+        let first = commit(
+            &db,
+            r#"insert items.Closed { id: items.key(1), name: "ann" }"#,
+        );
+        let commits = rows(&db, "from c in sys::commit_times select c");
+        let markers = rows(&db, "from s in sys::safe_snapshots select s");
+        let mut tx = db.begin(&TxnOptions::default()).expect("begin");
+        tx.query_text(
+            r#"insert items.Closed { id: items.key(2), name: "bo" }"#,
+            &[],
+            &TxnCallOptions::default(),
+        )
+        .expect("write");
+        tx.rollback().expect("rollback");
+        let failed = read(
+            &db,
+            r#"insert items.Closed { id: items.key(1), name: "duplicate" }"#,
+        )
+        .expect_err("the duplicate key is refused");
+        assert!(
+            matches!(rejection(&failed), RejectReason::KeyViolation { .. }),
+            "{failed:?}"
+        );
+        assert_eq!(commits, rows(&db, "from c in sys::commit_times select c"));
+        assert_eq!(markers, rows(&db, "from s in sys::safe_snapshots select s"));
+        assert_eq!(names(&["ann"]), rows(&db, &past_names(first)));
+        db.close().expect("close");
+        let db = open(&rt);
+        assert_eq!(commits, rows(&db, "from c in sys::commit_times select c"));
+        assert_eq!(markers, rows(&db, "from s in sys::safe_snapshots select s"));
+    });
+}
+
+#[test]
+fn a_quiescent_commit_survives_a_crash_before_any_history_read() {
+    let mut sim = Sim::new(27, Config::default());
+    let committed = run(&mut sim, |rt| {
+        let db = open(&rt);
+        keep(&db, "1h");
+        let committed = commit(
+            &db,
+            r#"insert items.Closed { id: items.key(1), name: "ann" }"#,
+        );
+        std::mem::forget(db);
+        committed
+    });
+    run(&mut sim, |rt| {
+        let db = open(&rt);
+        assert_eq!(names(&["ann"]), rows(&db, &past_names(committed)));
+        assert_eq!(
+            vec![format!("{{ lsn: {} }}", committed.lsn)],
+            rows(
+                &db,
+                "from c in sys::commit_times select { lsn: c.position.lsn }"
+            )
+        );
+    });
+}
+
+#[test]
+fn a_commit_with_another_writer_running_does_not_publish_an_unsafe_marker() {
+    api::once(28, |rt| {
+        let db = open(&rt);
+        keep(&db, "1h");
+        let first = commit(
+            &db,
+            r#"insert items.Closed { id: items.key(1), name: "ann" }"#,
+        );
+        let mut before = db.begin(&TxnOptions::default()).expect("begin");
+        let second = commit(
+            &db,
+            r#"insert items.Closed { id: items.key(2), name: "bo" }"#,
+        );
+        assert_eq!(names(&["ann"]), rows(&db, &past_names(second)));
+        let err = before
+            .query_text(&past_names(second), &[], &TxnCallOptions::default())
+            .expect_err("the commit follows the reader's snapshot");
+        unavailable(&err);
+        assert_eq!(
+            vec![format!("{{ lsn: {} }}", first.lsn)],
+            rows(
+                &db,
+                "from s in sys::safe_snapshots select { lsn: s.position.lsn }"
+            )
+        );
+        before.rollback().expect("rollback");
+    });
+}
+
+#[test]
 fn the_retention_window_is_a_file_setting_zero_by_default() {
     api::once(0, |rt| {
         let db = open(&rt);
@@ -403,7 +561,27 @@ fn past_the_window_a_read_is_unavailable_and_names_the_oldest_position_kept() {
             first < oldest && oldest <= last,
             "{first:?} {oldest:?} {last:?}"
         );
-        let kept = rows(&db, &past_names(oldest));
+        assert!(
+            rows(
+                &db,
+                &format!(
+                    "from c in sys::commit_times where c.position.lsn == {} select c",
+                    first.lsn
+                )
+            )
+            .is_empty()
+        );
+        assert!(
+            rows(
+                &db,
+                &format!(
+                    "from s in sys::safe_snapshots where s.position.lsn == {} select s",
+                    first.lsn
+                )
+            )
+            .is_empty()
+        );
+        let kept = rows(&db, &past_names(last));
         assert!(kept.contains(&"\"x\"".to_owned()), "{kept:?}");
     });
 }
@@ -412,6 +590,8 @@ fn past_the_window_a_read_is_unavailable_and_names_the_oldest_position_kept() {
 fn shrinking_the_window_to_zero_makes_earlier_states_unavailable() {
     with_history(14, |_, db, first, _| {
         keep(db, "0s");
+        assert!(rows(db, "from c in sys::commit_times select c").is_empty());
+        assert!(rows(db, "from s in sys::safe_snapshots select s").is_empty());
         let e = read(db, &past_names(first)).expect_err("no state is kept");
         unavailable(&e);
     });

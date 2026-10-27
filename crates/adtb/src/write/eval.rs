@@ -275,10 +275,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 }
                 Input::Volatile { rel, ctors } => {
                     let mut rows = BTreeSet::new();
-                    for row in self.db.volatile.get(rel).into_iter().flatten() {
+                    for row in self.db.volatile_rows(*rel)? {
                         let c = row.ctor_of()?;
                         if ctors.as_ref().is_none_or(|s| s.contains(&c)) {
-                            rows.insert(row.clone());
+                            rows.insert(row);
                         }
                     }
                     env.insert(*v, Val::set(rows));

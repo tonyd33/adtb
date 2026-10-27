@@ -769,6 +769,14 @@ along positions, across restarts too: a commit records the later of
 the clock and the latest commit time the record holds. At most one
 marker is kept per position.
 
+When a commit leaves no running read-write transaction and retention
+is enabled, transactions publish a marker for the resulting snapshot.
+The write layer publishes each commit through transactions before
+releasing commit serialization.
+Retained commit positions and these markers are durable before the
+commit is acknowledged. Opening restores the latest retained commit
+position for new snapshots. Commit times have microsecond precision.
+
 A version is kept by the window when its inserter committed, another
 transaction deleted it, and the deleter committed at or after the
 window's cutoff: the window's length before now, or the time of the

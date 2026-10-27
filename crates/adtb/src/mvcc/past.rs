@@ -8,6 +8,14 @@ use super::{Snapshot, Xid};
 
 const COMMIT: u8 = 0;
 const MARKER: u8 = 1;
+const POSITION: u8 = 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Commit {
+    pub xid: Xid,
+    pub at: Position,
+    pub time: u64,
+}
 
 /// A safe snapshot kept for reads of the past.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,6 +122,43 @@ impl Past {
         Ok(latest)
     }
 
+    pub(super) fn record_position<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        commit: Commit,
+    ) -> Result<(), btree::Error> {
+        let mut e = vec![POSITION];
+        e.extend(commit.xid.0.to_be_bytes());
+        e.extend(commit.time.to_be_bytes());
+        e.extend(commit.at.epoch.to_be_bytes());
+        e.extend(commit.at.lsn.0.to_be_bytes());
+        self.tree.insert(pager, &e)?;
+        Ok(())
+    }
+
+    pub fn commits<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Commit>, btree::Error> {
+        let mut commits = Vec::new();
+        let mut cursor = self.tree.prefix(&[POSITION]);
+        while let Some(e) = cursor.next(pager)? {
+            let malformed = btree::Error::Malformed(self.tree.root());
+            let xid = Xid(word(&e, 1).ok_or(malformed)?);
+            let time = word(&e, 9).ok_or(malformed)?;
+            let epoch = u32::from_be_bytes(
+                e.get(17..21)
+                    .and_then(|b| b.try_into().ok())
+                    .ok_or(malformed)?,
+            );
+            let lsn = Lsn(word(&e, 21).ok_or(malformed)?);
+            commits.push(Commit {
+                xid,
+                at: Position { epoch, lsn },
+                time,
+            });
+        }
+        commits.sort_unstable_by_key(|c| c.at);
+        Ok(commits)
+    }
+
     /// Keep `marker`, unless one at its position is kept already or its snapshot is too long
     /// for an entry.
     pub fn record_marker<R: Runtime>(
@@ -175,7 +220,7 @@ impl Past {
     pub fn expire<R: Runtime>(&self, pager: &Pager<R>, cutoff: u64) -> Result<usize, btree::Error> {
         self.tree.retain(pager, |e| {
             let time = match e.first() {
-                Some(&COMMIT) => word(e, 9),
+                Some(&COMMIT | &POSITION) => word(e, 9),
                 _ => word(e, 13),
             };
             time.is_none_or(|t| t >= cutoff)

@@ -101,6 +101,23 @@ fn seed(db: &Path) {
 }
 
 #[test]
+fn recent_commits_are_listed_and_readable_after_reopen() {
+    let (schema, db) = scratch("recent");
+    create(&schema, &db);
+    let out = adtb(
+        &[db.to_str().unwrap()],
+        "set setting RetentionWindow = { length: 1h }\ninsert users { name: \"ann\" }\n",
+    );
+    assert!(out.status.success(), "{out:?}");
+    let out = run(
+        &db,
+        "from c in sys::commit_times, n in (at commit c.position { from u in users select u.name }) select n",
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(vec![r#""ann""#], stdout(&out));
+}
+
+#[test]
 fn a_created_database_answers_a_match_over_constructors() {
     let (schema, db) = scratch("match");
     create(&schema, &db);
