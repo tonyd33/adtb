@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 
 use adtb_lang::analysis::Totality;
 use adtb_lang::kernel::{Agg, Kind, PathStep, Prim, Terms, Tm, Var};
@@ -103,6 +104,7 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         total: Totality::new(schema, options.hiding),
         facts: Facts::default(),
         vars: HashMap::new(),
+        outer: Vec::new(),
     };
     let root = p.eval(root)?;
     let mut reads = Reads::default();
@@ -126,6 +128,18 @@ struct Planner<'a> {
     total: Totality<'a>,
     facts: Facts,
     vars: HashMap<Var, Tm>,
+    /// One entry per chain being planned, innermost last.
+    outer: Vec<Outer>,
+}
+
+/// What a query planned inside a chain may add to the query that holds the chain.
+struct Outer {
+    /// The variables bound where the holding query is evaluated.
+    env: Rc<BTreeSet<Var>>,
+    /// The rows the fixed cost model assumes reach the chain.
+    rows: f64,
+    /// Bindings for the holding query's spine.
+    lets: Vec<(Var, Eval)>,
 }
 
 /// What is known at one point of a query's pipelines.
@@ -172,6 +186,10 @@ impl Scope {
 struct QueryCx {
     builds: Vec<Build>,
     memo: HashMap<BuildKey, BuildId>,
+    /// The variables bound where the query is evaluated.
+    env: Rc<BTreeSet<Var>>,
+    /// Bindings that wrap the query's spine.
+    lets: Vec<(Var, Eval)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -183,12 +201,24 @@ struct BuildKey {
     filters: Vec<Tm>,
 }
 
-/// An index probe: the index, the values of its leading fields, and the conditions they replace.
+/// An index probe: the index, the values of its leading fields, the bounds of the next one, and
+/// the conditions the values replace.
 struct IndexProbe {
     index: IndexDesc,
     key: Vec<Tm>,
+    range: Option<Span>,
     used: Vec<usize>,
 }
+
+/// The bounds a range probe puts on the index field after its key.
+#[derive(Clone, Copy, Debug)]
+struct Span {
+    lo: Option<RangeBound>,
+    hi: Option<RangeBound>,
+}
+
+/// A bound a comparison puts on a field of a row: the field, whether from below, and the bound.
+type Limit = (String, bool, RangeBound);
 
 impl IndexProbe {
     fn unique(&self) -> bool {
@@ -513,10 +543,28 @@ impl Planner<'_> {
         Ok(out)
     }
 
-    /// Returns `t` as a scalar expression at a point of a chain, with the bindings that compute what it reads.
-    fn lift_here(&mut self, t: Tm, sc: &Scope) -> Result<(Vec<(Var, Eval)>, Tm), Error> {
-        let (lets, t) = self.lift_eval(t)?;
+    /// Returns `t` as a scalar expression at a point of a chain of `q`, with the bindings that compute what it reads.
+    fn lift_here(
+        &mut self,
+        t: Tm,
+        q: &mut QueryCx,
+        sc: &Scope,
+    ) -> Result<(Vec<(Var, Eval)>, Tm), Error> {
+        let (lets, t) = self.in_chain(q, sc, |p| p.lift_eval(t))?;
         Ok((lets, self.here(t, sc)?))
+    }
+
+    /// Returns `f`'s result, with the bindings the queries it plans flatten into `q` added to `q`.
+    fn in_chain<T>(&mut self, q: &mut QueryCx, sc: &Scope, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.outer.push(Outer {
+            env: q.env.clone(),
+            rows: sc.rows,
+            lets: Vec::new(),
+        });
+        let out = f(self);
+        let o = self.outer.pop().expect("the entry pushed above");
+        q.lets.extend(o.lets);
+        out
     }
 
     /// Returns how many conditions from the first are scalar and total.
@@ -574,7 +622,7 @@ impl Planner<'_> {
                     body: self.eval(body)?,
                     fold: self.fold(a, &ty)?,
                 };
-                self.query(source, sink)
+                self.query(source, sink, Some(&[body]))
             }
             Kind::Agg {
                 op,
@@ -590,10 +638,10 @@ impl Planner<'_> {
                     ty,
                     body_ty,
                 };
-                self.query(source, sink)
+                self.query(source, sink, Some(&[body]))
             }
-            Kind::Exists(s) => self.query(s, Sink::Exists),
-            Kind::IsEmpty(s) => self.query(s, Sink::IsEmpty),
+            Kind::Exists(s) => self.query(s, Sink::Exists, Some(&[])),
+            Kind::IsEmpty(s) => self.query(s, Sink::IsEmpty, Some(&[])),
             Kind::Group { var, source, by } => {
                 let sink = Sink::Group {
                     var,
@@ -601,7 +649,7 @@ impl Planner<'_> {
                     rows: true,
                     aggs: Vec::new(),
                 };
-                self.query(source, sink)
+                self.query(source, sink, Some(&[by]))
             }
             Kind::Top {
                 count,
@@ -610,8 +658,9 @@ impl Planner<'_> {
                 source,
             } => {
                 let count = self.eval(count)?;
+                let parts: Vec<Tm> = keys.iter().map(|(k, _)| *k).collect();
                 let keys = self.keys(&keys)?;
-                self.query(source, Sink::Top { count, keys, var })
+                self.query(source, Sink::Top { count, keys, var }, Some(&parts))
             }
             Kind::Present {
                 var,
@@ -620,6 +669,7 @@ impl Planner<'_> {
                 take,
                 after,
             } => {
+                let parts: Vec<Tm> = keys.iter().map(|(k, _)| *k).collect();
                 let keys = self.keys(&keys)?;
                 let take = take.map(|x| self.eval(x)).transpose()?;
                 let after = after.map(|x| self.eval(x)).transpose()?;
@@ -631,10 +681,11 @@ impl Planner<'_> {
                         take,
                         after,
                     },
+                    Some(&parts),
                 )
             }
             _ if matches!(ty, Ty::Set(_) | Ty::NonEmpty(_)) && self.streams(t) => {
-                self.query(t, Sink::Set)
+                self.query(t, Sink::Set, Some(&[]))
             }
             kind => {
                 let cs = self.t.children(t);
@@ -774,14 +825,141 @@ impl Planner<'_> {
         Ok((vec![(v, e)], self.var_tm(v)))
     }
 
-    fn query(&mut self, source: Tm, sink: Sink) -> Result<Eval, Error> {
-        let mut q = QueryCx::default();
+    /// Returns the query forming `sink` from the set `source`. `parts` are the sink's terms
+    /// evaluated per element, `None` when the sink may abort on an element otherwise.
+    fn query(&mut self, source: Tm, sink: Sink, parts: Option<&[Tm]>) -> Result<Eval, Error> {
+        let Some((s, rows, source)) = self.flatten(source)? else {
+            return self.flat_query(source, sink, parts);
+        };
+        let q = self.flat_query(source, sink, parts)?;
+        Ok(Eval::Let(s, Box::new(rows), Box::new(q)))
+    }
+
+    fn flat_query(&mut self, source: Tm, sink: Sink, parts: Option<&[Tm]>) -> Result<Eval, Error> {
+        let total = self.rw.early_stop
+            && parts.is_some_and(|ps| ps.iter().all(|t| self.total(*t)))
+            && self.total(source);
+        let mut q = QueryCx {
+            env: self.facts.free(&self.t, source),
+            ..QueryCx::default()
+        };
         let spine = self.spine(source, &mut q, &Scope::new())?;
         Ok(Eval::Query(Box::new(Query {
             builds: q.builds,
-            spine,
+            spine: wrap_spine(q.lets, spine),
             sink,
+            total,
         })))
+    }
+
+    /// Returns `source`, a comprehension over a constructor relation inside a chain, as a
+    /// comprehension over the variable it binds first to the rows of one group of a grouping
+    /// added to the spine of the query holding the chain, when the fixed cost model prefers it.
+    fn flatten(&mut self, source: Tm) -> Result<Option<(Var, Eval, Tm)>, Error> {
+        if !self.rw.flatten || self.bounded {
+            return Ok(None);
+        }
+        let Some(outer) = self.outer.last() else {
+            return Ok(None);
+        };
+        let (env, rows) = (outer.env.clone(), outer.rows);
+        let Kind::For(y, src, body) = self.kind(source) else {
+            return Ok(None);
+        };
+        let Some((r, ctors)) = self.rel_source(src) else {
+            return Ok(None);
+        };
+        let (conds, rest) = self.peel(body);
+        let n = self.total_prefix(&conds);
+        let outside = |p: &mut Self, t: Tm| {
+            p.facts
+                .free(&p.t, t)
+                .iter()
+                .all(|v| *v == y || env.contains(v))
+        };
+        let (mut filters, mut keys, mut probes, mut kept) = (vec![], vec![], vec![], vec![]);
+        for (i, c) in conds.iter().enumerate() {
+            if i < n && self.mentions(*c, &[y]) && outside(self, *c) {
+                filters.push(*c);
+                continue;
+            }
+            if i < n
+                && let Kind::Prim(Prim::Eq, args) = self.kind(*c)
+                && let [a, b] = args[..]
+                && erase(&self.ty(a)) == erase(&self.ty(b))
+                && let Some((build, probe)) = [(a, b), (b, a)].into_iter().find(|(build, probe)| {
+                    self.mentions(*build, &[y])
+                        && outside(self, *build)
+                        && !self.mentions(*probe, &[y])
+                })
+            {
+                keys.push(build);
+                probes.push(probe);
+                continue;
+            }
+            kept.push(*c);
+        }
+        if keys.is_empty() {
+            return Ok(None);
+        }
+        let heap_rows = ctors.len() as f64 * HEAP_ROWS;
+        let per_row = match self.rw.index_scan {
+            true => match self.index_for(r, &ctors, y, &conds, rest) {
+                Some(p) if p.unique() => PROBE_COST,
+                Some(_) => PROBE_COST + PROBE_ROWS,
+                None => heap_rows,
+            },
+            false => heap_rows,
+        };
+        if heap_rows + rows >= rows * per_row {
+            return Ok(None);
+        }
+        let (by, probe) = self.group_key(&keys, &probes);
+        let row_ty = self.elem_ty(src)?;
+        let set_ty = Ty::Set(Box::new(row_ty.clone()));
+        let one = self.var_tm(y);
+        let one = self.add(Kind::Singleton(one), set_ty.clone());
+        let picked = self.guarded(&filters, one, &set_ty);
+        let picked = self.add(Kind::For(y, src, picked), set_ty.clone());
+        let group_ty = Ty::Record(vec![
+            ("key".into(), self.ty(by)),
+            ("rows".into(), Ty::NonEmpty(Box::new(row_ty))),
+        ]);
+        let sink = Sink::Group {
+            var: y,
+            by: Eval::Expr(by),
+            rows: true,
+            aggs: Vec::new(),
+        };
+        let grouped = self.flat_query(picked, sink, Some(&[by]))?;
+        let g = self.fresh("%groups", Ty::Set(Box::new(group_ty)));
+        self.outer
+            .last_mut()
+            .expect("the entry read above")
+            .lets
+            .push((g, grouped));
+        let s = self.fresh("%rows", set_ty);
+        let groups = self.var_tm(g);
+        let body_ty = self.ty(body);
+        let each = self.guarded(&kept, rest, &body_ty);
+        let from = self.var_tm(s);
+        let source = self.add(Kind::For(y, from, each), self.ty(source));
+        Ok(Some((s, Eval::GroupRows { groups, key: probe }, source)))
+    }
+
+    /// Returns the key a grouping keys its rows by and the key a probe of it looks up: the one
+    /// term of each, or a record of them.
+    fn group_key(&mut self, keys: &[Tm], probes: &[Tm]) -> (Tm, Tm) {
+        if let ([k], [p]) = (keys, probes) {
+            return (*k, *p);
+        }
+        let names: Vec<String> = (0..keys.len()).map(|i| format!("k{i:04}")).collect();
+        let record = |p: &mut Self, ts: &[Tm]| {
+            let fields: Vec<(String, Tm)> = names.iter().cloned().zip(ts.iter().copied()).collect();
+            let ty = Ty::Record(fields.iter().map(|(n, t)| (n.clone(), p.ty(*t))).collect());
+            p.add(Kind::Record(fields), ty)
+        };
+        (record(self, keys), record(self, probes))
     }
 
     fn lookup(&mut self, key: Tm, row_ty: &Ty) -> Result<Lookup, Error> {
@@ -1060,10 +1238,18 @@ impl Planner<'_> {
         if !in_arms.is_empty() {
             fixed.push((None, in_arms));
         }
-        if fixed.is_empty() {
+        let limits: Vec<Limit> = if self.rw.range_probe && !self.bounded {
+            conds[..n]
+                .iter()
+                .filter_map(|c| self.comparison(*c, x))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if fixed.is_empty() && limits.is_empty() {
             return None;
         }
-        let mut best: Option<((bool, usize), IndexProbe)> = None;
+        let mut best: Option<((bool, usize, bool), IndexProbe)> = None;
         for index in &self.catalog.relation(rel).indexes {
             if !ctors.iter().all(|c| index.ctors.contains(c)) {
                 continue;
@@ -1080,7 +1266,23 @@ impl Planner<'_> {
                 }
             }
             let full = key.len() == index.elements.len();
-            if key.is_empty() || (!full && !index.ordered) {
+            let range = match index.elements.get(key.len()) {
+                Some(Element::Field(f)) if index.ordered => {
+                    let bound = |below: bool| {
+                        limits
+                            .iter()
+                            .find(|(g, b, _)| g == f && *b == below)
+                            .map(|l| l.2)
+                    };
+                    let span = Span {
+                        lo: bound(true),
+                        hi: bound(false),
+                    };
+                    (span.lo.is_some() || span.hi.is_some()).then_some(span)
+                }
+                _ => None,
+            };
+            if (key.is_empty() && range.is_none()) || (!full && !index.ordered) {
                 continue;
             }
             let covered = &index.elements[..key.len()];
@@ -1097,17 +1299,50 @@ impl Planner<'_> {
                 })
                 .filter_map(|(i, _)| *i)
                 .collect();
-            let rank = (full && index.unique, key.len());
+            let rank = (full && index.unique, key.len(), range.is_some());
             if best.as_ref().is_none_or(|b| rank > b.0) {
                 let probe = IndexProbe {
                     index: index.clone(),
                     key,
+                    range,
                     used,
                 };
                 best = Some((rank, probe));
             }
         }
         best.map(|(_, p)| p)
+    }
+
+    /// Returns the bound comparison `c` puts on a field of row `x`, when it compares the field with
+    /// a term of the same type that does not mention `x`.
+    fn comparison(&mut self, c: Tm, x: Var) -> Option<Limit> {
+        let Kind::Prim(op, args) = self.kind(c) else {
+            return None;
+        };
+        let (below, inclusive) = match op {
+            Prim::Gt => (true, false),
+            Prim::Ge => (true, true),
+            Prim::Lt => (false, false),
+            Prim::Le => (false, true),
+            _ => return None,
+        };
+        let [a, b] = args[..] else { return None };
+        if erase(&self.ty(a)) != erase(&self.ty(b)) {
+            return None;
+        }
+        for (this, other, below) in [(a, b, below), (b, a, !below)] {
+            if let Kind::Field(row, f) = self.kind(this)
+                && matches!(self.t.kind(row), Kind::Var(v) if *v == x)
+                && !self.mentions(other, &[x])
+            {
+                let bound = RangeBound {
+                    value: other,
+                    inclusive,
+                };
+                return Some((f, below, bound));
+            }
+        }
+        None
     }
 
     /// Returns the refusal of a read of the rows `x` of `ctors` of `rel` under `conds` that no
@@ -1210,7 +1445,12 @@ impl Planner<'_> {
             && let Some(probe) = self.index_for(r, ctors, x, &conds, rest)
         {
             let rows = if probe.unique() { 1.0 } else { PROBE_ROWS };
-            let IndexProbe { index, key, used } = probe;
+            let IndexProbe {
+                index,
+                key,
+                range,
+                used,
+            } = probe;
             let left: Vec<Tm> = (0..conds.len())
                 .filter(|i| !used.contains(i))
                 .map(|i| conds[i])
@@ -1225,7 +1465,7 @@ impl Planner<'_> {
                 q,
                 &sc.clone().times(rows),
             )?;
-            let ends = self.index_ends(&index, key, x, routes);
+            let ends = self.index_ends(&index, key, range, x, routes);
             return Ok(union(
                 ends.into_iter()
                     .map(|end| {
@@ -1309,14 +1549,25 @@ impl Planner<'_> {
         &mut self,
         index: &IndexDesc,
         key: Vec<Tm>,
+        range: Option<Span>,
         x: Var,
         routes: Vec<Route>,
     ) -> Vec<End> {
-        let end = |routes| End::Index {
-            index: index.id,
-            key: key.clone(),
-            var: x,
-            routes,
+        let end = |routes| match range {
+            Some(Span { lo, hi }) => End::Range {
+                index: index.id,
+                key: key.clone(),
+                lo,
+                hi,
+                var: x,
+                routes,
+            },
+            None => End::Index {
+                index: index.id,
+                key: key.clone(),
+                var: x,
+                routes,
+            },
         };
         if routes.is_empty() {
             Vec::new()
@@ -1325,6 +1576,23 @@ impl Planner<'_> {
         } else {
             routes.into_iter().map(|r| end(vec![r])).collect()
         }
+    }
+
+    /// Returns `s` with its bounds specialised as [`Planner::here`] does.
+    fn span_here(&mut self, s: Span, sc: &Scope) -> Result<Span, Error> {
+        let mut at = |b: Option<RangeBound>| -> Result<Option<RangeBound>, Error> {
+            b.map(|b| {
+                Ok(RangeBound {
+                    value: self.here(b.value, sc)?,
+                    inclusive: b.inclusive,
+                })
+            })
+            .transpose()
+        };
+        Ok(Span {
+            lo: at(s.lo)?,
+            hi: at(s.hi)?,
+        })
     }
 
     /// Returns the chain applying `conds` in order, then `rest`.
@@ -1359,7 +1627,7 @@ impl Planner<'_> {
                 None => {}
             }
             silent = silent && self.scalar(c) && self.total(c);
-            let (lets, c) = self.lift_here(c, &sc)?;
+            let (lets, c) = self.lift_here(c, q, &sc)?;
             steps.extend(binds(lets));
             steps.push(Step::Filter(c));
         }
@@ -1375,7 +1643,7 @@ impl Planner<'_> {
         match self.kind(t) {
             Kind::EmptySet => Ok(nothing()),
             Kind::Singleton(e) => {
-                let (lets, e) = self.lift_here(e, sc)?;
+                let (lets, e) = self.lift_here(e, q, sc)?;
                 Ok(chain(binds(lets), End::Emit(e)))
             }
             Kind::Union(a, b) => {
@@ -1402,7 +1670,7 @@ impl Planner<'_> {
                 self.filtered(&conds, rest, q, sc)
             }
             Kind::If(c, a, b) => {
-                let (lets, c) = self.lift_here(c, sc)?;
+                let (lets, c) = self.lift_here(c, q, sc)?;
                 let end = match self.literal(c) {
                     Some(true) => return Ok(prepend(binds(lets), self.chain(a, q, sc)?)),
                     Some(false) => return Ok(prepend(binds(lets), self.chain(b, q, sc)?)),
@@ -1431,7 +1699,7 @@ impl Planner<'_> {
                     let rest = self.chain(body, q, &sc.bind_known(x, Some(c)))?;
                     return Ok(prepend(vec![Step::Bind(x, Eval::Expr(scrutinee))], rest));
                 }
-                let (lets, s) = self.lift_here(scrutinee, sc)?;
+                let (lets, s) = self.lift_here(scrutinee, q, sc)?;
                 let mut out = Vec::new();
                 for (c, x, body) in arms {
                     out.push((c, x, self.chain(body, q, &sc.bind_known(x, Some(c)))?));
@@ -1439,7 +1707,7 @@ impl Planner<'_> {
                 Ok(chain(binds(lets), End::Case(s, out)))
             }
             Kind::Let(x, e, b) => {
-                let e = self.eval(e)?;
+                let e = self.in_chain(q, sc, |p| p.eval(e))?;
                 let rest = self.chain(b, q, &sc.bind(x))?;
                 Ok(prepend(vec![Step::Bind(x, e)], rest))
             }
@@ -1496,7 +1764,7 @@ impl Planner<'_> {
             let each = self.add(Kind::For(y, kept, body), self.ty(body));
             return self.for_chain(z, inner, each, q, sc);
         }
-        let (lets, s) = self.lift_here(src, sc)?;
+        let (lets, s) = self.lift_here(src, q, sc)?;
         let mut steps = binds(lets);
         steps.push(Step::Unnest(y, s));
         let rest = self.chain(body, q, &sc.bind(y).times(SET_ROWS))?;
@@ -1604,7 +1872,12 @@ impl Planner<'_> {
         match access {
             Access::Index(probe) => {
                 let rows = if probe.unique() { 1.0 } else { PROBE_ROWS };
-                let IndexProbe { index, key, used } = probe;
+                let IndexProbe {
+                    index,
+                    key,
+                    range,
+                    used,
+                } = probe;
                 let left: Vec<Tm> = (0..conds.len())
                     .filter(|i| !used.contains(i))
                     .map(|i| conds[i])
@@ -1615,7 +1888,8 @@ impl Planner<'_> {
                     .into_iter()
                     .map(|k| self.here(k, sc))
                     .collect::<Result<_, _>>()?;
-                let mut ends = self.index_ends(&index, key, y, routes);
+                let range = range.map(|s| self.span_here(s, sc)).transpose()?;
+                let mut ends = self.index_ends(&index, key, range, y, routes);
                 Ok(match ends.len() {
                     0 if pre.is_empty() => nothing(),
                     0 => chain(pre, End::Nothing),
@@ -1979,7 +2253,7 @@ impl Planner<'_> {
                 rows: rows_used,
                 aggs,
             };
-            let groups = self.query(source, sink)?;
+            let groups = self.query(source, sink, None)?;
             let v = self.fresh("%groups", Ty::Set(Box::new(rec_ty)));
             let v_tm = self.var_tm(v);
             let rest = self.chain(new_body, q, &sc.bind(g2).times(SET_ROWS))?;
@@ -2161,7 +2435,7 @@ struct Found {
 
 fn collect_eval(c: &Catalog, e: &Eval, out: &mut Reads) {
     match e {
-        Eval::Expr(_) => {}
+        Eval::Expr(_) | Eval::GroupRows { .. } => {}
         Eval::Let(_, a, b) | Eval::If(_, a, b) => {
             collect_eval(c, a, out);
             collect_eval(c, b, out);
@@ -2251,7 +2525,7 @@ fn collect_chain(c: &Catalog, ch: &Chain, out: &mut Reads) {
             collect_chain(c, b, out);
         }
         End::Case(_, arms) => arms.iter().for_each(|(_, _, x)| collect_chain(c, x, out)),
-        End::Index { index, routes, .. } => {
+        End::Index { index, routes, .. } | End::Range { index, routes, .. } => {
             out.indexes.insert(*index);
             for r in routes {
                 out.heaps.insert(r.heap);

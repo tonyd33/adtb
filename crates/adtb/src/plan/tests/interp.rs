@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use adtb_lang::check::Program;
-use adtb_lang::kernel::{Kind, Terms, Tm, Var};
+use adtb_lang::kernel::{Kind, Prim, Terms, Tm, Var};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{Base, RelId, Ty};
 use adtb_reference::{Abort, Database, Fault, Interpreter, Limit, R, Value};
@@ -160,7 +160,36 @@ impl<'a> Interp<'a> {
             }
             Eval::Query(q) => self.query(q, env),
             Eval::Fix(f) => self.fix(f, env),
+            Eval::GroupRows { groups, key } => {
+                let k = self.expr(*key, env)?;
+                let found = set(self.expr(*groups, env)?)
+                    .into_iter()
+                    .find(|g| g.field("key") == Some(&k));
+                Ok(match found {
+                    Some(g) => g.field("rows").expect("a group has rows").clone(),
+                    None => Value::Set(BTreeSet::new()),
+                })
+            }
         }
+    }
+
+    /// Returns whether `op`, a comparison, holds of `a` and `b`, values of type `ty`.
+    fn compare(&self, op: Prim, a: &Value, b: &Value, ty: &Ty) -> R<bool> {
+        let mut t = self.terms.borrow_mut();
+        let (x, y) = (t.var("%a", ty.clone()), t.var("%b", ty.clone()));
+        let (xt, yt) = (
+            t.add(Kind::Var(x), ty.clone()),
+            t.add(Kind::Var(y), ty.clone()),
+        );
+        let bool_ty = Ty::Data {
+            def: self.schema.prelude_type("Bool"),
+            args: Vec::new(),
+            ctors: None,
+        };
+        let tm = t.add(Kind::Prim(op, vec![xt, yt]), bool_ty);
+        drop(t);
+        let env = Env::from([(x, a.clone()), (y, b.clone())]);
+        Ok(truth(&self.expr(tm, &env)?))
     }
 
     fn fix(&self, f: &Fix, env: &Env) -> R<Value> {
@@ -237,7 +266,14 @@ impl<'a> Interp<'a> {
             let c = self.eval(count, env)?;
             return self.finish(q, env, Some(c));
         }
-        self.finish(q, env, None)
+        let out = self.finish(q, env, None);
+        if q.total
+            && matches!(q.sink, Sink::Set | Sink::Exists | Sink::IsEmpty)
+            && let Err(Abort::Fault(f)) = &out
+        {
+            panic!("a query the plan marks total aborts with {f:?}");
+        }
+        out
     }
 
     fn finish(&self, q: &Query, env: &Env, count: Option<Value>) -> R<Value> {
@@ -624,18 +660,85 @@ impl<'a> Interp<'a> {
                     .iter()
                     .map(|k| self.expr(*k, env))
                     .collect::<R<Vec<_>>>()?;
+                let rows = self.entries(*index, &k);
+                self.routed(*index, routes, *var, rows, env, b, out)
+            }
+            End::Range {
+                index,
+                key,
+                lo,
+                hi,
+                var,
+                routes,
+            } => {
+                let k = key
+                    .iter()
+                    .map(|k| self.expr(*k, env))
+                    .collect::<R<Vec<_>>>()?;
+                let desc = &self.indexes[index].1;
+                assert!(desc.ordered, "a range probe reads an ordered index");
+                let Element::Field(f) = &desc.elements[key.len()] else {
+                    panic!("a range probe bounds a field");
+                };
+                let bound = |b: &Option<RangeBound>,
+                             strict: Prim,
+                             loose: Prim|
+                 -> R<Option<(Prim, Value, Ty)>> {
+                    b.map(|b| {
+                        let ty = self.terms.borrow().ty(b.value).clone();
+                        let op = if b.inclusive { loose } else { strict };
+                        Ok((op, self.expr(b.value, env)?, ty))
+                    })
+                    .transpose()
+                };
+                let bounds: Vec<(Prim, Value, Ty)> = [
+                    bound(lo, Prim::Gt, Prim::Ge)?,
+                    bound(hi, Prim::Lt, Prim::Le)?,
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                let mut rows = Vec::new();
                 for (c, row) in self.entries(*index, &k) {
-                    if let Some(r) = routes.iter().find(|r| r.ctor == c) {
-                        assert_eq!(
-                            self.heaps[&r.heap],
-                            (self.indexes[index].0, c),
-                            "a route fetches from its constructor's heap"
-                        );
-                        self.chain(&r.chain, &bind(env, *var, row), b, out)?;
+                    let v = row.field(f).expect("an indexed field").clone();
+                    let mut within = true;
+                    for (op, b, ty) in &bounds {
+                        within = within && self.compare(*op, &v, b, ty)?;
+                    }
+                    if within {
+                        rows.push((c, row));
                     }
                 }
-                Ok(())
+                self.routed(*index, routes, *var, rows, env, b, out)
             }
         }
+    }
+
+    /// Pass each of `rows`, entries of `index` with their constructors, to its route's chain.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "an index end's parts and the evaluation it runs in"
+    )]
+    fn routed(
+        &self,
+        index: IndexId,
+        routes: &[Route],
+        var: Var,
+        rows: Vec<(u32, Value)>,
+        env: &Env,
+        b: &Built,
+        out: &mut BTreeSet<Value>,
+    ) -> R<()> {
+        for (c, row) in rows {
+            if let Some(r) = routes.iter().find(|r| r.ctor == c) {
+                assert_eq!(
+                    self.heaps[&r.heap],
+                    (self.indexes[&index].0, c),
+                    "a route fetches from its constructor's heap"
+                );
+                self.chain(&r.chain, &bind(env, var, row), b, out)?;
+            }
+        }
+        Ok(())
     }
 }

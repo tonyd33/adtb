@@ -6,7 +6,7 @@ use adtb_sys::lock::Lock;
 
 use crate::batch::Batch;
 use crate::key::{Tid, Value};
-use crate::plan::HeapId;
+use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
 
 use super::code::Catch;
@@ -43,6 +43,8 @@ struct Table {
 struct Out {
     set: BTreeSet<Val>,
     arena: Arena,
+    /// Set on the first value inserted.
+    stop: Option<Arc<AtomicBool>>,
 }
 
 impl Out {
@@ -50,6 +52,7 @@ impl Out {
         Ok(Out {
             set: BTreeSet::new(),
             arena: grant.take(0)?,
+            stop: None,
         })
     }
 
@@ -57,6 +60,9 @@ impl Out {
         let n = v.size();
         if self.set.insert(v) {
             self.arena.grow(n)?;
+        }
+        if let Some(s) = &self.stop {
+            s.store(true, Ordering::Release);
         }
         Ok(())
     }
@@ -71,11 +77,14 @@ struct Run {
     error: Lock<Option<Error>>,
     failed: AtomicBool,
     pending: AtomicUsize,
+    /// Set once one value decides the sink, when no remaining row could abort.
+    stopped: Option<Arc<AtomicBool>>,
 }
 
 impl Run {
     fn new(query: Arc<Query>, env: Frame) -> Run {
         let builds = query.builds.iter().map(|_| Lock::new(None)).collect();
+        let stops = query.total && matches!(query.sink, Sink::Exists | Sink::IsEmpty);
         Run {
             query,
             env,
@@ -84,7 +93,21 @@ impl Run {
             error: Lock::new(None),
             failed: AtomicBool::new(false),
             pending: AtomicUsize::new(0),
+            stopped: stops.then(|| Arc::new(AtomicBool::new(false))),
         }
+    }
+
+    /// Returns an empty set for values the query's pipelines emit.
+    fn out(&self, grant: &Arc<Grant>) -> Result<Out, Error> {
+        let mut out = Out::new(grant)?;
+        out.stop.clone_from(&self.stopped);
+        Ok(out)
+    }
+
+    fn stopped(&self) -> bool {
+        self.stopped
+            .as_ref()
+            .is_some_and(|s| s.load(Ordering::Acquire))
     }
 
     fn fail<R: Runtime>(&self, rt: &R, e: Error) {
@@ -265,6 +288,16 @@ impl<R: Runtime> Ctx<R> {
                 catch.drop_faulted(since, sel);
                 Ok(out)
             }
+            Eval::GroupRows(groups, key) => {
+                let ks: HashMap<u32, Val> =
+                    key.eval(f, sel, catch, self.sh())?.into_iter().collect();
+                let mut out = Vec::new();
+                for (r, g) in groups.eval(f, sel, catch, self.sh())? {
+                    let Some(k) = ks.get(&r) else { continue };
+                    out.push((r, group_rows(&g, k)?));
+                }
+                Ok(out)
+            }
             Eval::Fix(fx) => {
                 let since = catch.faults.len();
                 let mut out = Vec::new();
@@ -430,13 +463,19 @@ impl<R: Runtime> Ctx<R> {
             Sink::Top { count, .. } => Some(self.eval_env(count, &env, par)?),
             _ => None,
         };
+        if q.total
+            && let Some(c) = &count
+            && c.int()? <= 0
+        {
+            return self.sink(&q.sink, BTreeSet::new(), &env, count);
+        }
         let mut chosen = Vec::new();
         self.spine(&q.spine, env.clone(), par, &mut chosen)?;
         let run = Arc::new(Run::new(q.clone(), env.clone()));
         match &self.pool {
             Some(pool) if par => self.parallel(pool, &run, chosen)?,
             _ => {
-                let mut out = Out::new(&self.grant)?;
+                let mut out = run.out(&self.grant)?;
                 for (p, e) in &chosen {
                     self.pipeline(&run, p, e, &mut out)?;
                 }
@@ -702,7 +741,7 @@ impl<R: Runtime> Ctx<R> {
         }
         if !small.is_empty() {
             self.spawn(pool, run, move |cx, run| {
-                let mut out = Out::new(&cx.grant)?;
+                let mut out = run.out(&cx.grant)?;
                 for (p, env) in &small {
                     cx.pipeline(run, p, env, &mut out)?;
                 }
@@ -731,7 +770,7 @@ impl<R: Runtime> Ctx<R> {
         run.pending.fetch_add(1, Ordering::AcqRel);
         let (cx, run) = (self.clone(), run.clone());
         pool.submit(Box::new(move || {
-            if !run.failed.load(Ordering::Acquire) {
+            if !run.failed.load(Ordering::Acquire) && !run.stopped() {
                 let r = cx.check_cancel().and_then(|()| task(&cx, &run));
                 if let Err(e) = r {
                     run.fail(&cx.rt, e);
@@ -760,14 +799,14 @@ impl<R: Runtime> Ctx<R> {
         for b in batches {
             let (p, env) = (p.clone(), env.clone());
             self.spawn(&pool, run, move |cx, run| {
-                let mut out = Out::new(&cx.grant)?;
+                let mut out = run.out(&cx.grant)?;
                 cx.morsel(run, &p, &env, &b, &mut out)?;
                 run.emitted.lock(&cx.rt).push(out);
                 Ok(())
             });
         }
         if let Some(b) = last {
-            let mut out = Out::new(&self.grant)?;
+            let mut out = run.out(&self.grant)?;
             self.morsel(run, p, env, &b, &mut out)?;
             run.emitted.lock(&self.rt).push(out);
         }
@@ -781,6 +820,9 @@ impl<R: Runtime> Ctx<R> {
         env: &Frame,
         out: &mut Out,
     ) -> Result<(), Error> {
+        if run.stopped() {
+            return Ok(());
+        }
         match &p.source {
             Source::Unit => {
                 self.check_cancel()?;
@@ -804,6 +846,9 @@ impl<R: Runtime> Ctx<R> {
         out: &mut Out,
     ) -> Result<(), Error> {
         self.check_cancel()?;
+        if run.stopped() {
+            return Ok(());
+        }
         let Source::Scan { heap, var } = &p.source else {
             unreachable!("a morsel is of a scan")
         };
@@ -930,44 +975,123 @@ impl<R: Runtime> Ctx<R> {
                 routes,
             } => {
                 let keys = self.eval_keys(key, &mut f, &mut sel, off)?;
-                let types = self.store.key_types(*index);
                 let ctors: BTreeSet<u32> = routes.iter().map(|(r, _)| r.ctor).collect();
-                let mut hits: Vec<(Vec<u32>, Vec<Val>)> =
-                    vec![(Vec::new(), Vec::new()); routes.len()];
-                for &r in &sel {
-                    let k = &keys[&r];
-                    let prefix: Vec<Value> = types
-                        .iter()
-                        .zip(k)
-                        .map(|(t, v)| to_key(t, v))
-                        .collect::<Result<_, _>>()?;
-                    let mut seen = BTreeSet::new();
-                    for (c, tid) in self.store.probe(*index, &prefix, &ctors)? {
-                        let i = routes
-                            .iter()
-                            .position(|(rt, _)| rt.ctor == c)
-                            .expect("a route of the entry's constructor");
-                        let Some((at, v)) = self.fetch(&routes[i].0, tid, k)? else {
-                            continue;
+                let found = |_: u32, prefix: &[Value]| self.store.probe(*index, prefix, &ctors);
+                let at = Probed {
+                    index: *index,
+                    keys: &keys,
+                    var: *var,
+                    routes,
+                };
+                self.routed(run, &at, f, &sel, found, out)
+            }
+            End::Range {
+                index,
+                key,
+                lo,
+                hi,
+                var,
+                routes,
+            } => {
+                let keys = self.eval_keys(key, &mut f, &mut sel, off)?;
+                let types = self.store.key_types(*index);
+                let next = &types[key.len()];
+                let mut bound =
+                    |b: &Option<(Expr, bool)>| -> Result<HashMap<u32, (Value, bool)>, Error> {
+                        let Some((e, inclusive)) = b else {
+                            return Ok(HashMap::new());
                         };
-                        if seen.insert(at) {
-                            hits[i].0.push(r);
-                            hits[i].1.push(v);
+                        let mut out = HashMap::new();
+                        for (r, v) in e.eval(&mut f, &mut sel, off, self.sh())? {
+                            out.insert(r, (to_key(next, &v)?, *inclusive));
                         }
-                    }
-                }
-                for ((from, rows), (_, chain)) in hits.into_iter().zip(routes) {
-                    if from.is_empty() {
-                        continue;
-                    }
-                    let mut g = f.gather(&from);
-                    g.bind_all(*var, rows);
-                    let s = g.all();
-                    self.chain(run, chain, g, s, out)?;
-                }
-                Ok(())
+                        Ok(out)
+                    };
+                let (los, his) = (bound(lo)?, bound(hi)?);
+                let ctors: BTreeSet<u32> = routes.iter().map(|(r, _)| r.ctor).collect();
+                let found = |r: u32, prefix: &[Value]| {
+                    let (l, h) = (los.get(&r).cloned(), his.get(&r).cloned());
+                    self.store.range(*index, prefix, l, h, &ctors)
+                };
+                let at = Probed {
+                    index: *index,
+                    keys: &keys,
+                    var: *var,
+                    routes,
+                };
+                self.routed(run, &at, f, &sel, found, out)
             }
         }
+    }
+
+    /// Fetch the rows of the entries `found` returns for each row of `sel` and its key prefix,
+    /// and pass each to the chain of its constructor's route.
+    fn routed(
+        self: &Arc<Self>,
+        run: &Run,
+        at: &Probed,
+        f: Frame,
+        sel: &Sel,
+        mut found: impl FnMut(u32, &[Value]) -> Result<Vec<(u32, Tid)>, Error>,
+        out: &mut Out,
+    ) -> Result<(), Error> {
+        let types = self.store.key_types(at.index);
+        let mut hits: Vec<(Vec<u32>, Vec<Val>)> = vec![(Vec::new(), Vec::new()); at.routes.len()];
+        for &r in sel {
+            let k = &at.keys[&r];
+            let prefix: Vec<Value> = types
+                .iter()
+                .zip(k)
+                .map(|(t, v)| to_key(t, v))
+                .collect::<Result<_, _>>()?;
+            let mut seen = BTreeSet::new();
+            for (c, tid) in found(r, &prefix)? {
+                let i = at
+                    .routes
+                    .iter()
+                    .position(|(rt, _)| rt.ctor == c)
+                    .expect("a route of the entry's constructor");
+                let Some((t, v)) = self.fetch(&at.routes[i].0, tid, k)? else {
+                    continue;
+                };
+                if seen.insert(t) {
+                    hits[i].0.push(r);
+                    hits[i].1.push(v);
+                }
+            }
+        }
+        for ((from, rows), (_, chain)) in hits.into_iter().zip(at.routes) {
+            if from.is_empty() {
+                continue;
+            }
+            let mut g = f.gather(&from);
+            g.bind_all(at.var, rows);
+            let s = g.all();
+            self.chain(run, chain, g, s, out)?;
+        }
+        Ok(())
+    }
+}
+
+/// An index end's probe: its index, each row's key values, its variable and its routes.
+struct Probed<'a> {
+    index: IndexId,
+    keys: &'a HashMap<u32, Vec<Val>>,
+    var: u32,
+    routes: &'a [(Fetch, Chain)],
+}
+
+/// Returns the `rows` of the group of `groups`, a set of `{ key, rows }` records, whose key is
+/// `key`, or the empty set when none is.
+fn group_rows(groups: &Val, key: &Val) -> Result<Val, Error> {
+    let first = Val::record(vec![key.clone(), Val::empty_set()]);
+    match groups.as_set()?.range(first..).next() {
+        Some(Val::Record(fs)) if fs.len() == 2 => Ok(match &fs[0] == key {
+            true => fs[1].clone(),
+            false => Val::empty_set(),
+        }),
+        Some(other) => Err(super::value::mistyped("a group record", other)),
+        None => Ok(Val::empty_set()),
     }
 }
 

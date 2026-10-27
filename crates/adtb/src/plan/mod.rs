@@ -52,6 +52,12 @@ pub enum Eval {
     Lookup(Lookup),
     Query(Box<Query>),
     Fix(Box<Fix>),
+    /// Returns the `rows` of the record of the set `groups` whose `key` equals the value of `key`,
+    /// or the empty set when none does.
+    GroupRows {
+        groups: Tm,
+        key: Tm,
+    },
 }
 
 /// The row whose key index entry has the key values, fetched from the heap of its constructor.
@@ -68,6 +74,9 @@ pub struct Query {
     pub builds: Vec<Build>,
     pub spine: Spine,
     pub sink: Sink,
+    /// Set when no evaluation of the pipelines, the builds, or the sink's per-element parts
+    /// aborts, whatever the database holds.
+    pub total: bool,
 }
 
 /// The decisions taken once per evaluation of a query, before its pipelines run, that choose which pipelines run.
@@ -147,6 +156,24 @@ pub enum End {
         var: Var,
         routes: Vec<Route>,
     },
+    /// Probe the ordered index for the entries whose leading fields equal the key values and whose
+    /// next field lies within `lo` and `hi` in the language's order, and route each as `Index`
+    /// does.
+    Range {
+        index: IndexId,
+        key: Vec<Tm>,
+        lo: Option<RangeBound>,
+        hi: Option<RangeBound>,
+        var: Var,
+        routes: Vec<Route>,
+    },
+}
+
+/// One end of a range probe: the value of `value`, included when `inclusive` is set.
+#[derive(Clone, Copy, Debug)]
+pub struct RangeBound {
+    pub value: Tm,
+    pub inclusive: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -254,6 +281,9 @@ pub struct Rewrites {
     pub unswitch: bool,
     pub group_agg: bool,
     pub semi_naive: bool,
+    pub range_probe: bool,
+    pub early_stop: bool,
+    pub flatten: bool,
 }
 
 impl Rewrites {
@@ -267,6 +297,9 @@ impl Rewrites {
         unswitch: true,
         group_agg: true,
         semi_naive: true,
+        range_probe: true,
+        early_stop: true,
+        flatten: true,
     };
 
     pub const NONE: Rewrites = Rewrites {
@@ -279,6 +312,9 @@ impl Rewrites {
         unswitch: false,
         group_agg: false,
         semi_naive: false,
+        range_probe: false,
+        early_stop: false,
+        flatten: false,
     };
 }
 

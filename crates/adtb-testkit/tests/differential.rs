@@ -668,7 +668,7 @@ fn predicate_partitions_bindings() {
     });
 }
 
-const REWRITES: usize = 9;
+const REWRITES: usize = 12;
 
 fn flag(r: &mut Rewrites, i: usize) -> &mut bool {
     match i {
@@ -680,7 +680,10 @@ fn flag(r: &mut Rewrites, i: usize) -> &mut bool {
         5 => &mut r.prune,
         6 => &mut r.unswitch,
         7 => &mut r.group_agg,
-        _ => &mut r.semi_naive,
+        8 => &mut r.semi_naive,
+        9 => &mut r.range_probe,
+        10 => &mut r.early_stop,
+        _ => &mut r.flatten,
     }
 }
 

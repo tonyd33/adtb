@@ -49,8 +49,8 @@ Preconditions:
 - An index whose key holds an expression or a path through a
   value-level sum is not in `catalog`; the planner uses none (§5).
 
-`options.rewrites` turns each rewrite of §3, §4, §7.2 and §7.4 on or
-off. `options.hiding` is set for a bundle declaring `hide new
+`options.rewrites` turns each rewrite of §1.3, §3, §4, §7.2 and §7.4
+on or off. `options.hiding` is set for a bundle declaring `hide new
 constructors`, for which every dereference is partial.
 
 Postconditions:
@@ -98,7 +98,7 @@ Postconditions: those of `plan` with every rewrite on, and:
 | `Plan` | `terms`, `params`, `root: Eval`, `reads: Reads` | The value of `root` with `params` bound |
 | `Reads` | `heaps`, `indexes` | Every heap and index the plan names (§4) |
 | `Eval` | below | The computation of one value in an environment |
-| `Query` | `builds`, `spine`, `sink` | Pipelines that push values into one sink |
+| `Query` | `builds`, `spine`, `sink`, `total` | Pipelines that push values into one sink |
 | `Spine` | below | The choices taken once per evaluation of a query that select its pipelines |
 | `Pipeline` | `source`, `chain` | Rows from the source, each passed through the chain |
 | `Chain` | `steps`, `end` | Steps applied to each row in turn, then the end that consumes it |
@@ -129,6 +129,7 @@ parameter's value.
 | `Lookup { index, key, routes }` | The row whose `index` entry has the field values `key`, fetched from the heap its constructor routes to; fails with `NoSuchRow` when there is none or its constructor has no route. `index` is the relation's key index, and `key` one value per key field |
 | `Query(q)` | The value `q`'s sink forms (below) |
 | `Fix(f)` | As below |
+| `GroupRows { groups, key }` | The `rows` of the record of the set `groups`, a value a `Group` sink with `rows` set formed, whose `key` equals `key`'s value; the empty set when none does |
 
 A query is evaluated in an environment:
 
@@ -169,6 +170,7 @@ A query is evaluated in an environment:
 | `If(c, a, b)` | Passed to `a` when `c` is `True`, else to `b` |
 | `Case(s, arms)` | Passed to the arm for the constructor of `s`'s value, its variable bound to that value: the per-row routing of §3 |
 | `Index { index, key, var, routes }` | Probes `index` for the entries whose leading fields equal `key`'s values, one value per field of a prefix; each entry whose constructor has a route is fetched from the route's heap and the row, with `var` bound to it, passes to the route's chain; other entries are dropped |
+| `Range { index, key, lo, hi, var, routes }` | As `Index`, for the entries whose field after the prefix `key` fixes also lies above `lo`'s value and below `hi`'s in the language's order, each bound inclusive when its `inclusive` is set and absent when it does not bound |
 
 A `Build` is made by running its pipelines, which emit its elements;
 each element's key is the values of `key` with `var` bound to it.
@@ -216,18 +218,32 @@ Invariants of every plan:
   steps and an `Emit` or `Nothing` end, and its pipelines and `key`
   mention only its scan variable and variables of its query's
   environment.
-- A `Scan`'s `heap` is `ctor`'s heap in the catalog. An `Index` end's
-  routes name distinct constructors of the index's constructor set,
-  each with that constructor's heap; so do a `Lookup`'s.
+- A `Scan`'s `heap` is `ctor`'s heap in the catalog. An `Index` or
+  `Range` end's routes name distinct constructors of the index's
+  constructor set, each with that constructor's heap; so do a
+  `Lookup`'s.
+- A `Range` end's index is `ordered`, its `key` is shorter than the
+  index's fields, the field after them is a field of the row, not an
+  expression, and `lo` and `hi`, when present, are of that field's
+  type, which is ordered.
+- `total` is set only when no evaluation of the query's pipelines and
+  builds, nor of its sink's `body`, `by` or keys, aborts, whatever the
+  database holds; aborts for the statement's limits and cancellation
+  excepted. A `Spine::Let` the planner adds binds a value that
+  evaluation computes without aborting.
 - `Plan.reads` holds every heap a `Scan`, route or `Lookup` names and
-  every index an `Index` end or `Lookup` names, including those of
-  builds and nested queries.
+  every index an `Index` or `Range` end or `Lookup` names, including
+  those of builds and nested queries.
 
 Evaluation of a plan:
 
 - The executor evaluates every row of every selected pipeline and every
-  step of every chain a row reaches. No sink stops its pipelines early:
-  a query whose remaining rows could abort reports the abort.
+  step of every chain a row reaches, with two exceptions for a query
+  whose `total` is set: an `Exists` or `IsEmpty` sink may stop its
+  pipelines once one value is emitted, and a `Top` sink whose `count`
+  is zero or negative may form its value without running them. A query
+  whose remaining rows could abort reports the abort. With rewrite
+  `early_stop` off, no query is `total`.
 - Rows of one pipeline, the pipelines of one query and the elements of
   a sink may be processed in any order, interleaved or in parallel. An
   abort of any evaluation is the outcome of the query, and when several
@@ -535,6 +551,15 @@ same rules choose an index for a comprehension at the start of a query
 (rewrite `index_scan`), whose key values may then mention anything but
 the row.
 
+With rewrite `range_probe` on, an ordered index whose leading fields
+the equalities fix, none or some, is also read through a `Range` end
+when a comparison `<`, `<=`, `>` or `>=` among the reorderable
+conditions bounds the next field, a field of the row, by a value of the
+field's type that does not mention the row. The first lower and the
+first upper bound are taken; every comparison stays a filter on the
+routes. A probe fixing more fields is preferred, then one with a range.
+`plan_bounded` makes no `Range` end.
+
 The build of a join is keyed by the relation, its constructor set, the
 row variable, the key and the filters, so arms that share the joined
 subterm probe one build.
@@ -545,7 +570,7 @@ model:
 | Quantity | Assumed |
 | --- | --- |
 | Rows of every heap | 1000 |
-| Rows of a probe of an index that is not unique, or whose key does not fix every field | 100 |
+| Rows of a probe of an index that is not unique, or whose key does not fix every field, and of a range probe | 100 |
 | Rows of a unique probe fixing every field | 1 |
 | Rows of a set an `Unnest` ranges over | 10 |
 | Fraction of rows a condition keeps | 1/2 |
@@ -584,7 +609,30 @@ method that yields the sets of
 The planner evaluates a nested result as a query per row of its
 enclosing pipeline (`Step::Bind` of an `Eval::Query`), whose
 comprehensions over constructor relations probe an index where their
-conditions allow. It does not yet flatten nested results.
+conditions allow.
+
+With rewrite `flatten` on, a query planned inside a chain whose source
+is a comprehension over a constructor relation is flattened when its
+reorderable conditions hold an equality between a term over the row and
+a term over the enclosing row. The comprehension's rows that pass its
+reorderable conditions mentioning only the row and variables bound
+outside the enclosing query are grouped, once per evaluation of that
+query, by the row's sides of those equalities: a `Group` query bound
+by a `Spine::Let` of the enclosing query. Per enclosing row,
+`GroupRows` looks up the group of the other sides' values, and the
+nested query ranges over its rows with the remaining conditions in
+their order. Its sink is unchanged. The fixed cost model chooses: a
+flattened read costs `1000 k + n` against `n` per-row reads of `4`,
+`104` or `1000 k`, so a nested result over one row is never
+flattened. `plan_bounded` flattens nothing.
+
+With rewrite `early_stop` on, a query's `total` is the totality of its
+source and of its sink's per-element terms by
+[kernel.md §7.1](kernel.md#71-totality). The executor stops an
+`Exists` or `IsEmpty` query with `total` set once a task emits a value:
+tasks not yet started do not run and running scans stop at their next
+morsel. A `Top` query with `total` set and a count of zero or less
+forms its value without selecting pipelines.
 
 The planner gives a `fix` semi-naive steps (rewrite `semi_naive`) when
 every occurrence of its variables in its bodies is a generator source

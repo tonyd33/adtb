@@ -347,5 +347,26 @@ pub fn variants() -> Vec<(&'static str, Rewrites)> {
                 ..all
             },
         ),
+        (
+            "range_probe off",
+            Rewrites {
+                range_probe: false,
+                ..all
+            },
+        ),
+        (
+            "early_stop off",
+            Rewrites {
+                early_stop: false,
+                ..all
+            },
+        ),
+        (
+            "flatten off",
+            Rewrites {
+                flatten: false,
+                ..all
+            },
+        ),
     ]
 }

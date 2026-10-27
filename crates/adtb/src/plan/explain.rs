@@ -318,6 +318,7 @@ impl<'a> Describe<'a> {
                 n
             }
             Eval::Query(q) => self.query(plan, q),
+            Eval::GroupRows { .. } => Node::new("Rows of a group", "", Vec::new()),
             Eval::Fix(f) => {
                 let mut children: Vec<Node> = f
                     .binds
@@ -462,8 +463,12 @@ impl<'a> Describe<'a> {
                     .collect();
                 n
             }
-            End::Index { index, routes, .. } => {
-                let mut n = Node::new("Probe", self.index(*index), Vec::new());
+            End::Index { index, routes, .. } | End::Range { index, routes, .. } => {
+                let kind = match e {
+                    End::Range { .. } => "Range probe",
+                    _ => "Probe",
+                };
+                let mut n = Node::new(kind, self.index(*index), Vec::new());
                 n.arms = routes
                     .iter()
                     .map(|r| Arm {

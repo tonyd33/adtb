@@ -8,7 +8,7 @@ use adtb_lang::types::Ty;
 use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
 use crate::btree::{self, Index, prefix_end};
 use crate::heap::{FieldType, Header, Heap, walk};
-use crate::key::{CtorId, KeySchema, KeyType, Scalar, Tid, Value};
+use crate::key::{CtorId, Dir, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{
     SerialId, SerializationFailure, Serializer, Snapshot, Status, Transactions, Xid,
 };
@@ -269,10 +269,68 @@ impl<R: Runtime> Store<R> {
         prefix: &[Value],
         routes: &BTreeSet<u32>,
     ) -> Result<Vec<(u32, Tid)>, Error> {
+        let bytes = self.encode_prefix(id, prefix);
+        let end = prefix_end(&bytes);
+        self.entries(id, Bound::Included(bytes), end, routes)
+    }
+
+    /// Returns the entries of index `id` whose leading key fields are `prefix` and whose next
+    /// field lies within `lo` and `hi` in the language's order, each bound its value and whether
+    /// it is included, as [`Store::probe`] does.
+    ///
+    /// Preconditions: the index has a field after `prefix`, and the field's type is ordered.
+    pub fn range(
+        &self,
+        id: IndexId,
+        prefix: &[Value],
+        lo: Option<(Value, bool)>,
+        hi: Option<(Value, bool)>,
+        routes: &BTreeSet<u32>,
+    ) -> Result<Vec<(u32, Tid)>, Error> {
+        let base = self.encode_prefix(id, prefix);
+        let next = self.index(id).index.schema().components()[prefix.len()].clone();
+        let dir = next.1;
+        let field = KeySchema::new(vec![next]);
+        let at = |v: &Value| {
+            let mut b = base.clone();
+            field.encode_into(std::slice::from_ref(v), &mut b);
+            b
+        };
+        let (lo, hi) = match dir {
+            Dir::Asc => (lo, hi),
+            Dir::Desc => (hi, lo),
+        };
+        let start = match lo {
+            None => Bound::Included(base.clone()),
+            Some((v, true)) => Bound::Included(at(&v)),
+            Some((v, false)) => match prefix_end(&at(&v)) {
+                Bound::Excluded(end) => Bound::Included(end),
+                _ => return Ok(Vec::new()),
+            },
+        };
+        let end = match hi {
+            None => prefix_end(&base),
+            Some((v, true)) => prefix_end(&at(&v)),
+            Some((v, false)) => Bound::Excluded(at(&v)),
+        };
+        self.entries(id, start, end, routes)
+    }
+
+    fn encode_prefix(&self, id: IndexId, prefix: &[Value]) -> Vec<u8> {
+        let components = self.index(id).index.schema().components();
+        KeySchema::new(components[..prefix.len()].to_vec()).encode(prefix)
+    }
+
+    /// Returns the entries of index `id` whose encodings lie between `lo` and `hi`, each with
+    /// its constructor position, for the constructors of `routes`.
+    fn entries(
+        &self,
+        id: IndexId,
+        lo: Bound<Vec<u8>>,
+        hi: Bound<Vec<u8>>,
+        routes: &BTreeSet<u32>,
+    ) -> Result<Vec<(u32, Tid)>, Error> {
         let ix = self.index(id);
-        let components = ix.index.schema().components();
-        let schema = KeySchema::new(components[..prefix.len()].to_vec());
-        let bytes = schema.encode(prefix);
         let ctors: BTreeSet<CtorId> = ix
             .ctors
             .iter()
@@ -280,16 +338,15 @@ impl<R: Runtime> Store<R> {
             .map(|(id, _)| *id)
             .collect();
         self.reads
-            .probed(
-                ix.index.tree().root(),
-                Bound::Included(bytes.clone()),
-                prefix_end(&bytes),
-                ctors,
-            )
+            .probed(ix.index.tree().root(), lo.clone(), hi.clone(), ctors)
             .map_err(Error::Serialization)?;
         let entries = ix
             .index
-            .scan_prefix(&self.pager, &bytes)
+            .scan(
+                &self.pager,
+                lo.as_ref().map(Vec::as_slice),
+                hi.as_ref().map(Vec::as_slice),
+            )
             .map_err(index_error)?;
         Ok(entries
             .into_iter()

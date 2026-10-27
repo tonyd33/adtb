@@ -25,6 +25,8 @@ pub enum Eval {
     Lookup(Lookup),
     Query(Arc<Query>),
     Fix(Box<Fix>),
+    /// The groups, then the key whose group's rows it returns.
+    GroupRows(Expr, Expr),
 }
 
 #[derive(Debug)]
@@ -48,6 +50,7 @@ pub struct Query {
     pub builds: Vec<Build>,
     pub spine: Spine,
     pub sink: Sink,
+    pub total: bool,
 }
 
 #[derive(Debug)]
@@ -106,6 +109,16 @@ pub enum End {
     Index {
         index: IndexId,
         key: Vec<Expr>,
+        var: u32,
+        routes: Vec<(Fetch, Chain)>,
+    },
+    /// An `Index` end whose entries' next field also lies within the bounds, each its value and
+    /// whether it is included.
+    Range {
+        index: IndexId,
+        key: Vec<Expr>,
+        lo: Option<(Expr, bool)>,
+        hi: Option<(Expr, bool)>,
         var: u32,
         routes: Vec<(Fetch, Chain)>,
     },
@@ -356,6 +369,9 @@ impl Lower<'_> {
                     .collect::<Result<_, _>>()?,
             }),
             plan::Eval::Query(q) => Eval::Query(Arc::new(self.query(q)?)),
+            plan::Eval::GroupRows { groups, key } => {
+                Eval::GroupRows(self.expr(*groups)?, self.expr(*key)?)
+            }
             plan::Eval::Fix(f) => Eval::Fix(Box::new(Fix {
                 binds: f
                     .binds
@@ -409,6 +425,7 @@ impl Lower<'_> {
             builds,
             spine: self.spine(&q.spine)?,
             sink: self.sink(&q.sink)?,
+            total: q.total,
         })
     }
 
@@ -491,12 +508,40 @@ impl Lower<'_> {
                 index: *index,
                 key: self.exprs(key)?,
                 var: var.0,
-                routes: routes
-                    .iter()
-                    .map(|r| Ok((self.fetch(*index, r.ctor, r.heap)?, self.chain(&r.chain)?)))
-                    .collect::<Result<_, Error>>()?,
+                routes: self.routes(*index, routes)?,
+            },
+            plan::End::Range {
+                index,
+                key,
+                lo,
+                hi,
+                var,
+                routes,
+            } => End::Range {
+                index: *index,
+                key: self.exprs(key)?,
+                lo: self.bound(lo)?,
+                hi: self.bound(hi)?,
+                var: var.0,
+                routes: self.routes(*index, routes)?,
             },
         })
+    }
+
+    fn routes(
+        &mut self,
+        index: IndexId,
+        routes: &[plan::Route],
+    ) -> Result<Vec<(Fetch, Chain)>, Error> {
+        routes
+            .iter()
+            .map(|r| Ok((self.fetch(index, r.ctor, r.heap)?, self.chain(&r.chain)?)))
+            .collect()
+    }
+
+    fn bound(&mut self, b: &Option<plan::RangeBound>) -> Result<Option<(Expr, bool)>, Error> {
+        b.map(|b| Ok((self.expr(b.value)?, b.inclusive)))
+            .transpose()
     }
 
     fn agg(&self, op: Agg, ty: &Ty, body_ty: &Ty) -> Result<AggOp, Error> {

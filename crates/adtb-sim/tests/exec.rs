@@ -279,6 +279,17 @@ const QUERIES: &[&str] = &[
     "sum(o.total for o in orders where o.user == me)",
     "from o in orders select o.total * 2 - o.qty",
     "from u in users select u.name ++ \"!\"",
+    "from o in orders where o.id > orders.key(2) select o.total",
+    "from o in orders where o.id >= orders.key(2) and o.id < orders.key(4) select o.total",
+    "from x in follows where x.src == me and x.dst > users.key(1) select x.dst",
+    "from a in orders, b in orders where b.id > a.id and b.qty < a.qty select { a: a.id, b: b.id }",
+    "from u in users select { u: u.name, out: from x in follows where x.src == key u and x.dst != me select x.dst }",
+    "from u in users select count(o for o in orders where o.user == key u and o.total / o.qty > 10)",
+    "from u in users select count(o for o in orders where o.user == key u and o.qty > 0 and o.total / o.qty > 10)",
+    "exists o in orders where o.total / o.qty > 10",
+    "exists p in posts where p.author == me",
+    "top 0 by (o.total, key o) (from o in orders select o)",
+    "top (0 - 1) by (o.total, key o) (from o in orders select o)",
 ];
 
 fn running_cases(f: &Fixture) -> Vec<Case> {

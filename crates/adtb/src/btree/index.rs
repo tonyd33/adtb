@@ -156,6 +156,16 @@ impl Index {
         self.decode_all(pager, self.tree.prefix(prefix))
     }
 
+    /// Returns the entries whose encodings lie between `lo` and `hi`, in order.
+    pub fn scan<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        lo: Bound<&[u8]>,
+        hi: Bound<&[u8]>,
+    ) -> Result<Vec<Entry>, Error> {
+        self.decode_all(pager, self.tree.range(lo, hi))
+    }
+
     /// Returns every entry of `key`, in order of constructor and TID.
     pub fn probe<R: Runtime>(&self, pager: &Pager<R>, key: &[Value]) -> Result<Vec<Entry>, Error> {
         self.scan_prefix(pager, &self.schema.encode(key))
