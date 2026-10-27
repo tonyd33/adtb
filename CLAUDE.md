@@ -26,11 +26,11 @@ Tracked work lives in `work/issues/` and is managed with `tix`; the
 format and priority scheme are in `work/issues/README.md`. Design
 decisions are not tickets: they go through the design space. Check
 `tix list --ready` before starting work, and run `tix check` after
-editing a ticket. `tix` is not on PATH yet
-(`work/issues/tix-in-devenv.md`); run it as:
+editing a ticket. The devenv shell puts `tix` on PATH with `-C work/issues` set. Outside
+it, run it from the repository root as:
 
 ```
-nix run path:/home/tony/code/tql/work/tools/tix -- -C work/issues check
+nix run github:tonyd33/tix -- -C work/issues check
 ```
 
 ## Knowledge base

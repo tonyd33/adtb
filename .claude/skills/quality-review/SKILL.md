@@ -27,7 +27,7 @@ lines, new `#[expect]`s, panic/unwrap/expect counts per crate and new
 Then list the open quality tickets, so you do not file what one covers:
 
 ```
-nix run path:/home/tony/code/tql/work/tools/tix -- -C work/issues list --tag quality
+nix run github:tonyd33/tix -- -C work/issues list --tag quality
 ```
 
 ## Reading
@@ -73,8 +73,8 @@ One ticket per real finding, skipping any an open `quality` ticket
 already covers:
 
 ```
-nix run path:/home/tony/code/tql/work/tools/tix -- -C work/issues new STEM --kind bug --summary "..."
-nix run path:/home/tony/code/tql/work/tools/tix -- -C work/issues set STEM tags=quality,engine
+nix run github:tonyd33/tix -- -C work/issues new STEM --kind bug --summary "..."
+nix run github:tonyd33/tix -- -C work/issues set STEM tags=quality,engine
 ```
 
 Name the stem for the gap. Follow the format in `work/issues/README.md`:

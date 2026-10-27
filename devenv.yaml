@@ -12,6 +12,11 @@ inputs:
         follows: nixpkgs
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/rolling
+  tix:
+    url: github:tonyd33/tix
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
   quandary:
     url: github:tonyd33/quandary
     inputs:

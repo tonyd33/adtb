@@ -8,6 +8,7 @@
 
 let
   quandary = inputs.quandary.packages.${pkgs.stdenv.system}.default;
+  tix = inputs.tix.packages.${pkgs.stdenv.system}.default;
 in
 {
   # https://devenv.sh/packages/
@@ -26,6 +27,10 @@ in
     cargo nextest run --workspace --no-tests=pass
     cargo deny check
     size-check
+  '';
+
+  scripts.tix.exec = ''
+    ${lib.getExe tix} -C "$DEVENV_ROOT/work/issues" "$@"
   '';
 
   scripts.size-check.exec = ''

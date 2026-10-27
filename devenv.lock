@@ -136,7 +136,28 @@
         "editorenv": "editorenv",
         "git-hooks": "git-hooks",
         "nixpkgs": "nixpkgs",
-        "quandary": "quandary"
+        "quandary": "quandary",
+        "tix": "tix"
+      }
+    },
+    "tix": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1793077072,
+        "narHash": "sha256-k3Mk1n2zUB3EKq1aRzjsl68/cEBrDCM4yxRU63u8wfY=",
+        "owner": "tonyd33",
+        "repo": "tix",
+        "rev": "27c8188e52b1897b1095208ecc3fc33da2d08cf5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "tonyd33",
+        "repo": "tix",
+        "type": "github"
       }
     }
   },
