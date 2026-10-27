@@ -1035,7 +1035,7 @@ impl Cx<'_> {
                 into,
                 arms,
                 clauses,
-            } => self.merge(ty, sel, into, arms.as_deref(), clauses),
+            } => self.merge(ty, sel, into, arms.as_deref(), clauses, false),
             OperatorKind::NestConstructor {
                 ty,
                 sel,

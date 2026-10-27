@@ -2559,6 +2559,24 @@ fn a_cursor_record_matches_the_keys_by_field_name_order() {
     );
 }
 
+#[test]
+fn a_literal_in_an_after_record_is_checked_against_its_ordering_key() {
+    adhoc_accepts(
+        &[],
+        "from s in sales select s order by (s.qty, key s) take 5 after Some { value: { a: 3, b: sales.key(1) } }",
+    );
+    adhoc_refuses(
+        &[],
+        "from s in sales select s order by (s.qty, key s) take 5 after Some { value: { a: 3000000000, b: sales.key(1) } }",
+        "literal out of range of I32",
+    );
+    adhoc_refuses(
+        &[],
+        "from p in posts select p order by (p.created_at desc, key p) take 5 after Some { value: { a: 40, b: posts.key(1) } }",
+        "expected Instant, found I64",
+    );
+}
+
 // Redundant alternatives
 
 #[test]

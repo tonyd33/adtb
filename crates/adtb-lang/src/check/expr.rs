@@ -2358,6 +2358,10 @@ impl Checker<'_> {
                     self.terms.ty(keys[0].0).clone()
                 } else {
                     let o = self.synth(a)?;
+                    let o = match self.after_want(&o.ty, &keys) {
+                        Some(want) if wants_expected(a) => self.check(a, &want)?,
+                        _ => o,
+                    };
                     return self.after_record(o, &keys, a.span, x, source, take);
                 };
                 let want = self.option_ty(kty);
@@ -2378,6 +2382,26 @@ impl Checker<'_> {
         );
         o.rows = source.rows;
         Ok(o)
+    }
+
+    /// Returns the type `after` expects of a cursor synthesized at `ty`: an `Option` of a record
+    /// with its field names, each typed as the ordering key it stands for.
+    fn after_want(&self, ty: &Ty, keys: &[(Tm, bool)]) -> Option<Ty> {
+        let Ty::Data { def, args, .. } = ty else {
+            return None;
+        };
+        let [Ty::Record(fs)] = args.as_slice() else {
+            return None;
+        };
+        if *def != self.schema.prelude_type("Option") || fs.len() != keys.len() {
+            return None;
+        }
+        let fields = fs
+            .iter()
+            .zip(keys)
+            .map(|((name, _), (k, _))| (name.clone(), self.terms.ty(*k).clone()))
+            .collect();
+        Some(self.option_ty(Ty::Record(fields)))
     }
 
     /// `after c` for a compound ordering: `c` is an `Option` of a record whose fields, in order, have the keys' types.

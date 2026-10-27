@@ -345,53 +345,7 @@ impl Cx<'_> {
             );
         };
         match (&part, sel) {
-            (Part::Ctor(c), None) => {
-                let others: Vec<String> = cs
-                    .iter()
-                    .map(|d| d.name.text.clone())
-                    .filter(|d| d != c)
-                    .collect();
-                for o in &others {
-                    if Self::field_decl(&t, &Part::Ctor(o.clone()), &path.field.text).is_some() {
-                        return self.err(format!(
-                            "`{}.{o}` already has a field `{}`; the header cannot take it",
-                            t.name.text, path.field.text
-                        ));
-                    }
-                }
-                let removal = self
-                    .field_removal(i, &t, &part, &path.field.text)
-                    .expect("the field");
-                let added = add_field_edit(&text, h, &t, None, item.as_str().into())
-                    .expect("a header place");
-                self.src.edit(i, vec![(removal.0, removal.1.into()), added]);
-                if others.is_empty() {
-                    return Ok(());
-                }
-                let Some(fill) = fill else {
-                    return self.err(
-                        "a move to the header takes `fill match` with an arm for each constructor that lacks the field",
-                    );
-                };
-                if matches!(fill, Fill::Expr(_)) {
-                    return self.err(
-                        "the fill of a move to the header is a `match` whose arms are the constructors that lack the field",
-                    );
-                }
-                let schema = self.schema()?;
-                let def = self.type_id(&schema, &path.ty)?;
-                let td = schema.ty(def);
-                let ctors: Vec<u32> = others.iter().filter_map(|o| td.ctor_index(o)).collect();
-                let fty = td
-                    .header()
-                    .iter()
-                    .find(|x| x.name == path.field.text)
-                    .map(|x| x.ty.clone());
-                let Some(fty) = fty else {
-                    return self.err("the moved field does not resolve");
-                };
-                self.check_fill(&path.ty, Some(ctors), &fty, fill)
-            }
+            (Part::Ctor(c), None) => self.move_up(path, std::slice::from_ref(c), fill),
             (Part::Header, Some(sel)) => {
                 if fill.is_some() {
                     return self.err("a move from the header down to constructors takes no fill");
@@ -426,6 +380,85 @@ impl Cx<'_> {
                 self.err("a header field moves down to constructors: `move field T.f to T.(C | D)`")
             }
         }
+    }
+
+    /// Moves field `path.field` of every constructor of `from` to the header of `path.ty`, the
+    /// constructors that lack it taking `fill`.
+    pub(super) fn move_up(
+        &mut self,
+        path: &ast::FieldPath,
+        from: &[String],
+        fill: Option<&Fill>,
+    ) -> R<()> {
+        let (i, t) = self.type_decl(&path.ty)?;
+        let ast::TypeBody::Ctors(cs) = &t.body else {
+            return self.err_at(
+                path.ty.span(),
+                format!(
+                    "record `{}` has no header to move a field to or from",
+                    t.name.text
+                ),
+            );
+        };
+        let field = &path.field.text;
+        let h = header(&self.src.decls[i].module).len();
+        let text = self.src.decls[i].text.clone();
+        let mut edits = Vec::new();
+        let mut item = None;
+        for c in from {
+            let part = Part::Ctor(c.clone());
+            let Some(f) = Self::field_decl(&t, &part, field) else {
+                return self.err(format!("`{}.{c}` has no field `{field}`", t.name.text));
+            };
+            let fty = &text[f.ty.span.start as usize - h..f.ty.span.end as usize - h];
+            item.get_or_insert_with(|| format!("{field}: {fty}"));
+            let removal = self.field_removal(i, &t, &part, field).expect("the field");
+            edits.push((removal.0, Written::from(removal.1)));
+        }
+        let item = item.expect("a move up names a constructor");
+        let others: Vec<String> = cs
+            .iter()
+            .map(|d| d.name.text.clone())
+            .filter(|d| !from.contains(d))
+            .collect();
+        for o in &others {
+            if Self::field_decl(&t, &Part::Ctor(o.clone()), field).is_some() {
+                return self.err(format!(
+                    "`{}.{o}` already has a field `{field}`; the header cannot take it",
+                    t.name.text
+                ));
+            }
+        }
+        edits.push(
+            add_field_edit(&text, h, &t, None, item.as_str().into()).expect("a header place"),
+        );
+        self.src.edit(i, edits);
+        if others.is_empty() {
+            return Ok(());
+        }
+        let Some(fill) = fill else {
+            return self.err(
+                "a move to the header takes `fill match` with an arm for each constructor that lacks the field",
+            );
+        };
+        if matches!(fill, Fill::Expr(_)) {
+            return self.err(
+                "the fill of a move to the header is a `match` whose arms are the constructors that lack the field",
+            );
+        }
+        let schema = self.schema()?;
+        let def = self.type_id(&schema, &path.ty)?;
+        let td = schema.ty(def);
+        let ctors: Vec<u32> = others.iter().filter_map(|o| td.ctor_index(o)).collect();
+        let fty = td
+            .header()
+            .iter()
+            .find(|x| x.name == *field)
+            .map(|x| x.ty.clone());
+        let Some(fty) = fty else {
+            return self.err("the moved field does not resolve");
+        };
+        self.check_fill(&path.ty, Some(ctors), &fty, fill)
     }
 }
 

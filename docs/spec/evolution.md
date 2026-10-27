@@ -485,7 +485,10 @@ A record is a sum with one constructor named after the type
 ([model.md §2.2](model.md#22-records)), and `add constructor` applies
 to it as to any sum: `add constructor Point.Polar { r: F64, theta: F64 }`
 makes `Point` the sum `Point { x: I64, y: I64 } | Polar { r: F64, theta: F64 }`,
-the record's fields remaining those of its constructor `Point`. Every
+the record's fields remaining those of its constructor `Point`. The
+key fields of a relation over the record become fields of every
+constructor, so the new constructor has them, and its rows are keyed
+as the record's are. Every
 schema object is rechecked (§3.2), and so is every registered query
 and transaction of a live bundle; the migration is refused if one
 fails.
@@ -726,8 +729,13 @@ the old constructor, or fixes it to a literal or a nullary constructor, and its 
 bound variable exactly once as a whole field value with no other
 computation, and every product is the result of some arm. A field
 access `g.f` on a constructor binder `g` counts as binding field `f`
-and carrying it whole. The engine then derives the inverse merge. A
-split whose routing is not invertible is a declared loss and has no
+and carrying it whole. The engine then derives the inverse merge, which
+carries the split's routing: each product's rows go back to the old
+constructor with every fixed field set to the value its arm fixes, so a
+split by the constructors of a discriminator, by the values of a `Bool`
+field, or into one product reverts with the old rows intact. The name
+rule for a merge's discriminator (§4.7) does not apply to this inverse.
+A split whose routing is not invertible is a declared loss and has no
 inverse: it is
 refused while a live bundle pinned before it reads or writes the old
 constructor (§7.2), and a `revert` of it is refused. A refusal for a
@@ -754,7 +762,10 @@ the first source in that order. The new constructor has exactly one discriminato
 field: the field whose type is a declared nullary sum whose
 constructors are exactly the merged constructors' names (`Provider`).
 The merge fills it with each row's old constructor. A merge whose new
-constructor has no such field, or more than one, is refused.
+constructor has no such field, or more than one, is refused. This rule
+applies to a merge an author writes; the merge the engine derives as
+the inverse of a split tells its sources apart by the split's routing
+(§4.6) instead.
 The `by match` clause maps each old row to the new value, and must not
 compute the discriminator otherwise than as its own constructor name.
 Without `by`, each old constructor's fields map by name and type to the

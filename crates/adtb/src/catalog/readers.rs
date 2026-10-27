@@ -699,13 +699,6 @@ fn relation_named(schema: &Schema, qualified: &str) -> Result<RelId, String> {
     found.ok_or_else(|| format!("there is no relation {qualified}"))
 }
 
-/// Returns the type `q` names in a migration of `module`.
-pub(super) fn type_named(schema: &Schema, module: &str, q: &QName) -> Option<TypeId> {
-    let m = q.module.as_ref().map_or(module, |m| m.text.as_str());
-    let m = schema.module_named(m)?;
-    schema.module(m).types.get(&q.name.text).copied()
-}
-
 /// Returns whether named set `set` of relation `r` holds constructor `c`.
 fn in_set(schema: &Schema, r: RelId, set: CatSetId, c: u32) -> bool {
     schema

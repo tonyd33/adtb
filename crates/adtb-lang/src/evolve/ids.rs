@@ -305,6 +305,35 @@ impl Source {
                 let (from, to) = (format!("field {m}::{from}"), format!("field {m}::{to}"));
                 rewrite(&mut self.ids, &|k| (k == from).then(|| to.clone()));
             }
+            OperatorKind::AddConstructor { path, .. } => {
+                let m = q(&path.ty);
+                let t = path.ty.name.text.clone();
+                let Ok(schema) = before.built() else {
+                    return;
+                };
+                let Some(def) = schema
+                    .module_named(&m)
+                    .and_then(|mid| schema.module(mid).types.get(&t).copied())
+                else {
+                    return;
+                };
+                if !matches!(schema.ty(def).kind, TypeDefKind::Sum { record: true, .. }) {
+                    return;
+                }
+                let keys: BTreeSet<&String> = schema
+                    .relations
+                    .iter()
+                    .filter(|r| r.elem_def == def)
+                    .flat_map(|r| &r.key)
+                    .collect();
+                let field = format!("field {m}::{t}.{t}.");
+                rewrite(&mut self.ids, &|k| {
+                    let f = k.strip_prefix(&field)?;
+                    keys.iter()
+                        .any(|x| *x == f)
+                        .then(|| format!("field {m}::{t}.{f}"))
+                });
+            }
             _ => {}
         }
     }

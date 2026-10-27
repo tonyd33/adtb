@@ -1496,7 +1496,6 @@ merge constructor Identity.(Google | Apple) into Social
 }
 
 #[test]
-#[ignore = "reverting a merge that carried a one-constructor check leaves a match on the dropped discriminator"]
 fn a_revert_of_a_merge_restores_the_check_it_carried() {
     let s = applies(
         &running(),
@@ -2418,6 +2417,49 @@ split constructor Identity.OAuth into Google { gid: Text } | Apple { sub: Text }
     assert!(flat(&decl(&s, "fn", "name")).contains("| OAuth o -> o.sub"));
 }
 
+const SCALES: &str = "module auth
+type Scale = Realm | Town
+type Place { id: Key places } = Location { name: Text, scale: Scale } | Faction
+relation places : Place key id generate sequence unique (name) in Location
+check named on places.Location (scalar_len(name) > 0)";
+
+const SCALED: &str = "module auth
+split constructor Place.Location into Region { name: Text } | Settlement { name: Text }
+  by match
+    | Location { name, scale: Realm } -> Region { name: name }
+    | Location { name, scale: Town } -> Settlement { name: name }";
+
+#[test]
+fn revert_of_a_split_by_a_discriminator_named_otherwise_merges_back() {
+    let s = applies(&source(SCALES), SCALED);
+    let s = applies(&s, "module auth\nrevert 0001");
+    let t = flat(&decl(&s, "type", "Place"));
+    assert!(
+        t.ends_with("= Location { name: Text, scale: Scale } | Faction"),
+        "{t}"
+    );
+    let r = flat(&decl(&s, "relation", "places"));
+    assert!(r.contains("unique (scale, name) in Location"), "{r}");
+    assert_eq!(
+        "check named on places.Location (scalar_len(name) > 0)",
+        flat(&decl(&s, "check", "named"))
+    );
+}
+
+#[test]
+fn revert_of_a_split_matches_a_check_on_one_product_by_the_field_its_routing_fixes() {
+    let s = applies(&source(SCALES), SCALED);
+    let s = applies(
+        &s,
+        "module auth\nadd check long on places.Region (scalar_len(name) > 3)",
+    );
+    let s = applies(&s, "module auth\nrevert 0001");
+    assert_eq!(
+        "check long on places.Location (match scale | Realm -> scalar_len(name) > 3 | Town -> true)",
+        flat(&decl(&s, "check", "long"))
+    );
+}
+
 #[test]
 fn revert_of_a_lossy_split_is_refused() {
     let base = source(
@@ -2594,11 +2636,40 @@ fn a_record_gains_a_constructor_as_any_sum() {
 }
 
 #[test]
-fn a_record_keyed_by_its_fields_needs_its_key_in_a_header_once_it_has_two_constructors() {
-    refuses(
+fn a_keyed_record_gains_a_constructor_with_its_key_in_the_header() {
+    let before = ids_of(&running());
+    let id = field_id(&before, "User", Some("User"), "id");
+    assert!(id.is_some());
+    let s = applies(
         &running(),
         "module auth\nadd constructor User.Admin { level: I32 }",
-        "key field `id` is not a header field",
+    );
+    assert_eq!(
+        "type User { id: Key users }\n  = User { name: Text }\n  | Admin { level: I32 }",
+        decl(&s, "type", "User")
+    );
+    assert_eq!(id, field_id(&ids_of(&s), "User", None, "id"));
+    let s = applies(&s, "module auth\nrevert 0001");
+    assert_eq!(
+        "type User = { id: Key users, name: Text }",
+        decl(&s, "type", "User")
+    );
+    assert_eq!(id, field_id(&ids_of(&s), "User", Some("User"), "id"));
+}
+
+#[test]
+fn a_record_keyed_by_all_its_fields_gains_a_constructor_as_a_nullary_one() {
+    let s = applies(
+        &running(),
+        "module auth\nadd type Label = { name: Text }\nadd relation labels : Label key name",
+    );
+    let s = applies(
+        &s,
+        "module auth\nadd constructor Label.Pinned { rank: I32 }",
+    );
+    assert_eq!(
+        "type Label { name: Text }\n  = Label\n  | Pinned { rank: I32 }",
+        decl(&s, "type", "Label")
     );
 }
 
@@ -2845,6 +2916,62 @@ move field Identity.EmailPass.verified to Identity fill match
         Some(next + 1),
         field_id(&down, "Identity", Some("Apple"), "verified")
     );
+}
+
+#[test]
+fn a_revert_of_a_move_down_to_every_constructor_takes_no_fill() {
+    let s = applies(
+        &running(),
+        "module auth\nadd field Identity.EmailPass.verified: Bool fill false",
+    );
+    let s = applies(
+        &s,
+        "module auth
+move field Identity.EmailPass.verified to Identity fill match
+  | Google g -> true
+  | Apple a  -> true",
+    );
+    let s = applies(
+        &s,
+        "module auth\nmove field Identity.verified to Identity.(Apple | Google | EmailPass)",
+    );
+    let s = applies(&s, "module auth\nrevert 0003");
+    let t = flat(&decl(&s, "type", "Identity"));
+    assert!(
+        t.starts_with("type Identity { id: Key identities, user: Key users, verified: Bool }"),
+        "{t}"
+    );
+    assert!(t.contains("Apple { sub: Text }"), "{t}");
+}
+
+#[test]
+fn a_revert_of_a_move_down_to_some_constructors_fills_only_the_others() {
+    let s = applies(
+        &running(),
+        "module auth\nadd field Identity.EmailPass.verified: Bool fill false",
+    );
+    let s = applies(
+        &s,
+        "module auth
+move field Identity.EmailPass.verified to Identity fill match
+  | Google g -> true
+  | Apple a  -> true",
+    );
+    let s = applies(
+        &s,
+        "module auth\nmove field Identity.verified to Identity.(EmailPass | Google)",
+    );
+    refuses(
+        &s,
+        "module auth\nrevert 0003",
+        "needs a fill: `fill Identity.EmailPass.verified = e`",
+    );
+    let s = applies(
+        &s,
+        "module auth\nrevert 0003\n  fill Identity.EmailPass.verified = match | Apple a -> true",
+    );
+    let t = flat(&decl(&s, "type", "Identity"));
+    assert!(t.contains("Google { gid: Text }"), "{t}");
 }
 
 #[test]

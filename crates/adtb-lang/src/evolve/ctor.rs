@@ -119,6 +119,60 @@ impl Cx<'_> {
         edits
     }
 
+    /// Rewrites record `t`, declaration `i`, as a sum of one constructor named after it, the key
+    /// fields of its relations moving to the header.
+    fn record_to_sum(
+        &mut self,
+        i: usize,
+        t: &ast::TypeDecl,
+        path: &ast::CtorPath,
+        fields: &[ast::FieldType],
+    ) -> R<()> {
+        let tname = &t.name.text;
+        let h = header(&self.src.decls[i].module).len();
+        let text = self.src.decls[i].text.clone();
+        let Some(braces) = field_braces(&text, h, t, None) else {
+            return self.err_at(
+                path.ty.span(),
+                format!("record `{tname}` has no fields to keep"),
+            );
+        };
+        let schema = self.schema()?;
+        let keys = Self::key_fields(&schema, self.type_id(&schema, &path.ty)?);
+        let item = |f: &&ast::FieldType| {
+            let end = f.on_delete.as_ref().map_or(f.ty.span.end, |a| a.span.end);
+            text[f.name.span.start as usize - h..end as usize - h].to_string()
+        };
+        let (head, rest): (Vec<&ast::FieldType>, Vec<&ast::FieldType>) =
+            fields.iter().partition(|f| keys.contains(&f.name.text));
+        let edit = if head.is_empty() {
+            (braces.start..braces.start, format!("{tname} "))
+        } else {
+            let eq = text[..braces.start].rfind('=').expect("a record's `=`");
+            let body = if rest.is_empty() {
+                tname.clone()
+            } else {
+                let rest: Vec<String> = rest.iter().map(item).collect();
+                format!("{tname} {{ {} }}", rest.join(", "))
+            };
+            let head: Vec<String> = head.iter().map(item).collect();
+            (
+                eq..braces.end,
+                format!("{{ {} }}\n  = {body}", head.join(", ")),
+            )
+        };
+        self.src.edit(i, vec![edit]);
+        Ok(())
+    }
+
+    /// Returns the key fields of the relations over type `def`.
+    fn key_fields(schema: &Schema, def: TypeId) -> BTreeSet<String> {
+        Self::relations_of(schema, def)
+            .into_iter()
+            .flat_map(|(r, _, _)| schema.relation(r).key.clone())
+            .collect()
+    }
+
     pub(super) fn add_constructor(
         &mut self,
         path: &ast::CtorPath,
@@ -138,17 +192,8 @@ impl Cx<'_> {
                     format!("`{name}` is already a constructor of `{tname}`"),
                 );
             }
-            ast::TypeBody::Record(_) => {
-                let h = header(&self.src.decls[i].module).len();
-                let text = self.src.decls[i].text.clone();
-                let Some(braces) = field_braces(&text, h, &t, None) else {
-                    return self.err_at(
-                        path.ty.span(),
-                        format!("record `{tname}` has no fields to keep"),
-                    );
-                };
-                self.src
-                    .edit(i, vec![(braces.start..braces.start, format!("{tname} "))]);
+            ast::TypeBody::Record(fields) => {
+                self.record_to_sum(i, &t, path, fields)?;
                 t = self.type_decl(&path.ty)?.1;
             }
             ast::TypeBody::New(..) => {
@@ -865,11 +910,28 @@ pub(super) struct RowTypes {
 /// What a routing carries whole: (source constructor, field, product constructor, field).
 pub(super) type Carries = Vec<(String, String, String, String)>;
 
+/// The fields of a merged row that tell which merged constructor it came from, with each
+/// constructor's values of them as expression text.
+struct Disc {
+    fields: Vec<String>,
+    values: BTreeMap<String, Vec<(String, String)>>,
+}
+
+impl Disc {
+    fn value(&self, ctor: &str, field: &str) -> Option<&str> {
+        self.values
+            .get(ctor)?
+            .iter()
+            .find(|(f, _)| f == field)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
 /// A merge's image of the merged constructors: `src_ix` are the indexes of `sources`, in order.
 struct MergeImage<'a> {
     def: TypeId,
     ctor: &'a str,
-    disc: &'a str,
+    disc: &'a Disc,
     sources: &'a [String],
     src_ix: &'a [u32],
     carries: &'a Carries,
@@ -1308,9 +1370,11 @@ impl Cx<'_> {
         base
     }
 
+    /// With `derived`, the values the routing's arms fix tell the merged constructors apart, and
+    /// no field need be a discriminator.
     #[expect(
         clippy::too_many_lines,
-        reason = "routing the arms, choosing the discriminator and rewriting checks and clauses would each have to be a step"
+        reason = "routing the arms and rewriting checks and clauses would each have to be a step"
     )]
     pub(super) fn merge(
         &mut self,
@@ -1319,6 +1383,7 @@ impl Cx<'_> {
         into: &ast::CtorDef,
         arms: Option<&[ast::Arm]>,
         clauses: &[ast::ArmClause],
+        derived: bool,
     ) -> R<()> {
         let schema = self.schema()?;
         let (i, t) = self.type_decl(ty)?;
@@ -1346,95 +1411,17 @@ impl Cx<'_> {
         let ad = self.type_id(&after, ty)?;
         let mc = after.ty(ad).ctor_index(&m).expect("the merged constructor");
         let mfields = after.ty(ad).ctors()[mc as usize].fields.clone();
-        let wanted: BTreeSet<&str> = sources.iter().map(String::as_str).collect();
-        let discs: Vec<&schema::FieldDef> = mfields
-            .iter()
-            .filter(|f| match &f.ty {
-                Ty::Data { def: d, args, .. } if args.is_empty() => {
-                    let s = after.ty(*d);
-                    matches!(s.kind, TypeDefKind::Sum { record: false, .. })
-                        && s.ctors().iter().all(|c| c.fields.is_empty())
-                        && s.ctors()
-                            .iter()
-                            .map(|c| c.name.as_str())
-                            .collect::<BTreeSet<_>>()
-                            == wanted
-                }
-                _ => false,
-            })
-            .collect();
-        let disc = match discs.as_slice() {
-            [one] => one.name.clone(),
-            [] => {
-                return self.err_at(into.name.span, format!(
-                    "the merged constructor `{m}` has no discriminator: a field typed by a nullary sum whose constructors are exactly {}",
-                    sources.join(", ")
-                ));
-            }
-            _ => {
-                return self.err_at(
-                    into.name.span,
-                    format!("the merged constructor `{m}` has more than one discriminator field"),
-                );
-            }
+        let disc = match arms {
+            Some(a) if derived => self.fixed_disc(a),
+            _ => self.named_disc(&after, &mfields, into, &sources)?,
         };
         let carries: Carries = match (arms, carries) {
+            (Some(_), Some(c)) if derived => c,
             (Some(a), Some(c)) => {
-                for arm in a {
-                    let ok = match (&arm.patterns.first().map(|p| &p.kind), &arm.body.kind) {
-                        (
-                            Some(ast::PatternKind::Ctor { path, ctor, .. }),
-                            ast::ExprKind::Ctor {
-                                record: Some(ast::RecordExpr::Fields(given, _)),
-                                ..
-                            },
-                        ) => {
-                            let from = &ctor.as_ref().unwrap_or(&path.name).text;
-                            given.iter().any(|(g, e)| {
-                                g.text == disc
-                                    && matches!(&e.kind, ast::ExprKind::Ctor { path: p, ctor: None, record: None } if p.name.text == *from)
-                            })
-                        }
-                        _ => false,
-                    };
-                    if !ok {
-                        return self.err_at(arm.body.span, format!(
-                            "the routing gives the discriminator `{disc}` as each row's own constructor name"
-                        ));
-                    }
-                }
+                self.own_names(a, &disc.fields[0])?;
                 c
             }
-            _ => {
-                let td = schema.ty(def);
-                let mut c = Vec::new();
-                for s in &sources {
-                    let k = td.ctor_index(s).expect("a source");
-                    let sf = &td.ctors()[k as usize].fields;
-                    for f in sf {
-                        match mfields.iter().find(|g| g.name == f.name && g.name != disc) {
-                            Some(g) if g.ty == f.ty => {
-                                c.push((s.clone(), f.name.clone(), m.clone(), f.name.clone()));
-                            }
-                            _ => {
-                                return self.err(format!(
-                                    "field `{s}.{}` has no counterpart in `{m}`",
-                                    f.name
-                                ));
-                            }
-                        }
-                    }
-                    for g in &mfields {
-                        if g.name != disc && !sf.iter().any(|f| f.name == g.name) {
-                            return self.err(format!(
-                                "field `{m}.{}` has no counterpart in `{s}`",
-                                g.name
-                            ));
-                        }
-                    }
-                }
-                c
-            }
+            _ => self.carried_by_name(schema.ty(def), &sources, &m, &mfields, &disc)?,
         };
         let tm = self.module_of(ty);
         self.restate(&schema, def, &tm, &sources, std::slice::from_ref(&m), true)?;
@@ -1517,8 +1504,12 @@ impl Cx<'_> {
                         }
                     }
                 }
-                if cl.kind == "unique" && !fs.contains(&disc) {
-                    fs.insert(0, disc.clone());
+                if cl.kind == "unique" {
+                    for f in disc.fields.iter().rev() {
+                        if !fs.contains(f) {
+                            fs.insert(0, f.clone());
+                        }
+                    }
                 }
                 match &out_fields {
                     None => out_fields = Some(fs),
@@ -1555,6 +1546,163 @@ impl Cx<'_> {
         edits = Self::merged(edits, arm_edits);
         self.apply_edits(edits);
         self.retype_products(&schema, def, &sources, std::slice::from_ref(&m))
+    }
+
+    /// Refuses an arm of an author's merge that does not give discriminator `disc` as its own
+    /// constructor name.
+    fn own_names(&self, arms: &[ast::Arm], disc: &str) -> R<()> {
+        for arm in arms {
+            let ok = match (&arm.patterns.first().map(|p| &p.kind), &arm.body.kind) {
+                (
+                    Some(ast::PatternKind::Ctor { path, ctor, .. }),
+                    ast::ExprKind::Ctor {
+                        record: Some(ast::RecordExpr::Fields(given, _)),
+                        ..
+                    },
+                ) => {
+                    let from = &ctor.as_ref().unwrap_or(&path.name).text;
+                    given.iter().any(|(g, e)| {
+                        g.text == *disc
+                            && matches!(&e.kind, ast::ExprKind::Ctor { path: p, ctor: None, record: None } if p.name.text == *from)
+                    })
+                }
+                _ => false,
+            };
+            if !ok {
+                return self.err_at(arm.body.span, format!(
+                    "the routing gives the discriminator `{disc}` as each row's own constructor name"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns what a merge without routing carries: each field of each source to the field of
+    /// `m` of the same name and type.
+    fn carried_by_name(
+        &self,
+        td: &schema::TypeDef,
+        sources: &[String],
+        m: &str,
+        mfields: &[schema::FieldDef],
+        disc: &Disc,
+    ) -> R<Carries> {
+        let mut c = Vec::new();
+        for s in sources {
+            let k = td.ctor_index(s).expect("a source");
+            let sf = &td.ctors()[k as usize].fields;
+            for f in sf {
+                match mfields
+                    .iter()
+                    .find(|g| g.name == f.name && !disc.fields.contains(&g.name))
+                {
+                    Some(g) if g.ty == f.ty => {
+                        c.push((s.clone(), f.name.clone(), m.to_string(), f.name.clone()));
+                    }
+                    _ => {
+                        return self.err(format!(
+                            "field `{s}.{}` has no counterpart in `{m}`",
+                            f.name
+                        ));
+                    }
+                }
+            }
+            for g in mfields {
+                if !disc.fields.contains(&g.name) && !sf.iter().any(|f| f.name == g.name) {
+                    return self.err(format!(
+                        "field `{m}.{}` has no counterpart in `{s}`",
+                        g.name
+                    ));
+                }
+            }
+        }
+        Ok(c)
+    }
+
+    /// Returns the discriminator field of merged constructor `into`, typed by a declared nullary sum
+    /// whose constructors are exactly `sources`, each source's value its own name.
+    fn named_disc(
+        &self,
+        after: &Schema,
+        mfields: &[schema::FieldDef],
+        into: &ast::CtorDef,
+        sources: &[String],
+    ) -> R<Disc> {
+        let m = &into.name.text;
+        let wanted: BTreeSet<&str> = sources.iter().map(String::as_str).collect();
+        let discs: Vec<&schema::FieldDef> = mfields
+            .iter()
+            .filter(|f| match &f.ty {
+                Ty::Data { def: d, args, .. } if args.is_empty() => {
+                    let s = after.ty(*d);
+                    matches!(s.kind, TypeDefKind::Sum { record: false, .. })
+                        && s.ctors().iter().all(|c| c.fields.is_empty())
+                        && s.ctors()
+                            .iter()
+                            .map(|c| c.name.as_str())
+                            .collect::<BTreeSet<_>>()
+                            == wanted
+                }
+                _ => false,
+            })
+            .collect();
+        let name = match discs.as_slice() {
+            [one] => one.name.clone(),
+            [] => {
+                return self.err_at(into.name.span, format!(
+                    "the merged constructor `{m}` has no discriminator: a field typed by a nullary sum whose constructors are exactly {}",
+                    sources.join(", ")
+                ));
+            }
+            _ => {
+                return self.err_at(
+                    into.name.span,
+                    format!("the merged constructor `{m}` has more than one discriminator field"),
+                );
+            }
+        };
+        Ok(Disc {
+            fields: vec![name.clone()],
+            values: sources
+                .iter()
+                .map(|s| (s.clone(), vec![(name.clone(), s.clone())]))
+                .collect(),
+        })
+    }
+
+    /// Returns the fields the arms of a derived merge give a value not read from the row, with
+    /// each source's values.
+    fn fixed_disc(&self, arms: &[ast::Arm]) -> Disc {
+        let mut disc = Disc {
+            fields: Vec::new(),
+            values: BTreeMap::new(),
+        };
+        for a in arms {
+            let (
+                Some(ast::PatternKind::Ctor { path, ctor, .. }),
+                ast::ExprKind::Ctor {
+                    record: Some(ast::RecordExpr::Fields(given, _)),
+                    ..
+                },
+            ) = (a.patterns.first().map(|p| &p.kind), &a.body.kind)
+            else {
+                continue;
+            };
+            let from = ctor.as_ref().unwrap_or(&path.name).text.clone();
+            for (g, e) in given {
+                if matches!(e.kind, ast::ExprKind::Field(..) | ast::ExprKind::Name(_)) {
+                    continue;
+                }
+                if !disc.fields.contains(&g.text) {
+                    disc.fields.push(g.text.clone());
+                }
+                disc.values
+                    .entry(from.clone())
+                    .or_default()
+                    .push((g.text.clone(), self.text[e.span.range()].to_string()));
+            }
+        }
+        disc
     }
 
     /// Returns the edits that carry each check over the merged constructors to the merged one. A check
@@ -1625,23 +1773,28 @@ impl Cx<'_> {
                 nested |= matches!(e.kind, ast::ExprKind::Match(..));
             });
             let body = if nested { format!("({body})") } else { body };
-            let arms: Vec<String> = image
-                .sources
-                .iter()
-                .zip(image.src_ix)
-                .map(|(s, c)| {
-                    let e = if cs.contains(c) {
-                        body.as_str()
-                    } else {
-                        "true"
-                    };
-                    format!("{s} -> {e}")
-                })
-                .collect();
-            entry.push((
-                pred,
-                format!("match {} | {}", image.disc, arms.join(" | ")).into(),
-            ));
+            let untold = || {
+                self.err(format!(
+                    "check `{}` has no image under the merge: no one field of `{}` tells its constructors apart",
+                    chk.name, image.ctor
+                ))
+            };
+            let [field] = image.disc.fields.as_slice() else {
+                return untold();
+            };
+            let mut arms: Vec<String> = Vec::new();
+            for (s, c) in image.sources.iter().zip(image.src_ix) {
+                let Some(v) = image.disc.value(s, field) else {
+                    return untold();
+                };
+                let e = if cs.contains(c) {
+                    body.as_str()
+                } else {
+                    "true"
+                };
+                arms.push(format!("{v} -> {e}"));
+            }
+            entry.push((pred, format!("match {field} | {}", arms.join(" | ")).into()));
         }
         Ok(edits)
     }

@@ -17,14 +17,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use adtb_lang::ast::{CtorPath, CtorSel, CtorTarget, MigrationFile, Operator, OperatorKind};
+use adtb_lang::ast::MigrationFile;
 use adtb_lang::check::Program;
-use adtb_lang::evolve::{Code, Refusal, Source};
+use adtb_lang::evolve::{Code, Refusal, RowMap, Source};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_lang::schema::{self, Schema, ValueDef};
+use adtb_lang::schema::{self, Schema, Stage};
 use adtb_lang::span::Diag;
-use adtb_lang::types::{RelId, Ty};
+use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::btree::{self, BTree, Index};
 use crate::exec::{self, StoredHeap, StoredIndex};
@@ -896,11 +896,11 @@ impl Catalog {
                     return Err(Error::Refused(ds.into_iter().map(|d| d.message).collect()));
                 }
             };
-            why.extend(self.emptied(m, &before, &data, module, op)?);
             for step in steps {
                 let Ok(schema) = step.after.schema() else {
                     continue;
                 };
+                why.extend(self.emptied(m, &before, &schema, &step.maps, &data)?);
                 let moved = match moved::moved(&before, &schema, &step.maps, &data) {
                     Ok(m) => m,
                     Err(Error::Refused(w)) => {
@@ -939,64 +939,74 @@ impl Catalog {
         Ok(built)
     }
 
-    /// Returns why the data refuses `op`, applied to `schema` of a migration of `module`, beyond
-    /// what its data map refuses: a constructor relation it disables holds rows, or a field
-    /// holds a value of a constructor of a type it disables or removes.
+    /// Returns why `data` refuses the step from `a` to `b`, which moves rows by `maps`, beyond
+    /// what its data map refuses: a constructor relation it disables holds rows, or a field holds
+    /// a value of a constructor of a type that it disables, or that it drops and no map carries.
     fn emptied<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
-        schema: &Schema,
+        a: &Schema,
+        b: &Schema,
+        maps: &[RowMap],
         data: &Data,
-        module: &str,
-        op: &Operator,
     ) -> Result<Vec<String>, Error> {
-        let target = match &op.kind {
-            OperatorKind::Disable(CtorTarget::Type(path)) => {
-                return self.stored_in(m, schema, data, module, path, "disabled");
-            }
-            OperatorKind::RemoveConstructor(path) => {
-                return self.stored_in(m, schema, data, module, path, "removed");
-            }
-            OperatorKind::Disable(target) => target,
-            _ => return Ok(Vec::new()),
-        };
         let mut why = Vec::new();
-        for (r, c) in targeted(schema, module, target) {
-            let rid = rel_id(schema, r);
-            let cid = ctor_id(schema, r, c);
-            let held = match data.get(&rid) {
-                Some(ctors) => !ctors[&cid].is_empty(),
-                None => self.holds(m, rid, cid)?,
+        for &r in a.ids.relations.keys() {
+            let rid = rel_id(a, r);
+            let Some(rb) = relation(b, rid) else {
+                continue;
             };
-            if held {
-                let rel = schema.relation(r);
-                let ctor = &schema.ty(rel.elem_def).ctors()[c as usize].name;
-                why.push(format!(
-                    "constructor relation {}.{ctor} holds rows; it cannot be disabled",
-                    rel.name
-                ));
+            for c in 0..ctor_count(a, r) {
+                let cid = ctor_id(a, r, c);
+                let Some(k) = ctor_index(b, rb, cid) else {
+                    continue;
+                };
+                if a.stage(r, c) == Stage::Declared || b.stage(rb, k) != Stage::Declared {
+                    continue;
+                }
+                let held = match data.get(&rid) {
+                    Some(ctors) => ctors.get(&cid).is_some_and(|rows| !rows.is_empty()),
+                    None => self.holds(m, rid, cid)?,
+                };
+                if held {
+                    let rel = a.relation(r);
+                    let ctor = &a.ty(rel.elem_def).ctors()[c as usize].name;
+                    why.push(format!(
+                        "constructor relation {}.{ctor} holds rows; it cannot be disabled",
+                        rel.name
+                    ));
+                }
             }
+        }
+        let now: BTreeMap<u64, (TypeId, u32)> =
+            b.ids.ctors.iter().map(|(&at, &id)| (id, at)).collect();
+        for (&(def, c), &id) in &a.ids.ctors {
+            let verb = match now.get(&id) {
+                Some(&(d, k))
+                    if a.value_stage(def, c) != Stage::Declared
+                        && b.value_stage(d, k) == Stage::Declared =>
+                {
+                    "disabled"
+                }
+                None if !carried(maps, def, c) => "removed",
+                _ => continue,
+            };
+            why.extend(self.stored_in(m, a, data, def, c, verb)?);
         }
         Ok(why)
     }
 
-    /// Returns why constructor `path` of a type, in a migration of `module` applied to
-    /// `schema`, cannot be `verb`: each relation a field of whose rows holds a value of it.
+    /// Returns why constructor `c` of type `def` of `schema` cannot be `verb`: each relation a
+    /// field of whose rows holds a value of it.
     fn stored_in<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
         schema: &Schema,
         data: &Data,
-        module: &str,
-        path: &CtorPath,
+        def: TypeId,
+        c: u32,
         verb: &str,
     ) -> Result<Vec<String>, Error> {
-        let Some(def) = readers::type_named(schema, module, &path.ty) else {
-            return Ok(Vec::new());
-        };
-        let Some(c) = schema.ty(def).ctor_index(&path.ctor.text) else {
-            return Ok(Vec::new());
-        };
         let id = CatCtorId(schema.ids.ctors[&(def, c)]).stored();
         let mut why = Vec::new();
         for (&r, &rid) in &schema.ids.relations {
@@ -1043,7 +1053,7 @@ impl Catalog {
                     "a field of {} holds a value of {}.{}; it cannot be {verb}",
                     schema.relation(r).name,
                     schema.ty(def).name,
-                    path.ctor.text
+                    schema.ty(def).ctors()[c as usize].name
                 ));
             }
         }
@@ -1674,32 +1684,13 @@ fn holds_ctor(t: &FieldType, v: &Value, id: CtorId) -> bool {
     }
 }
 
-/// Returns the constructor relations `target`, of an `enable`, `disable` or `deprecate` in a
-/// migration of `module`, names in `schema`: none for a constructor of a type.
-fn targeted(schema: &Schema, module: &str, target: &CtorTarget) -> Vec<(RelId, u32)> {
-    let CtorTarget::Relation(on) = target else {
-        return Vec::new();
-    };
-    let m = on
-        .relation
-        .module
-        .as_ref()
-        .map_or(module, |m| m.text.as_str());
-    let Some(ValueDef::Relation(r)) = schema
-        .module_named(m)
-        .and_then(|mid| schema.module(mid).values.get(&on.relation.name.text))
-    else {
-        return Vec::new();
-    };
-    let t = schema.ty(schema.relation(*r).elem_def);
-    let names: Vec<&str> = match &on.sel {
-        Some(CtorSel::One(c)) => vec![c.text.as_str()],
-        Some(CtorSel::Many(cs)) => cs.iter().map(|c| c.text.as_str()).collect(),
-        None => Vec::new(),
-    };
-    names
-        .into_iter()
-        .filter_map(|n| t.ctor_index(n))
-        .map(|c| (*r, c))
-        .collect()
+/// Returns whether a map of `maps` carries the rows or values of constructor `c` of type `def`.
+fn carried(maps: &[RowMap], def: TypeId, c: u32) -> bool {
+    maps.iter().any(|m| match m {
+        RowMap::Route { def: d, from, .. }
+        | RowMap::Merge { def: d, from, .. }
+        | RowMap::Nest { def: d, from, .. } => *d == def && from.contains(&c),
+        RowMap::Unnest { def: d, from } => *d == def && *from == c,
+        _ => false,
+    })
 }

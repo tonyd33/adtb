@@ -751,13 +751,6 @@ const STAGED: [Operator; 3] = [
 /// The operators the engine refuses, having no resolved form for them.
 const UNRESOLVED: [Operator; 2] = [Operator::AddDefault, Operator::DropDefault];
 
-/// The operators whose revert the engine refuses or applies otherwise than their inverse.
-const UNREVERTED: [Operator; 3] = [
-    Operator::SplitByLiteral,
-    Operator::SplitRenaming,
-    Operator::MoveFieldDownMany,
-];
-
 /// Returns the first query of `case` on which `db` disagrees with the reference, named by
 /// where in the walk it runs.
 fn walk_check(seed: u64, db: &Database<SimRuntime>, case: &Case, at: &str) -> Option<String> {
@@ -946,7 +939,7 @@ fn schema_operators_keep_their_laws() {
         "operator laws",
         LAW_WALKS,
         STEPS,
-        &[&STAGED[..], &UNRESOLVED, &UNREVERTED].concat(),
+        &[&STAGED[..], &UNRESOLVED].concat(),
         laws,
     );
 }
@@ -1076,7 +1069,6 @@ fn merges_carrying_checks_keep_engine_equal_to_reference() {
 }
 
 #[test]
-#[ignore = "reverting a merge that carried a one-constructor check leaves a match on the dropped discriminator"]
 fn merges_carrying_checks_keep_their_laws() {
     let skip = beside_checked_merges();
     sweep_seeds(

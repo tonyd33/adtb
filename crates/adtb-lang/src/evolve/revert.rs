@@ -1,12 +1,39 @@
 use super::*;
 
+/// How an inverse applies an operator of its text.
+#[derive(Clone, Copy)]
+pub(super) enum How<'a> {
+    /// As the operator written.
+    Written,
+    /// A merge whose arms' fixed values tell its constructors apart.
+    Derived,
+    /// A move to the header of the field of every constructor of the slice.
+    UpFrom(&'a [String]),
+}
+
 /// One step of the inverse of an operator.
 #[derive(Clone, Debug)]
 pub(super) enum Inverse {
     /// Operators, as source text, applied in the migration's module.
     Ops(Written),
-    /// Removes the constructor an `add constructor` added, with its arms.
-    Unadd(ast::CtorPath),
+    /// A merge, as source text, putting back a split: its arms' fixed values tell its
+    /// constructors apart.
+    Derived(Written),
+    /// A split, as source text, putting back a merge, and the texts of the checks it carried, by
+    /// module and name, set in the same step.
+    Unmerge {
+        split: Written,
+        checks: Vec<(String, String, String)>,
+    },
+    /// A move to the header, as source text naming the first of `from`, of the field of every
+    /// constructor of `from`.
+    MoveUp { text: Written, from: Vec<String> },
+    /// Removes the constructor an `add constructor` added, with its arms, then sets the type back
+    /// to `record`, the text of the record it was.
+    Unadd {
+        path: ast::CtorPath,
+        record: Option<String>,
+    },
     /// Puts back a removed constructor, as written, after the constructor named, else first.
     Readd {
         ty: QName,
@@ -319,7 +346,14 @@ impl Cx<'_> {
         }
         for step in steps.into_iter().rev() {
             for inv in step {
-                let recorded = matches!(inv, Inverse::Ops(_) | Inverse::Replay(_));
+                let recorded = matches!(
+                    inv,
+                    Inverse::Ops(_)
+                        | Inverse::Derived(_)
+                        | Inverse::Unmerge { .. }
+                        | Inverse::MoveUp { .. }
+                        | Inverse::Replay(_)
+                );
                 self.undo(inv)?;
                 self.src.reconcile_ids();
                 if let (Some(steps), false) = (self.steps, recorded) {
@@ -484,7 +518,24 @@ impl Cx<'_> {
                 r.name.text,
                 s.text
             )),
-            OperatorKind::AddConstructor { path, .. } => Ok(vec![Inverse::Unadd(path.clone())]),
+            OperatorKind::AddConstructor { path, .. } => {
+                let record = before
+                    .find("type", &q(&path.ty), &path.ty.name.text)
+                    .filter(|&i| {
+                        matches!(
+                            before.parsed(i),
+                            Some(Decl::Type(ast::TypeDecl {
+                                body: ast::TypeBody::Record(_),
+                                ..
+                            }))
+                        )
+                    })
+                    .map(|i| before.decls[i].text.clone());
+                Ok(vec![Inverse::Unadd {
+                    path: path.clone(),
+                    record,
+                }])
+            }
             OperatorKind::RemoveConstructor(path) => {
                 let m = q(&path.ty);
                 let Some(i) = before.find("type", &m, &path.ty.name.text) else {
@@ -648,25 +699,28 @@ impl Cx<'_> {
                             sel_idents(sel).iter().map(|x| x.text.clone()).collect();
                         let first = &names[0];
                         let key = format!("{}.{first}.{}", path.ty.name.text, path.field.text);
-                        let Some(fill) = self.fill_for(fills, &key) else {
-                            return self.err(format!(
-                                "the inverse of moving `{}` down needs a fill: `fill {key} = e`",
-                                path_text(path)
-                            ));
-                        };
-                        let mut s = Written::default();
-                        for other in &names[1..] {
-                            s.push(&format!(
-                                "drop field {m}::{}.{other}.{}\n",
-                                path.ty.name.text, path.field.text
-                            ));
-                        }
-                        s.push(&format!(
-                            "move field {m}::{}.{first}.{} to {m}::{} fill ",
+                        let schema = before
+                            .schema()
+                            .map_err(|_| vec![Diag::new(self.span, "the log does not replay")])?;
+                        let def = self.type_id(&schema, &path.ty)?;
+                        let mut s = Written::from(format!(
+                            "move field {m}::{}.{first}.{} to {m}::{}",
                             path.ty.name.text, path.field.text, path.ty.name.text
                         ));
-                        s.append(fill);
-                        Ok(vec![Inverse::Ops(s)])
+                        if schema.ty(def).ctors().len() > names.len() {
+                            let Some(fill) = self.fill_for(fills, &key) else {
+                                return self.err(format!(
+                                    "the inverse of moving `{}` down needs a fill: `fill {key} = e`",
+                                    path_text(path)
+                                ));
+                            };
+                            s.push(" fill ");
+                            s.append(fill);
+                        }
+                        Ok(vec![Inverse::MoveUp {
+                            text: s,
+                            from: names,
+                        }])
                     }
                     _ => Ok(Vec::new()),
                 }
@@ -1279,7 +1333,7 @@ impl Cx<'_> {
             inverse_arms.concat()
         );
         s.push_str(&self.restored_arms(before, clauses, std::slice::from_ref(&path.ctor.text)));
-        Ok(vec![Inverse::Ops(s.into())])
+        Ok(vec![Inverse::Derived(s.into())])
     }
 
     pub(super) fn merge_inverse(
@@ -1434,7 +1488,43 @@ impl Cx<'_> {
             s.push_str(&c);
         }
         s.push_str(&self.restored_arms(before, clauses, &sources));
-        Ok(vec![Inverse::Ops(s.into())])
+        Ok(vec![Inverse::Unmerge {
+            split: s.into(),
+            checks: self.carried_checks_back(before, &schema, ty, &sources)?,
+        }])
+    }
+
+    /// Returns each check over some of `sources` of type `ty`, by module and name, with its text in
+    /// `before`, whose schema is `schema`.
+    fn carried_checks_back(
+        &self,
+        before: &Source,
+        schema: &Schema,
+        ty: &QName,
+        sources: &[String],
+    ) -> R<Vec<(String, String, String)>> {
+        let def = self.type_id(schema, ty)?;
+        let td = schema.ty(def);
+        let src_ix: Vec<u32> = sources.iter().filter_map(|s| td.ctor_index(s)).collect();
+        let rels: Vec<RelId> = Self::relations_of(schema, def)
+            .into_iter()
+            .map(|(r, _, _)| r)
+            .collect();
+        Ok(schema
+            .checks
+            .iter()
+            .filter(|chk| {
+                rels.contains(&chk.relation)
+                    && chk
+                        .ctors
+                        .as_ref()
+                        .is_some_and(|cs| cs.iter().any(|c| src_ix.contains(c)))
+            })
+            .map(|chk| {
+                let d = &before.decls[chk.file.0 as usize];
+                (d.module.clone(), chk.name.clone(), d.text.clone())
+            })
+            .collect())
     }
 
     /// The `arm` clauses that put back, for each dependent `clauses` name, its arms over `ctors` in `before`.
@@ -1484,12 +1574,26 @@ impl Cx<'_> {
         out
     }
 
-    /// Applies one step of an inverse to the source.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per inverse kind; each arm would have to be a function"
-    )]
-    pub(super) fn undo(&mut self, inv: Inverse) -> R<()> {
+    /// Sets type `ty`, a sum of one constructor named after it, to record text `text`, its header
+    /// fields keeping their ids as fields of that constructor.
+    fn unsum(&mut self, ty: &QName, text: String) -> R<()> {
+        let (i, _) = self.type_decl(ty)?;
+        self.src.rewrite(i, text);
+        let header = format!("field {}::{}.", self.module_of(ty), ty.name.text);
+        let ids = std::mem::take(&mut self.src.ids);
+        self.src.ids = ids
+            .into_iter()
+            .map(|(k, id)| match k.strip_prefix(&header) {
+                Some(f) if !f.contains('.') => (format!("{header}{}.{f}", ty.name.text), id),
+                _ => (k, id),
+            })
+            .collect();
+        Ok(())
+    }
+
+    /// Applies operators given as source text in the migration's module as `how` says, then sets
+    /// each check of `checks`, by module and name, to its text within the last operator's step.
+    fn undo_ops(&mut self, text: &Written, how: How, checks: &[(String, String, String)]) -> R<()> {
         let span = self.span;
         let wrap = |ds: Vec<Diag>, what: &str| -> Vec<Diag> {
             ds.into_iter()
@@ -1501,50 +1605,92 @@ impl Cx<'_> {
                 })
                 .collect()
         };
-        match inv {
-            Inverse::Ops(text) => {
-                let head = format!("module {}\n", self.module);
-                let full = format!("{head}{}", text.text);
-                let m = crate::parse::parse_migration(&full, Options::default())
-                    .ok()
-                    .map_err(|ds| wrap(ds, &text.text))?;
-                let noted = RefCell::new(Names::default());
-                for op in &m.operators {
-                    let before = self.src.clone();
-                    let mut sub = Cx {
-                        src: &mut *self.src,
-                        module: self.module.clone(),
-                        text: &full,
-                        span: op.span,
-                        noted: self.noted.map(|_| &noted),
-                        copying: false,
-                        steps: None,
-                    };
-                    sub.operator(&op.kind)
-                        .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
-                    self.src.rename_ids(&before, &self.module, &op.kind);
-                    self.src.reconcile_ids();
-                    if let Some(steps) = self.steps {
-                        let maps = before
-                            .row_maps(&self.module, op, &full, self.src)
-                            .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
-                        steps.borrow_mut().push(Step {
-                            after: self.src.clone(),
-                            maps,
-                        });
-                    }
+        let head = format!("module {}\n", self.module);
+        let full = format!("{head}{}", text.text);
+        let m = crate::parse::parse_migration(&full, Options::default())
+            .ok()
+            .map_err(|ds| wrap(ds, &text.text))?;
+        let noted = RefCell::new(Names::default());
+        for op in &m.operators {
+            let before = self.src.clone();
+            let mut sub = Cx {
+                src: &mut *self.src,
+                module: self.module.clone(),
+                text: &full,
+                span: op.span,
+                noted: self.noted.map(|_| &noted),
+                copying: false,
+                steps: None,
+            };
+            match (&op.kind, how) {
+                (
+                    OperatorKind::MergeConstructor {
+                        ty,
+                        sel,
+                        into,
+                        arms,
+                        clauses,
+                    },
+                    How::Derived,
+                ) => sub.merge(ty, sel, into, arms.as_deref(), clauses, true),
+                (OperatorKind::MoveField { path, fill, .. }, How::UpFrom(from)) => {
+                    sub.move_up(path, from, fill.as_ref())
                 }
-                if let Some(out) = self.noted {
-                    let noted = noted.into_inner();
-                    for (o, from) in &text.copies {
-                        let at = head.len() + o;
-                        out.borrow_mut()
-                            .copy(&noted, at..at + from.len(), from.start);
-                    }
+                (kind, _) => sub.operator(kind),
+            }
+            .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
+            self.src.rename_ids(&before, &self.module, &op.kind);
+            self.src.reconcile_ids();
+            if let Some(steps) = self.steps {
+                let maps = before
+                    .row_maps(&self.module, op, &full, self.src, how)
+                    .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
+                steps.borrow_mut().push(Step {
+                    after: self.src.clone(),
+                    maps,
+                });
+            }
+        }
+        for (module, name, check) in checks {
+            if let Some(i) = self.src.find("check", module, name) {
+                self.src.rewrite(i, check.clone());
+            }
+        }
+        self.src.reconcile_ids();
+        if let (Some(steps), false) = (self.steps, checks.is_empty())
+            && let Some(last) = steps.borrow_mut().last_mut()
+        {
+            last.after = self.src.clone();
+        }
+        if let Some(out) = self.noted {
+            let noted = noted.into_inner();
+            for (o, from) in &text.copies {
+                let at = head.len() + o;
+                out.borrow_mut()
+                    .copy(&noted, at..at + from.len(), from.start);
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies one step of an inverse to the source.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per inverse kind; each arm would have to be a function"
+    )]
+    pub(super) fn undo(&mut self, inv: Inverse) -> R<()> {
+        match inv {
+            Inverse::Ops(text) => self.undo_ops(&text, How::Written, &[]),
+            Inverse::Derived(text) => self.undo_ops(&text, How::Derived, &[]),
+            Inverse::Unmerge { split, checks } => self.undo_ops(&split, How::Written, &checks),
+            Inverse::MoveUp { text, from } => self.undo_ops(&text, How::UpFrom(&from), &[]),
+            Inverse::Unadd { path, record } => {
+                self.remove_ctor(&path, true)?;
+                if let Some(text) = record {
+                    self.unsum(&path.ty, text)?;
                 }
                 Ok(())
             }
-            Inverse::Unadd(path) => self.remove_ctor(&path, true),
             Inverse::Readd {
                 ty,
                 text,

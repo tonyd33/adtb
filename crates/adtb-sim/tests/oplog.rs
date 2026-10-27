@@ -1256,7 +1256,45 @@ fn a_migration_validates_its_constraints_within_the_query_memory_of_the_open() {
 }
 
 #[test]
-#[ignore = "the derived inverse merge has no discriminator, so the revert is refused"]
+fn reverting_a_constructor_a_keyed_record_gained_keeps_its_rows() {
+    let vip = "module shop\nadd constructor Customer.Vip { tier: Text }\n";
+    let revert = "module shop\nrevert 0002\n";
+    after(74, &[vip, revert], |db| {
+        let db = db.expect("the revert applies");
+        write(&db, r#"insert customers { name: "cy" }"#);
+        assert_eq!(
+            vec![r#""ann""#, r#""bob""#, r#""cy""#],
+            query(&db, "from c in customers select c.name")
+        );
+    });
+}
+
+#[test]
+fn a_keyed_record_gains_a_constructor_keeping_its_rows_and_their_keys() {
+    let vip = "module shop\nadd constructor Customer.Vip { tier: Text }\nenable customers.Vip\n";
+    after(73, &[vip], |db| {
+        let db = db.expect("the add applies");
+        write(&db, r#"insert customers.Vip { tier: "gold" }"#);
+        assert_eq!(
+            vec![r#""ann""#, r#""bob""#],
+            query(&db, "from c in customers.Customer select c.name")
+        );
+        assert_eq!(
+            3,
+            query(&db, "from c in customers select c.id").len(),
+            "the keys stay distinct"
+        );
+        assert_eq!(
+            vec![r#""4242""#],
+            query(
+                &db,
+                "from p in payments.Card, c in customers.Customer where p.customer == key c and c.name == \"ann\" select p.last4"
+            )
+        );
+    });
+}
+
+#[test]
 fn reverting_a_split_by_a_bool_field_merges_the_rows_back_with_the_field() {
     let wide = "module shop\nadd field Payment.Card.wide: Bool fill true\n";
     let split = r"module shop
@@ -1269,7 +1307,7 @@ split constructor Payment.Card into Wide { last4: Text } | Narrow { last4: Text 
     after(70, &[wide, split, revert], |db| {
         let db = db.expect("the revert applies");
         assert_eq!(
-            vec![r#"{ wide: True, last4: "4242" }"#],
+            vec![r#"{ last4: "4242", wide: True }"#],
             query(
                 &db,
                 "from p in payments.Card select { wide: p.wide, last4: p.last4 }"
@@ -1279,7 +1317,6 @@ split constructor Payment.Card into Wide { last4: Text } | Narrow { last4: Text 
 }
 
 #[test]
-#[ignore = "the derived inverse merge has no discriminator, so the revert is refused"]
 fn reverting_a_split_into_one_product_merges_the_rows_back() {
     let split = r"module shop
 split constructor Payment.Card into Visa { digits: Text }
@@ -1297,7 +1334,6 @@ split constructor Payment.Card into Visa { digits: Text }
 }
 
 #[test]
-#[ignore = "the revert asks a fill for every listed constructor but the first and loses their values"]
 fn reverting_a_move_down_to_two_constructors_keeps_their_values_and_fills_the_others() {
     let wire = "module shop\nadd constructor Payment.Wire { iban: Text }\nenable payments.Wire\nadd field Payment.note: Text fill \"n\"\n";
     let down = "module shop\nmove field Payment.note to Payment.(Card | Invoice)\n";
@@ -1318,10 +1354,17 @@ fn reverting_a_move_down_to_two_constructors_keeps_their_values_and_fills_the_ot
     });
     run(&mut sim, |rt| {
         let db = opened(&rt, &[SHOP, wire, down, revert]);
-        assert_eq!(
-            vec![r#""n""#, r#""n""#, r#""w""#],
-            query(&db, "from p in payments select p.note")
-        );
+        for (ctor, note) in [
+            ("Card", r#""n""#),
+            ("Invoice", r#""n""#),
+            ("Wire", r#""w""#),
+        ] {
+            assert_eq!(
+                vec![note],
+                query(&db, &format!("from p in payments.{ctor} select p.note")),
+                "{ctor}"
+            );
+        }
     });
 }
 

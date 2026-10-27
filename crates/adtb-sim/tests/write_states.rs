@@ -409,6 +409,56 @@ fn a_value_constructor_a_stored_value_holds_is_neither_disabled_nor_removed() {
     assert!(detail.contains("Okta"), "{detail}");
 }
 
+/// Opens a database at `SHOP` and `before`, writes `stored`, then returns the refusal of
+/// reopening it with `later` appended.
+fn refused_after(seed: u64, before: &[&str], stored: &str, later: &[&str]) -> (u64, String) {
+    let mut sim = Sim::new(seed, Config::default());
+    let mut log = vec![SHOP];
+    log.extend_from_slice(before);
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &log);
+        write(&db, stored);
+    });
+    log.extend_from_slice(later);
+    run(&mut sim, |rt| refusal(open(&rt, &log)))
+}
+
+#[test]
+fn a_revert_of_an_enable_on_a_constructor_that_holds_rows_is_refused() {
+    let enable = "module shop\nenable payments.Wire\n";
+    let revert = "module shop\nrevert 0003\n";
+    let (version, detail) = refused_after(104, &[ADD_WIRE, enable], INSERT_WIRE, &[revert]);
+    assert_eq!(4, version);
+    assert!(
+        detail.contains("constructor relation payments.Wire holds rows"),
+        "{detail}"
+    );
+}
+
+#[test]
+fn a_revert_that_disables_or_removes_a_stored_value_constructor_is_refused() {
+    let enable = "module shop\nenable Provider.Okta\n";
+    let store = r#"insert accounts { provider: Okta, note: "o" }"#;
+    let (version, detail) = refused_after(
+        105,
+        &[ADD_OKTA, enable],
+        store,
+        &["module shop\nrevert 0003\n"],
+    );
+    assert_eq!(4, version);
+    assert!(
+        detail.contains("holds a value of Provider.Okta; it cannot be disabled"),
+        "{detail}"
+    );
+    let both = "module shop\nadd constructor Provider.Okta\nenable Provider.Okta\n";
+    let (version, detail) = refused_after(106, &[both], store, &["module shop\nrevert 0002\n"]);
+    assert_eq!(3, version);
+    assert!(
+        detail.contains("holds a value of Provider.Okta"),
+        "{detail}"
+    );
+}
+
 #[test]
 fn removing_an_unused_deprecated_value_constructor_applies() {
     let enable = "module shop\nenable Provider.Okta\n";

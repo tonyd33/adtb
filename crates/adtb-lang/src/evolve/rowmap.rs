@@ -1,4 +1,5 @@
 use super::ctor::RowTypes;
+use super::revert::How;
 use super::*;
 use crate::norm::{self, NormalQuery};
 
@@ -86,7 +87,7 @@ impl Source {
         self.apply_recording(module, op, text, None, Some(&steps))?;
         let mut steps = steps.into_inner();
         if !matches!(op.kind, OperatorKind::Revert { .. }) {
-            let maps = before.row_maps(module, op, text, self)?;
+            let maps = before.row_maps(module, op, text, self, How::Written)?;
             steps.push(Step {
                 after: self.clone(),
                 maps,
@@ -102,13 +103,14 @@ impl Source {
         Ok(steps)
     }
 
-    /// Returns how `op`, applied to this source to give `after`, moves rows.
+    /// Returns how `op`, applied as `how` says to this source to give `after`, moves rows.
     pub(super) fn row_maps(
         &self,
         module: &str,
         op: &Operator,
         text: &str,
         after: &Source,
+        how: How,
     ) -> Result<Vec<RowMap>, Vec<Diag>> {
         let mut src = self.clone();
         Cx {
@@ -120,14 +122,17 @@ impl Source {
             copying: false,
             steps: None,
         }
-        .row_maps(&op.kind, after)
+        .row_maps(&op.kind, after, how)
     }
 }
 
 impl Cx<'_> {
-    fn row_maps(&self, op: &OperatorKind, after: &Source) -> R<Vec<RowMap>> {
+    fn row_maps(&self, op: &OperatorKind, after: &Source, how: How) -> R<Vec<RowMap>> {
         match op {
             OperatorKind::AddField { path, fill, .. } => self.fill_map(path, fill, after),
+            OperatorKind::MoveField { path, fill, .. } if let How::UpFrom(from) = how => {
+                self.up_maps(path, from, fill.as_ref())
+            }
             OperatorKind::MoveField {
                 path, sel, fill, ..
             } => self.move_maps(path, sel.as_ref(), fill.as_ref()),
@@ -277,54 +282,69 @@ impl Cx<'_> {
         fill: Option<&Fill>,
     ) -> R<Vec<RowMap>> {
         let (_, t) = self.type_decl(&path.ty)?;
-        let part = self.part(&t, path)?;
-        let (schema, program) = self.checked()?;
-        let def = self.type_id(&schema, &path.ty)?;
-        let td = schema.ty(def);
-        let field = path.field.text.clone();
-        match (&part, sel) {
-            (Part::Ctor(c), None) => {
-                let k = td.ctor_index(c).expect("the constructor");
-                let Some(field_ty) = td.field(k, &field).map(|f| f.ty.clone()) else {
-                    return self.err(format!("`{c}` has no field `{field}`"));
-                };
-                let others: Vec<u32> = (0..td.ctors().len() as u32).filter(|&o| o != k).collect();
-                let mut maps = vec![RowMap::Copy {
-                    def,
-                    ctors: vec![k],
-                    field: field.clone(),
-                }];
-                if let (Some(fill), false) = (fill, others.is_empty()) {
-                    let module = schema
-                        .module_named(&self.module_of(&path.ty))
-                        .unwrap_or(schema::PRELUDE);
-                    let row = Self::row_ty(&schema, def, Some(others.clone()));
-                    let rt = RowTypes {
-                        schema,
-                        program,
-                        module,
-                        row,
-                        result: field_ty,
-                    };
-                    maps.push(RowMap::Fill {
-                        def,
-                        ctors: others,
-                        field,
-                        fill: self.row_fn(rt, fill_body(fill, self.span))?,
-                    });
-                }
-                Ok(maps)
-            }
+        match (&self.part(&t, path)?, sel) {
+            (Part::Ctor(c), None) => self.up_maps(path, std::slice::from_ref(c), fill),
             (Part::Header, Some(sel)) => {
+                let schema = self.schema()?;
+                let def = self.type_id(&schema, &path.ty)?;
                 let sources = self.sources(&schema, def, sel)?;
                 Ok(vec![RowMap::Copy {
                     def,
                     ctors: ctor_indexes(&schema, def, &sources),
-                    field,
+                    field: path.field.text.clone(),
                 }])
             }
             _ => Ok(Vec::new()),
         }
+    }
+
+    /// The maps of a move of field `path.field` of every constructor of `from` to the header.
+    pub(super) fn up_maps(
+        &self,
+        path: &ast::FieldPath,
+        from: &[String],
+        fill: Option<&Fill>,
+    ) -> R<Vec<RowMap>> {
+        let (schema, program) = self.checked()?;
+        let def = self.type_id(&schema, &path.ty)?;
+        let td = schema.ty(def);
+        let field = path.field.text.clone();
+        let ks = ctor_indexes(&schema, def, from);
+        let Some(field_ty) = ks
+            .first()
+            .and_then(|&k| td.field(k, &field))
+            .map(|f| f.ty.clone())
+        else {
+            return self.err(format!("`{}` has no field `{field}`", from.join(" | ")));
+        };
+        let others: Vec<u32> = (0..td.ctors().len() as u32)
+            .filter(|o| !ks.contains(o))
+            .collect();
+        let mut maps = vec![RowMap::Copy {
+            def,
+            ctors: ks,
+            field: field.clone(),
+        }];
+        if let (Some(fill), false) = (fill, others.is_empty()) {
+            let module = schema
+                .module_named(&self.module_of(&path.ty))
+                .unwrap_or(schema::PRELUDE);
+            let row = Self::row_ty(&schema, def, Some(others.clone()));
+            let rt = RowTypes {
+                schema,
+                program,
+                module,
+                row,
+                result: field_ty,
+            };
+            maps.push(RowMap::Fill {
+                def,
+                ctors: others,
+                field,
+                fill: self.row_fn(rt, fill_body(fill, self.span))?,
+            });
+        }
+        Ok(maps)
     }
 
     /// The field of constructor `m` of `ty` in `after` whose type is a declared nullary sum of
