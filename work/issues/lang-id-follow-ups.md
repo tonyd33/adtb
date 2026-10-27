@@ -18,3 +18,7 @@ Left by the catalog quality track, which could not touch adtb-lang:
 - `present_step` in `norm.rs` still has its `too_many_arguments` expectation.
 
 `fold` now type-checks the stored log, so a log that builds but does not check fails `Catalog::open` with `Error::Unaccepted`.
+
+## 2026-10-27: grants
+
+`Granted` and `GrantTarget` in `crates/adtb-lang/src/evolve/grant.rs` name objects by bare catalog ids; give them the newtype ids.
