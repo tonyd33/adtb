@@ -186,17 +186,31 @@ impl<R: Runtime> Store<R> {
 
     /// Returns the visible rows of heap `id` as batches of at most `rows` rows each.
     pub fn scan(&self, id: HeapId, rows: usize) -> Result<Vec<Batch>, Error> {
-        let h = self.heap(id);
-        let heap = &h.heap;
+        let pages = self.pages(id)?;
+        self.scan_pages(id, &pages, rows)
+    }
+
+    /// Returns the pages of heap `id` in directory order, recording that every version of the
+    /// heap is read.
+    pub fn pages(&self, id: HeapId) -> Result<Vec<Pid>, Error> {
+        let heap = &self.heap(id).heap;
         self.reads
             .scanned(heap.id())
             .map_err(Error::Serialization)?;
+        Ok(heap.pages(&self.pager)?)
+    }
+
+    /// Returns the visible rows on `pages`, a range of what [`Store::pages`] returned for heap
+    /// `id`, as batches of at most `rows` rows each.
+    pub fn scan_pages(&self, id: HeapId, pages: &[Pid], rows: usize) -> Result<Vec<Batch>, Error> {
+        let h = self.heap(id);
+        let heap = &h.heap;
         let schema = BatchSchema::of_heap(&h.row);
         let mut out = Vec::new();
         let mut b = BatchBuilder::new(schema.clone());
         let mut failed = None;
         let mut writers = BTreeSet::new();
-        heap.scan(&self.pager, |v| {
+        heap.scan_pages(&self.pager, pages, |v| {
             if failed.is_some() {
                 return;
             }

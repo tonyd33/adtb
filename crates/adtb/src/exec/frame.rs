@@ -123,6 +123,51 @@ impl Frame {
         Frame { len, cols }
     }
 
+    /// Returns the variables bound to one value at every row, with their values.
+    pub fn fixed(&self) -> Vec<(u32, Val)> {
+        self.cols
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| match c {
+                Col::One(v) => Some((i as u32, v.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Returns the variables bound row by row, with their values at row `row`.
+    pub fn varying(&self, row: u32) -> Vec<(u32, Val)> {
+        self.cols
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| match c {
+                Col::Many(vs) => Some((i as u32, vs[row as usize].clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Returns a frame of `vars` variables binding `fixed` at every row and, at each row of
+    /// `rows`, its values.
+    ///
+    /// Every row of `rows` binds the same variables.
+    pub fn rebuild(vars: usize, fixed: &[(u32, Val)], rows: Vec<Vec<(u32, Val)>>) -> Frame {
+        let mut cols = vec![Col::Unset; vars];
+        for (v, x) in fixed {
+            cols[*v as usize] = Col::One(x.clone());
+        }
+        let len = rows.len();
+        for row in rows {
+            for (v, x) in row {
+                match &mut cols[v as usize] {
+                    Col::Many(vs) => vs.push(x),
+                    c => *c = Col::Many(vec![x]),
+                }
+            }
+        }
+        Frame { len, cols }
+    }
+
     /// Returns an estimate of the bytes the frame's own columns hold.
     pub fn size(&self) -> usize {
         self.cols

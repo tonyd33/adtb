@@ -428,9 +428,20 @@ impl Heap {
     pub fn scan<R: Runtime>(
         &self,
         pager: &Pager<R>,
+        f: impl FnMut(Version),
+    ) -> Result<(), PageError> {
+        self.scan_pages(pager, &self.pages(pager)?, f)
+    }
+
+    /// Call `f` on every version on `pages`, a range of what [`Heap::pages`] returned, in their
+    /// order and then slot order, as [`Heap::scan`] does. A page no longer of the heap is skipped.
+    pub fn scan_pages<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pages: &[Pid],
         mut f: impl FnMut(Version),
     ) -> Result<(), PageError> {
-        for pid in self.space.pages(pager)? {
+        for &pid in pages {
             let mut found = Vec::new();
             {
                 let page = pager.read(pid)?;

@@ -36,3 +36,7 @@ Read-only deferrable transactions, call and transaction options, `TxnId`, abort 
 ## 2026-10-26: Display for errors
 
 `api::Error` and its reasons now display as messages for a person, one per line, naming the operator of a `SchemaRefused` when it has one. The one-line value of the prelude sum, which `Display` printed before, is `Error::value()`. Done in `shell-usability`.
+
+## 2026-10-26: temp_dir
+
+`docs/spec/embedding.md` §8.1 lists `temp_dir` as an open setting, but `api::OpenOptions` has none; spill files go to a fixed `spill/` directory under the database directory.

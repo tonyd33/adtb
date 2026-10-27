@@ -72,7 +72,7 @@ pub struct Build {
 #[derive(Debug)]
 pub struct Pipeline {
     pub source: Source,
-    pub chain: Chain,
+    pub chain: Arc<Chain>,
 }
 
 #[derive(Debug)]
@@ -103,14 +103,14 @@ pub enum Step {
 pub enum End {
     Nothing,
     Emit(Expr),
-    Fork(Vec<Chain>),
-    If(Expr, Box<Chain>, Box<Chain>),
-    Case(Expr, Vec<Option<(u32, Chain)>>),
+    Fork(Vec<Arc<Chain>>),
+    If(Expr, Arc<Chain>, Arc<Chain>),
+    Case(Expr, Vec<Option<(u32, Arc<Chain>)>>),
     Index {
         index: IndexId,
         key: Vec<Expr>,
         var: u32,
-        routes: Vec<(Fetch, Chain)>,
+        routes: Vec<(Fetch, Arc<Chain>)>,
     },
     /// An `Index` end whose entries' next field also lies within the bounds, each its value and
     /// whether it is included.
@@ -120,7 +120,7 @@ pub enum End {
         lo: Option<(Expr, bool)>,
         hi: Option<(Expr, bool)>,
         var: u32,
-        routes: Vec<(Fetch, Chain)>,
+        routes: Vec<(Fetch, Arc<Chain>)>,
     },
 }
 
@@ -231,6 +231,8 @@ pub struct HeapInfo {
 #[derive(Debug)]
 pub struct Program {
     pub root: Eval,
+    /// The type of the root's value.
+    pub ty: Ty,
     pub params: Vec<u32>,
     pub vars: usize,
     pub heaps: BTreeMap<HeapId, HeapInfo>,
@@ -295,6 +297,7 @@ pub fn compile(
     }
     Ok(Program {
         root,
+        ty: plan.ty.clone(),
         params: plan.params.iter().map(|v| v.0).collect(),
         vars: plan.terms.vars.len(),
         heaps: infos,
@@ -461,7 +464,7 @@ impl Lower<'_> {
         })
     }
 
-    fn chain(&mut self, c: &plan::Chain) -> Result<Chain, Error> {
+    fn chain(&mut self, c: &plan::Chain) -> Result<Arc<Chain>, Error> {
         let steps = c
             .steps
             .iter()
@@ -478,10 +481,10 @@ impl Lower<'_> {
                 })
             })
             .collect::<Result<_, Error>>()?;
-        Ok(Chain {
+        Ok(Arc::new(Chain {
             steps,
             end: self.end(&c.end)?,
-        })
+        }))
     }
 
     fn end(&mut self, e: &plan::End) -> Result<End, Error> {
@@ -491,11 +494,7 @@ impl Lower<'_> {
             plan::End::Fork(cs) => {
                 End::Fork(cs.iter().map(|c| self.chain(c)).collect::<Result<_, _>>()?)
             }
-            plan::End::If(c, a, b) => End::If(
-                self.expr(*c)?,
-                Box::new(self.chain(a)?),
-                Box::new(self.chain(b)?),
-            ),
+            plan::End::If(c, a, b) => End::If(self.expr(*c)?, self.chain(a)?, self.chain(b)?),
             plan::End::Case(s, arms) => {
                 End::Case(self.expr(*s)?, self.arms(*s, arms, Lower::chain)?)
             }
@@ -532,7 +531,7 @@ impl Lower<'_> {
         &mut self,
         index: IndexId,
         routes: &[plan::Route],
-    ) -> Result<Vec<(Fetch, Chain)>, Error> {
+    ) -> Result<Vec<(Fetch, Arc<Chain>)>, Error> {
         routes
             .iter()
             .map(|r| Ok((self.fetch(index, r.ctor, r.heap)?, self.chain(&r.chain)?)))

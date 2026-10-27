@@ -113,6 +113,7 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         terms: p.t,
         params: params.to_vec(),
         root,
+        ty: terms.ty(input.root).clone(),
         reads,
     })
 }

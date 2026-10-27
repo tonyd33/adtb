@@ -95,7 +95,7 @@ Postconditions: those of `plan` with every rewrite on, and:
 
 | Type | Fields | Meaning |
 | --- | --- | --- |
-| `Plan` | `terms`, `params`, `root: Eval`, `reads: Reads` | The value of `root` with `params` bound |
+| `Plan` | `terms`, `params`, `root: Eval`, `ty`, `reads: Reads` | The value of `root` with `params` bound, of type `ty`: the type of the term the planner was given |
 | `Reads` | `heaps`, `indexes` | Every heap and index the plan names (§4) |
 | `Eval` | below | The computation of one value in an environment |
 | `Query` | `builds`, `spine`, `sink`, `total` | Pipelines that push values into one sink |
@@ -491,10 +491,13 @@ simulator schedules them. They take tasks from one shared queue, and a
 call's own thread runs queued tasks while it waits for its query; no
 worker keeps a queue of its own to steal from yet. The pipelines of a
 query evaluated once per statement become tasks: the scan of a heap is
-one task that submits a task per morsel after the first, and pipelines
-with no source or over heaps of at most `pack_pages` pages run in turn
-in one task. Each task emits into its own set, merged into the query's
-when the task ends. A query evaluated per row of a pipeline runs on that
+one task per range of `range_pages` of its pages, which runs a morsel at
+a time over the rows of its range, and pipelines with no source or over
+heaps of at most `pack_pages` pages run in turn in one task. Rows a
+step or an end expands, by `Unnest`, `Probe`, `Index` or `Range`, go
+on in frames of at most `morsel_rows` rows. Each task emits into its
+own set, merged into the query's when the task ends. A query evaluated
+per row of a pipeline runs on that
 row's thread. The first task that probes a build makes it, while the
 others wait for it.
 
@@ -629,9 +632,10 @@ flattened. `plan_bounded` flattens nothing.
 With rewrite `early_stop` on, a query's `total` is the totality of its
 source and of its sink's per-element terms by
 [kernel.md §7.1](kernel.md#71-totality). The executor stops an
-`Exists` or `IsEmpty` query with `total` set once a task emits a value:
-tasks not yet started do not run and running scans stop at their next
-morsel. A `Top` query with `total` set and a count of zero or less
+`Exists` or `IsEmpty` query with `total` set once any task inserts a
+value into its set: tasks not yet started do not run, running scans
+stop at their next morsel, and rows waiting for a partitioned build are
+not resumed. A `Top` query with `total` set and a count of zero or less
 forms its value without selecting pipelines.
 
 The planner gives a `fix` semi-naive steps (rewrite `semi_naive`) when
@@ -686,8 +690,35 @@ to the budget when the call's last holder drops it. A call takes arenas
 from its grant for what it holds: the rows of each morsel while the
 morsel runs, the values its sinks collect, build tables, group records
 and the sets of each fixpoint round. Each arena returns to the grant
-when dropped. Nothing spills yet, and plans carry no grant estimate: an
-arena request past the grant rejects the statement with
-`StatementLimit`, which `try` does not catch.
+when dropped. Plans carry no grant estimate yet.
+
+Operators spill to one spill file per call, in the directory `spill`
+beside the database, made on the first spill and removed when the call
+ends; `Options::spill_bytes` bounds it. Spill buffers are outside the
+grant, at most a chunk per writer or reader. Spilling goes straight to
+the file: no temporary pages of the pool are used yet, and spill files
+are not encrypted yet.
+
+- The values a query's pipelines emit are a distinct set that holds at
+  most an eighth of the grant in memory and writes the rest as sorted
+  runs. Sinks read the set back in order, a morsel at a time, merging
+  at most 64 runs at once.
+- A build holds at most a quarter of the grant in memory. Past that its
+  elements are partitioned by key hash into 16 partitions of the spill
+  file, or one when it has no key. A row that probes a partitioned
+  build waits in its partition, with its key and the variables its
+  frame binds row by row. When the query's pipelines have run, each
+  partition is loaded in chunks of at most half the grant's room, and
+  its waiting rows resume after the probe against each chunk in turn.
+- A `Group` sink passes key and element pairs through a spilling
+  distinct set and forms one group at a time; one group's elements must
+  fit the grant.
+- `Top` and `Present` keep only the elements they return.
+- An `Agg` or `Fold` sink folds its values a morsel at a time.
+
+A value a query returns, a group, a morsel and a fixpoint's sets do not
+spill: an arena request for one past the grant, or a spill past
+`spill_bytes`, rejects the statement with `StatementLimit`, which `try`
+does not catch.
 
 Rulings: buffer/memory/split, project/arch/alloc/budgeted

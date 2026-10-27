@@ -28,6 +28,8 @@ pub struct Plan {
     pub terms: Terms,
     pub params: Vec<Var>,
     pub root: Eval,
+    /// The type of `root`'s value.
+    pub ty: Ty,
     pub reads: Reads,
 }
 

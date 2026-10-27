@@ -18,6 +18,7 @@ mod tests;
 pub use alloc::Reservation;
 pub use block::{LogFinding, LogProblem};
 pub use crc::{Crc32c, crc32c};
+pub(crate) use driver::Driver;
 pub use page::{
     FIRST_EDITABLE, HEADER_LEN, MAX_PAGE_SIZE, MIN_PAGE_SIZE, PageKind, flags, format, header_edit,
     kind, lsn, owner,
@@ -28,6 +29,7 @@ pub use pager::{
 };
 pub use quarantine::Quarantine;
 pub use record::Edit;
+pub(crate) use record::{Malformed, Reader};
 pub use recovery::Recovery;
 pub use verify::{Finding, Verification};
 

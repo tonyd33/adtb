@@ -15,6 +15,7 @@ use super::frame::Frame;
 use super::ir::AggOp;
 use super::prim::{Arith, Op, Width, apply};
 use super::sink::aggregate;
+use super::spill::{put, record};
 use super::types::At;
 use super::value::{F32, F64, Val};
 use super::wide::{Wide, cmp_decimal};
@@ -221,6 +222,77 @@ fn grants_take_from_the_budget_and_return_to_it() {
     assert_eq!(400, b.peak());
     drop(b);
     assert_eq!(0, budget.granted());
+}
+
+#[test]
+fn an_arena_returns_what_it_releases_and_takes_over_what_it_absorbs() {
+    let budget = Budget::new(1000);
+    let g = budget.admit(500).expect("fits");
+    let mut a = g.take(300).expect("within the grant");
+    a.release(100);
+    assert_eq!(200, g.used());
+    a.release(1000);
+    assert_eq!(0, a.bytes());
+    assert_eq!(0, g.used());
+    let b = g.take(150).expect("within the grant");
+    a.absorb(b);
+    assert_eq!(150, a.bytes());
+    assert_eq!(150, g.used());
+    drop(a);
+    assert_eq!(0, g.used());
+}
+
+#[test]
+fn a_spilled_value_reads_back_equal() {
+    let vals = vec![
+        Val::Int(-5),
+        Val::F32(F32::new(f32::NAN)),
+        Val::F64(F64::new(-2.5)),
+        Val::Decimal(-123_456_789_012_345_678_901_234_567),
+        Val::text("naïve"),
+        Val::Bytes(Arc::from(&[0u8, 255, 7][..])),
+        Val::SortKey(Arc::from(&[9u8][..])),
+        Val::Instant(i64::MIN),
+        Val::Date(-3),
+        Val::Time(86_399_999_999),
+        Val::DateTime(42),
+        Val::Zoned {
+            local: 7,
+            zone: Arc::from("Europe/Paris"),
+        },
+        Val::Duration(-1),
+        Val::Period {
+            months: -2,
+            days: 30,
+        },
+        Val::tag(3),
+        Val::ctor(1, vec![Val::Int(1), Val::empty_set()]),
+        Val::record(vec![Val::bool(true), Val::none()]),
+        Val::set([Val::Int(2), Val::Int(1)].into_iter().collect()),
+        Val::List(Arc::from(vec![Val::Int(2), Val::Int(1)])),
+    ];
+    let mut bytes = Vec::new();
+    for v in &vals {
+        put(v, &mut bytes);
+    }
+    assert_eq!(Ok(vals), record(&bytes));
+    assert!(record(&bytes[..bytes.len() - 1]).is_err());
+}
+
+#[test]
+fn a_frame_rebuilt_from_its_rows_binds_what_it_bound() {
+    let mut f = Frame::unit(4).widen(2);
+    f.bind_one(0, Val::Int(7));
+    f.bind_all(2, vec![Val::Int(10), Val::Int(11)]);
+    let fixed = f.fixed();
+    let rows: Vec<Vec<(u32, Val)>> = (0..2).map(|r| f.varying(r)).collect();
+    assert_eq!(vec![(0, Val::Int(7))], fixed);
+    assert_eq!(vec![(2, Val::Int(11))], rows[1]);
+    let g = Frame::rebuild(4, &fixed, rows);
+    assert_eq!(2, g.len());
+    assert_eq!(&Val::Int(7), g.get(0, 1));
+    assert_eq!(&Val::Int(10), g.get(2, 0));
+    assert_eq!(&Val::Int(11), g.get(2, 1));
 }
 
 #[test]

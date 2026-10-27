@@ -56,12 +56,20 @@ const PREFIX: usize = 5;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Malformed;
 
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     bytes: &'a [u8],
 }
 
 impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8], Malformed> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Reader<'a> {
+        Reader { bytes }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    pub(crate) fn take(&mut self, n: usize) -> Result<&'a [u8], Malformed> {
         if self.bytes.len() < n {
             return Err(Malformed);
         }
@@ -69,10 +77,10 @@ impl<'a> Reader<'a> {
         self.bytes = rest;
         Ok(head)
     }
-    fn u32(&mut self) -> Result<u32, Malformed> {
+    pub(crate) fn u32(&mut self) -> Result<u32, Malformed> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
     }
-    fn u64(&mut self) -> Result<u64, Malformed> {
+    pub(crate) fn u64(&mut self) -> Result<u64, Malformed> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
 }

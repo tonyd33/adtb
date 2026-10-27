@@ -63,6 +63,10 @@ Postconditions:
 
 - A scan of the heap reads its pages in position order and each page's
   versions in slot order.
+- A scan of a range of the pages the heap lists reads those pages as a
+  scan of the heap does and skips any no longer of the heap; scans of
+  the ranges of one listing, together, read what a scan of the heap
+  reads at that listing.
 - Each pager update a heap operation makes
   ([storage.md §2.3](storage.md#23-page-access)) latches at most five
   pages, transient reads included: at most two heap pages, at most one

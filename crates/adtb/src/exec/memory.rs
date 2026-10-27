@@ -46,6 +46,7 @@ impl Budget {
             limit: bytes,
             used: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
+            spilled: AtomicUsize::new(0),
         }))
     }
 }
@@ -59,6 +60,7 @@ pub struct Grant {
     limit: usize,
     used: AtomicUsize,
     peak: AtomicUsize,
+    spilled: AtomicUsize,
 }
 
 impl Grant {
@@ -73,6 +75,15 @@ impl Grant {
     /// Returns the most the query held at once.
     pub fn peak(&self) -> usize {
         self.peak.load(Ordering::Acquire)
+    }
+
+    /// Returns the bytes the query wrote to its spill file.
+    pub fn spilled(&self) -> usize {
+        self.spilled.load(Ordering::Acquire)
+    }
+
+    pub(super) fn note_spill(&self, bytes: usize) {
+        self.spilled.fetch_add(bytes, Ordering::AcqRel);
     }
 
     /// Take `bytes` of the grant until the returned arena is dropped. Fails with the statement
@@ -120,6 +131,10 @@ pub struct Arena {
 }
 
 impl Arena {
+    pub(super) fn grant(&self) -> &Arc<Grant> {
+        &self.grant
+    }
+
     pub fn bytes(&self) -> usize {
         self.bytes
     }
@@ -129,6 +144,22 @@ impl Arena {
         self.grant.reserve(bytes)?;
         self.bytes += bytes;
         Ok(())
+    }
+
+    /// Return up to `bytes` of this arena to the grant.
+    pub fn release(&mut self, bytes: usize) {
+        let n = bytes.min(self.bytes);
+        self.bytes -= n;
+        self.grant.used.fetch_sub(n, Ordering::AcqRel);
+    }
+
+    /// Take over what `other` holds.
+    pub fn absorb(&mut self, mut other: Arena) {
+        assert!(
+            Arc::ptr_eq(&self.grant, &other.grant),
+            "an arena absorbs only arenas of its own grant"
+        );
+        self.bytes += std::mem::take(&mut other.bytes);
     }
 }
 

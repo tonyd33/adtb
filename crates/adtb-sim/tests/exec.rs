@@ -388,12 +388,36 @@ fn morsels_of_heaps_of_many_pages_agree_for_every_seed() {
     }
     let opts = XOptions {
         morsel_rows: 16,
+        range_pages: 2,
         ..XOptions::default()
     };
     let ran: usize = sweep(0..4)
         .map(|seed| check(seed, &f, &cases, 4, opts))
         .sum();
     assert!(ran > 0, "no worker ran a task");
+}
+
+#[test]
+fn scans_of_ranges_of_a_heap_s_pages_read_what_a_scan_of_the_heap_reads() {
+    let f = stock();
+    let heap = f.catalog.heap(f.rel("stock"), 0);
+    let (whole, ranges, pages) = with_store(0, &f, 0, |_, store, _| {
+        let rows = |bs: Vec<batch::Batch>| -> Vec<Vec<KValue>> {
+            bs.iter()
+                .flat_map(|b| (0..b.len()).map(|i| b.row(i)))
+                .collect()
+        };
+        let pages = store.pages(heap).expect("the heap's pages");
+        let whole = rows(store.scan(heap, 1000).expect("a scan"));
+        let ranges: Vec<Vec<KValue>> = pages
+            .chunks(1)
+            .flat_map(|r| rows(store.scan_pages(heap, r, 7).expect("a range scan")))
+            .collect();
+        (whole, ranges, pages.len())
+    });
+    assert!(pages > 1, "the heap spans {pages} pages");
+    assert_eq!(300, whole.len());
+    assert_eq!(whole, ranges);
 }
 
 #[test]
@@ -743,4 +767,292 @@ fn every_primitive_agrees_with_the_reference() {
         check(0, &f, &cases, 0, XOptions::default());
     }
     assert!(refused.is_empty(), "refused: {refused:#?}");
+}
+
+#[test]
+fn every_program_records_the_type_of_its_root() {
+    let f = running();
+    for c in running_cases(&f) {
+        assert_eq!(c.ty, c.program.ty, "{}", c.name);
+    }
+}
+
+/// Queries over `stock` whose inputs exceed `SPILL_GRANT` while their results fit it.
+const SPILL_QUERIES: &[&str] = &[
+    "from s in stock, n in notes where n.item == key s select { s: s.id, n: n.id }",
+    "count(x for x in (from s in stock, n in notes where n.item == key s select { s: s, n: n }))",
+    "count(s for s in stock)",
+    "max(s.name for s in stock)",
+    "sum(s.v for s in stock)",
+    "from s in stock select s order by (s.v desc, key s) take 5",
+    "from s in stock select s order by (s.v, key s) take 40",
+];
+
+/// A group whose aggregates fuse into its sink. Without the fusion each group record holds its
+/// rows, and the records together exceed `SPILL_GRANT`.
+const GROUP_SPILLS: &str = "from s in stock group s by s.g into g
+     select { g: g.key, n: count(x for x in g), t: sum(x.v for x in g) }";
+
+const SPILL_GRANT: usize = 32 << 10;
+
+/// Runs every case under the simulator with a grant of `grant` bytes, and returns each case's
+/// outcome with the bytes it spilled.
+fn run_spilling(
+    seed: u64,
+    f: &Fixture,
+    cases: &[Case],
+    workers: usize,
+    opts: XOptions,
+    grant: usize,
+) -> Vec<(Result<Value, String>, usize)> {
+    with_store(seed, f, workers, |rt, store, pool| {
+        let budget = Budget::new(1 << 30);
+        let mut got = Vec::new();
+        for c in cases {
+            let g = budget.admit(grant).expect("a grant fits");
+            let v = exec::execute(
+                rt.clone(),
+                c.program.clone(),
+                call(store, g.clone(), pool, opts),
+                &c.params,
+            );
+            got.push((outcome(&f.schema, &c.ty, v), g.spilled()));
+        }
+        assert_eq!(0, budget.granted(), "every grant returned to the budget");
+        got
+    })
+}
+
+#[test]
+fn queries_past_their_grant_spill_and_agree_with_the_reference() {
+    let f = stock();
+    let mut cases = Vec::new();
+    for q in SPILL_QUERIES {
+        cases.extend(cases_of(&f, q, &[]));
+    }
+    cases.extend(
+        cases_of(&f, GROUP_SPILLS, &[])
+            .into_iter()
+            .filter(|c| !c.name.ends_with("with none") && !c.name.ends_with("with group_agg off")),
+    );
+    let opts = XOptions {
+        morsel_rows: 16,
+        ..XOptions::default()
+    };
+    let runs = std::iter::once((0, 0)).chain(sweep(0..1).map(|seed| (seed, 3)));
+    for (seed, workers) in runs {
+        {
+            let got = run_spilling(seed, &f, &cases, workers, opts, SPILL_GRANT);
+            let mut bad = Vec::new();
+            for (c, (g, spilled)) in cases.iter().zip(got) {
+                let want = expected(&c.want);
+                if want != g || spilled == 0 {
+                    bad.push(format!(
+                        "{}: spilled {spilled}\n  want {want:?}\n  got  {g:?}",
+                        c.name
+                    ));
+                }
+            }
+            assert!(
+                bad.is_empty(),
+                "seed {seed}, {workers} workers: {} of {} cases differ or did not spill:\n{}",
+                bad.len(),
+                cases.len(),
+                bad.join("\n")
+            );
+        }
+    }
+}
+
+/// Queries over `stock` that stop early or probe a range of its key index.
+const STOP_RANGE_QUERIES: &[&str] = &[
+    "exists s in stock where s.v > 50",
+    "exists s in stock where s.v > 500",
+    "exists s in stock where s.id > stock.key(10) and s.v > 50",
+    "from s in stock where s.id > stock.key(40) and s.id <= stock.key(260) select { id: s.id, name: s.name }",
+    "count(s for s in stock where s.id >= stock.key(100))",
+    "top 0 by (s.v, key s) (from s in stock select s)",
+];
+
+#[test]
+fn early_stops_and_range_probes_under_a_small_grant_agree_with_the_reference() {
+    let f = stock();
+    let mut cases = Vec::new();
+    for q in STOP_RANGE_QUERIES {
+        cases.extend(cases_of(&f, q, &[]));
+    }
+    let opts = XOptions {
+        morsel_rows: 8,
+        range_pages: 2,
+        pack_pages: 0,
+        ..XOptions::default()
+    };
+    for seed in sweep(0..2) {
+        let got = run_spilling(seed, &f, &cases, 3, opts, SPILL_GRANT);
+        for (c, (g, _)) in cases.iter().zip(got) {
+            assert_eq!(expected(&c.want), g, "seed {seed}: {}", c.name);
+        }
+    }
+}
+
+#[test]
+fn a_build_past_its_grant_with_no_spill_space_is_rejected_for_its_statement_limit() {
+    let f = stock();
+    let cases = cases_of(
+        &f,
+        "from s in stock, n in notes where n.item == key s select { s: s.id, n: n.id }",
+        &[],
+    );
+    let opts = XOptions {
+        morsel_rows: 16,
+        spill_bytes: 0,
+        ..XOptions::default()
+    };
+    let got = run_spilling(0, &f, &cases, 0, opts, SPILL_GRANT);
+    for (c, (g, spilled)) in cases.iter().zip(got) {
+        assert_eq!(Err("limit".to_string()), g, "{}", c.name);
+        assert_eq!(0, spilled, "{}", c.name);
+    }
+}
+
+#[test]
+fn a_call_removes_its_spill_file_when_it_ends() {
+    let f = stock();
+    let cases = cases_of(&f, "count(s for s in stock)", &[]);
+    let opts = XOptions {
+        morsel_rows: 16,
+        ..XOptions::default()
+    };
+    let left = with_store(0, &f, 2, |rt, store, pool| {
+        let budget = Budget::new(1 << 30);
+        let g = budget.admit(SPILL_GRANT).expect("a grant fits");
+        let v = exec::execute(
+            rt.clone(),
+            cases[0].program.clone(),
+            call(store, g.clone(), pool, opts),
+            &[],
+        );
+        assert_eq!(Ok(Val::Int(300)), v);
+        assert!(g.spilled() > 0, "the call spilled");
+        listed(rt, "spill")
+    });
+    assert_eq!(Vec::<String>::new(), left);
+}
+
+/// Returns the files in `dir` of the simulated file system.
+fn listed(rt: &SimRuntime, dir: &str) -> Vec<String> {
+    use adtb::runtime::{Done, Io, Op, Runtime, Threads};
+    let mut io = rt.io();
+    let t = io.submit(Op::List { dir: dir.into() });
+    loop {
+        match io.poll() {
+            Some(c) if c.ticket == t => {
+                return match c.result {
+                    Ok(Done::Listed(paths)) => paths,
+                    other => panic!("listing {dir} completed as {other:?}"),
+                };
+            }
+            Some(_) => {}
+            None => rt.park(),
+        }
+    }
+}
+
+#[test]
+fn a_set_spilled_in_more_runs_than_one_merge_reads_agrees_with_the_reference() {
+    let f = stock();
+    let mut cases = Vec::new();
+    for q in ["count(s for s in stock)", "max(s.name for s in stock)"] {
+        cases.extend(cases_of(&f, q, &[]));
+    }
+    let opts = XOptions {
+        morsel_rows: 2,
+        ..XOptions::default()
+    };
+    let got = run_spilling(0, &f, &cases, 0, opts, 4 << 10);
+    for (c, (g, spilled)) in cases.iter().zip(got) {
+        assert_eq!(expected(&c.want), g, "{}", c.name);
+        assert!(spilled > 64 * 4096, "{}: spilled {spilled}", c.name);
+    }
+}
+
+/// Returns a fixture of `n` items over `n / 2` notes, its heaps spanning many pages.
+fn stock_of(n: usize) -> Fixture {
+    let mut f = Fixture::new(STOCK);
+    let items: Vec<String> = (1..=n)
+        .map(|i| {
+            format!(
+                r#"Item {{ id: stock.key({i}), g: {}, v: {}, name: "item{i}" }}"#,
+                i % 7,
+                (i * 37) % 101
+            )
+        })
+        .collect();
+    for chunk in items.chunks(200) {
+        f.rows("stock", &format!("[{}]", chunk.join(", ")), &[]);
+    }
+    let notes: Vec<String> = (1..=n / 2)
+        .map(|i| {
+            format!(
+                r#"Note {{ id: notes.key({i}), item: stock.key({}), label: "n{i}" }}"#,
+                (i * 3) % n + 1
+            )
+        })
+        .collect();
+    for chunk in notes.chunks(200) {
+        f.rows("notes", &format!("[{}]", chunk.join(", ")), &[]);
+    }
+    f
+}
+
+#[test]
+#[ignore = "a benchmark: run with --ignored --no-capture"]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a benchmark times the host, not the simulated clock"
+)]
+fn bench_scans_joins_and_groups() {
+    let f = stock_of(4000);
+    let mut programs = Vec::new();
+    for q in [
+        "from s in stock where s.v > 50 select s.id",
+        "from s in stock group s by s.g into g select { g: g.key, n: count(x for x in g), t: sum(x.v for x in g) }",
+        "count(x for x in (from s in stock, n in notes where n.item == key s select { s: s.id, n: n.id }))",
+        "sum(s.v * 2 - s.g for s in stock)",
+    ] {
+        let c = cases_of(&f, q, &[]).into_iter().next().expect("a case");
+        programs.push((q, c.program));
+    }
+    let configs: [(&str, usize, usize); 4] = [
+        ("serial", 0, 8),
+        ("4 workers, 1 page per task", 4, 1),
+        ("4 workers, 8 pages per task", 4, 8),
+        ("4 workers, one task per heap", 4, usize::MAX),
+    ];
+    for (name, workers, range_pages) in configs {
+        let opts = XOptions {
+            range_pages,
+            ..XOptions::default()
+        };
+        let times = with_store(0, &f, workers, |rt, store, pool| {
+            let budget = Budget::new(1 << 30);
+            programs
+                .iter()
+                .map(|(q, p)| {
+                    let mut best = std::time::Duration::MAX;
+                    for _ in 0..3 {
+                        let g = budget.admit(64 << 20).expect("a grant fits");
+                        let start = std::time::Instant::now();
+                        exec::execute(rt.clone(), p.clone(), call(store, g, pool, opts), &[])
+                            .expect("a value");
+                        best = best.min(start.elapsed());
+                    }
+                    (*q, best)
+                })
+                .collect::<Vec<_>>()
+        });
+        for (q, t) in times {
+            println!("{name:32} {t:>9.2?}  {q}");
+        }
+    }
 }

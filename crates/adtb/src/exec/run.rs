@@ -8,16 +8,17 @@ use crate::batch::Batch;
 use crate::key::{Tid, Value};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
+use crate::storage::Pid;
 
 use super::code::Catch;
 use super::frame::{Frame, Sel};
 use super::ir::{
-    Build, Chain, End, Eval, Expr, Fetch, Fix, Fold, GroupAgg, Lookup, Pipeline, Program, Query,
-    Sink, Source, Spine, Step,
+    Chain, End, Eval, Expr, Fetch, Fix, Lookup, Pipeline, Program, Query, Sink, Source, Spine, Step,
 };
-use super::memory::{Arena, Grant};
+use super::join::{Deferred, Probed, Table};
+use super::memory::Grant;
 use super::sched::Scheduler;
-use super::sink::{aggregate, cmp_keys, sorted};
+use super::spill::{Distinct, Spill};
 use super::store::{Store, from_stored, to_key};
 use super::value::Val;
 use super::{Error, Exceeded, Fault, Options};
@@ -31,49 +32,17 @@ pub struct Ctx<R: Runtime> {
     pub options: Options,
     pub pool: Option<Arc<Scheduler<R>>>,
     pub cancel: Arc<AtomicBool>,
-}
-
-/// A build's hash table: the elements of each key.
-struct Table {
-    rows: HashMap<Vec<Val>, Vec<Val>>,
-    _arena: Arena,
-}
-
-/// The values a task emits, held until it merges them into its query's.
-struct Out {
-    set: BTreeSet<Val>,
-    arena: Arena,
-    /// Set on the first value inserted.
-    stop: Option<Arc<AtomicBool>>,
-}
-
-impl Out {
-    fn new(grant: &Arc<Grant>) -> Result<Out, Error> {
-        Ok(Out {
-            set: BTreeSet::new(),
-            arena: grant.take(0)?,
-            stop: None,
-        })
-    }
-
-    fn insert(&mut self, v: Val) -> Result<(), Error> {
-        let n = v.size();
-        if self.set.insert(v) {
-            self.arena.grow(n)?;
-        }
-        if let Some(s) = &self.stop {
-            s.store(true, Ordering::Release);
-        }
-        Ok(())
-    }
+    pub spill: Spill<R>,
 }
 
 /// One evaluation of a query.
-struct Run {
-    query: Arc<Query>,
-    env: Frame,
-    builds: Vec<Lock<Option<Arc<Table>>>>,
-    emitted: Lock<Vec<Out>>,
+pub(super) struct Run {
+    pub(super) query: Arc<Query>,
+    pub(super) env: Frame,
+    pub(super) builds: Vec<Lock<Option<Arc<Table>>>>,
+    /// The values the finished tasks emitted, held until the query's sink reads them.
+    emitted: Lock<Option<Distinct>>,
+    pub(super) deferred: Lock<Deferred>,
     error: Lock<Option<Error>>,
     failed: AtomicBool,
     pending: AtomicUsize,
@@ -89,7 +58,8 @@ impl Run {
             query,
             env,
             builds,
-            emitted: Lock::new(Vec::new()),
+            emitted: Lock::new(None),
+            deferred: Lock::new(Deferred::new()),
             error: Lock::new(None),
             failed: AtomicBool::new(false),
             pending: AtomicUsize::new(0),
@@ -98,16 +68,24 @@ impl Run {
     }
 
     /// Returns an empty set for values the query's pipelines emit.
-    fn out(&self, grant: &Arc<Grant>) -> Result<Out, Error> {
-        let mut out = Out::new(grant)?;
-        out.stop.clone_from(&self.stopped);
-        Ok(out)
+    fn out(&self, grant: &Arc<Grant>) -> Result<Distinct, Error> {
+        Distinct::stopping(grant, self.stopped.clone())
     }
 
-    fn stopped(&self) -> bool {
+    pub(super) fn stopped(&self) -> bool {
         self.stopped
             .as_ref()
             .is_some_and(|s| s.load(Ordering::Acquire))
+    }
+
+    /// Merge what a task emitted into the query's values.
+    fn emit<R: Runtime>(&self, rt: &R, sp: &Spill<R>, out: Distinct) -> Result<(), Error> {
+        let mut slot = self.emitted.lock(rt);
+        match &mut *slot {
+            None => *slot = Some(out),
+            Some(d) => d.absorb(out, sp)?,
+        }
+        Ok(())
     }
 
     fn fail<R: Runtime>(&self, rt: &R, e: Error) {
@@ -124,7 +102,7 @@ fn faulted(e: Error, row: u32, catch: &mut Catch) -> Result<(), Error> {
 }
 
 impl<R: Runtime> Ctx<R> {
-    fn sh(&self) -> &super::code::Shared {
+    pub(super) fn sh(&self) -> &super::code::Shared {
         &self.program.shared
     }
 
@@ -166,14 +144,19 @@ impl<R: Runtime> Ctx<R> {
             .collect()
     }
 
-    fn check_cancel(&self) -> Result<(), Error> {
+    pub(super) fn check_cancel(&self) -> Result<(), Error> {
         if self.cancel.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
         }
         Ok(())
     }
 
-    fn eval_env(self: &Arc<Self>, e: &Eval, env: &Frame, par: bool) -> Result<Val, Error> {
+    pub(super) fn eval_env(
+        self: &Arc<Self>,
+        e: &Eval,
+        env: &Frame,
+        par: bool,
+    ) -> Result<Val, Error> {
         let mut f = env.clone();
         let mut sel = vec![0];
         let mut v = self.eval_rows(e, &mut f, &mut sel, &mut Catch::off(), par)?;
@@ -181,7 +164,7 @@ impl<R: Runtime> Ctx<R> {
     }
 
     /// Evaluate `codes` in turn at the rows of `sel`. Returns each remaining row's values.
-    fn eval_keys(
+    pub(super) fn eval_keys(
         &self,
         codes: &[Expr],
         f: &mut Frame,
@@ -200,7 +183,7 @@ impl<R: Runtime> Ctx<R> {
 
     /// Evaluate `e` at the rows of `sel`, removing rows that fault when `catch` is on. `par`
     /// lets a query it evaluates run on the scheduler.
-    fn eval_rows(
+    pub(super) fn eval_rows(
         self: &Arc<Self>,
         e: &Eval,
         f: &mut Frame,
@@ -467,7 +450,7 @@ impl<R: Runtime> Ctx<R> {
             && let Some(c) = &count
             && c.int()? <= 0
         {
-            return self.sink(&q.sink, BTreeSet::new(), &env, count);
+            return self.sink(&q.sink, Distinct::new(&self.grant)?, &env, count);
         }
         let mut chosen = Vec::new();
         self.spine(&q.spine, env.clone(), par, &mut chosen)?;
@@ -479,244 +462,18 @@ impl<R: Runtime> Ctx<R> {
                 for (p, e) in &chosen {
                     self.pipeline(&run, p, e, &mut out)?;
                 }
-                run.emitted.lock(&self.rt).push(out);
+                run.emit(&self.rt, &self.spill, out)?;
             }
         }
-        let outs = std::mem::take(&mut *run.emitted.lock(&self.rt));
-        let mut arenas = Vec::with_capacity(outs.len());
-        let mut set = BTreeSet::new();
-        for o in outs {
-            if set.is_empty() {
-                set = o.set;
-            } else {
-                set.extend(o.set);
-            }
-            arenas.push(o.arena);
+        let mut set = run.out(&self.grant)?;
+        self.drain(&run, &mut set)?;
+        for b in &run.builds {
+            b.lock(&self.rt).take();
         }
-        let v = self.sink(&q.sink, set, &env, count);
-        drop(arenas);
-        v
-    }
-
-    fn sink(
-        self: &Arc<Self>,
-        sink: &Sink,
-        set: BTreeSet<Val>,
-        env: &Frame,
-        count: Option<Val>,
-    ) -> Result<Val, Error> {
-        let elems = |set: &BTreeSet<Val>, var: u32| {
-            let mut f = env.widen(set.len());
-            f.bind_all(var, set.iter().cloned().collect());
-            f
-        };
-        Ok(match sink {
-            Sink::Set => Val::set(set),
-            Sink::Exists => Val::bool(!set.is_empty()),
-            Sink::IsEmpty => Val::bool(set.is_empty()),
-            Sink::Agg { op, var, body } => {
-                let mut f = elems(&set, *var);
-                let mut sel_f = f.all();
-                let ms = self.eval_rows(body, &mut f, &mut sel_f, &mut Catch::off(), false)?;
-                aggregate(*op, ms.into_iter().map(|(_, v)| v).collect())?
-            }
-            Sink::Fold { var, body, fold } => {
-                let mut f = elems(&set, *var);
-                let mut sel_f = f.all();
-                let ms = self.eval_rows(body, &mut f, &mut sel_f, &mut Catch::off(), false)?;
-                self.fold(fold, ms.into_iter().map(|(_, v)| v), env)?
-            }
-            Sink::Group {
-                var,
-                by,
-                aggs,
-                order,
-                ..
-            } => {
-                let all: Vec<Val> = set.iter().cloned().collect();
-                let mut f = elems(&set, *var);
-                let mut sel_f = f.all();
-                let keys = self.eval_rows(by, &mut f, &mut sel_f, &mut Catch::off(), false)?;
-                let mut groups: BTreeMap<Val, BTreeSet<Val>> = BTreeMap::new();
-                for (r, k) in keys {
-                    groups.entry(k).or_default().insert(all[r as usize].clone());
-                }
-                let mut held = self.grant.take(0)?;
-                let mut out = BTreeSet::new();
-                for (k, members) in groups {
-                    let computed = aggs
-                        .iter()
-                        .map(|a| self.group_agg(a, &members, env))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let mut members = Some(members);
-                    let mut key = Some(k);
-                    let fields = order
-                        .iter()
-                        .map(|o| match o {
-                            None => key.take().expect("one key field"),
-                            Some(None) => Val::set(members.take().expect("one rows field")),
-                            Some(Some(i)) => computed[*i].clone(),
-                        })
-                        .collect();
-                    let rec = Val::record(fields);
-                    held.grow(rec.size())?;
-                    out.insert(rec);
-                }
-                Val::set(out)
-            }
-            Sink::Top { keys, var, .. } => {
-                let keyed = self.keyed(&set, keys, *var, env)?;
-                let n = count.expect("a top's count").int()?;
-                if n < 0 {
-                    return Err(Error::Fault(Fault::NegativeCount));
-                }
-                let desc: Vec<bool> = keys.iter().map(|(_, d)| *d).collect();
-                Val::set(
-                    sorted(keyed, &desc)
-                        .into_iter()
-                        .take(n as usize)
-                        .map(|(_, v)| v)
-                        .collect(),
-                )
-            }
-            Sink::Present {
-                var,
-                keys,
-                take,
-                after,
-            } => {
-                let keyed = self.keyed(&set, keys, *var, env)?;
-                let take = take
-                    .as_ref()
-                    .map(|t| self.eval_env(t, env, false))
-                    .transpose()?;
-                let after = after
-                    .as_ref()
-                    .map(|t| self.eval_env(t, env, false))
-                    .transpose()?;
-                let desc: Vec<bool> = keys.iter().map(|(_, d)| *d).collect();
-                let cursor: Option<Vec<Val>> = match after {
-                    Some(Val::Ctor(1, fs)) if keys.len() == 1 => Some(vec![fs[0].clone()]),
-                    Some(Val::Ctor(1, fs)) => Some(fs[0].fields()?.to_vec()),
-                    _ => None,
-                };
-                let n = match take.as_ref().map(Val::int).transpose()? {
-                    Some(t) if t < 0 => return Err(Error::Fault(Fault::NegativeCount)),
-                    Some(t) => t as usize,
-                    None => usize::MAX,
-                };
-                let listed: Vec<Val> = sorted(keyed, &desc)
-                    .into_iter()
-                    .filter(|(k, _)| {
-                        cursor
-                            .as_ref()
-                            .is_none_or(|c| cmp_keys(c, k, &desc) == std::cmp::Ordering::Less)
-                    })
-                    .take(n)
-                    .map(|(_, v)| v)
-                    .collect();
-                Val::List(Arc::from(listed))
-            }
-        })
-    }
-
-    /// Returns each element of `set` with the values of `keys` at it.
-    fn keyed(
-        self: &Arc<Self>,
-        set: &BTreeSet<Val>,
-        keys: &[(Eval, bool)],
-        var: u32,
-        env: &Frame,
-    ) -> Result<Vec<(Vec<Val>, Val)>, Error> {
-        let all: Vec<Val> = set.iter().cloned().collect();
-        let mut f = env.widen(all.len());
-        f.bind_all(var, all.clone());
-        let mut ks: Vec<Vec<Val>> = vec![Vec::with_capacity(keys.len()); all.len()];
-        for (k, _) in keys {
-            let mut sel_f = f.all();
-            for (r, v) in self.eval_rows(k, &mut f, &mut sel_f, &mut Catch::off(), false)? {
-                ks[r as usize].push(v);
-            }
+        if let Some(o) = run.emitted.lock(&self.rt).take() {
+            set.absorb(o, &self.spill)?;
         }
-        Ok(ks.into_iter().zip(all).collect())
-    }
-
-    /// Returns `fold` over `ms`, folded in turn from its initial state.
-    fn fold(
-        &self,
-        fold: &Fold,
-        ms: impl ExactSizeIterator<Item = Val>,
-        env: &Frame,
-    ) -> Result<Val, Error> {
-        if fold.optional && ms.len() == 0 {
-            return Ok(Val::none());
-        }
-        let mut f = env.clone();
-        let mut state = fold.init.eval_one(&mut f, self.sh())?;
-        for m in ms {
-            f.bind_one(fold.state, state);
-            f.bind_one(fold.value, m);
-            state = fold.step.eval_one(&mut f, self.sh())?;
-        }
-        f.bind_one(fold.state, state);
-        let v = fold.finish.eval_one(&mut f, self.sh())?;
-        Ok(if fold.optional { Val::some(v) } else { v })
-    }
-
-    fn group_agg(
-        self: &Arc<Self>,
-        a: &GroupAgg,
-        members: &BTreeSet<Val>,
-        env: &Frame,
-    ) -> Result<Val, Error> {
-        let mut f = env.widen(members.len());
-        f.bind_all(a.row, members.iter().cloned().collect());
-        let mut sel = f.all();
-        for c in &a.filter {
-            let vs = self.eval_rows(c, &mut f, &mut sel, &mut Catch::off(), false)?;
-            sel = holding(vs)?;
-        }
-        let elems: BTreeSet<Val> = self
-            .eval_rows(&a.element, &mut f, &mut sel, &mut Catch::off(), false)?
-            .into_iter()
-            .map(|(_, v)| v)
-            .collect();
-        let mut g = env.widen(elems.len());
-        g.bind_all(a.elem, elems.into_iter().collect());
-        let mut sel_g = g.all();
-        let ms = self.eval_rows(&a.body, &mut g, &mut sel_g, &mut Catch::off(), false)?;
-        aggregate(a.op, ms.into_iter().map(|(_, v)| v).collect())
-    }
-
-    /// Returns the table of build `i` of `run`'s query, made on first use.
-    fn table(self: &Arc<Self>, run: &Run, i: usize) -> Result<Arc<Table>, Error> {
-        let mut slot = run.builds[i].lock(&self.rt);
-        if let Some(t) = &*slot {
-            return Ok(t.clone());
-        }
-        let build: &Build = &run.query.builds[i];
-        let mut out = Out::new(&self.grant)?;
-        for p in &build.pipelines {
-            self.pipeline(run, p, &run.env, &mut out)?;
-        }
-        let elems: Vec<Val> = out.set.into_iter().collect();
-        let mut f = run.env.widen(elems.len());
-        f.bind_all(build.var, elems.clone());
-        let mut sel_f = f.all();
-        let keys = self.eval_keys(&build.key, &mut f, &mut sel_f, &mut Catch::off())?;
-        let mut rows: HashMap<Vec<Val>, Vec<Val>> = HashMap::new();
-        let mut arena = out.arena;
-        for (r, e) in elems.into_iter().enumerate() {
-            let k = keys[&(r as u32)].clone();
-            arena.grow(k.iter().map(Val::size).sum())?;
-            rows.entry(k).or_default().push(e);
-        }
-        let t = Arc::new(Table {
-            rows,
-            _arena: arena,
-        });
-        *slot = Some(t.clone());
-        Ok(t)
+        self.sink(&q.sink, set, &env, count)
     }
 
     fn parallel(
@@ -727,16 +484,20 @@ impl<R: Runtime> Ctx<R> {
     ) -> Result<(), Error> {
         let mut small = Vec::new();
         for (p, env) in chosen {
-            let pages = match &p.source {
-                Source::Unit => 0,
-                Source::Scan { heap, .. } => {
-                    self.store.heaps[heap].heap.pages(&self.store.pager)?.len()
-                }
-            };
-            if pages <= self.options.pack_pages {
+            let Source::Scan { heap, .. } = &p.source else {
                 small.push((p, env));
-            } else {
-                self.spawn(pool, run, move |cx, run| cx.scan_task(run, &p, &env));
+                continue;
+            };
+            let pages = self.store.pages(*heap)?;
+            if pages.len() <= self.options.pack_pages {
+                small.push((p, env));
+                continue;
+            }
+            for range in pages.chunks(self.options.range_pages.max(1)) {
+                let (p, env, range) = (p.clone(), env.clone(), range.to_vec());
+                self.spawn(pool, run, move |cx, run| {
+                    cx.range_task(run, &p, &env, &range)
+                });
             }
         }
         if !small.is_empty() {
@@ -745,7 +506,7 @@ impl<R: Runtime> Ctx<R> {
                 for (p, env) in &small {
                     cx.pipeline(run, p, env, &mut out)?;
                 }
-                run.emitted.lock(&cx.rt).push(out);
+                run.emit(&cx.rt, &cx.spill, out)?;
                 Ok(())
             });
         }
@@ -780,45 +541,33 @@ impl<R: Runtime> Ctx<R> {
         }));
     }
 
-    /// Scan the heap of `p` and submit a task per morsel but the last, which runs in this one.
-    fn scan_task(
+    /// Run `p` over the rows on `pages`, a range of its heap's pages.
+    fn range_task(
         self: &Arc<Self>,
         run: &Arc<Run>,
         p: &Arc<Pipeline>,
         env: &Frame,
+        pages: &[Pid],
     ) -> Result<(), Error> {
         let Source::Scan { heap, .. } = &p.source else {
-            unreachable!("a scan task scans")
+            unreachable!("a range task scans")
         };
-        let mut batches = self.store.scan(*heap, self.options.morsel_rows)?;
-        let last = batches.pop();
-        let pool = self
-            .pool
-            .clone()
-            .expect("a scan task runs on the scheduler");
-        for b in batches {
-            let (p, env) = (p.clone(), env.clone());
-            self.spawn(&pool, run, move |cx, run| {
-                let mut out = run.out(&cx.grant)?;
-                cx.morsel(run, &p, &env, &b, &mut out)?;
-                run.emitted.lock(&cx.rt).push(out);
-                Ok(())
-            });
-        }
-        if let Some(b) = last {
-            let mut out = run.out(&self.grant)?;
+        let mut out = run.out(&self.grant)?;
+        for b in self
+            .store
+            .scan_pages(*heap, pages, self.options.morsel_rows)?
+        {
             self.morsel(run, p, env, &b, &mut out)?;
-            run.emitted.lock(&self.rt).push(out);
         }
-        Ok(())
+        run.emit(&self.rt, &self.spill, out)
     }
 
-    fn pipeline(
+    pub(super) fn pipeline(
         self: &Arc<Self>,
         run: &Run,
         p: &Pipeline,
         env: &Frame,
-        out: &mut Out,
+        out: &mut Distinct,
     ) -> Result<(), Error> {
         if run.stopped() {
             return Ok(());
@@ -826,7 +575,7 @@ impl<R: Runtime> Ctx<R> {
         match &p.source {
             Source::Unit => {
                 self.check_cancel()?;
-                self.chain(run, &p.chain, env.clone(), vec![0], out)
+                self.chain(run, &p.chain, 0, env.clone(), vec![0], out)
             }
             Source::Scan { heap, .. } => {
                 for b in self.store.scan(*heap, self.options.morsel_rows)? {
@@ -843,7 +592,7 @@ impl<R: Runtime> Ctx<R> {
         p: &Pipeline,
         env: &Frame,
         b: &Batch,
-        out: &mut Out,
+        out: &mut Distinct,
     ) -> Result<(), Error> {
         self.check_cancel()?;
         if run.stopped() {
@@ -857,19 +606,21 @@ impl<R: Runtime> Ctx<R> {
         let mut f = env.widen(rows.len());
         f.bind_all(*var, rows);
         let sel = f.all();
-        self.chain(run, &p.chain, f, sel, out)
+        self.chain(run, &p.chain, 0, f, sel, out)
     }
 
-    fn chain(
+    /// Pass the rows of `sel` through the steps of `c` from step `from` on, then its end.
+    pub(super) fn chain(
         self: &Arc<Self>,
         run: &Run,
-        c: &Chain,
+        c: &Arc<Chain>,
+        from: usize,
         mut f: Frame,
         mut sel: Sel,
-        out: &mut Out,
+        out: &mut Distinct,
     ) -> Result<(), Error> {
         let off = &mut Catch::off();
-        for step in &c.steps {
+        for (i, step) in c.steps.iter().enumerate().skip(from) {
             if sel.is_empty() {
                 return Ok(());
             }
@@ -882,38 +633,30 @@ impl<R: Runtime> Ctx<R> {
                     f.bind(*x, vs);
                 }
                 Step::Unnest(x, s) => {
-                    let mut from = Vec::new();
-                    let mut elems = Vec::new();
-                    for (r, v) in s.eval(&mut f, &mut sel, off, self.sh())? {
+                    let sets = s.eval(&mut f, &mut sel, off, self.sh())?;
+                    let mut rows = Expand::new(&f, *x, self.options.morsel_rows);
+                    for (r, v) in sets {
                         for e in v.as_set()? {
-                            from.push(r);
-                            elems.push(e.clone());
+                            if let Some((g, s)) = rows.push(r, e.clone()) {
+                                self.chain(run, c, i + 1, g, s, out)?;
+                            }
                         }
                     }
-                    f = f.gather(&from);
-                    f.bind_all(*x, elems);
-                    sel = f.all();
+                    if let Some((g, s)) = rows.rest() {
+                        self.chain(run, c, i + 1, g, s, out)?;
+                    }
+                    return Ok(());
                 }
                 Step::Probe { build, key, var } => {
                     let table = self.table(run, *build)?;
                     let keys = self.eval_keys(key, &mut f, &mut sel, off)?;
-                    let mut from = Vec::new();
-                    let mut elems = Vec::new();
-                    for &r in &sel {
-                        let k = &keys[&r];
-                        let hits: Box<dyn Iterator<Item = &Val>> = if k.is_empty() {
-                            Box::new(table.rows.values().flatten())
-                        } else {
-                            Box::new(table.rows.get(k).into_iter().flatten())
-                        };
-                        for e in hits {
-                            from.push(r);
-                            elems.push(e.clone());
-                        }
-                    }
-                    f = f.gather(&from);
-                    f.bind_all(*var, elems);
-                    sel = f.all();
+                    let input = Probed {
+                        f: &f,
+                        sel: &sel,
+                        keys: &keys,
+                        var: *var,
+                    };
+                    return self.probe(run, c, i, &table, &input, out);
                 }
             }
         }
@@ -926,7 +669,7 @@ impl<R: Runtime> Ctx<R> {
         end: &End,
         mut f: Frame,
         mut sel: Sel,
-        out: &mut Out,
+        out: &mut Distinct,
     ) -> Result<(), Error> {
         if sel.is_empty() {
             return Ok(());
@@ -936,13 +679,13 @@ impl<R: Runtime> Ctx<R> {
             End::Nothing => Ok(()),
             End::Emit(t) => {
                 for (_, v) in t.eval(&mut f, &mut sel, off, self.sh())? {
-                    out.insert(v)?;
+                    out.insert(v, &self.spill)?;
                 }
                 Ok(())
             }
             End::Fork(cs) => {
                 for c in cs {
-                    self.chain(run, c, f.clone(), sel.clone(), out)?;
+                    self.chain(run, c, 0, f.clone(), sel.clone(), out)?;
                 }
                 Ok(())
             }
@@ -951,8 +694,8 @@ impl<R: Runtime> Ctx<R> {
                 for (r, v) in c.eval(&mut f, &mut sel, off, self.sh())? {
                     if v.truth()? { t.push(r) } else { e.push(r) }
                 }
-                self.chain(run, a, f.clone(), t, out)?;
-                self.chain(run, b, f, e, out)
+                self.chain(run, a, 0, f.clone(), t, out)?;
+                self.chain(run, b, 0, f, e, out)
             }
             End::Case(s, arms) => {
                 let mut by: BTreeMap<u32, Vec<(u32, Val)>> = BTreeMap::new();
@@ -964,7 +707,7 @@ impl<R: Runtime> Ctx<R> {
                     let s: Sel = rows.iter().map(|(r, _)| *r).collect();
                     let mut g = f.clone();
                     g.bind(*var, rows);
-                    self.chain(run, arm, g, s, out)?;
+                    self.chain(run, arm, 0, g, s, out)?;
                 }
                 Ok(())
             }
@@ -977,13 +720,13 @@ impl<R: Runtime> Ctx<R> {
                 let keys = self.eval_keys(key, &mut f, &mut sel, off)?;
                 let ctors: BTreeSet<u32> = routes.iter().map(|(r, _)| r.ctor).collect();
                 let found = |_: u32, prefix: &[Value]| self.store.probe(*index, prefix, &ctors);
-                let at = Probed {
+                let at = IndexEnd {
                     index: *index,
                     keys: &keys,
                     var: *var,
                     routes,
                 };
-                self.routed(run, &at, f, &sel, found, out)
+                self.routed(run, &at, &f, &sel, found, out)
             }
             End::Range {
                 index,
@@ -1013,30 +756,34 @@ impl<R: Runtime> Ctx<R> {
                     let (l, h) = (los.get(&r).cloned(), his.get(&r).cloned());
                     self.store.range(*index, prefix, l, h, &ctors)
                 };
-                let at = Probed {
+                let at = IndexEnd {
                     index: *index,
                     keys: &keys,
                     var: *var,
                     routes,
                 };
-                self.routed(run, &at, f, &sel, found, out)
+                self.routed(run, &at, &f, &sel, found, out)
             }
         }
     }
 
     /// Fetch the rows of the entries `found` returns for each row of `sel` and its key prefix,
-    /// and pass each to the chain of its constructor's route.
+    /// and pass each to the chain of its constructor's route, a morsel at a time.
     fn routed(
         self: &Arc<Self>,
         run: &Run,
-        at: &Probed,
-        f: Frame,
+        at: &IndexEnd,
+        f: &Frame,
         sel: &Sel,
         mut found: impl FnMut(u32, &[Value]) -> Result<Vec<(u32, Tid)>, Error>,
-        out: &mut Out,
+        out: &mut Distinct,
     ) -> Result<(), Error> {
         let types = self.store.key_types(at.index);
-        let mut hits: Vec<(Vec<u32>, Vec<Val>)> = vec![(Vec::new(), Vec::new()); at.routes.len()];
+        let mut hits: Vec<Expand<'_>> = at
+            .routes
+            .iter()
+            .map(|_| Expand::new(f, at.var, self.options.morsel_rows))
+            .collect();
         for &r in sel {
             let k = &at.keys[&r];
             let prefix: Vec<Value> = types
@@ -1054,31 +801,28 @@ impl<R: Runtime> Ctx<R> {
                 let Some((t, v)) = self.fetch(&at.routes[i].0, tid, k)? else {
                     continue;
                 };
-                if seen.insert(t) {
-                    hits[i].0.push(r);
-                    hits[i].1.push(v);
+                if seen.insert(t)
+                    && let Some((g, s)) = hits[i].push(r, v)
+                {
+                    self.chain(run, &at.routes[i].1, 0, g, s, out)?;
                 }
             }
         }
-        for ((from, rows), (_, chain)) in hits.into_iter().zip(at.routes) {
-            if from.is_empty() {
-                continue;
+        for (rows, (_, chain)) in hits.into_iter().zip(at.routes) {
+            if let Some((g, s)) = rows.rest() {
+                self.chain(run, chain, 0, g, s, out)?;
             }
-            let mut g = f.gather(&from);
-            g.bind_all(at.var, rows);
-            let s = g.all();
-            self.chain(run, chain, g, s, out)?;
         }
         Ok(())
     }
 }
 
 /// An index end's probe: its index, each row's key values, its variable and its routes.
-struct Probed<'a> {
+struct IndexEnd<'a> {
     index: IndexId,
     keys: &'a HashMap<u32, Vec<Val>>,
     var: u32,
-    routes: &'a [(Fetch, Chain)],
+    routes: &'a [(Fetch, Arc<Chain>)],
 }
 
 /// Returns the `rows` of the group of `groups`, a set of `{ key, rows }` records, whose key is
@@ -1095,6 +839,48 @@ fn group_rows(groups: &Val, key: &Val) -> Result<Val, Error> {
     }
 }
 
+/// Rows expanded from the rows of a frame, each bound to a value of `var`, cut into frames of
+/// at most `per` rows.
+pub(super) struct Expand<'a> {
+    f: &'a Frame,
+    var: u32,
+    per: usize,
+    from: Vec<u32>,
+    elems: Vec<Val>,
+}
+
+impl<'a> Expand<'a> {
+    pub(super) fn new(f: &'a Frame, var: u32, per: usize) -> Expand<'a> {
+        Expand {
+            f,
+            var,
+            per: per.max(1),
+            from: Vec::new(),
+            elems: Vec::new(),
+        }
+    }
+
+    /// Add a copy of row `r` with `var` bound to `v`. Returns the frame of the rows added so far
+    /// once they fill one.
+    pub(super) fn push(&mut self, r: u32, v: Val) -> Option<(Frame, Sel)> {
+        self.from.push(r);
+        self.elems.push(v);
+        (self.from.len() >= self.per).then(|| self.take())
+    }
+
+    fn take(&mut self) -> (Frame, Sel) {
+        let mut g = self.f.gather(&std::mem::take(&mut self.from));
+        g.bind_all(self.var, std::mem::take(&mut self.elems));
+        let s = g.all();
+        (g, s)
+    }
+
+    /// Returns the frame of the rows added since the last one returned, if any.
+    pub(super) fn rest(mut self) -> Option<(Frame, Sel)> {
+        (!self.from.is_empty()).then(|| self.take())
+    }
+}
+
 /// Returns whether any of `sets` holds a row.
 fn any_rows(sets: &[Val]) -> Result<bool, Error> {
     for s in sets {
@@ -1106,7 +892,7 @@ fn any_rows(sets: &[Val]) -> Result<bool, Error> {
 }
 
 /// Returns the rows of `vs` whose value is `True`.
-fn holding(vs: Vec<(u32, Val)>) -> Result<Sel, Error> {
+pub(super) fn holding(vs: Vec<(u32, Val)>) -> Result<Sel, Error> {
     let mut sel = Vec::new();
     for (r, v) in vs {
         if v.truth()? {

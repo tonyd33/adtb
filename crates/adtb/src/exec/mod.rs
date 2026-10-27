@@ -1,11 +1,13 @@
 mod code;
 mod frame;
 mod ir;
+mod join;
 mod memory;
 mod prim;
 mod run;
 mod sched;
 mod sink;
+mod spill;
 mod store;
 pub(crate) mod types;
 mod value;
@@ -174,6 +176,10 @@ pub struct Options {
     /// The pages a heap may have for its pipelines to run in one task with other such
     /// pipelines; a pipeline with no source always may.
     pub pack_pages: usize,
+    /// The pages of a heap one task of a parallel scan reads.
+    pub range_pages: usize,
+    /// The bytes a statement may write to its spill file.
+    pub spill_bytes: usize,
 }
 
 impl Default for Options {
@@ -182,6 +188,8 @@ impl Default for Options {
             fix_rounds: 10_000,
             morsel_rows: 1024,
             pack_pages: 1,
+            range_pages: 8,
+            spill_bytes: usize::MAX,
         }
     }
 }
@@ -216,6 +224,7 @@ pub fn execute<R: Runtime>(
     params: &[(Var, Val)],
 ) -> Result<Val, Error> {
     let cx = Arc::new(run::Ctx {
+        spill: spill::Spill::new(rt.clone(), call.grant.clone(), call.options.spill_bytes),
         rt,
         program,
         store: call.store,
