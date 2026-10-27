@@ -247,9 +247,6 @@ pub fn check_schema(schema: &Schema) -> Vec<FileDiag> {
         );
     }
     for (i, r) in schema.relations.iter().enumerate() {
-        if r.elem_def.0 == u32::MAX {
-            continue;
-        }
         let vis = Visible::module(r.module);
         for ix in &r.indexes {
             let names = row_fields(schema, RelId(i as u32), ix.scope.as_deref());

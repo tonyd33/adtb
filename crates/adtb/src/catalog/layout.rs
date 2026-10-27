@@ -122,7 +122,13 @@ pub fn is_record(schema: &Schema, ty: &Ty) -> bool {
 }
 
 /// Returns the type of the values of `Key rel`.
+///
+/// A relation a later operator of the migration adds has no key yet and no row refers to it, so
+/// its values are the empty record.
 pub fn key_value_ty(schema: &Schema, rel: RelId) -> Ty {
+    if schema.ahead_relation(rel).is_some() {
+        return Ty::Record(Vec::new());
+    }
     match schema.relation(rel).key.as_slice() {
         [k] => key_field_ty(schema, rel, k),
         ks => {

@@ -2292,6 +2292,52 @@ add relation teams : Team key id generate sequence
 add unique (id) in teams",
         "teams",
     );
+    refuses(
+        &running(),
+        "module auth
+define fn nick (u: User) -> Text = u.nickname
+add field User.nickname: Text fill \"\"",
+        "nickname",
+    );
+    let counted = applies(
+        &running(),
+        "module auth\ndefine fn team_count () -> I64 = 0",
+    );
+    refuses(
+        &counted,
+        "module auth
+redefine fn team_count () -> I64 = count(t for t in teams)
+add type Team = { id: Key teams }
+add relation teams : Team key id generate sequence",
+        "teams",
+    );
+    refuses(
+        &running(),
+        "module auth
+add constraint no_teams = from t in teams select t
+add type Team = { id: Key teams }
+add relation teams : Team key id generate sequence",
+        "teams",
+    );
+    refuses(
+        &running(),
+        "module auth
+add field User.pair: Pair fill Pair { n: 0 }
+add type Pair = { n: I64 }",
+        "Pair",
+    );
+}
+
+#[test]
+fn a_key_type_in_a_signature_names_a_relation_a_later_operator_adds() {
+    let s = applies(
+        &running(),
+        "module auth
+define fn same (t: Key teams) -> Key teams = t
+add type Team = { id: Key teams }
+add relation teams : Team key id generate sequence",
+    );
+    assert!(s.check().is_ok());
 }
 
 #[test]
@@ -2359,4 +2405,40 @@ nest constructor Payment.(Card | Invoice) into Held { method: Method }",
     let s = applies(&s, "module auth\nunnest constructor Payment.Held");
     let r = flat(&decl(&s, "relation", "payments"));
     assert!(r.contains("unique (last4) in Card"), "{r}");
+}
+
+#[test]
+fn a_relation_a_later_operator_adds_is_no_relation_before_it() {
+    let text = "module auth
+add type Team = { id: Key teams }
+add relation teams : Team key id generate sequence";
+    let m = parse_migration(text, Options::default())
+        .ok()
+        .expect("the migration parses");
+    let mut s = running();
+    s.expecting("auth", &m.operators);
+    s.apply("auth", &m.operators[0], text)
+        .unwrap_or_else(|e| panic!("add type refused: {e:?}"));
+    let schema = s.schema().unwrap_or_else(|e| panic!("{e:?}"));
+    assert!(schema.relations.iter().all(|r| r.name != "teams"));
+    let team = schema
+        .types
+        .iter()
+        .find(|t| t.name == "Team")
+        .expect("Team is declared");
+    let id = team.field(0, "id").expect("Team has field id");
+    assert_eq!("Key teams", schema.show_ty(&id.ty));
+}
+
+#[test]
+fn an_index_over_a_key_names_a_relation_a_later_operator_adds() {
+    let s = applies(
+        &running(),
+        "module auth
+add type Team = { id: Key teams, name: Text, lead: Key members }
+add type Member = { id: Key members, team: Key teams }
+add relation teams : Team key id generate sequence index (lead)
+add relation members : Member key id generate sequence index (team)",
+    );
+    assert!(s.check().is_ok());
 }

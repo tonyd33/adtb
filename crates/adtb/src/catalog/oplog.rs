@@ -126,13 +126,24 @@ fn boolean(schema: &Schema, b: bool) -> Value {
 
 fn operator(schema: &Schema, ty: &Ty, op: &ResolvedOp) -> Value {
     let v = |ctor: &str, fields: &[(&str, Value)]| sum(schema, ty, ctor, fields);
+    let one = |ctor: &str, name: &str, object: u64| v(ctor, &[(name, id(object))]);
+    let two = |ctor: &str, name: &str, object: u64, field: &str, t: &str| {
+        v(ctor, &[(name, id(object)), (field, text(t))])
+    };
+    let targeted = |ctor: &str, t: &Target| v(ctor, &[("target", target(schema, ty, ctor, t))]);
     match &op.op {
         Resolved::AddModule { module } => v("AddModule", &[("module", text(module))]),
-        Resolved::AddType { sum, decl } => v("AddType", &[("sum", id(*sum)), ("decl", text(decl))]),
-        Resolved::AddRelation { relation, decl } => v(
-            "AddRelation",
-            &[("relation", id(*relation)), ("decl", text(decl))],
-        ),
+        Resolved::DropModule { module } => v("DropModule", &[("module", text(module))]),
+        Resolved::AddType { sum, decl } => two("AddType", "sum", *sum, "decl", decl),
+        Resolved::DropType { sum } => one("DropType", "sum", *sum),
+        Resolved::RenameType { sum, name } => two("RenameType", "sum", *sum, "name", name),
+        Resolved::AddRelation { relation: r, decl } => {
+            two("AddRelation", "relation", *r, "decl", decl)
+        }
+        Resolved::DropRelation { relation: r } => one("DropRelation", "relation", *r),
+        Resolved::RenameRelation { relation: r, name } => {
+            two("RenameRelation", "relation", *r, "name", name)
+        }
         Resolved::AddSet {
             set,
             relation,
@@ -145,6 +156,8 @@ fn operator(schema: &Schema, ty: &Ty, op: &ResolvedOp) -> Value {
                 ("name", text(name)),
             ],
         ),
+        Resolved::DropSet { set } => one("DropSet", "set", *set),
+        Resolved::RenameSet { set, name } => two("RenameSet", "set", *set, "name", name),
         Resolved::AddUnique {
             index,
             relation,
@@ -162,103 +175,9 @@ fn operator(schema: &Schema, ty: &Ty, op: &ResolvedOp) -> Value {
             relation,
             interval,
             fields,
-        } => v(
-            "AddIndex",
-            &[
-                ("index", id(*index)),
-                ("relation", id(*relation)),
-                ("interval", boolean(schema, *interval)),
-                ("fields", text(fields)),
-            ],
-        ),
-        Resolved::DefineFn { function, decl } => v(
-            "DefineFn",
-            &[("function", id(*function)), ("decl", text(decl))],
-        ),
-        Resolved::DefineAggregate { function, decl } => v(
-            "DefineAggregate",
-            &[("function", id(*function)), ("decl", text(decl))],
-        ),
-        Resolved::AddConstraint { constraint, body } => v(
-            "AddConstraint",
-            &[("constraint", id(*constraint)), ("body", text(body))],
-        ),
-        Resolved::AddCheck { constraint, body } => v(
-            "AddCheck",
-            &[("constraint", id(*constraint)), ("body", text(body))],
-        ),
-        other => changing(schema, ty, other),
-    }
-}
-
-/// Returns the value of an operator that drops, renames or reshapes objects.
-fn changing(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
-    let v = |ctor: &str, fields: &[(&str, Value)]| sum(schema, ty, ctor, fields);
-    let field = |ctor: &str, name: &str| field_of(schema, ty, ctor, name);
-    let target = |ctor: &str, t: &Target| {
-        let tt = field(ctor, "target");
-        let value = match t {
-            Target::InRelation { relation, ctor } => sum(
-                schema,
-                &tt,
-                "InRelation",
-                &[("relation", id(*relation)), ("ctor", id(*ctor))],
-            ),
-            Target::OfType { ctor } => sum(schema, &tt, "OfType", &[("ctor", id(*ctor))]),
-        };
-        v(ctor, &[("target", value)])
-    };
-    match op {
-        Resolved::DropModule { module } => v("DropModule", &[("module", text(module))]),
-        Resolved::DropType { sum } => v("DropType", &[("sum", id(*sum))]),
-        Resolved::DropRelation { relation } => v("DropRelation", &[("relation", id(*relation))]),
-        Resolved::DropSet { set } => v("DropSet", &[("set", id(*set))]),
-        Resolved::AddConstructor {
-            ctor,
-            sum: of,
-            decl,
-            place,
-        } => {
-            let pt = field("AddConstructor", "place");
-            let place = match place {
-                Place::Last => sum(schema, &pt, "Last", &[]),
-                Place::Before { ctor } => sum(schema, &pt, "Before", &[("ctor", id(*ctor))]),
-                Place::After { ctor } => sum(schema, &pt, "After", &[("ctor", id(*ctor))]),
-            };
-            v(
-                "AddConstructor",
-                &[
-                    ("ctor", id(*ctor)),
-                    ("sum", id(*of)),
-                    ("decl", text(decl)),
-                    ("place", place),
-                ],
-            )
-        }
-        Resolved::RemoveConstructor { ctor } => v("RemoveConstructor", &[("ctor", id(*ctor))]),
-        Resolved::Enable { target: t } => target("Enable", t),
-        Resolved::Disable { target: t } => target("Disable", t),
-        Resolved::Deprecate { target: t } => target("Deprecate", t),
-        Resolved::RenameConstructor { ctor, name } => v(
-            "RenameConstructor",
-            &[("ctor", id(*ctor)), ("name", text(name))],
-        ),
-        Resolved::RenameType { sum, name } => {
-            v("RenameType", &[("sum", id(*sum)), ("name", text(name))])
-        }
-        Resolved::RenameRelation { relation, name } => v(
-            "RenameRelation",
-            &[("relation", id(*relation)), ("name", text(name))],
-        ),
-        Resolved::RenameSet { set, name } => {
-            v("RenameSet", &[("set", id(*set)), ("name", text(name))])
-        }
-        Resolved::RenameField { field, name } => v(
-            "RenameField",
-            &[("field", id(*field)), ("name", text(name))],
-        ),
-        Resolved::DropUnique { index } => v("DropUnique", &[("index", id(*index))]),
-        Resolved::DropIndex { index } => v("DropIndex", &[("index", id(*index))]),
+        } => added_index(schema, ty, *index, *relation, *interval, fields),
+        Resolved::DropUnique { index } => one("DropUnique", "index", *index),
+        Resolved::DropIndex { index } => one("DropIndex", "index", *index),
         Resolved::Rekey {
             relation,
             key,
@@ -271,32 +190,38 @@ fn changing(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
                 ("fields", text(fields)),
             ],
         ),
-        Resolved::RedefineFn { function, decl } => v(
-            "RedefineFn",
-            &[("function", id(*function)), ("decl", text(decl))],
-        ),
-        Resolved::DropFn { function } => v("DropFn", &[("function", id(*function))]),
-        Resolved::DropAggregate { function } => v("DropAggregate", &[("function", id(*function))]),
-        Resolved::DropConstraint { constraint } => {
-            v("DropConstraint", &[("constraint", id(*constraint))])
+        Resolved::DefineFn { function: f, decl } => two("DefineFn", "function", *f, "decl", decl),
+        Resolved::RedefineFn { function: f, decl } => {
+            two("RedefineFn", "function", *f, "decl", decl)
         }
-        Resolved::DropCheck { constraint } => v("DropCheck", &[("constraint", id(*constraint))]),
-        Resolved::Revert { migration } => v("Revert", &[("migration", id(*migration))]),
-        other => reshaping(schema, ty, other),
-    }
-}
-
-/// Returns the value of an operator that reshapes constructors or fields.
-fn reshaping(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
-    let v = |ctor: &str, fields: &[(&str, Value)]| sum(schema, ty, ctor, fields);
-    let option = |ctor: &str, name: &str, t: Option<&String>| {
-        let o = field_of(schema, ty, ctor, name);
-        match t {
-            Some(t) => sum(schema, &o, "Some", &[("value", text(t))]),
-            None => sum(schema, &o, "None", &[]),
+        Resolved::DropFn { function: f } => one("DropFn", "function", *f),
+        Resolved::DefineAggregate { function: f, decl } => {
+            two("DefineAggregate", "function", *f, "decl", decl)
         }
-    };
-    match op {
+        Resolved::DropAggregate { function: f } => one("DropAggregate", "function", *f),
+        Resolved::AddConstraint {
+            constraint: c,
+            body,
+        } => two("AddConstraint", "constraint", *c, "body", body),
+        Resolved::DropConstraint { constraint: c } => one("DropConstraint", "constraint", *c),
+        Resolved::AddCheck {
+            constraint: c,
+            body,
+        } => two("AddCheck", "constraint", *c, "body", body),
+        Resolved::DropCheck { constraint: c } => one("DropCheck", "constraint", *c),
+        Resolved::AddConstructor {
+            ctor,
+            sum: of,
+            decl,
+            place,
+        } => added_ctor(schema, ty, *ctor, *of, decl, place),
+        Resolved::RemoveConstructor { ctor } => one("RemoveConstructor", "ctor", *ctor),
+        Resolved::RenameConstructor { ctor, name } => {
+            two("RenameConstructor", "ctor", *ctor, "name", name)
+        }
+        Resolved::Enable { target: t } => targeted("Enable", t),
+        Resolved::Disable { target: t } => targeted("Disable", t),
+        Resolved::Deprecate { target: t } => targeted("Deprecate", t),
         Resolved::Split {
             ctor,
             decl,
@@ -318,11 +243,11 @@ fn reshaping(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
             &[
                 ("ctor", id(*ctor)),
                 ("decl", text(decl)),
-                ("routing", option("Merge", "routing", routing.as_ref())),
+                ("routing", optional(schema, ty, "Merge", "routing", routing)),
             ],
         ),
-        Resolved::Nest { ctor, decl } => v("Nest", &[("ctor", id(*ctor)), ("decl", text(decl))]),
-        Resolved::Unnest { ctor } => v("Unnest", &[("ctor", id(*ctor))]),
+        Resolved::Nest { ctor, decl } => two("Nest", "ctor", *ctor, "decl", decl),
+        Resolved::Unnest { ctor } => one("Unnest", "ctor", *ctor),
         Resolved::AddField { field, decl, fill } => v(
             "AddField",
             &[
@@ -331,7 +256,8 @@ fn reshaping(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
                 ("fill", text(fill)),
             ],
         ),
-        Resolved::DropField { field } => v("DropField", &[("field", id(*field))]),
+        Resolved::DropField { field } => one("DropField", "field", *field),
+        Resolved::RenameField { field, name } => two("RenameField", "field", *field, "name", name),
         Resolved::MoveField {
             field,
             header,
@@ -341,10 +267,77 @@ fn reshaping(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
             &[
                 ("field", id(*field)),
                 ("header", boolean(schema, *header)),
-                ("fill", option("MoveField", "fill", fill.as_ref())),
+                ("fill", optional(schema, ty, "MoveField", "fill", fill)),
             ],
         ),
-        declaring => panic!("{declaring:?} is a declaring operator"),
+        Resolved::Revert { migration } => one("Revert", "migration", *migration),
+    }
+}
+
+/// Returns the value of field `target` of constructor `ctor` of the operator sum `ty`.
+fn target(schema: &Schema, ty: &Ty, ctor: &str, t: &Target) -> Value {
+    let tt = field_of(schema, ty, ctor, "target");
+    match t {
+        Target::InRelation { relation, ctor } => sum(
+            schema,
+            &tt,
+            "InRelation",
+            &[("relation", id(*relation)), ("ctor", id(*ctor))],
+        ),
+        Target::OfType { ctor } => sum(schema, &tt, "OfType", &[("ctor", id(*ctor))]),
+    }
+}
+
+/// Returns the `AddIndex` value of the operator sum `ty`.
+fn added_index(
+    schema: &Schema,
+    ty: &Ty,
+    index: u64,
+    relation: u64,
+    interval: bool,
+    fields: &str,
+) -> Value {
+    sum(
+        schema,
+        ty,
+        "AddIndex",
+        &[
+            ("index", id(index)),
+            ("relation", id(relation)),
+            ("interval", boolean(schema, interval)),
+            ("fields", text(fields)),
+        ],
+    )
+}
+
+/// Returns the `AddConstructor` value of the operator sum `ty` for constructor `ctor` of sum `of`.
+fn added_ctor(schema: &Schema, ty: &Ty, ctor: u64, of: u64, decl: &str, place: &Place) -> Value {
+    let pt = field_of(schema, ty, "AddConstructor", "place");
+    let place = match place {
+        Place::Last => sum(schema, &pt, "Last", &[]),
+        Place::Before { ctor } => sum(schema, &pt, "Before", &[("ctor", id(*ctor))]),
+        Place::After { ctor } => sum(schema, &pt, "After", &[("ctor", id(*ctor))]),
+    };
+    sum(
+        schema,
+        ty,
+        "AddConstructor",
+        &[
+            ("ctor", id(ctor)),
+            ("sum", id(of)),
+            ("decl", text(decl)),
+            ("place", place),
+        ],
+    )
+}
+
+/// Returns the value of the optional text field `name` of constructor `ctor` of the operator
+/// sum `ty`.
+fn optional(schema: &Schema, ty: &Ty, ctor: &str, name: &str, t: &Option<String>) -> Value {
+    let o = field_of(schema, ty, ctor, name);
+    match t {
+        Some(t) => sum(schema, &o, "Some", &[("value", text(t))]),
+        None => sum(schema, &o, "None", &[]),
     }
 }
 

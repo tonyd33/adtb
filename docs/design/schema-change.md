@@ -300,6 +300,10 @@ Postconditions of `steps`:
   last step's source is the source `steps` leaves.
 - Every object of a step's source has its catalog id: ids are
   reconciled after each step, so the last step's ids are the result's.
+- A step's schema may hold a `Key r` type whose `r` a later operator
+  of the migration adds. `Schema::ahead_relation(r)` names such an
+  `r`; `Schema::relations` does not hold it, `Schema::relation(r)`
+  panics on it, and no row of the step holds a value of that type.
 - A `Fill` or `Route` is a `RowFn`: a normal query of one parameter,
   the row, checked and normalised against its `schema`, reading only
   the row. A `Fill`'s schema is the step's source before it; a

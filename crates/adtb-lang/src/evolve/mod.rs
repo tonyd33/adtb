@@ -354,7 +354,7 @@ impl Source {
     fn all_states(schema: &Schema, stage: Stage) -> BTreeMap<StateKey, State> {
         let mut out = BTreeMap::new();
         for r in &schema.relations {
-            if schema.module(r.module).engine || r.elem_def.0 == u32::MAX {
+            if schema.module(r.module).engine {
                 continue;
             }
             for c in schema.ty(r.elem_def).ctors() {
@@ -1123,8 +1123,23 @@ impl Cx<'_> {
         }
         let text = self.copy(span);
         let module = self.module.clone();
-        self.src.push(&module, text);
-        Ok(())
+        let i = self.src.push(&module, text);
+        self.checks_where_written(i)
+    }
+
+    /// Refuses the operator when declaration `i` fails to check against the source it is in.
+    ///
+    /// The failures of other declarations are left to the recheck at the end of the migration.
+    fn checks_where_written(&self, i: usize) -> R<()> {
+        let Err(ds) = self.src.check() else {
+            return Ok(());
+        };
+        let own: Vec<Diag> = ds
+            .into_iter()
+            .filter(|d| d.file == FileId(i as u32))
+            .map(|d| Diag::new(self.span, d.diag.message))
+            .collect();
+        if own.is_empty() { Ok(()) } else { Err(own) }
     }
 
     fn redefine(&mut self, kind: &str, name: &ast::Ident, span: Span) -> R<()> {
@@ -1139,7 +1154,7 @@ impl Cx<'_> {
         };
         let text = self.copy(span);
         self.src.rewrite(i, text);
-        Ok(())
+        self.checks_where_written(i)
     }
 
     fn drop_decl(&mut self, kind: &str, q: &QName) -> R<()> {
@@ -1330,11 +1345,7 @@ impl Cx<'_> {
         self.add_decl("relation", &r.name.name.text, r.span)?;
         let schema = self.schema()?;
         let rel = self.rel_id(&schema, &r.name)?;
-        let def = schema.relation(rel).elem_def;
-        if def.0 == u32::MAX {
-            return Ok(());
-        }
-        let t = schema.ty(def);
+        let t = schema.ty(schema.relation(rel).elem_def);
         let tm = schema.module(t.module).name.clone();
         let since = self.src.version;
         for c in t.ctors() {
@@ -1366,7 +1377,7 @@ impl Cx<'_> {
                 .iter()
                 .chain(t.ctors().iter().flat_map(|c| c.fields.iter()))
             {
-                if mentions_rel(&f.ty, rel) && schema.relation(rel).elem_def != TypeId(u32::MAX) {
+                if mentions_rel(&f.ty, rel) {
                     let own = schema.relation(rel).elem_def;
                     if schema.ty(own).name == t.name && schema.ty(own).module == t.module {
                         continue;

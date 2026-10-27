@@ -247,8 +247,9 @@ pub struct Schema {
     /// The write state of each value-level constructor that is not enabled.
     pub value_stages: BTreeMap<(TypeId, u32), Stage>,
     /// The relation variables a later operator of the migration being applied adds, by module and
-    /// name: each is a relation with no element type that only a `Key r` type resolves to.
-    pub ahead: BTreeMap<(ModuleId, String), RelId>,
+    /// name. Entry `i` is `RelId(u32::MAX - i)`, which only a `Key r` type holds and no
+    /// `relations` entry has.
+    pub ahead: Vec<(ModuleId, String)>,
 }
 
 /// The write state of a constructor in a relation variable, or of a value-level constructor.
@@ -301,7 +302,14 @@ impl Schema {
     }
 
     pub fn relation(&self, id: RelId) -> &RelationDef {
-        &self.relations[id.0 as usize]
+        self.relations.get(id.0 as usize).unwrap_or_else(|| {
+            panic!("{id:?} is a declared relation: one a later operator adds has no definition")
+        })
+    }
+
+    /// Returns the module and name of `id` when a later operator of the migration adds it.
+    pub fn ahead_relation(&self, id: RelId) -> Option<&(ModuleId, String)> {
+        self.ahead.get((u32::MAX - id.0) as usize)
     }
 
     pub fn function(&self, id: FnId) -> &FunctionDef {
@@ -372,7 +380,10 @@ impl Schema {
             Some(m) => self.module_named(&m.text)?,
             None => module,
         };
-        self.ahead.get(&(m, name.name.text.clone())).copied()
+        self.ahead
+            .iter()
+            .position(|(am, n)| *am == m && *n == name.name.text)
+            .map(|i| RelId(u32::MAX - i as u32))
     }
 
     pub fn lookup_relation(&self, module: ModuleId, name: &ast::QName) -> Result<RelId, String> {
@@ -580,15 +591,18 @@ impl Schema {
                 .get(*i as usize)
                 .cloned()
                 .unwrap_or_else(|| format!("t{i}")),
-            Ty::Key { rel, ctors } => {
-                let r = self.relation(*rel);
-                format!(
-                    "Key {}{}{}",
-                    qualifier(r.module),
-                    r.name,
-                    sel(r.elem_def, ctors)
-                )
-            }
+            Ty::Key { rel, ctors } => match self.ahead_relation(*rel) {
+                Some((m, name)) => format!("Key {}{name}", qualifier(*m)),
+                None => {
+                    let r = self.relation(*rel);
+                    format!(
+                        "Key {}{}{}",
+                        qualifier(r.module),
+                        r.name,
+                        sel(r.elem_def, ctors)
+                    )
+                }
+            },
             Ty::Set(t) | Ty::NonEmpty(t) => format!("Set {}", atom(t)),
             Ty::Group(k, t) => format!("Group {} {}", atom(k), atom(t)),
             Ty::Tag(t) => format!("Tag {}", atom(t)),
@@ -843,7 +857,7 @@ pub fn build_ahead(
             ids: crate::ids::CatalogIds::default(),
             stages: BTreeMap::new(),
             value_stages: BTreeMap::new(),
-            ahead: BTreeMap::new(),
+            ahead: Vec::new(),
         },
         diags: Vec::new(),
         files: &all,
@@ -1101,23 +1115,7 @@ impl Builder<'_> {
             if self.schema.module(module).values.contains_key(name) {
                 continue;
             }
-            let id = RelId(self.schema.relations.len() as u32);
-            self.schema.relations.push(RelationDef {
-                name: name.clone(),
-                module,
-                elem: Ty::Unit,
-                elem_def: TypeId(u32::MAX),
-                key: Vec::new(),
-                generate: None,
-                indexes: Vec::new(),
-                defaults: Vec::new(),
-                computed: Vec::new(),
-                sets: Vec::new(),
-                volatile: false,
-                file: FileId(u32::MAX - 3),
-                span: Span::default(),
-            });
-            self.schema.ahead.insert((module, name.clone()), id);
+            self.schema.ahead.push((module, name.clone()));
         }
     }
 
@@ -2219,7 +2217,7 @@ pub fn resolve_type(
                 .map_err(|e| (r.span, e))?;
             let ctors = match &r.sel {
                 None => None,
-                Some(_) if schema.relation(rel).elem_def.0 == u32::MAX => {
+                Some(_) if schema.ahead_relation(rel).is_some() => {
                     return Err((
                         r.span,
                         format!(

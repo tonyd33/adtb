@@ -634,9 +634,6 @@ fn bodies(
         }
     }
     for (i, r) in schema.relations.iter().enumerate() {
-        if r.elem_def.0 == u32::MAX {
-            continue;
-        }
         let rel = RelId(i as u32);
         for (j, d) in r.defaults.iter().enumerate() {
             if let DefaultValue::Expr(e) = &d.value

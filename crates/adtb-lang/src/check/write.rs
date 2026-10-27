@@ -945,9 +945,6 @@ impl Checker<'_> {
         loop {
             let before = out.len();
             for (i, r) in self.schema.relations.iter().enumerate() {
-                if r.elem_def.0 == u32::MAX {
-                    continue;
-                }
                 let t = self.schema.ty(r.elem_def);
                 let cascades = t
                     .header()

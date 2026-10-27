@@ -71,7 +71,7 @@ impl Source {
         }
         let mut stages = Vec::new();
         for (i, r) in schema.relations.iter().enumerate() {
-            if schema.module(r.module).engine || r.elem_def.0 == u32::MAX {
+            if schema.module(r.module).engine {
                 continue;
             }
             let m = schema.module(r.module).name.clone();

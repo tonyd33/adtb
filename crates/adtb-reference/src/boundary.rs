@@ -493,9 +493,6 @@ impl Interpreter<'_> {
             report
         };
         for (i, r) in schema.relations.iter().enumerate() {
-            if r.elem_def.0 == u32::MAX {
-                continue;
-            }
             let rel = RelId(i as u32);
             let name = self.qualified(r.module, &r.name);
             let def = schema.ty(r.elem_def);
