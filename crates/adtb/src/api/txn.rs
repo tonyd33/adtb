@@ -209,6 +209,7 @@ impl<R: Runtime> Drop for AdHocTransaction<'_, R> {
     fn drop(&mut self) {
         if let State::Open(tx) = std::mem::replace(&mut self.state, State::Closed)
             && let Err(e) = self.engine.abort(self.id, tx)
+            && !std::thread::panicking()
         {
             assert!(
                 matches!(

@@ -34,7 +34,15 @@ pub fn plan(
     params: &[Var],
     options: Options,
 ) -> Result<Plan, Error> {
-    plan_in(schema, normal, catalog, terms, root, params, options, false)
+    let input = Input {
+        schema,
+        normal,
+        catalog,
+        terms,
+        root,
+        params,
+    };
+    plan_in(&input, options, false)
 }
 
 /// Returns the plan of `root`, as [`plan`] does, reading every constructor relation only through
@@ -50,32 +58,36 @@ pub fn plan_bounded(
     root: Tm,
     params: &[Var],
 ) -> Result<Plan, Error> {
-    plan_in(
+    let input = Input {
         schema,
         normal,
         catalog,
         terms,
         root,
         params,
-        Options::default(),
-        true,
-    )
+    };
+    plan_in(&input, Options::default(), true)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the inputs of `plan` and whether the plan is bounded"
-)]
-fn plan_in(
-    schema: &Schema,
-    normal: &NormalProgram,
-    catalog: &Catalog,
-    terms: &Terms,
+/// What [`plan`] plans: `root`, a normal form in `terms` whose free variables are `params`.
+struct Input<'a> {
+    schema: &'a Schema,
+    normal: &'a NormalProgram,
+    catalog: &'a Catalog,
+    terms: &'a Terms,
     root: Tm,
-    params: &[Var],
-    options: Options,
-    bounded: bool,
-) -> Result<Plan, Error> {
+    params: &'a [Var],
+}
+
+fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, Error> {
+    let Input {
+        schema,
+        normal,
+        catalog,
+        terms,
+        root,
+        params,
+    } = *input;
     let mut p = Planner {
         schema,
         normal,

@@ -2,15 +2,20 @@
 //! in-process API: building them by migration, keeping them through crashes, and checking them
 //! between concurrent writers.
 
+#[expect(dead_code, reason = "this binary uses part of the API helpers")]
+#[path = "support/api.rs"]
+mod api;
+
 use std::sync::{Arc, Mutex};
 
 use adtb::runtime::Threads;
 use adtb::{
-    AdHocTransaction, CallOptions, CreateOptions, Database, DynRows, Error, Log, OpenError,
-    OpenOptions, RejectReason, TxnCallOptions, TxnOptions,
+    AdHocTransaction, CallOptions, Database, Error, Log, OpenError, RejectReason, TxnCallOptions,
+    TxnOptions,
 };
-use adtb_lang::textual::print;
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
+
+use api::{once, options, result, run, sorted};
 
 const BILLING: &str = r"module billing
 add module billing
@@ -27,20 +32,12 @@ const EMAILS: &str = "from i in invoices select i.email";
 
 const SEEDS: std::ops::Range<u64> = 0..3;
 
-fn options() -> OpenOptions {
-    OpenOptions {
-        create: Some(CreateOptions::default()),
-        workers: Some(2),
-        ..OpenOptions::default()
-    }
-}
-
 fn open_with(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
     Database::open_in(
         rt.clone(),
         "app.adt",
         &Log::new(log.iter().copied()),
-        &options(),
+        &options(2),
     )
     .expect("the database opens")
 }
@@ -49,32 +46,8 @@ fn open(rt: &SimRuntime) -> Database<SimRuntime> {
     open_with(rt, &[BILLING])
 }
 
-fn run<T>(sim: &mut Sim, body: impl FnOnce(SimRuntime) -> T) -> T {
-    let mut got = None;
-    let outcome = sim.run(|rt| got = Some(body(rt)));
-    assert_eq!(Outcome::Finished, outcome);
-    got.expect("the run returns")
-}
-
-fn once<T>(seed: u64, body: impl FnOnce(SimRuntime) -> T) -> T {
-    run(&mut Sim::new(seed, Config::default()), body)
-}
-
-fn printed(rows: DynRows) -> Vec<String> {
-    let form = rows.form().clone();
-    let mut out: Vec<String> = rows
-        .map(|r| print(&r.expect("a row"), &form).expect("a row prints"))
-        .collect();
-    out.sort();
-    out
-}
-
 fn query(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    let mut out = db
-        .query_text(text, &[], &CallOptions::default())
-        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
-    assert_eq!(1, out.len(), "`{text}` has one result");
-    printed(out.remove(0))
+    sorted(result(db, text))
 }
 
 fn write(db: &Database<SimRuntime>, text: &str) -> Result<(), Error> {
@@ -182,7 +155,7 @@ fn an_expression_unique_added_over_rows_sharing_its_value_is_refused() {
     });
     run(&mut sim, |rt| {
         let log = Log::new([BILLING, LOWER_UNIQUE]);
-        match Database::open_in(rt, "app.adt", &log, &options()) {
+        match Database::open_in(rt, "app.adt", &log, &options(2)) {
             Err(OpenError::MigrationRefused { version: 2, .. }) => {}
             other => panic!("not refused: {other:?}"),
         }

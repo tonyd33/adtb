@@ -1,21 +1,25 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{RelId, Ty, TypeId};
+use adtb_lang::types::{RelId, Ty};
 
 use crate::heap::FieldType;
 use crate::key::Value;
 
-use super::{Error, ctor_id, ctor_relations, layout, row_type, rows};
+use super::ids::{
+    CatCtorId, CatFieldId, CatRelId, CatTypeId, ctor_id, ctor_index, field_id, rel_id, relation,
+    type_id,
+};
+use super::{Error, ctor_relations, layout, row_type, rows};
 
 /// The rows of the relations a migration rewrites, by relation id and then constructor id, each
 /// row in the layout of the schema the operators applied so far produce.
-pub type Data = BTreeMap<u64, BTreeMap<u64, Vec<Vec<Value>>>>;
+pub type Data = BTreeMap<CatRelId, BTreeMap<CatCtorId, Vec<Vec<Value>>>>;
 
 /// A field of a row: its catalog id and how a heap stores it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
-    pub id: Option<u64>,
+    pub id: Option<CatFieldId>,
     pub name: String,
     pub ty: FieldType,
 }
@@ -26,14 +30,10 @@ pub fn fields(schema: &Schema, r: RelId, c: u32) -> Vec<Field> {
     layout::row(schema, r, c)
         .into_iter()
         .zip(row_type(schema, r, c))
-        .map(|((name, _), ty)| {
-            let id = schema
-                .ids
-                .fields
-                .get(&(def, None, name.clone()))
-                .or_else(|| schema.ids.fields.get(&(def, Some(c), name.clone())))
-                .copied();
-            Field { id, name, ty }
+        .map(|((name, _), ty)| Field {
+            id: field_id(schema, def, c, &name),
+            name,
+            ty,
         })
         .collect()
 }
@@ -42,14 +42,14 @@ pub fn fields(schema: &Schema, r: RelId, c: u32) -> Vec<Field> {
 /// unique, its constructor ids and its fields.
 #[derive(Debug, PartialEq, Eq)]
 struct Shape {
-    ctors: Vec<(u64, Vec<Field>)>,
-    indexes: Vec<(u64, bool, Vec<u64>, Vec<String>)>,
+    ctors: Vec<(CatCtorId, Vec<Field>)>,
+    indexes: Vec<(u64, bool, Vec<CatCtorId>, Vec<String>)>,
 }
 
-fn shapes(schema: &Schema) -> BTreeMap<u64, Shape> {
-    let mut out: BTreeMap<u64, Shape> = BTreeMap::new();
+fn shapes(schema: &Schema) -> BTreeMap<CatRelId, Shape> {
+    let mut out: BTreeMap<CatRelId, Shape> = BTreeMap::new();
     for (r, c) in ctor_relations(schema) {
-        let rid = schema.ids.relations[&r];
+        let rid = rel_id(schema, r);
         let shape = out.entry(rid).or_insert(Shape {
             ctors: Vec::new(),
             indexes: Vec::new(),
@@ -59,7 +59,7 @@ fn shapes(schema: &Schema) -> BTreeMap<u64, Shape> {
             .push((ctor_id(schema, r, c), fields(schema, r, c)));
     }
     for spec in rows::indexes(schema).into_values() {
-        let rid = schema.ids.relations[&spec.relation];
+        let rid = rel_id(schema, spec.relation);
         let ctors = spec
             .ctors
             .iter()
@@ -76,7 +76,7 @@ fn shapes(schema: &Schema) -> BTreeMap<u64, Shape> {
 
 /// Returns the ids of the relations that `old` and `new` store otherwise: those only one of them
 /// has, and those whose constructors, fields or indexes differ.
-pub fn rewritten(old: &Schema, new: &Schema) -> BTreeSet<u64> {
+pub fn rewritten(old: &Schema, new: &Schema) -> BTreeSet<CatRelId> {
     let (a, b) = (shapes(old), shapes(new));
     a.keys()
         .chain(b.keys())
@@ -85,40 +85,19 @@ pub fn rewritten(old: &Schema, new: &Schema) -> BTreeSet<u64> {
         .collect()
 }
 
-/// Returns the relation of `schema` whose catalog id is `id`.
-pub fn relation(schema: &Schema, id: u64) -> Option<RelId> {
-    schema
-        .ids
-        .relations
-        .iter()
-        .find(|&(_, &x)| x == id)
-        .map(|(&r, _)| r)
-}
-
-/// Returns the constructor index of the constructor with catalog id `id` of relation `r`.
-pub fn ctor_index(schema: &Schema, r: RelId, id: u64) -> Option<u32> {
-    let def = schema.relation(r).elem_def;
-    schema
-        .ids
-        .ctors
-        .iter()
-        .find(|&(&(d, _), &x)| d == def && x == id)
-        .map(|(&(_, k), _)| k)
-}
-
 /// What one operator's data map gives beyond the fields and constructors it keeps.
 #[derive(Default)]
 pub struct Moved {
     /// The value of each field a kept constructor gains, from the row before the operator, by
     /// relation id, constructor id and field id.
-    pub fills: BTreeMap<(u64, u64, u64), Box<Fill<'static>>>,
+    pub fills: BTreeMap<(CatRelId, CatCtorId, CatFieldId), Box<Fill<'static>>>,
     /// The rows of the constructors the operator creates, by relation id and constructor id.
-    pub routed: BTreeMap<(u64, u64), Vec<Vec<Value>>>,
+    pub routed: BTreeMap<(CatRelId, CatCtorId), Vec<Vec<Value>>>,
     /// The constructors, by relation id and constructor id, whose rows `routed` holds.
-    pub consumed: BTreeSet<(u64, u64)>,
+    pub consumed: BTreeSet<(CatRelId, CatCtorId)>,
     /// The value of each field a constructor of a type held as a value gains, from the fields of
     /// the value before the operator, by type id, constructor id and field id.
-    pub values: BTreeMap<(u64, u64, u64), Box<Fill<'static>>>,
+    pub values: BTreeMap<(CatTypeId, CatCtorId, CatFieldId), Box<Fill<'static>>>,
 }
 
 /// The value of a field for a row, from the fields of the row before the operator.
@@ -131,18 +110,6 @@ pub enum Failed {
     Refused(String),
     /// A guarantee of the checker or the executor does not hold; the one named.
     Internal(String),
-}
-
-impl From<String> for Failed {
-    fn from(why: String) -> Failed {
-        Failed::Refused(why)
-    }
-}
-
-impl From<&str> for Failed {
-    fn from(why: &str) -> Failed {
-        Failed::Refused(why.to_string())
-    }
 }
 
 /// Map `data` from schema `a` to schema `b`, the schemas before and after one operator.
@@ -164,7 +131,7 @@ pub fn step(a: &Schema, b: &Schema, data: &mut Data, mut moved: Moved) -> Result
             }
             continue;
         };
-        let mut next: BTreeMap<u64, Vec<Vec<Value>>> = BTreeMap::new();
+        let mut next: BTreeMap<CatCtorId, Vec<Vec<Value>>> = BTreeMap::new();
         for cb in 0..b.ty(b.relation(rb).elem_def).ctors().len() as u32 {
             let cid = ctor_id(b, rb, cb);
             let to = fields(b, rb, cb);
@@ -207,7 +174,7 @@ pub fn step(a: &Schema, b: &Schema, data: &mut Data, mut moved: Moved) -> Result
         out.insert(rid, next);
     }
     for r in b.ids.relations.keys() {
-        let rid = b.ids.relations[r];
+        let rid = rel_id(b, *r);
         if relation(a, rid).is_none() {
             let ctors = (0..b.ty(b.relation(*r).elem_def).ctors().len() as u32)
                 .map(|c| {
@@ -232,7 +199,7 @@ struct Types<'s> {
     b: &'s Schema,
     from: Vec<Ty>,
     to: Vec<Ty>,
-    values: &'s BTreeMap<(u64, u64, u64), Box<Fill<'static>>>,
+    values: &'s BTreeMap<(CatTypeId, CatCtorId, CatFieldId), Box<Fill<'static>>>,
 }
 
 /// Returns `row`, with fields `from`, as a row with fields `to`: each field the fill `fill` gives
@@ -242,7 +209,7 @@ fn carry<'f>(
     to: &[Field],
     types: &Types<'_>,
     row: &[Value],
-    fill: impl Fn(u64) -> Option<&'f Box<Fill<'static>>>,
+    fill: impl Fn(CatFieldId) -> Option<&'f Box<Fill<'static>>>,
 ) -> Result<Vec<Value>, Failed> {
     to.iter()
         .zip(&types.to)
@@ -257,11 +224,15 @@ fn carry<'f>(
             match (t.id.and_then(&fill), kept) {
                 (Some(f), _) => f(from, row),
                 (None, Some(at)) if from[at].ty == t.ty => Ok(row[at].clone()),
-                (None, Some(at)) => held(types, &types.from[at], tb, &row[at])
-                    .unwrap_or_else(|| Ok(convert(&from[at].ty, &t.ty, &row[at])?)),
-                (None, None) => {
-                    Err(format!("field `{}` has no value for existing rows", t.name).into())
+                (None, Some(at)) => {
+                    held(types, &types.from[at], tb, &row[at]).unwrap_or_else(|| {
+                        convert(&from[at].ty, &t.ty, &row[at]).map_err(Failed::Refused)
+                    })
                 }
+                (None, None) => Err(Failed::Refused(format!(
+                    "field `{}` has no value for existing rows",
+                    t.name
+                ))),
             }
         })
         .collect()
@@ -276,8 +247,8 @@ fn held(types: &Types<'_>, ta: &Ty, tb: &Ty, v: &Value) -> Option<Result<Value, 
     let (Ty::Data { def: da, .. }, Ty::Data { def: db, .. }) = (&ra, &rb) else {
         return None;
     };
-    let tid = *a.ids.types.get(da)?;
-    if b.ids.types.get(db) != Some(&tid) {
+    let tid = type_id(a, *da)?;
+    if type_id(b, *db) != Some(tid) {
         return None;
     }
     let (ca, vs) = match v {
@@ -288,30 +259,25 @@ fn held(types: &Types<'_>, ta: &Ty, tb: &Ty, v: &Value) -> Option<Result<Value, 
     let (ctors_a, ctors_b) = (layout::ctors(a, &ra), layout::ctors(b, &rb));
     let (cid, fields_a) = &ctors_a[ca as usize];
     let Some(cb) = ctors_b.iter().position(|(id, _)| id == cid) else {
-        return Some(Err(format!(
+        return Some(Err(Failed::Refused(format!(
             "a stored value holds constructor {cid} of a sum that no longer has it"
-        )
-        .into()));
-    };
-    let field_id = |s: &Schema, def: TypeId, c: usize, name: &str| {
-        s.ids
-            .fields
-            .get(&(def, None, name.to_string()))
-            .or_else(|| s.ids.fields.get(&(def, Some(c as u32), name.to_string())))
-            .copied()
+        ))));
     };
     let out = ctors_b[cb]
         .1
         .iter()
         .map(|(name, t)| {
-            let id = field_id(b, *db, cb, name);
-            if let Some(f) = id.and_then(|id| types.values.get(&(tid, u64::from(*cid), id))) {
+            let id = field_id(b, *db, cb as u32, name);
+            let cid = CatCtorId(u64::from(*cid));
+            if let Some(f) = id.and_then(|id| types.values.get(&(tid, cid, id))) {
                 return f(&[], vs);
             }
             let at = fields_a
                 .iter()
-                .position(|(n, _)| id.is_some() && field_id(a, *da, ca as usize, n) == id)
-                .ok_or_else(|| format!("field `{name}` has no value in stored values"))?;
+                .position(|(n, _)| id.is_some() && field_id(a, *da, ca, n) == id)
+                .ok_or_else(|| {
+                    Failed::Refused(format!("field `{name}` has no value in stored values"))
+                })?;
             let (fa, fb) = (
                 layout::field_type(a, &fields_a[at].1),
                 layout::field_type(b, t),
@@ -320,7 +286,7 @@ fn held(types: &Types<'_>, ta: &Ty, tb: &Ty, v: &Value) -> Option<Result<Value, 
                 return Ok(vs[at].clone());
             }
             held(types, &fields_a[at].1, t, &vs[at])
-                .unwrap_or_else(|| Ok(convert(&fa, &fb, &vs[at])?))
+                .unwrap_or_else(|| convert(&fa, &fb, &vs[at]).map_err(Failed::Refused))
         })
         .collect::<Result<Vec<_>, _>>();
     Some(out.map(|fields| match v {

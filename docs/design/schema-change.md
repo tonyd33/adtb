@@ -107,7 +107,9 @@ Postconditions:
 - `open` fails with `Error::Corrupt` when a stored page or row does
   not read as the catalog writes it, and with `Error::Unaccepted`,
   naming the version, when a stored migration does not parse or apply
-  under the running engine.
+  under the running engine, or the source they fold to does not check.
+- `program` returns the checked program of `source`, over the schema
+  `schema` returns.
 - `rows` returns the rows a snapshot sees.
 - `plan` describes every relation: a heap for each constructor, no two
   with one heap id, and each index by its catalog id, the key index

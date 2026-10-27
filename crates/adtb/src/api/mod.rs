@@ -149,7 +149,7 @@ impl<R: Runtime> Clone for Database<R> {
 struct Engine<R: Runtime> {
     rt: R,
     schema: Arc<Schema>,
-    program: Program,
+    program: Arc<Program>,
     pager: Pager<R>,
     db: write::Database<R>,
     #[cfg(target_os = "linux")]
@@ -328,10 +328,8 @@ impl<R: Runtime> Engine<R> {
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
         catalog.set_query_memory(query_memory);
         migrate(&mut catalog, &pager, &txns, log)?;
-        let (schema, program) = catalog
-            .source()
-            .check()
-            .map_err(|ds| corrupt(ds.into_iter().map(|d| d.diag.message).collect::<Vec<_>>()))?;
+        let schema = catalog.schema().clone();
+        let program = catalog.program().clone();
         let normal = norm::program(&schema, &program).map_err(corrupt)?;
         let plan = catalog.plan();
         let root = catalog.root();

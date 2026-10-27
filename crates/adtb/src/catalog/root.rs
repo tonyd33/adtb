@@ -1,11 +1,40 @@
+use crate::mvcc::Xid;
 use crate::storage::{HEADER_LEN, Pid};
 
 /// The format of the catalog's root page.
 pub const FORMAT: u16 = 1;
 
-/// The `changing` of a root page whose catalog is naming its page of generated counters; no
-/// transaction has this id.
-pub const NAMING_SEQUENCES: u64 = u64::MAX;
+/// The stored `changing` of a root page whose catalog is naming its page of generated counters;
+/// no transaction has this id.
+const NAMING_SEQUENCES: u64 = u64::MAX;
+
+/// What a catalog is in the middle of changing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Changing {
+    None,
+    /// The schema change of this transaction is in progress.
+    Schema(Xid),
+    /// The write path's page of generated counters is allocated but not named.
+    NamingSequences,
+}
+
+impl Changing {
+    fn encoded(self) -> u64 {
+        match self {
+            Changing::None => 0,
+            Changing::Schema(x) => x.0,
+            Changing::NamingSequences => NAMING_SEQUENCES,
+        }
+    }
+
+    fn decoded(at: u64) -> Changing {
+        match at {
+            0 => Changing::None,
+            NAMING_SEQUENCES => Changing::NamingSequences,
+            x => Changing::Schema(Xid(x)),
+        }
+    }
+}
 
 /// What the catalog's root page names: the structures found before any catalog row is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,9 +47,7 @@ pub struct Root {
     pub roots: (u32, Pid),
     /// No heap has this id or a higher one.
     pub next_heap: u32,
-    /// The transaction of the schema change in progress, [`NAMING_SEQUENCES`] while the write
-    /// path's page of generated counters is allocated but not named, 0 when neither is.
-    pub changing: u64,
+    pub changing: Changing,
     /// The write path's page of generated counters, `Pid(0)` until it has one.
     pub sequences: Pid,
 }
@@ -50,7 +77,7 @@ impl Root {
         page[LARGE_ROOT..ROOTS_ROOT].copy_from_slice(&self.large.1.0.to_le_bytes());
         page[ROOTS_ROOT..NEXT_HEAP].copy_from_slice(&self.roots.1.0.to_le_bytes());
         page[NEXT_HEAP..NEXT_HEAP + 4].copy_from_slice(&self.next_heap.to_le_bytes());
-        page[CHANGING..SEQUENCES].copy_from_slice(&self.changing.to_le_bytes());
+        page[CHANGING..SEQUENCES].copy_from_slice(&self.changing.encoded().to_le_bytes());
         page[SEQUENCES..SEQUENCES + 8].copy_from_slice(&self.sequences.0.to_le_bytes());
     }
 
@@ -60,7 +87,7 @@ impl Root {
             large: (u32_at(page, LARGE_ID), Pid(u64_at(page, LARGE_ROOT))),
             roots: (u32_at(page, ROOTS_ID), Pid(u64_at(page, ROOTS_ROOT))),
             next_heap: u32_at(page, NEXT_HEAP),
-            changing: u64_at(page, CHANGING),
+            changing: Changing::decoded(u64_at(page, CHANGING)),
             sequences: Pid(u64_at(page, SEQUENCES)),
         }
     }

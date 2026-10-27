@@ -8,6 +8,7 @@ use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, ValueDef};
 use adtb_lang::span::Span;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
+use crate::exec;
 use crate::key::Value;
 use crate::plan::{Element, declared_elements};
 
@@ -256,16 +257,22 @@ pub enum Step {
 /// Returns the steps of field path `path` through a row of constructor `c` of `r`, and the type
 /// of the value it reaches.
 ///
-/// Panics if `path` names no field or constructor at a step.
-pub fn path_steps(schema: &Schema, r: RelId, c: u32, path: &[PathStep]) -> (Vec<Step>, Ty) {
+/// Fails with `exec::Error::Internal` if `path` names no field or constructor at a step.
+pub fn path_steps(
+    schema: &Schema,
+    r: RelId,
+    c: u32,
+    path: &[PathStep],
+) -> Result<(Vec<Step>, Ty), exec::Error> {
+    let broken = |why: String| exec::Error::Internal(format!("an index path {why}: {path:?}"));
     let Some((PathStep::Field(first), rest)) = path.split_first() else {
-        panic!("a path starts at a field: {path:?}");
+        return Err(broken("starts at a field".into()));
     };
     let row = layout::row(schema, r, c);
     let at = row
         .iter()
         .position(|(n, _)| n == first)
-        .unwrap_or_else(|| panic!("a row holds indexed field `{first}`"));
+        .ok_or_else(|| broken(format!("names a field `{first}` of the row")))?;
     let mut steps = vec![Step::Field(at)];
     let mut ty = row[at].1.clone();
     let mut fields: Option<Vec<(String, Ty)>> = None;
@@ -273,11 +280,11 @@ pub fn path_steps(schema: &Schema, r: RelId, c: u32, path: &[PathStep]) -> (Vec<
         let name = match step {
             PathStep::Ctor(k) => {
                 steps.push(Step::Ctor(*k));
-                fields = Some(
-                    layout::ctors(schema, &layout::repr(schema, &ty))
-                        .swap_remove(*k as usize)
-                        .1,
-                );
+                let mut ctors = layout::ctors(schema, &layout::repr(schema, &ty));
+                if *k as usize >= ctors.len() {
+                    return Err(broken(format!("names a constructor {k} of the value")));
+                }
+                fields = Some(ctors.swap_remove(*k as usize).1);
                 continue;
             }
             PathStep::Field(name) => name,
@@ -286,40 +293,53 @@ pub fn path_steps(schema: &Schema, r: RelId, c: u32, path: &[PathStep]) -> (Vec<
             Some(fs) => fs,
             None => match layout::repr(schema, &ty) {
                 Ty::Record(fs) => fs,
-                t => layout::ctors(schema, &t).swap_remove(0).1,
+                t => match layout::ctors(schema, &t).into_iter().next() {
+                    Some((_, fs)) => fs,
+                    None => return Err(broken(format!("reaches a value with field `{name}`"))),
+                },
             },
         };
         let at = fs
             .iter()
             .position(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("a value of path {path:?} has field `{name}`"));
+            .ok_or_else(|| broken(format!("reaches a value with field `{name}`")))?;
         steps.push(Step::Field(at));
         ty = fs[at].1.clone();
     }
-    (steps, ty)
+    Ok((steps, ty))
 }
 
 /// Returns the value `steps` reach in `row`, or `None` when a value on the way holds another
 /// constructor than a step names.
-pub fn at_path<'v>(row: &'v [Value], steps: &[Step]) -> Option<&'v Value> {
-    let (first, rest) = steps.split_first()?;
-    let Step::Field(i) = first else {
-        panic!("a path starts at a field");
+///
+/// Fails with `exec::Error::Corrupt` when a value on the way does not have the shape the steps
+/// give it.
+pub fn at_path<'v>(row: &'v [Value], steps: &[Step]) -> Result<Option<&'v Value>, exec::Error> {
+    let corrupt = || exec::Error::Corrupt(format!("a stored row does not hold path {steps:?}"));
+    let Some((first, rest)) = steps.split_first() else {
+        return Ok(None);
     };
-    let mut at = &row[*i];
+    let Step::Field(i) = first else {
+        return Err(exec::Error::Internal(format!(
+            "index path steps start at a field: {steps:?}"
+        )));
+    };
+    let mut at = row.get(*i).ok_or_else(corrupt)?;
     for step in rest {
         at = match (step, at) {
             (Step::Ctor(k), Value::Sum { ctor, .. }) => {
                 if ctor != k {
-                    return None;
+                    return Ok(None);
                 }
                 at
             }
-            (Step::Field(i), Value::Sum { fields, .. } | Value::Record(fields)) => &fields[*i],
-            (s, v) => panic!("path step {s:?} meets {v:?}"),
+            (Step::Field(i), Value::Sum { fields, .. } | Value::Record(fields)) => {
+                fields.get(*i).ok_or_else(corrupt)?
+            }
+            _ => return Err(corrupt()),
         };
     }
-    Some(at)
+    Ok(Some(at))
 }
 
 fn all_ctors(schema: &Schema, r: RelId) -> Vec<u32> {

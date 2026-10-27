@@ -39,9 +39,9 @@ enum Part {
 impl IndexKeys {
     /// Returns the keying of an index of `rel` over `ctors` whose key is `elements`.
     ///
-    /// Fails if the executor cannot compile an expression element.
-    ///
-    /// Panics if an element is derived and `normal`, the normal program of `schema`, is `None`.
+    /// Fails if the executor cannot compile an expression element, or with
+    /// `exec::Error::Internal` if an element is derived and `normal`, the normal program of
+    /// `schema`, is `None` or a path names no field or constructor.
     pub fn new(
         schema: &Schema,
         normal: Option<&NormalProgram>,
@@ -55,9 +55,9 @@ impl IndexKeys {
             let mut parts = Vec::new();
             let mut reads = BTreeSet::new();
             for e in elements {
-                match derived(normal, rel, e) {
+                match derived(normal, rel, e)? {
                     Derived::Path(path) => {
-                        let (steps, _) = path_steps(schema, rel, c, &path);
+                        let (steps, _) = path_steps(schema, rel, c, &path)?;
                         if let Some(Step::Field(i)) = steps.first() {
                             reads.insert(*i);
                         }
@@ -94,7 +94,8 @@ impl IndexKeys {
     /// or `None` when the index holds no entry for it: it is not over `c`, or a value on a path
     /// holds another constructor than the path names.
     ///
-    /// Fails if an expression element faults on the row.
+    /// Fails if an expression element faults on the row, or with `exec::Error::Corrupt` if the
+    /// row does not have the shape a path gives it.
     pub fn key(
         &self,
         c: u32,
@@ -108,7 +109,7 @@ impl IndexKeys {
         let mut out = Vec::with_capacity(ctor.parts.len());
         for (part, t) in ctor.parts.iter().zip(types) {
             match part {
-                Part::At(steps) => match at_path(row, steps) {
+                Part::At(steps) => match at_path(row, steps)? {
                     Some(v) => out.push(v.clone()),
                     None => return Ok(None),
                 },
@@ -136,19 +137,20 @@ impl IndexKeys {
 /// Returns the type of each of `elements`, the key of an index of `rel` over a set holding
 /// constructor `c`.
 ///
-/// Panics if an element is derived and `normal`, the normal program of `schema`, is `None`.
+/// Fails with `exec::Error::Internal` if an element is derived and `normal`, the normal program
+/// of `schema`, is `None`, or a path names no field or constructor.
 pub fn element_types(
     schema: &Schema,
     normal: Option<&NormalProgram>,
     rel: RelId,
     c: u32,
     elements: &[Element],
-) -> Vec<Ty> {
+) -> Result<Vec<Ty>, exec::Error> {
     elements
         .iter()
-        .map(|e| match derived(normal, rel, e) {
-            Derived::Path(path) => path_steps(schema, rel, c, &path).1,
-            Derived::Expr(terms, _, body) => terms.ty(body).clone(),
+        .map(|e| match derived(normal, rel, e)? {
+            Derived::Path(path) => Ok(path_steps(schema, rel, c, &path)?.1),
+            Derived::Expr(terms, _, body) => Ok(terms.ty(body).clone()),
         })
         .collect()
 }
@@ -158,17 +160,29 @@ enum Derived<'n> {
     Expr(&'n Terms, Var, Tm),
 }
 
-fn derived<'n>(normal: Option<&'n NormalProgram>, rel: RelId, e: &Element) -> Derived<'n> {
+fn derived<'n>(
+    normal: Option<&'n NormalProgram>,
+    rel: RelId,
+    e: &Element,
+) -> Result<Derived<'n>, exec::Error> {
     match e {
-        Element::Field(f) => Derived::Path(vec![PathStep::Field(f.clone())]),
+        Element::Field(f) => Ok(Derived::Path(vec![PathStep::Field(f.clone())])),
         Element::Derived { index, element } => {
-            let normal = normal.expect("a derived index element has the normal program");
-            let (x, f) = &normal.index_fields[&(rel, *index, *element)];
-            if f.path.is_empty() {
+            let missing = || {
+                exec::Error::Internal(format!(
+                    "derived element {element} of index {index} has a normal program"
+                ))
+            };
+            let normal = normal.ok_or_else(missing)?;
+            let (x, f) = normal
+                .index_fields
+                .get(&(rel, *index, *element))
+                .ok_or_else(missing)?;
+            Ok(if f.path.is_empty() {
                 Derived::Expr(&normal.terms, *x, f.value)
             } else {
                 Derived::Path(f.path.clone())
-            }
+            })
         }
     }
 }

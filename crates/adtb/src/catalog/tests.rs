@@ -4,9 +4,11 @@ use adtb_lang::evolve::Source;
 use adtb_lang::schema::Schema;
 
 use crate::key::Value;
+use crate::mvcc::Xid;
 use crate::storage::Pid;
 
-use super::root::Root;
+use super::ids::{CatCtorId, CatRelId};
+use super::root::{Changing, Root};
 use super::{
     Error, HEAP_ROOT, Hash, MIGRATION, Named, Rows, applied, check_order_keys, declared,
     engine_schema, fold, indexes, layout, oplog, version_hash,
@@ -30,18 +32,26 @@ fn rows_of(schema: &Schema, rows: &Rows, id: u64) -> Vec<Vec<Value>> {
 
 #[test]
 fn the_root_page_round_trips() {
-    let root = Root {
-        commit_log: Pid(7),
-        large: (1, Pid(3)),
-        roots: (2, Pid(9)),
-        next_heap: 70,
-        changing: 1025,
-        sequences: Pid(77),
-    };
-    let mut page = vec![0; 4096];
-    root.write(&mut page);
-    assert_eq!(root, Root::read(&page));
-    assert!(page[..24].iter().all(|&b| b == 0));
+    for (changing, stored) in [
+        (Changing::None, 0),
+        (Changing::Schema(Xid(1025)), 1025),
+        (Changing::NamingSequences, u64::MAX),
+    ] {
+        let root = Root {
+            commit_log: Pid(7),
+            large: (1, Pid(3)),
+            roots: (2, Pid(9)),
+            next_heap: 70,
+            changing,
+            sequences: Pid(77),
+        };
+        let mut page = vec![0; 4096];
+        root.write(&mut page);
+        assert_eq!(root, Root::read(&page));
+        assert!(page[..24].iter().all(|&b| b == 0));
+        let at = 24 + 8 + 4 + 4 + 8 + 8 + 8;
+        assert_eq!(stored.to_le_bytes(), page[at..at + 8], "{changing:?}");
+    }
 }
 
 #[test]
@@ -478,7 +488,7 @@ fn a_stored_migration_that_does_not_apply_is_not_accepted() {
 #[test]
 fn a_stored_log_that_applies_folds() {
     let texts = BTreeMap::from([(1, FIRST.to_string())]);
-    let (source, _) = fold(&texts).expect("the log folds");
+    let (source, _, _) = fold(&texts).expect("the log folds");
     assert_eq!(1, source.version);
 }
 
@@ -525,7 +535,10 @@ fn a_roots_row_names_its_structure() {
         vec![Value::I64(1), Value::I64(0), Value::I64(3), Value::I64(7)],
     );
     named.add(&row).expect("the row reads");
-    assert_eq!(Some(&(3, Pid(7))), named.heaps.get(&(1, 0)));
+    assert_eq!(
+        Some(&(3, Pid(7))),
+        named.heaps.get(&(CatRelId(1), CatCtorId(0)))
+    );
 }
 
 #[test]
@@ -552,6 +565,29 @@ fn stored_order_keys_order_every_declared_sum() {
 
 #[test]
 fn a_fill_that_fails_internally_fails_the_step_as_internal() {
+    let (sa, sb, r, mut data) = gaining_a_field();
+    let rid = super::ids::rel_id(&sa, r);
+    let cid = super::ctor_id(&sa, r, 0);
+    let rb = super::ids::relation(&sb, rid).expect("ts after");
+    let fid = super::change::fields(&sb, rb, 0)
+        .iter()
+        .find(|f| f.name == "n")
+        .and_then(|f| f.id)
+        .expect("n has an id");
+    let mut moved = super::change::Moved::default();
+    moved.fills.insert(
+        (rid, cid, fid),
+        Box::new(|_, _| Err(super::change::Failed::Internal("broken".into()))),
+    );
+    match super::change::step(&sa, &sb, &mut data, moved) {
+        Err(Error::Internal(why)) => assert_eq!("broken", why),
+        other => panic!("not an internal failure: {other:?}"),
+    }
+}
+
+/// Returns the schemas of a relation `ts` of a one-field record before and after it gains a
+/// field `n`, the relation in the first, and data holding one row of it.
+fn gaining_a_field() -> (Schema, Schema, adtb_lang::types::RelId, super::change::Data) {
     let a = migrated(
         &Source::default(),
         "module m\nadd module m\nadd type T = { id: Key ts }\nadd relation ts : T key id\n",
@@ -567,23 +603,83 @@ fn a_fill_that_fails_internally_fails_the_step_as_internal() {
         .keys()
         .find(|&&r| sa.relation(r).name == "ts")
         .expect("ts");
-    let rid = sa.ids.relations[&r];
+    let rid = super::ids::rel_id(&sa, r);
     let cid = super::ctor_id(&sa, r, 0);
     let mut data = super::change::Data::new();
     data.insert(rid, [(cid, vec![vec![Value::I64(1)]])].into());
-    let rb = super::change::relation(&sb, rid).expect("ts after");
-    let fid = super::change::fields(&sb, rb, 0)
-        .iter()
-        .find(|f| f.name == "n")
-        .and_then(|f| f.id)
-        .expect("n has an id");
-    let mut moved = super::change::Moved::default();
-    moved.fills.insert(
-        (rid, cid, fid),
-        Box::new(|_, _| Err(super::change::Failed::Internal("broken".into()))),
-    );
-    match super::change::step(&sa, &sb, &mut data, moved) {
-        Err(Error::Internal(why)) => assert_eq!("broken", why),
+    (sa, sb, r, data)
+}
+
+#[test]
+fn a_rekey_of_a_relation_the_schema_after_lacks_is_internal() {
+    let (sa, _, r, data) = gaining_a_field();
+    let maps = [adtb_lang::evolve::RowMap::Rekey { relation: r }];
+    match super::moved::moved(&sa, &engine_schema(), &maps, &data) {
+        Err(Error::Internal(why)) => assert!(why.contains("rekeyed"), "{why}"),
+        Err(e) => panic!("not an internal failure: {e:?}"),
+        Ok(_) => panic!("the rekey maps"),
+    }
+}
+
+#[test]
+fn a_copy_from_a_row_without_the_field_is_internal() {
+    let (sa, sb, r, data) = gaining_a_field();
+    let maps = [adtb_lang::evolve::RowMap::Copy {
+        def: sa.relation(r).elem_def,
+        ctors: vec![0],
+        field: "n".into(),
+    }];
+    let moved = super::moved::moved(&sa, &sb, &maps, &data).expect("the copy maps");
+    let fill = moved.fills.values().next().expect("the copy fills `n`");
+    match fill(&[], &[]) {
+        Err(super::change::Failed::Internal(why)) => assert!(why.contains("`n`"), "{why}"),
         other => panic!("not an internal failure: {other:?}"),
     }
+}
+
+#[test]
+fn an_index_path_naming_no_field_is_internal() {
+    let (sa, _, r, _) = gaining_a_field();
+    let path = [adtb_lang::kernel::PathStep::Field("missing".into())];
+    let got = super::rows::path_steps(&sa, r, 0, &path);
+    assert!(
+        matches!(got, Err(crate::exec::Error::Internal(_))),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn a_stored_row_without_the_shape_of_an_index_path_is_corrupt() {
+    use super::rows::{Step, at_path};
+    let steps = [Step::Field(0), Step::Ctor(1), Step::Field(0)];
+    let held = [sum(1, vec![Value::I64(7)]).remove(0)];
+    assert_eq!(Ok(Some(&Value::I64(7))), at_path(&held, &steps));
+    let other = [sum(0, vec![]).remove(0)];
+    assert_eq!(Ok(None), at_path(&other, &steps));
+    for row in [vec![], vec![Value::I64(1)], vec![sum(1, vec![]).remove(0)]] {
+        let got = at_path(&row, &steps);
+        assert!(
+            matches!(got, Err(crate::exec::Error::Corrupt(_))),
+            "{row:?}: {got:?}"
+        );
+    }
+}
+
+#[test]
+fn a_derived_index_element_without_the_normal_program_is_internal() {
+    let (sa, _, r, _) = gaining_a_field();
+    let elements = [crate::plan::Element::Derived {
+        index: 0,
+        element: 0,
+    }];
+    let got = super::IndexKeys::new(&sa, None, r, &[0], &elements);
+    assert!(
+        matches!(got, Err(crate::exec::Error::Internal(_))),
+        "{got:?}"
+    );
+    let got = super::element_types(&sa, None, r, 0, &elements);
+    assert!(
+        matches!(got, Err(crate::exec::Error::Internal(_))),
+        "{got:?}"
+    );
 }

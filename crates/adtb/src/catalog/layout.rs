@@ -7,6 +7,8 @@ use adtb_lang::types::{Base, RelId, Ty, TypeId};
 use crate::heap::{self, FieldType};
 use crate::key::{self, AnonRecordType, AnonSumType, CtorId, KeyType, OrderKey, Scalar, SumType};
 
+use super::ids::CatCtorId;
+
 /// Returns `ty` with every newtype replaced by its representation, down to a base, a sum or
 /// another type that is no newtype.
 pub fn repr(schema: &Schema, ty: &Ty) -> Ty {
@@ -94,7 +96,7 @@ pub fn ctors(schema: &Schema, ty: &Ty) -> Vec<(u32, Vec<(String, Ty)>)> {
                         .unwrap_or_else(|| panic!("constructor {} has a catalog id", c.name));
                     let mut fs = header.clone();
                     fs.extend(c.fields.iter().map(|f| (f.name.clone(), f.ty.subst(&args))));
-                    (ctor_id(*id), fs)
+                    (CatCtorId(*id).stored().0, fs)
                 })
                 .collect()
         }
@@ -105,10 +107,6 @@ pub fn ctors(schema: &Schema, ty: &Ty) -> Vec<(u32, Vec<(String, Ty)>)> {
             .collect(),
         t => panic!("{t:?} is not a sum"),
     }
-}
-
-pub fn ctor_id(id: u64) -> u32 {
-    u32::try_from(id).expect("a constructor id fits 32 bits")
 }
 
 /// Returns whether `ty`, a type no newtype wraps, is a declared record.

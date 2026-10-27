@@ -1,16 +1,21 @@
 //! The in-process API over the simulator: open, ad hoc text, interactive transactions and the
 //! retrying closure.
 
+#[expect(dead_code, reason = "this binary uses part of the API helpers")]
+#[path = "support/api.rs"]
+mod api;
+
 use std::sync::{Arc, Mutex};
 
 use adtb::runtime::Threads;
 use adtb::{
-    AdHocTransaction, CallOptions, CreateOptions, Database, DynRows, Error, Limit, Log, OpenError,
-    OpenOptions, Position, RejectReason, RetryReason, TxnCallOptions, TxnOptions, Value,
+    CallOptions, Database, Error, Limit, Log, OpenError, OpenOptions, Position, RejectReason,
+    RetryReason, TxnCallOptions, TxnOptions, Value,
 };
-use adtb_lang::textual::print;
 use adtb_lang::types::{Base, Ty};
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
+
+use api::{in_txn, once, options, printed, result, run};
 
 const SHOP: &str = r"module shop
 add module shop
@@ -44,28 +49,8 @@ fn log() -> Log {
     Log::new([SHOP])
 }
 
-fn options() -> OpenOptions {
-    OpenOptions {
-        create: Some(CreateOptions::default()),
-        workers: Some(4),
-        ..OpenOptions::default()
-    }
-}
-
 fn open(rt: &SimRuntime) -> Database<SimRuntime> {
-    Database::open_in(rt.clone(), "app.adt", &log(), &options()).expect("the database opens")
-}
-
-/// Runs `body` as one process of `sim` and returns what it returns.
-fn run<T>(sim: &mut Sim, body: impl FnOnce(SimRuntime) -> T) -> T {
-    let mut got = None;
-    let outcome = sim.run(|rt| got = Some(body(rt)));
-    assert_eq!(Outcome::Finished, outcome);
-    got.expect("the run returns")
-}
-
-fn once<T>(seed: u64, body: impl FnOnce(SimRuntime) -> T) -> T {
-    run(&mut Sim::new(seed, Config::default()), body)
+    Database::open_in(rt.clone(), "app.adt", &log(), &options(4)).expect("the database opens")
 }
 
 fn text(t: &str) -> Value {
@@ -76,27 +61,9 @@ fn name(n: &str) -> [(&'static str, Ty, Value); 1] {
     [("n", Ty::Base(Base::Text), text(n))]
 }
 
-fn printed(rows: DynRows) -> Vec<String> {
-    let form = rows.form().clone();
-    rows.map(|r| print(&r.expect("a row"), &form).expect("a row prints"))
-        .collect()
-}
-
 /// Returns each row of the one result of `text` run in `db`, printed.
 fn query(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    let mut out = db
-        .query_text(text, &[], &CallOptions::default())
-        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
-    assert_eq!(1, out.len(), "`{text}` has one result");
-    printed(out.remove(0))
-}
-
-fn in_txn(t: &mut AdHocTransaction<'_, SimRuntime>, text: &str) -> Vec<String> {
-    let mut out = t
-        .query_text(text, &[], &TxnCallOptions::default())
-        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
-    assert_eq!(1, out.len(), "`{text}` has one result");
-    printed(out.remove(0))
+    printed(result(db, text))
 }
 
 fn sign_up(db: &Database<SimRuntime>, n: &str) {
@@ -212,7 +179,7 @@ fn a_shipped_log_that_differs_from_the_file_diverges() {
     run(&mut sim, |rt| drop(open(&rt)));
     run(&mut sim, |rt| {
         let other = Log::new([SHOP.replace("body: Text", "text: Text")]);
-        let got = Database::open_in(rt, "app.adt", &other, &options());
+        let got = Database::open_in(rt, "app.adt", &other, &options(4));
         assert!(
             matches!(got, Err(OpenError::Diverged { version: 1 })),
             "{got:?}"
@@ -225,7 +192,7 @@ fn a_shorter_shipped_log_opens_at_the_file_version() {
     let mut sim = Sim::new(4, Config::default());
     run(&mut sim, |rt| sign_up(&open(&rt), "ann"));
     run(&mut sim, |rt| {
-        let db = Database::open_in(rt, "app.adt", &Log::default(), &options())
+        let db = Database::open_in(rt, "app.adt", &Log::default(), &options(4))
             .expect("an empty log is a prefix of the file's");
         assert_eq!(vec![r#""ann""#], query(&db, NAMES));
     });
@@ -238,7 +205,7 @@ fn a_refused_first_migration_fails_open() {
             "where not exists p in payments where p.customer == key c",
             "where not exists n in notes where n.body == c.name",
         );
-        let got = Database::open_in(rt, "app.adt", &Log::new([unindexed]), &options());
+        let got = Database::open_in(rt, "app.adt", &Log::new([unindexed]), &options(4));
         match got {
             Err(OpenError::MigrationRefused {
                 version: 1,
@@ -261,7 +228,7 @@ fn a_second_migration_applies_at_open() {
             SHOP,
             "module shop\nadd type Label = { id: Key tags, name: Text }\nadd relation tags : Label key id generate sequence\n",
         ]);
-        let db = Database::open_in(rt, "app.adt", &next, &options())
+        let db = Database::open_in(rt, "app.adt", &next, &options(4))
             .expect("the second migration applies");
         assert!(query(&db, "from t in tags select t.name").is_empty());
     });
@@ -694,7 +661,7 @@ fn the_round_limit_of_an_open_rejects_a_longer_fixpoint() {
     once(0, |rt| {
         let opts = OpenOptions {
             fix_rounds: Some(3),
-            ..options()
+            ..options(4)
         };
         let db = Database::open_in(rt, "app.adt", &log(), &opts).expect("the database opens");
         let got = db.query_text(FIVE_ROUNDS, &[], &CallOptions::default());
@@ -1065,7 +1032,7 @@ fn open_wide(rt: &SimRuntime, n: usize) -> Database<SimRuntime> {
         rt.clone(),
         "app.adt",
         &Log::new([SHOP.to_string(), wide(n, "Text")]),
-        &options(),
+        &options(4),
     )
     .expect("the database opens")
 }
@@ -1153,7 +1120,7 @@ fn a_migration_declaring_a_constructor_that_can_never_fit_is_refused_naming_it()
                 rt,
                 "app.adt",
                 &Log::new([SHOP.to_string(), wide(n, ty)]),
-                &options(),
+                &options(4),
             );
             match got {
                 Err(OpenError::MigrationRefused {

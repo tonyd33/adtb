@@ -591,12 +591,16 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     .uniques
                     .iter()
                     .find(|u| u.pos == i as usize)
-                    .expect("an upsert names a unique");
+                    .ok_or_else(|| {
+                        Error::Internal(format!("an upsert names unique {i} of its relation"))
+                    })?;
                 let (_, ix) = r
                     .indexes
                     .iter()
                     .find(|(id, _)| *id == u.index)
-                    .expect("a unique's index is one of its relation's");
+                    .ok_or_else(|| {
+                        Error::Internal("a unique's index is one of its relation's".into())
+                    })?;
                 let c = n.ctor_of()?;
                 let types = self.store.key_types(u.index);
                 let row = self.stored(r.ctors[c as usize].heap, n)?;

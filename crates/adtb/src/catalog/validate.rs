@@ -8,34 +8,28 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 
 use crate::exec::{self, AtSnapshot, Budget, Call, Store, Val};
-use crate::mvcc::{Snapshot, Transactions, Xid};
 use crate::plan;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
-use super::{Catalog, Error};
+use super::ids::CatRelId;
+use super::{Catalog, Error, Migrating};
 
 impl Catalog {
     /// Returns, for each constraint and check of this catalog that `old` lacks or that reads a
-    /// relation whose catalog id is in `rewritten`, why the rows transaction `x` sees at
-    /// `snapshot` violate it.
+    /// relation whose catalog id is in `rewritten`, why the rows transaction `m.x` sees at
+    /// `m.snapshot` violate it.
     ///
     /// A constraint that reads a transition is not validated.
     pub(super) fn violations<R: Runtime>(
         &self,
-        pager: &Pager<R>,
-        txns: &Transactions<R>,
-        x: Xid,
-        snapshot: &Snapshot,
+        m: &Migrating<'_, R>,
         old: &Schema,
-        rewritten: &BTreeSet<u64>,
+        rewritten: &BTreeSet<CatRelId>,
     ) -> Result<Vec<String>, Error> {
+        let (pager, x) = (m.pager, m.x);
         let schema = &self.schema;
-        let (_, program) = self
-            .source
-            .check()
-            .map_err(|ds| Error::Internal(format!("an applied migration checks: {ds:?}")))?;
-        let normal = norm::program(schema, &program)
+        let normal = norm::program(schema, &self.program)
             .map_err(|e| Error::Internal(format!("a checked schema normalises: {e:?}")))?;
         let existed: BTreeSet<String> = qualified(old).into_iter().collect();
         let catalog = self.plan();
@@ -45,8 +39,8 @@ impl Catalog {
             reads: Arc::new(AtSnapshot {
                 rt: pager.rt.clone(),
                 pager: pager.clone(),
-                txns: Arc::new(txns.clone()),
-                snapshot: snapshot.clone(),
+                txns: Arc::new(m.txns.clone()),
+                snapshot: m.snapshot.clone(),
                 reader: Some(x),
                 serial: None,
             }),
@@ -69,7 +63,7 @@ impl Catalog {
                     .ids
                     .relations
                     .get(r)
-                    .is_some_and(|id| rewritten.contains(id))
+                    .is_some_and(|&id| rewritten.contains(&CatRelId(id)))
             });
             if existed.contains(&name) && !touched {
                 continue;

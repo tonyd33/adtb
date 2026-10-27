@@ -1,20 +1,23 @@
 //! The operator log over the simulator: migrations after the first, their data maps, version
 //! hashes, inverses and revert.
 
+#[expect(dead_code, reason = "this binary uses part of the API helpers")]
+#[path = "support/api.rs"]
+mod api;
 #[path = "support/harness.rs"]
 mod harness;
 
 use std::collections::BTreeSet;
 
+use adtb::RejectReason;
 use adtb::catalog::{self, Catalog, Error as CatalogError};
 use adtb::mvcc::{Scope, Transactions};
 use adtb::storage::Pager;
 use adtb::verify::{self, Depth};
 use adtb::{CallOptions, Database, Error, Log, OpenError, OpenOptions};
-use adtb::{CreateOptions, RejectReason};
-use adtb_lang::textual::print;
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
+use adtb_sim::{Config, Sim, SimRuntime};
 
+use api::{options, result, run, sorted};
 use harness::{finished, options as pager_options};
 
 const SHOP: &str = r"module shop
@@ -29,27 +32,12 @@ add relation payments : Payment
   index (customer)
 ";
 
-fn options() -> OpenOptions {
-    OpenOptions {
-        create: Some(CreateOptions::default()),
-        workers: Some(4),
-        ..OpenOptions::default()
-    }
-}
-
-fn run<T>(sim: &mut Sim, body: impl FnOnce(SimRuntime) -> T) -> T {
-    let mut got = None;
-    let outcome = sim.run(|rt| got = Some(body(rt)));
-    assert_eq!(Outcome::Finished, outcome);
-    got.expect("the run returns")
-}
-
 fn open(rt: &SimRuntime, log: &[&str]) -> Result<Database<SimRuntime>, OpenError> {
     Database::open_in(
         rt.clone(),
         "app.adt",
         &Log::new(log.iter().copied()),
-        &options(),
+        &options(4),
     )
 }
 
@@ -59,17 +47,7 @@ fn opened(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
 
 /// Returns each row of the one result of `text` run in `db`, printed and sorted.
 fn query(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    let mut out = db
-        .query_text(text, &[], &CallOptions::default())
-        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
-    assert_eq!(1, out.len(), "`{text}` has one result");
-    let rows = out.remove(0);
-    let form = rows.form().clone();
-    let mut got: Vec<String> = rows
-        .map(|r| print(&r.expect("a row"), &form).expect("a row prints"))
-        .collect();
-    got.sort();
-    got
+    sorted(result(db, text))
 }
 
 fn write(db: &Database<SimRuntime>, text: &str) {
@@ -1265,7 +1243,7 @@ fn a_migration_validates_its_constraints_within_the_query_memory_of_the_open() {
     run(&mut sim, |rt| {
         let tight = OpenOptions {
             query_memory_bytes: Some(1),
-            ..options()
+            ..options(4)
         };
         let got = Database::open_in(rt, "app.adt", &Log::new([SHOP, check]), &tight);
         let (version, detail) = refusal(got);

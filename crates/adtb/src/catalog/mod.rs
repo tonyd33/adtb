@@ -1,4 +1,5 @@
 mod change;
+mod ids;
 mod keying;
 pub mod layout;
 mod moved;
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use adtb_lang::ast::{CtorSel, CtorTarget, MigrationFile, Operator, OperatorKind};
+use adtb_lang::check::Program;
 use adtb_lang::evolve::{Code, Refusal, Source};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
@@ -37,7 +39,8 @@ pub use oplog::{Hash, version_hash};
 pub use rows::{IndexSpec, Rows, applied, declared, field_path, indexed_fields, indexes};
 
 use change::Data;
-use root::{NAMING_SEQUENCES, Root};
+use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, rel_id, relation};
+use root::{Changing, Root};
 
 /// The heap id of the large-value store every heap shares.
 const LARGE: u32 = 1;
@@ -102,6 +105,8 @@ impl From<mvcc::Error> for Error {
 pub struct Catalog {
     source: Source,
     schema: Schema,
+    /// The checked program of `source`.
+    program: Arc<Program>,
     root: Pid,
     large: LargeStore,
     roots: Arc<Heap>,
@@ -180,24 +185,38 @@ fn row_type(schema: &Schema, r: RelId, ctor: u32) -> Vec<FieldType> {
         .collect()
 }
 
+/// Fails with [`Error::Internal`] if an element is derived and `normal` is `None`, or a path
+/// names no field or constructor.
 fn key_schema(
     schema: &Schema,
     normal: Option<&NormalProgram>,
     keys: &OrderKeys,
     spec: &IndexSpec,
-) -> KeySchema {
-    let types = element_types(schema, normal, spec.relation, spec.ctors[0], &spec.elements);
-    KeySchema::new(
+) -> Result<KeySchema, Error> {
+    let types = element_types(schema, normal, spec.relation, spec.ctors[0], &spec.elements)
+        .map_err(broken)?;
+    Ok(KeySchema::new(
         types
             .iter()
             .map(|t| (layout::key_type(schema, keys, t), Dir::Asc))
             .collect(),
-    )
+    ))
+}
+
+/// Returns `e`, a failure of the executor on a guarantee of the checker or of a stored row, as
+/// the catalog's.
+fn broken(e: exec::Error) -> Error {
+    match e {
+        exec::Error::Corrupt(why) => Error::Corrupt(why),
+        exec::Error::Internal(why) => Error::Internal(why),
+        other => Error::Internal(format!("an index key evaluates: {other:?}")),
+    }
 }
 
 /// Returns the keying of index `spec` of `schema`, whose normal program is `normal`.
 ///
-/// Fails with [`Error::Refused`] if the executor cannot compile an expression element.
+/// Fails with [`Error::Refused`] if the executor cannot compile an expression element, or with
+/// [`Error::Internal`] or [`Error::Corrupt`] on a guarantee of the checker or of a stored row.
 fn index_keys(
     schema: &Schema,
     normal: Option<&NormalProgram>,
@@ -205,18 +224,20 @@ fn index_keys(
 ) -> Result<Arc<IndexKeys>, Error> {
     IndexKeys::new(schema, normal, spec.relation, &spec.ctors, &spec.elements)
         .map(Arc::new)
-        .map_err(|e| {
-            Error::Refused(vec![format!(
+        .map_err(|e| match e {
+            exec::Error::Internal(_) | exec::Error::Corrupt(_) => broken(e),
+            e => Error::Refused(vec![format!(
                 "index `{}` is not admitted: {e:?}",
                 spec.clause
-            )])
+            )]),
         })
 }
 
-/// Returns the normal program of `source` when an index of `specs` has an element other than a
-/// field.
+/// Returns the normal program of `schema`, whose checked program is `program`, when an index of
+/// `specs` has an element other than a field.
 fn index_program<'s>(
-    source: &Source,
+    schema: &Schema,
+    program: &Program,
     mut specs: impl Iterator<Item = &'s IndexSpec>,
 ) -> Result<Option<NormalProgram>, String> {
     let derived = specs.any(|s| {
@@ -227,22 +248,15 @@ fn index_program<'s>(
     if !derived {
         return Ok(None);
     }
-    let (schema, program) = source
-        .check()
-        .map_err(|ds| format!("the schema checks: {ds:?}"))?;
-    norm::program(&schema, &program)
+    norm::program(schema, program)
         .map(Some)
         .map_err(|e| format!("the schema normalises: {e:?}"))
-}
-
-fn ctor_id(schema: &Schema, r: RelId, c: u32) -> u64 {
-    schema.ids.ctors[&(schema.relation(r).elem_def, c)]
 }
 
 fn index_ctors(schema: &Schema, spec: &IndexSpec) -> BTreeSet<CtorId> {
     spec.ctors
         .iter()
-        .map(|&c| CtorId(layout::ctor_id(ctor_id(schema, spec.relation, c))))
+        .map(|&c| ctor_id(schema, spec.relation, c).stored())
         .collect()
 }
 
@@ -258,10 +272,10 @@ fn ctor_count(schema: &Schema, r: RelId) -> u32 {
 /// constructor index.
 /// Returns why each constructor relation of `schema` that `rewritten` names cannot store its
 /// smallest row on a page of `page_size` bytes.
-fn oversized(page_size: usize, schema: &Schema, rewritten: &BTreeSet<u64>) -> Vec<String> {
+fn oversized(page_size: usize, schema: &Schema, rewritten: &BTreeSet<CatRelId>) -> Vec<String> {
     let mut why = Vec::new();
     for (r, c) in ctor_relations(schema) {
-        if !rewritten.contains(&schema.ids.relations[&r]) {
+        if !rewritten.contains(&rel_id(schema, r)) {
             continue;
         }
         if let Err(heap::Error::TooLarge { len, limit }) =
@@ -337,7 +351,7 @@ fn update_root<R: Runtime>(
 #[derive(Default)]
 struct Named {
     /// The heap id and root of each constructor relation, by relation id and constructor id.
-    heaps: BTreeMap<(u64, u64), (u32, Pid)>,
+    heaps: BTreeMap<(CatRelId, CatCtorId), (u32, Pid)>,
     indexes: BTreeMap<u64, Pid>,
     keys: OrderKeys,
     /// The text of each migration, by version.
@@ -355,8 +369,10 @@ impl Named {
                 let id = uint(id)?;
                 let id = u32::try_from(id)
                     .map_err(|_| Error::Corrupt(format!("heap id {id} is past 32 bits")))?;
-                self.heaps
-                    .insert((uint(rel)?, uint(c)?), (id, Pid(uint(at)?)));
+                self.heaps.insert(
+                    (CatRelId(uint(rel)?), CatCtorId(uint(c)?)),
+                    (id, Pid(uint(at)?)),
+                );
             }
             (INDEX_ROOT, [id, at]) => {
                 self.indexes.insert(uint(id)?, Pid(uint(at)?));
@@ -414,8 +430,8 @@ fn visible<R: Runtime>(
 }
 
 /// Returns the source the migrations `texts` fold to, in version order from the empty schema,
-/// and its schema.
-fn fold(texts: &BTreeMap<u64, String>) -> Result<(Source, Schema), Error> {
+/// and its schema and checked program.
+fn fold(texts: &BTreeMap<u64, String>) -> Result<(Source, Schema, Program), Error> {
     let mut source = Source::default();
     for (&version, text) in texts {
         let refused = |why: Vec<String>| Error::Unaccepted(version, why);
@@ -426,13 +442,13 @@ fn fold(texts: &BTreeMap<u64, String>) -> Result<(Source, Schema), Error> {
             .migrate(&file, text)
             .map_err(|r| refused(reasons(r)))?;
     }
-    let schema = source.schema().map_err(|ds| {
+    let (schema, program) = source.check().map_err(|ds| {
         Error::Unaccepted(
             source.version,
             ds.into_iter().map(|d| d.diag.message).collect(),
         )
     })?;
-    Ok((source, schema))
+    Ok((source, schema, program))
 }
 
 /// Returns whether `keys` holds an order key for each constructor of every declared sum of
@@ -531,7 +547,7 @@ impl Catalog {
             large: (0, Pid(0)),
             roots: (0, Pid(0)),
             next_heap: FIRST_HEAP,
-            changing: 0,
+            changing: Changing::None,
             sequences: Pid(0),
         };
         pager.update(&[pid], |p| root.write(p[0]))?;
@@ -550,9 +566,14 @@ impl Catalog {
         let large = LargeStore::create(pager, LARGE)?;
         let roots = Heap::create(pager, ROOTS, roots_row(), large)?;
         let named = (roots.id(), roots.root());
+        let (schema, program) = Source::default()
+            .check()
+            .map_err(|ds| Error::Internal(format!("the engine's declarations check: {ds:?}")))?;
+        let program = Arc::new(program);
         let empty = Catalog {
             source: Source::default(),
             schema: engine_schema(),
+            program: program.clone(),
             root: pid,
             large,
             roots: Arc::new(roots),
@@ -564,15 +585,28 @@ impl Catalog {
             query_memory: DEFAULT_QUERY_MEMORY,
         };
         let x = txns.begin(pager)?;
-        let every = empty.schema.ids.relations.values().copied().collect();
+        let every = empty
+            .schema
+            .ids
+            .relations
+            .values()
+            .map(|&id| CatRelId(id))
+            .collect();
         let (id, snapshot) = txns.take(Scope::Every)?;
-        let built = empty.build(
+        let m = Migrating {
             pager,
             txns,
+            x,
+            snapshot: &snapshot,
+        };
+        let built = empty.build(
+            &m,
             &Built {
-                x,
-                snapshot: &snapshot,
-                source: Source::default(),
+                next: Checked {
+                    source: Source::default(),
+                    schema,
+                    program,
+                },
                 data: &Data::new(),
                 rewritten: &every,
                 old: Rows::new(),
@@ -640,11 +674,11 @@ impl Catalog {
         let large = LargeStore::open(root.large.0, root.large.1);
         let roots = Heap::open(pager, root.roots.0, root.roots.1, roots_row(), large)?;
         let named = named(pager, &txns, &roots)?;
-        let (source, schema) = fold(&named.migrations)?;
+        let (source, schema, program) = fold(&named.migrations)?;
         check_order_keys(&schema, &named.keys)?;
         let mut heaps = BTreeMap::new();
         for (r, c) in ctor_relations(&schema) {
-            let rid = schema.ids.relations[&r];
+            let rid = rel_id(&schema, r);
             let cid = ctor_id(&schema, r, c);
             let Some(&(id, at)) = named.heaps.get(&(rid, cid)) else {
                 let name = &schema.relation(r).name;
@@ -654,7 +688,7 @@ impl Catalog {
             heaps.insert((r, c), Arc::new(heap));
         }
         let specs = indexes(&schema);
-        let normal = index_program(&source, specs.values()).map_err(Error::Corrupt)?;
+        let normal = index_program(&schema, &program, specs.values()).map_err(Error::Corrupt)?;
         let mut stored = BTreeMap::new();
         for (id, spec) in specs {
             let Some(&at) = named.indexes.get(&id) else {
@@ -662,7 +696,8 @@ impl Catalog {
             };
             let index = Index::open(
                 BTree::open(at, owner(id)),
-                key_schema(&schema, normal.as_ref(), &named.keys, &spec),
+                key_schema(&schema, normal.as_ref(), &named.keys, &spec)
+                    .map_err(|e| Error::Corrupt(format!("{e:?}")))?,
                 index_ctors(&schema, &spec),
             );
             let keys = index_keys(&schema, normal.as_ref(), &spec)
@@ -672,6 +707,7 @@ impl Catalog {
         let catalog = Catalog {
             source,
             schema,
+            program: Arc::new(program),
             root: pid,
             large,
             roots: Arc::new(roots),
@@ -682,9 +718,9 @@ impl Catalog {
             sequences: root.sequences,
             query_memory: DEFAULT_QUERY_MEMORY,
         };
-        if root.changing != 0 {
+        if root.changing != Changing::None {
             catalog.free_leaked(pager, &txns)?;
-            update_root(pager, pid, |r| r.changing = 0)?;
+            update_root(pager, pid, |r| r.changing = Changing::None)?;
         }
         Ok((catalog, txns))
     }
@@ -722,15 +758,30 @@ impl Catalog {
             Ok(s) => s,
             Err(r) => return refused(reasons(r)),
         };
-        let schema = next.schema().expect("an applied migration builds");
+        let (schema, program) = match next.check() {
+            Ok(checked) => checked,
+            Err(ds) => return refused(ds.into_iter().map(|d| d.diag.message).collect()),
+        };
         if let Err(why) = recordable(&next) {
             return refused(why);
         }
-        self.admits(&next, &schema)?;
+        let rewritten = change::rewritten(&self.schema, &schema);
+        self.admits(&schema, &program, &rewritten)?;
         let x = txns.begin(pager)?;
-        update_root(pager, self.root, |r| r.changing = x.0)?;
+        update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
         let (id, snapshot) = txns.take(Scope::Every)?;
-        let built = self.replay(pager, txns, x, &snapshot, &file, text, next);
+        let m = Migrating {
+            pager,
+            txns,
+            x,
+            snapshot: &snapshot,
+        };
+        let next = Checked {
+            source: next,
+            schema,
+            program: Arc::new(program),
+        };
+        let built = self.replay(&m, &file, text, next, &rewritten);
         txns.release(id);
         let built = built.and_then(|c| {
             update_root(pager, self.root, |r| r.next_heap = c.next_heap)?;
@@ -744,38 +795,33 @@ impl Catalog {
             Err(e) => {
                 txns.abort(pager, x)?;
                 self.free_leaked(pager, txns)?;
-                let lsn = update_root(pager, self.root, |r| r.changing = 0)?;
+                let lsn = update_root(pager, self.root, |r| r.changing = Changing::None)?;
                 pager.wait_durable(lsn);
                 return Err(e);
             }
         }
         self.free_leaked(pager, txns)?;
-        let lsn = update_root(pager, self.root, |r| r.changing = 0)?;
+        let lsn = update_root(pager, self.root, |r| r.changing = Changing::None)?;
         pager.wait_durable(lsn);
         Ok(())
     }
 
-    /// Refuses `schema`, built from `source`, when a constraint of it has no index-bounded
-    /// incremental check over the heaps [`Catalog::extend`] would create and its indexes; each
-    /// reason.
-    fn admits(&self, source: &Source, schema: &Schema) -> Result<(), Error> {
-        let (_, program) = source.check().map_err(|ds| {
-            Error::Refused(ds.into_iter().map(|d| d.diag.message).collect::<Vec<_>>())
-        })?;
-        let normal = norm::program(schema, &program)
+    /// Refuses `schema`, whose checked program is `program`, when a constraint of it has no
+    /// index-bounded incremental check over the heaps [`Catalog::heap_ids`] assigns a migration
+    /// rewriting the relations `rewritten` names, and its indexes; each reason.
+    fn admits(
+        &self,
+        schema: &Schema,
+        program: &Program,
+        rewritten: &BTreeSet<CatRelId>,
+    ) -> Result<(), Error> {
+        let normal = norm::program(schema, program)
             .map_err(|e| Error::Refused(vec![format!("the schema does not normalise: {e:?}")]))?;
-        let mut heaps: BTreeMap<(RelId, u32), HeapId> = BTreeMap::new();
-        let mut next = self.next_heap;
-        for rc in ctor_relations(schema) {
-            let id = match self.heaps.get(&rc) {
-                Some(h) => h.id(),
-                None => {
-                    next += 1;
-                    next - 1
-                }
-            };
-            heaps.insert(rc, HeapId(u64::from(id)));
-        }
+        let (ids, _) = self.heap_ids(schema, rewritten)?;
+        let heaps: BTreeMap<(RelId, u32), HeapId> = ids
+            .into_iter()
+            .map(|(rc, id)| (rc, HeapId(u64::from(id))))
+            .collect();
         let specs = indexes(schema);
         for spec in specs.values() {
             index_keys(schema, Some(&normal), spec)?;
@@ -792,34 +838,26 @@ impl Catalog {
         ))
     }
 
-    /// Returns the catalog of `next`, the source after migration `file`, as transaction `x`
-    /// writes it: the rows of every relation the migration changes mapped through each of its
-    /// operators in turn from the rows `snapshot` sees.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one migration's transaction, snapshot, file and result"
-    )]
+    /// Returns the catalog of `next`, the source after migration `file`, as `m.x` writes it: the
+    /// rows of every relation `rewritten` names mapped through each of the migration's operators
+    /// in turn from the rows `m.snapshot` sees.
     fn replay<R: Runtime>(
         &self,
-        pager: &Pager<R>,
-        txns: &Transactions<R>,
-        x: Xid,
-        snapshot: &Snapshot,
+        m: &Migrating<'_, R>,
         file: &MigrationFile,
         text: &str,
-        next: Source,
+        next: Checked,
+        rewritten: &BTreeSet<CatRelId>,
     ) -> Result<Catalog, Error> {
-        let schema = next.schema().expect("an applied migration builds");
-        let rewritten = change::rewritten(&self.schema, &schema);
         let mut data = Data::new();
-        for &rid in &rewritten {
-            let Some(r) = change::relation(&self.schema, rid) else {
+        for &rid in rewritten {
+            let Some(r) = relation(&self.schema, rid) else {
                 continue;
             };
-            let mut ctors: BTreeMap<u64, Vec<Vec<Value>>> = (0..ctor_count(&self.schema, r))
+            let mut ctors: BTreeMap<CatCtorId, Vec<Vec<Value>>> = (0..ctor_count(&self.schema, r))
                 .map(|c| (ctor_id(&self.schema, r, c), Vec::new()))
                 .collect();
-            for (c, row) in self.rows(pager, txns, snapshot, r)? {
+            for (c, row) in self.rows(m.pager, m.txns, m.snapshot, r)? {
                 ctors
                     .get_mut(&ctor_id(&self.schema, r, c))
                     .expect("a constructor of the relation")
@@ -841,7 +879,7 @@ impl Catalog {
                     return Err(Error::Refused(ds.into_iter().map(|d| d.message).collect()));
                 }
             };
-            why.extend(self.emptied(pager, txns, snapshot, &before, &data, module, op)?);
+            why.extend(self.emptied(m, &before, &data, module, op)?);
             for step in steps {
                 let Ok(schema) = step.after.schema() else {
                     continue;
@@ -863,24 +901,20 @@ impl Catalog {
             }
             at = after;
         }
-        why.extend(oversized(pager.page_size(), &schema, &rewritten));
+        why.extend(oversized(m.pager.page_size(), &next.schema, rewritten));
         if !why.is_empty() {
             return Err(Error::Refused(why));
         }
-        let old = declared(&self.schema, &self.source);
         let built = self.build(
-            pager,
-            txns,
+            m,
             &Built {
-                x,
-                snapshot,
-                source: next,
+                next,
                 data: &data,
-                rewritten: &rewritten,
-                old,
+                rewritten,
+                old: declared(&self.schema, &self.source),
             },
         )?;
-        let why = built.violations(pager, txns, x, snapshot, &self.schema, &rewritten)?;
+        let why = built.violations(m, &self.schema, rewritten)?;
         if !why.is_empty() {
             return Err(Error::Refused(why));
         }
@@ -889,15 +923,9 @@ impl Catalog {
 
     /// Returns why the data refuses `op`, applied to `schema` of a migration of `module`, beyond
     /// what its data map refuses: a constructor it disables holds rows.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one operator, the state before it and where its rows are"
-    )]
     fn emptied<R: Runtime>(
         &self,
-        pager: &Pager<R>,
-        txns: &Transactions<R>,
-        snapshot: &Snapshot,
+        m: &Migrating<'_, R>,
         schema: &Schema,
         data: &Data,
         module: &str,
@@ -908,11 +936,11 @@ impl Catalog {
         };
         let mut why = Vec::new();
         for (r, c) in disabled(schema, module, target) {
-            let rid = schema.ids.relations[&r];
+            let rid = rel_id(schema, r);
             let cid = ctor_id(schema, r, c);
             let held = match data.get(&rid) {
                 Some(ctors) => !ctors[&cid].is_empty(),
-                None => self.holds(pager, txns, snapshot, rid, cid)?,
+                None => self.holds(m, rid, cid)?,
             };
             if held {
                 let rel = schema.relation(r);
@@ -926,71 +954,68 @@ impl Catalog {
         Ok(why)
     }
 
-    /// Returns whether the heap of constructor `cid` of relation `rid` holds a row `snapshot`
+    /// Returns whether the heap of constructor `cid` of relation `rid` holds a row `m.snapshot`
     /// sees.
     fn holds<R: Runtime>(
         &self,
-        pager: &Pager<R>,
-        txns: &Transactions<R>,
-        snapshot: &Snapshot,
-        rid: u64,
-        cid: u64,
+        m: &Migrating<'_, R>,
+        rid: CatRelId,
+        cid: CatCtorId,
     ) -> Result<bool, Error> {
-        let Some(r) = change::relation(&self.schema, rid) else {
+        let Some(r) = relation(&self.schema, rid) else {
             return Ok(false);
         };
-        let c = change::ctor_index(&self.schema, r, cid).expect("a constructor of the relation");
-        Ok(!visible(pager, txns, snapshot, self.heap(r, c))?.is_empty())
+        let c = ctor_index(&self.schema, r, cid).expect("a constructor of the relation");
+        Ok(!visible(m.pager, m.txns, m.snapshot, self.heap(r, c))?.is_empty())
     }
 
-    /// Returns the catalog of `b.source` as transaction `b.x` writes it over this one: a heap for
+    /// Returns the catalog of `b.next` as transaction `m.x` writes it over this one: a heap for
     /// each constructor relation and an index for each index of the relations `b.rewritten`
     /// names, filled with the rows `b.data` gives them, the structures of every other relation
     /// kept, the roots rows of the replaced structures deleted and those of the new ones
     /// written, and every catalog row that `b.old` holds and the new version does not deleted
     /// and every other one written.
-    fn build<R: Runtime>(
-        &self,
-        pager: &Pager<R>,
-        txns: &Transactions<R>,
-        b: &Built,
-    ) -> Result<Catalog, Error> {
-        let schema = b.source.schema().expect("the source builds");
+    fn build<R: Runtime>(&self, m: &Migrating<'_, R>, b: &Built) -> Result<Catalog, Error> {
+        let pager = m.pager;
+        let schema = b.next.schema.clone();
         let mut keys = self.keys.clone();
         let fresh = layout::new_order_keys(&schema, &keys);
         keys.extend(fresh.clone());
+        let (heap_ids, next_heap) = self.heap_ids(&schema, b.rewritten)?;
         let mut next = Catalog {
-            source: b.source.clone(),
+            source: b.next.source.clone(),
             schema,
+            program: b.next.program.clone(),
             root: self.root,
             large: self.large,
             roots: self.roots.clone(),
             heaps: BTreeMap::new(),
             indexes: BTreeMap::new(),
             keys,
-            next_heap: self.next_heap,
+            next_heap,
             sequences: self.sequences,
             query_memory: self.query_memory,
         };
         let specs = indexes(&next.schema);
-        let normal = index_program(&next.source, specs.values()).map_err(Error::Internal)?;
+        let normal =
+            index_program(&next.schema, &next.program, specs.values()).map_err(Error::Internal)?;
         let mut keyed = BTreeMap::new();
         for (id, spec) in &specs {
             keyed.insert(*id, index_keys(&next.schema, normal.as_ref(), spec)?);
         }
         duplicates(&next.schema, &next.keys, normal.as_ref(), &specs, &keyed, b)?;
-        let old: BTreeMap<(u64, u64), (RelId, u32)> = self
+        let old: BTreeMap<(CatRelId, CatCtorId), (RelId, u32)> = self
             .heaps
             .keys()
             .map(|&(r, c)| {
-                let id = (self.schema.ids.relations[&r], ctor_id(&self.schema, r, c));
+                let id = (rel_id(&self.schema, r), ctor_id(&self.schema, r, c));
                 (id, (r, c))
             })
             .collect();
         let mut named = Vec::new();
         let mut gone = Vec::new();
         for (r, c) in ctor_relations(&next.schema) {
-            let rid = next.schema.ids.relations[&r];
+            let rid = rel_id(&next.schema, r);
             let cid = ctor_id(&next.schema, r, c);
             if !b.rewritten.contains(&rid) {
                 let kept = old
@@ -1001,11 +1026,10 @@ impl Catalog {
             }
             let heap = Heap::create(
                 pager,
-                next.next_heap,
+                heap_ids[&(r, c)],
                 row_type(&next.schema, r, c),
                 self.large,
             )?;
-            next.next_heap += 1;
             named.push((HEAP_ROOT, heap_root(rid, cid, &heap)));
             next.heaps.insert((r, c), Arc::new(heap));
         }
@@ -1015,7 +1039,7 @@ impl Catalog {
             }
         }
         for (id, spec) in specs {
-            let rid = next.schema.ids.relations[&spec.relation];
+            let rid = rel_id(&next.schema, spec.relation);
             let keys = keyed.remove(&id).expect("every index is keyed");
             if !b.rewritten.contains(&rid) {
                 let (_, index, _) = &self.indexes[&id];
@@ -1026,16 +1050,14 @@ impl Catalog {
             let index = Index::create(
                 pager,
                 owner(id),
-                key_schema(&next.schema, normal.as_ref(), &next.keys, &spec),
+                key_schema(&next.schema, normal.as_ref(), &next.keys, &spec)?,
                 index_ctors(&next.schema, &spec),
             )?;
             named.push((INDEX_ROOT, vec![int(id), int(index.tree().root().0)]));
             next.indexes.insert(id, (spec, index, keys));
         }
         for (&id, (spec, index, _)) in &self.indexes {
-            if b.rewritten
-                .contains(&self.schema.ids.relations[&spec.relation])
-            {
+            if b.rewritten.contains(&rel_id(&self.schema, spec.relation)) {
                 gone.push((INDEX_ROOT, vec![int(id), int(index.tree().root().0)]));
             }
         }
@@ -1052,47 +1074,80 @@ impl Catalog {
             .into_iter()
             .map(|(ctor, fields)| vec![Value::Sum { ctor, fields }])
             .collect();
-        delete_rows(pager, txns, b, &self.roots, &gone)?;
+        delete_rows(m, &self.roots, &gone)?;
         for (ctor, fields) in named {
             self.roots
-                .insert(pager, b.x.0, &[Value::Sum { ctor, fields }])?;
+                .insert(pager, m.x.0, &[Value::Sum { ctor, fields }])?;
         }
         for (&rid, ctors) in b.data {
-            let r =
-                change::relation(&next.schema, rid).expect("data holds relations of the result");
+            let r = relation(&next.schema, rid).expect("data holds relations of the result");
             for (&cid, rows) in ctors {
-                let c =
-                    change::ctor_index(&next.schema, r, cid).expect("a constructor of the result");
+                let c = ctor_index(&next.schema, r, cid).expect("a constructor of the result");
                 for row in rows {
-                    next.insert(pager, b.x, r, c, row)?;
+                    next.insert(pager, m.x, r, c, row)?;
                 }
             }
         }
-        self.write_rows(pager, txns, &next, b)?;
+        self.write_rows(m, &next, b)?;
         Ok(next)
     }
 
-    /// Write the catalog rows of `next`'s version as `b.x` over this catalog's: delete each row
+    /// Returns the heap id each constructor relation of `schema` has once a migration that
+    /// rewrites the relations `rewritten` names is built over this catalog, and the id after
+    /// the last one it gives: a kept relation's heap keeps its id, and every heap of a rewritten
+    /// one takes the next free id in turn.
+    fn heap_ids(
+        &self,
+        schema: &Schema,
+        rewritten: &BTreeSet<CatRelId>,
+    ) -> Result<(HeapIds, u32), Error> {
+        let old: BTreeMap<(CatRelId, CatCtorId), u32> = self
+            .heaps
+            .iter()
+            .map(|(&(r, c), h)| {
+                let id = (rel_id(&self.schema, r), ctor_id(&self.schema, r, c));
+                (id, h.id())
+            })
+            .collect();
+        let mut next = self.next_heap;
+        let mut out = BTreeMap::new();
+        for (r, c) in ctor_relations(schema) {
+            let rid = rel_id(schema, r);
+            let cid = ctor_id(schema, r, c);
+            let id = if rewritten.contains(&rid) {
+                next += 1;
+                next - 1
+            } else {
+                *old.get(&(rid, cid)).ok_or_else(|| {
+                    Error::Internal(format!("relation {rid} keeps constructor {cid}"))
+                })?
+            };
+            out.insert((r, c), id);
+        }
+        Ok((out, next))
+    }
+
+    /// Write the catalog rows of `next`'s version as `m.x` over this catalog's: delete each row
     /// `b.old` holds that the version does not, insert each other row of the version, and insert
     /// the row of its migration.
     fn write_rows<R: Runtime>(
         &self,
-        pager: &Pager<R>,
-        txns: &Transactions<R>,
+        m: &Migrating<'_, R>,
         next: &Catalog,
         b: &Built,
     ) -> Result<(), Error> {
-        let old: BTreeMap<u64, Held> = b
+        let pager = m.pager;
+        let old: BTreeMap<CatRelId, Held> = b
             .old
             .iter()
-            .map(|(r, rows)| (self.schema.ids.relations[r], (*r, rows.as_slice())))
+            .map(|(r, rows)| (rel_id(&self.schema, *r), (*r, rows.as_slice())))
             .collect();
         for (r, rows) in declared(&next.schema, &next.source) {
-            let rid = next.schema.ids.relations[&r];
+            let rid = rel_id(&next.schema, r);
             let (was, before) = old.get(&rid).copied().unwrap_or((r, &[]));
             for (c, row) in &rows {
                 if !before.contains(&(*c, row.clone())) {
-                    next.insert(pager, b.x, r, *c, row)?;
+                    next.insert(pager, m.x, r, *c, row)?;
                 }
             }
             let mut gone: BTreeMap<u32, Vec<Vec<Value>>> = BTreeMap::new();
@@ -1102,12 +1157,12 @@ impl Catalog {
                 }
             }
             for (c, rows) in gone {
-                delete_rows(pager, txns, b, self.heap(was, c), &rows)?;
+                delete_rows(m, self.heap(was, c), &rows)?;
             }
         }
         for (r, rows) in applied(&next.schema, &next.source, micros(pager.wall())) {
             for (c, row) in rows {
-                next.insert(pager, b.x, r, c, &row)?;
+                next.insert(pager, m.x, r, c, &row)?;
             }
         }
         Ok(())
@@ -1145,6 +1200,11 @@ impl Catalog {
         &self.schema
     }
 
+    /// Returns the checked program of the catalog's source.
+    pub fn program(&self) -> &Arc<Program> {
+        &self.program
+    }
+
     /// Returns the source the catalog's migrations fold to.
     pub fn source(&self) -> &Source {
         &self.source
@@ -1178,7 +1238,7 @@ impl Catalog {
     /// its page of generated counters, so an open after a crash frees that page until
     /// [`Catalog::name_sequences`] names it.
     pub fn naming_sequences<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<(), PageError> {
-        update_root(pager, root, |r| r.changing = NAMING_SEQUENCES)?;
+        update_root(pager, root, |r| r.changing = Changing::NamingSequences)?;
         Ok(())
     }
 
@@ -1192,7 +1252,7 @@ impl Catalog {
     ) -> Result<(), PageError> {
         let lsn = update_root(pager, root, |r| {
             r.sequences = pid;
-            r.changing = 0;
+            r.changing = Changing::None;
         })?;
         pager.wait_durable(lsn);
         Ok(())
@@ -1220,12 +1280,7 @@ impl Catalog {
                 let ctors = spec
                     .ctors
                     .iter()
-                    .map(|&c| {
-                        (
-                            CtorId(layout::ctor_id(ctor_id(schema, spec.relation, c))),
-                            c,
-                        )
-                    })
+                    .map(|&c| (ctor_id(schema, spec.relation, c).stored(), c))
                     .collect();
                 (
                     IndexId(spec.id),
@@ -1290,7 +1345,7 @@ impl Catalog {
                 .heaps
                 .range((r, 0)..=(r, u32::MAX))
                 .map(|((_, c), h)| {
-                    let id = CtorId(layout::ctor_id(ctor_id(&self.schema, r, *c)));
+                    let id = ctor_id(&self.schema, r, *c).stored();
                     (id, h.as_ref())
                 })
                 .collect();
@@ -1321,7 +1376,7 @@ impl Catalog {
         row: &[Value],
     ) -> Result<(), Error> {
         let tid = self.heap(r, c).insert(pager, x.0, row)?;
-        let ctor = CtorId(layout::ctor_id(ctor_id(&self.schema, r, c)));
+        let ctor = ctor_id(&self.schema, r, c).stored();
         for (spec, index, keys) in self.indexes.values() {
             if spec.relation != r {
                 continue;
@@ -1339,37 +1394,51 @@ impl Catalog {
 /// A relation of the catalog before a migration, with the catalog rows it holds.
 type Held<'a> = (RelId, &'a [(u32, Vec<Value>)]);
 
+/// The heap id of each constructor relation, by relation and constructor.
+type HeapIds = BTreeMap<(RelId, u32), u32>;
+
 /// What [`Catalog::build`] makes a catalog of.
 struct Built<'a> {
-    x: Xid,
-    /// What `x` reads the catalog before it at.
-    snapshot: &'a Snapshot,
-    source: Source,
+    next: Checked,
     data: &'a Data,
     /// The ids of the relations whose heaps and indexes are made again.
-    rewritten: &'a BTreeSet<u64>,
-    /// The catalog rows of the catalog before `x`, by its relations.
+    rewritten: &'a BTreeSet<CatRelId>,
+    /// The catalog rows of the catalog before the migration, by its relations.
     old: Rows,
 }
 
+/// A source, the schema it builds and its checked program.
+struct Checked {
+    source: Source,
+    schema: Schema,
+    program: Arc<Program>,
+}
+
+/// The transaction `x` of one migration, and what it reads the catalog before it at.
+struct Migrating<'a, R: Runtime> {
+    pager: &'a Pager<R>,
+    txns: &'a Transactions<R>,
+    x: Xid,
+    snapshot: &'a Snapshot,
+}
+
 /// Returns the fields of the roots row naming `heap`, constructor `cid` of relation `rid`.
-fn heap_root(rid: u64, cid: u64, heap: &Heap) -> Vec<Value> {
+fn heap_root(rid: CatRelId, cid: CatCtorId, heap: &Heap) -> Vec<Value> {
     vec![
-        int(rid),
-        int(cid),
+        int(rid.0),
+        int(cid.0),
         int(u64::from(heap.id())),
         int(heap.root().0),
     ]
 }
 
-/// Delete, as `b.x`, one version `b.snapshot` sees of each row of `rows` from `heap`.
+/// Delete, as `m.x`, one version `m.snapshot` sees of each row of `rows` from `heap`.
 fn delete_rows<R: Runtime>(
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-    b: &Built,
+    m: &Migrating<'_, R>,
     heap: &Heap,
     rows: &[Vec<Value>],
 ) -> Result<(), Error> {
+    let pager = m.pager;
     if rows.is_empty() {
         return Ok(());
     }
@@ -1380,8 +1449,10 @@ fn delete_rows<R: Runtime>(
         let Some(at) = left.iter().position(|r| **r == v.row) else {
             continue;
         };
-        if txns.sees(pager, b.snapshot, None, v.header.xmin, v.header.xmax)? {
-            heap.delete(pager, v.tid, b.x.0)?;
+        if m.txns
+            .sees(pager, m.snapshot, None, v.header.xmin, v.header.xmax)?
+        {
+            heap.delete(pager, v.tid, m.x.0)?;
             left.swap_remove(at);
         }
     }
@@ -1405,7 +1476,7 @@ fn row_key(
             "an index expression faults with {} on a row",
             f.name()
         )]),
-        other => Error::Internal(format!("an index expression evaluates: {other:?}")),
+        other => broken(other),
     })
 }
 
@@ -1422,7 +1493,7 @@ fn duplicates(
 ) -> Result<(), Error> {
     let mut why = Vec::new();
     for (id, spec) in specs {
-        let rid = schema.ids.relations[&spec.relation];
+        let rid = rel_id(schema, spec.relation);
         let Some(ctors) = b
             .data
             .get(&rid)
@@ -1430,7 +1501,7 @@ fn duplicates(
         else {
             continue;
         };
-        let ks = key_schema(schema, normal, keys, spec);
+        let ks = key_schema(schema, normal, keys, spec)?;
         let mut seen = BTreeSet::new();
         let mut shared = false;
         for &c in &spec.ctors {

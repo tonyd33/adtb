@@ -326,6 +326,7 @@ impl Db {
             for i in &d.indexes {
                 let components =
                     element_types(f.schema, Some(f.normal), *r, i.ctors[0], &i.elements)
+                        .expect("the index's elements are typed")
                         .iter()
                         .map(|t| (key_type(f.schema, &keys, t), Dir::Asc))
                         .collect();
