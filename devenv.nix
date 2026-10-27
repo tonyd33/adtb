@@ -13,7 +13,18 @@ in
 {
   # https://devenv.sh/packages/
   packages = [
+    pkgs.bash
+    pkgs.coreutils
+    pkgs.diffutils
+    pkgs.findutils
     pkgs.git
+    pkgs.gawk
+    pkgs.gnugrep
+    pkgs.gnused
+    pkgs.jujutsu
+    pkgs.jq
+    pkgs.ripgrep
+    pkgs.util-linux
     pkgs.cargo-deny
     pkgs.cargo-nextest
     quandary
@@ -77,7 +88,6 @@ in
   # https://devenv.sh/languages/
   languages.rust = {
     enable = true;
-    lsp.enable = true;
   };
 
   # https://devenv.sh/processes/
@@ -116,8 +126,6 @@ in
     shellcheck.enable = true;
     nixfmt.enable = true;
   };
-
-  editors.neovim.enable = true;
 
   # See full reference at https://devenv.sh/reference/options/
 }

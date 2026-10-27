@@ -9,39 +9,13 @@ devenv.local.yaml
 # pre-commit
 .pre-commit-config.yaml
 
-# Devenv
-.devenv*
-devenv.local.nix
-devenv.local.yaml
-
-# direnv
-.direnv
-
-# pre-commit
-.pre-commit-config.yaml
-
-
 # Added by cargo
 
 /target
 
-# Design space, knowledge base, tickets, tools and the application study are tracked; other work/ files are not
-!/work/
-/work/*
-!/work/research/
-!/work/kb/
-!/work/issues/
-!/work/tools/
-!/work/app/
+# Local session state
+/work/HANDOFF.md
 /work/research/.quandary/
 
 # Generated editor config
 /.nvim.lua
-
-# Project instructions are tracked despite the global ignore
-!/CLAUDE.md
-
-# Project skills are tracked despite the global ignore
-!/.claude/
-/.claude/*
-!/.claude/skills/
