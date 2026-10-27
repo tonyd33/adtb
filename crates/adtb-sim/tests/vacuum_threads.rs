@@ -186,14 +186,21 @@ impl Db {
             let h = e.ctor.0 as usize;
             let mut first = true;
             let mut seen = Vec::new();
-            walk(&self.pager, HeapNo(HEAP_IDS[h]), e.tid, |l| {
-                if l.tid.page() != e.tid.page() || !first && !l.flags.contains(Flags::HEAP_ONLY) {
-                    return true;
-                }
-                first = false;
-                seen.push((l.tid, l.header.xmin, l.header.xmax));
-                false
-            })
+            walk(
+                &self.pager,
+                HeapNo(HEAP_IDS[h]),
+                &HEAP_IDS.map(HeapNo),
+                e.tid,
+                |l| {
+                    if l.tid.page() != e.tid.page() || !first && !l.flags.contains(Flags::HEAP_ONLY)
+                    {
+                        return true;
+                    }
+                    first = false;
+                    seen.push((l.tid, l.header.xmin, l.header.xmax));
+                    false
+                },
+            )
             .expect("walk");
             for (t, xmin, xmax) in seen {
                 if self

@@ -852,7 +852,9 @@ fn an_enable_refused_for_a_reader_applies_when_presented_again_after_its_release
             .expect("the reader registers");
         refused(catalog.migrate(pager, txns, ENABLE_APPLE));
         assert_eq!(2, catalog.source().version);
-        catalog.release("web-1").expect("the reader is released");
+        catalog
+            .release(pager, txns, "web-1")
+            .expect("the reader is released");
         catalog
             .migrate(pager, txns, ENABLE_APPLE)
             .expect("the enable applies once its reader is released");
@@ -953,12 +955,16 @@ fn a_pending_drop_takes_effect_when_its_last_holding_reader_is_released() {
         catalog
             .migrate(pager, txns, DROP_NO_BLANK)
             .expect("the drop applies");
-        catalog.release("web-2").expect("the reader is released");
+        catalog
+            .release(pager, txns, "web-2")
+            .expect("the reader is released");
         assert_eq!(
             vec![pending("auth::no_blank", 3, &["api-2"])],
             catalog.pending_drops()
         );
-        catalog.release("api-2").expect("the reader is released");
+        catalog
+            .release(pager, txns, "api-2")
+            .expect("the reader is released");
         assert!(catalog.pending_drops().is_empty());
         catalog
             .migrate(pager, txns, "module auth\ndrop field User.name\n")
@@ -991,6 +997,137 @@ fn a_pending_drop_takes_effect_at_the_next_embedded_open() {
     });
 }
 
+/// Run `body` over the catalog of a file at `[AUTH, NO_BLANK, DROP_NO_BLANK]` whose drop
+/// `web-2` and `api-2` held pending in an earlier open of the catalog.
+fn reopened_with_pending_drop<T>(
+    seed: u64,
+    body: impl FnOnce(&mut Catalog, &Pager<SimRuntime>, &Transactions<SimRuntime>) -> T,
+) -> T {
+    let mut sim = Sim::new(seed, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[AUTH, NO_BLANK]);
+        write(&db, AUTH_ROWS);
+        db.close().expect("the database closes");
+    });
+    run(&mut sim, |rt| {
+        let (pager, mut catalog, txns) = catalog_at(&rt);
+        for b in ["web-2", "api-2"] {
+            catalog
+                .register(reader(b, 2, vec![whole("auth::users")]))
+                .expect("the reader registers");
+        }
+        catalog
+            .migrate(&pager, &txns, DROP_NO_BLANK)
+            .expect("the drop applies");
+        pager.close();
+    });
+    run(&mut sim, |rt| {
+        let (pager, mut catalog, txns) = catalog_at(&rt);
+        let got = body(&mut catalog, &pager, &txns);
+        pager.close();
+        got
+    })
+}
+
+#[test]
+fn pending_drops_and_their_holders_carry_across_a_catalog_open() {
+    reopened_with_pending_drop(120, |catalog, _, _| {
+        assert_eq!(
+            vec![pending("auth::no_blank", 3, &["api-2", "web-2"])],
+            catalog.pending_drops()
+        );
+    });
+}
+
+#[test]
+fn a_reopened_catalog_still_refuses_a_migration_that_leaves_a_pending_drop_without_an_image() {
+    reopened_with_pending_drop(121, |catalog, pager, txns| {
+        let why = refused(catalog.migrate(pager, txns, "module auth\ndrop field User.name\n"));
+        assert!(
+            why.iter().any(|w| w.contains("auth::no_blank")),
+            "the refusal does not name the pending constraint: {why:?}"
+        );
+    });
+}
+
+#[test]
+fn settling_keeps_the_holds_of_live_readers_and_releases_the_rest() {
+    reopened_with_pending_drop(122, |catalog, pager, txns| {
+        catalog
+            .register(reader("web-2", 2, vec![whole("auth::users")]))
+            .expect("the reader registers");
+        catalog.settle(pager, txns).expect("the holds settle");
+        assert_eq!(
+            vec![pending("auth::no_blank", 3, &["web-2"])],
+            catalog.pending_drops()
+        );
+    });
+}
+
+#[test]
+fn a_hold_released_by_settling_does_not_return_at_the_next_open() {
+    let mut sim = Sim::new(123, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[AUTH, NO_BLANK]);
+        write(&db, AUTH_ROWS);
+        db.close().expect("the database closes");
+    });
+    run(&mut sim, |rt| {
+        let (pager, mut catalog, txns) = catalog_at(&rt);
+        catalog
+            .register(reader("web-2", 2, vec![whole("auth::users")]))
+            .expect("the reader registers");
+        catalog
+            .migrate(&pager, &txns, DROP_NO_BLANK)
+            .expect("the drop applies");
+        pager.close();
+    });
+    run(&mut sim, |rt| {
+        let (pager, mut catalog, txns) = catalog_at(&rt);
+        catalog.settle(&pager, &txns).expect("the holds settle");
+        assert!(catalog.pending_drops().is_empty());
+        pager.close();
+    });
+    run(&mut sim, |rt| {
+        let (pager, catalog, _) = catalog_at(&rt);
+        assert!(catalog.pending_drops().is_empty());
+        pager.close();
+    });
+}
+
+#[test]
+fn a_release_is_durable_across_a_catalog_open() {
+    let mut sim = Sim::new(124, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[AUTH, NO_BLANK]);
+        write(&db, AUTH_ROWS);
+        db.close().expect("the database closes");
+    });
+    run(&mut sim, |rt| {
+        let (pager, mut catalog, txns) = catalog_at(&rt);
+        for b in ["web-2", "api-2"] {
+            catalog
+                .register(reader(b, 2, vec![whole("auth::users")]))
+                .expect("the reader registers");
+        }
+        catalog
+            .migrate(&pager, &txns, DROP_NO_BLANK)
+            .expect("the drop applies");
+        catalog
+            .release(&pager, &txns, "web-2")
+            .expect("the reader is released");
+        pager.close();
+    });
+    run(&mut sim, |rt| {
+        let (pager, catalog, _) = catalog_at(&rt);
+        assert_eq!(
+            vec![pending("auth::no_blank", 3, &["api-2"])],
+            catalog.pending_drops()
+        );
+        pager.close();
+    });
+}
+
 #[test]
 #[ignore = "a dropped unique held by a reader is refused instead of kept pending"]
 fn a_dropped_unique_stays_pending_while_a_reader_pinned_before_the_drop_is_live() {
@@ -1020,7 +1157,9 @@ fn a_relaxing_rekey_that_drops_its_old_key_field_is_refused_while_a_reader_holds
             .expect("the reader registers");
         let why = refused(catalog.migrate(pager, txns, rekey)).join("\n");
         assert!(why.contains("web-1"), "{why}");
-        catalog.release("web-1").expect("the reader is released");
+        catalog
+            .release(pager, txns, "web-1")
+            .expect("the reader is released");
         catalog
             .migrate(pager, txns, rekey)
             .expect("the rekey applies once no reader holds the old key");
@@ -1105,7 +1244,9 @@ fn a_revert_that_drops_a_constraint_a_reader_holds_keeps_it_pending() {
             why.iter().any(|w| w.contains("auth::no_blank")),
             "the refusal does not name the pending constraint: {why:?}"
         );
-        catalog.release("web-2").expect("the reader is released");
+        catalog
+            .release(pager, txns, "web-2")
+            .expect("the reader is released");
         assert!(catalog.pending_drops().is_empty());
         catalog
             .migrate(pager, txns, "module auth\ndrop field User.name\n")
@@ -1176,13 +1317,13 @@ add constraint no_blank_login = from i in identities
 
 #[test]
 fn a_reader_naming_nothing_at_its_version_is_not_registered() {
-    at_catalog(105, &[AUTH], |catalog, _, _| {
+    at_catalog(105, &[AUTH], |catalog, pager, txns| {
         assert!(
             catalog
                 .register(reader("bad", 1, vec![whole("auth::nothing")]))
                 .is_err()
         );
         assert!(catalog.register(reader("future", 2, Vec::new())).is_err());
-        assert!(catalog.release("unknown").is_err());
+        assert!(catalog.release(pager, txns, "unknown").is_err());
     });
 }

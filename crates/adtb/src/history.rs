@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::btree::Index;
-use crate::heap::{Fate, Flags, Header, Heap, Version, walk};
+use crate::heap::{Fate, Flags, Header, Heap, HeapNo, Version, walk};
 use crate::key::{CtorId, Entry, Value};
 use crate::mvcc::{Marker, Status, Transactions, Xid};
 use crate::runtime::Runtime;
@@ -200,8 +200,9 @@ pub fn rows<R: Runtime>(
 }
 
 /// Returns the row of constructor `ctor` keyed `key` as the safe snapshot of `marker` reads it:
-/// the version reached from an entry of `index`, the current key index, through `current`, or
-/// else the version an entry of `into`'s history key index names.
+/// the version reached from an entry of `index`, the current key index, through `current` and
+/// the other heaps of `sum`, the heaps of its relation, or else the version an entry of `into`'s
+/// history key index names.
 ///
 /// Precondition: `marker` is held by [`Transactions::pin`].
 pub fn probe<R: Runtime>(
@@ -209,13 +210,13 @@ pub fn probe<R: Runtime>(
     txns: &Transactions<R>,
     marker: &Marker,
     ctor: CtorId,
-    (current, index): (&Heap, &Index),
+    (current, sum, index): (&Heap, &[HeapNo], &Index),
     into: &History,
     key: &[Value],
 ) -> Result<Option<Vec<Value>>, Error> {
     for e in index.probe_ctor(pager, key, ctor)? {
         let mut failed = None;
-        let link = walk(pager, current.id(), e.tid, |l| {
+        let link = walk(pager, current.id(), sum, e.tid, |l| {
             sees(txns, pager, marker, &l.header).unwrap_or_else(|err| {
                 failed = Some(err);
                 true

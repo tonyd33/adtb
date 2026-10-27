@@ -262,16 +262,24 @@ Postconditions of `Catalog::migrate` with live readers:
   refused, naming the bundle.
 
 Postcondition of `Catalog::release`: every pending drop whose last
-holder the released bundle was takes effect.
+holder the released bundle was takes effect, durably.
 
-`Catalog::open` starts with no readers and no pending drops. Before
-it migrates, an embedded open supersedes the bundles of earlier opens
-that it does not ship
-([../spec/evolution.md §8.4](../spec/evolution.md#84-embedded-databases))
-and registers as a reader, at its pin, each bundle it ships that was
-live before it. Only those hold a migration or a drop back; a bundle
-the open records for the first time does not. The write path an open
-binds is built from the version's program.
+The pending drops and their holders are durable: a migration that
+makes a drop pending commits it with its holders, and a release
+commits before it returns. `Catalog::open` starts with no readers and
+with the pending drops and holders the file holds. `Catalog::settle`
+releases every holder that is not a live reader; a drop left with no
+holder takes effect, durably, and a bundle that later becomes a reader
+again does not hold it back.
+
+Before it migrates, an embedded open supersedes the bundles of earlier
+opens that it does not ship
+([../spec/evolution.md §8.4](../spec/evolution.md#84-embedded-databases)),
+registers as a reader, at its pin, each bundle it ships that was live
+before it, and settles. Only those hold a migration or a drop back; a
+bundle the open records for the first time does not. The write path
+an open binds is built from `Catalog::checking`: the version's schema
+and program with every pending-dropped object kept.
 
 Rulings: engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version
 

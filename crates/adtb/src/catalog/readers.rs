@@ -58,7 +58,7 @@ pub struct PendingDrop {
 
 /// A reader with its names resolved to catalog ids.
 #[derive(Clone, Debug)]
-struct Pinned {
+pub(super) struct Pinned {
     version: u64,
     hides_new: bool,
     whole: BTreeSet<CatRelId>,
@@ -75,13 +75,13 @@ struct Pinned {
     relations: BTreeSet<CatRelId>,
 }
 
-#[derive(Clone, Debug)]
-struct Pending {
-    module: String,
-    name: String,
-    check: bool,
-    dropped: u64,
-    blocking: BTreeSet<String>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Pending {
+    pub(super) module: String,
+    pub(super) name: String,
+    pub(super) check: bool,
+    pub(super) dropped: u64,
+    pub(super) blocking: BTreeSet<String>,
 }
 
 impl Pending {
@@ -89,7 +89,7 @@ impl Pending {
         format!("{}::{}", self.module, self.name)
     }
 
-    fn kept(&self) -> Kept {
+    pub(super) fn kept(&self) -> Kept {
         Kept {
             module: self.module.clone(),
             name: self.name.clone(),
@@ -188,10 +188,10 @@ impl Changes {
 /// held object.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Readers {
-    live: BTreeMap<String, Pinned>,
-    pending: Vec<Pending>,
+    pub(super) live: BTreeMap<String, Pinned>,
+    pub(super) pending: Vec<Pending>,
     /// The source with every pending-dropped object kept, while one is pending.
-    enforced: Option<Rc<Checked>>,
+    pub(super) enforced: Option<Rc<Checked>>,
 }
 
 impl Readers {
@@ -224,42 +224,6 @@ impl Catalog {
             )])
         })?;
         self.readers.live.insert(reader.bundle, pinned);
-        Ok(())
-    }
-
-    /// Release the live reader of `bundle`. Every pending drop it was the last to hold takes
-    /// effect.
-    ///
-    /// Fails with [`Error::Refused`] when no reader of `bundle` is live, and with
-    /// [`Error::Unchecked`] when the schema without the drops that take effect does not check.
-    pub fn release(&mut self, bundle: &str) -> Result<(), Error> {
-        if !self.readers.live.contains_key(bundle) {
-            return Err(Error::Refused(vec![format!("bundle {bundle} is not live")]));
-        }
-        let (done, pending): (Vec<Pending>, Vec<Pending>) = self
-            .readers
-            .pending
-            .iter()
-            .cloned()
-            .map(|mut p| {
-                p.blocking.remove(bundle);
-                p
-            })
-            .partition(|p| p.blocking.is_empty());
-        let enforced = match &self.readers.enforced {
-            Some(e) if !pending.is_empty() && !done.is_empty() => {
-                let source = without(&e.source, &done)?;
-                let built = checked(source).map_err(|ds| {
-                    Error::Unchecked("the schema without the released drops".to_string(), ds)
-                })?;
-                Some(Rc::new(built))
-            }
-            Some(e) if !pending.is_empty() => Some(Rc::clone(e)),
-            _ => None,
-        };
-        self.readers.live.remove(bundle);
-        self.readers.pending = pending;
-        self.readers.enforced = enforced;
         Ok(())
     }
 
@@ -316,9 +280,11 @@ impl Catalog {
         Ok(None)
     }
 
-    /// Returns the drops live readers hold back, in the order they applied.
+    /// Returns the pending drops with the bundles holding each, in the order they applied,
+    /// those of one migration by object.
     pub fn pending_drops(&self) -> Vec<PendingDrop> {
-        self.readers
+        let mut out: Vec<PendingDrop> = self
+            .readers
             .pending
             .iter()
             .map(|p| PendingDrop {
@@ -326,7 +292,9 @@ impl Catalog {
                 dropped: p.dropped,
                 blocking: p.blocking.iter().cloned().collect(),
             })
-            .collect()
+            .collect();
+        out.sort_by(|a, b| (a.dropped, &a.object).cmp(&(b.dropped, &b.object)));
+        out
     }
 
     /// Returns the readers after `file`, the migration of `text` whose result is `next`: the
@@ -817,7 +785,7 @@ fn declares(schema: &Schema, p: &Pending) -> bool {
 /// Returns `source` with the objects of `drops` dropped, at its own version and log.
 ///
 /// Fails with [`Error::Unchecked`] when a drop does not apply.
-fn without(source: &Source, drops: &[Pending]) -> Result<Source, Error> {
+pub(super) fn without(source: &Source, drops: &[Pending]) -> Result<Source, Error> {
     let mut next = source.clone();
     for p in drops {
         let ident = |text: &str| Ident {
@@ -844,7 +812,7 @@ fn without(source: &Source, drops: &[Pending]) -> Result<Source, Error> {
 }
 
 /// Returns `source` checked, or the checker's diagnostics.
-fn checked(source: Source) -> Result<Checked, Vec<Diag>> {
+pub(super) fn checked(source: Source) -> Result<Checked, Vec<Diag>> {
     let (schema, program) = source
         .check()
         .map_err(|ds| ds.into_iter().map(|d| d.diag).collect::<Vec<_>>())?;

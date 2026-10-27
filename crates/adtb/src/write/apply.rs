@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
-use crate::exec::{Val, to_stored};
-use crate::heap::{self, Flags, Heap, HeapNo, Link, walk};
+use crate::exec::{StoredHeap, Val, to_stored};
+use crate::heap::{self, Flags, Heap, Link, walk};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Probe, Status, Write, Xid, check_write, probe_unique};
 use crate::plan::{HeapId, IndexId};
@@ -280,7 +280,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 for e in stored.index.probe(pager, &key)? {
                     let c = stored.ctors[&e.ctor];
                     let heap = r.ctors[c as usize].heap;
-                    for link in hot_run(pager, e.tid, self.heap(heap).id())? {
+                    for link in hot_run(pager, e.tid, &self.db.heaps[&heap])? {
                         let p = probe_unique(
                             xid,
                             &self.tx.snapshot,
@@ -341,15 +341,16 @@ impl<R: Runtime> Stmt<'_, R> {
     }
 }
 
-/// Returns the version at `tid` and its heap-only successors in heap `heap`: the versions an
+/// Returns the version at `tid` and its heap-only successors in heap `stored`: the versions an
 /// index entry for `tid` stands for.
 fn hot_run<R: Runtime>(
     pager: &crate::storage::Pager<R>,
     tid: Tid,
-    heap: HeapNo,
+    stored: &StoredHeap,
 ) -> Result<Vec<Link>, Error> {
+    let heap = stored.heap.id();
     let mut links = Vec::new();
-    walk(pager, heap, tid, |l| {
+    walk(pager, heap, &stored.sum, tid, |l| {
         let first = links.is_empty();
         if l.heap == heap && (first || l.flags.contains(Flags::HEAP_ONLY)) {
             links.push(*l);

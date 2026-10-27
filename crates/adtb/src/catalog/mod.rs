@@ -7,6 +7,7 @@ mod keying;
 pub mod layout;
 mod moved;
 mod oplog;
+mod pending;
 mod readers;
 mod root;
 mod rows;
@@ -31,7 +32,7 @@ use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::btree::{self, BTree, Index};
 use crate::exec::{self, StoredHeap, StoredIndex};
-use crate::heap::{self, FieldType, Heap, LargeStore};
+use crate::heap::{self, FieldType, Heap, HeapNo, LargeStore};
 use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Value};
 use crate::mvcc::{self, CommitLog, Scope, Snapshot, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
@@ -50,7 +51,8 @@ pub use rows::{IndexSpec, Rows, applied, declared, field_path, indexed_fields, i
 use change::Data;
 use history::{HISTORY_HEAP, HISTORY_INDEX, Kept, Rebuilding, key_indexes};
 use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, rel_id, relation};
-use readers::Readers;
+use pending::{HELD_CHECK, HELD_CONSTRAINT};
+use readers::{Pending, Readers};
 use root::{Changing, Root};
 
 /// The heap id of the large-value store every heap shares.
@@ -162,6 +164,15 @@ pub fn engine_schema() -> Schema {
 
 fn roots_row() -> Vec<FieldType> {
     let ids = |n: usize| vec![FieldType::Scalar(Scalar::I64); n];
+    let held = || {
+        let text = FieldType::Scalar(Scalar::Text);
+        vec![
+            FieldType::Scalar(Scalar::I64),
+            text.clone(),
+            text.clone(),
+            text,
+        ]
+    };
     let ctor = |id: u32, fields: Vec<FieldType>| heap::CtorType {
         id: CtorId(id),
         fields,
@@ -185,6 +196,8 @@ fn roots_row() -> Vec<FieldType> {
         ),
         ctor(HISTORY_HEAP, ids(4)),
         ctor(HISTORY_INDEX, ids(3)),
+        ctor(HELD_CONSTRAINT, held()),
+        ctor(HELD_CHECK, held()),
     ])]
 }
 
@@ -351,6 +364,8 @@ struct Named {
     /// The text of each migration, by version.
     migrations: BTreeMap<u64, String>,
     history: history::Names,
+    /// The pending drops and the bundles holding each.
+    pending: Vec<Pending>,
 }
 
 impl Named {
@@ -381,6 +396,9 @@ impl Named {
                 self.migrations.insert(uint(version)?, text.clone());
             }
             (HISTORY_HEAP | HISTORY_INDEX, fields) => self.history.add(*ctor, fields)?,
+            (HELD_CONSTRAINT | HELD_CHECK, fields) => {
+                pending::add(&mut self.pending, *ctor, fields)?;
+            }
             (ctor, fields) => {
                 return Err(Error::Corrupt(format!(
                     "a roots row of constructor {ctor} holds {fields:?}"
@@ -684,6 +702,7 @@ impl Catalog {
         let named = named(pager, &txns, &roots)?;
         let (source, schema, program) = fold(&named.migrations)?;
         check_order_keys(&schema, &named.keys)?;
+        let readers = Readers::reopened(&source, named.pending)?;
         let mut heaps = BTreeMap::new();
         for (r, c) in ctor_relations(&schema) {
             let rid = rel_id(&schema, r);
@@ -733,7 +752,7 @@ impl Catalog {
             next_heap: root.next_heap,
             sequences: root.sequences,
             query_memory: DEFAULT_QUERY_MEMORY,
-            readers: Readers::default(),
+            readers,
             hosts: Arc::default(),
             kept,
         };
@@ -938,6 +957,7 @@ impl Catalog {
                 old: declared(&self.schema, &self.source),
             },
         )?;
+        pending::rewrite(m, &self.roots, &self.readers.pending, &readers.pending)?;
         built.readers = readers;
         let why = built.violations(m, self.checking().0, rewritten)?;
         if !why.is_empty() {
@@ -1322,7 +1342,7 @@ impl Catalog {
 
     /// Returns the schema and program constraint checks and validation run against: the
     /// version's, with every pending-dropped object kept.
-    fn checking(&self) -> (&Schema, &Arc<Program>) {
+    pub fn checking(&self) -> (&Schema, &Arc<Program>) {
         self.readers
             .enforced()
             .map_or((&self.schema, &self.program), |e| (&e.schema, &e.program))
@@ -1407,6 +1427,7 @@ impl Catalog {
                 let stored = StoredHeap {
                     row: row_type(schema, r, c),
                     heap: heap.clone(),
+                    sum: sum_of(&self.heaps, r),
                 };
                 (HeapId(u64::from(stored.heap.id().0)), stored)
             })
@@ -1561,6 +1582,14 @@ struct Migrating<'a, R: Runtime> {
     txns: &'a Transactions<R>,
     x: Xid,
     snapshot: &'a Snapshot,
+}
+
+/// Returns the id of the heap of every constructor of relation `r` among `heaps`.
+fn sum_of(heaps: &BTreeMap<(RelId, u32), Arc<Heap>>, r: RelId) -> Vec<HeapNo> {
+    heaps
+        .range((r, 0)..=(r, u32::MAX))
+        .map(|(_, h)| h.id())
+        .collect()
 }
 
 /// Returns the fields of the roots row naming `heap`, constructor `cid` of relation `rid`.

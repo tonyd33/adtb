@@ -4,7 +4,7 @@ use std::ops::{Bound, Range};
 use std::sync::{Arc, Mutex};
 
 use adtb::btree::{BTree, Index};
-use adtb::heap::{FieldType, Flags, Heap, HeapNo, LargeStore, walk};
+use adtb::heap::{FieldType, Flags, HEADER_LEN, Header, Heap, HeapNo, LargeStore, header_at, walk};
 use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use adtb::mvcc::{Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
 use adtb::runtime::Entropy;
@@ -306,7 +306,7 @@ impl Db {
         let mut seen = None;
         let mut first = true;
         let mut checks = Vec::new();
-        walk(pager, HeapNo(heap), tid, |l| {
+        walk(pager, HeapNo(heap), &HEAP_IDS.map(HeapNo), tid, |l| {
             if l.tid.page() != tid.page() || !first && !l.flags.contains(Flags::HEAP_ONLY) {
                 return true;
             }
@@ -768,9 +768,15 @@ fn a_heap_only_chain_keeps_its_first_slot_as_a_redirect() {
         assert_eq!(2, report.freed, "{report:?}");
         assert_eq!(1, report.all_visible, "{report:?}");
         let pager = &mut db.pager;
-        let found = walk(pager, HeapNo(HEAP_IDS[EMAIL]), first, |_| true)
-            .unwrap()
-            .unwrap();
+        let found = walk(
+            pager,
+            HeapNo(HEAP_IDS[EMAIL]),
+            &HEAP_IDS.map(HeapNo),
+            first,
+            |_| true,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(at, found.tid);
         assert_eq!(None, db.heaps[EMAIL].read(pager, first).unwrap());
         assert!(db.heaps[EMAIL].all_visible(pager, Pid(at.page())).unwrap());
@@ -1052,7 +1058,14 @@ fn a_walk_from_an_entry_read_before_vacuum_ends_on_a_page_the_large_store_took()
         assert!(store.contains(&Pid(t.page())), "{t:?} is not in {store:?}");
         assert_eq!(
             None,
-            walk(&db.pager, HeapNo(HEAP_IDS[APPLE]), t, |_| true).unwrap()
+            walk(
+                &db.pager,
+                HeapNo(HEAP_IDS[APPLE]),
+                &HEAP_IDS.map(HeapNo),
+                t,
+                |_| true
+            )
+            .unwrap()
         );
     });
 }
@@ -1092,10 +1105,84 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         assert_eq!(moved, reused, "the freed slot is taken again");
         assert_eq!(
             None,
-            walk(&db.pager, HeapNo(HEAP_IDS[APPLE]), t, |l| l.tid == reused).unwrap()
+            walk(
+                &db.pager,
+                HeapNo(HEAP_IDS[APPLE]),
+                &HEAP_IDS.map(HeapNo),
+                t,
+                |l| l.tid == reused
+            )
+            .unwrap()
         );
         db.txns.release(old_id);
         assert_eq!(Vec::<String>::new(), db.verify());
+    });
+}
+
+/// Point the `next` of the version at `at` to `to` in place, as a stale TID whose slot was taken
+/// again reads.
+fn forge_next(pager: &Pager<SimRuntime>, at: Tid, to: Tid) {
+    let was = header_at(pager, at).unwrap().expect("a version at the TID");
+    let (mut old, mut new) = ([0; HEADER_LEN], [0; HEADER_LEN]);
+    was.write(&mut old);
+    Header {
+        next: Some(to),
+        ..was
+    }
+    .write(&mut new);
+    pager
+        .update(&[Pid(at.page())], |p| {
+            let page = &mut p[0];
+            let starts: Vec<usize> = (0..=page.len() - HEADER_LEN)
+                .filter(|&i| page[i..i + HEADER_LEN] == old)
+                .collect();
+            assert_eq!(1, starts.len(), "the header of {at:?} is found once");
+            page[starts[0]..starts[0] + HEADER_LEN].copy_from_slice(&new);
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_walk_ends_at_a_retagged_in_version_of_another_sums_heap() {
+    let mut sim = Sim::new(38, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut db, _) = Db::create(rt, 4);
+        let large = LargeStore::create(&db.pager, 30).unwrap();
+        let other = Heap::create(&db.pager, 20, row_type(EMAIL), large).unwrap();
+        let other_in = Heap::create(&db.pager, 21, row_type(EMAIL), large).unwrap();
+        let email_row = |k: i64| vec![Value::I64(k), Value::Text("o".into()), Value::Bytes(vec![])];
+        let x = db.txns.begin(&db.pager).unwrap();
+        let t = db.heaps[APPLE]
+            .insert(&db.pager, x.0, &[Value::I64(1), Value::I32(0)])
+            .unwrap();
+        let o = other.insert(&db.pager, x.0, &email_row(2)).unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
+        let x = db.txns.begin(&db.pager).unwrap();
+        let (apple, email) = pair(&mut db.heaps, APPLE, EMAIL);
+        let moved = apple
+            .retag(&db.pager, t, x.0, email, &email_row(1))
+            .unwrap();
+        let stray = other
+            .retag(&db.pager, o, x.0, &other_in, &email_row(2))
+            .unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
+        let sum = HEAP_IDS.map(HeapNo);
+        let start = HeapNo(HEAP_IDS[APPLE]);
+        let reached = walk(&db.pager, start, &sum, t, |l| l.tid == moved).unwrap();
+        assert_eq!(Some(moved), reached.map(|l| l.tid));
+        forge_next(&db.pager, t, stray);
+        let stray_link = walk(&db.pager, HeapNo(20), &[HeapNo(20), HeapNo(21)], o, |l| {
+            l.tid == stray
+        })
+        .unwrap()
+        .expect("the stray version is retagged in from its own sum");
+        assert!(stray_link.flags.contains(Flags::RETAGGED_IN));
+        assert_eq!(x.0, stray_link.header.xmin);
+        assert_eq!(None, walk(&db.pager, start, &sum, t, |_| false).unwrap());
+        assert_eq!(
+            None,
+            walk(&db.pager, start, &sum, t, |l| l.tid == stray).unwrap()
+        );
     });
 }
 

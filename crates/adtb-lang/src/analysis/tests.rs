@@ -1054,3 +1054,44 @@ fn a_nested_insert_draws_its_key_once() {
     assert_normal(&s, &n.terms, n.items[0]);
     assert_eq!(2, fresh_draws(&n.terms, n.items[0]));
 }
+
+/// Returns the number of distinct calls of host function `name` reachable from `root`.
+fn host_calls(s: &Schema, terms: &Terms, root: Tm, name: &str) -> usize {
+    reachable(terms, root)
+        .into_iter()
+        .filter(
+            |t| matches!(terms.kind(*t), Kind::Call { func, .. } if s.function(*func).name == name),
+        )
+        .count()
+}
+
+const STAMPS: &str = r#"fn stamp (t: Text) -> Text = host "stamp" version "1"
+fn stamped (t: Text) -> Text = stamp(t)
+fn twice (t: Text) -> Bool = stamped(t) == stamped(t)
+"#;
+
+#[test]
+fn two_call_sites_of_a_volatile_host_function_with_the_same_text_stay_two_calls() {
+    let cases = [
+        "from u in users select stamp(u.name) == stamp(u.name)",
+        "from u in users select stamped(u.name) == stamped(u.name)",
+        "from u in users select twice(u.name)",
+        r#"stamp("x") == stamp("x")"#,
+        r#"stamped("x") == stamped("x")"#,
+        r#"twice("x")"#,
+    ];
+    for text in cases {
+        let (s, n) = adhoc_normal(STAMPS, &[], text);
+        assert_eq!(2, host_calls(&s, &n.terms, n.items[0], "stamp"), "`{text}`");
+    }
+}
+
+#[test]
+fn one_call_site_of_a_volatile_host_function_bound_by_let_stays_one_call() {
+    let (s, n) = adhoc_normal(
+        STAMPS,
+        &[],
+        "from u in users, s in [stamp(u.name)] select s == s",
+    );
+    assert_eq!(1, host_calls(&s, &n.terms, n.items[0], "stamp"));
+}

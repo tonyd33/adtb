@@ -7,7 +7,7 @@ pub use adtb::catalog::layout::{
 };
 use adtb::catalog::{IndexKeys, element_types};
 use adtb::exec::{self, AtSnapshot, Histories, Store, StoredHeap, StoredIndex, Val};
-use adtb::heap::{FieldType, Heap, LargeStore};
+use adtb::heap::{FieldType, Heap, HeapNo, LargeStore};
 use adtb::key::{CtorId, Dir, Entry, F32, F64, KeySchema, Tid, Value as KValue};
 use adtb::mvcc::{Access, Limits, Scope, Serializer, Transactions};
 use adtb::plan::Catalog;
@@ -270,6 +270,8 @@ pub struct Db {
     pub pager: Pager<SimRuntime>,
     pub heaps: BTreeMap<adtb::plan::HeapId, Heap>,
     pub rows: BTreeMap<adtb::plan::HeapId, Vec<FieldType>>,
+    /// The heap of every constructor of each heap's relation.
+    pub sums: BTreeMap<adtb::plan::HeapId, Vec<HeapNo>>,
     pub indexes: BTreeMap<adtb::plan::IndexId, (StoredIndex, IndexKeys, RelId)>,
     pub txns: Arc<Transactions<SimRuntime>>,
 }
@@ -296,6 +298,7 @@ impl Db {
         };
         let mut heaps = BTreeMap::new();
         let mut rows = BTreeMap::new();
+        let mut sums = BTreeMap::new();
         let mut indexes = BTreeMap::new();
         let keys = new_order_keys(f.schema, &Default::default());
         for (r, d) in &f.catalog.relations {
@@ -306,7 +309,9 @@ impl Db {
             };
             out.larges.insert(*r, large.root());
             let cs = ctors_of(f.schema, &rel.elem);
+            let sum: Vec<HeapNo> = d.heaps.values().map(|h| HeapNo(h.0 as u32)).collect();
             for (c, h) in &d.heaps {
+                sums.insert(*h, sum.clone());
                 let row: Vec<FieldType> = cs[*c as usize]
                     .1
                     .iter()
@@ -353,6 +358,7 @@ impl Db {
                 pager,
                 heaps,
                 rows,
+                sums,
                 indexes,
                 txns,
             },
@@ -363,6 +369,7 @@ impl Db {
     /// Returns the heaps and indexes as the executor and the write path bind them.
     pub fn bindings(self) -> Bound {
         let rows = self.rows;
+        let sums = self.sums;
         let heaps = self
             .heaps
             .into_iter()
@@ -373,6 +380,7 @@ impl Db {
                     StoredHeap {
                         heap: Arc::new(heap),
                         row,
+                        sum: sums[&h].clone(),
                     },
                 )
             })
@@ -578,6 +586,7 @@ impl Db {
                     StoredHeap {
                         heap: Arc::new(heap),
                         row,
+                        sum: self.sums[&h].clone(),
                     },
                 )
             })

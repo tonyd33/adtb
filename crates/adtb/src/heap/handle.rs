@@ -1425,16 +1425,20 @@ pub fn header_at<R: Runtime>(pager: &Pager<R>, tid: Tid) -> Result<Option<Header
 }
 
 /// Follow the chain from the version at `start`, in heap `heap`, through each `next`, across
-/// heaps, and return the first version `stop` accepts. Returns `None` when the chain ends first.
+/// the heaps of `sum`, and return the first version `stop` accepts. Returns `None` when the
+/// chain ends first.
+///
+/// Precondition: `sum` holds the heap of every constructor of `heap`'s relation.
 ///
 /// The chain ends at a slot holding no version, at a page that is not a heap page, at a version
 /// whose `xmin` is not the `xmax` of the version before it, and at a version on a page of the
-/// wrong heap: the first must be in `heap`, the successor of a moved version in another heap and
-/// flagged retagged in, and any other successor in its predecessor's heap. The versions of one
-/// stretch of the chain on one page are read from one copy of that page.
+/// wrong heap: the first must be in `heap`, the successor of a moved version in another heap of
+/// `sum` and flagged retagged in, and any other successor in its predecessor's heap. The
+/// versions of one stretch of the chain on one page are read from one copy of that page.
 pub fn walk<R: Runtime>(
     pager: &Pager<R>,
     heap: HeapNo,
+    sum: &[HeapNo],
     start: Tid,
     mut stop: impl FnMut(&Link) -> bool,
 ) -> Result<Option<Link>, PageError> {
@@ -1461,7 +1465,7 @@ pub fn walk<R: Runtime>(
                     header: Header::read(&page[range]),
                     flags,
                 };
-                if !follows(prior.as_ref(), heap, &link) {
+                if !follows(prior.as_ref(), heap, sum, &link) {
                     return Ok(None);
                 }
                 if stop(&link) {
@@ -1479,13 +1483,14 @@ pub fn walk<R: Runtime>(
     }
 }
 
-/// Returns whether `link` can be the version after `prior` in a chain starting in heap `heap`.
-fn follows(prior: Option<&Link>, heap: HeapNo, link: &Link) -> bool {
+/// Returns whether `link` can be the version after `prior` in a chain starting in heap `heap`
+/// and running across the heaps of `sum`.
+fn follows(prior: Option<&Link>, heap: HeapNo, sum: &[HeapNo], link: &Link) -> bool {
     let Some(p) = prior else {
         return link.heap == heap;
     };
     let placed = if p.flags.contains(Flags::MOVED) {
-        link.heap != p.heap && link.flags.contains(Flags::RETAGGED_IN)
+        link.heap != p.heap && sum.contains(&link.heap) && link.flags.contains(Flags::RETAGGED_IN)
     } else {
         link.heap == p.heap
     };

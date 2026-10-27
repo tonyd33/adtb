@@ -582,7 +582,9 @@ impl<'a> Normaliser<'a> {
             return Ok(Val::Tm(*o));
         }
         let v = self.step(t, cx)?;
-        if let (Some(k), Val::Tm(o)) = (key, &v) {
+        if let (Some(k), Val::Tm(o)) = (key, &v)
+            && !self.draws(*o)
+        {
             self.memo.insert(k, *o);
         }
         Ok(v)

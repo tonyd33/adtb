@@ -484,7 +484,7 @@ impl Engine {
         }
         for entry in by_id.probe(&self.pager, &[Value::I64(id)]).unwrap() {
             let mut links = Vec::new();
-            walk(&self.pager, heap.id(), entry.tid, |l| {
+            walk(&self.pager, heap.id(), &[heap.id()], entry.tid, |l| {
                 links.push(*l);
                 false
             })

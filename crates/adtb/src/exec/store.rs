@@ -136,6 +136,8 @@ impl<R: Runtime> Reads for AtSnapshot<R> {
 pub struct StoredHeap {
     pub heap: Arc<Heap>,
     pub row: Vec<FieldType>,
+    /// The heap of every constructor of its relation, its own among them.
+    pub sum: Vec<HeapNo>,
 }
 
 /// An index a plan names, with the constructor position of each constructor id it holds.
@@ -370,10 +372,10 @@ impl<R: Runtime> Store<R> {
 
     /// Returns the version of heap `id` visible from the chain starting at `tid`, with its TID.
     pub fn fetch(&self, id: HeapId, tid: Tid) -> Result<Option<(Tid, Vec<Value>)>, Error> {
-        let heap = &self.heap(id).heap;
+        let StoredHeap { heap, sum, .. } = self.heap(id);
         let mut failed = None;
         let mut writers = BTreeSet::new();
-        let link = walk(&self.pager, heap.id(), tid, |l| {
+        let link = walk(&self.pager, heap.id(), sum, tid, |l| {
             match self.reads.sees(&l.header) {
                 Ok(seen) => {
                     writers.extend(writer_of(&l.header, seen));

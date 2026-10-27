@@ -963,7 +963,6 @@ const NO_BLANK: &str =
 const DROP_NO_BLANK: &str = "module auth\ndrop constraint no_blank\n";
 
 #[test]
-#[ignore = "the write path enforces the version program, not the catalog's pending drops"]
 fn a_drop_stays_pending_while_a_bundle_live_before_the_open_reads_it() {
     let mut sim = Sim::new(40, Config::default());
     run(&mut sim, |rt| {
@@ -990,6 +989,76 @@ fn a_drop_stays_pending_while_a_bundle_live_before_the_open_reads_it() {
             }) => assert_eq!("auth::no_blank", constraint),
             other => panic!("the pending-dropped constraint is not enforced: {other:?}"),
         }
+    });
+}
+
+/// Opens a file at `[V1, NO_BLANK]` shipping `web-1.0` pinned there, then reopens it with
+/// `DROP_NO_BLANK` applied while `web-1.0` holds it pending, and runs `body` at a third open
+/// shipping `shipped`.
+fn third_open_after_a_pending_drop(
+    seed: u64,
+    shipped: Vec<Registration>,
+    body: impl FnOnce(&Database<SimRuntime>),
+) {
+    let pinned = || bundle("web-1.0", &[V1, NO_BLANK], "", NAMES);
+    let log = [V1, NO_BLANK, DROP_NO_BLANK];
+    let mut sim = Sim::new(seed, Config::default());
+    run(&mut sim, |rt| {
+        opened(&rt, &[V1, NO_BLANK], vec![pinned()]);
+    });
+    run(&mut sim, |rt| {
+        opened(&rt, &log, vec![pinned()]);
+    });
+    run(&mut sim, |rt| body(&opened(&rt, &log, shipped)));
+}
+
+fn insert_blank(db: &Database<SimRuntime>) -> Result<(), Error> {
+    db.query_text(
+        "insert users { name: \"\", tier: Free }",
+        &[],
+        &CallOptions::default(),
+    )
+    .map(drop)
+}
+
+#[test]
+fn a_drop_stays_pending_at_a_later_open_that_ships_its_holder_again() {
+    third_open_after_a_pending_drop(
+        41,
+        vec![bundle("web-1.0", &[V1, NO_BLANK], "", NAMES)],
+        |db| match insert_blank(db) {
+            Err(Error::Rejected {
+                reason: RejectReason::Violated { constraint, .. },
+            }) => assert_eq!("auth::no_blank", constraint),
+            other => panic!("the pending-dropped constraint is not enforced: {other:?}"),
+        },
+    );
+}
+
+#[test]
+fn a_drop_takes_effect_at_the_open_that_supersedes_its_last_holder() {
+    third_open_after_a_pending_drop(42, Vec::new(), |db| {
+        insert_blank(db).expect("the drop has taken effect");
+    });
+}
+
+#[test]
+fn a_drop_that_took_effect_stays_in_effect_when_its_holder_is_shipped_again() {
+    let pinned = || bundle("web-1.0", &[V1, NO_BLANK], "", NAMES);
+    let log = [V1, NO_BLANK, DROP_NO_BLANK];
+    let mut sim = Sim::new(43, Config::default());
+    run(&mut sim, |rt| {
+        opened(&rt, &[V1, NO_BLANK], vec![pinned()]);
+    });
+    run(&mut sim, |rt| {
+        opened(&rt, &log, vec![pinned()]);
+    });
+    run(&mut sim, |rt| {
+        opened(&rt, &log, Vec::new());
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &log, vec![pinned()]);
+        insert_blank(&db).expect("the drop stays in effect");
     });
 }
 

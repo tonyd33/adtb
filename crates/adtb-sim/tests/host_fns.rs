@@ -471,6 +471,38 @@ fn a_volatile_host_function_is_evaluated_once_per_call() {
     });
 }
 
+const STAMPED: &str = r"module shop
+define fn stamped (t: Text) -> Text = stamp(t)
+define fn twice (t: Text) -> Bool = stamped(t) == stamped(t)
+";
+
+#[test]
+fn two_call_sites_of_a_volatile_host_function_with_the_same_text_draw_apart() {
+    once(15, |rt| {
+        let db = opened(&rt, &[NOTES, STAMPED], stamping());
+        write(&db, r#"insert notes { body: "n" }"#).expect("a note");
+        let cases = [
+            r#"from b in ["x", "y"] select stamp(b) == stamp(b)"#,
+            r#"from b in ["x", "y"] select stamped(b) == stamped(b)"#,
+            "from n in notes select twice(n.body)",
+            r#"from b in ["x", "y"], s in [stamp(b)], t in [stamp(b)] select s == t"#,
+            r#"from b in ["x", "y"] select [stamp(b), stamp(b)] == [stamp(b), stamp(b)]"#,
+            r#"from b in ["x", "y"] where stamp(b) != stamp(b) select b"#,
+        ];
+        let expected = [
+            vec!["False"],
+            vec!["False"],
+            vec!["False"],
+            vec!["False"],
+            vec!["False"],
+            vec![r#""x""#, r#""y""#],
+        ];
+        for (text, want) in cases.iter().zip(expected) {
+            assert_eq!(want, query(&db, text), "`{text}`");
+        }
+    });
+}
+
 /// Commits `text` as one transaction. Returns its commit position.
 fn commit(db: &Database<SimRuntime>, text: &str) -> Position {
     let mut t = db

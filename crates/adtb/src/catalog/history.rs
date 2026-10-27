@@ -289,6 +289,7 @@ impl Catalog {
                 let stored = StoredHeap {
                     row: row_type(schema, r, c),
                     heap: past.clone(),
+                    sum: super::sum_of(&self.kept.heaps, r),
                 };
                 (id, stored)
             })

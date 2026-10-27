@@ -473,6 +473,7 @@ impl<R: Runtime> Engine<R> {
         let headers: Vec<&bundle::Header> = regs.iter().filter_map(Registration::header).collect();
         bundle::record(&catalog, &pager, &txns, &mut stored, &headers, opened)?;
         registered::readers(&mut catalog, regs, &live)?;
+        catalog.settle(&pager, &txns).map_err(corrupt)?;
         let applied = catalog.source().log.len();
         options
             .host_fns
@@ -480,8 +481,8 @@ impl<R: Runtime> Engine<R> {
         let hosts = Arc::new(options.host_fns.hosts());
         catalog.set_hosts(hosts.clone());
         migrate(&mut catalog, &pager, &txns, log)?;
-        let schema = catalog.schema().clone();
-        let program = catalog.program().clone();
+        let (schema, program) = catalog.checking();
+        let (schema, program) = (schema.clone(), program.clone());
         let normal = norm::program(&schema, &program).map_err(corrupt)?;
         options.host_fns.bound(&schema, &normal)?;
         let plan = catalog.plan();

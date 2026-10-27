@@ -351,7 +351,7 @@ impl Db {
             &self.txns,
             &marker,
             CTOR,
-            (self.heap(), &self.index),
+            (self.heap(), &[self.heap().id()], &self.index),
             &self.history(),
             &[Value::I64(k)],
         )
@@ -376,7 +376,7 @@ impl Db {
                 &self.txns,
                 &marker,
                 CTOR,
-                (self.heap(), &self.index),
+                (self.heap(), &[self.heap().id()], &self.index),
                 &history,
                 &[Value::I64(k)],
             )

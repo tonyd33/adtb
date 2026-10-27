@@ -192,7 +192,9 @@ fn check_links(db: &mut Db) -> Vec<String> {
             let next = v.header.next.map(|n| {
                 db.heaps
                     .iter()
-                    .find_map(|h| walk(&db.pager, h.id(), n, |_| true).unwrap())
+                    .find_map(|h| {
+                        walk(&db.pager, h.id(), &HEAP_IDS.map(HeapNo), n, |_| true).unwrap()
+                    })
                     .expect("a successor in a heap of the sum")
             });
             let (moved, hot) = (
@@ -263,9 +265,11 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
             }
             for (key, (heap, tid, _)) in &live {
                 let (h, t) = first[key];
-                let end = walk(&db.pager, HeapNo(h), t, |l| l.header.next.is_none())
-                    .unwrap()
-                    .expect("chain ends");
+                let end = walk(&db.pager, HeapNo(h), &HEAP_IDS.map(HeapNo), t, |l| {
+                    l.header.next.is_none()
+                })
+                .unwrap()
+                .expect("chain ends");
                 assert_eq!(
                     (HeapNo(HEAP_IDS[*heap]), *tid),
                     (end.heap, end.tid),
@@ -312,10 +316,16 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         let mut links: Vec<Link> = Vec::new();
         assert_eq!(
             None,
-            walk(pager, HeapNo(HEAP_IDS[EMAIL]), first, |l| {
-                links.push(*l);
-                false
-            })
+            walk(
+                pager,
+                HeapNo(HEAP_IDS[EMAIL]),
+                &HEAP_IDS.map(HeapNo),
+                first,
+                |l| {
+                    links.push(*l);
+                    false
+                }
+            )
             .unwrap()
         );
         assert_eq!(33, links.len());
@@ -345,9 +355,13 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         for w in links.windows(2) {
             assert_eq!(Some(w[1].tid), w[0].header.next);
         }
-        let newest = walk(pager, HeapNo(HEAP_IDS[EMAIL]), first, |l| {
-            l.header.next.is_none()
-        })
+        let newest = walk(
+            pager,
+            HeapNo(HEAP_IDS[EMAIL]),
+            &HEAP_IDS.map(HeapNo),
+            first,
+            |l| l.header.next.is_none(),
+        )
         .unwrap();
         assert_eq!(Some(back), newest.map(|l| l.tid));
     });
