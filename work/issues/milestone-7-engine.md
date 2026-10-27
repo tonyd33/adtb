@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 700
 summary: "milestone 7 (engine, single version) has not exited: no catalog, planner, executor, write path, constraints or in-process API"
+closed: 2026-10-27
 depends-on:
   - admission-path-forms
   - engine-file-scans
@@ -11,8 +12,6 @@ depends-on:
   - exec-refusal-test-subject
   - catalog-follow-ups
   - exec-primitives
-  - exec-follow-ups
-  - planner-follow-ups
   - textual-syntax-in-engine
   - milestone-2-reference
   - milestone-6-transactions
@@ -58,3 +57,9 @@ Open on 2026-10-25: `id-assignment-gaps.md`, `schema-catalog-ids.md`,
 ## 2026-10-26: gate
 
 heap-performance and batch-value-types are follow-up work, not exit blockers. The exit also takes the wrong-answer and panic bugs the 2026-10-26 quality review found in this milestone's code, and the campaign app's release 1.2 log opening in the engine.
+
+## 2026-10-27: resolved
+
+## 2026-10-27: exited
+
+exec-follow-ups and planner-follow-ups hold performance and coverage work (Arrow kernels, grant estimates, work stealing, top-n over an ordered scan, range path tests), not exit blockers; they stay open outside the gate. Every other dependency is resolved, the quality review's wrong-answer and panic bugs in this milestone's code are fixed, and the campaign app's releases open in the engine.
