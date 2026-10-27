@@ -89,6 +89,7 @@ constructor. To apply a migration, give the shell the whole log, one
 `--schema` per file in order. It applies the files the database has
 not seen yet:
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema shelter.adt --schema vaccinated.adt shelter.db
 adtb> from c in pets.Cat select c order by c.name
@@ -117,6 +118,7 @@ module shelter
 rename field Adopter.phone to mobile
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema shelter.adt --schema vaccinated.adt --schema mobile.adt shelter.db
 adtb> from a in adopters select { name: a.name, mobile: a.mobile } order by a.name
@@ -146,6 +148,7 @@ module shelter
 add constructor Pet.Bird { sings: Bool }
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema shelter.adt --schema vaccinated.adt --schema mobile.adt --schema bird.adt shelter.db
 shelter.db: migration 4 is refused: match does not cover `Bird _`
@@ -161,6 +164,7 @@ add constructor Pet.Bird { sings: Bool }
   arm species: Bird _ -> "bird"
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema shelter.adt --schema vaccinated.adt --schema mobile.adt --schema bird.adt shelter.db
 adtb> insert pets.Bird { name: "tweety", age: 1, size: Small, diet: Normal, sings: true }
@@ -207,6 +211,7 @@ module shelter
 add check grown on pets (age >= 2)
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema shelter.adt --schema vaccinated.adt --schema mobile.adt --schema bird.adt --schema enable-bird.adt --schema grown.adt shelter.db
 shelter.db: migration 6 is refused: constraint shelter::grown is violated by Cat { name: "kit", age: 1, size: Small, diet: Special { food: "kitten" }, lives: 9, indoor: False, vaccinated: False }, Rabbit { name: "bun", age: 1, size: Small, diet: Normal }, Bird { name: "tweety", age: 1, size: Small, diet: Normal, sings: True }
@@ -253,6 +258,7 @@ module shelter
 add field Pet.Cat.vaccinated: Bool fill true
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema shelter.adt --schema vaccinated-2.adt shelter.db
 shelter.db: the file's migration 2 differs from the log's

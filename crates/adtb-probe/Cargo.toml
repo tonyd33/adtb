@@ -7,6 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+adtb.workspace = true
 adtb-conformance.workspace = true
 adtb-lang.workspace = true
 adtb-sim.workspace = true

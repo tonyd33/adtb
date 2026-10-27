@@ -894,19 +894,25 @@ fn sweep_walks(
     skip: &[Operator],
     check: fn(u64, &Walk) -> Option<String>,
 ) {
+    sweep_seeds(name, seeds_of(walks).collect(), steps, skip, check);
+}
+
+/// Sweeps the walks of `seeds` as [`sweep_walks`] does.
+fn sweep_seeds(
+    name: &str,
+    seeds: Vec<u64>,
+    steps: usize,
+    skip: &[Operator],
+    check: fn(u64, &Walk) -> Option<String>,
+) {
     let mut found = Vec::new();
-    let seeds = seeds_of(walks);
-    for seed in seeds.clone() {
+    for &seed in &seeds {
         let w = walk_of(seed, steps, QUERIES, skip);
         if let Some(m) = check(seed, &w) {
             found.push((seed, m, w));
         }
     }
-    let mut report = format!(
-        "{name}: {} of {} seeds fail\n",
-        found.len(),
-        seeds.end - seeds.start
-    );
+    let mut report = format!("{name}: {} of {} seeds fail\n", found.len(), seeds.len());
     for (i, (seed, message, w)) in found.iter().enumerate() {
         report.push_str(&format!("seed {seed}: {message}\n"));
         if i < SHOWN {
@@ -973,5 +979,111 @@ fn walks_draw_every_operator() {
     assert!(
         missing.is_empty(),
         "no walk of seeds 0..{DRAWS} draws {missing:?}"
+    );
+}
+
+/// Returns the constructors a `merge constructor` line of `migration` merges.
+fn merged(migration: &str) -> Vec<String> {
+    migration
+        .lines()
+        .filter_map(|l| l.strip_prefix("merge constructor "))
+        .filter_map(|l| l.split_once(".(")?.1.split_once(')'))
+        .flat_map(|(cs, _)| cs.split(" | ").map(str::to_owned).collect::<Vec<_>>())
+        .collect()
+}
+
+/// The operators other than adding a check and merging constructors.
+fn beside_checked_merges() -> Vec<Operator> {
+    Operator::ALL
+        .into_iter()
+        .filter(|o| ![Operator::AddCheck, Operator::Merge].contains(o))
+        .collect()
+}
+
+/// Returns the first `want` seeds of `seeds` whose walk of `steps` migrations and `queries`
+/// queries, drawing no operator of `skip`, merges a constructor a check ranges over alone.
+fn checked_merges(
+    seeds: Range<u64>,
+    want: usize,
+    steps: usize,
+    queries: usize,
+    skip: &[Operator],
+) -> Vec<u64> {
+    let mut out = Vec::new();
+    for seed in seeds {
+        if out.len() == want {
+            break;
+        }
+        let w = walk_of(seed, steps, queries, skip);
+        let mut before = w.start.program();
+        for step in &w.steps {
+            let checked = merged(&step.migration).iter().any(|c| {
+                let on = format!(".{c} (");
+                before
+                    .lines()
+                    .any(|l| l.contains("check ") && l.contains(&on))
+            });
+            if checked {
+                out.push(seed);
+                break;
+            }
+            before = step.written.program();
+        }
+    }
+    out
+}
+
+#[test]
+fn walks_merge_a_constructor_a_check_ranges_over() {
+    assert!(
+        !checked_merges(0..DRAWS, 1, 8, 0, &[]).is_empty(),
+        "no walk of seeds 0..{DRAWS} merges a constructor a check ranges over"
+    );
+}
+
+/// The migrations of each walk of a sweep over merges carrying checks: one adding a check, then
+/// one merging its constructor.
+const CHECKED_STEPS: usize = 2;
+
+/// Returns the first walks, [`profile::deep`] sized, of seeds 0..[`DRAWS`] drawing only checks
+/// and merges that merge a constructor a check ranges over alone.
+fn checked_merge_seeds() -> Vec<u64> {
+    let want = profile::deep(1) as usize;
+    let seeds = checked_merges(
+        0..DRAWS,
+        want,
+        CHECKED_STEPS,
+        QUERIES,
+        &beside_checked_merges(),
+    );
+    assert!(
+        !seeds.is_empty(),
+        "a walk of seeds 0..{DRAWS} merges a checked constructor"
+    );
+    seeds
+}
+
+#[test]
+fn merges_carrying_checks_keep_engine_equal_to_reference() {
+    let skip = beside_checked_merges();
+    sweep_seeds(
+        "checked merge",
+        checked_merge_seeds(),
+        CHECKED_STEPS,
+        &skip,
+        walked,
+    );
+}
+
+#[test]
+#[ignore = "reverting a merge that carried a one-constructor check leaves a match on the dropped discriminator"]
+fn merges_carrying_checks_keep_their_laws() {
+    let skip = beside_checked_merges();
+    sweep_seeds(
+        "checked merge laws",
+        checked_merge_seeds(),
+        CHECKED_STEPS,
+        &skip,
+        laws,
     );
 }

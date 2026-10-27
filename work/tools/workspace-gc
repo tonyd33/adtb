@@ -18,20 +18,28 @@ free_gb() {
   df --output=avail -B1G "$root" | tail -1 | tr -d ' '
 }
 
-# Prints `name<TAB>path<TAB>empty` for every workspace, then `-<TAB>path<TAB>forgotten` for each
-# sibling directory of a workspace that is not one.
+# Prints `empty`, `changed` or `unknown` for the working copy of the workspace at $1, from a
+# fresh snapshot of it.
+copy_state() {
+  jj -R "$1" log -r @ --no-graph -T 'if(empty, "empty", "changed")' 2>/dev/null || echo unknown
+}
+
+# Prints `name<TAB>path<TAB>state` for every workspace, then `-<TAB>path<TAB>forgotten` for each
+# sibling directory of a workspace that holds a `.jj` and is not one.
 workspaces() {
   local known
-  known=$(jj -R "$root" workspace list --ignore-working-copy \
-    -T 'name ++ "\t" ++ root ++ "\t" ++ if(target.empty(), "empty", "changed") ++ "\n"')
-  printf '%s\n' "$known"
+  known=$(jj -R "$root" workspace list --ignore-working-copy -T 'name ++ "\t" ++ root ++ "\n"')
+  local name path
+  while IFS=$'\t' read -r name path; do
+    printf '%s\t%s\t%s\n' "$name" "$path" "$(copy_state "$path")"
+  done <<<"$known"
   local default_root
   default_root=$(printf '%s\n' "$known" | awk -F'\t' '$1 == "default" { print $2 }')
   [[ -n $default_root ]] || return 0
   local d
   for d in "$default_root"-*/; do
     d=${d%/}
-    [[ -d $d ]] || continue
+    [[ -d $d/.jj ]] || continue
     printf '%s\n' "$known" | cut -f2 | grep -qxF "$d" || printf '%s\t%s\t%s\n' - "$d" forgotten
   done
 }

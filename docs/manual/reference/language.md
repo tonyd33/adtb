@@ -166,6 +166,7 @@ See [model.md §2](../../spec/model.md#2-sums).
 clause makes it a domain: the condition, with `self` the underlying
 value, is checked wherever a value is stored.
 
+<!-- exit 1 -->
 ```console
 $ adtb library.db
 adtb> insert books { isbn: Isbn("123"), title: "Short", year: 2000, format: Hardback }
@@ -243,6 +244,7 @@ A relation holds a set of rows of one type, identified by its key.
 - `computed f: T = e` adds a field computed from the row, with `self`
   the row.
 
+<!-- exit 1 -->
 ```console
 $ adtb library.db
 adtb> insert members { name: "cy", email: "ann@example.org" }
@@ -281,6 +283,7 @@ admits a constraint only if it can check it without reading a whole
 relation for every change. See
 [constraints.md](../../spec/constraints.md).
 
+<!-- exit 1 -->
 ```console
 $ adtb library.db
 adtb> insert books { isbn: Isbn("9780000000001"), title: "Old", year: 1200, format: Hardback }
@@ -429,6 +432,7 @@ only scalars such as integers and text.
 A constructor of a relation-level sum always has its header fields, so
 even `Lost` is matched as `Lost _`.
 
+<!-- exit 1 -->
 ```console
 $ adtb library.db
 adtb> from b in books select match b.format | Paperback | Hardback -> "paper" | Ebook e if e.size > 2 -> "large file" | Ebook _ -> "small file"
@@ -543,6 +547,7 @@ insert made; `key x` is its key. `return e` gives the block's result.
 
 At the prompt a block runs at the blank line after it:
 
+<!-- exit 1 -->
 ```console
 $ adtb library.db
 adtb> transact

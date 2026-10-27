@@ -61,6 +61,7 @@ you can read the header fields; a constructor's own fields need a
 range that names the constructor, or a `match`
 ([Tutorial 4](../tutorial/4-match.md)).
 
+<!-- exit 1 -->
 ```console
 $ adtb zoo.db
 adtb> from b in animals.Bird select b.wingspan
@@ -86,6 +87,7 @@ that way.
 Every row belongs to exactly one constructor, and the key ranges over
 all of them. A name used by a bird cannot be used by a snake:
 
+<!-- exit 1 -->
 ```console
 $ adtb zoo.db -c 'insert animals.Snake { name: "polly", born: 2000 }'
 `zoo::animals` already holds a row with key `animals.key("polly")`

@@ -162,8 +162,20 @@ set Settled of regions = Town
     }
 
     #[test]
-    fn a_text_of_neither_form_reports_the_errors_of_the_form_it_reads_further_as() {
-        let err = first_migration("module demo\ntype P = { id: Key ps, }}\n").unwrap_err();
-        assert!(!err.contains("schema operator"), "{err}");
+    fn a_schema_like_text_of_neither_form_reports_the_schema_form_errors() {
+        assert_eq!(
+            Err("2:24: expected a field name, found `}`".to_owned()),
+            first_migration("module demo\ntype P = { id: Key ps, }}\n")
+        );
+    }
+
+    #[test]
+    fn a_migration_like_text_of_neither_form_reports_the_migration_form_errors() {
+        let text =
+            "module demo\nadd module demo\nadd type P = { id: Key ps }\nadd relation ps P key id\n";
+        assert_eq!(
+            Err("4:17: expected `:`, found `P`".to_owned()),
+            first_migration(text)
+        );
     }
 }

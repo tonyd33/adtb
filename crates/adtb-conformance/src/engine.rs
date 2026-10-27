@@ -10,7 +10,10 @@ use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::textual::{self, Form};
 use adtb_lang::types::Ty;
 
-use crate::{Difference, Directive, FIX_ROUNDS, Kind, Script, differ, modules, repeated};
+use crate::{
+    Difference, Directive, FIX_ROUNDS, Got, Kind, Script, differ, differ_got, modules, refused,
+    repeated,
+};
 
 const FILE: &str = "conformance.adt";
 
@@ -118,7 +121,7 @@ fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Differen
         Kind::Run => db
             .query_text(&d.body, &[], &CallOptions::default())
             .map(drop)
-            .map_err(|e| differ(d.line, format!("refused with {}", shown(&e)))),
+            .map_err(|e| refusal_of(d.line, &e)),
         Kind::Error { reason } => {
             let mut t = begin(db, d.line, &TxnOptions::default())?;
             let ended = refusal(&mut t, &d.body);
@@ -166,8 +169,7 @@ fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Differen
                     .map_err(|e| differ(d.line, format!("the rollback fails: {}", shown(&e))))?;
                 got
             };
-            let mut results =
-                got.map_err(|e| differ(d.line, format!("refused with {}", shown(&e))))?;
+            let mut results = got.map_err(|e| refusal_of(d.line, &e))?;
             match results.len() {
                 0 => compare(
                     d.line,
@@ -304,8 +306,18 @@ fn compare(
     if got == want {
         Ok(())
     } else {
-        Err(differ(line, format!("got [{}]", printed.join(", "))))
+        let message = format!("got [{}]", printed.join(", "));
+        Err(differ_got(line, message, Got::Rows(printed)))
     }
+}
+
+fn refusal_of(line: usize, e: &Error) -> Difference {
+    refused(
+        line,
+        format!("refused with {}", shown(e)),
+        &name(e),
+        &e.to_string(),
+    )
 }
 
 /// Returns the reason constructor `e` is refused with.

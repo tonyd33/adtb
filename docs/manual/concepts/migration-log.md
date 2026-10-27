@@ -52,6 +52,7 @@ type Item { sku: Text, price: I64, stock: I64 } = Listed | Retired { why: Text }
 relation items : Item key sku
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema shop-edited.adt shop.db -c 'from i in items select i'
 shop.db: the file's migration 1 differs from the log's
@@ -119,6 +120,7 @@ module shop
 enable items.Preorder
 ```
 
+<!-- exit 1 0 -->
 ```console
 $ adtb --schema shop.adt --schema 0002-stock.adt --schema 0003-revert.adt --schema 0004-preorder.adt shop.db
 adtb> insert items.Preorder { sku: "lamp", price: 30, ships: "may" }
@@ -147,6 +149,7 @@ migration against the queries still in use. The shell runs ad hoc text
 at the current version, and this engine does not run bundle
 registration yet:
 
+<!-- exit 1 -->
 ```console
 $ adtb shop.db -c 'register bundle "web.adb"'
 `register bundle` does not run in this engine yet

@@ -1,4 +1,4 @@
-use adtb_conformance::{Kind, parse, run_reference};
+use adtb_conformance::{Got, Kind, parse, run_reference};
 
 const SCHEMA: &str = "schema
   module test
@@ -286,4 +286,38 @@ fn an_ordered_result_with_a_repeated_expected_row_differs_as_a_script_error() {
             "{head}"
         );
     }
+}
+
+fn got(rest: &str) -> Vec<Option<Got>> {
+    let script = parse(&format!("{SCHEMA}{rest}")).expect("the script reads");
+    run_reference(&script).into_iter().map(|d| d.got).collect()
+}
+
+#[test]
+fn a_differing_query_carries_its_rows_and_a_refusal_its_reason() {
+    let found = got("query rowsort
+  from t in ts select t.n
+----
+3
+query
+  count(t for t in ts)
+----
+5
+run
+  insert ts { id: 1, n: 9 }
+query
+  from t in ts select 1 / (t.n - t.n)
+----
+");
+    assert_eq!(4, found.len());
+    assert_eq!(Some(Got::Rows(vec!["1".into(), "2".into()])), found[0]);
+    assert_eq!(Some(Got::Rows(vec!["2".into()])), found[1]);
+    let reasons: Vec<&str> = found[2..]
+        .iter()
+        .map(|g| match g {
+            Some(Got::Refused { reason, .. }) => reason.as_str(),
+            _ => panic!("a refusal carries its reason: {g:?}"),
+        })
+        .collect();
+    assert_eq!(vec!["KeyViolation", "Faulted"], reasons);
 }

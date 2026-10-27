@@ -39,6 +39,7 @@ holds several items, each is a statement, and the first that fails
 ends the text with nothing applied. This transfer would overdraw Ann,
 so neither update happens:
 
+<!-- exit 1 0 -->
 ```console
 $ adtb bank.db -c 'update a in accounts where a.name == "bo" set { a with balance: a.balance + 500 }
 update a in accounts where a.name == "ann" set { a with balance: a.balance - 500 }'
@@ -77,6 +78,7 @@ been applied yet. Because every item reads the same state, two updates
 of one row in one block do not run one after the other. They propose
 two new values for one key, and the block is refused:
 
+<!-- exit 1 -->
 ```console
 $ adtb bank.db
 adtb> transact
@@ -98,6 +100,7 @@ adtb> \q
 `fail` ends a block with an error of your own, and nothing it did is
 applied. A block can also be `read_only`, which the engine checks:
 
+<!-- exit 1 -->
 ```console
 $ adtb bank.db -c 'transact read_only
   insert accounts { name: "cy", balance: 1 }'
@@ -111,6 +114,7 @@ in, one statement each, until `\commit` or `\rollback`. A text that
 fails is undone and the transaction stays open, so you can go on or
 roll back:
 
+<!-- exit 1 -->
 ```console
 $ adtb bank.db
 adtb> \begin

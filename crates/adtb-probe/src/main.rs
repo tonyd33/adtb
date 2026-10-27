@@ -9,14 +9,17 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use adtb::Value;
 use adtb_conformance::{
-    Difference, Directive, Kind, Script, panic_message, run_engine_in, run_reference_in,
+    Difference, Directive, Got, Kind, Script, panic_message, run_engine_in, run_reference_in,
 };
 use adtb_lang::ast::AdhocItem;
 use adtb_lang::check::{check_adhoc, check_schema};
 use adtb_lang::parse::{Options, parse_adhoc, parse_schema};
 use adtb_lang::schema::build;
 use adtb_lang::span::{Diag, FileDiag, FileId};
+use adtb_lang::textual::{self, Form};
+use adtb_lang::types::Base;
 use adtb_sim::{Config, Outcome, Sim};
 
 const USAGE: &str =
@@ -211,7 +214,11 @@ fn script(schema: &str, data: Option<&str>, text: &str, items: &[AdhocItem]) -> 
 }
 
 fn failed(message: String) -> Vec<Difference> {
-    vec![Difference { line: 0, message }]
+    vec![Difference {
+        line: 0,
+        message,
+        got: None,
+    }]
 }
 
 fn on_reference(script: &Script, dir: &Path) -> Vec<Difference> {
@@ -231,29 +238,72 @@ fn on_engine(script: &Script, dir: &Path) -> Vec<Difference> {
     }
 }
 
-/// How one side ran the script: what loading the database reported, and the outcome of the
-/// text and of its explain.
+/// How a side's text ended, as two sides compare it: rows as a multiset, a refusal by its reason.
+#[derive(Debug, PartialEq, Eq)]
+enum Ended {
+    Ok,
+    Rows(Vec<String>),
+    Refused(String),
+    Failed,
+}
+
+/// How one side ran the script: what loading the database reported, how the text ended and how
+/// that reads, and the plan of its explain.
 struct Ran {
     setup: Vec<String>,
+    ended: Ended,
     text: String,
     explain: Option<String>,
 }
 
-fn outcome(found: &[Difference], line: usize, kind: &Kind) -> String {
+fn outcome(found: &[Difference], line: usize, kind: &Kind) -> (Ended, String) {
     match found.iter().find(|d| d.line == line) {
-        Some(d) => d
-            .message
-            .strip_prefix("got ")
-            .unwrap_or(&d.message)
-            .to_owned(),
-        None if matches!(kind, Kind::Query { .. }) => "[]".into(),
-        None => "ok".into(),
+        Some(d) => match &d.got {
+            Some(Got::Rows(rows)) => {
+                let mut sorted = rows.clone();
+                sorted.sort();
+                (Ended::Rows(sorted), format!("[{}]", rows.join(", ")))
+            }
+            Some(Got::Refused { reason, detail }) => (
+                Ended::Refused(reason.clone()),
+                format!("refused with {reason}: {detail}"),
+            ),
+            None => (Ended::Failed, d.message.clone()),
+        },
+        None if matches!(kind, Kind::Query { .. }) => (Ended::Rows(Vec::new()), "[]".into()),
+        None => (Ended::Ok, "ok".into()),
+    }
+}
+
+/// Returns the `text` member of the row an `explain` returns, or all of `row` when it does not
+/// read as one.
+fn plan_text(row: &str) -> String {
+    let text = || Form::Base(Base::Text);
+    let form = Form::Record(vec![("document".into(), text()), ("text".into(), text())]);
+    match textual::parse::<Value>(row, &form) {
+        Ok(Value::Record(fields)) => match &fields[..] {
+            [_, Value::Text(plan)] => plan.to_string(),
+            _ => row.to_owned(),
+        },
+        _ => row.to_owned(),
+    }
+}
+
+fn plan(found: &[Difference]) -> String {
+    match found.iter().find(|d| d.line == EXPLAIN) {
+        Some(Difference {
+            got: Some(Got::Rows(rows)),
+            ..
+        }) => rows.iter().map(|r| plan_text(r)).collect(),
+        Some(d) => d.message.clone(),
+        None => "no plan".into(),
     }
 }
 
 fn ran(script: &Script, found: &[Difference]) -> Ran {
     let at = |line| script.directives.iter().find(|d| d.line == line);
     let text = at(TEXT).expect("a probe's script runs its text");
+    let (ended, shown) = outcome(found, TEXT, &text.kind);
     Ran {
         setup: found
             .iter()
@@ -265,28 +315,14 @@ fn ran(script: &Script, found: &[Difference]) -> Ran {
                 _ => d.message.clone(),
             })
             .collect(),
-        text: outcome(found, TEXT, &text.kind),
-        explain: at(EXPLAIN).map(|e| outcome(found, EXPLAIN, &e.kind)),
+        ended,
+        text: shown,
+        explain: at(EXPLAIN).map(|_| plan(found)),
     }
 }
 
-/// Returns what two outcomes agree on: the rows, or the reason a refusal names.
-fn gist(outcome: &str) -> &str {
-    const REFUSED: &str = "refused with ";
-    match outcome.find(REFUSED) {
-        Some(at) => {
-            let rest = &outcome[at + REFUSED.len()..];
-            rest.split(':').next().unwrap_or(rest)
-        }
-        None => outcome,
-    }
-}
-
-/// Returns the `text` member of the row an `explain` returns, or all of `row` when it has none.
-fn plan_text(row: &str) -> &str {
-    row.split_once("text: \"")
-        .and_then(|(_, rest)| rest.rsplit_once("\" }]"))
-        .map_or(row, |(text, _)| text)
+fn agree(a: &Ran, b: &Ran) -> bool {
+    a.ended != Ended::Failed && a.ended == b.ended
 }
 
 fn report(out: &mut String, side: &str, r: &Ran) {
@@ -295,9 +331,7 @@ fn report(out: &mut String, side: &str, r: &Ran) {
     }
     writeln!(out, "{side}: {}", r.text).expect("a string is written");
     if let Some(plan) = &r.explain {
-        let plan = plan_text(plan)
-            .trim_end_matches("\\n")
-            .replace("\\n", "\n  ");
+        let plan = plan.trim_end_matches('\n').replace('\n', "\n  ");
         writeln!(out, "{side} plan:\n  {plan}").expect("a string is written");
     }
 }
@@ -331,10 +365,7 @@ fn probe(args: &Args) -> Result<(String, ExitCode), String> {
         report(&mut out, side, r);
     }
     let loaded = sides.iter().all(|(_, r)| r.setup.is_empty());
-    let agree = loaded
-        && sides
-            .windows(2)
-            .all(|w| gist(&w[0].1.text) == gist(&w[1].1.text));
+    let agree = loaded && sides.windows(2).all(|w| agree(&w[0].1, &w[1].1));
     if sides.len() == 2 {
         out.push_str(if agree { "agree\n" } else { "differ\n" });
     }
@@ -374,5 +405,81 @@ fn main() -> ExitCode {
             eprintln!("adtb-probe: {e}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn side(got: Option<Got>) -> Ran {
+        let found = vec![Difference {
+            line: TEXT,
+            message: "a message: with a colon".into(),
+            got,
+        }];
+        let (ended, text) = outcome(&found, TEXT, &query());
+        Ran {
+            setup: Vec::new(),
+            ended,
+            text,
+            explain: None,
+        }
+    }
+
+    fn rows(rows: &[&str]) -> Option<Got> {
+        Some(Got::Rows(rows.iter().map(ToString::to_string).collect()))
+    }
+
+    fn refused(reason: &str, detail: &str) -> Option<Got> {
+        Some(Got::Refused {
+            reason: reason.into(),
+            detail: detail.into(),
+        })
+    }
+
+    #[test]
+    fn rows_agree_as_a_multiset() {
+        assert!(agree(
+            &side(rows(&["b", "a: 1"])),
+            &side(rows(&["a: 1", "b"]))
+        ));
+        assert!(!agree(&side(rows(&["a", "a"])), &side(rows(&["a"]))));
+    }
+
+    #[test]
+    fn refusals_agree_by_reason_whatever_their_detail() {
+        let a = side(refused("KeyViolation", "Violated: `x`"));
+        let b = side(refused("KeyViolation", "holds a row: with key"));
+        assert!(agree(&a, &b));
+        assert!(!agree(&a, &side(refused("Violated", "KeyViolation: x"))));
+    }
+
+    #[test]
+    fn rows_and_a_refusal_differ() {
+        assert!(!agree(&side(rows(&[])), &side(refused("Invalid", ""))));
+    }
+
+    #[test]
+    fn a_failure_agrees_with_nothing() {
+        assert!(!agree(&side(None), &side(None)));
+    }
+
+    #[test]
+    fn no_difference_is_no_rows_for_a_query_and_ok_for_a_run() {
+        assert_eq!(
+            (Ended::Rows(Vec::new()), "[]".into()),
+            outcome(&[], TEXT, &query())
+        );
+        assert_eq!((Ended::Ok, "ok".into()), outcome(&[], TEXT, &Kind::Run));
+    }
+
+    #[test]
+    fn the_plan_is_the_text_member_of_the_explain_row() {
+        assert_eq!(
+            "Set\n  Scan \"us\"\n",
+            plan_text(r#"{ document: "{}", text: "Set\n  Scan \"us\"\n" }"#)
+        );
+        assert_eq!("not a row", plan_text("not a row"));
     }
 }

@@ -394,6 +394,15 @@ fn install_adds_the_declarations_its_package_holds() {
         "module auth\ninstall geo \"1.2\" from \"geo-1.2.adtx\"",
         "nosuch",
     );
+    let mut unparsed = running();
+    unparsed
+        .packages
+        .insert("geo-1.2.adtx".into(), "fn scale (x: F64) -> = x".into());
+    refuses(
+        &unparsed,
+        "module auth\ninstall geo \"1.2\" from \"geo-1.2.adtx\"",
+        "the package `geo-1.2.adtx` does not parse: ",
+    );
 }
 
 #[test]
@@ -1441,6 +1450,74 @@ merge constructor Identity.(Google | Apple) into Social
   arm display_name: Social s -> s.sub
   arm login_present: Social s -> scalar_len(s.sub) == 0",
         "check `gid_set` has no image under the merge: the routing does not carry `Google.gid` whole",
+    );
+}
+
+#[test]
+fn a_merge_refuses_a_check_over_a_merged_and_a_kept_constructor() {
+    let s = applies(
+        &running(),
+        "module auth\nadd check named on identities.(EmailPass | Google) (user == user)",
+    );
+    refuses(
+        &s,
+        "module auth
+add type Provider = Google | Apple
+merge constructor Identity.(Google | Apple) into Social
+  { provider: Provider, sub: Text }
+  by match
+    | Google g -> Social { provider: Google, sub: g.gid }
+    | Apple a  -> Social { provider: Apple, sub: a.sub }
+  arm display_name: Social s -> s.sub
+  arm login_present: Social s -> scalar_len(s.sub) == 0",
+        "check `named` has no image under the merge; drop or rewrite it in this or an earlier migration",
+    );
+}
+
+#[test]
+fn a_merge_refuses_a_check_whose_field_goes_to_different_fields() {
+    let s = source(
+        "module auth
+type Identity { id: Key identities } = Mail { email: Text } | Google { sub: Text } | Apple { sub: Text }
+relation identities : Identity key id generate uuidv7
+type Provider = Google | Apple
+check sub_set on identities.(Google | Apple) (scalar_len(sub) > 0)",
+    );
+    refuses(
+        &s,
+        "module auth
+merge constructor Identity.(Google | Apple) into Social
+  { provider: Provider, google: Text, apple: Text }
+  by match
+    | Google g -> Social { provider: Google, google: g.sub, apple: \"\" }
+    | Apple a  -> Social { provider: Apple, google: \"\", apple: a.sub }",
+        "check `sub_set` has no image under the merge: its constructors' field `sub` goes to different fields",
+    );
+}
+
+#[test]
+#[ignore = "reverting a merge that carried a one-constructor check leaves a match on the dropped discriminator"]
+fn a_revert_of_a_merge_restores_the_check_it_carried() {
+    let s = applies(
+        &running(),
+        "module auth\nadd check gid_set on identities.Google (scalar_len(gid) > 0)",
+    );
+    let s = applies(
+        &s,
+        "module auth
+add type Provider = Google | Apple
+merge constructor Identity.(Google | Apple) into Social
+  { provider: Provider, sub: Text }
+  by match
+    | Google g -> Social { provider: Google, sub: g.gid }
+    | Apple a  -> Social { provider: Apple, sub: a.sub }
+  arm display_name: Social s -> s.sub
+  arm login_present: Social s -> scalar_len(s.sub) == 0",
+    );
+    let s = applies(&s, "module auth\nrevert 0002");
+    assert_eq!(
+        "check gid_set on identities.Google (scalar_len(gid) > 0)",
+        flat(&decl(&s, "check", "gid_set"))
     );
 }
 

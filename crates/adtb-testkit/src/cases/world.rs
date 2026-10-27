@@ -151,8 +151,16 @@ pub(super) struct Rel {
     pub(super) uniques: Vec<Index>,
     /// Each default with the literal it gives.
     pub(super) defaults: Vec<(Index, String)>,
-    /// Each check by name with the integer header field it bounds below by [`INT_MIN`].
-    pub(super) checks: Vec<(String, String)>,
+    pub(super) checks: Vec<Check>,
+}
+
+/// A check bounding an integer header field below by [`INT_MIN`], over the relation or over one
+/// constructor of it.
+#[derive(Clone, Debug)]
+pub(super) struct Check {
+    pub(super) name: String,
+    pub(super) field: String,
+    pub(super) ctor: Option<usize>,
 }
 
 /// An index of a relation over one field, of a constructor or of the header.
@@ -233,7 +241,7 @@ impl World {
             out.push(("add", r.relation_decl()));
         }
         for r in &self.rels {
-            out.extend(r.checks.iter().map(|(k, f)| ("add", r.check_decl(k, f))));
+            out.extend(r.checks.iter().map(|k| ("add", r.check_decl(k))));
         }
         out
     }
@@ -433,6 +441,7 @@ impl World {
         let old = std::mem::take(&mut rel.ctors);
         let mut map = vec![None; old.len()];
         let mut first = 0;
+        let made = products.len();
         let mut products = Some(products);
         for (k, c) in old.into_iter().enumerate() {
             if k == at {
@@ -450,6 +459,18 @@ impl World {
         }
         for (i, _) in &mut rel.defaults {
             i.ctor = i.ctor.map(moved);
+        }
+        for k in &mut rel.checks {
+            k.ctor = k.ctor.map(|c| {
+                if !sources.contains(&c) {
+                    return moved(c);
+                }
+                assert_eq!(
+                    1, made,
+                    "a check over a source names the one product of a merge"
+                );
+                first
+            });
         }
         for row in self.rows.iter_mut().filter(|row| row.rel == r) {
             if sources.contains(&row.ctor) {
@@ -594,9 +615,12 @@ impl Rel {
         }
     }
 
-    /// Returns the declaration of check `k` over integer header field `f`.
-    pub(super) fn check_decl(&self, k: &str, f: &str) -> String {
-        format!("check {k} on {} ({f} >= {INT_MIN})", self.name)
+    pub(super) fn check_decl(&self, k: &Check) -> String {
+        let on = match k.ctor {
+            Some(c) => format!("{}.{}", self.name, self.ctors[c].name),
+            None => self.name.clone(),
+        };
+        format!("check {} on {on} ({} >= {INT_MIN})", k.name, k.field)
     }
 
     /// Returns the constructor set an operator names index `i` over.
@@ -613,11 +637,16 @@ impl Rel {
         let names = |i: &Index| i.field == f && (i.ctor == c || i.ctor.is_none());
         self.indexes.iter().chain(&self.uniques).any(names)
             || self.defaults.iter().any(|(d, _)| names(d))
-            || self.checks.iter().any(|(_, g)| g == f)
+            || self.checks.iter().any(|k| k.field == f)
+    }
+
+    /// Returns whether an index, unique, default or check ranges over constructor `c` alone.
+    pub(super) fn scopes(&self, c: usize) -> bool {
+        self.indexes_alone(c) || self.checks.iter().any(|k| k.ctor == Some(c))
     }
 
     /// Returns whether an index, unique or default ranges over constructor `c` alone.
-    pub(super) fn scopes(&self, c: usize) -> bool {
+    pub(super) fn indexes_alone(&self, c: usize) -> bool {
         let names = |i: &Index| i.ctor == Some(c);
         self.indexes.iter().chain(&self.uniques).any(names)
             || self.defaults.iter().any(|(d, _)| names(d))

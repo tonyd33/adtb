@@ -39,6 +39,7 @@ it named after the file with `-log` appended, here `shelter.db-log`.
 Keep the two together; the database is both. When the file already
 exists, `--create` opens it as if the flag were absent.
 
+<!-- exit 0 1 -->
 ```console
 $ adtb --create --schema shelter.adt shelter.db -c 'insert pets.Cat { name: "tom", lives: 9 }'
 $ adtb missing.db -c 'from p in pets select p'
@@ -71,6 +72,7 @@ module shelter
 add field Pet.Cat.age: I64 fill 0
 ```
 
+<!-- exit 0 1 -->
 ```console
 $ adtb --schema shelter.adt --schema age.adt shelter.db -c 'from c in pets.Cat select c'
 Cat { name: "tom", lives: 9, age: 0 }
@@ -94,6 +96,7 @@ commands. With `-c`, the shell runs one text as one transaction and
 exits. The items run in order; the first one that fails ends the text,
 and nothing it did commits.
 
+<!-- exit 1 0 -->
 ```console
 $ adtb shelter.db -c 'insert pets.Dog { name: "rex", good: true }
 insert pets.Dog { name: "tom", good: false }'
@@ -176,6 +179,7 @@ A text that fails inside a transaction prints its error and leaves the
 transaction open. When the input ends, or `\q` quits, with a
 transaction still open, the shell rolls it back and says so:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> \begin
@@ -237,6 +241,7 @@ saw the error.
 In ad hoc text a free lowercase name is a parameter. The shell supplies
 no parameters, so a text that uses one is refused:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db -c 'from p in pets where p.name == who select p'
 `who` is a parameter of this text, but the call supplies no value for it

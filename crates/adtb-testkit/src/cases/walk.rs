@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::world::{Ctor, Field, Index, Rel, Row, SHADE, State, Sum, T, Val, World};
+use super::world::{Check, Ctor, Field, Index, Rel, Row, SHADE, State, Sum, T, Val, World};
 use super::{Case, query};
 use crate::Rng;
 
@@ -333,7 +333,8 @@ fn operator(
 /// Returns the operators that take back what an earlier operator left on relation `r`: an
 /// unnest of a constructor holding one value of a declared sum, a split of one holding a value
 /// of a declared sum of fieldless constructors, a remove of an empty deprecated constructor, and
-/// a drop of a unique, default or check.
+/// a drop of a unique, default or check. Returns a merge too when a check ranges over one
+/// constructor alone, which the merge carries.
 fn undoing(w: &World, r: usize) -> Vec<Operator> {
     let rel = &w.rels[r];
     let mut out = Vec::new();
@@ -355,6 +356,7 @@ fn undoing(w: &World, r: usize) -> Vec<Operator> {
         }
     }
     for (some, o) in [
+        (rel.checks.iter().any(|k| k.ctor.is_some()), Operator::Merge),
         (!rel.uniques.is_empty(), Operator::DropUnique),
         (!rel.defaults.is_empty(), Operator::DropDefault),
         (!rel.checks.is_empty(), Operator::DropCheck),
@@ -829,23 +831,33 @@ fn lossy_split(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
 }
 
 /// Returns two constructors of a sum `r` drawn at random, in declaration order, that may be
-/// merged or nested: neither deprecated, no index, unique or default over one alone, and
-/// neither named as a constructor of a sum the walk declares.
-fn pair(rng: &mut Rng, w: &World, r: usize) -> Option<(usize, usize)> {
+/// merged or nested: neither deprecated, no index, unique or default over one alone, no check
+/// over one alone unless `checks` carry, and neither named as a constructor of a sum the walk
+/// declares. When `checks` carry, one is a constructor a check ranges over alone half the time.
+fn pair(rng: &mut Rng, w: &World, r: usize, checks: bool) -> Option<(usize, usize)> {
     let rel = &w.rels[r];
     if !rel.sum || rel.ctors.len() < 2 {
         return None;
     }
     let ok = |c: usize| {
         let ctor = &rel.ctors[c];
+        let scoped = if checks {
+            rel.indexes_alone(c)
+        } else {
+            rel.scopes(c)
+        };
         ctor.state != State::Deprecated
-            && !rel.scopes(c)
+            && !scoped
             && !w
                 .sums
                 .iter()
                 .any(|s| s.ctors.iter().any(|d| d.name == ctor.name))
     };
-    let a = rng.below(rel.ctors.len() as u64) as usize;
+    let checked: Vec<usize> = rel.checks.iter().filter_map(|k| k.ctor).collect();
+    let a = match rng.pick_some(&checked) {
+        Some(&c) if checks && rng.below(2) == 0 => c,
+        _ => rng.below(rel.ctors.len() as u64) as usize,
+    };
     let b = rng.below(rel.ctors.len() as u64) as usize;
     (a != b && ok(a) && ok(b)).then(|| (a.min(b), a.max(b)))
 }
@@ -862,7 +874,7 @@ fn joined(a: State, b: State) -> State {
 /// Merges two constructors of a sum `r` into one, its discriminator of a sum added alongside,
 /// each source's fields carried whole and the other source's fields filled with literals.
 fn merge(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
-    let (a, b) = pair(rng, w, r)?;
+    let (a, b) = pair(rng, w, r, true)?;
     let sources = [w.rels[r].ctors[a].clone(), w.rels[r].ctors[b].clone()];
     let tag_ty = Sum {
         name: w.fresh("D"),
@@ -950,7 +962,7 @@ fn merge(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
 /// Nests two constructors of a sum `r` into one holding a value of a sum added alongside, of
 /// constructors of the same names and fields.
 fn nest(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
-    let (a, b) = pair(rng, w, r)?;
+    let (a, b) = pair(rng, w, r, false)?;
     let sources = [w.rels[r].ctors[a].clone(), w.rels[r].ctors[b].clone()];
     let held = Sum {
         name: w.fresh("N"),
@@ -1261,7 +1273,8 @@ fn drop_default(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     )])
 }
 
-/// Adds a check bounding a free integer header field below by the least integer a case draws.
+/// Adds a check bounding a free integer header field below by the least integer a case draws,
+/// over the relation or, of a sum, over one constructor.
 fn add_check(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     let rel = &w.rels[r];
     let ints: Vec<&Field> = rel
@@ -1269,11 +1282,16 @@ fn add_check(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
         .iter()
         .filter(|f| f.ty == T::Int && !rel.attached(None, &f.name))
         .collect();
-    let f = rng.pick_some(&ints)?.name.clone();
-    let k = w.fresh("k");
+    let field = rng.pick_some(&ints)?.name.clone();
+    let ctor = (rel.sum && rng.below(2) == 0).then(|| rng.below(rel.ctors.len() as u64) as usize);
+    let k = Check {
+        name: w.fresh("k"),
+        field,
+        ctor,
+    };
     let rel = &mut w.rels[r];
-    let op = format!("add {}", rel.check_decl(&k, &f));
-    rel.checks.push((k, f));
+    let op = format!("add {}", rel.check_decl(&k));
+    rel.checks.push(k);
     Some(vec![op])
 }
 
@@ -1283,8 +1301,8 @@ fn drop_check(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
         return None;
     }
     let k = rng.below(rel.checks.len() as u64) as usize;
-    let (name, _) = rel.checks.remove(k);
-    Some(vec![format!("drop check {name}")])
+    let gone = rel.checks.remove(k);
+    Some(vec![format!("drop check {}", gone.name)])
 }
 
 fn redefine_fn(w: &mut World) -> Vec<String> {

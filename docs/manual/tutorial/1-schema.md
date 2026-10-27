@@ -115,6 +115,7 @@ order.
 The engine checks every text against the schema before it runs it,
 and checks every write against the keys:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> insert adopters { email: "ann@example.com", name: "Annie", phone: "555-0199" }
@@ -137,6 +138,7 @@ A composite key is built with the names of its fields. `kennels.key(building: "A
 is the key of kennel 1 in building A, and `key k` is the key of a row
 `k`:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> insert kennels { building: "A", number: 1, places: 2 }

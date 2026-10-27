@@ -70,6 +70,7 @@ module crm
 rename field Contact.Lead.source to channel
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema crm.adt --schema plan.adt --schema channel.adt crm.db
 adtb> from c in contacts.Lead select c.source
@@ -101,6 +102,7 @@ would no longer cover every constructor.
 A new constructor starts declared: it exists and can be read, but no
 row can be written into it yet.
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema crm.adt --schema plan.adt --schema channel.adt --schema partner.adt crm.db -c 'insert contacts.Partner { email: "cy@example.com", name: "cy", company: "acme" }'
 constructor `contacts.Partner` is Declared, not open for writes
@@ -184,6 +186,7 @@ module crm
 deprecate contacts.Partner
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema crm.adt --schema plan.adt --schema channel.adt --schema partner.adt --schema enable.adt --schema header.adt --schema revert.adt --schema deprecate.adt crm.db -c 'insert contacts.Partner { email: "dee@example.com", name: "dee", channel: "web", company: "acme" }'
 constructor `contacts.Partner` is Deprecated, not open for writes
@@ -281,6 +284,7 @@ module shop
 add unique (total) in orders
 ```
 
+<!-- exit 0 1 -->
 ```console
 $ adtb orders.db -c 'insert orders.Shipped { id: 3, total: 400, carrier: "post" }'
 $ adtb --schema orders.adt --schema split.adt --schema merge.adt --schema unique.adt orders.db -c 'from o in orders select o.id'

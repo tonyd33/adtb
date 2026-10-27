@@ -53,6 +53,18 @@ pub struct Script {
 pub struct Difference {
     pub line: usize,
     pub message: String,
+    /// What the directive's statement ended with, when it ran to a result or a refusal.
+    pub got: Option<Got>,
+}
+
+/// How a `run` or `query` directive's statement ended where it differs from its script.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Got {
+    /// A query's result, one row per element in the order the side returned them, each printed
+    /// in the textual syntax.
+    Rows(Vec<String>),
+    /// A statement refused with the reason constructor `reason`.
+    Refused { reason: String, detail: String },
 }
 
 impl fmt::Display for Difference {
@@ -65,7 +77,24 @@ fn differ(line: usize, message: impl Into<String>) -> Difference {
     Difference {
         line,
         message: message.into(),
+        got: None,
     }
+}
+
+fn differ_got(line: usize, message: String, got: Got) -> Difference {
+    Difference {
+        line,
+        message,
+        got: Some(got),
+    }
+}
+
+fn refused(line: usize, message: String, reason: &str, detail: &str) -> Difference {
+    let got = Got::Refused {
+        reason: reason.to_owned(),
+        detail: detail.to_owned(),
+    };
+    differ_got(line, message, got)
 }
 
 /// Reads a script.
@@ -268,10 +297,9 @@ impl Run {
             Kind::Run => {
                 for (i, ended) in self.statements(&d.body, true)?.0.into_iter().enumerate() {
                     if let Ended::Refused(reason, detail) = ended {
-                        return Err(differ(
-                            d.line,
-                            format!("statement {} is refused with {reason}: {detail}", i + 1),
-                        ));
+                        let message =
+                            format!("statement {} is refused with {reason}: {detail}", i + 1);
+                        return Err(refused(d.line, message, &reason, &detail));
                     }
                 }
                 Ok(())
@@ -317,9 +345,12 @@ impl Run {
                     return Err(differ(d.line, "a query holds one statement"));
                 };
                 match one {
-                    Ended::Refused(r, detail) => {
-                        Err(differ(d.line, format!("refused with {r}: {detail}")))
-                    }
+                    Ended::Refused(r, detail) => Err(refused(
+                        d.line,
+                        format!("refused with {r}: {detail}"),
+                        r,
+                        detail,
+                    )),
                     Ended::Ok(v, ty) => self.compare(d.line, v, ty, *rowsort, rows),
                 }
             }
@@ -411,7 +442,12 @@ impl Run {
         if let Some(d) = repeated(line, &want) {
             return Err(d);
         }
-        let mismatch = || differ(line, format!("got {}", shown()));
+        let rows = || match got {
+            Value::Set(s) => s.iter().map(|v| self.show(v, &elem)).collect(),
+            Value::List(l) => l.iter().map(|v| self.show(v, &elem)).collect(),
+            v => vec![self.show(v, ty)],
+        };
+        let mismatch = || differ_got(line, format!("got {}", shown()), Got::Rows(rows()));
         match got {
             Value::Set(s) => {
                 let want_set: std::collections::BTreeSet<Value> = want.iter().cloned().collect();
@@ -421,12 +457,13 @@ impl Run {
                 if !rowsort {
                     let canonical: Vec<String> = want.iter().map(|v| self.show(v, &elem)).collect();
                     if format!("[{}]", canonical.join(", ")) != shown() {
-                        return Err(differ(
+                        return Err(differ_got(
                             line,
                             format!(
                                 "the rows are not in printed order; got {}; use `rowsort`",
                                 shown()
                             ),
+                            Got::Rows(rows()),
                         ));
                     }
                 }

@@ -611,11 +611,14 @@ impl Source {
         next.expecting(&m.module.text, &m.operators);
         let mut refusal = Refusal::default();
         let mut rekeyed = Vec::new();
+        let mut applied = Vec::with_capacity(m.operators.len());
         for op in &m.operators {
             if let OperatorKind::Rekey { relation, .. } = &op.kind {
                 rekeyed.push((relation.clone(), op.span));
             }
-            if let Err(mut ds) = next.apply(&m.module.text, op, text) {
+            let ended = next.apply(&m.module.text, op, text);
+            applied.push(ended.is_ok());
+            if let Err(mut ds) = ended {
                 refusal.operators.append(&mut ds);
             }
         }
@@ -635,7 +638,7 @@ impl Source {
                 .into_iter()
                 .filter(|d| !reported.contains(&d.diag.message))
                 .collect();
-            refusal.recheck_from = self.copied_from(m, text, &refusal.recheck);
+            refusal.recheck_from = self.copied_from(m, text, &applied, &refusal.recheck);
         }
         if refusal.operators.is_empty() && refusal.recheck.is_empty() {
             next.log.push(Logged {
@@ -654,19 +657,28 @@ impl Source {
 
     /// Returns, for each diagnostic of the result of migration `m`, the span of `text` an operator
     /// copied the diagnosed text from, by applying `m` again recording its copies.
-    fn copied_from(&self, m: &MigrationFile, text: &str, diags: &[FileDiag]) -> Vec<Option<Span>> {
+    ///
+    /// Preconditions:
+    /// - `applied` holds, for each operator of `m`, whether [`Source::migrate`] applied it.
+    fn copied_from(
+        &self,
+        m: &MigrationFile,
+        text: &str,
+        applied: &[bool],
+        diags: &[FileDiag],
+    ) -> Vec<Option<Span>> {
         let mut replay = self.clone();
         replay.version += 1;
         replay.expecting(&m.module.text, &m.operators);
         replay.marks = Some(Marks::default());
-        for op in &m.operators {
+        for (op, &was) in m.operators.iter().zip(applied) {
             let noted = RefCell::new(Names::default());
-            if replay
-                .apply_noting(&m.module.text, op, text, Some(&noted))
-                .is_err()
-            {
-                continue;
-            }
+            let ended = replay.apply_noting(&m.module.text, op, text, Some(&noted));
+            assert_eq!(
+                was,
+                ended.is_ok(),
+                "a replay of a migration applies each operator the migration applied, and no other"
+            );
         }
         let marks = replay.marks.take().expect("the replay records its copies");
         diags

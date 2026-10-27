@@ -1,6 +1,6 @@
 //! The runner's judgement of the engine's outcomes, over the simulator.
 
-use adtb_conformance::{parse, run_engine};
+use adtb_conformance::{Got, parse, run_engine};
 use adtb_sim::{Config, Outcome, Sim};
 
 const SCHEMA: &str = "schema
@@ -192,5 +192,28 @@ fn a_set_result_with_a_repeated_expected_row_differs_as_a_script_error() {
     assert_eq!(
         vec!["expected row 3 repeats row 2; a result holds each row once".to_string()],
         found
+    );
+}
+
+#[test]
+fn a_differing_query_carries_its_rows_and_a_refusal_its_reason() {
+    let script = parse(&format!(
+        "{SCHEMA}query rowsort\n  from t in ts select t.n\n----\n3\nrun\n  insert ts {{ id: ts.key(1), n: 9 }}\n"
+    ))
+    .expect("the script reads");
+    let mut found = Vec::new();
+    let outcome = Sim::new(0, Config::default()).run(|rt| found = run_engine(rt, &script));
+    assert_eq!(Outcome::Finished, outcome);
+    let got: Vec<Option<Got>> = found.into_iter().map(|d| d.got).collect();
+    assert_eq!(2, got.len());
+    let Some(Got::Rows(mut rows)) = got[0].clone() else {
+        panic!("a differing query carries its rows: {:?}", got[0]);
+    };
+    rows.sort();
+    assert_eq!(vec!["1".to_string(), "2".into()], rows);
+    assert!(
+        matches!(&got[1], Some(Got::Refused { reason, .. }) if reason == "KeyViolation"),
+        "{:?}",
+        got[1]
     );
 }

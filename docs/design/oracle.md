@@ -197,6 +197,26 @@ every other value is compared exactly.
 
 Rulings: project/oracle/rust-reference, project/oracle/shared-front/typed-input, project/oracle/float/tolerance
 
+### 3.1 Conformance outcomes
+
+`adtb-conformance` runs a script on either side and returns a
+`Difference` per directive whose outcome differs from the script. A
+caller that compares the two sides reads each difference's `got`,
+never its message.
+
+Postconditions:
+
+- A `query` that returns rows other than its script's carries
+  `Got::Rows`: one printed row per element, in the order the side
+  returned them.
+- A `run` or `query` whose statement is refused carries
+  `Got::Refused` with the reason constructor's name.
+- Any other difference carries no `got`.
+- A `query` with no difference returned its script's rows; a `run`
+  with no difference succeeded.
+
+The message is for people and may change wording at any time.
+
 ## 4. Generator interface
 
 Inputs are generated well-typed, in three ways:

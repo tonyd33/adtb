@@ -69,6 +69,7 @@ Ann and Bo want to swap phone numbers. As two statements it cannot be
 done: whichever runs first leaves two adopters with one number, and
 `one_adopter_per_phone` refuses it.
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> update a in adopters where a.name == "Ann" set Adopter { a with phone: Some { value: "555-0101" } }
@@ -120,6 +121,7 @@ block's writes all happen at its end.
 else ...` chooses between writes, with `skip` as the write that does
 nothing:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> transact
@@ -139,6 +141,7 @@ several writes one after another. They run in order as one
 transaction, each its own statement, and the first that fails undoes
 them all:
 
+<!-- exit 1 0 -->
 ```console
 $ adtb shelter.db -c 'insert pets.Dog { name: "fido", age: 2, size: Medium, diet: Normal, breed: "pug" } insert adoptions { pet: pets.key("fido"), adopter: adopters.key("bo@example.com"), fee: 25.00 } insert adoptions { pet: pets.key("fido"), adopter: adopters.key("ann@example.com"), fee: 25.00 }'
 `shelter::adoptions` already holds a row with key `adoptions.key(pets.key("fido"))`
@@ -156,6 +159,7 @@ run in, `\commit` makes their changes permanent and `\rollback`
 discards them. Inside it each text sees the changes of the ones
 before:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> \begin

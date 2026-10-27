@@ -86,6 +86,7 @@ Floats never fault. `-0.0` is stored as `0.0`, every NaN is one value,
 NaN equals itself and sorts above every other float, including
 infinity.
 
+<!-- exit 1 -->
 ```console
 $ adtb demo.db
 adtb> 1.25 + 1.5
@@ -279,6 +280,7 @@ type Fault = DivisionByZero | ArithmeticOverflow | OutOfRange | NotFinite
 `try e` catches a fault raised by `e` and gives `Ok { value: v }` or
 `Err { error: f }`, a `Result` whose error is a `Fault`:
 
+<!-- exit 1 -->
 ```console
 $ adtb demo.db
 adtb> 7 / 0
@@ -302,6 +304,7 @@ type Uuid = new Bytes where bytes_len(self) == 16
 
 A key declared `generate uuidv7` holds a `Uuid`.
 
+<!-- exit 1 -->
 ```console
 $ adtb demo.db
 adtb> uuid("0190A4B2-7C3E-7D4F-9A21-5B6C7D8E9F01")
@@ -330,6 +333,7 @@ excluded, over an ordered type `a`. You build one only with `span`.
 | `covers (x: Span a, y: Span a) -> Bool` | whether `y` lies inside `x` | none |
 | `covers (x: Span a, t: a) -> Bool` | whether `t` lies inside `x` | none |
 
+<!-- exit 1 -->
 ```console
 $ adtb demo.db
 adtb> span(3, 7)
@@ -380,6 +384,7 @@ than in your own data:
 Decimals have no `/` and no `%`: divide them with `div`. Integer
 arithmetic never wraps.
 
+<!-- exit 1 -->
 ```console
 $ adtb demo.db
 adtb> 1 + 2 * 3
@@ -437,6 +442,7 @@ Some { value: 2.500 }
 The scale `u` is written as a literal, since it is part of the result
 type.
 
+<!-- exit 1 -->
 ```console
 $ adtb demo.db
 adtb> div(10.00, 3.00, 2, HalfEven)
@@ -478,6 +484,7 @@ arguments and returns an `Option`.
 | `decimal (x, s, r: Rounding)` | a float | `x` rounded to scale `s` by `r` | `OutOfRange`; `NotFinite` |
 | `f32 (x)`, `f64 (x)` | an integer, a decimal or the other float type | the nearest float | `f32` only: `OutOfRange` |
 
+<!-- exit 1 -->
 ```console
 $ adtb demo.db
 adtb> i8(100)
@@ -565,6 +572,7 @@ statement runs.
 as `"de@cldr-49"` or `"en-u-ks-level2@cldr-49"`; ordering by its result
 sorts text the way that locale does.
 
+<!-- exit 1 -->
 ```console
 $ adtb demo.db
 adtb> "caf" ++ "é"
@@ -735,6 +743,7 @@ names the earlier of its two instants. A `ZonedDateTime` keeps its zone
 name and civil time; it has no order, since two zones' clocks do not
 line up.
 
+<!-- exit 1 -->
 ```console
 $ adtb demo.db
 adtb> from d in datetime("2026-10-25T09:30:00") select zoned(d, "Europe/Paris", Clamp)
@@ -771,6 +780,7 @@ merged equal ones; range over the rows and aggregate the field
 instead. An integer or decimal `sum` faults with `ArithmeticOverflow`
 only when the exact total is out of range.
 
+<!-- exit 1 -->
 ```console
 $ adtb demo.db
 adtb> count(p for p in pets)

@@ -53,7 +53,16 @@ suite=$root/conformance/
 differs=0
 
 on_reference() {
-  "$reference" "$1" | sed -E "s|^([^:]*:[0-9]+): |\1: reference: |"
+  local err=$results/reference.$BASHPID out status
+  out=$("$reference" "$1" 2>"$err")
+  status=$?
+  if ((status > 1)) || [[ $status == 1 && -z $out ]]; then
+    echo "$1:0: reference: aborts ($status): $(printf '%s\n' "$out" | cat - "$err" \
+      | grep -v '^\s*$' | tail -3 | paste -sd'/')"
+  elif [[ -n $out ]]; then
+    sed -E "s|^([^:]*:[0-9]+): |\1: reference: |" <<<"$out"
+  fi
+  rm -f "$err"
 }
 
 on_engine() {
@@ -88,6 +97,7 @@ one() {
 results=$(mktemp -d "${CARGO_TARGET_DIR:-$root/target}/conf.XXXXXX")
 trap 'rm -r "$results"' EXIT
 workers=$(($(nproc) / 2))
+((workers > 0)) || workers=1
 for i in "${!files[@]}"; do
   while (($(jobs -rp | wc -l) >= workers)); do wait -n; done
   one "${files[$i]}" >"$results/$i" &

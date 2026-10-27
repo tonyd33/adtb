@@ -3,29 +3,32 @@
 //! A fenced block whose info string is a language and a name, such as `adt NAME` or `csv NAME`,
 //! is a file the page asks the reader to save as `NAME`; `adt fragment` is an excerpt, not a
 //! file. A `console` block holds `$ adtb ...` commands, each followed by the output it prints
-//! on stdout and stderr, interleaved as printed.
+//! on stdout and stderr, interleaved as printed. A line `<!-- exit N... -->` just before a
+//! `console` block lists the status each of its sessions exits with; without one, each exits 0.
 //! A command without `-c` reads the lines after it that start with the prompt or the
 //! continuation prompt as its input; a bare continuation prompt is a blank line. A command
 //! ending in `< FILE` reads that file instead.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 const PROMPT: &str = "adtb> ";
 const CONTINUE: &str = "  ... ";
 
 enum Block {
     File { name: String, text: String },
-    Console(Vec<String>),
+    Console { lines: Vec<String>, exits: Vec<i32> },
 }
 
 /// Returns the file and `console` blocks of markdown `page`, in order.
 fn blocks(page: &str) -> Vec<Block> {
     let mut out = Vec::new();
     let mut lines = page.lines();
+    let mut before = "";
     while let Some(line) = lines.next() {
         let Some(info) = line.strip_prefix("```") else {
+            before = line;
             continue;
         };
         let body: Vec<String> = lines
@@ -38,11 +41,28 @@ fn blocks(page: &str) -> Vec<Block> {
                 name: name.to_owned(),
                 text: body.join("\n") + "\n",
             }),
-            None if info == "console" => out.push(Block::Console(body)),
+            None if info == "console" => out.push(Block::Console {
+                lines: body,
+                exits: exits(before),
+            }),
             _ => {}
         }
+        before = "";
     }
     out
+}
+
+/// Returns the statuses a `<!-- exit N... -->` line lists, or none for any other line.
+fn exits(line: &str) -> Vec<i32> {
+    line.strip_prefix("<!-- exit ")
+        .and_then(|l| l.strip_suffix(" -->"))
+        .map(|codes| {
+            codes
+                .split(' ')
+                .map(|c| c.parse().unwrap_or_else(|e| panic!("{line}: {c}: {e}")))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// A command of a console block, the input it reads and the output the page shows for it.
@@ -115,8 +135,14 @@ fn words(command: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
-/// Run `session` in `dir`. Returns the lines it prints on stdout and stderr, in the order printed.
-fn printed(dir: &Path, session: &Session) -> Vec<String> {
+/// What a session printed on stdout and stderr, in the order printed, and how it exited.
+struct Printed {
+    lines: Vec<String>,
+    status: ExitStatus,
+}
+
+/// Run `session` in `dir`.
+fn printed(dir: &Path, session: &Session) -> Printed {
     let mut words = words(&session.command).expect("a whole command");
     let input = match words.as_slice() {
         [.., lt, file] if lt == "<" => {
@@ -143,25 +169,30 @@ fn printed(dir: &Path, session: &Session) -> Vec<String> {
         .stderr(err)
         .spawn()
         .expect("the shell starts");
-    child
-        .stdin
-        .take()
-        .expect("a piped stdin")
-        .write_all(input.as_bytes())
-        .expect("the shell reads its stdin");
+    let mut stdin = child.stdin.take().expect("a piped stdin");
     let mut text = String::new();
-    printed
-        .read_to_string(&mut text)
-        .expect("the shell prints UTF-8");
-    child.wait().expect("the shell exits");
-    text.lines().map(str::to_owned).collect()
+    std::thread::scope(|s| {
+        let writer = s.spawn(move || stdin.write_all(input.as_bytes()));
+        printed
+            .read_to_string(&mut text)
+            .expect("the shell prints UTF-8");
+        writer
+            .join()
+            .expect("the input writer does not panic")
+            .expect("the shell reads its stdin");
+    });
+    let status = child.wait().expect("the shell exits");
+    Printed {
+        lines: text.lines().map(str::to_owned).collect(),
+        status,
+    }
 }
 
-fn check(page: &str) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/manual")
-        .join(page);
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+/// Runs every session of `page`, a path under `docs/manual`, and returns what each that prints
+/// other than the page shows printed. Returns `None` when the page shows no session.
+fn check(manual: &Path, page: &Path) -> Option<Vec<String>> {
+    let text =
+        std::fs::read_to_string(manual.join(page)).unwrap_or_else(|e| panic!("{page:?}: {e}"));
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("manual")
         .join(page);
@@ -175,124 +206,90 @@ fn check(page: &str) {
     for block in blocks(&text) {
         match block {
             Block::File { name, text } => std::fs::write(dir.join(name), text).unwrap(),
-            Block::Console(lines) => {
-                for session in sessions(&lines) {
+            Block::Console { lines, exits } => {
+                let sessions = sessions(&lines);
+                if !exits.is_empty() && exits.len() != sessions.len() {
+                    wrong.push(format!(
+                        "{}: {} statuses for the {} sessions of the block at `{}`",
+                        page.display(),
+                        exits.len(),
+                        sessions.len(),
+                        lines[0]
+                    ));
+                }
+                for (i, session) in sessions.iter().enumerate() {
                     ran += 1;
-                    let got = printed(&dir, &session);
-                    if got != session.shown {
+                    let got = printed(&dir, session);
+                    let status = got.status.code();
+                    let expected = exits.get(i).copied().unwrap_or(0);
+                    if got.lines != session.shown || status != Some(expected) {
                         wrong.push(format!(
-                            "$ {}\nshown:\n{}\nprinted:\n{}",
+                            "{}: $ {}\nshown, exit {expected}:\n{}\nprinted, {status:?}:\n{}",
+                            page.display(),
                             session.command,
                             session.shown.join("\n"),
-                            got.join("\n")
+                            got.lines.join("\n")
                         ));
                     }
                 }
             }
         }
     }
-    assert!(ran > 0, "{page} shows no session");
-    assert!(wrong.is_empty(), "{page}:\n\n{}", wrong.join("\n\n"));
+    (ran > 0).then_some(wrong)
+}
+
+/// Returns the markdown pages under `dir`, as paths relative to `root`, sorted.
+fn pages(root: &Path, dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{dir:?}: {e}")) {
+        let path = entry.expect("a directory entry").path();
+        if path.is_dir() {
+            out.extend(pages(root, &path));
+        } else if path.extension().is_some_and(|e| e == "md") {
+            out.push(
+                path.strip_prefix(root)
+                    .expect("under the root")
+                    .to_path_buf(),
+            );
+        }
+    }
+    out.sort();
+    out
 }
 
 #[test]
-fn getting_started_prints_what_it_shows() {
-    check("getting-started.md");
-}
-
-#[test]
-fn tutorial_schema_prints_what_it_shows() {
-    check("tutorial/1-schema.md");
-}
-
-#[test]
-fn tutorial_sums_prints_what_it_shows() {
-    check("tutorial/2-sums.md");
-}
-
-#[test]
-fn tutorial_queries_prints_what_it_shows() {
-    check("tutorial/3-queries.md");
-}
-
-#[test]
-fn tutorial_match_prints_what_it_shows() {
-    check("tutorial/4-match.md");
-}
-
-#[test]
-fn tutorial_references_and_constraints_prints_what_it_shows() {
-    check("tutorial/5-references-and-constraints.md");
-}
-
-#[test]
-fn tutorial_transactions_prints_what_it_shows() {
-    check("tutorial/6-transactions.md");
-}
-
-#[test]
-fn tutorial_migrations_prints_what_it_shows() {
-    check("tutorial/7-migrations.md");
-}
-
-#[test]
-fn guide_modelling_with_sums_prints_what_it_shows() {
-    check("guides/modelling-with-sums.md");
-}
-
-#[test]
-fn guide_evolving_a_schema_prints_what_it_shows() {
-    check("guides/evolving-a-schema.md");
-}
-
-#[test]
-fn guide_writing_constraints_prints_what_it_shows() {
-    check("guides/writing-constraints.md");
-}
-
-#[test]
-fn guide_files_and_csv_prints_what_it_shows() {
-    check("guides/files-and-csv.md");
-}
-
-#[test]
-fn concept_relations_as_sums_prints_what_it_shows() {
-    check("concepts/relations-as-sums.md");
-}
-
-#[test]
-fn concept_no_null_prints_what_it_shows() {
-    check("concepts/no-null.md");
-}
-
-#[test]
-fn concept_keys_and_references_prints_what_it_shows() {
-    check("concepts/keys-and-references.md");
-}
-
-#[test]
-fn concept_serializable_transactions_prints_what_it_shows() {
-    check("concepts/serializable-transactions.md");
-}
-
-#[test]
-fn concept_migration_log_prints_what_it_shows() {
-    check("concepts/migration-log.md");
-}
-
-#[test]
-fn reference_shell_prints_what_it_shows() {
-    check("reference/shell.md");
-}
-
-#[test]
-fn reference_language_prints_what_it_shows() {
-    check("reference/language.md");
-}
-
-#[test]
-fn reference_prelude_prints_what_it_shows() {
-    check("reference/prelude.md");
+fn every_page_prints_what_it_shows() {
+    let manual = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual");
+    let pages = pages(&manual, &manual);
+    assert!(!pages.is_empty(), "the manual has pages");
+    let checked: Vec<(PathBuf, Option<Vec<String>>)> = std::thread::scope(|s| {
+        let runs: Vec<_> = pages
+            .iter()
+            .map(|page| (page, s.spawn(|| check(&manual, page))))
+            .collect();
+        runs.into_iter()
+            .map(|(page, run)| {
+                (
+                    page.clone(),
+                    run.join().expect("a page's check does not panic"),
+                )
+            })
+            .collect()
+    });
+    let shows: Vec<&PathBuf> = checked
+        .iter()
+        .filter(|(_, c)| c.is_some())
+        .map(|(p, _)| p)
+        .collect();
+    assert!(
+        shows.contains(&&PathBuf::from("getting-started.md")),
+        "the walk finds the pages: {shows:?}"
+    );
+    let wrong: Vec<String> = checked
+        .into_iter()
+        .flat_map(|(_, c)| c.unwrap_or_default())
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));
 }
 
 #[test]

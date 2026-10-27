@@ -55,6 +55,7 @@ schema is refused, the shell says why and leaves no file behind.
 `-c` runs one text and exits. An insert into a relation of several
 constructors names the constructor:
 
+<!-- exit 0 0 1 -->
 ```console
 $ adtb shelter.db -c 'insert pets.Cat { name: "tom", lives: 9 }'
 $ adtb shelter.db -c 'insert pets.Dog { name: "rex", good: true }'
@@ -89,6 +90,7 @@ To read the fields of each constructor, `match` on the row. A match
 names every constructor; leaving one out is an error, not a silent
 gap:
 
+<!-- exit 0 1 -->
 ```console
 $ adtb shelter.db -c 'from p in pets select { name: p.name, kind: match p
   | Cat c -> "cat"
@@ -121,6 +123,7 @@ The database's log is its list of migrations, in order. To add one,
 give the shell the whole list, one `--schema` per file; it applies the
 ones the database has not seen yet:
 
+<!-- exit 0 1 1 -->
 ```console
 $ adtb --schema shelter.adt --schema adoptions.adt shelter.db -c 'insert adoptions { pet: pets.key("tom"), by: "ann" }'
 $ adtb shelter.db -c 'insert adoptions { pet: pets.key("felix"), by: "bo" }'

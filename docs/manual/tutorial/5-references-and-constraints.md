@@ -67,6 +67,7 @@ adtb> \q
 own type, so the text `"kit"` is not a `Key pets`, and a reference to
 a pet that does not exist is refused:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> insert adoptions { pet: pets.key("tom"), adopter: adopters.key("ann@example.com"), fee: 40.00 }
@@ -115,6 +116,7 @@ not fit. The key of a row you read from `pets.Dog` does: `key d`, with
 `d` ranging over the dogs, is a `Key pets.Dog`. You insert walks from a
 query that reads them:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> insert walks { dog: pets.key("rex"), walker: adopters.key("bo@example.com"), minutes: 30 }
@@ -139,6 +141,7 @@ The engine keeps the narrower promise too. Turning `rex` into a cat
 would leave two walks pointing at something that is not a dog, so it
 is refused:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> update d in pets.Dog where d.name == "rex" set Cat { d with lives: 9, indoor: true }
@@ -153,6 +156,7 @@ the field. Without anything written, the delete is refused while a
 reference remains. `on delete cascade` deletes the referring rows
 with it:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> delete p in pets where p.name == "tom"
@@ -180,6 +184,7 @@ directly. A `constraint` is a query that must return nothing; the rows
 it returns are the violations. `one_adopter_per_phone` returns every
 adopter who shares a phone number with another one:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> insert pets.Rabbit { name: "old", age: 50, size: Small, diet: Normal }
@@ -217,6 +222,7 @@ constraint one_adopter_per_phone =
   select a
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --create --schema nophone.adt nophone.db
 nophone.db: migration 1 is refused: constraint shelter::one_adopter_per_phone is not admitted: changes to shelter::adopters: index (phone) in shelter::adopters is missing

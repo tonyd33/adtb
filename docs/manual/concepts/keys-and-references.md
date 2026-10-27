@@ -34,6 +34,7 @@ exists, a relation can generate its key instead, with
 `id: Key r`. A generated key is promised to be distinct from every
 other, not to be consecutive or to follow insertion order.
 
+<!-- exit 1 -->
 ```console
 $ adtb --create --schema library.adt library.db
 adtb> insert members { card: "c1", name: "Ann" }
@@ -52,6 +53,7 @@ with `books.key("111")`, take the key of a bound row with `key b`, and
 read the value back with `value(k)`. A composite key is built with
 named fields:
 
+<!-- exit 1 -->
 ```console
 $ adtb library.db
 adtb> books.key("111")
@@ -80,6 +82,7 @@ name a book that is on the shelf. A key built with `books.key(...)`
 is a `Key books`, which could be any book, so it does not fit; the key
 of a row ranged over `books.Shelved` does:
 
+<!-- exit 1 -->
 ```console
 $ adtb library.db
 adtb> insert holds from (from b in books.Shelved where b.title == "Dune" select { book: key b, by: members.key("c1") })
@@ -117,6 +120,7 @@ no action, the delete is refused while a reference names the row.
 `on delete clear`, on an `Option (Key ...)` field, sets the field to
 `None`:
 
+<!-- exit 1 -->
 ```console
 $ adtb library.db
 adtb> delete m in members where m.name == "Bo"
@@ -144,6 +148,7 @@ type Member = { card: Text, name: Text, tags: Set Text }
 relation members : Member key card
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --create --schema library-bad.adt bad.db
 bad.db: migration 1 is refused:

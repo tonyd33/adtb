@@ -190,6 +190,7 @@ by the first, then the next on a tie; `desc` reverses one. An ordering
 key reads the selected value, so to sort by age you select something
 that holds the age:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> from p in pets select { name: p.name, age: p.age } order by (p.age desc, p.name)

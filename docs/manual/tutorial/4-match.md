@@ -92,6 +92,7 @@ value must have one common type.
 
 ## What a match must cover
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> from p in pets select match p | Cat c -> c.name | Dog d -> d.name
@@ -208,6 +209,7 @@ fn species (p: Pet) -> Text = match p
   | _ -> "other"
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --create --schema wild.adt wild.db
 wild.db: migration 1 is refused: `_` and a binder do not match a value of a sum; name the constructors of Pet

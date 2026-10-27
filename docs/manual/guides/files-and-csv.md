@@ -103,6 +103,7 @@ Two rows of this file do not convert: `Scroll` is not a constructor,
 and `many` is not a number. Without anywhere to put them, the whole
 load fails, naming the file, the record and the column:
 
+<!-- exit 1 -->
 ```console
 $ adtb library.db
 adtb> insert books from (from r in read_csv("books.csv", BookRow) select match r.format | Print -> Print { isbn: r.isbn, title: r.title, author: r.author, pages: r.size } | Ebook -> Ebook { isbn: r.isbn, title: r.title, author: r.author, bytes: r.size })

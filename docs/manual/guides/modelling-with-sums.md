@@ -147,6 +147,7 @@ key. Three kinds of key cover most cases.
 A key value has the type `Key r` of its relation, and only `r.key(...)`
 or `key x` makes one, so a number cannot stand in for a pet:
 
+<!-- exit 1 -->
 ```console
 $ adtb clinic.db -c 'insert vaccinations { pet: pets.key(1), vaccine: "x", year: 1 }'
 expected Uuid, found I64

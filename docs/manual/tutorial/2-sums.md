@@ -72,6 +72,7 @@ adtb> \q
 
 The engine checks the value against the constructor you name:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> insert pets { name: "kit", age: 1, size: Small, diet: Normal, lives: 9, indoor: false }
@@ -112,6 +113,7 @@ Over `pets` you can read the header fields of any row directly. A
 field only one constructor has is read over that constructor's rows,
 `pets.Cat`, or over a set of constructors, `pets.(Cat | Rabbit)`:
 
+<!-- exit 1 -->
 ```console
 $ adtb shelter.db
 adtb> from p in pets where p.size < Large select p.name

@@ -58,6 +58,7 @@ queries of this kind.
 Each kind below is broken once in this session, and each message
 names the constraint that refused the write:
 
+<!-- exit 1 -->
 ```console
 $ adtb rooms.db
 adtb> insert rooms { name: "hall", seats: 0 }
@@ -122,6 +123,7 @@ from one constructor to another shows up in `deleted` of the first and
 `no_uncancel` selects bookings retagged from `Cancelled` back to
 `Held`, so a cancelled booking stays cancelled:
 
+<!-- exit 1 -->
 ```console
 $ adtb rooms.db -c 'update b in bookings where b.id == 1 set Held { b with hour: 15, people: 3 }'
 constraint `rooms::no_uncancel` is violated by 1 row
@@ -194,6 +196,7 @@ add constraint three_each =
   select b
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema rooms.adt --schema busy.adt rooms.db -c 'from r in rooms select r.name'
 rooms.db: migration 2 is refused: constraint rooms::three_each is not admitted: changes to rooms::bookings.Held: index (by) in rooms::bookings.Held is missing
@@ -229,6 +232,7 @@ add constraint once =
   select r
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema rooms.adt --schema busy-indexed.adt --schema once.adt rooms.db -c '1'
 rooms.db: migration 3 is refused: constraint rooms::once is not admitted: `inserted(rooms::rooms)` is read under negation
@@ -244,6 +248,7 @@ module rooms
 add check big on rooms (seats > 10)
 ```
 
+<!-- exit 1 -->
 ```console
 $ adtb --schema rooms.adt --schema busy-indexed.adt --schema big.adt rooms.db -c '1'
 rooms.db: migration 3 is refused: constraint rooms::big is violated by Room { name: "loft", seats: 6 }

@@ -47,6 +47,7 @@ relation orders : Order key id
 An insert gives every field. There is no implicit NULL for a field you
 leave out, and `null` is not a word of the language:
 
+<!-- exit 1 -->
 ```console
 $ adtb --create --schema crm.adt crm.db
 adtb> insert people { email: "ann@x", name: "Ann", phone: Some { value: "555" } }
@@ -82,6 +83,7 @@ exactly one of them.
 A path stops at an `Option`. To use the value inside, `match` on it and
 say what the `None` case gives:
 
+<!-- exit 1 -->
 ```console
 $ adtb crm.db
 adtb> from p in people select p.phone.value
