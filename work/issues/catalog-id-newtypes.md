@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: feature
 priority: 795
 summary: "catalog ids are bare u64 in tuples of different meaning, and Root.changing packs none, an Xid and a naming marker into one u64"
+closed: 2026-10-26
 tags:
   - quality
 ---
@@ -17,3 +18,9 @@ Catalog ids are bare `u64` (`crates/adtb-lang/src/ids.rs:15-19`), and the engine
 `crates/adtb/src/catalog/root.rs:8` adds `NAMING_SEQUENCES = u64::MAX`, so `Root::changing` is 0 for no change, an xid for a schema change, and `u64::MAX` while the counters page is named.
 
 Fix: newtypes per catalog id kind (`CatRelId`, `CatCtorId`, `CatFieldId`, `CatTypeId`) in ids.rs, used by `Moved` and the catalog's heap and index maps; an in-memory `enum Changing { None, Schema(Xid), NamingSequences }` on `Root`, encoded to the same `u64` on the page.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed in wqmnkqkx, within the adtb crate and its tests. What remains in adtb-lang is `lang-id-follow-ups`.

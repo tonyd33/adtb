@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: bug
 priority: 793
 summary: "index path keying and derived elements panic on a checker or stored-row guarantee instead of failing with an internal error, and dropping a transaction can panic while unwinding"
+closed: 2026-10-26
 tags:
   - quality
 ---
@@ -17,3 +18,9 @@ tags:
 `crates/adtb/src/api/txn.rs:213` asserts inside `Drop for AdHocTransaction` that an abort fails only with a storage fatal. Dropping a transaction while a caller's code is unwinding and the abort fails otherwise panics twice and aborts the process.
 
 Fix: have `path_steps`, `at_path` and `IndexKeys::new` return a `Result` with an internal error naming the guarantee (corrupt for `at_path`), and pass the normal program as required wherever an index has a derived element; return an internal error at eval.rs:593. Skip the assertion in `Drop` when `std::thread::panicking()`.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed in wqmnkqkx, within the adtb crate and its tests. What remains in adtb-lang is `lang-id-follow-ups`.

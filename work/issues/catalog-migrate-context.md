@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: feature
 priority: 892
 summary: "Catalog::migrate threads pager, transactions, transaction and snapshot through helpers with too_many_arguments, links a removed Catalog::extend, and admits over heap ids build never assigns"
+closed: 2026-10-26
 tags:
   - quality
 ---
@@ -20,3 +21,9 @@ In crates/adtb/src/catalog/mod.rs:
 - The migration's source is checked three times on the open path: `next.schema()` in `migrate`, `source.check()` in `admits`, and `catalog.source().check()` in `Engine::open` (crates/adtb/src/api/mod.rs).
 
 Fix: one `Migrating` context holding pager, transactions, `x` and snapshot, passed to `replay`, `emptied`, `holds`, `build` and `write_rows`, which removes both expectations; fix the link; have `admits` take its heap ids from the same assignment `build` makes, or state in its doc that the ids are placeholders; check the source once and keep the checked program on the catalog.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed in wqmnkqkx, within the adtb crate and its tests. What remains in adtb-lang is `lang-id-follow-ups`.
