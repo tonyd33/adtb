@@ -1,0 +1,27 @@
+module campaign
+add type Map = { id: Key maps, campaign: Key campaigns, title: Text, image: Text, width: I64, height: I64 }
+add relation maps : Map key id generate sequence
+add type Pin { id: Key pins, map: Key maps on delete cascade, x: I64, y: I64 }
+  = OfEntity { entity: Key entities on delete cascade }
+  | Marker { label: Text }
+add relation pins : Pin key id generate sequence
+add check pin_on_map on pins (x >= 0 and y >= 0)
+add constraint pin_inside_map =
+  from p in pins
+  where p.x > p.map.width or p.y > p.map.height
+  select p
+add constraint pin_in_campaign =
+  from p in pins.OfEntity
+  where p.entity.campaign != p.map.campaign
+  select p
+add constructor Discovery.KnowsMap { map: Key maps on delete cascade }
+add unique (party, map) in discoveries.KnowsMap
+add constraint map_discovery_in_campaign =
+  from d in discoveries.KnowsMap
+  where d.map.campaign != d.party.campaign
+  select d
+enable discoveries.KnowsMap
+add constructor Entity.Item { holder: Option (Key entities.Characters) on delete clear }
+  after Faction
+  arm kind_label: Item _ -> "Item"
+enable entities.Item

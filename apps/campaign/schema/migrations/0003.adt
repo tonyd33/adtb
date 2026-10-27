@@ -1,0 +1,13 @@
+module campaign
+split constructor Entity.Location
+  into Region { parent: Option (Key entities.(Region | Settlement | Site)) }
+     | Settlement { parent: Option (Key entities.(Region | Settlement | Site)) }
+     | Site { parent: Option (Key entities.(Region | Settlement | Site)) }
+  by match
+    | Location { parent, scale: Realm } -> Region { parent: parent }
+    | Location { parent, scale: Town } -> Settlement { parent: parent }
+    | Location { parent, scale: Spot } -> Site { parent: parent }
+  arm kind_label: Region _ -> "Region"
+  arm kind_label: Settlement _ -> "Settlement"
+  arm kind_label: Site _ -> "Site"
+add set Places of entities = Region | Settlement | Site

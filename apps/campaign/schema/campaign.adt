@@ -1,0 +1,244 @@
+module campaign
+
+type Campaign { id: Key campaigns, title: Text, pitch: Text, created: Instant }
+  = Running
+  | Paused { since: Date }
+  | Concluded { ended: Date, epilogue: Text }
+relation campaigns : Campaign
+  key id generate sequence
+  default created = generate clock
+
+type Player { id: Key players, campaign: Key campaigns, name: Text, party: Key entities.Party }
+  = Seated { token: Text }
+  | Left { left: Date }
+relation players : Player
+  key id generate sequence
+  unique (campaign, name)
+  unique (token) in Seated
+
+type Scale = Realm | Town | Spot
+
+type Entity { id: Key entities, campaign: Key campaigns, name: Text, summary: Text, body: Text, secret: Text }
+  = Npc { location: Option (Key entities.Location) on delete clear }
+  | Fallen { died_in: Key sessions.Run, location: Option (Key entities.Location) on delete clear }
+  | PlayerCharacter { player: Key players }
+  | Location { scale: Scale, parent: Option (Key entities.Location) }
+  | Faction { agenda: Text }
+  | Party
+relation entities : Entity
+  key id generate sequence
+  unique (campaign, name)
+  default summary = ""
+  default body = ""
+  default secret = ""
+set Characters of entities = Npc | PlayerCharacter | Fallen
+set Groups of entities = Faction | Party
+
+type Membership { id: Key memberships, member: Key entities.Characters on delete cascade, group: Key entities.Groups on delete cascade, role: Text }
+  = Current
+  | Former { left_in: Option (Key sessions.Run) }
+relation memberships : Membership
+  key id generate sequence
+  unique (member, group)
+
+type GameSession { id: Key sessions, campaign: Key campaigns, party: Key entities.Party, number: I64, title: Text, prep: Text }
+  = Planned { planned_for: Option Date }
+  | Live { started: Instant }
+  | Played { played_on: Date, log: Text, recap: Text }
+relation sessions : GameSession
+  key id generate sequence
+  unique (campaign, number)
+  unique (campaign) in Live
+  default prep = ""
+  default Live.started = generate clock
+set Run of sessions = Live | Played
+
+type Quest { id: Key quests, campaign: Key campaigns, title: Text, hook: Text, giver: Option (Key entities.Characters) on delete clear }
+  = Rumoured { heard_in: Option (Key sessions.Run) }
+  | Active { taken_in: Key sessions.Run }
+  | Completed { closed_in: Key sessions.Run, outcome: Text }
+  | Failed { closed_in: Key sessions.Run, outcome: Text }
+relation quests : Quest
+  key id generate sequence
+set Open of quests = Rumoured | Active
+set Closed of quests = Completed | Failed
+
+type Event { id: Key events, campaign: Key campaigns, title: Text, body: Text, era: Text, sort: I64 }
+  = Backstory
+  | InPlay { session: Key sessions.Run }
+relation events : Event
+  key id generate sequence
+  index (campaign, sort)
+
+type Involvement = { event: Key events on delete cascade, entity: Key entities on delete cascade }
+relation involvements : Involvement key (event, entity)
+
+type Note = { id: Key notes, campaign: Key campaigns, title: Text, body: Text }
+relation notes : Note key id generate sequence
+
+type Link { id: Key links, target: Key entities on delete cascade, hidden: Bool }
+  = FromEntity { entity: Key entities on delete cascade }
+  | FromSession { session: Key sessions on delete cascade }
+  | FromQuest { quest: Key quests on delete cascade }
+  | FromEvent { event: Key events on delete cascade }
+  | FromNote { note: Key notes on delete cascade }
+relation links : Link key id generate sequence
+
+type Discovery { id: Key discoveries, party: Key entities.Party on delete cascade, learned_in: Option (Key sessions.Run) }
+  = KnowsEntity { entity: Key entities on delete cascade }
+  | KnowsQuest { quest: Key quests on delete cascade }
+  | KnowsEvent { event: Key events on delete cascade }
+relation discoveries : Discovery
+  key id generate sequence
+  unique (party, entity) in KnowsEntity
+  unique (party, quest) in KnowsQuest
+  unique (party, event) in KnowsEvent
+
+type Encounter { id: Key encounters, session: Key sessions on delete cascade, name: Text, setup: Text }
+  = Prepared
+  | Underway { round: I64, turn: I64 }
+  | Resolved { rounds: I64, aftermath: Text }
+relation encounters : Encounter
+  key id generate sequence
+  unique (session) in Underway
+
+type Standing = Ready | Downed | Fled | Slain
+
+type Combatant { id: Key combatants, encounter: Key encounters on delete cascade, label: Text, standing: Standing, tracker: Text }
+  = Cast { who: Key entities.Characters }
+  | Extra { kind: Text }
+relation combatants : Combatant
+  key id generate sequence
+  default standing = Ready
+  default tracker = ""
+
+type Turn = { id: Key initiative, encounter: Key encounters on delete cascade, combatant: Key combatants on delete cascade, roll: I64, slot: I64 }
+relation initiative : Turn
+  key id generate sequence
+  unique (combatant)
+  unique (encounter, slot)
+
+fn kind_label (e: Entity) -> Text = match e
+  | Npc _ -> "NPC"
+  | Fallen _ -> "NPC"
+  | PlayerCharacter _ -> "PC"
+  | Location _ -> "Location"
+  | Faction _ -> "Faction"
+  | Party _ -> "Party"
+
+fn knows (p: Key entities.Party, e: Key entities) -> Bool =
+  exists d in discoveries.KnowsEntity where d.party == p and d.entity == e
+
+check named on entities (scalar_len(name) > 0)
+check rounds_count on encounters.Underway (round >= 1)
+check slots_count on initiative (slot >= 1)
+
+constraint player_in_campaign =
+  from p in players
+  where p.party.campaign != p.campaign
+  select p
+
+constraint character_player_in_campaign =
+  from c in entities.PlayerCharacter
+  where c.player.campaign != c.campaign
+  select c
+
+constraint location_parent_in_campaign =
+  from l in entities.Location, p in entities.Location
+  where l.parent == Some { value: key p } and (p.campaign != l.campaign or key p == key l)
+  select l
+
+constraint death_in_campaign =
+  from f in entities.Fallen
+  where f.died_in.campaign != f.campaign
+  select f
+
+constraint membership_in_campaign =
+  from m in memberships
+  where m.member.campaign != m.group.campaign
+  select m
+
+constraint session_party_in_campaign =
+  from s in sessions
+  where s.party.campaign != s.campaign
+  select s
+
+constraint quest_giver_in_campaign =
+  from q in quests, c in entities.Characters
+  where q.giver == Some { value: key c } and c.campaign != q.campaign
+  select q
+
+constraint entity_discovery_in_campaign =
+  from d in discoveries.KnowsEntity
+  where d.entity.campaign != d.party.campaign
+  select d
+
+constraint quest_discovery_in_campaign =
+  from d in discoveries.KnowsQuest
+  where d.quest.campaign != d.party.campaign
+  select d
+
+constraint event_discovery_in_campaign =
+  from d in discoveries.KnowsEvent
+  where d.event.campaign != d.party.campaign
+  select d
+
+constraint entity_link_in_campaign =
+  from l in links.FromEntity
+  where l.entity.campaign != l.target.campaign
+  select l
+
+constraint session_link_in_campaign =
+  from l in links.FromSession
+  where l.session.campaign != l.target.campaign
+  select l
+
+constraint quest_link_in_campaign =
+  from l in links.FromQuest
+  where l.quest.campaign != l.target.campaign
+  select l
+
+constraint event_link_in_campaign =
+  from l in links.FromEvent
+  where l.event.campaign != l.target.campaign
+  select l
+
+constraint note_link_in_campaign =
+  from l in links.FromNote
+  where l.note.campaign != l.target.campaign
+  select l
+
+constraint underway_needs_live_session =
+  from e in encounters.Underway
+  where not exists s in sessions.Live where key s == e.session
+  select e
+
+constraint turn_in_its_encounter =
+  from t in initiative
+  where t.combatant.encounter != t.encounter
+  select t
+
+constraint turn_is_seated =
+  from e in encounters.Underway
+  where not exists t in initiative where t.encounter == key e and t.slot == e.turn
+  select e
+
+constraint cast_in_campaign =
+  from c in combatants.Cast, e in encounters, s in sessions
+  where c.encounter == key e and e.session == key s and c.who.campaign != s.campaign
+  select c
+
+constraint the_dead_stay_dead =
+  from c in combatants.Cast, f in entities.Fallen, e in encounters, s in sessions
+  where c.who == key f and c.encounter == key e and e.session == key s and s.number > f.died_in.number
+  select c
+
+constraint closed_quests_stay_closed =
+  from o in deleted(quests.Closed), n in inserted(quests.Open)
+  where key o == key n
+  select n
+
+constraint played_sessions_stay_played =
+  from o in deleted(sessions.Played), n in inserted(sessions.(Planned | Live))
+  where key o == key n
+  select n

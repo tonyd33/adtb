@@ -1,0 +1,8 @@
+module campaign
+add constructor Quest.Shelved { taken_in: Key sessions.Run, reason: Text }
+  after Active
+  joins quests.Open
+enable quests.Shelved
+add constructor Quest.Abandoned { closed_in: Key sessions.Run, reason: Text }
+  joins quests.Closed
+enable quests.Abandoned
