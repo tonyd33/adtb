@@ -5,12 +5,14 @@ use adtb::btree::{BTree, Index};
 pub use adtb::catalog::layout::{
     field_type, is_record, key_type, key_value_ty, new_order_keys, repr,
 };
+use adtb::catalog::{IndexKeys, element_types};
 use adtb::exec::{self, AtSnapshot, Store, StoredHeap, StoredIndex, Val};
 use adtb::heap::{FieldType, Heap, LargeStore};
 use adtb::key::{CtorId, Dir, Entry, F32, F64, KeySchema, Tid, Value as KValue};
 use adtb::mvcc::{Access, Limits, Scope, Serializer, Transactions};
 use adtb::plan::Catalog;
 use adtb::storage::Pager;
+use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{Base, RelId, Ty};
 use adtb_reference::{Database, Value};
@@ -44,6 +46,7 @@ pub struct Roots {
 /// The schema, catalog and rows a database is loaded from.
 pub struct World<'a> {
     pub schema: &'a Schema,
+    pub normal: &'a NormalProgram,
     pub catalog: &'a Catalog,
     pub db: &'a Database,
 }
@@ -267,7 +270,7 @@ pub struct Db {
     pub pager: Pager<SimRuntime>,
     pub heaps: BTreeMap<adtb::plan::HeapId, Heap>,
     pub rows: BTreeMap<adtb::plan::HeapId, Vec<FieldType>>,
-    pub indexes: BTreeMap<adtb::plan::IndexId, (StoredIndex, Vec<String>, RelId)>,
+    pub indexes: BTreeMap<adtb::plan::IndexId, (StoredIndex, IndexKeys, RelId)>,
     pub txns: Arc<Transactions<SimRuntime>>,
 }
 
@@ -321,15 +324,13 @@ impl Db {
                 rows.insert(*h, row);
             }
             for i in &d.indexes {
-                let first = &cs[i.ctors[0] as usize].1;
-                let components = i
-                    .fields
-                    .iter()
-                    .map(|n| {
-                        let t = &first.iter().find(|(f, _)| f == n).unwrap().1;
-                        (key_type(f.schema, &keys, t), Dir::Asc)
-                    })
-                    .collect();
+                let components =
+                    element_types(f.schema, Some(f.normal), *r, i.ctors[0], &i.elements)
+                        .iter()
+                        .map(|t| (key_type(f.schema, &keys, t), Dir::Asc))
+                        .collect();
+                let keying = IndexKeys::new(f.schema, Some(f.normal), *r, &i.ctors, &i.elements)
+                    .expect("the index's expressions compile");
                 let ids: BTreeMap<CtorId, u32> =
                     i.ctors.iter().map(|c| (CtorId(10 + c), *c)).collect();
                 let owner = 80_000 + i.id.0 as u32;
@@ -342,10 +343,7 @@ impl Db {
                     }
                 };
                 out.indexes.insert(i.id, index.tree().root());
-                indexes.insert(
-                    i.id,
-                    (StoredIndex { index, ctors: ids }, i.fields.clone(), *r),
-                );
+                indexes.insert(i.id, (StoredIndex { index, ctors: ids }, keying, *r));
             }
         }
         pager.flush_log();
@@ -392,19 +390,21 @@ impl Db {
             .clone()
     }
 
-    pub fn entries(&self, f: &World, rel: RelId, c: u32, row: &Value, tid: Tid) {
-        let tys = Db::row_ty(f, rel, c);
-        for (st, fields, r) in self.indexes.values() {
-            if *r != rel || !st.ctors.values().any(|x| *x == c) {
+    pub fn entries(&self, rel: RelId, c: u32, row: &[KValue], tid: Tid) {
+        for (st, keying, r) in self.indexes.values() {
+            if *r != rel {
                 continue;
             }
-            let key = fields
+            let types: Vec<_> = st
+                .index
+                .schema()
+                .components()
                 .iter()
-                .map(|n| {
-                    let t = &tys.iter().find(|(m, _)| m == n).unwrap().1;
-                    stored(f.schema, t, row.field(n).unwrap())
-                })
+                .map(|(t, _)| t.clone())
                 .collect();
+            let Some(key) = keying.key(c, row, &types).expect("an index key evaluates") else {
+                continue;
+            };
             st.index
                 .insert(
                     &self.pager,
@@ -441,7 +441,7 @@ impl Db {
             .unwrap()
             .insert(&self.pager, xid, &values)
             .expect("insert");
-        self.entries(f, rel, c, row, tid);
+        self.entries(rel, c, &values, tid);
         tid
     }
 
@@ -458,13 +458,8 @@ impl Db {
         let indexed: Vec<usize> = self
             .indexes
             .values()
-            .filter(|(st, _, r)| *r == rel && st.ctors.values().any(|x| *x == c))
-            .flat_map(|(_, fields, _)| {
-                fields
-                    .iter()
-                    .map(|n| tys.iter().position(|(m, _)| m == n).unwrap())
-                    .collect::<Vec<_>>()
-            })
+            .filter(|(_, _, r)| *r == rel)
+            .flat_map(|(_, keying, _)| keying.reads(c))
             .collect();
         let up = self
             .heaps
@@ -473,7 +468,7 @@ impl Db {
             .update(&self.pager, at, xid, &values, &indexed)
             .expect("update");
         if !up.heap_only {
-            self.entries(f, rel, c, row, up.tid);
+            self.entries(rel, c, &values, up.tid);
         }
     }
 

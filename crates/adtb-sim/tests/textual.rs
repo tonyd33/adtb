@@ -164,6 +164,7 @@ fn engine(f: &Fixture, text: &str) -> (Ty, Val) {
     );
     let world = World {
         schema: &f.schema,
+        normal: &f.normal,
         catalog: &f.catalog,
         db: &f.db,
     };

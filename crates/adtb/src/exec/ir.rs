@@ -5,7 +5,7 @@ use adtb_lang::kernel::{Agg, Tm};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{Base, RelId, Ty};
 
-use crate::plan::{self, Catalog, HeapId, IndexId, Plan};
+use crate::plan::{self, Catalog, Element, HeapId, IndexId, Plan};
 
 use super::Error;
 use super::code::{Code, Compiler, Shared};
@@ -39,8 +39,8 @@ pub struct Lookup {
 pub struct Fetch {
     pub ctor: u32,
     pub heap: HeapId,
-    /// The position in the row of each of the index's key fields.
-    pub key_at: Vec<usize>,
+    /// The position in the row of each of the index's key elements that is a field.
+    pub key_at: Vec<Option<usize>>,
 }
 
 #[derive(Debug)]
@@ -240,7 +240,7 @@ pub(super) fn fault_ctors(schema: &Schema) -> Vec<u32> {
 struct Lower<'a> {
     c: Compiler<'a>,
     heaps: BTreeMap<HeapId, (RelId, u32)>,
-    indexes: BTreeMap<IndexId, (RelId, Vec<String>)>,
+    indexes: BTreeMap<IndexId, (RelId, Vec<Element>)>,
 }
 
 /// Compiles `plan`, planned against `schema` and `catalog`, for the executor. `caller` is the
@@ -260,7 +260,7 @@ pub fn compile(
             heaps.insert(*h, (*r, *c));
         }
         for i in &d.indexes {
-            indexes.insert(i.id, (*r, i.fields.clone()));
+            indexes.insert(i.id, (*r, i.elements.clone()));
         }
     }
     let mut l = Lower {
@@ -375,11 +375,16 @@ impl Lower<'_> {
     }
 
     fn fetch(&mut self, index: IndexId, ctor: u32, heap: HeapId) -> Result<Fetch, Error> {
-        let (rel, fields) = self.indexes[&index].clone();
+        let (rel, elements) = self.indexes[&index].clone();
         let row = self.row_type(rel, ctor);
-        let key_at = fields
+        let key_at = elements
             .iter()
-            .map(|f| field(self.schema(), &row, f).and_then(|(at, _)| at.of(ctor)))
+            .map(|e| match e {
+                Element::Field(f) => field(self.schema(), &row, f)
+                    .and_then(|(at, _)| at.of(ctor))
+                    .map(Some),
+                Element::Derived { .. } => Ok(None),
+            })
             .collect::<Result<_, _>>()?;
         Ok(Fetch { ctor, heap, key_at })
     }

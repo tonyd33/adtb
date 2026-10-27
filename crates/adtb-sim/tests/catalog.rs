@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use adtb::catalog::{Catalog, Error, applied, declared, version_hash};
 use adtb::key::{CtorId, Value};
 use adtb::mvcc::{Scope, Transactions};
-use adtb::plan::IndexId;
+use adtb::plan::{Element, IndexId};
 use adtb::storage::{Options, Pager, Pid};
 use adtb::verify::{self, Report};
 use adtb_lang::types::RelId;
@@ -265,7 +265,7 @@ fn the_planner_catalog_describes_every_engine_relation() {
         let name = roles
             .indexes
             .iter()
-            .find(|i| i.fields == ["name"])
+            .find(|i| i.fields() == Some(vec!["name"]))
             .expect("the unique of roles");
         assert!(name.unique);
         assert_eq!(vec![0], name.ctors);
@@ -416,13 +416,13 @@ fn a_migrated_catalog_reopens_with_the_running_schema() {
             vec![0, 1, 2],
             identities.heaps.keys().copied().collect::<Vec<_>>()
         );
-        let uniques: BTreeSet<(Vec<String>, Vec<u32>)> = identities
+        let uniques: BTreeSet<(Vec<Element>, Vec<u32>)> = identities
             .indexes
             .iter()
             .filter(|i| i.id != identities.key_index)
-            .map(|i| (i.fields.clone(), i.ctors.clone()))
+            .map(|i| (i.elements.clone(), i.ctors.clone()))
             .collect();
-        let field = |f: &str| vec![f.to_string()];
+        let field = |f: &str| vec![Element::Field(f.to_string())];
         assert_eq!(
             BTreeSet::from([
                 (field("email"), vec![0]),
@@ -439,7 +439,7 @@ fn a_migrated_catalog_reopens_with_the_running_schema() {
             .expect("the key index");
         assert_eq!(
             (field("id"), vec![0, 1, 2], true),
-            (key.fields.clone(), key.ctors.clone(), key.unique)
+            (key.elements.clone(), key.ctors.clone(), key.unique)
         );
         let mut heaps = BTreeSet::new();
         for d in plan.relations.values() {
@@ -784,7 +784,7 @@ fn a_reference_field_with_no_declared_index_has_an_implied_one_listed_in_the_cat
             identities
                 .indexes
                 .iter()
-                .any(|i| i.fields == ["user"] && i.ctors == [0, 1, 2] && !i.unique),
+                .any(|i| i.fields() == Some(vec!["user"]) && i.ctors == [0, 1, 2] && !i.unique),
             "{:?}",
             identities.indexes
         );

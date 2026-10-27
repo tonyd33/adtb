@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
 
-use adtb_lang::kernel::{IndexField, Kind, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Generator, OnDelete, ReferenceIndex, Schema};
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
-use crate::catalog::field_path;
+use crate::catalog::{IndexKeys, field_path};
 use crate::exec::types::ctors;
 use crate::exec::{Conv, conv};
-use crate::plan::{Catalog, HeapId, IndexDesc, IndexId};
+use crate::plan::{Catalog, HeapId, IndexDesc, IndexId, declared_elements};
 
 use super::Error;
 
@@ -46,8 +45,7 @@ pub struct Ctor {
 #[derive(Debug)]
 pub struct Indexed {
     pub desc: IndexDesc,
-    /// The position of each of its fields in a row, by constructor position.
-    pub at: BTreeMap<u32, Vec<usize>>,
+    pub keys: IndexKeys,
     /// The canonical name of the unique it holds, or of the key.
     pub name: Option<String>,
 }
@@ -58,10 +56,8 @@ pub struct Unique {
     /// Its position among the relation's declared indexes.
     pub pos: usize,
     pub scope: Vec<u32>,
-    /// Its field values, each a body over the row's variable.
-    pub fields: Vec<(Var, IndexField)>,
-    /// The catalog index that holds it, when there is one.
-    pub index: Option<IndexId>,
+    /// The catalog index that holds it.
+    pub index: IndexId,
     pub name: String,
 }
 
@@ -86,18 +82,6 @@ pub struct Rel {
 pub type Rels = BTreeMap<RelId, Rel>;
 
 impl Rel {
-    /// Returns the row type of constructor `c`.
-    pub fn row_ty(&self, c: u32) -> Ty {
-        match &self.elem {
-            Ty::Data { def, args, .. } => Ty::Data {
-                def: *def,
-                args: args.clone(),
-                ctors: Some(vec![c]),
-            },
-            t => panic!("a relation's element type is a declared sum, found {t:?}"),
-        }
-    }
-
     pub fn all_ctors(&self) -> Vec<u32> {
         (0..self.ctors.len() as u32).collect()
     }
@@ -196,77 +180,44 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
             if !ix.unique {
                 continue;
             }
-            let fields: Vec<(Var, IndexField)> = (0..ix.fields.len())
-                .map(|k| normal.index_fields[&(*rel, i, k)].clone())
-                .collect();
             let scope = ix
                 .scope
                 .clone()
                 .unwrap_or_else(|| (0..cs.len() as u32).collect());
-            let plain: Option<Vec<String>> = fields
+            let elements = declared_elements(i, ix);
+            let index = desc
+                .indexes
                 .iter()
-                .map(|(_, f)| match normal.terms.kind(f.value) {
-                    Kind::Field(x, name)
-                        if f.path.is_empty() && matches!(normal.terms.kind(*x), Kind::Var(_)) =>
-                    {
-                        Some(name.clone())
-                    }
-                    _ => None,
-                })
-                .collect();
-            let index = plain.and_then(|names| {
-                desc.indexes
-                    .iter()
-                    .find(|d| d.unique && d.ctors == scope && d.fields == names)
-                    .map(|d| d.id)
-            });
+                .find(|d| d.unique && d.ctors == scope && d.elements == elements)
+                .map(|d| d.id)
+                .ok_or_else(|| {
+                    Error::Internal(format!("unique {i} of relation {} has an index", r.name))
+                })?;
             uniques.push(Unique {
                 pos: i,
                 scope,
-                fields,
                 index,
                 name: unique_name(schema, *rel, i),
             });
         }
-        let indexes =
-            desc.indexes
-                .iter()
-                .map(|d| {
-                    let at =
-                        d.ctors
-                            .iter()
-                            .map(|c| {
-                                let fields = &cs[*c as usize];
-                                let ps =
-                                    d.fields
-                                        .iter()
-                                        .map(|n| {
-                                            fields.iter().position(|(f, _)| f == n).expect(
-                                                "an index field is a field of its constructors",
-                                            )
-                                        })
-                                        .collect();
-                                (*c, ps)
-                            })
-                            .collect();
-                    let name = if d.id == desc.key_index {
-                        Some(format!("{}.key", qualified(schema, *rel)))
-                    } else {
-                        uniques
-                            .iter()
-                            .find(|u| u.index == Some(d.id))
-                            .map(|u| u.name.clone())
-                    };
-                    (
-                        d.id,
-                        Indexed {
-                            desc: d.clone(),
-                            at,
-                            name,
-                        },
-                    )
-                })
-                .collect();
+        let mut indexes = Vec::new();
+        for d in &desc.indexes {
+            let keys = IndexKeys::new(schema, Some(normal), *rel, &d.ctors, &d.elements)?;
+            let name = if d.id == desc.key_index {
+                Some(format!("{}.key", qualified(schema, *rel)))
+            } else {
+                uniques
+                    .iter()
+                    .find(|u| u.index == d.id)
+                    .map(|u| u.name.clone())
+            };
+            let indexed = Indexed {
+                desc: d.clone(),
+                keys,
+                name,
+            };
+            indexes.push((d.id, indexed));
+        }
         let key_desc = desc
             .indexes
             .iter()
@@ -282,7 +233,12 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
                 ctors: ctor_list,
                 single_key: r.key.len() == 1,
                 key_index: desc.key_index,
-                key_fields: key_desc.fields.clone(),
+                key_fields: key_desc
+                    .fields()
+                    .ok_or_else(|| Error::Internal(format!("the key of {} is fields", r.name)))?
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
                 generate: r.generate,
                 indexes,
                 uniques,

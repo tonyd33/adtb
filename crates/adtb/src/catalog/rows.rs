@@ -2,12 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ast::{self, Decl, ExprKind, QName, RelationClause, RelationDecl};
 use adtb_lang::evolve::{Code, Source};
+use adtb_lang::kernel::PathStep;
 use adtb_lang::lex::lex;
 use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, ValueDef};
 use adtb_lang::span::Span;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::key::Value;
+use crate::plan::{Element, declared_elements};
 
 use super::{layout, oplog};
 
@@ -73,35 +75,18 @@ pub struct IndexSpec {
     pub unique: bool,
     /// Constructor indexes, in order.
     pub ctors: Vec<u32>,
-    /// Each a field, or a path through a field's value-level sum, as `login.Google.gid`.
+    /// Each element as written: a field, a path through a field's value-level sum, as
+    /// `login.Google.gid`, or an expression, as `lower(email)`.
     pub fields: Vec<String>,
+    pub elements: Vec<Element>,
     kind: &'static str,
     /// The clause as the catalog writes it.
     pub clause: String,
 }
 
-impl IndexSpec {
-    /// Returns whether a B-tree holds the index: every element is a field.
-    pub fn stored(&self) -> bool {
-        !self.fields.iter().any(|f| f.contains('.'))
-    }
-}
-
-/// Returns the key index and the uniques and indexes over fields of every relation of `schema`
-/// with catalog ids, and the implied indexes: those a B-tree holds, by index id.
-///
-/// Panics if an index is over an expression other than a field path.
+/// Returns every index of the relations of `schema` with catalog ids, by index id: the key
+/// indexes, the declared uniques and indexes, and the implied indexes.
 pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
-    let mut out = listed(schema);
-    out.retain(|_, s| s.stored());
-    out
-}
-
-/// Returns every index of the relations of `schema` with catalog ids, those over field paths
-/// included, by index id.
-///
-/// Panics if an index is over an expression other than a field path.
-pub fn listed(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
     let mut out = BTreeMap::new();
     for (&r, &id) in &schema.ids.keys {
         let rel = schema.relation(r);
@@ -116,6 +101,7 @@ pub fn listed(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
             unique: true,
             ctors: all_ctors(schema, r),
             fields: rel.key.clone(),
+            elements: rel.key.iter().cloned().map(Element::Field).collect(),
             kind: "PrimaryKey",
             clause: key,
         };
@@ -123,7 +109,12 @@ pub fn listed(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
     }
     for (&(r, i), &id) in &schema.ids.indexes {
         let def = &schema.relation(r).indexes[i];
-        let fields = indexed_paths(def).expect("every index of the schema is over field paths");
+        let fields: Vec<String> = def
+            .fields
+            .iter()
+            .map(|e| field_path(e).unwrap_or_else(|| expr_text(e)))
+            .collect();
+        let elements = declared_elements(i, def);
         let spec = IndexSpec {
             id,
             relation: r,
@@ -131,6 +122,7 @@ pub fn listed(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
             ctors: def.scope.clone().unwrap_or_else(|| all_ctors(schema, r)),
             clause: clause(schema, r, def, &fields),
             fields,
+            elements,
             kind: match (def.unique, def.interval) {
                 (true, _) => "Unique",
                 (false, true) => "Interval",
@@ -154,12 +146,81 @@ pub fn listed(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
             unique: false,
             ctors,
             fields: vec![field.clone()],
+            elements: vec![Element::Field(field.clone())],
             kind: "Implied",
             clause,
         };
         out.insert(id, spec);
     }
     out
+}
+
+/// Returns index element `e`, an expression that is not a field path, as the catalog writes it.
+fn expr_text(e: &ast::Expr) -> String {
+    let name = |q: &QName| match &q.module {
+        Some(m) => format!("{}::{}", m.text, q.name.text),
+        None => q.name.text.clone(),
+    };
+    let nested = |x: &ast::Expr| match &x.kind {
+        ExprKind::Binary(..) | ExprKind::If(..) => format!("({})", expr_text(x)),
+        _ => expr_text(x),
+    };
+    match &e.kind {
+        ExprKind::Lit(l) => match l {
+            ast::Lit::Int(t) | ast::Lit::Decimal(t) | ast::Lit::Float(t) => t.clone(),
+            ast::Lit::Text(t) => format!("{t:?}"),
+            ast::Lit::Duration { amount, unit } => format!("{amount}{unit}"),
+            ast::Lit::Bool(b) => b.to_string(),
+        },
+        ExprKind::Name(q) => name(q),
+        ExprKind::Call {
+            callee,
+            args: ast::CallArgs::List(xs),
+            pins: None,
+        } => {
+            let args: Vec<String> = xs.iter().map(expr_text).collect();
+            format!("{}({})", name(callee), args.join(", "))
+        }
+        ExprKind::Unit => "()".into(),
+        ExprKind::Unary(op, x) => {
+            let op = match op {
+                ast::UnOp::Neg => "-",
+                ast::UnOp::Not => "not ",
+                ast::UnOp::Key => "key ",
+                ast::UnOp::Try => "try ",
+            };
+            format!("{op}{}", nested(x))
+        }
+        ExprKind::Binary(op, a, b) => {
+            let op = match op {
+                ast::BinOp::Union => "|",
+                ast::BinOp::Or => "or",
+                ast::BinOp::And => "and",
+                ast::BinOp::Eq => "==",
+                ast::BinOp::Ne => "!=",
+                ast::BinOp::Lt => "<",
+                ast::BinOp::Le => "<=",
+                ast::BinOp::Gt => ">",
+                ast::BinOp::Ge => ">=",
+                ast::BinOp::Add => "+",
+                ast::BinOp::Sub => "-",
+                ast::BinOp::Concat => "++",
+                ast::BinOp::Mul => "*",
+                ast::BinOp::Div => "/",
+                ast::BinOp::Rem => "%",
+            };
+            format!("{} {op} {}", nested(a), nested(b))
+        }
+        ExprKind::Field(x, f) => format!("{}.{}", nested(x), f.text),
+        ExprKind::Select(x, ast::CtorSel::One(c)) => format!("{}.{}", nested(x), c.text),
+        ExprKind::If(c, a, b) => format!(
+            "if {} then {} else {}",
+            expr_text(c),
+            expr_text(a),
+            expr_text(b)
+        ),
+        other => format!("{other:?}"),
+    }
 }
 
 /// Returns the fields an index's clause names, or `None` if one of its expressions is not a
@@ -172,12 +233,6 @@ pub fn indexed_fields(def: &IndexDef) -> Option<Vec<String>> {
             _ => None,
         })
         .collect()
-}
-
-/// Returns the field paths an index's clause names, each written `f.C.g`, or `None` if one of
-/// its expressions is not a field path.
-pub fn indexed_paths(def: &IndexDef) -> Option<Vec<String>> {
-    def.fields.iter().map(field_path).collect()
 }
 
 /// Returns the field path `e` is, written `f.C.g`.
@@ -202,9 +257,10 @@ pub enum Step {
 /// of the value it reaches.
 ///
 /// Panics if `path` names no field or constructor at a step.
-pub fn path_steps(schema: &Schema, r: RelId, c: u32, path: &str) -> (Vec<Step>, Ty) {
-    let mut names = path.split('.');
-    let first = names.next().expect("a path names a field");
+pub fn path_steps(schema: &Schema, r: RelId, c: u32, path: &[PathStep]) -> (Vec<Step>, Ty) {
+    let Some((PathStep::Field(first), rest)) = path.split_first() else {
+        panic!("a path starts at a field: {path:?}");
+    };
     let row = layout::row(schema, r, c);
     let at = row
         .iter()
@@ -213,46 +269,34 @@ pub fn path_steps(schema: &Schema, r: RelId, c: u32, path: &str) -> (Vec<Step>, 
     let mut steps = vec![Step::Field(at)];
     let mut ty = row[at].1.clone();
     let mut fields: Option<Vec<(String, Ty)>> = None;
-    for name in names {
+    for step in rest {
+        let name = match step {
+            PathStep::Ctor(k) => {
+                steps.push(Step::Ctor(*k));
+                fields = Some(
+                    layout::ctors(schema, &layout::repr(schema, &ty))
+                        .swap_remove(*k as usize)
+                        .1,
+                );
+                continue;
+            }
+            PathStep::Field(name) => name,
+        };
         let fs = match fields.take() {
             Some(fs) => fs,
             None => match layout::repr(schema, &ty) {
                 Ty::Record(fs) => fs,
-                t if layout::is_record(schema, &t) => layout::ctors(schema, &t).swap_remove(0).1,
-                t => {
-                    let k = ctor_names(schema, &t)
-                        .iter()
-                        .position(|n| n == name)
-                        .unwrap_or_else(|| {
-                            panic!("the sum of path `{path}` has constructor `{name}`")
-                        });
-                    steps.push(Step::Ctor(k as u32));
-                    fields = Some(layout::ctors(schema, &t).swap_remove(k).1);
-                    continue;
-                }
+                t => layout::ctors(schema, &t).swap_remove(0).1,
             },
         };
         let at = fs
             .iter()
             .position(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("a value of path `{path}` has field `{name}`"));
+            .unwrap_or_else(|| panic!("a value of path {path:?} has field `{name}`"));
         steps.push(Step::Field(at));
         ty = fs[at].1.clone();
     }
     (steps, ty)
-}
-
-fn ctor_names(schema: &Schema, ty: &Ty) -> Vec<String> {
-    match ty {
-        Ty::Data { def, .. } => schema
-            .ty(*def)
-            .ctors()
-            .iter()
-            .map(|c| c.name.clone())
-            .collect(),
-        Ty::Sum { ctors, .. } => ctors.iter().map(|(n, _)| n.clone()).collect(),
-        t => panic!("{t:?} is not a sum"),
-    }
 }
 
 /// Returns the value `steps` reach in `row`, or `None` when a value on the way holds another
@@ -607,7 +651,7 @@ impl Builder<'_> {
     }
 
     fn indexes(&mut self) {
-        for (id, spec) in listed(self.schema) {
+        for (id, spec) in indexes(self.schema) {
             let fields = vec![
                 ("id", key(id)),
                 ("relation", key(self.schema.ids.relations[&spec.relation])),

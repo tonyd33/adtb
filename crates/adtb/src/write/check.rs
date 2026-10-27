@@ -12,7 +12,7 @@ use crate::plan::Catalog;
 use crate::runtime::Runtime;
 
 use super::delta::{self, Delta, Input, Part};
-use super::eval::{Arena, Env, Stmt, Violations, pairs, violate};
+use super::eval::{Arena, Env, Stmt, Violations, violate};
 use super::schema::RefField;
 use super::{Error, Rows};
 
@@ -75,7 +75,7 @@ impl<R: Runtime> Stmt<'_, R> {
     }
 
     /// Check, after the change set is applied, every constraint it can violate: references,
-    /// uniques no index holds, newtype domains, and the schema's constraints and checks.
+    /// newtype domains, and the schema's constraints and checks.
     pub fn check(&self, plus: &Rows, minus: &Rows, viol: &mut Violations) -> Result<(), Error> {
         for ((r, c), rows) in plus {
             for f in &self.rel(*r).ctors[*c as usize].refs {
@@ -110,9 +110,6 @@ impl<R: Runtime> Stmt<'_, R> {
                     }
                 }
             }
-        }
-        for rel in plus.keys().map(|(r, _)| *r).collect::<BTreeSet<_>>() {
-            self.check_uniques(rel, plus, viol)?;
         }
         for ((r, _), rows) in plus {
             for v in rows {
@@ -149,43 +146,6 @@ impl<R: Runtime> Stmt<'_, R> {
                     }
                 }
             }
-        }
-        Ok(())
-    }
-
-    /// Check the uniques of `rel` that no index holds against the rows the change set inserts.
-    fn check_uniques(&self, rel: RelId, plus: &Rows, viol: &mut Violations) -> Result<(), Error> {
-        let r = self.rel(rel);
-        for (i, u) in r.uniques.iter().enumerate() {
-            if u.index.is_some() {
-                continue;
-            }
-            let mut wanted = BTreeSet::new();
-            for ((x, c), rows) in plus {
-                if *x != rel || !u.scope.contains(c) {
-                    continue;
-                }
-                for v in rows {
-                    if let Some(vs) = self.unique_values(rel, i, v)? {
-                        wanted.insert(vs);
-                    }
-                }
-            }
-            if wanted.is_empty() {
-                continue;
-            }
-            let mut groups: BTreeMap<Vec<Val>, BTreeMap<Val, Val>> = BTreeMap::new();
-            for (_, row) in self.rows(rel, Some(&u.scope))? {
-                if let Some(vs) = self.unique_values(rel, i, &row)?
-                    && wanted.contains(&vs)
-                {
-                    groups
-                        .entry(vs)
-                        .or_default()
-                        .insert(self.key_of(rel, &row)?, row);
-                }
-            }
-            violate(viol, &u.name, pairs(groups.values()));
         }
         Ok(())
     }

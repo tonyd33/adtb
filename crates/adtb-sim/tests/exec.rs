@@ -37,6 +37,7 @@ use support::*;
 fn world(f: &Fixture) -> World<'_> {
     World {
         schema: &f.schema,
+        normal: &f.normal,
         catalog: &f.catalog,
         db: &f.db,
     }

@@ -181,7 +181,7 @@ relation contacts : Contact key id generate sequence"#,
 fn refusals(src: &str) -> Vec<(String, String)> {
     let f = Fixture::new(src);
     let normal = norm::program(&f.schema, &f.program).expect("the schema normalises");
-    let catalog = planfix::catalog(&f.schema, &f.program);
+    let catalog = planfix::catalog(&f.schema);
     write::refusals(&f.schema, &normal, &catalog)
         .unwrap_or_else(|e| panic!("admission breaks a guarantee: {e}"))
 }
@@ -549,6 +549,7 @@ fn database(
 ) -> Database<SimRuntime> {
     let world = World {
         schema: &f.schema,
+        normal,
         catalog,
         db: &f.db,
     };
@@ -580,7 +581,7 @@ fn with_engine<T>(
     body: impl FnOnce(&Fixture, &Database<SimRuntime>) -> T,
 ) -> T {
     let f = Fixture::new(src);
-    let catalog = Arc::new(planfix::catalog(&f.schema, &f.program));
+    let catalog = Arc::new(planfix::catalog(&f.schema));
     let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
     let mut got = None;
     let mut sim = Sim::new(seed, Config::default());

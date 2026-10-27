@@ -260,7 +260,7 @@ struct Mode {
 
 fn engine(seed: u64, case: &Case, mode: Mode) -> Outcomes {
     let f = (case.fixture)();
-    let catalog = Arc::new(planfix::catalog(&f.schema, &f.program));
+    let catalog = Arc::new(planfix::catalog(&f.schema));
     let normal: Arc<NormalProgram> =
         Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
     let prepared: Vec<Prepared> = case.steps.iter().map(|s| prepare(&f, s)).collect();
@@ -287,6 +287,7 @@ fn run_engine(
 ) -> Outcomes {
     let world = World {
         schema: &f.schema,
+        normal,
         catalog,
         db: &f.db,
     };
@@ -936,7 +937,7 @@ fn is_expected_failure(e: &str) -> bool {
 fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
     const SEEDS: Range<u64> = 0..4;
     let f = shop();
-    let catalog = Arc::new(planfix::catalog(&f.schema, &f.program));
+    let catalog = Arc::new(planfix::catalog(&f.schema));
     let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
     let schema = Arc::new(f.schema.clone());
     let preps = Arc::new([
@@ -955,6 +956,7 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
             use adtb::runtime::{Entropy, Threads};
             let world = World {
                 schema: &f.schema,
+                normal: &normal,
                 catalog: &catalog,
                 db: &f.db,
             };
@@ -1044,12 +1046,13 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
 fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
     use adtb::runtime::Threads;
     let f = Fixture::new(SHOP);
-    let catalog = Arc::new(planfix::catalog(&f.schema, &f.program));
+    let catalog = Arc::new(planfix::catalog(&f.schema));
     let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
     let schema = Arc::new(f.schema.clone());
     let tag = Arc::new(prep(&f, TAG, true));
     let world = World {
         schema: &f.schema,
+        normal: &normal,
         catalog: &catalog,
         db: &f.db,
     };
@@ -1149,9 +1152,8 @@ fn committed_writes_survive_a_crash_and_sequences_never_reissue() {
         });
         assert_eq!(Outcome::Finished, result, "seed {seed}");
         let (rows, next) = after.unwrap_or_else(|| panic!("seed {seed}: recovery read no rows"));
-        let tags = f.rel("tags");
         let held: BTreeMap<String, Val> = rows
-            .get(&(tags, 0))
+            .get(&(f.rel("tags"), 0))
             .into_iter()
             .flatten()
             .map(|r| {
@@ -1205,7 +1207,7 @@ fn behind_a_damaged_commit_log(
     use adtb::runtime::Runtime;
     use adtb::storage::Pid;
     let f = shop();
-    let catalog = Arc::new(planfix::catalog(&f.schema, &f.program));
+    let catalog = Arc::new(planfix::catalog(&f.schema));
     let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
     let schema = Arc::new(f.schema.clone());
     let s = prep(&f, text, over_t);
@@ -1214,6 +1216,7 @@ fn behind_a_damaged_commit_log(
     let result = sim.run(|rt| {
         let world = World {
             schema: &f.schema,
+            normal: &normal,
             catalog: &catalog,
             db: &f.db,
         };
@@ -1279,7 +1282,7 @@ relation items : Item key id
 type Label = { id: Key tags, name: Text }
 relation tags : Label key id generate sequence",
     );
-    let catalog = Arc::new(planfix::catalog(&f.schema, &f.program));
+    let catalog = Arc::new(planfix::catalog(&f.schema));
     let normal = Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
     let schema = Arc::new(f.schema.clone());
     let item = prep(&f, "insert items { id: 7, n: 0 }", false);
@@ -1289,6 +1292,7 @@ relation tags : Label key id generate sequence",
     finished(&mut sim, |rt| {
         let world = World {
             schema: &f.schema,
+            normal: &normal,
             catalog: &catalog,
             db: &f.db,
         };

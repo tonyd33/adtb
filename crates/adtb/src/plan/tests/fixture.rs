@@ -4,7 +4,7 @@ use adtb_lang::ast::AdhocItem;
 use adtb_lang::ast::{BundleItem, ExampleItem};
 use adtb_lang::check::check_query;
 use adtb_lang::check::{Checker, Context, Program, check_adhoc, check_schema};
-use adtb_lang::kernel::{Kind, Tm};
+use adtb_lang::kernel::Tm;
 use adtb_lang::norm::{self, NormalAdhoc, NormalProgram, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use adtb_lang::resolve::Visible;
@@ -14,7 +14,9 @@ use adtb_lang::types::{RelId, Ty};
 use adtb_reference::{Database, Interpreter, R, Value};
 use adtb_testkit::uuid;
 
-use crate::plan::{Catalog, HeapId, IndexDesc, IndexId, RelationDesc, Rewrites};
+use crate::plan::{
+    Catalog, Element, HeapId, IndexDesc, IndexId, RelationDesc, Rewrites, declared_elements,
+};
 
 pub struct Fixture {
     pub schema: Schema,
@@ -35,7 +37,7 @@ impl Fixture {
         let program =
             check_schema(&schema).unwrap_or_else(|ds| panic!("the schema does not check: {ds:?}"));
         let normal = norm::program(&schema, &program).expect("the schema's bodies normalise");
-        let catalog = catalog(&schema, &program);
+        let catalog = catalog(&schema);
         Fixture {
             schema,
             program,
@@ -121,9 +123,8 @@ impl Fixture {
     }
 }
 
-/// Returns a catalog with a heap per constructor, the key index, every index of the schema whose fields are fields of the row, and every implied index.
-pub fn catalog(schema: &Schema, program: &Program) -> Catalog {
-    let normal = norm::program(schema, program).expect("the schema's bodies normalise");
+/// Returns a catalog with a heap per constructor, the key index, every index of the schema, and every implied index.
+pub fn catalog(schema: &Schema) -> Catalog {
     let mut out = Catalog::default();
     for (i, r) in schema.relations.iter().enumerate() {
         let rel = RelId(i as u32);
@@ -135,30 +136,15 @@ pub fn catalog(schema: &Schema, program: &Program) -> Catalog {
         let mut indexes = vec![IndexDesc {
             id: key_index,
             ctors: all.clone(),
-            fields: r.key.clone(),
+            elements: r.key.iter().cloned().map(Element::Field).collect(),
             unique: true,
             ordered: true,
         }];
         for (j, def) in r.indexes.iter().enumerate() {
-            let mut fields = Vec::new();
-            for k in 0..def.fields.len() {
-                let (_, f) = &normal.index_fields[&(rel, j, k)];
-                match normal.terms.kind(f.value) {
-                    Kind::Field(x, name)
-                        if f.path.is_empty() && matches!(normal.terms.kind(*x), Kind::Var(_)) =>
-                    {
-                        fields.push(name.clone());
-                    }
-                    _ => break,
-                }
-            }
-            if fields.len() < def.fields.len() {
-                continue;
-            }
             indexes.push(IndexDesc {
                 id: IndexId(ids.indexes[&(rel, j)]),
                 ctors: def.scope.clone().unwrap_or_else(|| all.clone()),
-                fields,
+                elements: declared_elements(j, def),
                 unique: def.unique,
                 ordered: true,
             });
@@ -174,7 +160,7 @@ pub fn catalog(schema: &Schema, program: &Program) -> Catalog {
             indexes.push(IndexDesc {
                 id: IndexId(id),
                 ctors: implied.ctors,
-                fields: vec![implied.field],
+                elements: vec![Element::Field(implied.field)],
                 unique: false,
                 ordered: true,
             });

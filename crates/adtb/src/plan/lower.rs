@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use adtb_lang::analysis::Totality;
-use adtb_lang::kernel::{Agg, Kind, Prim, Terms, Tm, Var};
+use adtb_lang::kernel::{Agg, Kind, PathStep, Prim, Terms, Tm, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
-use super::catalog::{Catalog, IndexDesc};
+use super::catalog::{Catalog, Element, IndexDesc};
 use super::terms::{Facts, with_children, with_vars};
 use super::*;
 
@@ -175,7 +175,27 @@ struct IndexProbe {
 
 impl IndexProbe {
     fn unique(&self) -> bool {
-        self.index.unique && self.key.len() == self.index.fields.len()
+        self.index.unique && self.key.len() == self.index.elements.len()
+    }
+}
+
+/// What an equality condition fixes of a row.
+#[derive(Clone, Debug)]
+struct Fixed {
+    /// The path from the row the fixed side reads, when it reads one.
+    path: Option<Vec<PathStep>>,
+    term: Tm,
+}
+
+/// What conditions fix of a row, each with its value.
+type Fixes = Vec<(Fixed, Tm)>;
+
+impl Fixed {
+    fn field(f: String, term: Tm) -> Fixed {
+        Fixed {
+            path: Some(vec![PathStep::Field(f)]),
+            term,
+        }
     }
 }
 
@@ -807,8 +827,16 @@ impl Planner<'_> {
         }
     }
 
-    /// Returns the fields of a row `x` of `rel` that condition `c` fixes, each with its value, when `c` is an equality whose other side does not mention `x`.
-    fn equality(&mut self, rel: RelId, c: Tm, x: Var) -> Option<Vec<(String, Tm)>> {
+    /// Returns what of a row `x` of `rel` condition `c` fixes, each with its value, when `c` is an
+    /// equality whose other side mentions neither `x` nor a variable of `arms`, each the value at
+    /// a path from `x`.
+    fn equality(
+        &mut self,
+        rel: RelId,
+        c: Tm,
+        x: Var,
+        arms: &HashMap<Var, Vec<PathStep>>,
+    ) -> Option<Fixes> {
         let Kind::Prim(Prim::Eq, args) = self.kind(c) else {
             return None;
         };
@@ -816,37 +844,197 @@ impl Planner<'_> {
         if erase(&self.ty(a)) != erase(&self.ty(b)) {
             return None;
         }
+        let bound: Vec<Var> = std::iter::once(x).chain(arms.keys().copied()).collect();
         for (this, other) in [(a, b), (b, a)] {
-            if self.mentions(other, &[x]) {
+            if self.mentions(other, &bound) || !self.mentions(this, &bound) {
                 continue;
             }
-            match self.kind(this) {
-                Kind::Field(row, f) if matches!(self.t.kind(row), Kind::Var(v) if *v == x) => {
-                    return Some(vec![(f, other)]);
-                }
-                Kind::Key(row) if matches!(self.t.kind(row), Kind::Var(v) if *v == x) => {
-                    return Some(self.key_values(rel, other));
-                }
-                _ => {}
+            if let Kind::Key(row) = self.kind(this)
+                && matches!(self.t.kind(row), Kind::Var(v) if *v == x)
+            {
+                let fields = self.key_values(rel, other).into_iter();
+                return Some(fields.map(|(f, v)| (Fixed::field(f, v), v)).collect());
             }
+            let path = self.path_of(this, x, arms).filter(|p| !p.is_empty());
+            return Some(vec![(Fixed { path, term: this }, other)]);
         }
         None
     }
 
-    /// Returns the best index of `rel` covering `ctors` whose fields the total prefix of `conds` fixes for row `x`.
+    /// Returns the path from `x` that `t` reads, each variable of `arms` standing for the value at
+    /// its path.
+    fn path_of(&self, t: Tm, x: Var, arms: &HashMap<Var, Vec<PathStep>>) -> Option<Vec<PathStep>> {
+        match self.t.kind(t) {
+            Kind::Var(v) if *v == x => Some(Vec::new()),
+            Kind::Var(v) => arms.get(v).cloned(),
+            Kind::Field(row, f) => {
+                let mut p = self.path_of(*row, x, arms)?;
+                p.push(PathStep::Field(f.clone()));
+                Some(p)
+            }
+            _ => None,
+        }
+    }
+
+    /// Add to `out` what of row `x` of `rel` every result of set term `t` needs fixed: under a
+    /// case over a path from `x` with one arm that is not empty, the total conditions guarding
+    /// that arm's results, and so on inside it, and inside the source of a comprehension over
+    /// such a case.
+    fn arm_equalities(
+        &mut self,
+        rel: RelId,
+        t: Tm,
+        x: Var,
+        arms: &mut HashMap<Var, Vec<PathStep>>,
+        out: &mut Fixes,
+    ) {
+        match self.kind(t) {
+            Kind::For(_, src, _) if self.rel_source(src).is_none() => {
+                self.arm_equalities(rel, src, x, arms, out);
+            }
+            Kind::Case { .. } => {
+                let Some(body) = self.live_arm(t, x, arms, Planner::is_empty_set) else {
+                    return;
+                };
+                let (conds, rest) = self.peel(body);
+                let n = self.total_prefix(&conds);
+                for cond in &conds[..n] {
+                    self.cond_equalities(rel, *cond, x, arms, out);
+                }
+                self.arm_equalities(rel, rest, x, arms, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// Add to `out` what of row `x` of `rel` total condition `c` needs fixed to hold: an
+    /// equality, the conjuncts of a conjunction, or under a case over a path from `x` with one
+    /// arm that is not false, what that arm needs.
+    fn cond_equalities(
+        &mut self,
+        rel: RelId,
+        c: Tm,
+        x: Var,
+        arms: &mut HashMap<Var, Vec<PathStep>>,
+        out: &mut Fixes,
+    ) {
+        if let Some(pairs) = self.equality(rel, c, x, arms) {
+            out.extend(pairs);
+            return;
+        }
+        let Some(body) = self.live_arm(c, x, arms, |p, a| p.literal(a) == Some(false)) else {
+            return;
+        };
+        let mut conjuncts = Vec::new();
+        self.conjuncts(body, &mut conjuncts);
+        for d in conjuncts {
+            self.cond_equalities(rel, d, x, arms, out);
+        }
+    }
+
+    /// Returns the body of the one arm of case `t` over a path from `x` that `dead` does not
+    /// hold of, binding its variable in `arms` to the path through its constructor.
+    fn live_arm(
+        &self,
+        t: Tm,
+        x: Var,
+        arms: &mut HashMap<Var, Vec<PathStep>>,
+        dead: impl Fn(&Self, Tm) -> bool,
+    ) -> Option<Tm> {
+        let Kind::Case {
+            scrutinee,
+            arms: cases,
+        } = self.t.kind(t)
+        else {
+            return None;
+        };
+        let mut path = self
+            .path_of(*scrutinee, x, arms)
+            .filter(|p| !p.is_empty())?;
+        let live: Vec<&(u32, Var, Tm)> = cases.iter().filter(|(_, _, a)| !dead(self, *a)).collect();
+        let [(c, v, body)] = live[..] else {
+            return None;
+        };
+        path.push(PathStep::Ctor(*c));
+        arms.insert(*v, path);
+        Some(*body)
+    }
+
+    /// Returns whether `fixed`, of a row `x` of `rel`, is key element `e` of one of its indexes.
+    fn is_element(&self, rel: RelId, x: Var, e: &Element, fixed: &Fixed) -> bool {
+        match e {
+            Element::Field(f) => {
+                matches!(fixed.path.as_deref(), Some([PathStep::Field(g)]) if g == f)
+            }
+            Element::Derived { index, element } => {
+                let (x0, f) = &self.normal.index_fields[&(rel, *index, *element)];
+                if !f.path.is_empty() {
+                    return fixed.path.as_ref() == Some(&f.path);
+                }
+                let mut vars = HashMap::from([(*x0, x)]);
+                self.same_term(fixed.term, f.value, &mut vars)
+            }
+        }
+    }
+
+    /// Returns whether term `a` of the plan's arena is term `b` of the normal program's, each
+    /// variable of `b` renamed by `vars` or bound alike in both.
+    fn same_term(&self, a: Tm, b: Tm, vars: &mut HashMap<Var, Var>) -> bool {
+        let from = &self.normal.terms;
+        let (ca, cb) = (self.t.children(a), from.children(b));
+        if ca.len() != cb.len() || erase(self.t.ty(a)) != erase(from.ty(b)) {
+            return false;
+        }
+        let zeros = vec![Tm(0); ca.len()];
+        let ka = with_children(self.t.kind(a), &zeros);
+        let kb = with_children(from.kind(b), &zeros);
+        let (mut va, mut vb) = (Vec::new(), Vec::new());
+        with_vars(&ka, &mut |v| {
+            va.push(v);
+            v
+        });
+        with_vars(&kb, &mut |v| {
+            vb.push(v);
+            v
+        });
+        if va.len() != vb.len() {
+            return false;
+        }
+        for (u, w) in vb.iter().zip(&va) {
+            if *vars.entry(*u).or_insert(*w) != *w {
+                return false;
+            }
+        }
+        if with_vars(&kb, &mut |v| vars[&v]) != ka {
+            return false;
+        }
+        ca.into_iter()
+            .zip(cb)
+            .all(|(x, y)| self.same_term(x, y, vars))
+    }
+
+    /// Returns the best index of `rel` covering `ctors` whose elements the total prefix of
+    /// `conds`, or the arms of `rest` as [`Planner::arm_equalities`] reads them, fix for row `x`.
     fn index_for(
         &mut self,
         rel: RelId,
         ctors: &CtorSet,
         x: Var,
         conds: &[Tm],
+        rest: Tm,
     ) -> Option<IndexProbe> {
         let n = self.total_prefix(conds);
-        let mut fixed: Vec<(usize, Vec<(String, Tm)>)> = Vec::new();
+        let mut fixed: Vec<(Option<usize>, Fixes)> = Vec::new();
+        let mut in_arms = Vec::new();
         for (i, c) in conds.iter().enumerate().take(n) {
-            if let Some(pairs) = self.equality(rel, *c, x) {
-                fixed.push((i, pairs));
+            match self.equality(rel, *c, x, &HashMap::new()) {
+                Some(pairs) => fixed.push((Some(i), pairs)),
+                None => self.cond_equalities(rel, *c, x, &mut HashMap::new(), &mut in_arms),
             }
+        }
+        self.arm_equalities(rel, rest, x, &mut HashMap::new(), &mut in_arms);
+        if !in_arms.is_empty() {
+            fixed.push((None, in_arms));
         }
         if fixed.is_empty() {
             return None;
@@ -857,21 +1045,31 @@ impl Planner<'_> {
                 continue;
             }
             let mut key = Vec::new();
-            for f in &index.fields {
-                match fixed.iter().flat_map(|(_, ps)| ps).find(|(g, _)| g == f) {
+            for e in &index.elements {
+                let found = fixed
+                    .iter()
+                    .flat_map(|(_, ps)| ps)
+                    .find(|(f, _)| self.is_element(rel, x, e, f));
+                match found {
                     Some((_, v)) => key.push(*v),
                     None => break,
                 }
             }
-            let full = key.len() == index.fields.len();
+            let full = key.len() == index.elements.len();
             if key.is_empty() || (!full && !index.ordered) {
                 continue;
             }
-            let covered: Vec<&String> = index.fields.iter().take(key.len()).collect();
+            let covered = &index.elements[..key.len()];
             let used = fixed
                 .iter()
-                .filter(|(_, ps)| ps.iter().all(|(g, _)| covered.contains(&g)))
-                .map(|(i, _)| *i)
+                .filter(|(_, ps)| {
+                    ps.iter().all(|(f, _)| {
+                        covered.iter().any(|e| {
+                            matches!(e, Element::Field(_)) && self.is_element(rel, x, e, f)
+                        })
+                    })
+                })
+                .filter_map(|(i, _)| *i)
                 .collect();
             let rank = (full && index.unique, key.len());
             if best.as_ref().is_none_or(|b| rank > b.0) {
@@ -892,9 +1090,14 @@ impl Planner<'_> {
         let n = self.total_prefix(conds);
         let mut fields: Vec<String> = Vec::new();
         for c in &conds[..n] {
-            for (f, _) in self.equality(rel, *c, x).unwrap_or_default() {
-                if !fields.contains(&f) {
-                    fields.push(f);
+            for (f, _) in self
+                .equality(rel, *c, x, &HashMap::new())
+                .unwrap_or_default()
+            {
+                if let Some([PathStep::Field(f)]) = f.path.as_deref()
+                    && !fields.contains(f)
+                {
+                    fields.push(f.clone());
                 }
             }
         }
@@ -978,7 +1181,7 @@ impl Planner<'_> {
     ) -> Result<Spine, Error> {
         let (conds, rest) = self.pulled(body);
         if (self.rw.index_scan || self.bounded)
-            && let Some(probe) = self.index_for(r, ctors, x, &conds)
+            && let Some(probe) = self.index_for(r, ctors, x, &conds, rest)
         {
             let rows = if probe.unique() { 1.0 } else { PROBE_ROWS };
             let IndexProbe { index, key, used } = probe;
@@ -1294,7 +1497,7 @@ impl Planner<'_> {
         let n = self.total_prefix(&conds);
         let mut options: Vec<(f64, Access)> = Vec::new();
         if (self.rw.index_join || self.bounded)
-            && let Some(probe) = self.index_for(r, ctors, y, &conds)
+            && let Some(probe) = self.index_for(r, ctors, y, &conds, rest)
         {
             let per = if probe.unique() {
                 PROBE_COST

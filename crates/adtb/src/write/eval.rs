@@ -2,11 +2,11 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use adtb_lang::kernel::{Conflict, Kind, PathStep, Terms, Tm, Var};
+use adtb_lang::kernel::{Conflict, Kind, Terms, Tm, Var};
 use adtb_lang::schema::{Generator, OnDelete, Stage};
 use adtb_lang::types::{RelId, Ty};
 
-use crate::exec::types::{ctors, field};
+use crate::exec::types::ctors;
 use crate::exec::{self, Val, from_stored, to_key};
 use crate::key::Tid;
 use crate::runtime::Runtime;
@@ -587,83 +587,39 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             }
             Conflict::Unique(i) => {
                 let r = self.rel(rel);
-                let pos = r
+                let u = r
                     .uniques
                     .iter()
-                    .position(|u| u.pos == i as usize)
+                    .find(|u| u.pos == i as usize)
                     .expect("an upsert names a unique");
-                let u = &r.uniques[pos];
-                let Some(want) = self.unique_values(rel, pos, n)? else {
+                let (_, ix) = r
+                    .indexes
+                    .iter()
+                    .find(|(id, _)| *id == u.index)
+                    .expect("a unique's index is one of its relation's");
+                let c = n.ctor_of()?;
+                let types = self.store.key_types(u.index);
+                let row = self.stored(r.ctors[c as usize].heap, n)?;
+                let Some(key) = ix.keys.key(c, &row, &types)? else {
                     return Ok(Vec::new());
                 };
-                let mut out = Vec::new();
-                for (_, o) in self.rows(rel, Some(&u.scope))? {
-                    if self.unique_values(rel, pos, &o)?.as_ref() == Some(&want) {
-                        out.push(o);
+                let schema = self.db.indexes[&u.index].index.schema();
+                let want = schema.encode(&key);
+                let scope: BTreeSet<u32> = u.scope.iter().copied().collect();
+                let mut out = BTreeMap::new();
+                for (d, tid) in self.store.probe(u.index, &key, &scope)? {
+                    let Some((_, stored)) = self.store.fetch(r.ctors[d as usize].heap, tid)? else {
+                        continue;
+                    };
+                    let found = ix.keys.key(d, &stored, &types)?;
+                    if found.is_some_and(|k| schema.encode(&k) == want) {
+                        let o = self.row(rel, d, &stored);
+                        out.insert(self.key_of(rel, &o)?, o);
                     }
                 }
-                Ok(out)
+                Ok(out.into_values().collect())
             }
         }
-    }
-
-    /// Returns the values of the fields of unique `u` of `rel` on `row`, or `None` when `row`
-    /// holds another constructor than a field's path names.
-    pub fn unique_values(
-        &self,
-        rel: RelId,
-        u: usize,
-        row: &Val,
-    ) -> Result<Option<Vec<Val>>, Error> {
-        let r = self.rel(rel);
-        let unique = &r.uniques[u];
-        if !unique.scope.contains(&row.ctor_of()?) {
-            return Ok(None);
-        }
-        let mut out = Vec::new();
-        for (var, f) in &unique.fields {
-            if !self.holds_path(&r.row_ty(row.ctor_of()?), row, &f.path)? {
-                return Ok(None);
-            }
-            let env: Env = [(*var, row.clone())].into();
-            out.push(self.eval(Arena::Program, f.value, &env)?);
-        }
-        Ok(Some(out))
-    }
-
-    fn holds_path(&self, ty: &Ty, v: &Val, path: &[PathStep]) -> Result<bool, Error> {
-        let (mut ty, mut at) = (ty.clone(), v.clone());
-        for step in path {
-            match step {
-                PathStep::Field(f) => {
-                    let (a, t) = field(&self.db.schema, &ty, f)?;
-                    let i = match &at {
-                        Val::Ctor(c, _) => a.of(*c)?,
-                        _ => a.of(0)?,
-                    };
-                    at = at.fields()?[i].clone();
-                    ty = t;
-                }
-                PathStep::Ctor(c) => {
-                    if at.ctor_of()? != *c {
-                        return Ok(false);
-                    }
-                    ty = match exec::types::repr(&self.db.schema, &ty) {
-                        Ty::Data { def, args, .. } => Ty::Data {
-                            def,
-                            args,
-                            ctors: Some(vec![*c]),
-                        },
-                        Ty::Sum { ctors, .. } => Ty::Sum {
-                            ctors,
-                            sel: Some(vec![*c]),
-                        },
-                        other => other,
-                    };
-                }
-            }
-        }
-        Ok(true)
     }
 
     /// Returns the key of `row`, a row of `rel`.

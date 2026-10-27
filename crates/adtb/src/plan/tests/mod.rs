@@ -288,7 +288,7 @@ fn a_probe_of_an_index_over_one_constructor_reads_only_it() {
     let ix = &f.catalog.relation(f.rel("identities")).indexes;
     let gid = ix
         .iter()
-        .find(|i| i.fields == ["gid"])
+        .find(|i| i.fields() == Some(vec!["gid"]))
         .expect("the gid index")
         .id;
     assert_eq!(BTreeSet::from([gid]), p.reads.indexes);
@@ -363,7 +363,7 @@ fn a_correlated_count_probes_the_index_per_row() {
     let ix = &f.catalog.relation(f.rel("identities")).indexes;
     let user = ix
         .iter()
-        .find(|i| i.fields == ["user"])
+        .find(|i| i.fields() == Some(vec!["user"]))
         .expect("the user index")
         .id;
     assert!(p.reads.indexes.contains(&user));
@@ -849,4 +849,99 @@ fn a_user_aggregate_over_a_possibly_empty_range_is_an_option() {
     assert_eq!(Ok(Value::none()), got);
     let got = outcome(&f, "tally(o.total for o in sales)", &[]);
     assert_eq!(Ok(Value::some(Value::Int(3006))), got);
+}
+
+fn invoices() -> Fixture {
+    let mut f = Fixture::new(
+        "type Status = Draft | Paid { ref: Text }
+type Invoice = { id: Key invoices, status: Status, email: Text }
+relation invoices : Invoice key id generate sequence
+  unique (status.Paid.ref)
+  index (lower(email))
+",
+    );
+    f.rows(
+        "invoices",
+        r#"[Invoice { id: invoices.key(1), status: Draft, email: "Ann@X" },
+            Invoice { id: invoices.key(2), status: Paid { ref: "r1" }, email: "bo@x" },
+            Invoice { id: invoices.key(3), status: Paid { ref: "r2" }, email: "ANN@x" }]"#,
+        &[],
+    );
+    f
+}
+
+/// Returns the id of the index of `invoices` whose key is `elements`.
+fn invoice_index(f: &Fixture, elements: &[Element]) -> IndexId {
+    f.catalog
+        .relation(f.rel("invoices"))
+        .indexes
+        .iter()
+        .find(|i| i.elements == elements)
+        .expect("the index")
+        .id
+}
+
+fn lower_email(f: &Fixture) -> IndexId {
+    invoice_index(
+        f,
+        &[Element::Derived {
+            index: 1,
+            element: 0,
+        }],
+    )
+}
+
+fn paid_ref(f: &Fixture) -> IndexId {
+    invoice_index(
+        f,
+        &[Element::Derived {
+            index: 0,
+            element: 0,
+        }],
+    )
+}
+
+#[test]
+fn an_equality_on_an_indexed_expression_probes_its_index() {
+    let f = invoices();
+    let text = r#"from i in invoices where lower(i.email) == "ann@x" select key i"#;
+    let got = outcome(&f, text, &[]);
+    assert_eq!(Ok(Value::Set(BTreeSet::from([key(1), key(3)]))), got);
+    let p = adhoc_plan(&f, text, &[], Rewrites::ALL);
+    assert_eq!(BTreeSet::from([lower_email(&f)]), p.reads.indexes);
+}
+
+#[test]
+fn an_equality_on_another_expression_does_not_probe_an_expression_index() {
+    let f = invoices();
+    let text = r#"from i in invoices where upper(i.email) == "ANN@X" select key i"#;
+    agrees(&f, text, &[]);
+    let p = adhoc_plan(&f, text, &[], Rewrites::ALL);
+    assert!(p.reads.indexes.is_empty(), "{:?}", p.reads.indexes);
+}
+
+#[test]
+fn an_arm_naming_a_constructor_probes_a_path_index() {
+    let f = invoices();
+    for text in [
+        r#"from i in invoices, k in (match i.status
+             | Paid p -> if p.ref == "r1" then [key i] else []
+             | Draft -> []) select k"#,
+        r#"from i in invoices where (match i.status | Paid p -> p.ref == "r1" | Draft -> false) select key i"#,
+    ] {
+        agrees(&f, text, &[]);
+        let p = adhoc_plan(&f, text, &[], Rewrites::ALL);
+        assert_eq!(BTreeSet::from([paid_ref(&f)]), p.reads.indexes, "`{text}`");
+    }
+}
+
+#[test]
+fn a_path_index_is_not_probed_where_another_arm_yields_rows() {
+    let f = invoices();
+    let text = r#"from i in invoices, k in (match i.status
+         | Paid p -> if p.ref == "r1" then [key i] else []
+         | Draft -> [key i]) select k"#;
+    agrees(&f, text, &[]);
+    let p = adhoc_plan(&f, text, &[], Rewrites::ALL);
+    assert!(p.reads.indexes.is_empty(), "{:?}", p.reads.indexes);
 }

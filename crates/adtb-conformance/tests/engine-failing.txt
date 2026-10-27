@@ -1,2 +1,1 @@
 # Files the reference interpreter passes and the engine fails: a path under conformance/, then why.
-writes/06-upsert-expression-unique.test an index or unique over an expression is refused

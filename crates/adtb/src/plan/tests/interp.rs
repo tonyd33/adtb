@@ -97,17 +97,16 @@ impl<'a> Interp<'a> {
             .unwrap_or_default()
     }
 
-    /// Returns the rows of the index's constructors whose leading fields equal `key`, with their constructors.
+    /// Returns the rows of the index's constructors whose leading fields equal `key`, with their constructors; the plan rechecks every other element.
     fn entries(&self, index: IndexId, key: &[Value]) -> Vec<(u32, Value)> {
         let (r, desc) = &self.indexes[&index];
         let mut out = Vec::new();
         for c in &desc.ctors {
             for row in self.db.get(&(*r, *c)).into_iter().flatten() {
-                let hit = desc
-                    .fields
-                    .iter()
-                    .zip(key)
-                    .all(|(f, k)| row.field(f).expect("an indexed field") == k);
+                let hit = desc.elements.iter().zip(key).all(|(e, k)| match e {
+                    Element::Field(f) => row.field(f).expect("an indexed field") == k,
+                    Element::Derived { .. } => true,
+                });
                 if hit {
                     out.push((*c, row.clone()));
                 }

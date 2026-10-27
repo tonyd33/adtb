@@ -1,4 +1,5 @@
 mod change;
+mod keying;
 pub mod layout;
 mod moved;
 mod oplog;
@@ -15,20 +16,22 @@ use std::time::SystemTime;
 
 use adtb_lang::ast::{CtorSel, CtorTarget, MigrationFile, Operator, OperatorKind};
 use adtb_lang::evolve::{Code, Refusal, Source};
+use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Schema, ValueDef};
 use adtb_lang::types::RelId;
 
 use crate::btree::{self, BTree, Index};
-use crate::exec::{StoredHeap, StoredIndex};
+use crate::exec::{self, StoredHeap, StoredIndex};
 use crate::heap::{self, FieldType, Heap, LargeStore};
-use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Value};
+use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, OrderKey, Scalar, Value};
 use crate::mvcc::{self, CommitLog, Scope, Snapshot, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
 use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 
+pub use keying::{IndexKeys, element_types};
 pub use layout::OrderKeys;
 pub use oplog::{Hash, version_hash};
 pub use rows::{IndexSpec, Rows, applied, declared, field_path, indexed_fields, indexes};
@@ -103,7 +106,7 @@ pub struct Catalog {
     large: LargeStore,
     roots: Arc<Heap>,
     heaps: BTreeMap<(RelId, u32), Arc<Heap>>,
-    indexes: BTreeMap<u64, (IndexSpec, Index)>,
+    indexes: BTreeMap<u64, (IndexSpec, Index, Arc<IndexKeys>)>,
     keys: OrderKeys,
     next_heap: u32,
     sequences: Pid,
@@ -177,16 +180,59 @@ fn row_type(schema: &Schema, r: RelId, ctor: u32) -> Vec<FieldType> {
         .collect()
 }
 
-fn key_schema(schema: &Schema, keys: &OrderKeys, spec: &IndexSpec) -> KeySchema {
+fn key_schema(
+    schema: &Schema,
+    normal: Option<&NormalProgram>,
+    keys: &OrderKeys,
+    spec: &IndexSpec,
+) -> KeySchema {
+    let types = element_types(schema, normal, spec.relation, spec.ctors[0], &spec.elements);
     KeySchema::new(
-        spec.fields
+        types
             .iter()
-            .map(|f| {
-                let (_, t) = rows::path_steps(schema, spec.relation, spec.ctors[0], f);
-                (layout::key_type(schema, keys, &t), Dir::Asc)
-            })
+            .map(|t| (layout::key_type(schema, keys, t), Dir::Asc))
             .collect(),
     )
+}
+
+/// Returns the keying of index `spec` of `schema`, whose normal program is `normal`.
+///
+/// Fails with [`Error::Refused`] if the executor cannot compile an expression element.
+fn index_keys(
+    schema: &Schema,
+    normal: Option<&NormalProgram>,
+    spec: &IndexSpec,
+) -> Result<Arc<IndexKeys>, Error> {
+    IndexKeys::new(schema, normal, spec.relation, &spec.ctors, &spec.elements)
+        .map(Arc::new)
+        .map_err(|e| {
+            Error::Refused(vec![format!(
+                "index `{}` is not admitted: {e:?}",
+                spec.clause
+            )])
+        })
+}
+
+/// Returns the normal program of `source` when an index of `specs` has an element other than a
+/// field.
+fn index_program<'s>(
+    source: &Source,
+    mut specs: impl Iterator<Item = &'s IndexSpec>,
+) -> Result<Option<NormalProgram>, String> {
+    let derived = specs.any(|s| {
+        s.elements
+            .iter()
+            .any(|e| matches!(e, plan::Element::Derived { .. }))
+    });
+    if !derived {
+        return Ok(None);
+    }
+    let (schema, program) = source
+        .check()
+        .map_err(|ds| format!("the schema checks: {ds:?}"))?;
+    norm::program(&schema, &program)
+        .map(Some)
+        .map_err(|e| format!("the schema normalises: {e:?}"))
 }
 
 fn ctor_id(schema: &Schema, r: RelId, c: u32) -> u64 {
@@ -234,7 +280,7 @@ fn planned<'s>(
             .map(|s| IndexDesc {
                 id: IndexId(s.id),
                 ctors: s.ctors.clone(),
-                fields: s.fields.clone(),
+                elements: s.elements.clone(),
                 unique: s.unique,
                 ordered: true,
             })
@@ -585,17 +631,21 @@ impl Catalog {
             let heap = Heap::open(pager, id, at, row_type(&schema, r, c), large)?;
             heaps.insert((r, c), Arc::new(heap));
         }
+        let specs = indexes(&schema);
+        let normal = index_program(&source, specs.values()).map_err(Error::Corrupt)?;
         let mut stored = BTreeMap::new();
-        for (id, spec) in indexes(&schema) {
+        for (id, spec) in specs {
             let Some(&at) = named.indexes.get(&id) else {
                 return Err(Error::Missing(format!("index {id}")));
             };
             let index = Index::open(
                 BTree::open(at, owner(id)),
-                key_schema(&schema, &named.keys, &spec),
+                key_schema(&schema, normal.as_ref(), &named.keys, &spec),
                 index_ctors(&schema, &spec),
             );
-            stored.insert(id, (spec, index));
+            let keys = index_keys(&schema, normal.as_ref(), &spec)
+                .map_err(|e| Error::Corrupt(format!("{e:?}")))?;
+            stored.insert(id, (spec, index, keys));
         }
         let catalog = Catalog {
             source,
@@ -625,11 +675,12 @@ impl Catalog {
     /// Fails with [`Error::Refused`], changing nothing, if the migration does not apply to the
     /// schema, if a constraint of the result has no index-bounded incremental check, or if the
     /// data contradicts an operator: a constructor or relation it removes holds rows, a unique or
-    /// key it adds finds a duplicate, a constructor it disables holds rows, a fill or routing
-    /// faults on a row, or a constraint or check it adds, or one reading a relation it rewrites,
-    /// has violating rows in the final state. Fails with [`Error::Internal`] when admitting or
-    /// validating a constraint breaks a guarantee of the checker. On any other failure the
-    /// transaction is aborted, and the catalog must be opened again.
+    /// key it adds finds a duplicate, a constructor it disables holds rows, a fill, routing or
+    /// index expression faults on a row, or a constraint or check it adds, or one reading a
+    /// relation it rewrites, has violating rows in the final state. Fails with
+    /// [`Error::Internal`] when admitting or validating a constraint breaks a guarantee of the
+    /// checker. On any other failure the transaction is aborted, and the catalog must be opened
+    /// again.
     ///
     /// Postcondition: [`Catalog::open`] after a crash finds either the whole migration or
     /// nothing of it, and no page of the structures the migration replaced or created but did not
@@ -650,16 +701,6 @@ impl Catalog {
             Err(r) => return refused(reasons(r)),
         };
         let schema = next.schema().expect("an applied migration builds");
-        let over: Vec<String> = schema
-            .relations
-            .iter()
-            .flat_map(|r| &r.indexes)
-            .filter(|d| rows::indexed_paths(d).is_none())
-            .map(|_| "an index over an expression other than a field path".to_string())
-            .collect();
-        if !over.is_empty() {
-            return refused(over);
-        }
         if let Err(why) = recordable(&next) {
             return refused(why);
         }
@@ -699,7 +740,7 @@ impl Catalog {
         let (_, program) = source.check().map_err(|ds| {
             Error::Refused(ds.into_iter().map(|d| d.diag.message).collect::<Vec<_>>())
         })?;
-        let normal = adtb_lang::norm::program(schema, &program)
+        let normal = norm::program(schema, &program)
             .map_err(|e| Error::Refused(vec![format!("the schema does not normalise: {e:?}")]))?;
         let mut heaps: BTreeMap<(RelId, u32), HeapId> = BTreeMap::new();
         let mut next = self.next_heap;
@@ -714,6 +755,9 @@ impl Catalog {
             heaps.insert(rc, HeapId(u64::from(id)));
         }
         let specs = indexes(schema);
+        for spec in specs.values() {
+            index_keys(schema, Some(&normal), spec)?;
+        }
         let catalog = planned(schema, specs.values(), &heaps);
         let why = crate::write::refusals(schema, &normal, &catalog).map_err(Error::Internal)?;
         if why.is_empty() {
@@ -905,9 +949,13 @@ impl Catalog {
             sequences: self.sequences,
             query_memory: self.query_memory,
         };
-        if let Err(why) = duplicates(&next.schema, &next.keys, b.data, b.rewritten) {
-            return Err(Error::Refused(why));
+        let specs = indexes(&next.schema);
+        let normal = index_program(&next.source, specs.values()).map_err(Error::Internal)?;
+        let mut keyed = BTreeMap::new();
+        for (id, spec) in &specs {
+            keyed.insert(*id, index_keys(&next.schema, normal.as_ref(), spec)?);
         }
+        duplicates(&next.schema, &next.keys, normal.as_ref(), &specs, &keyed, b)?;
         let old: BTreeMap<(u64, u64), (RelId, u32)> = self
             .heaps
             .keys()
@@ -943,24 +991,25 @@ impl Catalog {
                 gone.push((HEAP_ROOT, heap_root(rid, cid, &self.heaps[rc])));
             }
         }
-        for (id, spec) in indexes(&next.schema) {
+        for (id, spec) in specs {
             let rid = next.schema.ids.relations[&spec.relation];
+            let keys = keyed.remove(&id).expect("every index is keyed");
             if !b.rewritten.contains(&rid) {
-                let (_, index) = &self.indexes[&id];
+                let (_, index, _) = &self.indexes[&id];
                 let index = index.clone();
-                next.indexes.insert(id, (spec, index));
+                next.indexes.insert(id, (spec, index, keys));
                 continue;
             }
             let index = Index::create(
                 pager,
                 owner(id),
-                key_schema(&next.schema, &next.keys, &spec),
+                key_schema(&next.schema, normal.as_ref(), &next.keys, &spec),
                 index_ctors(&next.schema, &spec),
             )?;
             named.push((INDEX_ROOT, vec![int(id), int(index.tree().root().0)]));
-            next.indexes.insert(id, (spec, index));
+            next.indexes.insert(id, (spec, index, keys));
         }
-        for (&id, (spec, index)) in &self.indexes {
+        for (&id, (spec, index, _)) in &self.indexes {
             if b.rewritten
                 .contains(&self.schema.ids.relations[&spec.relation])
             {
@@ -1144,7 +1193,7 @@ impl Catalog {
         let indexes = self
             .indexes
             .values()
-            .map(|(spec, index)| {
+            .map(|(spec, index, _)| {
                 let ctors = spec
                     .ctors
                     .iter()
@@ -1199,7 +1248,11 @@ impl Catalog {
             .iter()
             .map(|(rc, h)| (*rc, HeapId(u64::from(h.id()))))
             .collect();
-        planned(&self.schema, self.indexes.values().map(|(s, _)| s), &heaps)
+        planned(
+            &self.schema,
+            self.indexes.values().map(|(s, _, _)| s),
+            &heaps,
+        )
     }
 
     /// Returns every structure of the file for `verify`: the commit log `clog`, the catalog's
@@ -1221,8 +1274,8 @@ impl Catalog {
             let indexes = self
                 .indexes
                 .values()
-                .filter(|(s, _)| s.relation == r)
-                .map(|(_, i)| i)
+                .filter(|(s, _, _)| s.relation == r)
+                .map(|(_, i, _)| i)
                 .collect();
             sums.push(Sum { heaps, indexes });
         }
@@ -1246,11 +1299,13 @@ impl Catalog {
     ) -> Result<(), Error> {
         let tid = self.heap(r, c).insert(pager, x.0, row)?;
         let ctor = CtorId(layout::ctor_id(ctor_id(&self.schema, r, c)));
-        for (spec, index) in self.indexes.values() {
-            if spec.relation != r || !spec.ctors.contains(&c) {
+        for (spec, index, keys) in self.indexes.values() {
+            if spec.relation != r {
                 continue;
             }
-            let key = index_key(&self.schema, spec, c, row).expect("a stored index is over fields");
+            let Some(key) = row_key(keys, index.schema(), c, row)? else {
+                continue;
+            };
             let fresh = index.insert(pager, &Entry { key, ctor, tid })?;
             assert!(fresh, "a new row's entry is not in its index yet");
         }
@@ -1311,43 +1366,57 @@ fn delete_rows<R: Runtime>(
     Ok(())
 }
 
-/// Returns the key `row`, of constructor `c`, has in index `spec`, or `None` when a value on a
-/// field path holds another constructor than the path names.
-fn index_key(schema: &Schema, spec: &IndexSpec, c: u32, row: &[Value]) -> Option<Vec<Value>> {
-    spec.fields
-        .iter()
-        .map(|f| {
-            let (steps, _) = rows::path_steps(schema, spec.relation, c, f);
-            rows::at_path(row, &steps).cloned()
-        })
-        .collect()
+/// Returns the key stored row `row` of constructor `c` has in an index keyed by `keys` whose key
+/// schema is `schema`, or `None` when the index holds no entry for it.
+///
+/// Fails with [`Error::Refused`] when an expression element faults on the row.
+fn row_key(
+    keys: &IndexKeys,
+    schema: &KeySchema,
+    c: u32,
+    row: &[Value],
+) -> Result<Option<Vec<Value>>, Error> {
+    let types: Vec<KeyType> = schema.components().iter().map(|(t, _)| t.clone()).collect();
+    keys.key(c, row, &types).map_err(|e| match e {
+        exec::Error::Fault(f) => Error::Refused(vec![format!(
+            "an index expression faults with {} on a row",
+            f.name()
+        )]),
+        other => Error::Internal(format!("an index expression evaluates: {other:?}")),
+    })
 }
 
-/// Returns why the rows `data` gives the relations `rewritten` names break a unique index of
-/// `schema`: each unique, the key among them, that two rows share a key of.
+/// Refuses the rows `b.data` gives the relations `b.rewritten` names when two of them share a key
+/// of a unique of `specs`, each keyed by `keyed`: each unique, the key among them, that two rows
+/// share a key of.
 fn duplicates(
     schema: &Schema,
     keys: &OrderKeys,
-    data: &Data,
-    rewritten: &BTreeSet<u64>,
-) -> Result<(), Vec<String>> {
+    normal: Option<&NormalProgram>,
+    specs: &BTreeMap<u64, IndexSpec>,
+    keyed: &BTreeMap<u64, Arc<IndexKeys>>,
+    b: &Built,
+) -> Result<(), Error> {
     let mut why = Vec::new();
-    for spec in rows::listed(schema).values() {
+    for (id, spec) in specs {
         let rid = schema.ids.relations[&spec.relation];
-        let Some(ctors) = data
+        let Some(ctors) = b
+            .data
             .get(&rid)
-            .filter(|_| spec.unique && rewritten.contains(&rid))
+            .filter(|_| spec.unique && b.rewritten.contains(&rid))
         else {
             continue;
         };
-        let ks = key_schema(schema, keys, spec);
+        let ks = key_schema(schema, normal, keys, spec);
         let mut seen = BTreeSet::new();
-        let shared = spec.ctors.iter().any(|&c| {
-            ctors[&ctor_id(schema, spec.relation, c)]
-                .iter()
-                .filter_map(|row| index_key(schema, spec, c, row))
-                .any(|key| !seen.insert(ks.encode(&key)))
-        });
+        let mut shared = false;
+        for &c in &spec.ctors {
+            for row in &ctors[&ctor_id(schema, spec.relation, c)] {
+                if let Some(key) = row_key(&keyed[id], &ks, c, row)? {
+                    shared |= !seen.insert(ks.encode(&key));
+                }
+            }
+        }
         if shared {
             why.push(format!(
                 "two rows of {} share a key of `{}`",
@@ -1356,7 +1425,11 @@ fn duplicates(
             ));
         }
     }
-    if why.is_empty() { Ok(()) } else { Err(why) }
+    if why.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Refused(why))
+    }
 }
 
 /// Returns the constructor relations `disable target`, in a migration of `module`, names in

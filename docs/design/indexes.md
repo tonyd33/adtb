@@ -190,6 +190,20 @@ search are B-link trees over relations derived by a function
 [../spec/interop.md](../spec/interop.md)) and inherit everything in
 this file.
 
+An index's key is a list of elements, each a field, a path into a
+value-level sum field, or an expression of the row. Consumers may rely
+on:
+
+- A row has an entry only when every value on each of its paths holds
+  the constructor the path names; a unique constrains no other row.
+- An expression element's component is the expression's value on the
+  row under the current code, encoded as its type is in §3.
+- An expression that faults on a row fails the write of that row with
+  the fault, and refuses a migration that would build an entry for it.
+- An entry may name a version whose key no longer has the entry's
+  value, so a reader of a probe evaluates each element of the key on
+  the version it fetches.
+
 Rulings: btree/sum-field/whole, btree/sum-field/by-tag, btree/sum-field/ctor-field, btree/sum-field/implied/arm-scoped
 
 ### 6.2 Hash indexes

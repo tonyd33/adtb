@@ -58,7 +58,7 @@ fn shapes(schema: &Schema) -> BTreeMap<u64, Shape> {
             .ctors
             .push((ctor_id(schema, r, c), fields(schema, r, c)));
     }
-    for spec in rows::listed(schema).into_values() {
+    for spec in rows::indexes(schema).into_values() {
         let rid = schema.ids.relations[&spec.relation];
         let ctors = spec
             .ctors

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
-use crate::exec::{Val, to_key, to_stored};
+use crate::exec::{Val, to_stored};
 use crate::heap::{Flags, Heap, Link, walk};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Probe, Status, Write, Xid, check_write, probe_unique};
@@ -30,6 +30,8 @@ struct Written {
     ctor: u32,
     tid: Tid,
     row: Val,
+    /// The row as its heap stores it.
+    stored: Vec<Value>,
 }
 
 impl<R: Runtime> Stmt<'_, R> {
@@ -41,7 +43,8 @@ impl<R: Runtime> Stmt<'_, R> {
         self.db.txns.status(&self.db.pager, x)
     }
 
-    fn stored(&self, heap: HeapId, row: &Val) -> Result<Vec<Value>, Error> {
+    /// Returns `row` as `heap` stores it.
+    pub(super) fn stored(&self, heap: HeapId, row: &Val) -> Result<Vec<Value>, Error> {
         Ok(self.db.heaps[&heap]
             .row
             .iter()
@@ -126,9 +129,7 @@ impl<R: Runtime> Stmt<'_, R> {
                     let indexed: Vec<usize> = r
                         .indexes
                         .iter()
-                        .filter_map(|(_, ix)| ix.at.get(&c))
-                        .flatten()
-                        .copied()
+                        .flat_map(|(_, ix)| ix.keys.reads(c))
                         .collect();
                     let row = self.stored(heap, n)?;
                     let up = vacuum::update(
@@ -150,6 +151,7 @@ impl<R: Runtime> Stmt<'_, R> {
                             ctor: c,
                             tid: up.tid,
                             row: n.clone(),
+                            stored: row,
                         });
                     }
                 }
@@ -170,6 +172,7 @@ impl<R: Runtime> Stmt<'_, R> {
                         ctor: *d,
                         tid: at,
                         row: n.clone(),
+                        stored: row,
                     });
                 }
                 (None, Some((d, n))) => {
@@ -183,6 +186,7 @@ impl<R: Runtime> Stmt<'_, R> {
                         ctor: *d,
                         tid,
                         row: n.clone(),
+                        stored: row,
                     });
                 }
             }
@@ -238,17 +242,11 @@ impl<R: Runtime> Stmt<'_, R> {
         let xid = self.tx.writer()?;
         let pager = &self.db.pager;
         for (id, ix) in &r.indexes {
-            let Some(at) = ix.at.get(&w.ctor) else {
+            let types = self.store.key_types(*id);
+            let Some(key) = ix.keys.key(w.ctor, &w.stored, &types)? else {
                 continue;
             };
             let stored = &self.db.indexes[id];
-            let types = self.store.key_types(*id);
-            let fields = w.row.fields()?;
-            let key: Vec<Value> = at
-                .iter()
-                .zip(&types)
-                .map(|(i, t)| to_key(t, &fields[*i]))
-                .collect::<Result<_, _>>()?;
             let ctor_id = *stored
                 .ctors
                 .iter()

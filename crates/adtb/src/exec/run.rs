@@ -299,14 +299,17 @@ impl<R: Runtime> Ctx<R> {
     }
 
     /// Returns the visible version the chain from `tid` reaches in `route`'s heap, with its
-    /// TID, when its key fields still equal `key`.
+    /// TID, when its key fields still equal `key`. The plan rechecks every other key element.
     fn fetch(&self, route: &Fetch, tid: Tid, key: &[Val]) -> Result<Option<(Tid, Val)>, Error> {
         let Some((at, row)) = self.store.fetch(route.heap, tid)? else {
             return Ok(None);
         };
         let v = self.row(route.heap, &row);
         let fields = v.fields()?;
-        let same = key.iter().zip(&route.key_at).all(|(k, i)| &fields[*i] == k);
+        let same = key
+            .iter()
+            .zip(&route.key_at)
+            .all(|(k, i)| i.is_none_or(|i| &fields[i] == k));
         Ok(same.then_some((at, v)))
     }
 
