@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 200
 summary: "milestone 2 (reference interpreter and conformance runner) has not exited: no runner and no first suite"
+closed: 2026-10-26
 depends-on:
   - typing-soundness-test
   - reference-span-text
@@ -44,3 +45,9 @@ landing), `conformance-runner.md`, `textual-value-syntax.md`,
 `reference-unicode-text.md`, and the spec rulings the interpreter
 needs: `spec-textual-specials.md`, `spec-take-negative.md`,
 `spec-field-eval-order.md`, `spec-constraint-naming-gaps.md`.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: exited
+
+Every dependency is resolved. The conformance suite passes on the reference interpreter, and the soundness test finds every result and stored row inhabits its checked type over the spec corpus and generated terms. All 1748 tests pass at vyoxxlpm.
