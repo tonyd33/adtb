@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 100
 summary: "milestone 1, the front end: the spec corpus does not yet pass and no fuzzer has run"
+closed: 2026-10-26
 depends-on:
   - migration-forward-refs
   - anon-sum-join-fix-writes
@@ -52,3 +53,9 @@ Open on 2026-10-25:
   `spec-impl4-followups.md`, `spec-fix-and-totality-rulings.md`,
   `surface-only.md`;
 - `front-end-fuzzer.md`.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: exited
+
+Every dependency is resolved. The spec corpus parses and checks every example, and the front end fuzzer runs in the suite. All 1668 tests pass at tlvmqsut.
