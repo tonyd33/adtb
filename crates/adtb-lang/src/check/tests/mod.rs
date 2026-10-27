@@ -108,17 +108,47 @@ fn on_small_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     })
 }
 
+fn rel_id(s: &Schema, name: &str) -> RelId {
+    RelId(
+        s.relations
+            .iter()
+            .position(|r| r.name == name)
+            .expect("a relation of that name") as u32,
+    )
+}
+
 /// Checks ad hoc `text` against the running schema, its parameters given as `name: Type`.
 fn adhoc(params: &[(&str, &str)], text: &str) -> Result<(Schema, Adhoc), Vec<String>> {
+    adhoc_in(&[], params, text)
+}
+
+/// A registered query of a live bundle: family, version, query name and parameter types.
+type RegisteredQuery<'a> = (&'a str, &'a str, &'a str, &'a [&'a str]);
+
+/// Checks ad hoc `text` as [`adhoc`] does, knowing the registered queries `bundles`.
+fn adhoc_in(
+    bundles: &[RegisteredQuery],
+    params: &[(&str, &str)],
+    text: &str,
+) -> Result<(Schema, Adhoc), Vec<String>> {
     let s = schema("").expect("the running schema builds");
     let mut tys = BTreeMap::new();
+    let mut known = Bundles::default();
     {
         let c = Checker::new(&s, Visible::all(&s), Context::Adhoc);
-        for (name, t) in params {
+        let resolve = |t: &str| {
             let parsed = parse_type(t, Options::default()).ok().expect("a type");
-            tys.insert(
-                name.to_string(),
-                c.resolve_type(&parsed).expect("a known type"),
+            c.resolve_type(&parsed).expect("a known type")
+        };
+        for (name, t) in params {
+            tys.insert(name.to_string(), resolve(t));
+        }
+        for (family, version, query, ps) in bundles {
+            known.insert(
+                family,
+                version,
+                query,
+                ps.iter().map(|t| resolve(t)).collect(),
             );
         }
     }
@@ -135,7 +165,7 @@ fn adhoc(params: &[(&str, &str)], text: &str) -> Result<(Schema, Adhoc), Vec<Str
     }
     let items = parsed.ok().expect("parsed");
     let program = check_schema(&s).expect("the schema checks");
-    match check_adhoc(&s, &program, &items, &tys) {
+    match check_adhoc_recording(&s, &program, &items, &tys, &known, None) {
         Ok(a) => Ok((s, a)),
         Err(ds) => Err(ds.into_iter().map(|d| d.message).collect()),
     }

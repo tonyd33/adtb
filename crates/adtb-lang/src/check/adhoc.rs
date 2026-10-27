@@ -1,27 +1,228 @@
 use super::*;
 use crate::ast::{
-    AdhocItem, Command, CtorScope, CtorSel, ExplainTarget, Grant, PeerStmt, Privilege, RelationRef,
-    RestorePoint, Revoke, RoleStmt, TempDecl,
+    AdhocItem, BundleName, CallArgs, CtorScope, CtorSel, ExplainTarget, Grant, PeerStmt, Privilege,
+    RelationRef, Revoke, RoleStmt, TempDecl,
 };
+use crate::kernel::alpha_equal;
+
+/// The registered queries of the live bundles, by bundle and query name.
+#[derive(Clone, Debug, Default)]
+pub struct Bundles {
+    queries: BTreeMap<(String, String), BTreeMap<String, Vec<Ty>>>,
+}
+
+impl Bundles {
+    /// Records that bundle `family-version` registers query `name` over parameters of types `params`.
+    pub fn insert(&mut self, family: &str, version: &str, name: &str, params: Vec<Ty>) {
+        self.queries
+            .entry((family.to_string(), version.to_string()))
+            .or_default()
+            .insert(name.to_string(), params);
+    }
+
+    /// Returns the parameter types of registered query `query` of `bundle`, `None` knowing no bundle.
+    fn params<'b>(
+        bundles: Option<&'b Bundles>,
+        bundle: &BundleName,
+        query: &str,
+    ) -> Result<&'b [Ty], String> {
+        let name = format!("{}-{}", bundle.family, bundle.version);
+        let queries = bundles
+            .and_then(|b| {
+                b.queries
+                    .get(&(bundle.family.clone(), bundle.version.clone()))
+            })
+            .ok_or_else(|| format!("bundle `{name}` is not registered"))?;
+        queries
+            .get(query)
+            .map(Vec::as_slice)
+            .ok_or_else(|| format!("bundle `{name}` registers no query `{query}`"))
+    }
+}
+
+/// A checked command; each of its terms is in the arena of the text it was checked in.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Command {
+    Explain {
+        analyze: bool,
+        target: Explained,
+    },
+    /// A key of `catalog::plans`.
+    PinPlan(Tm),
+    /// A key of `catalog::plans`.
+    UnpinPlan(Tm),
+    /// A key of `sys::calls`.
+    CancelCall(Tm),
+    /// A key of `sys::sessions`.
+    TerminateSession(Tm),
+    Vacuum(RelId),
+    Verify(Option<RelId>),
+    /// `index` is the position of the one index rebuilt among the relation's indexes, `None` for every index.
+    Reindex {
+        relation: RelId,
+        index: Option<usize>,
+        online: bool,
+    },
+    Compact,
+    FinalizeUpgrade,
+    RetireBundle(BundleName),
+    SupersedeBundle(BundleName, BundleName),
+    /// `value` is a record of the fields of constructor `setting` of `catalog::Setting`.
+    SetSetting {
+        setting: u32,
+        value: Tm,
+    },
+    /// `source` is a set.
+    Export {
+        source: Tm,
+        path: String,
+        sums_text: bool,
+    },
+    RegisterBundle(String),
+    ApplyMigrations(Vec<String>),
+    PrintSchema,
+    /// `through` is an `I64`.
+    ArchiveAudit {
+        through: Tm,
+        path: String,
+    },
+    RotateKek(String),
+    RotateDek,
+    DestroyDek(u64),
+    Dump {
+        path: String,
+        encrypt: Option<Tm>,
+    },
+    Restore {
+        from: String,
+        to: String,
+        point: Option<RestorePoint>,
+    },
+    Backup {
+        path: String,
+        incremental: bool,
+    },
+}
+
+/// What `explain` explains.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Explained {
+    /// A query, a write or a `transact` block, as the term the same text gives as a statement.
+    Statement(Tm),
+    /// A call of a registered query, each argument at its parameter's type.
+    Registered {
+        bundle: BundleName,
+        query: String,
+        args: Vec<Tm>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RestorePoint {
+    BeforeVersion(u64),
+    /// An `Instant`.
+    AtInstant(Tm),
+    /// A `Position`.
+    AtPosition(Tm),
+}
+
+impl Command {
+    /// Returns the terms of the command, in field order.
+    pub fn terms(&self) -> Vec<Tm> {
+        self.clone().terms_mut().into_iter().map(|t| *t).collect()
+    }
+
+    /// Returns this command with its terms replaced by `ts`, given in the order of [`Command::terms`].
+    pub fn with_terms(&self, ts: &[Tm]) -> Command {
+        let mut c = self.clone();
+        let slots = c.terms_mut();
+        assert_eq!(slots.len(), ts.len(), "one term per term position");
+        for (slot, t) in slots.into_iter().zip(ts) {
+            *slot = *t;
+        }
+        c
+    }
+
+    fn terms_mut(&mut self) -> Vec<&mut Tm> {
+        match self {
+            Command::Explain { target, .. } => match target {
+                Explained::Statement(t) => vec![t],
+                Explained::Registered { args, .. } => args.iter_mut().collect(),
+            },
+            Command::PinPlan(t)
+            | Command::UnpinPlan(t)
+            | Command::CancelCall(t)
+            | Command::TerminateSession(t)
+            | Command::SetSetting { value: t, .. }
+            | Command::Export { source: t, .. }
+            | Command::ArchiveAudit { through: t, .. }
+            | Command::Dump {
+                encrypt: Some(t), ..
+            }
+            | Command::Restore {
+                point: Some(RestorePoint::AtInstant(t) | RestorePoint::AtPosition(t)),
+                ..
+            } => vec![t],
+            Command::Vacuum(_)
+            | Command::Verify(_)
+            | Command::Reindex { .. }
+            | Command::Compact
+            | Command::FinalizeUpgrade
+            | Command::RetireBundle(_)
+            | Command::SupersedeBundle(..)
+            | Command::RegisterBundle(_)
+            | Command::ApplyMigrations(_)
+            | Command::PrintSchema
+            | Command::RotateKek(_)
+            | Command::RotateDek
+            | Command::DestroyDek(_)
+            | Command::Dump { encrypt: None, .. }
+            | Command::Restore {
+                point: Some(RestorePoint::BeforeVersion(_)) | None,
+                ..
+            }
+            | Command::Backup { .. } => Vec::new(),
+        }
+    }
+}
+
+/// A checked command of ad hoc text and its place among the text's statements.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdhocCommand {
+    /// The number of terms of [`Adhoc::items`] the text holds before the command.
+    pub at: usize,
+    pub command: Command,
+    pub span: Span,
+}
+
+/// A checked ad hoc item.
+pub(super) enum Checked {
+    Statement(Tm),
+    Command(Command, Span),
+    Nothing,
+}
 
 impl Checker<'_> {
-    /// Checks one ad hoc item; returns its term when it is a query, a write or a `transact` block.
-    pub(super) fn adhoc_item(&mut self, item: &AdhocItem) -> R<Option<Tm>> {
+    /// Checks one ad hoc item; returns its term when it is a query, a write or a `transact` block,
+    /// and its checked form when it is a command.
+    pub(super) fn adhoc_item(&mut self, item: &AdhocItem) -> R<Checked> {
         match item {
-            AdhocItem::Expr(e) => self.statement(e).map(|o| Some(o.tm)),
-            AdhocItem::Write(w) => self.write(w).map(Some),
-            AdhocItem::Transact(b) => self.transact(b, None).map(|o| Some(o.tm)),
-            AdhocItem::Command(c, span) => self.command(c, *span).map(|()| None),
+            AdhocItem::Expr(e) => self.statement(e).map(|o| Checked::Statement(o.tm)),
+            AdhocItem::Write(w) => self.write(w).map(Checked::Statement),
+            AdhocItem::Transact(b) => self.transact(b, None).map(|o| Checked::Statement(o.tm)),
+            AdhocItem::Command(c, span) => {
+                self.command(c, *span).map(|c| Checked::Command(c, *span))
+            }
             AdhocItem::Grant(Grant { privileges, .. })
             | AdhocItem::Revoke(Revoke { privileges, .. }) => {
                 for p in privileges {
                     self.deployment_privilege(p)?;
                 }
-                Ok(None)
+                Ok(Checked::Nothing)
             }
-            AdhocItem::Role(r, _) => self.role_stmt(r).map(|()| None),
+            AdhocItem::Role(r, _) => self.role_stmt(r).map(|()| Checked::Nothing),
             AdhocItem::Peer(PeerStmt::Map { .. } | PeerStmt::Unmap { .. }, _)
-            | AdhocItem::Temp(_) => Ok(None),
+            | AdhocItem::Temp(_) => Ok(Checked::Nothing),
         }
     }
 
@@ -220,7 +421,7 @@ impl Checker<'_> {
         Ty::Key { rel, ctors: None }
     }
 
-    fn set_setting(&mut self, name: &ast::Ident, value: &ast::Expr) -> R<()> {
+    fn set_setting(&mut self, name: &ast::Ident, value: &ast::Expr) -> R<Command> {
         let m = self
             .schema
             .module_named("catalog")
@@ -239,51 +440,185 @@ impl Checker<'_> {
             .map(|f| (f.name.clone(), f.ty.clone()))
             .collect();
         fields.sort_by(|a, b| a.0.cmp(&b.0));
-        self.check(value, &Ty::Record(fields)).map(|_| ())
+        let value = self.check(value, &Ty::Record(fields))?.tm;
+        Ok(Command::SetSetting { setting: c, value })
     }
 
-    fn command(&mut self, c: &Command, span: Span) -> R<()> {
-        match c {
-            Command::Explain { target, .. } => match target {
-                ExplainTarget::Registered { .. } => Ok(()),
-                ExplainTarget::Expr(e) => self.statement(e).map(|_| ()),
-                ExplainTarget::Write(w) => self.write(w).map(|_| ()),
-                ExplainTarget::Transact(b) => self.transact(b, None).map(|_| ()),
+    fn explained(&mut self, target: &ExplainTarget) -> R<Explained> {
+        let statement = match target {
+            ExplainTarget::Registered {
+                bundle,
+                query,
+                args,
+            } => return self.registered_call(bundle, query, args),
+            ExplainTarget::Expr(e) => self.statement(e)?.tm,
+            ExplainTarget::Write(w) => self.write(w)?,
+            ExplainTarget::Transact(b) => self.transact(b, None)?.tm,
+        };
+        Ok(Explained::Statement(statement))
+    }
+
+    fn registered_call(
+        &mut self,
+        bundle: &BundleName,
+        query: &ast::Ident,
+        args: &CallArgs,
+    ) -> R<Explained> {
+        let params = Bundles::params(self.bundles, bundle, &query.text)
+            .map_err(|e| diag(bundle.span.to(query.span), e))?;
+        let CallArgs::List(es) = args else {
+            return Err(diag(
+                query.span,
+                "a registered query takes its arguments as a list",
+            ));
+        };
+        if es.len() != params.len() {
+            return Err(diag(
+                query.span,
+                format!(
+                    "`{}-{}::{}` takes {} argument{}, given {}",
+                    bundle.family,
+                    bundle.version,
+                    query.text,
+                    params.len(),
+                    if params.len() == 1 { "" } else { "s" },
+                    es.len()
+                ),
+            ));
+        }
+        let args = es
+            .iter()
+            .zip(params)
+            .map(|(e, ty)| self.check(e, ty).map(|o| o.tm))
+            .collect::<R<Vec<Tm>>>()?;
+        Ok(Explained::Registered {
+            bundle: bundle.clone(),
+            query: query.text.clone(),
+            args,
+        })
+    }
+
+    /// Returns the position among `rel`'s indexes of the one whose fields are `fields` over `scope`.
+    fn reindexed(
+        &mut self,
+        rel: RelId,
+        fields: &[ast::Expr],
+        scope: &CtorScope,
+        span: Span,
+    ) -> R<usize> {
+        let sel = match scope {
+            CtorScope::One(c) => CtorSel::One(c.clone()),
+            CtorScope::Many(cs) => CtorSel::Many(cs.clone()),
+        };
+        let set = self.relation_sel(rel, &sel).map_err(|e| diag(span, e))?;
+        let schema = self.schema;
+        let r = schema.relation(rel);
+        let normal = |s: Option<CtorSet>| s.and_then(|s| schema.normalize_ctors(r.elem_def, s));
+        let want = normal(Some(set.clone()));
+        let ctx = std::mem::replace(&mut self.ctx, Context::Schema);
+        let found = self.declared_position(rel, Some(set), fields, |ix| {
+            ix.fields.len() == fields.len() && normal(ix.scope.clone()) == want
+        });
+        self.ctx = ctx;
+        found?.ok_or_else(|| {
+            diag(
+                span,
+                format!(
+                    "`{}` declares no index or unique with these fields in this constructor set",
+                    r.name
+                ),
+            )
+        })
+    }
+
+    /// Checks `fields` at `scope`; returns the position of the first index of `rel` that `candidate`
+    /// admits and whose fields check to the same terms as `fields`.
+    fn declared_position(
+        &mut self,
+        rel: RelId,
+        scope: Option<CtorSet>,
+        fields: &[ast::Expr],
+        candidate: impl Fn(&crate::schema::IndexDef) -> bool,
+    ) -> R<Option<usize>> {
+        self.index_terms(rel, scope, fields)?;
+        for (i, ix) in self.schema.relation(rel).indexes.iter().enumerate() {
+            if candidate(ix) {
+                let ours = self.index_terms(rel, ix.scope.clone(), fields)?;
+                if self.declared_index(rel, i, &ours) {
+                    return Ok(Some(i));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn index_terms(
+        &mut self,
+        rel: RelId,
+        scope: Option<CtorSet>,
+        fields: &[ast::Expr],
+    ) -> R<Vec<IndexField>> {
+        fields
+            .iter()
+            .map(|e| self.index_field(rel, scope.clone(), e))
+            .collect()
+    }
+
+    /// Returns whether `fields`, checked in this text, are the fields of `rel`'s `i`-th index.
+    fn declared_index(&self, rel: RelId, i: usize, fields: &[IndexField]) -> bool {
+        let program = self
+            .program
+            .expect("ad hoc text is checked against the program of its schema");
+        fields.iter().enumerate().all(|(k, f)| {
+            program.index_fields.get(&(rel, i, k)).is_some_and(|d| {
+                d.path == f.path && alpha_equal(&self.terms, f.value, &program.terms, d.value)
+            })
+        })
+    }
+
+    fn command(&mut self, c: &ast::Command, span: Span) -> R<Command> {
+        let key = |c: &mut Self, e: &ast::Expr, module: &str, name: &str| -> R<Tm> {
+            let ty = c.engine_key(module, name);
+            c.check(e, &ty).map(|o| o.tm)
+        };
+        Ok(match c {
+            ast::Command::Explain { analyze, target } => Command::Explain {
+                analyze: *analyze,
+                target: self.explained(target)?,
             },
-            Command::PinPlan(e) | Command::UnpinPlan(e) => {
-                let plan = self.engine_key("catalog", "plans");
-                self.check(e, &plan).map(|_| ())
+            ast::Command::PinPlan(e) => Command::PinPlan(key(self, e, "catalog", "plans")?),
+            ast::Command::UnpinPlan(e) => Command::UnpinPlan(key(self, e, "catalog", "plans")?),
+            ast::Command::CancelCall(e) => Command::CancelCall(key(self, e, "sys", "calls")?),
+            ast::Command::TerminateSession(e) => {
+                Command::TerminateSession(key(self, e, "sys", "sessions")?)
             }
-            Command::CancelCall(e) => {
-                let call = self.engine_key("sys", "calls");
-                self.check(e, &call).map(|_| ())
-            }
-            Command::TerminateSession(e) => {
-                let session = self.engine_key("sys", "sessions");
-                self.check(e, &session).map(|_| ())
-            }
-            Command::SetSetting(name, value) => self.set_setting(name, value),
-            Command::Vacuum(r) | Command::Verify(Some(r)) => self.relation_named(r).map(|_| ()),
-            Command::Reindex {
-                relation, index, ..
+            ast::Command::SetSetting(name, value) => self.set_setting(name, value)?,
+            ast::Command::Vacuum(r) => Command::Vacuum(self.relation_named(r)?),
+            ast::Command::Verify(r) => Command::Verify(match r {
+                Some(r) => Some(self.relation_named(r)?),
+                None => None,
+            }),
+            ast::Command::Reindex {
+                relation,
+                index,
+                online,
             } => {
                 let rel = self.relation_named(relation)?;
-                if let Some((fields, scope)) = index {
-                    let sel = match scope {
-                        CtorScope::One(c) => CtorSel::One(c.clone()),
-                        CtorScope::Many(cs) => CtorSel::Many(cs.clone()),
-                    };
-                    let set = self.relation_sel(rel, &sel).map_err(|e| diag(span, e))?;
-                    let ctx = std::mem::replace(&mut self.ctx, Context::Schema);
-                    let r = fields
-                        .iter()
-                        .try_for_each(|e| self.index_field(rel, Some(set.clone()), e).map(|_| ()));
-                    self.ctx = ctx;
-                    r?;
+                let index = match index {
+                    Some((fields, scope)) => Some(self.reindexed(rel, fields, scope, span)?),
+                    None => None,
+                };
+                Command::Reindex {
+                    relation: rel,
+                    index,
+                    online: online.unwrap_or(true),
                 }
-                Ok(())
             }
-            Command::Export { source, .. } => {
+            ast::Command::Export {
+                source,
+                path,
+                sums_text,
+            } => {
                 let o = self.synth(source)?;
                 if self.elem_ty(&o.ty).is_none() {
                     return Err(diag(
@@ -291,42 +626,63 @@ impl Checker<'_> {
                         format!("`export` takes a set, found {}", self.show(&o.ty)),
                     ));
                 }
-                Ok(())
-            }
-            Command::ArchiveAudit { through, .. } => {
-                self.check(through, &Ty::Base(Base::I64)).map(|_| ())
-            }
-            Command::Dump { encrypt, .. } => match encrypt {
-                Some(k) => self.synth(k).map(|_| ()),
-                None => Ok(()),
-            },
-            Command::Restore { point, .. } => match point {
-                Some(RestorePoint::AtInstant(e)) => {
-                    self.check(e, &Ty::Base(Base::Instant)).map(|_| ())
+                Command::Export {
+                    source: o.tm,
+                    path: path.clone(),
+                    sums_text: *sums_text,
                 }
-                Some(RestorePoint::AtPosition(e)) => {
-                    let position = Ty::Data {
-                        def: self.schema.prelude_type("Position"),
-                        args: Vec::new(),
-                        ctors: None,
-                    };
-                    self.check(e, &position).map(|_| ())
-                }
-                Some(RestorePoint::BeforeVersion(_)) | None => Ok(()),
+            }
+            ast::Command::ArchiveAudit { through, path } => Command::ArchiveAudit {
+                through: self.check(through, &Ty::Base(Base::I64))?.tm,
+                path: path.clone(),
             },
-            Command::Verify(None)
-            | Command::Compact
-            | Command::FinalizeUpgrade
-            | Command::RetireBundle(_)
-            | Command::SupersedeBundle(..)
-            | Command::RegisterBundle(_)
-            | Command::ApplyMigrations(_)
-            | Command::PrintSchema
-            | Command::RotateKek(_)
-            | Command::RotateDek
-            | Command::DestroyDek(_)
-            | Command::Backup { .. } => Ok(()),
-        }
+            ast::Command::Dump { path, encrypt } => Command::Dump {
+                path: path.clone(),
+                encrypt: match encrypt {
+                    Some(k) => Some(self.synth(k)?.tm),
+                    None => None,
+                },
+            },
+            ast::Command::Restore { from, to, point } => Command::Restore {
+                from: from.clone(),
+                to: to.clone(),
+                point: match point {
+                    Some(p) => Some(self.restore_point(p)?),
+                    None => None,
+                },
+            },
+            ast::Command::Compact => Command::Compact,
+            ast::Command::FinalizeUpgrade => Command::FinalizeUpgrade,
+            ast::Command::RetireBundle(b) => Command::RetireBundle(b.clone()),
+            ast::Command::SupersedeBundle(b, by) => Command::SupersedeBundle(b.clone(), by.clone()),
+            ast::Command::RegisterBundle(f) => Command::RegisterBundle(f.clone()),
+            ast::Command::ApplyMigrations(fs) => Command::ApplyMigrations(fs.clone()),
+            ast::Command::PrintSchema => Command::PrintSchema,
+            ast::Command::RotateKek(uri) => Command::RotateKek(uri.clone()),
+            ast::Command::RotateDek => Command::RotateDek,
+            ast::Command::DestroyDek(n) => Command::DestroyDek(*n),
+            ast::Command::Backup { path, incremental } => Command::Backup {
+                path: path.clone(),
+                incremental: *incremental,
+            },
+        })
+    }
+
+    fn restore_point(&mut self, p: &ast::RestorePoint) -> R<RestorePoint> {
+        Ok(match p {
+            ast::RestorePoint::BeforeVersion(v) => RestorePoint::BeforeVersion(*v),
+            ast::RestorePoint::AtInstant(e) => {
+                RestorePoint::AtInstant(self.check(e, &Ty::Base(Base::Instant))?.tm)
+            }
+            ast::RestorePoint::AtPosition(e) => {
+                let position = Ty::Data {
+                    def: self.schema.prelude_type("Position"),
+                    args: Vec::new(),
+                    ctors: None,
+                };
+                RestorePoint::AtPosition(self.check(e, &position)?.tm)
+            }
+        })
     }
 }
 

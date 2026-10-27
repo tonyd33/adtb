@@ -16,8 +16,8 @@ terms and share nothing else.
 | Entry point | Returns |
 | --- | --- |
 | `check_schema(schema)` | `Program`: one arena holding the term of every function, constraint, check, newtype domain, default, computed field, index field, retag delete action (§4.6) and user-defined aggregate of the schema |
-| `check_adhoc(schema, program, items, params)` | `Adhoc`: an arena with one term per query, write and `transact` statement, in the order of the items, and the variable of each ad hoc parameter; commands, grants, revokes and role, peer and temp relation statements are checked and have no term |
-| `check_adhoc_recording(schema, program, items, params, record)` | as `check_adhoc`; with `record`, also appends each schema object the text names, by span, as `schema_refs` reports them, those of items before a refused one included |
+| `check_adhoc(schema, program, items, params)` | `Adhoc`: an arena with one term per query, write and `transact` statement, in the order of the items, one checked `Command` per command, and the variable of each ad hoc parameter; grants, revokes and role, peer and temp relation statements are checked and have no term; no bundle is known |
+| `check_adhoc_recording(schema, program, items, params, bundles, record)` | as `check_adhoc`, an `explain B::q(args)` checked against `bundles`; with `record`, also appends each schema object the text names, by span, as `schema_refs` reports them, those of items before a refused one included |
 | `check_query(schema, program, module, q)` | `Query`: an arena with the term of one registered query |
 | `check_txn(schema, program, module, t)` | `Txn`: an arena with the term of one registered transaction |
 
@@ -51,6 +51,34 @@ Postconditions on a `Program`:
 
 Postconditions on an `Adhoc`:
 
+- `Adhoc.commands` holds one `AdhocCommand` per command, in the
+  order of the text. Its `at` is the number of terms of `Adhoc.items`
+  the text holds before it, and its `command` holds a term in the
+  `Adhoc` arena for each expression of the command, which
+  `Command::terms` lists: the statement `explain` explains, as the
+  term the same text has as a statement, or the arguments of the
+  registered call it explains; the key `pin plan`, `unpin plan`,
+  `cancel call` and `terminate session` take, at the key type of
+  `catalog::plans`, `sys::calls` or `sys::sessions`; the value of `set
+  setting`, a record of the fields of its `catalog::Setting`
+  constructor; the source of `export`, a set; the bound of `archive
+  audit`, an `I64`; the key of `dump ... encrypt`; and the point of
+  `restore ... at`, an `Instant` or a `Position`. Every such term keeps
+  the postconditions below, and the acceptance rules a statement's
+  term is held to, so it normalises, plans and runs as a statement's
+  does. `norm::adhoc` normalises them into `NormalAdhoc.commands`.
+- A relation a command names is its `RelId`. `Reindex.index` is the
+  position among the relation's indexes, uniques included, of the one
+  index `reindex r index (f) in S` names: the one whose fields check to
+  the same terms as `f`, up to the names of variables, over the same
+  constructor set as `S`. Text naming no declared index is refused.
+  `Reindex.online` is `true` unless the text writes `offline`.
+- `explain B::q(args)` names a query `bundles` registers for bundle
+  `B`; text naming a bundle or a query `bundles` does not hold is
+  refused, as are arguments that do not check against the query's
+  parameter types, which the caller gives in the types of `schema`.
+  The checked form names the bundle and the query, with one term per
+  argument.
 - When the text declares temp relations, `Adhoc.temps` is the schema
   its terms name declarations of: `schema` with one `RelationDef` per
   temp relation appended to `schema.relations`, in declaration order,
@@ -420,8 +448,10 @@ field keeps its `path`. An aggregate's `step`, `merge` and `finish`
 are each a body over their variables, `None` for the aggregate when
 one of its parts is not first-order. `NormalQuery` is a
 registered query's or transaction's body over its parameter variables;
-one with no parameters has one variable of type `()`. `Error` is never
-returned for a body the checker accepted.
+one with no parameters has one variable of type `()`. `NormalAdhoc`
+holds the normal form of each item and, in `commands`, each command of
+`Adhoc.commands` at the same place, its terms replaced by their normal
+forms. `Error` is never returned for a body the checker accepted.
 
 Postconditions on a normal form, beyond those of §1:
 

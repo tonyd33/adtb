@@ -86,7 +86,9 @@ fn root_site(schema: &Schema, root: Root) -> (FileId, Span) {
             let d = &schema.aggregates[i];
             (d.file, d.decl.span)
         }
-        Root::Item(_) | Root::Query => unreachable!("a schema has no ad hoc items or queries"),
+        Root::Item(_) | Root::Command(_) | Root::Query => {
+            unreachable!("a schema has no ad hoc items or queries")
+        }
     }
 }
 
@@ -160,7 +162,12 @@ pub(crate) fn schema_diags(schema: &Schema, p: &Program) -> Vec<FileDiag> {
 fn volatile_free(schema: &Schema, terms: &Terms, root: Root, t: Tm) -> Result<(), String> {
     let what = match root {
         Root::Function(f) if schema.function(f).stored.is_some() => "a stored view",
-        Root::Function(_) | Root::Aggregate(_) | Root::Domain(_) | Root::Item(_) | Root::Query => {
+        Root::Function(_)
+        | Root::Aggregate(_)
+        | Root::Domain(_)
+        | Root::Item(_)
+        | Root::Command(_)
+        | Root::Query => {
             return Ok(());
         }
         Root::Constraint(_) => "a constraint",
@@ -179,32 +186,37 @@ fn volatile_free(schema: &Schema, terms: &Terms, root: Root, t: Tm) -> Result<()
 
 const VOLATILE_WRITE: &str = "a write must not depend on a volatile relation: not in its target, its predicate, its values, or a value or condition it depends on";
 
-/// Normalises checked ad hoc text and applies the acceptance rules over its items' normal forms, `spans` giving each item's span.
+/// Normalises checked ad hoc text and applies the acceptance rules over the normal forms of its
+/// items and its commands' terms, `spans` giving each item's span.
 pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span]) -> Vec<Diag> {
     let n = match norm::adhoc(schema, p, a) {
         Ok(n) => n,
         Err(e) => {
-            let Root::Item(i) = e.root else {
-                unreachable!("ad hoc errors are at items")
+            let span = match e.root {
+                Root::Item(i) => spans[i],
+                Root::Command(i) => a.commands[i].span,
+                _ => unreachable!("ad hoc errors are at items or commands"),
             };
-            return vec![Diag::new(spans[i], e.message)];
+            return vec![Diag::new(span, e.message)];
         }
     };
-    n.items
-        .iter()
-        .zip(spans)
-        .filter_map(|(t, span)| {
-            accept(&n.terms, &[*t])
-                .and_then(|()| {
-                    if write_depends_on_volatile(schema, &n.terms, *t) {
-                        Err(VOLATILE_WRITE.to_string())
-                    } else {
-                        Ok(())
-                    }
-                })
-                .err()
-                .map(|m| Diag::new(*span, m))
+    let accepted = |t: Tm| {
+        accept(&n.terms, &[t]).and_then(|()| {
+            if write_depends_on_volatile(schema, &n.terms, t) {
+                Err(VOLATILE_WRITE.to_string())
+            } else {
+                Ok(())
+            }
         })
+    };
+    let items = n.items.iter().zip(spans).map(|(t, span)| (*t, *span));
+    let commands = n
+        .commands
+        .iter()
+        .flat_map(|c| c.command.terms().into_iter().map(|t| (t, c.span)));
+    items
+        .chain(commands)
+        .filter_map(|(t, span)| accepted(t).err().map(|m| Diag::new(span, m)))
         .collect()
 }
 

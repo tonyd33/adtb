@@ -2077,6 +2077,8 @@ constructor of its set.
   the rebuild ends.
 
 ```adt
+-- with:
+--   relation identities : Identity key id generate uuidv7 unique (email) in EmailPass unique (gid) in Google unique (sub) in Apple index (user) in (Google | Apple)
 reindex identities index (user) in (Google | Apple) online
 ```
 

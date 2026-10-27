@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use crate::analysis::Totality;
-use crate::check::{Adhoc, Program, Query, Txn};
+use crate::check::{Adhoc, AdhocCommand, Program, Query, Txn};
 use crate::kernel::{Agg, IndexField, Kind, Node, Terms, Tm, Var};
 use crate::schema::Schema;
 use crate::types::*;
@@ -40,6 +40,8 @@ pub struct NormalAggregate {
 pub struct NormalAdhoc {
     pub terms: Terms,
     pub items: Vec<Tm>,
+    /// Each command, its terms normalised.
+    pub commands: Vec<AdhocCommand>,
     pub params: BTreeMap<String, Var>,
 }
 
@@ -64,6 +66,8 @@ pub enum Root {
     IndexField(RelId, usize, usize),
     Aggregate(usize),
     Item(usize),
+    /// A term of the command at this position among the text's commands.
+    Command(usize),
     Query,
 }
 
@@ -169,9 +173,23 @@ pub fn adhoc(schema: &Schema, p: &Program, a: &Adhoc) -> Result<NormalAdhoc, Err
     for (i, t) in a.items.iter().enumerate() {
         items.push(at(Root::Item(i), n.root(*t))?);
     }
+    let mut commands = Vec::with_capacity(a.commands.len());
+    for (i, c) in a.commands.iter().enumerate() {
+        let terms = c
+            .command
+            .terms()
+            .into_iter()
+            .map(|t| at(Root::Command(i), n.root(t)))
+            .collect::<Result<Vec<Tm>, Error>>()?;
+        commands.push(AdhocCommand {
+            command: c.command.with_terms(&terms),
+            ..c.clone()
+        });
+    }
     Ok(NormalAdhoc {
         terms: n.out,
         items,
+        commands,
         params,
     })
 }

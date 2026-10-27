@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::schema::Generator;
 use crate::types::*;
 
@@ -567,4 +569,100 @@ impl Kind {
             },
         }
     }
+
+    /// Returns this kind with every variable it binds or reads replaced by its image under `f`, `f`
+    /// called on them in field order.
+    pub fn with_vars(&self, f: &mut impl FnMut(Var) -> Var) -> Kind {
+        let mut k = self.clone();
+        match &mut k {
+            Kind::Var(x)
+            | Kind::Lam(x, _)
+            | Kind::Let(x, ..)
+            | Kind::LetBang(x, ..)
+            | Kind::For(x, ..)
+            | Kind::Agg { var: x, .. }
+            | Kind::Group { var: x, .. }
+            | Kind::Top { var: x, .. }
+            | Kind::Present { var: x, .. } => *x = f(*x),
+            Kind::Case { arms, .. } => arms.iter_mut().for_each(|(_, x, _)| *x = f(*x)),
+            Kind::Fix(binds, _) => binds.iter_mut().for_each(|(x, _)| *x = f(*x)),
+            Kind::Upsert { old, new, .. } => {
+                *old = f(*old);
+                *new = f(*new);
+            }
+            Kind::Const(_)
+            | Kind::Prim(..)
+            | Kind::Record(_)
+            | Kind::Field(..)
+            | Kind::Ctor { .. }
+            | Kind::If(..)
+            | Kind::App(..)
+            | Kind::Call { .. }
+            | Kind::Caller
+            | Kind::Key(_)
+            | Kind::KeyOf(..)
+            | Kind::Deref { .. }
+            | Kind::Tag(_)
+            | Kind::Try(_)
+            | Kind::Rel(..)
+            | Kind::Transition(..)
+            | Kind::Restrict(..)
+            | Kind::EmptySet
+            | Kind::Singleton(_)
+            | Kind::Union(..)
+            | Kind::IsEmpty(_)
+            | Kind::Exists(_)
+            | Kind::Fresh(..)
+            | Kind::Only(_)
+            | Kind::At { .. }
+            | Kind::Reject(_)
+            | Kind::Unreachable
+            | Kind::Skip
+            | Kind::Insert(..)
+            | Kind::Delete(..)
+            | Kind::Replace(..)
+            | Kind::Rejects { .. }
+            | Kind::Par(_)
+            | Kind::Fail(_)
+            | Kind::Block(..)
+            | Kind::Transact(..) => {}
+        }
+        k
+    }
+}
+
+/// Returns whether term `x` of `xs` and term `y` of `ys` are the same term up to the names of
+/// their variables: alike in kind, type and every subterm, each variable of one standing for
+/// exactly one of the other.
+pub fn alpha_equal(xs: &Terms, x: Tm, ys: &Terms, y: Tm) -> bool {
+    let mut there = BTreeMap::new();
+    let mut back = BTreeMap::new();
+    let mut stack = vec![(x, y)];
+    while let Some((x, y)) = stack.pop() {
+        let (nx, ny) = (xs.node(x), ys.node(y));
+        if nx.ty != ny.ty {
+            return false;
+        }
+        let (mut vx, mut vy) = (Vec::new(), Vec::new());
+        let blank = |k: &Kind, vs: &mut Vec<Var>| {
+            let k = k.with_vars(&mut |v| {
+                vs.push(v);
+                Var(0)
+            });
+            k.with_children(&vec![Tm(0); k.children().len()])
+        };
+        if blank(&nx.kind, &mut vx) != blank(&ny.kind, &mut vy) {
+            return false;
+        }
+        for (a, b) in vx.into_iter().zip(vy) {
+            if *there.entry(a).or_insert(b) != b || *back.entry(b).or_insert(a) != a {
+                return false;
+            }
+            if xs.var_info(a).ty != ys.var_info(b).ty {
+                return false;
+            }
+        }
+        stack.extend(nx.kind.children().into_iter().zip(ny.kind.children()));
+    }
+    true
 }

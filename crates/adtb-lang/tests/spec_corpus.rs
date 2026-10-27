@@ -9,7 +9,7 @@ use adtb_lang::ast::{
     QueryDecl, TxnDecl,
 };
 use adtb_lang::check::{
-    Checker, Context, Program, check_adhoc, check_query, check_schema, check_txn,
+    Bundles, Checker, Context, Program, check_adhoc_recording, check_query, check_schema, check_txn,
 };
 use adtb_lang::evolve::{Source, SourceDecl};
 use adtb_lang::parse::{Options, parse_example, parse_schema, parse_type};
@@ -607,7 +607,38 @@ fn render_in(src: &Source, entries: &[Entry], b: Option<&Block>, d: &FileDiag) -
 }
 
 /// Type checks block `b` against the running schema `part`.
-fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<String>> {
+/// A registered query some example declares: its bundle's family and version, and its declaration.
+type Registered = (String, String, QueryDecl);
+
+/// Returns every registered query the examples declare under a bundle header.
+fn registered_queries(blocks: &[Block]) -> Vec<Registered> {
+    let mut out = Vec::new();
+    for b in blocks.iter().filter(|b| b.is_adt() && b.info != FRAGMENT) {
+        let Ok(items) = parse_example(&b.text, Options { elisions: true }).ok() else {
+            continue;
+        };
+        let mut bundle = None;
+        for item in items {
+            match item {
+                ExampleItem::BundleHeader(h) => bundle = Some(h.name),
+                ExampleItem::BundleItem(BundleItem::Query(q)) => {
+                    if let Some(n) = &bundle {
+                        out.push((n.family.clone(), n.version.clone(), q));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+fn check_block(
+    b: &Block,
+    part: &[Entry],
+    prelude: &[Entry],
+    registered: &[Registered],
+) -> Result<(), Vec<String>> {
     let items = parse_example(&b.text, Options { elisions: true })
         .ok()
         .map_err(|ds| {
@@ -735,8 +766,15 @@ fn check_block(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<(), Vec<S
             )),
         }
     }
+    let mut bundles = Bundles::default();
+    for (family, version, q) in registered {
+        let params: Result<Vec<_>, _> = q.params.iter().map(|p| c.resolve_type(&p.ty)).collect();
+        if let Ok(params) = params {
+            bundles.insert(family, version, &q.name.text, params);
+        }
+    }
     if !adhoc.is_empty()
-        && let Err(ds) = check_adhoc(&schema, &program, &adhoc, &params)
+        && let Err(ds) = check_adhoc_recording(&schema, &program, &adhoc, &params, &bundles, None)
     {
         errs.extend(ds.iter().map(|d| at(b, d.span, &d.message)));
     }
@@ -785,6 +823,7 @@ fn spec_examples_check() {
     let base = running::version_12(&blocks);
     let parts = running::parts(&blocks, &base);
     let prelude = prelude_entries();
+    let registered = registered_queries(&blocks);
     let mut failures = Vec::new();
     let mut checked = 0;
     let mut fragments = 0;
@@ -795,7 +834,7 @@ fn spec_examples_check() {
         }
         checked += 1;
         let part = parts.get(b.file.as_str()).unwrap_or(&base);
-        if let Err(es) = check_block(b, part, &prelude) {
+        if let Err(es) = check_block(b, part, &prelude, &registered) {
             failures.push(format!("{}:{}:\n  {}", b.file, b.line, es.join("\n  ")));
         }
     }

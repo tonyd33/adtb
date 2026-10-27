@@ -216,7 +216,6 @@ fn explain_checks_its_statement() {
     adhoc_accepts(&[], "explain from u in users select u");
     adhoc_accepts(&[], "explain analyze insert users { name: \"a\" }");
     adhoc_accepts(&[], "explain transact insert users { name: \"a\" }");
-    adhoc_accepts(&[], "explain web-2.4::login_key(1)");
     adhoc_refuses(
         &[],
         "explain from u in nosuch select u",
@@ -672,4 +671,441 @@ fn nested_parenthesised_writes_parse_in_linear_attempts() {
         " then 1 else 2) == 1".repeat(n)
     );
     assert!(parse_adhoc(&text, Options::default()).ok().is_ok());
+}
+
+const LOGINS: &str = r"
+type Login { id: Key logins, user: Key users }
+  = Password { email: Text }
+  | Sso      { issuer: Text, subject: Text }
+  | Passkey  { credential: Bytes }
+relation logins : Login
+  key id generate sequence
+  unique (lower(email)) in Password
+  index (user) in (Sso | Passkey)
+  index (issuer, subject) in Sso
+  index (user)
+set Federated of logins = Sso | Passkey
+
+type Settled = Open | Paid { receipt: Text }
+type Bill = { id: Key bills, state: Settled }
+relation bills : Bill key id generate sequence unique (state.Paid.receipt)
+";
+
+fn reindexed(text: &str) -> Result<Option<usize>, Vec<String>> {
+    let a = adhoc_over(LOGINS, text)?;
+    match a.commands.as_slice() {
+        [
+            AdhocCommand {
+                command: Command::Reindex { index, .. },
+                ..
+            },
+        ] => Ok(*index),
+        cs => panic!("{text}\nis not one reindex: {cs:?}"),
+    }
+}
+
+fn reindexes(text: &str, index: usize) {
+    match reindexed(text) {
+        Ok(found) => assert_eq!(Some(index), found, "{text}"),
+        Err(errs) => panic!("{text}\nrefused: {errs:?}"),
+    }
+}
+
+fn reindex_refused(text: &str, needle: &str) {
+    match reindexed(text) {
+        Ok(found) => panic!("{text}\naccepted as index {found:?}; expected {needle:?}"),
+        Err(errs) => assert!(
+            errs.iter().any(|e| e.contains(needle)),
+            "{text}\nno error containing {needle:?} in {errs:?}"
+        ),
+    }
+}
+
+const NO_INDEX: &str = "declares no index or unique with these fields";
+
+#[test]
+fn reindex_names_a_declared_index_by_its_clause() {
+    reindexes("reindex logins index (lower(email)) in Password", 0);
+    reindexes("reindex logins index (user) in (Sso | Passkey)", 1);
+    reindexes("reindex logins index (issuer, subject) in Sso", 2);
+    reindexes(
+        "reindex logins index (user) in (Password | Sso | Passkey)",
+        3,
+    );
+    reindexes("reindex bills index (state.Paid.receipt) in Bill", 0);
+}
+
+#[test]
+fn reindex_matches_the_clause_however_it_is_spaced_or_grouped() {
+    reindexes("reindex logins index ( lower( email ) ) in Password", 0);
+    reindexes("reindex logins index ((user)) in (Passkey | Sso)", 1);
+    reindexes("reindex logins index (user) in Federated", 1);
+    reindexes(
+        "reindex logins\n  index (issuer,subject)\n  in Sso offline",
+        2,
+    );
+}
+
+#[test]
+fn reindex_refuses_an_index_that_is_not_declared() {
+    reindex_refused("reindex logins index (email) in Password", NO_INDEX);
+    reindex_refused("reindex logins index (upper(email)) in Password", NO_INDEX);
+    reindex_refused("reindex logins index (user) in Sso", NO_INDEX);
+    reindex_refused("reindex logins index (user) in (Password | Sso)", NO_INDEX);
+    reindex_refused("reindex logins index (subject, issuer) in Sso", NO_INDEX);
+    reindex_refused("reindex logins index (issuer) in Sso", NO_INDEX);
+    reindex_refused("reindex logins index (id) in Sso", NO_INDEX);
+    reindex_refused("reindex logins index (subject) in Sso", NO_INDEX);
+}
+
+#[test]
+fn reindex_still_type_checks_its_fields_and_scope() {
+    reindex_refused("reindex logins index (email) in Sso", "email");
+    reindex_refused(
+        "reindex logins index (user) in Nope",
+        "neither a constructor",
+    );
+    reindex_refused("reindex logins index (nosuch) in Sso", "nosuch");
+}
+
+#[test]
+fn reindex_without_a_clause_rebuilds_every_index() {
+    let a = adhoc_over(LOGINS, "reindex logins").expect("checks");
+    let [AdhocCommand { command, .. }] = a.commands.as_slice() else {
+        panic!("one command: {:?}", a.commands);
+    };
+    let s = schema(LOGINS).expect("the schema builds");
+    let logins = rel_id(&s, "logins");
+    assert_eq!(
+        &Command::Reindex {
+            relation: logins,
+            index: None,
+            online: true,
+        },
+        command
+    );
+}
+
+#[test]
+fn reindex_is_online_unless_offline_is_written() {
+    let online = |text: &str| match adhoc_over(LOGINS, text)
+        .expect("checks")
+        .commands
+        .as_slice()
+    {
+        [
+            AdhocCommand {
+                command: Command::Reindex { online, .. },
+                ..
+            },
+        ] => *online,
+        cs => panic!("{text}\nis not one reindex: {cs:?}"),
+    };
+    assert!(online("reindex logins index (user) in Federated"));
+    assert!(online("reindex logins online"));
+    assert!(!online("reindex logins index (user) in Federated offline"));
+}
+
+const LOGIN_KEY: RegisteredQuery = ("web", "2.4", "login_key", &["Key users"]);
+
+fn explained(params: &[(&str, &str)], text: &str) -> (Adhoc, Explained) {
+    match adhoc_in(&[LOGIN_KEY], params, text) {
+        Ok((_, a)) => match a.commands.as_slice() {
+            [
+                AdhocCommand {
+                    command: Command::Explain { target, .. },
+                    ..
+                },
+            ] => {
+                let target = target.clone();
+                (a, target)
+            }
+            cs => panic!("{text}\nis not one explain: {cs:?}"),
+        },
+        Err(errs) => panic!("{text}\nrefused: {errs:?}"),
+    }
+}
+
+fn explain_refused(bundles: &[RegisteredQuery], text: &str, needle: &str) {
+    match adhoc_in(bundles, &[], text) {
+        Ok(_) => panic!("{text}\naccepted; expected an error containing {needle:?}"),
+        Err(errs) => assert!(
+            errs.iter().any(|e| e.contains(needle)),
+            "{text}\nno error containing {needle:?} in {errs:?}"
+        ),
+    }
+}
+
+#[test]
+fn explain_of_a_registered_call_checks_against_its_bundle() {
+    let (a, target) = explained(&[], "explain analyze web-2.4::login_key(users.key(3))");
+    let Explained::Registered {
+        bundle,
+        query,
+        args,
+    } = target
+    else {
+        panic!("a registered call: {target:?}");
+    };
+    assert_eq!(
+        ("web", "2.4"),
+        (bundle.family.as_str(), bundle.version.as_str())
+    );
+    assert_eq!("login_key", query);
+    let [arg] = args.as_slice() else {
+        panic!("one argument: {args:?}");
+    };
+    assert!(matches!(a.terms.ty(*arg), Ty::Key { .. }));
+    assert!(a.items.is_empty());
+    explained(&[("u", "Key users")], "explain web-2.4::login_key(u)");
+}
+
+#[test]
+fn explain_of_a_call_of_an_unknown_bundle_is_refused() {
+    explain_refused(
+        &[],
+        "explain web-2.4::login_key(users.key(3))",
+        "bundle `web-2.4` is not registered",
+    );
+    explain_refused(
+        &[LOGIN_KEY],
+        "explain web-2.5::login_key(users.key(3))",
+        "bundle `web-2.5` is not registered",
+    );
+    explain_refused(
+        &[LOGIN_KEY],
+        "explain web-2.4::logout(users.key(3))",
+        "bundle `web-2.4` registers no query `logout`",
+    );
+}
+
+#[test]
+fn explain_of_a_registered_call_checks_its_arguments() {
+    explain_refused(
+        &[LOGIN_KEY],
+        "explain web-2.4::login_key(3)",
+        "expected Key users",
+    );
+    explain_refused(
+        &[LOGIN_KEY],
+        "explain web-2.4::login_key(users.key(3), 4)",
+        "`web-2.4::login_key` takes 1 argument, given 2",
+    );
+    explain_refused(
+        &[LOGIN_KEY],
+        "explain web-2.4::login_key()",
+        "`web-2.4::login_key` takes 1 argument, given 0",
+    );
+    explain_refused(
+        &[LOGIN_KEY],
+        "explain web-2.4::login_key(nosuch)",
+        "supplies no value",
+    );
+}
+
+#[test]
+fn explain_keeps_the_term_its_statement_would_have() {
+    for text in [
+        "from u in users select u.name",
+        "insert users { name: \"a\" }",
+        "transact insert users { name: \"a\" }",
+    ] {
+        let (_, statement) = adhoc(&[], text).expect("checks");
+        let (a, target) = explained(&[], &format!("explain {text}"));
+        let Explained::Statement(t) = target else {
+            panic!("{text}\nis not a statement: {target:?}");
+        };
+        assert_eq!(
+            statement.terms.ty(statement.items[0]),
+            a.terms.ty(t),
+            "{text}"
+        );
+        assert!(a.items.is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn explain_analyze_of_a_write_is_held_to_the_rules_of_writes() {
+    adhoc_refuses(
+        &[],
+        "explain analyze insert users from (from s in sys::sessions select { name: s.principal })",
+        "a write must not depend on a volatile relation",
+    );
+    adhoc_accepts(&[], "explain from s in sys::sessions select s.principal");
+}
+
+fn command_of(params: &[(&str, &str)], text: &str) -> (Schema, Adhoc, Command) {
+    let (s, a) = adhoc(params, text).unwrap_or_else(|e| panic!("{text}\nrefused: {e:?}"));
+    let [AdhocCommand { command, .. }] = a.commands.as_slice() else {
+        panic!("{text}\nis not one command: {:?}", a.commands);
+    };
+    let command = command.clone();
+    (s, a, command)
+}
+
+#[test]
+fn every_command_keeps_the_terms_of_its_expressions() {
+    type Case<'a> = (&'a [(&'a str, &'a str)], &'a str, &'a str);
+    let cases: &[Case] = &[
+        (
+            &[],
+            "pin plan catalog::plans.key(8812)",
+            "Key catalog::plans",
+        ),
+        (
+            &[("p", "Key catalog::plans")],
+            "unpin plan p",
+            "Key catalog::plans",
+        ),
+        (&[], "cancel call sys::calls.key(812)", "Key sys::calls"),
+        (
+            &[("s", "Key sys::sessions")],
+            "terminate session s",
+            "Key sys::sessions",
+        ),
+        (
+            &[],
+            "set setting VacuumBudget = { io: 0.2, cpu: 0.5 }",
+            "{ cpu: F64, io: F64 }",
+        ),
+        (
+            &[],
+            "export (from i in identities.Google select i) to \"google.parquet\"",
+            "Set Identity.Google",
+        ),
+        (
+            &[],
+            "archive audit through 991204 to \"audit.arrow\"",
+            "I64",
+        ),
+        (&[("k", "Text")], "dump to \"d\" encrypt k", "Text"),
+        (
+            &[("t", "Instant")],
+            "restore from \"d\" to \"f\" at instant t",
+            "Instant",
+        ),
+        (
+            &[("p", "Position")],
+            "restore from \"d\" to \"f\" at position p",
+            "Position",
+        ),
+        (&[], "explain from u in users select u.name", "Set Text"),
+    ];
+    for (params, text, ty) in cases {
+        let (s, a, command) = command_of(params, text);
+        let terms = command.terms();
+        let [t] = terms.as_slice() else {
+            panic!("{text}\nhas not one term: {terms:?}");
+        };
+        assert_eq!(*ty, s.show_ty(a.terms.ty(*t)), "{text}");
+        assert!(a.items.is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn commands_with_no_expression_keep_what_they_name() {
+    let (s, _, c) = command_of(&[], "vacuum users");
+    assert_eq!(Command::Vacuum(rel_id(&s, "users")), c);
+    let (s, _, c) = command_of(&[], "verify identities");
+    assert_eq!(Command::Verify(Some(rel_id(&s, "identities"))), c);
+    assert_eq!(Command::Verify(None), command_of(&[], "verify").2);
+    assert_eq!(Command::Compact, command_of(&[], "compact").2);
+    assert_eq!(
+        Command::FinalizeUpgrade,
+        command_of(&[], "finalize upgrade").2
+    );
+    assert_eq!(Command::PrintSchema, command_of(&[], "print schema").2);
+    assert_eq!(Command::RotateDek, command_of(&[], "rotate key dek").2);
+    assert_eq!(
+        Command::RotateKek("kms://k".into()),
+        command_of(&[], "rotate key kek \"kms://k\"").2
+    );
+    assert_eq!(
+        Command::DestroyDek(3),
+        command_of(&[], "destroy key dek 3").2
+    );
+    assert_eq!(
+        Command::Backup {
+            path: "b".into(),
+            incremental: true
+        },
+        command_of(&[], "backup to \"b\" incremental").2
+    );
+    assert_eq!(
+        Command::RegisterBundle("web-2.4.adt".into()),
+        command_of(&[], "register bundle \"web-2.4.adt\"").2
+    );
+    assert_eq!(
+        Command::ApplyMigrations(vec!["0013.adt".into(), "0014.adt".into()]),
+        command_of(&[], "apply migrations \"0013.adt\" \"0014.adt\"").2
+    );
+    assert!(matches!(
+        command_of(&[], "retire bundle web-2.4").2,
+        Command::RetireBundle(b) if b.family == "web" && b.version == "2.4"
+    ));
+    assert!(matches!(
+        command_of(&[], "supersede bundle web-2.3 by web-2.4").2,
+        Command::SupersedeBundle(a, b) if a.version == "2.3" && b.version == "2.4"
+    ));
+    assert_eq!(
+        Command::Restore {
+            from: "d".into(),
+            to: "f".into(),
+            point: Some(RestorePoint::BeforeVersion(12)),
+        },
+        command_of(&[], "restore from \"d\" to \"f\" before version 12").2
+    );
+    assert_eq!(
+        Command::Dump {
+            path: "d".into(),
+            encrypt: None
+        },
+        command_of(&[], "dump to \"d\"").2
+    );
+    assert!(matches!(
+        command_of(&[], "set setting StatementLimit = { limit: None }").2,
+        Command::SetSetting { .. }
+    ));
+}
+
+#[test]
+fn commands_keep_their_place_among_the_statements() {
+    let (_, a) = adhoc(
+        &[],
+        "compact\nfrom u in users select u.name\nvacuum users\nexplain from p in posts select p\nfrom p in posts select p.title\nprint schema",
+    )
+    .expect("checks");
+    assert_eq!(2, a.items.len());
+    let places: Vec<usize> = a.commands.iter().map(|c| c.at).collect();
+    assert_eq!(vec![0, 1, 1, 2], places);
+}
+
+#[test]
+fn command_terms_normalise_with_the_statements() {
+    let (s, a) = adhoc_in(
+        &[LOGIN_KEY],
+        &[("u", "Key users")],
+        "from x in users select x.name
+export (from i in identities where i.user == u select display_name(i)) to \"x\"
+explain web-2.4::login_key(u)",
+    )
+    .expect("checks");
+    let program = check_schema(&s).expect("the schema checks");
+    let n = crate::norm::adhoc(&s, &program, &a).expect("normalises");
+    assert_eq!(1, n.items.len());
+    assert_eq!(2, n.commands.len());
+    for (c, d) in a.commands.iter().zip(&n.commands) {
+        assert_eq!(c.at, d.at);
+        assert_eq!(c.command.terms().len(), d.command.terms().len());
+        for (t, u) in c.command.terms().into_iter().zip(d.command.terms()) {
+            assert_eq!(a.terms.ty(t), n.terms.ty(u));
+        }
+    }
+    let Command::Export { source, .. } = n.commands[0].command else {
+        panic!("an export: {:?}", n.commands[0]);
+    };
+    assert!(
+        !n.terms.any(source, |k| matches!(k, Kind::Call { .. })),
+        "a normal export source inlines its calls"
+    );
 }

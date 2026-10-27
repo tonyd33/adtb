@@ -125,15 +125,6 @@ fn schema_no(extra: &str, needle: &str) {
     refuses(&format!("{WRITES}\n{extra}"), needle);
 }
 
-fn rel_id(s: &Schema, name: &str) -> RelId {
-    RelId(
-        s.relations
-            .iter()
-            .position(|r| r.name == name)
-            .expect("a relation of that name") as u32,
-    )
-}
-
 /// The named field of a constructor term.
 fn field(terms: &Terms, t: Tm, name: &str) -> Tm {
     let Kind::Ctor { fields, .. } = terms.kind(t) else {

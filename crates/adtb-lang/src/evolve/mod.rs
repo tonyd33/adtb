@@ -1621,6 +1621,7 @@ impl Cx<'_> {
             &program,
             &[ast::AdhocItem::Write(w.clone())],
             &BTreeMap::new(),
+            &check::Bundles::default(),
             self.noted.is_some().then_some(&mut refs),
         )?;
         self.note(&schema, &refs);

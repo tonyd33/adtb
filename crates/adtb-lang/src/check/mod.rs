@@ -22,6 +22,7 @@ mod write;
 #[cfg(test)]
 mod tests;
 
+pub use adhoc::{AdhocCommand, Bundles, Command, Explained, RestorePoint};
 pub use ty::{join, subtype};
 pub use write::{Txn, check_txn};
 
@@ -160,6 +161,10 @@ pub struct Checker<'a> {
     row_fields: BTreeMap<Var, (TypeId, Option<CtorSet>, String)>,
     /// The temp relations of ad hoc text not yet declared at the item being checked.
     hidden: BTreeSet<RelId>,
+    /// The checked schema, which ad hoc text names the index fields of.
+    program: Option<&'a Program>,
+    /// The registered queries ad hoc text may explain.
+    bundles: Option<&'a Bundles>,
 }
 
 impl std::fmt::Debug for Checker<'_> {
@@ -194,6 +199,8 @@ impl<'a> Checker<'a> {
             carry: None,
             row_fields: BTreeMap::new(),
             hidden: BTreeSet::new(),
+            program: None,
+            bundles: None,
         }
     }
 
@@ -820,11 +827,14 @@ fn reads_only_row(terms: &Terms, t: Tm, program: &Program, seen: &mut BTreeSet<F
         .all(|c| reads_only_row(terms, c, program, seen))
 }
 
-/// Checked ad hoc text: one kernel term per item.
+/// Checked ad hoc text: one kernel term per statement and one checked form per command.
 #[derive(Debug)]
 pub struct Adhoc {
     pub terms: Terms,
+    /// The term of each query, write and `transact` block, in the order of the text.
     pub items: Vec<Tm>,
+    /// Each command, in the order of the text.
+    pub commands: Vec<AdhocCommand>,
     pub params: BTreeMap<String, Var>,
     /// The schema the terms were checked against when the text declares temp relations: the given
     /// schema with each temp relation appended to its relations in module [`TEMP_MODULE`].
@@ -841,29 +851,34 @@ impl Adhoc {
 /// The module that holds the temp relations of ad hoc text; no module can take its name.
 pub const TEMP_MODULE: &str = "temp";
 
-/// Type checks ad hoc text, its free names typed by `params`, against `program`, the checked `schema`.
+/// Type checks ad hoc text, its free names typed by `params`, against `program`, the checked `schema`,
+/// knowing no bundle.
 pub fn check_adhoc(
     schema: &Schema,
     program: &Program,
     items: &[ast::AdhocItem],
     params: &BTreeMap<String, Ty>,
 ) -> Result<Adhoc, Vec<Diag>> {
-    check_adhoc_recording(schema, program, items, params, None)
+    check_adhoc_recording(schema, program, items, params, &Bundles::default(), None)
 }
 
-/// Type checks ad hoc text as [`check_adhoc`] does. With `record`, appends the schema objects the text
-/// names, as [`schema_refs`] reports them, those of items before a refused one included.
+/// Type checks ad hoc text as [`check_adhoc`] does, its `explain` of a registered call against
+/// `bundles`. With `record`, appends the schema objects the text names, as [`schema_refs`] reports
+/// them, those of items before a refused one included.
 pub fn check_adhoc_recording(
     schema: &Schema,
     program: &Program,
     items: &[ast::AdhocItem],
     params: &BTreeMap<String, Ty>,
+    bundles: &Bundles,
     record: Option<&mut Vec<(Span, Ref)>>,
 ) -> Result<Adhoc, Vec<Diag>> {
     let mut diags = Vec::new();
     let temps = adhoc::temp_relations(schema, items, &mut diags);
     let checked = temps.as_ref().map_or(schema, |(s, _)| s);
     let mut c = Checker::new(checked, Visible::all(checked), Context::Adhoc);
+    c.program = Some(program);
+    c.bundles = Some(bundles);
     if record.is_some() {
         c.refs = Some(RefCell::new(Vec::new()));
     }
@@ -876,6 +891,7 @@ pub fn check_adhoc_recording(
     c.hidden = declared.iter().flatten().copied().collect();
     let mut declared = declared.into_iter();
     let mut out = Vec::new();
+    let mut commands = Vec::new();
     for item in items {
         if let ast::AdhocItem::Temp(_) = item {
             if let Some(Some(r)) = declared.next() {
@@ -884,8 +900,13 @@ pub fn check_adhoc_recording(
             continue;
         }
         match c.adhoc_item(item) {
-            Ok(Some(tm)) => out.push(tm),
-            Ok(None) => {}
+            Ok(adhoc::Checked::Statement(tm)) => out.push(tm),
+            Ok(adhoc::Checked::Command(command, span)) => commands.push(AdhocCommand {
+                at: out.len(),
+                command,
+                span,
+            }),
+            Ok(adhoc::Checked::Nothing) => {}
             Err(d) => diags.push(d),
         }
     }
@@ -899,6 +920,7 @@ pub fn check_adhoc_recording(
         params: c.params.iter().map(|(n, (v, _))| (n.clone(), *v)).collect(),
         terms: c.terms,
         items: out,
+        commands,
         temps: temps.map(|(s, _)| s),
     };
     let schema = adhoc.schema(schema);
