@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: feature
 priority: 795
 summary: seed loops in the API and real-runtime fault tests assert without the seed
+closed: 2026-10-26
 tags:
   - quality
 ---
@@ -18,3 +19,9 @@ Assertions inside `for seed in` loops without the seed in their message:
 - crates/adtb-sim/tests/io_contract/faults.rs:299, 301, 304, 309 (the unforced names test) and 342, 345, 347 (the directory test).
 
 Fix: add `"seed {seed}"` to each message.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed as xtksymmw.

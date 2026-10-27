@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: feature
 priority: 793
 summary: "the language's implied-index rule and the write path's reference fields each decide which fields are references, by different tests"
+closed: 2026-10-26
 tags:
   - quality
 ---
@@ -20,3 +21,9 @@ Two functions decide which fields of a relation's sum are references:
 When the two tests disagree, a reference field either has no implied index, which `referring` (crates/adtb/src/write/eval.rs) reports as an internal error at the first delete, or an index nothing reads. A rename of a field to match another index's leading field could also pick the wrong index.
 
 Fix: give adtb-lang one pub function returning each reference field of a relation with its holding constructors and whether it is optional; build `implied_indexes` and `refs` from it, take the index id from the catalog's implied ids rather than a name search, and move `self_key` out of `textual`.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed as xtksymmw.
