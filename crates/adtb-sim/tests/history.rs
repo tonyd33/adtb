@@ -1140,3 +1140,94 @@ fn a_history_heap_write_that_fails_on_a_page_is_a_page_error() {
         "{e:?}"
     );
 }
+
+#[test]
+fn store_scan_sees_history_pages_created_during_its_current_walk() {
+    let mut sim = Sim::new(19, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut db, _) = Db::create(rt.clone(), LONG);
+        let ops: Vec<_> = (0..1000).map(|k| (k, Some(k))).collect();
+        db.write(&ops);
+        let (reader, snapshot) = db.txns.take(Scope::Every).expect("snapshot");
+        db.txns.release(reader);
+        let last = db.live[&999];
+        let first = db.live[&0];
+        db.write(&[(0, None), (999, None)]);
+        assert!(
+            db.past_heap
+                .pages(&db.pager)
+                .expect("history pages")
+                .is_empty()
+        );
+        let heap = Arc::new(db.heap.take().expect("current heap"));
+        let past = Arc::new(db.past_heap);
+        let stored = |heap: Arc<Heap>| adtb::exec::StoredHeap {
+            heap,
+            row: row_type(),
+            sum: vec![adtb::heap::HeapNo(HEAP)],
+        };
+        let id = adtb::plan::HeapId(u64::from(HEAP));
+        let store = adtb::exec::Store {
+            pager: db.pager.clone(),
+            reads: Arc::new(adtb::exec::AtSnapshot {
+                rt,
+                pager: db.pager.clone(),
+                txns: Arc::new(db.txns),
+                snapshot,
+                reader: None,
+                serial: None,
+            }),
+            heaps: BTreeMap::from([(id, stored(heap.clone()))]),
+            indexes: BTreeMap::new(),
+            history: adtb::exec::Histories {
+                heaps: BTreeMap::from([(id, stored(past.clone()))]),
+                indexes: BTreeMap::new(),
+            },
+            past: None,
+        };
+        let mut moved = false;
+        let mut rows = Vec::new();
+        store
+            .scan(id, 1, |batch| {
+                rows.extend((0..batch.len()).map(|r| pair(&batch.row(r))));
+                if !moved {
+                    for tid in [first, last] {
+                        let version = heap.read(&db.pager, tid).expect("read").expect("version");
+                        assert!(
+                            past.copy_version(&db.pager, &heap, &version)
+                                .expect("copy")
+                                .is_some()
+                        );
+                    }
+                    heap.prune(
+                        &db.pager,
+                        Pid(last.page()),
+                        |_, h| {
+                            Ok(if h.xmax != 0 {
+                                adtb::heap::Fate::Remove
+                            } else {
+                                adtb::heap::Fate::Keep
+                            })
+                        },
+                        &[last.slot()],
+                        false,
+                    )
+                    .expect("prune moved last row");
+                    moved = true;
+                }
+                Ok(std::ops::ControlFlow::Continue(()))
+            })
+            .expect("historical scan");
+        rows.sort_unstable();
+        assert_eq!(rows.len(), 1000);
+        assert_eq!(rows, (0..1000).map(|k| (k, k)).collect::<Vec<_>>());
+        let mut calls = 0;
+        store
+            .scan(id, 1, |_| {
+                calls += 1;
+                Ok(std::ops::ControlFlow::Break(()))
+            })
+            .expect("stopped scan");
+        assert_eq!(calls, 1);
+    });
+}

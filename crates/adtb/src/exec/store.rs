@@ -248,28 +248,35 @@ impl<R: Runtime> Store<R> {
         let schema = BatchSchema::of_heap(&h.row);
         let mut b = BatchBuilder::new(schema.clone());
         let mut deleted: BTreeMap<(u64, u64), Vec<Vec<Value>>> = BTreeMap::new();
-        let history = past.heap.pages(&self.pager)?;
-        let current = pages.iter().map(|p| (&h.heap, *p, true));
-        for (heap, pid, now) in current.chain(history.iter().map(|p| (&past.heap, *p, false))) {
-            let mut versions = Vec::new();
-            heap.scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
-            for v in versions {
-                if !self.reads.sees(&v.header)? {
-                    continue;
-                }
-                if Xid(v.header.xmax) != Xid::NONE {
-                    let same = deleted.entry((v.header.xmin, v.header.xmax)).or_default();
-                    if now {
-                        same.push(v.row.clone());
-                    } else if same.contains(&v.row) {
+        for now in [true, false] {
+            let history;
+            let (heap, pages) = if now {
+                (&h.heap, pages)
+            } else {
+                history = past.heap.pages(&self.pager)?;
+                (&past.heap, history.as_slice())
+            };
+            for &pid in pages {
+                let mut versions = Vec::new();
+                heap.scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
+                for v in versions {
+                    if !self.reads.sees(&v.header)? {
                         continue;
                     }
-                }
-                b.push_row(&v.row);
-                if b.len() == rows {
-                    let full = std::mem::replace(&mut b, BatchBuilder::new(schema.clone()));
-                    if each(full.finish())?.is_break() {
-                        return Ok(());
+                    if Xid(v.header.xmax) != Xid::NONE {
+                        let same = deleted.entry((v.header.xmin, v.header.xmax)).or_default();
+                        if now {
+                            same.push(v.row.clone());
+                        } else if same.contains(&v.row) {
+                            continue;
+                        }
+                    }
+                    b.push_row(&v.row);
+                    if b.len() == rows {
+                        let full = std::mem::replace(&mut b, BatchBuilder::new(schema.clone()));
+                        if each(full.finish())?.is_break() {
+                            return Ok(());
+                        }
                     }
                 }
             }
