@@ -1,12 +1,17 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use adtb_lang::ast::FnBody;
 use adtb_lang::kernel::{Const, Kind, Terms, Tm};
 use adtb_lang::schema::Schema;
-use adtb_lang::types::{Base, Ty};
+use adtb_lang::types::{Base, FnId, Ty};
+
+use crate::catalog::layout::batch_type;
 
 use super::frame::{Frame, Sel};
+use super::host::{HostCall, Hosts};
 use super::prim::{self, Op};
+use super::store::conv;
 use super::types::{At, base, ctors, field, key_fields, repr};
 use super::value::{F32, F64, Val};
 use super::{Error, Fault};
@@ -90,6 +95,12 @@ pub enum Ins {
     Caller {
         dst: u32,
     },
+    /// Calls a host function once for every selected row.
+    Host {
+        call: Box<HostCall>,
+        args: Vec<Opd>,
+        dst: u32,
+    },
     /// Rejects the statement's input with the text of `msg` at the first selected row.
     Reject {
         msg: Opd,
@@ -161,6 +172,7 @@ pub struct Shared {
     pub caller: Option<Val>,
     /// The `Fault` constructor of each fault, by `Fault as usize`.
     pub fault_ctors: Vec<u32>,
+    pub hosts: Arc<Hosts>,
 }
 
 impl Shared {
@@ -450,6 +462,25 @@ impl Code {
                     let out = sel.iter().map(|&r| (r, c.clone())).collect();
                     Code::put(regs, len, *dst, out);
                 }
+                Ins::Host { call, args, dst } => {
+                    let rows: Vec<Vec<&Val>> = sel
+                        .iter()
+                        .map(|&r| args.iter().map(|o| self.get(*o, f, regs, r)).collect())
+                        .collect();
+                    match call.call(&sh.hosts, &rows)? {
+                        Ok(vals) => {
+                            let out = sel.iter().copied().zip(vals).collect();
+                            Code::put(regs, len, *dst, out);
+                        }
+                        Err(fault) => {
+                            let since = catch.faults.len();
+                            for &r in sel.iter() {
+                                catch.fault(r, fault)?;
+                            }
+                            catch.drop_faulted(since, sel);
+                        }
+                    }
+                }
                 Ins::Reject { msg } => {
                     if let Some(&r) = sel.first() {
                         let Val::Text(t) = self.get(*msg, f, regs, r) else {
@@ -528,6 +559,29 @@ impl<'a> Compiler<'a> {
         });
         self.codes.insert(t, code.clone());
         Ok(code)
+    }
+
+    /// Returns the call of host function `func` with `args` for a result of type `ty`.
+    ///
+    /// Fails with `Unsupported` for a function of another kind and for one whose argument or
+    /// result types no batch column holds.
+    fn host(&self, func: FnId, args: &[Tm], ty: &Ty) -> Result<HostCall, Error> {
+        let def = self.schema.function(func);
+        let unsupported = || Error::Unsupported(format!("a call of `{}`", def.name));
+        let FnBody::Host { name, .. } = &def.body else {
+            return Err(unsupported());
+        };
+        let column = |t: &Ty| batch_type(self.schema, t).ok_or_else(unsupported);
+        Ok(HostCall {
+            function: def.name.clone(),
+            symbol: name.clone(),
+            params: args
+                .iter()
+                .map(|x| column(self.terms.ty(*x)))
+                .collect::<Result<_, _>>()?,
+            result: column(ty)?,
+            conv: conv(self.schema, ty),
+        })
     }
 
     fn block(&self, e: &mut Emit, t: Tm) -> Result<Block, Error> {
@@ -732,6 +786,20 @@ impl<'a> Compiler<'a> {
             Kind::Caller => {
                 let dst = e.reg();
                 ins.push(Ins::Caller { dst });
+                Opd::Reg(dst)
+            }
+            Kind::Call { func, args, .. } => {
+                let call = self.host(*func, args, ty)?;
+                let args = args
+                    .iter()
+                    .map(|x| self.expr(e, ins, *x))
+                    .collect::<Result<_, _>>()?;
+                let dst = e.reg();
+                ins.push(Ins::Host {
+                    call: Box::new(call),
+                    args,
+                    dst,
+                });
                 Opd::Reg(dst)
             }
             Kind::Reject(m) => {

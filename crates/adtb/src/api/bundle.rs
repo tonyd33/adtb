@@ -16,17 +16,12 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 
 use super::error::{Error, RejectReason};
+use super::settings::Settings;
 use super::text::{DynRows, rows};
 use super::{Engine, OpenError, corrupt};
 
 /// The edition of the specification this engine implements.
 pub(super) const EDITION: &str = "2026-10";
-
-const HOUR: i64 = 3_600_000_000;
-/// The lease of a bundle whose header states none.
-const DEFAULT_LEASE: i64 = 30 * 24 * HOUR;
-/// How long past its lease the primary still serves a bundle.
-const LEASE_GRACE: i64 = HOUR;
 
 /// The header of a bundle file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,9 +73,9 @@ impl Header {
         Ok(header)
     }
 
-    /// Returns the lease duration, in microseconds.
-    fn lease(&self) -> i64 {
-        self.lease.unwrap_or(DEFAULT_LEASE)
+    /// Returns the lease duration, in microseconds, under the file settings `s`.
+    fn lease(&self, s: &Settings) -> i64 {
+        self.lease.unwrap_or(s.lease)
     }
 }
 
@@ -124,31 +119,33 @@ pub(super) struct Row {
 }
 
 impl Row {
-    /// Returns whether the lease has run out at `now`, with the primary's grace.
-    fn expired(&self, now: i64) -> bool {
-        now >= self.renewed + self.header.lease() + LEASE_GRACE
+    /// Returns whether the lease has run out at `now` under the file settings `s`, with the
+    /// primary's grace.
+    fn expired(&self, now: i64, s: &Settings) -> bool {
+        now >= self.renewed + self.header.lease(s) + s.grace
     }
 
-    /// Returns whether the bundle is live at `now`: neither retired, superseded nor expired.
-    fn live(&self, now: i64) -> bool {
-        self.state == State::Active && !self.expired(now)
+    /// Returns whether the bundle is live at `now` under the file settings `s`: neither retired,
+    /// superseded nor expired.
+    fn live(&self, now: i64, s: &Settings) -> bool {
+        self.state == State::Active && !self.expired(now, s)
     }
 
     /// Returns whether a bind or call at `now` writes a renewal: an eighth of the lease has
     /// passed since the last, and the lease has not run out.
-    fn renewal_due(&self, now: i64) -> bool {
-        let lease = self.header.lease();
+    fn renewal_due(&self, now: i64, s: &Settings) -> bool {
+        let lease = self.header.lease(s);
         now - self.renewed >= lease / 8 && now < self.renewed + lease
     }
 
     /// Returns why a bind or call of the bundle is refused at `now`, the call's query named
     /// `query`, if it is.
-    fn refusal(&self, now: i64, query: &str) -> Option<RejectReason> {
+    fn refusal(&self, now: i64, s: &Settings, query: &str) -> Option<RejectReason> {
         let bundle = self.header.name.clone();
         match self.state {
             State::Retired(_) => Some(RejectReason::Retired { bundle }),
             State::Superseded(_) => Some(RejectReason::BundleSuperseded { bundle }),
-            State::Active if self.expired(now) => Some(RejectReason::BundleExpired {
+            State::Active if self.expired(now, s) => Some(RejectReason::BundleExpired {
                 bundle,
                 query: query.to_owned(),
             }),
@@ -611,15 +608,21 @@ pub(super) fn admitted(stored: &Stored, header: &Header, calls: &[CallRow]) -> R
     Ok(())
 }
 
-/// Returns the refusal of registering `header` at `now` because it would read `ctor`, a
-/// constructor enabled since its pin: `BundleExpired` for a bundle whose lease ran out, else
-/// `BundleStale`.
-pub(super) fn stale(stored: &Stored, header: &Header, now: i64, ctor: String) -> Error {
+/// Returns the refusal of registering `header` at `now`, under the file settings `s`, because it
+/// would read `ctor`, a constructor enabled since its pin: `BundleExpired` for a bundle whose
+/// lease ran out, else `BundleStale`.
+pub(super) fn stale(
+    stored: &Stored,
+    header: &Header,
+    now: i64,
+    s: &Settings,
+    ctor: String,
+) -> Error {
     let bundle = header.name.clone();
     let expired = stored
         .bundles
         .get(&bundle)
-        .is_some_and(|r| r.state == State::Active && r.expired(now));
+        .is_some_and(|r| r.state == State::Active && r.expired(now, s));
     let reason = if expired {
         RejectReason::BundleExpired {
             bundle,
@@ -633,7 +636,8 @@ pub(super) fn stale(stored: &Stored, header: &Header, now: i64, ctor: String) ->
 
 /// Make each bundle of `regs`, a header and its calls that passed every check, live: start a new
 /// lease for one that was not live, renew a lease that is due, and store the calls of one never
-/// registered, as one durable transaction. Returns the row of every bundle.
+/// registered, as one durable transaction, at `now` under the file settings `s`. Returns the
+/// row of every bundle.
 pub(super) fn register<R: Runtime>(
     catalog: &Catalog,
     pager: &Pager<R>,
@@ -641,6 +645,7 @@ pub(super) fn register<R: Runtime>(
     mut stored: Stored,
     regs: &[(&Header, Vec<CallRow>)],
     now: i64,
+    s: &Settings,
 ) -> Result<BTreeMap<String, Row>, OpenError> {
     let mut writes = Writes::default();
     let mut next_call = stored.next_call();
@@ -649,7 +654,7 @@ pub(super) fn register<R: Runtime>(
             .bundles
             .get(&h.name)
             .unwrap_or_else(|| panic!("bundle {} is recorded before it registers", h.name));
-        if !row.live(now) || row.renewal_due(now) {
+        if !row.live(now, s) || row.renewal_due(now, s) {
             let mut next = row.clone();
             next.state = State::Active;
             next.renewed = now;
@@ -676,14 +681,15 @@ impl<R: Runtime> Engine<R> {
     /// is no bundle's is not refused.
     pub(super) fn bind(&self, name: &str, query: &str) -> Result<(), Error> {
         let now = self.clock();
+        let s = *self.settings.lock(&self.rt);
         let mut deployed = self.deployed.lock(&self.rt);
         let Some(row) = deployed.get(name) else {
             return Ok(());
         };
-        if let Some(reason) = row.refusal(now, query) {
+        if let Some(reason) = row.refusal(now, &s, query) {
             return Err(Error::rejected(reason));
         }
-        if row.renewal_due(now) {
+        if row.renewal_due(now, &s) {
             let mut next = row.clone();
             next.renewed = now;
             self.replace_bundle(row, &next)?;
@@ -721,10 +727,11 @@ impl<R: Runtime> Engine<R> {
     /// Supersede bundle `name` by `by`, a live bundle of its family. Returns the row of `name`.
     pub(super) fn supersede(&self, name: &str, by: &str) -> Result<DynRows, Error> {
         let now = self.clock();
+        let s = *self.settings.lock(&self.rt);
         let mut deployed = self.deployed.lock(&self.rt);
         let row = known(&deployed, name)?;
         let successor = known(&deployed, by)?;
-        if name == by || successor.header.family != row.header.family || !successor.live(now) {
+        if name == by || successor.header.family != row.header.family || !successor.live(now, &s) {
             return Err(Error::invalid(format!(
                 "bundle {name} is superseded only by another live bundle of family {}",
                 row.header.family

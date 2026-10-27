@@ -128,9 +128,12 @@ fn a_closed_database_holds_no_file_open() {
     .expect("an insert");
     let clone = db.clone();
     db.close().expect("close");
-    assert!(!open_under(&dir).is_empty(), "a clone keeps the files open");
+    assert_eq!(
+        Vec::<PathBuf>::new(),
+        open_under(&dir),
+        "close closes the files whatever clones remain"
+    );
     clone.close().expect("close");
-    assert_eq!(Vec::<PathBuf>::new(), open_under(&dir));
     let db = adtb::open(&path, &log, &OpenOptions::default()).expect("reopen");
     assert_eq!(vec![r#""ann""#], names(&db));
 }
@@ -147,4 +150,142 @@ fn a_failed_open_holds_no_file_open() {
     );
     assert_eq!(Vec::<PathBuf>::new(), open_under(&dir));
     drop(rt);
+}
+
+#[test]
+fn a_refused_create_leaves_no_file_behind() {
+    let dir = scratch("refused-create");
+    let path = dir.join("shop.adt");
+    let refused = Log::new([SHOP, "module shop\nremove relation missing"]);
+    let got = adtb::open(&path, &refused, &options()).map(drop);
+    assert!(
+        matches!(got, Err(OpenError::MigrationRefused { version: 2, .. })),
+        "{got:?}"
+    );
+    let left: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("the directory")
+        .map(|e| e.expect("an entry").path())
+        .collect();
+    assert_eq!(
+        Vec::<PathBuf>::new(),
+        left,
+        "a refused create removes what it made"
+    );
+    adtb::open(&path, &Log::new([SHOP]), &options()).expect("a later create succeeds");
+}
+
+#[test]
+fn a_refused_open_of_an_existing_file_keeps_it() {
+    let dir = scratch("refused-existing");
+    let path = dir.join("shop.adt");
+    let log = Log::new([SHOP]);
+    adtb::open(&path, &log, &options())
+        .expect("create")
+        .close()
+        .expect("close");
+    let refused = Log::new([SHOP, "module shop\nremove relation missing"]);
+    let got = adtb::open(&path, &refused, &options()).map(drop);
+    assert!(
+        matches!(got, Err(OpenError::MigrationRefused { .. })),
+        "{got:?}"
+    );
+    assert!(
+        path.is_file(),
+        "an open that created nothing removes nothing"
+    );
+    let db = adtb::open(&path, &log, &OpenOptions::default()).expect("reopen");
+    assert!(names(&db).is_empty());
+}
+
+/// A query that runs one fixpoint round per number up to ten million, far longer than any test
+/// waits for it.
+const LONG: &str =
+    "fix n = [0] union (from x in n where x < 10000000 select x + 1) in count(x for x in n)";
+
+/// Returns what [`LONG`] returns in a new database in scratch directory `name`, under the
+/// options `opts` makes, while `stop` runs on another thread.
+fn stopped(
+    name: &str,
+    opts: impl FnOnce(&OsRuntime) -> CallOptions,
+    stop: impl FnOnce() + Send,
+) -> Result<Vec<adtb::DynRows>, adtb::Error> {
+    let dir = scratch(name);
+    let rt = OsRuntime::new(&dir, Backend::Pool { threads: 2 });
+    let db =
+        Database::open_in(rt.clone(), "shop.adt", &Log::new([SHOP]), &options()).expect("create");
+    let opts = CallOptions {
+        fix_rounds: Some(usize::MAX),
+        ..opts(&rt)
+    };
+    std::thread::scope(|s| {
+        s.spawn(stop);
+        db.query_text(LONG, &[], &opts)
+    })
+}
+
+fn rejected(got: &Result<Vec<adtb::DynRows>, adtb::Error>) -> Option<&adtb::RejectReason> {
+    match got {
+        Err(adtb::Error::Rejected { reason }) => Some(reason),
+        _ => None,
+    }
+}
+
+#[test]
+fn cancelling_a_running_call_from_another_thread_stops_it_promptly() {
+    let tok = adtb::CancelToken::new();
+    let other = tok.clone();
+    let got = stopped(
+        "cancel",
+        |_| CallOptions {
+            cancel: Some(tok.clone()),
+            ..CallOptions::default()
+        },
+        move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            other.cancel();
+        },
+    );
+    assert_eq!(
+        Some(&adtb::RejectReason::Cancelled),
+        rejected(&got),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn a_running_call_past_its_deadline_stops_with_deadline_exceeded() {
+    use adtb::runtime::Clock;
+    let got = stopped(
+        "deadline",
+        |rt| CallOptions {
+            deadline: Some(rt.wall() + std::time::Duration::from_millis(50)),
+            ..CallOptions::default()
+        },
+        || {},
+    );
+    assert_eq!(
+        Some(&adtb::RejectReason::DeadlineExceeded),
+        rejected(&got),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn a_statement_past_its_limit_stops_with_statement_limit() {
+    let after = std::time::Duration::from_millis(50);
+    let got = stopped(
+        "limit",
+        |_| CallOptions {
+            limit: Some(after),
+            ..CallOptions::default()
+        },
+        || {},
+    );
+    assert_eq!(
+        Some(&adtb::RejectReason::StatementLimit {
+            limit: adtb::Limit::Time { after }
+        }),
+        rejected(&got),
+        "{got:?}"
+    );
 }

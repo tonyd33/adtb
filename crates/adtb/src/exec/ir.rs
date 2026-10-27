@@ -304,6 +304,7 @@ pub fn compile(
         shared: Shared {
             caller,
             fault_ctors: fault_ctors(schema),
+            hosts: Arc::default(),
         },
         reads: plan.reads.clone(),
     })

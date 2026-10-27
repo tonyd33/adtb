@@ -155,6 +155,7 @@ fn call(
         pool: pool.cloned(),
         options,
         cancel: Arc::new(AtomicBool::new(false)),
+        deadline: None,
     }
 }
 
@@ -772,16 +773,16 @@ fn a_mistyped_value_is_an_internal_error_in_batches() {
 }
 
 #[test]
-fn a_call_of_a_wasm_or_host_function_is_refused_before_it_reaches_the_executor() {
+fn a_call_of_a_wasm_function_is_refused_before_it_reaches_the_executor_and_a_host_one_plans() {
     let f = Fixture::new(
         "type User = { id: Key users, name: Text }
          relation users : User key id generate sequence
          fn slugify (t: Text) -> Text = host \"slugify\" version \"1.0\" deterministic
          fn shout (t: Text) -> Text = wasm \"text.wasm\" export \"shout\"",
     );
-    for (q, name) in [
-        ("from u in users select slugify(u.name)", "slugify"),
-        ("from u in users select shout(u.name)", "shout"),
+    for (q, refused) in [
+        ("from u in users select slugify(u.name)", None),
+        ("from u in users select shout(u.name)", Some("shout")),
     ] {
         let (n, t) = f.normal(q, &[]);
         let got = plan(
@@ -794,7 +795,11 @@ fn a_call_of_a_wasm_or_host_function_is_refused_before_it_reaches_the_executor()
             PlanOptions::default(),
         )
         .map(|_| ());
-        assert_eq!(Err(PlanError::UserCode(name.into())), got, "{q}");
+        assert_eq!(
+            refused.map_or(Ok(()), |name| Err(PlanError::UserCode(name.into()))),
+            got,
+            "{q}"
+        );
     }
 }
 

@@ -635,6 +635,7 @@ fn eval_term(schema: &Schema, terms: &Terms, t: Tm) -> Result<Val, Error> {
     let shared = Shared {
         caller: None,
         fault_ctors: Vec::new(),
+        hosts: Arc::default(),
     };
     code.eval_one(&mut Frame::unit(terms.vars.len()), &shared)
 }

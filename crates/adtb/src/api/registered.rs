@@ -2,7 +2,7 @@
 //! by ordinal with arguments, each for the principal of its call.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use adtb_lang::ast::{BundleItem, FnDecl, Import, Operator, OperatorKind, QName};
 use adtb_lang::check::{Bundles, Program, check_adhoc, check_query_in, check_txn_in};
@@ -17,11 +17,12 @@ use adtb_lang::types::Ty;
 use crate::catalog::{self, Catalog};
 use crate::exec::Val;
 use crate::runtime::Runtime;
-use crate::write::Bounds;
 
+use super::arrow::{self, ArrowStream};
 use super::bundle::{self, CallRow, EDITION, Header, Stored};
 use super::error::{Error, RejectReason};
 use super::reads::Reads;
+use super::settings::Settings;
 use super::text::{DynRows, Prepared, rows};
 use super::txn::{AdHocTransaction, Committed, TxnCallOptions};
 use super::{CallOptions, Database, Engine, OpenError};
@@ -204,7 +205,7 @@ impl Pin {
 /// Check and normalise every registration of `regs`, all or none: one with no header against
 /// `program` of `schema`, the schema of `catalog`'s version, and a bundle's at the version it
 /// pins, refusing one `stored` holds otherwise or that would read a constructor enabled since
-/// its pin, at `now`.
+/// its pin, at `now` under the file settings `s`.
 pub(super) fn register(
     catalog: &Catalog,
     schema: &Arc<Schema>,
@@ -212,6 +213,7 @@ pub(super) fn register(
     regs: &[Registration],
     stored: &Stored,
     now: i64,
+    s: &Settings,
 ) -> Result<Vec<Checked>, OpenError> {
     let over = Over {
         source: catalog.source(),
@@ -244,7 +246,7 @@ pub(super) fn register(
         let (_, calls) = c.bundle().expect("a bundle's registration has a header");
         bundle::admitted(stored, h, &calls).map_err(refused)?;
         if let Some(ctor) = stale(catalog, &c).map_err(refused)? {
-            return Err(refused(bundle::stale(stored, h, now, ctor)));
+            return Err(refused(bundle::stale(stored, h, now, s, ctor)));
         }
         out.push(c);
     }
@@ -623,18 +625,19 @@ fn joined<'a>(ms: impl Iterator<Item = &'a str>) -> String {
     ms.collect::<Vec<_>>().join("\n")
 }
 
-/// A registration of an open database, by which its callables are called.
+/// A registration of an open database, by which its callables are called. It does not keep the
+/// database open: once the database closes, every call through it is refused.
 #[derive(Debug)]
 pub struct Registered<R: Runtime = adtb_sys::os::OsRuntime> {
-    engine: Arc<Engine<R>>,
-    at: usize,
+    engine: Weak<Engine<R>>,
+    checked: Arc<Checked>,
 }
 
 impl<R: Runtime> Clone for Registered<R> {
     fn clone(&self) -> Self {
         Registered {
             engine: self.engine.clone(),
-            at: self.at,
+            checked: self.checked.clone(),
         }
     }
 }
@@ -646,14 +649,15 @@ impl<R: Runtime> Database<R> {
     /// Fails with `Retired`, `BundleSuperseded` or `BundleExpired` for a bundle that is, and with
     /// `UnknownBundle` for a name no registration of this open has.
     pub fn registered(&self, name: &str) -> Result<Registered<R>, Error> {
+        let _open = self.engine.enter()?;
         self.engine.bind(name, "")?;
         self.engine
             .registered
             .iter()
-            .position(|c| c.name == name)
-            .map(|at| Registered {
-                engine: self.engine.clone(),
-                at,
+            .find(|c| c.name == name)
+            .map(|c| Registered {
+                engine: Arc::downgrade(&self.engine),
+                checked: c.clone(),
             })
             .ok_or_else(|| {
                 Error::rejected(RejectReason::UnknownBundle {
@@ -685,12 +689,13 @@ impl<R: Runtime> Registered<R> {
     /// rerun on a serialization failure up to `opts.retry`, else its `retry n`, else the retry
     /// limit.
     pub fn call(&self, ordinal: u32, args: &[Val], opts: &CallOptions) -> Result<Called, Error> {
-        let e = &*self.engine;
-        let entry = self.entry(ordinal)?;
+        let e = self.engine()?;
+        let _open = e.enter()?;
+        let entry = self.entry(&e, ordinal)?;
         let caller = e.principal(opts.assert.as_ref())?;
         let p = prepared(self.checked(), entry, args, caller)?;
         let done = e.call(&p, opts)?;
-        let value = one(e, entry, done.value);
+        let value = one(&e, entry, done.value);
         Ok(match entry.kind {
             Callable::Txn => Called::Committed(Committed {
                 value,
@@ -701,20 +706,43 @@ impl<R: Runtime> Registered<R> {
         })
     }
 
+    /// Call the query or function `ordinal` with `args` as [`call`](Registered::call) does.
+    /// Returns its result as record batches of one schema, as the wire's Arrow format maps the
+    /// result type.
+    pub fn call_arrow(
+        &self,
+        ordinal: u32,
+        args: &[Val],
+        opts: &CallOptions,
+    ) -> Result<ArrowStream, Error> {
+        let rows = match self.call(ordinal, args, opts)? {
+            Called::Rows(rows) => rows,
+            Called::Committed(done) => done.value,
+        };
+        arrow::stream(&self.checked.schema, rows)
+    }
+
     fn checked(&self) -> &Checked {
-        &self.engine.registered[self.at]
+        &self.checked
+    }
+
+    /// Returns the engine, refusing a call once the database is closed.
+    fn engine(&self) -> Result<Arc<Engine<R>>, Error> {
+        self.engine
+            .upgrade()
+            .ok_or_else(|| Error::invalid("the database is closed"))
     }
 
     /// Returns the callable `ordinal`, refusing a call of a bundle that is retired, superseded
-    /// or expired, renewing its lease when a renewal is due, and refusing a call of a bundle
-    /// pinned before the version the database is at.
-    fn entry(&self, ordinal: u32) -> Result<&Entry, Error> {
+    /// or expired, renewing its lease in `e` when a renewal is due, and refusing a call of a
+    /// bundle pinned before the version the database is at.
+    fn entry(&self, e: &Engine<R>, ordinal: u32) -> Result<&Entry, Error> {
         let checked = self.checked();
         let entry = usize::try_from(ordinal)
             .ok()
             .and_then(|i| checked.entries.get(i.checked_sub(1)?))
             .ok_or_else(|| Error::rejected(RejectReason::UnknownQuery))?;
-        self.engine.bind(&checked.name, &entry.name)?;
+        e.bind(&checked.name, &entry.name)?;
         if !checked.current {
             return Err(Error::rejected(RejectReason::Untranslatable {
                 query: format!("{}::{}", checked.name, entry.name),
@@ -741,20 +769,17 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         args: &[Val],
         opts: &TxnCallOptions,
     ) -> Result<InTxn, Error> {
-        if !std::ptr::eq(self.engine, &*reg.engine) {
+        if !std::ptr::eq(self.engine, reg.engine.as_ptr()) {
             return Err(Error::invalid(
                 "a registration calls only in a transaction of its own database",
             ));
         }
-        let entry = reg.entry(ordinal)?;
+        let entry = reg.entry(self.engine, ordinal)?;
         let p = prepared(reg.checked(), entry, args, self.caller.clone())?;
         if self.read_only && p.writes {
             return Err(Error::invalid("a read-only transaction does not write"));
         }
-        let bounds = Bounds {
-            fix_rounds: opts.fix_rounds,
-        };
-        let value = one(self.engine, entry, self.run(&p, opts, bounds)?);
+        let value = one(self.engine, entry, self.run(&p, opts)?);
         Ok(match entry.kind {
             Callable::Txn => InTxn::Pending(value),
             Callable::Query | Callable::Fn => InTxn::Rows(value),

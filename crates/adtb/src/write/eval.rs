@@ -129,6 +129,7 @@ pub struct Stmt<'a, R: Runtime> {
     clock: i64,
     caller: Option<Val>,
     pub options: exec::Options,
+    pub stop: super::Stop,
     pub store: Arc<exec::Store<R>>,
     drawn: RefCell<BTreeMap<(Arena, Val), Val>>,
     load: Cell<Option<i64>>,
@@ -143,6 +144,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         text: super::Text<'a>,
         root: Tm,
         options: exec::Options,
+        stop: super::Stop,
     ) -> Self {
         let schema = text.schema;
         let mut terms = text.terms.clone();
@@ -163,6 +165,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             clock: text.clock,
             caller: text.caller.cloned(),
             options,
+            stop,
             store: db.store(tx),
             drawn: RefCell::default(),
             load: Cell::default(),
@@ -187,6 +190,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             clock: 0,
             caller: None,
             options: db.options,
+            stop: super::Stop::default(),
             store: db.store(tx),
             drawn: RefCell::default(),
             load: Cell::default(),
@@ -269,6 +273,16 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                     let rows = self.local.borrow().rows(*rel, ctors.as_ref())?;
                     env.insert(*v, Val::set(rows));
                 }
+                Input::Volatile { rel, ctors } => {
+                    let mut rows = BTreeSet::new();
+                    for row in self.db.volatile.get(rel).into_iter().flatten() {
+                        let c = row.ctor_of()?;
+                        if ctors.as_ref().is_none_or(|s| s.contains(&c)) {
+                            rows.insert(row.clone());
+                        }
+                    }
+                    env.insert(*v, Val::set(rows));
+                }
                 Input::File { format, path, row } => {
                     if !facts.free(&self.terms, *path).is_subset(&bound) {
                         return Err(Error::Unsupported(
@@ -337,17 +351,14 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             None => {
                 let db = self.db;
                 let p = self.plan_in(a, t, &params)?;
-                let x = Arc::new(exec::compile(
-                    self.schema,
-                    &db.catalog,
-                    &p,
-                    self.caller.clone(),
-                )?);
+                let mut x = exec::compile(self.schema, &db.catalog, &p, self.caller.clone())?;
+                x.shared.hosts = db.hosts.clone();
+                let x = Arc::new(x);
                 self.plans.borrow_mut().insert(key, x.clone());
                 x
             }
         };
-        let call = self.db.call(&self.store, self.options)?;
+        let call = self.db.call(&self.store, self.options, &self.stop)?;
         let bound: Vec<(Var, Val)> = env.iter().map(|(v, x)| (*v, x.clone())).collect();
         let v = exec::execute(self.db.rt.clone(), program, call, &bound)?;
         let ty = self.arena(a).ty(t).clone();
@@ -596,7 +607,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             Kind::For(x, src, body) => match self.terms.kind(*src) {
                 Kind::Rel(r, _) => Some((*x, *r, *src, *body)),
                 Kind::Var(v) => match self.inputs.get(v) {
-                    Some(Input::Temp { rel, .. }) => Some((*x, *rel, *src, *body)),
+                    Some(Input::Temp { rel, .. } | Input::Volatile { rel, .. }) => {
+                        Some((*x, *rel, *src, *body))
+                    }
                     Some(Input::File { .. }) => {
                         return self.file_records(*v, (*x, *body), env, rejected);
                     }

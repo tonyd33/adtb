@@ -1,5 +1,6 @@
 mod code;
 mod frame;
+mod host;
 mod ir;
 mod join;
 mod memory;
@@ -16,6 +17,8 @@ mod wide;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use host::canonical;
+pub use host::{HostBody, HostCall, HostError, Hosts};
 pub use ir::{Program, compile};
 pub use memory::{Arena, Budget, Grant};
 pub(crate) use prim::print;
@@ -26,6 +29,7 @@ pub use value::{F32, F64, Val};
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::schema::Schema;
@@ -33,7 +37,7 @@ use adtb_lang::textual::PrintError;
 
 use crate::batch::{self, Batch, BatchBuilder, Datum};
 use crate::mvcc::SerializationFailure;
-use crate::runtime::{IoError, Runtime};
+use crate::runtime::{Instant, IoError, Runtime};
 use crate::storage::PageError;
 
 /// A fault of the prelude's `Fault`, which `try` catches.
@@ -95,6 +99,8 @@ pub enum Exceeded {
     Spill { limit: usize, grant: usize },
     /// `limit` rounds of a fixpoint.
     Rounds { limit: usize },
+    /// Its time limit, `after` from its start.
+    Time { after: Duration },
 }
 
 /// Why an evaluation produced no value.
@@ -116,6 +122,10 @@ pub enum Error {
     /// The evaluation reached `reject` with this text.
     Rejected(String),
     Cancelled,
+    /// The call's deadline passed.
+    DeadlineExceeded,
+    /// The evaluation reached a host function, by its name, with no body bound.
+    MissingFunction(String),
     /// The plan or a value breaks the invariant this text names, one the checker guarantees.
     Internal(String),
 }
@@ -152,6 +162,7 @@ impl Scalar {
             shared: code::Shared {
                 caller: None,
                 fault_ctors: ir::fault_ctors(schema),
+                hosts: Arc::default(),
             },
         })
     }
@@ -209,6 +220,15 @@ pub struct Call<R: Runtime> {
     pub options: Options,
     /// Set to stop the execution at its next morsel boundary.
     pub cancel: Arc<AtomicBool>,
+    pub deadline: Option<Deadline>,
+}
+
+/// An instant of the runtime's clock at which an execution stops at its next morsel boundary,
+/// failing with `error`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Deadline {
+    pub at: Instant,
+    pub error: Error,
 }
 
 impl<R: Runtime> std::fmt::Debug for Call<R> {
@@ -237,6 +257,7 @@ pub fn execute<R: Runtime>(
         options: call.options,
         pool: call.pool,
         cancel: call.cancel,
+        deadline: call.deadline,
     });
     let params: Vec<(u32, Val)> = params.iter().map(|(v, x)| (v.0, x.clone())).collect();
     cx.root(&params)
@@ -301,7 +322,7 @@ fn data(ts: &[batch::Type], vs: &[Val]) -> Result<Vec<Datum>, Error> {
     ts.iter().zip(vs).map(|(t, x)| datum(t, x)).collect()
 }
 
-fn datum(t: &batch::Type, v: &Val) -> Result<Datum, Error> {
+pub(super) fn datum(t: &batch::Type, v: &Val) -> Result<Datum, Error> {
     Ok(match (t, v) {
         (batch::Type::Scalar(s), v) => {
             Datum::Scalar(to_key(&crate::key::KeyType::Scalar(*s), v).map_err(|_| mistyped(v, t))?)

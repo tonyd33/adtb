@@ -344,6 +344,7 @@ impl<R: Runtime> Engine<R> {
         }
         let row = Val::ctor(setting, fields);
         self.swap_row(schema, settings, Old::Ctor(setting), row.clone())?;
+        self.settings.lock(&self.rt).set(schema, &row);
         let elem = Ty::Data {
             def,
             args: Vec::new(),

@@ -622,7 +622,7 @@ fn queries_of_the_running_schema_agree() {
 }
 
 #[test]
-fn a_call_of_a_host_function_is_refused() {
+fn a_call_of_a_host_function_plans() {
     let f = Fixture::new(
         "type User = { id: Key users, name: Text }
          relation users : User key id generate sequence
@@ -639,7 +639,7 @@ fn a_call_of_a_host_function_is_refused() {
         Options::default(),
     )
     .map(|_| ());
-    assert_eq!(Err(Error::UserCode("slugify".into())), got);
+    assert_eq!(Ok(()), got);
 }
 
 #[test]

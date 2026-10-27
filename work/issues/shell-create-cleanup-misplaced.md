@@ -1,10 +1,13 @@
 ---
 created-at: 2026-10-27
-status: open
+status: resolved
 kind: bug
 priority: 873
 summary: "the shell removes a refused create's file and log by rebuilding the pager's private log directory name, and reports a second NotFound error when nothing was created"
-tags: [quality, engine]
+closed: 2026-10-27
+tags:
+  - quality
+  - engine
 ---
 
 # A refused create in the shell prints a spurious second error, and other clients keep the half-made file
@@ -33,3 +36,13 @@ Fix: have `Database::open` with create remove what it made when it fails, stated
 ## 2026-10-27: ruling
 
 `Database::open` with create removes the file and log it made when the open fails, and leaves nothing behind; state it as a postcondition in the API design file. The shell then drops its own cleanup and its second error.
+
+## 2026-10-27: done
+
+`Database::open` with create removes the data file and the log directory (`storage::Options::log_dir`) it made when the open fails, and removes nothing of a file that existed; postcondition in `docs/design/server.md` §4.1, the log directory's name in `docs/design/storage.md` §5.3. The shell dropped its `log_dir`, `remove` and second error. Tests in `crates/adtb-sim/tests/api_real_file.rs`.
+
+## 2026-10-27: resolved
+
+## 2026-10-27: landed
+
+Landed with the embed track. What stays open is in `embedded-open-follow-ups`, `host-fns-in-keys`, `spec-closed-database-reason` and `conformance-refused-schema`.

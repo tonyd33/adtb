@@ -179,6 +179,7 @@ fn engine(f: &Fixture, text: &str) -> (Ty, Val) {
             pool: None,
             options: XOptions::default(),
             cancel: Arc::new(AtomicBool::new(false)),
+            deadline: None,
         };
         out = Some(exec::execute(rt, program.clone(), call, &[]));
     });

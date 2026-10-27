@@ -812,6 +812,55 @@ fn a_bundle_with_no_lease_clause_holds_its_lease_thirty_days() {
 }
 
 #[test]
+fn the_default_lease_is_the_file_setting() {
+    let mut sim = Sim::new(46, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[V1], Vec::new());
+        db.query_text(
+            "set setting DefaultLease = { lease: 2d }",
+            &[],
+            &CallOptions::default(),
+        )
+        .expect("the setting");
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", NAMES)]);
+        sleep(&rt, 2 * DAY + 2 * HOUR);
+        assert!(matches!(
+            unbound(&db, "web-1.0"),
+            RejectReason::BundleExpired { .. }
+        ));
+    });
+}
+
+#[test]
+fn the_lease_grace_is_the_file_setting_from_its_commit() {
+    once(47, |rt| {
+        let db = opened(
+            &rt,
+            &[V1],
+            vec![bundle("web-1.0", &[V1], " lease 1d", NAMES)],
+        );
+        db.query_text(
+            "set setting LeaseGrace = { grace: 3h }",
+            &[],
+            &CallOptions::default(),
+        )
+        .expect("the setting");
+        sleep(&rt, DAY + 2 * HOUR);
+        assert!(
+            db.registered("web-1.0").is_ok(),
+            "two hours past the lease is within a grace of three"
+        );
+        sleep(&rt, 2 * HOUR);
+        assert!(matches!(
+            unbound(&db, "web-1.0"),
+            RejectReason::BundleExpired { .. }
+        ));
+    });
+}
+
+#[test]
 fn a_renewal_is_recorded_and_survives_reopen() {
     let mut sim = Sim::new(35, Config::default());
     let renewed =

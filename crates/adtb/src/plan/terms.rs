@@ -268,6 +268,7 @@ impl Facts {
                 | Kind::Restrict(..)
                 | Kind::Reject(_)
                 | Kind::Unreachable
+                | Kind::Call { .. }
         );
         let s = here && terms.children(t).into_iter().all(|c| self.scalar(terms, c));
         self.scalar.insert(t, s);

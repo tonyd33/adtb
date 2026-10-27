@@ -33,6 +33,7 @@ pub struct Ctx<R: Runtime> {
     pub options: Options,
     pub pool: Option<Arc<Scheduler<R>>>,
     pub cancel: Arc<AtomicBool>,
+    pub deadline: Option<super::Deadline>,
     pub spill: Spill<R>,
 }
 
@@ -149,7 +150,10 @@ impl<R: Runtime> Ctx<R> {
         if self.cancel.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
         }
-        Ok(())
+        match &self.deadline {
+            Some(d) if self.rt.now() >= d.at => Err(d.error.clone()),
+            _ => Ok(()),
+        }
     }
 
     pub(super) fn eval_env(

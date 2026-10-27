@@ -20,7 +20,7 @@ use adtb_sys::lock::Lock;
 
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// The data file's path; the log's segments live in the directory `{name}-log`.
+    /// The data file's path; the log's segments live in the directory [`log_dir`](Options::log_dir).
     pub name: String,
     pub page_size: u32,
     /// The device's logical block size, and the log's block size.
@@ -57,6 +57,11 @@ impl Options {
             threads: 1,
             stall_after: Duration::from_secs(10),
         }
+    }
+
+    /// Returns the path of the directory holding the log's segments.
+    pub fn log_dir(&self) -> String {
+        format!("{}-log", self.name)
     }
 }
 
@@ -323,11 +328,7 @@ impl<'a, R: Runtime> PageOptimistic<'a, R> {
 impl<R: Runtime> Pager<R> {
     fn assemble(rt: R, o: &Options, header: FileHeader, copy: u64, data: FileId) -> Self {
         let log = Log::new(header.log_block as usize, header.epoch);
-        let segments = Segments::new(
-            format!("{}-log", o.name),
-            header.log_block as usize,
-            header.segment_size,
-        );
+        let segments = Segments::new(o.log_dir(), header.log_block as usize, header.segment_size);
         Pager(std::sync::Arc::new(Shared {
             name: o.name.clone(),
             page_size: header.page_size as usize,

@@ -14,8 +14,9 @@ fn mentions(terms: &Terms, t: Tm, vars: &BTreeSet<Var>) -> bool {
     terms.any(t, |k| matches!(k, Kind::Var(v) if vars.contains(v)))
 }
 
-/// Returns whether a write in `t` depends on a volatile read: its target, predicate or values read one, or a
-/// condition, a source it ranges over or a `let` whose value reaches it does.
+/// Returns whether a write in `t` depends on a volatile read: its target is a volatile relation, its
+/// target, predicate or values read one, or a condition, a source it ranges over or a `let` whose
+/// value reaches it does.
 ///
 /// Preconditions:
 /// - `t` is a normal form.
@@ -45,7 +46,14 @@ fn visit(schema: &Schema, terms: &Terms, t: Tm, tainted: &mut BTreeSet<Var>) -> 
     };
     let kind = terms.kind(t);
     if kind.is_write() {
-        return if dirty(t, tainted) {
+        let target = match kind {
+            Kind::Insert(r, _) | Kind::Delete(r, _) | Kind::Replace(r, ..) => Some(*r),
+            Kind::Upsert { rel, .. } => Some(*rel),
+            Kind::Rejects { into, .. } => Some(*into),
+            _ => None,
+        };
+        let volatile = target.is_some_and(|r| schema.relation(r).volatile);
+        return if volatile || dirty(t, tainted) {
             Visit::Depends
         } else {
             Visit::Into(Vec::new())

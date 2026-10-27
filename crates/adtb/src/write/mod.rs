@@ -12,6 +12,7 @@ mod sequence;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::time::Duration;
 
 use adtb_file::Disk;
 use adtb_lang::kernel::{Terms, Tm, Var};
@@ -29,7 +30,7 @@ use crate::mvcc::{
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
-use crate::runtime::{IoError, Runtime};
+use crate::runtime::{Instant, IoError, Runtime};
 use crate::storage::{PageError, Pager, Pid, Position};
 use crate::vacuum;
 
@@ -103,6 +104,10 @@ pub enum Error {
     Refused(Vec<(String, String)>),
     /// The files a path names differ from those an earlier scan of it in the transaction read.
     FileChanged(String),
+    Cancelled,
+    DeadlineExceeded,
+    /// A statement reached a host function, by its name, with no body bound.
+    MissingFunction(String),
 }
 
 impl Error {
@@ -173,7 +178,9 @@ impl From<exec::Error> for Error {
                 detail,
             }),
             exec::Error::NoCaller => Error::Unsupported("`caller` in a statement".into()),
-            exec::Error::Cancelled => Error::Unsupported("a cancelled statement".into()),
+            exec::Error::Cancelled => Error::Cancelled,
+            exec::Error::DeadlineExceeded => Error::DeadlineExceeded,
+            exec::Error::MissingFunction(name) => Error::MissingFunction(name),
             exec::Error::Internal(what) => Error::Internal(what),
         }
     }
@@ -260,10 +267,24 @@ pub struct Text<'a> {
 pub type Between<'h> = dyn FnMut(usize, &mut Local) -> Result<(), Error> + 'h;
 
 /// What bounds the statements of one call, past the database's own bounds.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct Bounds {
     /// The rounds a fixpoint may take, else the database's limit.
     pub fix_rounds: Option<usize>,
+    /// How long each statement may run, from its start.
+    pub limit: Option<Duration>,
+    /// Set to stop the statements with `Cancelled`.
+    pub cancel: Option<Arc<AtomicBool>>,
+    /// The instant of the runtime's clock at which the statements fail with `DeadlineExceeded`.
+    pub deadline: Option<Instant>,
+}
+
+/// What stops one statement's executions early.
+#[derive(Clone, Debug, Default)]
+pub struct Stop {
+    /// Set to stop them with `Cancelled`.
+    pub cancel: Arc<AtomicBool>,
+    pub deadline: Option<exec::Deadline>,
 }
 
 /// The heaps and indexes of the relation variables a catalog describes.
@@ -308,6 +329,9 @@ pub struct Database<R: Runtime> {
     files: Disk,
     /// Held while a vacuum runs, so that one runs at a time.
     vacuuming: Lock<()>,
+    hosts: Arc<exec::Hosts>,
+    /// The rows the engine holds for each volatile relation.
+    volatile: BTreeMap<RelId, BTreeSet<Val>>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Database<R> {
@@ -414,8 +438,32 @@ impl<R: Runtime> Database<R> {
             grant: setup.grant,
             files: Disk::default(),
             vacuuming: Lock::new(()),
+            hosts: Arc::default(),
+            volatile: BTreeMap::new(),
             rt,
         })
+    }
+
+    /// Returns the database calling the host functions of `hosts`.
+    ///
+    /// Panics if a statement has run.
+    pub fn with_hosts(mut self, hosts: Arc<exec::Hosts>) -> Self {
+        for d in &mut self.denials {
+            for (_, p) in &mut d.deltas {
+                Arc::get_mut(p)
+                    .expect("no statement holds a check's program before the first runs")
+                    .shared
+                    .hosts = hosts.clone();
+            }
+        }
+        self.hosts = hosts;
+        self
+    }
+
+    /// Returns the database reading `rows` for each volatile relation of `rows`.
+    pub fn with_volatile(mut self, rows: BTreeMap<RelId, BTreeSet<Val>>) -> Self {
+        self.volatile = rows;
+        self
     }
 
     /// Returns the database reading the files of file scans through `files`.
@@ -555,7 +603,7 @@ impl<R: Runtime> Database<R> {
         for item in 0..=text.items.len() {
             let done = between(item, local).and_then(|()| match text.items.get(item) {
                 Some(t) => {
-                    let s = self.stmt(tx, text, *t, bounds);
+                    let s = self.stmt(tx, text, *t, &bounds);
                     let o = s.run(text.params, local);
                     ran.push(s);
                     o.map(|o| out.push(o))
@@ -587,7 +635,7 @@ impl<R: Runtime> Database<R> {
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
         for (item, t) in text.items.iter().enumerate() {
-            let s = self.stmt(tx, text, *t, bounds);
+            let s = self.stmt(tx, text, *t, &bounds);
             let o = s.run(text.params, local);
             ran.push(s);
             match o {
@@ -610,7 +658,7 @@ impl<R: Runtime> Database<R> {
     /// Returns the operators of term `t` of `text` as a statement of `tx` would run it.
     pub fn explain(&self, tx: &Txn, text: Text<'_>, t: Tm) -> Result<Node, Error> {
         let params: Vec<Var> = text.params.iter().map(|(v, _)| *v).collect();
-        self.stmt(tx, text, t, Bounds::default()).explain(&params)
+        self.stmt(tx, text, t, &Bounds::default()).explain(&params)
     }
 
     /// Vacuums each constructor relation of `rel` in turn. Returns the id of each constructor
@@ -655,12 +703,30 @@ impl<R: Runtime> Database<R> {
         Ok(out)
     }
 
-    fn stmt<'a>(&'a self, tx: &'a Txn, text: Text<'a>, t: Tm, bounds: Bounds) -> eval::Stmt<'a, R> {
+    fn stmt<'a>(
+        &'a self,
+        tx: &'a Txn,
+        text: Text<'a>,
+        t: Tm,
+        bounds: &Bounds,
+    ) -> eval::Stmt<'a, R> {
         let options = exec::Options {
             fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
             ..self.options
         };
-        eval::Stmt::new(self, tx, text, t, options)
+        let limit = bounds.limit.map(|after| exec::Deadline {
+            at: self.rt.now() + after,
+            error: exec::Error::StatementLimit(exec::Exceeded::Time { after }),
+        });
+        let deadline = bounds.deadline.map(|at| exec::Deadline {
+            at,
+            error: exec::Error::DeadlineExceeded,
+        });
+        let stop = Stop {
+            cancel: bounds.cancel.clone().unwrap_or_default(),
+            deadline: [limit, deadline].into_iter().flatten().min_by_key(|d| d.at),
+        };
+        eval::Stmt::new(self, tx, text, t, options, stop)
     }
 
     /// Undoes the effects of `ran` on the file, the last first.
@@ -783,6 +849,7 @@ impl<R: Runtime> Database<R> {
         &self,
         store: &Arc<exec::Store<R>>,
         options: exec::Options,
+        stop: &Stop,
     ) -> Result<exec::Call<R>, Error> {
         let grant =
             self.budget
@@ -795,7 +862,8 @@ impl<R: Runtime> Database<R> {
             grant,
             pool: self.pool.clone(),
             options,
-            cancel: Arc::new(AtomicBool::new(false)),
+            cancel: stop.cancel.clone(),
+            deadline: stop.deadline.clone(),
         })
     }
 }

@@ -1,10 +1,14 @@
 ---
 created-at: 2026-10-27
-status: open
+status: resolved
 kind: bug
 priority: 856
 summary: "a Registered handle keeps the engine, its file and lock alive after Database::close, so close returns Ok without closing the pager"
-tags: [quality, engine, design]
+closed: 2026-10-27
+tags:
+  - quality
+  - engine
+  - design
 ---
 
 # Database::close returns Ok while a Registered handle keeps the database open
@@ -30,3 +34,15 @@ Fix: borrow `&Database` from `Registered`, or hold a `Weak` and fail calls after
 ## 2026-10-27: ruling
 
 A `Registered` holds a `Weak` reference to the engine. `Database::close` closes the pager whatever handles remain, and a call through a handle after close fails with a closed-database error. State it in `docs/design/server.md` section 4 in place of the current lifetime sentence.
+
+## 2026-10-27: done
+
+`Registered` holds a `Weak` engine and an `Arc` of its checked registration, so `name` and `ordinal` still answer after close. `Database::close` waits for running calls, then closes the pager and releases the lock whatever registrations and clones remain; every later call through any of them, `begin`, `registered` and a transaction's calls and commit included, is refused with `Invalid` naming the database closed. Stated in `docs/design/server.md` §4. Tests in `crates/adtb-sim/tests/embedding.rs` and `api_real_file.rs` (`a_closed_database_holds_no_file_open` now expects a clone not to keep the file open).
+
+Still open: the spec's error sums have no closed-database reason; `Invalid` stands in.
+
+## 2026-10-27: resolved
+
+## 2026-10-27: landed
+
+Landed with the embed track. What stays open is in `embedded-open-follow-ups`, `host-fns-in-keys`, `spec-closed-database-reason` and `conformance-refused-schema`.

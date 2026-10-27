@@ -4,6 +4,7 @@ use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::textual::key_field_ty;
 use adtb_lang::types::{Base, RelId, Ty, TypeId};
 
+use crate::batch;
 use crate::heap::{self, FieldType};
 use crate::key::{self, AnonRecordType, AnonSumType, CtorId, KeyType, OrderKey, Scalar, SumType};
 
@@ -192,6 +193,35 @@ pub fn field_type(schema: &Schema, ty: &Ty) -> FieldType {
                 .collect(),
         ),
     }
+}
+
+/// Returns the type of a batch column holding values of type `ty`: as a heap stores it, with
+/// each set a list. `None` for a type no column holds: a function, a type parameter, a group or
+/// a change.
+pub fn batch_type(schema: &Schema, ty: &Ty) -> Option<batch::Type> {
+    let all = |fs: &[(String, Ty)]| -> Option<Vec<batch::Type>> {
+        fs.iter().map(|(_, f)| batch_type(schema, f)).collect()
+    };
+    Some(match repr(schema, ty) {
+        Ty::Base(b) => batch::Type::Scalar(scalar(b)),
+        Ty::Key { rel, .. } => batch_type(schema, &key_value_ty(schema, rel))?,
+        Ty::Record(fs) => batch::Type::Record(all(&fs)?),
+        Ty::Unit => batch::Type::Record(Vec::new()),
+        Ty::Set(e) | Ty::NonEmpty(e) => batch::Type::List(Box::new(batch_type(schema, &e)?)),
+        Ty::Fn(..) | Ty::Param(_) | Ty::Group(..) | Ty::Change => return None,
+        t if is_record(schema, &t) => batch::Type::Record(all(&ctors(schema, &t)[0].1)?),
+        t => batch::Type::Sum(
+            ctors(schema, &t)
+                .into_iter()
+                .map(|(id, fs)| {
+                    Some(batch::Ctor {
+                        id: CtorId(id),
+                        fields: all(&fs)?,
+                    })
+                })
+                .collect::<Option<_>>()?,
+        ),
+    })
 }
 
 /// Returns the type of an index key component of type `ty`, each declared sum's constructors

@@ -155,6 +155,7 @@ fn violating<R: Runtime>(
         pool: None,
         options: exec::Options::default(),
         cancel: Arc::new(AtomicBool::new(false)),
+        deadline: None,
     };
     let v = match exec::execute(pager.rt.clone(), program, call, &[]) {
         Ok(v) => v,

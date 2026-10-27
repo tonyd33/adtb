@@ -262,8 +262,14 @@ impl Error {
                     Exceeded::Rounds { limit } => Limit::Rounds {
                         rounds: i64::try_from(limit).unwrap_or(i64::MAX),
                     },
+                    Exceeded::Time { after } => Limit::Time { after },
                 },
             }),
+            write::Error::Cancelled => Error::rejected(RejectReason::Cancelled),
+            write::Error::DeadlineExceeded => Error::rejected(RejectReason::DeadlineExceeded),
+            write::Error::MissingFunction(function) => Error::Fatal {
+                reason: FatalReason::MissingFunction { function },
+            },
             write::Error::Serialization(_) => Error::Retry {
                 reason: RetryReason::Serialization {
                     txn,

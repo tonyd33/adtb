@@ -999,6 +999,7 @@ impl Builder<'_> {
     fn run(&mut self) {
         let files = self.files;
         let mut principal = None;
+        let mut principal_decl = None;
         // Collect every name, so later passes may refer forward.
         let mut type_decls = Vec::new();
         let mut rel_decls = Vec::new();
@@ -1023,6 +1024,7 @@ impl Builder<'_> {
                         }
                         if !prelude && t.name.text == "Principal" {
                             principal = Some(id);
+                            principal_decl = Some((file, t.name.span));
                         } else if self.schema.modules[module.0 as usize]
                             .types
                             .insert(t.name.text.clone(), id)
@@ -1141,6 +1143,9 @@ impl Builder<'_> {
         for &(file, module, id, t) in &type_decls {
             self.type_body(file, module, id, t);
         }
+        if let Some((file, span)) = principal_decl {
+            self.check_principal(file, span);
+        }
         for &(file, module, id, r) in &rel_decls {
             self.relation_body(file, module, id, r);
         }
@@ -1184,6 +1189,38 @@ impl Builder<'_> {
             }
         } else if is_prelude_type(text) {
             self.err(file, name.span, format!("`{text}` is a prelude type"));
+        }
+    }
+
+    /// Refuses a declared `Principal` other than a sum of `EndUser`, `Service { name: Text }` and
+    /// `Anonymous`, with no header fields.
+    fn check_principal(&mut self, file: FileId, span: Span) {
+        let def = self.schema.ty(self.schema.principal);
+        let shaped = |name: &str, fields: Option<&[(&str, Ty)]>| {
+            def.ctors().iter().any(|c| {
+                c.name == name
+                    && fields.is_none_or(|want| {
+                        c.fields.len() == want.len()
+                            && c.fields
+                                .iter()
+                                .zip(want)
+                                .all(|(f, (n, t))| f.name == *n && f.ty == *t)
+                    })
+            })
+        };
+        let ok = matches!(def.kind, TypeDefKind::Sum { .. })
+            && def.header().is_empty()
+            && def.ctors().len() == 3
+            && shaped("EndUser", None)
+            && shaped("Service", Some(&[("name", Ty::Base(Base::Text))]))
+            && shaped("Anonymous", Some(&[]));
+        if !ok {
+            self.err(
+                file,
+                span,
+                "`Principal` has exactly the constructors `EndUser`, `Service { name: Text }` and \
+                 `Anonymous`",
+            );
         }
     }
 

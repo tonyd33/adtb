@@ -52,6 +52,7 @@ entry points:
 | `OpenOptions::registrations` | the registrations open records, checks and registers once its migrations apply |
 | `Database::registered(name)` | the handle of registration `name`, bound to it; else `Retired`, `BundleSuperseded`, `BundleExpired` or `UnknownBundle` |
 | `Registered::call(ordinal, args, opts)` | runs callable `ordinal` with `args` as a transaction of its own: rows for a query or function, `Committed` for a transaction |
+| `Registered::call_arrow(ordinal, args, opts)` | runs it as `call` does and returns its result as an `ArrowStream` of `RecordBatch`es of one `ArrowSchema` |
 | `AdHocTransaction::call(reg, ordinal, args, opts)` | runs callable `ordinal` of `reg` as one call of the transaction: rows, or `Pending` for a transaction |
 | `retire bundle B`, `supersede bundle B by B2` | commands of ad hoc text, returning the bundle's row of `catalog::bundles` |
 
@@ -88,13 +89,106 @@ Postconditions:
   call's `caller`.
 - A bundle's registration, its calls in `catalog::registered` and its
   lease survive the handle; a registration that is no bundle's lives as
-  long as the handle that opened with it.
+  long as the database that opened with it.
+- A `Registered` does not keep its database open. `Database::close`
+  closes the database whatever `Registered` handles and `Database`
+  clones remain, once every running call has returned; every later call
+  through any of them, `begin` included, is refused with `Invalid`
+  naming the database closed. An interactive transaction open at close
+  ends uncommitted; its later calls and its commit are refused alike.
 
 A code generator emits, for each bundle, its file's text and the
 ordinals it computes from that file; the embedded open of
 [../spec/embedding.md](../spec/embedding.md#21-open) passes each
 generated bundle to open as `Registration::bundle` of that text, so
 its ordinals are those `Registered::ordinal` returns.
+
+### 4.1 Opening
+
+`Database::open(path, log, options)` opens the file of the host's
+runtime; `Database::open_in(rt, name, log, options)` opens file `name`
+of runtime `rt`.
+
+Postconditions:
+
+- `Database::open` runs on `Backend::Uring` where `OsRuntime::try_new`
+  admits it, else on `Backend::Pool`
+  ([runtime.md §2](runtime.md#2-io-interface)).
+- An open with `options.create` that creates the file and then fails
+  removes the file and its log, and leaves nothing behind; an open of
+  a file that existed removes nothing.
+- Open checks `options.host_fns` against the schema before its first
+  migration, and again once its migrations apply: a supplied function
+  the schema declares with a host body at another determinism, at a
+  type no batch column holds, or at another version fails open with
+  `HostFnMismatch`, unless a migration open applies redefines it at the
+  supplied version; a declared host function with no body that a
+  constraint, check, domain, default, computed field, index or stored
+  view reaches fails open with `HostFnMissing`.
+- `sys::process_options` holds one row per open-time setting, fixed
+  until the database closes.
+
+### 4.2 Calls
+
+| Entry point | Meaning |
+| --- | --- |
+| `CancelToken::new()`, `cancel()`, `is_cancelled()` | a token shared by its clones, cancelled once and for good |
+| `CallOptions { cancel, deadline, limit, .. }` | the token, wall-clock deadline and statement time limit of one call |
+| `TxnOptions { deadline, limit, .. }` | the deadline and statement limit of every call of an interactive transaction |
+| `TxnCallOptions { cancel, deadline, limit, .. }` | those of one call inside it |
+
+Postconditions:
+
+- A call whose token is cancelled, or whose deadline has passed, when
+  it starts or before it commits fails with `Cancelled` or
+  `DeadlineExceeded` and has no effect. One running a query stops at
+  its next morsel boundary, failing alike, or with `StatementLimit {
+  Time }` once a statement runs past `limit`. A call that commits
+  returns its commit whatever the token does after.
+- A failed call inside an interactive transaction leaves the
+  transaction open without its effects.
+
+### 4.3 Arrow batches and loads
+
+A `RecordBatch` is a `batch::Batch` under an `ArrowSchema`, a list of
+named `Field`s each holding the `batch::Type` of its column; a sum's
+type lists its constructors with their constructor ids.
+
+| Entry point | Meaning |
+| --- | --- |
+| `Database::load(opts)` | a `Load`: a write transaction whose snapshot is taken now |
+| `Load::appender(target)` | the `Appender` of constructor relation `target`, `r.C`, or `r` of a record type, as ad hoc text names it |
+| `Appender::schema()` | the `ArrowSchema` of a batch holding every field of the relation's row |
+| `Appender::push(batch)` | stages the batch's rows |
+| `Load::commit()` | inserts every staged row as one change set and commits: a `LoadReport` of the rows and the position |
+
+Postconditions:
+
+- A result's columns are those of the wire's Arrow format: one per
+  field of a record element, in declared order, one `row` column of a
+  sum of two or more constructors, else one `value` column.
+- `push` refuses a batch with `SchemaMismatch`, staging nothing, unless
+  its fields are those of `schema()`, in order and at their types, less
+  fields a key generator or a default fills.
+- `commit` fails, inserting nothing, as an insert of the staged rows
+  fails, and is not rerun. Dropping a `Load` discards what it staged.
+
+### 4.4 Host functions
+
+`HostFns::register(name, version, det, body)` supplies the body of the
+host function declared as `host "name" version "version"`. A body takes
+a `Batch` of one column per parameter and returns a `Batch` of one
+column of the result type with as many rows; it may run on several
+threads at once.
+
+Postconditions:
+
+- A statement calls a body once per batch of the rows it evaluates the
+  call at. A body that returns an error, panics, or returns a batch of
+  another type or length faults each of those rows with
+  `FunctionFailed`.
+- A call that reaches a host function with no body fails with `Fatal {
+  MissingFunction }`.
 
 ## 5. Notes for the implementation
 

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use adtb_lang::analysis::Totality;
+use adtb_lang::ast::FnBody;
 use adtb_lang::kernel::{Agg, Kind, PathStep, Prim, Terms, Tm, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
@@ -91,6 +92,7 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         root,
         params,
     } = *input;
+    user_code(schema, terms, root)?;
     let mut p = Planner {
         schema,
         normal,
@@ -116,6 +118,26 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
         ty: terms.ty(input.root).clone(),
         reads,
     })
+}
+
+/// Refuses a term reaching a call of a function other than a host function: a Wasm function or
+/// one that takes or returns a function, which no plan runs.
+fn user_code(schema: &Schema, terms: &Terms, root: Tm) -> Result<(), Error> {
+    let mut seen = std::collections::HashSet::new();
+    let mut todo = vec![root];
+    while let Some(t) = todo.pop() {
+        if !seen.insert(t) {
+            continue;
+        }
+        if let Kind::Call { func, .. } = terms.kind(t) {
+            let def = schema.function(*func);
+            if !matches!(def.body, FnBody::Host { .. }) {
+                return Err(Error::UserCode(def.name.clone()));
+            }
+        }
+        todo.extend(terms.children(t));
+    }
+    Ok(())
 }
 
 struct Planner<'a> {
@@ -729,9 +751,6 @@ impl Planner<'_> {
     /// Refuses a term whose root form a plan does not compute.
     fn refuse(&self, t: Tm) -> Result<(), Error> {
         match self.t.kind(t) {
-            Kind::Call { func, .. } => {
-                Err(Error::UserCode(self.schema.function(*func).name.clone()))
-            }
             Kind::At { .. } => Err(Error::NotAQuery("a read of history")),
             Kind::Transition(..) => Err(Error::NotAQuery("a read of a statement's transition")),
             Kind::Lam(..) | Kind::App(..) => Err(Error::Internal(

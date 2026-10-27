@@ -27,7 +27,7 @@ fn form(schema: &Schema, ty: &Ty) -> Result<Form, Error> {
     Ok(f)
 }
 mod time;
-mod unicode;
+pub(super) mod unicode;
 
 use num::Rounding;
 use time::MICROS_PER_DAY;

@@ -515,7 +515,9 @@ can be torn.
 ### 5.3 Blocks and segments
 
 The log is a sequence of preallocated segment files in the database's
-log directory, named by the LSN of their first byte. The log is written
+log directory, `storage::Options::log_dir()` of the options the pager
+opens with, named by the LSN of their first byte. The data file and
+that directory are every file a database has. The log is written
 with direct I/O in whole blocks of the device's logical block size.
 Each group commit (§10) is one batch of whole blocks, padded after its
 last record.

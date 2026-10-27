@@ -366,6 +366,33 @@ fn the_schema_may_declare_principal_once() {
 }
 
 #[test]
+fn a_principal_without_the_required_constructors_is_refused() {
+    let shapes = [
+        "type Principal = Admin | Guest",
+        "type Principal = EndUser { u: Text } | Service { name: I64 } | Anonymous",
+        "type Principal = EndUser { u: Text } | Service { name: Text } | Anonymous { why: Text }",
+        "type Principal = EndUser { u: Text } | Service { name: Text }",
+        "type Principal = EndUser { u: Text } | Service { name: Text } | Anonymous | Robot",
+        "type Principal { at: Text } = EndUser { u: Text } | Service { name: Text } | Anonymous",
+        "type Principal = Service { name: Text, team: Text } | EndUser | Anonymous",
+    ];
+    for shape in shapes {
+        assert_error(
+            &[&module(shape)],
+            "`Principal` has exactly the constructors",
+        );
+    }
+}
+
+#[test]
+fn a_principal_in_any_constructor_order_checks() {
+    build_src(&[&module(
+        "type Principal = Anonymous | Service { name: Text } | EndUser { id: I64, org: Text }",
+    )])
+    .unwrap();
+}
+
+#[test]
 fn engine_only_relation_forms_are_refused() {
     assert_error(
         &[&module(

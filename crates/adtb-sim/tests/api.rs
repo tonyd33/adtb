@@ -743,7 +743,7 @@ fn a_read_after_a_position_past_the_history_is_refused() {
 }
 
 #[test]
-fn a_deadline_is_refused_until_the_engine_runs_one() {
+fn a_call_whose_deadline_passed_before_it_starts_is_refused_with_deadline_exceeded() {
     once(0, |rt| {
         let db = open(&rt);
         let opts = CallOptions {
@@ -751,7 +751,15 @@ fn a_deadline_is_refused_until_the_engine_runs_one() {
             ..CallOptions::default()
         };
         let got = db.query_text(NAMES, &[], &opts);
-        assert!(got.as_ref().is_err_and(is_invalid), "{got:?}");
+        assert!(
+            matches!(
+                got,
+                Err(Error::Rejected {
+                    reason: RejectReason::DeadlineExceeded
+                })
+            ),
+            "{got:?}"
+        );
     });
 }
 

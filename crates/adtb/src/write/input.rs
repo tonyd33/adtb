@@ -30,6 +30,9 @@ pub struct Local {
 pub enum Input {
     /// The rows of temp relation `rel` of the constructors `ctors`, or of all.
     Temp { rel: RelId, ctors: Option<CtorSet> },
+    /// The rows the engine holds for volatile relation `rel` of the constructors `ctors`, or of
+    /// all.
+    Volatile { rel: RelId, ctors: Option<CtorSet> },
     /// The rows of the files `path` names, read in `format` at `row`.
     File {
         format: FileFormat,
@@ -43,8 +46,8 @@ pub fn is_temp(schema: &Schema, rel: RelId) -> bool {
     schema.module(schema.relation(rel).module).name == TEMP_MODULE
 }
 
-/// Replaces each read of a temp relation and each file scan reachable from `root` by a variable
-/// of its own. Returns what each variable stands for.
+/// Replaces each read of a temp or volatile relation and each file scan reachable from `root` by
+/// a variable of its own. Returns what each variable stands for.
 pub fn rewrite(schema: &Schema, terms: &mut Terms, root: Tm) -> BTreeMap<Var, Input> {
     let mut out = BTreeMap::new();
     let mut seen = HashSet::new();
@@ -55,6 +58,10 @@ pub fn rewrite(schema: &Schema, terms: &mut Terms, root: Tm) -> BTreeMap<Var, In
         }
         let input = match terms.kind(t) {
             Kind::Rel(r, s) if is_temp(schema, *r) => Some(Input::Temp {
+                rel: *r,
+                ctors: s.clone(),
+            }),
+            Kind::Rel(r, s) if schema.relation(*r).volatile => Some(Input::Volatile {
                 rel: *r,
                 ctors: s.clone(),
             }),

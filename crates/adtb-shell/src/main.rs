@@ -4,7 +4,7 @@ mod text;
 
 use std::ffi::OsString;
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use adtb::{CreateOptions, Log, OpenOptions};
@@ -116,17 +116,7 @@ fn shell(args: &Args) -> Result<bool, String> {
         create: args.create.then(CreateOptions::default),
         ..OpenOptions::default()
     };
-    let fresh = args.create && !file.exists() && !log_dir(file).exists();
-    let db = match adtb::open(file, &log, &options) {
-        Ok(db) => db,
-        Err(e) => {
-            let why = format!("{}: {e}", file.display());
-            if fresh {
-                remove(file).map_err(|r| format!("{why}\n{}: {r}", file.display()))?;
-            }
-            return Err(why);
-        }
-    };
+    let db = adtb::open(file, &log, &options).map_err(|e| format!("{}: {e}", file.display()))?;
     let interactive = args.text.is_none() && io::stdin().is_terminal();
     let mut session = Session::new(&db, io::stdout(), io::stderr());
     let ran = match &args.text {
@@ -153,22 +143,6 @@ fn log(paths: &[PathBuf]) -> Result<Log, String> {
         });
     }
     Ok(Log::new(texts))
-}
-
-/// Returns the log directory beside database file `file`.
-fn log_dir(file: &Path) -> PathBuf {
-    let mut dir = file.as_os_str().to_owned();
-    dir.push("-log");
-    dir.into()
-}
-
-/// Remove database file `file` and its log directory.
-fn remove(file: &Path) -> io::Result<()> {
-    std::fs::remove_file(file)?;
-    match std::fs::remove_dir_all(log_dir(file)) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
-    }
 }
 
 /// Read `input` a line at a time, running each text and each command, prompting on stdout

@@ -1,10 +1,15 @@
+mod arrow;
 mod bundle;
 mod command;
 mod error;
 #[cfg(target_os = "linux")]
 mod file;
+mod host;
+mod load;
 mod reads;
 mod registered;
+mod settings;
+mod stop;
 mod text;
 mod txn;
 
@@ -20,7 +25,7 @@ use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
-use adtb_sys::lock::Lock;
+use adtb_sys::lock::{Lock, RwLock};
 
 use crate::catalog::{self, Catalog};
 use crate::exec::{self, Budget, Val};
@@ -29,25 +34,30 @@ use crate::runtime::Runtime;
 use crate::storage::{self, LATCHES_PER_THREAD, Pager};
 use crate::write::{self, Bindings, Bounds, Local, Setup, Text, Txn};
 
+pub use arrow::{ArrowSchema, ArrowStream, Field, RecordBatch};
 pub use error::{Error, FatalReason, Fault, Limit, OpenError, RejectReason, RetryReason};
+pub use host::{Determinism, HostFns};
+pub use load::{Appender, Load, LoadOptions, LoadReport};
 pub use registered::{Called, InTxn, Registered, Registration};
+pub use stop::CancelToken;
 pub use text::DynRows;
 pub use txn::{AdHocTransaction, Committed, TxnCallOptions, TxnOptions};
 
+use settings::Settings;
+use stop::Stops;
 use text::Prepared;
 
 /// The schema-owner role an in-process handle acts as.
 const OWNER_ROLE: &str = "owner";
-
-/// The reruns of ad hoc text that writes, and of a `transact` block run in process, after a
-/// serialization failure when the text states no `retry n`.
-const RETRY_LIMIT: u64 = 5;
 
 const PAGE_SIZE: u32 = 8192;
 const DEFAULT_POOL_FRAMES: usize = 1024;
 const DEFAULT_WORKERS: usize = 8;
 const DEFAULT_QUERY_MEMORY: usize = 256 << 20;
 const STATEMENT_GRANT: usize = 64 << 20;
+/// The submission entries of the io_uring an open tries first.
+#[cfg(target_os = "linux")]
+const URING_ENTRIES: u32 = 256;
 
 /// The program's operator log: the text of each migration, in order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -69,7 +79,7 @@ impl Log {
 pub struct CreateOptions {}
 
 /// The settings fixed while a handle is open.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct OpenOptions {
     /// Create the file when it does not exist; `None` fails open with `NotFound` instead.
     pub create: Option<CreateOptions>,
@@ -83,6 +93,8 @@ pub struct OpenOptions {
     pub file_root: Option<PathBuf>,
     /// What open registers once its migrations apply, all or none.
     pub registrations: Vec<Registration>,
+    /// The bodies of the schema's host functions, bound before migrations run.
+    pub host_fns: HostFns,
 }
 
 impl OpenOptions {
@@ -101,6 +113,42 @@ impl OpenOptions {
             threads,
             ..storage::Options::new(name)
         }
+    }
+
+    /// Returns each setting as `sys::process_options` shows it.
+    fn shown(&self) -> Vec<settings::Shown> {
+        let shown = |name, value: String, given: bool| settings::Shown {
+            name,
+            value,
+            derived: !given,
+        };
+        let pool = self.storage("").pool_frames as u64 * u64::from(PAGE_SIZE);
+        let memory = self
+            .query_memory_bytes
+            .unwrap_or(DEFAULT_QUERY_MEMORY as u64);
+        let rounds = self
+            .fix_rounds
+            .unwrap_or(exec::Options::default().fix_rounds);
+        let root = self
+            .file_root
+            .as_ref()
+            .map_or_else(|| ".".to_owned(), |p| p.display().to_string());
+        vec![
+            shown("pool_bytes", pool.to_string(), self.pool_bytes.is_some()),
+            shown(
+                "query_memory_bytes",
+                memory.to_string(),
+                self.query_memory_bytes.is_some(),
+            ),
+            shown(
+                "workers",
+                self.workers().to_string(),
+                self.workers.is_some(),
+            ),
+            shown("fix_rounds", rounds.to_string(), self.fix_rounds.is_some()),
+            shown("file_root", root, self.file_root.is_some()),
+            shown("host_fns", self.host_fns.names().join(", "), true),
+        ]
     }
 }
 
@@ -149,10 +197,21 @@ pub struct CallOptions {
     pub assert: Option<Val>,
     /// The rounds a fixpoint of the call may take, else the limit the database was opened with.
     pub fix_rounds: Option<usize>,
+    pub cancel: Option<CancelToken>,
+}
+
+impl CallOptions {
+    fn stops(&self) -> Stops<'_> {
+        Stops {
+            cancel: self.cancel.as_ref(),
+            deadline: self.deadline,
+            limit: self.limit,
+        }
+    }
 }
 
 /// A handle on an open database file. Clones share one engine, which closes when the last
-/// handle is dropped.
+/// handle is dropped or when any handle is closed.
 #[derive(Debug)]
 pub struct Database<R: Runtime = adtb_sys::os::OsRuntime> {
     engine: Arc<Engine<R>>,
@@ -172,13 +231,18 @@ struct Engine<R: Runtime> {
     program: Arc<Program>,
     /// The registered queries of the live bundles, which `explain B::q(args)` names.
     bundles: Bundles,
-    registered: Vec<registered::Checked>,
+    registered: Vec<Arc<registered::Checked>>,
     /// The rows of `catalog::bundles`, by bundle name, as the latest commit holds them.
     deployed: Lock<BTreeMap<String, bundle::Row>>,
+    /// The file settings, as the latest commit holds them.
+    settings: Lock<Settings>,
     pager: Pager<R>,
     db: write::Database<R>,
+    /// Whether the engine is open. A call holds it shared while it runs; close holds it
+    /// exclusively.
+    open: RwLock<bool>,
     #[cfg(target_os = "linux")]
-    held: Option<file::Held>,
+    held: Lock<Option<file::Held>>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Engine<R> {
@@ -192,7 +256,31 @@ impl<R: Runtime> std::fmt::Debug for Engine<R> {
 impl<R: Runtime> Drop for Engine<R> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
+            self.shut();
+        }
+    }
+}
+
+impl<R: Runtime> Engine<R> {
+    /// Returns the engine held open for one call, or refuses a call of a closed database.
+    fn enter(&self) -> Result<std::sync::RwLockReadGuard<'_, bool>, Error> {
+        let open = self.open.read(&self.rt);
+        if *open {
+            Ok(open)
+        } else {
+            Err(Error::invalid("the database is closed"))
+        }
+    }
+
+    /// Close the engine once every running call has returned: write every changed page, take a
+    /// checkpoint, close the files and release the lock on the database file. Every later call
+    /// is refused.
+    fn shut(&self) {
+        let mut open = self.open.write(&self.rt);
+        if std::mem::replace(&mut *open, false) {
             self.pager.close();
+            #[cfg(target_os = "linux")]
+            drop(self.held.lock(&self.rt).take());
         }
     }
 }
@@ -231,16 +319,18 @@ impl<R: Runtime> Database<R> {
         opts: &CallOptions,
     ) -> Result<Vec<DynRows>, Error> {
         let e = &*self.engine;
+        let _open = e.enter()?;
         let caller = e.principal(opts.assert.as_ref())?;
         let p = Prepared::new(&e.schema, &e.program, &e.bundles, text, params, caller)?;
         e.call(&p, opts).map(|done| done.value)
     }
 
-    /// Close the handle. The engine closes, writing every changed page, taking a checkpoint,
-    /// closing its files and releasing the lock on the database file, once no other handle is
-    /// open.
+    /// Close the database once every running call has returned: write every changed page, take
+    /// a checkpoint, close the files and release the lock on the database file. Interactive
+    /// transactions still open end uncommitted, and every later call through any handle on the
+    /// database, a clone or a registration, is refused as the database is closed.
     pub fn close(self) -> Result<(), Error> {
-        drop(self);
+        self.engine.shut();
         Ok(())
     }
 }
@@ -249,24 +339,60 @@ impl<R: Runtime> Database<R> {
 impl Database<adtb_sys::os::OsRuntime> {
     /// Open or create the database file at `path` under the host's runtime, locking it against
     /// every other open, and apply the migrations of `log` beyond the file's own.
+    ///
+    /// The runtime runs on io_uring where the host allows it, else on a pool of threads. An open
+    /// that creates the file and then fails removes the file and its log, leaving nothing behind.
     pub fn open(
         path: impl AsRef<std::path::Path>,
         log: &Log,
         options: &OpenOptions,
     ) -> Result<Database, OpenError> {
-        let (held, dir, name) = file::Held::take(path.as_ref(), options.create.is_some())?;
-        let rt = adtb_sys::os::OsRuntime::new(
-            dir,
-            adtb_sys::os::Backend::Pool {
-                threads: options.workers(),
-            },
-        );
-        let mut engine = Engine::open(rt, &name, log, options)?;
-        engine.held = Some(held);
-        Ok(Database {
-            engine: Arc::new(engine),
-        })
+        let path = path.as_ref();
+        let fresh = options.create.is_some() && !path.exists();
+        let (held, dir, name) = file::Held::take(path, options.create.is_some())?;
+        let rt = os_runtime(&dir, options.workers());
+        match Engine::open(rt, &name, log, options) {
+            Ok(engine) => {
+                *engine.held.lock(&engine.rt) = Some(held);
+                Ok(Database {
+                    engine: Arc::new(engine),
+                })
+            }
+            Err(e) => {
+                drop(held);
+                if fresh {
+                    let log_dir = dir.join(options.storage(&name).log_dir());
+                    remove(&dir.join(&name), &log_dir)?;
+                }
+                Err(e)
+            }
+        }
     }
+}
+
+/// Returns the host's runtime over directory `dir`: on io_uring where the host allows it, else
+/// on a pool of `workers` threads.
+#[cfg(target_os = "linux")]
+fn os_runtime(dir: &std::path::Path, workers: usize) -> adtb_sys::os::OsRuntime {
+    use adtb_sys::os::{Backend, OsRuntime};
+    OsRuntime::try_new(
+        dir,
+        Backend::Uring {
+            entries: URING_ENTRIES,
+        },
+    )
+    .unwrap_or_else(|_| OsRuntime::new(dir, Backend::Pool { threads: workers }))
+}
+
+/// Remove the database file `file` and its log directory `log`, whichever exist.
+#[cfg(target_os = "linux")]
+fn remove(file: &std::path::Path, log: &std::path::Path) -> Result<(), OpenError> {
+    let gone = |r: std::io::Result<()>| match r {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(OpenError::Io(e)),
+        _ => Ok(()),
+    };
+    gone(std::fs::remove_file(file))?;
+    gone(std::fs::remove_dir_all(log))
 }
 
 /// Open or create the database file at `path`, as [`Database::open`] does.
@@ -345,23 +471,29 @@ impl<R: Runtime> Engine<R> {
             &headers,
             micros(pager.wall()),
         )?;
+        let applied = catalog.source().log.len();
+        options
+            .host_fns
+            .check(catalog.schema(), &host::pending(log, applied))?;
         migrate(&mut catalog, &pager, &txns, log)?;
         let schema = catalog.schema().clone();
         let program = catalog.program().clone();
-
+        let settings = Settings::stored(&catalog, &pager, &txns)?;
         let normal = norm::program(&schema, &program).map_err(corrupt)?;
+        options.host_fns.bound(&schema, &normal)?;
         let plan = catalog.plan();
         let root = catalog.root();
         let sequences = catalog.sequences();
         let (heaps, indexes) = catalog.bindings();
         let schema = Arc::new(schema);
         let now = micros(pager.wall());
-        let registered = registered::register(&catalog, &schema, &program, regs, &stored, now)?;
+        let registered =
+            registered::register(&catalog, &schema, &program, regs, &stored, now, &settings)?;
         let bundled: Vec<_> = registered
             .iter()
             .filter_map(registered::Checked::bundle)
             .collect();
-        let deployed = bundle::register(&catalog, &pager, &txns, stored, &bundled, now)?;
+        let deployed = bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)?;
         let mut bundles = Bundles::default();
         for c in &registered {
             c.explained(&mut bundles);
@@ -391,7 +523,9 @@ impl<R: Runtime> Engine<R> {
             },
         )
         .map_err(corrupt)?
-        .with_files(options.file_root.clone().map(Disk::new).unwrap_or_default());
+        .with_files(options.file_root.clone().map(Disk::new).unwrap_or_default())
+        .with_hosts(Arc::new(options.host_fns.hosts()))
+        .with_volatile(settings::process_options(&schema, &options.shown()));
         if sequences.is_none() {
             Catalog::name_sequences(&pager, root, db.sequences_root()).map_err(corrupt)?;
         }
@@ -400,12 +534,14 @@ impl<R: Runtime> Engine<R> {
             schema,
             program,
             bundles,
-            registered,
+            registered: registered.into_iter().map(Arc::new).collect(),
             deployed: Lock::new(deployed),
+            settings: Lock::new(settings),
             pager,
             db,
+            open: RwLock::new(true),
             #[cfg(target_os = "linux")]
-            held: None,
+            held: Lock::new(None),
         })
     }
 
@@ -450,14 +586,14 @@ impl<R: Runtime> Engine<R> {
                             "a deployment command was refused".into(),
                         ));
                     }
-                    None => ran.push((at, self.command(tx, p, &c.command, local, bounds)?)),
+                    None => ran.push((at, self.command(tx, p, &c.command, local, bounds.clone())?)),
                 }
             }
             Ok(())
         };
         let done = self
             .db
-            .statements_with(tx, text, local, bounds, &mut between);
+            .statements_with(tx, text, local, bounds.clone(), &mut between);
         match (done, refused) {
             (Err(_), Some(e)) => Err((e, false)),
             (Ok(outcomes), _) => p.results(schema, outcomes, ran).map_err(|e| (e, true)),
@@ -501,17 +637,17 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Run `p` as one transaction of its own under `opts`: read-only when `p` only reads, else
-    /// rerun on a serialization failure up to `opts.retry`, else `p`'s `retry n`, else the retry
-    /// limit. Returns the rows of each item that yields a result, with the commit position and
-    /// the attempts made.
+    /// rerun on a serialization failure up to `opts.retry`, else `p`'s `retry n`, else the file
+    /// setting `RetryLimit`. Returns the rows of each item that yields a result, with the commit
+    /// position and the attempts made.
+    ///
+    /// A call whose token is cancelled, or whose deadline passes, before it commits fails with
+    /// `Cancelled` or `DeadlineExceeded` and has no effect.
     fn call(&self, p: &Prepared, opts: &CallOptions) -> Result<Committed<Vec<DynRows>>, Error> {
-        if opts.deadline.is_some() || opts.limit.is_some() {
-            return Err(unsupported("a deadline or statement limit on a call"));
-        }
+        let stops = opts.stops();
+        stops.check(&self.rt)?;
         self.reads_after(opts.after)?;
-        let bounds = Bounds {
-            fix_rounds: opts.fix_rounds,
-        };
+        let bounds = stops.bounds(&self.rt, opts.fix_rounds);
         if !p.writes {
             let id = self.txn_id();
             let tx = self.begin_read(id, p.deferrable)?;
@@ -523,12 +659,14 @@ impl<R: Runtime> Engine<R> {
                     attempts: 1,
                 });
         }
-        let reruns = opts.retry.map_or(p.retry.unwrap_or(RETRY_LIMIT), u64::from);
+        let limit = self.settings.lock(&self.rt).retries;
+        let reruns = opts.retry.map_or(p.retry.unwrap_or(limit), u64::from);
         let mut attempts = 1;
         loop {
+            stops.check(&self.rt)?;
             let id = self.txn_id();
             let tx = self.begin(id)?;
-            match self.run(id, tx, p, bounds) {
+            match self.run(id, tx, p, bounds.clone()) {
                 Err(err) if err.is_serialization() && u64::from(attempts) <= reruns => {
                     attempts += 1;
                 }
@@ -552,9 +690,19 @@ impl<R: Runtime> Engine<R> {
         p: &Prepared,
         bounds: Bounds,
     ) -> Result<(Vec<DynRows>, Position), Error> {
+        let (cancel, deadline) = (bounds.cancel.clone(), bounds.deadline);
         let rows = self
             .statements(id, &tx, p, &mut Local::default(), bounds)
-            .map_err(|(e, _)| e);
+            .map_err(|(e, _)| e)
+            .and_then(|rows| {
+                if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Acquire)) {
+                    Err(Error::rejected(RejectReason::Cancelled))
+                } else if deadline.is_some_and(|d| self.rt.now() >= d) {
+                    Err(Error::rejected(RejectReason::DeadlineExceeded))
+                } else {
+                    Ok(rows)
+                }
+            });
         match rows {
             Ok(rows) => {
                 let at = self.db.commit(tx).map_err(|e| self.write_error(id, e))?;

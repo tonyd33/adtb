@@ -6,11 +6,12 @@ use adtb_lang::types::Ty;
 
 use crate::exec::Val;
 use crate::runtime::Runtime;
-use crate::write::{Bounds, Local, Txn};
+use crate::write::{Local, Txn};
 
 use super::error::FatalReason;
+use super::stop::{CancelToken, Stops};
 use super::text::{DynRows, Prepared};
-use super::{Database, Durability, Engine, Error, Position, TxnId, unsupported};
+use super::{Database, Durability, Engine, Error, Position, TxnId};
 
 /// The options of an interactive transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -38,6 +39,8 @@ pub struct TxnCallOptions {
     pub priority: Option<u8>,
     /// The rounds a fixpoint of the call may take, else the limit the database was opened with.
     pub fix_rounds: Option<usize>,
+    /// A cancelled call has no effect and leaves the transaction open.
+    pub cancel: Option<CancelToken>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +71,9 @@ pub struct AdHocTransaction<'a, R: Runtime = adtb_sys::os::OsRuntime> {
     /// has.
     temps: Option<Arc<Schema>>,
     local: Local,
+    /// The deadline and statement limit of every call of the transaction.
+    deadline: Option<SystemTime>,
+    limit: Option<Duration>,
 }
 
 impl<R: Runtime> Database<R> {
@@ -78,12 +84,14 @@ impl<R: Runtime> Database<R> {
         if opts.deferrable && !opts.read_only {
             return Err(Error::invalid("only a read-only transaction is deferrable"));
         }
-        if opts.deadline.is_some() || opts.limit.is_some() {
-            return Err(unsupported(
-                "a deadline or statement limit on a transaction",
-            ));
-        }
         let e = &*self.engine;
+        let _open = e.enter()?;
+        let txn = Stops {
+            cancel: None,
+            deadline: opts.deadline,
+            limit: None,
+        };
+        txn.check(&e.rt)?;
         let caller = e.principal(opts.assert.as_ref())?;
         e.reads_after(opts.after)?;
         let id = e.txn_id();
@@ -100,6 +108,8 @@ impl<R: Runtime> Database<R> {
             state: State::Open(tx),
             temps: None,
             local: Local::default(),
+            deadline: opts.deadline,
+            limit: opts.limit,
         })
     }
 
@@ -168,34 +178,39 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         if self.read_only && p.writes {
             return Err(Error::invalid("a read-only transaction does not write"));
         }
-        let bounds = Bounds {
-            fix_rounds: opts.fix_rounds,
-        };
-        let rows = self.run(&p, opts, bounds)?;
+        let rows = self.run(&p, opts)?;
         self.temps = Some(p.schema().clone());
         Ok(rows)
     }
 
-    /// Runs the items of `p` as one call of the transaction. Returns the rows of each item that
-    /// yields a result, in item order.
+    /// Runs the items of `p` as one call of the transaction under `opts` and the transaction's
+    /// own deadline and limit. Returns the rows of each item that yields a result, in item
+    /// order.
     pub(super) fn run(
         &mut self,
         p: &Prepared,
         opts: &TxnCallOptions,
-        bounds: Bounds,
     ) -> Result<Vec<DynRows>, Error> {
+        let e = self.engine;
+        let _open = e.enter()?;
         let tx = match &self.state {
             State::Open(tx) => tx,
             State::Ended(err) => return Err(err.clone()),
             State::Closed => unreachable!("a transaction is closed only as it is consumed"),
         };
-        if opts.deadline.is_some() || opts.limit.is_some() {
-            return Err(unsupported("a deadline or statement limit on a call"));
-        }
-        let (err, ends) = match self
-            .engine
-            .statements(self.id, tx, p, &mut self.local, bounds)
-        {
+        let call = Stops {
+            cancel: opts.cancel.as_ref(),
+            deadline: opts.deadline,
+            limit: opts.limit,
+        };
+        let stops = call.within(Stops {
+            cancel: None,
+            deadline: self.deadline,
+            limit: self.limit,
+        });
+        stops.check(&e.rt)?;
+        let bounds = stops.bounds(&e.rt, opts.fix_rounds);
+        let (err, ends) = match e.statements(self.id, tx, p, &mut self.local, bounds) {
             Ok(rows) => return Ok(rows),
             Err(failed) => failed,
         };
@@ -209,6 +224,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     ///
     /// A database without replicas commits at `local` whatever level `_durability` names.
     pub fn commit(mut self, _durability: Option<Durability>) -> Result<Position, Error> {
+        let _open = self.engine.enter()?;
         match std::mem::replace(&mut self.state, State::Closed) {
             State::Open(tx) => self
                 .engine
@@ -221,8 +237,13 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         }
     }
 
-    /// Roll the transaction back.
+    /// Roll the transaction back. A transaction of a closed database ended uncommitted when it
+    /// closed.
     pub fn rollback(mut self) -> Result<(), Error> {
+        let Ok(_open) = self.engine.enter() else {
+            self.state = State::Closed;
+            return Ok(());
+        };
         match std::mem::replace(&mut self.state, State::Closed) {
             State::Open(tx) => self.engine.abort(self.id, tx),
             State::Ended(_) | State::Closed => Ok(()),
@@ -241,6 +262,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
 impl<R: Runtime> Drop for AdHocTransaction<'_, R> {
     fn drop(&mut self) {
         if let State::Open(tx) = std::mem::replace(&mut self.state, State::Closed)
+            && let Ok(_open) = self.engine.enter()
             && let Err(e) = self.engine.abort(self.id, tx)
             && !std::thread::panicking()
         {
