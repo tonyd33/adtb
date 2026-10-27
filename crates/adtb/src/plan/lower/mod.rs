@@ -1513,6 +1513,7 @@ impl Planner<'_> {
         q: &mut QueryCx,
         sc: &Scope,
     ) -> Result<Chain, Error> {
+        let outer = sc;
         let (all, rest) = self.pulled(body);
         let n = self.total_prefix(&all);
         let mut pre = Vec::new();
@@ -1536,6 +1537,19 @@ impl Planner<'_> {
                 PROBE_COST + PROBE_ROWS
             };
             options.push((sc.rows * per, Access::Index(probe)));
+        }
+        if options.is_empty() && ctors.len() > 1 && (self.rw.index_join || self.bounded) {
+            let each: Vec<CtorSet> = ctors.iter().map(|&c| CtorSet::from([c])).collect();
+            if each
+                .iter()
+                .all(|one| self.index_for(r, one, y, &conds, rest).is_some())
+            {
+                let arms = each
+                    .iter()
+                    .map(|one| self.join(r, one, y, body, q, outer))
+                    .collect::<Result<_, _>>()?;
+                return Ok(chain(Vec::new(), End::Fork(arms)));
+            }
         }
         if self.bounded && options.is_empty() {
             return Err(self.unbounded(r, ctors, y, &conds));

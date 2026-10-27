@@ -187,11 +187,6 @@ fn release_1_3_adds_quest_states() {
 }
 
 #[test]
-fn release_1_3_applies_over_release_1_1() {
-    assert_eq!(3, migrated(&version(2), MIGRATIONS[3]).version);
-}
-
-#[test]
 fn the_bundle_parses() {
     if let Err(ds) = parse_bundle(BUNDLE, Options::default()).ok() {
         panic!("{}", rendered(BUNDLE, &ds));

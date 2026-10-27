@@ -142,6 +142,8 @@ scrutinee covers the new constructor, wherever it sits.
 
 Resolved 2026-10-26: split and merge now type the routing at the retyped types and drop retyping edits that fall inside a replaced constructor's own text (`migration-text-corruption`).
 
+That fixed the front end only. The engine still refused release 1.2 at open: `constraint campaign::location_parent_in_campaign is not admitted: changes to campaign::entities.(Region | Settlement | Site): index (parent) in campaign::entities.(Region | Settlement | Site) is missing`. Each product holds its own `parent` field with its own implied index, and the bounded check looked for one index over all three. Resolved 2026-10-26 (`campaign-release-1-2-refused-by-engine`): a read of a constructor set that no one index covers goes through each constructor's own index, as constraints.md §5.1 allows. The full 1.2 and 1.3 logs open in the engine, fresh and over 1.1 rows.
+
 Written, release 1.2 (`schema/migrations/0003.adt`):
 
 ```adt fragment
@@ -186,10 +188,9 @@ the products declare a reference to the constructor being split, or
 that the routing types a carried field at its retyped type. The spec
 should say both; the text corruption is a bug whichever is chosen.
 
-Cost: release 1.2 does not apply, and so neither does the full log of
-1.3. `release_1_3_applies_over_release_1_1` and
-`release_1_3_shelves_a_quest_over_release_1_1` check 0004 on top of
-0002 alone.
+Cost, until both fixes: release 1.2 did not apply, and so neither did
+the full log of 1.3; the tests checked 0004 on top of 0002 alone. They
+now apply the full logs.
 
 ### Within one migration, only `Key r` may name a relation added later
 
@@ -281,15 +282,17 @@ Not faults. Each costs the application code the spec could save it.
 
 ## Failing tests
 
-As of 2026-10-26, with `cargo test -p campaign`: 21 of 21 tests pass.
-No test fails.
+As of 2026-10-26, with `cargo nextest run` in `apps/campaign`: 25 of 25
+tests pass. No test fails.
 
 The schema file checks, is the fold of migration 0001 and replays as a
 first migration; releases 1.1 to 1.3 apply in the front end; all 50
 registered queries and transactions check at version 1; and in the
-engine both constraints are admitted, version 1 opens, upgrades to 1.1
-with its rows, and runs prep, discovery, an encounter, a death, a
-closed quest and two colliding planners as the design describes.
+engine both constraints are admitted, every release opens fresh,
+1.1 upgrades 1.0 rows, 1.2 and 1.3 route 1.1 locations by scale and
+keep a split location's parent in its campaign, and the app runs prep,
+discovery, an encounter, a death, a closed quest, a shelved quest and
+two colliding planners as the design describes.
 
 With admission and migration text fixed, the app could now restore the
 match-scoped `discovery_in_campaign` constraint and the path forms it

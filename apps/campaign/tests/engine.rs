@@ -529,10 +529,11 @@ fn two_gms_planning_the_same_session_number_do_not_both_commit() {
 
 #[test]
 fn release_1_3_shelves_a_quest_over_release_1_1() {
-    let mut log = migrations(2);
-    log.push(MIGRATIONS[3].to_string());
-    let app = App::with(scratch("shelve"), &Log::new(log));
+    let path = scratch("shelve");
+    let app = App::at(path.clone(), 2);
     let w = world(&app);
+    app.db.close().expect("close");
+    let app = App::at(path, 4);
     let s = live_session(&app, &w);
     let q = app.one(
         "add_quest",
@@ -559,5 +560,113 @@ fn release_1_3_shelves_a_quest_over_release_1_1() {
     assert!(
         format!("{reopened:?}").contains("closed_quests_stay_closed"),
         "an abandoned quest joins the closed set: {reopened:?}"
+    );
+}
+
+#[test]
+fn release_1_2_opens() {
+    App::open("opens-1-2", 3);
+}
+
+#[test]
+fn release_1_3_opens() {
+    App::open("opens-1-3", 4);
+}
+
+/// Returns the names of the rows of `scope`, sorted.
+fn names(app: &App, scope: &str) -> Vec<String> {
+    let mut out = app
+        .adhoc(&format!("from e in {scope} select e.name"))
+        .unwrap_or_else(|e| panic!("{scope}: {e:?}"));
+    out.sort();
+    out
+}
+
+/// Build `w` and a realm and a site under its keep at release 1.1, then reopen the database
+/// at the first `n` migrations. Returns the site's key.
+fn located_over_release_1_1(path: PathBuf, n: usize) -> (App, World, String) {
+    let app = App::at(path.clone(), 2);
+    let w = world(&app);
+    app.one(
+        "add_location",
+        &[
+            &w.campaign,
+            &text("Vael"),
+            &text("The old empire"),
+            "None",
+            "Realm",
+        ],
+    );
+    let gate = app.one(
+        "add_location",
+        &[
+            &w.campaign,
+            &text("The Gate"),
+            &text("Under the keep"),
+            &some(&w.keep),
+            "Spot",
+        ],
+    );
+    app.db.close().expect("close");
+    (App::at(path, n), w, gate)
+}
+
+#[test]
+fn release_1_2_routes_locations_by_scale_over_release_1_1() {
+    let (app, w, gate) = located_over_release_1_1(scratch("split"), 3);
+    assert_eq!(vec![text("Vael")], names(&app, "entities.Region"));
+    assert_eq!(vec![text("Greyhold")], names(&app, "entities.Settlement"));
+    assert_eq!(vec![text("The Gate")], names(&app, "entities.Site"));
+    let parent = app
+        .adhoc(&format!(
+            "from s in entities.Site where key s == {gate} select s.parent"
+        ))
+        .expect("the site's parent");
+    assert_eq!(vec![some(&w.keep)], parent);
+    let location = app
+        .adhoc(&format!(
+            "from n in entities.Npc where key n == {} select n.location",
+            w.warden
+        ))
+        .expect("the warden's location");
+    assert_eq!(vec![some(&w.keep)], location);
+}
+
+#[test]
+fn release_1_3_routes_locations_by_scale_over_release_1_1() {
+    let (app, _, _) = located_over_release_1_1(scratch("split-1-3"), 4);
+    assert_eq!(vec![text("Vael")], names(&app, "entities.Region"));
+    assert_eq!(vec![text("Greyhold")], names(&app, "entities.Settlement"));
+    assert_eq!(vec![text("The Gate")], names(&app, "entities.Site"));
+}
+
+#[test]
+fn a_split_location_and_its_parent_stay_in_one_campaign() {
+    let (app, w, _) = located_over_release_1_1(scratch("split-parent"), 3);
+    let other = app.one(
+        "new_campaign",
+        &[&text("Salt Roads"), &text("Caravans"), &text("The Drovers")],
+    );
+    let stray = app.adhoc_with(
+        &format!(
+            "insert entities.Site {{ campaign: {other}, name: \"Waystone\", parent: parent }}"
+        ),
+        &[(
+            "parent",
+            "Option (Key entities.(Region | Settlement | Site))",
+            &some(&w.keep),
+        )],
+    );
+    assert!(
+        format!("{stray:?}").contains("location_parent_in_campaign"),
+        "{stray:?}"
+    );
+    let moved = app.adhoc(&format!(
+        "update x in entities.Settlement where key x == {} set Settlement {{ x with campaign: {other} }}",
+        w.keep
+    ));
+    assert!(
+        format!("{moved:?}").contains("location_parent_in_campaign"),
+        "the gate under the keep stays in the first campaign: {moved:?}"
     );
 }

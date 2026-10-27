@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 703
 summary: "catalog reads bypass snapshots, heap ids and order keys are not persisted, and a redone create reuses xids"
+closed: 2026-10-26
 depends-on:
   - bootstrap-catalog
 tags:
@@ -30,3 +31,13 @@ tags:
 ## 2026-10-25: progress
 
 Done on main: catalog reads go through snapshots, the next heap id is stored, and kept order keys are read back rather than respread. Unverified: the next xid across a redone create, and the type conversion duplicated between `catalog/layout.rs` and the sim exec tests.
+
+## 2026-10-26: done
+
+All five items verified with tests in `crates/adtb-sim/tests/catalog.rs`. Catalog reads go through snapshots: `a_snapshot_taken_before_a_migration_reads_the_catalog_rows_of_the_version_before`. The stored next heap id: `a_migration_after_a_reopen_gives_its_new_heaps_ids_no_heap_had`. Kept order keys: `a_migrated_catalog_reopens_to_the_same_structures`. The next xid across a redone create: the redo opens the kept commit log, whose open assigns no id assigned before the crash; `a_crash_at_every_flush_during_create_reopens_to_a_whole_catalog` now checks that a create redone over a named catalog commits under an id above the uninterrupted create's. The type conversion: the sim tests use `catalog::layout` through `tests/support`. No engine code changed for this ticket.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed with the cat track.

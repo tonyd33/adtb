@@ -32,3 +32,7 @@ Constraints, transition reads and writes are planned by
 ## 2026-10-26: user aggregates
 
 A user aggregate folds sequentially: its `merge` part is unused, so no parallel fold, and it skips the fused group-aggregate rewrite in `crates/adtb/src/plan/lower.rs` (about line 1769). `exec/ir.rs` `agg()` keeps an unreachable `Agg::User` arm. `docs/design/planner.md` does not exist, though the planner is a boundary other subsystems call.
+
+## 2026-10-26: per-constructor fork by cost
+
+A join whose constructor set no index covers now forks into one indexed join per constructor, but only when no covering index probe exists. An unbounded plan could weigh that fork against other access paths by cost.

@@ -186,6 +186,11 @@ fn a_crash_at_every_flush_during_create_reopens_to_a_whole_catalog() {
     let seed = 2;
     let (sim, start) = created(seed);
     let recording = sim.recording();
+    let whole = recording.images(recording.len(), 1, seed).swap_remove(0);
+    let (_, first) = reopened_commits(seed, whole);
+    let [first] = first[..] else {
+        panic!("one commit creates the catalog: {first:?}")
+    };
     let flushes: Vec<usize> = recording
         .flushes()
         .into_iter()
@@ -193,11 +198,26 @@ fn a_crash_at_every_flush_during_create_reopens_to_a_whole_catalog() {
         .collect();
     assert!(flushes.len() > 4, "{} flushes", flushes.len());
     let mut found = BTreeSet::new();
+    let mut redone = Vec::new();
     for at in flushes {
         let files = recording.images(at, 1, seed + at as u64).swap_remove(0);
-        found.insert(reopen(seed + at as u64, files).0);
+        let (named, commits) = reopened_commits(seed + at as u64, files);
+        found.insert(named);
+        if named && commits != [first] {
+            redone.push((at, commits));
+        }
     }
     assert_eq!(BTreeSet::from([false, true]), found);
+    assert!(
+        !redone.is_empty(),
+        "no crash point leaves a named catalog whose create commits under a new id"
+    );
+    for (at, commits) in redone {
+        assert!(
+            commits.iter().all(|&x| x > first),
+            "the create redone after a crash at {at} commits {commits:?}, not after {first}"
+        );
+    }
 }
 
 #[test]
@@ -820,4 +840,88 @@ fn a_declared_index_over_fewer_constructors_than_hold_the_field_keeps_the_implie
         rows.iter().filter(|r| r.contains(IMPLIED)).count(),
         "{rows:?}"
     );
+}
+
+/// Returns whether the header of the file `files` named a catalog, and the transaction of every
+/// commit record its log holds once the catalog opens.
+fn reopened_commits(seed: u64, files: BTreeMap<String, Vec<u8>>) -> (bool, Vec<u64>) {
+    let mut sim = Sim::with_files(seed, crash_config(), files);
+    let mut out = (false, Vec::new());
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
+        let found = pager.catalog_root() != Pid(0);
+        let (catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+        check_whole(&pager, &catalog, &txns);
+        out = (found, verify_catalog(&pager, &catalog, &txns).commits);
+    });
+    out
+}
+
+#[test]
+fn a_migration_after_a_reopen_gives_its_new_heaps_ids_no_heap_had() {
+    let (sim, _) = migrated(42);
+    let recording = sim.recording();
+    let files = recording.images(recording.len(), 1, 42).swap_remove(0);
+    let mut sim = Sim::with_files(42, Config::default(), files);
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
+        let (mut catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+        let heaps = |c: &Catalog| -> Vec<u64> {
+            let plan = c.plan();
+            plan.relations
+                .values()
+                .flat_map(|d| d.heaps.values().map(|h| h.0))
+                .collect()
+        };
+        let before: BTreeSet<u64> = heaps(&catalog).into_iter().collect();
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module auth\nadd type Label = { id: Key tags, label: Text }\n\
+                 add relation tags : Label key id generate sequence\n",
+            )
+            .expect("the migration applies");
+        let tags = &catalog.plan().relations[&rel(&catalog, "auth", "tags")];
+        let new: Vec<u64> = tags.heaps.values().map(|h| h.0).collect();
+        assert!(
+            new.iter().all(|h| !before.contains(h)),
+            "tags is stored in {new:?}, among {before:?}"
+        );
+        let after = heaps(&catalog);
+        let distinct: BTreeSet<u64> = after.iter().copied().collect();
+        assert_eq!(
+            after.len(),
+            distinct.len(),
+            "heap ids are distinct: {after:?}"
+        );
+    });
+}
+
+#[test]
+fn a_snapshot_taken_before_a_migration_reads_the_catalog_rows_of_the_version_before() {
+    let mut sim = Sim::new(43, Config::default());
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &small_pool()).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        let relations = rel(&catalog, "catalog", "relations");
+        let (id, before) = txns.take(Scope::Every).expect("a snapshot");
+        catalog
+            .migrate(&pager, &txns, RUNNING)
+            .expect("the migration applies");
+        let names = |snapshot| {
+            let rows = catalog
+                .rows(&pager, &txns, snapshot, relations)
+                .expect("the rows read");
+            sorted(&rows)
+                .into_iter()
+                .filter(|r| r.contains("Text(\"identities\")"))
+                .count()
+        };
+        assert_eq!(0, names(&before), "the snapshot before sees no identities");
+        txns.release(id);
+        let (id, after) = txns.take(Scope::Every).expect("a snapshot");
+        assert_eq!(1, names(&after), "a snapshot after sees identities");
+        txns.release(id);
+    });
 }

@@ -483,7 +483,7 @@ Settlement | Site` names them for later references. `kind_label` gets
 an arm per product.
 
 After 1.2, a field can require a settlement, which 1.3's shops would
-use. This release does not yet apply (`gaps.md`).
+use. The release opens in the engine, fresh and over 1.1 rows.
 
 ### 10.3 Release 1.3: shelved and abandoned quests (`0004`)
 

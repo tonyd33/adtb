@@ -214,6 +214,45 @@ fn has_identity_without_a_declared_index_on_identities_is_admitted_through_the_i
     assert_eq!(Vec::<(String, String)>::new(), why);
 }
 
+/// A sum whose constructors each hold their own reference field `parent`.
+const PLACES: &str = r"
+type Spot { id: Key spots, zone: Text }
+  = Region { parent: Option (Key spots.(Region | Town)) }
+  | Town   { parent: Option (Key spots.(Region | Town)) }
+  | Mark   { label: Text }
+relation spots : Spot key id generate sequence
+";
+
+#[test]
+fn a_join_on_a_field_each_constructor_holds_is_admitted_through_their_implied_indexes() {
+    let decl = "constraint parent_in_zone =
+  from l in spots.(Region | Town), p in spots.(Region | Town)
+  where l.parent == Some { value: key p } and p.zone != l.zone
+  select l";
+    let why = refusals(&format!("{PLACES}\n{decl}\n"));
+    assert_eq!(Vec::<(String, String)>::new(), why);
+}
+
+#[test]
+fn a_join_on_a_field_one_constructor_has_no_index_on_is_refused_naming_the_set() {
+    let src = PLACES
+        .replace("Option (Key spots.(Region | Town))", "Option Text")
+        .replacen(
+            "relation spots : Spot key id generate sequence",
+            "relation spots : Spot key id generate sequence index (zone) index (parent) in Region",
+            1,
+        );
+    let decl = "constraint parent_in_zone =
+  from l in spots.(Region | Town), p in spots.(Region | Town)
+  where l.parent == Some { value: p.zone } and key p != key l
+  select l";
+    let (_, detail) = refused(&format!("{src}\n{decl}\n"));
+    assert_eq!(
+        "changes to app::spots.(Region | Town): index (parent) in app::spots.(Region | Town) is missing",
+        detail
+    );
+}
+
 #[test]
 fn a_constraint_joining_on_a_field_no_index_leads_with_is_refused_naming_it() {
     let src = SPEC.replace(

@@ -17,6 +17,7 @@ adtb-lang = { path = "../../crates/adtb-lang" }
 [lints]
 workspace = true
 
+# From here to the end, this manifest matches the root one; `check` fails otherwise.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unused_qualifications = "deny"
@@ -51,3 +52,7 @@ range_plus_one = "deny"
 too_many_lines = "deny"
 cognitive_complexity = "deny"
 too_many_arguments = "deny"
+
+[profile.test]
+opt-level = 1
+debug = "line-tables-only"

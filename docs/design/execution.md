@@ -81,9 +81,12 @@ Postconditions: those of `plan` with every rewrite on, and:
 
 - On `Ok(p)`, `p` has no `Scan` source and no `Build`: it reads every
   constructor relation through an `Index` end or a `Lookup` whose key
-  holds at least one value, bound before the read.
+  holds at least one value, bound before the read. A read of `ctors`
+  that no one index covers is a `Fork` with one read per constructor
+  of `ctors`, each through an index covering that constructor.
 - `Err(Unbounded { rel, ctors, fields })` when some read of `ctors` of
-  `rel` has no such probe; `fields` are the fields of the read row that
+  `rel` has no such probe, neither over `ctors` nor over each of its
+  constructors; `fields` are the fields of the read row that
   the equalities among its conditions fix, in order of first mention,
   empty when none does.
 - `Err(Outside("fix"))` when `root` holds a `fix`.
