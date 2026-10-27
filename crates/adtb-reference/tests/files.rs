@@ -13,6 +13,7 @@ type Point = { x: I32, y: I32 }
 type Wide = { id: I64, name: Text, nick: Option Text, owner: Key users, level: Level,
               pos: Point, via: Via, amount: Decimal 2, ratio: F64 }
 type Small = { id: I64, name: Text }
+type Named = { name: Text }
 type Identity { id: Key identities, user: Key users } = Google { gid: Text } | Apple { sub: Text }
 relation identities : Identity key id generate sequence
 relation outs : Small key id
@@ -207,6 +208,60 @@ fn a_record_with_another_number_of_fields_than_the_header_does_not_convert() {
 }
 
 #[test]
+fn a_blank_line_in_a_csv_file_is_no_record() {
+    let mut f = fixture();
+    f.files.put("one.csv", "name\nann\n\n");
+    assert_eq!(texts(["ann"]), names(&f, r#"read_csv("one.csv", Named)"#));
+    f.files
+        .put("two.csv", "\nid,name\n\n1,ann\r\n\r\n2,bo\n\n\n");
+    assert_eq!(
+        texts(["ann", "bo"]),
+        names(&f, r#"read_csv("two.csv", Small)"#)
+    );
+}
+
+#[test]
+fn records_are_numbered_without_the_blank_lines() {
+    let mut f = fixture();
+    f.files.put("s.csv", "id,name\n\n1,ann\n\nx,bo\n");
+    let (_, line, _) = bad_input(f.eval(r#"read_csv("s.csv", Small)"#));
+    assert_eq!(2, line);
+}
+
+#[test]
+fn a_bare_carriage_return_ends_a_csv_record() {
+    let mut f = fixture();
+    f.files.put("s.csv", "id,name\r1,ann\r2,\"bo\"\r");
+    assert_eq!(
+        texts(["ann", "bo"]),
+        names(&f, r#"read_csv("s.csv", Small)"#)
+    );
+}
+
+#[test]
+fn a_leading_byte_order_mark_is_not_part_of_the_file() {
+    let mut f = fixture();
+    f.files.put("s.csv", "\u{feff}id,name\n1,ann\n");
+    assert_eq!(texts(["ann"]), names(&f, r#"read_csv("s.csv", Small)"#));
+    f.files
+        .put("s.ndjson", "\u{feff}{\"id\": \"1\", \"name\": \"ann\"}\n");
+    assert_eq!(
+        texts(["ann"]),
+        names(&f, r#"read_ndjson("s.ndjson", Small)"#)
+    );
+}
+
+#[test]
+fn a_byte_order_mark_after_the_start_is_text() {
+    let mut f = fixture();
+    f.files.put("s.csv", "id,name\n1,\u{feff}ann\n");
+    assert_eq!(
+        texts(["\u{feff}ann"]),
+        names(&f, r#"read_csv("s.csv", Small)"#)
+    );
+}
+
+#[test]
 fn a_glob_reads_every_file_it_matches_as_one_relation() {
     let mut f = fixture();
     f.files.put("logs/a.csv", "id,name\n1,ann\n");
@@ -226,6 +281,34 @@ fn a_glob_numbers_records_across_its_files_in_name_order() {
     f.files.put("logs/b.csv", "id,name\nx,cy\n");
     let (source, line, _) = bad_input(f.eval(r#"read_csv("logs/*.csv", Small)"#));
     assert_eq!(("logs/b.csv", 3), (source.as_str(), line));
+}
+
+#[test]
+fn a_glob_with_many_stars_matches_in_polynomial_time() {
+    let mut f = fixture();
+    let long = format!("{}.csv", "a".repeat(40));
+    f.files.put(&long, "id,name\n1,ann\n");
+    assert_eq!(
+        set([]),
+        f.value(r#"read_csv("*a*a*a*a*a*a*a*a*a*a*a*a*b", Small)"#)
+    );
+    assert_eq!(
+        texts(["ann"]),
+        names(&f, r#"read_csv("*a*a*a*a*a*a*a*a*a*.c?v", Small)"#)
+    );
+}
+
+#[test]
+fn a_glob_star_matches_an_empty_run_and_question_one_byte() {
+    let mut f = fixture();
+    f.files.put("ab.csv", "id,name\n1,ann\n");
+    f.files.put("a.csv", "id,name\n2,bo\n");
+    assert_eq!(
+        texts(["ann", "bo"]),
+        names(&f, r#"read_csv("a*.csv", Small)"#)
+    );
+    assert_eq!(texts(["ann"]), names(&f, r#"read_csv("a?.csv", Small)"#));
+    assert_eq!(set([]), f.value(r#"read_csv("a?*b.csv", Small)"#));
 }
 
 #[test]

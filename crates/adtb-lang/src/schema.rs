@@ -1456,7 +1456,7 @@ impl Builder<'_> {
                             "`on delete` is allowed only on a `Key` field or an `Option` of one",
                         );
                     }
-                    match a {
+                    match &a.action {
                         ast::RefAction::Restrict => OnDelete::Restrict,
                         ast::RefAction::Cascade => OnDelete::Cascade,
                         ast::RefAction::Clear => {

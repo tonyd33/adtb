@@ -1729,14 +1729,11 @@ pub(super) fn field_texts(
         };
         (here && f.name.text == p.field.text).then(|| {
             let text = &src.decls[i].text;
-            let end = f.ty.span.end as usize - h;
-            let ty = text[f.ty.span.start as usize - h..end].to_string();
-            let rest = text[end..item_end(text, end)].trim();
-            let action = rest
-                .strip_prefix("on")
-                .and_then(|r| r.trim_start().strip_prefix("delete"))
-                .map(|a| a.trim().to_string());
-            (ty, action)
+            let local = |s: Span| text[s.start as usize - h..s.end as usize - h].to_string();
+            (
+                local(f.ty.span),
+                f.on_delete.as_ref().map(|a| local(a.span)),
+            )
         })
     })
 }

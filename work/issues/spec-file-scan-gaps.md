@@ -19,3 +19,7 @@ Found by the reference file scans track; the reference's current choice follows 
 - Where the header fields of a value-level sum go among its tag columns is unstated. The reference puts them at `f.h`.
 - A file that is not UTF-8 is unspecified. The reference fails the whole scan with `BadInput`, line 0, even with a rejects relation.
 - A conformance script cannot carry its own files. The runner resolves paths against the script's directory.
+
+## 2026-10-26: line endings, blank lines and a byte order mark
+
+interop.md's CSV row says only "RFC 4180", which ends a record at CRLF. The engine and the reference now also end a record at LF and at a bare CR, skip empty records (a line holding only spaces is still a record) and number records without them, and strip one leading U+FEFF from a CSV or NDJSON file. The spec should state each of these or refuse them.

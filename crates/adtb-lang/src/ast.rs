@@ -95,7 +95,14 @@ pub struct AnonCtor {
 pub struct FieldType {
     pub name: Ident,
     pub ty: Type,
-    pub on_delete: Option<RefAction>,
+    pub on_delete: Option<FieldAction>,
+}
+
+/// A field's delete action, with the span of its text after `on delete`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldAction {
+    pub action: RefAction,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

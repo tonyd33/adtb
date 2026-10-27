@@ -2,6 +2,7 @@
 //! against its partitions by constructor and by predicate, and every planner rewrite setting
 //! against the default. A disagreement is shrunk to a small program before it is reported.
 
+use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
@@ -11,7 +12,7 @@ use std::sync::OnceLock;
 use adtb::plan::{Rewrites, with_rewrites};
 use adtb::{CallOptions, CreateOptions, Database, Error, Log, OpenOptions, RejectReason};
 use adtb_lang::textual;
-use adtb_reference::{Abort, Value};
+use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_testkit::cases::{Case, Forms, Query, Walk, case, walk};
 use adtb_testkit::corpus::{self, Script};
@@ -51,12 +52,51 @@ const QUERY_TRIES: usize = 400;
 /// The engine databases a shrink of the database of a case may open.
 const DATABASE_TRIES: usize = 24;
 
-/// How a query ended: its rows, ascending, or a fault, or a refusal of another kind.
+/// How a query ended: its rows, ascending, or a fault, or a rejection both sides name, or a
+/// refusal of another kind.
 #[derive(Clone, Debug, PartialEq)]
 enum Got {
     Rows(Vec<Value>),
     Faulted,
+    Rejected(Reason),
     Refused(String),
+}
+
+/// A rejection reason the engine and the reference both give, by the fields that identify it.
+#[derive(Clone, Debug, PartialEq)]
+enum Reason {
+    Violated { constraint: String },
+    KeyViolation { relation: String, key: String },
+    KeyChanged { relation: String },
+    NotOpen { ctor: String },
+    UserError { message: String },
+    BadInput { source: String, line: i64 },
+}
+
+impl Reason {
+    fn of_engine(r: RejectReason) -> Option<Reason> {
+        Some(match r {
+            RejectReason::Violated { constraint, .. } => Reason::Violated { constraint },
+            RejectReason::KeyViolation { relation, key } => Reason::KeyViolation { relation, key },
+            RejectReason::KeyChanged { relation } => Reason::KeyChanged { relation },
+            RejectReason::NotOpen { ctor, .. } => Reason::NotOpen { ctor },
+            RejectReason::UserError { message } => Reason::UserError { message },
+            RejectReason::BadInput { source, line, .. } => Reason::BadInput { source, line },
+            _ => return None,
+        })
+    }
+
+    fn of_reference(r: Rejection) -> Option<Reason> {
+        Some(match r {
+            Rejection::Violated { constraint, .. } => Reason::Violated { constraint },
+            Rejection::KeyViolation { relation, key } => Reason::KeyViolation { relation, key },
+            Rejection::KeyChanged { relation } => Reason::KeyChanged { relation },
+            Rejection::NotOpen { ctor, .. } => Reason::NotOpen { ctor },
+            Rejection::UserError { message } => Reason::UserError { message },
+            Rejection::BadInput { source, line, .. } => Reason::BadInput { source, line },
+            Rejection::RowTooLarge { .. } => return None,
+        })
+    }
 }
 
 /// Returns whether `a` and `b` are equal, floats within `tolerance` of each other.
@@ -71,7 +111,9 @@ fn within(a: &Value, b: &Value, tolerance: f64) -> bool {
                 .all(|((m, x), (n, y))| m == n && within(x, y, tolerance))
     };
     match (a, b) {
-        (Value::F64(x), Value::F64(y)) => x == y || (x - y).abs() <= tolerance,
+        (Value::F64(x), Value::F64(y)) => {
+            x == y || (x.is_nan() && y.is_nan()) || (x - y).abs() <= tolerance
+        }
         (Value::Ctor(c, xs), Value::Ctor(d, ys)) => c == d && fields(xs, ys),
         (Value::Record(xs), Value::Record(ys)) => fields(xs, ys),
         (Value::Key(x), Value::Key(y)) => within(x, y, tolerance),
@@ -92,6 +134,7 @@ impl Got {
                 a.len() == b.len() && a.iter().zip(b).all(|(x, y)| within(x, y, tolerance))
             }
             (Got::Faulted, Got::Faulted) => true,
+            (Got::Rejected(a), Got::Rejected(b)) => a == b,
             _ => false,
         }
     }
@@ -145,23 +188,32 @@ fn reference_eval(fx: &Fixture, text: &str) -> Got {
         Ok(Value::Set(s)) => Got::Rows(s.into_iter().collect()),
         Ok(v) => Got::Rows(vec![v]),
         Err(Abort::Fault(_)) => Got::Faulted,
+        Err(Abort::Reject(r)) => match Reason::of_reference(r.clone()) {
+            Some(reason) => Got::Rejected(reason),
+            None => Got::Refused(format!("{:?}", Abort::Reject(r))),
+        },
         Err(a) => Got::Refused(format!("{a:?}")),
     }
 }
 
+/// Returns how a query ends that the engine fails with `e`.
+fn engine_failed(e: Error) -> Got {
+    let message = e.to_string();
+    match e {
+        Error::Rejected {
+            reason: RejectReason::Faulted { .. },
+        } => Got::Faulted,
+        Error::Rejected { reason } => {
+            Reason::of_engine(reason).map_or(Got::Refused(message), Got::Rejected)
+        }
+        _ => Got::Refused(message),
+    }
+}
+
 fn engine_eval(db: &Database<SimRuntime>, text: &str) -> Got {
-    let faulted = |e: &Error| {
-        matches!(
-            e,
-            Error::Rejected {
-                reason: RejectReason::Faulted { .. }
-            }
-        )
-    };
     let mut results = match db.query_text(text, &[], &CallOptions::default()) {
         Ok(r) => r,
-        Err(e) if faulted(&e) => return Got::Faulted,
-        Err(e) => return Got::Refused(e.to_string()),
+        Err(e) => return engine_failed(e),
     };
     if results.len() != 1 {
         return Got::Refused(format!("{} results of one query", results.len()));
@@ -172,8 +224,7 @@ fn engine_eval(db: &Database<SimRuntime>, text: &str) -> Got {
     for row in got {
         let v = match row {
             Ok(v) => v,
-            Err(e) if faulted(&e) => return Got::Faulted,
-            Err(e) => return Got::Refused(e.to_string()),
+            Err(e) => return engine_failed(e),
         };
         let read = textual::print(&v, &form)
             .map_err(|e| e.message)
@@ -260,17 +311,38 @@ struct Env<'a> {
 /// A law of one query: the disagreement it shows, if any.
 type Law = fn(&Env, &Query) -> Option<String>;
 
-/// Returns the disagreement `law` shows on `q`, a panic included.
-fn fails(env: &Env, law: Law, q: &Query) -> Option<String> {
-    match panic::catch_unwind(AssertUnwindSafe(|| law(env, q))) {
-        Ok(m) => m,
-        Err(p) => Some(format!("panics: {}", panic_message(&*p))),
+/// How a law fails on a case: a disagreement it states, or a panic.
+#[derive(Clone, Debug)]
+enum Failure {
+    Disagrees(String),
+    Panics(String),
+}
+
+impl Failure {
+    fn same_kind(&self, other: &Failure) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 }
 
-/// Runs `body` over the reference and the engine holding `case`, a panic reported as its
-/// message.
-fn with_case<T>(seed: u64, case: &Case, body: impl FnOnce(&Env) -> T) -> Result<T, String> {
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Failure::Disagrees(m) => f.write_str(m),
+            Failure::Panics(m) => write!(f, "panics: {m}"),
+        }
+    }
+}
+
+/// Returns how `law` fails on `q`, if it does.
+fn fails(env: &Env, law: Law, q: &Query) -> Option<Failure> {
+    match panic::catch_unwind(AssertUnwindSafe(|| law(env, q))) {
+        Ok(m) => m.map(Failure::Disagrees),
+        Err(p) => Some(Failure::Panics(panic_message(&*p))),
+    }
+}
+
+/// Runs `body` over the reference and the engine holding `case`, a panic reported as a failure.
+fn with_case<T>(seed: u64, case: &Case, body: impl FnOnce(&Env) -> T) -> Result<T, Failure> {
     panic::catch_unwind(AssertUnwindSafe(|| {
         let fx = reference(case);
         on_engine(seed, case, |db| {
@@ -282,11 +354,11 @@ fn with_case<T>(seed: u64, case: &Case, body: impl FnOnce(&Env) -> T) -> Result<
             })
         })
     }))
-    .map_err(|p| format!("panics: {}", panic_message(&*p)))
+    .map_err(|p| Failure::Panics(panic_message(&*p)))
 }
 
-/// Returns the first query of `case` that breaks `law`, by index, and the disagreement.
-fn first_failure(seed: u64, case: &Case, law: Law) -> Option<(Option<usize>, String)> {
+/// Returns the first query of `case` that breaks `law`, by index, and how.
+fn first_failure(seed: u64, case: &Case, law: Law) -> Option<(Option<usize>, Failure)> {
     let ran = with_case(seed, case, |env| {
         case.queries
             .iter()
@@ -299,15 +371,16 @@ fn first_failure(seed: u64, case: &Case, law: Law) -> Option<(Option<usize>, Str
     }
 }
 
-/// Returns `q` shrunk greedily against `law` over the database `env` reads.
-fn shrink_query(env: &Env, law: Law, q: Query, message: String) -> (Query, String) {
-    let (mut q, mut message) = (q, message);
+/// Returns `q` shrunk greedily against `law` over the database `env` reads, each step failing
+/// as `failure` does.
+fn shrink_query(env: &Env, law: Law, q: Query, failure: Failure) -> (Query, Failure) {
+    let (mut q, mut failure) = (q, failure);
     let mut tries = 0;
     'outer: while tries < QUERY_TRIES {
         for s in q.shrinks() {
             tries += 1;
-            if let Some(m) = fails(env, law, &s) {
-                (q, message) = (s, m);
+            if let Some(f) = fails(env, law, &s).filter(|f| f.same_kind(&failure)) {
+                (q, failure) = (s, f);
                 continue 'outer;
             }
             if tries >= QUERY_TRIES {
@@ -316,28 +389,35 @@ fn shrink_query(env: &Env, law: Law, q: Query, message: String) -> (Query, Strin
         }
         break;
     }
-    (q, message)
+    (q, failure)
 }
 
 /// Returns `case` shrunk against `law`, from its failing query `at`: that query alone, shrunk,
-/// over a database shrunk, then shrunk again over that database.
-fn shrink(seed: u64, case: &Case, law: Law, at: Option<usize>, message: &str) -> (Case, String) {
+/// over a database shrunk, then shrunk again over that database, each step failing as
+/// `failure` does.
+fn shrink(
+    seed: u64,
+    case: &Case,
+    law: Law,
+    at: Option<usize>,
+    failure: &Failure,
+) -> (Case, Failure) {
     let mut c = match at {
         Some(i) => case.with_queries(vec![case.queries[i].clone()]),
         None => case.clone(),
     };
-    let mut message = message.to_owned();
-    let queries = |c: &Case, message: &str| {
+    let mut failure = failure.clone();
+    let queries = |c: &Case, failure: &Failure| {
         let [q] = c.queries.as_slice() else {
             return None;
         };
         with_case(seed, c, |env| {
-            shrink_query(env, law, q.clone(), message.to_owned())
+            shrink_query(env, law, q.clone(), failure.clone())
         })
         .ok()
     };
-    if let Some((q, m)) = queries(&c, &message) {
-        (c, message) = (c.with_queries(vec![q]), m);
+    if let Some((q, f)) = queries(&c, &failure) {
+        (c, failure) = (c.with_queries(vec![q]), f);
     }
     let mut opened = 0;
     'outer: while opened < DATABASE_TRIES {
@@ -346,8 +426,10 @@ fn shrink(seed: u64, case: &Case, law: Law, at: Option<usize>, message: &str) ->
                 continue;
             }
             opened += 1;
-            if let Some((_, m)) = first_failure(seed, &s, law) {
-                (c, message) = (s, m);
+            if let Some((_, f)) =
+                first_failure(seed, &s, law).filter(|(_, f)| f.same_kind(&failure))
+            {
+                (c, failure) = (s, f);
                 continue 'outer;
             }
             if opened >= DATABASE_TRIES {
@@ -356,10 +438,10 @@ fn shrink(seed: u64, case: &Case, law: Law, at: Option<usize>, message: &str) ->
         }
         break;
     }
-    if let Some((q, m)) = queries(&c, &message) {
-        (c, message) = (c.with_queries(vec![q]), m);
+    if let Some((q, f)) = queries(&c, &failure) {
+        (c, failure) = (c.with_queries(vec![q]), f);
     }
-    (c, message)
+    (c, failure)
 }
 
 /// Runs `law` over every query of every seed's drawn case and fails with each disagreement, or
@@ -375,11 +457,11 @@ fn sweep_cases(name: &str, law: Law, make: impl Fn(u64) -> (String, Case)) {
     let seeds = seeds();
     for seed in seeds.clone() {
         let (label, c) = make(seed);
-        if let Some((at, message)) = first_failure(seed, &c, law) {
-            found.push((seed, c, at, format!("{label}{message}")));
+        if let Some((at, failure)) = first_failure(seed, &c, law) {
+            found.push((seed, label, c, at, failure));
         }
     }
-    let Some((seed, c, at, message)) = found.first() else {
+    let Some((seed, _, c, at, failure)) = found.first() else {
         return;
     };
     let mut report = format!(
@@ -387,14 +469,14 @@ fn sweep_cases(name: &str, law: Law, make: impl Fn(u64) -> (String, Case)) {
         found.len(),
         seeds.end - seeds.start
     );
-    let (small, why) = shrink(*seed, c, law, *at, message);
+    let (small, why) = shrink(*seed, c, law, *at, failure);
     report.push_str(&format!("seed {seed}, shrunk: {why}\n{}", small.program()));
     for q in &small.queries {
         report.push_str(&format!("query: {}\n", q.text()));
     }
     report.push('\n');
-    for (i, (seed, c, _, message)) in found.iter().enumerate() {
-        report.push_str(&format!("seed {seed}: {message}\n"));
+    for (i, (seed, label, c, _, failure)) in found.iter().enumerate() {
+        report.push_str(&format!("seed {seed}: {label}{failure}\n"));
         if 0 < i && i < SHOWN {
             report.push_str(&format!("{}\n\n", c.program()));
         }
@@ -492,6 +574,26 @@ fn differential(env: &Env, q: &Query) -> Option<String> {
         (!got.agrees(&want, env.tolerance))
             .then(|| format!("`{t}`: the engine gives {got:?}, the reference {want:?}"))
     })
+}
+
+#[test]
+fn a_nan_agrees_with_a_nan() {
+    assert!(within(&Value::F64(f64::NAN), &Value::F64(f64::NAN), 0.0));
+    assert!(!within(&Value::F64(f64::NAN), &Value::F64(0.0), 0.0));
+}
+
+#[test]
+fn a_rejection_both_sides_give_alike_is_agreement() {
+    let c = Case::of_text(
+        "module app\ntype Small = { id: I64, name: Text }\n".to_owned(),
+        "module app\nadd module app\nadd type Small = { id: I64, name: Text }\n".to_owned(),
+        Vec::new(),
+        vec![r#"read_csv("nope.csv", Small)"#.to_owned()],
+    );
+    assert_eq!(
+        None,
+        first_failure(0, &c, differential).map(|(_, f)| f.to_string())
+    );
 }
 
 #[test]

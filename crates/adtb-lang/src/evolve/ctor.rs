@@ -732,7 +732,7 @@ impl Cx<'_> {
                 .push((self.src.local(i, cd.name.span), to.text.clone().into()));
         }
         for (_, f) in decl_fields(&t) {
-            if let Some(ast::RefAction::Retag(x, _)) = &f.on_delete
+            if let Some(ast::RefAction::Retag(x, _)) = f.on_delete.as_ref().map(|a| &a.action)
                 && x.text == from
             {
                 edits.entry(i).or_default().push((

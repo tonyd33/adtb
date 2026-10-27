@@ -22,9 +22,20 @@ pub struct Script {
     queries: Vec<String>,
 }
 
-/// The words a query of a case holds none of: writes and ordering.
-const EXCLUDED: [&str; 7] = [
-    "insert", "delete", "update", "order", "take", "top", "transact",
+/// The words a query of a case holds none of: writes, ordering, and file scans, whose files a
+/// case does not hold.
+const EXCLUDED: [&str; 11] = [
+    "insert",
+    "delete",
+    "update",
+    "order",
+    "take",
+    "top",
+    "transact",
+    "read_csv",
+    "read_ndjson",
+    "read_parquet",
+    "read_arrow",
 ];
 
 /// The generated values a script's results may hold, which the engine and the reference agree
@@ -151,7 +162,7 @@ impl Script {
     }
 }
 
-/// Returns whether a query body holds no write, ordering or parameter.
+/// Returns whether a query body holds no write, ordering, file scan or parameter.
 fn allowed(body: &str) -> bool {
     let mut words = body.split(|c: char| !c.is_alphanumeric() && c != '_');
     !body.contains('$') && !words.any(|w| EXCLUDED.contains(&w))
@@ -328,7 +339,9 @@ fn mutate(rng: &mut Rng, mut ts: Vec<Token>, pool: &[Vec<Token>]) -> Vec<Token> 
         0 => {
             if let Some(&k) = rng.pick_some(&at(&ts, &|t| t.chars().all(|c| c.is_ascii_digit()))) {
                 let n: i64 = ts[k].text.parse().unwrap_or(0);
-                ts[k].text = (n + *rng.pick(&[-1, 1, 2])).max(0).to_string();
+                if let Some(m) = n.checked_add(*rng.pick(&[-1, 1, 2])) {
+                    ts[k].text = m.max(0).to_string();
+                }
             }
         }
         1 => {
@@ -397,5 +410,26 @@ fn kind(t: &str) -> String {
         Some(c) if c.is_ascii_digit() => "number".into(),
         Some(c) if (c.is_alphabetic() || c == '_') && !KEYWORDS.contains(&t) => "name".into(),
         _ => t.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moving_the_largest_integer_keeps_it_an_integer() {
+        let ts = tokens("9223372036854775807");
+        let pool = vec![ts.clone()];
+        for seed in 0..64 {
+            let mut rng = Rng::new(seed);
+            let moved = panic::catch_unwind(AssertUnwindSafe(|| {
+                render(&mutate(&mut rng, ts.clone(), &pool))
+            }));
+            assert!(
+                moved.as_ref().is_ok_and(|t| t.parse::<i64>().is_ok()),
+                "seed {seed}: {moved:?}"
+            );
+        }
     }
 }

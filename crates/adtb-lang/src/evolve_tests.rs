@@ -1575,6 +1575,76 @@ add field Identity.EmailPass.invited_by: Option (Key users) on delete clear fill
     );
 }
 
+/// The source of module `auth` holding users and npcs, whose `owner` field is written `owner`.
+fn with_owner(owner: &str) -> Source {
+    source(&format!(
+        "
+module auth
+type User = {{ id: Key users, name: Text }}
+relation users : User key id generate sequence
+type Npc = {{ id: Key npcs, {owner}
+  , name: Text }}
+relation npcs : Npc key id generate sequence
+"
+    ))
+}
+
+#[test]
+fn revert_of_a_dropped_field_ignores_a_comment_after_its_delete_action() {
+    let s = with_owner("owner: Option (Key users) on delete clear -- keep the npc\n");
+    let s = applies(&s, "module auth\ndrop field Npc.owner");
+    let s = applies(&s, "module auth\nrevert 0001\n  fill Npc.owner = None");
+    let t = flat(&decl(&s, "type", "Npc"));
+    assert!(
+        t.contains("owner: Option (Key users) on delete clear"),
+        "{t}"
+    );
+}
+
+#[test]
+fn alter_field_keeps_a_comment_after_the_delete_action() {
+    let s = with_owner("owner: Option (Key users) on delete clear -- keep the npc\n");
+    let s = applies(&s, "module auth\nalter field Npc.owner on delete restrict");
+    let t = decl(&s, "type", "Npc");
+    assert!(
+        t.contains("owner: Option (Key users) on delete restrict -- keep the npc\n"),
+        "{t}"
+    );
+}
+
+#[test]
+fn alter_field_takes_a_comment_holding_a_comma_as_a_comment() {
+    let s = with_owner("owner: Option (Key users) on delete clear -- keep, really\n");
+    let s = applies(&s, "module auth\nalter field Npc.owner on delete restrict");
+    let t = decl(&s, "type", "Npc");
+    assert!(
+        t.contains("owner: Option (Key users) on delete restrict -- keep, really\n"),
+        "{t}"
+    );
+}
+
+#[test]
+fn revert_of_alter_field_restores_an_action_after_a_comment() {
+    let s = with_owner("owner: Option (Key users) -- the player\n    on delete clear\n");
+    let s = applies(&s, "module auth\nalter field Npc.owner on delete restrict");
+    let t = flat(&decl(&s, "type", "Npc"));
+    assert!(t.contains("-- the player on delete restrict"), "{t}");
+    let s = applies(&s, "module auth\nrevert 0001");
+    let t = flat(&decl(&s, "type", "Npc"));
+    assert!(t.contains("-- the player on delete clear"), "{t}");
+}
+
+#[test]
+fn alter_field_adds_an_action_to_a_field_without_one() {
+    let s = with_owner("owner: Option (Key users) -- the player\n");
+    let s = applies(&s, "module auth\nalter field Npc.owner on delete clear");
+    let t = decl(&s, "type", "Npc");
+    assert!(
+        t.contains("owner: Option (Key users) on delete clear -- the player\n"),
+        "{t}"
+    );
+}
+
 #[test]
 fn a_fill_is_typed_and_reads_only_its_row() {
     refuses(

@@ -198,11 +198,16 @@ impl Parser<'_> {
         })
     }
 
-    pub(super) fn on_delete(&mut self) -> PResult<Option<RefAction>> {
+    pub(super) fn on_delete(&mut self) -> PResult<Option<FieldAction>> {
         if self.at_word("on") && self.peek(1).tok == Tok::Kw(Kw::Delete) {
             self.bump();
             self.bump();
-            Ok(Some(self.ref_action()?))
+            let start = self.tok().span;
+            let action = self.ref_action()?;
+            Ok(Some(FieldAction {
+                action,
+                span: self.span_from(start),
+            }))
         } else {
             Ok(None)
         }

@@ -57,7 +57,8 @@ pub(super) fn records<V: Textual>(
         .collect())
 }
 
-/// Returns each record of `text`, as the file holds it and as its cells.
+/// Returns each nonempty record of `text`, as the file holds it and as its cells. A line feed, a
+/// carriage return and the pair of them each end a record.
 fn split(text: &str) -> Result<Vec<(String, Vec<Cell>)>, String> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
@@ -77,15 +78,17 @@ fn split(text: &str) -> Result<Vec<(String, Vec<Cell>)>, String> {
         let end = at;
         match bytes.get(at) {
             None => {}
-            Some(b'\n') => at += 1,
             Some(b'\r') if bytes.get(at + 1) == Some(&b'\n') => at += 2,
+            Some(b'\n' | b'\r') => at += 1,
             Some(_) => {
                 return Err(format!(
                     "byte {at}: a quoted cell ends before its separator"
                 ));
             }
         }
-        out.push((text[start..end].to_string(), cells));
+        if end > start {
+            out.push((text[start..end].to_string(), cells));
+        }
     }
     Ok(out)
 }

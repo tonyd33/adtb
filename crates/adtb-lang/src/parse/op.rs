@@ -376,7 +376,7 @@ impl Parser<'_> {
                 let path = self.field_path()?;
                 self.expect(Tok::Colon, "`:`")?;
                 let ty = self.ty()?;
-                let on_delete = self.on_delete()?;
+                let on_delete = self.on_delete()?.map(|a| a.action);
                 let decl = self.span_from(path.field.span);
                 self.expect_word("fill")?;
                 let fill = self.fill()?;

@@ -169,11 +169,17 @@ impl Cx<'_> {
                 ),
             );
         };
-        let at = self.src.local(i, f.ty.span).end;
-        let text = &self.src.decls[i].text;
-        let end = at + text[at..item_end(text, at)].trim_end().len();
-        let written = Written::concat([" on delete ".into(), self.copy(action)]);
-        self.src.edit(i, vec![(at..end, written)]);
+        let edit = match &f.on_delete {
+            Some(a) => (self.src.local(i, a.span), self.copy(action)),
+            None => {
+                let at = self.src.local(i, f.ty.span).end;
+                (
+                    at..at,
+                    Written::concat([" on delete ".into(), self.copy(action)]),
+                )
+            }
+        };
+        self.src.edit(i, vec![edit]);
         self.schema()?;
         Ok(())
     }

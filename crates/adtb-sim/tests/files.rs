@@ -25,6 +25,7 @@ add type Point = { x: I32, y: I32 }
 add type Wide = { id: I64, name: Text, nick: Option Text, owner: Key users, level: Level,
               pos: Point, via: Via, amount: Decimal 2, ratio: F64 }
 add type Small = { id: I64, name: Text }
+add type Named = { name: Text }
 add type Identity { id: Key identities, user: Key users } = Google { gid: Text } | Apple { sub: Text }
 add relation identities : Identity key id generate sequence
 add relation outs : Small key id
@@ -540,6 +541,84 @@ fn a_line_that_is_not_json_does_not_convert() {
     with_db(&root, |db| {
         let (source, line, _) = bad_input(failure(db, r#"read_ndjson("s.ndjson", Small)"#));
         assert_eq!(("s.ndjson", 2), (source.as_str(), line));
+    });
+}
+
+#[test]
+fn a_blank_line_in_a_csv_file_is_no_record() {
+    let root = dir(
+        "csv-blank",
+        &[
+            ("one.csv", "name\nann\n\n"),
+            ("two.csv", "\nid,name\n\n1,ann\r\n\r\n2,bo\n\n"),
+        ],
+    );
+    with_db(&root, |db| {
+        assert_eq!(
+            strings(&[r#""ann""#]),
+            rows(db, r#"from r in read_csv("one.csv", Named) select r.name"#)
+        );
+        assert_eq!(
+            strings(&["1", "2"]),
+            rows(db, r#"from r in read_csv("two.csv", Small) select r.id"#)
+        );
+    });
+}
+
+#[test]
+fn a_bare_carriage_return_ends_a_csv_record() {
+    let root = dir("csv-cr", &[("s.csv", "id,name\r1,ann\r2,bo\r")]);
+    with_db(&root, |db| {
+        assert_eq!(
+            strings(&["1", "2"]),
+            rows(db, r#"from r in read_csv("s.csv", Small) select r.id"#)
+        );
+    });
+}
+
+#[test]
+fn a_leading_byte_order_mark_is_not_part_of_the_file() {
+    let root = dir(
+        "bom",
+        &[
+            ("s.csv", "\u{feff}id,name\n1,ann\n"),
+            ("s.ndjson", "\u{feff}{\"id\": \"1\", \"name\": \"ann\"}\n"),
+        ],
+    );
+    with_db(&root, |db| {
+        assert_eq!(
+            strings(&[r#""ann""#]),
+            rows(db, r#"from r in read_csv("s.csv", Small) select r.name"#)
+        );
+        assert_eq!(
+            strings(&[r#""ann""#]),
+            rows(
+                db,
+                r#"from r in read_ndjson("s.ndjson", Small) select r.name"#
+            )
+        );
+    });
+}
+
+#[test]
+fn a_glob_with_many_stars_matches_in_polynomial_time() {
+    let long = format!("{}.csv", "a".repeat(40));
+    let root = dir("glob-stars", &[(&long, "id,name\n1,ann\n")]);
+    with_db(&root, |db| {
+        assert_eq!(
+            strings(&["0"]),
+            rows(
+                db,
+                r#"(count(r for r in read_csv("*a*a*a*a*a*a*a*a*a*a*a*a*b", Small)))"#
+            )
+        );
+        assert_eq!(
+            strings(&["1"]),
+            rows(
+                db,
+                r#"from r in read_csv("*a*a*a*a*a*a*a*a*a*.c?v", Small) select r.id"#
+            )
+        );
     });
 }
 

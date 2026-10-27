@@ -129,15 +129,29 @@ fn expand(root: &Path, path: &str) -> Result<Vec<(String, PathBuf)>, String> {
 
 /// Returns whether `name` matches `pattern`, where `*` matches any run of bytes and `?` one.
 fn matches(pattern: &[u8], name: &[u8]) -> bool {
-    match (pattern.first(), name.first()) {
-        (None, None) => true,
-        (Some(b'*'), _) => {
-            matches(&pattern[1..], name) || (!name.is_empty() && matches(pattern, &name[1..]))
+    let (mut p, mut n) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while n < name.len() {
+        match pattern.get(p) {
+            Some(b'*') => {
+                star = Some((p, n));
+                p += 1;
+            }
+            Some(&c) if c == b'?' || c == name[n] => {
+                p += 1;
+                n += 1;
+            }
+            _ => match star {
+                Some((sp, sn)) => {
+                    star = Some((sp, sn + 1));
+                    p = sp + 1;
+                    n = sn + 1;
+                }
+                None => return false,
+            },
         }
-        (Some(b'?'), Some(_)) => matches(&pattern[1..], &name[1..]),
-        (Some(p), Some(n)) if p == n => matches(&pattern[1..], &name[1..]),
-        _ => false,
     }
+    pattern[p..].iter().all(|&c| c == b'*')
 }
 
 /// A record as the file holds it, and its row or why it does not convert.
@@ -199,7 +213,8 @@ pub fn records_in<V: Textual>(
     for (source, bytes) in found {
         let text = String::from_utf8(bytes)
             .map_err(|e| unreadable(&source, format!("the file is not UTF-8: {e}")))?;
-        let found = read(schema, &text, row).map_err(|e| unreadable(&source, e))?;
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        let found = read(schema, text, row).map_err(|e| unreadable(&source, e))?;
         for (raw, row) in found {
             out.push(Record {
                 source: source.clone(),

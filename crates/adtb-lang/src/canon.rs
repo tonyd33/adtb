@@ -303,7 +303,8 @@ pub fn decl_names(schema: &Schema, module: ModuleId, d: &Decl, names: &mut Names
             }
             tys(&mut fields.iter().map(|f| &f.ty), &mut refs);
             for f in &fields {
-                if let (Some(ast::RefAction::Retag(c, _)), Some(def)) = (&f.on_delete, def)
+                if let (Some(ast::RefAction::Retag(c, _)), Some(def)) =
+                    (f.on_delete.as_ref().map(|a| &a.action), def)
                     && let Some(i) = schema.ty(def).ctor_index(&c.text)
                 {
                     refs.push((c.span, Ref::Ctor(def, i)));

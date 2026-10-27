@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: bug
 priority: 696
 summary: "the differential sweep counts a query both sides refuse alike as a disagreement, so seeds picking the file scan conformance script fail"
+closed: 2026-10-26
 tags:
   - quality
   - test
@@ -30,3 +31,13 @@ Expected: the case passes or is skipped. Seed 225 picks the same script. The def
 The shrinker (`shrink_query` and `shrink`, differential.rs:303-363) keeps any failure, so a shrink can also drift onto a query both sides refuse.
 
 Fix: have `agrees` treat equal refusal reasons as agreement (or a refusal by both as not applicable), keep shrinking only toward the original kind of failure, and either drop file scanning queries in `Script::read` or give both sides the script's directory as the file root.
+
+## 2026-10-26: done
+
+`Got` in `crates/adtb-testkit/tests/differential.rs` has a `Rejected(Reason)` arm: the rejection reasons the engine and the reference both give, by their identifying fields (constraint, relation and key, ctor, message, source and line), with the free-text details left out. Equal reasons agree. Failures are a `Failure` (disagrees or panics) and both shrink loops keep only candidates failing the same way. `corpus.rs` `EXCLUDED` now drops queries naming `read_csv`, `read_ndjson`, `read_parquet` or `read_arrow`, whose files a case does not hold. Test: `a_rejection_both_sides_give_alike_is_agreement`. Seeds 136 and 225 pass.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed with the fbug track.
