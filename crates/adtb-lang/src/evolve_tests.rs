@@ -352,10 +352,69 @@ add relation regions : Region key id generate sequence",
     );
 }
 
+/// The running example with the package `geo-1.2.adtx` available to `install`.
+fn with_geo() -> Source {
+    let mut s = running();
+    s.packages.insert(
+        "geo-1.2.adtx".into(),
+        "type Cell = { lat: F64, lon: F64 }\nfn scale (x: F64) -> F64 = x * 2.0".into(),
+    );
+    s
+}
+
+#[test]
+fn install_adds_the_declarations_its_package_holds() {
+    let s = applies(
+        &with_geo(),
+        "module auth\ninstall geo \"1.2\" from \"geo-1.2.adtx\"",
+    );
+    assert_eq!(
+        "type Cell = { lat: F64, lon: F64 }",
+        s.decls[s.find("type", "geo", "Cell").expect("geo::Cell")].text
+    );
+    assert!(s.find("fn", "geo", "scale").is_some());
+    applies(
+        &s,
+        "module auth\ndefine fn near (x: F64) -> F64 = geo::scale(x)",
+    );
+    let t = applies(&s, "module auth\nuninstall geo");
+    assert!(t.find("fn", "geo", "scale").is_none());
+    refuses(
+        &running(),
+        "module auth\ninstall geo \"1.2\" from \"geo-1.2.adtx\"",
+        "the package `geo-1.2.adtx` is not available",
+    );
+    let mut bad = running();
+    bad.packages.insert(
+        "geo-1.2.adtx".into(),
+        "fn scale (x: F64) -> F64 = nosuch".into(),
+    );
+    refuses(
+        &bad,
+        "module auth\ninstall geo \"1.2\" from \"geo-1.2.adtx\"",
+        "nosuch",
+    );
+}
+
+#[test]
+fn revert_of_an_install_removes_the_package_declarations() {
+    let s = applies(
+        &with_geo(),
+        "module auth\ninstall geo \"1.2\" from \"geo-1.2.adtx\"",
+    );
+    let t = applies(&s, "module auth\nrevert 0001");
+    assert!(!t.modules.contains("geo"));
+    assert!(t.find("fn", "geo", "scale").is_none());
+    let u = applies(&s, "module auth\nuninstall geo");
+    let u = applies(&u, "module auth\nrevert 0002");
+    assert!(u.installed.contains("geo"));
+    assert!(u.find("fn", "geo", "scale").is_some());
+}
+
 #[test]
 fn extensions_install_and_uninstall() {
     let s = applies(
-        &running(),
+        &with_geo(),
         "module auth\ninstall geo \"1.2\" from \"geo-1.2.adtx\"",
     );
     assert!(s.installed.contains("geo"));
@@ -1335,6 +1394,57 @@ merge constructor Identity.(Google | Apple) into Social { provider: Provider, su
 }
 
 #[test]
+fn a_merge_carries_a_per_constructor_check_into_a_match_on_the_discriminator() {
+    let s = applies(
+        &running(),
+        "module auth
+add check gid_set on identities.Google (scalar_len(gid) > 0)
+add check sub_short on identities.Apple (scalar_len(sub) < 64)",
+    );
+    let s = applies(
+        &s,
+        "module auth
+add type Provider = Google | Apple
+merge constructor Identity.(Google | Apple) into Social
+  { provider: Provider, sub: Text }
+  by match
+    | Google g -> Social { provider: Google, sub: g.gid }
+    | Apple a  -> Social { provider: Apple, sub: a.sub }
+  arm display_name: Social s -> s.sub
+  arm login_present: Social s -> scalar_len(s.sub) == 0",
+    );
+    assert_eq!(
+        "check gid_set on identities.Social (match provider | Google -> scalar_len(sub) > 0 | Apple -> true)",
+        flat(&decl(&s, "check", "gid_set"))
+    );
+    assert_eq!(
+        "check sub_short on identities.Social (match provider | Google -> true | Apple -> scalar_len(sub) < 64)",
+        flat(&decl(&s, "check", "sub_short"))
+    );
+}
+
+#[test]
+fn a_merge_refuses_a_check_whose_field_the_routing_computes() {
+    let s = applies(
+        &running(),
+        "module auth\nadd check gid_set on identities.Google (scalar_len(gid) > 0)",
+    );
+    refuses(
+        &s,
+        "module auth
+add type Provider = Google | Apple
+merge constructor Identity.(Google | Apple) into Social
+  { provider: Provider, sub: Text }
+  by match
+    | Google g -> Social { provider: Google, sub: g.gid ++ \"!\" }
+    | Apple a  -> Social { provider: Apple, sub: a.sub }
+  arm display_name: Social s -> s.sub
+  arm login_present: Social s -> scalar_len(s.sub) == 0",
+        "check `gid_set` has no image under the merge: the routing does not carry `Google.gid` whole",
+    );
+}
+
+#[test]
 fn a_merge_without_routing_maps_fields_by_name() {
     let s = source(
         "module auth
@@ -1960,6 +2070,62 @@ fn log_grants_name_schema_objects() {
         &running(),
         "module auth\ngrant read nosuch to support",
         "nosuch",
+    );
+}
+
+#[test]
+fn log_grants_are_stored_in_the_source_by_catalog_id() {
+    let s = applies(
+        &running(),
+        "module auth\ngrant read identities.(EmailPass | Google) (user), delete identities to support with grant option",
+    );
+    let schema = ids_of(&s);
+    let identity = ty(&schema, "Identity");
+    let identities = schema.ids.relations[&rel(&schema, "identities")];
+    let ctor = |n: &str| schema.ids.ctors[&(identity, schema.ty(identity).ctor_index(n).unwrap())];
+    let user = schema.ids.fields[&(identity, None, "user".to_string())];
+    let read = LogGrant {
+        role: "support".into(),
+        privilege: Granted::Read(
+            GrantTarget {
+                relation: identities,
+                sel: GrantSel::Ctors(vec![ctor("EmailPass"), ctor("Google")]),
+            },
+            Some(vec![user]),
+        ),
+        grant_option: true,
+    };
+    let delete = LogGrant {
+        role: "support".into(),
+        privilege: Granted::Delete(GrantTarget {
+            relation: identities,
+            sel: GrantSel::Whole,
+        }),
+        grant_option: true,
+    };
+    assert_eq!(vec![read.clone(), delete.clone()], s.grants);
+    let s = applies(&s, "module auth\nrename relation identities to logins");
+    assert_eq!(vec![read.clone(), delete], s.grants);
+    let s = applies(&s, "module auth\nrevoke delete logins from support");
+    assert_eq!(vec![read], s.grants);
+    let s = applies(&s, "module auth\ngrant call fn display_name to web");
+    let schema = ids_of(&s);
+    let m = schema.module_named("auth").unwrap();
+    let Some(&ValueDef::Function(f)) = schema.module(m).values.get("display_name") else {
+        panic!("no fn `display_name`");
+    };
+    assert_eq!(
+        Some(&LogGrant {
+            role: "web".into(),
+            privilege: Granted::CallFn(schema.ids.functions[&f]),
+            grant_option: false,
+        }),
+        s.grants.last()
+    );
+    refuses(
+        &running(),
+        "module auth\ngrant read identities (nosuch) to support",
+        "`identities` has no field `nosuch`",
     );
 }
 
@@ -2939,4 +3105,25 @@ add relation teams : Team key id generate sequence index (lead)
 add relation members : Member key id generate sequence index (team)",
     );
     assert!(s.check().is_ok());
+}
+
+#[test]
+fn a_recheck_error_in_copied_text_is_located_in_the_migration() {
+    let text = "module auth
+add constructor Identity.Corp { domain: Text }
+  arm display_name: Corp c -> c.nosuch
+  arm login_present: Corp c -> false";
+    let m = parse_migration(text, Options::default()).ok().unwrap();
+    let r = running().migrate(&m, text).unwrap_err();
+    let at = text.find("nosuch").unwrap();
+    assert_eq!(1, r.recheck.len(), "{:?}", r.recheck);
+    assert_eq!(
+        vec![Some(Span::new(at, at + "nosuch".len()))],
+        r.recheck_from
+    );
+    let text = "module auth\ndrop field Identity.Google.gid";
+    let m = parse_migration(text, Options::default()).ok().unwrap();
+    let r = running().migrate(&m, text).unwrap_err();
+    assert!(!r.recheck.is_empty());
+    assert_eq!(vec![None; r.recheck.len()], r.recheck_from);
 }

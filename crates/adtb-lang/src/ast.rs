@@ -568,6 +568,21 @@ pub enum Decl {
     Aggregate(AggregateDecl),
 }
 
+impl Decl {
+    pub fn span(&self) -> Span {
+        match self {
+            Decl::Type(d) => d.span,
+            Decl::Relation(d) => d.span,
+            Decl::Set(d) => d.span,
+            Decl::Fn(d) => d.span,
+            Decl::Constraint(d) => d.span,
+            Decl::Check(d) => d.span,
+            Decl::Store(d) => d.span,
+            Decl::Aggregate(d) => d.span,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Operator {
     pub kind: OperatorKind,

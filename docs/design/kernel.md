@@ -20,6 +20,7 @@ terms and share nothing else.
 | `check_adhoc_recording(schema, program, items, params, bundles, record)` | as `check_adhoc`, an `explain B::q(args)` checked against `bundles`; with `record`, also appends each schema object the text names, by span, as `schema_refs` reports them, those of items before a refused one included |
 | `check_query(schema, program, module, q)` | `Query`: an arena with the term of one registered query |
 | `check_txn(schema, program, module, t)` | `Txn`: an arena with the term of one registered transaction |
+| `check_feed(schema, module, f)` | the relation variable a feed names and the constructors it streams; refused when the relation is volatile |
 
 `program` is the result of `check_schema(schema)`.
 

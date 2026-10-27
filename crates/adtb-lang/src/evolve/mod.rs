@@ -17,6 +17,7 @@ use crate::types::*;
 
 mod ctor;
 mod field;
+mod grant;
 mod ids;
 mod names;
 mod resolved;
@@ -32,6 +33,7 @@ use text::*;
 mod tests;
 
 pub use crate::schema::Stage;
+pub use grant::{GrantSel, GrantTarget, Granted, LogGrant};
 pub use resolved::{
     ArmTarget, Clause, Code, Function, IndexKind, Place, Resolved, ResolvedOp, Target,
 };
@@ -72,6 +74,12 @@ pub struct Source {
     pub modules: BTreeSet<String>,
     /// The modules `install` created.
     pub installed: BTreeSet<String>,
+    /// The declarations of each extension package `install` may read, by the file it names, as
+    /// the text of a module file without its `module` line.
+    pub packages: BTreeMap<String, String>,
+    /// The privileges the log's `grant` and `revoke` operators leave each role holding, in the
+    /// order they were first granted.
+    pub grants: Vec<LogGrant>,
     /// The write state of each constructor relation, keyed by the relation's module, the relation and the constructor.
     pub states: BTreeMap<StateKey, State>,
     /// The write state of each value-level constructor, keyed by the type's module, the type and the constructor.
@@ -179,6 +187,9 @@ impl From<&str> for Written {
 pub struct Refusal {
     pub operators: Vec<Diag>,
     pub recheck: Vec<FileDiag>,
+    /// For each of `recheck`, in order, the span of the migration's text an operator copied the
+    /// failing text from, when it copied it.
+    pub recheck_from: Vec<Option<Span>>,
     /// The result, whose files `recheck` points into.
     pub result: Option<Box<Source>>,
 }
@@ -624,6 +635,7 @@ impl Source {
                 .into_iter()
                 .filter(|d| !reported.contains(&d.diag.message))
                 .collect();
+            refusal.recheck_from = self.copied_from(m, text, &refusal.recheck);
         }
         if refusal.operators.is_empty() && refusal.recheck.is_empty() {
             next.log.push(Logged {
@@ -638,6 +650,39 @@ impl Source {
             refusal.result = Some(Box::new(next));
             Err(refusal)
         }
+    }
+
+    /// Returns, for each diagnostic of the result of migration `m`, the span of `text` an operator
+    /// copied the diagnosed text from, by applying `m` again recording its copies.
+    fn copied_from(&self, m: &MigrationFile, text: &str, diags: &[FileDiag]) -> Vec<Option<Span>> {
+        let mut replay = self.clone();
+        replay.version += 1;
+        replay.expecting(&m.module.text, &m.operators);
+        replay.marks = Some(Marks::default());
+        for op in &m.operators {
+            let noted = RefCell::new(Names::default());
+            if replay
+                .apply_noting(&m.module.text, op, text, Some(&noted))
+                .is_err()
+            {
+                continue;
+            }
+        }
+        let marks = replay.marks.take().expect("the replay records its copies");
+        diags
+            .iter()
+            .map(|d| {
+                let i = d.file.0 as usize;
+                let h = header(replay.decls.get(i)?.module.as_str()).len();
+                let start = (d.diag.span.start as usize).checked_sub(h)?;
+                let end = d.diag.span.end as usize - h;
+                marks
+                    .written
+                    .iter()
+                    .find(|w| w.decl == i && w.at <= start && end <= w.at + w.from.len())
+                    .map(|w| Span::new(w.from.start + start - w.at, w.from.start + end - w.at))
+            })
+            .collect()
     }
 
     /// Applies one operator of a migration of `module` whose text is `text`.
@@ -736,6 +781,8 @@ struct Reselect {
     whole: bool,
     /// The scopes of relation clauses are rewritten too.
     clauses: bool,
+    /// The scopes of checks are rewritten too.
+    checks: bool,
     /// The operator, as a refusal names it.
     what: &'static str,
 }
@@ -922,7 +969,7 @@ impl Cx<'_> {
         match op {
             OperatorKind::AddModule(m) => self.add_module(m),
             OperatorKind::DropModule(m) => self.drop_module(m),
-            OperatorKind::Install { name, .. } => self.install(name),
+            OperatorKind::Install { name, from, .. } => self.install(name, from),
             OperatorKind::Uninstall(m) => self.uninstall(m),
             OperatorKind::AddType(t) => self.add_type(t),
             OperatorKind::DropType(q) => self.drop_type(q),
@@ -1040,8 +1087,8 @@ impl Cx<'_> {
             OperatorKind::Revert { migration, fills } => self.revert(migration, fills),
             OperatorKind::Script(w) => self.script(w),
             OperatorKind::AdoptTzdb { .. } => Ok(()),
-            OperatorKind::Grant(g) => self.log_grant(&g.privileges),
-            OperatorKind::Revoke(r) => self.log_grant(&r.privileges),
+            OperatorKind::Grant(g) => self.grant(g),
+            OperatorKind::Revoke(r) => self.revoke(r),
         }
     }
 
@@ -1080,10 +1127,32 @@ impl Cx<'_> {
         Ok(())
     }
 
-    fn install(&mut self, m: &ast::Ident) -> R<()> {
+    fn install(&mut self, m: &ast::Ident, from: &str) -> R<()> {
         self.reserved_module(m)?;
+        let Some(package) = self.src.packages.get(from) else {
+            return self.err(format!("the package `{from}` is not available"));
+        };
+        let file = format!("module {}\n", m.text);
+        let text = format!("{file}{package}");
+        let parsed = parse_schema(&text, Options::default()).ok().map_err(|ds| {
+            ds.into_iter()
+                .map(|d| {
+                    Diag::new(
+                        self.span,
+                        format!("the package `{from}` does not parse: {}", d.message),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })?;
+        let first = self.src.decls.len();
         self.src.modules.insert(m.text.clone());
         self.src.installed.insert(m.text.clone());
+        for d in &parsed.decls {
+            self.src.push(&m.text, &text[d.span().range()]);
+        }
+        for i in first..self.src.decls.len() {
+            self.checks_where_written(i)?;
+        }
         Ok(())
     }
 
@@ -1642,85 +1711,6 @@ impl Cx<'_> {
             self.noted.is_some().then_some(&mut refs),
         )?;
         self.note(&schema, &refs);
-        Ok(())
-    }
-
-    fn log_grant(&mut self, privileges: &[ast::Privilege]) -> R<()> {
-        let schema = self.schema()?;
-        let vis = crate::resolve::Visible::module(
-            schema.module_named(&self.module).unwrap_or(schema::PRELUDE),
-        );
-        let refs = RefCell::new(Vec::new());
-        let relation = |r: &ast::RelationRef| -> R<()> {
-            let rel = match crate::resolve::lookup_value(&schema, &vis, &r.relation) {
-                Ok(ValueDef::Relation(rel)) => rel,
-                Ok(_) => {
-                    return self.err_at(
-                        r.span,
-                        format!("`{}` is not a relation", r.relation.name.text),
-                    );
-                }
-                Err(e) => return self.err_at(r.span, e),
-            };
-            if schema.module(schema.relation(rel).module).engine {
-                return self.err_at(
-                    r.span,
-                    "a grant on a `catalog::` or `sys::` relation is deployment state, an ad hoc statement, never an operator in a migration",
-                );
-            }
-            let mut refs = refs.borrow_mut();
-            refs.push((r.relation.name.span, Ref::Relation(rel)));
-            if let Some(sel) = &r.sel {
-                schema
-                    .relation_sel(rel, sel)
-                    .map_err(|e| vec![Diag::new(r.span, e)])?;
-                let def = schema.relation(rel).elem_def;
-                for x in sel_idents(sel) {
-                    refs.push(match schema.ty(def).ctor_index(&x.text) {
-                        Some(c) => (x.span, Ref::Ctor(def, c)),
-                        None => (x.span, Ref::Set(rel, x.text.clone())),
-                    });
-                }
-            }
-            Ok(())
-        };
-        for p in privileges {
-            match p {
-                ast::Privilege::Read(r, _)
-                | ast::Privilege::Insert(r)
-                | ast::Privilege::Update(r, _)
-                | ast::Privilege::Delete(r) => relation(r)?,
-                ast::Privilege::Retag(a, b) => {
-                    relation(a)?;
-                    relation(b)?;
-                }
-                ast::Privilege::CallFn(f) => match crate::resolve::lookup_value(&schema, &vis, f) {
-                    Ok(ValueDef::Function(g)) => {
-                        refs.borrow_mut().push((f.name.span, Ref::Function(g)));
-                    }
-                    Ok(_) => {
-                        return self
-                            .err_at(f.span(), format!("`{}` is not a function", f.name.text));
-                    }
-                    Err(e) => return self.err_at(f.span(), e),
-                },
-                ast::Privilege::Call(..) => {
-                    return self.err(
-                        "a bundle call grant is deployment state, an ad hoc statement, never an operator in a migration",
-                    );
-                }
-                ast::Privilege::Capability(c) => {
-                    return self.err_at(
-                        c.span,
-                        format!(
-                            "the capability grant `{}` is deployment state, an ad hoc statement, never an operator in a migration",
-                            c.text
-                        ),
-                    );
-                }
-            }
-        }
-        self.note(&schema, &refs.into_inner());
         Ok(())
     }
 

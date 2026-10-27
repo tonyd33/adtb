@@ -461,6 +461,37 @@ fn a_migration_declaring_a_constraint_outside_the_bound_is_refused() {
 }
 
 #[test]
+#[ignore = "the engine has no stored views yet"]
+fn storing_a_view_with_no_index_bounded_maintenance_is_refused_naming_the_index() {
+    let view = "define fn by_name () -> Set ({ user: Key users, n: I64 }) =
+  from u in users
+  select { user: key u, n: count(i for i in identities.EmailPass where i.email == u.name) }
+store by_name
+";
+    let got = migrate(&format!("{RUNNING}{view}"), None);
+    let Some(Err(CatalogError::Refused(why))) = got.first() else {
+        panic!("the migration is not refused: {got:?}")
+    };
+    assert!(
+        why.iter()
+            .any(|w| w.contains("by_name") && w.contains("index (name) in auth::users")),
+        "{why:?}"
+    );
+    let indexed = RUNNING.replacen(
+        "add relation users : User key id generate sequence\n",
+        "add relation users : User key id generate sequence\n  index (name)\n",
+        1,
+    );
+    let indexed = indexed.replacen(
+        "  unique (email) in EmailPass\n",
+        "  unique (email) in EmailPass\n  index (email) in EmailPass\n",
+        1,
+    );
+    let got = migrate(&format!("{indexed}{view}"), None);
+    assert!(matches!(got.as_slice(), [Ok(())]), "{got:?}");
+}
+
+#[test]
 fn a_migration_declaring_has_identity_with_no_declared_index_is_admitted() {
     let got = migrate(&format!("{RUNNING}{HAS_IDENTITY}"), None);
     assert!(matches!(got.as_slice(), [Ok(())]), "{got:?}");

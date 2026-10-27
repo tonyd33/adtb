@@ -321,6 +321,7 @@ impl Cx<'_> {
         let Reselect {
             whole,
             clauses,
+            checks,
             what,
         } = mode;
         let mut edits: Edits = BTreeMap::new();
@@ -395,7 +396,7 @@ impl Cx<'_> {
                             }
                         }
                     }
-                    Decl::Check(c) if names_rel(&c.on.relation) => {
+                    Decl::Check(c) if checks && names_rel(&c.on.relation) => {
                         if let Some(sel) = &c.on.sel {
                             sels.push(sel_idents(sel).into_iter().cloned().collect());
                         }
@@ -614,6 +615,7 @@ impl Cx<'_> {
             Reselect {
                 whole: false,
                 clauses: true,
+                checks: true,
                 what: "the remove",
             },
         )?;
@@ -719,6 +721,7 @@ impl Cx<'_> {
             Reselect {
                 whole: false,
                 clauses: true,
+                checks: true,
                 what: "the rename",
             },
         )?;
@@ -861,6 +864,16 @@ pub(super) struct RowTypes {
 
 /// What a routing carries whole: (source constructor, field, product constructor, field).
 pub(super) type Carries = Vec<(String, String, String, String)>;
+
+/// A merge's image of the merged constructors: `src_ix` are the indexes of `sources`, in order.
+struct MergeImage<'a> {
+    def: TypeId,
+    ctor: &'a str,
+    disc: &'a str,
+    sources: &'a [String],
+    src_ix: &'a [u32],
+    carries: &'a Carries,
+}
 
 impl Cx<'_> {
     pub(super) fn ctor_def_text(&self, d: &ast::CtorDef) -> Written {
@@ -1070,7 +1083,7 @@ impl Cx<'_> {
     }
 
     /// The schema with constructors `texts` of `products` appended to type declaration `i`, and every
-    /// reference to the constructors `sources` retyped to the products, theirs included.
+    /// reference to the constructors `sources` outside a check retyped to the products, theirs included.
     fn with_retyped_ctors(
         &self,
         def_q: &QName,
@@ -1099,6 +1112,7 @@ impl Cx<'_> {
             Reselect {
                 whole: false,
                 clauses: false,
+                checks: false,
                 what: "the routing",
             },
         )?;
@@ -1432,20 +1446,19 @@ impl Cx<'_> {
             Reselect {
                 whole: true,
                 clauses: false,
+                checks: false,
                 what: "the merge",
             },
         )?;
-        for chk in &schema.checks {
-            if let Some(cs) = &chk.ctors
-                && cs.iter().any(|c| src_ix.contains(c))
-                && !src_ix.iter().all(|c| cs.contains(c))
-            {
-                return self.err(format!(
-                    "check `{}` has no image under the merge; drop or rewrite it in this or an earlier migration",
-                    chk.name
-                ));
-            }
-        }
+        let image = MergeImage {
+            def,
+            ctor: &m,
+            disc: &disc,
+            sources: &sources,
+            src_ix: &src_ix,
+            carries: &carries,
+        };
+        edits = Self::merged(edits, self.merged_checks(&schema, def, &refs, &image)?);
         edits = Self::merged(
             edits,
             self.reselect_rows(&schema, def, &sources, std::slice::from_ref(&m), true),
@@ -1544,6 +1557,176 @@ impl Cx<'_> {
         self.retype_products(&schema, def, &sources, std::slice::from_ref(&m))
     }
 
+    /// Returns the edits that carry each check over the merged constructors to the merged one. A check
+    /// over some but not all of them becomes a check matching on the discriminator, with `true` for the
+    /// others.
+    fn merged_checks(
+        &self,
+        schema: &Schema,
+        def: TypeId,
+        refs: &[(FileId, Span, Ref)],
+        image: &MergeImage,
+    ) -> R<Edits> {
+        let td = schema.ty(def);
+        let rels: Vec<RelId> = Self::relations_of(schema, def)
+            .into_iter()
+            .map(|(r, _, _)| r)
+            .collect();
+        let sets: BTreeSet<&str> = rels
+            .iter()
+            .flat_map(|&r| schema.relation(r).sets.iter().map(|x| x.name.as_str()))
+            .collect();
+        let mut edits: Edits = BTreeMap::new();
+        for chk in &schema.checks {
+            let Some(cs) = &chk.ctors else { continue };
+            if !rels.contains(&chk.relation) {
+                continue;
+            }
+            let inside = cs.iter().filter(|c| image.src_ix.contains(c)).count();
+            if inside == 0 {
+                continue;
+            }
+            let partial = inside < image.src_ix.len();
+            if partial && inside < cs.len() {
+                return self.err(format!(
+                    "check `{}` has no image under the merge; drop or rewrite it in this or an earlier migration",
+                    chk.name
+                ));
+            }
+            let j = chk.file.0 as usize;
+            let Some(Decl::Check(cd)) = self.src.parsed(j) else {
+                continue;
+            };
+            let Some(sel) = &cd.on.sel else { continue };
+            let pred = self.src.local(j, cd.predicate.span);
+            let body = self.carried_predicate(td, refs, image, chk, j, pred.clone())?;
+            let idents: Vec<ast::Ident> = sel_idents(sel).into_iter().cloned().collect();
+            let entry = edits.entry(j).or_default();
+            if !idents.iter().any(|x| sets.contains(x.text.as_str())) {
+                let mut names: Vec<String> = Vec::new();
+                for &c in cs {
+                    let n = if image.src_ix.contains(&c) {
+                        image.ctor.to_string()
+                    } else {
+                        td.ctors()[c as usize].name.clone()
+                    };
+                    if !names.contains(&n) {
+                        names.push(n);
+                    }
+                }
+                entry.push((self.sel_range(j, &idents), sel_text(&names).into()));
+            }
+            if !partial {
+                entry.push((pred, body.into()));
+                continue;
+            }
+            let mut nested = false;
+            crate::visit::each_expr(&cd.predicate, &mut |e| {
+                nested |= matches!(e.kind, ast::ExprKind::Match(..));
+            });
+            let body = if nested { format!("({body})") } else { body };
+            let arms: Vec<String> = image
+                .sources
+                .iter()
+                .zip(image.src_ix)
+                .map(|(s, c)| {
+                    let e = if cs.contains(c) {
+                        body.as_str()
+                    } else {
+                        "true"
+                    };
+                    format!("{s} -> {e}")
+                })
+                .collect();
+            entry.push((
+                pred,
+                format!("match {} | {}", image.disc, arms.join(" | ")).into(),
+            ));
+        }
+        Ok(edits)
+    }
+
+    /// Returns the text at `pred` of check declaration `j` with each field of a merged constructor
+    /// renamed to the field of the merged constructor the routing carries it to whole.
+    fn carried_predicate(
+        &self,
+        td: &schema::TypeDef,
+        refs: &[(FileId, Span, Ref)],
+        image: &MergeImage,
+        chk: &schema::CheckDef,
+        j: usize,
+        pred: Range<usize>,
+    ) -> R<String> {
+        let refused = |why: String| {
+            self.err(format!(
+                "check `{}` has no image under the merge: {why}",
+                chk.name
+            ))
+        };
+        let cs = chk.ctors.as_deref().unwrap_or_default();
+        let mut renames: Vec<(Range<usize>, String)> = Vec::new();
+        for (file, span, r) in refs {
+            let Ref::Field {
+                def: d, name, pun, ..
+            } = r
+            else {
+                continue;
+            };
+            if *file != chk.file || td.header().iter().any(|h| h.name == *name) {
+                continue;
+            }
+            let at = self.src.local(j, *span);
+            if !(pred.start <= at.start && at.end <= pred.end) || *d != image.def {
+                continue;
+            }
+            let mut to: Option<&str> = None;
+            for &c in cs {
+                let s = &td.ctors()[c as usize].name;
+                let carried = if image.src_ix.contains(&c) {
+                    image
+                        .carries
+                        .iter()
+                        .find(|(x, y, _, _)| x == s && y == name)
+                        .map(|(_, _, _, g)| g.as_str())
+                } else {
+                    Some(name.as_str())
+                };
+                match (carried, to) {
+                    (None, _) => {
+                        return refused(format!("the routing does not carry `{s}.{name}` whole"));
+                    }
+                    (Some(g), Some(prev)) if g != prev => {
+                        return refused(format!(
+                            "its constructors' field `{name}` goes to different fields"
+                        ));
+                    }
+                    (Some(g), _) => to = Some(g),
+                }
+            }
+            if let Some(to) = to
+                && to != name
+            {
+                let text = if *pun {
+                    format!("{name}: {to}")
+                } else {
+                    to.to_string()
+                };
+                renames.push((at.start - pred.start..at.end - pred.start, text));
+            }
+        }
+        renames.sort_by_key(|(r, _)| r.start);
+        let old = &self.src.decls[j].text[pred];
+        let mut body = String::new();
+        let mut from = 0;
+        for (r, text) in &renames {
+            body.push_str(&old[from..r.start]);
+            body.push_str(text);
+            from = r.end;
+        }
+        body.push_str(&old[from..]);
+        Ok(body)
+    }
+
     /// Retypes the references to `sources` the products' own declarations still name.
     fn retype_products(
         &mut self,
@@ -1560,6 +1743,7 @@ impl Cx<'_> {
             Reselect {
                 whole: false,
                 clauses: false,
+                checks: true,
                 what: "the operator",
             },
         )?;
@@ -1623,6 +1807,7 @@ impl Cx<'_> {
             Reselect {
                 whole: false,
                 clauses: false,
+                checks: true,
                 what: "the split",
             },
         )?;
@@ -1827,6 +2012,7 @@ impl Cx<'_> {
             Reselect {
                 whole: true,
                 clauses: false,
+                checks: true,
                 what: "the nest",
             },
         )?;
@@ -1942,6 +2128,7 @@ impl Cx<'_> {
             Reselect {
                 whole: false,
                 clauses: false,
+                checks: true,
                 what: "the unnest",
             },
         )?;

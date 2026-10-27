@@ -973,6 +973,41 @@ pub fn check_query(
     Ok(query)
 }
 
+/// Returns the relation variable a feed of a bundle of `module` names and the constructors it streams.
+///
+/// Fails when the relation does not resolve, a selected name is no constructor or named set of it,
+/// or the relation is volatile.
+pub fn check_feed(
+    schema: &Schema,
+    module: ModuleId,
+    f: &ast::FeedDecl,
+) -> Result<(RelId, CtorSet), Diag> {
+    let of = &f.of;
+    let rel = match crate::resolve::lookup_value(schema, &Visible::module(module), &of.relation) {
+        Ok(ValueDef::Relation(rel)) => rel,
+        Ok(_) => {
+            return Err(Diag::new(
+                of.span,
+                format!("`{}` is not a relation", of.relation.name.text),
+            ));
+        }
+        Err(e) => return Err(Diag::new(of.span, e)),
+    };
+    if schema.relation(rel).volatile {
+        return Err(Diag::new(
+            of.span,
+            "a feed must not name a volatile relation",
+        ));
+    }
+    let ctors = match &of.sel {
+        None => (0..schema.ty(schema.relation(rel).elem_def).ctors().len() as u32).collect(),
+        Some(sel) => schema
+            .relation_sel(rel, sel)
+            .map_err(|e| Diag::new(of.span, e))?,
+    };
+    Ok((rel, ctors))
+}
+
 impl Checker<'_> {
     fn query(&mut self, q: &ast::QueryDecl) -> R<Tm> {
         if let Some(l) = &q.limit {

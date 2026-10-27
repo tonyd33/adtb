@@ -1517,6 +1517,30 @@ fn a_registered_transaction_keeps_volatile_reads_out_of_its_writes() {
     );
 }
 
+fn feed(text: &str) -> Result<(RelId, CtorSet), String> {
+    let s = wschema();
+    let items = parse_example(text, Options::default())
+        .ok()
+        .expect("parses");
+    let Some(ExampleItem::BundleItem(BundleItem::Feed(f))) = items.into_iter().next() else {
+        panic!("{text}\nis not a feed");
+    };
+    let module = s.module_named("auth").expect("module auth");
+    check_feed(&s, module, &f).map_err(|d| d.message)
+}
+
+#[test]
+fn a_feed_names_no_volatile_relation() {
+    assert_eq!(
+        Err("a feed must not name a volatile relation".to_string()),
+        feed("feed sessions_changes of sys::sessions")
+    );
+    let (_, ctors) = feed("feed identity_changes of identities.(Google | Apple)")
+        .unwrap_or_else(|e| panic!("refused: {e}"));
+    assert_eq!(2, ctors.len());
+    assert!(feed("feed nothing of nosuch").is_err_and(|e| e.contains("nosuch")));
+}
+
 #[test]
 fn schema_objects_never_read_a_volatile_relation() {
     schema_no(

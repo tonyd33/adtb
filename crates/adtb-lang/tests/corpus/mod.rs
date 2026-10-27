@@ -5,10 +5,10 @@ use std::fs;
 use std::path::Path;
 
 use adtb_lang::ast::{
-    AdhocItem, BundleItem, Decl, ExampleItem, Import, MigrationFile, Operator, OperatorKind,
-    QueryDecl, TxnDecl,
+    AdhocItem, BundleItem, Decl, ExampleItem, FeedDecl, Import, MigrationFile, Operator,
+    OperatorKind, QueryDecl, TxnDecl,
 };
-use adtb_lang::check::{Bundles, Checker, Context, Program};
+use adtb_lang::check::{Bundles, Checker, Context, Program, check_feed};
 use adtb_lang::evolve::{Source, SourceDecl};
 use adtb_lang::parse::{Options, parse_example, parse_type};
 use adtb_lang::resolve::Visible;
@@ -326,6 +326,7 @@ pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared,
     let mut adhoc = Vec::new();
     let mut queries: Vec<QueryDecl> = Vec::new();
     let mut txns: Vec<TxnDecl> = Vec::new();
+    let mut feeds: Vec<FeedDecl> = Vec::new();
     let mut migrations: Vec<MigrationFile> = Vec::new();
     let mut errs = Vec::new();
     let declare = |entries: &mut Vec<Entry>, module: &str, d: Decl| {
@@ -369,7 +370,7 @@ pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared,
                 BundleItem::Aggregate(a) => declare(&mut entries, &module, Decl::Aggregate(a)),
                 BundleItem::Query(q) => queries.push(q),
                 BundleItem::Txn(t) => txns.push(t),
-                BundleItem::Feed(_) => {}
+                BundleItem::Feed(f) => feeds.push(f),
             },
             ExampleItem::Adhoc(a) => adhoc.push(a),
         }
@@ -391,7 +392,11 @@ pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared,
                     refusal
                         .recheck
                         .iter()
-                        .map(|d| render_in(result, &entries, Some(b), d)),
+                        .zip(&refusal.recheck_from)
+                        .map(|(d, from)| match from {
+                            Some(span) => at(b, *span, &d.diag.message),
+                            None => render_in(result, &entries, Some(b), d),
+                        }),
                 );
                 return Err(errs);
             }
@@ -408,6 +413,14 @@ pub fn prepare(b: &Block, part: &[Entry], prelude: &[Entry]) -> Result<Prepared,
     let module = schema
         .module_named(&reads)
         .expect("the bundle reads a module");
+    for f in &feeds {
+        if let Err(d) = check_feed(&schema, module, f) {
+            errs.push(at(b, d.span, &d.message));
+        }
+    }
+    if !errs.is_empty() {
+        return Err(errs);
+    }
     Ok(Prepared {
         schema,
         program,

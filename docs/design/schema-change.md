@@ -216,7 +216,9 @@ not this function's.
 | `Source::expecting(module, ops)`, `Source::settled()` | prepare a source for the operators `ops` of one migration applied one at a time by `apply` or `steps`, and end it |
 
 A `Source` holds the declaration texts of every user module, the
-modules that hold nothing, the installed extensions, the write state
+modules that hold nothing, the installed extensions, the extension
+packages `install` may read, the privileges log grants leave each role
+holding, the write state
 of each (relation variable, constructor) and of each value-level
 (type, constructor) with the version that set it, the catalog id of
 each object with the next id of each space, and the log of the
@@ -238,6 +240,8 @@ Postconditions of `migrate`:
 - On success the result checks: `result.check()` succeeds. Otherwise
   `Refusal.recheck` names every schema object of the result that fails
   to build or check, and `Refusal.result` is that result.
+  `Refusal.recheck_from[i]` is the span of `text` that an operator
+  copied the text `recheck[i]` points at from, when it copied it.
 - The result's declarations are the operators' rewrite of the source's
   text. A declaration no operator touches keeps its text.
 - Every object keeps its catalog id across the migration, a renamed
@@ -259,7 +263,7 @@ whose element type is the operator's type.
 | --- | --- | --- |
 | `add module m` | `m` is not `prelude`, `catalog` or `sys` and is no module | `m` is a module with nothing in it |
 | `drop module m` | `m` holds no declaration | `m` is no module |
-| `install m ...` | as `add module` | `m` is a module and an installed extension |
+| `install m "v" from "f"` | as `add module`; `packages` holds `f`, as the text of a module file without its `module` line, and each of its declarations checks | `m` is a module and an installed extension holding `f`'s declarations |
 | `uninstall m` | `m` is installed; no declaration outside `m` names `m::` | `m` and its declarations are gone |
 | `add type`, `add relation`, `add set`, `define fn`, `define aggregate`, `add constraint`, `add check`, `store` | the module exists and declares nothing of that kind and name; a relation name is unqualified | the declaration is the text after the verb; a type's constructors are `Enabled` value-level; a relation's constructors take their value-level state, else `Enabled` |
 | `redefine fn` | the function exists | its declaration is the new text |
@@ -271,7 +275,7 @@ whose element type is the operator's type.
 | `remove constructor T.C` | `C` is `Deprecated` in each of its relations (value-level, when it has none) since an earlier migration; no reference type names a constructor set holding `C` but the whole sum; no named set is `C` alone; no check ranges over `C` alone | `C` is gone from `T`, every named set and listed scope; a unique, index or default over `C` alone is gone; constraints lose their arms for `C`; its states are gone |
 | `enable`, `disable`, `deprecate` | `r.C` or `T.C` names one constructor; `enable` meets one not `Enabled`; `disable` and `deprecate` meet one `Enabled` | its state is `Enabled`, `Declared` or `Deprecated` since this version |
 | `split constructor T.C into ...` | the products are no constructors of `T`; the routing is a match over rows of `C`, exhaustive, reading only the row, each arm a product's value, omitted header fields carried; a unique or index over `C` alone with a field no product keeps has replacements stated | the products replace `C` at its place; a scope over `C` alone moves to each product that keeps all its fields, under their new names, and the stated replacements are added; listed scopes, named sets and reference types over `C` list the products; arm clauses replace `C`'s arms; products take `C`'s states |
-| `merge constructor T.(C \| D) into M` | `M` is no constructor of `T`; `M` has exactly one discriminator field; with `by`, the routing is as a split's and gives the discriminator as each row's constructor; without it, fields match by name and type; no source is `Deprecated`; no named set, scope or reference type holds some but not all sources; no check ranges over some but not all | `M` replaces the sources at the first one's place; a unique over sources becomes a unique over `M` on the discriminator and the fields the routing carries; sets and scopes holding all sources hold `M`; arm clauses replace the sources' arms; `M` is `Declared` where a source is, else `Enabled` |
+| `merge constructor T.(C \| D) into M` | `M` is no constructor of `T`; `M` has exactly one discriminator field; with `by`, the routing is as a split's and gives the discriminator as each row's constructor; without it, fields match by name and type; no source is `Deprecated`; no named set, scope or reference type holds some but not all sources; no check ranges over some but not all sources and a constructor outside them; each field a check over sources reads is carried whole to one field of `M` | `M` replaces the sources at the first one's place; a unique over sources becomes a unique over `M` on the discriminator and the fields the routing carries; sets and scopes holding all sources hold `M`; a check over some but not all sources is a check on `M` matching on the discriminator, `true` for the other sources, with each field renamed to the one the routing carries it to; arm clauses replace the sources' arms; `M` is `Declared` where a source is, else `Enabled` |
 | `nest constructor T.(C \| D) into N { f: S }` | `N` has one field, typed by a sum `S` whose constructors have the sources' names and fields; no source is `Deprecated`; scopes as for a merge | `N` replaces the sources; a scope over one source's field `g` becomes `f.C.g` in `N`; states and arms as for a merge |
 | `unnest constructor T.N` | `N` has one field of a sum with no header or parameters, whose constructor names are free in `T` | `S`'s constructors replace `N`, as `S` writes them; a field `f.C.g` of a scope over `N` becomes `g` in `C`; states and arms as for a split |
 | `add field T.C.f: U fill e` | `f` is no field of `C` or the header (of any constructor, for a header field); `e` checks at `U` over a row of `C`, reading only the row | `f: U` ends the field list |
@@ -282,7 +286,7 @@ whose element type is the operator's type.
 | `drop unique`, `drop index` | a clause of that kind with the same fields, token for token, and the same constructor set exists | it is gone |
 | `rekey relation r key (...) carry ...` | the carried fields are exactly the fields outside `r`'s own type typed `Key r` or `Key r.S`; at the end of the migration no field of `r`'s own type typed `Key r` lies outside the new key | `r`'s key clause is the new key, with no generator |
 | `add default`, `drop default`, `add computed`, `redefine computed`, `drop computed` | the default or computed field exists, for a drop or redefine | the clause is added, replaced or gone |
-| `grant`, `revoke` | each relation names a relation variable of a user module; each function a schema function; no capability or bundle call privilege | the source is unchanged |
+| `grant`, `revoke` | each relation names a relation variable of a user module; each function a schema function; each listed field is a field of the header or of a selected constructor; no capability or bundle call privilege | `grants` holds each privilege of a `grant` for its role once, by the catalog ids of what it names, with the grant option when any grant of it gave one; a `revoke` removes each privilege it lists from the role; the declarations are unchanged |
 | `adopt tzdb` | none | the source is unchanged |
 | `script w` | `w` checks as ad hoc text against the schema the operators before it produce | the source is unchanged |
 | `revert n` | `n` is in the log and holds no `script`; no later migration names an object `n` creates; each inverse that adds a field the log holds no value for has a `fill` | the inverses of `n`'s operators, last first, apply as the table states, computed against the source before each; an added constructor goes with its arms, a removed one comes back at its place with its states and its constraints' arms, a split or merge is inverted when its routing binds or fixes every field and carries each binding whole and, for a split, routes some row to every product, else refused, a split naming each product no arm reaches |

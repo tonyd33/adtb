@@ -24,10 +24,12 @@ pub(super) enum Inverse {
         text: Option<String>,
         states: Vec<(StateKey, State)>,
     },
+    /// Adds module `name` with the declaration texts `decls`, or with `present` false removes it.
     Module {
         name: String,
         present: bool,
         installed: bool,
+        decls: Vec<String>,
     },
     /// Applies a logged migration's operators again.
     Replay(Box<Logged>),
@@ -378,16 +380,24 @@ impl Cx<'_> {
                 name: m.text.clone(),
                 present: false,
                 installed: false,
+                decls: Vec::new(),
             }]),
             OperatorKind::Install { name, .. } => Ok(vec![Inverse::Module {
                 name: name.text.clone(),
                 present: false,
-                installed: false,
+                installed: true,
+                decls: Vec::new(),
             }]),
             OperatorKind::DropModule(m) | OperatorKind::Uninstall(m) => Ok(vec![Inverse::Module {
                 name: m.text.clone(),
                 present: true,
                 installed: before.installed.contains(&m.text),
+                decls: before
+                    .decls
+                    .iter()
+                    .filter(|d| d.module == m.text)
+                    .map(|d| d.text.clone())
+                    .collect(),
             }]),
             OperatorKind::AddType(t) => Ok(vec![decl(
                 "type",
@@ -1612,12 +1622,21 @@ impl Cx<'_> {
                 name,
                 present,
                 installed,
+                decls,
             } => {
                 if present {
                     self.src.modules.insert(name.clone());
+                    for d in decls {
+                        self.src.push(&name, d);
+                    }
                     if installed {
                         self.src.installed.insert(name);
                     }
+                } else if installed {
+                    self.uninstall(&ast::Ident {
+                        text: name,
+                        span: self.span,
+                    })?;
                 } else {
                     if self.src.decls.iter().any(|d| d.module == name) {
                         return self.err(format!(
