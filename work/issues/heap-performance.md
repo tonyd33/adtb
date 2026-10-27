@@ -22,3 +22,7 @@ Found while building the heap:
 
 Measure each one with a benchmark under the simulator before changing
 it.
+
+## 2026-10-26: measured
+
+Under the simulator, `Stage::commit` is 7 to 10% of heap-heavy profiles: the heap is not the hot spot. `PageExclusive::update` and `edits_by` still copy the whole page and diff it, which is this ticket's first item.

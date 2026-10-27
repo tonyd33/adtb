@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: feature
 priority: 822
 summary: "a printed schema cannot be replayed as a first migration, add field cannot declare a delete action, and a split product cannot refer to itself"
+closed: 2026-10-26
 tags:
   - spec
   - evolution
@@ -25,3 +26,9 @@ Found by the campaign manager (`apps/campaign/docs/gaps.md`):
 - In a split, a self-reference field of the split constructor is typed in each product to the product set that replaces it, unless the split names the target.
 
 These go through the design space before the spec changes.
+
+## 2026-10-26: landed
+
+Landed in `fix(evolution): keep migration text whole through arms, splits and merges, type forward selections within a migration, and add field delete actions`. Rulings `spec/evolution/forward-sets/same-migration`, `spec/evolution/field-action/field-type-and-alter`, and `spec/evolution/split-self-ref/product-set` are adopted; evolution.md 3.2, 4.6, 4.9, 4.10 and 6.2 and syntax.md 8.3 are updated. `AlterField` is catalog constructor 468.
+
+## 2026-10-26: resolved

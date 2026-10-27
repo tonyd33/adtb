@@ -18,6 +18,7 @@ depends-on:
   - schema-operator-laws
   - io-backends
   - real-runtime
+  - user-manual
 tags:
   - milestone
 ---

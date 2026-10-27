@@ -14,6 +14,8 @@ Found on 2026-10-26, against the workspace at the commit after
 
 ### Joins through an optional reference are not admitted
 
+Resolved 2026-10-26: the planner now splits joins through a reference on constructor equalities (`admission-path-forms`).
+
 Written, in migration 0001:
 
 ```adt fragment
@@ -50,6 +52,8 @@ opens the real log and fails.
 
 ### Paths inside the arms of a `match` over a sum are not admitted
 
+Resolved 2026-10-26: the delta compiler now unfolds dereferences and keeps arm conditions (`admission-path-forms`).
+
 Written first:
 
 ```adt fragment
@@ -82,6 +86,8 @@ which the engine admits. That loses the match-scoped constraint whose
 
 ### A path of two references is not admitted, the same joins written out are
 
+Resolved 2026-10-26: path forms through several references now admit the same way as the written-out join (`admission-path-forms`).
+
 Written first: `c.who.campaign != c.encounter.session.campaign` over
 `combatants.Cast`, and `c.encounter.session.number > f.died_in.number`
 for the dead NPC rule.
@@ -104,6 +110,8 @@ Expected: the path form admitted like the join form. Spec: queries.md
 ## Language: schema evolution
 
 ### An `arm` clause into a parenthesised match corrupts the declaration
+
+Resolved 2026-10-26: the arm is now placed inside the parentheses, after the last arm (`migration-text-corruption`).
 
 Written, against the first form of `discovery_in_campaign` above:
 
@@ -131,6 +139,8 @@ evolution.md §4.2, the `arm` clause adds an arm to the match whose
 scrutinee covers the new constructor, wherever it sits.
 
 ### Splitting a constructor that references itself
+
+Resolved 2026-10-26: split and merge now type the routing at the retyped types and drop retyping edits that fall inside a replaced constructor's own text (`migration-text-corruption`).
 
 Written, release 1.2 (`schema/migrations/0003.adt`):
 
@@ -183,6 +193,8 @@ Cost: release 1.2 does not apply, and so neither does the full log of
 
 ### Within one migration, only `Key r` may name a relation added later
 
+Resolved 2026-10-26: `Key r.C` and `Key r.(Set)` may now name a relation added later in the same migration, and a printed schema replays as a first migration (`spec-migration-authoring-gaps`).
+
 Written first, as one migration with types in reading order: `type
 Player { ..., party: Key entities.Party }` before `relation entities`,
 and `Location { parent: Option (Key entities.Location) }` inside
@@ -208,6 +220,8 @@ engine fault, but it has two consequences the spec does not mention:
   the engine cannot be replayed as a first migration for a new file.
 
 ### `add field` cannot declare a delete action
+
+Resolved 2026-10-26: `add field` now takes a `field_type`, so `on delete ...` may follow its type, and `alter field` changes the action of an existing reference field (`spec-migration-authoring-gaps`).
 
 `field_op` takes a `type`, and a delete action is part of `field_type`,
 not of `type` (syntax.md §4, §8.3). So `Location.parent`, added by `add
@@ -267,17 +281,18 @@ Not faults. Each costs the application code the spec could save it.
 
 ## Failing tests
 
-As of this writing, with `cargo test -p campaign`:
+As of 2026-10-26, with `cargo test -p campaign`: 21 of 21 tests pass.
+No test fails.
 
-| Test | Fails because |
-| --- | --- |
-| `engine::release_1_0_opens` | joins through an optional reference are not admitted |
-
-Every other test passes: the schema file checks, is the fold of
-migration 0001 and replays as a first migration; releases 1.1 to 1.3
-apply in the front end; all 50
+The schema file checks, is the fold of migration 0001 and replays as a
+first migration; releases 1.1 to 1.3 apply in the front end; all 50
 registered queries and transactions check at version 1; and in the
-engine, with the two unadmitted constraints left out, version 1 opens,
-upgrades to 1.1 with its rows, and runs prep, discovery, an encounter,
-a death, a closed quest and two colliding planners as the design
-describes.
+engine both constraints are admitted, version 1 opens, upgrades to 1.1
+with its rows, and runs prep, discovery, an encounter, a death, a
+closed quest and two colliding planners as the design describes.
+
+With admission and migration text fixed, the app could now restore the
+match-scoped `discovery_in_campaign` constraint and the path forms it
+used instead of the per-constructor constraints and written-out joins.
+The schema is left as written; this is noted for a future release, not
+done here.
