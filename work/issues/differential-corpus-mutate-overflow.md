@@ -18,3 +18,6 @@ tags:
 ```
 cargo nextest run --profile deep -p adtb-testkit --test differential corpus_mutants_equal_reference
 ```
+## 2026-10-26: quality review
+
+The overflow happens in `make`, outside `catch_unwind`, so it aborts the whole sweep rather than failing one case. Seeds 96 to 496 of the corpus sweep hit it.
