@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: bug
 priority: 802
 summary: "migration gaps left by the operator log: nested add field, internal errors as refusal strings, no internal open error, add then rename, validation memory, rekey revert"
+closed: 2026-10-26
 ---
 
 # Operator log follow ups
@@ -23,3 +24,9 @@ From the operator log tracks:
 ## 2026-10-26: internal open error
 
 `catalog::Error::Internal` during a migration now reaches users as `MigrationRefused { reason: Rejected { Internal { what } } }`, since the spec lists `OpenError` exactly; no new variant.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed as mrtsvsxs.
