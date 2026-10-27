@@ -1254,3 +1254,108 @@ fn a_migration_validates_its_constraints_within_the_query_memory_of_the_open() {
         opened(&rt, &[SHOP, check]);
     });
 }
+
+#[test]
+#[ignore = "the derived inverse merge has no discriminator, so the revert is refused"]
+fn reverting_a_split_by_a_bool_field_merges_the_rows_back_with_the_field() {
+    let wide = "module shop\nadd field Payment.Card.wide: Bool fill true\n";
+    let split = r"module shop
+split constructor Payment.Card into Wide { last4: Text } | Narrow { last4: Text }
+  by match
+    | Card { wide: true, last4 } -> Wide { last4: last4 }
+    | Card { wide: false, last4 } -> Narrow { last4: last4 }
+";
+    let revert = "module shop\nrevert 0003\n";
+    after(70, &[wide, split, revert], |db| {
+        let db = db.expect("the revert applies");
+        assert_eq!(
+            vec![r#"{ wide: True, last4: "4242" }"#],
+            query(
+                &db,
+                "from p in payments.Card select { wide: p.wide, last4: p.last4 }"
+            )
+        );
+    });
+}
+
+#[test]
+#[ignore = "the derived inverse merge has no discriminator, so the revert is refused"]
+fn reverting_a_split_into_one_product_merges_the_rows_back() {
+    let split = r"module shop
+split constructor Payment.Card into Visa { digits: Text }
+  by match
+    | Card { last4 } -> Visa { digits: last4 }
+";
+    let revert = "module shop\nrevert 0002\n";
+    after(71, &[split, revert], |db| {
+        let db = db.expect("the revert applies");
+        assert_eq!(
+            vec![r#""4242""#],
+            query(&db, "from p in payments.Card select p.last4")
+        );
+    });
+}
+
+#[test]
+#[ignore = "the revert asks a fill for every listed constructor but the first and loses their values"]
+fn reverting_a_move_down_to_two_constructors_keeps_their_values_and_fills_the_others() {
+    let wire = "module shop\nadd constructor Payment.Wire { iban: Text }\nenable payments.Wire\nadd field Payment.note: Text fill \"n\"\n";
+    let down = "module shop\nmove field Payment.note to Payment.(Card | Invoice)\n";
+    let revert =
+        "module shop\nrevert 0003\n  fill Payment.Card.note = match\n    | Wire x -> \"w\"\n";
+    let mut sim = Sim::new(72, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP]);
+        write(&db, CUSTOMERS);
+        write(&db, INVOICE);
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP, wire]);
+        write(
+            &db,
+            r#"insert payments.Wire { customer: customers.key(1), iban: "DE", note: "n" }"#,
+        );
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP, wire, down, revert]);
+        assert_eq!(
+            vec![r#""n""#, r#""n""#, r#""w""#],
+            query(&db, "from p in payments select p.note")
+        );
+    });
+}
+
+#[test]
+#[ignore = "add default has no resolved form, so the migration is refused"]
+fn an_added_default_fills_a_later_insert_and_its_revert_drops_it() {
+    let default = "module shop\nadd default customers.name = \"anon\"\n";
+    let revert = "module shop\nrevert 0002\n";
+    after(73, &[default], |db| {
+        let db = db.expect("the default applies");
+        write(&db, "insert customers {}");
+        assert_eq!(
+            vec![r#""ann""#, r#""anon""#, r#""bob""#],
+            query(&db, "from c in customers select c.name")
+        );
+    });
+    after(74, &[default, revert], |db| {
+        let db = db.expect("the revert applies");
+        let got = fails(&db, "insert customers {}");
+        assert!(matches!(got, Error::Rejected { .. }), "{got:?}");
+    });
+}
+
+#[test]
+fn reverting_a_move_down_moves_the_field_back_and_takes_the_fill_in_the_others() {
+    let note = "module shop\nadd field Payment.note: Text fill \"n\"\n";
+    let down = "module shop\nmove field Payment.note to Payment.(Invoice)\n";
+    let revert =
+        "module shop\nrevert 0003\n  fill Payment.Invoice.note = match\n    | Card x -> \"w\"\n";
+    after_invoice(75, &[note, down, revert], |db| {
+        let db = db.expect("the revert applies");
+        assert_eq!(
+            vec![r#""n""#, r#""w""#],
+            query(&db, "from p in payments select p.note")
+        );
+    });
+}

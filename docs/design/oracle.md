@@ -262,7 +262,8 @@ migration and two per migration after it:
 
 ```text
 walk(seed, steps, n) -> Walk { start: Case, steps: [Step; steps] }
-Step { migration, migrated: Case, writes: [text], written: Case }
+Step { migration, operators: [Operator], inverse: Inverse, migrated: Case, writes: [text], written: Case }
+Inverse = Restores { revert, reverted: Case } | Refused { revert }
 ```
 
 Postconditions:
@@ -279,7 +280,19 @@ Postconditions:
   interpreter holding `migrated`; `written` is the database they leave,
   with the queries of `migrated`.
 - No operator of a migration names what an earlier operator of the same
-  migration creates.
+  migration creates, but for the type a merge or a nest declares before
+  it and the enable of a constructor added before it.
+- `operators` are the operators of the migration, in order, each a kind
+  the walk can draw; a walk drawn with a set of kinds to skip holds none
+  of them.
+- `inverse.revert` is a migration `revert n` of this step's migration,
+  with a `fill` for each value a lossy operator of it discards. Applied
+  right after the step's migration, it is refused when `inverse` is
+  `Refused`, which holds exactly when an operator of the migration
+  discards data and has no inverse. Otherwise it applies and leaves
+  `reverted`: the database before the migration, but for each value a
+  lossy operator discarded, which holds that operator's fill, with the
+  queries of the case before the migration.
 
 Rulings: project/testing/gen/type-directed, project/testing/gen/corpus-mutation, project/testing/gen/schema-walk
 

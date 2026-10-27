@@ -10,11 +10,13 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use adtb::plan::{Rewrites, with_rewrites};
-use adtb::{CallOptions, CreateOptions, Database, Error, Log, OpenOptions, RejectReason};
+use adtb::{
+    CallOptions, CreateOptions, Database, Error, Log, OpenError, OpenOptions, RejectReason,
+};
 use adtb_lang::textual;
 use adtb_reference::{Abort, Rejection, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_testkit::cases::{Case, Forms, Query, Walk, case, walk};
+use adtb_testkit::cases::{Case, Forms, Inverse, Operator, Query, Walk, case, walk, walk_of};
 use adtb_testkit::corpus::{self, Script};
 use adtb_testkit::fixture::Fixture;
 use adtb_testkit::{Rng, profile};
@@ -241,19 +243,21 @@ fn engine_eval(db: &Database<SimRuntime>, text: &str) -> Got {
 /// Returns the engine database of the simulated file, created if it does not exist, at the
 /// version the migrations of `log` leave.
 fn open(rt: SimRuntime, log: &[String]) -> Database<SimRuntime> {
+    try_open(rt, log).unwrap_or_else(|e| {
+        let last = log.last().map_or("", String::as_str);
+        panic!(
+            "the engine does not open at migration {}: {e:?}\n{last}",
+            log.len()
+        )
+    })
+}
+
+fn try_open(rt: SimRuntime, log: &[String]) -> Result<Database<SimRuntime>, OpenError> {
     let options = OpenOptions {
         create: Some(CreateOptions::default()),
         ..OpenOptions::default()
     };
-    Database::open_in(rt, "differential.adt", &Log::new(log.to_vec()), &options).unwrap_or_else(
-        |e| {
-            let last = log.last().map_or("", String::as_str);
-            panic!(
-                "the engine does not open at migration {}: {e:?}\n{last}",
-                log.len()
-            )
-        },
-    )
+    Database::open_in(rt, "differential.adt", &Log::new(log.to_vec()), &options)
 }
 
 fn write(db: &Database<SimRuntime>, writes: &[String]) {
@@ -730,8 +734,29 @@ fn rewrites_keep_results() {
 /// Walks per default run, [`profile::deep`] sized, unless `ADTB_DIFF_CASES` says otherwise.
 const WALKS: u64 = 4;
 
-/// The migrations of each walk.
+/// The migrations of each walk of a default sweep.
 const STEPS: usize = 2;
+
+/// The migrations of each walk of a sweep over every operator, enough for the operators that
+/// take back what an earlier one left.
+const LONG_STEPS: usize = 6;
+
+/// The operators whose laws depend on how removals and constraint drops stage.
+const STAGED: [Operator; 3] = [
+    Operator::RemoveConstructor,
+    Operator::DropUnique,
+    Operator::DropCheck,
+];
+
+/// The operators the engine refuses, having no resolved form for them.
+const UNRESOLVED: [Operator; 2] = [Operator::AddDefault, Operator::DropDefault];
+
+/// The operators whose revert the engine refuses or applies otherwise than their inverse.
+const UNREVERTED: [Operator; 3] = [
+    Operator::SplitByLiteral,
+    Operator::SplitRenaming,
+    Operator::MoveFieldDownMany,
+];
 
 /// Returns the first query of `case` on which `db` disagrees with the reference, named by
 /// where in the walk it runs.
@@ -786,18 +811,99 @@ fn walked(seed: u64, w: &Walk) -> Option<String> {
     .unwrap_or_else(|p| Some(format!("panics: {}", panic_message(&*p))))
 }
 
-#[test]
-fn schema_walks_keep_engine_equal_to_reference() {
+/// Returns the first disagreement of `db` at the version `log` leaves with the reference
+/// holding `case`.
+fn checked(sim: &mut Sim, seed: u64, log: &[String], case: &Case, at: &str) -> Option<String> {
+    process(sim, |rt| {
+        let db = open(rt, log);
+        let found = walk_check(seed, &db, case, at);
+        close(db);
+        found
+    })
+}
+
+/// Returns the first law of its operators that migration `k` of walk `w` breaks, from the
+/// database the walk holds before it: its revert, which restores the database before it or is
+/// refused, then the revert of that revert, which applies the migration again.
+fn step_laws(seed: u64, w: &Walk, k: usize) -> Option<String> {
+    let log = w.log();
+    let step = &w.steps[k];
+    let mut sim = Sim::new(seed, Config::default());
+    process(&mut sim, |rt| {
+        let db = open(rt, &log[..1]);
+        write(&db, &w.start.load);
+        close(db);
+    });
+    for (j, before) in w.steps[..k].iter().enumerate() {
+        process(&mut sim, |rt| {
+            let db = open(rt, &log[..j + 2]);
+            write(&db, &before.writes);
+            close(db);
+        });
+    }
+    let mut at = log[..k + 2].to_vec();
+    at.push(step.inverse.revert().to_owned());
+    let reverted = match &step.inverse {
+        Inverse::Refused { .. } => {
+            return process(&mut sim, |rt| match try_open(rt, &at) {
+                Err(OpenError::MigrationRefused { version, .. }) if version == at.len() as u64 => {
+                    None
+                }
+                Err(e) => Some(format!("its revert fails, not refused: {e:?}")),
+                Ok(db) => {
+                    close(db);
+                    Some("its revert applies, though it discards data with no inverse".into())
+                }
+            });
+        }
+        Inverse::Restores { reverted, .. } => reverted,
+    };
+    let found = checked(&mut sim, seed, &at, reverted, "its revert");
+    if found.is_some() {
+        return found;
+    }
+    at.push(format!("module app\nrevert {:04}\n", at.len()));
+    checked(
+        &mut sim,
+        seed,
+        &at,
+        &step.migrated,
+        "the revert of its revert",
+    )
+}
+
+/// Returns the first law of a schema operator that walk `w` breaks, by migration.
+fn laws(seed: u64, w: &Walk) -> Option<String> {
+    w.steps.iter().enumerate().find_map(|(k, step)| {
+        panic::catch_unwind(AssertUnwindSafe(|| step_laws(seed, w, k)))
+            .unwrap_or_else(|p| Some(format!("panics: {}", panic_message(&*p))))
+            .map(|m| format!("migration {} of {:?}: {m}", k + 2, step.operators))
+    })
+}
+
+/// Walks per default run of a law sweep, [`profile::deep`] sized, unless `ADTB_DIFF_CASES` says
+/// otherwise. An open applying a revert takes about two seconds.
+const LAW_WALKS: u64 = 2;
+
+/// Sweeps `walks` walks of `steps` migrations of one run drawing no operator of `skip`, each
+/// checked by `check`.
+fn sweep_walks(
+    name: &str,
+    walks: u64,
+    steps: usize,
+    skip: &[Operator],
+    check: fn(u64, &Walk) -> Option<String>,
+) {
     let mut found = Vec::new();
-    let seeds = seeds_of(WALKS);
+    let seeds = seeds_of(walks);
     for seed in seeds.clone() {
-        let w = walk(seed, STEPS, QUERIES);
-        if let Some(m) = walked(seed, &w) {
+        let w = walk_of(seed, steps, QUERIES, skip);
+        if let Some(m) = check(seed, &w) {
             found.push((seed, m, w));
         }
     }
     let mut report = format!(
-        "schema walk: {} of {} seeds disagree\n",
+        "{name}: {} of {} seeds fail\n",
         found.len(),
         seeds.end - seeds.start
     );
@@ -815,4 +921,57 @@ fn schema_walks_keep_engine_equal_to_reference() {
         }
     }
     assert!(found.is_empty(), "{report}");
+}
+
+#[test]
+fn schema_walks_keep_engine_equal_to_reference() {
+    sweep_walks(
+        "schema walk",
+        WALKS,
+        STEPS,
+        &[&STAGED[..], &UNRESOLVED].concat(),
+        walked,
+    );
+}
+
+#[test]
+fn schema_operators_keep_their_laws() {
+    sweep_walks(
+        "operator laws",
+        LAW_WALKS,
+        STEPS,
+        &[&STAGED[..], &UNRESOLVED, &UNREVERTED].concat(),
+        laws,
+    );
+}
+
+#[test]
+#[ignore = "draws operators the engine does not yet apply as their laws state"]
+fn every_schema_walk_keeps_engine_equal_to_reference() {
+    sweep_walks("every schema walk", WALKS, LONG_STEPS, &[], walked);
+}
+
+#[test]
+#[ignore = "draws operators the engine does not yet apply as their laws state"]
+fn every_operator_keeps_its_laws() {
+    sweep_walks("every operator's laws", LAW_WALKS, LONG_STEPS, &[], laws);
+}
+
+/// The walks whose operators [`walks_draw_every_operator`] counts.
+const DRAWS: u64 = 200;
+
+#[test]
+fn walks_draw_every_operator() {
+    let mut drawn = Vec::new();
+    for seed in 0..DRAWS {
+        drawn.extend(walk(seed, 8, 0).steps.into_iter().flat_map(|s| s.operators));
+    }
+    let missing: Vec<&Operator> = Operator::ALL
+        .iter()
+        .filter(|o| !drawn.contains(o))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "no walk of seeds 0..{DRAWS} draws {missing:?}"
+    );
 }

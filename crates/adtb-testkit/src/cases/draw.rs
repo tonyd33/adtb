@@ -131,7 +131,9 @@ impl Gen<'_> {
             T::Text => self.text(rng, d),
             T::Bool => self.boolean(rng, d),
             T::Float => self.float(rng, d),
-            T::Shade | T::OptInt | T::Key(_) | T::Row(..) | T::FloatSum => self.leaf(rng, t),
+            T::Shade | T::OptInt | T::Key(_) | T::Named(_) | T::Row(..) | T::FloatSum => {
+                self.leaf(rng, t)
+            }
             T::Rec(fs) => E::Rec(
                 fs.iter()
                     .map(|(n, ft)| (n.clone(), self.expr(rng, ft, d)))
@@ -164,7 +166,7 @@ impl Gen<'_> {
                 _ => &[],
             };
             for f in rel.header.iter().chain(own) {
-                if t.is_none_or(|t| f.ty == *t) {
+                if t.map_or(!matches!(f.ty, T::Named(_)), |t| f.ty == *t) {
                     out.push(Read {
                         path: E::Path(v.clone(), f.name.clone()),
                         ty: f.ty.clone(),
@@ -200,11 +202,13 @@ impl Gen<'_> {
         }
         match t {
             T::Int | T::Text | T::Bool | T::Float | T::Shade | T::OptInt => {
-                Self::literal(t, value(rng, t, &[]))
+                Self::literal(t, value(rng, t, self.w, &[]))
             }
-            T::Key(r) => E::Lit(format!("r{r}.key({})", 1 + rng.below(3))),
+            T::Key(r) => E::Lit(self.w.key(*r, 1 + rng.below(3))),
             T::FloatSum => E::Agg("sum", Box::new(self.comp(rng, &T::Float, 0, 1))),
-            T::Row(..) => unreachable!("no expression has a row type"),
+            T::Row(..) | T::Named(_) => {
+                unreachable!("no expression has a row type or a declared sum")
+            }
             T::Rec(fs) => E::Rec(
                 fs.iter()
                     .map(|(n, ft)| (n.clone(), self.leaf(rng, ft)))
@@ -254,8 +258,8 @@ impl Gen<'_> {
         };
         let text = match (rng.pick_some(&seen), &read.ty) {
             (Some(v), _) => v.clone(),
-            (None, T::Key(r)) => format!("r{r}.key({})", 1 + rng.below(3)),
-            (None, t) => value(rng, t, &[]),
+            (None, T::Key(r)) => self.w.key(*r, 1 + rng.below(3)),
+            (None, t) => value(rng, t, self.w, &[]),
         };
         let op = match read.ty {
             T::Int | T::Float => *rng.pick(&["==", "==", "<", ">="]),

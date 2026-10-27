@@ -14,7 +14,7 @@ use self::expr::{Comp, E, Render, Tried};
 use self::world::{T, World};
 use crate::Rng;
 
-pub use self::walk::{Step, Walk, walk};
+pub use self::walk::{Inverse, Operator, Step, Walk, walk, walk_of};
 
 /// A schema, the writes that load a database of it and queries over that database.
 #[derive(Clone, Debug)]

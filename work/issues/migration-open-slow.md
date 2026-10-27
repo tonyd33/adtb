@@ -15,3 +15,7 @@ tags:
 From the cat track: opening the campaign app's log in the engine costs about 4 seconds of CPU per migration. Opening release 1.0 takes about 5 seconds, and each release 1.2 or 1.3 test takes 12 to 17 seconds under parallel load. A user with a few dozen migrations would wait minutes to open a database.
 
 Profile an open of the app's release 1.3 log, find where the time goes (checking, admission of constraints, catalog writes, page flushes), and bring an open of an already-applied log down to well under a second per migration.
+
+## 2026-10-27: reverts
+
+Each open that applies a revert takes about 2 seconds in the schema operator law sweep, which takes about 11 seconds for two walks.

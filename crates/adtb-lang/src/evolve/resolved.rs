@@ -761,7 +761,9 @@ impl Resolver<'_> {
             OperatorKind::Revert { migration, fills } => {
                 for (p, f) in fills {
                     clauses.push(Clause::Fill {
-                        field: self.field_in(after, p, &p.field.text)?,
+                        field: self
+                            .field_in(after, p, &p.field.text)
+                            .or_else(|| self.field_in(before, p, &p.field.text))?,
                         fill: canonical_term(&self.logged.text, fill_span(f)?, self.names),
                     });
                 }
