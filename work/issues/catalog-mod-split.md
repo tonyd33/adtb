@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: feature
 priority: 862
-summary: "catalog/mod.rs grew past the 1500 line limit and went on the size allowlist; split it and take it off"
+summary: catalog/mod.rs grew past the 1500 line limit and went on the size allowlist; split it and take it off
+branch: catsplit
 tags:
   - quality
   - engine

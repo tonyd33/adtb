@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: bug
 priority: 799
 summary: a historical scan misses a retained row when vacuum moves it to a history page allocated after the scan captured its page list
+branch: pastrace
 tags:
   - quality
   - engine
