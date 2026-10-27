@@ -448,4 +448,15 @@ toolchain in the dev shell. Loom models the page state word in
 dev-dependency. The `io_uring` backend needs `io-uring` or `libc`, and
 real entropy needs `getrandom` or `libc`.
 
+### 7.7 Test time
+
+The default `cargo nextest run --workspace` stays under 90 seconds on
+16 cores, and each test under 20: nextest marks a test slow at 20
+seconds and kills it at 60. Tests build at `opt-level = 1`. A sweep
+states its default count of seeds or cases once, as a constant, and
+sizes it through `adtb_testkit::profile`, so the `quick` profile runs
+one seed and `deep` runs `profile::DEEP` times the default. A new sweep
+takes the smallest default count that still exercises its claim, and
+builds what does not depend on the seed once per test.
+
 Rulings: buffer/test/fault-fs, buffer/test/crash-replay, project/testing/isolation-check, project/testing/elle/row-per-element, project/testing/where/in-sim, project/testing/where/real-process, project/testing/memory-model/loom, project/testing/memory-model/miri

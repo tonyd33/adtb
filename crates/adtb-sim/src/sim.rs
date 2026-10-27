@@ -75,6 +75,7 @@ struct SimThread {
     name: String,
     status: Status,
     token: bool,
+    turn: Arc<Condvar>,
 }
 
 struct Event {
@@ -231,6 +232,7 @@ impl Sim {
                 name: "main".into(),
                 status: Status::Runnable,
                 token: false,
+                turn: Arc::new(Condvar::new()),
             }];
             st.current = 0;
             st.rings.clear();
@@ -299,9 +301,17 @@ fn settle(shared: &Shared, me: usize, result: thread::Result<()>) {
         Err(payload) => {
             st.crash();
             st.phase = Phase::Panicked(payload);
-            shared.turn.notify_all();
+            wake_all(shared, &st);
         }
     }
+}
+
+/// Wake every thread and the waiting run, after the process has left `Phase::Running`.
+fn wake_all(shared: &Shared, st: &State) {
+    for t in &st.threads {
+        t.turn.notify_all();
+    }
+    shared.turn.notify_all();
 }
 
 /// Pass the processor from the current thread `me` to the next, and wait for it to come back.
@@ -312,7 +322,7 @@ fn switch<'a>(shared: &'a Shared, mut st: Guard<'a>, me: usize) -> Result<Guard<
     let step = st.sched.between(0, jitter);
     let target = st.now + step;
     if !st.advance(target) {
-        shared.turn.notify_all();
+        wake_all(shared, &st);
         return Err(Halt);
     }
     let next = loop {
@@ -325,7 +335,7 @@ fn switch<'a>(shared: &'a Shared, mut st: Guard<'a>, me: usize) -> Result<Guard<
         }
         if let Some((&(due, _), _)) = st.events.first_key_value() {
             if !st.advance(due) {
-                shared.turn.notify_all();
+                wake_all(shared, &st);
                 return Err(Halt);
             }
             continue;
@@ -342,7 +352,7 @@ fn switch<'a>(shared: &'a Shared, mut st: Guard<'a>, me: usize) -> Result<Guard<
                 .collect();
             st.phase = Phase::Deadlocked(blocked.join(", "));
         }
-        shared.turn.notify_all();
+        wake_all(shared, &st);
         return Err(Halt);
     };
     if next != me {
@@ -350,12 +360,14 @@ fn switch<'a>(shared: &'a Shared, mut st: Guard<'a>, me: usize) -> Result<Guard<
         trace!(st.trace, "t={now} run {next}");
     }
     st.current = next;
-    shared.turn.notify_all();
+    if next != me {
+        st.threads[next].turn.notify_one();
+    }
     if st.threads[me].status == Status::Done {
         return Ok(st);
     }
-    let st = shared
-        .turn
+    let turn = Arc::clone(&st.threads[me].turn);
+    let st = turn
         .wait_while(st, |st| {
             matches!(st.phase, Phase::Running) && st.current != me
         })
@@ -630,6 +642,7 @@ impl Threads for SimRuntime {
             name: name.to_owned(),
             status: Status::Runnable,
             token: false,
+            turn: Arc::new(Condvar::new()),
         });
         let now = st.now;
         trace!(st.trace, "t={now} spawn {id} {name:?}");
@@ -694,8 +707,8 @@ impl Threads for SimRuntime {
 fn thread_main<F: FnOnce()>(shared: &Shared, id: usize, body: F) {
     {
         let st = lock(&shared.state);
-        let st = shared
-            .turn
+        let turn = Arc::clone(&st.threads[id].turn);
+        let st = turn
             .wait_while(st, |st| {
                 matches!(st.phase, Phase::Running) && st.current != id
             })

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::LazyLock;
 
 use crate::ast;
 use crate::parse::{self, Options};
@@ -866,11 +867,7 @@ pub fn build_ahead(
     files: &[(FileId, ast::SchemaFile)],
     ahead: &[Ahead],
 ) -> Result<Schema, Vec<FileDiag>> {
-    let prelude = parse::parse_schema(PRELUDE_SRC, Options::default())
-        .ok()
-        .expect("the prelude parses");
-    let mut all = vec![(FileId::PRELUDE, prelude)];
-    all.extend(engine_files().into_iter().map(|f| (FileId::ENGINE, f)));
+    let mut all = BUILT_IN.clone();
     all.extend(files.iter().cloned());
     let mut b = Builder {
         schema: Schema {
@@ -924,6 +921,16 @@ fn tag_former() -> TypeDef {
         span: Span::default(),
     }
 }
+
+/// The prelude and the engine's own module files, parsed once.
+static BUILT_IN: LazyLock<Vec<(FileId, ast::SchemaFile)>> = LazyLock::new(|| {
+    let prelude = parse::parse_schema(PRELUDE_SRC, Options::default())
+        .ok()
+        .expect("the prelude parses");
+    let mut all = vec![(FileId::PRELUDE, prelude)];
+    all.extend(engine_files().into_iter().map(|f| (FileId::ENGINE, f)));
+    all
+});
 
 /// The module files of the engine's own declarations.
 fn engine_files() -> Vec<ast::SchemaFile> {

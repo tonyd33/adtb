@@ -1,6 +1,11 @@
+# The default run stays under 20 seconds a test; a test still running at 60 is killed.
 [profile.default]
-slow-timeout = { period = "30s", terminate-after = 4 }
+slow-timeout = { period = "20s", terminate-after = 3 }
 
-# For iteration: one seed per `support::sweep` sweep, and no crash sweeps.
+# For iteration: one seed per `profile::sweep` sweep, and no crash sweeps.
 [profile.quick]
 default-filter = "not test(/crash/)"
+
+# Every sweep at `profile::DEEP` times its default count of seeds or cases.
+[profile.deep]
+slow-timeout = { period = "120s", terminate-after = 10 }

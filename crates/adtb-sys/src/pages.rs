@@ -495,11 +495,18 @@ impl Exclusive<'_> {
         while at < end {
             let w = at / 8;
             let lo = w * 8;
-            let mut buf = words[w].load(Ordering::Relaxed).to_le_bytes();
             let from = at - lo;
             let n = (8 - from).min(end - at);
-            buf[from..from + n].copy_from_slice(&bytes[at - offset..at - offset + n]);
-            words[w].store(u64::from_le_bytes(buf), Ordering::Relaxed);
+            let src = &bytes[at - offset..at - offset + n];
+            let value = match <[u8; 8]>::try_from(src) {
+                Ok(whole) => whole,
+                Err(_) => {
+                    let mut buf = words[w].load(Ordering::Relaxed).to_le_bytes();
+                    buf[from..from + n].copy_from_slice(src);
+                    buf
+                }
+            };
+            words[w].store(u64::from_le_bytes(value), Ordering::Relaxed);
             at += n;
         }
         self.resident = true;

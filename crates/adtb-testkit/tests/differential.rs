@@ -13,12 +13,12 @@ use adtb::{CallOptions, CreateOptions, Database, Error, Log, OpenOptions, Reject
 use adtb_lang::textual;
 use adtb_reference::{Abort, Value};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_testkit::Rng;
 use adtb_testkit::cases::{Case, Forms, Query, Walk, case, walk};
 use adtb_testkit::corpus::{self, Script};
 use adtb_testkit::fixture::Fixture;
+use adtb_testkit::{Rng, profile};
 
-/// Cases per run unless `ADTB_DIFF_CASES` says otherwise.
+/// Cases per default run, [`profile::deep`] sized, unless `ADTB_DIFF_CASES` says otherwise.
 const CASES: u64 = 12;
 
 /// The queries of each case, over one database.
@@ -30,7 +30,7 @@ fn seeds() -> Range<u64> {
 }
 
 /// Returns the seeds of one run, from `ADTB_DIFF_SEED`, else zero, `ADTB_DIFF_CASES` of them,
-/// else `cases`.
+/// else `cases` as [`profile::deep`] sizes it.
 fn seeds_of(cases: u64) -> Range<u64> {
     let var = |name: &str, default: u64| {
         std::env::var(name).map_or(default, |v| {
@@ -39,7 +39,7 @@ fn seeds_of(cases: u64) -> Range<u64> {
         })
     };
     let first = var("ADTB_DIFF_SEED", 0);
-    first..first + var("ADTB_DIFF_CASES", cases)
+    first..first + var("ADTB_DIFF_CASES", profile::deep(cases))
 }
 
 /// The disagreements printed whole with their program; the rest are listed by seed.
@@ -622,7 +622,7 @@ fn rewrites_keep_results() {
     });
 }
 
-/// Walks per run unless `ADTB_DIFF_CASES` says otherwise.
+/// Walks per default run, [`profile::deep`] sized, unless `ADTB_DIFF_CASES` says otherwise.
 const WALKS: u64 = 4;
 
 /// The migrations of each walk.

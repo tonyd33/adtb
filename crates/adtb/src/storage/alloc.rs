@@ -15,9 +15,9 @@ pub(crate) fn diff(old: &[u8], new: &[u8]) -> Vec<Edit> {
     let mut edits: Vec<Edit> = Vec::new();
     let mut i = 0;
     while i < new.len() {
-        if old[i] == new[i] {
-            i += 1;
-            continue;
+        i = first_difference(old, new, i);
+        if i == new.len() {
+            break;
         }
         let start = i;
         let mut end = i + 1;
@@ -35,6 +35,20 @@ pub(crate) fn diff(old: &[u8], new: &[u8]) -> Vec<Edit> {
         i = end;
     }
     edits
+}
+
+/// Returns the first index from `i` where `old` and `new` differ, or `new.len()`.
+fn first_difference(old: &[u8], new: &[u8], mut i: usize) -> usize {
+    let word = |b: &[u8], at: usize| {
+        u64::from_ne_bytes(b[at..at + 8].try_into().expect("the range is 8 bytes long"))
+    };
+    while i + 8 <= new.len() && word(old, i) == word(new, i) {
+        i += 8;
+    }
+    while i < new.len() && old[i] == new[i] {
+        i += 1;
+    }
+    i
 }
 
 impl<R: Runtime> Pager<R> {

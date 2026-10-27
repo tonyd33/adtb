@@ -70,6 +70,18 @@ pub fn set_lsn(page: &mut [u8], lsn: Lsn) {
     page[LSN..LSN + 8].copy_from_slice(&lsn.0.to_le_bytes());
 }
 
+/// Returns the offset and bytes of the LSN field holding `lsn`.
+pub fn lsn_field(lsn: Lsn) -> (usize, [u8; 8]) {
+    (LSN, lsn.0.to_le_bytes())
+}
+
+/// Returns a copy of `page` with its LSN set to `lsn`.
+pub fn with_lsn(page: &[u8], lsn: Lsn) -> Vec<u8> {
+    let mut copy = page.to_vec();
+    set_lsn(&mut copy, lsn);
+    copy
+}
+
 pub fn format(page: &[u8]) -> u16 {
     u16_at(page, FORMAT)
 }

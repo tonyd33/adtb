@@ -4,8 +4,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use adtb_testkit::fuzz::{Case, Front, Kind, Reached, case, long_case, spec_corpus};
+use adtb_testkit::profile;
 
-/// Cases per run unless `ADTB_FUZZ_CASES` says otherwise.
+/// Cases per default run, [`profile::deep`] sized, unless `ADTB_FUZZ_CASES` says otherwise.
 const CASES: u64 = 3000;
 
 /// The first seed unless `ADTB_FUZZ_SEED` says otherwise.
@@ -59,7 +60,7 @@ fn the_front_end_accepts_or_refuses_every_drawn_program() {
     let front = Front::new();
     let corpus = corpus();
     let first = env_u64("ADTB_FUZZ_SEED", FIRST_SEED);
-    let cases = env_u64("ADTB_FUZZ_CASES", CASES);
+    let cases = env_u64("ADTB_FUZZ_CASES", profile::deep(CASES));
     let mut failures = Vec::new();
     for seed in first..first + cases {
         let c = case(seed, &corpus);

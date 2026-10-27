@@ -697,44 +697,41 @@ impl<R: Runtime> Pager<R> {
         tail: Option<Record>,
     ) -> Lsn {
         let size = self.page_size;
-        let mut copies = Vec::new();
-        for (g, edits) in guards.iter().zip(&edits) {
-            let mut copy = g.to_vec();
-            for e in edits {
-                let at = e.offset as usize;
-                assert!(
-                    at >= FIRST_EDITABLE && at + e.bytes.len() <= size,
-                    "edit of {} bytes at {at} is outside the page's contents",
-                    e.bytes.len()
-                );
-                copy[at..at + e.bytes.len()].copy_from_slice(&e.bytes);
-            }
-            copies.push(copy);
+        for e in edits.iter().flatten() {
+            let at = e.offset as usize;
+            assert!(
+                at >= FIRST_EDITABLE && at + e.bytes.len() <= size,
+                "edit of {} bytes at {at} is outside the page's contents",
+                e.bytes.len()
+            );
         }
         let mut log = self.log();
         let mut last = log.next_lsn();
         let mut m = self.meta();
-        for ((g, edits), copy) in guards.iter_mut().zip(edits).zip(&mut copies) {
+        for (g, edits) in guards.iter_mut().zip(edits) {
             if edits.is_empty() {
                 continue;
             }
             let pid = Pid(g.pid());
-            let prev = page::lsn(copy);
+            let prev = page::lsn(g);
             let lsn = log.next_lsn();
-            page::set_lsn(copy, lsn);
+            for e in &edits {
+                g.write(e.offset as usize, &e.bytes);
+            }
             let record = if m.dirty.contains_key(&pid) || self.atomic_page_writes {
                 Record::Change { pid, prev, edits }
             } else {
                 Record::Image {
                     pid,
                     prev,
-                    page: copy.clone(),
+                    page: page::with_lsn(g, lsn),
                 }
             };
+            let (at, field) = page::lsn_field(lsn);
+            g.write(at, &field);
             log.append(&record);
             m.dirty.entry(pid).or_insert(lsn);
             m.changed.insert(pid);
-            g.write(0, copy);
             last = lsn;
         }
         tail.map_or(last, |r| log.append(&r))

@@ -31,12 +31,12 @@ use adtb_lang::span::FileId;
 use adtb_lang::textual::Form;
 use adtb_lang::types::{ModuleId, Ty};
 use adtb_reference::{Abort, Database, Disk, Files, InMemory, Interpreter, Outcome, Supply, Value};
-use adtb_testkit::Rng;
 use adtb_testkit::cases::case;
 use adtb_testkit::draw::draw;
 use adtb_testkit::fixture::Fixture;
 use adtb_testkit::fuzz::{self, Kind};
 use adtb_testkit::inhabit::Judge;
+use adtb_testkit::{Rng, profile};
 use corpus::{
     FRAGMENT, blocks, bundles, given_types, prelude_entries, prepare, registered_queries,
 };
@@ -44,8 +44,8 @@ use corpus::{
 /// The rounds a `fix` may take before the statement is rejected.
 const FIX_ROUNDS: usize = 200;
 
-/// Returns the seeds of one run of `cases` cases, from `ADTB_SOUND_SEED` and
-/// `ADTB_SOUND_CASES`.
+/// Returns the seeds of one run of `cases` cases as [`profile::deep`] sizes it, from
+/// `ADTB_SOUND_SEED` and `ADTB_SOUND_CASES`.
 fn seeds(cases: u64) -> Range<u64> {
     let var = |name: &str, default: u64| {
         std::env::var(name).map_or(default, |v| {
@@ -54,7 +54,7 @@ fn seeds(cases: u64) -> Range<u64> {
         })
     };
     let first = var("ADTB_SOUND_SEED", 0);
-    first..first + var("ADTB_SOUND_CASES", cases)
+    first..first + var("ADTB_SOUND_CASES", profile::deep(cases))
 }
 
 /// What a run judged and every judgement that failed.

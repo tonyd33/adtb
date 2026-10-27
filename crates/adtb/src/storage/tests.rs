@@ -4,7 +4,7 @@ use super::alloc::diff;
 use super::block::{
     Batch, BlockState, InMemory, LogImage, LogProblem, Mode, Scan, frame, read_block, scan,
 };
-use super::crc::crc32c;
+use super::crc::{Crc32c, crc32c};
 use super::header::{FileHeader, choose};
 use super::page::{self, Verdict};
 use super::record::{Edit, Record};
@@ -17,6 +17,24 @@ const SEGMENT: u64 = 16 * BLOCK as u64;
 fn crc32c_check_value() {
     assert_eq!(0xE306_9283, crc32c(b"123456789"));
     assert_eq!(0, crc32c(b""));
+}
+
+#[test]
+fn crc32c_is_the_same_however_the_bytes_are_split() {
+    let bytes: Vec<u8> = (0..300u32).map(|i| (i * 7 + i / 5) as u8).collect();
+    let whole = crc32c(&bytes);
+    for cut in 0..bytes.len() {
+        let (a, b) = bytes.split_at(cut);
+        assert_eq!(
+            whole,
+            Crc32c::new().update(a).update(b).finish(),
+            "cut at {cut}"
+        );
+    }
+    let bytewise = bytes
+        .iter()
+        .fold(Crc32c::new(), |c, b| c.update(std::slice::from_ref(b)));
+    assert_eq!(whole, bytewise.finish());
 }
 
 #[test]
@@ -159,6 +177,27 @@ fn diff_logs_only_changed_bytes() {
     assert_eq!((30, 6), (edits[0].offset, edits[0].bytes.len()));
     assert_eq!((150, 1), (edits[1].offset, edits[1].bytes.len()));
     assert!(diff(&old, &old).is_empty());
+}
+
+#[test]
+fn diff_edits_turn_old_into_new_at_every_alignment() {
+    let old: Vec<u8> = (0..100u32).map(|i| (i * 13) as u8).collect();
+    for a in 0..old.len() {
+        for b in [a, a + 1, a + 7, a + 8, a + 17, a + 40] {
+            let mut new = old.clone();
+            new[a] ^= 0xff;
+            if b < new.len() {
+                new[b] ^= 0x0f;
+            }
+            let mut rebuilt = old.clone();
+            for e in diff(&old, &new) {
+                let at = e.offset as usize;
+                assert_ne!(old[at], new[at], "edit at {at} starts on an unchanged byte");
+                rebuilt[at..at + e.bytes.len()].copy_from_slice(&e.bytes);
+            }
+            assert_eq!(new, rebuilt, "changes at {a} and {b}");
+        }
+    }
 }
 
 fn records(n: usize) -> Vec<u8> {

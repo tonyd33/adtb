@@ -4,6 +4,7 @@ pub mod draw;
 pub mod fixture;
 pub mod fuzz;
 pub mod inhabit;
+pub mod profile;
 pub mod writes;
 
 mod rng;
