@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: in-progress
 kind: feature
 priority: 790
 summary: "opening a database replays each migration of its log at about 4 seconds of CPU apiece, so the campaign app's engine tests take 5 to 17 seconds each"
+branch: openperf
 tags:
   - engine
 ---

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: bug
 priority: 799
 summary: "at commit at the position of a commit just made is refused HistoryUnavailable, even with a retention window set and after a reopen, and sys::commit_times is empty"
+branch: recent
 tags:
   - engine
 ---

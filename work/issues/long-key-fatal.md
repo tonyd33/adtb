@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: bug
 priority: 799
-summary: "a text key longer than about 1600 bytes fails with fatal TooLong instead of a rejection"
+summary: a text key longer than about 1600 bytes fails with fatal TooLong instead of a rejection
+branch: longkey
 tags:
   - engine
 ---
