@@ -2,7 +2,7 @@
 created-at: 2026-10-26
 status: open
 kind: feature
-priority: 540
+priority: 875
 summary: "install reads its package from Source::packages, which nothing in the engine fills, so every engine install is refused"
 tags:
   - engine

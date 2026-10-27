@@ -2,7 +2,7 @@
 created-at: 2026-10-26
 status: open
 kind: feature
-priority: 520
+priority: 870
 summary: "the engine has no stored views, so a view with no index-bounded maintenance is not refused"
 tags:
   - engine

@@ -159,6 +159,14 @@ Postconditions of a migration with staged jobs:
   at the commit of its last staged job, and a failure discards the
   pending migration as a failed job does.
 
+An embedded open applies its migrations before it serves a call and
+runs every staged job of a migration inside that migration's one
+transaction, so the first and last states commit together: the
+migration is never pending while another transaction can run,
+`MigrationInProgress` never arises, and `sys::jobs` never holds a row
+for it. A crash before that commit leaves the file at version `n - 1`,
+and the next open applies the migration again.
+
 A host function must be bound before any staged job or plan needs it
 ([../spec/embedding.md §10](../spec/embedding.md#10-host-functions)).
 
@@ -174,6 +182,46 @@ valid `D_m`, with `⟦q⟧^{n}` as
 defines it.
 
 TODO: the contract of the recheck pipeline for registered queries is undecided.
+
+### 2.1 Readers
+
+The catalog holds its live readers, each a `catalog::Reader`: a
+bundle, its pinned version, whether it hides new constructors, the
+relations it reads whole, the references it follows, the fields it
+reads and the constructor relations it can write into, all named as at
+its version. `Catalog::register` records one and `Catalog::release`
+releases it. Whoever registers bundles states their readers through
+these calls; the catalog derives nothing from `catalog::bundles`.
+
+Preconditions of `Catalog::register`: the reader's version is one the
+log holds, and every name it reads or writes resolves at that version.
+The catalog keeps the names as catalog ids, so later renames do not
+change what a reader reads.
+
+Postconditions of `Catalog::migrate` with live readers:
+
+- An `enable` or `deprecate` or `disable` a live reader blocks under
+  [../spec/evolution.md §4.3 and §8](../spec/evolution.md#8-readers-first)
+  is refused, changing nothing; each reason names the blocking bundle.
+- A `drop constraint` or `drop check` whose object exists at a live
+  reader's version applies and produces its version, and is pending:
+  `Catalog::pending_drops` lists it with the bundles holding it.
+  Validation and admission of every later migration run against the
+  schema that keeps each pending-dropped object, carried by the later
+  operators; a migration that leaves one without an image is refused,
+  naming it.
+- A migration that drops a unique a live reader's version holds is
+  refused, naming the bundle.
+
+Postcondition of `Catalog::release`: every pending drop whose last
+holder the released bundle was takes effect.
+
+`Catalog::open` starts with no readers and no pending drops: an
+embedded open supersedes the bundles of earlier opens before it
+migrates ([../spec/evolution.md §8.4](../spec/evolution.md#84-embedded-databases)),
+so no embedded open holds a migration or a drop back. The write path
+an open binds is built from the version's program, which equals the
+schema keeping pending drops, since nothing is pending at open.
 
 Rulings: engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version
 

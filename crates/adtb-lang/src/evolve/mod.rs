@@ -1783,6 +1783,24 @@ impl Cx<'_> {
                 ));
             }
         };
+        if relation
+            && next != Stage::Enabled
+            && let CtorTarget::Relation(rr) = t
+        {
+            let schema = self.schema()?;
+            let def = schema
+                .relation(self.rel_id(&schema, &rr.relation)?)
+                .elem_def;
+            let c = schema
+                .ty(def)
+                .ctor_index(&key.2)
+                .expect("a lifecycle target names a constructor of its relation");
+            if let Some(f) = retag_into(&schema, def, c) {
+                return self.err(format!(
+                    "`{verb} {shown}` is refused: the delete action of field `{f}` retags into it"
+                ));
+            }
+        }
         let since = self.src.version;
         let map = if relation {
             &mut self.src.states
@@ -1792,6 +1810,16 @@ impl Cx<'_> {
         map.insert(key, State { stage: next, since });
         Ok(())
     }
+}
+
+/// Returns the name of a field of type `def` whose delete action retags into constructor `c`.
+fn retag_into(schema: &Schema, def: TypeId, c: u32) -> Option<String> {
+    let t = schema.ty(def);
+    t.header()
+        .iter()
+        .chain(t.ctors().iter().flat_map(|x| &x.fields))
+        .find(|f| matches!(f.on_delete, schema::OnDelete::Retag(k, _) if k == c))
+        .map(|f| f.name.clone())
 }
 
 fn mentions_def(t: &Ty, def: TypeId) -> bool {

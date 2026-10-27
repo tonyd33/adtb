@@ -28,8 +28,8 @@ impl Catalog {
         rewritten: &BTreeSet<CatRelId>,
     ) -> Result<Vec<String>, Error> {
         let (pager, x) = (m.pager, m.x);
-        let schema = &self.schema;
-        let normal = norm::program(schema, &self.program)
+        let (schema, program) = self.checking();
+        let normal = norm::program(schema, program)
             .map_err(|e| Error::Internal(format!("a checked schema normalises: {e:?}")))?;
         let existed: BTreeSet<String> = qualified(old).into_iter().collect();
         let catalog = self.plan();

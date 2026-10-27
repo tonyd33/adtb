@@ -2,7 +2,7 @@
 created-at: 2026-10-26
 status: open
 kind: feature
-priority: 560
+priority: 860
 summary: "structural operators ignore log grants, and a recheck error in rewritten text not copied from the migration is reported at the block"
 tags:
   - lang

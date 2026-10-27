@@ -4,6 +4,7 @@ mod keying;
 pub mod layout;
 mod moved;
 mod oplog;
+mod readers;
 mod root;
 mod rows;
 mod validate;
@@ -15,13 +16,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use adtb_lang::ast::{CtorSel, CtorTarget, MigrationFile, Operator, OperatorKind};
+use adtb_lang::ast::{CtorPath, CtorSel, CtorTarget, MigrationFile, Operator, OperatorKind};
 use adtb_lang::check::Program;
 use adtb_lang::evolve::{Code, Refusal, Source};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Schema, ValueDef};
-use adtb_lang::types::RelId;
+use adtb_lang::types::{RelId, Ty};
 
 use crate::btree::{self, BTree, Index};
 use crate::exec::{self, StoredHeap, StoredIndex};
@@ -36,10 +37,12 @@ use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 pub use keying::{IndexKeys, element_types};
 pub use layout::OrderKeys;
 pub use oplog::{Hash, version_hash};
+pub use readers::{PendingDrop, Read, Reader};
 pub use rows::{IndexSpec, Rows, applied, declared, field_path, indexed_fields, indexes};
 
 use change::Data;
 use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, rel_id, relation};
+use readers::Readers;
 use root::{Changing, Root};
 
 /// The heap id of the large-value store every heap shares.
@@ -117,6 +120,7 @@ pub struct Catalog {
     sequences: Pid,
     /// The memory a migration's validation of its constraints may hold.
     query_memory: usize,
+    readers: Readers,
 }
 
 /// The memory a migration's validation may hold until [`Catalog::set_query_memory`] sets it.
@@ -583,6 +587,7 @@ impl Catalog {
             next_heap: FIRST_HEAP,
             sequences: Pid(0),
             query_memory: DEFAULT_QUERY_MEMORY,
+            readers: Readers::default(),
         };
         let x = txns.begin(pager)?;
         let every = empty
@@ -717,6 +722,7 @@ impl Catalog {
             next_heap: root.next_heap,
             sequences: root.sequences,
             query_memory: DEFAULT_QUERY_MEMORY,
+            readers: Readers::default(),
         };
         if root.changing != Changing::None {
             catalog.free_leaked(pager, &txns)?;
@@ -765,8 +771,17 @@ impl Catalog {
         if let Err(why) = recordable(&next) {
             return refused(why);
         }
-        let rewritten = change::rewritten(&self.schema, &schema);
-        self.admits(&schema, &program, &rewritten)?;
+        let next = Checked {
+            source: next,
+            schema,
+            program: Arc::new(program),
+        };
+        let readers = self.held(&file, text, &next)?;
+        let rewritten = change::rewritten(&self.schema, &next.schema);
+        let (schema, program) = readers
+            .enforced()
+            .map_or((&next.schema, &next.program), |e| (&e.schema, &e.program));
+        self.admits(schema, program, &rewritten)?;
         let x = txns.begin(pager)?;
         update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
         let (id, snapshot) = txns.take(Scope::Every)?;
@@ -776,12 +791,7 @@ impl Catalog {
             x,
             snapshot: &snapshot,
         };
-        let next = Checked {
-            source: next,
-            schema,
-            program: Arc::new(program),
-        };
-        let built = self.replay(&m, &file, text, next, &rewritten);
+        let built = self.replay(&m, &file, text, next, &rewritten, readers);
         txns.release(id);
         let built = built.and_then(|c| {
             update_root(pager, self.root, |r| r.next_heap = c.next_heap)?;
@@ -848,6 +858,7 @@ impl Catalog {
         text: &str,
         next: Checked,
         rewritten: &BTreeSet<CatRelId>,
+        readers: Readers,
     ) -> Result<Catalog, Error> {
         let mut data = Data::new();
         for &rid in rewritten {
@@ -905,7 +916,7 @@ impl Catalog {
         if !why.is_empty() {
             return Err(Error::Refused(why));
         }
-        let built = self.build(
+        let mut built = self.build(
             m,
             &Built {
                 next,
@@ -914,7 +925,8 @@ impl Catalog {
                 old: declared(&self.schema, &self.source),
             },
         )?;
-        let why = built.violations(m, &self.schema, rewritten)?;
+        built.readers = readers;
+        let why = built.violations(m, self.checking().0, rewritten)?;
         if !why.is_empty() {
             return Err(Error::Refused(why));
         }
@@ -922,7 +934,8 @@ impl Catalog {
     }
 
     /// Returns why the data refuses `op`, applied to `schema` of a migration of `module`, beyond
-    /// what its data map refuses: a constructor it disables holds rows.
+    /// what its data map refuses: a constructor relation it disables holds rows, or a field
+    /// holds a value of a constructor of a type it disables or removes.
     fn emptied<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
@@ -931,11 +944,18 @@ impl Catalog {
         module: &str,
         op: &Operator,
     ) -> Result<Vec<String>, Error> {
-        let OperatorKind::Disable(target) = &op.kind else {
-            return Ok(Vec::new());
+        let target = match &op.kind {
+            OperatorKind::Disable(CtorTarget::Type(path)) => {
+                return self.stored_in(m, schema, data, module, path, "disabled");
+            }
+            OperatorKind::RemoveConstructor(path) => {
+                return self.stored_in(m, schema, data, module, path, "removed");
+            }
+            OperatorKind::Disable(target) => target,
+            _ => return Ok(Vec::new()),
         };
         let mut why = Vec::new();
-        for (r, c) in disabled(schema, module, target) {
+        for (r, c) in targeted(schema, module, target) {
             let rid = rel_id(schema, r);
             let cid = ctor_id(schema, r, c);
             let held = match data.get(&rid) {
@@ -948,6 +968,76 @@ impl Catalog {
                 why.push(format!(
                     "constructor relation {}.{ctor} holds rows; it cannot be disabled",
                     rel.name
+                ));
+            }
+        }
+        Ok(why)
+    }
+
+    /// Returns why constructor `path` of a type, in a migration of `module` applied to
+    /// `schema`, cannot be `verb`: each relation a field of whose rows holds a value of it.
+    fn stored_in<R: Runtime>(
+        &self,
+        m: &Migrating<'_, R>,
+        schema: &Schema,
+        data: &Data,
+        module: &str,
+        path: &CtorPath,
+        verb: &str,
+    ) -> Result<Vec<String>, Error> {
+        let Some(def) = readers::type_named(schema, module, &path.ty) else {
+            return Ok(Vec::new());
+        };
+        let Some(c) = schema.ty(def).ctor_index(&path.ctor.text) else {
+            return Ok(Vec::new());
+        };
+        let id = CatCtorId(schema.ids.ctors[&(def, c)]).stored();
+        let mut why = Vec::new();
+        for (&r, &rid) in &schema.ids.relations {
+            let fields: Vec<Vec<(String, Ty)>> = (0..ctor_count(schema, r))
+                .map(|k| layout::row(schema, r, k))
+                .collect();
+            let reached = fields
+                .iter()
+                .flatten()
+                .any(|(_, t)| readers::reaches(schema, t, def, &mut BTreeSet::new()));
+            if !reached {
+                continue;
+            }
+            let types: Vec<Vec<FieldType>> = fields
+                .iter()
+                .map(|fs| {
+                    fs.iter()
+                        .map(|(_, t)| layout::field_type(schema, t))
+                        .collect()
+                })
+                .collect();
+            let rid = CatRelId(rid);
+            let rows: Vec<(u32, Vec<Value>)> = match data.get(&rid) {
+                Some(ctors) => ctors
+                    .iter()
+                    .flat_map(|(&cid, rows)| {
+                        let k = ctor_index(schema, r, cid).expect("a constructor of the relation");
+                        rows.iter().map(move |row| (k, row.clone()))
+                    })
+                    .collect(),
+                None => match relation(&self.schema, rid) {
+                    Some(old) => self.rows(m.pager, m.txns, m.snapshot, old)?,
+                    None => continue,
+                },
+            };
+            let held = rows.iter().any(|(k, row)| {
+                types[*k as usize]
+                    .iter()
+                    .zip(row)
+                    .any(|(t, v)| holds_ctor(t, v, id))
+            });
+            if held {
+                why.push(format!(
+                    "a field of {} holds a value of {}.{}; it cannot be {verb}",
+                    schema.relation(r).name,
+                    schema.ty(def).name,
+                    path.ctor.text
                 ));
             }
         }
@@ -995,6 +1085,7 @@ impl Catalog {
             next_heap,
             sequences: self.sequences,
             query_memory: self.query_memory,
+            readers: Readers::default(),
         };
         let specs = indexes(&next.schema);
         let normal =
@@ -1188,6 +1279,14 @@ impl Catalog {
             pager.free(p)?;
         }
         Ok(())
+    }
+
+    /// Returns the schema and program constraint checks and validation run against: the
+    /// version's, with every pending-dropped object kept.
+    fn checking(&self) -> (&Schema, &Arc<Program>) {
+        self.readers
+            .enforced()
+            .map_or((&self.schema, &self.program), |e| (&e.schema, &e.program))
     }
 
     /// Set the memory a migration's validation of its constraints may hold: the query memory
@@ -1408,6 +1507,7 @@ struct Built<'a> {
 }
 
 /// A source, the schema it builds and its checked program.
+#[derive(Debug)]
 struct Checked {
     source: Source,
     schema: Schema,
@@ -1481,8 +1581,7 @@ fn row_key(
 }
 
 /// Refuses the rows `b.data` gives the relations `b.rewritten` names when two of them share a key
-/// of a unique of `specs`, each keyed by `keyed`: each unique, the key among them, that two rows
-/// share a key of.
+/// of a unique of `specs`, each keyed by `keyed`: each unique and the keys rows share.
 fn duplicates(
     schema: &Schema,
     keys: &OrderKeys,
@@ -1503,18 +1602,21 @@ fn duplicates(
         };
         let ks = key_schema(schema, normal, keys, spec)?;
         let mut seen = BTreeSet::new();
-        let mut shared = false;
+        let mut shared = Vec::new();
         for &c in &spec.ctors {
             for row in &ctors[&ctor_id(schema, spec.relation, c)] {
-                if let Some(key) = row_key(&keyed[id], &ks, c, row)? {
-                    shared |= !seen.insert(ks.encode(&key));
+                if let Some(key) = row_key(&keyed[id], &ks, c, row)?
+                    && !seen.insert(ks.encode(&key))
+                {
+                    shared.push(shown_key(&key));
                 }
             }
         }
-        if shared {
+        if !shared.is_empty() {
             why.push(format!(
-                "two rows of {} share a key of `{}`",
+                "rows of {} share the key {} of `{}`",
                 schema.relation(spec.relation).name,
+                shared.join(", "),
                 spec.clause
             ));
         }
@@ -1526,9 +1628,49 @@ fn duplicates(
     }
 }
 
-/// Returns the constructor relations `disable target`, in a migration of `module`, names in
-/// `schema`: none for a constructor of a type.
-fn disabled(schema: &Schema, module: &str, target: &CtorTarget) -> Vec<(RelId, u32)> {
+/// Returns the components of index key `key`, printed.
+fn shown_key(key: &[Value]) -> String {
+    let parts: Vec<String> = key.iter().map(shown_value).collect();
+    match parts.as_slice() {
+        [one] => one.clone(),
+        _ => format!("({})", parts.join(", ")),
+    }
+}
+
+fn shown_value(v: &Value) -> String {
+    match v {
+        Value::Text(t) => format!("{t:?}"),
+        Value::I8(x) => x.to_string(),
+        Value::I16(x) => x.to_string(),
+        Value::I32(x) => x.to_string(),
+        Value::I64(x) => x.to_string(),
+        Value::Record(vs) => shown_key(vs),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Returns whether `v`, stored as `t`, holds a value of the constructor stored as `id`.
+fn holds_ctor(t: &FieldType, v: &Value, id: CtorId) -> bool {
+    match (t, v) {
+        (FieldType::Sum(cs), Value::Sum { ctor, fields }) => {
+            cs.get(*ctor as usize).is_some_and(|c| {
+                c.id == id
+                    || c.fields
+                        .iter()
+                        .zip(fields)
+                        .any(|(t, v)| holds_ctor(t, v, id))
+            })
+        }
+        (FieldType::Record(ts), Value::Record(vs)) => {
+            ts.iter().zip(vs).any(|(t, v)| holds_ctor(t, v, id))
+        }
+        _ => false,
+    }
+}
+
+/// Returns the constructor relations `target`, of an `enable`, `disable` or `deprecate` in a
+/// migration of `module`, names in `schema`: none for a constructor of a type.
+fn targeted(schema: &Schema, module: &str, target: &CtorTarget) -> Vec<(RelId, u32)> {
     let CtorTarget::Relation(on) = target else {
         return Vec::new();
     };

@@ -2,7 +2,7 @@
 created-at: 2026-10-26
 status: open
 kind: feature
-priority: 530
+priority: 865
 summary: "the .adtx package format and revoke of a privilege never granted are unspecified"
 tags:
   - spec
