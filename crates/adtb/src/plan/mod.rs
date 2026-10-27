@@ -1,3 +1,8 @@
+//! Planning: the physical plan of a normal form over the catalog.
+//!
+//! [`with_rewrites`] is a hook for tests: while it runs, every unbounded plan its thread makes
+//! applies the rewrites it names in place of the ones its caller passes.
+
 mod catalog;
 mod lower;
 mod terms;
@@ -9,6 +14,7 @@ pub use catalog::{Catalog, Element, HeapId, IndexDesc, IndexId, RelationDesc, de
 pub use lower::{plan, plan_bounded};
 pub(crate) use terms::{Facts, with_children};
 
+use std::cell::Cell;
 use std::collections::BTreeSet;
 
 use adtb_lang::kernel::{Agg, Terms, Tm, Var};
@@ -279,6 +285,29 @@ impl Default for Rewrites {
     fn default() -> Rewrites {
         Rewrites::ALL
     }
+}
+
+thread_local! {
+    static FORCED: Cell<Option<Rewrites>> = const { Cell::new(None) };
+}
+
+/// Run `f` with every unbounded plan this thread makes applying `rewrites`, whatever rewrites
+/// its caller passes, and returns its result. A nested call restores the outer setting when it
+/// returns.
+#[doc(hidden)]
+pub fn with_rewrites<T>(rewrites: Rewrites, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Rewrites>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FORCED.set(self.0);
+        }
+    }
+    let _restore = Restore(FORCED.replace(Some(rewrites)));
+    f()
+}
+
+fn forced() -> Option<Rewrites> {
+    FORCED.get()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

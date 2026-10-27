@@ -99,8 +99,10 @@ dependencies = [
 name = "adtb-testkit"
 version = "0.1.0"
 dependencies = [
+ "adtb",
  "adtb-lang",
  "adtb-reference",
+ "adtb-sim",
 ]
 
 [[package]]

@@ -180,7 +180,44 @@ Inputs are generated well-typed, in three ways:
 Postcondition: every generated term type-checks, so the interpreter
 and the engine both accept it.
 
-TODO: the interface a generator exposes to the harness is undecided.
+A generator gives the harness cases, each a function of its seed and
+its number of queries:
+
+```text
+case(seed, n) -> Case { schema, migration, load, queries: [Query; n] }
+query.text()         -> text
+query.by_ctor()      -> Option<[text]>
+query.by_predicate() -> Option<Split { whole, parts: [text; 3] }>
+query.counts()       -> Split { whole, parts: [text; 3] }
+```
+
+Postconditions:
+
+- `schema` is the schema file of module `app`; it builds and checks.
+  `migration` adds module `app` with the same declarations, and an empty
+  engine database accepts it.
+- `load` is a sequence of ad hoc writes. Applied in order from the empty
+  database, each succeeds on the interpreter and on the engine, so both
+  hold one database.
+- Each `query.text()` is ad hoc text of one query over `schema`, holding
+  no write, `order by`, parameter or float value. It may fault.
+- `query.by_ctor()`, when the query's first generator ranges over a sum
+  relation and the query does not group, holds one query per
+  constructor that generator ranges over, the generator ranging over
+  that constructor's relation alone. The union of their results is the
+  result of `query.text()`.
+- `query.by_predicate()`, when the query does not group, holds a
+  predicate `p` of the query's bindings as three restrictions of
+  `whole`, the query without `p`: to the bindings where `p` is true,
+  false, and where it faults, each tested through `try`. The union of
+  their results is the result of `whole`.
+- `query.counts()` holds `whole` as a `count` over the bindings of the
+  query and `parts` as its three restrictions by `p`; `whole` is the sum
+  of the parts.
+- Where one side of a law faults, the other faults too. Which fault is
+  reported is not part of a law.
+
+Every method of the table gives cases of this shape.
 
 Rulings: project/testing/gen/type-directed, project/testing/gen/corpus-mutation, project/testing/gen/schema-walk
 
@@ -232,7 +269,8 @@ planner without the reference interpreter.
 
 A query equals the union of its restrictions to `p` and to `not p`.
 There is no NULL and `Bool` has two constructors, so two partitions
-cover every row. Aggregates decompose the same way:
+cover every row that `p` does not fault on; a third, `try p` returning
+`Err`, covers the rest. Aggregates decompose the same way:
 
 ```adt
 count(x for x in g) == count(x for x in g where p) + count(x for x in g where not p)

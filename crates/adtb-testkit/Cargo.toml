@@ -10,5 +10,9 @@ publish = false
 adtb-lang.workspace = true
 adtb-reference.workspace = true
 
+[dev-dependencies]
+adtb.workspace = true
+adtb-sim.workspace = true
+
 [lints]
 workspace = true

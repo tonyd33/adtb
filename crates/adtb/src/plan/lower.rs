@@ -80,7 +80,10 @@ fn plan_in(
         schema,
         normal,
         catalog,
-        rw: options.rewrites,
+        rw: match forced() {
+            Some(rw) if !bounded => rw,
+            _ => options.rewrites,
+        },
         bounded,
         t: terms.clone(),
         total: Totality::new(schema, options.hiding),
