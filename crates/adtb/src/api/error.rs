@@ -178,6 +178,7 @@ pub enum RejectReason {
         size: i64,
         limit: i64,
     },
+    Closed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -222,6 +223,10 @@ impl Error {
         Error::rejected(RejectReason::Invalid {
             detail: detail.into(),
         })
+    }
+
+    pub(super) fn closed() -> Error {
+        Error::rejected(RejectReason::Closed)
     }
 
     pub(super) fn storage(detail: impl Into<String>) -> Error {
@@ -496,6 +501,7 @@ impl fmt::Display for RejectReason {
                 f,
                 "a row of `{relation}.{ctor}` takes {size} bytes, over the limit of {limit}"
             ),
+            R::Closed => f.write_str("the database is closed"),
         }
     }
 }
@@ -686,6 +692,7 @@ impl fmt::Display for Value<&RejectReason> {
                     ("limit", limit),
                 ],
             ),
+            R::Closed => ("Closed", &[]),
         };
         ctor(f, name, fields)
     }

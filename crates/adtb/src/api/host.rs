@@ -85,7 +85,7 @@ impl HostFns {
     pub(super) fn hosts(&self) -> Hosts {
         let mut out = Hosts::default();
         for (name, s) in &self.0 {
-            out.insert(name.clone(), s.body.clone());
+            out.insert(name.clone(), s.version.clone(), s.body.clone());
         }
         out
     }

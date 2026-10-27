@@ -14,8 +14,8 @@ use adtb::batch::{Datum, Type};
 use adtb::key::{Scalar, Value as Stored};
 use adtb::runtime::{Clock, Done, Entropy, Io, Op, Runtime, Threads};
 use adtb::{
-    CallOptions, Called, CancelToken, Database, Error, Field, Log, OpenOptions, Registration,
-    RejectReason, TxnCallOptions, TxnOptions, Value,
+    CallOptions, Called, CancelToken, Database, Error, Field, LoadOptions, Log, OpenOptions,
+    Registration, RejectReason, TxnCallOptions, TxnOptions, Value,
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 
@@ -82,8 +82,8 @@ fn is_closed(e: &Error) -> bool {
     matches!(
         e,
         Error::Rejected {
-            reason: RejectReason::Invalid { detail },
-        } if detail.contains("closed")
+            reason: RejectReason::Closed,
+        }
     )
 }
 
@@ -341,6 +341,8 @@ fn closing_one_handle_closes_the_database_for_its_clones() {
         let got = other.begin(&TxnOptions::default()).map(drop);
         assert!(got.as_ref().is_err_and(is_closed), "{got:?}");
         let got = other.registered("app");
+        assert!(got.as_ref().is_err_and(is_closed), "{got:?}");
+        let got = other.load(&LoadOptions::default()).map(drop);
         assert!(got.as_ref().is_err_and(is_closed), "{got:?}");
         other
             .close()

@@ -10,8 +10,8 @@ use adtb_lang::types::{RelId, Ty};
 use crate::exec::{self, AtSnapshot, Budget, Call, Store, Val};
 use crate::plan;
 use crate::runtime::Runtime;
-use crate::storage::Pager;
 
+use super::hosts::unbound;
 use super::ids::CatRelId;
 use super::{Catalog, Error, Migrating};
 
@@ -68,7 +68,7 @@ impl Catalog {
             if existed.contains(&name) && !touched {
                 continue;
             }
-            let found = violating(schema, &catalog, &normal, t, &store, &budget, pager)?;
+            let found = violating(schema, &catalog, &normal, t, &store, &budget, &self.hosts)?;
             if !found.is_empty() {
                 why.push(format!(
                     "constraint {name} is violated by {}",
@@ -131,7 +131,7 @@ fn violating<R: Runtime>(
     t: Tm,
     store: &Arc<Store<R>>,
     budget: &Arc<Budget>,
-    pager: &Pager<R>,
+    hosts: &Arc<exec::Hosts>,
 ) -> Result<Vec<String>, Error> {
     let terms = &normal.terms;
     let internal = Error::Internal;
@@ -145,7 +145,9 @@ fn violating<R: Runtime>(
         plan::Options::default(),
     )
     .map_err(|e| internal(e.to_string()))?;
-    let program = Arc::new(exec::compile(schema, catalog, &p, None).map_err(failed)?);
+    let mut program = exec::compile(schema, catalog, &p, None).map_err(failed)?;
+    program.shared.hosts = hosts.clone();
+    let program = Arc::new(program);
     let grant = budget
         .admit(budget.limit())
         .expect("one validation runs at a time");
@@ -157,7 +159,7 @@ fn violating<R: Runtime>(
         cancel: Arc::new(AtomicBool::new(false)),
         deadline: None,
     };
-    let v = match exec::execute(pager.rt.clone(), program, call, &[]) {
+    let v = match exec::execute(store.pager.rt.clone(), program, call, &[]) {
         Ok(v) => v,
         Err(exec::Error::Fault(f)) => {
             return Ok(vec![format!("its query faults with {}", f.name())]);
@@ -189,6 +191,9 @@ fn violating<R: Runtime>(
 }
 
 fn failed(e: exec::Error) -> Error {
+    if let Some(e) = unbound(&e) {
+        return e;
+    }
     match e {
         exec::Error::Page(p) => Error::Page(p),
         other => Error::Internal(format!("{other:?}")),

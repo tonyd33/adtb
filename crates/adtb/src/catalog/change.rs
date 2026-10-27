@@ -110,6 +110,8 @@ pub enum Failed {
     Refused(String),
     /// A guarantee of the checker or the executor does not hold; the one named.
     Internal(String),
+    /// A call reached a host function with no body bound at the version its declaration names.
+    Unbound(Error),
 }
 
 /// Map `data` from schema `a` to schema `b`, the schemas before and after one operator.
@@ -155,6 +157,7 @@ pub fn step(a: &Schema, b: &Schema, data: &mut Data, mut moved: Moved) -> Result
                                 break;
                             }
                             Err(Failed::Internal(e)) => return Err(Error::Internal(e)),
+                            Err(Failed::Unbound(e)) => return Err(e),
                         }
                     }
                     rows

@@ -24,6 +24,9 @@ pub struct Faults {
     pub lose_unsynced: bool,
     /// Complete ops after random delays, and so out of submission order.
     pub delay_completions: bool,
+    /// The device has no free space: a write past a file's end, or an allocate that grows a
+    /// file, fails with `Full` and changes nothing.
+    pub no_space: bool,
 }
 
 impl Default for Faults {
@@ -37,6 +40,7 @@ impl Default for Faults {
             fail_p: 0.0,
             lose_unsynced: true,
             delay_completions: true,
+            no_space: false,
         }
     }
 }
@@ -378,6 +382,11 @@ impl Disk {
             data.len()
         );
         let path = self.path_of(ino);
+        if cx.faults.no_space && offset + data.len() as u64 > self.inodes[ino].visible.len() as u64
+        {
+            trace!(cx.trace, "no space for write ino {ino} {path:?} @{offset}");
+            return Err(IoError::Full);
+        }
         if cx.rng.chance(cx.faults.fail_p) {
             let mut landed = Vec::new();
             for (i, chunk) in data.chunks(sector as usize).enumerate() {
@@ -444,12 +453,17 @@ impl Disk {
         self.seq += 1;
     }
 
-    pub(crate) fn allocate(&mut self, ino: Ino, len: u64, sector: u64) {
+    pub(crate) fn allocate(&mut self, ino: Ino, len: u64, cx: Ctx<'_>) -> Result<(), IoError> {
         let have = self.inodes[ino].visible.len() as u64;
         if len > have {
+            if cx.faults.no_space {
+                trace!(cx.trace, "no space to allocate ino {ino} to {len}");
+                return Err(IoError::Full);
+            }
             let zeros = vec![0; (len - have) as usize];
-            self.apply(ino, have, &zeros, sector);
+            self.apply(ino, have, &zeros, cx.geometry.sector);
         }
+        Ok(())
     }
 
     pub(crate) fn sync(&mut self, ino: Ino, upto: u64, cx: Ctx<'_>) -> Result<(), IoError> {

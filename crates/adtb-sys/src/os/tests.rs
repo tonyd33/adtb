@@ -142,3 +142,22 @@ fn faults_refuse_the_uring_backend() {
         Faults::default(),
     );
 }
+
+#[test]
+fn both_backends_report_a_device_with_no_space_as_full() {
+    use std::io;
+
+    use crate::runtime::IoError;
+
+    for kind in [io::ErrorKind::StorageFull, io::ErrorKind::QuotaExceeded] {
+        assert_eq!(
+            IoError::Full,
+            super::files::error(&io::Error::from(kind)),
+            "{kind:?}"
+        );
+    }
+    for errno in [libc::ENOSPC, libc::EDQUOT] {
+        assert_eq!(IoError::Full, super::uring::failure(errno), "{errno}");
+    }
+    assert_eq!(IoError::Failed, super::uring::failure(libc::EIO));
+}

@@ -167,7 +167,7 @@ impl Catch {
 }
 
 /// What every evaluation of a plan shares.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Shared {
     pub caller: Option<Val>,
     /// The `Fault` constructor of each fault, by `Fault as usize`.
@@ -568,13 +568,14 @@ impl<'a> Compiler<'a> {
     fn host(&self, func: FnId, args: &[Tm], ty: &Ty) -> Result<HostCall, Error> {
         let def = self.schema.function(func);
         let unsupported = || Error::Unsupported(format!("a call of `{}`", def.name));
-        let FnBody::Host { name, .. } = &def.body else {
+        let FnBody::Host { name, version, .. } = &def.body else {
             return Err(unsupported());
         };
         let column = |t: &Ty| batch_type(self.schema, t).ok_or_else(unsupported);
         Ok(HostCall {
             function: def.name.clone(),
             symbol: name.clone(),
+            version: version.clone(),
             params: args
                 .iter()
                 .map(|x| column(self.terms.ty(*x)))

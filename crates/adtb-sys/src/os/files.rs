@@ -21,6 +21,7 @@ pub(crate) type Outcome = (Option<AlignedBuf>, Result<Done, IoError>);
 pub(crate) fn error(e: &io::Error) -> IoError {
     match e.kind() {
         ErrorKind::NotFound => IoError::NotFound,
+        ErrorKind::StorageFull | ErrorKind::QuotaExceeded => IoError::Full,
         _ => IoError::Failed,
     }
 }

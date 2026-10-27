@@ -466,8 +466,8 @@ impl State {
             Op::Size { file } => (None, Ok(Done::Size(self.disk.size(self.ino(file))))),
             Op::Allocate { file, len } => {
                 let ino = self.ino(file);
-                self.disk.allocate(ino, len, self.config.sector);
-                (None, Ok(Done::Allocated))
+                let (disk, cx) = self.ctx();
+                (None, disk.allocate(ino, len, cx).map(|()| Done::Allocated))
             }
             Op::Sync { file } => {
                 let ino = self.ino(file);

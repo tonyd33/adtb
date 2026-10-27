@@ -331,6 +331,9 @@ pub fn decl_names(schema: &Schema, module: ModuleId, d: &Decl, names: &mut Names
         }
         Decl::Fn(f) => {
             own(names, f.name.span);
+            for b in f.type_params.iter().flat_map(|p| &p.bounds) {
+                names.qualify(schema, b.span, PRELUDE);
+            }
             tys(
                 &mut f.params.iter().map(|p| &p.ty).chain([&f.result]),
                 &mut refs,

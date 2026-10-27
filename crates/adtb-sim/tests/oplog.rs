@@ -156,6 +156,20 @@ fn a_shipped_migration_differing_only_in_layout_has_the_same_hash() {
 }
 
 #[test]
+fn a_shipped_migration_with_an_operator_of_no_resolved_form_diverges() {
+    let mut sim = Sim::new(53, Config::default());
+    run(&mut sim, |rt| drop(opened(&rt, &[SHOP, TAGS])));
+    let defaulted = "module shop\nadd default customers.name = \"anon\"\n";
+    run(&mut sim, |rt| match open(&rt, &[SHOP, defaulted]) {
+        Err(OpenError::Diverged { version }) => assert_eq!(2, version),
+        got => panic!(
+            "a migration 2 of no resolved form does not diverge: {:?}",
+            got.err()
+        ),
+    });
+}
+
+#[test]
 fn renames_keep_rows_and_values() {
     let renames = "module shop
 rename relation customers to clients
@@ -275,6 +289,18 @@ fn removing_a_constructor_that_holds_rows_is_refused() {
     after(10, &[deprecate, remove], |db| {
         let (version, detail) = refusal(db);
         assert_eq!(3, version);
+        assert!(detail.contains("payments.Card"), "{detail}");
+    });
+}
+
+#[test]
+fn removing_a_constructor_that_holds_rows_with_a_redefined_function_is_refused() {
+    let define = "module shop\ndefine fn method (p: Payment) -> Text = match p\n  | Card c -> c.last4\n  | Invoice i -> i.due\n";
+    let deprecate = "module shop\ndeprecate payments.Card\n";
+    let remove = "module shop\nremove constructor Payment.Card\nredefine fn method (p: Payment) -> Text = match p\n  | Invoice i -> i.due\n";
+    after(54, &[define, deprecate, remove], |db| {
+        let (version, detail) = refusal(db);
+        assert_eq!(4, version);
         assert!(detail.contains("payments.Card"), "{detail}");
     });
 }

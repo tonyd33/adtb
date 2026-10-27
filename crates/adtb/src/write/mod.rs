@@ -181,6 +181,9 @@ impl From<exec::Error> for Error {
             exec::Error::Cancelled => Error::Cancelled,
             exec::Error::DeadlineExceeded => Error::DeadlineExceeded,
             exec::Error::MissingFunction(name) => Error::MissingFunction(name),
+            exec::Error::OtherVersion(name) => Error::Internal(format!(
+                "host function `{name}` is bound at the version its declaration names"
+            )),
             exec::Error::Internal(what) => Error::Internal(what),
         }
     }
@@ -454,6 +457,11 @@ impl<R: Runtime> Database<R> {
                     .expect("no statement holds a check's program before the first runs")
                     .shared
                     .hosts = hosts.clone();
+            }
+        }
+        for rel in self.rels.values_mut() {
+            for (_, indexed) in &mut rel.indexes {
+                indexed.keys.set_hosts(&hosts);
             }
         }
         self.hosts = hosts;

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use adtb_sys::lock::Lock;
 
-use crate::runtime::{AlignedBuf, Done, FileId, Op, Runtime};
+use crate::runtime::{AlignedBuf, Done, FileId, IoError, Op, Runtime};
 use crate::storage::{Driver, Malformed, Reader};
 
 use super::memory::{Arena, Grant};
@@ -62,12 +62,23 @@ impl<R: Runtime> Spill<R> {
         })
     }
 
+    /// Returns the error of a call whose spill file met `io`: a device with no space left is
+    /// the memory grant's limit.
+    fn failed(&self, io: IoError) -> Error {
+        match io {
+            IoError::Full => Error::StatementLimit(Exceeded::Memory {
+                limit: self.grant.limit(),
+            }),
+            io => Error::Spill(io),
+        }
+    }
+
     fn open(&self) -> Result<File<R>, Error> {
         let mut driver = Driver::new(self.rt.clone());
         let t = driver.submit(Op::CreateDir { dir: DIR.into() });
-        driver.wait(t).result.map_err(Error::Spill)?;
+        driver.wait(t).result.map_err(|io| self.failed(io))?;
         let path = format!("{DIR}/{:016x}", self.rt.next_u64());
-        let (id, _) = driver.open(&path, true).map_err(Error::Spill)?;
+        let (id, _) = driver.open(&path, true).map_err(|io| self.failed(io))?;
         Ok(File {
             driver,
             id,
@@ -98,7 +109,7 @@ impl<R: Runtime> Spill<R> {
             offset: at,
             buf,
         });
-        f.driver.wait(t).result.map_err(Error::Spill)?;
+        f.driver.wait(t).result.map_err(|io| self.failed(io))?;
         f.end += padded as u64;
         self.grant.note_spill(padded);
         Ok(Extent {

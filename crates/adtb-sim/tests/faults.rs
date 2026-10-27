@@ -194,6 +194,30 @@ fn latent_sector_error_persists_until_rewritten() {
 }
 
 #[test]
+fn a_device_with_no_space_refuses_growth_and_keeps_overwrites() {
+    let mut sim = sim(9, quiet());
+    setup(&mut sim, 1);
+    sim.set_faults(Faults {
+        no_space: true,
+        ..quiet()
+    });
+    run(&mut sim, |rt, io| {
+        let (file, _) = open(rt, io, "f", false).unwrap();
+        assert_eq!(
+            Err(IoError::Full),
+            write(rt, io, file, SECTOR as u64, &sector(2))
+        );
+        let grow = Op::Allocate {
+            file,
+            len: 2 * SECTOR as u64,
+        };
+        assert_eq!(Err(IoError::Full), complete(rt, io, grow).result);
+        write(rt, io, file, 0, &sector(7)).unwrap();
+        assert_eq!(Ok(sector(7)), read(rt, io, file, 0, 2 * SECTOR));
+    });
+}
+
+#[test]
 fn write_and_force_fail() {
     let mut sim = sim(5, quiet());
     setup(&mut sim, 1);

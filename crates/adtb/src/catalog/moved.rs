@@ -9,6 +9,7 @@ use crate::exec::{self, Conv, Scalar, Val, conv, from_stored, to_stored};
 use crate::key::Value;
 
 use super::change::{Data, Failed, Field, Fill, Moved, convert, fields};
+use super::hosts::unbound;
 use super::ids::{
     CatCtorId, CatRelId, ctor_id, ctor_index, field_id, rel_id, relation, type_def, type_id,
 };
@@ -18,11 +19,18 @@ use super::{Error, layout, oplog};
 /// `data`, which are in `a`'s layout.
 ///
 /// Fails with `Error::Refused` naming each map the data refuses, or with `Error::Internal`.
-pub fn moved(a: &Schema, b: &Schema, maps: &[RowMap], data: &Data) -> Result<Moved, Error> {
+pub fn moved(
+    a: &Schema,
+    b: &Schema,
+    maps: &[RowMap],
+    data: &Data,
+    hosts: &Arc<exec::Hosts>,
+) -> Result<Moved, Error> {
     let mut m = Mapping {
         a,
         b,
         data,
+        hosts,
         out: Moved::default(),
     };
     let mut why = Vec::new();
@@ -53,6 +61,7 @@ pub fn moved(a: &Schema, b: &Schema, maps: &[RowMap], data: &Data) -> Result<Mov
             Ok(()) => {}
             Err(Failed::Refused(e)) => why.push(e),
             Err(Failed::Internal(e)) => return Err(Error::Internal(e)),
+            Err(Failed::Unbound(e)) => return Err(e),
         }
     }
     if why.is_empty() {
@@ -68,6 +77,7 @@ struct Mapping<'s> {
     a: &'s Schema,
     b: &'s Schema,
     data: &'s Data,
+    hosts: &'s Arc<exec::Hosts>,
     out: Moved,
 }
 
@@ -122,14 +132,19 @@ fn field_named<'f>(fs: &'f [Field], name: &str) -> Result<&'f Field, Failed> {
         .ok_or_else(|| internal(format!("no field `{name}`")))
 }
 
-fn compiled(f: &RowFn) -> Result<Scalar, Failed> {
+fn compiled(f: &RowFn, hosts: &Arc<exec::Hosts>) -> Result<Scalar, Failed> {
     let [var] = f.query.params.as_slice() else {
         return Err(internal("a fill or routing takes the row"));
     };
-    Scalar::new(&f.schema, &f.query.terms, *var, f.query.body).map_err(shown)
+    let mut scalar = Scalar::new(&f.schema, &f.query.terms, *var, f.query.body).map_err(shown)?;
+    scalar.set_hosts(hosts.clone());
+    Ok(scalar)
 }
 
 fn shown(e: exec::Error) -> Failed {
+    if let Some(e) = unbound(&e) {
+        return Failed::Unbound(e);
+    }
     match e {
         exec::Error::Fault(f) => Failed::Refused(format!("the map faults with {}", f.name())),
         exec::Error::Rejected(why) => Failed::Refused(format!("the map rejects: {why}")),
@@ -203,7 +218,7 @@ impl Mapping<'_> {
         fill: &RowFn,
     ) -> Result<(), Failed> {
         let (a, b) = (self.a, self.b);
-        let f = Arc::new(compiled(fill)?);
+        let f = Arc::new(compiled(fill, self.hosts)?);
         for (ra, rid, rb) in relations_of(a, b, def) {
             for &c in ctors {
                 let name = ctor_name(a, def, c);
@@ -308,7 +323,7 @@ impl Mapping<'_> {
 
     fn route(&mut self, def: TypeId, from: &[u32], routing: &RowFn) -> Result<(), Failed> {
         let (a, b) = (self.a, self.b);
-        let f = compiled(routing)?;
+        let f = compiled(routing, self.hosts)?;
         for (ra, rid, rb) in relations_of(a, b, def) {
             let Some(rows) = self.data.get(&rid) else {
                 continue;

@@ -409,7 +409,7 @@ impl<R: Runtime> Pager<R> {
         let mut drv = Driver::new(rt.clone());
         let (data, _) = drv.open(&options.name, false).map_err(|e| match e {
             IoError::NotFound => OpenError::NotFound,
-            IoError::Failed => OpenError::NoHeader,
+            IoError::Full | IoError::Failed => OpenError::NoHeader,
         })?;
         let read = |drv: &mut Driver<R>, at: u64| drv.read(data, at, REGION).ok();
         let first = read(&mut drv, 0).and_then(|b| FileHeader::decode(0, &b));

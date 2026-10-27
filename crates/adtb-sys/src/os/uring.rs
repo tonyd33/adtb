@@ -138,11 +138,11 @@ fn buf_len(len: usize) -> u32 {
     u32::try_from(len).expect("an I/O buffer is under 4 GiB")
 }
 
-fn failure(errno: i32) -> IoError {
-    if errno == libc::ENOENT {
-        IoError::NotFound
-    } else {
-        IoError::Failed
+pub(super) fn failure(errno: i32) -> IoError {
+    match errno {
+        libc::ENOENT => IoError::NotFound,
+        libc::ENOSPC | libc::EDQUOT => IoError::Full,
+        _ => IoError::Failed,
     }
 }
 

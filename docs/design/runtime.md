@@ -185,7 +185,7 @@ enum Op {
   Timer    { at }                    // -> Fired, once now() >= at
 }
 struct Completion { ticket, buf: Option<AlignedBuf>, result: Result<Done, IoError> }
-enum IoError { NotFound, Failed }
+enum IoError { NotFound, Full, Failed }
 ```
 
 Paths are relative to the database directory, separated by `/`; the
@@ -218,6 +218,9 @@ Postconditions every backend must meet:
 - `Open` with `create` and `CreateDir` complete with `NotFound` when
   the parent directory is absent; `Open` without `create`, `List` and
   `Remove` do when their path is absent.
+- An op that fails because the device or the process's quota has no
+  space left completes with `Full`, never `Failed`. A `Write` that
+  completes with `Full` may have changed any of its blocks.
 - `Size`, like `len` at `Open`, counts every write and allocation to
   the file that completed before the op was submitted.
 - `List` returns the full paths of the files in the directory, not its

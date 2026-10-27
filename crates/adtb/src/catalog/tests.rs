@@ -614,7 +614,7 @@ fn gaining_a_field() -> (Schema, Schema, adtb_lang::types::RelId, super::change:
 fn a_rekey_of_a_relation_the_schema_after_lacks_is_internal() {
     let (sa, _, r, data) = gaining_a_field();
     let maps = [adtb_lang::evolve::RowMap::Rekey { relation: r }];
-    match super::moved::moved(&sa, &engine_schema(), &maps, &data) {
+    match super::moved::moved(&sa, &engine_schema(), &maps, &data, &Default::default()) {
         Err(Error::Internal(why)) => assert!(why.contains("rekeyed"), "{why}"),
         Err(e) => panic!("not an internal failure: {e:?}"),
         Ok(_) => panic!("the rekey maps"),
@@ -629,7 +629,8 @@ fn a_copy_from_a_row_without_the_field_is_internal() {
         ctors: vec![0],
         field: "n".into(),
     }];
-    let moved = super::moved::moved(&sa, &sb, &maps, &data).expect("the copy maps");
+    let moved =
+        super::moved::moved(&sa, &sb, &maps, &data, &Default::default()).expect("the copy maps");
     let fill = moved.fills.values().next().expect("the copy fills `n`");
     match fill(&[], &[]) {
         Err(super::change::Failed::Internal(why)) => assert!(why.contains("`n`"), "{why}"),
@@ -682,4 +683,15 @@ fn a_derived_index_element_without_the_normal_program_is_internal() {
         matches!(got, Err(crate::exec::Error::Internal(_))),
         "{got:?}"
     );
+}
+
+#[test]
+fn a_function_with_a_bounded_type_parameter_is_hashed() {
+    let src = migrated(
+        &Source::default(),
+        "module app\nadd module app\ndefine fn least [a: Ord] (x: a, y: a) -> a = if x < y then x else y\n",
+    );
+    let (ctor, row) = function_row(&src, "least");
+    assert_eq!("Language", ctor);
+    assert_eq!(Value::Text("[a: Ord] (x: a, y: a) -> a".into()), row[3]);
 }

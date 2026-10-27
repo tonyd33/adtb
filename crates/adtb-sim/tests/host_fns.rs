@@ -307,3 +307,166 @@ fn a_host_function_that_errs_panics_or_returns_another_shape_faults_its_statemen
 fn empty() -> Batch {
     BatchBuilder::new(batch::Schema::new(vec![Type::Scalar(Scalar::Text)])).finish()
 }
+
+const SLUG_UNIQUE: &str = "module shop\nadd unique (slugify(body)) in notes\n";
+
+fn is_violated(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Rejected {
+            reason: RejectReason::Violated { .. }
+        }
+    )
+}
+
+#[test]
+fn an_index_whose_key_calls_a_host_function_is_built_and_kept() {
+    let mut sim = Sim::new(9, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[NOTES], deterministic());
+        write(&db, r#"insert notes { body: "A B" }"#).expect("a note");
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[NOTES, SLUG_UNIQUE], deterministic());
+        let got = write(&db, r#"insert notes { body: "a b" }"#).expect_err("the unique holds");
+        assert!(is_violated(&got), "{got:?}");
+        write(&db, r#"insert notes { body: "C D" }"#).expect("another slug");
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[NOTES, SLUG_UNIQUE], deterministic());
+        let got = write(&db, r#"insert notes { body: "c d" }"#).expect_err("the unique holds");
+        assert!(is_violated(&got), "{got:?}");
+    });
+}
+
+#[test]
+fn an_index_build_over_rows_its_host_function_keys_alike_is_refused() {
+    let mut sim = Sim::new(10, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[NOTES], deterministic());
+        write(&db, r#"insert notes { body: "A B" }"#).expect("a note");
+        write(&db, r#"insert notes { body: "a b" }"#).expect("a note of the same slug");
+    });
+    run(&mut sim, |rt| {
+        match open(&rt, &[NOTES, SLUG_UNIQUE], deterministic()).map(drop) {
+            Err(OpenError::MigrationRefused {
+                version: 2,
+                reason:
+                    Error::Rejected {
+                        reason: RejectReason::SchemaRefused { .. },
+                    },
+            }) => {}
+            other => panic!("not refused: {other:?}"),
+        }
+    });
+}
+
+#[test]
+fn a_migration_validates_a_constraint_reaching_a_host_function_over_existing_rows() {
+    let mut sim = Sim::new(11, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[NOTES], deterministic());
+        write(&db, r#"insert notes { body: "Not A Slug" }"#).expect("a note");
+    });
+    run(&mut sim, |rt| {
+        match open(&rt, &[NOTES, SLUGGED], deterministic()).map(drop) {
+            Err(OpenError::MigrationRefused {
+                version: 2,
+                reason:
+                    Error::Rejected {
+                        reason: RejectReason::SchemaRefused { .. },
+                    },
+            }) => {}
+            other => panic!("not refused: {other:?}"),
+        }
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[NOTES], deterministic());
+        write(&db, "delete n in notes").expect("the delete");
+        write(&db, r#"insert notes { body: "a-slug" }"#).expect("a slugged note");
+    });
+    run(&mut sim, |rt| {
+        drop(opened(&rt, &[NOTES, SLUGGED], deterministic()));
+    });
+}
+
+#[test]
+fn a_staged_job_reaching_a_host_function_before_its_redefinition_fails_open() {
+    let mut sim = Sim::new(12, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[NOTES], deterministic());
+        write(&db, r#"insert notes { body: "a-slug" }"#).expect("a note");
+    });
+    run(&mut sim, |rt| {
+        let got = open(
+            &rt,
+            &[NOTES, SLUGGED, REDEFINE],
+            slugify("2.0", Determinism::Deterministic, &Arc::default()),
+        )
+        .map(drop);
+        assert!(
+            matches!(&got, Err(OpenError::HostFnMismatch { name }) if name == "slugify"),
+            "{got:?}"
+        );
+    });
+    run(&mut sim, |rt| {
+        let got = open(
+            &rt,
+            &[NOTES, SLUG_UNIQUE, REDEFINE],
+            slugify("2.0", Determinism::Deterministic, &Arc::default()),
+        )
+        .map(drop);
+        assert!(
+            matches!(&got, Err(OpenError::HostFnMismatch { name }) if name == "slugify"),
+            "{got:?}"
+        );
+    });
+    run(&mut sim, |rt| {
+        let db = opened(
+            &rt,
+            &[NOTES, REDEFINE, SLUGGED],
+            slugify("2.0", Determinism::Deterministic, &Arc::default()),
+        );
+        assert_eq!(
+            vec![r#""a-slug""#],
+            query(&db, "from n in notes select n.body")
+        );
+    });
+}
+
+/// Returns the host functions with `stamp` volatile, its result a number counting its rows.
+fn stamping() -> HostFns {
+    let mut fns = deterministic();
+    let next = Arc::new(AtomicUsize::new(0));
+    fns.register("stamp", "1.0", Determinism::Volatile, move |b: &Batch| {
+        Ok(texts(b, |_| {
+            next.fetch_add(1, Ordering::Relaxed).to_string()
+        }))
+    });
+    fns
+}
+
+#[test]
+fn a_volatile_host_function_is_evaluated_once_per_call() {
+    once(13, |rt| {
+        let db = opened(&rt, &[NOTES], stamping());
+        assert_eq!(
+            vec!["True"],
+            query(
+                &db,
+                r#"from b in ["x", "y"], s in [stamp(b)] select s == s"#
+            )
+        );
+        assert_eq!(
+            vec!["True"],
+            query(
+                &db,
+                r#"from b in ["x", "y"], s in [try stamp(b)] select s == s"#
+            )
+        );
+        assert_eq!(
+            2,
+            query(&db, r#"from b in ["x", "y"], s in [stamp(b)] select s"#).len()
+        );
+    });
+}

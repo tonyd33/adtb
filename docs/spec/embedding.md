@@ -376,6 +376,11 @@ acknowledgement: a call that returns an error has not committed, and
 calls carry no request numbers. An embedded replica numbers the writes
 it forwards itself (§12.2), and the same holds there.
 
+A call, an interactive transaction's statement or commit, or a load on
+a database after `close` (§2.3), through any handle, fails with
+`Rejected` `Closed` and has no effect. Only the in-process API raises
+`Closed`.
+
 ### 4.4 Feeds
 
 A bundle's feeds ([wire.md](wire.md#9-feeds)) are subscribed in

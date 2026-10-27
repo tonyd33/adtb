@@ -18,6 +18,7 @@ fn faults() -> Faults {
         fail_p: 0.02,
         lose_unsynced: true,
         delay_completions: true,
+        no_space: false,
     }
 }
 

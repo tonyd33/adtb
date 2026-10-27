@@ -416,7 +416,7 @@ impl Catalog {
                 .steps(module, op, text)
                 .map_err(|ds| Error::Refused(ds.into_iter().map(|d| d.message).collect()))?;
             for step in steps {
-                let Ok(schema) = step.after.schema() else {
+                let Some(schema) = super::steps::built(&step, op, text)? else {
                     continue;
                 };
                 changes.add(&before, &schema);

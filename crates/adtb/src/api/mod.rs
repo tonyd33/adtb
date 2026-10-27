@@ -270,7 +270,7 @@ impl<R: Runtime> Engine<R> {
         if *open {
             Ok(open)
         } else {
-            Err(Error::invalid("the database is closed"))
+            Err(Error::closed())
         }
     }
 
@@ -477,6 +477,8 @@ impl<R: Runtime> Engine<R> {
         options
             .host_fns
             .check(catalog.schema(), &host::pending(log, applied))?;
+        let hosts = Arc::new(options.host_fns.hosts());
+        catalog.set_hosts(hosts.clone());
         migrate(&mut catalog, &pager, &txns, log)?;
         let schema = catalog.schema().clone();
         let program = catalog.program().clone();
@@ -526,7 +528,7 @@ impl<R: Runtime> Engine<R> {
         )
         .map_err(corrupt)?
         .with_files(options.file_root.clone().map(Disk::new).unwrap_or_default())
-        .with_hosts(Arc::new(options.host_fns.hosts()))
+        .with_hosts(hosts)
         .with_volatile(settings::process_options(&schema, &options.shown()));
         if sequences.is_none() {
             Catalog::name_sequences(&pager, root, db.sequences_root()).map_err(corrupt)?;
@@ -792,6 +794,8 @@ fn migrate<R: Runtime>(
                 },
             ),
             catalog::Error::Internal(what) => refused(version, RejectReason::Internal { what }),
+            catalog::Error::MissingFunction(name) => OpenError::HostFnMissing { name },
+            catalog::Error::OtherVersion(name) => OpenError::HostFnMismatch { name },
             catalog::Error::Unchecked(built, ds) => {
                 let what = ds.into_iter().map(|d| d.message).collect::<Vec<_>>();
                 let what = format!("{built} does not check: {}", what.join("; "));
@@ -810,7 +814,7 @@ fn same_hash(m: &Logged, text: &str) -> bool {
         let file = parse_migration(text, ParseOptions::default()).ok().ok()?;
         let source = m.before.migrate(&file, text).ok()?;
         let schema = source.schema().ok()?;
-        Some(catalog::version_hash(&schema, &source))
+        catalog::try_version_hash(&schema, &source).ok()
     };
     hash(text).is_some_and(|h| Some(h) == hash(&m.text))
 }

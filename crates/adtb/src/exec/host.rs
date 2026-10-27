@@ -18,10 +18,10 @@ pub struct HostError(pub String);
 /// one column of the result type, with as many rows.
 pub type HostBody = dyn Fn(&Batch) -> Result<Batch, HostError> + Send + Sync;
 
-/// The bodies of the host functions bound to an open database, by the name their declarations
-/// register them under.
+/// The bodies of the host functions bound to an open database, with the version each is
+/// supplied at, by the name their declarations register them under.
 #[derive(Clone, Default)]
-pub struct Hosts(BTreeMap<String, Arc<HostBody>>);
+pub struct Hosts(BTreeMap<String, (String, Arc<HostBody>)>);
 
 impl fmt::Debug for Hosts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -30,8 +30,13 @@ impl fmt::Debug for Hosts {
 }
 
 impl Hosts {
-    pub fn insert(&mut self, name: impl Into<String>, body: Arc<HostBody>) {
-        self.0.insert(name.into(), body);
+    pub fn insert(
+        &mut self,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        body: Arc<HostBody>,
+    ) {
+        self.0.insert(name.into(), (version.into(), body));
     }
 }
 
@@ -42,6 +47,8 @@ pub struct HostCall {
     pub function: String,
     /// The name its body is registered under.
     pub symbol: String,
+    /// The version its declaration names.
+    pub version: String,
     pub params: Vec<batch::Type>,
     pub result: batch::Type,
     pub conv: Conv,
@@ -52,16 +59,20 @@ impl HostCall {
     /// Returns the result of each row, or the fault of every row when the body fails, panics, or
     /// returns a batch of another type or length.
     ///
-    /// Fails with `MissingFunction` when no body is bound.
+    /// Fails with `MissingFunction` when no body is bound, and with `OtherVersion` when the body
+    /// bound is supplied at another version than the declaration names.
     pub fn call(
         &self,
         hosts: &Hosts,
         rows: &[Vec<&Val>],
     ) -> Result<Result<Vec<Val>, Fault>, Error> {
-        let body = hosts
+        let (version, body) = hosts
             .0
             .get(&self.symbol)
             .ok_or_else(|| Error::MissingFunction(self.function.clone()))?;
+        if *version != self.version {
+            return Err(Error::OtherVersion(self.symbol.clone()));
+        }
         let mut b = BatchBuilder::new(batch::Schema::new(self.params.clone()));
         for row in rows {
             let ds = self

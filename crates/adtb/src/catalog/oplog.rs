@@ -2,6 +2,7 @@ use adtb_lang::evolve::{
     ArmTarget, Clause, IndexKind, Place, Resolved, ResolvedOp, Source, Target,
 };
 use adtb_lang::schema::{Schema, ValueDef};
+use adtb_lang::span::Diag;
 use adtb_lang::types::Ty;
 
 use crate::heap::{FieldType, put_uvarint};
@@ -21,31 +22,49 @@ pub type OperatorRow = (Value, Vec<Value>);
 ///
 /// Panics if a migration of the log does not resolve.
 pub fn version_hash(schema: &Schema, source: &Source) -> Hash {
+    try_version_hash(schema, source)
+        .unwrap_or_else(|ds| panic!("every logged migration resolves: {ds:?}"))
+}
+
+/// Returns the hash `version_hash` returns, or the diagnostics of the first migration of the
+/// log that does not resolve.
+pub fn try_version_hash(schema: &Schema, source: &Source) -> Result<Hash, Vec<Diag>> {
     let mut h = [0; 32];
     for l in &source.log {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&h);
-        hasher.update(&encoded(schema, &operators(schema, source, l.number)));
+        hasher.update(&encoded(
+            schema,
+            &resolved_operators(schema, source, l.number)?,
+        ));
         h = *hasher.finalize().as_bytes();
     }
-    h
+    Ok(h)
 }
 
 /// Returns the resolved operators of migration `number` of `source` in ordinal order.
 ///
 /// Panics if the migration does not resolve.
 pub fn operators(schema: &Schema, source: &Source, number: u64) -> Vec<OperatorRow> {
-    let ops = source
-        .resolved(number)
-        .unwrap_or_else(|ds| panic!("logged migration {number} resolves: {ds:?}"));
+    resolved_operators(schema, source, number)
+        .unwrap_or_else(|ds| panic!("logged migration {number} resolves: {ds:?}"))
+}
+
+fn resolved_operators(
+    schema: &Schema,
+    source: &Source,
+    number: u64,
+) -> Result<Vec<OperatorRow>, Vec<Diag>> {
+    let ops = source.resolved(number)?;
     let op_ty = field_ty(schema, "migration_ops", "op");
     let clause_ty = field_ty(schema, "migration_clauses", "body");
-    ops.iter()
+    Ok(ops
+        .iter()
         .map(|op| {
             let clauses = op.clauses.iter().map(|c| clause(schema, &clause_ty, c));
             (operator(schema, &op_ty, op), clauses.collect())
         })
-        .collect()
+        .collect())
 }
 
 /// Returns the encoding of a migration's operators: their count, then each operator, the count

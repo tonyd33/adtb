@@ -1,5 +1,6 @@
 mod change;
 mod deploy;
+mod hosts;
 mod ids;
 mod keying;
 pub mod layout;
@@ -8,6 +9,7 @@ mod oplog;
 mod readers;
 mod root;
 mod rows;
+mod steps;
 mod validate;
 
 #[cfg(test)]
@@ -29,7 +31,7 @@ use adtb_lang::types::{RelId, Ty, TypeId};
 use crate::btree::{self, BTree, Index};
 use crate::exec::{self, StoredHeap, StoredIndex};
 use crate::heap::{self, FieldType, Heap, LargeStore};
-use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, OrderKey, Scalar, Value};
+use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Value};
 use crate::mvcc::{self, CommitLog, Scope, Snapshot, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
@@ -38,8 +40,9 @@ use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 
 pub use deploy::Rewrite;
 pub use keying::{IndexKeys, element_types};
+use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
-pub use oplog::{Hash, version_hash};
+pub use oplog::{Hash, try_version_hash, version_hash};
 pub use readers::{PendingDrop, Read, Reader};
 pub use rows::{IndexSpec, Rows, applied, declared, field_path, indexed_fields, indexes};
 
@@ -80,6 +83,11 @@ pub enum Error {
     Unaccepted(u64, Vec<String>),
     /// A guarantee of the checker or planner does not hold; the one named.
     Internal(String),
+    /// The migration reached a host function, by its name, with no body bound.
+    MissingFunction(String),
+    /// The migration reached a host function whose body is bound at another version than its
+    /// declaration names; the name the body is registered under.
+    OtherVersion(String),
     /// The checker refuses a schema the catalog builds and guarantees it admits; what was built
     /// and each diagnostic.
     Unchecked(String, Vec<Diag>),
@@ -127,6 +135,7 @@ pub struct Catalog {
     /// The memory a migration's validation of its constraints may hold.
     query_memory: usize,
     readers: Readers,
+    hosts: Arc<exec::Hosts>,
 }
 
 /// The memory a migration's validation may hold until [`Catalog::set_query_memory`] sets it.
@@ -211,36 +220,6 @@ fn key_schema(
             .map(|t| (layout::key_type(schema, keys, t), Dir::Asc))
             .collect(),
     ))
-}
-
-/// Returns `e`, a failure of the executor on a guarantee of the checker or of a stored row, as
-/// the catalog's.
-fn broken(e: exec::Error) -> Error {
-    match e {
-        exec::Error::Corrupt(why) => Error::Corrupt(why),
-        exec::Error::Internal(why) => Error::Internal(why),
-        other => Error::Internal(format!("an index key evaluates: {other:?}")),
-    }
-}
-
-/// Returns the keying of index `spec` of `schema`, whose normal program is `normal`.
-///
-/// Fails with [`Error::Refused`] if the executor cannot compile an expression element, or with
-/// [`Error::Internal`] or [`Error::Corrupt`] on a guarantee of the checker or of a stored row.
-fn index_keys(
-    schema: &Schema,
-    normal: Option<&NormalProgram>,
-    spec: &IndexSpec,
-) -> Result<Arc<IndexKeys>, Error> {
-    IndexKeys::new(schema, normal, spec.relation, &spec.ctors, &spec.elements)
-        .map(Arc::new)
-        .map_err(|e| match e {
-            exec::Error::Internal(_) | exec::Error::Corrupt(_) => broken(e),
-            e => Error::Refused(vec![format!(
-                "index `{}` is not admitted: {e:?}",
-                spec.clause
-            )]),
-        })
 }
 
 /// Returns the normal program of `schema`, whose checked program is `program`, when an index of
@@ -594,6 +573,7 @@ impl Catalog {
             sequences: Pid(0),
             query_memory: DEFAULT_QUERY_MEMORY,
             readers: Readers::default(),
+            hosts: Arc::default(),
         };
         let x = txns.begin(pager)?;
         let every = empty
@@ -711,7 +691,7 @@ impl Catalog {
                     .map_err(|e| Error::Corrupt(format!("{e:?}")))?,
                 index_ctors(&schema, &spec),
             );
-            let keys = index_keys(&schema, normal.as_ref(), &spec)
+            let keys = index_keys(&schema, normal.as_ref(), &spec, &Arc::default())
                 .map_err(|e| Error::Corrupt(format!("{e:?}")))?;
             stored.insert(id, (spec, index, keys));
         }
@@ -729,6 +709,7 @@ impl Catalog {
             sequences: root.sequences,
             query_memory: DEFAULT_QUERY_MEMORY,
             readers: Readers::default(),
+            hosts: Arc::default(),
         };
         if root.changing != Changing::None {
             catalog.free_leaked(pager, &txns)?;
@@ -840,7 +821,7 @@ impl Catalog {
             .collect();
         let specs = indexes(schema);
         for spec in specs.values() {
-            index_keys(schema, Some(&normal), spec)?;
+            index_keys(schema, Some(&normal), spec, &self.hosts)?;
         }
         let catalog = planned(schema, specs.values(), &heaps);
         let why = crate::write::refusals(schema, &normal, &catalog).map_err(Error::Internal)?;
@@ -897,11 +878,11 @@ impl Catalog {
                 }
             };
             for step in steps {
-                let Ok(schema) = step.after.schema() else {
+                let Some(schema) = steps::built(&step, op, text)? else {
                     continue;
                 };
                 why.extend(self.emptied(m, &before, &schema, &step.maps, &data)?);
-                let moved = match moved::moved(&before, &schema, &step.maps, &data) {
+                let moved = match moved::moved(&before, &schema, &step.maps, &data, &self.hosts) {
                     Ok(m) => m,
                     Err(Error::Refused(w)) => {
                         why.extend(w);
@@ -911,7 +892,7 @@ impl Catalog {
                 };
                 match change::step(&before, &schema, &mut data, moved) {
                     Ok(()) => {}
-                    Err(Error::Refused(w)) => why.extend(w),
+                    Err(Error::Refused(w)) => return Err(Error::Refused([why, w].concat())),
                     Err(e) => return Err(e),
                 }
                 before = schema;
@@ -1102,13 +1083,17 @@ impl Catalog {
             sequences: self.sequences,
             query_memory: self.query_memory,
             readers: Readers::default(),
+            hosts: self.hosts.clone(),
         };
         let specs = indexes(&next.schema);
         let normal =
             index_program(&next.schema, &next.program, specs.values()).map_err(Error::Internal)?;
         let mut keyed = BTreeMap::new();
         for (id, spec) in &specs {
-            keyed.insert(*id, index_keys(&next.schema, normal.as_ref(), spec)?);
+            keyed.insert(
+                *id,
+                index_keys(&next.schema, normal.as_ref(), spec, &self.hosts)?,
+            );
         }
         duplicates(&next.schema, &next.keys, normal.as_ref(), &specs, &keyed, b)?;
         let old: BTreeMap<(CatRelId, CatCtorId), (RelId, u32)> = self
@@ -1574,26 +1559,6 @@ fn delete_rows<R: Runtime>(
     }
     assert!(left.is_empty(), "every row deleted is visible: {left:?}");
     Ok(())
-}
-
-/// Returns the key stored row `row` of constructor `c` has in an index keyed by `keys` whose key
-/// schema is `schema`, or `None` when the index holds no entry for it.
-///
-/// Fails with [`Error::Refused`] when an expression element faults on the row.
-fn row_key(
-    keys: &IndexKeys,
-    schema: &KeySchema,
-    c: u32,
-    row: &[Value],
-) -> Result<Option<Vec<Value>>, Error> {
-    let types: Vec<KeyType> = schema.components().iter().map(|(t, _)| t.clone()).collect();
-    keys.key(c, row, &types).map_err(|e| match e {
-        exec::Error::Fault(f) => Error::Refused(vec![format!(
-            "an index expression faults with {} on a row",
-            f.name()
-        )]),
-        other => broken(other),
-    })
 }
 
 /// Refuses the rows `b.data` gives the relations `b.rewritten` names when two of them share a key

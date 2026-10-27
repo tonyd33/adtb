@@ -680,9 +680,7 @@ impl<R: Runtime> Registered<R> {
 
     /// Returns the engine, refusing a call once the database is closed.
     fn engine(&self) -> Result<Arc<Engine<R>>, Error> {
-        self.engine
-            .upgrade()
-            .ok_or_else(|| Error::invalid("the database is closed"))
+        self.engine.upgrade().ok_or_else(Error::closed)
     }
 
     /// Returns the callable `ordinal`, refusing a call of a bundle that is retired, superseded

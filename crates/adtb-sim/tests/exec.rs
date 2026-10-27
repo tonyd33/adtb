@@ -1176,6 +1176,31 @@ fn a_spill_file_that_fails_its_writes_fails_the_call_with_the_io_error() {
     }
 }
 
+#[test]
+fn a_spill_onto_a_full_device_is_rejected_for_its_memory_grant() {
+    let f = stock();
+    let cases = cases_of(&f, BUILD_SPILLS, &[]);
+    let opts = XOptions {
+        morsel_rows: 16,
+        ..XOptions::default()
+    };
+    let faults = Faults {
+        no_space: true,
+        ..Faults::default()
+    };
+    let got = spill_errors(&f, &cases, opts, faults);
+    for (c, e) in cases.iter().zip(got) {
+        assert_eq!(
+            Some(Error::StatementLimit(Exceeded::Memory {
+                limit: SPILL_GRANT
+            })),
+            e,
+            "{}",
+            c.name
+        );
+    }
+}
+
 /// Returns a fixture of 200 items, 120 of them in the group `big` and the rest in groups 1 to 5.
 fn one_big_group(big: i64) -> Fixture {
     let mut f = Fixture::new(STOCK);

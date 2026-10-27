@@ -172,6 +172,8 @@ pub enum Done {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IoError {
     NotFound,
+    /// The device has no space for the op; a `Full` `Write` may have changed any of its blocks.
+    Full,
     /// The device refused the op; a failed `Write` may have changed any of its blocks.
     Failed,
 }

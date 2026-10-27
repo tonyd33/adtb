@@ -315,6 +315,7 @@ enum Wrap {
 type MemoKey = (usize, Tm, Vec<Ty>, Vec<Option<Tm>>);
 
 struct Normaliser<'a> {
+    schema: &'a Schema,
     src: [&'a Terms; 2],
     fns: &'a [Option<Tm>],
     out: Terms,
@@ -328,6 +329,7 @@ struct Normaliser<'a> {
 impl<'a> Normaliser<'a> {
     fn new(schema: &'a Schema, src: [&'a Terms; 2], fns: &'a [Option<Tm>]) -> Self {
         Normaliser {
+            schema,
             src,
             fns,
             out: Terms::default(),
@@ -344,7 +346,8 @@ impl<'a> Normaliser<'a> {
         terms.node(t)
     }
 
-    /// Returns whether `t` may be duplicated or dropped: it is total and draws no fresh value.
+    /// Returns whether `t` may be duplicated or dropped: it is total, draws no fresh value and
+    /// calls no volatile host function.
     fn copyable(&mut self, t: Tm) -> bool {
         self.tot.total(&self.out, t) && !self.draws(t)
     }
@@ -355,6 +358,17 @@ impl<'a> Normaliser<'a> {
         }
         let d = match self.out.kind(t) {
             Kind::Fresh(..) => true,
+            Kind::Call { func, .. }
+                if matches!(
+                    self.schema.function(*func).body,
+                    crate::ast::FnBody::Host {
+                        deterministic: false,
+                        ..
+                    }
+                ) =>
+            {
+                true
+            }
             _ => self.out.children(t).into_iter().any(|c| self.draws(c)),
         };
         self.draws.insert(t, d);

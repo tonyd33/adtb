@@ -126,6 +126,9 @@ pub enum Error {
     DeadlineExceeded,
     /// The evaluation reached a host function, by its name, with no body bound.
     MissingFunction(String),
+    /// The evaluation reached a host function whose body is bound at another version than its
+    /// declaration names; the name the body is registered under.
+    OtherVersion(String),
     /// The plan or a value breaks the invariant this text names, one the checker guarantees.
     Internal(String),
 }
@@ -143,7 +146,7 @@ impl From<PrintError> for Error {
 }
 
 /// A scalar expression of one variable, compiled.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Scalar {
     code: Arc<code::Code>,
     var: Var,
@@ -165,6 +168,11 @@ impl Scalar {
                 hosts: Arc::default(),
             },
         })
+    }
+
+    /// Bind the host function bodies of `hosts` to the calls the expression makes.
+    pub fn set_hosts(&mut self, hosts: Arc<Hosts>) {
+        self.shared.hosts = hosts;
     }
 
     /// Returns the expression's value with its variable bound to `v`.
