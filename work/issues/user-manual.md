@@ -31,3 +31,13 @@ Done when:
 - the example test passes in the default run, within the test-time budget;
 - a reader check passes: a fresh agent given only `docs/manual/`, with no access to the spec or the code, models a small domain, writes its queries, constraints and one migration, and the result runs; every point where it got stuck is fixed in the manual;
 - Tony reads it as a new user and signs off.
+
+## 2026-10-26: done
+
+Landed: the manual under `docs/manual/` in four parts. Tutorial: getting started and seven pages (schema, sums, queries, match, references and constraints, transactions, migrations) on one running example. Guides: modelling with sums, evolving a schema, writing constraints, files and CSV scans. Concepts: relations as sums, no NULL, keys and references, serializable transactions, the migration log. Reference: the shell, the language, the prelude. `crates/adtb-shell/tests/manual.rs` runs every page's sessions, with stdout and stderr interleaved, continuation prompts, `< FILE` input and `adt fragment` excerpts skipped.
+
+Open: the in-process Rust API page and its example test; the errors reference; bundles and pinning, and the operational commands, which the engine refuses; `script`, `add default`, `add computed` and `store`, which it refuses at apply. The README lists these as planned pages. The reader check and Tony's sign-off have not happened. Under load the migration pages run near 15 s; quiet they take about 2 s.
+
+## 2026-10-27: landed
+
+The tutorial, guides, concepts and reference landed in `docs/manual/`, every example run by `crates/adtb-shell/tests/manual.rs`. Still open: the Rust API page (needs a test that compiles Rust examples), the errors reference, the pages for operators and commands the engine refuses (listed under "Not yet in this manual" in `docs/manual/README.md`), a reader check, and Tony's sign-off. Bugs found are in `manual-found-panics`, `after-literal-unchecked`, `keyed-record-add-ctor`, `refusal-message-follow-ups` and `shell-new-user-follow-ups`.

@@ -43,10 +43,11 @@ values, identified by `name`: no two pets share one. Integers are
 
 ```console
 $ adtb --create --schema shelter.adt shelter.db
+adtb> \q
 ```
 
 This creates `shelter.db` and a log directory, `shelter.db-log`, beside
-it. The schema file becomes the database's first migration. If the
+it, and opens the shell's prompt on the new database; `\q` leaves. The schema file becomes the database's first migration. If the
 schema is refused, the shell says why and leaves no file behind.
 
 ## Insert rows

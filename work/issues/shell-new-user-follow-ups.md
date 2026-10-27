@@ -22,3 +22,9 @@ Found by the shell usability track while writing the getting-started page:
 - A foreign-key refusal reads "constraint `shelter::adoptions.Adoption.pet` is violated by 1 row" and never says a reference names a missing row.
 
 Check each against the spec before changing it: printing order, the spelling of `True` and the `order by` refusal may be specified.
+
+## 2026-10-27: found by the manual
+
+- At a terminal the shell runs a `match` as soon as its first arm parses, so a multi-line match cannot be typed at the prompt.
+- `--create` without `-c` opens the prompt and waits on stdin.
+- `\help` says ad hoc text may be "a migration", but migration text is refused as ad hoc text.
