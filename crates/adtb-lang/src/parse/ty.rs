@@ -190,13 +190,7 @@ impl Parser<'_> {
         let name = self.field_word()?;
         self.expect(Tok::Colon, "`:`")?;
         let ty = self.ty()?;
-        let on_delete = if self.at_word("on") && self.peek(1).tok == Tok::Kw(Kw::Delete) {
-            self.bump();
-            self.bump();
-            Some(self.ref_action()?)
-        } else {
-            None
-        };
+        let on_delete = self.on_delete()?;
         Ok(FieldType {
             name,
             ty,
@@ -204,7 +198,17 @@ impl Parser<'_> {
         })
     }
 
-    fn ref_action(&mut self) -> PResult<RefAction> {
+    pub(super) fn on_delete(&mut self) -> PResult<Option<RefAction>> {
+        if self.at_word("on") && self.peek(1).tok == Tok::Kw(Kw::Delete) {
+            self.bump();
+            self.bump();
+            Ok(Some(self.ref_action()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(super) fn ref_action(&mut self) -> PResult<RefAction> {
         if self.eat_word("restrict") {
             Ok(RefAction::Restrict)
         } else if self.eat_word("cascade") {

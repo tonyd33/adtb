@@ -433,6 +433,7 @@ type Operator
   | Unnest            { ctor: I64 }
   | AddField          { field: I64, decl: Term, fill: Term }
   | DropField         { field: I64 }
+  | AlterField        { field: I64, action: Term }
   | MoveField         { field: I64, header: Bool, fill: Option Term }
   | AddUnique         { index: I64, relation: I64, fields: Term }
   | DropUnique        { index: I64 }
@@ -1049,7 +1050,7 @@ Module `catalog`, types:
 | 360 | `PeerMapping` | 361 (one constructor) |
 | 373 | `CtorTarget` | 374 `InRelation`, 375 `OfType` |
 | 376 | `Place` | 377 `Last`, 378 `Before`, 379 `After` |
-| 380 | `Operator` | 381 `AddModule`, 382 `DropModule`, 383 `Install`, 384 `Uninstall`, 385 `AddType`, 386 `DropType`, 387 `AddRelation`, 388 `DropRelation`, 389 `AddSet`, 390 `DropSet`, 391 `AddConstructor`, 392 `RemoveConstructor`, 393 `Enable`, 394 `Disable`, 395 `Deprecate`, 396 `RenameConstructor`, 397 `RenameType`, 398 `RenameRelation`, 399 `RenameSet`, 400 `RenameField`, 401 `Split`, 402 `Merge`, 403 `Nest`, 404 `Unnest`, 405 `AddField`, 406 `DropField`, 407 `MoveField`, 408 `AddUnique`, 409 `DropUnique`, 410 `Rekey`, 411 `AddIndex`, 412 `DropIndex`, 413 `AddDefault`, 414 `DropDefault`, 415 `DefineFn`, 416 `RedefineFn`, 417 `DropFn`, 418 `DefineAggregate`, 419 `DropAggregate`, 420 `AddConstraint`, 421 `DropConstraint`, 422 `AddCheck`, 423 `DropCheck`, 424 `Store`, 425 `Unstore`, 426 `AddComputed`, 427 `RedefineComputed`, 428 `DropComputed`, 429 `Grant`, 430 `Revoke`, 431 `AdoptTzdb`, 432 `Script`, 433 `Revert` |
+| 380 | `Operator` | 381 `AddModule`, 382 `DropModule`, 383 `Install`, 384 `Uninstall`, 385 `AddType`, 386 `DropType`, 387 `AddRelation`, 388 `DropRelation`, 389 `AddSet`, 390 `DropSet`, 391 `AddConstructor`, 392 `RemoveConstructor`, 393 `Enable`, 394 `Disable`, 395 `Deprecate`, 396 `RenameConstructor`, 397 `RenameType`, 398 `RenameRelation`, 399 `RenameSet`, 400 `RenameField`, 401 `Split`, 402 `Merge`, 403 `Nest`, 404 `Unnest`, 405 `AddField`, 406 `DropField`, 407 `MoveField`, 408 `AddUnique`, 409 `DropUnique`, 410 `Rekey`, 411 `AddIndex`, 412 `DropIndex`, 413 `AddDefault`, 414 `DropDefault`, 415 `DefineFn`, 416 `RedefineFn`, 417 `DropFn`, 418 `DefineAggregate`, 419 `DropAggregate`, 420 `AddConstraint`, 421 `DropConstraint`, 422 `AddCheck`, 423 `DropCheck`, 424 `Store`, 425 `Unstore`, 426 `AddComputed`, 427 `RedefineComputed`, 428 `DropComputed`, 429 `Grant`, 430 `Revoke`, 431 `AdoptTzdb`, 432 `Script`, 433 `Revert`, 468 `AlterField` |
 | 434 | `MigrationOp` | 435 (one constructor) |
 | 436 | `ArmTarget` | 437 `OfFn`, 438 `OfConstraint`, 439 `OfComputed` |
 | 440 | `ClauseBody` | 441 `Joins`, 442 `Member`, 443 `Arm`, 444 `Replacement`, 445 `Carry`, 446 `Fill` |
@@ -1156,21 +1157,21 @@ Module `sys`, relation variables:
 | 371 | `sys::safe_snapshots` |
 
 
-Ids from 341 to 467 are listed in the rows of the types they belong
+Ids from 341 to 468 are listed in the rows of the types they belong
 to. `Person` and the other types of examples are not engine types and
 have no fixed id, nor has a `Principal` the schema declares
 ([security.md](security.md#11-the-principal-sum)). Ids 287 to 290, 306
-to 309 and from 468 to 1023 are unassigned.
+to 309 and from 469 to 1023 are unassigned.
 
 Fields and indexes have fixed ids in their own spaces. In edition
 2026-10 and catalog version 1, the engine's fields take ids from 0:
 for each type of the tables above in id order, its header fields in
 declared order, then each constructor's fields, constructors in listed
-order and fields in declared order. They take ids 0 to 560:
+order and fields in declared order. They take ids 0 to 562:
 `Option.Some.value` 0, `Result.Ok.value` 1, `Result.Err.error` 2,
 `RejectReason.DumpDamaged.offset` 68, `RejectReason.Internal.what` 69,
 `RejectReason.RowTooLarge`'s fields 70 to 73, the fields of the
-`catalog` and `sys` modules from 92, and `Limit.Rounds.rounds` 560. The engine's indexes take ids from 0: for
+`catalog` and `sys` modules from 92, and `Limit.Rounds.rounds` 562. The engine's indexes take ids from 0: for
 each relation variable of the tables above in id order, the index of
 its key, then an index for each `unique` clause in written order;
 they end at 60. A field or index that a later edition or catalog

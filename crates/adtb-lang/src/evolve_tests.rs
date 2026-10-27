@@ -77,7 +77,40 @@ fn migrate(src: &Source, text: &str) -> Result<Source, Vec<String>> {
 }
 
 fn applies(src: &Source, text: &str) -> Source {
-    migrate(src, text).unwrap_or_else(|e| panic!("{text}\nrefused: {e:?}\n{}", printed_or(src)))
+    let next = migrate(src, text)
+        .unwrap_or_else(|e| panic!("{text}\nrefused: {e:?}\n{}", printed_or(src)));
+    reprints(&next, text);
+    next
+}
+
+/// Asserts that each declaration `src` prints parses as one declaration, and that the printed
+/// declarations build and check as a schema of their own.
+fn reprints(src: &Source, text: &str) {
+    for d in &src.decls {
+        let file = format!("{}{}", header(&d.module), d.text);
+        let parsed = parse_schema(&file, Options { elisions: true })
+            .ok()
+            .unwrap_or_else(|e| {
+                panic!("{text}\nprints a declaration that does not parse: {e:?}\n{file}")
+            });
+        assert_eq!(
+            1,
+            parsed.decls.len(),
+            "{text}\nprints more than one declaration as one:\n{file}"
+        );
+    }
+    let fresh = Source::new(src.decls.clone()).unwrap_or_else(|e| {
+        panic!(
+            "{text}\nprints a schema that does not build: {e:?}\n{}",
+            printed_or(src)
+        )
+    });
+    if let Err(e) = fresh.check() {
+        panic!(
+            "{text}\nprints a schema that does not check: {e:?}\n{}",
+            printed_or(src)
+        );
+    }
 }
 
 fn printed_or(src: &Source) -> String {
@@ -216,6 +249,107 @@ fn a_migration_of_a_missing_module_adds_it_first() {
         "module billing\nadd module billing\nadd type Invoice = { id: Key invoices }\nadd relation invoices : Invoice key id generate sequence",
     );
     assert!(s.find("type", "billing", "Invoice").is_some());
+}
+
+const WORLD: &str = "module auth
+type Region { id: Key regions, parent: Option (Key regions.Settled) on delete clear }
+  = Wild
+  | Town { mayor: Key people.Living }
+type Person { id: Key people, home: Key regions.Town } = Living | Dead
+relation regions : Region key id generate sequence
+set Settled of regions = Town
+relation people : Person key id generate sequence
+fn mayor_of (t: Region.Town) -> Key people.Living = t.mayor
+constraint mayors_live_at_home =
+  from t in regions.Town, p in people.Living
+  where t.mayor == key p and p.home != key t
+  select t";
+
+/// The first migration of `src`'s module that declares what `src` prints, each declaration
+/// prefixed by its verb.
+fn replay(src: &Source, module: &str) -> String {
+    let mut out = format!("module {module}\nadd module {module}\n");
+    for (i, d) in src.decls.iter().enumerate() {
+        let verb = match src.parsed(i) {
+            Some(Decl::Fn(_) | Decl::Aggregate(_)) => "define ",
+            Some(Decl::Store(_)) => "",
+            _ => "add ",
+        };
+        out.push_str(&format!("{verb}{}\n", d.text));
+    }
+    out
+}
+
+#[test]
+fn a_reference_selects_constructors_of_a_relation_added_later_with_its_type() {
+    let s = applies(
+        &Source::default(),
+        "module world
+add module world
+add type Region { id: Key regions, parent: Option (Key regions.Settled) }
+  = Wild
+  | Town { mayor: Key people.Living }
+add type Person { id: Key people, home: Key regions.Town }
+  = Living
+  | Dead
+add relation regions : Region key id generate sequence
+add set Settled of regions = Town
+add relation people : Person key id generate sequence",
+    );
+    let schema = s.schema().expect("the schema builds");
+    let region = ty(&schema, "Region");
+    let parent = &schema.ty(region).header()[1];
+    assert_eq!(
+        "Option (Key regions.Town)",
+        schema.show_ty(&parent.ty),
+        "{parent:?}"
+    );
+}
+
+#[test]
+fn a_printed_schema_replays_as_a_first_migration() {
+    let printed = source(&format!(
+        "{RUNNING}{}",
+        WORLD.trim_start_matches("module auth")
+    ));
+    let s = applies(&Source::default(), &replay(&printed, "auth"));
+    let texts = |s: &Source| s.decls.iter().map(|d| d.text.clone()).collect::<Vec<_>>();
+    assert_eq!(texts(&printed), texts(&s));
+}
+
+#[test]
+fn a_late_selection_needs_the_type_added_in_the_same_migration() {
+    let s = applies(
+        &running(),
+        "module auth\nadd type Seat { n: I64 } = Free | Taken",
+    );
+    refuses(
+        &s,
+        "module auth
+add type Holder = { id: Key holders, seat: Key seats.Free }
+add relation holders : Holder key id generate sequence
+add relation seats : Seat key n",
+        "its type is not added by this migration, so only `Key seats` may name it",
+    );
+    applies(
+        &s,
+        "module auth
+add type Holder = { id: Key holders, seat: Key seats }
+add relation holders : Holder key id generate sequence
+add relation seats : Seat key n",
+    );
+}
+
+#[test]
+fn a_late_selection_that_never_resolves_is_refused_when_the_migration_ends() {
+    refuses(
+        &Source::default(),
+        "module auth
+add module auth
+add type Region { id: Key regions, parent: Option (Key regions.Nowhere) } = Wild | Town
+add relation regions : Region key id generate sequence",
+        "`Nowhere` is neither a constructor of `Region` nor a named set of `regions`",
+    );
 }
 
 #[test]
@@ -843,6 +977,223 @@ split constructor Identity.OAuth into Google { gid: Text } | Apple { sub: Text }
     assert_eq!(Stage::Enabled, stage(&s, "identities", "Google"));
 }
 
+const PLACES: &str = "module auth
+type Scale = Realm | Town | Spot
+type Place { id: Key places, name: Text }
+  = Location { parent: Option (Key places.Location), scale: Scale }
+  | Faction { agenda: Text }
+relation places : Place key id generate sequence
+type Npc = { id: Key npcs, location: Option (Key places.Location) on delete clear }
+relation npcs : Npc key id generate sequence
+fn kind (p: Place) -> Text = match p
+  | Location _ -> \"Location\"
+  | Faction _ -> \"Faction\"
+fn place_name (l: Place.Location) -> Text = l.name
+constraint parent_elsewhere =
+  from l in places.Location, p in places.Location
+  where l.parent == Some { value: key p } and key p == key l
+  select l";
+
+const SPLIT_PLACES: &str = "module auth
+split constructor Place.Location
+  into Region { parent: Option (Key places.(Region | Settlement | Site)) }
+     | Settlement { parent: Option (Key places.(Region | Settlement | Site)) }
+     | Site { parent: Option (Key places.(Region | Settlement | Site)) }
+  by match
+    | Location { parent, scale: Realm } -> Region { parent: parent }
+    | Location { parent, scale: Town } -> Settlement { parent: parent }
+    | Location { parent, scale: Spot } -> Site { parent: parent }
+  arm kind: Region _ -> \"Region\"
+  arm kind: Settlement _ -> \"Settlement\"
+  arm kind: Site _ -> \"Site\"";
+
+fn assert_places_split(s: &Source) {
+    let products = "Option (Key places.(Region | Settlement | Site))";
+    assert_eq!(
+        flat(&format!(
+            "type Place {{ id: Key places, name: Text }} = Region {{ parent: {products} }} \
+             | Settlement {{ parent: {products} }} | Site {{ parent: {products} }} \
+             | Faction {{ agenda: Text }}"
+        )),
+        flat(&decl(s, "type", "Place"))
+    );
+    assert!(
+        flat(&decl(s, "type", "Npc")).contains(&format!("location: {products} on delete clear")),
+        "{}",
+        decl(s, "type", "Npc")
+    );
+    assert_eq!(
+        "fn place_name (l: Place.(Region | Settlement | Site)) -> Text = l.name",
+        decl(s, "fn", "place_name")
+    );
+    let c = flat(&decl(s, "constraint", "parent_elsewhere"));
+    assert!(
+        c.contains("from l in places.(Region | Settlement | Site), p in places.(Region | Settlement | Site)"),
+        "{c}"
+    );
+}
+
+#[test]
+fn a_split_carries_a_reference_to_itself_at_its_retyped_type() {
+    let s = applies(&source(PLACES), SPLIT_PLACES);
+    assert_places_split(&s);
+}
+
+#[test]
+fn a_split_product_naming_the_split_constructor_names_the_products() {
+    let s = applies(
+        &source(PLACES),
+        &SPLIT_PLACES.replace("places.(Region | Settlement | Site)", "places.Location"),
+    );
+    assert_places_split(&s);
+}
+
+#[test]
+fn a_split_product_may_name_one_product() {
+    let without_constraint = PLACES.split("\nconstraint").next().expect("a schema");
+    let s = applies(
+        &source(without_constraint),
+        "module auth
+split constructor Place.Location
+  into Region { parent: Option (Key places.Region) }
+     | Settlement { parent: Option (Key places.Region) }
+     | Site { parent: Option (Key places.Settlement) }
+  by match
+    | Location { scale: Realm } -> Region { parent: None }
+    | Location { scale: Town } -> Settlement { parent: None }
+    | Location { scale: Spot } -> Site { parent: None }
+  arm kind: Region _ -> \"Region\"
+  arm kind: Settlement _ -> \"Settlement\"
+  arm kind: Site _ -> \"Site\"",
+    );
+    let t = flat(&decl(&s, "type", "Place"));
+    assert!(
+        t.contains("Site { parent: Option (Key places.Settlement) }"),
+        "{t}"
+    );
+}
+
+/// `PLACES` with its scale named after the products, which a merge back needs as its
+/// discriminator, and `SPLIT_PLACES` over it.
+fn places_by_product() -> (Source, String) {
+    let scales = [
+        ("Realm", "Region"),
+        ("Town", "Settlement"),
+        ("Spot", "Site"),
+    ];
+    let (mut schema, mut split) = (PLACES.to_string(), SPLIT_PLACES.to_string());
+    for (old, new) in scales {
+        schema = schema.replace(old, new);
+        split = split.replace(&format!("scale: {old}"), &format!("scale: {new}"));
+    }
+    (source(&schema), split)
+}
+
+#[test]
+fn revert_of_a_split_of_a_constructor_referencing_itself_merges_back() {
+    let (base, split) = places_by_product();
+    let s = applies(&base, &split);
+    let s = applies(&s, "module auth\nrevert 0001");
+    let t = flat(&decl(&s, "type", "Place"));
+    assert!(
+        t.contains("Location { parent: Option (Key places.Location), scale: Scale }"),
+        "{t}"
+    );
+    assert!(
+        flat(&decl(&s, "type", "Npc")).contains("Option (Key places.Location)"),
+        "{}",
+        decl(&s, "type", "Npc")
+    );
+    assert_eq!(
+        "fn place_name (l: Place.Location) -> Text = l.name",
+        decl(&s, "fn", "place_name")
+    );
+    assert!(
+        flat(&decl(&s, "constraint", "parent_elsewhere"))
+            .contains("from l in places.Location, p in places.Location"),
+        "{}",
+        decl(&s, "constraint", "parent_elsewhere")
+    );
+}
+
+#[test]
+fn a_merge_of_constructors_referencing_themselves_names_the_merged_one() {
+    let (base, split) = places_by_product();
+    let s = applies(&base, &split);
+    let s = applies(
+        &s,
+        "module auth
+merge constructor Place.(Region | Settlement | Site)
+  into Location { parent: Option (Key places.Location), scale: Scale }
+  by match
+    | Region { parent } -> Location { parent: parent, scale: Region }
+    | Settlement { parent } -> Location { parent: parent, scale: Settlement }
+    | Site { parent } -> Location { parent: parent, scale: Site }
+  arm kind: Location _ -> \"Location\"",
+    );
+    let t = flat(&decl(&s, "type", "Place"));
+    assert!(
+        t.contains("= Location { parent: Option (Key places.Location), scale: Scale } | Faction"),
+        "{t}"
+    );
+}
+
+#[test]
+fn an_arm_goes_inside_the_parentheses_around_its_match() {
+    let base = source(&format!(
+        "{RUNNING}constraint login_long =
+  from i in identities
+  where 3 > (match i
+    | EmailPass e -> scalar_len(e.email)
+    | Google g -> scalar_len(g.gid)
+    | Apple a -> scalar_len(a.sub))
+  select i
+"
+    ));
+    let s = applies(
+        &base,
+        "module auth
+add constructor Identity.Corp { domain: Text }
+  arm display_name: Corp c -> c.domain
+  arm login_present: Corp c -> scalar_len(c.domain) == 0
+  arm login_long: Corp c -> scalar_len(c.domain)",
+    );
+    assert!(
+        flat(&decl(&s, "constraint", "login_long"))
+            .contains("| Apple a -> scalar_len(a.sub) | Corp c -> scalar_len(c.domain)) select i"),
+        "{}",
+        decl(&s, "constraint", "login_long")
+    );
+}
+
+#[test]
+fn a_split_arm_goes_inside_the_parentheses_around_its_match() {
+    let base = source(&format!(
+        "{PLACES}
+constraint long_names =
+  from p in places
+  where 3 > (match p
+    | Location l -> scalar_len(l.name)
+    | Faction f -> scalar_len(f.agenda))
+  select p
+"
+    ));
+    let s = applies(
+        &base,
+        &format!(
+            "{SPLIT_PLACES}
+  arm long_names: Region r -> scalar_len(r.name)
+  arm long_names: Settlement t -> scalar_len(t.name)
+  arm long_names: Site t -> scalar_len(t.name)"
+        ),
+    );
+    let c = flat(&decl(&s, "constraint", "long_names"));
+    assert!(
+        c.ends_with("| Site t -> scalar_len(t.name)) select p"),
+        "{c}"
+    );
+}
+
 #[test]
 fn a_split_routing_is_checked_exhaustive_and_typed() {
     let s = source(
@@ -1143,6 +1494,84 @@ move field Identity.EmailPass.verified to Identity fill match
     let s = applies(&s, "module auth\ndrop field Identity.EmailPass.hash");
     assert!(
         flat(&decl(&s, "type", "Identity")).contains("EmailPass { email: Text, verified: Bool }")
+    );
+}
+
+#[test]
+fn add_field_states_a_delete_action_and_alter_field_changes_it() {
+    let s = applies(
+        &running(),
+        "module auth
+add field Identity.EmailPass.invited_by: Option (Key users) on delete clear fill None",
+    );
+    let t = flat(&decl(&s, "type", "Identity"));
+    assert!(
+        t.contains(
+            "EmailPass { email: Text, hash: Bytes, invited_by: Option (Key users) on delete clear }"
+        ),
+        "{t}"
+    );
+    let s = applies(
+        &s,
+        "module auth\nalter field Identity.EmailPass.invited_by on delete restrict",
+    );
+    let t = flat(&decl(&s, "type", "Identity"));
+    assert!(
+        t.contains("invited_by: Option (Key users) on delete restrict }"),
+        "{t}"
+    );
+    let s = applies(
+        &s,
+        "module auth\nalter field Identity.user on delete cascade",
+    );
+    let t = flat(&decl(&s, "type", "Identity"));
+    assert!(t.contains("user: Key users on delete cascade }"), "{t}");
+    let s = applies(&s, "module auth\nrevert 0003");
+    let t = flat(&decl(&s, "type", "Identity"));
+    assert!(t.contains("user: Key users on delete restrict }"), "{t}");
+    let s = applies(&s, "module auth\nrevert 0002");
+    let t = flat(&decl(&s, "type", "Identity"));
+    assert!(
+        t.contains("invited_by: Option (Key users) on delete clear }"),
+        "{t}"
+    );
+}
+
+#[test]
+fn alter_field_is_refused_on_a_field_that_is_not_a_reference() {
+    refuses(
+        &running(),
+        "module auth\nalter field Identity.EmailPass.email on delete cascade",
+        "`on delete` is allowed only on a `Key` field or an `Option` of one",
+    );
+    refuses(
+        &running(),
+        "module auth\nalter field Identity.user on delete clear",
+        "`on delete clear` is allowed only on an `Option (Key ...)` field",
+    );
+    refuses(
+        &running(),
+        "module auth\nalter field Identity.EmailPass.nothing on delete cascade",
+        "has no field `nothing`",
+    );
+}
+
+#[test]
+fn revert_of_a_dropped_reference_field_restores_its_delete_action() {
+    let s = applies(
+        &running(),
+        "module auth
+add field Identity.EmailPass.invited_by: Option (Key users) on delete clear fill None",
+    );
+    let s = applies(&s, "module auth\ndrop field Identity.EmailPass.invited_by");
+    let s = applies(
+        &s,
+        "module auth\nrevert 0002\n  fill Identity.EmailPass.invited_by = None",
+    );
+    let t = flat(&decl(&s, "type", "Identity"));
+    assert!(
+        t.contains("invited_by: Option (Key users) on delete clear }"),
+        "{t}"
     );
 }
 
@@ -2263,14 +2692,13 @@ add relation teams : Team key id generate sequence
 add type Team = { id: Key teams, name: Text }",
         "Team",
     );
-    refuses(
+    applies(
         &running(),
         "module auth
 add type Team = { id: Key teams, lead: Key members.Admin }
 add relation teams : Team key id generate sequence
 add type Member { id: Key members } = Plain { name: Text } | Admin { level: I32 }
 add relation members : Member key id generate sequence",
-        "only `Key members` may name it",
     );
 }
 

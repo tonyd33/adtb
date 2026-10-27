@@ -250,6 +250,9 @@ pub struct Schema {
     /// name. Entry `i` is `RelId(u32::MAX - i)`, which only a `Key r` type holds and no
     /// `relations` entry has.
     pub ahead: Vec<(ModuleId, String)>,
+    /// The relation variables, by module and name, that the migration being applied adds with
+    /// their type: a reference type's selection of their constructors resolves when it ends.
+    pub late_sels: Vec<(ModuleId, String)>,
 }
 
 /// The write state of a constructor in a relation variable, or of a value-level constructor.
@@ -305,6 +308,21 @@ impl Schema {
         self.relations.get(id.0 as usize).unwrap_or_else(|| {
             panic!("{id:?} is a declared relation: one a later operator adds has no definition")
         })
+    }
+
+    /// Returns whether a reference type's selection of the constructors of `id` resolves when the
+    /// migration being applied ends.
+    pub fn selects_late(&self, id: RelId) -> bool {
+        let named = match self.ahead_relation(id) {
+            Some((m, name)) => (*m, name.as_str()),
+            None => {
+                let r = self.relation(id);
+                (r.module, r.name.as_str())
+            }
+        };
+        self.late_sels
+            .iter()
+            .any(|(m, n)| (*m, n.as_str()) == named)
     }
 
     /// Returns the module and name of `id` when a later operator of the migration adds it.
@@ -824,7 +842,7 @@ struct Builder<'a> {
     files: &'a [(FileId, ast::SchemaFile)],
     /// Spans of `Span a` uses whose argument must be ordered, checked once every type is known.
     ordered_args: Vec<(Ty, FileId, Span)>,
-    ahead: &'a [(String, String)],
+    ahead: &'a [Ahead],
 }
 
 /// Builds the schema the given module files declare, over the prelude.
@@ -832,11 +850,21 @@ pub fn build(files: &[(FileId, ast::SchemaFile)]) -> Result<Schema, Vec<FileDiag
     build_ahead(files, &[])
 }
 
+/// A relation variable a later operator of the migration being applied adds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ahead {
+    pub module: String,
+    pub relation: String,
+    /// Whether the migration also adds the relation variable's type.
+    pub typed: bool,
+}
+
 /// Builds the schema as `build` does, where a `Key r` type may also name each relation variable
-/// `ahead` lists by module and name that the files do not declare.
+/// `ahead` lists that the files do not declare, and select the constructors of one whose type the
+/// migration adds before they resolve.
 pub fn build_ahead(
     files: &[(FileId, ast::SchemaFile)],
-    ahead: &[(String, String)],
+    ahead: &[Ahead],
 ) -> Result<Schema, Vec<FileDiag>> {
     let prelude = parse::parse_schema(PRELUDE_SRC, Options::default())
         .ok()
@@ -858,6 +886,7 @@ pub fn build_ahead(
             stages: BTreeMap::new(),
             value_stages: BTreeMap::new(),
             ahead: Vec::new(),
+            late_sels: Vec::new(),
         },
         diags: Vec::new(),
         files: &all,
@@ -1108,14 +1137,17 @@ impl Builder<'_> {
     }
 
     fn declare_ahead(&mut self) {
-        for (m, name) in self.ahead {
-            let Some(module) = self.schema.module_named(m) else {
+        for a in self.ahead {
+            let Some(module) = self.schema.module_named(&a.module) else {
                 continue;
             };
-            if self.schema.module(module).values.contains_key(name) {
+            if a.typed {
+                self.schema.late_sels.push((module, a.relation.clone()));
+            }
+            if self.schema.module(module).values.contains_key(&a.relation) {
                 continue;
             }
-            self.schema.ahead.push((module, name.clone()));
+            self.schema.ahead.push((module, a.relation.clone()));
         }
     }
 
@@ -2215,21 +2247,24 @@ pub fn resolve_type(
                 .lookup_relation(scope.module, &r.relation)
                 .or_else(|e| schema.relation_ahead(scope.module, &r.relation).ok_or(e))
                 .map_err(|e| (r.span, e))?;
+            let late = schema.selects_late(rel);
             let ctors = match &r.sel {
                 None => None,
+                Some(_) if late && schema.ahead_relation(rel).is_some() => None,
                 Some(_) if schema.ahead_relation(rel).is_some() => {
                     return Err((
                         r.span,
                         format!(
-                            "`{}` is added by a later operator, so only `Key {}` may name it",
+                            "`{}` is added by a later operator and its type is not added by this migration, so only `Key {}` may name it",
                             r.relation.name.text, r.relation.name.text
                         ),
                     ));
                 }
-                Some(sel) => {
-                    let set = schema.relation_sel(rel, sel).map_err(|e| (r.span, e))?;
-                    schema.normalize_ctors(schema.relation(rel).elem_def, set)
-                }
+                Some(sel) => match schema.relation_sel(rel, sel) {
+                    Ok(set) => schema.normalize_ctors(schema.relation(rel).elem_def, set),
+                    Err(_) if late => None,
+                    Err(e) => return Err((r.span, e)),
+                },
             };
             Ok(Ty::Key { rel, ctors })
         }

@@ -70,7 +70,7 @@ impl Parser<'_> {
                 Some("type" | "relation" | "set" | "constructor" | "field")
             ),
             "remove" | "split" | "nest" | "unnest" | "merge" => next_word == Some("constructor"),
-            "move" => next_word == Some("field"),
+            "move" | "alter" => next_word == Some("field"),
             "rekey" => next_word == Some("relation"),
             "define" => matches!(next_word, Some("fn" | "aggregate")),
             "redefine" => matches!(next_word, Some("fn" | "computed")),
@@ -203,6 +203,22 @@ impl Parser<'_> {
                 let path = self.ctor_path()?;
                 let clauses = self.arm_clauses()?;
                 Ok(OperatorKind::UnnestConstructor(path, clauses))
+            }
+            "alter" => {
+                self.expect_word("field")?;
+                let path = self.field_path()?;
+                if !(self.at_word("on") && self.peek(1).tok == Tok::Kw(Kw::Delete)) {
+                    return Err(self.error_here("expected `on delete`"));
+                }
+                self.bump();
+                self.bump();
+                let start = self.tok().span;
+                let action = self.ref_action()?;
+                Ok(OperatorKind::AlterField {
+                    path,
+                    action,
+                    span: self.span_from(start),
+                })
             }
             "move" => {
                 self.expect_word("field")?;
@@ -360,9 +376,17 @@ impl Parser<'_> {
                 let path = self.field_path()?;
                 self.expect(Tok::Colon, "`:`")?;
                 let ty = self.ty()?;
+                let on_delete = self.on_delete()?;
+                let decl = self.span_from(path.field.span);
                 self.expect_word("fill")?;
                 let fill = self.fill()?;
-                Ok(OperatorKind::AddField { path, ty, fill })
+                Ok(OperatorKind::AddField {
+                    path,
+                    ty,
+                    on_delete,
+                    decl,
+                    fill,
+                })
             }
             _ if self.eat_word("unique") => {
                 let fields = self.index_fields()?;

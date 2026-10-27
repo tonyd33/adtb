@@ -271,12 +271,11 @@ As of this writing, with `cargo test -p campaign`:
 
 | Test | Fails because |
 | --- | --- |
-| `front_end::release_1_2_splits_locations` | splitting a self-referencing constructor |
-| `front_end::release_1_3_adds_quest_states` | the full log goes through release 1.2 |
 | `engine::release_1_0_opens` | joins through an optional reference are not admitted |
 
-Every other test passes: the schema file checks and is the fold of
-migration 0001; releases 1.1 and 1.3 apply in the front end; all 50
+Every other test passes: the schema file checks, is the fold of
+migration 0001 and replays as a first migration; releases 1.1 to 1.3
+apply in the front end; all 50
 registered queries and transactions check at version 1; and in the
 engine, with the two unadmitted constraints left out, version 1 opens,
 upgrades to 1.1 with its rows, and runs prep, discovery, an encounter,

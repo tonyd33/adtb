@@ -656,7 +656,16 @@ pub enum OperatorKind {
     AddField {
         path: FieldPath,
         ty: Type,
+        on_delete: Option<RefAction>,
+        /// The field's name through its type and delete action.
+        decl: Span,
         fill: Fill,
+    },
+    /// `alter field T.C.f on delete a`, with the span of `a`.
+    AlterField {
+        path: FieldPath,
+        action: RefAction,
+        span: Span,
     },
     DropField(FieldPath),
     RenameField(FieldPath, Ident),

@@ -1,4 +1,4 @@
-bundle campaign-1.0 pins 1 (a57e70c84980a6589d1fcc38c5736400545d509e022fdda6ee5820b113c4f897) edition "2026-10"
+bundle campaign-1.0 pins 1 (fc0a74642b9f6711651848cdee8609dee7e5d09de4dca2f3c0f4b9e671a13b29) edition "2026-10"
 import campaign
 
 query campaigns () -> Set (Ongoing { id: Key campaigns, title: Text } | Over { id: Key campaigns, title: Text, ended: Date }) =

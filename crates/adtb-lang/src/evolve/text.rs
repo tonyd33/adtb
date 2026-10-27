@@ -265,6 +265,14 @@ pub(super) fn match_arms(d: &Decl, span: Span) -> Option<Vec<ast::Arm>> {
     found
 }
 
+/// Returns the end of the last arm's body of the match at `span` in `d`, inside any parentheses
+/// around the match.
+pub(super) fn match_end(d: &Decl, span: Span) -> Option<usize> {
+    match_arms(d, span)?
+        .last()
+        .map(|a| a.body.span.end as usize)
+}
+
 /// The range of an arm, from the `|` before it to the end of its body, local to `text`.
 pub(super) fn arm_range(text: &str, h: usize, a: &ast::Arm) -> Range<usize> {
     let start = a.patterns[0].span.start as usize - h;

@@ -909,6 +909,7 @@ pub const TYPES: &[FixedType] = &[
             ("Unnest", 404),
             ("AddField", 405),
             ("DropField", 406),
+            ("AlterField", 468),
             ("MoveField", 407),
             ("AddUnique", 408),
             ("DropUnique", 409),

@@ -216,6 +216,7 @@ pub(super) fn named(op: &OperatorKind, module: &str, schema: &Schema) -> Vec<Str
             }
         }
         OperatorKind::DropField(p)
+        | OperatorKind::AlterField { path: p, .. }
         | OperatorKind::RenameField(p, _)
         | OperatorKind::MoveField { path: p, .. } => {
             out.push(field(p));
@@ -571,6 +572,17 @@ impl Cx<'_> {
             }
             OperatorKind::AddField { path, .. } => {
                 ops(format!("drop field {}", qualified_path(path, &q(&path.ty))))
+            }
+            OperatorKind::AlterField { path, .. } => {
+                let m = q(&path.ty);
+                let Some((_, action)) = field_texts(before, &m, path) else {
+                    return self.err("the log does not hold the altered field");
+                };
+                ops(format!(
+                    "alter field {} on delete {}",
+                    qualified_path(path, &m),
+                    action.as_deref().unwrap_or("restrict")
+                ))
             }
             OperatorKind::DropField(path) => {
                 let m = q(&path.ty);
@@ -1688,8 +1700,21 @@ pub(super) fn qualified_path(p: &ast::FieldPath, module: &str) -> String {
     }
 }
 
-/// The type text of the field a path names in the schema `src`.
+/// The type text of the field a path names in the schema `src`, its delete action included.
 pub(super) fn field_type_text(src: &Source, module: &str, p: &ast::FieldPath) -> Option<String> {
+    let (ty, action) = field_texts(src, module, p)?;
+    Some(match action {
+        Some(a) => format!("{ty} on delete {a}"),
+        None => ty,
+    })
+}
+
+/// The type text and the delete action text of the field a path names in the schema `src`.
+pub(super) fn field_texts(
+    src: &Source,
+    module: &str,
+    p: &ast::FieldPath,
+) -> Option<(String, Option<String>)> {
     let i = src.find("type", module, &p.ty.name.text)?;
     let Some(Decl::Type(t)) = src.parsed(i) else {
         return None;
@@ -1703,7 +1728,15 @@ pub(super) fn field_type_text(src: &Source, module: &str, p: &ast::FieldPath) ->
             (Some(_), None) => false,
         };
         (here && f.name.text == p.field.text).then(|| {
-            src.decls[i].text[f.ty.span.start as usize - h..f.ty.span.end as usize - h].to_string()
+            let text = &src.decls[i].text;
+            let end = f.ty.span.end as usize - h;
+            let ty = text[f.ty.span.start as usize - h..end].to_string();
+            let rest = text[end..item_end(text, end)].trim();
+            let action = rest
+                .strip_prefix("on")
+                .and_then(|r| r.trim_start().strip_prefix("delete"))
+                .map(|a| a.trim().to_string());
+            (ty, action)
         })
     })
 }

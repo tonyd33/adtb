@@ -257,6 +257,9 @@ fn operator(schema: &Schema, ty: &Ty, op: &ResolvedOp) -> Value {
             ],
         ),
         Resolved::DropField { field } => one("DropField", "field", *field),
+        Resolved::AlterField { field, action } => {
+            two("AlterField", "field", *field, "action", action)
+        }
         Resolved::RenameField { field, name } => two("RenameField", "field", *field, "name", name),
         Resolved::MoveField {
             field,

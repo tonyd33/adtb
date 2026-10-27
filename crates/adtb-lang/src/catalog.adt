@@ -100,6 +100,7 @@ type Operator
   | Unnest            { ctor: I64 }
   | AddField          { field: I64, decl: Term, fill: Term }
   | DropField         { field: I64 }
+  | AlterField        { field: I64, action: Term }
   | MoveField         { field: I64, header: Bool, fill: Option Term }
   | AddUnique         { index: I64, relation: I64, fields: Term }
   | DropUnique        { index: I64 }

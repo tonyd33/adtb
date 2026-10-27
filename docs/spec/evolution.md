@@ -252,7 +252,7 @@ every failure, not only the first:
 
 | Check | Refused when |
 | --- | --- |
-| Typing | an operator does not type against the schema produced by the operators before it in the migration, except that a reference type `Key r` in a declaration may name a relation variable a later operator of the same migration adds |
+| Typing | an operator does not type against the schema produced by the operators before it in the migration, except that a reference type in a declaration may name a relation variable a later operator of the same migration adds, as stated below |
 | Recheck of schema objects | a schema function, constraint, stored view, default or computed field no longer type checks or is no longer exhaustive at the new version |
 | Constraint carrying | a constraint touched by a structural operator, including one whose drop is pending, has no image under it (§6.2, §6.4) |
 | Constraint validation | an added constraint has violating rows in the migration's final state (§6.3) |
@@ -266,9 +266,38 @@ every failure, not only the first:
 | Privilege | the principal may not append the operators ([security.md](security.md#3-grants)) |
 
 A reference cycle is declared within one migration: each type of the
-cycle may name, as `Key r`, a relation variable added after it. Any
-other name, including a type named by a field, must be declared by an
-operator before the one that uses it.
+cycle may name, as `Key r`, a relation variable added after it. When
+the type of that relation variable is added in the same migration, a
+reference may also select its constructors, as `Key r.C` or `Key
+r.(C | S)`: the constructors and named sets it names resolve when the
+migration's last operator has applied, so a named set added later in
+the migration may be named too, and a sum may reference its own
+constructors in the operator that adds it. A selection that names no
+constructor or named set of `r` at the end of the migration fails the
+typing check. Any other name, including a type named by a field, must
+be declared by an operator before the one that uses it.
+
+```adt fragment
+-- 0001
+module world
+add module world
+add type Region { id: Key regions, parent: Option (Key regions.Settled) }
+  = Wild
+  | Town { mayor: Key people.Living }
+add type Person { id: Key people, home: Key regions.Town }
+  = Living
+  | Dead
+add relation regions : Region key id generate sequence
+add set Settled of regions = Town
+add relation people : Person key id generate sequence
+```
+
+A schema file whose declarations each name only declarations before
+them, apart from the relation variables of reference types, is a valid
+first migration of an empty database file when each declaration is
+prefixed by its verb (`add`; `define` for a function or an aggregate;
+nothing for `store`), and the migration produces the schema the file
+declares.
 
 A failure of a schema object always refuses the migration: schema
 objects exist only at the current version, so the migration must
@@ -350,7 +379,7 @@ that version is older than the current version, its reads and writes
 are translated through the operators between the two (§7). A staged
 migration runs while bundles pinned earlier keep being served.
 
-Rulings: engine/transactional-ddl, engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version, evolution/breaks/recompile, evolution/breaks/invisible/registered, surface/registration/on-change/refuse, spec/schema-siread/version-item, spec/evolution/migration-statement/one-statement, spec/evolution/preconditions/predicate-read, spec/evolution/staged-meaning/one-transaction, spec/txn/one-version/one-pair, spec/evolution/forward-refs/later-key, spec/row-too-large/refuse-at-write
+Rulings: engine/transactional-ddl, engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version, evolution/breaks/recompile, evolution/breaks/invisible/registered, surface/registration/on-change/refuse, spec/schema-siread/version-item, spec/evolution/migration-statement/one-statement, spec/evolution/preconditions/predicate-read, spec/evolution/staged-meaning/one-transaction, spec/txn/one-version/one-pair, spec/evolution/forward-refs/later-key, spec/evolution/forward-sets/same-migration, spec/row-too-large/refuse-at-write
 
 ## 4. Operators
 
@@ -383,6 +412,7 @@ with their inverses; §5 states what an inverse is.
 | `nest constructor T.(C \| D) into N { f: S }` | `unnest constructor T.N` | yes |
 | `unnest constructor T.N` | `nest` | yes |
 | `add field T.C.f: U fill e` | `drop field T.C.f` | yes |
+| `alter field T.C.f on delete a` | `alter field T.C.f` to the previous action | yes |
 | `drop field T.C.f` | `add field T.C.f: U fill e` | no: values of `f` are lost |
 | `move field T.C.f to T fill e` | `move field T.f to T.C` | yes for rows of `C` (§4.9) |
 | `move field T.f to T.(C \| D)` | `move field ... to T fill e` | no for the other constructors |
@@ -659,8 +689,31 @@ field the routing carries whole into a new constructor is indexed
 there under its new name. A unique or index naming a field that no new
 constructor keeps (here `provider`) is refused unless the split states
 its replacements, as `unique` and `index` clauses after the routing.
-A reference type `Key r.OAuth` is retyped to `Key r.(Google | Apple)`.
+A reference type `Key r.OAuth` is retyped to `Key r.(Google | Apple)`,
+and so is a selection of `OAuth` in a query or row type of a schema
+object: `from i in identities.OAuth` reads `identities.(Google |
+Apple)`. A field of a product typed by a reference to the split
+constructor is retyped the same way, so a constructor that references
+itself is split with products that reference one another; a product may
+instead name its target among the products, as `Key r.Google`, resolved
+at the new version. The routing is typed with every reference to the
+split constructor retyped: a field it carries whole keeps its value,
+which now references one of the products.
 Constraints are carried (§6.2) and grants re-scoped (§6.5).
+
+```adt fragment
+-- from a version at which
+--   type Place { id: Key places } = Location { parent: Option (Key places.Location), scale: Scale } | Faction
+--   type Scale = Realm | Town
+split constructor Place.Location
+  into Region { parent: Option (Key places.Location) }
+     | Settlement { parent: Option (Key places.Location) }
+  by match
+    | Location { parent, scale: Realm } -> Region { parent: parent }
+    | Location { parent, scale: Town } -> Settlement { parent: parent }
+-- Place = Region { parent: Option (Key places.(Region | Settlement)) }
+--       | Settlement { parent: Option (Key places.(Region | Settlement)) } | Faction
+```
 
 A split takes `arm` clauses as a merge does (§4.7): for every schema
 function, computed field and match-scoped constraint whose match names
@@ -783,7 +836,9 @@ drop field Identity.EmailPass.hash
 ```
 
 - `add field T.C.f: U fill e` adds a field to a constructor (or to the
-  header, `T.f`). `e` gives the value for every existing row; it may
+  header, `T.f`). A reference field states its delete action after its
+  type, as in a declaration: `add field T.C.f: Option (Key r) on delete
+  clear fill None`; without one it is `restrict`. `e` gives the value for every existing row; it may
   read the row being filled and nothing else. The fill is recorded with
   the operator: a write translated from an earlier version that lacks
   the field takes the fill when the relation has no default for it
@@ -799,6 +854,13 @@ drop field Identity.EmailPass.hash
   field back down to `C` and drops it from the others.
 - `move field T.f to T.(C | D)` moves a header field down to the listed
   constructors and drops it from the others, a declared loss for them.
+- `alter field T.C.f on delete a` changes the delete action of a
+  reference field (or of a header field, `T.f`) to `a`. Rows are
+  unchanged; the action governs deletes from the version it produces.
+  It is refused unless the field's type is a `Key` type or an `Option`
+  of one, under the same rules as a declared action. Its inverse is
+  `alter field` back to the field's previous action, `restrict` when it
+  stated none.
 
 ### 4.10 Keys, uniques and indexes
 
@@ -921,7 +983,7 @@ inverse: `revert` of a migration containing one is refused. A restore
 replays schema operators and skips scripts, since the restored data
 is the state after them ([interop.md](interop.md#6-dump-and-restore)).
 
-Rulings: evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/remove-rows/deprecate, evolution/log-ops, evolution/scripted, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, derived/defaults/backfill/separate, spec/evolution/deprecated-value/same-path, spec/evolution/product-state/source-state, spec/evolution/new-ids/listed-order, spec/evolution/ctor-order/placed, spec/evolution/arm-target/scrutinee-set, spec/evolution/product-position/first-source, spec/late-relation-state/type-state, spec/record-add-ctor/allowed, spec/evolution/split-inverse/every-product
+Rulings: evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, evolution/remove-rows/restrict, evolution/remove-rows/merge-first, evolution/remove-rows/deprecate, evolution/log-ops, evolution/scripted, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, derived/defaults/backfill/separate, spec/evolution/deprecated-value/same-path, spec/evolution/product-state/source-state, spec/evolution/new-ids/listed-order, spec/evolution/ctor-order/placed, spec/evolution/arm-target/scrutinee-set, spec/evolution/product-position/first-source, spec/late-relation-state/type-state, spec/record-add-ctor/allowed, spec/evolution/split-inverse/every-product, spec/evolution/split-self-ref/product-set, spec/evolution/field-action/field-type-and-alter
 
 ## 5. Inverses and revert
 
@@ -987,7 +1049,7 @@ operators names an object id that `n` created: reverting `0011` at
 version 19 of §4.3 is refused, since `0012` and `0019` enable and
 deprecate the `Apple` it added.
 
-Rulings: evolution/smo, evolution/revert, evolution/merge-tag/discriminator, evolution/hoist/default, spec/evolution/enable-inverse/prior-state, spec/evolution/revert-identity/by-id, spec/evolution/product-position/first-source, spec/evolution/revert-fill/per-field
+Rulings: evolution/smo, evolution/revert, evolution/merge-tag/discriminator, evolution/hoist/default, spec/evolution/enable-inverse/prior-state, spec/evolution/revert-identity/by-id, spec/evolution/product-position/first-source, spec/evolution/revert-fill/per-field, spec/evolution/field-action/field-type-and-alter
 
 ## 6. Constraints and grants under evolution
 
@@ -1008,7 +1070,7 @@ Each structural operator rewrites the constraints it touches:
 | merge | per-constructor checks become one check matching on the discriminator; per-constructor uniques become uniques including the discriminator |
 | nest, unnest | scopes re-scope by leaf constructor, and paths change |
 | move field | field references follow the field |
-| add field | unchanged |
+| add field, alter field | unchanged |
 | add constructor | named sets it joins carry their constraints to it; match-scoped constraints need its arm (§4.2) |
 | remove | arms of the removed constructor are dropped; its constructor relation reads as empty |
 | rekey | key comparisons follow the carried fields |

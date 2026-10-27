@@ -116,16 +116,11 @@ impl Cx<'_> {
         Ok(())
     }
 
-    pub(super) fn add_field(
-        &mut self,
-        path: &ast::FieldPath,
-        ty: &ast::Type,
-        fill: &Fill,
-    ) -> R<()> {
+    pub(super) fn add_field(&mut self, path: &ast::FieldPath, decl: Span, fill: &Fill) -> R<()> {
         let (i, t) = self.type_decl(&path.ty)?;
         let part = self.part(&t, path)?;
         self.field_is_free(&t, &part, &path.field)?;
-        let item = Written::concat([format!("{}: ", path.field.text).into(), self.copy(ty.span)]);
+        let item = self.copy(decl);
         let h = header(&self.src.decls[i].module).len();
         let text = self.src.decls[i].text.clone();
         let ctor = match &part {
@@ -159,6 +154,28 @@ impl Cx<'_> {
             return self.err("the added field does not resolve");
         };
         self.check_fill(&path.ty, ctors, &fty, fill)
+    }
+
+    pub(super) fn alter_field(&mut self, path: &ast::FieldPath, action: Span) -> R<()> {
+        let (i, t) = self.type_decl(&path.ty)?;
+        let part = self.part(&t, path)?;
+        let Some(f) = Self::field_decl(&t, &part, &path.field.text) else {
+            return self.err_at(
+                path.field.span,
+                format!(
+                    "`{}` has no field `{}`",
+                    Self::shown(&t, &part),
+                    path.field.text
+                ),
+            );
+        };
+        let at = self.src.local(i, f.ty.span).end;
+        let text = &self.src.decls[i].text;
+        let end = at + text[at..item_end(text, at)].trim_end().len();
+        let written = Written::concat([" on delete ".into(), self.copy(action)]);
+        self.src.edit(i, vec![(at..end, written)]);
+        self.schema()?;
+        Ok(())
     }
 
     /// The edit that removes field `name` from a part of declaration `i`.

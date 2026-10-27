@@ -114,7 +114,7 @@ impl Cx<'_> {
                 edits.push((arm_range(text, h, a), Written::default()));
             }
         }
-        let end = at.end as usize - h;
+        let end = match_end(&d, at).unwrap_or(at.end as usize) - h;
         edits.push((end..end, Written::prefixed(arms.iter().cloned(), "\n  | ")));
         edits
     }
@@ -253,7 +253,12 @@ impl Cx<'_> {
         for a in arms {
             let (k, within) = self.arm_target(a)?;
             let at = self.target_match(&refs, a, k, within, &|ty| holds(&after, ty, def, c))?;
-            let end = at.end as usize - header(&self.src.decls[k].module).len();
+            let end = self
+                .src
+                .parsed(k)
+                .and_then(|d| match_end(&d, at))
+                .unwrap_or(at.end as usize)
+                - header(&self.src.decls[k].module).len();
             inserts
                 .entry((k, end))
                 .or_default()
@@ -320,28 +325,7 @@ impl Cx<'_> {
         } = mode;
         let mut edits: Edits = BTreeMap::new();
         let mut errs = Vec::new();
-        let rewrite = |names: &[String]| -> Option<Option<Vec<String>>> {
-            let hit = names.iter().filter(|n| gone.contains(n)).count();
-            if hit == 0 {
-                return None;
-            }
-            if whole && hit != gone.len() {
-                return Some(None);
-            }
-            let mut out = Vec::new();
-            for n in names {
-                if gone.contains(n) {
-                    for b in by {
-                        if !out.contains(b) {
-                            out.push(b.clone());
-                        }
-                    }
-                } else {
-                    out.push(n.clone());
-                }
-            }
-            Some(Some(out))
-        };
+        let rewrite = |names: &[String]| reselected(names, gone, by, whole);
         for (rel, m, rname) in Self::relations_of(schema, def) {
             for j in 0..self.src.decls.len() {
                 if self.src.decls[j].module != m {
@@ -441,21 +425,10 @@ impl Cx<'_> {
                 if out.is_empty() {
                     continue;
                 }
-                let h = header(&self.src.decls[j].module).len();
-                let text = &self.src.decls[j].text;
-                let from = idents[0].span.start as usize - h;
-                let to = idents.last().expect("an ident").span.end as usize - h;
-                let (from, to) = if idents.len() > 1 || text[..from].trim_end().ends_with('(') {
-                    let open = text[..from].trim_end().len() - 1;
-                    let close = to + text[to..].find(')').map_or(0, |k| k + 1);
-                    (open, close)
-                } else {
-                    (from, to)
-                };
                 edits
                     .entry(j)
                     .or_default()
-                    .push((from..to, sel_text(&out).into()));
+                    .push((self.sel_range(j, &idents), sel_text(&out).into()));
             }
         }
         if errs.is_empty() {
@@ -463,6 +436,88 @@ impl Cx<'_> {
         } else {
             Err(errs)
         }
+    }
+
+    /// The range of declaration `j` a selection of `idents` spans, its parentheses included.
+    fn sel_range(&self, j: usize, idents: &[ast::Ident]) -> Range<usize> {
+        let h = header(&self.src.decls[j].module).len();
+        let text = &self.src.decls[j].text;
+        let from = idents[0].span.start as usize - h;
+        let to = idents.last().expect("an ident").span.end as usize - h;
+        if idents.len() > 1 || text[..from].trim_end().ends_with('(') {
+            let open = text[..from].trim_end().len() - 1;
+            let close = to + text[to..].find(')').map_or(0, |k| k + 1);
+            open..close
+        } else {
+            from..to
+        }
+    }
+
+    /// The edits that put `by` in place of `gone` in every selection of constructors of `def` an
+    /// expression or a row type makes, such as `from l in places.Location` or `(p: Place.Location)`.
+    /// With `whole`, a selection of only some of `gone` is left as it is.
+    pub(super) fn reselect_rows(
+        &self,
+        schema: &Schema,
+        def: TypeId,
+        gone: &[String],
+        by: &[String],
+        whole: bool,
+    ) -> Edits {
+        let td = schema.ty(def);
+        let gone_ix: Vec<u32> = gone.iter().filter_map(|g| td.ctor_index(g)).collect();
+        let noted: BTreeSet<(usize, u32)> = check::schema_refs(schema)
+            .into_iter()
+            .filter(|(_, _, r)| matches!(r, Ref::Ctor(d, c) if *d == def && gone_ix.contains(c)))
+            .map(|(f, s, _)| (f.0 as usize, s.start))
+            .collect();
+        let type_module = schema.module(td.module).name.clone();
+        let mut edits: Edits = BTreeMap::new();
+        for j in 0..self.src.decls.len() {
+            let Some(d) = self.src.parsed(j) else {
+                continue;
+            };
+            let home = self.src.decls[j].module.clone();
+            let mut sels: Vec<Vec<ast::Ident>> = Vec::new();
+            for e in decl_exprs(&d) {
+                crate::visit::each_expr(e, &mut |x| {
+                    if let ast::ExprKind::Select(_, sel) = &x.kind
+                        && sel_idents(sel)
+                            .iter()
+                            .any(|i| noted.contains(&(j, i.span.start)))
+                    {
+                        sels.push(sel_idents(sel).into_iter().cloned().collect());
+                    }
+                });
+            }
+            each_type(&d, &mut |t| {
+                if let ast::TypeKind::Named {
+                    name,
+                    sel: Some(sel),
+                    ..
+                } = &t.kind
+                    && name.name.text == td.name
+                    && name
+                        .module
+                        .as_ref()
+                        .map_or(home == type_module, |m| m.text == type_module)
+                {
+                    sels.push(sel_idents(sel).into_iter().cloned().collect());
+                }
+            });
+            for idents in sels {
+                let names: Vec<String> = idents.iter().map(|x| x.text.clone()).collect();
+                if let Some(Some(out)) = reselected(&names, gone, by, whole)
+                    && !out.is_empty()
+                {
+                    edits
+                        .entry(j)
+                        .or_default()
+                        .push((self.sel_range(j, &idents), sel_text(&out).into()));
+                }
+            }
+        }
+        edits
     }
 
     pub(super) fn remove_constructor(&mut self, path: &ast::CtorPath) -> R<()> {
@@ -968,8 +1023,7 @@ impl Cx<'_> {
         product_texts: &[Written],
     ) -> R<RowTypes> {
         let (_, program) = self.checked()?;
-        let (i, t) = self.type_decl(def_q)?;
-        let schema = self.with_ctors(i, &t, product_texts)?;
+        let schema = self.with_retyped_ctors(def_q, sources, products, product_texts)?;
         let def = self.type_id(&schema, def_q)?;
         let td = schema.ty(def);
         let src_ix: Vec<u32> = sources.iter().filter_map(|s| td.ctor_index(s)).collect();
@@ -1000,6 +1054,10 @@ impl Cx<'_> {
 
     /// The schema with constructors `texts` appended to type declaration `i`, beside the ones it has.
     pub(super) fn with_ctors(&self, i: usize, t: &ast::TypeDecl, texts: &[Written]) -> R<Schema> {
+        Self::built(&self.ctors_appended(i, t, texts), self.span)
+    }
+
+    fn ctors_appended(&self, i: usize, t: &ast::TypeDecl, texts: &[Written]) -> Source {
         let mut temp = self.src.clone();
         let h = header(&temp.decls[i].module).len();
         let text = temp.decls[i].text.clone();
@@ -1008,9 +1066,52 @@ impl Cx<'_> {
             i,
             vec![(at..at, Written::prefixed(texts.iter().cloned(), "\n  | "))],
         );
-        temp.schema().map_err(|ds| {
+        temp
+    }
+
+    /// The schema with constructors `texts` of `products` appended to type declaration `i`, and every
+    /// reference to the constructors `sources` retyped to the products, theirs included.
+    fn with_retyped_ctors(
+        &self,
+        def_q: &QName,
+        sources: &[String],
+        products: &[String],
+        texts: &[Written],
+    ) -> R<Schema> {
+        let schema = self.schema()?;
+        let def = self.type_id(&schema, def_q)?;
+        let (i, t) = self.type_decl(def_q)?;
+        let mut temp = self.ctors_appended(i, &t, texts);
+        let edits = Cx {
+            src: &mut temp,
+            module: self.module.clone(),
+            text: self.text,
+            span: self.span,
+            noted: None,
+            copying: false,
+            steps: None,
+        }
+        .reselect(
+            &schema,
+            def,
+            sources,
+            products,
+            Reselect {
+                whole: false,
+                clauses: false,
+                what: "the routing",
+            },
+        )?;
+        for (k, es) in edits {
+            temp.edit(k, es);
+        }
+        Self::built(&temp, self.span)
+    }
+
+    fn built(src: &Source, span: Span) -> R<Schema> {
+        src.schema().map_err(|ds| {
             ds.into_iter()
-                .map(|d| Diag::new(self.span, d.diag.message))
+                .map(|d| Diag::new(span, d.diag.message))
                 .collect()
         })
     }
@@ -1022,7 +1123,7 @@ impl Cx<'_> {
         t: &ast::TypeDecl,
         sources: &[String],
         text: &Written,
-    ) -> Vec<(Range<usize>, Written)> {
+    ) -> Edits {
         let h = header(&self.src.decls[i].module).len();
         let ctors = ctor_extents(&self.src.decls[i].text, h, t);
         let mut edits = Vec::new();
@@ -1038,7 +1139,7 @@ impl Cx<'_> {
                 edits.push((ctor_removal(&ctors, k), Written::default()));
             }
         }
-        edits
+        BTreeMap::from([(i, edits)])
     }
 
     /// The edits replacing, in each dependent an `arm` clause names, the arms over `replaced` by the clauses' arms.
@@ -1345,6 +1446,10 @@ impl Cx<'_> {
                 ));
             }
         }
+        edits = Self::merged(
+            edits,
+            self.reselect_rows(&schema, def, &sources, std::slice::from_ref(&m), true),
+        );
         let mut clause_edits: Edits = BTreeMap::new();
         let mut added: BTreeMap<usize, Vec<Written>> = BTreeMap::new();
         for cl in self.scoped_clauses(&schema, def)? {
@@ -1432,12 +1537,32 @@ impl Cx<'_> {
                 .push((end..end, Written::prefixed(news, "\n  ")));
         }
         edits = Self::merged(edits, clause_edits);
-        edits
-            .entry(i)
-            .or_default()
-            .extend(self.replace_ctors(i, &t, &sources, &m_text));
+        edits = Self::merged(edits, self.replace_ctors(i, &t, &sources, &m_text));
         let arm_edits = self.arm_replacements(&schema, &refs, def, &src_ix, clauses)?;
         edits = Self::merged(edits, arm_edits);
+        self.apply_edits(edits);
+        self.retype_products(&schema, def, &sources, std::slice::from_ref(&m))
+    }
+
+    /// Retypes the references to `sources` the products' own declarations still name.
+    fn retype_products(
+        &mut self,
+        schema: &Schema,
+        def: TypeId,
+        sources: &[String],
+        products: &[String],
+    ) -> R<()> {
+        let edits = self.reselect(
+            schema,
+            def,
+            sources,
+            products,
+            Reselect {
+                whole: false,
+                clauses: false,
+                what: "the operator",
+            },
+        )?;
         self.apply_edits(edits);
         Ok(())
     }
@@ -1501,6 +1626,16 @@ impl Cx<'_> {
                 what: "the split",
             },
         )?;
+        edits = Self::merged(
+            edits,
+            self.reselect_rows(
+                &schema,
+                def,
+                std::slice::from_ref(&source),
+                &products,
+                false,
+            ),
+        );
         let mut clause_edits: Edits = BTreeMap::new();
         let mut added: BTreeMap<usize, Vec<Written>> = BTreeMap::new();
         let mut decls_of_t = BTreeSet::new();
@@ -1599,12 +1734,15 @@ impl Cx<'_> {
                 .push((end..end, Written::prefixed(news, "\n  ")));
         }
         edits = Self::merged(edits, clause_edits);
-        edits.entry(i).or_default().extend(self.replace_ctors(
-            i,
-            &t,
-            std::slice::from_ref(&source),
-            &Written::joined(texts, "\n  | "),
-        ));
+        edits = Self::merged(
+            edits,
+            self.replace_ctors(
+                i,
+                &t,
+                std::slice::from_ref(&source),
+                &Written::joined(texts, "\n  | "),
+            ),
+        );
         let arm_edits = self.arm_replacements(&schema, &refs, def, &[c], &arm_clauses)?;
         edits = Self::merged(edits, arm_edits);
         let tm = self.module_of(&path.ty);
@@ -1617,7 +1755,7 @@ impl Cx<'_> {
             false,
         )?;
         self.apply_edits(edits);
-        Ok(())
+        self.retype_products(&schema, def, std::slice::from_ref(&source), &products)
     }
 
     pub(super) fn nest(
@@ -1741,10 +1879,7 @@ impl Cx<'_> {
             ));
         }
         edits = Self::merged(edits, clause_edits);
-        edits
-            .entry(i)
-            .or_default()
-            .extend(self.replace_ctors(i, &t, &sources, &n_text));
+        edits = Self::merged(edits, self.replace_ctors(i, &t, &sources, &n_text));
         let arm_edits = self.arm_replacements(&schema, &refs, def, &src_ix, clauses)?;
         edits = Self::merged(edits, arm_edits);
         self.apply_edits(edits);
@@ -1860,12 +1995,15 @@ impl Cx<'_> {
             ));
         }
         edits = Self::merged(edits, clause_edits);
-        edits.entry(i).or_default().extend(self.replace_ctors(
-            i,
-            &t,
-            std::slice::from_ref(&n),
-            &texts.join("\n  | ").into(),
-        ));
+        edits = Self::merged(
+            edits,
+            self.replace_ctors(
+                i,
+                &t,
+                std::slice::from_ref(&n),
+                &texts.join("\n  | ").into(),
+            ),
+        );
         let arm_edits = self.arm_replacements(&schema, &refs, def, &[c], clauses)?;
         edits = Self::merged(edits, arm_edits);
         let tm = self.module_of(&path.ty);
@@ -1880,4 +2018,34 @@ impl Cx<'_> {
         self.apply_edits(edits);
         Ok(())
     }
+}
+
+/// Returns `names` with `by` in place of `gone`: `None` when it names none of them, and `Some(None)`
+/// when `whole` asks for all or none and it names only some.
+fn reselected(
+    names: &[String],
+    gone: &[String],
+    by: &[String],
+    whole: bool,
+) -> Option<Option<Vec<String>>> {
+    let hit = names.iter().filter(|n| gone.contains(n)).count();
+    if hit == 0 {
+        return None;
+    }
+    if whole && hit != gone.len() {
+        return Some(None);
+    }
+    let mut out = Vec::new();
+    for n in names {
+        if gone.contains(n) {
+            for b in by {
+                if !out.contains(b) {
+                    out.push(b.clone());
+                }
+            }
+        } else {
+            out.push(n.clone());
+        }
+    }
+    Some(Some(out))
 }

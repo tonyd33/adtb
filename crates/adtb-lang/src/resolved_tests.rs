@@ -627,3 +627,43 @@ fn a_field_added_then_renamed_resolves_to_one_id() {
         other => panic!("an add field and a rename: {other:?}"),
     }
 }
+
+#[test]
+fn alter_field_resolves_to_the_field_and_its_action() {
+    let src = migrated(
+        &first(),
+        "module auth\nalter field Identity.user on delete cascade\n",
+    );
+    let field = id(&src, "field auth::Identity.user");
+    match ops(&src, 2)
+        .into_iter()
+        .map(|o| o.op)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [Resolved::AlterField { field: f, action }] => {
+            assert_eq!(field, *f);
+            assert_eq!("cascade", action);
+        }
+        other => panic!("an alter field: {other:?}"),
+    }
+}
+
+#[test]
+fn an_added_field_resolves_with_its_delete_action() {
+    let src = migrated(
+        &first(),
+        "module auth\nadd field User.mentor: Option (Key users) on delete clear fill None\n",
+    );
+    match ops(&src, 2)
+        .into_iter()
+        .map(|o| o.op)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [Resolved::AddField { decl, .. }] => {
+            assert_eq!("mentor : Option ( Key auth::users ) on delete clear", decl);
+        }
+        other => panic!("an add field: {other:?}"),
+    }
+}

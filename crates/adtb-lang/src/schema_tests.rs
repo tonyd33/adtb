@@ -642,8 +642,8 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
     assert_eq!(Some(69), field(reject, Some(internal), "what"));
     let limit = s.prelude_type("Limit");
     let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
-    assert_eq!(Some(560), field(limit, Some(rounds), "rounds"));
-    assert_eq!(Some(560), s.ids.fields.values().max().copied());
+    assert_eq!(Some(562), field(limit, Some(rounds), "rounds"));
+    assert_eq!(Some(562), s.ids.fields.values().max().copied());
     assert_eq!(
         Some(60),
         s.ids

@@ -86,7 +86,7 @@ pub struct Source {
     pub marks: Option<Marks>,
     /// The relation variables, by module and name, that the operators of the migration being
     /// applied add.
-    pub ahead: Vec<(String, String)>,
+    pub ahead: Vec<schema::Ahead>,
 }
 
 /// Text of the migration being replayed that an operator copied into a declaration.
@@ -420,12 +420,26 @@ impl Source {
     ///
     /// Call `settled` after the last of them.
     pub fn expecting(&mut self, module: &str, ops: &[Operator]) {
+        let types: BTreeSet<&str> = ops
+            .iter()
+            .filter_map(|op| match &op.kind {
+                OperatorKind::AddType(t) => Some(t.name.text.as_str()),
+                _ => None,
+            })
+            .collect();
         self.ahead = ops
             .iter()
             .filter_map(|op| match &op.kind {
-                OperatorKind::AddRelation(r) => {
-                    Some((module.to_string(), r.name.name.text.clone()))
-                }
+                OperatorKind::AddRelation(r) => Some(schema::Ahead {
+                    module: module.to_string(),
+                    relation: r.name.name.text.clone(),
+                    typed: matches!(
+                        &r.ty.kind,
+                        ast::TypeKind::Named { name, .. }
+                            if name.module.as_ref().is_none_or(|m| m.text == module)
+                                && types.contains(name.name.text.as_str())
+                    ),
+                }),
                 _ => None,
             })
             .collect();
@@ -952,7 +966,10 @@ impl Cx<'_> {
                 clauses,
             } => self.nest(ty, sel, into, clauses),
             OperatorKind::UnnestConstructor(path, clauses) => self.unnest(path, clauses),
-            OperatorKind::AddField { path, ty, fill } => self.add_field(path, ty, fill),
+            OperatorKind::AddField {
+                path, decl, fill, ..
+            } => self.add_field(path, *decl, fill),
+            OperatorKind::AlterField { path, span, .. } => self.alter_field(path, *span),
             OperatorKind::DropField(path) => self.drop_field(path),
             OperatorKind::RenameField(path, to) => self.rename_field(path, to),
             OperatorKind::MoveField {

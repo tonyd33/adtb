@@ -12,8 +12,10 @@ add relation campaigns : Campaign
 add type Scale = Realm | Town | Spot
 
 add type Entity { id: Key entities, campaign: Key campaigns, name: Text, summary: Text, body: Text, secret: Text }
-  = PlayerCharacter { player: Key players }
-  | Location { scale: Scale }
+  = Npc { location: Option (Key entities.Location) on delete clear }
+  | Fallen { died_in: Key sessions.Run, location: Option (Key entities.Location) on delete clear }
+  | PlayerCharacter { player: Key players }
+  | Location { scale: Scale, parent: Option (Key entities.Location) }
   | Faction { agenda: Text }
   | Party
 add relation entities : Entity
@@ -22,12 +24,8 @@ add relation entities : Entity
   default summary = ""
   default body = ""
   default secret = ""
+add set Characters of entities = Npc | PlayerCharacter | Fallen
 add set Groups of entities = Faction | Party
-add field Entity.Location.parent: Option (Key entities.Location) fill None
-add constructor Entity.Npc { location: Option (Key entities.Location) on delete clear }
-  before PlayerCharacter
-enable entities.Npc
-add set Characters of entities = Npc | PlayerCharacter
 
 add type Player { id: Key players, campaign: Key campaigns, name: Text, party: Key entities.Party }
   = Seated { token: Text }
@@ -48,11 +46,6 @@ add relation sessions : GameSession
   default prep = ""
   default Live.started = generate clock
 add set Run of sessions = Live | Played
-
-add constructor Entity.Fallen { died_in: Key sessions.Run, location: Option (Key entities.Location) on delete clear }
-  after Npc
-  joins entities.Characters
-enable entities.Fallen
 
 add type Membership { id: Key memberships, member: Key entities.Characters on delete cascade, group: Key entities.Groups on delete cascade, role: Text }
   = Current

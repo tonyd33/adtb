@@ -1255,7 +1255,8 @@ unnest constructor Identity.Social
 ### 8.3 Fields
 
 ```ebnf
-field_op     = "add" "field" field_path ":" type "fill" fill
+field_op     = "add" "field" field_path ":" type [ ref_action ] "fill" fill
+             | "alter" "field" field_path ref_action
              | "drop" "field" field_path
              | "rename" "field" field_path "to" LOWER
              | "move" "field" field_path "to" field_target [ "fill" fill ]
@@ -1278,13 +1279,19 @@ move field Identity.verified to Identity.(EmailPass | Google)
 rename field Identity.EmailPass.hash to pw_hash
 -- 0017
 drop field Identity.EmailPass.pw_hash
+-- 0018
+add field Identity.EmailPass.invited_by: Option (Key users) on delete clear fill None
+-- 0019
+alter field Identity.EmailPass.invited_by on delete restrict
 ```
 
 `Type.f` is a header field; `Type.C.f` a field of one constructor.
 `fill` gives the field's value for existing rows; in a `move` to the
 header it gives the value for the constructors that lack the field, as
 a `match` with no scrutinee over their rows. A fill is not a default
-for later inserts.
+for later inserts. A `ref_action` after the type of `add field`, and
+the one `alter field` sets, follow the rules of a declared field's
+action (§4).
 
 ### 8.4 Keys, uniques, indexes and defaults
 
@@ -1390,7 +1397,7 @@ disable identities.Saml
 - `retire bundle` and `supersede bundle` are commands (§12), never
   operators: they are not written in a migration.
 
-Rulings: syntax/operator/verb, evolution/smo, evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, derived/defaults/backfill/separate, derived/materialize/storage-choice, derived/computed/virtual, interop/ext-pkg/catalog-module, evolution/in-log, evolution/log-ops, evolution/revert, evolution/scripted, evolution/types, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, spec/evolution/ctor-order/placed, spec/evolution/enable-inverse/prior-state, spec/evolution/revert-fill/per-field
+Rulings: syntax/operator/verb, evolution/smo, evolution/add, evolution/remove, evolution/rename, evolution/split, evolution/merge, evolution/move-field, evolution/nest, evolution/split-routing/match-route, evolution/merge-tag/discriminator, evolution/hoist/default, derived/defaults/backfill/separate, derived/materialize/storage-choice, derived/computed/virtual, interop/ext-pkg/catalog-module, evolution/in-log, evolution/log-ops, evolution/revert, evolution/scripted, evolution/types, surface/ctor-set/growth/declare, constraint/scope/new-ctor/arm-in-add, spec/evolution/ctor-order/placed, spec/evolution/enable-inverse/prior-state, spec/evolution/revert-fill/per-field, spec/evolution/field-action/field-type-and-alter
 
 ## 9. Bundle files
 

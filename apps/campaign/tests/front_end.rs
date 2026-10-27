@@ -119,14 +119,12 @@ fn the_schema_checks() {
     }
 }
 
-#[test]
-fn the_first_migration_folds_to_the_schema() {
-    let v1 = version(1);
-    assert_eq!(1, v1.version);
-    if let Err(ds) = v1.check() {
-        panic!("{}", in_files(&v1, &ds));
+/// Asserts that `src` declares what the schema file declares, token for token.
+fn folds_to_the_schema(src: &Source) {
+    if let Err(ds) = src.check() {
+        panic!("{}", in_files(src, &ds));
     }
-    let texts: Vec<String> = v1
+    let texts: Vec<String> = src
         .decls
         .iter()
         .map(|d| format!("module {}\n{}", d.module, d.text))
@@ -147,6 +145,30 @@ fn the_first_migration_folds_to_the_schema() {
         )
         .collect();
     assert!(differ.is_empty(), "differ: {differ:?}");
+}
+
+#[test]
+fn the_first_migration_folds_to_the_schema() {
+    let v1 = version(1);
+    assert_eq!(1, v1.version);
+    folds_to_the_schema(&v1);
+}
+
+#[test]
+fn the_schema_file_replays_as_a_first_migration() {
+    let file = parse_schema(SCHEMA, Options::default())
+        .ok()
+        .unwrap_or_else(|ds| panic!("{}", rendered(SCHEMA, &ds)));
+    let mut text = format!("module {MODULE}\nadd module {MODULE}\n");
+    for d in &file.decls {
+        let verb = match d {
+            Decl::Fn(_) | Decl::Aggregate(_) => "define ",
+            Decl::Store(_) => "",
+            _ => "add ",
+        };
+        text.push_str(&format!("{verb}{}\n", &SCHEMA[span(d)]));
+    }
+    folds_to_the_schema(&migrated(&Source::default(), &text));
 }
 
 #[test]

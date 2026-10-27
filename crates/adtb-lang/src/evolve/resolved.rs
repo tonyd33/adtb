@@ -127,6 +127,10 @@ pub enum Resolved {
     DropField {
         field: u64,
     },
+    AlterField {
+        field: u64,
+        action: String,
+    },
     MoveField {
         field: u64,
         header: bool,
@@ -449,6 +453,7 @@ fn resolvable(op: &OperatorKind) -> bool {
             | OperatorKind::NestConstructor { .. }
             | OperatorKind::UnnestConstructor(..)
             | OperatorKind::AddField { .. }
+            | OperatorKind::AlterField { .. }
             | OperatorKind::DropField(_)
             | OperatorKind::RenameField(..)
             | OperatorKind::MoveField { .. }
@@ -822,10 +827,16 @@ impl Resolver<'_> {
             OperatorKind::Deprecate(t) => Resolved::Deprecate {
                 target: self.target(t)?,
             },
-            OperatorKind::AddField { path, ty, fill } => Resolved::AddField {
+            OperatorKind::AddField {
+                path, decl, fill, ..
+            } => Resolved::AddField {
                 field: self.field_in(after, path, &self.renamed_later(path))?,
-                decl: term(path.field.span.to(ty.span)),
+                decl: term(*decl),
                 fill: term(fill_span(fill)?),
+            },
+            OperatorKind::AlterField { path, span, .. } => Resolved::AlterField {
+                field: self.field_in(before, path, &path.field.text)?,
+                action: term(*span),
             },
             OperatorKind::DropField(path) => Resolved::DropField {
                 field: self.field_in(before, path, &path.field.text)?,
