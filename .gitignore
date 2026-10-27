@@ -15,6 +15,7 @@ devenv.local.yaml
 
 # Local session state
 /work/HANDOFF.md
+/work/briefs/
 /work/research/.quandary/
 
 # Generated editor config

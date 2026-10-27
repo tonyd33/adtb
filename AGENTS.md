@@ -36,6 +36,9 @@ code and `jj status` to establish implementation status. Record anything
 needed to resume work in repository files, with paths and commands that
 another agent can use without access to your session or private memory.
 
+To dispatch, coordinate or land agent tracks, read and follow
+[the lead workflow](.agents/skills/lead/SKILL.md).
+
 ## Build and checks
 
 Enter the development environment with `direnv allow` or `devenv shell`.
@@ -49,6 +52,8 @@ For a fresh clone, host prerequisites and optional editor setup, read
 - `work/tools/suite [ARGS]`: run tests through the shared nextest lock.
 - `check` (in the dev shell): run the full checks, including the campaign
   application, dependency policy and source-size limits.
+- `apps/campaign/` is its own cargo workspace, excluded from the root
+  one. Build and test it from that directory.
 
 Use targeted checks while working and run the checks appropriate to the
 change before reporting completion.
@@ -80,6 +85,13 @@ root (devenv also puts each on PATH as `NAME`):
 - `codemap [CRATE [MODULE]]`, `codemap --tests [CRATE]`: modules, pub
   items with line numbers, test binaries with their test counts.
 - `house-check`: the added lines of `jj diff` that break a comment rule.
+- `quality-metrics.sh [REVSET]` (`quality-metrics` in the dev shell):
+  review metrics for the changes in REVSET, by default `reviewed..@`.
+- `size-check.sh` (`size-check` in the dev shell): fail when a non-test
+  source passes the line limit or the allowlist in `size-allowlist` is
+  stale.
+- `land WS [SUBJECT]`: land workspace WS on `main` and move the main
+  working copy onto it; refuses while the main working copy has changes.
 - `workspace-gc [--clean | --guard]`: every workspace's `target/` size;
   clean the idle ones; `--guard` fails under 30 GB free.
 
@@ -124,6 +136,9 @@ rule belongs to the lowest tier that can observe it. Treat any spec
 change an implementation asks for as suspect: patch the spec only for
 undecided or contradictory observable behaviour, never to promote an
 internal choice into a promise.
+
+Before writing or reviewing spec parts, read and follow
+[the spec-revision workflow](.agents/skills/spec-revision/SKILL.md).
 
 ## Design space
 

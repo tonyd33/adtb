@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# land WS [SUBJECT]   land workspace WS on top of the main checkout's parent commit: snapshot WS,
+#                     rebase its commits, describe its working-copy commit as SUBJECT, move the
+#                     `main` bookmark and the main working copy onto it, and forget WS
+#
+# Refuses before changing anything when the main working copy has changes, WS is unknown or
+# a commit to land has no description. Refuses after the rebase when a landed commit has
+# conflicts; the rebased commits stay in WS for its agent to fix. Leaves WS's directory in place.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+ws=${1:?usage: land WS [SUBJECT]}
+subject=${2:-}
+
+die() {
+  printf 'land: %s\n' "$1" >&2
+  exit 1
+}
+
+# Prints the root of the workspace named $1.
+workspace_root() {
+  jj -R "$root" workspace list --ignore-working-copy -T 'name ++ "\t" ++ root ++ "\n"' |
+    awk -F'\t' -v name="$1" '$1 == name { print $2 }'
+}
+
+main=$(workspace_root default)
+wsroot=$(workspace_root "$ws")
+[[ -n $wsroot ]] || die "no workspace named $ws"
+[[ $ws != default ]] || die "cannot land the default workspace"
+
+jj -R "$wsroot" status
+
+pending=$(jj -R "$main" diff --summary)
+if [[ -n $pending ]]; then
+  printf '%s\n' "$pending" >&2
+  die "the main working copy has changes; describe them and run jj new first"
+fi
+
+tip="$ws@"
+if [[ -z $(jj -R "$main" log -r "$ws@ & ~empty() | $ws@ & ~description(exact:'')" --no-graph -T 'change_id') ]]; then
+  tip="$ws@-"
+elif [[ -n $subject ]]; then
+  jj -R "$main" describe -r "$ws@" -m "$subject"
+fi
+undescribed=$(jj -R "$main" log -r "(@-..$tip) & description(exact:'')" --no-graph -T 'change_id.short() ++ "\n"')
+[[ -z $undescribed ]] || die "no description on $(echo $undescribed); pass SUBJECT or describe them"
+
+jj -R "$main" rebase -b "$ws@" -d @-
+
+conflicted=$(jj -R "$main" log -r "(@-..$tip) & conflicts()" --no-graph -T 'change_id.short() ++ "\n"')
+[[ -z $conflicted ]] || die "conflicts in $(echo $conflicted); send them back to the agent in $ws"
+
+old=$(jj -R "$main" log -r @ --no-graph -T 'change_id')
+jj -R "$main" new "$tip"
+if [[ -n $(jj -R "$main" log -r "present($old)" --no-graph -T 'change_id') ]]; then
+  jj -R "$main" abandon "$old"
+fi
+jj -R "$main" bookmark set main -r @-
+jj -R "$main" workspace forget "$ws"
+jj -R "$main" log -r '@-|@' --no-graph -T 'change_id.short() ++ " " ++ description.first_line() ++ "\n"'
+printf 'land: run check, then remove %s\n' "$wsroot"

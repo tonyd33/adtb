@@ -83,6 +83,10 @@ in
     "$DEVENV_ROOT/work/tools/quality-metrics.sh" "$@"
   '';
 
+  scripts.land.exec = ''
+    "$DEVENV_ROOT/work/tools/land" "$@"
+  '';
+
   enterTest = "check";
 
   # https://devenv.sh/languages/
