@@ -16,3 +16,7 @@ tags:
 - A restricted constructor-set type such as `identities.Google` maps to the full enum.
 - A user type named `Error`, `Option`, `Result` or another Rust prelude name is refused instead of being emitted under a qualified path.
 - `call_arrow` returns the untyped `adtb::ArrowStream`; a typed Arrow result needs the `arrow` crate, which is not approved.
+
+## 2026-10-27: keys across bundle versions
+
+Each bundle version gets its own relation marker types, so a key carried from a `v1_0` call to a `v1_3` call needs `Key(k.0)`. Share relation markers between bundle versions of one log where the relation is unchanged.

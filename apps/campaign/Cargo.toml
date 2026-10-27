@@ -10,8 +10,13 @@ rust-version = "1.98"
 license = "MIT"
 publish = false
 
-[dev-dependencies]
+[dependencies]
 adtb = { path = "../../crates/adtb" }
+
+[build-dependencies]
+adtb-codegen = { path = "../../crates/adtb-codegen" }
+
+[dev-dependencies]
 adtb-lang = { path = "../../crates/adtb-lang" }
 
 [lints]

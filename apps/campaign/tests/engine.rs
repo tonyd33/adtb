@@ -1,19 +1,22 @@
-//! The schema opened in the engine, with the bundle's queries and transactions run as ad hoc
-//! text through the in-process API.
+//! The schema opened in the engine, and the bundles' queries and transactions called through the
+//! code generated from them.
 
+use std::fmt::Debug;
 use std::path::PathBuf;
 
+use adtb::Value;
+use adtb::typed::{Date, HostValue, Relation};
 use adtb::{
-    CallOptions, CreateOptions, Database, Log, OpenOptions, TxnCallOptions, TxnOptions, Value,
+    BundleDef, CallOptions, Callable, CreateOptions, Database, Key, Log, OpenOptions, RejectReason,
+    RetryReason, Rows, TxnCallOptions, TxnOptions,
 };
-use adtb_lang::ast::{BundleFile, BundleItem, Param};
 use adtb_lang::check::{Checker, Context};
-use adtb_lang::evolve::Source;
-use adtb_lang::parse::{Options, parse_bundle, parse_migration, parse_type};
+use adtb_lang::parse::{Options, parse_type};
 use adtb_lang::resolve::Visible;
 use adtb_lang::textual::{Form, parse, print};
 use adtb_lang::types::Ty;
-use campaign::{BUNDLE, MIGRATIONS};
+use campaign::schema::{Campaigns, Entities, Quests, Sessions};
+use campaign::{MIGRATIONS, v1_0, v1_3};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
@@ -27,137 +30,95 @@ fn scratch(name: &str) -> PathBuf {
     dir.join("campaign.adt")
 }
 
-/// Returns the first `n` migrations.
-fn migrations(n: usize) -> Vec<String> {
-    MIGRATIONS[..n].iter().map(|m| (*m).to_string()).collect()
+/// Open or create the database at `path` at the first `n` migrations, registering `bundles`.
+fn open_db(path: PathBuf, n: usize, bundles: Vec<adtb::Registration>) -> Database {
+    let options = OpenOptions {
+        create: Some(CreateOptions::default()),
+        workers: Some(2),
+        registrations: bundles,
+        ..OpenOptions::default()
+    };
+    let log = Log::new(MIGRATIONS[..n].iter().copied());
+    adtb::open(path, &log, &options).unwrap_or_else(|e| panic!("open: {e:?}"))
 }
 
-struct App {
+/// Open or create the database at `path` at the first `n` migrations, registering no bundle,
+/// and close it again.
+fn migrate(path: PathBuf, n: usize) {
+    open_db(path, n, Vec::new()).close().expect("close");
+}
+
+struct App<B> {
     db: Database,
-    bundle: BundleFile,
+    bundle: adtb::typed::Bundle<B>,
 }
 
-impl App {
-    /// Open a new database under `name` at the first `n` migrations.
-    fn open(name: &str, n: usize) -> App {
-        App::at(scratch(name), n)
-    }
+type Current = App<v1_3::Bundle>;
 
-    /// Open or create the database at `path` at the first `n` migrations.
-    fn at(path: PathBuf, n: usize) -> App {
-        App::with(path, &Log::new(migrations(n)))
-    }
-
-    fn with(path: PathBuf, log: &Log) -> App {
-        let options = OpenOptions {
-            create: Some(CreateOptions::default()),
-            workers: Some(2),
-            ..OpenOptions::default()
-        };
-        let db = adtb::open(path, log, &options).unwrap_or_else(|e| panic!("open: {e:?}"));
-        let bundle = parse_bundle(BUNDLE, Options::default())
-            .ok()
-            .expect("the bundle parses");
+impl<B: BundleDef> App<B> {
+    /// Open or create the database at `path` at the first `n` migrations with bundle `def`.
+    fn at(path: PathBuf, n: usize, def: &B) -> App<B> {
+        let reg = def
+            .registration()
+            .expect("the generated bundle file registers");
+        let db = open_db(path, n, vec![reg]);
+        let bundle = db
+            .bundle(def)
+            .unwrap_or_else(|e| panic!("{}: {e:?}", B::NAME));
         App { db, bundle }
     }
 
-    /// Returns the body text of the bundle's query or transaction `name` and its parameters.
-    fn item(&self, name: &str) -> (&str, &[Param]) {
-        let found = self.bundle.items.iter().find_map(|i| match i {
-            BundleItem::Query(q) if q.name.text == name => Some((q.body.span, &q.params[..])),
-            BundleItem::Txn(t) if t.name.text == name => Some((t.body.span, &t.params[..])),
-            _ => None,
-        });
-        let (span, params) = found.unwrap_or_else(|| panic!("no `{name}` in the bundle"));
-        (&BUNDLE[span.range()], params)
-    }
-
-    fn params(&self, params: &[Param], args: &[&str]) -> Vec<(String, Ty, Value)> {
-        assert_eq!(params.len(), args.len(), "arguments");
-        let schema = self.db.schema();
-        let c = Checker::new(schema, Visible::all(schema), Context::Adhoc);
-        params
-            .iter()
-            .zip(args)
-            .map(|(p, a)| {
-                let ty = c
-                    .resolve_type(&p.ty)
-                    .unwrap_or_else(|d| panic!("`{}`: {}", p.name.text, d.message));
-                let v = parse(a, &Form::of(schema, &ty))
-                    .unwrap_or_else(|e| panic!("`{}` = `{a}`: {e}", p.name.text));
-                (p.name.text.clone(), ty, v)
-            })
-            .collect()
-    }
-
-    /// Runs the bundle's `name` as ad hoc text, each argument written in the textual syntax,
-    /// and returns every row of its results, printed.
-    fn call(&self, name: &str, args: &[&str]) -> Result<Vec<String>, adtb::Error> {
-        let (text, params) = self.item(name);
-        let bound = self.params(params, args);
-        let refs: Vec<(&str, Ty, Value)> = bound
-            .iter()
-            .map(|(n, t, v)| (n.as_str(), t.clone(), v.clone()))
-            .collect();
-        let out = self.db.query_text(text, &refs, &CallOptions::default())?;
-        Ok(printed(out))
-    }
-
-    fn ok(&self, name: &str, args: &[&str]) -> Vec<String> {
-        self.call(name, args)
-            .unwrap_or_else(|e| panic!("`{name}` fails: {e:?}"))
-    }
-
-    /// Returns the one row `name` returns.
-    fn one(&self, name: &str, args: &[&str]) -> String {
-        let mut rows = self.ok(name, args);
-        assert_eq!(1, rows.len(), "`{name}` returns one row: {rows:?}");
-        rows.remove(0)
-    }
-
-    /// Returns the rows of ad hoc `text`, each parameter given as its name, type and value in
-    /// the textual syntax.
-    fn adhoc_with(
+    fn try_call<C: Callable<Bundle = B>>(
         &self,
-        text: &str,
-        given: &[(&str, &str, &str)],
-    ) -> Result<Vec<String>, adtb::Error> {
-        let schema = self.db.schema();
-        let c = Checker::new(schema, Visible::all(schema), Context::Adhoc);
-        let params: Vec<(&str, Ty, Value)> = given
-            .iter()
-            .map(|&(name, ty, v)| {
-                let ty = parse_type(ty, Options::default()).ok().expect("a type");
-                let ty = c.resolve_type(&ty).expect("the type resolves");
-                let v = parse(v, &Form::of(schema, &ty)).expect("the value reads");
-                (name, ty, v)
-            })
-            .collect();
-        Ok(printed(self.db.query_text(
-            text,
-            &params,
-            &CallOptions::default(),
-        )?))
+        c: C,
+        args: C::Args,
+    ) -> Result<C::Output, B::Error> {
+        self.bundle.call(c, args, &CallOptions::default())
     }
 
-    /// Returns the rows of ad hoc `text`.
+    fn call<C: Callable<Bundle = B>>(&self, c: C, args: C::Args) -> C::Output {
+        self.try_call(c, args)
+            .unwrap_or_else(|e| panic!("`{}` fails: {e:?}", std::any::type_name::<C>()))
+    }
+
     fn adhoc(&self, text: &str) -> Result<Vec<String>, adtb::Error> {
-        Ok(printed(self.db.query_text(
-            text,
-            &[],
-            &CallOptions::default(),
-        )?))
+        adhoc(&self.db, text, &[])
     }
 }
 
-fn printed(results: Vec<adtb::DynRows>) -> Vec<String> {
-    results
+impl Current {
+    /// Open a new database under `name` at release 1.3.
+    fn open(name: &str) -> Current {
+        App::at(scratch(name), MIGRATIONS.len(), &v1_3::BUNDLE)
+    }
+}
+
+/// Returns the rows of ad hoc `text`, printed, each parameter given as its name, type and value
+/// in the textual syntax.
+fn adhoc(
+    db: &Database,
+    text: &str,
+    given: &[(&str, &str, &str)],
+) -> Result<Vec<String>, adtb::Error> {
+    let schema = db.schema();
+    let c = Checker::new(schema, Visible::all(schema), Context::Adhoc);
+    let params: Vec<(&str, Ty, Value)> = given
+        .iter()
+        .map(|&(name, ty, v)| {
+            let ty = parse_type(ty, Options::default()).ok().expect("a type");
+            let ty = c.resolve_type(&ty).expect("the type resolves");
+            let v = parse(v, &Form::of(schema, &ty)).expect("the value reads");
+            (name, ty, v)
+        })
+        .collect();
+    let results = db.query_text(text, &params, &CallOptions::default())?;
+    Ok(results
         .into_iter()
         .flat_map(|rows| {
             let form = rows.form().clone();
             rows.map(move |r| print(&r.expect("a row"), &form).expect("a row prints"))
         })
-        .collect()
+        .collect())
 }
 
 fn text(t: &str) -> String {
@@ -168,44 +129,92 @@ fn some(v: &str) -> String {
     format!("Some {{ value: {v} }}")
 }
 
-/// A campaign with one party, a location and an NPC there.
-struct World {
-    campaign: String,
-    party: String,
-    keep: String,
-    warden: String,
+/// Returns every row of a call's result.
+fn all<T: HostValue, E: From<adtb::Error> + Debug>(rows: Rows<T, E>) -> Vec<T> {
+    rows.collect::<Result<_, _>>()
+        .expect("every row is a value of its host type")
 }
 
-fn world(app: &App) -> World {
-    let campaign = app.one(
-        "new_campaign",
-        &[
-            &text("Ashes of Vael"),
-            &text("A fallen empire"),
-            &text("The Lanterns"),
-        ],
-    );
-    let party = app.one("lookup", &[&campaign, &text("Lanterns")]);
-    let party = field(&party, "id");
-    let keep = app.one(
-        "add_location",
-        &[
-            &campaign,
-            &text("Greyhold"),
-            &text("A keep on the pass"),
-            "None",
-            "Town",
-        ],
-    );
-    let warden = app.one(
-        "add_npc",
-        &[
-            &campaign,
-            &text("Warden Ilsa"),
-            &text("Holds the pass"),
-            &some(&keep),
-        ],
-    );
+/// Returns the one row of a call's result.
+fn one<T: HostValue + Debug, E: From<adtb::Error> + Debug>(rows: Rows<T, E>) -> T {
+    let mut rows = all(rows);
+    assert_eq!(1, rows.len(), "one row: {rows:?}");
+    rows.remove(0)
+}
+
+/// Returns `k` as a key of the relation of the same name at another version.
+fn carry<A, B>(k: Key<A>) -> Key<B>
+where
+    A: Relation<KeyValue = i64>,
+    B: Relation<KeyValue = i64>,
+{
+    Key(k.0)
+}
+
+/// Returns `k` in the textual syntax, as ad hoc text takes it.
+fn key<R: Relation<KeyValue = i64>>(k: &Key<R>) -> String {
+    let rel = R::NAME.rsplit("::").next().expect("a relation name");
+    format!("{rel}.key({})", k.0)
+}
+
+/// Returns whether `got` failed on a violation of constraint `name`.
+fn violates<T: Debug>(got: &Result<T, v1_3::Error>, name: &str) -> bool {
+    matches!(got, Err(v1_3::Error::Rejected { reason }) if violated(reason, name))
+}
+
+/// Returns whether ad hoc text failed `got` on a violation of constraint `name`.
+fn adhoc_violates<T: Debug>(got: &Result<T, adtb::Error>, name: &str) -> bool {
+    matches!(got, Err(adtb::Error::Rejected { reason }) if violated(reason, name))
+}
+
+fn violated(reason: &RejectReason, name: &str) -> bool {
+    matches!(reason, RejectReason::Violated { constraint, .. }
+        if constraint.rsplit("::").next() == Some(name))
+}
+
+/// A campaign with one party, a location and an NPC there.
+#[derive(Clone, Debug)]
+struct World {
+    campaign: Key<Campaigns>,
+    party: Key<Entities>,
+    keep: Key<Entities>,
+    warden: Key<Entities>,
+}
+
+fn world(app: &Current) -> World {
+    let campaign = app
+        .call(
+            v1_3::new_campaign,
+            (
+                "Ashes of Vael".into(),
+                "A fallen empire".into(),
+                "The Lanterns".into(),
+            ),
+        )
+        .value;
+    let party = one(app.call(v1_3::lookup, (campaign.clone(), "Lanterns".into()))).id;
+    let keep = app
+        .call(
+            v1_3::add_settlement,
+            (
+                campaign.clone(),
+                "Greyhold".into(),
+                "A keep on the pass".into(),
+                None,
+            ),
+        )
+        .value;
+    let warden = app
+        .call(
+            v1_3::add_npc,
+            (
+                campaign.clone(),
+                "Warden Ilsa".into(),
+                "Holds the pass".into(),
+                Some(keep.clone()),
+            ),
+        )
+        .value;
     World {
         campaign,
         party,
@@ -214,299 +223,398 @@ fn world(app: &App) -> World {
     }
 }
 
-/// Returns the printed value of field `name` of a printed record.
-fn field(record: &str, name: &str) -> String {
-    let at = record
-        .find(&format!("{name}: "))
-        .unwrap_or_else(|| panic!("no `{name}` in {record}"));
-    let rest = &record[at + name.len() + 2..];
-    let mut depth = 0;
-    let end = rest
-        .char_indices()
-        .find(|&(_, c)| {
-            match c {
-                '(' | '{' | '[' => depth += 1,
-                ')' | '}' | ']' if depth > 0 => depth -= 1,
-                ',' | '}' if depth == 0 => return true,
-                _ => {}
-            }
-            false
-        })
-        .map_or(rest.len(), |(i, _)| i);
-    rest[..end].trim().to_string()
+/// Builds the world of [`world`] through the bundle of release 1.0.
+fn world_1_0(app: &App<v1_0::Bundle>) -> World {
+    let campaign = app
+        .call(
+            v1_0::new_campaign,
+            (
+                "Ashes of Vael".into(),
+                "A fallen empire".into(),
+                "The Lanterns".into(),
+            ),
+        )
+        .value;
+    let party = one(app.call(v1_0::lookup, (campaign.clone(), "Lanterns".into()))).id;
+    let keep = app
+        .call(
+            v1_0::add_location,
+            (
+                campaign.clone(),
+                "Greyhold".into(),
+                "A keep on the pass".into(),
+                None,
+                v1_0::Scale::Town,
+            ),
+        )
+        .value;
+    let warden = app
+        .call(
+            v1_0::add_npc,
+            (
+                campaign.clone(),
+                "Warden Ilsa".into(),
+                "Holds the pass".into(),
+                Some(keep.clone()),
+            ),
+        )
+        .value;
+    World {
+        campaign: carry(campaign),
+        party: carry(party),
+        keep: carry(keep),
+        warden: carry(warden),
+    }
+}
+
+/// Assert that bundle `B` pins the version it names by the hash of that version.
+fn pins_its_hash<B: BundleDef>() {
+    let pins = usize::try_from(B::PINS).expect("a small version");
+    let source =
+        adtb_lang::signature::replay(MIGRATIONS[..pins].iter().copied()).expect("the log replays");
+    let schema = source.schema().expect("the source builds");
+    let hash: String = adtb::catalog::version_hash(&schema, &source)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert!(
+        B::TEXT.lines().next().is_some_and(|h| h.contains(&hash)),
+        "the header of {} states the hash {hash}",
+        B::NAME
+    );
+}
+
+#[test]
+fn the_bundle_pins_version_1_by_its_hash() {
+    assert_eq!(1, v1_0::Bundle::PINS);
+    pins_its_hash::<v1_0::Bundle>();
+}
+
+#[test]
+fn the_bundle_pins_version_4_by_its_hash() {
+    assert_eq!(4, v1_3::Bundle::PINS);
+    pins_its_hash::<v1_3::Bundle>();
 }
 
 #[test]
 fn release_1_0_opens() {
-    App::with(scratch("opens"), &Log::new(MIGRATIONS[..1].iter().copied()));
+    let app = App::at(scratch("opens"), 1, &v1_0::BUNDLE);
+    assert!(all(app.call(v1_0::campaigns, ())).is_empty());
 }
 
 #[test]
 fn release_1_1_opens_over_release_1_0() {
     let path = scratch("upgrade");
-    let app = App::at(path.clone(), 1);
-    let w = world(&app);
-    app.db.close().expect("close");
-    let app = App::at(path, 2);
-    let found = app.ok("lookup", &[&w.campaign, &text("ilsa")]);
-    assert_eq!(1, found.len(), "{found:?}");
-    let map = app.adhoc_with(
+    let old = App::at(path.clone(), 1, &v1_0::BUNDLE);
+    let w = world_1_0(&old);
+    old.db.close().expect("close");
+    let db = open_db(path, 2, Vec::new());
+    let found = adhoc(
+        &db,
+        "from e in entities where contains(fold(e.name), \"ilsa\") select key e",
+        &[],
+    );
+    assert_eq!(vec![key(&w.warden)], found.expect("the warden"));
+    let map = adhoc(
+        &db,
         &format!(
-        r#"transact
+            r#"transact
              let m = insert maps {{ campaign: {c}, title: "The pass", image: "pass.png", width: 800, height: 600 }}
              insert pins.OfEntity {{ map: key m, x: 120, y: 340, entity: {keep} }}
              insert discoveries.KnowsMap {{ party: party, learned_in: None, map: key m }}
              return key m"#,
-            c = w.campaign,
-            keep = w.keep,
+            c = key(&w.campaign),
+            keep = key(&w.keep),
         ),
-        &[("party", "Key entities.Party", &w.party)],
+        &[("party", "Key entities.Party", &key(&w.party))],
     );
     assert!(map.is_ok(), "{map:?}");
-    let off = app.adhoc(&format!(
-        "insert pins.Marker {{ map: {}, x: 900, y: 10, label: \"Off the edge\" }}",
-        map.expect("a map")[0]
-    ));
-    assert!(format!("{off:?}").contains("pin_inside_map"), "{off:?}");
-}
-
-#[test]
-fn the_bundle_pins_version_1_by_its_hash() {
-    let text = MIGRATIONS[0];
-    let file = parse_migration(text, Options::default())
-        .ok()
-        .expect("parses");
-    let v1 = Source::default().migrate(&file, text).expect("applies");
-    let schema = v1.schema().expect("builds");
-    let hash: String = adtb::catalog::version_hash(&schema, &v1)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let bundle = parse_bundle(BUNDLE, Options::default())
-        .ok()
-        .expect("parses");
-    assert_eq!(1, bundle.header.pins.number);
-    assert_eq!(Some(hash), bundle.header.pins.hash);
+    let off = adhoc(
+        &db,
+        &format!(
+            "insert pins.Marker {{ map: {}, x: 900, y: 10, label: \"Off the edge\" }}",
+            map.expect("a map")[0]
+        ),
+        &[],
+    );
+    assert!(adhoc_violates(&off, "pin_inside_map"), "{off:?}");
 }
 
 #[test]
 fn prep_builds_a_world_the_gm_can_look_up() {
-    let app = App::open("prep", 1);
+    let app = Current::open("prep");
     let w = world(&app);
-    let found = app.ok("lookup", &[&w.campaign, &text("ilsa")]);
-    assert_eq!(1, found.len(), "{found:?}");
-    assert!(found[0].contains("Warden Ilsa"), "{found:?}");
-    app.ok(
-        "write_entity",
-        &[
-            &w.warden,
-            &text("Holds the pass"),
-            &text("She keeps [[Greyhold]]."),
-            &text("Sold the pass to [[The Lanterns]]."),
-            &format!("[{}]", w.keep),
-            &format!("[{}]", w.party),
-        ],
+    let found = one(app.call(v1_3::lookup, (w.campaign.clone(), "ilsa".into())));
+    assert_eq!(
+        ("Warden Ilsa", "NPC"),
+        (found.name.as_str(), found.kind.as_str())
     );
-    let page = app.one("entity_page", &[&w.warden]);
-    assert!(page.contains("Greyhold"), "{page}");
-    let keep = app.one("entity_page", &[&w.keep]);
-    assert!(
-        keep.contains("InEntity"),
-        "the keep is mentioned by the warden: {keep}"
+    app.call(
+        v1_3::write_entity,
+        (
+            w.warden.clone(),
+            "Holds the pass".into(),
+            "She keeps [[Greyhold]].".into(),
+            "Sold the pass to [[The Lanterns]].".into(),
+            vec![w.keep.clone()],
+            vec![w.party.clone()],
+        ),
+    );
+    let page = one(app.call(v1_3::entity_page, (w.warden.clone(),)));
+    let mentions: Vec<(&str, bool)> = page
+        .mentions
+        .iter()
+        .map(|m| (m.name.as_str(), m.hidden))
+        .collect();
+    assert_eq!(
+        vec![("Greyhold", false), ("The Lanterns", true)],
+        mentions,
+        "{page:?}"
+    );
+    let keep = one(app.call(v1_3::entity_page, (w.keep.clone(),)));
+    assert_eq!(
+        vec![v1_3::EntityPageRowMentionedIn::InEntity {
+            id: w.warden,
+            name: "Warden Ilsa".into()
+        }],
+        keep.mentioned_in,
+        "the keep is mentioned by the warden"
     );
 }
 
 #[test]
 fn players_see_only_what_their_party_discovered() {
-    let app = App::open("discovery", 1);
+    let app = Current::open("discovery");
     let w = world(&app);
-    app.ok(
-        "write_entity",
-        &[
-            &w.warden,
-            &text("Holds the pass"),
-            &text("She keeps [[Greyhold]]."),
-            &text("Sold the pass."),
-            &format!("[{}]", w.keep),
-            "[]",
-        ],
+    app.call(
+        v1_3::write_entity,
+        (
+            w.warden.clone(),
+            "Holds the pass".into(),
+            "She keeps [[Greyhold]].".into(),
+            "Sold the pass.".into(),
+            vec![w.keep.clone()],
+            Vec::new(),
+        ),
     );
-    assert!(app.ok("known_entities", &[&w.party]).is_empty());
-    app.ok("reveal", &[&w.party, &w.warden, "None"]);
-    app.ok("reveal", &[&w.party, &w.warden, "None"]);
-    let known = app.ok("known_entities", &[&w.party]);
-    assert_eq!(1, known.len(), "{known:?}");
-    let page = app.one("known_entity", &[&w.party, &w.warden]);
-    assert!(
-        !page.contains("Sold the pass"),
-        "secrets stay hidden: {page}"
-    );
+    assert!(all(app.call(v1_3::known_entities, (w.party.clone(),))).is_empty());
+    let reveal = (w.party.clone(), w.warden.clone(), None);
+    app.call(v1_3::reveal, reveal.clone());
+    app.call(v1_3::reveal, reveal);
+    let known = one(app.call(v1_3::known_entities, (w.party.clone(),)));
     assert_eq!(
-        "[]",
-        field(&page, "mentions"),
-        "an undiscovered link stays hidden: {page}"
+        v1_3::KnownEntitiesRow::Person {
+            dead: false,
+            id: w.warden.clone(),
+            name: "Warden Ilsa".into(),
+            summary: "Holds the pass".into()
+        },
+        known
     );
-    app.ok("reveal", &[&w.party, &w.keep, "None"]);
-    let page = app.one("known_entity", &[&w.party, &w.warden]);
+    let page = one(app.call(v1_3::known_entity, (w.party.clone(), w.warden.clone())));
+    assert_eq!(
+        "She keeps [[Greyhold]].", page.body,
+        "the page shows the body and no secret"
+    );
     assert!(
-        field(&page, "mentions").contains("Greyhold"),
-        "a discovered link shows: {page}"
+        page.mentions.is_empty(),
+        "an undiscovered link stays hidden: {page:?}"
     );
+    app.call(v1_3::reveal, (w.party.clone(), w.keep.clone(), None));
+    let page = one(app.call(v1_3::known_entity, (w.party.clone(), w.warden)));
+    let mentions: Vec<&str> = page.mentions.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(vec!["Greyhold"], mentions, "a discovered link shows");
 }
 
 #[test]
 fn a_discovery_never_crosses_campaigns() {
-    let app = App::open("crossing", 1);
+    let app = Current::open("crossing");
     let w = world(&app);
-    let other = app.one(
-        "new_campaign",
-        &[&text("Other"), &text(""), &text("The Others")],
-    );
-    let stranger = app.one("add_npc", &[&other, &text("Stranger"), &text(""), "None"]);
-    let refused = app.call("reveal", &[&w.party, &stranger, "None"]);
+    let other = app
+        .call(
+            v1_3::new_campaign,
+            ("Other".into(), String::new(), "The Others".into()),
+        )
+        .value;
+    let stranger = app
+        .call(
+            v1_3::add_npc,
+            (other, "Stranger".into(), String::new(), None),
+        )
+        .value;
+    let refused = app.try_call(v1_3::reveal, (w.party, stranger, None));
     assert!(
-        format!("{refused:?}").contains("discovery_in_campaign"),
+        violates(&refused, "entity_discovery_in_campaign"),
         "{refused:?}"
     );
 }
 
 /// Plans and starts session 1 of `w`, returning its key.
-fn live_session(app: &App, w: &World) -> String {
-    let s = app.one("plan_session", &[&w.campaign, &w.party, &text("The pass")]);
-    app.ok("start_session", &[&s]);
+fn live_session(app: &Current, w: &World) -> Key<Sessions> {
+    let s = app
+        .call(
+            v1_3::plan_session,
+            (w.campaign.clone(), w.party.clone(), "The pass".into()),
+        )
+        .value;
+    app.call(v1_3::start_session, (s.clone(),));
     s
+}
+
+/// Returns the round and turn of encounter `e`.
+fn round_and_turn(app: &Current, e: &Key<v1_3::Encounters>) -> (i64, i64) {
+    let t = one(app.call(v1_3::tracker, (e.clone(),)));
+    (t.round, t.turn)
 }
 
 #[test]
 fn an_encounter_runs_round_by_round() {
-    let app = App::open("encounter", 1);
+    let app = Current::open("encounter");
     let w = world(&app);
     let s = live_session(&app, &w);
-    let e = app.one(
-        "add_encounter",
-        &[&s, &text("Ambush"), &text("Bandits on the road")],
+    let e = app
+        .call(
+            v1_3::add_encounter,
+            (s, "Ambush".into(), "Bandits on the road".into()),
+        )
+        .value;
+    let ilsa = app
+        .call(v1_3::add_cast, (e.clone(), w.warden.clone(), "Ilsa".into()))
+        .value;
+    let bandit = app
+        .call(
+            v1_3::add_extra,
+            (e.clone(), "Bandit".into(), "bandit".into()),
+        )
+        .value;
+    let roll = |combatant: &Key<v1_3::Combatants>, roll, slot| v1_3::StartEncounterRollsArg {
+        combatant: combatant.clone(),
+        roll,
+        slot,
+    };
+    app.call(
+        v1_3::start_encounter,
+        (e.clone(), vec![roll(&ilsa, 17, 1), roll(&bandit, 9, 2)]),
     );
-    let ilsa = app.one("add_cast", &[&e, &w.warden, &text("Ilsa")]);
-    let bandit = app.one("add_extra", &[&e, &text("Bandit"), &text("bandit")]);
-    app.ok(
-        "start_encounter",
-        &[
-            &e,
-            &format!(
-                "[{{ combatant: {ilsa}, roll: 17, slot: 1 }}, {{ combatant: {bandit}, roll: 9, slot: 2 }}]"
-            ),
-        ],
-    );
-    let t = app.one("tracker", &[&e]);
-    assert_eq!("1", field(&t, "round"), "{t}");
-    assert_eq!("1", field(&t, "turn"), "{t}");
-    app.ok("next_turn", &[&e]);
-    assert_eq!("2", field(&app.one("tracker", &[&e]), "turn"));
-    app.ok("next_turn", &[&e]);
-    let t = app.one("tracker", &[&e]);
+    assert_eq!((1, 1), round_and_turn(&app, &e));
+    app.call(v1_3::next_turn, (e.clone(),));
+    assert_eq!((1, 2), round_and_turn(&app, &e));
+    app.call(v1_3::next_turn, (e.clone(),));
+    assert_eq!((2, 1), round_and_turn(&app, &e));
+    let wolf = app
+        .call(v1_3::add_extra, (e.clone(), "Wolf".into(), "wolf".into()))
+        .value;
+    app.call(v1_3::join_fight, (e.clone(), wolf, 4, 3));
+    app.call(v1_3::leave_fight, (ilsa,));
+    assert_eq!((2, 2), round_and_turn(&app, &e), "the acting slot left");
+    let seen = one(app.call(v1_3::party_encounter, (w.party,)));
+    let order: Vec<(i64, &str)> = seen
+        .order
+        .iter()
+        .map(|t| (t.slot, t.label.as_str()))
+        .collect();
     assert_eq!(
-        ("2", "1"),
-        (field(&t, "round").as_str(), field(&t, "turn").as_str()),
-        "{t}"
+        vec![(2, "Bandit"), (3, "Wolf")],
+        order,
+        "players see labels, not kinds"
     );
-    let wolf = app.one("add_extra", &[&e, &text("Wolf"), &text("wolf")]);
-    app.ok("join_fight", &[&e, &wolf, "4", "3"]);
-    app.ok("leave_fight", &[&ilsa]);
-    let t = app.one("tracker", &[&e]);
-    assert_eq!(
-        ("2", "2"),
-        (field(&t, "round").as_str(), field(&t, "turn").as_str()),
-        "the acting slot left: {t}"
-    );
-    let seen = app.one("party_encounter", &[&w.party]);
-    assert!(
-        seen.contains("Bandit") && !seen.contains("bandit\""),
-        "{seen}"
-    );
-    app.ok("end_encounter", &[&e, &text("Bandits fled")]);
-    assert!(app.ok("tracker", &[&e]).is_empty());
+    app.call(v1_3::end_encounter, (e.clone(), "Bandits fled".into()));
+    assert!(all(app.call(v1_3::tracker, (e,))).is_empty());
 }
 
 #[test]
 fn a_second_live_session_is_refused() {
-    let app = App::open("two-live", 1);
+    let app = Current::open("two-live");
     let w = world(&app);
     live_session(&app, &w);
-    let s2 = app.one("plan_session", &[&w.campaign, &w.party, &text("Again")]);
-    let refused = app.call("start_session", &[&s2]);
-    assert!(refused.is_err(), "{refused:?}");
+    let s2 = app
+        .call(
+            v1_3::plan_session,
+            (w.campaign.clone(), w.party, "Again".into()),
+        )
+        .value;
+    let refused = app.try_call(v1_3::start_session, (s2,));
+    assert!(
+        matches!(refused, Err(v1_3::Error::Rejected { .. })),
+        "{refused:?}"
+    );
 }
 
 #[test]
 fn the_dead_do_not_fight_in_later_sessions() {
-    let app = App::open("dead", 1);
+    let app = Current::open("dead");
     let w = world(&app);
     let s1 = live_session(&app, &w);
-    let npc = w.warden.clone();
-    app.ok("kill", &[&npc, &s1]);
-    app.ok(
-        "end_session",
-        &[&s1, "2026-10-24", &text("Ilsa fell."), &text("Ilsa fell.")],
+    app.call(v1_3::kill, (w.warden.clone(), s1.clone()));
+    app.call(
+        v1_3::end_session,
+        (s1, Date(20750), "Ilsa fell.".into(), "Ilsa fell.".into()),
     );
     let s2 = live_session(&app, &w);
-    let e = app.one("add_encounter", &[&s2, &text("Haunting"), &text("")]);
-    let refused = app.call("add_cast", &[&e, &npc, &text("Ilsa")]);
-    assert!(
-        format!("{refused:?}").contains("the_dead_stay_dead"),
-        "{refused:?}"
+    let e = app
+        .call(v1_3::add_encounter, (s2, "Haunting".into(), String::new()))
+        .value;
+    let refused = app.try_call(v1_3::add_cast, (e, w.warden.clone(), "Ilsa".into()));
+    assert!(violates(&refused, "the_dead_stay_dead"), "{refused:?}");
+    let recap = one(app.call(v1_3::recaps, (w.party,)));
+    assert_eq!(
+        (1, Date(20750), "Ilsa fell."),
+        (recap.number, recap.played_on, recap.recap.as_str())
     );
-    let known = app.ok("recaps", &[&w.party]);
-    assert_eq!(1, known.len(), "{known:?}");
 }
 
 #[test]
 fn a_closed_quest_stays_closed() {
-    let app = App::open("quest", 1);
+    let app = Current::open("quest");
     let w = world(&app);
     let s = live_session(&app, &w);
-    let q = app.one(
-        "add_quest",
-        &[
-            &w.campaign,
-            &text("Clear the pass"),
-            &text(""),
-            &some(&w.warden),
-            "None",
-        ],
+    let q = app
+        .call(
+            v1_3::add_quest,
+            (
+                w.campaign.clone(),
+                "Clear the pass".into(),
+                String::new(),
+                Some(w.warden.clone()),
+                None,
+            ),
+        )
+        .value;
+    app.call(v1_3::take_quest, (q.clone(), s.clone()));
+    app.call(
+        v1_3::close_quest,
+        (q.clone(), s, false, "The pass fell".into()),
     );
-    app.ok("take_quest", &[&q, &s]);
-    app.ok("close_quest", &[&q, &s, "False", &text("The pass fell")]);
-    let log = app.one("quest_log", &[&w.campaign]);
-    assert!(log.starts_with("Done"), "{log}");
+    let log = one(app.call(v1_3::quest_log, (w.campaign,)));
+    assert!(
+        matches!(&log, v1_3::QuestLogRow::Done { won: false, outcome, closed: 1, .. } if outcome == "The pass fell"),
+        "{log:?}"
+    );
     let reopened = app.adhoc(&format!(
-        "update x in quests.Failed where key x == {q} set Active {{ taken_in: x.closed_in }}"
+        "update x in quests.Failed where key x == {} set Active {{ taken_in: x.closed_in }}",
+        key(&q)
     ));
     assert!(
-        format!("{reopened:?}").contains("closed_quests_stay_closed"),
+        adhoc_violates(&reopened, "closed_quests_stay_closed"),
         "{reopened:?}"
     );
 }
 
 #[test]
 fn two_gms_planning_the_same_session_number_do_not_both_commit() {
-    let app = App::open("collide", 1);
+    let app = Current::open("collide");
     let w = world(&app);
-    let (text_, params) = app.item("plan_session");
-    let bound = app.params(params, &[&w.campaign, &w.party, &text("Concurrent")]);
-    let refs: Vec<(&str, Ty, Value)> = bound
-        .iter()
-        .map(|(n, t, v)| (n.as_str(), t.clone(), v.clone()))
-        .collect();
-    let mut a = app.db.begin(&TxnOptions::default()).expect("begin a");
-    a.query_text(text_, &refs, &TxnCallOptions::default())
+    let args = (w.campaign.clone(), w.party.clone(), "Concurrent".into());
+    let mut a = app.bundle.begin(&TxnOptions::default()).expect("begin a");
+    a.call(v1_3::plan_session, args.clone(), &TxnCallOptions::default())
         .expect("a plans");
     let (a_done, b_done) = std::thread::scope(|s| {
         let (begun, wait) = std::sync::mpsc::channel();
-        let db = &app.db;
+        let bundle = &app.bundle;
         let b = s.spawn(move || {
-            let mut b = db.begin(&TxnOptions::default())?;
+            let mut b = bundle.begin(&TxnOptions::default())?;
             begun.send(()).expect("the test waits");
-            b.query_text(text_, &refs, &TxnCallOptions::default())?;
+            b.call(v1_3::plan_session, args, &TxnCallOptions::default())?;
             b.commit(None)
         });
         wait.recv().expect("b begins");
@@ -515,158 +623,339 @@ fn two_gms_planning_the_same_session_number_do_not_both_commit() {
     });
     assert!(a_done.is_ok(), "{a_done:?}");
     assert!(
-        b_done.as_ref().is_err_and(adtb::Error::is_serialization),
+        matches!(
+            b_done,
+            Err(v1_3::Error::Retry {
+                reason: RetryReason::Serialization { .. }
+            })
+        ),
         "the second plan of session 1 fails to serialize: {b_done:?}"
     );
     let numbers = app
         .adhoc(&format!(
             "from s in sessions where s.campaign == {} select s.number",
-            w.campaign
+            key(&w.campaign)
         ))
         .expect("the sessions");
     assert_eq!(vec!["1"], numbers);
 }
 
+/// Returns the quest log of campaign `c`.
+fn quest_log(app: &Current, c: &Key<Campaigns>) -> Vec<v1_3::QuestLogRow> {
+    all(app.call(v1_3::quest_log, (c.clone(),)))
+}
+
 #[test]
 fn release_1_3_shelves_a_quest_over_release_1_1() {
     let path = scratch("shelve");
-    let app = App::at(path.clone(), 2);
-    let w = world(&app);
-    app.db.close().expect("close");
-    let app = App::at(path, 4);
+    let old = App::at(path.clone(), 1, &v1_0::BUNDLE);
+    let w = world_1_0(&old);
+    old.db.close().expect("close");
+    migrate(path.clone(), 2);
+    let app = App::at(path, 4, &v1_3::BUNDLE);
     let s = live_session(&app, &w);
-    let q = app.one(
-        "add_quest",
-        &[
-            &w.campaign,
-            &text("Find the heir"),
-            &text(""),
-            "None",
-            "None",
-        ],
+    let q: Key<Quests> = app
+        .call(
+            v1_3::add_quest,
+            (
+                w.campaign.clone(),
+                "Find the heir".into(),
+                String::new(),
+                None,
+                None,
+            ),
+        )
+        .value;
+    app.call(v1_3::take_quest, (q.clone(), s.clone()));
+    app.call(v1_3::shelve_quest, (q.clone(), "winter".into()));
+    assert_eq!(
+        vec![v1_3::QuestLogRow::Aside {
+            id: q.clone(),
+            reason: "winter".into(),
+            since: 1,
+            title: "Find the heir".into()
+        }],
+        quest_log(&app, &w.campaign)
     );
-    app.ok("take_quest", &[&q, &s]);
-    let shelved = app.adhoc(&format!(
-        "update x in quests.Active where key x == {q} set Shelved {{ taken_in: x.taken_in, reason: \"winter\" }}"
-    ));
-    assert!(shelved.is_ok(), "{shelved:?}");
-    let abandoned = app.adhoc(&format!(
-        "update x in quests.Shelved where key x == {q} set Abandoned {{ closed_in: x.taken_in, reason: \"heir died\" }}"
-    ));
-    assert!(abandoned.is_ok(), "{abandoned:?}");
+    app.call(v1_3::abandon_quest, (q.clone(), s, "heir died".into()));
+    assert_eq!(
+        vec![v1_3::QuestLogRow::Dropped {
+            closed: 1,
+            id: q.clone(),
+            reason: "heir died".into(),
+            title: "Find the heir".into()
+        }],
+        quest_log(&app, &w.campaign)
+    );
     let reopened = app.adhoc(&format!(
-        "update x in quests.Abandoned where key x == {q} set Shelved {{ taken_in: x.closed_in, reason: \"\" }}"
+        "update x in quests.Abandoned where key x == {} set Shelved {{ taken_in: x.closed_in, reason: \"\" }}",
+        key(&q)
     ));
     assert!(
-        format!("{reopened:?}").contains("closed_quests_stay_closed"),
+        adhoc_violates(&reopened, "closed_quests_stay_closed"),
         "an abandoned quest joins the closed set: {reopened:?}"
     );
 }
 
 #[test]
+fn release_1_3_calls_through_its_bundle_over_a_release_1_0_file() {
+    let path = scratch("reopen");
+    let old = App::at(path.clone(), 1, &v1_0::BUNDLE);
+    let w = world_1_0(&old);
+    old.call(
+        v1_0::write_entity,
+        (
+            carry(w.warden.clone()),
+            "Holds the pass".into(),
+            "She keeps [[Greyhold]].".into(),
+            String::new(),
+            vec![carry(w.keep.clone())],
+            Vec::new(),
+        ),
+    );
+    old.call(
+        v1_0::reveal,
+        (carry(w.party.clone()), carry(w.keep.clone()), None),
+    );
+    old.db.close().expect("close");
+
+    let app = App::at(path, MIGRATIONS.len(), &v1_3::BUNDLE);
+    let superseded = app.db.bundle(&v1_0::BUNDLE).map(drop);
+    assert!(
+        matches!(
+            superseded,
+            Err(v1_0::Error::Rejected {
+                reason: RejectReason::BundleSuperseded { .. }
+            })
+        ),
+        "the 1.3 open supersedes the 1.0 bundle: {superseded:?}"
+    );
+    let found = one(app.call(v1_3::lookup, (w.campaign.clone(), "Greyhold".into())));
+    assert_eq!(
+        (w.keep.clone(), "Settlement"),
+        (found.id, found.kind.as_str()),
+        "a town of 1.0 is a settlement"
+    );
+    assert_eq!(
+        vec![v1_3::KnownEntitiesRow::Place {
+            id: w.keep.clone(),
+            name: "Greyhold".into(),
+            summary: "A keep on the pass".into()
+        }],
+        all(app.call(v1_3::known_entities, (w.party.clone(),))),
+        "a discovery of 1.0 survives"
+    );
+    let page = one(app.call(v1_3::entity_page, (w.warden.clone(),)));
+    let mentions: Vec<&str> = page.mentions.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(vec!["Greyhold"], mentions);
+
+    let map = app
+        .call(
+            v1_3::add_map,
+            (
+                w.campaign.clone(),
+                "The pass".into(),
+                "pass.png".into(),
+                800,
+                600,
+            ),
+        )
+        .value;
+    let pin = app
+        .call(v1_3::pin_entity, (map.clone(), 120, 340, w.keep.clone()))
+        .value;
+    let off = app.try_call(
+        v1_3::add_marker,
+        (map.clone(), 900, 10, "Off the edge".into()),
+    );
+    assert!(violates(&off, "pin_inside_map"), "{off:?}");
+    let view = one(app.call(v1_3::map_view, (map.clone(),)));
+    assert_eq!(
+        vec![v1_3::MapViewRowPins::OnEntity {
+            entity: w.keep.clone(),
+            id: pin,
+            name: "Greyhold".into(),
+            x: 120,
+            y: 340
+        }],
+        view.pins
+    );
+    app.call(v1_3::reveal_map, (w.party.clone(), map.clone(), None));
+    let known: Vec<_> = all(app.call(v1_3::known_maps, (w.party.clone(),)))
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+    assert_eq!(vec![map], known);
+
+    let lantern = app
+        .call(
+            v1_3::add_item,
+            (
+                w.campaign.clone(),
+                "Storm lantern".into(),
+                String::new(),
+                Some(w.warden.clone()),
+            ),
+        )
+        .value;
+    let found = one(app.call(v1_3::lookup, (w.campaign, "storm".into())));
+    assert_eq!((lantern, "Item"), (found.id, found.kind.as_str()));
+}
+
+#[test]
 fn release_1_2_opens() {
-    App::open("opens-1-2", 3);
+    open_db(scratch("opens-1-2"), 3, Vec::new());
 }
 
 #[test]
 fn release_1_3_opens() {
-    App::open("opens-1-3", 4);
+    let app = Current::open("opens-1-3");
+    assert!(all(app.call(v1_3::campaigns, ())).is_empty());
+}
+
+/// A world built at release 1.0, with a realm and a site under its keep, and a second
+/// campaign, carried through release 1.1.
+struct Located {
+    w: World,
+    gate: Key<Entities>,
+    other: Key<Campaigns>,
+}
+
+/// Build a [`Located`] world at release 1.0 at `path`, then migrate the file to release 1.1.
+fn located_over_release_1_1(path: PathBuf) -> Located {
+    let app = App::at(path.clone(), 1, &v1_0::BUNDLE);
+    let w = world_1_0(&app);
+    let location = |name: &str, summary: &str, parent: Option<&Key<Entities>>, scale| {
+        app.call(
+            v1_0::add_location,
+            (
+                carry(w.campaign.clone()),
+                name.into(),
+                summary.into(),
+                parent.map(|p| carry(p.clone())),
+                scale,
+            ),
+        )
+        .value
+    };
+    location("Vael", "The old empire", None, v1_0::Scale::Realm);
+    let gate = location(
+        "The Gate",
+        "Under the keep",
+        Some(&w.keep),
+        v1_0::Scale::Spot,
+    );
+    let other = app
+        .call(
+            v1_0::new_campaign,
+            ("Salt Roads".into(), "Caravans".into(), "The Drovers".into()),
+        )
+        .value;
+    app.db.close().expect("close");
+    migrate(path, 2);
+    Located {
+        w,
+        gate: carry(gate),
+        other: carry(other),
+    }
 }
 
 /// Returns the names of the rows of `scope`, sorted.
-fn names(app: &App, scope: &str) -> Vec<String> {
-    let mut out = app
-        .adhoc(&format!("from e in {scope} select e.name"))
+fn names(db: &Database, scope: &str) -> Vec<String> {
+    let mut out = adhoc(db, &format!("from e in {scope} select e.name"), &[])
         .unwrap_or_else(|e| panic!("{scope}: {e:?}"));
     out.sort();
     out
 }
 
-/// Build `w` and a realm and a site under its keep at release 1.1, then reopen the database
-/// at the first `n` migrations. Returns the site's key.
-fn located_over_release_1_1(path: PathBuf, n: usize) -> (App, World, String) {
-    let app = App::at(path.clone(), 2);
-    let w = world(&app);
-    app.one(
-        "add_location",
-        &[
-            &w.campaign,
-            &text("Vael"),
-            &text("The old empire"),
-            "None",
-            "Realm",
-        ],
-    );
-    let gate = app.one(
-        "add_location",
-        &[
-            &w.campaign,
-            &text("The Gate"),
-            &text("Under the keep"),
-            &some(&w.keep),
-            "Spot",
-        ],
-    );
-    app.db.close().expect("close");
-    (App::at(path, n), w, gate)
-}
-
 #[test]
 fn release_1_2_routes_locations_by_scale_over_release_1_1() {
-    let (app, w, gate) = located_over_release_1_1(scratch("split"), 3);
-    assert_eq!(vec![text("Vael")], names(&app, "entities.Region"));
-    assert_eq!(vec![text("Greyhold")], names(&app, "entities.Settlement"));
-    assert_eq!(vec![text("The Gate")], names(&app, "entities.Site"));
-    let parent = app
-        .adhoc(&format!(
-            "from s in entities.Site where key s == {gate} select s.parent"
-        ))
-        .expect("the site's parent");
-    assert_eq!(vec![some(&w.keep)], parent);
-    let location = app
-        .adhoc(&format!(
+    let path = scratch("split");
+    let Located { w, gate, .. } = located_over_release_1_1(path.clone());
+    let db = open_db(path, 3, Vec::new());
+    assert_eq!(vec![text("Vael")], names(&db, "entities.Region"));
+    assert_eq!(vec![text("Greyhold")], names(&db, "entities.Settlement"));
+    assert_eq!(vec![text("The Gate")], names(&db, "entities.Site"));
+    let parent = adhoc(
+        &db,
+        &format!(
+            "from s in entities.Site where key s == {} select s.parent",
+            key(&gate)
+        ),
+        &[],
+    );
+    assert_eq!(
+        vec![some(&key(&w.keep))],
+        parent.expect("the site's parent")
+    );
+    let location = adhoc(
+        &db,
+        &format!(
             "from n in entities.Npc where key n == {} select n.location",
-            w.warden
-        ))
-        .expect("the warden's location");
-    assert_eq!(vec![some(&w.keep)], location);
+            key(&w.warden)
+        ),
+        &[],
+    );
+    assert_eq!(
+        vec![some(&key(&w.keep))],
+        location.expect("the warden's location")
+    );
 }
 
 #[test]
 fn release_1_3_routes_locations_by_scale_over_release_1_1() {
-    let (app, _, _) = located_over_release_1_1(scratch("split-1-3"), 4);
-    assert_eq!(vec![text("Vael")], names(&app, "entities.Region"));
-    assert_eq!(vec![text("Greyhold")], names(&app, "entities.Settlement"));
-    assert_eq!(vec![text("The Gate")], names(&app, "entities.Site"));
+    let path = scratch("split-1-3");
+    let Located { w, gate, .. } = located_over_release_1_1(path.clone());
+    migrate(path.clone(), 3);
+    let app = App::at(path, 4, &v1_3::BUNDLE);
+    let kinds = |q: &str| -> Vec<(String, String)> {
+        all(app.call(v1_3::lookup, (w.campaign.clone(), q.into())))
+            .into_iter()
+            .map(|r| (r.name, r.kind))
+            .collect()
+    };
+    assert_eq!(vec![("Vael".into(), "Region".into())], kinds("Vael"));
+    assert_eq!(
+        vec![("Greyhold".into(), "Settlement".into())],
+        kinds("Greyhold")
+    );
+    assert_eq!(vec![("The Gate".into(), "Site".into())], kinds("Gate"));
+    let page = one(app.call(v1_3::entity_page, (gate,)));
+    assert_eq!("Site", page.kind);
 }
 
 #[test]
 fn a_split_location_and_its_parent_stay_in_one_campaign() {
-    let (app, w, _) = located_over_release_1_1(scratch("split-parent"), 3);
-    let other = app.one(
-        "new_campaign",
-        &[&text("Salt Roads"), &text("Caravans"), &text("The Drovers")],
-    );
-    let stray = app.adhoc_with(
+    let path = scratch("split-parent");
+    let Located { w, other, .. } = located_over_release_1_1(path.clone());
+    let db = open_db(path, 3, Vec::new());
+    let stray = adhoc(
+        &db,
         &format!(
-            "insert entities.Site {{ campaign: {other}, name: \"Waystone\", parent: parent }}"
+            "insert entities.Site {{ campaign: {}, name: \"Waystone\", parent: parent }}",
+            key(&other)
         ),
         &[(
             "parent",
             "Option (Key entities.(Region | Settlement | Site))",
-            &some(&w.keep),
+            &some(&key(&w.keep)),
         )],
     );
     assert!(
-        format!("{stray:?}").contains("location_parent_in_campaign"),
+        adhoc_violates(&stray, "location_parent_in_campaign"),
         "{stray:?}"
     );
-    let moved = app.adhoc(&format!(
-        "update x in entities.Settlement where key x == {} set Settlement {{ x with campaign: {other} }}",
-        w.keep
-    ));
+    let moved = adhoc(
+        &db,
+        &format!(
+            "update x in entities.Settlement where key x == {} set Settlement {{ x with campaign: {} }}",
+            key(&w.keep),
+            key(&other)
+        ),
+        &[],
+    );
     assert!(
-        format!("{moved:?}").contains("location_parent_in_campaign"),
+        adhoc_violates(&moved, "location_parent_in_campaign"),
         "the gate under the keep stays in the first campaign: {moved:?}"
     );
 }

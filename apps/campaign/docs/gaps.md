@@ -233,14 +233,20 @@ it.
 
 ## In-process API
 
-### No bundles, calls or feeds
+### No feeds
 
-`Database::open` takes a path, a log and options. It takes no bundles,
-and there is no `Database::bundle`, `Bundle::call` or
-`Bundle::subscribe`. The spec has all three (embedding.md §2.1, §3,
-§4.1, §4.4). The engine is pre-alpha and this is known; the tests run
-each bundle body as ad hoc text with typed parameters.
+`Database::open` takes the bundle as a registration, `Database::bundle`
+binds it, and the tests call every query and transaction through the
+code `adtb-codegen` generates from the bundle file. There is still no
+`Bundle::subscribe` (embedding.md §4.4); the app needs none (design.md
+§8.3).
 
+A bundle pinned earlier than the file's version is refused
+`Untranslatable` until version translation lands. The app ships bundles
+for 1.0 and 1.3 only, so the tests that stop at releases 1.1 and 1.2
+check those files with ad hoc text.
+
+Before the port, the tests ran each bundle body as ad hoc text.
 Running a registered query as ad hoc text is not the same as calling
 it. Ad hoc text has no signature, so arms are not checked against the
 declared result: `known_entities` built `Person { id: key n, ... }` in
@@ -282,17 +288,20 @@ Not faults. Each costs the application code the spec could save it.
 
 ## Failing tests
 
-As of 2026-10-26, with `cargo nextest run` in `apps/campaign`: 25 of 25
+As of 2026-10-27, with `cargo nextest run` in `apps/campaign`: 27 of 27
 tests pass. No test fails.
 
 The schema file checks, is the fold of migration 0001 and replays as a
 first migration; releases 1.1 to 1.3 apply in the front end; all 50
-registered queries and transactions check at version 1; and in the
+registered queries and transactions of the 1.0 bundle check at
+version 1 and all 63 of the 1.3 bundle at version 4; and in the
 engine both constraints are admitted, every release opens fresh,
 1.1 upgrades 1.0 rows, 1.2 and 1.3 route 1.1 locations by scale and
 keep a split location's parent in its campaign, and the app runs prep,
 discovery, an encounter, a death, a closed quest, a shelved quest and
-two colliding planners as the design describes.
+two colliding planners as the design describes, every call through
+generated code; release 1.3 reopens a 1.0 file, supersedes the 1.0
+bundle and calls its own.
 
 With admission and migration text fixed, the app could now restore the
 match-scoped `discovery_in_campaign` constraint and the path forms it

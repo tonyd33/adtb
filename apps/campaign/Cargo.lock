@@ -20,6 +20,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "adtb-codegen"
+version = "0.1.0"
+dependencies = [
+ "adtb-lang",
+]
+
+[[package]]
 name = "adtb-file"
 version = "0.1.0"
 dependencies = [
@@ -88,6 +95,7 @@ name = "campaign"
 version = "0.1.0"
 dependencies = [
  "adtb",
+ "adtb-codegen",
  "adtb-lang",
 ]
 

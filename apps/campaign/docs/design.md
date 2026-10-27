@@ -13,8 +13,9 @@ database file, which holds every campaign the GM runs.
 
 The schema is `schema/campaign.adt` (release 1.0, as a schema file) and
 `schema/migrations/` (the operator log). The registered queries and
-transactions are `bundles/campaign-1.0.adb`. What adtb does not yet do
-for it is in `gaps.md`.
+transactions are `bundles/campaign-1.3.adb`, pinned at version 4;
+`bundles/campaign-1.0.adb` is release 1.0's, pinned at version 1. What
+adtb does not yet do for it is in `gaps.md`.
 
 ## 1. What it is for
 
@@ -388,27 +389,31 @@ registers the bundle. A file from an older release is upgraded on
 first open; the release's own older bundle is superseded by that open,
 so it holds back none of the release's `enable` operators.
 
-Until the in-process API takes bundles, the app sends each registered
-query and transaction's body as ad hoc text with typed parameters,
-exactly as `tests/engine.rs` does. The bundle file stays the source of
-truth, so switching to registered calls changes no query.
+`build.rs` runs `adtb-codegen` over the log and both bundle files. The
+library holds what it generates: module `schema` with the host types
+of release 1.3, and modules `v1_0` and `v1_3` with each bundle's
+`BUNDLE`, error type and one value per query and transaction. The app
+opens with `v1_3::BUNDLE.registration()`, binds it with
+`Database::bundle`, and calls `bundle.call(v1_3::lookup, (c, q), &opts)`,
+getting typed rows back; `tests/engine.rs` does exactly this.
 
 ### 9.2 Registered queries and transactions
 
-All in `bundles/campaign-1.0.adb`.
+All in `bundles/campaign-1.3.adb`.
 
 | Screen | Queries | Transactions |
 | --- | --- | --- |
 | Campaigns | `campaigns` | `new_campaign` |
-| Campaign home and search | `lookup`, `quest_log` | `add_npc`, `add_location`, `add_faction`, `add_party` |
+| Campaign home and search | `lookup`, `quest_log` | `add_npc`, `add_region`, `add_settlement`, `add_site`, `add_faction`, `add_party`, `add_item`, `give_item` |
 | Entity page | `entity_page` | `write_entity`, `rename`, `join`, `leave`, `reveal`, `forget` |
 | Session prep | `session_board`, `roster` | `plan_session`, `write_prep`, `add_encounter`, `add_cast`, `add_extra` |
 | Live view | `live_session`, `tracker`, `roster` | `start_session`, `start_encounter`, `next_turn`, `join_fight`, `leave_fight`, `set_standing`, `kill`, `end_encounter`, `end_session`, `reveal`, `reveal_quest` |
-| Quests | `quest_log` | `add_quest`, `take_quest`, `close_quest`, `reveal_quest` |
+| Quests | `quest_log` | `add_quest`, `take_quest`, `shelve_quest`, `resume_quest`, `close_quest`, `abandon_quest`, `reveal_quest` |
+| Maps | `map_view` | `add_map`, `pin_entity`, `add_marker`, `reveal_map` |
 | Timeline | `timeline` | `log_backstory`, `log_in_play` |
 | Notes | | `write_note` |
 | Seats | `seat` | `seat_player`, `unseat` |
-| Player pages | `known_entities`, `known_entity`, `party_quests`, `party_timeline`, `recaps`, `party_encounter` | none |
+| Player pages | `known_entities`, `known_entity`, `party_quests`, `party_timeline`, `recaps`, `party_encounter`, `known_maps` | none |
 
 Every GM action is one registered transaction, so each is one
 statement: one change set, checked against every constraint at its

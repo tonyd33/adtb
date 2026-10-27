@@ -1,4 +1,4 @@
-//! The schema, the migrations and the bundle, checked by adtb's front end.
+//! The schema, the migrations and the bundles, checked by adtb's front end.
 
 use adtb_lang::ast::{BundleItem, Decl};
 use adtb_lang::check::{check_query, check_schema, check_txn};
@@ -7,7 +7,7 @@ use adtb_lang::lex::{Tok, lex};
 use adtb_lang::parse::{Options, parse_bundle, parse_migration, parse_schema};
 use adtb_lang::schema::build;
 use adtb_lang::span::{Diag, FileDiag, FileId};
-use campaign::{BUNDLE, MIGRATIONS, MODULE, SCHEMA};
+use campaign::{BUNDLE, BUNDLE_1_0, MIGRATIONS, MODULE, SCHEMA};
 
 fn rendered(src: &str, ds: &[Diag]) -> String {
     ds.iter()
@@ -186,22 +186,38 @@ fn release_1_3_adds_quest_states() {
     assert_eq!(4, version(4).version);
 }
 
+/// The bundle of each release, with the version it pins.
+const BUNDLES: [(&str, usize); 2] = [(BUNDLE_1_0, 1), (BUNDLE, 4)];
+
 #[test]
-fn the_bundle_parses() {
-    if let Err(ds) = parse_bundle(BUNDLE, Options::default()).ok() {
-        panic!("{}", rendered(BUNDLE, &ds));
+fn every_bundle_parses() {
+    for (text, _) in BUNDLES {
+        if let Err(ds) = parse_bundle(text, Options::default()).ok() {
+            panic!("{}", rendered(text, &ds));
+        }
     }
 }
 
 #[test]
 fn every_query_and_transaction_checks_at_its_pin() {
-    let bundle = parse_bundle(BUNDLE, Options::default())
+    for (text, pin) in BUNDLES {
+        checks_at(text, pin);
+    }
+}
+
+/// Assert that every query and transaction of bundle `text` checks at version `pin`.
+fn checks_at(text: &str, pin: usize) {
+    let bundle = parse_bundle(text, Options::default())
         .ok()
-        .unwrap_or_else(|ds| panic!("{}", rendered(BUNDLE, &ds)));
-    let v1 = version(1);
-    let (schema, program) = v1
+        .unwrap_or_else(|ds| panic!("{}", rendered(text, &ds)));
+    assert_eq!(
+        pin,
+        usize::try_from(bundle.header.pins.number).expect("a small version")
+    );
+    let at = version(pin);
+    let (schema, program) = at
         .check()
-        .unwrap_or_else(|ds| panic!("{}", in_files(&v1, &ds)));
+        .unwrap_or_else(|ds| panic!("{}", in_files(&at, &ds)));
     let module = schema.module_named(MODULE).expect("the module");
     let mut failures = Vec::new();
     let mut checked = 0;
@@ -219,12 +235,12 @@ fn every_query_and_transaction_checks_at_its_pin() {
         };
         checked += 1;
         if let Err(d) = got {
-            failures.push(format!("{name}: {}", d.render(BUNDLE)));
+            failures.push(format!("{name}: {}", d.render(text)));
         }
     }
     assert!(
         failures.is_empty(),
-        "{} of {checked} fail:\n{}",
+        "{} of {checked} at version {pin} fail:\n{}",
         failures.len(),
         failures.join("\n")
     );
