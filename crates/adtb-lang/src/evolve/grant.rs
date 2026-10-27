@@ -36,6 +36,43 @@ pub enum GrantSel {
     Set(u64),
 }
 
+/// What a role holds of a privilege: its place among the grants and its grant option, `None`
+/// when it holds nothing.
+#[derive(Clone, Debug)]
+pub(super) struct HeldGrant {
+    pub(super) role: String,
+    pub(super) privilege: Granted,
+    pub(super) held: Option<(usize, bool)>,
+}
+
+impl Source {
+    /// Set what each role of `back` holds of its privilege to what it states, putting a grant
+    /// it lacks back at its place.
+    pub(super) fn hold(&mut self, back: Vec<HeldGrant>) {
+        for h in back {
+            let at = self
+                .grants
+                .iter()
+                .position(|x| x.role == h.role && x.privilege == h.privilege);
+            match (at, h.held) {
+                (Some(i), Some((_, grant_option))) => self.grants[i].grant_option = grant_option,
+                (Some(i), None) => {
+                    self.grants.remove(i);
+                }
+                (None, Some((i, grant_option))) => self.grants.insert(
+                    i.min(self.grants.len()),
+                    LogGrant {
+                        role: h.role,
+                        privilege: h.privilege,
+                        grant_option,
+                    },
+                ),
+                (None, None) => {}
+            }
+        }
+    }
+}
+
 impl Cx<'_> {
     /// Adds each privilege to the role's log grants, keeping one entry per privilege.
     pub(super) fn grant(&mut self, g: &ast::Grant) -> R<()> {
@@ -75,14 +112,8 @@ impl Cx<'_> {
         let target = |r: &ast::RelationRef,
                       fields: Option<&[ast::Ident]>|
          -> R<(GrantTarget, Option<Vec<u64>>)> {
-            let rel = match crate::resolve::lookup_value(&schema, &vis, &r.relation) {
-                Ok(ValueDef::Relation(rel)) => rel,
-                Ok(_) => {
-                    return self.err_at(
-                        r.span,
-                        format!("`{}` is not a relation", r.relation.name.text),
-                    );
-                }
+            let rel = match crate::resolve::lookup_relation(&schema, &vis, &r.relation) {
+                Ok(rel) => rel,
                 Err(e) => return self.err_at(r.span, e),
             };
             let rd = schema.relation(rel);
@@ -141,6 +172,8 @@ impl Cx<'_> {
                         }
                         out.extend(found);
                     }
+                    out.sort_unstable();
+                    out.dedup();
                     Some(out)
                 }
             };

@@ -25,7 +25,13 @@ catalog_id!(
     /// The catalog id of a field.
     CatFieldId,
     /// The catalog id of a type.
-    CatTypeId
+    CatTypeId,
+    /// The catalog id of a constraint or a check.
+    CatConstraintId,
+    /// The catalog id of a unique or an index.
+    CatIndexId,
+    /// The catalog id of a named constructor set.
+    CatSetId
 );
 
 impl CatCtorId {

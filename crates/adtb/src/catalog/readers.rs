@@ -2,13 +2,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use adtb_lang::ast::{CtorTarget, MigrationFile, OperatorKind, QName};
-use adtb_lang::evolve::Source;
-use adtb_lang::parse::{Options, parse_migration};
+use adtb_lang::ast::{Ident, MigrationFile, Operator, OperatorKind, QName};
+use adtb_lang::evolve::{Kept, Source};
 use adtb_lang::schema::{Schema, Stage, TypeDefKind, ValueDef};
+use adtb_lang::span::{Diag, Span};
 use adtb_lang::types::{RelId, Ty, TypeId};
 
-use super::{Catalog, Checked, Error, targeted};
+use super::ids::{
+    CatConstraintId, CatCtorId, CatFieldId, CatIndexId, CatRelId, CatSetId, ctor_id, ctor_index,
+    rel_id, relation,
+};
+use super::{Catalog, Checked, Error, ctor_count};
 
 /// A live reader of the database: a bundle with its feeds and registered change consumers, at
 /// the version it is pinned to.
@@ -57,18 +61,18 @@ pub struct PendingDrop {
 struct Pinned {
     version: u64,
     hides_new: bool,
-    whole: BTreeSet<u64>,
-    references: Vec<(u64, Option<u64>)>,
-    fields: BTreeSet<u64>,
-    writes: BTreeSet<(u64, u64)>,
+    whole: BTreeSet<CatRelId>,
+    references: Vec<(CatRelId, Option<CatSetId>)>,
+    fields: BTreeSet<CatFieldId>,
+    writes: BTreeSet<(CatRelId, CatCtorId)>,
     /// The constructors that exist at `version`.
-    ctors: BTreeSet<u64>,
+    ctors: BTreeSet<CatCtorId>,
     /// The constraints and checks that exist at `version`.
-    constraints: BTreeSet<u64>,
+    constraints: BTreeSet<CatConstraintId>,
     /// The uniques that exist at `version`.
-    uniques: BTreeSet<u64>,
+    uniques: BTreeSet<CatIndexId>,
     /// The relations that exist at `version`.
-    relations: BTreeSet<u64>,
+    relations: BTreeSet<CatRelId>,
 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +87,100 @@ struct Pending {
 impl Pending {
     fn object(&self) -> String {
         format!("{}::{}", self.module, self.name)
+    }
+
+    fn kept(&self) -> Kept {
+        Kept {
+            module: self.module.clone(),
+            name: self.name.clone(),
+            check: self.check,
+        }
+    }
+}
+
+/// A constraint, or a check when `check`, that a step of a migration drops.
+#[derive(Clone, Debug)]
+struct Dropped {
+    id: CatConstraintId,
+    module: String,
+    name: String,
+    check: bool,
+}
+
+/// What the steps of a migration do to write states and constraints, by catalog id.
+#[derive(Debug, Default)]
+struct Changes {
+    /// The constructor relations a step makes writable.
+    enabled: BTreeSet<(CatRelId, CatCtorId)>,
+    /// The value-level constructors a step makes writable.
+    value_enabled: BTreeSet<CatCtorId>,
+    /// The constructor relations a step stops writes into, with the operator that does so.
+    stopped: BTreeSet<(CatRelId, CatCtorId, &'static str)>,
+    dropped: Vec<Dropped>,
+}
+
+impl Changes {
+    /// Record what the step from `a` to `b` changes.
+    fn add(&mut self, a: &Schema, b: &Schema) {
+        for &r in b.ids.relations.keys() {
+            let rid = rel_id(b, r);
+            let Some(was) = relation(a, rid) else {
+                continue;
+            };
+            for c in 0..ctor_count(b, r) {
+                let cid = ctor_id(b, r, c);
+                let Some(k) = ctor_index(a, was, cid) else {
+                    continue;
+                };
+                match (a.stage(was, k), b.stage(r, c)) {
+                    (Stage::Enabled, Stage::Deprecated) => {
+                        self.stopped.insert((rid, cid, "deprecate"));
+                    }
+                    (Stage::Enabled, Stage::Declared) => {
+                        self.stopped.insert((rid, cid, "disable"));
+                    }
+                    (Stage::Declared | Stage::Deprecated, Stage::Enabled) => {
+                        self.enabled.insert((rid, cid));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let was: BTreeMap<u64, (TypeId, u32)> =
+            a.ids.ctors.iter().map(|(&at, &id)| (id, at)).collect();
+        for (&(def, c), &id) in &b.ids.ctors {
+            if let Some(&(d, k)) = was.get(&id)
+                && a.value_stage(d, k) != Stage::Enabled
+                && b.value_stage(def, c) == Stage::Enabled
+            {
+                self.value_enabled.insert(CatCtorId(id));
+            }
+        }
+        let kept: BTreeSet<u64> = b
+            .ids
+            .constraints
+            .values()
+            .chain(b.ids.checks.values())
+            .copied()
+            .collect();
+        let named = |m, name: &str, id, check| Dropped {
+            id: CatConstraintId(id),
+            module: a.module(m).name.clone(),
+            name: name.to_string(),
+            check,
+        };
+        for (&i, &id) in &a.ids.constraints {
+            if !kept.contains(&id) {
+                let c = &a.constraints[i];
+                self.dropped.push(named(c.module, &c.name, id, false));
+            }
+        }
+        for (&i, &id) in &a.ids.checks {
+            if !kept.contains(&id) {
+                let c = &a.checks[i];
+                self.dropped.push(named(c.module, &c.name, id, true));
+            }
+        }
     }
 }
 
@@ -133,28 +231,35 @@ impl Catalog {
     /// effect.
     ///
     /// Fails with [`Error::Refused`] when no reader of `bundle` is live, and with
-    /// [`Error::Internal`] when the schema without the drops that take effect does not check.
+    /// [`Error::Unchecked`] when the schema without the drops that take effect does not check.
     pub fn release(&mut self, bundle: &str) -> Result<(), Error> {
-        if self.readers.live.remove(bundle).is_none() {
+        if !self.readers.live.contains_key(bundle) {
             return Err(Error::Refused(vec![format!("bundle {bundle} is not live")]));
         }
-        let mut done = Vec::new();
-        for p in &mut self.readers.pending {
-            p.blocking.remove(bundle);
-        }
-        self.readers.pending.retain(|p| {
-            let held = !p.blocking.is_empty();
-            if !held {
-                done.push(p.clone());
+        let (done, pending): (Vec<Pending>, Vec<Pending>) = self
+            .readers
+            .pending
+            .iter()
+            .cloned()
+            .map(|mut p| {
+                p.blocking.remove(bundle);
+                p
+            })
+            .partition(|p| p.blocking.is_empty());
+        let enforced = match &self.readers.enforced {
+            Some(e) if !pending.is_empty() && !done.is_empty() => {
+                let source = without(&e.source, &done)?;
+                let built = checked(source).map_err(|ds| {
+                    Error::Unchecked("the schema without the released drops".to_string(), ds)
+                })?;
+                Some(Rc::new(built))
             }
-            held
-        });
-        if self.readers.pending.is_empty() {
-            self.readers.enforced = None;
-        } else if let Some(enforced) = &self.readers.enforced {
-            let source = without(&enforced.source, &done).map_err(Error::Internal)?;
-            self.readers.enforced = Some(Rc::new(checked(source).map_err(Error::Internal)?));
-        }
+            Some(e) if !pending.is_empty() => Some(Rc::clone(e)),
+            _ => None,
+        };
+        self.readers.live.remove(bundle);
+        self.readers.pending = pending;
+        self.readers.enforced = enforced;
         Ok(())
     }
 
@@ -180,11 +285,12 @@ impl Catalog {
         let p = pinned(&schema, reader).map_err(refused)?;
         let now = &self.schema;
         if !p.hides_new {
-            for (&r, &rid) in &now.ids.relations {
+            for &r in now.ids.relations.keys() {
+                let rid = rel_id(now, r);
                 let rel = now.relation(r);
                 for (c, ctor) in now.ty(rel.elem_def).ctors().iter().enumerate() {
                     let c = u32::try_from(c).expect("a sum has fewer than 2^32 constructors");
-                    let cid = now.ids.ctors[&(rel.elem_def, c)];
+                    let cid = ctor_id(now, r, c);
                     if p.ctors.contains(&cid) || now.stage(r, c) == Stage::Declared {
                         continue;
                     }
@@ -198,8 +304,8 @@ impl Catalog {
                 }
             }
         }
-        for (&(def, c), cid) in &now.ids.ctors {
-            if p.ctors.contains(cid) || now.value_stage(def, c) == Stage::Declared {
+        for (&(def, c), &cid) in &now.ids.ctors {
+            if p.ctors.contains(&CatCtorId(cid)) || now.value_stage(def, c) == Stage::Declared {
                 continue;
             }
             if read_fields(now, &p).any(|t| reaches(now, t, def, &mut BTreeSet::new())) {
@@ -236,25 +342,26 @@ impl Catalog {
         text: &str,
         next: &Checked,
     ) -> Result<Readers, Error> {
-        let module = file.module.text.as_str();
+        let changes = self.changes(file, text)?;
+        let now = &next.schema;
         let mut refused = Vec::new();
-        let mut held = Vec::new();
-        for op in &file.operators {
-            match &op.kind {
-                OperatorKind::Enable(t) => refused.extend(self.enabling(&next.schema, module, t)),
-                OperatorKind::Deprecate(t) => {
-                    refused.extend(self.writing(&next.schema, module, t, "deprecate"));
-                }
-                OperatorKind::Disable(t) => {
-                    refused.extend(self.writing(&next.schema, module, t, "disable"));
-                }
-                OperatorKind::DropConstraint(q) => held.extend(self.dropping(module, q, false)),
-                OperatorKind::DropCheck(q) => held.extend(self.dropping(module, q, true)),
-                _ => {}
+        for &(rid, cid) in &changes.enabled {
+            if let Some((r, c)) = ctor_of(now, rid, cid) {
+                refused.extend(self.enabling(now, r, c));
             }
         }
-        refused.extend(self.uniques_held(&next.schema));
-        refused.extend(self.rekeys_held(&next.schema));
+        for &cid in &changes.value_enabled {
+            if let Some((def, c)) = value_ctor(now, cid) {
+                refused.extend(self.enabling_value(now, def, c));
+            }
+        }
+        for &(rid, cid, verb) in &changes.stopped {
+            if let Some((r, c)) = ctor_of(now, rid, cid) {
+                refused.extend(self.writing(now, r, c, verb));
+            }
+        }
+        refused.extend(self.uniques_held(now));
+        refused.extend(self.rekeys_held(now));
         if !refused.is_empty() {
             return Err(Error::Refused(refused));
         }
@@ -263,8 +370,8 @@ impl Catalog {
             .pending
             .iter()
             .cloned()
-            .partition(|p| declares(&next.schema, p));
-        pending.extend(held.iter().cloned());
+            .partition(|p| declares(now, p));
+        pending.extend(changes.dropped.into_iter().filter_map(|d| self.dropping(d)));
         let mut readers = Readers {
             live: self.readers.live.clone(),
             pending,
@@ -274,29 +381,19 @@ impl Catalog {
             return Ok(readers);
         }
         let base = match self.readers.enforced() {
-            Some(e) => without(&e.source, &redeclared).map_err(Error::Internal)?,
+            Some(e) => without(&e.source, &redeclared)?,
             None => self.source.clone(),
         };
-        let mut filtered = file.clone();
-        filtered
-            .operators
-            .retain(|op| !drops_any(module, &op.kind, &held));
+        let kept: Vec<Kept> = readers.pending.iter().map(Pending::kept).collect();
         let objects: Vec<String> = readers.pending.iter().map(Pending::object).collect();
-        let source = base.migrate(&filtered, text).map_err(|r| {
-            Error::Refused(
-                super::reasons(r)
-                    .into_iter()
-                    .map(|w| format!("pending-dropped {} has no image: {w}", objects.join(", ")))
-                    .collect(),
-            )
-        })?;
-        let enforced = checked(source).map_err(|why| {
-            Error::Refused(vec![format!(
-                "pending-dropped {} has no image: {why}",
-                objects.join(", ")
-            )])
-        })?;
-        if enforced.schema.ids.relations != next.schema.ids.relations {
+        let no_image =
+            |why: &str| format!("pending-dropped {} has no image: {why}", objects.join(", "));
+        let source = base
+            .migrate_keeping(file, text, &kept)
+            .map_err(|r| Error::Refused(super::reasons(r).iter().map(|w| no_image(w)).collect()))?;
+        let enforced = checked(source)
+            .map_err(|ds| Error::Refused(ds.iter().map(|d| no_image(&d.message)).collect()))?;
+        if enforced.schema.ids.relations != now.ids.relations {
             return Err(Error::Internal(
                 "the schema keeping pending drops has the relations of the version".to_string(),
             ));
@@ -305,51 +402,75 @@ impl Catalog {
         Ok(readers)
     }
 
-    /// Returns why the live readers refuse `enable target` in a migration of `module` whose
-    /// result is `next`.
-    fn enabling(&self, next: &Schema, module: &str, target: &CtorTarget) -> Vec<String> {
-        let mut why = Vec::new();
-        for (r, c) in targeted(next, module, target) {
-            let rid = next.ids.relations[&r];
-            let rel = next.relation(r);
-            let cid = next.ids.ctors[&(rel.elem_def, c)];
-            let shown = format!(
-                "{}.{}",
-                rel.name,
-                next.ty(rel.elem_def).ctors()[c as usize].name
-            );
-            for (bundle, p) in self.blocking(cid) {
-                let reads = if p.whole.contains(&rid) {
-                    format!("reads {} whole", rel.name)
-                } else if p
-                    .references
-                    .iter()
-                    .any(|&(to, set)| to == rid && set.is_none_or(|s| in_set(next, r, s, c)))
-                {
-                    format!("follows a reference that admits {shown}")
-                } else {
+    /// Returns what the steps of `file`, the migration of `text`, do to write states and
+    /// constraints.
+    fn changes(&self, file: &MigrationFile, text: &str) -> Result<Changes, Error> {
+        let module = &file.module.text;
+        let mut at = self.source.clone();
+        at.version += 1;
+        at.expecting(module, &file.operators);
+        let mut before = self.schema.clone();
+        let mut changes = Changes::default();
+        for op in &file.operators {
+            let steps = at
+                .steps(module, op, text)
+                .map_err(|ds| Error::Refused(ds.into_iter().map(|d| d.message).collect()))?;
+            for step in steps {
+                let Ok(schema) = step.after.schema() else {
                     continue;
                 };
-                why.push(blocked(&format!("enable {shown}"), bundle, p, &reads));
+                changes.add(&before, &schema);
+                before = schema;
             }
         }
-        if let CtorTarget::Type(path) = target
-            && let Some(def) = type_named(next, module, &path.ty)
-            && let Some(c) = next.ty(def).ctor_index(&path.ctor.text)
-        {
-            let cid = next.ids.ctors[&(def, c)];
-            let ty = &next.ty(def).name;
-            let shown = format!("{ty}.{}", path.ctor.text);
-            for (bundle, p) in self
-                .readers
-                .live
+        Ok(changes)
+    }
+
+    /// Returns why the live readers refuse enabling constructor `c` of relation `r` in a
+    /// migration whose result is `next`.
+    fn enabling(&self, next: &Schema, r: RelId, c: u32) -> Vec<String> {
+        let rid = rel_id(next, r);
+        let rel = next.relation(r);
+        let cid = ctor_id(next, r, c);
+        let shown = format!(
+            "{}.{}",
+            rel.name,
+            next.ty(rel.elem_def).ctors()[c as usize].name
+        );
+        let mut why = Vec::new();
+        for (bundle, p) in self.blocking(cid) {
+            let reads = if p.whole.contains(&rid) {
+                format!("reads {} whole", rel.name)
+            } else if p
+                .references
                 .iter()
-                .filter(|(_, p)| !p.ctors.contains(&cid))
+                .any(|&(to, set)| to == rid && set.is_none_or(|s| in_set(next, r, s, c)))
             {
-                if read_fields(next, p).any(|t| reaches(next, t, def, &mut BTreeSet::new())) {
-                    let reads = format!("reads a field whose type reaches {ty}");
-                    why.push(blocked(&format!("enable {shown}"), bundle, p, &reads));
-                }
+                format!("follows a reference that admits {shown}")
+            } else {
+                continue;
+            };
+            why.push(blocked(&format!("enable {shown}"), bundle, p, &reads));
+        }
+        why
+    }
+
+    /// Returns why the live readers refuse enabling constructor `c` of type `def` in a migration
+    /// whose result is `next`.
+    fn enabling_value(&self, next: &Schema, def: TypeId, c: u32) -> Vec<String> {
+        let cid = CatCtorId(next.ids.ctors[&(def, c)]);
+        let ty = &next.ty(def).name;
+        let shown = format!("{ty}.{}", next.ty(def).ctors()[c as usize].name);
+        let mut why = Vec::new();
+        for (bundle, p) in self
+            .readers
+            .live
+            .iter()
+            .filter(|(_, p)| !p.ctors.contains(&cid))
+        {
+            if read_fields(next, p).any(|t| reaches(next, t, def, &mut BTreeSet::new())) {
+                let reads = format!("reads a field whose type reaches {ty}");
+                why.push(blocked(&format!("enable {shown}"), bundle, p, &reads));
             }
         }
         why
@@ -357,54 +478,50 @@ impl Catalog {
 
     /// Returns the live readers that can be blocked by constructor `cid`: those pinned at a
     /// version without it that do not hide new constructors.
-    fn blocking(&self, cid: u64) -> impl Iterator<Item = (&String, &Pinned)> {
+    fn blocking(&self, cid: CatCtorId) -> impl Iterator<Item = (&String, &Pinned)> {
         self.readers
             .live
             .iter()
             .filter(move |(_, p)| !p.hides_new && !p.ctors.contains(&cid))
     }
 
-    /// Returns why the live readers refuse `verb target`, a deprecate or disable in a migration
-    /// of `module` whose result is `next`: each bundle that can write into the constructor
-    /// relation.
-    fn writing(&self, next: &Schema, module: &str, target: &CtorTarget, verb: &str) -> Vec<String> {
-        let mut why = Vec::new();
-        for (r, c) in targeted(next, module, target) {
-            let rel = next.relation(r);
-            let id = (next.ids.relations[&r], next.ids.ctors[&(rel.elem_def, c)]);
-            let shown = format!(
-                "{}.{}",
-                rel.name,
-                next.ty(rel.elem_def).ctors()[c as usize].name
-            );
-            for (bundle, p) in &self.readers.live {
-                if p.writes.contains(&id) {
-                    why.push(format!(
-                        "`{verb} {shown}` is refused: bundle {bundle}, pinned at version {}, can write into {shown}",
-                        p.version
-                    ));
-                }
-            }
-        }
-        why
+    /// Returns why the live readers refuse `verb`, a deprecate or disable of constructor `c` of
+    /// relation `r` in a migration whose result is `next`: each bundle that can write into the
+    /// constructor relation.
+    fn writing(&self, next: &Schema, r: RelId, c: u32, verb: &str) -> Vec<String> {
+        let rel = next.relation(r);
+        let id = (rel_id(next, r), ctor_id(next, r, c));
+        let shown = format!(
+            "{}.{}",
+            rel.name,
+            next.ty(rel.elem_def).ctors()[c as usize].name
+        );
+        self.readers
+            .live
+            .iter()
+            .filter(|(_, p)| p.writes.contains(&id))
+            .map(|(bundle, p)| {
+                format!(
+                    "`{verb} {shown}` is refused: bundle {bundle}, pinned at version {}, can write into {shown}",
+                    p.version
+                )
+            })
+            .collect()
     }
 
-    /// Returns the pending drop of the constraint, or check when `check`, that `q` names in a
-    /// migration of `module`, when a live reader holds it.
-    fn dropping(&self, module: &str, q: &QName, check: bool) -> Option<Pending> {
-        let m = q.module.as_ref().map_or(module, |m| m.text.as_str());
-        let id = constraint_id(&self.schema, m, &q.name.text, check)?;
+    /// Returns the pending drop of `d` when a live reader holds it.
+    fn dropping(&self, d: Dropped) -> Option<Pending> {
         let blocking: BTreeSet<String> = self
             .readers
             .live
             .iter()
-            .filter(|(_, p)| p.constraints.contains(&id))
+            .filter(|(_, p)| p.constraints.contains(&d.id))
             .map(|(b, _)| b.clone())
             .collect();
         (!blocking.is_empty()).then(|| Pending {
-            module: m.to_string(),
-            name: q.name.text.clone(),
-            check,
+            module: d.module,
+            name: d.name,
+            check: d.check,
             dropped: self.source.version + 1,
             blocking,
         })
@@ -441,8 +558,9 @@ impl Catalog {
     /// rekey of a relation a reader's version holds: this engine holds no old key pending.
     fn rekeys_held(&self, next: &Schema) -> Vec<String> {
         let mut why = Vec::new();
-        for (&r, &id) in &self.schema.ids.relations {
-            let Some(after) = super::relation(next, super::CatRelId(id)) else {
+        for &r in self.schema.ids.relations.keys() {
+            let id = rel_id(&self.schema, r);
+            let Some(after) = relation(next, id) else {
                 continue;
             };
             let old = &self.schema.relation(r).key;
@@ -504,36 +622,41 @@ fn pinned(schema: &Schema, reader: &Reader) -> Result<Pinned, String> {
         references: Vec::new(),
         fields: BTreeSet::new(),
         writes: BTreeSet::new(),
-        ctors: schema.ids.ctors.values().copied().collect(),
+        ctors: schema.ids.ctors.values().map(|&id| CatCtorId(id)).collect(),
         constraints: schema
             .ids
             .constraints
             .values()
             .chain(schema.ids.checks.values())
-            .copied()
+            .map(|&id| CatConstraintId(id))
             .collect(),
         uniques: uniques(schema).into_keys().collect(),
-        relations: schema.ids.relations.values().copied().collect(),
+        relations: schema
+            .ids
+            .relations
+            .keys()
+            .map(|&r| rel_id(schema, r))
+            .collect(),
     };
     for read in &reader.reads {
         match read {
             Read::Relation(name) => {
                 let r = relation_named(schema, name)?;
-                p.whole.insert(schema.ids.relations[&r]);
+                p.whole.insert(rel_id(schema, r));
             }
             Read::Reference { relation, set } => {
                 let r = relation_named(schema, relation)?;
                 let set = match set {
-                    Some(s) => Some(
+                    Some(s) => Some(CatSetId(
                         *schema
                             .ids
                             .sets
                             .get(&(r, s.clone()))
                             .ok_or_else(|| format!("{relation} has no set {s}"))?,
-                    ),
+                    )),
                     None => None,
                 };
-                p.references.push((schema.ids.relations[&r], set));
+                p.references.push((rel_id(schema, r), set));
             }
             Read::Field { relation, field } => {
                 let r = relation_named(schema, relation)?;
@@ -545,7 +668,7 @@ fn pinned(schema: &Schema, reader: &Reader) -> Result<Pinned, String> {
                         .fields
                         .iter()
                         .filter(|((d, _, n), _)| *d == def && n == field)
-                        .map(|(_, &id)| id),
+                        .map(|(_, &id)| CatFieldId(id)),
                 );
                 if p.fields.len() == before {
                     return Err(format!("{relation} has no field {field}"));
@@ -555,13 +678,11 @@ fn pinned(schema: &Schema, reader: &Reader) -> Result<Pinned, String> {
     }
     for (relation, ctor) in &reader.writes {
         let r = relation_named(schema, relation)?;
-        let def = schema.relation(r).elem_def;
         let c = schema
-            .ty(def)
+            .ty(schema.relation(r).elem_def)
             .ctor_index(ctor)
             .ok_or_else(|| format!("{relation} has no constructor {ctor}"))?;
-        p.writes
-            .insert((schema.ids.relations[&r], schema.ids.ctors[&(def, c)]));
+        p.writes.insert((rel_id(schema, r), ctor_id(schema, r, c)));
     }
     Ok(p)
 }
@@ -586,12 +707,28 @@ pub(super) fn type_named(schema: &Schema, module: &str, q: &QName) -> Option<Typ
 }
 
 /// Returns whether named set `set` of relation `r` holds constructor `c`.
-fn in_set(schema: &Schema, r: RelId, set: u64, c: u32) -> bool {
+fn in_set(schema: &Schema, r: RelId, set: CatSetId, c: u32) -> bool {
     schema
         .relation(r)
         .sets
         .iter()
-        .any(|s| schema.ids.sets.get(&(r, s.name.clone())) == Some(&set) && s.ctors.contains(&c))
+        .any(|s| schema.ids.sets.get(&(r, s.name.clone())) == Some(&set.0) && s.ctors.contains(&c))
+}
+
+/// Returns the relation and constructor index of constructor relation `(rid, cid)` of `schema`.
+fn ctor_of(schema: &Schema, rid: CatRelId, cid: CatCtorId) -> Option<(RelId, u32)> {
+    let r = relation(schema, rid)?;
+    Some((r, ctor_index(schema, r, cid)?))
+}
+
+/// Returns the type and constructor index of constructor `cid` of `schema`.
+fn value_ctor(schema: &Schema, cid: CatCtorId) -> Option<(TypeId, u32)> {
+    schema
+        .ids
+        .ctors
+        .iter()
+        .find(|&(_, &id)| id == cid.0)
+        .map(|(&at, _)| at)
 }
 
 /// Returns the type, in `schema`, of each field `p` reads.
@@ -600,7 +737,7 @@ fn read_fields<'s>(schema: &'s Schema, p: &'s Pinned) -> impl Iterator<Item = &'
         .ids
         .fields
         .iter()
-        .filter(move |(_, id)| p.fields.contains(id))
+        .filter(move |&(_, &id)| p.fields.contains(&CatFieldId(id)))
         .filter_map(|((def, c, name), _)| field_type(schema, *def, *c, name))
 }
 
@@ -646,26 +783,8 @@ pub(super) fn reaches(schema: &Schema, ty: &Ty, def: TypeId, seen: &mut BTreeSet
     }
 }
 
-/// Returns the catalog id of constraint `name`, or check when `check`, of module `module`.
-fn constraint_id(schema: &Schema, module: &str, name: &str, check: bool) -> Option<u64> {
-    let m = schema.module_named(module)?;
-    if check {
-        let i = schema
-            .checks
-            .iter()
-            .position(|c| c.module == m && c.name == name)?;
-        schema.ids.checks.get(&i).copied()
-    } else {
-        let i = schema
-            .constraints
-            .iter()
-            .position(|c| c.module == m && c.name == name)?;
-        schema.ids.constraints.get(&i).copied()
-    }
-}
-
 /// Returns the catalog id of each unique of `schema`, with its relation and its clause.
-fn uniques(schema: &Schema) -> BTreeMap<u64, (RelId, String)> {
+fn uniques(schema: &Schema) -> BTreeMap<CatIndexId, (RelId, String)> {
     schema
         .ids
         .indexes
@@ -677,54 +796,65 @@ fn uniques(schema: &Schema) -> BTreeMap<u64, (RelId, String)> {
                 .iter()
                 .map(|e| super::field_path(e).unwrap_or_else(|| "..".to_string()))
                 .collect();
-            Some((id, (r, format!("unique ({})", fields.join(", ")))))
+            Some((
+                CatIndexId(id),
+                (r, format!("unique ({})", fields.join(", "))),
+            ))
         })
         .collect()
 }
 
 /// Returns whether `schema` declares the object of pending drop `p` again.
 fn declares(schema: &Schema, p: &Pending) -> bool {
-    constraint_id(schema, &p.module, &p.name, p.check).is_some()
-}
-
-/// Returns whether operator `kind` of a migration of `module` drops an object of `held`.
-fn drops_any(module: &str, kind: &OperatorKind, held: &[Pending]) -> bool {
-    let (q, check) = match kind {
-        OperatorKind::DropConstraint(q) => (q, false),
-        OperatorKind::DropCheck(q) => (q, true),
-        _ => return false,
-    };
-    let m = q.module.as_ref().map_or(module, |m| m.text.as_str());
-    held.iter()
-        .any(|p| p.check == check && p.module == m && p.name == q.name.text)
+    schema.module_named(&p.module).is_some_and(|m| {
+        if p.check {
+            schema
+                .checks
+                .iter()
+                .any(|c| c.module == m && c.name == p.name)
+        } else {
+            schema
+                .constraints
+                .iter()
+                .any(|c| c.module == m && c.name == p.name)
+        }
+    })
 }
 
 /// Returns `source` with the objects of `drops` dropped, at its own version and log.
-fn without(source: &Source, drops: &[Pending]) -> Result<Source, String> {
+///
+/// Fails with [`Error::Unchecked`] when a drop does not apply.
+fn without(source: &Source, drops: &[Pending]) -> Result<Source, Error> {
     let mut next = source.clone();
     for p in drops {
-        let what = if p.check { "check" } else { "constraint" };
-        let text = format!("module {}\ndrop {what} {}\n", p.module, p.name);
-        let file = parse_migration(&text, Options::default())
-            .ok()
-            .map_err(|ds| format!("`{text}` parses: {ds:?}"))?;
-        next = next
-            .migrate(&file, &text)
-            .map_err(|r| format!("`{text}` applies: {:?}", super::reasons(r)))?;
+        let ident = |text: &str| Ident {
+            text: text.to_string(),
+            span: Span::default(),
+        };
+        let name = QName {
+            module: Some(ident(&p.module)),
+            name: ident(&p.name),
+        };
+        let kind = if p.check {
+            OperatorKind::DropCheck(name)
+        } else {
+            OperatorKind::DropConstraint(name)
+        };
+        let op = Operator {
+            kind,
+            span: Span::default(),
+        };
+        next.apply(&p.module, &op, "")
+            .map_err(|ds| Error::Unchecked(format!("the drop of {}", p.object()), ds))?;
     }
-    next.version = source.version;
-    next.log.clone_from(&source.log);
     Ok(next)
 }
 
-/// Returns `source` checked.
-fn checked(source: Source) -> Result<Checked, String> {
-    let (schema, program) = source.check().map_err(|ds| {
-        format!(
-            "{:?}",
-            ds.into_iter().map(|d| d.diag.message).collect::<Vec<_>>()
-        )
-    })?;
+/// Returns `source` checked, or the checker's diagnostics.
+fn checked(source: Source) -> Result<Checked, Vec<Diag>> {
+    let (schema, program) = source
+        .check()
+        .map_err(|ds| ds.into_iter().map(|d| d.diag).collect::<Vec<_>>())?;
     Ok(Checked {
         source,
         schema,

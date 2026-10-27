@@ -1530,6 +1530,34 @@ fn feed(text: &str) -> Result<(RelId, CtorSet), String> {
 }
 
 #[test]
+fn a_feed_resolves_over_the_modules_its_bundle_sees() {
+    let auth = parse_schema(&source(""), Options::default())
+        .ok()
+        .expect("module auth parses");
+    let billing = parse_schema(
+        "module billing\ntype Payout = { id: Key payouts, cents: I64 }\nrelation payouts : Payout key id generate sequence\n",
+        Options::default(),
+    )
+    .ok()
+    .expect("module billing parses");
+    let s = build(&[(FileId(0), auth), (FileId(1), billing)])
+        .unwrap_or_else(|ds| panic!("the schema builds: {ds:?}"));
+    let items = parse_example("feed payout_changes of payouts", Options::default())
+        .ok()
+        .expect("parses");
+    let Some(ExampleItem::BundleItem(BundleItem::Feed(f))) = items.into_iter().next() else {
+        panic!("not a feed");
+    };
+    let module = |n: &str| s.module_named(n).expect("a module");
+    let vis = Visible {
+        modules: vec![module("auth"), module("billing")],
+    };
+    let (rel, _) = check_feed_in(&s, vis, &f).unwrap_or_else(|d| panic!("refused: {d:?}"));
+    assert_eq!("payouts", s.relation(rel).name);
+    assert!(check_feed(&s, module("auth"), &f).is_err());
+}
+
+#[test]
 fn a_feed_names_no_volatile_relation() {
     assert_eq!(
         Err("a feed must not name a volatile relation".to_string()),

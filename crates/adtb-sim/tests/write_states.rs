@@ -995,6 +995,110 @@ fn a_dropped_check_stays_pending_like_a_constraint() {
     });
 }
 
+const DISABLE_APPLE: &str = "module auth\ndisable identities.Apple\n";
+
+#[test]
+fn a_revert_that_enables_is_refused_while_a_reader_pinned_before_the_constructor_reads_it() {
+    let renamed =
+        "module auth\ndisable identities.Apple\nrename constructor Identity.Apple to Pear\n";
+    for (seed, last) in [(110, DISABLE_APPLE), (111, renamed)] {
+        let why = at_catalog(
+            seed,
+            &[AUTH, ADD_APPLE, ENABLE_APPLE, last],
+            |catalog, pager, txns| {
+                catalog
+                    .register(reader("web-1", 1, vec![whole("auth::identities")]))
+                    .expect("the reader registers");
+                let why = refused(catalog.migrate(pager, txns, "module auth\nrevert 0004\n"));
+                assert_eq!(4, catalog.source().version, "seed {seed}");
+                why.join("\n")
+            },
+        );
+        assert!(why.contains("web-1"), "seed {seed}: {why}");
+        assert!(why.contains("released"), "seed {seed}: {why}");
+    }
+}
+
+#[test]
+fn a_revert_that_disables_is_refused_while_a_live_bundle_can_write_into_the_constructor() {
+    let why = at_catalog(
+        112,
+        &[AUTH, ADD_APPLE, ENABLE_APPLE],
+        |catalog, pager, txns| {
+            catalog
+                .register(Reader {
+                    writes: vec![("auth::identities".to_string(), "Apple".to_string())],
+                    ..reader("app-3", 3, Vec::new())
+                })
+                .expect("the reader registers");
+            refused(catalog.migrate(pager, txns, "module auth\nrevert 0003\n")).join("\n")
+        },
+    );
+    assert!(why.contains("app-3"), "{why}");
+}
+
+#[test]
+fn a_revert_that_drops_a_constraint_a_reader_holds_keeps_it_pending() {
+    at_catalog(113, &[AUTH, NO_BLANK], |catalog, pager, txns| {
+        catalog
+            .register(reader("web-2", 2, vec![whole("auth::users")]))
+            .expect("the reader registers");
+        catalog
+            .migrate(pager, txns, "module auth\nrevert 0002\n")
+            .expect("the revert applies");
+        assert_eq!(
+            vec![pending("auth::no_blank", 3, &["web-2"])],
+            catalog.pending_drops()
+        );
+        let why = refused(catalog.migrate(pager, txns, "module auth\ndrop field User.name\n"));
+        assert!(
+            why.iter().any(|w| w.contains("auth::no_blank")),
+            "the refusal does not name the pending constraint: {why:?}"
+        );
+        catalog.release("web-2").expect("the reader is released");
+        assert!(catalog.pending_drops().is_empty());
+        catalog
+            .migrate(pager, txns, "module auth\ndrop field User.name\n")
+            .expect("the drop has taken effect, so nothing reads the field");
+    });
+}
+
+#[test]
+fn a_revert_that_drops_a_check_a_reader_holds_keeps_it_pending() {
+    let check = "module auth\nadd check named on users (scalar_len(name) > 0)\n";
+    at_catalog(114, &[AUTH, check], |catalog, pager, txns| {
+        catalog
+            .register(reader("web-2", 2, vec![whole("auth::users")]))
+            .expect("the reader registers");
+        catalog
+            .migrate(pager, txns, "module auth\nrevert 0002\n")
+            .expect("the revert applies");
+        assert_eq!(
+            vec![pending("auth::named", 3, &["web-2"])],
+            catalog.pending_drops()
+        );
+    });
+}
+
+#[test]
+fn a_pending_drop_is_carried_by_the_operators_after_it_in_its_own_migration() {
+    let drop_and_rename =
+        "module auth\ndrop constraint no_blank\nrename field User.name to full_name\n";
+    at_catalog(115, &[AUTH, NO_BLANK], |catalog, pager, txns| {
+        catalog
+            .register(reader("web-2", 2, vec![whole("auth::users")]))
+            .expect("the reader registers");
+        catalog
+            .migrate(pager, txns, drop_and_rename)
+            .expect("the rename carries the pending constraint");
+        let why = refused(catalog.migrate(pager, txns, "module auth\ndrop field User.full_name\n"));
+        assert!(
+            why.iter().any(|w| w.contains("auth::no_blank")),
+            "the refusal does not name the pending constraint: {why:?}"
+        );
+    });
+}
+
 #[test]
 fn a_pending_dropped_constraint_is_rechecked_against_later_operators() {
     let matching = r#"module auth

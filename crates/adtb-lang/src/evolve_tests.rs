@@ -2207,6 +2207,60 @@ fn log_grants_are_stored_in_the_source_by_catalog_id() {
 }
 
 #[test]
+fn a_revoke_takes_the_grant_fields_in_any_order() {
+    let s = applies(
+        &running(),
+        "module auth\ngrant read identities (user, email) to support",
+    );
+    let s = applies(
+        &s,
+        "module auth\nrevoke read identities (email, user) from support",
+    );
+    assert_eq!(Vec::<LogGrant>::new(), s.grants);
+}
+
+#[test]
+fn revert_of_a_grant_removes_what_it_granted() {
+    for grant in [
+        "module auth\ngrant read identities to support with grant option",
+        "module auth\ngrant read identities\n  to support",
+        "module auth\ngrant read identities (user), delete identities to support",
+    ] {
+        let s = applies(&running(), grant);
+        let s = applies(&s, "module auth\nrevert 0001");
+        assert_eq!(Vec::<LogGrant>::new(), s.grants, "{grant}");
+    }
+}
+
+#[test]
+fn revert_of_a_grant_keeps_what_the_role_held_before() {
+    let held = applies(&running(), "module auth\ngrant read identities to support");
+    let s = applies(
+        &held,
+        "module auth\ngrant read identities to support with grant option",
+    );
+    let s = applies(&s, "module auth\nrevert 0002");
+    assert_eq!(held.grants, s.grants);
+}
+
+#[test]
+fn revert_of_a_revoke_restores_the_grants_it_removed_exactly() {
+    let held = applies(
+        &running(),
+        "module auth\ngrant read identities, delete identities to support with grant option",
+    );
+    let s = applies(&held, "module auth\nrevoke read identities\n  from support");
+    let s = applies(&s, "module auth\nrevert 0002");
+    assert_eq!(held.grants, s.grants);
+    let s = applies(
+        &running(),
+        "module auth\nrevoke read identities from support",
+    );
+    let s = applies(&s, "module auth\nrevert 0001");
+    assert_eq!(Vec::<LogGrant>::new(), s.grants);
+}
+
+#[test]
 fn adopt_tzdb_changes_no_schema_object() {
     let s = applies(
         &running(),

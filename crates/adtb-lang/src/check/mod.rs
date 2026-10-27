@@ -992,17 +992,19 @@ pub fn check_feed(
     module: ModuleId,
     f: &ast::FeedDecl,
 ) -> Result<(RelId, CtorSet), Diag> {
+    check_feed_in(schema, Visible::module(module), f)
+}
+
+/// Returns the relation variable a feed of a bundle that reads the modules of `vis` names, as
+/// [`check_feed`] does.
+pub fn check_feed_in(
+    schema: &Schema,
+    vis: Visible,
+    f: &ast::FeedDecl,
+) -> Result<(RelId, CtorSet), Diag> {
     let of = &f.of;
-    let rel = match crate::resolve::lookup_value(schema, &Visible::module(module), &of.relation) {
-        Ok(ValueDef::Relation(rel)) => rel,
-        Ok(_) => {
-            return Err(Diag::new(
-                of.span,
-                format!("`{}` is not a relation", of.relation.name.text),
-            ));
-        }
-        Err(e) => return Err(Diag::new(of.span, e)),
-    };
+    let rel = crate::resolve::lookup_relation(schema, &vis, &of.relation)
+        .map_err(|e| Diag::new(of.span, e))?;
     if schema.relation(rel).volatile {
         return Err(Diag::new(
             of.span,

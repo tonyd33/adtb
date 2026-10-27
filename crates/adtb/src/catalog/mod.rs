@@ -23,6 +23,7 @@ use adtb_lang::evolve::{Code, Refusal, Source};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Schema, ValueDef};
+use adtb_lang::span::Diag;
 use adtb_lang::types::{RelId, Ty};
 
 use crate::btree::{self, BTree, Index};
@@ -79,6 +80,9 @@ pub enum Error {
     Unaccepted(u64, Vec<String>),
     /// A guarantee of the checker or planner does not hold; the one named.
     Internal(String),
+    /// The checker refuses a schema the catalog builds and guarantees it admits; what was built
+    /// and each diagnostic.
+    Unchecked(String, Vec<Diag>),
 }
 
 impl From<PageError> for Error {

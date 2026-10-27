@@ -246,11 +246,13 @@ change what a reader reads.
 
 Postconditions of `Catalog::migrate` with live readers:
 
-- An `enable` or `deprecate` or `disable` a live reader blocks under
+- A migration whose operators enable, deprecate or disable a
+  constructor, a `revert` included, in a way a live reader blocks under
   [../spec/evolution.md §4.3 and §8](../spec/evolution.md#8-readers-first)
   is refused, changing nothing; each reason names the blocking bundle.
-- A `drop constraint` or `drop check` whose object exists at a live
-  reader's version applies and produces its version, and is pending:
+- A migration whose operators drop a constraint or check, a `revert`
+  of its `add` included, whose object exists at a live reader's version
+  applies and produces its version, and the drop is pending:
   `Catalog::pending_drops` lists it with the bundles holding it.
   Validation and admission of every later migration run against the
   schema that keeps each pending-dropped object, carried by the later

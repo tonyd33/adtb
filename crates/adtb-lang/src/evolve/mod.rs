@@ -19,6 +19,7 @@ mod ctor;
 mod field;
 mod grant;
 mod ids;
+mod keep;
 mod names;
 mod resolved;
 mod revert;
@@ -33,7 +34,9 @@ use text::*;
 mod tests;
 
 pub use crate::schema::Stage;
+use grant::HeldGrant;
 pub use grant::{GrantSel, GrantTarget, Granted, LogGrant};
+pub use keep::Kept;
 pub use resolved::{
     ArmTarget, Clause, Code, Function, IndexKind, Place, Resolved, ResolvedOp, Target,
 };
@@ -606,6 +609,17 @@ impl Source {
 
     /// Applies a migration, numbered one past the current version, and rechecks the result.
     pub fn migrate(&self, m: &MigrationFile, text: &str) -> Result<Source, Refusal> {
+        self.migrate_keeping(m, text, &[])
+    }
+
+    /// Applies a migration as [`Source::migrate`] does, putting back after each operator every
+    /// declaration of `kept` it removes, as it was before that operator and with its catalog id.
+    pub fn migrate_keeping(
+        &self,
+        m: &MigrationFile,
+        text: &str,
+        kept: &[Kept],
+    ) -> Result<Source, Refusal> {
         let mut next = self.clone();
         next.version += 1;
         next.expecting(&m.module.text, &m.operators);
@@ -616,10 +630,14 @@ impl Source {
             if let OperatorKind::Rekey { relation, .. } = &op.kind {
                 rekeyed.push((relation.clone(), op.span));
             }
+            let prior = (!kept.is_empty()).then(|| next.clone());
             let ended = next.apply(&m.module.text, op, text);
             applied.push(ended.is_ok());
             if let Err(mut ds) = ended {
                 refusal.operators.append(&mut ds);
+            }
+            if let Some(prior) = prior {
+                next.keep(&prior, kept);
             }
         }
         for (relation, span) in rekeyed {

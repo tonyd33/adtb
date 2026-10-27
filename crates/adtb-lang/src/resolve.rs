@@ -107,6 +107,16 @@ pub fn lookup_value(schema: &Schema, vis: &Visible, name: &QName) -> Result<Valu
     }
 }
 
+/// Returns the relation variable `name` denotes among the modules of `vis`.
+///
+/// Fails when `name` does not resolve or denotes something other than a relation.
+pub fn lookup_relation(schema: &Schema, vis: &Visible, name: &QName) -> Result<RelId, String> {
+    match lookup_value(schema, vis, name)? {
+        ValueDef::Relation(rel) => Ok(rel),
+        _ => Err(format!("`{}` is not a relation", name.name.text)),
+    }
+}
+
 pub fn lookup_type(schema: &Schema, vis: &Visible, name: &QName) -> Result<TypeName, String> {
     if name.module.is_some() {
         return schema.lookup_type(vis.first(), name);
@@ -408,15 +418,8 @@ impl<'a> Resolver<'a> {
     }
 
     fn relation(&mut self, r: &RelationRef) -> Option<RelId> {
-        let rel = match lookup_value(self.schema, &self.vis, &r.relation) {
-            Ok(ValueDef::Relation(rel)) => rel,
-            Ok(_) => {
-                self.err(
-                    r.span,
-                    format!("`{}` is not a relation", r.relation.name.text),
-                );
-                return None;
-            }
+        let rel = match lookup_relation(self.schema, &self.vis, &r.relation) {
+            Ok(rel) => rel,
             Err(e) => {
                 self.err(r.span, e);
                 return None;

@@ -642,6 +642,11 @@ fn migrate<R: Runtime>(
                 },
             ),
             catalog::Error::Internal(what) => refused(version, RejectReason::Internal { what }),
+            catalog::Error::Unchecked(built, ds) => {
+                let what = ds.into_iter().map(|d| d.message).collect::<Vec<_>>();
+                let what = format!("{built} does not check: {}", what.join("; "));
+                refused(version, RejectReason::Internal { what })
+            }
             other => corrupt(other),
         })?;
     }
