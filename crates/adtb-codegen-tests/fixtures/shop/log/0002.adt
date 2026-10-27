@@ -1,0 +1,5 @@
+module shop
+add type Note = { id: Key notes, customer: Key customers, body: Text }
+add relation notes : Note key id generate sequence
+add type Label = { customer: Key customers, label: Text }
+add relation tags : Label key (customer, label)

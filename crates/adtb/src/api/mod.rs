@@ -12,6 +12,7 @@ mod settings;
 mod stop;
 mod text;
 mod txn;
+pub mod typed;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -42,6 +43,7 @@ pub use registered::{Called, InTxn, Registered, Registration};
 pub use stop::CancelToken;
 pub use text::DynRows;
 pub use txn::{AdHocTransaction, Committed, TxnCallOptions, TxnOptions};
+pub use typed::{BundleDef, Callable, CtorRelation, Key, Pending, Rows};
 
 use settings::Settings;
 use stop::Stops;

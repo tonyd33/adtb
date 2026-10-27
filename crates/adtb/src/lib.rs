@@ -26,5 +26,6 @@ pub use api::{
     OpenOptions, Position, RecordBatch, Registered, Registration, RejectReason, RetryReason,
     TxnCallOptions, TxnId, TxnOptions,
 };
+pub use api::{BundleDef, Callable, CtorRelation, Key, Pending, Rows, typed};
 pub use exec::HostError;
 pub use exec::Val as Value;

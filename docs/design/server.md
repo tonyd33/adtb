@@ -157,7 +157,7 @@ type lists its constructors with their constructor ids.
 | Entry point | Meaning |
 | --- | --- |
 | `Database::load(opts)` | a `Load`: a write transaction whose snapshot is taken now |
-| `Load::appender(target)` | the `Appender` of constructor relation `target`, `r.C`, or `r` of a record type, as ad hoc text names it |
+| `Load::appender(target)` | the `Appender` of constructor relation `target`, a `CtorRelation`: `r.C`, or `r` of a record type, as ad hoc text names it; a `&str` is one |
 | `Appender::schema()` | the `ArrowSchema` of a batch holding every field of the relation's row |
 | `Appender::push(batch)` | stages the batch's rows |
 | `Load::commit()` | inserts every staged row as one change set and commits: a `LoadReport` of the rows and the position |
@@ -189,6 +189,48 @@ Postconditions:
   `FunctionFailed`.
 - A call that reaches a host function with no body fails with `Fatal {
   MissingFunction }`.
+
+### 4.5 Typed bundles
+
+`adtb::typed` is the API generated code calls. It runs every call
+through the entry points of §4.2 and §4.3.
+
+| Entry point | Meaning |
+| --- | --- |
+| `HostValue` | a host type of a language type: `to_value(&self) -> Value`, `from_value(&Value) -> Option<Self>` |
+| `BundleDef { Error, NAME, TEXT, PINS }` | a generated bundle: its error type, name, file and pinned version; `registration()` is `Registration::bundle(TEXT)` |
+| `Callable { Bundle, Args, Output, InTxn, ORDINAL }` | a generated callable; `output(Called)` and `in_txn(InTxn)` convert what `Registered::call` and `AdHocTransaction::call` return |
+| `Relation { KeyValue, NAME, ID }`, `Key<R>` | a generated relation variable and a key of it, holding its key value |
+| `CtorRelation` | a generated constructor relation, by the name `Load::appender` takes |
+| `Database::bundle(def)` | a `Bundle<B>`: `Database::registered(B::NAME)`, refused `VersionMismatch` when it pins another version than `B::PINS` |
+| `Bundle::call`, `call_arrow`, `begin`, `transact` | `Registered::call` and `call_arrow` by `C::ORDINAL`; an interactive `Transaction<B>` whose `call` is `AdHocTransaction::call` |
+| `rows`, `value`, `committed`, `rows_in_txn`, `value_in_txn`, `pending` | a set-valued result as `Rows<T, E>`, a result that is no set as `T`, a registered transaction's as `Committed<T>` or `Pending<T>` |
+| `ctor_parts`, `ctor_fields`, `record_fields`, `next`, `of_ctor`, `of_record` | a value's parts and a value from parts, through `Textual` ([kernel.md §9](kernel.md#9-textual-syntax)) |
+
+Host types: an integer type is `i8` to `i64`, `Text` is `String`,
+`Bool` is `bool`, `Option a` is `Option<A>`, `Set a` is `Vec<A>`, a
+record with no fields is `()`, `Uuid`, `Bytes`, `Decimal<S>` and the
+time types are `adtb::typed`'s. A declared type is a generated struct
+or enum, a `Tag` of a declared sum an enum of its constructors in name
+order, and an anonymous record or sum one named after the callable
+and field it occurs in.
+
+Preconditions:
+
+- A generated type's constructor `i` is constructor index `i` of the
+  type at the version its module was generated at; its fields are the
+  header fields then the constructor's own, each in declaration order,
+  and an anonymous record's fields are sorted by name.
+
+Postconditions:
+
+- `from_value(&x.to_value()) == Some(x)` for every host value `x`
+  whose every `Vec` holds distinct elements in ascending order; any
+  other `Vec` comes back so.
+- A call whose result is no value of the host type fails `Fatal {
+  Malformed }`.
+- `Rows` yields the result's elements in the order the call returns
+  them.
 
 ## 5. Notes for the implementation
 

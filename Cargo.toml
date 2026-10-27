@@ -12,6 +12,7 @@ publish = false
 
 [workspace.dependencies]
 adtb = { path = "crates/adtb" }
+adtb-codegen = { path = "crates/adtb-codegen" }
 adtb-conformance = { path = "crates/adtb-conformance" }
 adtb-file = { path = "crates/adtb-file" }
 adtb-lang = { path = "crates/adtb-lang" }

@@ -520,7 +520,55 @@ ordinals as [../spec/wire.md §4.3](../spec/wire.md#43-records-and-sums)
 and [§5.1](../spec/wire.md#51-call) assign them, so generated code
 agrees with every database built from the same log.
 
-TODO: the API by which `adtb-lang` gives a code generator these ids and ordinals is undecided.
+`adtb-lang` gives a generator these ids and ordinals through
+`signature`:
+
+```text
+replay(log) -> Result<Source, ReplayError>
+bundle(source, text) -> Result<Bundle, String>
+Bundle { header: BundleHeader, schema: Schema, calls: Vec<Signature> }
+Signature { ordinal: u32, name: String, kind: CallKind, params: Vec<(String, Ty)>, result: Ty }
+CallKind = Query | Txn | Fn
+ReplayError { migration: u64, message: String }
+```
+
+Preconditions: `source` is `replay` of the log up to the version the
+bundle file `text` pins.
+
+Postconditions:
+
+- `replay(log)` is the source every database that applies `log` in
+  order holds; it fails at the first migration that does not apply,
+  numbered from 1.
+- `Source::schema()` of it holds in `Schema::ids` the catalog id of
+  every type, constructor and relation variable that such a database
+  assigns.
+- `bundle` returns the callables of `text` in ordinal order, each with
+  the ordinal `adtb` assigns at registration: each `import fn` in
+  import order, then each query and transaction in item order, from 1.
+  A bundle function takes none. `params` are the declared parameters
+  in order; `result` is the declared result type.
+- `schema` is that of `source` with the bundle's functions added to
+  its first imported module, as registration checks the bundle.
+- `bundle` fails as registration refuses the file: a parse error, a
+  module import of no user module, a callable that does not check or
+  is declared twice, a generic imported function, a feed or an
+  aggregate.
+
+`adtb-codegen` is the generator for Rust. Its library takes the log
+and bundle files and returns Rust source, for a `build.rs`:
+
+```text
+generate(log: &[&str], bundles: &[BundleSource]) -> Result<String, Error>
+BundleSource { module: &str, text: &str }
+read_log(dir) -> io::Result<Vec<String>>
+```
+
+The source holds module `schema`, with `LOG` and the host types of
+the schema at the end of the log, and one module per bundle, with
+`BUNDLE`, `Bundle`, `Error` and one value per callable. The host types
+and calls it emits are those of
+[server.md §4.5](server.md#45-typed-bundles).
 
 ## 9. Textual syntax
 

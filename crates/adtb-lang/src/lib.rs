@@ -18,6 +18,7 @@ pub mod norm;
 pub mod parse;
 pub mod resolve;
 pub mod schema;
+pub mod signature;
 pub mod span;
 pub mod textual;
 pub mod types;

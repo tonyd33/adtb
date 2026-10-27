@@ -15,6 +15,7 @@ use super::arrow::{ArrowSchema, Field, RecordBatch};
 use super::error::{Error, RejectReason};
 use super::stop::CancelToken;
 use super::txn::{AdHocTransaction, TxnCallOptions, TxnOptions};
+use super::typed::CtorRelation;
 use super::{Database, Durability, Position};
 
 /// The options of a load.
@@ -85,12 +86,12 @@ impl<R: Runtime> Database<R> {
 }
 
 impl<R: Runtime> Load<'_, R> {
-    /// Returns the appender of `target`, a constructor relation as ad hoc text names it:
+    /// Returns the appender of constructor relation `target`, as ad hoc text names it:
     /// `r.C`, or `r` for a relation of a record type, its module qualifying `r` where needed.
     ///
     /// Fails with `Invalid` when `target` names no constructor relation.
-    pub fn appender(&mut self, target: &str) -> Result<Appender<'_>, Error> {
-        let fresh = staged(self.txn.engine.schema.as_ref(), target)?;
+    pub fn appender<C: CtorRelation>(&mut self, target: C) -> Result<Appender<'_>, Error> {
+        let fresh = staged(self.txn.engine.schema.as_ref(), target.target())?;
         let at = match self.staged.iter().position(|s| s.target == fresh.target) {
             Some(at) => at,
             None => {

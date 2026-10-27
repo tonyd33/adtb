@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
 
-use adtb_lang::ast::{BundleItem, FnDecl, Import, Operator, OperatorKind, QName};
+use adtb_lang::ast::{BundleItem, FnDecl, Import, QName};
 use adtb_lang::check::{Bundles, Program, check_adhoc, check_query_in, check_txn_in};
 use adtb_lang::evolve::Source;
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
@@ -12,6 +12,7 @@ use adtb_lang::norm::{self, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc, parse_bundle, parse_bundle_body};
 use adtb_lang::resolve::{Visible, lookup_value};
 use adtb_lang::schema::{Schema, ValueDef};
+use adtb_lang::signature;
 use adtb_lang::types::Ty;
 
 use crate::catalog::{self, Catalog};
@@ -352,19 +353,7 @@ fn stale(catalog: &Catalog, c: &Checked) -> Result<Option<String>, Error> {
 /// `current`.
 fn checked(over: &Over<'_>, r: &Registration, current: bool) -> Result<Checked, Error> {
     let (imports, items) = r.body()?;
-    let mut vis = Visible {
-        modules: Vec::new(),
-    };
-    for i in &imports {
-        if let Import::Module(m) = i {
-            let id = over
-                .schema
-                .module_named(&m.text)
-                .filter(|&id| !over.schema.module(id).engine)
-                .ok_or_else(|| Error::invalid(format!("no module `{}` to import", m.text)))?;
-            vis.modules.push(id);
-        }
-    }
+    let vis = signature::visible(over.schema, &imports).map_err(Error::invalid)?;
     let fns: Vec<&FnDecl> = items
         .iter()
         .filter_map(|i| match i {
@@ -372,7 +361,9 @@ fn checked(over: &Over<'_>, r: &Registration, current: bool) -> Result<Checked, 
             _ => None,
         })
         .collect();
-    let extended = with_functions(over, &vis, &fns, &r.text)?;
+    let extended = signature::with_functions(over.source, over.schema, &vis, &fns, &r.text)
+        .map_err(Error::invalid)?
+        .map(|(s, p)| (Arc::new(s), p));
     let (schema, program) = match &extended {
         Some((s, p)) => (s, p),
         None => (over.schema, over.program),
@@ -462,50 +453,6 @@ fn spanned(text: &str, span: adtb_lang::span::Span) -> &str {
     text.get(span.start as usize..span.end as usize)
         .unwrap_or_default()
         .trim_end()
-}
-
-/// Returns the schema and program of `over` with the bundle functions `fns` of `text` added to
-/// the first module of `vis`, `None` when there are none. Refuses a function whose name is a
-/// schema function's that `vis` sees, and one that fails to check.
-fn with_functions(
-    over: &Over<'_>,
-    vis: &Visible,
-    fns: &[&FnDecl],
-    text: &str,
-) -> Result<Option<(Arc<Schema>, Program)>, Error> {
-    if fns.is_empty() {
-        return Ok(None);
-    }
-    let Some(&home) = vis.modules.first() else {
-        return Err(Error::invalid(
-            "a registration with functions imports a module",
-        ));
-    };
-    let module = &over.schema.module(home).name;
-    let mut source = over.source.clone();
-    for f in fns {
-        let failed = |m: String| Error::invalid(format!("fn `{}`: {m}", f.name.text));
-        let name = QName {
-            module: None,
-            name: f.name.clone(),
-        };
-        if let Ok(ValueDef::Function(_)) = lookup_value(over.schema, vis, &name) {
-            return Err(failed(
-                "a bundle function has the name of a schema function".into(),
-            ));
-        }
-        let op = Operator {
-            kind: OperatorKind::DefineFn((*f).clone()),
-            span: f.span,
-        };
-        source
-            .apply(module, &op, text)
-            .map_err(|ds| failed(joined(ds.iter().map(|d| d.message.as_str()))))?;
-    }
-    let (schema, program) = source
-        .check()
-        .map_err(|ds| Error::invalid(joined(ds.iter().map(|d| d.diag.message.as_str()))))?;
-    Ok(Some((Arc::new(schema), program)))
 }
 
 /// Returns the entry of a checked query or transaction `name` of `arity` declared parameters.
@@ -670,6 +617,11 @@ impl<R: Runtime> Database<R> {
 impl<R: Runtime> Registered<R> {
     pub fn name(&self) -> &str {
         &self.checked().name
+    }
+
+    /// Returns the version a bundle's header pins; `None` for a registration that is no bundle.
+    pub fn pins(&self) -> Option<u64> {
+        self.checked().header.as_ref().map(|h| h.pins)
     }
 
     /// Returns the ordinal of the query, transaction or imported function `name`, from 1 in

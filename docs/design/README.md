@@ -62,6 +62,8 @@ different dependencies, consumers or stability promises:
 | `adtb-conformance` | The conformance runner over the script format of [../spec/conformance.md](../spec/conformance.md); the suite itself is `conformance/` at the root, one directory per spec part | `adtb-lang`, `adtb-reference`, and `adtb` once the engine runs scripts |
 | `adtb-isolation` | The isolation checker over list-append histories and the scripted anomaly scenarios ([runtime.md §6](runtime.md#6-isolation-histories)) | standard library |
 | `adtb-server` | The wire protocol of [../spec/wire.md](../spec/wire.md) around `adtb` ([server.md](server.md)) | `adtb` |
+| `adtb-codegen` | Rust code generation from a migration log and bundle files ([kernel.md §8](kernel.md#8-code-generators)) | `adtb-lang` |
+| `adtb-codegen-tests` | The code generated from fixture schemas and bundles, compiled and called over the simulator | `adtb`, `adtb-codegen` at build time |
 
 Layers inside `adtb` (catalog, planner, transactions, storage) are
 modules, not crates. Their boundaries are still contracts and have
@@ -83,6 +85,7 @@ design files of their own.
 | Staged schema changes | evolution | catalog, planner | [schema-change.md](schema-change.md) |
 | Log stream and replicas | primary | replicas, embedded replicas, backups | [replication.md](replication.md) |
 | Calls over the wire | `adtb-server` | `adtb` | [server.md](server.md) |
+| Typed bundles | `adtb` | generated code | [server.md §4.5](server.md#45-typed-bundles) |
 | Histories and anomalies | test harnesses | `adtb-isolation` | [runtime.md §6](runtime.md#6-isolation-histories) |
 | The test oracle | `adtb-reference` | test harness, `adtb-conformance` | [oracle.md](oracle.md) |
 

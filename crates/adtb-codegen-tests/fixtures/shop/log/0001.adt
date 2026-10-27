@@ -1,0 +1,14 @@
+module shop
+add module shop
+add type Tier = Free | Paid { level: I64 }
+add type Customer = { id: Key customers, name: Text, tier: Tier, nick: Option Text }
+add relation customers : Customer key id generate sequence
+add type Payment { id: Key payments, customer: Key customers }
+  = Card { last4: Text }
+  | Invoice { due: I64 }
+add relation payments : Payment
+  key id generate sequence
+  index (customer)
+define fn method (p: Payment) -> Text = match p
+  | Card c -> c.last4
+  | Invoice i -> "invoice"
