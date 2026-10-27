@@ -1,0 +1,4 @@
+module app
+type User = { id: Key users, name: Text, age: I64 }
+relation users : User key id generate sequence
+constraint adults = from u in users where u.age < 18 select u

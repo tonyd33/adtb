@@ -1,0 +1,15 @@
+[package]
+name = "adtb-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+adtb-conformance.workspace = true
+adtb-lang.workspace = true
+adtb-sim.workspace = true
+
+[lints]
+workspace = true

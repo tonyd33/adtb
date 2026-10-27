@@ -1,0 +1,2 @@
+insert users { name: "ann", age: 30 }
+insert users { name: "bob", age: 41 }

@@ -33,6 +33,23 @@ it, run it from the repository root as:
 nix run github:tonyd33/tix -- -C work/issues check
 ```
 
+## Tools
+
+Scripts in `work/tools/`, run as `work/tools/NAME` from any workspace
+root (devenv also puts each on PATH as `NAME`):
+
+- `suite [ARGS]`: the full nextest run, one at a time across the
+  machine; output in `target/suite.txt`, prints failures and the summary.
+- `conf PATH...`: run conformance files or directories on the
+  reference and the engine; prints each difference as `FILE:LINE`.
+- `adtb-probe --schema FILE [--data FILE] [--explain] TEXT`: check a
+  text and run it on the reference and the engine side by side.
+- `codemap [CRATE [MODULE]]`, `codemap --tests [CRATE]`: modules, pub
+  items with line numbers, test binaries with their test counts.
+- `house-check`: the added lines of `jj diff` that break a comment rule.
+- `workspace-gc [--clean | --guard]`: every workspace's `target/` size;
+  clean the idle ones; `--guard` fails under 30 GB free.
+
 ## Knowledge base
 
 Facts about other databases, formats, languages and papers live in

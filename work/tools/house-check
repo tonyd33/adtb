@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# house-check [DIR [JJ-DIFF-ARGS...]]   print each added line of `jj diff` in the workspace at DIR
+#                                       that breaks a house rule, as FILE:LINE: RULE: TEXT
+#
+# DIR defaults to the workspace holding this script.
+# Rules: an em dash anywhere; in a Rust comment, markdown bold, a section sign or a rule id; and
+# each added Rust comment that is not a doc comment, to read again. Pass `-r REV` or
+# `--from A --to B` to check other changes than the working copy's. Exits 1 when it prints.
+set -euo pipefail
+
+cd "${1:-$(dirname "$0")/../..}"
+shift || true
+
+jj diff --git "$@" | awk '
+  /^\+\+\+ / { file = substr($0, 7); next }
+  /^@@ / {
+    split($3, hunk, ",")
+    line = substr(hunk[1], 2) - 1
+    next
+  }
+  /^-/ { next }
+  /^ / { line++; next }
+  /^\+/ {
+    line++
+    text = substr($0, 2)
+    if (index(text, "\342\200\224")) report("em dash")
+    if (file !~ /\.rs$/) next
+    at = match(text, /(^|[ \t])\/\//)
+    if (!at) next
+    comment = substr(text, at)
+    if (comment ~ /\*\*/) report("bold in a comment")
+    if (comment ~ /§/) report("section sign in a comment")
+    bare = comment
+    gsub(/UTF-(8|16|32)/, "", bare)
+    if (bare ~ /(^|[^A-Za-z0-9_])[A-Z][A-Z]+-[A-Z0-9][A-Z0-9-]*/) report("rule id in a comment")
+    if (comment !~ /^[ \t]*\/\/[\/!]/) report("comment, keep only for an invariant")
+  }
+  function report(rule) {
+    printf "%s:%d: %s: %s\n", file, line, rule, text
+    found = 1
+  }
+  END { exit found }
+'

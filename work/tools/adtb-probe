@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# adtb-probe --schema FILE [--data FILE] [--explain] [--reference | --engine] TEXT
+#
+# Build and run `crates/adtb-probe` in the test profile, whose dependencies the suite builds.
+# `adtb-probe --help` prints its usage.
+root=$(cd "$(dirname "$0")/../.." && pwd)
+exec cargo run --quiet --profile test --manifest-path "$root/Cargo.toml" -p adtb-probe -- "$@"

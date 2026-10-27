@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# conf [--engine|--reference] PATH...   run each conformance file named, or every `.test` file
+#                                       under each directory named, on the reference and the
+#                                       engine, and print each difference as FILE:LINE: SIDE: TEXT
+#
+# Builds the conformance runner and the engine harness in the test profile, the artifacts
+# `cargo nextest run` uses. The engine side runs each file in its own process, as the suite
+# does. Notes a file on the engine's list of known failures. Exits 1 when any file differs.
+set -uo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+sides=(reference engine)
+paths=()
+for arg in "$@"; do
+  case $arg in
+    --engine) sides=(engine) ;;
+    --reference) sides=(reference) ;;
+    -h | --help)
+      sed -n '2,8s/^# \{0,1\}//p' "$0"
+      exit 0
+      ;;
+    *) paths+=("$(realpath "$arg")") ;;
+  esac
+done
+((${#paths[@]})) || { sed -n '2,4s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+
+files=()
+for p in "${paths[@]}"; do
+  if [[ -d $p ]]; then
+    while IFS= read -r f; do files+=("$f"); done < <(find "$p" -name '*.test' | sort)
+  elif [[ -f $p ]]; then
+    files+=("$p")
+  else
+    echo "$p: no such file or directory" >&2
+    exit 2
+  fi
+done
+((${#files[@]})) || { echo "no .test files under ${paths[*]}" >&2; exit 2; }
+
+cd "$root" || exit 1
+built=$(cargo test --no-run -p adtb-conformance --test engine \
+  --message-format=json-render-diagnostics) || exit 1
+executable() {
+  printf '%s\n' "$built" | jq -r --arg kind "$1" --arg name "$2" \
+    'select(.reason == "compiler-artifact" and .target.name == $name
+            and (.target.kind | index($kind)) and .executable != null) | .executable' | tail -1
+}
+reference=$(executable bin adtb-conformance)
+engine=$(executable test engine)
+
+failing=$root/crates/adtb-conformance/tests/engine-failing.txt
+suite=$root/conformance/
+differs=0
+
+on_reference() {
+  "$reference" "$1" | sed -E "s|^([^:]*:[0-9]+): |\1: reference: |"
+}
+
+on_engine() {
+  local out
+  out=$(ADTB_CONFORMANCE_ENGINE_FILE=$1 timeout 180 "$engine" --exact child --nocapture \
+    --test-threads 1 2>&1)
+  local status=$?
+  if ((status == 124)); then
+    echo "$1:0: engine: does not finish within 180s"
+  elif ! grep -q adtb-conformance-done <<<"$out"; then
+    echo "$1:0: engine: aborts ($status): $(grep -v '^\s*$' <<<"$out" | tail -3 | paste -sd'/')"
+  fi
+  grep -o 'adtb-conformance-difference: .*' <<<"$out" \
+    | sed -E "s|^adtb-conformance-difference: line ([0-9]+): |$1:\1: engine: |; s|\\\\n|\n    |g"
+}
+
+# Prints the differences of file $1 on each side, then its line on the list of known failures.
+one() {
+  local f=$1 side found listed
+  for side in "${sides[@]}"; do
+    case $side in
+      reference) found=$(on_reference "$f") ;;
+      engine) found=$(on_engine "$f") ;;
+    esac
+    [[ -n $found ]] && printf '%s\n' "${found//"$root"\//}"
+  done
+  listed=$(grep -E "^${f#"$suite"}( |$)" "$failing")
+  [[ -n $listed ]] && echo "${f#"$root"/}: on engine-failing.txt: ${listed#* }"
+  return 0
+}
+
+results=$(mktemp -d "${CARGO_TARGET_DIR:-$root/target}/conf.XXXXXX")
+trap 'rm -r "$results"' EXIT
+workers=$(($(nproc) / 2))
+for i in "${!files[@]}"; do
+  while (($(jobs -rp | wc -l) >= workers)); do wait -n; done
+  one "${files[$i]}" >"$results/$i" &
+done
+wait
+for i in "${!files[@]}"; do
+  cat "$results/$i"
+  grep -q ': \(reference\|engine\): ' "$results/$i" && differs=1
+done
+echo "${#files[@]} files on ${sides[*]}"
+exit "$differs"

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# workspace-gc            list each build directory of the repo's workspaces: size, whether the
+#                         working copy is empty, hours since its last build, and whether to clean it
+# workspace-gc --clean    run `cargo clean` on each build directory marked clean
+# workspace-gc --guard    print nothing when the disk has 30 GB free; else list the build
+#                         directories and fail
+#
+# A build directory is marked clean when its workspace is forgotten, or when its working copy
+# is empty and it was not built for ADTB_GC_IDLE_HOURS (default 2).
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+min_free_gb=${ADTB_MIN_FREE_GB:-30}
+idle_hours=${ADTB_GC_IDLE_HOURS:-2}
+mode=${1:-list}
+
+free_gb() {
+  df --output=avail -B1G "$root" | tail -1 | tr -d ' '
+}
+
+# Prints `name<TAB>path<TAB>empty` for every workspace, then `-<TAB>path<TAB>forgotten` for each
+# sibling directory of a workspace that is not one.
+workspaces() {
+  local known
+  known=$(jj -R "$root" workspace list --ignore-working-copy \
+    -T 'name ++ "\t" ++ root ++ "\t" ++ if(target.empty(), "empty", "changed") ++ "\n"')
+  printf '%s\n' "$known"
+  local default_root
+  default_root=$(printf '%s\n' "$known" | awk -F'\t' '$1 == "default" { print $2 }')
+  [[ -n $default_root ]] || return 0
+  local d
+  for d in "$default_root"-*/; do
+    d=${d%/}
+    [[ -d $d ]] || continue
+    printf '%s\n' "$known" | cut -f2 | grep -qxF "$d" || printf '%s\t%s\t%s\n' - "$d" forgotten
+  done
+}
+
+# Prints the hours since anything under build directory $1 last changed.
+idle() {
+  local newest
+  newest=$(find "$1" -maxdepth 2 -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
+  jq -n --argjson now "$(date +%s)" --argjson built "${newest:-0}" '[0, (($now - $built) / 3600 | floor)] | max'
+}
+
+# Prints `size<TAB>name<TAB>state<TAB>idle<TAB>verdict<TAB>dir` for each build directory.
+targets() {
+  local name path state dir hours verdict
+  while IFS=$'\t' read -r name path state; do
+    for dir in "$path/target" "$path/apps/campaign/target"; do
+      [[ -d $dir ]] || continue
+      hours=$(idle "$dir")
+      verdict=keep
+      if [[ $state == forgotten ]] || { [[ $state == empty ]] && ((hours >= idle_hours)); }; then
+        verdict=clean
+      fi
+      printf '%s\t%s\t%s\t%sh\t%s\t%s\n' \
+        "$(du -sh "$dir" | cut -f1)" "$name" "$state" "$hours" "$verdict" "$dir"
+    done
+  done < <(workspaces)
+}
+
+table() {
+  { printf 'SIZE\tWORKSPACE\tCOPY\tIDLE\tVERDICT\tDIR\n'; targets | sort -rh; } | column -t -s $'\t'
+}
+
+case $mode in
+  list)
+    table
+    echo "free: $(free_gb) GB"
+    ;;
+  --clean)
+    targets | while IFS=$'\t' read -r size name _ _ verdict dir; do
+      [[ $verdict == clean ]] || continue
+      echo "cleaning $dir ($name, $size)"
+      (cd "$root" && cargo clean --target-dir "$dir") || echo "$dir is not cleaned"
+    done
+    echo "free: $(free_gb) GB"
+    ;;
+  --guard)
+    free=$(free_gb)
+    ((free >= min_free_gb)) && exit 0
+    echo "only $free GB free, under $min_free_gb GB; the build directories:" >&2
+    table >&2
+    echo "run work/tools/workspace-gc --clean, or cargo clean in your own workspace" >&2
+    exit 1
+    ;;
+  *)
+    sed -n '2,9s/^# \{0,1\}//p' "$0" >&2
+    exit 2
+    ;;
+esac

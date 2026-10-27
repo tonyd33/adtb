@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# codemap                  one line per crate: files, lines, first //! line
+# codemap CRATE            one line per module of the crate: files, lines, first //! line
+# codemap CRATE MODULE     the module's files with their pub items and line numbers; MODULE is a
+#                          path under src/, with or without `.rs` (`heap`, `heap/page.rs`)
+# codemap --tests [CRATE]  each test binary of every crate, or of CRATE, with its test count
+#
+# Maps the workspace holding this script, or CODEMAP_ROOT when set.
+set -u
+root=${CODEMAP_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
+doc() { grep -m1 '^//!' "$1" 2>/dev/null | sed 's|^//! *||'; }
+lines() { cat "$@" 2>/dev/null | wc -l; }
+count_tests() { cat "$@" 2>/dev/null | grep -cE '^\s*#\[(test|tokio::test)\]'; }
+sources() { find "$@" -name '*.rs' 2>/dev/null | sort; }
+
+crates() {
+  for c in "$root"/crates/*/; do
+    c=${c%/}
+    local n fs
+    n=$(basename "$c")
+    fs=$(sources "$c/src")
+    # shellcheck disable=SC2086
+    printf '%-18s %3sf %6sL  %s\n' "$n" "$(echo "$fs" | wc -l)" "$(lines $fs)" "$(doc "$c/src/lib.rs")"
+  done
+}
+
+tests() {
+  local c=$1 dir="$root/crates/$1"
+  local unit
+  # shellcheck disable=SC2046
+  unit=$(count_tests $(sources "$dir/src"))
+  echo "crates/$c  unit tests: $unit (cargo nextest run -p $c --lib)"
+  [ -d "$dir/tests" ] || return 0
+  for f in "$dir"/tests/*.rs "$dir"/tests/*/main.rs; do
+    [ -f "$f" ] || continue
+    local name fs
+    if [ "$(basename "$f")" = main.rs ]; then
+      name=$(basename "$(dirname "$f")")
+      fs=$(sources "$(dirname "$f")")
+    else
+      name=$(basename "$f" .rs)
+      fs="$f $(sources "$dir/tests/$name")"
+    fi
+    # shellcheck disable=SC2086
+    printf '  --test %-18s %4s tests %6sL  %s\n' "$name" "$(count_tests $fs)" "$(lines $fs)" "$(doc "$f")"
+  done
+}
+
+if [ $# -eq 0 ]; then
+  crates
+  exit 0
+fi
+
+if [ "$1" = --tests ]; then
+  if [ $# -ge 2 ]; then
+    tests "$2"
+  else
+    for c in "$root"/crates/*/; do tests "$(basename "$c")"; done
+  fi
+  exit 0
+fi
+
+crate=$1
+src="$root/crates/$crate/src"
+[ -d "$src" ] || { echo "no $src; crates: $(cd "$root/crates" && echo */)" >&2; exit 1; }
+
+if [ $# -lt 2 ]; then
+  top=$src/lib.rs
+  [ -f "$top" ] || top=$src/main.rs
+  echo "crates/$crate  $(doc "$top")"
+  for f in "$src"/*.rs; do
+    n=$(basename "$f" .rs)
+    [ -d "$src/$n" ] && continue
+    printf '%-16s %5sL  %s\n' "$n.rs" "$(lines "$f")" "$(doc "$f")"
+  done
+  for d in "$src"/*/; do
+    [ -d "$d" ] || continue
+    n=$(basename "$d")
+    fs=$(find "$d" -name '*.rs' ! -name 'tests.rs' ! -name '*_tests.rs' | sort)
+    head=$d/mod.rs; [ -f "$head" ] || head="$src/$n.rs"
+    # shellcheck disable=SC2086
+    printf '%-16s %2sf %5sL  %s\n' "$n/" "$(echo "$fs" | wc -l)" "$(lines $fs)" "$(doc "$head")"
+  done
+  exit 0
+fi
+
+m=${2%.rs}
+m=${m#src/}
+if [ -d "$src/$m" ]; then
+  fs=$(sources "$src/$m")
+  [ -f "$src/$m.rs" ] && fs="$src/$m.rs $fs"
+elif [ -f "$src/$m.rs" ]; then
+  fs="$src/$m.rs"
+else
+  echo "no module $m under $src" >&2
+  exit 1
+fi
+for f in $fs; do
+  echo "${f#"$root"/}  $(lines "$f")L  $(doc "$f")"
+  grep -nE '^\s*pub(\([a-z]+\))? (fn|struct|enum|trait|type|const|static|mod) ' "$f" \
+    | sed -E 's/^([0-9]+):\s*/  \1 /; s/\s*\{\s*$//; s/ where .*//' | cut -c1-140
+done

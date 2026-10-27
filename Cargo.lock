@@ -56,6 +56,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "adtb-probe"
+version = "0.1.0"
+dependencies = [
+ "adtb-conformance",
+ "adtb-lang",
+ "adtb-sim",
+]
+
+[[package]]
 name = "adtb-reference"
 version = "0.1.0"
 dependencies = [

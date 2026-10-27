@@ -1,0 +1,7 @@
+module lib
+type Label = { id: Key labels, text: Text }
+relation labels : Label key id generate sequence
+
+module app
+type Note = { id: Key notes, body: Txt }
+relation notes : Note key id generate sequence

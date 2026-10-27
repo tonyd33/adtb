@@ -22,14 +22,13 @@ in
   scripts.check.exec = ''
     set -e
     export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$DEVENV_ROOT/target}"
-    cargo build --workspace --all-targets
+    workspace-gc --guard
     cargo clippy --workspace --all-targets -- -D warnings
     cargo fmt --all --check
-    cargo nextest run --workspace --no-tests=pass
+    suite --no-tests=pass
     app="$DEVENV_ROOT/apps/campaign/Cargo.toml"
     diff <(sed -n '/^\[workspace.lints.rust\]/,$p' "$DEVENV_ROOT/Cargo.toml") \
       <(sed -n '/^\[workspace.lints.rust\]/,$p' "$app")
-    cargo build --manifest-path "$app" --all-targets
     cargo clippy --manifest-path "$app" --all-targets -- -D warnings
     cargo fmt --manifest-path "$app" --all --check
     cargo nextest run --manifest-path "$app" --config-file "$DEVENV_ROOT/.config/nextest.toml"
@@ -43,6 +42,30 @@ in
 
   scripts.size-check.exec = ''
     "$DEVENV_ROOT/work/tools/size-check.sh"
+  '';
+
+  scripts.suite.exec = ''
+    "$DEVENV_ROOT/work/tools/suite" "$@"
+  '';
+
+  scripts.conf.exec = ''
+    "$DEVENV_ROOT/work/tools/conf" "$@"
+  '';
+
+  scripts.codemap.exec = ''
+    "$DEVENV_ROOT/work/tools/codemap" "$@"
+  '';
+
+  scripts.house-check.exec = ''
+    "$DEVENV_ROOT/work/tools/house-check" "$@"
+  '';
+
+  scripts.workspace-gc.exec = ''
+    "$DEVENV_ROOT/work/tools/workspace-gc" "$@"
+  '';
+
+  scripts.adtb-probe.exec = ''
+    "$DEVENV_ROOT/work/tools/adtb-probe" "$@"
   '';
 
   scripts.quality-metrics.exec = ''

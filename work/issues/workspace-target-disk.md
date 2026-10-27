@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: feature
 priority: 82
 summary: "each jj workspace keeps a 15 to 22 GB target directory, and the disk filled twice during parallel tracks"
+closed: 2026-10-26
 depends-on:
   - full-check-builds-dev-tests
 tags:
@@ -22,3 +23,13 @@ Fix:
 1. A devenv script `workspace-gc` for the lead that lists every workspace of the repo (`jj workspace list`), its target size and whether its working copy is empty, and runs `cargo clean` in those that are empty or forgotten.
 2. A free-space guard in the `suite` script and in `check`: below 30 GB free, print the largest target directories and stop before building.
 3. Shrink what each build keeps: drop the duplicate dev-profile test build (full-check-builds-dev-tests) and build `apps/campaign` into the root `target/` (campaign-app-not-in-check).
+
+## 2026-10-26: done
+
+`work/tools/workspace-gc` (devenv `workspace-gc`) lists each build directory of every workspace (`target/` and `apps/campaign/target/`) and of each forgotten `adtb-*` sibling directory, with its size, whether the working copy is empty and hours since its last build; `--clean` runs `cargo clean --target-dir` on the forgotten ones and on those with an empty working copy idle for `ADTB_GC_IDLE_HOURS` (default 2); `--guard` is silent at 30 GB free (`ADTB_MIN_FREE_GB`) and otherwise prints the table and fails. `suite` and `check` start with the guard. `apps/campaign/.cargo/config.toml` builds the app into the root `target/`. Open: `cargo clean` refuses a directory without `CACHEDIR.TAG`, which the main checkout's `target/` lacks; `--clean` reports it and moves on.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed with the devex track.
