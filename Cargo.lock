@@ -73,6 +73,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "adtb-manual"
+version = "0.1.0"
+dependencies = [
+ "adtb",
+ "adtb-codegen",
+ "adtb-lang",
+]
+
+[[package]]
 name = "adtb-probe"
 version = "0.1.0"
 dependencies = [

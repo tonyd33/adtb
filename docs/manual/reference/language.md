@@ -273,6 +273,13 @@ NAME () -> Set T = ...`, is a view. A parameter may have a function
 type, and a call may pass a lambda for it. See
 [syntax.md §5.4](../../spec/syntax.md#54-functions).
 
+`fn NAME (p: T, ...) -> U = host "NAME" version "V" [deterministic]`
+declares a function whose body a program supplies when it opens the
+database, under that name and version. The shell supplies none, so a
+query that calls one there fails with
+`` fatal: host function `NAME` is missing ``. A program supplies the
+body as [the Rust API](rust-api.md#host-functions) shows.
+
 ### Check and constraint
 
 `check NAME on R (e)` requires `e` of every row of `R`, with the row's
@@ -337,7 +344,8 @@ See [queries.md §7](../../spec/queries.md#7-navigation).
 `Ebook { size: 3 }` builds a constructor value, and `Loan.Out { ... }`
 qualifies it when the bare name is ambiguous. `{ who: "ann", n: 2 }` is
 an anonymous record. `Book { b with year: 1816 }` is `b` with one field
-replaced. Every field is named; there is no shorthand.
+replaced; for a record type the name may be left out, as
+`{ b with year: 1816 }`. Every field is named; there is no shorthand.
 See [syntax.md §6.3](../../spec/syntax.md#63-constructors-and-records).
 
 ### If, try and lambdas
@@ -415,7 +423,9 @@ match e | PATTERN [if GUARD] -> EXPR | ...
 A `match` takes the first arm whose pattern matches and whose guard
 holds. It must cover every constructor of the scrutinee's type by name;
 leaving one out is an error. A wildcard `_` or a bare binder covers
-only scalars such as integers and text.
+scalars such as integers and text. In ad hoc text `_` may also cover
+the constructors an arm does not name; in schema functions,
+constraints and bundles it may not.
 
 | Pattern | Matches |
 | --- | --- |
@@ -540,9 +550,10 @@ transact
   return e
 ```
 
-A `transact` block runs its items in order as one statement: each item
-sees what the earlier ones wrote, and if any fails, faults or violates
-a constraint, nothing commits. `let x = insert ...` binds the row the
+A `transact` block runs its items as one statement: every item reads
+the database as it was when the block began, the writes apply together
+at the end, and if any item fails, faults or violates a constraint,
+nothing commits. `let x = insert ...` binds the row the
 insert made; `key x` is its key. `return e` gives the block's result.
 
 At the prompt a block runs at the blank line after it:
@@ -583,7 +594,8 @@ clauses. These run in the engine:
 | `add constructor T.C { ... } [before D \| after D] [arm f: P -> e]` | add a constructor, declared but not yet open for writes |
 | `enable r.C`, `deprecate r.C`, `disable r.C` | open a constructor to writes, mark an enabled one deprecated, or return an enabled one to declared while it has no rows |
 | `rename constructor T.C to D` | rename a constructor |
-| `merge constructor T.(C \| D) into E { ... } by match ...` | merge constructors into one, with a field whose nullary sum names them |
+| `remove constructor T.C` | remove a deprecated constructor that has no rows |
+| `merge constructor T.(C \| D) into E { ... } [by match ...]` | merge constructors into one, with a field whose enumeration names them; `by match` gives the field's value when it is not the constructor's name |
 | `split constructor T.C into D { ... } \| E { ... } by match ...` | route the rows of one constructor onto several |
 | `nest constructor T.(C \| D) into E { f: S }`, `unnest constructor T.E` | move constructors into a value-level sum field and back |
 | `add field T.C.f: U fill e`, `drop field T.C.f`, `rename field T.C.f to g` | change a constructor's fields; `T.f` is a header field |
@@ -600,8 +612,7 @@ for later inserts. The `arm` clauses give the new constructor's arm of
 each schema function that matches on the type. A schema file's
 `default` clauses are applied, but the operators `add default`,
 `add computed` and `script` are not yet available: the engine refuses
-them with `this operator has no resolved form yet`. Nor is
-`remove constructor`.
+them with `this operator has no resolved form yet`.
 
 See [syntax.md §8](../../spec/syntax.md#8-schema-operators),
 [evolution.md §4](../../spec/evolution.md#4-operators) and

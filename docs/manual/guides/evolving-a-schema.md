@@ -223,7 +223,7 @@ When one constructor turns out to be two kinds of thing, `split`
 replaces it with several, routing each existing row with a `match`.
 `merge` is the inverse: it folds several constructors into one whose
 discriminator field records which one each row came from. A merge
-needs a nullary sum whose constructors are exactly the merged ones,
+needs an enumeration whose constructors are exactly the merged ones,
 for that field. These operators are shown in a history of their own,
 on a fresh database:
 
@@ -295,7 +295,8 @@ A unique added over data that breaks it is refused, as is a
 constraint the data violates; fix the data first, then add it. Others
 you will see:
 
-- Disabling a constructor that holds rows: "constructor relation
+- Disabling a constructor that holds rows (`disable r.C` returns an
+  enabled constructor with no rows to declared): "constructor relation
   contacts.Lead holds rows; it cannot be disabled".
 - A schema function that no longer checks after the migration, such
   as one reading a dropped field: the refusal names the function's

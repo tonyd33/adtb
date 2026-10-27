@@ -41,3 +41,9 @@ Open: the in-process Rust API page and its example test; the errors reference; b
 ## 2026-10-27: landed
 
 The tutorial, guides, concepts and reference landed in `docs/manual/`, every example run by `crates/adtb-shell/tests/manual.rs`. Still open: the Rust API page (needs a test that compiles Rust examples), the errors reference, the pages for operators and commands the engine refuses (listed under "Not yet in this manual" in `docs/manual/README.md`), a reader check, and Tony's sign-off. Bugs found are in `manual-found-panics`, `after-literal-unchecked`, `keyed-record-add-ctor`, `refusal-message-follow-ups` and `shell-new-user-follow-ups`.
+
+## 2026-10-27: done
+
+Landed: `docs/manual/reference/rust-api.md` (crate setup, migrations, a bundle and its hash, code generation in `build.rs`, open and call, values, calls by ordinal through `Registered`, ad hoc text, transactions and `transact`, cancellation and deadlines, Arrow results, bulk append, host functions, open options, close) and `docs/manual/reference/errors.md` (every reason the engine raises, with cause and remedy, open errors, and the reasons it does not raise). The new crate `crates/adtb-manual` extracts each page's `rust` blocks into tests: each block is a whole `main.rs`, run in an empty directory, its printed lines compared with the `text` block after it; the page's `build.rs` block is the build script the crate runs, checked byte for byte. A reader pass fixed contradictions and gaps in the language reference, tutorial 1, 5, 6 and 7, the guides, the migration-log concept and the prelude, whose sessions now show each output under its input. The README lists what is still missing: bundles in the shell, translation of earlier pins, reading the past, the rest of the in-process API, operations, and the operators refused at apply.
+
+Open: the reader check by a fresh agent writing a program from the manual alone, and Tony's sign-off.

@@ -42,6 +42,7 @@ value. Create the database and add a few rows:
 
 ```console
 $ adtb --create --schema demo.adt demo.db
+adtb> \q
 $ adtb demo.db
 adtb> insert pets.Cat { name: "tom", lives: 9 }
 adtb> insert pets.Cat { name: "kit", lives: 3 }
@@ -90,22 +91,22 @@ infinity.
 ```console
 $ adtb demo.db
 adtb> 1.25 + 1.5
-adtb> 1.25 * 1.5
-adtb> 1 + 1.5
-adtb> "a\tb\n\"c\""
-adtb> "Z" < "a"
-adtb> 1.0e0 / 0.0e0
-adtb> (0.0e0 / 0.0e0) > (1.0e0 / 0.0e0)
-adtb> -0.0e0
-adtb> i32(5) + i64(1)
 2.75
+adtb> 1.25 * 1.5
 1.875
+adtb> 1 + 1.5
 2.5
+adtb> "a\tb\n\"c\""
 "a\tb\n\"c\""
+adtb> "Z" < "a"
 True
+adtb> 1.0e0 / 0.0e0
 inf
+adtb> (0.0e0 / 0.0e0) > (1.0e0 / 0.0e0)
 True
+adtb> -0.0e0
 0.0
+adtb> i32(5) + i64(1)
 `+` does not apply to I32 and I64
 ```
 
@@ -124,36 +125,36 @@ is parenthesised: `(Set I64).parse(...)`, `(Tag Pet).parse(...)`.
 ```console
 $ adtb demo.db
 adtb> Instant.parse("2026-10-25T09:30:00Z")
-adtb> Instant.parse("2026-10-25T09:30:00.5Z")
-adtb> Date.parse("2026-10-25")
-adtb> Time.parse("09:30:00")
-adtb> DateTime.parse("2026-10-25T09:30:00")
-adtb> Period.parse("P1M-15D")
-adtb> Duration.parse("90s")
-adtb> Bytes.parse("0x00FF")
-adtb> F64.parse("NaN")
-adtb> I64.parse("12")
-adtb> I64.parse("twelve")
-adtb> Text.parse("\"hi\"")
-adtb> (Set I64).parse("[3, 1]")
-adtb> print(2.50)
-adtb> print(pets.key("tom"))
-adtb> print([3, 1, 2])
 Some { value: 2026-10-25T09:30:00.000000Z }
+adtb> Instant.parse("2026-10-25T09:30:00.5Z")
 Some { value: 2026-10-25T09:30:00.500000Z }
+adtb> Date.parse("2026-10-25")
 Some { value: 2026-10-25 }
+adtb> Time.parse("09:30:00")
 Some { value: 09:30:00.000000 }
+adtb> DateTime.parse("2026-10-25T09:30:00")
 Some { value: 2026-10-25T09:30:00.000000 }
+adtb> Period.parse("P1M-15D")
 Some { value: P1M-15D }
+adtb> Duration.parse("90s")
 Some { value: 90s }
+adtb> Bytes.parse("0x00FF")
 Some { value: 0x00ff }
+adtb> F64.parse("NaN")
 Some { value: NaN }
+adtb> I64.parse("12")
 Some { value: 12 }
+adtb> I64.parse("twelve")
 None
+adtb> Text.parse("\"hi\"")
 Some { value: "hi" }
+adtb> (Set I64).parse("[3, 1]")
 Some { value: [1, 3] }
+adtb> print(2.50)
 "2.50"
+adtb> print(pets.key("tom"))
 "pets.key(\"tom\")"
+adtb> print([3, 1, 2])
 "[1, 2, 3]"
 ```
 
@@ -177,10 +178,10 @@ type Bool ordered = False | True
 ```console
 $ adtb demo.db
 adtb> true and false
+False
 adtb> not true
+False
 adtb> if 1 > 2 then "yes" else "no"
-False
-False
 "no"
 ```
 
@@ -198,8 +199,8 @@ type Result a e = Ok { value: a } | Err { error: e }
 ```console
 $ adtb demo.db
 adtb> match I64.parse("12") | Some n -> n.value + 1 | None -> 0
-adtb> match I64.parse("x") | Some n -> n.value + 1 | None -> 0
 13
+adtb> match I64.parse("x") | Some n -> n.value + 1 | None -> 0
 0
 ```
 
@@ -218,15 +219,15 @@ of `e` as a `Tag T` value, which you can select, compare and group by.
 ```console
 $ adtb demo.db
 adtb> from p in pets select { name: p.name, kind: tag(p) } order by p.name
-adtb> from p in pets group p by tag(p) into g select { kind: g.key, n: count(x for x in g) }
-adtb> (Tag Pet).parse("Cat")
-adtb> (Tag Pet).parse("Bird")
 { kind: Cat, name: "kit" }
 { kind: Dog, name: "rex" }
 { kind: Cat, name: "tom" }
+adtb> from p in pets group p by tag(p) into g select { kind: g.key, n: count(x for x in g) }
 { kind: Cat, n: 2 }
 { kind: Dog, n: 1 }
+adtb> (Tag Pet).parse("Cat")
 Some { value: Cat }
+adtb> (Tag Pet).parse("Bird")
 None
 ```
 
@@ -284,10 +285,10 @@ type Fault = DivisionByZero | ArithmeticOverflow | OutOfRange | NotFinite
 ```console
 $ adtb demo.db
 adtb> 7 / 0
-adtb> try (7 / 0)
-adtb> try (7 / 1)
 fault `DivisionByZero`
+adtb> try (7 / 0)
 Err { error: DivisionByZero }
+adtb> try (7 / 1)
 Ok { value: 7 }
 ```
 
@@ -308,10 +309,10 @@ A key declared `generate uuidv7` holds a `Uuid`.
 ```console
 $ adtb demo.db
 adtb> uuid("0190A4B2-7C3E-7D4F-9A21-5B6C7D8E9F01")
-adtb> text(uuid("0190a4b2-7c3e-7d4f-9a21-5b6c7d8e9f01"))
-adtb> uuid("nope")
 uuid("0190a4b2-7c3e-7d4f-9a21-5b6c7d8e9f01")
+adtb> text(uuid("0190a4b2-7c3e-7d4f-9a21-5b6c7d8e9f01"))
 "0190a4b2-7c3e-7d4f-9a21-5b6c7d8e9f01"
+adtb> uuid("nope")
 fault `InvalidText`
 ```
 
@@ -337,18 +338,18 @@ excluded, over an ordered type `a`. You build one only with `span`.
 ```console
 $ adtb demo.db
 adtb> span(3, 7)
-adtb> end(span(3, 7))
-adtb> overlaps(span(1, 5), span(4, 9))
-adtb> overlaps(span(1, 5), span(5, 9))
-adtb> covers(span(1, 10), 10)
-adtb> from i in instant("2026-10-25T09:00:00Z") select covers(span(i, i + 1h), i + 30min)
-adtb> span(7, 3)
 span(3, 7)
+adtb> end(span(3, 7))
 7
+adtb> overlaps(span(1, 5), span(4, 9))
 True
+adtb> overlaps(span(1, 5), span(5, 9))
 False
+adtb> covers(span(1, 10), 10)
 False
+adtb> from i in instant("2026-10-25T09:00:00Z") select covers(span(i, i + 1h), i + 30min)
 True
+adtb> span(7, 3)
 fault `InvalidSpan`
 ```
 
@@ -388,16 +389,16 @@ arithmetic never wraps.
 ```console
 $ adtb demo.db
 adtb> 1 + 2 * 3
-adtb> -7 / 2
-adtb> -7 % 2
-adtb> 9223372036854775807 + 1
-adtb> i8(100) + i8(100)
-adtb> 1.0 / 3.0
 7
+adtb> -7 / 2
 -3
+adtb> -7 % 2
 -1
+adtb> 9223372036854775807 + 1
 fault `ArithmeticOverflow`
+adtb> i8(100) + i8(100)
 fault `ArithmeticOverflow`
+adtb> 1.0 / 3.0
 decimals have no `/` and no `%`; use `div` with a scale and a rounding
 ```
 
@@ -415,18 +416,18 @@ Each checked function returns `None` where its operator would fault and
 ```console
 $ adtb demo.db
 adtb> checked_add(9223372036854775807, 1)
+None
 adtb> checked_add(i8(100), i8(100))
+None
 adtb> checked_sub(1, 2)
-adtb> checked_div(7, 0)
-adtb> checked_rem(7, 2)
-adtb> checked_neg(5)
-adtb> checked_mul(1.25, 2.0)
-None
-None
 Some { value: -1 }
+adtb> checked_div(7, 0)
 None
+adtb> checked_rem(7, 2)
 Some { value: 1 }
+adtb> checked_neg(5)
 Some { value: -5 }
+adtb> checked_mul(1.25, 2.0)
 Some { value: 2.500 }
 ```
 
@@ -446,26 +447,26 @@ type.
 ```console
 $ adtb demo.db
 adtb> div(10.00, 3.00, 2, HalfEven)
-adtb> div(1, 3, 4, HalfUp)
-adtb> round(2.345, 2, HalfEven)
-adtb> round(2.345, 2, HalfUp)
-adtb> round(-2.345, 1, Floor)
-adtb> round(2.5, 0, HalfEven)
-adtb> round(3.5, 0, HalfEven)
-adtb> rescale(2.5, 3)
-adtb> abs(-2.50)
-adtb> div(1.00, 0.00, 2, HalfEven)
-adtb> rescale(2.50, 1)
 3.33
+adtb> div(1, 3, 4, HalfUp)
 0.3333
+adtb> round(2.345, 2, HalfEven)
 2.34
+adtb> round(2.345, 2, HalfUp)
 2.35
+adtb> round(-2.345, 1, Floor)
 -2.4
+adtb> round(2.5, 0, HalfEven)
 2
+adtb> round(3.5, 0, HalfEven)
 4
+adtb> rescale(2.5, 3)
 2.500
+adtb> abs(-2.50)
 2.50
+adtb> div(1.00, 0.00, 2, HalfEven)
 fault `DivisionByZero`
+adtb> rescale(2.50, 1)
 `rescale` takes a scale of at least the operand's 2; use `round` to narrow
 ```
 
@@ -488,24 +489,24 @@ arguments and returns an `Option`.
 ```console
 $ adtb demo.db
 adtb> i8(100)
-adtb> i8(300)
-adtb> checked_i8(300)
-adtb> i64(2.5, HalfEven)
-adtb> i32(2.7, Floor)
-adtb> i64(2.5e0, HalfUp)
-adtb> i64(0.0e0 / 0.0e0, Floor)
-adtb> decimal(3, 2)
-adtb> f64(2.50)
-adtb> f32(16777217)
 100
+adtb> i8(300)
 fault `OutOfRange`
+adtb> checked_i8(300)
 None
+adtb> i64(2.5, HalfEven)
 2
+adtb> i32(2.7, Floor)
 2
+adtb> i64(2.5e0, HalfUp)
 3
+adtb> i64(0.0e0 / 0.0e0, Floor)
 fault `NotFinite`
+adtb> decimal(3, 2)
 3.00
+adtb> f64(2.50)
 2.5
+adtb> f32(16777217)
 16777216.0
 ```
 
@@ -525,16 +526,16 @@ when the value is stored, as a constraint.
 ```console
 $ adtb demo.db
 adtb> Cents(250)
-adtb> unwrap(Cents(250))
-adtb> Email("not an email")
-adtb> value(pets.key("tom"))
-adtb> members.key(user: "ann", team: "red")
-adtb> value(members.key(user: "ann", team: "red"))
 Cents(250)
+adtb> unwrap(Cents(250))
 250
+adtb> Email("not an email")
 Email("not an email")
+adtb> value(pets.key("tom"))
 "tom"
+adtb> members.key(user: "ann", team: "red")
 members.key(team: "red", user: "ann")
+adtb> value(members.key(user: "ann", team: "red"))
 { team: "red", user: "ann" }
 ```
 
@@ -576,42 +577,42 @@ sorts text the way that locale does.
 ```console
 $ adtb demo.db
 adtb> "caf" ++ "é"
-adtb> bytes_len("café")
-adtb> scalar_len("café")
-adtb> scalar_len("🇫🇷")
-adtb> grapheme_len("🇫🇷")
-adtb> starts_with("hello", "he")
-adtb> contains("hello", "")
-adtb> matches("ann@example.com", "^[^@]+@[^@]+$")
-adtb> matches("ABC", "(?i)abc")
-adtb> matches("٣", "^\\d$")
-adtb> upper("straße")
-adtb> fold("Straße")
-adtb> lower("ÀB")
-adtb> text(2.50)
-adtb> text(0.1e0 + 0.2e0)
-adtb> text(90s)
-adtb> from p in pets select p.name order by collate(p.name, "en@cldr-49")
-adtb> matches("a", "(")
 "café"
+adtb> bytes_len("café")
 5
+adtb> scalar_len("café")
 4
+adtb> scalar_len("🇫🇷")
 2
+adtb> grapheme_len("🇫🇷")
 1
+adtb> starts_with("hello", "he")
 True
+adtb> contains("hello", "")
 True
+adtb> matches("ann@example.com", "^[^@]+@[^@]+$")
 True
+adtb> matches("ABC", "(?i)abc")
 True
+adtb> matches("٣", "^\\d$")
 True
+adtb> upper("straße")
 "STRASSE"
+adtb> fold("Straße")
 "strasse"
+adtb> lower("ÀB")
 "àb"
+adtb> text(2.50)
 "2.50"
+adtb> text(0.1e0 + 0.2e0)
 "0.30000000000000004"
+adtb> text(90s)
 "90s"
+adtb> from p in pets select p.name order by collate(p.name, "en@cldr-49")
 "kit"
 "rex"
 "tom"
+adtb> matches("a", "(")
 `(` is not a regular expression: regex parse error:
     (
     ^
@@ -628,14 +629,14 @@ the empty one.
 ```console
 $ adtb demo.db
 adtb> bytes("hi")
-adtb> bytes("hi") ++ bytes("!")
-adtb> bytes_len(bytes("hé"))
-adtb> utf8(bytes("hé"))
-adtb> match Bytes.parse("0xff") | Some b -> utf8(b.value) | None -> None
 0x6869
+adtb> bytes("hi") ++ bytes("!")
 0x686921
+adtb> bytes_len(bytes("hé"))
 3
+adtb> utf8(bytes("hé"))
 Some { value: "hé" }
+adtb> match Bytes.parse("0xff") | Some b -> utf8(b.value) | None -> None
 None
 ```
 
@@ -660,24 +661,24 @@ exactly.
 ```console
 $ adtb demo.db
 adtb> millis(1500)
-adtb> minutes(90)
-adtb> hours(48)
-adtb> 1h + 30min
-adtb> 2h * 3
-adtb> 7d / 2
-adtb> weeks(2)
-adtb> years(2)
-adtb> days(1) + months(1)
-adtb> -months(1)
 1500ms
+adtb> minutes(90)
 90min
+adtb> hours(48)
 2d
+adtb> 1h + 30min
 90min
+adtb> 2h * 3
 6h
+adtb> 7d / 2
 84h
+adtb> weeks(2)
 P0M14D
+adtb> years(2)
 P24M0D
+adtb> days(1) + months(1)
 P1M1D
+adtb> -months(1)
 P-1M0D
 ```
 
@@ -699,12 +700,12 @@ use `add_period`.
 ```console
 $ adtb demo.db
 adtb> from i in instant("2026-10-25T09:30:00Z") select i + 90min
-adtb> from a in instant("2026-10-25T09:30:00Z"), b in instant("2026-10-24T09:00:00Z") select a - b
-adtb> from a in date("2026-10-25"), b in date("2026-10-01") select a - b
-adtb> from d in datetime("2026-10-25T09:30:00") select d + 1h
 2026-10-25T11:00:00.000000Z
+adtb> from a in instant("2026-10-25T09:30:00Z"), b in instant("2026-10-24T09:00:00Z") select a - b
 1470min
+adtb> from a in date("2026-10-25"), b in date("2026-10-01") select a - b
 24d
+adtb> from d in datetime("2026-10-25T09:30:00") select d + 1h
 2026-10-25T10:30:00.000000
 ```
 
@@ -720,10 +721,10 @@ decides the result type.
 ```console
 $ adtb demo.db
 adtb> from d in date("2021-01-31") select add_period(d, months(1), Clamp)
-adtb> from d in date("2021-01-31") select add_period(d, months(1), Reject)
-adtb> from d in datetime("2026-10-25T09:30:00") select add_period(d, years(1), Clamp)
 2021-02-28
+adtb> from d in date("2021-01-31") select add_period(d, months(1), Reject)
 None
+adtb> from d in datetime("2026-10-25T09:30:00") select add_period(d, years(1), Clamp)
 2027-10-25T09:30:00.000000
 ```
 
@@ -747,16 +748,16 @@ line up.
 ```console
 $ adtb demo.db
 adtb> from d in datetime("2026-10-25T09:30:00") select zoned(d, "Europe/Paris", Clamp)
-adtb> from d in datetime("2026-03-29T01:30:00") select zoned(d, "Europe/Lisbon", Clamp)
-adtb> from d in datetime("2026-03-29T01:30:00") select zoned(d, "Europe/Lisbon", Reject)
-adtb> from i in instant("2026-10-25T09:30:00Z") select in_zone(i, "Asia/Tokyo")
-adtb> from i in instant("2026-10-25T09:30:00Z") select to_instant(in_zone(i, "Asia/Tokyo"))
-adtb> from i in instant("2026-10-25T09:30:00Z") select in_zone(i, "europe/lisbon")
 2026-10-25T09:30:00.000000[Europe/Paris]
+adtb> from d in datetime("2026-03-29T01:30:00") select zoned(d, "Europe/Lisbon", Clamp)
 2026-03-29T02:30:00.000000[Europe/Lisbon]
+adtb> from d in datetime("2026-03-29T01:30:00") select zoned(d, "Europe/Lisbon", Reject)
 None
+adtb> from i in instant("2026-10-25T09:30:00Z") select in_zone(i, "Asia/Tokyo")
 2026-10-25T18:30:00.000000[Asia/Tokyo]
+adtb> from i in instant("2026-10-25T09:30:00Z") select to_instant(in_zone(i, "Asia/Tokyo"))
 2026-10-25T09:30:00.000000Z
+adtb> from i in instant("2026-10-25T09:30:00Z") select in_zone(i, "europe/lisbon")
 fault `UnknownZone`
 ```
 
@@ -784,22 +785,22 @@ only when the exact total is out of range.
 ```console
 $ adtb demo.db
 adtb> count(p for p in pets)
-adtb> count(p for p in pets where p.name == "zzz")
-adtb> sum(c.lives for c in pets.Cat)
-adtb> sum(c.lives for c in pets.Cat where c.lives > 100)
-adtb> min(p.name for p in pets)
-adtb> max(c.lives for c in pets.Cat where c.lives > 100)
-adtb> avg(f64(c.lives) for c in pets.Cat)
-adtb> count(x for x in [1, 1, 2])
-adtb> sum(x for x in (from c in pets.Cat select c.lives))
 3
+adtb> count(p for p in pets where p.name == "zzz")
 0
+adtb> sum(c.lives for c in pets.Cat)
 12
+adtb> sum(c.lives for c in pets.Cat where c.lives > 100)
 0
+adtb> min(p.name for p in pets)
 Some { value: "kit" }
+adtb> max(c.lives for c in pets.Cat where c.lives > 100)
 None
+adtb> avg(f64(c.lives) for c in pets.Cat)
 Some { value: 6.0 }
+adtb> count(x for x in [1, 1, 2])
 2
+adtb> sum(x for x in (from c in pets.Cat select c.lives))
 `sum` ranges over rows, not over values a `select` may have merged; range over the rows and aggregate the field
 ```
 

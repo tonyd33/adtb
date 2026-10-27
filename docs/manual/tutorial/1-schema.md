@@ -56,7 +56,8 @@ hidden row id besides it. The key can be:
   kennels;
 - a field of type `Key r` for the relation itself, as `id: Key
   donations`, which `generate sequence` fills for you when an insert
-  leaves it out.
+  leaves it out. `Key r` is the type of a key of relation `r`;
+  [page 5](5-references-and-constraints.md) covers it.
 
 The full rules for keys are in [the specification](../../spec/model.md#7-keys).
 

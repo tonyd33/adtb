@@ -18,7 +18,10 @@ that disagrees with it.
 Migrations are numbered from 1 without gaps, and the schema after
 migration `n` is version `n`. The first migration of a database is
 usually a schema file, a module of declarations, which the shell turns
-into the operators that add each declaration. Save this as `shop.adt`:
+into the operators that add each declaration. A program that opens the
+database itself ships operators only, its first migration starting
+with `add module`, as [the Rust API](../reference/rust-api.md#the-migrations)
+shows. Save this as `shop.adt`:
 
 ```adt shop.adt
 module shop
@@ -115,6 +118,9 @@ module shop
 add constructor Item.Preorder { ships: Text } after Listed
 ```
 
+`after Listed` places the new constructor after `Listed` in the
+type's order of constructors.
+
 ```adt 0005-enable.adt
 module shop
 enable items.Preorder
@@ -143,17 +149,25 @@ it can be emptied and later removed.
 
 ## Bundles and pinned versions
 
-The specification also lets an application register its queries in a
-bundle pinned to a schema version, so that the engine can check every
-migration against the queries still in use. The shell runs ad hoc text
-at the current version, and this engine does not run bundle
-registration yet:
+An application registers its queries and transactions in a bundle
+pinned to a schema version, so that the engine checks each of them
+once, at that version, and knows which constructors every live
+program reads. A program registers its bundles when it opens the
+database in process, as [the Rust API](../reference/rust-api.md)
+shows; that open is also when it applies the migrations it ships. The
+shell runs ad hoc text at the current version and registers no
+bundles, and the `register bundle` command is refused:
 
 <!-- exit 1 -->
 ```console
 $ adtb shop.db -c 'register bundle "web.adb"'
 `register bundle` does not run in this engine yet
 ```
+
+A bundle pinned at an earlier version than the database's registers,
+but this engine refuses its calls: it does not yet translate a call
+across versions, so ship each bundle pinned at the version your log
+ends at.
 
 The rules are in [the operator log](../../spec/evolution.md#1-the-operator-log),
 [versions](../../spec/evolution.md#2-versions),

@@ -1,8 +1,8 @@
 //! The shell sessions of the user manual, run in order against the `adtb` binary.
 //!
-//! A fenced block whose info string is a language and a name, such as `adt NAME` or `csv NAME`,
-//! is a file the page asks the reader to save as `NAME`; `adt fragment` is an excerpt, not a
-//! file. A `console` block holds `$ adtb ...` commands, each followed by the output it prints
+//! A fenced block whose info string is a language and a path, such as `adt NAME` or `csv
+//! dir/NAME`, is a file the page asks the reader to save at that path; `adt fragment` is an
+//! excerpt, not a file. A `console` block holds `$ adtb ...` commands, each followed by the output it prints
 //! on stdout and stderr, interleaved as printed. A line `<!-- exit N... -->` just before a
 //! `console` block lists the status each of its sessions exits with; without one, each exits 0.
 //! A command without `-c` reads the lines after it that start with the prompt or the
@@ -205,7 +205,11 @@ fn check(manual: &Path, page: &Path) -> Option<Vec<String>> {
     let mut ran = 0;
     for block in blocks(&text) {
         match block {
-            Block::File { name, text } => std::fs::write(dir.join(name), text).unwrap(),
+            Block::File { name, text } => {
+                let path = dir.join(name);
+                std::fs::create_dir_all(path.parent().expect("a file's directory")).unwrap();
+                std::fs::write(path, text).unwrap();
+            }
             Block::Console { lines, exits } => {
                 let sessions = sessions(&lines);
                 if !exits.is_empty() && exits.len() != sessions.len() {

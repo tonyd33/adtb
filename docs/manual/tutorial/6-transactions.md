@@ -199,9 +199,10 @@ the open transaction is rolled back
 
 Two transactions that run at the same time and could not have run one
 after the other with the same results cannot both commit: one fails
-with a serialization failure, and running it again is the fix. A
-`transact` block can ask the engine to do that itself, up to a number
-of times:
+with a serialization failure, and running it again is the fix. Text
+that writes is rerun by the engine on such a failure, up to the
+`RetryLimit` setting, five times unless you change it. A `transact`
+block can set its own limit with `retry`:
 
 ```console
 $ adtb shelter.db

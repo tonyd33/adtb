@@ -242,7 +242,8 @@ adtb> from m in catalog::migrations where value(m.version) > 1 select { version:
 adtb> \q
 ```
 
-A migration is named by its four-digit number, `0003`. The log only
+`value(k)` reads a key's value back, here the migration's number. A
+migration is named by its four-digit number, `0003`. The log only
 grows: a revert does not remove migration 3, it adds migration 6, which
 undoes it. The refused `grown.adt` never entered the log, so
 `unrename.adt` is migration 6.

@@ -44,7 +44,9 @@ constraint one_adopter_per_phone =
 `Key pets` is the type of a key of `pets`: a reference to a pet. An
 adoption's `pet` field holds the key of the pet adopted, and since
 `pet` is also the key of `adoptions`, a pet is adopted at most once.
-`Key pets.Dog` is narrower: a reference to a pet that is a dog.
+`Key pets.Dog` is narrower: a reference to a pet that is a dog. The
+`index (phone)` clause on `adopters` is explained with the constraint
+it serves, below.
 
 Create the database with the pets and adopters of the earlier pages:
 

@@ -6,8 +6,9 @@ manual teaches you to use it. It describes what the engine runs today;
 the normative rules are in [the specification](../spec/README.md), and
 where the two differ the specification is right.
 
-Every example on these pages is run by the test suite against the
-`adtb` shell, and the output shown is the output it prints.
+Every example on these pages is run by the test suite, against the
+`adtb` shell or, for a Rust program, compiled and run, and the output
+shown is the output it prints.
 
 ## Tutorial
 
@@ -51,22 +52,36 @@ in two commands, so you can also start at any of them.
 - [The shell](reference/shell.md)
 - [The language](reference/language.md)
 - [The prelude](reference/prelude.md)
+- [The Rust API](reference/rust-api.md): opening a database from a
+  program, bundles and generated code, calls, transactions,
+  cancellation, Arrow results, bulk append and host functions.
+- [Errors](reference/errors.md): every error you can meet, what causes
+  it and what to do.
 
 ## Not yet in this manual
 
 These pages are planned. Some wait for the engine to run what the
-specification describes, the rest for a test that runs their examples:
+specification describes:
 
-- Calling adtb from Rust: opening a database in process, calls,
-  transactions and errors through the embedding API. The engine runs
-  it; the page waits for a test that compiles its examples.
-- Bundles: registering a bundle of queries and transactions, pinning
-  it to a schema version, and retiring it. The shell has no bundles,
-  and `register bundle` is refused.
-- Errors: every error a user can see, what it means and what to do.
+- Bundles in the shell: `register bundle` and `supersede bundle` as
+  commands, and calling a registered query from ad hoc text. A program
+  registers bundles when it opens the database
+  ([the Rust API](reference/rust-api.md)); the shell refuses
+  `register bundle`.
+- Serving a bundle pinned at an earlier version than the database's:
+  the engine registers it and refuses its calls as `Untranslatable`.
+- Reading the past: `at commit` and `at instant` blocks. Even with
+  the `RetentionWindow` setting raised, the engine refuses a read at
+  the position of a commit it has just made with `HistoryUnavailable`,
+  and `sys::commit_times` lists no commits to name.
+- The rest of the in-process API: feeds, notices, encryption and key
+  sources, the metrics callback, `finalize_upgrade`, log shipping and
+  embedded replicas.
 - Operations: `print schema`, `verify`, `export`, dump and restore,
   backups and `reindex`, which the engine refuses today with "does not
   run in this engine yet".
-- Migration scripts, defaults, computed fields and stored views: the
-  `script`, `add default`, `add computed` and `store` operators, which
-  the engine refuses with "this operator has no resolved form yet".
+- Migration scripts, stored views, and defaults and computed fields
+  added by migration: the `script`, `store`, `add default` and
+  `add computed` operators, which the engine refuses with "this
+  operator has no resolved form yet". The `default` and `computed`
+  clauses of a schema file do run.

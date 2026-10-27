@@ -28,7 +28,9 @@ relation load_rejects : RejectedRow key (load, line)
 
 `BookRow` is the shape of one line of the books file. It is a type
 with no relation: a file is read at a type you declare, never at one
-guessed from the file.
+guessed from the file. `RejectedRow` is a prelude type for the rows a
+load could not convert; [Keep the rows that do not fit](#keep-the-rows-that-do-not-fit)
+uses it.
 
 ```console
 $ adtb --create --schema library.adt library.db
@@ -215,7 +217,8 @@ of the schema, and lives until the transaction that declares it ends.
 Inside an interactive transaction, opened with `\begin`, it lasts
 across several texts.
 
-The rejected rows above had a misspelt format and a size in words.
+The rejected rows above had a format that is not a constructor and a
+size in words.
 Save the corrected rows, still with the bad format, as `fixes.csv`:
 
 ```csv fixes.csv
