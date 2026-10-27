@@ -19,3 +19,7 @@ From the operator log tracks:
 - `add field X` then `rename field X` in one migration is refused by `Source::resolved` ("gone by the migration's end").
 - Validation evaluates constraints in full with a fixed 1 GiB grant (`VALIDATION_MEMORY` in `crates/adtb/src/catalog/validate.rs`), whatever the relation's size.
 - Revert of a rekey is untested.
+
+## 2026-10-26: internal open error
+
+`catalog::Error::Internal` during a migration now reaches users as `MigrationRefused { reason: Rejected { Internal { what } } }`, since the spec lists `OpenError` exactly; no new variant.

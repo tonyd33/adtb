@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 780
 summary: "the in-process API has no read-only deferrable path, call options, engine transaction ids or Display for errors, and leaks a page on one crash"
-tags: [engine]
+closed: 2026-10-26
+tags:
+  - engine
 ---
 
 # Feature: in-process API follow-ups
@@ -23,3 +25,10 @@ From the in-process API track:
 - `api::Error` has no `Display`.
 - Spec gap: no field of the error sum names which item of an ad hoc text failed.
 - The contracts of `statements`, the commit position, the counters-page naming and `Catalog::into_bindings` are stated only in doc comments; the write path and catalog have no design file.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed as tylxvzor.
+Read-only deferrable transactions, call and transaction options, `TxnId`, abort on drop and the counters page leak are done. What is left is in api-follow-ups-2.
