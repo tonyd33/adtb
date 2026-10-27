@@ -20,6 +20,20 @@ pub type Rows = BTreeMap<RelId, Vec<(u32, Vec<Value>)>>;
 /// Returns the rows `catalog::` relations hold for the objects of `schema`, built from `source`,
 /// that have catalog ids, with every relation of `schema` present.
 pub fn declared(schema: &Schema, source: &Source) -> Rows {
+    let mut rows = objects(schema, source);
+    let mut b = Builder {
+        schema,
+        source,
+        rows: Rows::new(),
+    };
+    b.log();
+    for (r, logged) in b.rows {
+        rows.entry(r).or_default().extend(logged);
+    }
+    rows
+}
+
+pub(super) fn objects(schema: &Schema, source: &Source) -> Rows {
     let mut b = Builder {
         schema,
         source,
@@ -42,13 +56,16 @@ pub fn declared(schema: &Schema, source: &Source) -> Rows {
     b.ctor_states();
     b.value_states();
     b.functions();
-    b.log();
     b.rows
 }
 
 /// Returns the row of `catalog::migrations` for the last migration of `source`, applied at
 /// `applied` microseconds since 1970-01-01T00:00:00Z, or no row if the log is empty.
 pub fn applied(schema: &Schema, source: &Source, applied: i64) -> Rows {
+    applied_hash(schema, source, oplog::version_hash(schema, source), applied)
+}
+
+fn applied_hash(schema: &Schema, source: &Source, hash: oplog::Hash, applied: i64) -> Rows {
     let mut b = Builder {
         schema,
         source,
@@ -57,15 +74,34 @@ pub fn applied(schema: &Schema, source: &Source, applied: i64) -> Rows {
     if let Some(m) = source.log.last() {
         let fields = vec![
             ("version", key(m.number)),
-            (
-                "hash",
-                Value::Bytes(oplog::version_hash(schema, source).to_vec()),
-            ),
+            ("hash", Value::Bytes(hash.to_vec())),
             ("text", Value::Text(m.text.clone())),
             ("applied", Value::Instant(applied)),
         ];
         b.push("migrations", "Migration", fields);
     }
+    b.rows
+}
+
+pub(super) fn recorded(
+    schema: &Schema,
+    source: &Source,
+    ops: &[oplog::OperatorRow],
+    previous: oplog::Hash,
+    applied: i64,
+) -> Rows {
+    let rows = applied_hash(
+        schema,
+        source,
+        oplog::chained(schema, previous, ops),
+        applied,
+    );
+    let mut b = Builder {
+        schema,
+        source,
+        rows,
+    };
+    b.migration(source.version, ops);
     b.rows
 }
 
@@ -813,29 +849,33 @@ impl Builder<'_> {
     /// Add the rows of `migration_ops` and `migration_clauses` for every migration of the log.
     fn log(&mut self) {
         for l in &self.source.log {
-            let number = key(l.number);
-            for (k, (op, clauses)) in oplog::operators(self.schema, self.source, l.number)
-                .into_iter()
-                .enumerate()
-            {
-                let ordinal = Value::I32(i32::try_from(k + 1).expect("an ordinal fits 31 bits"));
-                for (j, body) in clauses.into_iter().enumerate() {
-                    let clause = Value::I32(i32::try_from(j + 1).expect("a clause fits 31 bits"));
-                    let fields = vec![
-                        ("migration", number.clone()),
-                        ("ordinal", ordinal.clone()),
-                        ("clause", clause),
-                        ("body", body),
-                    ];
-                    self.push("migration_clauses", "OpClause", fields);
-                }
+            self.migration(
+                l.number,
+                &oplog::operators(self.schema, self.source, l.number),
+            );
+        }
+    }
+
+    fn migration(&mut self, version: u64, ops: &[oplog::OperatorRow]) {
+        let number = key(version);
+        for (k, (op, clauses)) in ops.iter().enumerate() {
+            let ordinal = Value::I32(i32::try_from(k + 1).expect("an ordinal fits 31 bits"));
+            for (j, body) in clauses.iter().enumerate() {
+                let clause = Value::I32(i32::try_from(j + 1).expect("a clause fits 31 bits"));
                 let fields = vec![
                     ("migration", number.clone()),
-                    ("ordinal", ordinal),
-                    ("op", op),
+                    ("ordinal", ordinal.clone()),
+                    ("clause", clause),
+                    ("body", body.clone()),
                 ];
-                self.push("migration_ops", "MigrationOp", fields);
+                self.push("migration_clauses", "OpClause", fields);
             }
+            let fields = vec![
+                ("migration", number.clone()),
+                ("ordinal", ordinal),
+                ("op", op.clone()),
+            ];
+            self.push("migration_ops", "MigrationOp", fields);
         }
     }
 

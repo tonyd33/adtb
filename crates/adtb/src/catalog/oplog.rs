@@ -31,15 +31,16 @@ pub fn version_hash(schema: &Schema, source: &Source) -> Hash {
 pub fn try_version_hash(schema: &Schema, source: &Source) -> Result<Hash, Vec<Diag>> {
     let mut h = [0; 32];
     for l in &source.log {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&h);
-        hasher.update(&encoded(
-            schema,
-            &resolved_operators(schema, source, l.number)?,
-        ));
-        h = *hasher.finalize().as_bytes();
+        h = chained(schema, h, &resolved_operators(schema, source, l.number)?);
     }
     Ok(h)
+}
+
+pub(super) fn chained(schema: &Schema, previous: Hash, ops: &[OperatorRow]) -> Hash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&previous);
+    hasher.update(&encoded(schema, ops));
+    *hasher.finalize().as_bytes()
 }
 
 /// Returns the resolved operators of migration `number` of `source` in ordinal order.
@@ -56,15 +57,18 @@ fn resolved_operators(
     number: u64,
 ) -> Result<Vec<OperatorRow>, Vec<Diag>> {
     let ops = source.resolved(number)?;
+    Ok(operator_rows(schema, &ops))
+}
+
+pub(super) fn operator_rows(schema: &Schema, ops: &[ResolvedOp]) -> Vec<OperatorRow> {
     let op_ty = field_ty(schema, "migration_ops", "op");
     let clause_ty = field_ty(schema, "migration_clauses", "body");
-    Ok(ops
-        .iter()
+    ops.iter()
         .map(|op| {
             let clauses = op.clauses.iter().map(|c| clause(schema, &clause_ty, c));
             (operator(schema, &op_ty, op), clauses.collect())
         })
-        .collect())
+        .collect()
 }
 
 /// Returns the encoding of a migration's operators: their count, then each operator, the count

@@ -182,6 +182,51 @@ fn a_created_catalog_reopens_with_the_rows_the_engine_declares() {
 }
 
 #[test]
+fn appended_log_rows_and_hashes_survive_reopen_refusal_and_revert() {
+    let mut sim = Sim::new(41, Config::default());
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("catalog");
+        for text in [
+            "module app\nadd module app\nadd type Row = { id: I64 }\nadd relation rows : Row key id\n",
+            "module app\nadd field Row.x: I64 fill 7\n",
+            "module app\nrename field Row.x to value\n",
+        ] {
+            catalog.migrate(&pager, &txns, text).expect("apply");
+            check_whole(&pager, &catalog, &txns);
+        }
+    });
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
+        let (mut catalog, txns) = Catalog::open(rt, &pager).expect("catalog");
+        let before = committed(&pager, &catalog, &txns);
+        let hashes = migration_rows(&pager, &catalog, &txns);
+        let refused = catalog.migrate(&pager, &txns, "module app\ndrop relation missing\n");
+        assert!(matches!(refused, Err(Error::Refused(_))), "{refused:?}");
+        assert_eq!(before, committed(&pager, &catalog, &txns));
+        catalog
+            .migrate(&pager, &txns, "module app\nrevert 0003\n")
+            .expect("revert");
+        check_whole(&pager, &catalog, &txns);
+        let after = committed(&pager, &catalog, &txns);
+        for name in ["migration_ops", "migration_clauses"] {
+            let r = rel(&catalog, "catalog", name);
+            for row in &before[&r] {
+                assert!(after[&r].contains(row), "{name}: {row}");
+            }
+        }
+        let stored = migration_rows(&pager, &catalog, &txns);
+        assert_eq!(hashes.len() + 1, stored.len());
+        for row in hashes {
+            assert!(stored.contains(&row), "changed migration: {row:?}");
+        }
+    });
+    finished(&mut sim, |rt| {
+        assert_eq!((true, 4), check_reopened(rt));
+    });
+}
+
+#[test]
 fn a_crash_at_every_flush_during_create_reopens_to_a_whole_catalog() {
     let seed = 2;
     let (sim, start) = created(seed);

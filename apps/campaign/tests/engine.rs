@@ -48,6 +48,24 @@ fn migrate(path: PathBuf, n: usize) {
     open_db(path, n, Vec::new()).close().expect("close");
 }
 
+#[test]
+#[ignore = "measure migration apply and replay with --nocapture"]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "measuring host elapsed time would need an external benchmark harness"
+)]
+fn migration_open_timings() {
+    let path = scratch("open-timings");
+    let start = std::time::Instant::now();
+    let db = open_db(path.clone(), MIGRATIONS.len(), Vec::new());
+    eprintln!("campaign 1.3 fresh apply: {:?}", start.elapsed());
+    db.close().expect("close fresh database");
+    let start = std::time::Instant::now();
+    let db = open_db(path, MIGRATIONS.len(), Vec::new());
+    eprintln!("campaign 1.3 reopen: {:?}", start.elapsed());
+    db.close().expect("close reopened database");
+}
+
 struct App<B> {
     db: Database,
     bundle: adtb::typed::Bundle<B>,

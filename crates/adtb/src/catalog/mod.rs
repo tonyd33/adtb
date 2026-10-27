@@ -507,17 +507,18 @@ fn unfinished(report: &Report) -> Error {
     }
 }
 
-/// Returns why the catalog cannot record the last migration of `source`: its operators that do
-/// not resolve, a script it holds, and its functions whose names do not resolve or whose code it
-/// does not hold.
-fn recordable(source: &Source) -> Result<(), Vec<String>> {
+/// Resolve the last migration, refusing scripts and unavailable function code.
+fn recordable(source: &Source) -> Result<Vec<adtb_lang::evolve::ResolvedOp>, Vec<String>> {
     let mut why = Vec::new();
-    match source.resolved(source.version) {
-        Err(ds) => why.extend(ds.into_iter().map(|d| d.message)),
-        Ok(ops) if ops.iter().any(|o| matches!(o.op, Resolved::Script { .. })) => {
-            why.push("the engine does not run a `script` yet".to_string());
+    let ops = match source.resolved(source.version) {
+        Err(ds) => {
+            why.extend(ds.into_iter().map(|d| d.message));
+            Vec::new()
         }
-        Ok(_) => {}
+        Ok(ops) => ops,
+    };
+    if ops.iter().any(|o| matches!(o.op, Resolved::Script { .. })) {
+        why.push("the engine does not run a `script` yet".to_string());
     }
     match source.functions() {
         Err(ds) => why.extend(ds.into_iter().map(|d| d.diag.message)),
@@ -529,7 +530,7 @@ fn recordable(source: &Source) -> Result<(), Vec<String>> {
             _ => None,
         })),
     }
-    if why.is_empty() { Ok(()) } else { Err(why) }
+    if why.is_empty() { Ok(ops) } else { Err(why) }
 }
 
 /// Returns `t` in microseconds since 1970-01-01T00:00:00Z, saturating.
@@ -635,6 +636,7 @@ impl Catalog {
                 data: &Data::new(),
                 rewritten: &every,
                 old: Rows::new(),
+                operators: &[],
             },
         );
         txns.release(id);
@@ -800,9 +802,10 @@ impl Catalog {
             Ok(checked) => checked,
             Err(ds) => return refused(ds.into_iter().map(|d| d.diag.message).collect()),
         };
-        if let Err(why) = recordable(&next) {
-            return refused(why);
-        }
+        let operators = match recordable(&next) {
+            Ok(ops) => oplog::operator_rows(&schema, &ops),
+            Err(why) => return refused(why),
+        };
         let next = Checked {
             source: next,
             schema,
@@ -823,7 +826,8 @@ impl Catalog {
             x,
             snapshot: &snapshot,
         };
-        let built = self.replay(&m, &file, text, next, &rewritten, readers);
+        let prepared = Prepared { next, operators };
+        let built = self.replay(&m, &file, text, prepared, &rewritten, readers);
         txns.release(id);
         let built = built.and_then(|c| {
             update_root(pager, self.root, |r| r.next_heap = c.next_heap)?;
@@ -888,10 +892,11 @@ impl Catalog {
         m: &Migrating<'_, R>,
         file: &MigrationFile,
         text: &str,
-        next: Checked,
+        prepared: Prepared,
         rewritten: &BTreeSet<CatRelId>,
         readers: Readers,
     ) -> Result<Catalog, Error> {
+        let Prepared { next, operators } = prepared;
         let mut data = Data::new();
         for &rid in rewritten {
             let Some(r) = relation(&self.schema, rid) else {
@@ -954,7 +959,8 @@ impl Catalog {
                 next,
                 data: &data,
                 rewritten,
-                old: declared(&self.schema, &self.source),
+                old: rows::objects(&self.schema, &self.source),
+                operators: &operators,
             },
         )?;
         pending::rewrite(m, &self.roots, &self.readers.pending, &readers.pending)?;
@@ -1292,7 +1298,7 @@ impl Catalog {
             .iter()
             .map(|(r, rows)| (rel_id(&self.schema, *r), (*r, rows.as_slice())))
             .collect();
-        for (r, rows) in declared(&next.schema, &next.source) {
+        for (r, rows) in rows::objects(&next.schema, &next.source) {
             let rid = rel_id(&next.schema, r);
             let (was, before) = old.get(&rid).copied().unwrap_or((r, &[]));
             for (c, row) in &rows {
@@ -1310,12 +1316,49 @@ impl Catalog {
                 delete_rows(m, self.heap(was, c), &rows)?;
             }
         }
-        for (r, rows) in applied(&next.schema, &next.source, micros(pager.wall())) {
+        if next.source.log.is_empty() {
+            return Ok(());
+        }
+        let previous = self.stored_hash(m)?;
+        for (r, rows) in rows::recorded(
+            &next.schema,
+            &next.source,
+            b.operators,
+            previous,
+            micros(pager.wall()),
+        ) {
             for (c, row) in rows {
                 next.insert(pager, m.x, r, c, &row)?;
             }
         }
         Ok(())
+    }
+
+    fn stored_hash<R: Runtime>(&self, m: &Migrating<'_, R>) -> Result<Hash, Error> {
+        if self.source.version == 0 {
+            return Ok([0; 32]);
+        }
+        let module = self
+            .schema
+            .module_named("catalog")
+            .expect("the catalog module");
+        let schema::ValueDef::Relation(r) = self.schema.module(module).values["migrations"] else {
+            panic!("the catalog declares migrations as a relation");
+        };
+        for (_, row) in self.rows(m.pager, m.txns, m.snapshot, r)? {
+            let [Value::I64(version), Value::Bytes(hash), ..] = row.as_slice() else {
+                return Err(Error::Corrupt("malformed migration row".to_string()));
+            };
+            if *version == i64::try_from(self.source.version).expect("a version fits I64") {
+                return hash.as_slice().try_into().map_err(|_| {
+                    Error::Corrupt("a migration hash must hold 32 bytes".to_string())
+                });
+            }
+        }
+        Err(Error::Corrupt(format!(
+            "missing migration {}",
+            self.source.version
+        )))
     }
 
     /// Free every page the catalog's structures do not reach.
@@ -1583,6 +1626,12 @@ struct Built<'a> {
     rewritten: &'a BTreeSet<CatRelId>,
     /// The catalog rows of the catalog before the migration, by its relations.
     old: Rows,
+    operators: &'a [oplog::OperatorRow],
+}
+
+struct Prepared {
+    next: Checked,
+    operators: Vec<oplog::OperatorRow>,
 }
 
 /// A source, the schema it builds and its checked program.

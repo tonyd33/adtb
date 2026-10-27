@@ -840,7 +840,7 @@ pub struct TypeScope<'a> {
 struct Builder<'a> {
     schema: Schema,
     diags: Vec<FileDiag>,
-    files: &'a [(FileId, ast::SchemaFile)],
+    files: &'a [(FileId, &'a ast::SchemaFile)],
     /// Spans of `Span a` uses whose argument must be ordered, checked once every type is known.
     ordered_args: Vec<(Ty, FileId, Span)>,
     ahead: &'a [Ahead],
@@ -867,8 +867,11 @@ pub fn build_ahead(
     files: &[(FileId, ast::SchemaFile)],
     ahead: &[Ahead],
 ) -> Result<Schema, Vec<FileDiag>> {
-    let mut all = BUILT_IN.clone();
-    all.extend(files.iter().cloned());
+    let all: Vec<_> = BUILT_IN
+        .iter()
+        .chain(files)
+        .map(|(id, f)| (*id, f))
+        .collect();
     let mut b = Builder {
         schema: Schema {
             modules: Vec::new(),
@@ -897,7 +900,7 @@ pub fn build_ahead(
     let names = crate::resolve::check_schema(&b.schema);
     if names.is_empty() {
         b.schema.types.push(tag_former());
-        b.schema.ids = crate::ids::declared(&b.schema, &all);
+        b.schema.ids = crate::ids::declared(&b.schema, files);
         Ok(b.schema)
     } else {
         Err(names)
