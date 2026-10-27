@@ -1,0 +1,48 @@
+# Paths inside the arms of a match over a sum are admitted and hold from every relation an arm reaches, a retag included.
+schema
+  module test
+  type Org = { id: Key orgs, name: Text }
+  relation orgs : Org key id generate sequence
+  type Person = { id: Key people, org: Key orgs }
+  relation people : Person key id generate sequence
+  type Project = { id: Key projects, org: Key orgs }
+  relation projects : Project key id generate sequence
+  type Grant { id: Key grants, org: Key orgs }
+    = ToPerson { person: Key people }
+    | ToProject { project: Key projects }
+  relation grants : Grant key id generate sequence
+  constraint grant_in_org =
+    from g in grants
+    where g.org != (match g
+      | ToPerson p -> p.person.org
+      | ToProject j -> j.project.org)
+    select g
+run
+  insert orgs { id: orgs.key(1), name: "a" }
+  insert orgs { id: orgs.key(2), name: "b" }
+  insert people { id: people.key(1), org: orgs.key(1) }
+  insert people { id: people.key(2), org: orgs.key(2) }
+  insert projects { id: projects.key(1), org: orgs.key(1) }
+  insert grants.ToPerson { id: grants.key(1), org: orgs.key(1), person: people.key(1) }
+  insert grants.ToProject { id: grants.key(2), org: orgs.key(1), project: projects.key(1) }
+error Violated
+  insert grants.ToPerson { id: grants.key(3), org: orgs.key(1), person: people.key(2) }
+error Violated
+  update p in people where key p == people.key(1) set Person { p with org: orgs.key(2) }
+error Violated
+  update j in projects where key j == projects.key(1) set Project { j with org: orgs.key(2) }
+error Violated
+  update g in grants where key g == grants.key(2) set match g
+    | ToPerson p -> p
+    | ToProject j -> ToPerson { org: j.org, person: people.key(2) }
+run
+  update g in grants where key g == grants.key(2) set match g
+    | ToPerson p -> p
+    | ToProject j -> ToPerson { org: j.org, person: people.key(1) }
+run
+  update j in projects where key j == projects.key(1) set Project { j with org: orgs.key(2) }
+query rowsort
+  from g in grants.ToPerson select value(g.id)
+----
+1
+2

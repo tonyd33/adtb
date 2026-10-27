@@ -767,6 +767,46 @@ fn a_bounded_plan_probes_the_implied_index_of_a_reference() {
     assert!(!shown.contains("Scan {"), "{shown}");
 }
 
+fn probes_only(text: &str, ty: &str) {
+    let f = running();
+    let p = bounded(&f, text, ty).unwrap_or_else(|e| panic!("no plan for `{text}`: {e}"));
+    let shown = format!("{:?}", p.root);
+    assert!(!shown.contains("Scan {"), "{text}: {shown}");
+}
+
+#[test]
+fn a_bounded_plan_follows_an_optional_reference_compared_with_a_constructor() {
+    probes_only(
+        "from x in xs, s in sessions, u in users \
+         where key s == x and s.owner == Some { value: key u } select u",
+        "Set (Key sessions)",
+    );
+    probes_only(
+        "from x in xs, s in sessions, u in users \
+         where key s == x and Some { value: key u } == s.owner select u",
+        "Set (Key sessions)",
+    );
+}
+
+#[test]
+fn a_bounded_plan_probes_an_optional_reference_matched_against_a_value() {
+    probes_only(
+        "from x in xs, s in sessions where (match s.owner | Some o -> o.value == x | None -> false) \
+         select s",
+        "Set (Key users)",
+    );
+}
+
+#[test]
+fn a_bounded_plan_narrows_a_generator_matched_to_one_constructor() {
+    probes_only(
+        "from x in xs, i in identities \
+         where (match i | EmailPass e -> false | Google g -> g.gid == x | Apple a -> false) \
+         select key i",
+        "Set Text",
+    );
+}
+
 #[test]
 fn a_bounded_plan_refuses_a_fixpoint() {
     let f = running();

@@ -10,6 +10,8 @@ use super::catalog::{Catalog, Element, IndexDesc};
 use super::terms::{Facts, with_children, with_vars};
 use super::*;
 
+mod split;
+
 /// The rows the fixed cost model assumes in every heap.
 const HEAP_ROWS: f64 = 1000.0;
 /// The rows the fixed cost model assumes a probe of an index that is not unique returns.
@@ -940,10 +942,17 @@ impl Planner<'_> {
         let Some(body) = self.live_arm(c, x, arms, |p, a| p.literal(a) == Some(false)) else {
             return;
         };
+        let from = out.len();
         let mut conjuncts = Vec::new();
         self.conjuncts(body, &mut conjuncts);
         for d in conjuncts {
             self.cond_equalities(rel, d, x, arms, out);
+        }
+        if let Kind::Case { scrutinee, .. } = self.kind(c)
+            && let Some(path) = self.path_of(scrutinee, x, arms)
+            && let Some(at) = self.arm_ctor(c, |p, a| p.literal(a) == Some(false))
+        {
+            self.whole_ctor(scrutinee, &path, at, from, out);
         }
     }
 
@@ -1463,6 +1472,11 @@ impl Planner<'_> {
     ) -> Result<Chain, Error> {
         self.refuse(src)?;
         if let Some((r, ctors)) = self.rel_source(src) {
+            if (self.rw.unswitch || self.bounded)
+                && let Some(split) = self.split_join(y, src, body)
+            {
+                return self.chain(split, q, sc);
+            }
             return self.join(r, &ctors, y, body, q, sc);
         }
         if self.rw.group_agg

@@ -13,6 +13,9 @@ mod planfix;
 )]
 mod support;
 
+#[path = "constraints/paths.rs"]
+mod paths;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

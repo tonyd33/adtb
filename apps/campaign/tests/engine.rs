@@ -27,23 +27,9 @@ fn scratch(name: &str) -> PathBuf {
     dir.join("campaign.adt")
 }
 
-/// The constraints of migration 0001 the engine does not admit yet.
-const UNADMITTED: [&str; 2] = ["location_parent_in_campaign", "quest_giver_in_campaign"];
-
-/// Returns the first `n` migrations, with [`UNADMITTED`] left out of migration 0001.
-fn admitted(n: usize) -> Vec<String> {
-    let mut log: Vec<String> = MIGRATIONS[..n].iter().map(|m| (*m).to_string()).collect();
-    for name in UNADMITTED {
-        let first = &mut log[0];
-        let start = first
-            .find(&format!("add constraint {name} ="))
-            .unwrap_or_else(|| panic!("no constraint {name}"));
-        let end = first[start..]
-            .find("\n\n")
-            .map_or(first.len(), |i| start + i + 2);
-        first.replace_range(start..end, "");
-    }
-    log
+/// Returns the first `n` migrations.
+fn migrations(n: usize) -> Vec<String> {
+    MIGRATIONS[..n].iter().map(|m| (*m).to_string()).collect()
 }
 
 struct App {
@@ -57,9 +43,9 @@ impl App {
         App::at(scratch(name), n)
     }
 
-    /// Open or create the database at `path` at the first `n` admitted migrations.
+    /// Open or create the database at `path` at the first `n` migrations.
     fn at(path: PathBuf, n: usize) -> App {
-        App::with(path, &Log::new(admitted(n)))
+        App::with(path, &Log::new(migrations(n)))
     }
 
     fn with(path: PathBuf, log: &Log) -> App {
@@ -543,7 +529,7 @@ fn two_gms_planning_the_same_session_number_do_not_both_commit() {
 
 #[test]
 fn release_1_3_shelves_a_quest_over_release_1_1() {
-    let mut log = admitted(2);
+    let mut log = migrations(2);
     log.push(MIGRATIONS[3].to_string());
     let app = App::with(scratch("shelve"), &Log::new(log));
     let w = world(&app);

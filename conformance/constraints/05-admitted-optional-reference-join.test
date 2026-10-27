@@ -1,0 +1,33 @@
+# A join through an optional reference is admitted and holds from both sides: a change to the referring row and a change to the row it names.
+schema
+  module test
+  type Team = { id: Key teams, org: Text }
+  relation teams : Team key id generate sequence
+  type Task = { id: Key tasks, org: Text, team: Option (Key teams) }
+  relation tasks : Task key id generate sequence
+  constraint task_team_in_org =
+    from t in tasks, m in teams
+    where t.team == Some { value: key m } and m.org != t.org
+    select t
+run
+  insert teams { id: teams.key(1), org: "a" }
+  insert teams { id: teams.key(2), org: "b" }
+  insert tasks { id: tasks.key(1), org: "a", team: None }
+  insert tasks { id: tasks.key(2), org: "a", team: Some { value: teams.key(1) } }
+error Violated
+  insert tasks { id: tasks.key(3), org: "a", team: Some { value: teams.key(2) } }
+error Violated
+  update t in tasks where key t == tasks.key(1) set Task { t with team: Some { value: teams.key(2) } }
+error Violated
+  update m in teams where key m == teams.key(1) set Team { m with org: "b" }
+run
+  update m in teams where key m == teams.key(2) set Team { m with org: "c" }
+run
+  transact
+    update t in tasks where key t == tasks.key(2) set Task { t with org: "b" }
+    update m in teams where key m == teams.key(1) set Team { m with org: "b" }
+query rowsort
+  from t in tasks select t.org
+----
+"a"
+"b"

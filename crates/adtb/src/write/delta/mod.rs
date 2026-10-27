@@ -238,14 +238,20 @@ struct Occurrence {
 enum At {
     /// The source of a generator of the query's top level, the `For` node given.
     Top(Tm),
-    /// A read inside an expression of the query: the row it binds, the generators enclosing it
-    /// inside the expression, each with its source when that is a constructor set, and the
-    /// conditions guarding it there.
-    Nested {
-        row: Row,
-        path: Vec<(Var, Option<Tm>)>,
-        guards: Vec<Tm>,
-    },
+    /// A read inside an expression of the query: the row it binds and what of the expression
+    /// encloses it.
+    Nested { row: Row, within: Within },
+}
+
+/// What encloses a read inside an expression of the query.
+#[derive(Clone, Debug, Default)]
+struct Within {
+    /// The generators enclosing it, each with its source when that is a constructor set.
+    path: Vec<(Var, Option<Tm>)>,
+    /// The conditions guarding it.
+    guards: Vec<Tm>,
+    /// The arms enclosing it, each a case and the position of the arm, outermost first.
+    arms: Vec<(Tm, usize)>,
 }
 
 #[derive(Clone, Debug)]
@@ -414,8 +420,8 @@ impl Compiler<'_> {
                 let made = match (&o.at, o.origin) {
                     (_, Origin::Prior) => continue,
                     (At::Top(f), _) => self.top_delta(q, *f, o),
-                    (At::Nested { row, path, guards }, _) => {
-                        self.nested_delta(q, o, row, path, guards, &binders)
+                    (At::Nested { row, within }, _) => {
+                        self.nested_delta(q, o, row, within, &binders)
                     }
                 };
                 match made {
@@ -529,18 +535,18 @@ impl Compiler<'_> {
                         node: src,
                         at: At::Top(t),
                     }),
-                    None => self.nested(src, &mut Vec::new(), &mut Vec::new(), out),
+                    None => self.nested(src, &mut Within::default(), out),
                 }
                 bind(binders, x);
                 self.top(body, binders, out);
             }
             Kind::If(c, a, b) => {
-                self.nested(c, &mut Vec::new(), &mut Vec::new(), out);
+                self.nested(c, &mut Within::default(), out);
                 self.top(a, binders, out);
                 self.top(b, binders, out);
             }
             Kind::Let(x, e, b) => {
-                self.nested(e, &mut Vec::new(), &mut Vec::new(), out);
+                self.nested(e, &mut Within::default(), out);
                 bind(binders, x);
                 self.top(b, binders, out);
             }
@@ -549,63 +555,66 @@ impl Compiler<'_> {
                 self.top(b, binders, out);
             }
             Kind::Case { scrutinee, arms } => {
-                self.nested(scrutinee, &mut Vec::new(), &mut Vec::new(), out);
+                self.nested(scrutinee, &mut Within::default(), out);
                 for (_, _, a) in arms {
                     self.top(a, binders, out);
                 }
             }
-            _ => self.nested(t, &mut Vec::new(), &mut Vec::new(), out),
+            _ => self.nested(t, &mut Within::default(), out),
         }
     }
 
-    /// Collect the reads inside expression `t`, under the generators `path` and the conditions
-    /// `guards` of the expression enclosing it.
-    fn nested(
-        &mut self,
-        t: Tm,
-        path: &mut Vec<(Var, Option<Tm>)>,
-        guards: &mut Vec<Tm>,
-        out: &mut Vec<Occurrence>,
-    ) {
-        let here = |row: Row, path: &[(Var, Option<Tm>)], guards: &[Tm]| At::Nested {
+    /// Collect the reads inside expression `t`, under what of the expression encloses it.
+    fn nested(&mut self, t: Tm, within: &mut Within, out: &mut Vec<Occurrence>) {
+        let here = |row: Row, within: &Within, guards: Vec<Tm>| At::Nested {
             row,
-            path: path.to_vec(),
-            guards: guards.to_vec(),
+            within: Within {
+                guards,
+                ..within.clone()
+            },
         };
         match self.kind(t) {
             Kind::For(y, src, body) => {
                 let closed = match self.source(src) {
                     Some((rel, ctors, origin)) => {
-                        let mut own = guards.clone();
+                        let mut own = within.guards.clone();
                         own.extend(self.peel(body).0);
                         out.push(Occurrence {
                             rel,
                             ctors,
                             origin,
                             node: src,
-                            at: here(Row::Gen(y), path, &own),
+                            at: here(Row::Gen(y), within, own),
                         });
                         Some(src)
                     }
                     None => {
-                        self.nested(src, path, guards, out);
+                        self.nested(src, within, out);
                         None
                     }
                 };
-                path.push((y, closed));
-                self.nested(body, path, guards, out);
-                path.pop();
+                within.path.push((y, closed));
+                self.nested(body, within, out);
+                within.path.pop();
             }
             Kind::If(c, a, b) => {
-                self.nested(c, path, guards, out);
+                self.nested(c, within, out);
                 if matches!(self.terms.kind(b), Kind::EmptySet) || self.is_false(b) {
-                    let n = guards.len();
-                    self.conjuncts(c, guards);
-                    self.nested(a, path, guards, out);
-                    guards.truncate(n);
+                    let n = within.guards.len();
+                    self.conjuncts(c, &mut within.guards);
+                    self.nested(a, within, out);
+                    within.guards.truncate(n);
                 } else {
-                    self.nested(a, path, guards, out);
-                    self.nested(b, path, guards, out);
+                    self.nested(a, within, out);
+                    self.nested(b, within, out);
+                }
+            }
+            Kind::Case { scrutinee, arms } => {
+                self.nested(scrutinee, within, out);
+                for (i, (_, _, a)) in arms.iter().enumerate() {
+                    within.arms.push((t, i));
+                    self.nested(*a, within, out);
+                    within.arms.pop();
                 }
             }
             Kind::Deref { key, .. } => {
@@ -615,10 +624,10 @@ impl Compiler<'_> {
                         ctors: self.ctors_or_all(rel, &ctors),
                         origin: Origin::State,
                         node: t,
-                        at: here(Row::Deref(key), path, guards),
+                        at: here(Row::Deref(key), within, within.guards.clone()),
                     });
                 }
-                self.nested(key, path, guards, out);
+                self.nested(key, within, out);
             }
             Kind::Rel(..) | Kind::Restrict(..) | Kind::Var(_) if self.source(t).is_some() => {
                 let (rel, ctors, origin) = self.source(t).expect("a source");
@@ -627,12 +636,12 @@ impl Compiler<'_> {
                     ctors,
                     origin,
                     node: t,
-                    at: here(Row::Bare, path, guards),
+                    at: here(Row::Bare, within, within.guards.clone()),
                 });
             }
             _ => {
                 for c in self.terms.children(t) {
-                    self.nested(c, path, guards, out);
+                    self.nested(c, within, out);
                 }
             }
         }
@@ -662,8 +671,7 @@ impl Compiler<'_> {
         q: Tm,
         o: &Occurrence,
         row: &Row,
-        path: &[(Var, Option<Tm>)],
-        guards: &[Tm],
+        within: &Within,
         binders: &HashMap<Var, Binder>,
     ) -> Result<(Tm, Var), plan::Error> {
         let elem = match row {
@@ -689,7 +697,7 @@ impl Compiler<'_> {
         if let Row::Gen(y) = row {
             sub.insert(*y, d);
         }
-        for (p, src) in path.iter().rev() {
+        for (p, src) in within.path.iter().rev() {
             if let Some(src) = src {
                 let ty = self.terms.var_info(*p).ty.clone();
                 let fresh = self.terms.var(&self.terms.var_info(*p).name.clone(), ty);
@@ -697,19 +705,29 @@ impl Compiler<'_> {
                 prefix.push((fresh, Some(*src)));
             }
         }
-        let mut candidates: Vec<Tm> = guards.to_vec();
+        let mut candidates: Vec<Tm> = within.guards.clone();
+        let mut allowed: BTreeSet<Var> = BTreeSet::new();
         if let Row::Deref(key) = row {
-            let key_ty = self.ty(*key);
+            let mut via = Vec::new();
+            let mut conds = Vec::new();
+            let key = self.unfold(*key, &mut via, &mut conds);
+            let key_ty = self.ty(key);
             let dv = self.add(Kind::Var(d), self.terms.var_info(d).ty.clone());
             let k = self.add(Kind::Key(dv), key_ty);
-            let eq = self.add(Kind::Prim(Prim::Eq, vec![k, *key]), self.bool_ty());
+            let eq = self.add(Kind::Prim(Prim::Eq, vec![k, key]), self.bool_ty());
             candidates.insert(0, eq);
+            candidates.extend(conds);
+            for (v, src) in via {
+                allowed.insert(v);
+                prefix.push((v, Some(src)));
+            }
         }
-        let mut allowed: BTreeSet<Var> = sub.keys().copied().collect();
+        allowed.extend(sub.keys().copied());
         allowed.insert(d);
         allowed.extend(binders.keys().copied());
         let mut kept = Vec::new();
         for c in candidates {
+            let c = self.within_arms(c, &within.arms);
             let free = self.facts.free(self.terms, c);
             if free.iter().all(|v| allowed.contains(v))
                 && self.facts.scalar(self.terms, c)
@@ -782,6 +800,89 @@ impl Compiler<'_> {
         let (rest, tail) = self.chain(injected);
         links.extend(rest);
         Ok((self.ordered(links, tail, ty), input))
+    }
+
+    /// Returns key `t` with each row it reads through a key replaced by a generator over the
+    /// key's relation variable, adding each generator and its source to `via` and the equality
+    /// of its key with the key it replaces to `conds`.
+    fn unfold(&mut self, t: Tm, via: &mut Vec<(Var, Tm)>, conds: &mut Vec<Tm>) -> Tm {
+        if let Kind::Deref { key, .. } = self.kind(t)
+            && let Ty::Key { rel, ctors } = self.ty(key)
+        {
+            let key = self.unfold(key, via, conds);
+            let row_ty = self.ty(t);
+            let e = self.terms.var("%via", row_ty.clone());
+            let src = self.add(Kind::Rel(rel, ctors), Ty::Set(Box::new(row_ty.clone())));
+            let row = self.add(Kind::Var(e), row_ty);
+            let own = self.add(Kind::Key(row), self.ty(key));
+            let eq = self.add(Kind::Prim(Prim::Eq, vec![own, key]), self.bool_ty());
+            via.push((e, src));
+            conds.push(eq);
+            return row;
+        }
+        let cs = self.terms.children(t);
+        let new: Vec<Tm> = cs.iter().map(|c| self.unfold(*c, via, conds)).collect();
+        if new == cs {
+            t
+        } else {
+            let kind = with_children(self.terms.kind(t), &new);
+            self.add(kind, self.ty(t))
+        }
+    }
+
+    /// Returns condition `c`, read inside `arms`, as a condition read outside them: for each arm
+    /// whose variable it reads, innermost first, a case over that arm's scrutinee holding `c` in
+    /// that arm and false in the others.
+    fn within_arms(&mut self, c: Tm, arms: &[(Tm, usize)]) -> Tm {
+        let mut out = c;
+        for (case, at) in arms.iter().rev() {
+            let Kind::Case {
+                scrutinee,
+                arms: cases,
+            } = self.kind(*case)
+            else {
+                continue;
+            };
+            let (_, v, _) = cases[*at];
+            if !self.facts.mentions(self.terms, out, &[v]) {
+                continue;
+            }
+            let no = self.falsity();
+            let mut wrapped = Vec::new();
+            for (i, (k, w, _)) in cases.iter().enumerate() {
+                let ty = self.terms.var_info(*w).ty.clone();
+                let fresh = self.terms.var(&self.terms.var_info(*w).name.clone(), ty);
+                let body = if i == *at {
+                    self.subst(out, &HashMap::from([(v, fresh)]), &mut HashMap::new())
+                } else {
+                    no
+                };
+                wrapped.push((*k, fresh, body));
+            }
+            out = self.add(
+                Kind::Case {
+                    scrutinee,
+                    arms: wrapped,
+                },
+                self.bool_ty(),
+            );
+        }
+        out
+    }
+
+    fn falsity(&mut self) -> Tm {
+        let ctor = self
+            .schema
+            .ty(self.schema.prelude_type("Bool"))
+            .ctor_index("False")
+            .expect("the prelude's Bool has False");
+        self.add(
+            Kind::Ctor {
+                ctor,
+                fields: Vec::new(),
+            },
+            self.bool_ty(),
+        )
     }
 
     /// Returns the leading generators and conditions of the top level of `q`, and what they

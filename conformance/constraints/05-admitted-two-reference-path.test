@@ -1,0 +1,36 @@
+# A path through two references is admitted like the joins it stands for, and holds from each relation on the path.
+schema
+  module test
+  type Org = { id: Key orgs, name: Text }
+  relation orgs : Org key id generate sequence
+  type Team = { id: Key teams, org: Key orgs }
+  relation teams : Team key id generate sequence
+  type Member = { id: Key members, team: Key teams }
+  relation members : Member key id generate sequence
+  type Badge = { id: Key badges, org: Key orgs, member: Key members }
+  relation badges : Badge key id generate sequence
+  constraint badge_in_org =
+    from b in badges
+    where b.member.team.org != b.org
+    select b
+run
+  insert orgs { id: orgs.key(1), name: "a" }
+  insert orgs { id: orgs.key(2), name: "b" }
+  insert teams { id: teams.key(1), org: orgs.key(1) }
+  insert teams { id: teams.key(2), org: orgs.key(2) }
+  insert members { id: members.key(1), team: teams.key(1) }
+  insert badges { id: badges.key(1), org: orgs.key(1), member: members.key(1) }
+error Violated
+  insert badges { id: badges.key(2), org: orgs.key(2), member: members.key(1) }
+error Violated
+  update m in members where key m == members.key(1) set Member { m with team: teams.key(2) }
+error Violated
+  update t in teams where key t == teams.key(1) set Team { t with org: orgs.key(2) }
+run
+  transact
+    update t in teams where key t == teams.key(1) set Team { t with org: orgs.key(2) }
+    update b in badges where key b == badges.key(1) set Badge { b with org: orgs.key(2) }
+query
+  from b in badges select value(b.org)
+----
+2

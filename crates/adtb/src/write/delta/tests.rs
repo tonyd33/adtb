@@ -9,7 +9,7 @@ use adtb_lang::schema::{Schema, ValueDef, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::{Base, RelId, Ty};
 
-use super::{At, Binder, Compiler, Occurrence, Origin, Row};
+use super::{At, Binder, Compiler, Occurrence, Origin, Row, Within};
 use crate::plan::{self, Catalog, Facts};
 
 fn schema() -> Schema {
@@ -80,8 +80,7 @@ fn bare(schema: &Schema, node: adtb_lang::kernel::Tm, origin: Origin) -> Occurre
         node,
         at: At::Nested {
             row: Row::Bare,
-            path: Vec::new(),
-            guards: Vec::new(),
+            within: Within::default(),
         },
     }
 }
@@ -122,7 +121,7 @@ fn a_read_of_rows_not_a_set_is_an_internal_error() {
     let node = terms.add(Kind::Rel(us(&s), None), int());
     let mut cx = compiler(&s, &n, &catalog, &mut terms, None);
     let o = bare(&s, node, Origin::State);
-    let what = internal(cx.nested_delta(q, &o, &Row::Bare, &[], &[], &HashMap::new()));
+    let what = internal(cx.nested_delta(q, &o, &Row::Bare, &Within::default(), &HashMap::new()));
     assert!(what.contains("a read of rows is a set"), "{what}");
 }
 
@@ -138,7 +137,7 @@ fn a_change_set_input_not_a_set_is_an_internal_error() {
     let y = terms.var("y", int());
     let mut cx = compiler(&s, &n, &catalog, &mut terms, None);
     let o = bare(&s, node, Origin::Inserted);
-    let what = internal(cx.nested_delta(q, &o, &Row::Gen(y), &[], &[], &HashMap::new()));
+    let what = internal(cx.nested_delta(q, &o, &Row::Gen(y), &Within::default(), &HashMap::new()));
     assert!(what.contains("a change set input is a set"), "{what}");
 }
 
@@ -164,7 +163,16 @@ fn a_top_level_binder_outside_a_for_or_let_is_an_internal_error() {
     let mut cx = compiler(&s, &n, &catalog, &mut terms, None);
     let o = bare(&s, node, Origin::Inserted);
     let binders = HashMap::from([(x, Binder { node: q, order: 0 })]);
-    let what = internal(cx.nested_delta(q, &o, &Row::Gen(y), &[], &[guard], &binders));
+    let what = internal(cx.nested_delta(
+        q,
+        &o,
+        &Row::Gen(y),
+        &Within {
+            guards: vec![guard],
+            ..Within::default()
+        },
+        &binders,
+    ));
     assert!(
         what.contains("a top level binder is a `For` or a `Let`"),
         "{what}"
