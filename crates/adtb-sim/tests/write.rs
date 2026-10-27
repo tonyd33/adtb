@@ -204,6 +204,20 @@ fn engine_error(schema: &Schema, e: &write::Error) -> Failed {
                 let ctor = &schema.ty(rel.elem_def).ctors()[*ctor as usize].name;
                 plain(format!("RowTooLarge {} {ctor} {size} {limit}", rel.name))
             }
+            WRejection::KeyTooLarge {
+                relation,
+                ctor,
+                index,
+                size,
+                limit,
+            } => {
+                let rel = schema.relation(*relation);
+                let ctor = &schema.ty(rel.elem_def).ctors()[*ctor as usize].name;
+                plain(format!(
+                    "KeyTooLarge {} {ctor} {index} {size} {limit}",
+                    rel.name
+                ))
+            }
         },
         other => plain(format!("{other:?}")),
     }

@@ -126,6 +126,11 @@ field of the row type, in its order. Consumers rely on this row type:
 Preconditions: every row a caller writes has a value of each field's
 type; the heap panics on a row that does not.
 
+`Heap::check_row(row)` checks that a row fits the newest format without
+reading or changing pages. It returns `TooLarge { len, limit }` in stored
+row bytes when the row cannot fit even with large values out of line.
+It has the same row-type precondition as a write.
+
 Postconditions:
 
 - Every row a heap returns is in the heap's newest row format, whatever

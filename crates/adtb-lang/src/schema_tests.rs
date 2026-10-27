@@ -627,6 +627,29 @@ fn row_too_large_takes_the_field_ids_after_internal() {
 }
 
 #[test]
+fn key_too_large_appends_fields_without_renumbering_engine_fields() {
+    let s = build_src(&[]).unwrap();
+    let reject = s.prelude_type("RejectReason");
+    let ctor = s.ty(reject).ctor_index("KeyTooLarge").unwrap();
+    assert_eq!(Some(&471), s.ids.ctors.get(&(reject, ctor)));
+    for (offset, name) in ["relation", "ctor", "index", "size", "limit"]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(
+            Some(&(564 + offset as u64)),
+            s.ids.fields.get(&(reject, Some(ctor), name.to_string()))
+        );
+    }
+    let limit = s.prelude_type("Limit");
+    let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
+    assert_eq!(
+        Some(&563),
+        s.ids.fields.get(&(limit, Some(rounds), "rounds".into()))
+    );
+}
+
+#[test]
 fn engine_fields_and_keys_take_their_fixed_ids() {
     let s = build_src(&[]).unwrap();
     let field = |t, c, f: &str| s.ids.fields.get(&(t, c, f.to_string())).copied();
@@ -682,7 +705,7 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
     let limit = s.prelude_type("Limit");
     let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
     assert_eq!(Some(563), field(limit, Some(rounds), "rounds"));
-    assert_eq!(Some(563), s.ids.fields.values().max().copied());
+    assert_eq!(Some(568), s.ids.fields.values().max().copied());
     assert_eq!(
         Some(60),
         s.ids

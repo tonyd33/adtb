@@ -96,7 +96,7 @@ impl Reason {
             Rejection::NotOpen { ctor, .. } => Reason::NotOpen { ctor },
             Rejection::UserError { message } => Reason::UserError { message },
             Rejection::BadInput { source, line, .. } => Reason::BadInput { source, line },
-            Rejection::RowTooLarge { .. } => return None,
+            Rejection::RowTooLarge { .. } | Rejection::KeyTooLarge { .. } => return None,
         })
     }
 }

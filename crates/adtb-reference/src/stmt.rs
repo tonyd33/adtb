@@ -47,6 +47,13 @@ pub enum Rejection {
         size: i64,
         limit: i64,
     },
+    KeyTooLarge {
+        relation: String,
+        ctor: String,
+        index: String,
+        size: i64,
+        limit: i64,
+    },
 }
 
 /// The stage of a constructor that refuses writes.

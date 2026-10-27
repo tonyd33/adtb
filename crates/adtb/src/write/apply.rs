@@ -48,6 +48,56 @@ struct Written {
 }
 
 impl<R: Runtime> Stmt<'_, R> {
+    pub(super) fn check_sizes(&self, plus: &Rows) -> Result<(), Error> {
+        for ((r, c), rows) in plus {
+            let heap = self.rel(*r).ctors[*c as usize].heap;
+            for row in rows {
+                self.heap(heap)
+                    .check_row(&self.stored(heap, row)?)
+                    .map_err(too_large(*r, *c))?;
+            }
+        }
+        for ((r, c), rows) in plus {
+            let rel = self.rel(*r);
+            let heap = rel.ctors[*c as usize].heap;
+            for row in rows {
+                let row = self.stored(heap, row)?;
+                for (id, ix) in &rel.indexes {
+                    let types = self.store.key_types(*id);
+                    let Some(key) = ix.keys.key(*c, &row, &types)? else {
+                        continue;
+                    };
+                    let stored = &self.db.indexes[id];
+                    let ctor = *stored
+                        .ctors
+                        .iter()
+                        .find(|(_, n)| **n == *c)
+                        .expect("an index over a constructor holds its id")
+                        .0;
+                    if let Err(e) = stored
+                        .index
+                        .check_key(self.db.pager.page_size(), &key, ctor)
+                    {
+                        return Err(match e {
+                            crate::btree::Error::TooLong { len, max } => {
+                                let size = stored.index.schema().encode(&key).len();
+                                Error::Rejected(Rejection::KeyTooLarge {
+                                    relation: *r,
+                                    ctor: *c,
+                                    index: ix.clause.clone(),
+                                    size,
+                                    limit: max - (len - size),
+                                })
+                            }
+                            e => e.into(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn heap(&self, id: HeapId) -> &Heap {
         &self.db.heaps[&id].heap
     }

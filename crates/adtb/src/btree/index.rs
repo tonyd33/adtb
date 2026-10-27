@@ -66,6 +66,22 @@ impl Index {
         &self.ctors
     }
 
+    pub fn check_key(&self, page_size: usize, key: &[Value], ctor: CtorId) -> Result<(), Error> {
+        assert!(
+            self.ctors.contains(&ctor),
+            "the constructor belongs to the index"
+        );
+        let mut encoded = self.schema.encode(key);
+        ovarint::encode(ctor.0, &mut encoded);
+        let len = encoded.len() + 8;
+        let max = BTree::max_entry_len(page_size);
+        if len > max {
+            Err(Error::TooLong { len, max })
+        } else {
+            Ok(())
+        }
+    }
+
     fn encode(&self, entry: &Entry) -> Vec<u8> {
         assert!(
             self.ctors.contains(&entry.ctor),

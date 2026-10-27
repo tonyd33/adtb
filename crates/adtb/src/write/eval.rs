@@ -1165,11 +1165,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
         let mut plus = Rows::new();
         let mut minus = Rows::new();
-        let killed: BTreeSet<(RelId, Val)> = gone.clone();
         for e in &all {
             match e {
                 Eff::Ins(r, v) | Eff::Rep(r, _, v) => {
-                    if !killed.contains(&(*r, self.key_of(*r, v)?)) {
+                    if !gone.contains(&(*r, self.key_of(*r, v)?)) {
                         add(&mut plus, *r, v.clone())?;
                     }
                 }
@@ -1190,6 +1189,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
         normalise(&mut plus, &mut minus);
         self.check_open(&plus)?;
+        self.check_sizes(&plus)?;
         let mut viol = Violations::new();
         let mut by_key: BTreeMap<(RelId, Val), BTreeSet<Val>> = BTreeMap::new();
         for ((r, _), rows) in &plus {

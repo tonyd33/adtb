@@ -179,6 +179,13 @@ pub enum RejectReason {
         limit: i64,
     },
     Closed,
+    KeyTooLarge {
+        relation: String,
+        ctor: String,
+        index: String,
+        size: i64,
+        limit: i64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -524,6 +531,16 @@ impl fmt::Display for RejectReason {
                 "a row of `{relation}.{ctor}` takes {size} bytes, over the limit of {limit}"
             ),
             R::Closed => f.write_str("the database is closed"),
+            R::KeyTooLarge {
+                relation,
+                ctor,
+                index,
+                size,
+                limit,
+            } => write!(
+                f,
+                "index `{relation}.{index}` for `{ctor}` needs a key payload of {size} bytes, over the limit of {limit}"
+            ),
         }
     }
 }
@@ -715,6 +732,22 @@ impl fmt::Display for Value<&RejectReason> {
                 ],
             ),
             R::Closed => ("Closed", &[]),
+            R::KeyTooLarge {
+                relation,
+                ctor,
+                index,
+                size,
+                limit,
+            } => (
+                "KeyTooLarge",
+                &[
+                    ("relation", &Txt(relation)),
+                    ("ctor", &Txt(ctor)),
+                    ("index", &Txt(index)),
+                    ("size", size),
+                    ("limit", limit),
+                ],
+            ),
         };
         ctor(f, name, fields)
     }
@@ -808,6 +841,21 @@ fn rejection(schema: &Schema, r: Rejection) -> RejectReason {
             source,
             line,
             detail,
+        },
+        Rejection::KeyTooLarge {
+            relation,
+            ctor,
+            index,
+            size,
+            limit,
+        } => RejectReason::KeyTooLarge {
+            relation: qualified(schema, relation),
+            ctor: schema.ty(schema.relation(relation).elem_def).ctors()[ctor as usize]
+                .name
+                .clone(),
+            index,
+            size: i64::try_from(size).unwrap_or(i64::MAX),
+            limit: i64::try_from(limit).unwrap_or(i64::MAX),
         },
         Rejection::RowTooLarge {
             relation,

@@ -45,6 +45,7 @@ pub struct Ctor {
 #[derive(Debug)]
 pub struct Indexed {
     pub desc: IndexDesc,
+    pub clause: String,
     pub keys: IndexKeys,
     /// The canonical name of the unique it holds, or of the key.
     pub name: Option<String>,
@@ -150,6 +151,7 @@ fn unique_name(schema: &Schema, rel: RelId, i: usize) -> String {
 /// Returns what the engine derives from every relation variable `catalog` describes.
 pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Result<Rels, Error> {
     let mut out = Rels::new();
+    let specs = crate::catalog::indexes(schema);
     for (rel, desc) in &catalog.relations {
         let r = schema.relation(*rel);
         let cs = ctors(schema, &r.elem).expect("a relation's element type is a sum");
@@ -213,6 +215,7 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
             };
             let indexed = Indexed {
                 desc: d.clone(),
+                clause: specs[&d.id.0].clause.clone(),
                 keys,
                 name,
             };

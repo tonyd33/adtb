@@ -510,24 +510,8 @@ impl Heap {
             }
             stored.push(s.unwrap_or(Stored::Inline(bytes)));
         }
-        let max = match f.arrangement {
-            Arrangement::Fixed { width } => width,
-            Arrangement::Slotted => slotted::max_version(self.page_size),
-        };
-        let least = HEADER_LEN
-            + f.layout.least_body_len()
-            + stored
-                .iter()
-                .map(|s| s.len().min(POINTER_LEN))
-                .sum::<usize>();
-        if least > max {
-            return Err(Error::TooLarge {
-                len: least,
-                limit: max,
-            });
-        }
-        let limit = self.page_size / 4;
-        while HEADER_LEN + f.layout.body_len(&stored) > limit {
+        self.check_lengths(stored.iter().map(Stored::len))?;
+        while HEADER_LEN + f.layout.body_len(&stored) > self.page_size / 4 {
             let largest = stored
                 .iter()
                 .enumerate()
@@ -550,6 +534,24 @@ impl Heap {
             })
             .collect();
         Ok((f.layout.assemble(&fixed_part, &stored), held))
+    }
+
+    pub fn check_row(&self, row: &[Value]) -> Result<(), Error> {
+        let (_, vars) = self.current().layout.encode(row);
+        self.check_lengths(vars.iter().map(Vec::len))
+    }
+
+    fn check_lengths(&self, lengths: impl Iterator<Item = usize>) -> Result<(), Error> {
+        let limit = match self.current().arrangement {
+            Arrangement::Fixed { width } => width,
+            Arrangement::Slotted => slotted::max_version(self.page_size),
+        };
+        let base = HEADER_LEN + self.current().layout.least_body_len();
+        let len = base + lengths.map(|len| len.min(POINTER_LEN)).sum::<usize>();
+        if len > limit {
+            return Err(Error::TooLarge { len, limit });
+        }
+        Ok(())
     }
 
     /// Returns `page` with every version on it in the newest format, at the same slots, with the

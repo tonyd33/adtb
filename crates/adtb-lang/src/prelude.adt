@@ -81,6 +81,7 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | DumpDamaged          { offset: I64 }
                   | Internal             { what: Text }
                   | RowTooLarge          { relation: Text, ctor: Text, size: I64, limit: I64 }
+                  | KeyTooLarge          { relation: Text, ctor: Text, index: Text, size: I64, limit: I64 }
                   | Closed
 
 type Limit = Time   { after: Duration }

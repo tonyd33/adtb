@@ -183,6 +183,7 @@ fn engine(schema: &Schema) -> CatalogIds {
     let mut types: Vec<(u64, TypeId)> = ids.types.iter().map(|(&t, &id)| (id, t)).collect();
     types.sort();
     let mut field = 0;
+    let mut added = Vec::new();
     for (_, def) in types {
         let td = schema.ty(def);
         let parts = td.header().iter().map(|f| (None, f)).chain(
@@ -192,9 +193,18 @@ fn engine(schema: &Schema) -> CatalogIds {
                 .flat_map(|(k, c)| c.fields.iter().map(move |f| (Some(k as u32), f))),
         );
         for (c, f) in parts {
+            // Constructors from 471 extend the original engine field-id allocation.
+            if c.is_some_and(|c| ids.ctors[&(def, c)] >= 471) {
+                added.push((def, c, f.name.clone()));
+                continue;
+            }
             ids.fields.insert((def, c, f.name.clone()), field);
             field += 1;
         }
+    }
+    for slot in added {
+        ids.fields.insert(slot, field);
+        field += 1;
     }
     let mut relations: Vec<(u64, RelId)> = ids.relations.iter().map(|(&r, &id)| (id, r)).collect();
     relations.sort();
@@ -683,6 +693,7 @@ pub const TYPES: &[FixedType] = &[
             ("Internal", 465),
             ("RowTooLarge", 467),
             ("Closed", 469),
+            ("KeyTooLarge", 471),
         ],
     ),
     (

@@ -978,6 +978,13 @@ the one §1.1 states for the bindings of a set.
 The outcome of `transact b` in context `σ = (D, Σ, v, γ)`:
 
 ```text
+checkkey(i, v) =
+  ↯f               if extracting index i's key from v faults with f
+  ()               if extraction yields no entry
+  ⊗KeyTooLarge     if the extracted key's encoded payload exceeds its limit
+                   ([writes.md §1.7](writes.md#17-index-keys-too-large))
+  ()               otherwise
+
 run(s, σ) =
   (E, res) ⇐ ⟦b⟧ ∅ σ ;
   E*  = E with the effects its delete actions derive (§6.4) ;
@@ -990,6 +997,7 @@ run(s, σ) =
                    to w at p
   ⊗RowTooLarge     if some v ∈ Δ*⁺(r.C) has a stored form over the engine's row
                    limit ([writes.md §1.6](writes.md#16-rows-too-large))
+  _ ⇐ gather(checkkey(i, v))_{v ∈ Δ*⁺(r.C), i an index of r ranging over C} ;
   (R_c)_{c ∈ cons(Σ)} ⇐ gather(⟦c⟧(D, Δ*, D*))_{c ∈ cons(Σ)} ;
   viol = { c ∈ cons(Σ) | R_c ≠ ∅ }
        ∪ { the key of r | some ins(r, v) ∈ E* with key_r(v) = key_r(u₀),
@@ -1002,7 +1010,14 @@ run(s, σ) =
 
 An update that keeps a row in a deprecated constructor, or keeps a
 field's value in a deprecated value-level constructor, is not refused.
-The rejection carries one violated constraint and its report rows; the
+
+Key extraction evaluates the index's expressions on the new row. A fault
+`↯f` from extraction reaches the caller as `Faulted { fault: f }`.
+The `gather` permits any one abort among competing key extractions and
+payload checks. Every such check follows `NotOpen` and `RowTooLarge` and
+precedes uniqueness and constraint checks and application of the change set.
+
+A constraint rejection carries one violated constraint and its report rows; the
 caller sees the rows its grants allow
 ([constraints.md §7](constraints.md#7-checking-and-violation-reports)).
 
@@ -1014,8 +1029,9 @@ replaces `D` by `D*` for the statements after it in its transaction.
 `D` is the snapshot: a test that would meet a row committed by another
 transaction after the snapshot is not decided here; it ends the
 transaction with a serialization failure (§8.4). `NotOpen`,
-`RowTooLarge`, `KeyViolation`, `Violated`, `KeyChanged` and `UserError` are
-constructors of `RejectReason` ([catalog.md](catalog.md#4-error-sums)).
+`RowTooLarge`, `KeyTooLarge`, `KeyViolation`, `Violated`, `KeyChanged`,
+`Faulted` and `UserError` are constructors of `RejectReason`
+([catalog.md](catalog.md#4-error-sums)).
 
 ### 6.7 Inserts with rejects
 

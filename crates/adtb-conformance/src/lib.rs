@@ -502,6 +502,7 @@ fn refusal(a: Abort) -> (String, String) {
                 Rejection::UserError { .. } => "UserError",
                 Rejection::BadInput { .. } => "BadInput",
                 Rejection::RowTooLarge { .. } => "RowTooLarge",
+                Rejection::KeyTooLarge { .. } => "KeyTooLarge",
             };
             (name.into(), format!("{r:?}"))
         }

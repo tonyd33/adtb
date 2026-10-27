@@ -64,6 +64,18 @@ The TID format is that of [mvcc.md §2](mvcc.md#2-tids). The key's
 encoding is prefix-free, so `encode(k) ++ ovarint(c)` is a prefix of
 exactly the entries of key `k` and constructor `c`.
 
+`Index::check_key(page_size, key, ctor)` checks whether an entry fits
+before a TID is allocated, without reading or changing pages. It returns
+`TooLong { len, max }` with the encoded entry length and maximum in bytes.
+The entry length includes the encoded constructor id and eight-byte TID.
+An entry whose length equals the maximum fits.
+
+Preconditions:
+
+- `ctor` belongs to the index's constructor set.
+- `key` has the index's key schema.
+- `page_size` is the database's page size.
+
 Rulings: btree/entry-order/after-key, btree/ctor-width/uvarint
 
 ## 3. Key encoding

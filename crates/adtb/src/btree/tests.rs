@@ -342,3 +342,33 @@ fn a_page_of_another_format_is_not_a_node() {
     assert_eq!(FORMAT, 2);
     assert_eq!(Node::new(&p).err(), Some(Malformed));
 }
+
+#[test]
+fn index_key_limits_include_encoding_constructor_width_and_tid() {
+    use crate::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
+
+    for page_size in [4096, 8192, 16384, 32768] {
+        for id in [239, 240, 255, 256, 65535, 65536, u32::MAX] {
+            let ctor = CtorId(id);
+            let schema = KeySchema::new(vec![(KeyType::Scalar(Scalar::Bytes), Dir::Asc)]);
+            let index = super::Index::open(BTree::open(Pid(1), 1), schema, [ctor].into());
+            let mut entry = Entry {
+                key: vec![Value::Bytes(Vec::new())],
+                ctor,
+                tid: Tid::new(1, 0).unwrap(),
+            };
+            let max = BTree::max_entry_len(page_size);
+            let overhead = index.schema().encode_entry(&entry).len();
+            entry.key = vec![Value::Bytes(vec![1; max - overhead])];
+            assert_eq!(index.schema().encode_entry(&entry).len(), max);
+            assert_eq!(index.check_key(page_size, &entry.key, ctor), Ok(()));
+            entry.key = vec![Value::Bytes(vec![1; max - overhead + 1])];
+            assert_eq!(
+                index.check_key(page_size, &entry.key, ctor),
+                Err(super::Error::TooLong { len: max + 1, max })
+            );
+            entry.key = vec![Value::Bytes(vec![0; (max - overhead) / 2 + 1])];
+            assert!(index.check_key(page_size, &entry.key, ctor).is_err());
+        }
+    }
+}

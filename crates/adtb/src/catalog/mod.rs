@@ -1536,8 +1536,8 @@ impl Catalog {
         c: u32,
         row: &[Value],
     ) -> Result<(), Error> {
-        let tid = self.heap(r, c).insert(pager, x.0, row)?;
         let ctor = ctor_id(&self.schema, r, c).stored();
+        let mut entries = Vec::new();
         for (spec, index, keys) in self.indexes.values() {
             if spec.relation != r {
                 continue;
@@ -1545,6 +1545,23 @@ impl Catalog {
             let Some(key) = row_key(keys, index.schema(), c, row)? else {
                 continue;
             };
+            index.check_key(pager.page_size(), &key, ctor).map_err(|e| match e {
+                btree::Error::TooLong { len, max } => {
+                    let rel = self.schema.relation(r);
+                    let module = &self.schema.module(rel.module).name;
+                    let size = index.schema().encode(&key).len();
+                    let limit = max - (len - size);
+                    Error::Refused(vec![format!(
+                        "index `{module}::{}.{}` needs a key payload of {size} bytes; the limit is {limit} bytes",
+                        rel.name, spec.clause
+                    )])
+                }
+                e => e.into(),
+            })?;
+            entries.push((index, key));
+        }
+        let tid = self.heap(r, c).insert(pager, x.0, row)?;
+        for (index, key) in entries {
             let fresh = index.insert(pager, &Entry { key, ctor, tid })?;
             assert!(fresh, "a new row's entry is not in its index yet");
         }

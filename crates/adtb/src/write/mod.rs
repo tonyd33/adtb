@@ -82,6 +82,13 @@ pub enum Rejection {
         size: usize,
         limit: usize,
     },
+    KeyTooLarge {
+        relation: RelId,
+        ctor: u32,
+        index: String,
+        size: usize,
+        limit: usize,
+    },
 }
 
 /// Why a statement or a commit failed.

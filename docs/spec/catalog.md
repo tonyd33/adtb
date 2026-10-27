@@ -330,10 +330,34 @@ relation index_ctors : IndexCtor key (index, ctor)
 
 `Stored` is a stored view ([derived.md](derived.md#2-stored-views)).
 The relations of `catalog` have kind `Catalog` and those of `sys` kind
-`Volatile`. An index's `clause` is its declaration clause as written,
-for example `index (user) in (Google | Apple)`; a key's clause is
-written as its `key` clause would be, `key id` or `key (src, dst)`.
-`index_ctors` holds the constructor set it ranges over.
+`Volatile`. An index's `clause` is its canonical index clause, with no
+leading or trailing whitespace, comments or line breaks:
+
+- A primary key is `key id` for one field or `key (src, dst)` for several,
+  in key-field order, without a `generate` clause.
+- Other declared indexes begin with `unique`, `index` or `interval index`,
+  followed by one space and their elements in parentheses, in declaration
+  order, separated by a comma and one space.
+- Field paths have no spaces around `.`. Expression calls have no space
+  before `(` and separate arguments with a comma and one space. Binary
+  operators have one space on either side; unary `-` has no following
+  space, and `not`, `key` and `try` have one. A binary or conditional
+  expression used as a unary or binary operand or as the base of a field
+  selection is parenthesised. A conditional is `if e then a else b`,
+  with one space between its parts. Other redundant parentheses are
+  omitted. Names retain their qualification with no spaces around `::`;
+  numeric and duration literals retain their spelling, Boolean literals
+  are `true` and `false`, and text literals are quoted and escaped.
+- An unscoped index has no `in` suffix and ranges over every constructor.
+  An explicit scope is resolved to constructor names, expanding a named
+  set and ordering its members by the sum's constructor order. One member
+  is ` in Google`; several are ` in (Google | Apple)`, with one space
+  around each `|`. An explicit scope retains its suffix even when it
+  contains every constructor.
+
+For example, `index ( lower( email ) ) in Google` has clause
+`index (lower(email)) in Google`. `index_ctors` holds the resolved
+constructor set the index ranges over.
 
 An index of kind `Implied` is the implied index of a reference field
 ([constraints.md §2.1](constraints.md#21-keys-uniques-and-references)):
@@ -816,6 +840,7 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | DumpDamaged          { offset: I64 }
                   | Internal             { what: Text }
                   | RowTooLarge          { relation: Text, ctor: Text, size: I64, limit: I64 }
+                  | KeyTooLarge          { relation: Text, ctor: Text, index: Text, size: I64, limit: I64 }
                   | Closed
 
 type Limit = Time   { after: Duration }
@@ -883,6 +908,7 @@ wire's 32-bit epoch and 64-bit log position.
 | `DumpDamaged` | a restore could not authenticate or decode the dump; `offset` is the byte offset of the first part that fails | [interop.md](interop.md#61-a-logical-dump) |
 | `Internal` | the statement broke a guarantee the engine's checker makes about a program, a bug in the engine; the statement fails and none of its effects are applied, the transaction stays open, and the engine keeps serving; `what` is implementation-defined | [transactions.md](transactions.md#52-meaning) |
 | `RowTooLarge` | a row of the statement's change set has a stored form larger than the engine's row limit; `relation` is its relation variable qualified by module, `ctor` its constructor, `size` and `limit` in bytes | [writes.md](writes.md#16-rows-too-large) |
+| `KeyTooLarge` | a new row's encoded index key payload exceeds its database-derived limit; `relation` is module-qualified, `ctor` is the row's constructor, `index` is the canonical index clause of [§2.2](#22-relation-variables-named-sets-and-indexes), and `size` and `limit` are payload bytes | [writes.md](writes.md#17-index-keys-too-large) |
 | `Closed` | an in-process call, interactive transaction or load reached a database after its `close`; it has no effect | [embedding.md](embedding.md#43-errors) |
 | `Malformed` | a message violates the server protocol | [wire.md](wire.md#113-malformed-messages) |
 | `Quarantined` | the call reads a quarantined constructor relation, or writes a constructor relation a quarantined index covers; `what` names it | §11.2 |
@@ -1008,7 +1034,7 @@ Prelude:
 | 54 | `Report` | 55 (one constructor) |
 | 56 | `Position` | 57 (one constructor) |
 | 58 | `RetryReason` | 59 `Serialization`, 60 `SafePointTimeout`, 61 `Overloaded`, 62 `StreamIdle`, 63 `FileChanged`, 64 `Fenced`, 341 `ReplayConflict` |
-| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase`, 342 `CatalogMismatch`, 343 `EditionLocked`, 344 `UnknownEdition`, 345 `MixedVersions`, 372 `MigrationInProgress`, 460 `DumpDamaged`, 465 `Internal`, 467 `RowTooLarge`, 469 `Closed` |
+| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase`, 342 `CatalogMismatch`, 343 `EditionLocked`, 344 `UnknownEdition`, 345 `MixedVersions`, 372 `MigrationInProgress`, 460 `DumpDamaged`, 465 `Internal`, 467 `RowTooLarge`, 469 `Closed`, 471 `KeyTooLarge` |
 | 103 | `FatalReason` | 104 `Malformed`, 105 `Quarantined`, 106 `MissingFunction`, 107 `Storage` |
 | 108 | `Notice` | 109 `LeaseExpiring`, 110 `ShuttingDown`, 111 `ConstructorEnabled`, 112 `BundleRetired`, 113 `BlockingMigration`, 114 `UpgradeRequired` |
 | 115 | `RejectedRow` | 116 (one constructor) |
@@ -1162,21 +1188,25 @@ Module `sys`, relation variables:
 | 371 | `sys::safe_snapshots` |
 
 
-Ids from 341 to 470 are listed in the rows of the types they belong
+Ids from 341 to 471 are listed in the rows of the types they belong
 to. `Person` and the other types of examples are not engine types and
 have no fixed id, nor has a `Principal` the schema declares
 ([security.md](security.md#11-the-principal-sum)). Ids 287 to 290, 306
-to 309 and from 471 to 1023 are unassigned.
+to 309 and from 472 to 1023 are unassigned.
 
 Fields and indexes have fixed ids in their own spaces. In edition
-2026-10 and catalog version 1, the engine's fields take ids from 0:
+2026-10 and catalog version 1, the engine's original fields take ids from 0:
 for each type of the tables above in id order, its header fields in
 declared order, then each constructor's fields, constructors in listed
-order and fields in declared order. They take ids 0 to 563:
+order and fields in declared order, excluding constructors with ids
+from 471. They take ids 0 to 563:
 `Option.Some.value` 0, `Result.Ok.value` 1, `Result.Err.error` 2,
 `RejectReason.DumpDamaged.offset` 68, `RejectReason.Internal.what` 69,
 `RejectReason.RowTooLarge`'s fields 70 to 73, the fields of the
-`catalog` and `sys` modules from 92, and `Limit.Rounds.rounds` 563. The engine's indexes take ids from 0: for
+`catalog` and `sys` modules from 92, and `Limit.Rounds.rounds` 563.
+`RejectReason.KeyTooLarge` appends fields `relation`, `ctor`, `index`,
+`size` and `limit` at ids 564 to 568 without changing any earlier id.
+The engine's indexes take ids from 0: for
 each relation variable of the tables above in id order, the index of
 its key, then an index for each `unique` clause in written order;
 they end at 60. A field or index that a later edition or catalog

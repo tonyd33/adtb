@@ -182,6 +182,33 @@ form is larger than the limit is refused ([evolution.md §3.2](evolution.md#32-c
 
 Rulings: spec/row-too-large/refuse-at-write
 
+### 1.7 Index keys too large
+
+A new row in the normalised change set of an insert, update or retag,
+including appended rows, whose index key payload exceeds its limit fails
+with `KeyTooLarge { relation, ctor, index, size, limit }`.
+`relation` is module-qualified, `ctor` is the row's constructor, and
+`index` is the canonical index clause defined in
+[catalog.md §2.2](catalog.md#22-relation-variables-named-sets-and-indexes),
+including its constructor scope. `size` is the canonical encoded key
+payload's byte length after expression evaluation, including component
+encodings and escaping but excluding constructor and row-location suffixes. `limit` is the
+database-derived payload capacity for that constructor. Equality fits.
+An index whose key extraction yields no entry has no payload to check.
+
+These checks follow `NotOpen` and `RowTooLarge` and precede uniqueness
+checks, constraints and physical writes. An expression evaluation fault
+remains `Faulted`; competing failures follow the any-abort rule of §1.5.
+Any oversized key may be reported when several exceed their limits.
+The statement has no effects, its interactive transaction remains usable,
+and earlier successful statements remain.
+
+A migration building an oversized index key fails with `SchemaRefused`
+identifying the index, payload size and limit. The earlier schema and
+data remain usable.
+
+Rulings: spec/key-too-large/rejected
+
 ## 2. Insert
 
 ### 2.1 Forms
