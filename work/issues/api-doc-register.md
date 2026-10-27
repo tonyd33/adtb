@@ -30,3 +30,7 @@ Fix: rewrite these in the imperative, and have `house-check` flag an added `///`
 ## 2026-10-27: ruling
 
 Sweep the third-person doc comments this range added to the imperative, and add a `house-check` rule that flags an added doc comment whose first word is a third-person verb other than "Returns". Older code is converted only when a change touches it.
+
+## 2026-10-27: ruling
+
+The sweep takes in the third-person doc comments added in reviewed..b045483e too (evolve, the shell, the testkit, `admitted`, `deployment_command`, `downgrade` and the rest), and the `house-check` rule lands with it.

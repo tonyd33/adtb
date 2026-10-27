@@ -18,3 +18,7 @@ tags:
 Near-duplicate Bool literal builders sit in `crates/adtb/src/plan/lower/split.rs:189-212` and `crates/adtb/src/write/delta/mod.rs:873-886`.
 
 Fix: resolve the constructor index through the schema once, behind one shared helper for Bool and Option values, and use it from all three places.
+
+## 2026-10-27: typed values
+
+`crates/adtb/src/api/typed.rs` (about lines 253 to 291) builds `bool` and `Option` by constructor position too.
