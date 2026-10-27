@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: bug
 priority: 295
-summary: "the spec states no limit and no error for a row too large to store"
+summary: the spec states no limit and no error for a row too large to store
+closed: 2026-10-26
 tags:
   - spec
   - design
@@ -32,3 +33,9 @@ Candidates:
   the smallest page;
 - a refusal at migration time against the open database's page size;
 - rows that continue across pages.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed in vwztzyqp, ruling `spec/row-too-large/refuse-at-write`. writes.md §1.6, semantics.md §6.6, evolution.md §3.2 and catalog.md §4.2 state `RowTooLarge { relation, ctor, size, limit }`, constructor id 467, with the catalog field ids after it renumbered inside the unreleased 2026-10 edition. The engine refuses the statement before any large-value chunk is written, and refuses a migration whose constructor can never fit a page. The reference takes a caller-supplied row measure.
