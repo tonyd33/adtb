@@ -349,7 +349,7 @@ fn hot_run<R: Runtime>(
     heap: u32,
 ) -> Result<Vec<Link>, Error> {
     let mut links = Vec::new();
-    walk(pager, tid, |l| {
+    walk(pager, heap, tid, |l| {
         let first = links.is_empty();
         if l.heap == heap && (first || l.flags.contains(Flags::HEAP_ONLY)) {
             links.push(*l);

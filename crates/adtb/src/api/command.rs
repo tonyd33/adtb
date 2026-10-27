@@ -202,6 +202,7 @@ impl<R: Runtime> Engine<R> {
             write::Error::Internal("a trial of one statement has one outcome".into())
         })?;
         let rows = match &o.result {
+            _ if *text.terms.ty(text.items[0]) == Ty::Change => 0,
             Val::Set(s) => s.len(),
             Val::List(l) => l.len(),
             _ => 1,

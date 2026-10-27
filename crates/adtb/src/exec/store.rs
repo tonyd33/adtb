@@ -231,14 +231,16 @@ impl<R: Runtime> Store<R> {
         let heap = &self.heap(id).heap;
         let mut failed = None;
         let mut writers = BTreeSet::new();
-        let link = walk(&self.pager, tid, |l| match self.reads.sees(&l.header) {
-            Ok(seen) => {
-                writers.extend(writer_of(&l.header, seen));
-                seen
-            }
-            Err(e) => {
-                failed = Some(e);
-                true
+        let link = walk(&self.pager, heap.id(), tid, |l| {
+            match self.reads.sees(&l.header) {
+                Ok(seen) => {
+                    writers.extend(writer_of(&l.header, seen));
+                    seen
+                }
+                Err(e) => {
+                    failed = Some(e);
+                    true
+                }
             }
         })?;
         if let Some(e) = failed {

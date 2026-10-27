@@ -1294,19 +1294,22 @@ pub fn header_at<R: Runtime>(pager: &Pager<R>, tid: Tid) -> Result<Option<Header
     })
 }
 
-/// Follow the chain from the version at `start` through each `next`, across heaps, and return
-/// the first version `stop` accepts. Returns `None` when the chain ends first.
+/// Follow the chain from the version at `start`, in heap `heap`, through each `next`, across
+/// heaps, and return the first version `stop` accepts. Returns `None` when the chain ends first.
 ///
-/// The chain ends at a slot holding no version, at a page that is not a heap page, or at a
-/// version whose `xmin` is not the `xmax` of the version before it. The versions of one stretch
-/// of the chain on one page are read from one copy of that page.
+/// The chain ends at a slot holding no version, at a page that is not a heap page, at a version
+/// whose `xmin` is not the `xmax` of the version before it, and at a version on a page of the
+/// wrong heap: the first must be in `heap`, the successor of a moved version in another heap and
+/// flagged retagged in, and any other successor in its predecessor's heap. The versions of one
+/// stretch of the chain on one page are read from one copy of that page.
 pub fn walk<R: Runtime>(
     pager: &Pager<R>,
+    heap: u32,
     start: Tid,
     mut stop: impl FnMut(&Link) -> bool,
 ) -> Result<Option<Link>, PageError> {
     let mut at = start;
-    let mut prior = None;
+    let mut prior: Option<Link> = None;
     let mut copy: Option<(u64, Vec<u8>)> = None;
     loop {
         let page = match copy {
@@ -1328,20 +1331,33 @@ pub fn walk<R: Runtime>(
                     header: Header::read(&page[range]),
                     flags,
                 };
-                if prior.is_some_and(|x| x != link.header.xmin) {
+                if !follows(prior.as_ref(), heap, &link) {
                     return Ok(None);
                 }
                 if stop(&link) {
                     return Ok(Some(link));
                 }
-                prior = Some(link.header.xmax);
                 match link.header.next {
                     Some(next) => at = next,
                     None => return Ok(None),
                 }
+                prior = Some(link);
             }
             Slot::Redirect(slot) => at = tid(Pid(at.page()), usize::from(slot)),
             Slot::Unused | Slot::Dead => return Ok(None),
         }
     }
+}
+
+/// Returns whether `link` can be the version after `prior` in a chain starting in heap `heap`.
+fn follows(prior: Option<&Link>, heap: u32, link: &Link) -> bool {
+    let Some(p) = prior else {
+        return link.heap == heap;
+    };
+    let placed = if p.flags.contains(Flags::MOVED) {
+        link.heap != p.heap && link.flags.contains(Flags::RETAGGED_IN)
+    } else {
+        link.heap == p.heap
+    };
+    placed && link.header.xmin == p.header.xmax
 }

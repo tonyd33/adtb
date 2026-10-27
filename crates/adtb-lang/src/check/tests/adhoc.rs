@@ -113,6 +113,16 @@ fn temp_relations_check() {
     adhoc_accepts(&[], "temp relation copies : User key id");
     adhoc_accepts(&[], "temp relation ids : Identity key id");
     adhoc_refuses(&[], "temp relation r : Nope", "no type `Nope`");
+    adhoc_refuses(
+        &[],
+        "temp relation t : User key id\nvacuum t",
+        "`vacuum` takes a stored relation; `t` is a temp relation",
+    );
+    adhoc_refuses(
+        &[],
+        "temp relation t : User key id\nreindex t",
+        "`reindex` takes a stored relation; `t` is a temp relation",
+    );
     adhoc_refuses(&[], "temp relation r : { a: I64 } key b", "key field `b`");
     adhoc_refuses(
         &[],

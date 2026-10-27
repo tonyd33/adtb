@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: bug
 priority: 691
 summary: "a statement that reads a file and fails restores the transaction's local state and drops the file's pin, so a later read of the changed file gets no FileChanged"
+closed: 2026-10-26
 tags:
   - quality
   - engine
@@ -18,3 +19,13 @@ The first read of a path in a transaction must record its checksums, and every l
 Found by reading; no repro yet.
 
 Fix: keep file pins apart from the temp relation state that a failed statement rolls back, and never revert pins on a statement failure. Add a sim test: read a file in a statement that fails, change the file, read it again in the same transaction, expect `FileChanged`.
+
+## 2026-10-26: done
+
+`Local::restore_temps` puts back only the temp relation rows; `statements_with` and `trial` use it, so a file read by a failed statement or by `explain analyze` stays pinned. Tests in `adtb-sim/tests/files.rs`: after a failed scan, and after an `explain analyze` scan, a changed file makes the next read fail with `FileChanged`.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: landed
+
+Landed with the ebug track.

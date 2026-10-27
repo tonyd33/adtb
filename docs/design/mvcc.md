@@ -330,15 +330,21 @@ of §3: a moved version is invisible to newer snapshots by its `xmax`,
 like any superseded version. A deleter that aborted leaves the version
 visible until vacuum clears its `xmax`.
 
-The heap walks a chain from a TID through each `next`, across heaps,
-and returns the first version a caller's predicate accepts, with its
-TID, the heap id of its page, its header and flags; or none, when the
-chain ends first. A redirect line pointer
+The heap walks a chain from a TID in a named heap through each `next`,
+across heaps, and returns the first version a caller's predicate
+accepts, with its TID, the heap id of its page, its header and flags;
+or none, when the chain ends first. A redirect line pointer
 ([§12.1](#121-page-arrangement)) is followed to the slot it names. A
 slot holding no version ends the chain, as do a page that is not a heap
-page and a version whose `xmin` is not the `xmax` of the version before
-it: a version's `next` may name a successor vacuum freed, and whose
-slot or page was taken again.
+page, a version whose `xmin` is not the `xmax` of the version before
+it, and a version on a page of the wrong owner: the first version must
+be on a page of the named heap, the successor of a moved version on a
+page of another heap and flagged retagged in, and any other successor
+on a page of its predecessor's heap. A version's `next` may name a
+successor vacuum freed, and whose slot or page was taken again; an
+index entry read before vacuum's index pass may name a slot or page
+vacuum freed and something else took, a large-value store's slotted
+page among them.
 
 A `next` that names no successor written by the version's deleter is
 allowed only when that deleter has resolved: it aborted and vacuum has

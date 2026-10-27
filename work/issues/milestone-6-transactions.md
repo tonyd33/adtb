@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 600
 summary: "milestone 6 (transactions) has not exited: no commit log, snapshots, SSI, commit path or isolation checker"
+closed: 2026-10-26
 depends-on:
   - pager-safe-snapshot-record
   - txn-interior-locking
@@ -38,3 +39,9 @@ Open on 2026-10-25: `commit-log-snapshots.md`, `ssi.md`,
 ## 2026-10-26: gate
 
 The deep-profile vacuum crash (vacuum-threads-xid-not-reserved) gates the exit.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: exited
+
+Every dependency is resolved. `ssi.rs` `write_skew_aborts_one_side` and the isolation checker sweeps pass in the default run, and the deep-profile vacuum crash is fixed.

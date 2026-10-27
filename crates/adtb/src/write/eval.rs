@@ -240,9 +240,18 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let (temps, kept): (Effects, Effects) = effects
             .into_iter()
             .partition(|e| is_temp(self.schema, e.rel()));
-        let out = self.boundary(kept, result)?;
+        let mut out = self.boundary(kept, result)?;
         let temps: Vec<&Eff> = temps.iter().collect();
         self.local.borrow_mut().apply(self.schema, &temps)?;
+        for e in temps {
+            if let Eff::Ins(r, v) | Eff::Rep(r, _, v) = e {
+                add(&mut out.inserted, *r, v.clone())?;
+            }
+            if let Eff::Del(r, v) | Eff::Rep(r, v, _) = e {
+                add(&mut out.deleted, *r, v.clone())?;
+            }
+        }
+        normalise(&mut out.inserted, &mut out.deleted);
         Ok(out)
     }
 

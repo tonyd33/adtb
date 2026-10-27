@@ -288,6 +288,21 @@ impl Checker<'_> {
         }
     }
 
+    /// Returns the stored relation `q` names for the command `command`, refusing a temp relation.
+    fn stored_relation_named(&self, q: &ast::QName, command: &str) -> R<RelId> {
+        let rel = self.relation_named(q)?;
+        if self.schema.module_named(TEMP_MODULE) == Some(self.schema.relation(rel).module) {
+            return Err(diag(
+                q.span(),
+                format!(
+                    "`{command}` takes a stored relation; `{}` is a temp relation",
+                    q.name.text
+                ),
+            ));
+        }
+        Ok(rel)
+    }
+
     fn role_stmt(&mut self, r: &RoleStmt) -> R<()> {
         match r {
             RoleStmt::Create(_) | RoleStmt::Drop(_) => Ok(()),
@@ -593,7 +608,7 @@ impl Checker<'_> {
                 Command::TerminateSession(key(self, e, "sys", "sessions")?)
             }
             ast::Command::SetSetting(name, value) => self.set_setting(name, value)?,
-            ast::Command::Vacuum(r) => Command::Vacuum(self.relation_named(r)?),
+            ast::Command::Vacuum(r) => Command::Vacuum(self.stored_relation_named(r, "vacuum")?),
             ast::Command::Verify(r) => Command::Verify(match r {
                 Some(r) => Some(self.relation_named(r)?),
                 None => None,
@@ -603,7 +618,7 @@ impl Checker<'_> {
                 index,
                 online,
             } => {
-                let rel = self.relation_named(relation)?;
+                let rel = self.stored_relation_named(relation, "reindex")?;
                 let index = match index {
                     Some((fields, scope)) => Some(self.reindexed(rel, fields, scope, span)?),
                     None => None,

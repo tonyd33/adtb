@@ -98,6 +98,11 @@ pub fn temp_key(schema: &Schema, rel: RelId, row: &Val) -> Result<Val, Error> {
 }
 
 impl Local {
+    /// Put back the temp relation rows of `before`, keeping every file pinned since.
+    pub fn restore_temps(&mut self, before: Local) {
+        self.temps = before.temps;
+    }
+
     /// Returns the rows of temp relation `rel` of the constructors `ctors`, or of all.
     pub fn rows(&self, rel: RelId, ctors: Option<&CtorSet>) -> Result<BTreeSet<Val>, Error> {
         let mut out = BTreeSet::new();

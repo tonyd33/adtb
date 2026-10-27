@@ -234,6 +234,32 @@ fn explain_analyze_of_a_write_reports_its_change_set_and_applies_nothing() {
 }
 
 #[test]
+fn explain_analyze_of_a_write_to_a_temp_relation_reports_its_change() {
+    with_db(|db| {
+        let got = run(
+            db,
+            "temp relation t : { a: I64 } key a\nexplain analyze insert t { a: 1 }",
+        );
+        let (text, document) = explained(got.into_iter().next().expect("a result"));
+        assert!(text.contains("t.t: -0 +1"), "{text}");
+        assert!(
+            document.contains("\"change\": {\"t.t\": {\"deleted\": 0, \"inserted\": 1}}"),
+            "{document}"
+        );
+    });
+}
+
+#[test]
+fn explain_analyze_of_a_write_counts_no_actual_rows() {
+    with_db(|db| {
+        let (text, document) =
+            explained(run(db, r#"explain analyze insert users { name: "cy" }"#).remove(0));
+        assert!(text.contains("actual rows 0"), "{text}");
+        assert!(document.contains("\"actual\": {\"rows\": 0"), "{document}");
+    });
+}
+
+#[test]
 fn explain_analyze_of_a_write_checks_its_constraints() {
     with_db(|db| {
         let e = failure(
@@ -366,6 +392,45 @@ fn reindex_of_one_index_clause_rebuilds_it_as_a_job() {
 fn reindex_of_an_undeclared_index_is_invalid() {
     with_db(|db| {
         let e = failure(db, "reindex identities index (gid) in Google");
+        assert!(is_invalid(&e), "{e:?}");
+    });
+}
+
+#[test]
+fn vacuum_of_a_temp_relation_is_invalid_and_names_it() {
+    with_db(|db| {
+        let e = failure(db, "temp relation t : User key id\nvacuum t");
+        assert!(is_invalid(&e), "{e:?}");
+        let shown = format!("{e:?}");
+        assert!(shown.contains("`t`") && shown.contains("temp"), "{shown}");
+    });
+}
+
+#[test]
+fn reindex_of_a_temp_relation_is_invalid_and_names_it() {
+    with_db(|db| {
+        let e = failure(db, "temp relation t : User key id\nreindex t");
+        assert!(is_invalid(&e), "{e:?}");
+        let shown = format!("{e:?}");
+        assert!(shown.contains("`t`") && shown.contains("temp"), "{shown}");
+    });
+}
+
+#[test]
+fn vacuum_of_a_temp_relation_an_earlier_statement_declared_is_invalid() {
+    with_db(|db| {
+        let mut t = db
+            .begin(&TxnOptions::default())
+            .expect("a transaction begins");
+        t.query_text(
+            "temp relation t : User key id",
+            &[],
+            &TxnCallOptions::default(),
+        )
+        .expect("the temp relation is declared");
+        let Err(e) = t.query_text("vacuum t", &[], &TxnCallOptions::default()) else {
+            panic!("`vacuum t` succeeds")
+        };
         assert!(is_invalid(&e), "{e:?}");
     });
 }

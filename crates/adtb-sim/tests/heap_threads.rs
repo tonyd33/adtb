@@ -329,7 +329,7 @@ fn a_walk_beside_pruning_reaches_the_newest_version_of_its_row_and_no_other_row(
                 let (db, stop, walks) = (db.clone(), stop.clone(), walks.clone());
                 rt.spawn("reader", move || {
                     while !stop.load(Ordering::Relaxed) {
-                        let newest = walk(&db.pager, head, |l| {
+                        let newest = walk(&db.pager, HEAP_ID, head, |l| {
                             assert!(
                                 l.header.xmin.is_multiple_of(2),
                                 "seed {seed}: the walk from {head:?} reached {:?}, written by filler {}",

@@ -287,7 +287,7 @@ impl Db {
             if !heaps.contains(&h) {
                 continue;
             }
-            let found = self.chain_visible(snapshot, e.tid);
+            let found = self.chain_visible(snapshot, HEAP_IDS[h], e.tid);
             if let Some(tid) = found {
                 let v = self.heaps[h]
                     .read(&self.pager, tid)
@@ -301,12 +301,12 @@ impl Db {
 
     /// Returns the version `snapshot` sees among the one at `tid` and its heap-only successors on
     /// its page.
-    fn chain_visible(&mut self, snapshot: &Snapshot, tid: Tid) -> Option<Tid> {
+    fn chain_visible(&mut self, snapshot: &Snapshot, heap: u32, tid: Tid) -> Option<Tid> {
         let Db { pager, txns, .. } = self;
         let mut seen = None;
         let mut first = true;
         let mut checks = Vec::new();
-        walk(pager, tid, |l| {
+        walk(pager, heap, tid, |l| {
             if l.tid.page() != tid.page() || !first && !l.flags.contains(Flags::HEAP_ONLY) {
                 return true;
             }
@@ -768,7 +768,9 @@ fn a_heap_only_chain_keeps_its_first_slot_as_a_redirect() {
         assert_eq!(2, report.freed, "{report:?}");
         assert_eq!(1, report.all_visible, "{report:?}");
         let pager = &mut db.pager;
-        let found = walk(pager, first, |_| true).unwrap().unwrap();
+        let found = walk(pager, HEAP_IDS[EMAIL], first, |_| true)
+            .unwrap()
+            .unwrap();
         assert_eq!(at, found.tid);
         assert_eq!(None, db.heaps[EMAIL].read(pager, first).unwrap());
         assert!(db.heaps[EMAIL].all_visible(pager, Pid(at.page())).unwrap());
@@ -1027,6 +1029,32 @@ fn vacuum_reopens_a_page_conversion_left_full() {
 }
 
 #[test]
+fn a_walk_from_an_entry_read_before_vacuum_ends_on_a_page_the_large_store_took() {
+    let mut sim = Sim::new(37, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut db, _) = Db::create(rt, 4);
+        let row = vec![Value::I64(1), Value::I32(0)];
+        let x = db.txns.begin(&db.pager).unwrap();
+        let t = db.heaps[APPLE].insert(&db.pager, x.0, &row).unwrap();
+        db.index(APPLE, &row, t);
+        db.txns.abort(&db.pager, x).unwrap();
+        let report = db.vacuum(usize::MAX);
+        assert!(report.removed >= 1, "{report:?}");
+        let x = db.txns.begin(&db.pager).unwrap();
+        let large = vec![
+            Value::I64(2),
+            Value::Text("l".into()),
+            Value::Bytes(vec![7; 3 * PAGE]),
+        ];
+        db.heaps[EMAIL].insert(&db.pager, x.0, &large).unwrap();
+        db.txns.commit(&db.pager, x).unwrap();
+        let store = db.heaps[EMAIL].large().pages(&db.pager).unwrap();
+        assert!(store.contains(&Pid(t.page())), "{t:?} is not in {store:?}");
+        assert_eq!(None, walk(&db.pager, HEAP_IDS[APPLE], t, |_| true).unwrap());
+    });
+}
+
+#[test]
 fn a_chain_ends_where_vacuum_freed_the_successor() {
     let mut sim = Sim::new(36, Config::default());
     finished(&mut sim, |rt| {
@@ -1059,7 +1087,10 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         db.index(EMAIL, &other, reused);
         db.txns.commit(&db.pager, x).unwrap();
         assert_eq!(moved, reused, "the freed slot is taken again");
-        assert_eq!(None, walk(&db.pager, t, |l| l.tid == reused).unwrap());
+        assert_eq!(
+            None,
+            walk(&db.pager, HEAP_IDS[APPLE], t, |l| l.tid == reused).unwrap()
+        );
         db.txns.release(old_id);
         assert_eq!(Vec::<String>::new(), db.verify());
     });

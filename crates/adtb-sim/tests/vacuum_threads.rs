@@ -186,7 +186,7 @@ impl Db {
             let h = e.ctor.0 as usize;
             let mut first = true;
             let mut seen = Vec::new();
-            walk(&self.pager, e.tid, |l| {
+            walk(&self.pager, HEAP_IDS[h], e.tid, |l| {
                 if l.tid.page() != e.tid.page() || !first && !l.flags.contains(Flags::HEAP_ONLY) {
                     return true;
                 }
@@ -694,5 +694,17 @@ fn crashes_beside_concurrent_vacuum_recover_clean() {
     assert!(
         during >= share(SEEDS, 3),
         "{during} of {crashes} crashes came during a vacuum"
+    );
+}
+
+#[test]
+fn crash_beside_vacuum_at_seed_13_recovers_clean() {
+    crash_loop(
+        13,
+        Faults {
+            torn_p: 0.5,
+            ..Faults::default()
+        },
+        3,
     );
 }

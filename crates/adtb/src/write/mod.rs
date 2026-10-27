@@ -520,7 +520,8 @@ impl<R: Runtime> Database<R> {
     /// one, over `local`, what `tx` holds outside the file. Returns each one's outcome.
     ///
     /// On an `Err` that [ends the transaction](Error::ends_transaction), abort `tx`. On any other
-    /// `Err` none of the items has an effect, on the file or on `local`, and `tx` goes on.
+    /// `Err` none of the items has an effect on the file or on the temp relations of `local`, and
+    /// `tx` goes on. Every file an item read stays pinned in `local` either way.
     pub fn statements(
         &self,
         tx: &Txn,
@@ -556,7 +557,7 @@ impl<R: Runtime> Database<R> {
                 None => Ok(()),
             });
             if let Err(error) = done {
-                *local = before;
+                local.restore_temps(before);
                 if !error.ends_transaction() {
                     self.undo(&ran).map_err(|error| Failed { item, error })?;
                 }
@@ -567,7 +568,8 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Run the items of `text` as [`statements`](Database::statements) does, then undo every
-    /// one, leaving `tx` and `local` as they were. Returns each one's outcome.
+    /// one, leaving `tx` and the temp relations of `local` as they were and every file an item
+    /// read pinned. Returns each one's outcome.
     pub fn trial(
         &self,
         tx: &Txn,
@@ -585,7 +587,7 @@ impl<R: Runtime> Database<R> {
             match o {
                 Ok(o) => out.push(o),
                 Err(error) => {
-                    *local = before;
+                    local.restore_temps(before);
                     if !error.ends_transaction() {
                         self.undo(&ran).map_err(|error| Failed { item, error })?;
                     }
@@ -593,7 +595,7 @@ impl<R: Runtime> Database<R> {
                 }
             }
         }
-        *local = before;
+        local.restore_temps(before);
         let item = text.items.len();
         self.undo(&ran).map_err(|error| Failed { item, error })?;
         Ok(out)
@@ -609,7 +611,10 @@ impl<R: Runtime> Database<R> {
     /// with what its vacuum did.
     pub fn vacuum(&self, rel: RelId) -> Result<Vec<(CtorId, vacuum::Report)>, Error> {
         let _one = self.vacuuming.lock(&self.rt);
-        let r = &self.rels[&rel];
+        let r = self
+            .rels
+            .get(&rel)
+            .ok_or_else(|| Error::Internal(format!("vacuum of {rel:?}, which has no heaps")))?;
         let ids: BTreeMap<u32, CtorId> = self.indexes[&r.key_index]
             .ctors
             .iter()

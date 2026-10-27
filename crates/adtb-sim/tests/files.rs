@@ -661,6 +661,61 @@ fn a_file_that_changes_within_a_transaction_aborts_it_with_file_changed() {
     });
 }
 
+/// Asserts that `e` is a `FileChanged` retry naming `path`.
+fn assert_file_changed(e: &Error, path: &str) {
+    assert!(
+        matches!(
+            e,
+            Error::Retry {
+                reason: RetryReason::FileChanged { path: p }
+            } if p == path
+        ),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn a_file_a_failed_statement_read_stays_pinned_for_its_transaction() {
+    let root = dir("pinned-on-failure", &[("s.csv", "id,name\nx,ann\n")]);
+    with_db(&root, |db| {
+        let mut t = db
+            .begin(&TxnOptions::default())
+            .expect("a transaction begins");
+        let scan = r#"from r in read_csv("s.csv", Small) select r.name"#;
+        let e = t
+            .query_text(scan, &[], &TxnCallOptions::default())
+            .expect_err("a record that does not convert fails the statement");
+        bad_input(e);
+        std::fs::write(root.join("s.csv"), "id,name\n1,bo\n").expect("the file is rewritten");
+        let e = t
+            .query_text(scan, &[], &TxnCallOptions::default())
+            .expect_err("the file changed since the failed statement read it");
+        assert_file_changed(&e, "s.csv");
+    });
+}
+
+#[test]
+fn a_file_an_explain_analyze_read_stays_pinned_for_its_transaction() {
+    let root = dir("pinned-on-trial", &[("s.csv", "id,name\n1,ann\n")]);
+    with_db(&root, |db| {
+        let mut t = db
+            .begin(&TxnOptions::default())
+            .expect("a transaction begins");
+        let scan = r#"from r in read_csv("s.csv", Small) select r.name"#;
+        t.query_text(
+            &format!("explain analyze {scan}"),
+            &[],
+            &TxnCallOptions::default(),
+        )
+        .expect("explain analyze runs the scan");
+        std::fs::write(root.join("s.csv"), "id,name\n1,bo\n").expect("the file is rewritten");
+        let e = t
+            .query_text(scan, &[], &TxnCallOptions::default())
+            .expect_err("the file changed since explain analyze read it");
+        assert_file_changed(&e, "s.csv");
+    });
+}
+
 #[test]
 fn a_temp_relation_holds_rows_for_the_rest_of_its_text() {
     let root = dir("temp", &[]);

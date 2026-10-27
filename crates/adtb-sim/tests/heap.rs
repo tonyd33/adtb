@@ -189,10 +189,12 @@ fn check_links(db: &mut Db) -> Vec<String> {
         let mut versions = Vec::new();
         heap.scan(&db.pager, |v| versions.push(v)).expect("scan");
         for v in versions {
-            let next = v
-                .header
-                .next
-                .map(|n| walk(&db.pager, n, |_| true).unwrap().unwrap());
+            let next = v.header.next.map(|n| {
+                db.heaps
+                    .iter()
+                    .find_map(|h| walk(&db.pager, h.id(), n, |_| true).unwrap())
+                    .expect("a successor in a heap of the sum")
+            });
             let (moved, hot) = (
                 v.flags.contains(Flags::MOVED),
                 v.flags.contains(Flags::HOT_UPDATED),
@@ -234,7 +236,7 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
         finished(&mut sim, |rt| {
             let (mut db, _) = Db::create(rt.clone(), 4);
             let mut live = Live::new();
-            let mut first: BTreeMap<i64, Tid> = BTreeMap::new();
+            let mut first: BTreeMap<i64, (u32, Tid)> = BTreeMap::new();
             let mut next_key = 0;
             let mut hot = 0;
             let mut cold = 0;
@@ -247,7 +249,7 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
                     None => {}
                 }
                 if let Op::Insert { key, .. } = op {
-                    first.insert(key, live[&key].1);
+                    first.insert(key, (HEAP_IDS[live[&key].0], live[&key].1));
                 }
                 db.pager.commit(xid, &[], |_| {}).unwrap();
                 if xid % 250 == 0 {
@@ -260,7 +262,8 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
                 }
             }
             for (key, (heap, tid, _)) in &live {
-                let end = walk(&db.pager, first[key], |l| l.header.next.is_none())
+                let (h, t) = first[key];
+                let end = walk(&db.pager, h, t, |l| l.header.next.is_none())
                     .unwrap()
                     .expect("chain ends");
                 assert_eq!((HEAP_IDS[*heap], *tid), (end.heap, end.tid), "key {key}");
@@ -305,7 +308,7 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         let mut links: Vec<Link> = Vec::new();
         assert_eq!(
             None,
-            walk(pager, first, |l| {
+            walk(pager, HEAP_IDS[EMAIL], first, |l| {
                 links.push(*l);
                 false
             })
@@ -335,7 +338,7 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         for w in links.windows(2) {
             assert_eq!(Some(w[1].tid), w[0].header.next);
         }
-        let newest = walk(pager, first, |l| l.header.next.is_none()).unwrap();
+        let newest = walk(pager, HEAP_IDS[EMAIL], first, |l| l.header.next.is_none()).unwrap();
         assert_eq!(Some(back), newest.map(|l| l.tid));
     });
 }
