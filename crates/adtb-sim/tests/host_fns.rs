@@ -13,7 +13,7 @@ use adtb::batch::{self, Batch, BatchBuilder, Type};
 use adtb::key::{Scalar, Value as Stored};
 use adtb::{
     CallOptions, Database, Determinism, Error, FatalReason, Fault, HostError, HostFns, Log,
-    OpenError, OpenOptions, RejectReason,
+    OpenError, OpenOptions, Position, RejectReason, TxnCallOptions, TxnOptions,
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 
@@ -468,5 +468,32 @@ fn a_volatile_host_function_is_evaluated_once_per_call() {
             2,
             query(&db, r#"from b in ["x", "y"], s in [stamp(b)] select s"#).len()
         );
+    });
+}
+
+/// Commits `text` as one transaction. Returns its commit position.
+fn commit(db: &Database<SimRuntime>, text: &str) -> Position {
+    let mut t = db
+        .begin(&TxnOptions::default())
+        .expect("a transaction begins");
+    t.query_text(text, &[], &TxnCallOptions::default())
+        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
+    t.commit(None).expect("the transaction commits")
+}
+
+#[test]
+fn a_host_function_bound_at_open_is_called_inside_an_at_block() {
+    once(14, |rt| {
+        let db = opened(&rt, &[NOTES], deterministic());
+        write(&db, "set setting RetentionWindow = { length: 1h }").expect("the window");
+        let then = commit(&db, r#"insert notes { body: "A B" }"#);
+        query(&db, "from n in notes select key n");
+        commit(&db, r#"update n in notes set { n with body: "C D" }"#);
+        query(&db, "from n in notes select key n");
+        let at = format!(
+            "at commit Position {{ epoch: {}, lsn: {} }} {{ from n in notes select slugify(n.body) }}",
+            then.epoch, then.lsn
+        );
+        assert_eq!(vec![r#""a-b""#], query(&db, &at));
     });
 }

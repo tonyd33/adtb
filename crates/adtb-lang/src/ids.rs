@@ -838,6 +838,7 @@ pub const TYPES: &[FixedType] = &[
             ("BlockingNoticePeriod", 347),
             ("ReplicaVacuumWait", 348),
             ("RetryLimit", 451),
+            ("RetentionWindow", 470),
         ],
     ),
     (

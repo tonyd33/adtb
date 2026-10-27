@@ -102,6 +102,7 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
             _ => options.rewrites,
         },
         bounded,
+        past: false,
         t: terms.clone(),
         total: Totality::new(schema, options.hiding),
         facts: Facts::default(),
@@ -147,6 +148,9 @@ struct Planner<'a> {
     rw: Rewrites,
     /// Set to read every constructor relation only through an index probe.
     bounded: bool,
+    /// Set while planning the body of an `at` block, which reads no index but key indexes, and
+    /// those only by key lookups.
+    past: bool,
     t: Terms,
     total: Totality<'a>,
     facts: Facts,
@@ -629,6 +633,12 @@ impl Planner<'_> {
                 Ok(wrap_eval(lets, Eval::Case(s, out)))
             }
             Kind::Try(e) => Ok(Eval::Try(Box::new(self.eval(e)?))),
+            Kind::At {
+                instant,
+                point,
+                pins,
+                body,
+            } => self.at(instant, point, pins, body),
             Kind::Deref { key, .. } => {
                 let (lets, k) = self.lift_eval(key)?;
                 let lookup = self.lookup(k, &ty)?;
@@ -732,6 +742,34 @@ impl Planner<'_> {
         }
     }
 
+    /// Returns the read of `body` at the state `point` names, planned apart from every query
+    /// that holds it.
+    fn at(&mut self, instant: bool, point: Tm, pins: Option<u64>, body: Tm) -> Result<Eval, Error> {
+        if self.bounded {
+            return Err(Error::Outside("at"));
+        }
+        if self.past {
+            return Err(Error::NotAQuery("a read of the past inside another"));
+        }
+        let (lets, point) = self.lift_eval(point)?;
+        let outer = std::mem::take(&mut self.outer);
+        self.past = true;
+        let body = self.eval(body);
+        self.past = false;
+        self.outer = outer;
+        let body = body?;
+        let mut reads = Reads::default();
+        collect_eval(self.catalog, &body, &mut reads);
+        let at = AtRead {
+            instant,
+            point,
+            pins,
+            body,
+            heaps: reads.heaps,
+        };
+        Ok(wrap_eval(lets, Eval::At(Box::new(at))))
+    }
+
     /// Returns whether a chain reads the set term `t` by its root form, without evaluating it first.
     fn streams(&self, t: Tm) -> bool {
         self.rel_source(t).is_some()
@@ -751,7 +789,6 @@ impl Planner<'_> {
     /// Refuses a term whose root form a plan does not compute.
     fn refuse(&self, t: Tm) -> Result<(), Error> {
         match self.t.kind(t) {
-            Kind::At { .. } => Err(Error::NotAQuery("a read of history")),
             Kind::Transition(..) => Err(Error::NotAQuery("a read of a statement's transition")),
             Kind::Lam(..) | Kind::App(..) => Err(Error::Internal(
                 "a normal form holds no function value".into(),
@@ -1245,6 +1282,9 @@ impl Planner<'_> {
         conds: &[Tm],
         rest: Tm,
     ) -> Option<IndexProbe> {
+        if self.past {
+            return None;
+        }
         let n = self.total_prefix(conds);
         let mut fixed: Vec<(Option<usize>, Fixes)> = Vec::new();
         let mut in_arms = Vec::new();
@@ -2462,6 +2502,7 @@ fn collect_eval(c: &Catalog, e: &Eval, out: &mut Reads) {
         }
         Eval::Case(_, arms) => arms.iter().for_each(|(_, _, a)| collect_eval(c, a, out)),
         Eval::Try(a) => collect_eval(c, a, out),
+        Eval::At(a) => collect_eval(c, &a.body, out),
         Eval::Lookup(l) => {
             out.indexes.insert(l.index);
             out.heaps.extend(l.routes.iter().map(|(_, h)| *h));

@@ -6,7 +6,7 @@ pub use adtb::catalog::layout::{
     field_type, is_record, key_type, key_value_ty, new_order_keys, repr,
 };
 use adtb::catalog::{IndexKeys, element_types};
-use adtb::exec::{self, AtSnapshot, Store, StoredHeap, StoredIndex, Val};
+use adtb::exec::{self, AtSnapshot, Histories, Store, StoredHeap, StoredIndex, Val};
 use adtb::heap::{FieldType, Heap, LargeStore};
 use adtb::key::{CtorId, Dir, Entry, F32, F64, KeySchema, Tid, Value as KValue};
 use adtb::mvcc::{Access, Limits, Scope, Serializer, Transactions};
@@ -591,6 +591,8 @@ impl Db {
                 .into_iter()
                 .map(|(i, (st, _, _))| (i, st))
                 .collect(),
+            history: Histories::default(),
+            past: None,
         })
     }
 }

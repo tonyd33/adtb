@@ -160,6 +160,7 @@ impl<'a> Interp<'a> {
             }
             Eval::Query(q) => self.query(q, env),
             Eval::Fix(f) => self.fix(f, env),
+            Eval::At(_) => Err(Abort::NotYet("a read of the past".into())),
             Eval::GroupRows { groups, key } => {
                 let k = self.expr(*key, env)?;
                 let found = set(self.expr(*groups, env)?)

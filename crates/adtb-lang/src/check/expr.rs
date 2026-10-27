@@ -205,9 +205,9 @@ impl Checker<'_> {
             ExprKind::At {
                 instant,
                 point,
+                pins,
                 body,
-                ..
-            } => self.at(*instant, point, body),
+            } => self.at(*instant, point, pins.as_ref(), body),
             ExprKind::Reject(_) if self.reject_ok => Err(diag(
                 e.span,
                 "`reject` takes the type expected of it, and none is known here",
@@ -1974,7 +1974,13 @@ impl Checker<'_> {
         }
     }
 
-    fn at(&mut self, instant: bool, point: &Expr, body: &Expr) -> R<Out> {
+    fn at(
+        &mut self,
+        instant: bool,
+        point: &Expr,
+        pins: Option<&ast::Version>,
+        body: &Expr,
+    ) -> R<Out> {
         let pty = if instant {
             Ty::Base(Base::Instant)
         } else {
@@ -1986,11 +1992,18 @@ impl Checker<'_> {
         };
         let p = self.check(point, &pty)?;
         let b = self.synth(body)?;
+        if self.elem_ty(&b.ty).is_none() {
+            return Err(diag(
+                body.span,
+                format!("an `at` block reads a set, found {}", self.show(&b.ty)),
+            ));
+        }
         let ty = b.ty.clone();
         Ok(self.out(
             Kind::At {
                 instant,
                 point: p.tm,
+                pins: pins.map(|v| v.number),
                 body: b.tm,
             },
             ty,

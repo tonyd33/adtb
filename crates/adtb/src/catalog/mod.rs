@@ -1,5 +1,6 @@
 mod change;
 mod deploy;
+mod history;
 mod hosts;
 mod ids;
 mod keying;
@@ -47,6 +48,7 @@ pub use readers::{PendingDrop, Read, Reader};
 pub use rows::{IndexSpec, Rows, applied, declared, field_path, indexed_fields, indexes};
 
 use change::Data;
+use history::{HISTORY_HEAP, HISTORY_INDEX, Kept, Rebuilding, key_indexes};
 use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, rel_id, relation};
 use readers::Readers;
 use root::{Changing, Root};
@@ -136,6 +138,7 @@ pub struct Catalog {
     query_memory: usize,
     readers: Readers,
     hosts: Arc<exec::Hosts>,
+    kept: Kept,
 }
 
 /// The memory a migration's validation may hold until [`Catalog::set_query_memory`] sets it.
@@ -180,6 +183,8 @@ fn roots_row() -> Vec<FieldType> {
                 FieldType::Scalar(Scalar::Text),
             ],
         ),
+        ctor(HISTORY_HEAP, ids(4)),
+        ctor(HISTORY_INDEX, ids(3)),
     ])]
 }
 
@@ -345,6 +350,7 @@ struct Named {
     keys: OrderKeys,
     /// The text of each migration, by version.
     migrations: BTreeMap<u64, String>,
+    history: history::Names,
 }
 
 impl Named {
@@ -374,6 +380,7 @@ impl Named {
             (MIGRATION, [version, Value::Text(text)]) => {
                 self.migrations.insert(uint(version)?, text.clone());
             }
+            (HISTORY_HEAP | HISTORY_INDEX, fields) => self.history.add(*ctor, fields)?,
             (ctor, fields) => {
                 return Err(Error::Corrupt(format!(
                     "a roots row of constructor {ctor} holds {fields:?}"
@@ -538,6 +545,8 @@ impl Catalog {
             next_heap: FIRST_HEAP,
             changing: Changing::None,
             sequences: Pid(0),
+            history_large: (0, Pid(0)),
+            record: (0, Pid(0)),
         };
         pager.update(&[pid], |p| root.write(p[0]))?;
         pager.set_catalog_root(pid);
@@ -554,6 +563,7 @@ impl Catalog {
     ) -> Result<Catalog, Error> {
         let large = LargeStore::create(pager, LARGE)?;
         let roots = Heap::create(pager, ROOTS, roots_row(), large)?;
+        let kept = Kept::create(pager, FIRST_HEAP, FIRST_HEAP + 1)?;
         let named = (roots.id().0, roots.root());
         let (schema, program) = Source::default()
             .check()
@@ -569,11 +579,12 @@ impl Catalog {
             heaps: BTreeMap::new(),
             indexes: BTreeMap::new(),
             keys: OrderKeys::new(),
-            next_heap: FIRST_HEAP,
+            next_heap: FIRST_HEAP + 2,
             sequences: Pid(0),
             query_memory: DEFAULT_QUERY_MEMORY,
             readers: Readers::default(),
             hosts: Arc::default(),
+            kept,
         };
         let x = txns.begin(pager)?;
         let every = empty
@@ -610,6 +621,7 @@ impl Catalog {
             r.large = (large.id(), large.root());
             r.roots = named;
             r.next_heap = catalog.next_heap;
+            catalog.kept.name(r);
         })?;
         pager.wait_durable(lsn);
         Ok(catalog)
@@ -695,6 +707,14 @@ impl Catalog {
                 .map_err(|e| Error::Corrupt(format!("{e:?}")))?;
             stored.insert(id, (spec, index, keys));
         }
+        let kept = Kept::open(
+            pager,
+            &schema,
+            &root,
+            &named.history,
+            &heaps,
+            &key_indexes(&schema, &stored),
+        )?;
         let catalog = Catalog {
             source,
             schema,
@@ -710,6 +730,7 @@ impl Catalog {
             query_memory: DEFAULT_QUERY_MEMORY,
             readers: Readers::default(),
             hosts: Arc::default(),
+            kept,
         };
         if root.changing != Changing::None {
             catalog.free_leaked(pager, &txns)?;
@@ -1084,6 +1105,7 @@ impl Catalog {
             query_memory: self.query_memory,
             readers: Readers::default(),
             hosts: self.hosts.clone(),
+            kept: self.kept.clone(),
         };
         let specs = indexes(&next.schema);
         let normal =
@@ -1153,6 +1175,17 @@ impl Catalog {
                 gone.push((INDEX_ROOT, vec![int(id), int(index.tree().root().0)]));
             }
         }
+        let rebuilding = Rebuilding {
+            pager,
+            old: &self.schema,
+            next: &next.schema,
+            rewritten: b.rewritten,
+            keys: key_indexes(&next.schema, &next.indexes),
+        };
+        let kept = self
+            .kept
+            .rebuilt(&rebuilding, &mut next.next_heap, &mut named, &mut gone)?;
+        next.kept = kept;
         for (c, key) in &fresh {
             named.push((
                 ORDER_KEY,
@@ -1457,10 +1490,12 @@ impl Catalog {
                 .collect();
             sums.push(Sum { heaps, indexes });
         }
+        let (past, record) = self.kept.inventory(&self.schema);
+        sums.extend(past);
         Inventory {
             commit_log: Some(clog),
             sums,
-            trees: Vec::new(),
+            trees: vec![record],
             pages: std::iter::once(self.root).chain(self.sequences()).collect(),
         }
     }

@@ -60,6 +60,23 @@ pub enum Eval {
         groups: Tm,
         key: Tm,
     },
+    /// The value of a set computed from the state of the database a commit position or an
+    /// instant names.
+    At(Box<AtRead>),
+}
+
+/// A read of the past: `body` evaluated at the safe snapshot `point` names.
+#[derive(Clone, Debug)]
+pub struct AtRead {
+    /// Whether `point` is an `Instant` rather than a `Position`.
+    pub instant: bool,
+    pub point: Tm,
+    /// The version `body` is typed at, or `None` for the version of the state `point` names.
+    pub pins: Option<u64>,
+    /// Reads every relation by a scan of its heaps or by a key lookup, never by another index.
+    pub body: Eval,
+    /// The heaps `body` reads.
+    pub heaps: BTreeSet<HeapId>,
 }
 
 /// The row whose key index entry has the key values, fetched from the heap of its constructor.

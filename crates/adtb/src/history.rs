@@ -9,7 +9,7 @@ use crate::storage::{PageError, Pager};
 use crate::vacuum::{Error, Horizon};
 
 /// Returns the key of a row of a constructor.
-pub type Key = dyn Fn(CtorId, &[Value]) -> Vec<Value> + Sync;
+pub type Key<'a> = dyn Fn(CtorId, &[Value]) -> Vec<Value> + Sync + 'a;
 
 /// The history heaps of some constructors of one sum and the key index over them, whose
 /// entries are `(key, ctor, tid)`.
@@ -18,7 +18,7 @@ pub type Key = dyn Fn(CtorId, &[Value]) -> Vec<Value> + Sync;
 pub struct History<'a> {
     pub heaps: Vec<(CtorId, &'a Heap)>,
     pub index: &'a Index,
-    pub key: &'a Key,
+    pub key: &'a Key<'a>,
 }
 
 impl std::fmt::Debug for History<'_> {

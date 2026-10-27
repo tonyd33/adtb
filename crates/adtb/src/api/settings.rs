@@ -2,6 +2,7 @@
 //! shows in `sys::process_options`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::RelId;
@@ -25,6 +26,8 @@ pub(super) struct Settings {
     pub(super) grace: i64,
     /// The reruns of a serialization failure when a call or block states no `retry n`.
     pub(super) retries: u64,
+    /// The length of the retention window.
+    pub(super) window: Duration,
 }
 
 impl Default for Settings {
@@ -33,6 +36,7 @@ impl Default for Settings {
             lease: 30 * 24 * HOUR,
             grace: HOUR,
             retries: 5,
+            window: Duration::ZERO,
         }
     }
 }
@@ -70,6 +74,9 @@ impl Settings {
             ("DefaultLease", Some(Val::Duration(d))) => self.lease = *d,
             ("LeaseGrace", Some(Val::Duration(d))) => self.grace = *d,
             ("RetryLimit", Some(Val::Int(n))) => self.retries = u64::try_from(*n).unwrap_or(0),
+            ("RetentionWindow", Some(Val::Duration(d))) => {
+                self.window = Duration::from_micros(u64::try_from(*d).unwrap_or(0));
+            }
             _ => {}
         }
     }

@@ -14,7 +14,8 @@ use crate::storage::Pid;
 use super::code::Catch;
 use super::frame::{Frame, Sel};
 use super::ir::{
-    Chain, End, Eval, Expr, Fetch, Fix, Lookup, Pipeline, Program, Query, Sink, Source, Spine, Step,
+    At, Chain, End, Eval, Expr, Fetch, Fix, Lookup, Pipeline, Program, Query, Sink, Source, Spine,
+    Step,
 };
 use super::join::{Deferred, Probed, Table};
 use super::memory::Grant;
@@ -298,7 +299,47 @@ impl<R: Runtime> Ctx<R> {
                 catch.drop_faulted(since, sel);
                 Ok(out)
             }
+            Eval::At(a) => {
+                let points = a.point.eval(f, sel, catch, self.sh())?;
+                let since = catch.faults.len();
+                let mut out = Vec::new();
+                for (r, at) in points {
+                    match self.at(a, &at, &f.row(r)) {
+                        Ok(v) => out.push((r, v)),
+                        Err(e) => faulted(e, r, catch)?,
+                    }
+                }
+                catch.drop_faulted(since, sel);
+                Ok(out)
+            }
         }
+    }
+
+    /// Returns the value of `a`'s body in `env` at the state `point` names, read on the calling
+    /// thread.
+    fn at(self: &Arc<Self>, a: &At, point: &Val, env: &Frame) -> Result<Val, Error> {
+        let Some(past) = &self.store.past else {
+            return Err(Error::Internal(
+                "a read of the past holds no other read of the past".into(),
+            ));
+        };
+        let store = past.store(point, a.instant, a.pins, &a.heaps)?;
+        let cx = Arc::new(Ctx {
+            rt: self.rt.clone(),
+            program: self.program.clone(),
+            store,
+            grant: self.grant.clone(),
+            options: self.options,
+            pool: None,
+            cancel: self.cancel.clone(),
+            deadline: self.deadline.clone(),
+            spill: Spill::new(
+                self.rt.clone(),
+                self.grant.clone(),
+                self.options.spill_bytes,
+            ),
+        });
+        cx.eval_env(&a.body, env, false)
     }
 
     /// Returns the row whose key index entry has key `key`, from the heap of its constructor.
@@ -315,6 +356,10 @@ impl<R: Runtime> Ctx<R> {
             if let Some((_, v)) = self.fetch(route, tid, key)? {
                 return Ok(v);
             }
+        }
+        let heaps: Vec<(u32, HeapId)> = l.routes.iter().map(|r| (r.ctor, r.heap)).collect();
+        if let Some((heap, row)) = self.store.fetch_past(l.index, &k, &heaps)? {
+            return Ok(self.row(heap, &row));
         }
         Err(Error::Fault(Fault::NoSuchRow))
     }

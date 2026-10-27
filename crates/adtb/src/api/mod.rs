@@ -503,6 +503,7 @@ impl<R: Runtime> Engine<R> {
             c.explained(&mut bundles);
         }
         let defaults = exec::Options::default();
+        let retained = catalog.retained(&pager, &txns).map_err(corrupt)?;
         if sequences.is_none() {
             Catalog::naming_sequences(&pager, root).map_err(corrupt)?;
         }
@@ -529,7 +530,9 @@ impl<R: Runtime> Engine<R> {
         .map_err(corrupt)?
         .with_files(options.file_root.clone().map(Disk::new).unwrap_or_default())
         .with_hosts(hosts)
-        .with_volatile(settings::process_options(&schema, &options.shown()));
+        .with_volatile(settings::process_options(&schema, &options.shown()))
+        .with_history(retained, settings.window)
+        .map_err(corrupt)?;
         if sequences.is_none() {
             Catalog::name_sequences(&pager, root, db.sequences_root()).map_err(corrupt)?;
         }

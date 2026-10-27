@@ -1,5 +1,4 @@
 use std::ops::Bound;
-use std::time::Duration;
 
 use crate::btree::{self, BTree, prefix_end};
 use crate::runtime::Runtime;
@@ -30,7 +29,6 @@ pub struct Marker {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Past {
     tree: BTree,
-    window: Duration,
 }
 
 fn commit_key(x: Xid) -> Vec<u8> {
@@ -68,28 +66,19 @@ fn decode_marker(entry: &[u8]) -> Option<Marker> {
 }
 
 impl Past {
-    /// Allocate an empty record whose pages carry `owner`, keeping `window` of history.
-    pub fn create<R: Runtime>(
-        pager: &Pager<R>,
-        owner: u32,
-        window: Duration,
-    ) -> Result<Past, PageError> {
+    /// Allocate an empty record whose pages carry `owner`.
+    pub fn create<R: Runtime>(pager: &Pager<R>, owner: u32) -> Result<Past, PageError> {
         Ok(Past {
             tree: BTree::create(pager, owner)?,
-            window,
         })
     }
 
-    pub fn open(tree: BTree, window: Duration) -> Past {
-        Past { tree, window }
+    pub fn open(tree: BTree) -> Past {
+        Past { tree }
     }
 
     pub fn tree(&self) -> BTree {
         self.tree
-    }
-
-    pub fn window(&self) -> Duration {
-        self.window
     }
 
     /// Record that `x` commits at `time`.

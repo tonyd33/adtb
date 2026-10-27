@@ -219,6 +219,7 @@ type Setting { id: Key settings }
   | BlockingNoticePeriod { period: Duration }
   | ReplicaVacuumWait    { wait: Duration }
   | RetryLimit           { retries: I64 }
+  | RetentionWindow      { length: Duration }
 relation catalog::settings : Setting key id
 
 type AuditEvent { seq: Key catalog::audit, at: Instant, role: Text, principal: Text }

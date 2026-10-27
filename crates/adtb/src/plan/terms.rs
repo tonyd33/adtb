@@ -105,9 +105,10 @@ pub fn with_children(kind: &Kind, cs: &[Tm]) -> Kind {
             }
         }
         Kind::Fix(binds, _) => Kind::Fix(binds.iter().map(|(x, _)| (*x, next())).collect(), next()),
-        Kind::At { instant, .. } => Kind::At {
+        Kind::At { instant, pins, .. } => Kind::At {
             instant: *instant,
             point: next(),
+            pins: *pins,
             body: next(),
         },
         Kind::Present {

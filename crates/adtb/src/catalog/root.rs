@@ -50,6 +50,10 @@ pub struct Root {
     pub changing: Changing,
     /// The write path's page of generated counters, `Pid(0)` until it has one.
     pub sequences: Pid,
+    /// The large-value store of every history heap, by heap id and root.
+    pub history_large: (u32, Pid),
+    /// The record of the retention window, by the owner of its pages and its root.
+    pub record: (u32, Pid),
 }
 
 const COMMIT_LOG: usize = HEADER_LEN;
@@ -60,6 +64,10 @@ const ROOTS_ROOT: usize = LARGE_ROOT + 8;
 const NEXT_HEAP: usize = ROOTS_ROOT + 8;
 const CHANGING: usize = NEXT_HEAP + 8;
 const SEQUENCES: usize = CHANGING + 8;
+const HISTORY_LARGE_ID: usize = SEQUENCES + 8;
+const HISTORY_LARGE_ROOT: usize = HISTORY_LARGE_ID + 4;
+const RECORD_OWNER: usize = HISTORY_LARGE_ROOT + 8;
+const RECORD_ROOT: usize = RECORD_OWNER + 4;
 
 fn u32_at(page: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(page[at..at + 4].try_into().unwrap())
@@ -78,7 +86,13 @@ impl Root {
         page[ROOTS_ROOT..NEXT_HEAP].copy_from_slice(&self.roots.1.0.to_le_bytes());
         page[NEXT_HEAP..NEXT_HEAP + 4].copy_from_slice(&self.next_heap.to_le_bytes());
         page[CHANGING..SEQUENCES].copy_from_slice(&self.changing.encoded().to_le_bytes());
-        page[SEQUENCES..SEQUENCES + 8].copy_from_slice(&self.sequences.0.to_le_bytes());
+        page[SEQUENCES..HISTORY_LARGE_ID].copy_from_slice(&self.sequences.0.to_le_bytes());
+        page[HISTORY_LARGE_ID..HISTORY_LARGE_ROOT]
+            .copy_from_slice(&self.history_large.0.to_le_bytes());
+        page[HISTORY_LARGE_ROOT..RECORD_OWNER]
+            .copy_from_slice(&self.history_large.1.0.to_le_bytes());
+        page[RECORD_OWNER..RECORD_ROOT].copy_from_slice(&self.record.0.to_le_bytes());
+        page[RECORD_ROOT..RECORD_ROOT + 8].copy_from_slice(&self.record.1.0.to_le_bytes());
     }
 
     pub fn read(page: &[u8]) -> Root {
@@ -89,6 +103,11 @@ impl Root {
             next_heap: u32_at(page, NEXT_HEAP),
             changing: Changing::decoded(u64_at(page, CHANGING)),
             sequences: Pid(u64_at(page, SEQUENCES)),
+            history_large: (
+                u32_at(page, HISTORY_LARGE_ID),
+                Pid(u64_at(page, HISTORY_LARGE_ROOT)),
+            ),
+            record: (u32_at(page, RECORD_OWNER), Pid(u64_at(page, RECORD_ROOT))),
         }
     }
 }

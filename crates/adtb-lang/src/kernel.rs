@@ -189,9 +189,12 @@ pub enum Kind {
     Fix(Vec<(Var, Tm)>, Tm),
     Fresh(Generator, RelId),
     Only(Tm),
+    /// `body` read at the state `point` names; `pins` is the version `body` is typed at, or
+    /// `None` for the version of that state.
     At {
         instant: bool,
         point: Tm,
+        pins: Option<u64>,
         body: Tm,
     },
     /// The final result delivered in order; each key is `(expr, desc)` over `var`.
@@ -549,9 +552,10 @@ impl Kind {
             Kind::Fix(binds, _) => {
                 Kind::Fix(binds.iter().map(|(x, _)| (*x, next())).collect(), next())
             }
-            Kind::At { instant, .. } => Kind::At {
+            Kind::At { instant, pins, .. } => Kind::At {
                 instant: *instant,
                 point: next(),
+                pins: *pins,
                 body: next(),
             },
             Kind::Present {

@@ -1045,7 +1045,7 @@ Module `catalog`, types:
 | 187 | `Plan` | 188 (one constructor) |
 | 189 | `TzRelease` | 190 (one constructor) |
 | 191 | `Zone` | 192 (one constructor) |
-| 193 | `Setting` | 194 `StatementLimit`, 195 `TransactionLimit`, 196 `IdleLimit`, 197 `StreamIdleLimit`, 198 `RequestWindow`, 199 `SafePointDelay`, 200 `ReplicaWait`, 201 `DefaultLease`, 202 `FeedRetention`, 203 `StatsWindow`, 204 `StatsRetention`, 205 `WaitSampling`, 206 `ConflictLog`, 207 `VacuumBudget`, 208 `ScrubInterval`, 346 `LeaseGrace`, 347 `BlockingNoticePeriod`, 348 `ReplicaVacuumWait`, 451 `RetryLimit` |
+| 193 | `Setting` | 194 `StatementLimit`, 195 `TransactionLimit`, 196 `IdleLimit`, 197 `StreamIdleLimit`, 198 `RequestWindow`, 199 `SafePointDelay`, 200 `ReplicaWait`, 201 `DefaultLease`, 202 `FeedRetention`, 203 `StatsWindow`, 204 `StatsRetention`, 205 `WaitSampling`, 206 `ConflictLog`, 207 `VacuumBudget`, 208 `ScrubInterval`, 346 `LeaseGrace`, 347 `BlockingNoticePeriod`, 348 `ReplicaVacuumWait`, 451 `RetryLimit`, 470 `RetentionWindow` |
 | 209 | `AuditEvent` | 210 `Login`, 211 `Grant`, 212 `Register`, 213 `Retire`, 214 `SchemaOp`, 215 `Call`, 216 `Denied`, 217 `Commit`, 218 `Truncate` |
 | 349 | `ValueState` | 350 (one constructor) |
 | 351 | `Role` | 352 (one constructor) |
@@ -1162,21 +1162,21 @@ Module `sys`, relation variables:
 | 371 | `sys::safe_snapshots` |
 
 
-Ids from 341 to 469 are listed in the rows of the types they belong
+Ids from 341 to 470 are listed in the rows of the types they belong
 to. `Person` and the other types of examples are not engine types and
 have no fixed id, nor has a `Principal` the schema declares
 ([security.md](security.md#11-the-principal-sum)). Ids 287 to 290, 306
-to 309 and from 470 to 1023 are unassigned.
+to 309 and from 471 to 1023 are unassigned.
 
 Fields and indexes have fixed ids in their own spaces. In edition
 2026-10 and catalog version 1, the engine's fields take ids from 0:
 for each type of the tables above in id order, its header fields in
 declared order, then each constructor's fields, constructors in listed
-order and fields in declared order. They take ids 0 to 562:
+order and fields in declared order. They take ids 0 to 563:
 `Option.Some.value` 0, `Result.Ok.value` 1, `Result.Err.error` 2,
 `RejectReason.DumpDamaged.offset` 68, `RejectReason.Internal.what` 69,
 `RejectReason.RowTooLarge`'s fields 70 to 73, the fields of the
-`catalog` and `sys` modules from 92, and `Limit.Rounds.rounds` 562. The engine's indexes take ids from 0: for
+`catalog` and `sys` modules from 92, and `Limit.Rounds.rounds` 563. The engine's indexes take ids from 0: for
 each relation variable of the tables above in id order, the index of
 its key, then an index for each `unique` clause in written order;
 they end at 60. A field or index that a later edition or catalog
@@ -1875,6 +1875,7 @@ type Setting { id: Key settings }
   | BlockingNoticePeriod { period: Duration }
   | ReplicaVacuumWait    { wait: Duration }
   | RetryLimit           { retries: I64 }
+  | RetentionWindow      { length: Duration }
 relation catalog::settings : Setting key id
 ```
 
@@ -1915,6 +1916,7 @@ settings.
 | `ConflictLog` | rows kept in `sys::conflicts` (§6.4) | `10000` |
 | `VacuumBudget` | the fractions of device bandwidth and of CPU that vacuum may use (§11.5) | `io: 0.1`, `cpu: 1.0` |
 | `ScrubInterval` | the period of the background scrub (§11.1) | `Some { value: 7d }` |
+| `RetentionWindow` | how far back reads of the past may reach: the engine keeps every row version a snapshot within `length` of now can see ([derived.md](derived.md#61-the-retention-window)). At `0s` it keeps none beyond what running snapshots see, and every `at` block whose state no running snapshot reads is rejected with `HistoryUnavailable`. A new length applies to the versions vacuum has not yet reclaimed | `0s` |
 
 ### 10.3 Open settings
 

@@ -5,6 +5,7 @@ mod eval;
 mod explain;
 mod fresh;
 mod input;
+mod past;
 mod polarity;
 mod schema;
 mod sequence;
@@ -37,6 +38,7 @@ use crate::vacuum;
 pub use adtb_lang::schema::Stage;
 
 pub use input::Local;
+pub use past::Retained;
 
 use schema::Rels;
 use sequence::Sequences;
@@ -108,6 +110,16 @@ pub enum Error {
     DeadlineExceeded,
     /// A statement reached a host function, by its name, with no body bound.
     MissingFunction(String),
+    /// A read of the past names a state the engine keeps no history of; `oldest` is the oldest
+    /// position a read may name.
+    HistoryUnavailable {
+        oldest: Position,
+    },
+    /// A read of the past names a state at schema version `version`, which defines what it reads
+    /// otherwise than the version it is typed at.
+    WrongVersion {
+        version: u64,
+    },
 }
 
 impl Error {
@@ -185,6 +197,8 @@ impl From<exec::Error> for Error {
                 "host function `{name}` is bound at the version its declaration names"
             )),
             exec::Error::Internal(what) => Error::Internal(what),
+            exec::Error::HistoryUnavailable { oldest } => Error::HistoryUnavailable { oldest },
+            exec::Error::WrongVersion { version } => Error::WrongVersion { version },
         }
     }
 }
@@ -330,8 +344,10 @@ pub struct Database<R: Runtime> {
     options: exec::Options,
     grant: usize,
     files: Disk,
-    /// Held while a vacuum runs, so that one runs at a time.
+    /// Held while a vacuum runs or the retention window changes, so that one runs at a time.
     vacuuming: Lock<()>,
+    /// The structures history is kept in, once [`Database::with_history`] gives them.
+    retained: Option<Arc<Retained>>,
     hosts: Arc<exec::Hosts>,
     /// The rows the engine holds for each volatile relation.
     volatile: BTreeMap<RelId, BTreeSet<Val>>,
@@ -441,6 +457,7 @@ impl<R: Runtime> Database<R> {
             grant: setup.grant,
             files: Disk::default(),
             vacuuming: Lock::new(()),
+            retained: None,
             hosts: Arc::default(),
             volatile: BTreeMap::new(),
             rt,
@@ -466,6 +483,16 @@ impl<R: Runtime> Database<R> {
         }
         self.hosts = hosts;
         self
+    }
+
+    /// Returns the database keeping history in `retained`, for a retention window of `window`:
+    /// keeping it from now on when `window` is not zero.
+    ///
+    /// Fails if the record of the window is damaged.
+    pub fn with_history(mut self, retained: Retained, window: Duration) -> Result<Self, Error> {
+        self.retained = Some(Arc::new(retained));
+        self.set_retention(window)?;
+        Ok(self)
     }
 
     /// Returns the database reading `rows` for each volatile relation of `rows`.
@@ -694,14 +721,7 @@ impl<R: Runtime> Database<R> {
                 heaps: vec![(id, &*self.heaps[&ctor.heap].heap)],
                 indexes: indexes.clone(),
             };
-            let report = vacuum::vacuum(
-                &self.pager,
-                &self.txns,
-                &sum,
-                self.grant,
-                &vacuum::Progress::new(),
-            )
-            .map_err(|e| match e {
+            let report = self.vacuum_sum(r, &sum).map_err(|e| match e {
                 vacuum::Error::Page(p) => Error::Page(p),
                 vacuum::Error::Index(i) => Error::from(i),
                 vacuum::Error::Heap(h) => Error::Internal(format!("vacuum wrote history: {h:?}")),
@@ -845,11 +865,17 @@ impl<R: Runtime> Database<R> {
             reader: tx.xid,
             serial: Some((self.ser.clone(), tx.sid)),
         };
+        let upto = self
+            .txns
+            .read_upto(tx.hold)
+            .unwrap_or_else(|| self.pager.durable());
         Arc::new(exec::Store {
             pager: self.pager.clone(),
             reads: Arc::new(reads),
             heaps: self.heaps.clone(),
             indexes: self.indexes.clone(),
+            history: exec::Histories::default(),
+            past: self.pasts(self.pager.position(upto)),
         })
     }
 

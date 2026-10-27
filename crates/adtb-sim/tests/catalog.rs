@@ -290,7 +290,7 @@ fn the_planner_catalog_describes_every_engine_relation() {
         assert!(name.unique);
         assert_eq!(vec![0], name.ctors);
         let settings = &plan.relations[&rel(catalog, "catalog", "settings")];
-        assert_eq!(19, settings.heaps.len());
+        assert_eq!(20, settings.heaps.len());
     });
 }
 

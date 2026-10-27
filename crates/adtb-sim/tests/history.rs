@@ -108,8 +108,8 @@ impl Db {
         let index = Index::create(&pager, INDEX, key_schema(), ctors()).expect("index");
         let past_index =
             Index::create(&pager, PAST_INDEX, key_schema(), ctors()).expect("history index");
-        let past = Past::create(&pager, LEDGER, window).expect("ledger");
-        txns.keep_history(&pager, past).expect("history");
+        let past = Past::create(&pager, LEDGER).expect("ledger");
+        txns.keep_history(&pager, past, window).expect("history");
         let roots = Roots {
             clog: txns.commit_log().root(),
             large: large.root(),
@@ -141,7 +141,8 @@ impl Db {
         let txns = Transactions::open(rt, &pager, roots.clog).expect("commit log");
         txns.keep_history(
             &pager,
-            Past::open(BTree::open(roots.ledger, LEDGER), window),
+            Past::open(BTree::open(roots.ledger, LEDGER)),
+            window,
         )
         .expect("history");
         let large = LargeStore::open(LARGE, roots.large);
@@ -869,11 +870,8 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
         let window = Duration::from_millis(200);
         let pager = Pager::create(rt.clone(), &opts()).expect("create");
         let txns = Transactions::create(rt, &pager).expect("commit log");
-        txns.keep_history(
-            &pager,
-            Past::create(&pager, LEDGER, window).expect("ledger"),
-        )
-        .expect("history");
+        let past = Past::create(&pager, LEDGER).expect("ledger");
+        txns.keep_history(&pager, past, window).expect("history");
         let fields = vec![
             FieldType::Scalar(Scalar::I64),
             FieldType::Scalar(Scalar::Bytes),

@@ -234,8 +234,11 @@ pub(super) fn register(
                 r.name
             ))));
         }
+        let version = catalog.source().version;
         let Some(h) = &r.header else {
-            out.push(checked(&over, r, true).map_err(refused)?);
+            let c = checked(&over, r, true).map_err(refused)?;
+            pinned_within(&c, version).map_err(refused)?;
+            out.push(c);
             continue;
         };
         let at_pin = pinned(catalog, h).map_err(refused)?;
@@ -244,6 +247,7 @@ pub(super) fn register(
             None => checked(&over, r, true),
         }
         .map_err(refused)?;
+        pinned_within(&c, version).map_err(refused)?;
         let (_, calls) = c.bundle().expect("a bundle's registration has a header");
         bundle::admitted(stored, h, &calls).map_err(refused)?;
         if let Some(ctor) = stale(catalog, &c).map_err(refused)? {
@@ -252,6 +256,29 @@ pub(super) fn register(
         out.push(c);
     }
     Ok(out)
+}
+
+/// Refuses a callable of `c` with an `at` block pinned at a version after `version`.
+fn pinned_within(c: &Checked, version: u64) -> Result<(), Error> {
+    for e in &c.entries {
+        let mut seen = BTreeSet::new();
+        let mut todo = vec![e.body];
+        while let Some(t) = todo.pop() {
+            if !seen.insert(t) {
+                continue;
+            }
+            if let Kind::At { pins: Some(v), .. } = e.terms.kind(t)
+                && *v > version
+            {
+                return Err(Error::invalid(format!(
+                    "`{}` reads the past at version {v}, and the database is at version {version}",
+                    e.name
+                )));
+            }
+            todo.extend(e.terms.children(t));
+        }
+    }
+    Ok(())
 }
 
 /// Refuses an open whose bundles pin a version before the file's and would read a constructor

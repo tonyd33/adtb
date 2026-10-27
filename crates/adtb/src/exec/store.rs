@@ -145,14 +145,45 @@ pub struct StoredIndex {
     pub ctors: BTreeMap<CtorId, u32>,
 }
 
+/// The history heap of each heap and the history key index of each key index, which a read of
+/// the past reads besides them.
+#[derive(Clone, Debug, Default)]
+pub struct Histories {
+    pub heaps: BTreeMap<HeapId, StoredHeap>,
+    pub indexes: BTreeMap<IndexId, Index>,
+}
+
+/// Reads of the past a statement makes.
+pub trait PastReads<R: Runtime>: Send + Sync {
+    /// Returns the store that reads the state `at` names, a `Position` or, when `instant`, an
+    /// `Instant`, for a block reading `heaps` and typed at version `pins`, or at the version of
+    /// that state for `None`. The state stays readable while the store lives.
+    ///
+    /// Fails with [`Error::HistoryUnavailable`] when the state is outside the retention window,
+    /// after the reader's snapshot, or before history of a heap read begins, and with
+    /// [`Error::WrongVersion`] when a heap read is stored otherwise at that state than at `pins`.
+    fn store(
+        &self,
+        at: &Val,
+        instant: bool,
+        pins: Option<u64>,
+        heaps: &BTreeSet<HeapId>,
+    ) -> Result<Arc<Store<R>>, Error>;
+}
+
 /// The heaps and indexes a plan's reads go to, and what those reads see.
 ///
-/// Invariant: `heaps` and `indexes` hold every heap and index of the plan's `Reads`.
+/// Invariants: `heaps` and `indexes` hold every heap and index of the plan's `Reads`. When
+/// `history` holds a heap, the store reads the past: a scan of that heap reads its history heap
+/// too, a key lookup falls back to its history key index, and no plan probes another index.
 pub struct Store<R: Runtime> {
     pub pager: Pager<R>,
     pub reads: Arc<dyn Reads>,
     pub heaps: BTreeMap<HeapId, StoredHeap>,
     pub indexes: BTreeMap<IndexId, StoredIndex>,
+    pub history: Histories,
+    /// The reads of the past the store's statement may make; `None` once it reads the past.
+    pub past: Option<Arc<dyn PastReads<R>>>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Store<R> {
@@ -185,7 +216,8 @@ impl<R: Runtime> Store<R> {
     }
 
     /// Pass the visible rows of heap `id` to `each` as batches of at most `rows` rows each, as
-    /// [`Store::scan_pages`] does.
+    /// [`Store::scan_pages`] does, and then those of its history heap when the store reads the
+    /// past.
     pub fn scan(
         &self,
         id: HeapId,
@@ -193,7 +225,89 @@ impl<R: Runtime> Store<R> {
         each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
     ) -> Result<(), Error> {
         let pages = self.pages(id)?;
-        self.scan_pages(id, &pages, rows, each)
+        match self.history.heaps.get(&id) {
+            Some(past) => self.scan_past(id, &pages, past, rows, each),
+            None => self.scan_pages(id, &pages, rows, each),
+        }
+    }
+
+    /// Pass the visible rows on `pages` of heap `id` and then on every page of `past`, its
+    /// history heap, to `each` as [`Store::scan_pages`] does, each version once though vacuum has
+    /// copied it to `past` and not yet freed it.
+    fn scan_past(
+        &self,
+        id: HeapId,
+        pages: &[Pid],
+        past: &StoredHeap,
+        rows: usize,
+        mut each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
+    ) -> Result<(), Error> {
+        let h = self.heap(id);
+        let schema = BatchSchema::of_heap(&h.row);
+        let mut b = BatchBuilder::new(schema.clone());
+        let mut deleted: BTreeMap<(u64, u64), Vec<Vec<Value>>> = BTreeMap::new();
+        let history = past.heap.pages(&self.pager)?;
+        let current = pages.iter().map(|p| (&h.heap, *p, true));
+        for (heap, pid, now) in current.chain(history.iter().map(|p| (&past.heap, *p, false))) {
+            let mut versions = Vec::new();
+            heap.scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
+            for v in versions {
+                if !self.reads.sees(&v.header)? {
+                    continue;
+                }
+                if Xid(v.header.xmax) != Xid::NONE {
+                    let same = deleted.entry((v.header.xmin, v.header.xmax)).or_default();
+                    if now {
+                        same.push(v.row.clone());
+                    } else if same.contains(&v.row) {
+                        continue;
+                    }
+                }
+                b.push_row(&v.row);
+                if b.len() == rows {
+                    let full = std::mem::replace(&mut b, BatchBuilder::new(schema.clone()));
+                    if each(full.finish())?.is_break() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        if b.is_empty() {
+            return Ok(());
+        }
+        each(b.finish()).map(|_last| ())
+    }
+
+    /// Returns the version the history key index of key index `index` names for `key` and
+    /// the store's snapshot sees, from the history heap of the heap its route in `routes`, by
+    /// constructor, names; `None` when there is none or the store does not read the past.
+    pub fn fetch_past(
+        &self,
+        index: IndexId,
+        key: &[Value],
+        routes: &[(u32, HeapId)],
+    ) -> Result<Option<(HeapId, Vec<Value>)>, Error> {
+        let Some(past) = self.history.indexes.get(&index) else {
+            return Ok(None);
+        };
+        let ctors = &self.index(index).ctors;
+        for e in past.probe(&self.pager, key).map_err(index_error)? {
+            let Some(c) = ctors.get(&e.ctor) else {
+                continue;
+            };
+            let Some(&(_, heap)) = routes.iter().find(|(r, _)| r == c) else {
+                continue;
+            };
+            let Some(stored) = self.history.heaps.get(&heap) else {
+                continue;
+            };
+            if let Some(v) = stored.heap.read(&self.pager, e.tid)?
+                && self.reads.sees(&v.header)?
+            {
+                return Ok(Some((heap, v.row)));
+            }
+        }
+        Ok(None)
     }
 
     /// Returns the pages of heap `id` in directory order, recording that every version of the

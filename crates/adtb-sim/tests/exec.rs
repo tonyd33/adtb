@@ -489,6 +489,8 @@ fn counted(store: &Store<SimRuntime>) -> (Arc<Store<SimRuntime>>, Arc<Counted>) 
         reads: reads.clone(),
         heaps: store.heaps.clone(),
         indexes: store.indexes.clone(),
+        history: store.history.clone(),
+        past: None,
     };
     (Arc::new(store), reads)
 }

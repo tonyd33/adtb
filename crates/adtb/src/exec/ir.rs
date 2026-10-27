@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb_lang::kernel::{Agg, Tm};
@@ -27,6 +27,20 @@ pub enum Eval {
     Fix(Box<Fix>),
     /// The groups, then the key whose group's rows it returns.
     GroupRows(Expr, Expr),
+    At(Box<At>),
+}
+
+/// A read of the past: `body` evaluated at the state `point` names.
+#[derive(Debug)]
+pub struct At {
+    /// Whether `point` is an `Instant` rather than a `Position`.
+    pub instant: bool,
+    pub point: Expr,
+    /// The version `body` is typed at, or `None` for the version of the state `point` names.
+    pub pins: Option<u64>,
+    pub body: Eval,
+    /// The heaps `body` reads.
+    pub heaps: BTreeSet<HeapId>,
 }
 
 #[derive(Debug)]
@@ -376,6 +390,13 @@ impl Lower<'_> {
             plan::Eval::GroupRows { groups, key } => {
                 Eval::GroupRows(self.expr(*groups)?, self.expr(*key)?)
             }
+            plan::Eval::At(a) => Eval::At(Box::new(At {
+                instant: a.instant,
+                point: self.expr(a.point)?,
+                pins: a.pins,
+                body: self.eval(&a.body)?,
+                heaps: a.heaps.clone(),
+            })),
             plan::Eval::Fix(f) => Eval::Fix(Box::new(Fix {
                 binds: f
                     .binds

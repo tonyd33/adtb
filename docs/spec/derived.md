@@ -347,8 +347,8 @@ Rulings: derived/computed/virtual, derived/computed/expr-index
 
 ### 6.1 The retention window
 
-A query may read any committed state within the retention window, a
-database setting ([catalog.md](catalog.md#10-configuration)). The engine
+A query may read any committed state within the retention window, the
+file setting `RetentionWindow` ([catalog.md](catalog.md#102-file-settings)). The engine
 keeps every row version that some snapshot within the window can see.
 Versions older than both the oldest running snapshot and the window
 are reclaimed as usual.

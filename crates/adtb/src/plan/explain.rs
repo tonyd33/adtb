@@ -319,6 +319,14 @@ impl<'a> Describe<'a> {
             }
             Eval::Query(q) => self.query(plan, q),
             Eval::GroupRows { .. } => Node::new("Rows of a group", "", Vec::new()),
+            Eval::At(a) => {
+                let point = if a.instant { "at instant" } else { "at commit" };
+                let detail = match a.pins {
+                    Some(v) => format!("{point}, typed at version {v}"),
+                    None => point.to_string(),
+                };
+                Node::new("Read the past", detail, vec![self.eval(plan, &a.body)])
+            }
             Eval::Fix(f) => {
                 let mut children: Vec<Node> = f
                     .binds

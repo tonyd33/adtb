@@ -7,7 +7,7 @@ use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 
-use crate::exec::{self, AtSnapshot, Budget, Call, Store, Val};
+use crate::exec::{self, AtSnapshot, Budget, Call, Histories, Store, Val};
 use crate::plan;
 use crate::runtime::Runtime;
 
@@ -46,6 +46,8 @@ impl Catalog {
             }),
             heaps,
             indexes,
+            history: Histories::default(),
+            past: None,
         });
         let budget = Budget::new(self.query_memory);
         let terms = &normal.terms;

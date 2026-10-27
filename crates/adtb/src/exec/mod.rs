@@ -23,7 +23,7 @@ pub use ir::{Program, compile};
 pub use memory::{Arena, Budget, Grant};
 pub(crate) use prim::print;
 pub use sched::{Scheduler, Task};
-pub use store::{AtSnapshot, Reads, Store, StoredHeap, StoredIndex};
+pub use store::{AtSnapshot, Histories, PastReads, Reads, Store, StoredHeap, StoredIndex};
 pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};
 pub use value::{F32, F64, Val};
 
@@ -38,7 +38,7 @@ use adtb_lang::textual::PrintError;
 use crate::batch::{self, Batch, BatchBuilder, Datum};
 use crate::mvcc::SerializationFailure;
 use crate::runtime::{Instant, IoError, Runtime};
-use crate::storage::PageError;
+use crate::storage::{PageError, Position};
 
 /// A fault of the prelude's `Fault`, which `try` catches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -131,6 +131,16 @@ pub enum Error {
     OtherVersion(String),
     /// The plan or a value breaks the invariant this text names, one the checker guarantees.
     Internal(String),
+    /// A read of the past names a state the engine keeps no history of; `oldest` is the oldest
+    /// position a read may name.
+    HistoryUnavailable {
+        oldest: Position,
+    },
+    /// A read of the past names a state at schema version `version`, which defines what it reads
+    /// otherwise than the version it is typed at.
+    WrongVersion {
+        version: u64,
+    },
 }
 
 impl From<PageError> for Error {

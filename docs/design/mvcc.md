@@ -783,6 +783,34 @@ read would probe the key index, and judges each version by the
 marker's snapshot. Versions the window no longer keeps are removed
 from history heaps.
 
+The catalog keeps a history heap for every constructor relation and a
+history key index, keyed and constructed as the relation's key index,
+for every relation, over one large-value store of their own, and the
+record of the window; it names them in its root page and roots heap
+and lists them in its inventory. A migration that rewrites a relation
+gives it new history structures, so no history of the relation from
+before the migration stays readable. The retention window's length is
+the `RetentionWindow` file setting
+([../spec/catalog.md §10.2](../spec/catalog.md#102-file-settings)):
+history is kept from the open, or the change of the setting, at which
+it is first not zero, and a change of its length applies to the
+versions vacuum has not yet reclaimed.
+
+A read of the past evaluates its body at a held marker, reading the
+current heaps and then the history heaps of what it reads by scans,
+and a key lookup falls back to the history key index; it reads no
+other index. It is refused with `HistoryUnavailable { oldest }` when
+no marker within the window is at or before its position, the position
+is after the reader's snapshot, or a heap it reads was made by a
+migration the marker does not see and its block is typed at a version
+before that migration; `oldest` is then the oldest position a read may
+name, or the reader's own when none is kept. It is refused with
+`WrongVersion { version }`, naming the version at the marker, when a
+heap it reads was made by a migration after the version at the marker
+or after the version the block is typed at, and not after both. The
+version at a marker is that of the latest migration whose transaction
+its snapshot sees committed.
+
 Invariants:
 
 - Every version of a history heap had a committed inserter and a

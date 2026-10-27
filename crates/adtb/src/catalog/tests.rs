@@ -44,6 +44,8 @@ fn the_root_page_round_trips() {
             next_heap: 70,
             changing,
             sequences: Pid(77),
+            history_large: (71, Pid(78)),
+            record: (72, Pid(79)),
         };
         let mut page = vec![0; 4096];
         root.write(&mut page);

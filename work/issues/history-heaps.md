@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 870
 summary: "no history heaps, time-travel window or dropping of a removed constructor's heap"
+closed: 2026-10-27
 depends-on:
   - vacuum
 tags:
@@ -59,3 +60,9 @@ Open:
 ## 2026-10-27: storage layer landed
 
 The storage and vacuum layer landed with the hist track: the retention record, transactions hooks, vacuum moving versions into history heaps and expiring them, past reads by `history::rows` and `probe`, `drop_empty`, and trimming directory holes at a page end, with crash tests. `docs/design/mvcc.md` sections 10.3 and 10.4 are rewritten: history key index entries are `(key, ctor, tid)`, and per-xid commit times with markers replace the commit position map. Nothing user-visible yet; the rest is in `history-catalog`, `at-block-checker`, `history-across-rewrites`, `history-commit-time-restart`, `heap-directory-interior-holes` and `spec-retention-window-setting`. Close this ticket when `history-catalog` lands.
+
+## 2026-10-27: resolved
+
+## 2026-10-27: landed
+
+Landed with the hcat track. What stays open is in `history-follow-ups`, `history-across-rewrites` and `heap-directory-interior-holes`.

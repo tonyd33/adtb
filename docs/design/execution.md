@@ -130,6 +130,7 @@ parameter's value.
 | `Query(q)` | The value `q`'s sink forms (below) |
 | `Fix(f)` | As below |
 | `GroupRows { groups, key }` | The `rows` of the record of the set `groups`, a value a `Group` sink with `rows` set formed, whose `key` equals `key`'s value; the empty set when none does |
+| `At { instant, point, pins, body, heaps }` | `body`'s, evaluated at the state `point`'s value names, a `Position`, or an `Instant` when `instant` is set, for a block typed at version `pins` or, when it is `None`, at the version of that state; `heaps` are the heaps `body` reads. Fails with `HistoryUnavailable { oldest }` or `WrongVersion { version }` as [mvcc.md §10.3](mvcc.md#103-history-heaps-and-reads-of-the-past) states |
 
 A query is evaluated in an environment:
 
@@ -234,6 +235,9 @@ Invariants of every plan:
 - `Plan.reads` holds every heap a `Scan`, route or `Lookup` names and
   every index an `Index` or `Range` end or `Lookup` names, including
   those of builds and nested queries.
+- An `At`'s body names no `Index` or `Range` end and no other `At`,
+  and its `heaps` holds every heap its body names. A query holding an
+  `At` holds no build or `Spine::Let` computed from its body.
 
 Evaluation of a plan:
 

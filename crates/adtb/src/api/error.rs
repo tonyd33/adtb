@@ -290,6 +290,14 @@ impl Error {
                 Error::invalid(format!("{what} does not run in this engine yet"))
             }
             write::Error::Internal(what) => Error::rejected(RejectReason::Internal { what }),
+            write::Error::HistoryUnavailable { oldest } => {
+                Error::rejected(RejectReason::HistoryUnavailable {
+                    oldest: oldest.into(),
+                })
+            }
+            write::Error::WrongVersion { version } => Error::rejected(RejectReason::WrongVersion {
+                version: i64::try_from(version).unwrap_or(i64::MAX),
+            }),
             write::Error::FileChanged(path) => Error::Retry {
                 reason: RetryReason::FileChanged { path },
             },

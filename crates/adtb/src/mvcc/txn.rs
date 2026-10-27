@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{OnceLock, RwLockReadGuard};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use adtb_sys::lock::{Lock, RwLock};
 
@@ -55,6 +55,8 @@ struct State {
     reads: BTreeMap<SnapshotId, (Option<Lsn>, u64)>,
     /// The time of each marker a read of the past reads at, with the number of reads at it.
     pins: BTreeMap<u64, usize>,
+    /// The length of the retention window.
+    window: Duration,
 }
 
 /// Why a read of the past is refused.
@@ -150,6 +152,7 @@ impl<R: Runtime> Transactions<R> {
             opened: pager.durable(),
             reads: BTreeMap::new(),
             pins: BTreeMap::new(),
+            window: Duration::ZERO,
         };
         Transactions(std::sync::Arc::new(Shared {
             rt,
@@ -374,8 +377,8 @@ impl<R: Runtime> Transactions<R> {
         let truncated = self.clog.write(&self.rt).truncate(pager, bound);
         self.checked(truncated)
     }
-    /// Keep history in `past` from now on: record the time of every commit and keep every safe
-    /// snapshot marker logged.
+    /// Keep history in `past` from now on, for a retention window of `window`: record the time
+    /// of every commit and keep every safe snapshot marker logged.
     ///
     /// Postconditions: every commit from now on records a time no less than the latest `past`
     /// records, whatever the clock reads.
@@ -383,12 +386,23 @@ impl<R: Runtime> Transactions<R> {
     /// Fails if a page of `past` is damaged.
     ///
     /// Panics if history is kept already.
-    pub fn keep_history(&self, pager: &Pager<R>, past: Past) -> Result<(), Error> {
+    pub fn keep_history(
+        &self,
+        pager: &Pager<R>,
+        past: Past,
+        window: Duration,
+    ) -> Result<(), Error> {
         let latest = past.latest_commit(pager).map_err(Error::History)?;
         let mut st = self.state.lock(&self.rt);
         st.last_time = st.last_time.max(latest);
+        st.window = window;
         assert!(self.history.set(past).is_ok(), "history is kept already");
         Ok(())
+    }
+
+    /// Make the retention window `window` long from now on.
+    pub fn set_window(&self, window: Duration) {
+        self.state.lock(&self.rt).window = window;
     }
 
     /// Returns the record of the retention window, if history is kept.
@@ -400,14 +414,14 @@ impl<R: Runtime> Transactions<R> {
     /// the latest of now and the latest commit, or the time of the oldest marker a read of the
     /// past reads at, whichever is less. Returns `None` if history is not kept.
     pub fn cutoff(&self) -> Option<u64> {
-        let past = self.history.get()?;
+        self.history.get()?;
         let st = self.state.lock(&self.rt);
-        Some(self.cutoff_in(&st, past))
+        Some(self.cutoff_in(&st))
     }
 
-    fn cutoff_in(&self, st: &State, past: &Past) -> u64 {
+    fn cutoff_in(&self, st: &State) -> u64 {
         let now = nanos(self.rt.wall()).max(st.last_time);
-        let window = u64::try_from(past.window().as_nanos()).unwrap_or(u64::MAX);
+        let window = u64::try_from(st.window.as_nanos()).unwrap_or(u64::MAX);
         let edge = now.saturating_sub(window);
         st.pins.keys().next().map_or(edge, |&p| p.min(edge))
     }
@@ -477,7 +491,7 @@ impl<R: Runtime> Transactions<R> {
         }
         let found = find(past).map_err(PastError::Damaged)?;
         let mut st = self.state.lock(&self.rt);
-        let Some(m) = found.filter(|m| m.time >= self.cutoff_in(&st, past)) else {
+        let Some(m) = found.filter(|m| m.time >= self.cutoff_in(&st)) else {
             return Ok(None);
         };
         *st.pins.entry(m.time).or_default() += 1;
