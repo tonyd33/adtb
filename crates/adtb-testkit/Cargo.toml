@@ -9,9 +9,11 @@ publish = false
 [dependencies]
 adtb-lang.workspace = true
 adtb-reference.workspace = true
+unicode-normalization = { version = "0.1.26", default-features = false }
 
 [dev-dependencies]
 adtb.workspace = true
+adtb-conformance.workspace = true
 adtb-sim.workspace = true
 
 [lints]

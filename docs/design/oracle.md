@@ -11,6 +11,8 @@ runner.
 Interpreter::new(schema, program, db)      // plus with_caller, with_change, with_fix_limit, with_closed,
                                            // with_files, with_row_limit
   .eval(terms, t, params) -> Result<Value, Abort>
+  .apply(terms, t, args) -> Result<Value, Abort>
+  .key_of(rel, row) -> Value
 ```
 
 Preconditions: `program` is `check_schema(schema)`; `t` is a typed
@@ -55,6 +57,12 @@ files it reads across statements.
 `caller` denotes the value given by `with_caller`. In a constraint
 body, `inserted`, `deleted` and `prior` read the transition given by
 `with_change`, and the empty change without one.
+
+`apply` evaluates `t`, a function of its arguments such as a
+registered query's `Lam` chain, and applies it to `args` in order, or
+to `()` when there are none; its preconditions and postconditions are
+those of `eval` for the application. `key_of(rel, row)`, for `row` a
+row of `rel`, returns the value `key` of that row denotes.
 
 ### 1.1 Statements
 

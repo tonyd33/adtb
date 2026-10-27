@@ -6,7 +6,7 @@ use adtb_lang::parse::{Options, parse_example};
 use adtb_lang::span::Span;
 use adtb_lang::visit::each_expr;
 
-use crate::Block;
+use crate::corpus::Block;
 
 /// The block that declares the schema at version 10, where the history starts.
 const VERSION_10: (&str, &str) = ("README.md", "set OAuth of identities = Google\n");

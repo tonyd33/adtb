@@ -2,6 +2,7 @@ pub mod cases;
 pub mod draw;
 pub mod fixture;
 pub mod fuzz;
+pub mod inhabit;
 pub mod writes;
 
 mod rng;

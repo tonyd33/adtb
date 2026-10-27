@@ -100,9 +100,11 @@ name = "adtb-testkit"
 version = "0.1.0"
 dependencies = [
  "adtb",
+ "adtb-conformance",
  "adtb-lang",
  "adtb-reference",
  "adtb-sim",
+ "unicode-normalization",
 ]
 
 [[package]]
