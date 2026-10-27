@@ -37,3 +37,7 @@ Tony left the choice to the lead. The first application is Partcrate (working na
 ## 2026-10-26: changed
 
 Tony chose the runner-up instead: a local-first tabletop RPG campaign manager, for his own use first, with no revenue target. Its code and docs live in this repo under `apps/campaign/` until it is finished, then move to a repo of their own. Partcrate stays in `work/app/choice.md` as the studied alternative.
+
+## 2026-10-26: shape
+
+Tony: the GM edits and players get a read-only view of what their party has discovered. System-agnostic, with no stat blocks or rules. It runs as a local web server opened in a browser, so phones and tablets on the LAN can join. Version 1 covers session prep (NPCs, locations, factions, quests, linked notes), running a session live (initiative, encounter tracker, fast lookup) and campaign history (session logs, timeline, what the party knows, quest outcomes). Maps come later.
