@@ -211,11 +211,11 @@ A generator gives the harness cases, each a function of its seed and
 its number of queries:
 
 ```text
-case(seed, n) -> Case { schema, migration, load, queries: [Query; n] }
+case(seed, n) -> Case { schema, migration, load, queries: [Query; n], tolerance }
 query.text()         -> text
 query.by_ctor()      -> Option<[text]>
 query.by_predicate() -> Option<Split { whole, parts: [text; 3] }>
-query.counts()       -> Split { whole, parts: [text; 3] }
+query.counts()       -> Option<Split { whole, parts: [text; 3] }>
 ```
 
 Postconditions:
@@ -227,7 +227,12 @@ Postconditions:
   database, each succeeds on the interpreter and on the engine, so both
   hold one database.
 - Each `query.text()` is ad hoc text of one query over `schema`, holding
-  no write, `order by`, parameter or float value. It may fault.
+  no write, `order by` or parameter. It may fault. A sum of floats in it
+  reaches only its result: no comparison, arithmetic, key or group reads
+  one.
+- `tolerance` is at least the bound of the comparison rules for every
+  sum of floats a query of the case computes. Two results agree when
+  they are equal but for floats that differ by at most `tolerance`.
 - `query.by_ctor()`, when the query's first generator ranges over a sum
   relation and the query does not group, holds one query per
   constructor that generator ranges over, the generator ranging over
@@ -238,13 +243,40 @@ Postconditions:
   `whole`, the query without `p`: to the bindings where `p` is true,
   false, and where it faults, each tested through `try`. The union of
   their results is the result of `whole`.
-- `query.counts()` holds `whole` as a `count` over the bindings of the
-  query and `parts` as its three restrictions by `p`; `whole` is the sum
-  of the parts.
+- `query.counts()`, when the query is a comprehension the generator
+  drew, holds `whole` as a `count` over the bindings of the query and
+  `parts` as its three restrictions by `p`; `whole` is the sum of the
+  parts.
 - Where one side of a law faults, the other faults too. Which fault is
   reported is not part of a law.
 
-Every method of the table gives cases of this shape.
+Every method of the table gives cases of this shape. A corpus case's
+queries are the queries of one conformance script of one module and
+their mutants that check; they have no partitions and no counts, and a
+script whose results hold generated keys or clock values other than a
+sequence's makes no case. A schema walk gives a case before its first
+migration and two per migration after it:
+
+```text
+walk(seed, steps, n) -> Walk { start: Case, steps: [Step; steps] }
+Step { migration, migrated: Case, writes: [text], written: Case }
+```
+
+Postconditions:
+
+- `start.migration` followed by the `migration` of each step, in order,
+  is a log the engine applies from the empty database; the migration of
+  a step applies to the database `start.load` and the writes of the
+  steps before it leave.
+- `migrated` is that database once the step's migration applies,
+  stated as a case of the schema the migration leaves: its `load`
+  builds the same rows from the empty database. Its queries range over
+  that schema.
+- `writes` succeed on the engine after the migration and on the
+  interpreter holding `migrated`; `written` is the database they leave,
+  with the queries of `migrated`.
+- No operator of a migration names what an earlier operator of the same
+  migration creates.
 
 Rulings: project/testing/gen/type-directed, project/testing/gen/corpus-mutation, project/testing/gen/schema-walk
 

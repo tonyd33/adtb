@@ -444,9 +444,10 @@ fn generated_case_results_inhabit_their_types() {
             if let Some(split) = q.by_predicate() {
                 texts.extend(split.parts);
             }
-            let counts = q.counts();
-            texts.push(counts.whole);
-            texts.extend(counts.parts);
+            if let Some(counts) = q.counts() {
+                texts.push(counts.whole);
+                texts.extend(counts.parts);
+            }
             for t in &texts {
                 assert!(
                     text(&mut fx, t, false, &mut out),

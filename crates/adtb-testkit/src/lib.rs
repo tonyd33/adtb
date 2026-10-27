@@ -1,4 +1,5 @@
 pub mod cases;
+pub mod corpus;
 pub mod draw;
 pub mod fixture;
 pub mod fuzz;

@@ -24,4 +24,9 @@ impl Rng {
     pub fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
         &xs[self.below(xs.len() as u64) as usize]
     }
+
+    /// Returns an element of `xs`, or `None` when it is empty.
+    pub fn pick_some<'a, T>(&mut self, xs: &'a [T]) -> Option<&'a T> {
+        (!xs.is_empty()).then(|| self.pick(xs))
+    }
 }

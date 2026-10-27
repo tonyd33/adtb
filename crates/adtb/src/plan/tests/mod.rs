@@ -945,3 +945,13 @@ fn a_path_index_is_not_probed_where_another_arm_yields_rows() {
     let p = adhoc_plan(&f, text, &[], Rewrites::ALL);
     assert!(p.reads.indexes.is_empty(), "{:?}", p.reads.indexes);
 }
+
+#[test]
+fn two_equalities_on_one_index_element_both_hold() {
+    let f = running();
+    let text =
+        "from u in users, v in users, w in users where key v == key u and key v == other select 1";
+    agrees(&f, text, &[("other", "Key users", key(999))]);
+    let text = "from u in users, v in users where key v == key u and key v == other select key u";
+    agrees(&f, text, &[("other", "Key users", key(1))]);
+}

@@ -118,6 +118,15 @@ impl Fixture {
         self.interp().eval(&adhoc.terms, *item, &bound)
     }
 
+    /// Returns whether ad hoc text `text` parses and checks as one expression.
+    pub fn checks(&self, text: &str) -> bool {
+        let Ok(items) = parse_adhoc(text, Options::default()).ok() else {
+            return false;
+        };
+        matches!(items.as_slice(), [AdhocItem::Expr(_)])
+            && check_adhoc(&self.schema, &self.program, &items, &BTreeMap::new()).is_ok()
+    }
+
     /// Runs the one statement of ad hoc text `text` over `params`; when it succeeds, its state
     /// becomes the fixture's database.
     pub fn run_with(

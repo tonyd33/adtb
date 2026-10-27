@@ -1078,9 +1078,11 @@ impl Planner<'_> {
             let used = fixed
                 .iter()
                 .filter(|(_, ps)| {
-                    ps.iter().all(|(f, _)| {
-                        covered.iter().any(|e| {
-                            matches!(e, Element::Field(_)) && self.is_element(rel, x, e, f)
+                    ps.iter().all(|(f, v)| {
+                        covered.iter().zip(&key).any(|(e, k)| {
+                            matches!(e, Element::Field(_))
+                                && self.is_element(rel, x, e, f)
+                                && k == v
                         })
                     })
                 })
