@@ -25,13 +25,14 @@ devenv.local.yaml
 
 /target
 
-# Design space, knowledge base, tickets and tools are tracked; other work/ files are not
+# Design space, knowledge base, tickets, tools and the application study are tracked; other work/ files are not
 !/work/
 /work/*
 !/work/research/
 !/work/kb/
 !/work/issues/
 !/work/tools/
+!/work/app/
 /work/research/.quandary/
 
 # Generated editor config
