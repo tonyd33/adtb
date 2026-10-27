@@ -370,6 +370,7 @@ impl<R: Runtime> Ctx<R> {
             cur.get_or_insert_with(|| (k, BTreeSet::new())).1.insert(e);
         }
         if let Some((k, ms)) = cur {
+            members_held.release(usize::MAX);
             emit(k, ms)?;
         }
         drop(groups);

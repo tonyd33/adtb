@@ -492,7 +492,8 @@ call's own thread runs queued tasks while it waits for its query; no
 worker keeps a queue of its own to steal from yet. The pipelines of a
 query evaluated once per statement become tasks: the scan of a heap is
 one task per range of `range_pages` of its pages, which runs a morsel at
-a time over the rows of its range, and pipelines with no source or over
+a time over the rows of its range and reads a page only once the
+morsels before it have run, and pipelines with no source or over
 heaps of at most `pack_pages` pages run in turn in one task. Rows a
 step or an end expands, by `Unnest`, `Probe`, `Index` or `Range`, go
 on in frames of at most `morsel_rows` rows. Each task emits into its
@@ -697,7 +698,8 @@ beside the database, made on the first spill and removed when the call
 ends; `Options::spill_bytes` bounds it. Spill buffers are outside the
 grant, at most a chunk per writer or reader. Spilling goes straight to
 the file: no temporary pages of the pool are used yet, and spill files
-are not encrypted yet.
+are not encrypted yet. A spill file that cannot be made, written or read
+fails the statement with that I/O error, not `StatementLimit`.
 
 - The values a query's pipelines emit are a distinct set that holds at
   most an eighth of the grant in memory and writes the rest as sorted

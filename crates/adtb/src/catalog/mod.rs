@@ -571,7 +571,7 @@ impl Catalog {
     ) -> Result<Catalog, Error> {
         let large = LargeStore::create(pager, LARGE)?;
         let roots = Heap::create(pager, ROOTS, roots_row(), large)?;
-        let named = (roots.id(), roots.root());
+        let named = (roots.id().0, roots.root());
         let (schema, program) = Source::default()
             .check()
             .map_err(|ds| Error::Internal(format!("the engine's declarations check: {ds:?}")))?;
@@ -1199,7 +1199,7 @@ impl Catalog {
             .iter()
             .map(|(&(r, c), h)| {
                 let id = (rel_id(&self.schema, r), ctor_id(&self.schema, r, c));
-                (id, h.id())
+                (id, h.id().0)
             })
             .collect();
         let mut next = self.next_heap;
@@ -1371,7 +1371,7 @@ impl Catalog {
                     row: row_type(schema, r, c),
                     heap: heap.clone(),
                 };
-                (HeapId(u64::from(stored.heap.id())), stored)
+                (HeapId(u64::from(stored.heap.id().0)), stored)
             })
             .collect();
         let indexes = self
@@ -1425,7 +1425,7 @@ impl Catalog {
         let heaps: BTreeMap<(RelId, u32), HeapId> = self
             .heaps
             .iter()
-            .map(|(rc, h)| (*rc, HeapId(u64::from(h.id()))))
+            .map(|(rc, h)| (*rc, HeapId(u64::from(h.id().0))))
             .collect();
         planned(
             &self.schema,
@@ -1529,7 +1529,7 @@ fn heap_root(rid: CatRelId, cid: CatCtorId, heap: &Heap) -> Vec<Value> {
     vec![
         int(rid.0),
         int(cid.0),
-        int(u64::from(heap.id())),
+        int(u64::from(heap.id().0)),
         int(heap.root().0),
     ]
 }

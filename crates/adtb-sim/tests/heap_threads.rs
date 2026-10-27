@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use adtb::heap::{Fate, FieldType, Header, Heap, LargeStore, walk};
+use adtb::heap::{Fate, FieldType, Header, Heap, HeapNo, LargeStore, walk};
 use adtb::key::{Scalar, Tid, Value};
 use adtb::runtime::Threads;
 use adtb::storage::{Options, PageError, PageKind, Pager, Pid};
@@ -329,7 +329,7 @@ fn a_walk_beside_pruning_reaches_the_newest_version_of_its_row_and_no_other_row(
                 let (db, stop, walks) = (db.clone(), stop.clone(), walks.clone());
                 rt.spawn("reader", move || {
                     while !stop.load(Ordering::Relaxed) {
-                        let newest = walk(&db.pager, HEAP_ID, head, |l| {
+                        let newest = walk(&db.pager, HeapNo(HEAP_ID), head, |l| {
                             assert!(
                                 l.header.xmin.is_multiple_of(2),
                                 "seed {seed}: the walk from {head:?} reached {:?}, written by filler {}",

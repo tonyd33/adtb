@@ -563,7 +563,7 @@ pub fn repair<R: Runtime>(
             .sums
             .iter()
             .flat_map(|s| s.heaps.iter().map(|(_, h)| *h))
-            .find(|h| h.id() == owner);
+            .find(|h| h.id().0 == owner);
         match heap {
             Some(h) => h.settle_directory(pager)?,
             None => stores

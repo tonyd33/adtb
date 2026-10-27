@@ -115,6 +115,16 @@ impl Past {
         Ok(found.and_then(|e| word(&e, 9)))
     }
 
+    /// Returns the latest commit time recorded, or 0 when none is kept.
+    pub fn latest_commit<R: Runtime>(&self, pager: &Pager<R>) -> Result<u64, btree::Error> {
+        let mut latest = 0;
+        let mut c = self.tree.prefix(&[COMMIT]);
+        while let Some(e) = c.next(pager)? {
+            latest = word(&e, 9).map_or(latest, |t| t.max(latest));
+        }
+        Ok(latest)
+    }
+
     /// Keep `marker`, unless one at its position is kept already or its snapshot is too long
     /// for an entry.
     pub fn record_marker<R: Runtime>(

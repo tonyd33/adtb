@@ -763,7 +763,9 @@ The record of the window lives beside the commit log: the commit time
 of every transaction committed within the window, and the safe
 snapshot markers taken within it, each with the position of the latest
 commit it reads and that commit's time. Commit times never decrease
-along positions. At most one marker is kept per position.
+along positions, across restarts too: a commit records the later of
+the clock and the latest commit time the record holds. At most one
+marker is kept per position.
 
 A version is kept by the window when its inserter committed, another
 transaction deleted it, and the deleter committed at or after the

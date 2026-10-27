@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use adtb::batch::{Batch, BatchBuilder, Column, Schema};
 use adtb::heap::{
-    CtorType, Error, Fate, FieldType, Flags, Header, Heap, LargeStore, Link, Updated, walk,
+    CtorType, Error, Fate, FieldType, Flags, Header, Heap, HeapNo, LargeStore, Link, Updated, walk,
 };
 use adtb::key::{CtorId, Scalar, Tid, Value};
 use adtb::runtime::{Entropy, Threads};
@@ -263,10 +263,14 @@ fn inserts_updates_deletes_and_retags_match_a_model() {
             }
             for (key, (heap, tid, _)) in &live {
                 let (h, t) = first[key];
-                let end = walk(&db.pager, h, t, |l| l.header.next.is_none())
+                let end = walk(&db.pager, HeapNo(h), t, |l| l.header.next.is_none())
                     .unwrap()
                     .expect("chain ends");
-                assert_eq!((HEAP_IDS[*heap], *tid), (end.heap, end.tid), "key {key}");
+                assert_eq!(
+                    (HeapNo(HEAP_IDS[*heap]), *tid),
+                    (end.heap, end.tid),
+                    "key {key}"
+                );
             }
             assert!(
                 hot > 0 && cold > 0,
@@ -308,7 +312,7 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         let mut links: Vec<Link> = Vec::new();
         assert_eq!(
             None,
-            walk(pager, HEAP_IDS[EMAIL], first, |l| {
+            walk(pager, HeapNo(HEAP_IDS[EMAIL]), first, |l| {
                 links.push(*l);
                 false
             })
@@ -320,14 +324,17 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         assert_eq!(Some(there), tail[0].header.next);
         assert!(tail[0].flags.contains(Flags::MOVED));
         assert_eq!(50, tail[0].header.xmax);
-        assert_eq!((there, HEAP_IDS[GOOGLE]), (tail[1].tid, tail[1].heap));
+        assert_eq!(
+            (there, HeapNo(HEAP_IDS[GOOGLE])),
+            (tail[1].tid, tail[1].heap)
+        );
         assert!(
             tail[1]
                 .flags
                 .contains(Flags::MOVED.with(Flags::RETAGGED_IN))
         );
         assert_eq!(Some(back), tail[1].header.next);
-        assert_eq!((back, HEAP_IDS[EMAIL]), (tail[2].tid, tail[2].heap));
+        assert_eq!((back, HeapNo(HEAP_IDS[EMAIL])), (tail[2].tid, tail[2].heap));
         assert_eq!(Flags::RETAGGED_IN, tail[2].flags);
         assert_eq!((50, 0, None), {
             let h = tail[2].header;
@@ -338,7 +345,10 @@ fn a_chain_runs_across_pages_and_through_a_retag_and_back() {
         for w in links.windows(2) {
             assert_eq!(Some(w[1].tid), w[0].header.next);
         }
-        let newest = walk(pager, HEAP_IDS[EMAIL], first, |l| l.header.next.is_none()).unwrap();
+        let newest = walk(pager, HeapNo(HEAP_IDS[EMAIL]), first, |l| {
+            l.header.next.is_none()
+        })
+        .unwrap();
         assert_eq!(Some(back), newest.map(|l| l.tid));
     });
 }

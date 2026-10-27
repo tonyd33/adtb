@@ -57,12 +57,16 @@ pub(super) fn records<V: Textual>(
         .collect())
 }
 
-/// Returns each nonempty record of `text`, as the file holds it and as its cells. A line feed, a
-/// carriage return and the pair of them each end a record.
+/// Returns each nonempty record of `text`, as the file holds it and as its cells, past a leading
+/// byte order mark. A line feed, a carriage return and the pair of them each end a record.
 fn split(text: &str) -> Result<Vec<(String, Vec<Cell>)>, String> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
-    let mut at = 0;
+    let mut at = if text.starts_with('\u{feff}') {
+        '\u{feff}'.len_utf8()
+    } else {
+        0
+    };
     while at < bytes.len() {
         let start = at;
         let mut cells = Vec::new();
@@ -238,5 +242,35 @@ impl Reader<'_, '_> {
         let mut fields = self.fields(at, &sum.header)?;
         fields.extend(self.fields(&join(at, name), own)?);
         Ok(ctor(c, fields))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split;
+
+    #[test]
+    fn an_error_after_a_byte_order_mark_counts_bytes_from_the_file_s_start() {
+        assert_eq!(
+            Err("byte 7: a quoted cell is not closed".to_string()),
+            split("\u{feff}a,b\n\"x,1\n").map(|_| ())
+        );
+        assert_eq!(
+            Err("byte 4: a quoted cell is not closed".to_string()),
+            split("a,b\n\"x,1\n").map(|_| ())
+        );
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_not_part_of_the_first_record() {
+        let records = split("\u{feff}a,b\n1,2\n").expect("a valid file");
+        assert_eq!(
+            vec!["a,b", "1,2"],
+            records
+                .iter()
+                .map(|(raw, _)| raw.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!("a", records[0].1[0].text);
     }
 }

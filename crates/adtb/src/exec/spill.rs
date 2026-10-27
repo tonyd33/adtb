@@ -54,19 +54,20 @@ impl<R: Runtime> Spill<R> {
         }
     }
 
-    /// Returns the error of a call that cannot stay within its grant by spilling.
+    /// Returns the error of a call whose spilling would pass its spill bound.
     fn full(&self) -> Error {
-        Error::StatementLimit(Exceeded::Memory {
-            limit: self.grant.limit(),
+        Error::StatementLimit(Exceeded::Spill {
+            limit: self.limit,
+            grant: self.grant.limit(),
         })
     }
 
     fn open(&self) -> Result<File<R>, Error> {
         let mut driver = Driver::new(self.rt.clone());
         let t = driver.submit(Op::CreateDir { dir: DIR.into() });
-        driver.wait(t).result.map_err(|_| self.full())?;
+        driver.wait(t).result.map_err(Error::Spill)?;
         let path = format!("{DIR}/{:016x}", self.rt.next_u64());
-        let (id, _) = driver.open(&path, true).map_err(|_| self.full())?;
+        let (id, _) = driver.open(&path, true).map_err(Error::Spill)?;
         Ok(File {
             driver,
             id,
@@ -97,7 +98,7 @@ impl<R: Runtime> Spill<R> {
             offset: at,
             buf,
         });
-        f.driver.wait(t).result.map_err(|_| self.full())?;
+        f.driver.wait(t).result.map_err(Error::Spill)?;
         f.end += padded as u64;
         self.grant.note_spill(padded);
         Ok(Extent {
@@ -120,6 +121,7 @@ impl<R: Runtime> Spill<R> {
         let c = f.driver.wait(t);
         match (c.result, c.buf) {
             (Ok(Done::Read(n)), Some(buf)) if n >= e.len => Ok(buf[..e.len].to_vec()),
+            (Err(io), _) => Err(Error::Spill(io)),
             _ => Err(Error::Corrupt("a spilled extent reads back short".into())),
         }
     }

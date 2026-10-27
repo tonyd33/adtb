@@ -4,7 +4,7 @@ use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
 use crate::exec::{Val, to_stored};
-use crate::heap::{self, Flags, Heap, Link, walk};
+use crate::heap::{self, Flags, Heap, HeapNo, Link, walk};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Probe, Status, Write, Xid, check_write, probe_unique};
 use crate::plan::{HeapId, IndexId};
@@ -83,7 +83,7 @@ impl<R: Runtime> Stmt<'_, R> {
             let w = check_write(xid, header.xmax, |x| self.status(x))?;
             match w {
                 Write::Proceed => {
-                    let id = self.heap(heap).id();
+                    let id = self.heap(heap).id().0;
                     self.db
                         .ser
                         .lock(&self.db.rt)
@@ -97,7 +97,7 @@ impl<R: Runtime> Stmt<'_, R> {
     }
 
     fn inserted_into(&self, heap: HeapId) -> Result<(), Error> {
-        let id = self.heap(heap).id();
+        let id = self.heap(heap).id().0;
         self.db.ser.lock(&self.db.rt).insert_heap(self.tx.sid, id)?;
         Ok(())
     }
@@ -346,7 +346,7 @@ impl<R: Runtime> Stmt<'_, R> {
 fn hot_run<R: Runtime>(
     pager: &crate::storage::Pager<R>,
     tid: Tid,
-    heap: u32,
+    heap: HeapNo,
 ) -> Result<Vec<Link>, Error> {
     let mut links = Vec::new();
     walk(pager, heap, tid, |l| {

@@ -6,21 +6,27 @@ mod plan {
 #[expect(dead_code, reason = "this binary uses part of the planner fixture")]
 mod fixture;
 
+use std::collections::BTreeSet;
+use std::ops::{Bound, ControlFlow};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use adtb::batch;
 use adtb::exec::{
-    self, Budget, Call, Error, Exceeded, Options as XOptions, Program, Rows, Scheduler, Store, Val,
+    self, Budget, Call, Error, Exceeded, Options as XOptions, Program, Reads, Rows, Scheduler,
+    Store, Val,
 };
-use adtb::heap::FieldType;
-use adtb::key::Value as KValue;
-use adtb::plan::{Error as PlanError, Options as PlanOptions, plan};
+use adtb::heap::{FieldType, Header, HeapNo};
+use adtb::key::{CtorId, Tid, Value as KValue};
+use adtb::mvcc::{SerializationFailure, Xid};
+use adtb::plan::{Error as PlanError, HeapId, Options as PlanOptions, plan};
+use adtb::runtime::IoError;
+use adtb::storage::{PageError, Pid};
 use adtb_lang::kernel::Var;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, R, Value};
-use adtb_sim::{Config, Sim, SimRuntime};
+use adtb_sim::{Config, Faults, Sim, SimRuntime};
 use adtb_testkit::uuid;
 
 use fixture::{Fixture, running, variants};
@@ -397,27 +403,211 @@ fn morsels_of_heaps_of_many_pages_agree_for_every_seed() {
     assert!(ran > 0, "no worker ran a task");
 }
 
+/// Returns the rows of every batch `scan` passes.
+fn scanned_rows(
+    scan: impl FnOnce(
+        &mut dyn FnMut(batch::Batch) -> Result<ControlFlow<()>, Error>,
+    ) -> Result<(), Error>,
+) -> Vec<Vec<KValue>> {
+    let mut rows = Vec::new();
+    scan(&mut |b| {
+        rows.extend((0..b.len()).map(|i| b.row(i)));
+        Ok(ControlFlow::Continue(()))
+    })
+    .expect("a scan");
+    rows
+}
+
 #[test]
 fn scans_of_ranges_of_a_heap_s_pages_read_what_a_scan_of_the_heap_reads() {
     let f = stock();
     let heap = f.catalog.heap(f.rel("stock"), 0);
     let (whole, ranges, pages) = with_store(0, &f, 0, |_, store, _| {
-        let rows = |bs: Vec<batch::Batch>| -> Vec<Vec<KValue>> {
-            bs.iter()
-                .flat_map(|b| (0..b.len()).map(|i| b.row(i)))
-                .collect()
-        };
         let pages = store.pages(heap).expect("the heap's pages");
-        let whole = rows(store.scan(heap, 1000).expect("a scan"));
+        let whole = scanned_rows(|each| store.scan(heap, 1000, each));
         let ranges: Vec<Vec<KValue>> = pages
             .chunks(1)
-            .flat_map(|r| rows(store.scan_pages(heap, r, 7).expect("a range scan")))
+            .flat_map(|r| scanned_rows(|each| store.scan_pages(heap, r, 7, each)))
             .collect();
         (whole, ranges, pages.len())
     });
     assert!(pages > 1, "the heap spans {pages} pages");
     assert_eq!(300, whole.len());
     assert_eq!(whole, ranges);
+}
+
+/// Reads that count the versions whose visibility they decide.
+struct Counted {
+    inner: Arc<dyn Reads>,
+    seen: AtomicUsize,
+}
+
+impl Counted {
+    fn take(&self) -> usize {
+        self.seen.swap(0, Ordering::Relaxed)
+    }
+}
+
+impl Reads for Counted {
+    fn sees(&self, h: &Header) -> Result<bool, PageError> {
+        self.seen.fetch_add(1, Ordering::Relaxed);
+        self.inner.sees(h)
+    }
+
+    fn scanned(&self, heap: HeapNo) -> Result<(), SerializationFailure> {
+        self.inner.scanned(heap)
+    }
+
+    fn probed(
+        &self,
+        index: Pid,
+        lo: Bound<Vec<u8>>,
+        hi: Bound<Vec<u8>>,
+        ctors: BTreeSet<CtorId>,
+    ) -> Result<(), SerializationFailure> {
+        self.inner.probed(index, lo, hi, ctors)
+    }
+
+    fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure> {
+        self.inner.fetched(heap, tid)
+    }
+
+    fn depends(&self, writer: Xid) -> Result<(), Error> {
+        self.inner.depends(writer)
+    }
+}
+
+/// Returns `store` with its reads counted.
+fn counted(store: &Store<SimRuntime>) -> (Arc<Store<SimRuntime>>, Arc<Counted>) {
+    let reads = Arc::new(Counted {
+        inner: store.reads.clone(),
+        seen: AtomicUsize::new(0),
+    });
+    let store = Store {
+        pager: store.pager.clone(),
+        reads: reads.clone(),
+        heaps: store.heaps.clone(),
+        indexes: store.indexes.clone(),
+    };
+    (Arc::new(store), reads)
+}
+
+/// Returns how many versions a scan of `heap` reads.
+fn versions(store: &Store<SimRuntime>, count: &Counted, heap: HeapId) -> usize {
+    count.take();
+    store
+        .scan(heap, 1000, |_| Ok(ControlFlow::Continue(())))
+        .expect("a scan");
+    count.take()
+}
+
+#[test]
+fn a_scan_passes_its_first_batch_before_it_reads_the_heap_s_last_page() {
+    let f = stock();
+    let heap = f.catalog.heap(f.rel("stock"), 0);
+    let (total, first, stopped) = with_store(0, &f, 0, |_, store, _| {
+        let (store, count) = counted(store);
+        let total = versions(&store, &count, heap);
+        let mut first = None;
+        store
+            .scan(heap, 7, |_| {
+                first.get_or_insert(count.take());
+                Ok(ControlFlow::Continue(()))
+            })
+            .expect("a scan");
+        count.take();
+        store
+            .scan(heap, 7, |_| Ok(ControlFlow::Break(())))
+            .expect("a stopped scan");
+        (total, first.expect("a batch"), count.take())
+    });
+    assert!(
+        first < total,
+        "{first} of {total} versions read before the first batch"
+    );
+    assert_eq!(first, stopped, "a scan stopped at its first batch");
+}
+
+#[test]
+fn an_exists_that_stops_early_reads_fewer_versions_than_the_heap_holds() {
+    let f = stock();
+    let heap = f.catalog.heap(f.rel("stock"), 0);
+    let cases: Vec<Case> = cases_of(&f, "exists s in stock where s.v > 50", &[])
+        .into_iter()
+        .filter(|c| !c.name.ends_with("with none") && !c.name.ends_with("with early_stop off"))
+        .collect();
+    let opts = XOptions {
+        morsel_rows: 8,
+        ..XOptions::default()
+    };
+    let (total, got) = with_store(0, &f, 0, |rt, store, _| {
+        let (store, count) = counted(store);
+        let total = versions(&store, &count, heap);
+        let budget = Budget::new(1 << 30);
+        let got = cases
+            .iter()
+            .map(|c| {
+                let g = budget.admit(64 << 20).expect("a grant fits");
+                let v = exec::execute(
+                    rt.clone(),
+                    c.program.clone(),
+                    call(&store, g, None, opts),
+                    &[],
+                );
+                (c.name.clone(), v, count.take())
+            })
+            .collect::<Vec<_>>();
+        (total, got)
+    });
+    for (name, v, read) in got {
+        assert_eq!(Ok(Val::bool(true)), v, "{name}");
+        assert!(
+            read < total / 2,
+            "{name}: read {read} of the heap's {total} versions"
+        );
+    }
+}
+
+#[test]
+fn a_scan_of_a_heap_larger_than_its_grant_runs_within_the_grant() {
+    let f = stock_of(2000);
+    let mut cases = Vec::new();
+    for q in [
+        "count(s for s in stock)",
+        "exists s in stock where s.v > 500",
+    ] {
+        cases.extend(cases_of(&f, q, &[]));
+    }
+    let opts = XOptions {
+        morsel_rows: 16,
+        ..XOptions::default()
+    };
+    let got = with_store(0, &f, 0, |rt, store, _| {
+        let heap = f.catalog.heap(f.rel("stock"), 0);
+        let rows: usize = scanned_rows(|each| store.scan(heap, 1000, each))
+            .iter()
+            .map(|r| r.iter().map(|v| format!("{v:?}").len()).sum::<usize>())
+            .sum();
+        assert!(rows > SPILL_GRANT, "the heap's rows print in {rows} bytes");
+        let budget = Budget::new(1 << 30);
+        cases
+            .iter()
+            .map(|c| {
+                let g = budget.admit(SPILL_GRANT).expect("a grant fits");
+                let v = exec::execute(
+                    rt.clone(),
+                    c.program.clone(),
+                    call(store, g.clone(), None, opts),
+                    &[],
+                );
+                (outcome(&f.schema, &c.ty, v), g.peak())
+            })
+            .collect::<Vec<_>>()
+    });
+    for (c, (g, peak)) in cases.iter().zip(got) {
+        assert_eq!(expected(&c.want), g, "{}", c.name);
+        assert!(peak <= SPILL_GRANT, "{}: peak {peak}", c.name);
+    }
 }
 
 #[test]
@@ -912,6 +1102,135 @@ fn a_build_past_its_grant_with_no_spill_space_is_rejected_for_its_statement_limi
     for (c, (g, spilled)) in cases.iter().zip(got) {
         assert_eq!(Err("limit".to_string()), g, "{}", c.name);
         assert_eq!(0, spilled, "{}", c.name);
+    }
+}
+
+const BUILD_SPILLS: &str =
+    "from s in stock, n in notes where n.item == key s select { s: s.id, n: n.id }";
+
+/// Runs every case under the simulator with a grant of `SPILL_GRANT` bytes and `faults` set
+/// once the database is loaded, and returns each case's error.
+fn spill_errors(f: &Fixture, cases: &[Case], opts: XOptions, faults: Faults) -> Vec<Option<Error>> {
+    with_store(0, f, 0, |rt, store, _| {
+        rt.set_faults(faults);
+        let budget = Budget::new(1 << 30);
+        cases
+            .iter()
+            .map(|c| {
+                let g = budget.admit(SPILL_GRANT).expect("a grant fits");
+                exec::execute(
+                    rt.clone(),
+                    c.program.clone(),
+                    call(store, g, None, opts),
+                    &c.params,
+                )
+                .err()
+            })
+            .collect()
+    })
+}
+
+#[test]
+fn a_spill_past_its_spill_bound_is_rejected_for_the_bound_and_the_grant() {
+    let f = stock();
+    let cases = cases_of(&f, BUILD_SPILLS, &[]);
+    let opts = XOptions {
+        morsel_rows: 16,
+        spill_bytes: 4096,
+        ..XOptions::default()
+    };
+    let got = spill_errors(&f, &cases, opts, Faults::default());
+    for (c, e) in cases.iter().zip(got) {
+        assert_eq!(
+            Some(Error::StatementLimit(Exceeded::Spill {
+                limit: 4096,
+                grant: SPILL_GRANT
+            })),
+            e,
+            "{}",
+            c.name
+        );
+    }
+}
+
+#[test]
+fn a_spill_file_that_fails_its_writes_fails_the_call_with_the_io_error() {
+    let f = stock();
+    let cases = cases_of(&f, BUILD_SPILLS, &[]);
+    let opts = XOptions {
+        morsel_rows: 16,
+        ..XOptions::default()
+    };
+    let faults = Faults {
+        fail_p: 1.0,
+        ..Faults::default()
+    };
+    let got = spill_errors(&f, &cases, opts, faults);
+    for (c, e) in cases.iter().zip(got) {
+        assert_eq!(Some(Error::Spill(IoError::Failed)), e, "{}", c.name);
+    }
+}
+
+/// Returns a fixture of 200 items, 120 of them in the group `big` and the rest in groups 1 to 5.
+fn one_big_group(big: i64) -> Fixture {
+    let mut f = Fixture::new(STOCK);
+    let items: Vec<String> = (1..=200)
+        .map(|i| {
+            let g = if i <= 120 { big } else { i % 5 + 1 };
+            format!(r#"Item {{ id: stock.key({i}), g: {g}, v: {i}, name: "item{i}" }}"#)
+        })
+        .collect();
+    for chunk in items.chunks(40) {
+        f.rows("stock", &format!("[{}]", chunk.join(", ")), &[]);
+    }
+    f
+}
+
+/// Returns, for each grant from 4 KiB to 64 KiB in steps of 1 KiB, whether each group-holding
+/// case of `GROUP_SPILLS` over `f` stays within it.
+fn groups_fit(f: &Fixture) -> Vec<(usize, String, bool)> {
+    let cases: Vec<Case> = cases_of(f, GROUP_SPILLS, &[])
+        .into_iter()
+        .filter(|c| c.name.ends_with("with none") || c.name.ends_with("with group_agg off"))
+        .collect();
+    let opts = XOptions {
+        morsel_rows: 16,
+        ..XOptions::default()
+    };
+    with_store(0, f, 0, |rt, store, _| {
+        let budget = Budget::new(1 << 30);
+        let mut out = Vec::new();
+        for grant in (4..=64).map(|k| k << 10) {
+            for c in &cases {
+                let g = budget.admit(grant).expect("a grant fits");
+                let v = exec::execute(
+                    rt.clone(),
+                    c.program.clone(),
+                    call(store, g, None, opts),
+                    &[],
+                );
+                match v {
+                    Ok(_) | Err(Error::StatementLimit(Exceeded::Memory { .. })) => {}
+                    Err(e) => panic!("{} under a grant of {grant}: {e:?}", c.name),
+                }
+                out.push((grant, c.name.clone(), v.is_ok()));
+            }
+        }
+        out
+    })
+}
+
+#[test]
+fn whether_a_grouping_fits_its_grant_does_not_depend_on_where_its_largest_group_sorts() {
+    let first = groups_fit(&one_big_group(0));
+    let last = groups_fit(&one_big_group(9));
+    assert!(first.iter().any(|(_, _, ok)| *ok), "no grant fits");
+    assert!(first.iter().any(|(_, _, ok)| !*ok), "every grant fits");
+    for ((grant, name, a), (_, _, b)) in first.iter().zip(&last) {
+        assert_eq!(
+            a, b,
+            "{name} under a grant of {grant}: fits with its largest group first {a}, last {b}"
+        );
     }
 }
 

@@ -15,7 +15,7 @@ mod tests;
 
 pub use dir::max_fanout;
 pub use handle::{
-    Error, Heap, Judge, Link, Pruned, Updated, Upgrade, Version, fits, header_at, walk,
+    Error, Heap, HeapNo, Judge, Link, Pruned, Updated, Upgrade, Version, fits, header_at, walk,
 };
 pub use large::{Chunk, ChunkCheck, LargeStore};
 pub use prune::Fate;

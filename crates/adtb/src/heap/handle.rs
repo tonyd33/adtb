@@ -57,12 +57,22 @@ pub struct Updated {
     pub heap_only: bool,
 }
 
+/// The number a heap stamps on its pages as their owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HeapNo(pub u32);
+
+impl std::fmt::Display for HeapNo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// One version of a chain, as [`walk`] finds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Link {
     pub tid: Tid,
-    /// The heap id of the heap holding the version.
-    pub heap: u32,
+    /// The heap holding the version.
+    pub heap: HeapNo,
     pub header: Header,
     pub flags: Flags,
 }
@@ -284,8 +294,8 @@ impl Heap {
         Ok(self.newest())
     }
 
-    pub fn id(&self) -> u32 {
-        self.id
+    pub fn id(&self) -> HeapNo {
+        HeapNo(self.id)
     }
 
     /// Returns the root page of the heap's directory, which never changes.
@@ -1370,7 +1380,7 @@ pub fn header_at<R: Runtime>(pager: &Pager<R>, tid: Tid) -> Result<Option<Header
 /// stretch of the chain on one page are read from one copy of that page.
 pub fn walk<R: Runtime>(
     pager: &Pager<R>,
-    heap: u32,
+    heap: HeapNo,
     start: Tid,
     mut stop: impl FnMut(&Link) -> bool,
 ) -> Result<Option<Link>, PageError> {
@@ -1393,7 +1403,7 @@ pub fn walk<R: Runtime>(
             Slot::Normal { flags, at: range } => {
                 let link = Link {
                     tid: at,
-                    heap: storage::owner(page),
+                    heap: HeapNo(storage::owner(page)),
                     header: Header::read(&page[range]),
                     flags,
                 };
@@ -1416,7 +1426,7 @@ pub fn walk<R: Runtime>(
 }
 
 /// Returns whether `link` can be the version after `prior` in a chain starting in heap `heap`.
-fn follows(prior: Option<&Link>, heap: u32, link: &Link) -> bool {
+fn follows(prior: Option<&Link>, heap: HeapNo, link: &Link) -> bool {
     let Some(p) = prior else {
         return link.heap == heap;
     };

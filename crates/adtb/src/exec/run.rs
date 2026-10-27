@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -553,12 +554,10 @@ impl<R: Runtime> Ctx<R> {
             unreachable!("a range task scans")
         };
         let mut out = run.out(&self.grant)?;
-        for b in self
-            .store
-            .scan_pages(*heap, pages, self.options.morsel_rows)?
-        {
-            self.morsel(run, p, env, &b, &mut out)?;
-        }
+        self.store
+            .scan_pages(*heap, pages, self.options.morsel_rows, |b| {
+                self.morsel(run, p, env, &b, &mut out)
+            })?;
         run.emit(&self.rt, &self.spill, out)
     }
 
@@ -577,12 +576,9 @@ impl<R: Runtime> Ctx<R> {
                 self.check_cancel()?;
                 self.chain(run, &p.chain, 0, env.clone(), vec![0], out)
             }
-            Source::Scan { heap, .. } => {
-                for b in self.store.scan(*heap, self.options.morsel_rows)? {
-                    self.morsel(run, p, env, &b, out)?;
-                }
-                Ok(())
-            }
+            Source::Scan { heap, .. } => self.store.scan(*heap, self.options.morsel_rows, |b| {
+                self.morsel(run, p, env, &b, out)
+            }),
         }
     }
 
@@ -593,10 +589,10 @@ impl<R: Runtime> Ctx<R> {
         env: &Frame,
         b: &Batch,
         out: &mut Distinct,
-    ) -> Result<(), Error> {
+    ) -> Result<ControlFlow<()>, Error> {
         self.check_cancel()?;
         if run.stopped() {
-            return Ok(());
+            return Ok(ControlFlow::Break(()));
         }
         let Source::Scan { heap, var } = &p.source else {
             unreachable!("a morsel is of a scan")
@@ -606,7 +602,12 @@ impl<R: Runtime> Ctx<R> {
         let mut f = env.widen(rows.len());
         f.bind_all(*var, rows);
         let sel = f.all();
-        self.chain(run, &p.chain, 0, f, sel, out)
+        self.chain(run, &p.chain, 0, f, sel, out)?;
+        Ok(if run.stopped() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        })
     }
 
     /// Pass the rows of `sel` through the steps of `c` from step `from` on, then its end.

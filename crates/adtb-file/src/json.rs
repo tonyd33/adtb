@@ -37,6 +37,8 @@ pub(super) fn records<V: Textual>(
     row: &Ty,
 ) -> Result<Vec<Found<V>>, String> {
     Ok(text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(text)
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|line| {

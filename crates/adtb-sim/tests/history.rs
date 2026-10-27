@@ -109,7 +109,7 @@ impl Db {
         let past_index =
             Index::create(&pager, PAST_INDEX, key_schema(), ctors()).expect("history index");
         let past = Past::create(&pager, LEDGER, window).expect("ledger");
-        txns.keep_history(past);
+        txns.keep_history(&pager, past).expect("history");
         let roots = Roots {
             clog: txns.commit_log().root(),
             large: large.root(),
@@ -139,7 +139,11 @@ impl Db {
     fn open(rt: SimRuntime, roots: Roots, window: Duration) -> Db {
         let (pager, _) = Pager::open(rt.clone(), &opts()).expect("reopen");
         let txns = Transactions::open(rt, &pager, roots.clog).expect("commit log");
-        txns.keep_history(Past::open(BTree::open(roots.ledger, LEDGER), window));
+        txns.keep_history(
+            &pager,
+            Past::open(BTree::open(roots.ledger, LEDGER), window),
+        )
+        .expect("history");
         let large = LargeStore::open(LARGE, roots.large);
         let past_large = LargeStore::open(PAST_LARGE, roots.past_large);
         let allocated = pager.allocated().expect("bitmap");
@@ -227,6 +231,15 @@ impl Db {
         self.txns.log_safe_snapshot(&self.pager, id, &snapshot);
         self.txns.release(id);
         at
+    }
+
+    /// Returns the latest commit time the record of the window holds.
+    fn latest_commit(&self) -> u64 {
+        self.txns
+            .history()
+            .expect("history is kept")
+            .latest_commit(&self.pager)
+            .expect("the record of the window")
     }
 
     /// Commit empty transactions until the wall clock passes `d` from now.
@@ -638,6 +651,62 @@ fn a_read_by_time_reads_the_latest_marker_committed_by_then() {
     });
 }
 
+#[test]
+fn a_clock_that_steps_back_across_a_reopen_keeps_the_order_of_commit_times() {
+    let mut sim = Sim::new(3, Config::default());
+    let mut out = None;
+    finished(&mut sim, |rt| {
+        let (mut db, roots) = Db::create(rt, LONG);
+        db.idle(Duration::from_millis(50));
+        db.write(&[(1, Some(1))]);
+        db.mark();
+        let between = db.pager.wall();
+        db.idle(Duration::from_millis(5));
+        db.write(&[(1, Some(2))]);
+        db.mark();
+        db.pager.flush_log();
+        db.pager.checkpoint();
+        let latest = db.latest_commit();
+        out = Some((roots, between, latest));
+    });
+    let (roots, between, latest) = out.expect("the run finished");
+    let mut sim = Sim::with_files(4, Config::default(), sim.files());
+    finished(&mut sim, |rt| {
+        let mut db = Db::open(rt, roots, LONG);
+        let reopened = db.pager.wall();
+        assert!(
+            reopened < between,
+            "the clock reads {reopened:?} at the reopen"
+        );
+        db.write(&[(1, Some(3))]);
+        db.mark();
+        let times: Vec<u64> = db
+            .txns
+            .history()
+            .expect("history is kept")
+            .markers(&db.pager)
+            .expect("the markers")
+            .iter()
+            .map(|m| m.time)
+            .collect();
+        assert!(
+            times.is_sorted_by(|later, earlier| later >= earlier),
+            "markers from the latest back record times {times:?}"
+        );
+        let read = |t: SystemTime| {
+            let m = db.txns.pin_time(&db.pager, t, db.upto()).expect("pin");
+            let out = db.scan_at(&m);
+            db.txns.unpin(&m);
+            out
+        };
+        assert_eq!(State::from([(1, 1)]), read(between));
+        assert_eq!(
+            State::from([(1, 3)]),
+            read(SystemTime::UNIX_EPOCH + Duration::from_nanos(latest))
+        );
+    });
+}
+
 /// Returns the files of a database with history after `body` ran on it, the recording index
 /// where `body` started, and the database's roots.
 fn recorded(
@@ -800,7 +869,11 @@ fn a_moved_version_keeps_its_out_of_line_values_until_the_window_passes() {
         let window = Duration::from_millis(200);
         let pager = Pager::create(rt.clone(), &opts()).expect("create");
         let txns = Transactions::create(rt, &pager).expect("commit log");
-        txns.keep_history(Past::create(&pager, LEDGER, window).expect("ledger"));
+        txns.keep_history(
+            &pager,
+            Past::create(&pager, LEDGER, window).expect("ledger"),
+        )
+        .expect("history");
         let fields = vec![
             FieldType::Scalar(Scalar::I64),
             FieldType::Scalar(Scalar::Bytes),

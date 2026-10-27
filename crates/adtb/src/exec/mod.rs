@@ -33,7 +33,7 @@ use adtb_lang::textual::PrintError;
 
 use crate::batch::{self, Batch, BatchBuilder, Datum};
 use crate::mvcc::SerializationFailure;
-use crate::runtime::Runtime;
+use crate::runtime::{IoError, Runtime};
 use crate::storage::PageError;
 
 /// A fault of the prelude's `Fault`, which `try` catches.
@@ -90,6 +90,9 @@ impl Fault {
 pub enum Exceeded {
     /// Its memory grant of `limit` bytes.
     Memory { limit: usize },
+    /// Its spill bound of `limit` bytes, spilling what its memory grant of `grant` bytes could
+    /// not hold.
+    Spill { limit: usize, grant: usize },
     /// `limit` rounds of a fixpoint.
     Rounds { limit: usize },
 }
@@ -102,6 +105,8 @@ pub enum Error {
     StatementLimit(Exceeded),
     Serialization(SerializationFailure),
     Page(PageError),
+    /// The call's spill file could not be made, written or read.
+    Spill(IoError),
     /// A stored structure the plan reads does not decode.
     Corrupt(String),
     /// The plan needs a form or primitive the executor does not run yet.

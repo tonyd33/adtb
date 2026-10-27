@@ -377,9 +377,18 @@ impl<R: Runtime> Transactions<R> {
     /// Keep history in `past` from now on: record the time of every commit and keep every safe
     /// snapshot marker logged.
     ///
+    /// Postconditions: every commit from now on records a time no less than the latest `past`
+    /// records, whatever the clock reads.
+    ///
+    /// Fails if a page of `past` is damaged.
+    ///
     /// Panics if history is kept already.
-    pub fn keep_history(&self, past: Past) {
+    pub fn keep_history(&self, pager: &Pager<R>, past: Past) -> Result<(), Error> {
+        let latest = past.latest_commit(pager).map_err(Error::History)?;
+        let mut st = self.state.lock(&self.rt);
+        st.last_time = st.last_time.max(latest);
         assert!(self.history.set(past).is_ok(), "history is kept already");
+        Ok(())
     }
 
     /// Returns the record of the retention window, if history is kept.

@@ -4,7 +4,7 @@ use std::ops::{Bound, Range};
 use std::sync::{Arc, Mutex};
 
 use adtb::btree::{BTree, Index};
-use adtb::heap::{FieldType, Flags, Heap, LargeStore, walk};
+use adtb::heap::{FieldType, Flags, Heap, HeapNo, LargeStore, walk};
 use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use adtb::mvcc::{Scope, Snapshot, SnapshotId, Status, Transactions, Xid};
 use adtb::runtime::Entropy;
@@ -306,7 +306,7 @@ impl Db {
         let mut seen = None;
         let mut first = true;
         let mut checks = Vec::new();
-        walk(pager, heap, tid, |l| {
+        walk(pager, HeapNo(heap), tid, |l| {
             if l.tid.page() != tid.page() || !first && !l.flags.contains(Flags::HEAP_ONLY) {
                 return true;
             }
@@ -768,7 +768,7 @@ fn a_heap_only_chain_keeps_its_first_slot_as_a_redirect() {
         assert_eq!(2, report.freed, "{report:?}");
         assert_eq!(1, report.all_visible, "{report:?}");
         let pager = &mut db.pager;
-        let found = walk(pager, HEAP_IDS[EMAIL], first, |_| true)
+        let found = walk(pager, HeapNo(HEAP_IDS[EMAIL]), first, |_| true)
             .unwrap()
             .unwrap();
         assert_eq!(at, found.tid);
@@ -1050,7 +1050,10 @@ fn a_walk_from_an_entry_read_before_vacuum_ends_on_a_page_the_large_store_took()
         db.txns.commit(&db.pager, x).unwrap();
         let store = db.heaps[EMAIL].large().pages(&db.pager).unwrap();
         assert!(store.contains(&Pid(t.page())), "{t:?} is not in {store:?}");
-        assert_eq!(None, walk(&db.pager, HEAP_IDS[APPLE], t, |_| true).unwrap());
+        assert_eq!(
+            None,
+            walk(&db.pager, HeapNo(HEAP_IDS[APPLE]), t, |_| true).unwrap()
+        );
     });
 }
 
@@ -1089,7 +1092,7 @@ fn a_chain_ends_where_vacuum_freed_the_successor() {
         assert_eq!(moved, reused, "the freed slot is taken again");
         assert_eq!(
             None,
-            walk(&db.pager, HEAP_IDS[APPLE], t, |l| l.tid == reused).unwrap()
+            walk(&db.pager, HeapNo(HEAP_IDS[APPLE]), t, |l| l.tid == reused).unwrap()
         );
         db.txns.release(old_id);
         assert_eq!(Vec::<String>::new(), db.verify());

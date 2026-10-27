@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use adtb_file::Record;
@@ -937,11 +938,13 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             if of.is_some_and(|s| !s.contains(&c)) {
                 continue;
             }
-            for b in self.store.scan(ctor.heap, self.db.options.morsel_rows)? {
-                for i in 0..b.len() {
-                    out.push((c, self.row(rel, c, &b.row(i))));
-                }
-            }
+            self.store
+                .scan(ctor.heap, self.db.options.morsel_rows, |b| {
+                    for i in 0..b.len() {
+                        out.push((c, self.row(rel, c, &b.row(i))));
+                    }
+                    Ok(ControlFlow::Continue(()))
+                })?;
         }
         Ok(out)
     }

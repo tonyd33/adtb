@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use adtb::btree::{BTree, Index};
-use adtb::heap::{FieldType, Flags, Heap, LargeStore, walk};
+use adtb::heap::{FieldType, Flags, Heap, HeapNo, LargeStore, walk};
 use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use adtb::mvcc::{Scope, Snapshot, Status, Transactions, Xid};
 use adtb::runtime::{Entropy, Threads};
@@ -186,7 +186,7 @@ impl Db {
             let h = e.ctor.0 as usize;
             let mut first = true;
             let mut seen = Vec::new();
-            walk(&self.pager, HEAP_IDS[h], e.tid, |l| {
+            walk(&self.pager, HeapNo(HEAP_IDS[h]), e.tid, |l| {
                 if l.tid.page() != e.tid.page() || !first && !l.flags.contains(Flags::HEAP_ONLY) {
                     return true;
                 }

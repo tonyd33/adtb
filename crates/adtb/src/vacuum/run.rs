@@ -93,7 +93,7 @@ impl Horizon {
     /// Returns the horizon on-access pruning of `heap` judges by now.
     pub fn now<R: Runtime>(txns: &Transactions<R>, heap: &Heap) -> Horizon {
         Horizon {
-            watermark: txns.watermark(heap.id()),
+            watermark: txns.watermark(heap.id().0),
             cutoff: txns.cutoff(),
             moving: false,
         }
@@ -353,10 +353,10 @@ fn run<R: Runtime>(
     let mut dead = DeadSet::new();
     let mut marks = Watermarks::new(txns, rule);
     for (_, heap) in &sum.heaps {
-        progress.set(heap.id(), |_| {});
+        progress.set(heap.id().0, |_| {});
     }
     for (_, heap) in &sum.heaps {
-        let id = heap.id();
+        let id = heap.id().0;
         let pages = heap.pages(pager)?;
         for (n, pid) in pages.iter().enumerate() {
             report.scanned += 1;
@@ -397,13 +397,13 @@ fn run<R: Runtime>(
         progress,
     )?;
     for (_, heap) in &sum.heaps {
-        progress.set(heap.id(), |s| s.phase = Phase::Sweep);
+        progress.set(heap.id().0, |s| s.phase = Phase::Sweep);
     }
     report.chunks = large.sweep(pager, |x| {
         Ok(txns.status(pager, Xid(x))? != Status::InProgress)
     })?;
     for (_, heap) in &sum.heaps {
-        progress.finish(heap.id());
+        progress.finish(heap.id().0);
     }
     Ok(report)
 }
@@ -486,9 +486,9 @@ fn clean<R: Runtime>(
     }
     report.rounds += 1;
     for (_, heap) in &sum.heaps {
-        progress.set(heap.id(), |s| s.phase = Phase::Indexes);
+        progress.set(heap.id().0, |s| s.phase = Phase::Indexes);
     }
-    let heap_of: BTreeMap<CtorId, u32> = sum.heaps.iter().map(|(c, h)| (*c, h.id())).collect();
+    let heap_of: BTreeMap<CtorId, u32> = sum.heaps.iter().map(|(c, h)| (*c, h.id().0)).collect();
     for index in &sum.indexes {
         report.entries += index.retain(pager, |e| {
             !heap_of
@@ -497,7 +497,7 @@ fn clean<R: Runtime>(
         })?;
     }
     for &(ctor, heap) in &sum.heaps {
-        let id = heap.id();
+        let id = heap.id().0;
         progress.set(id, |s| s.phase = Phase::Prune);
         let w = marks.of(txns, id);
         for (pid, slots) in dead.pages(id) {

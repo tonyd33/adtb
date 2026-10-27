@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-27
-status: open
+status: resolved
 kind: bug
 priority: 875
 summary: "after a leading byte order mark, CSV parse errors report a byte offset 3 lower than the file's"
-tags: [quality]
+closed: 2026-10-27
+tags:
+  - quality
 ---
 
 # CSV errors in a file with a byte order mark point three bytes early
@@ -14,3 +16,13 @@ tags: [quality]
 `crates/adtb-file/src/lib.rs:216` strips a leading U+FEFF before `read`, and `crates/adtb-file/src/csv.rs:86` reports `byte {at}` against the stripped text, so every offset is 3 lower than in the file.
 
 Fix: add the stripped length to the offset, or strip inside `split` and count from the file start. Pin it with a test that has a BOM and a malformed record.
+
+## 2026-10-27: done
+
+`csv::split` skips a leading byte order mark and counts offsets from the file's start; `json::records` strips its own; `records_in` no longer strips. Unit tests in `crates/adtb-file/src/csv.rs`.
+
+## 2026-10-27: resolved
+
+## 2026-10-27: landed
+
+Landed with the qexec track; what stays open is in `exec-scan-follow-ups`.

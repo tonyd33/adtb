@@ -1114,24 +1114,36 @@ fn a_range_probe_keeps_its_comparisons_as_filters() {
 #[test]
 fn an_existence_test_over_total_pipelines_is_marked_total() {
     let f = running();
-    for (text, total) in [
-        ("exists p in posts where p.author == users.key(1)", true),
-        ("exists o in orders where o.total / o.qty > 10", false),
+    let division = Some(Abort::Fault(Fault::DivisionByZero));
+    for (text, total, abort) in [
+        (
+            "exists p in posts where p.author == users.key(1)",
+            true,
+            None,
+        ),
+        (
+            "exists o in orders where o.total / o.qty > 10",
+            false,
+            division.clone(),
+        ),
         (
             "exists o in orders where o.qty > 0 and o.total / o.qty > 10",
             false,
+            None,
         ),
-        ("exists p in posts where p.title == \"hello\"", true),
+        ("exists p in posts where p.title == \"hello\"", true, None),
         (
             "top 0 by (o.total, key o) (from o in orders select o)",
             true,
+            None,
         ),
         (
             "top 1 by (o.total / o.qty, key o) (from o in orders select o)",
             false,
+            division,
         ),
     ] {
-        outcome(&f, text, &[]).ok();
+        assert_eq!(abort, outcome(&f, text, &[]).err(), "`{text}`");
         let p = adhoc_plan(&f, text, &[], Rewrites::ALL);
         assert_eq!(total, query_of(&p.root).total, "`{text}`");
         let off = Rewrites {

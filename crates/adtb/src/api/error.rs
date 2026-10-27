@@ -254,9 +254,11 @@ impl Error {
             write::Error::Fault(fault) => Error::rejected(RejectReason::Faulted { fault }),
             write::Error::StatementLimit(x) => Error::rejected(RejectReason::StatementLimit {
                 limit: match x {
-                    Exceeded::Memory { limit } => Limit::Memory {
-                        bytes: i64::try_from(limit).unwrap_or(i64::MAX),
-                    },
+                    Exceeded::Memory { limit } | Exceeded::Spill { grant: limit, .. } => {
+                        Limit::Memory {
+                            bytes: i64::try_from(limit).unwrap_or(i64::MAX),
+                        }
+                    }
                     Exceeded::Rounds { limit } => Limit::Rounds {
                         rounds: i64::try_from(limit).unwrap_or(i64::MAX),
                     },
@@ -269,6 +271,7 @@ impl Error {
                 },
             },
             write::Error::Page(p) => Error::storage(format!("{p:?}")),
+            write::Error::Spill(io) => Error::storage(format!("the spill file failed: {io:?}")),
             write::Error::Transactions(detail) | write::Error::Corrupt(detail) => {
                 Error::storage(detail)
             }

@@ -213,8 +213,7 @@ pub fn records_in<V: Textual>(
     for (source, bytes) in found {
         let text = String::from_utf8(bytes)
             .map_err(|e| unreadable(&source, format!("the file is not UTF-8: {e}")))?;
-        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-        let found = read(schema, text, row).map_err(|e| unreadable(&source, e))?;
+        let found = read(schema, &text, row).map_err(|e| unreadable(&source, e))?;
         for (raw, row) in found {
             out.push(Record {
                 source: source.clone(),

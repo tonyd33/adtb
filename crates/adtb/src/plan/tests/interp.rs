@@ -660,8 +660,13 @@ impl<'a> Interp<'a> {
                     .iter()
                     .map(|k| self.expr(*k, env))
                     .collect::<R<Vec<_>>>()?;
-                let rows = self.entries(*index, &k);
-                self.routed(*index, routes, *var, rows, env, b, out)
+                let end = IndexEnd {
+                    index: *index,
+                    routes,
+                    var: *var,
+                    rows: self.entries(*index, &k),
+                };
+                self.routed(end, env, b, out)
             }
             End::Range {
                 index,
@@ -709,36 +714,38 @@ impl<'a> Interp<'a> {
                         rows.push((c, row));
                     }
                 }
-                self.routed(*index, routes, *var, rows, env, b, out)
+                let end = IndexEnd {
+                    index: *index,
+                    routes,
+                    var: *var,
+                    rows,
+                };
+                self.routed(end, env, b, out)
             }
         }
     }
 
-    /// Pass each of `rows`, entries of `index` with their constructors, to its route's chain.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "an index end's parts and the evaluation it runs in"
-    )]
-    fn routed(
-        &self,
-        index: IndexId,
-        routes: &[Route],
-        var: Var,
-        rows: Vec<(u32, Value)>,
-        env: &Env,
-        b: &Built,
-        out: &mut BTreeSet<Value>,
-    ) -> R<()> {
-        for (c, row) in rows {
-            if let Some(r) = routes.iter().find(|r| r.ctor == c) {
+    /// Pass each entry of `end` to its route's chain.
+    fn routed(&self, end: IndexEnd<'_>, env: &Env, b: &Built, out: &mut BTreeSet<Value>) -> R<()> {
+        for (c, row) in end.rows {
+            if let Some(r) = end.routes.iter().find(|r| r.ctor == c) {
                 assert_eq!(
                     self.heaps[&r.heap],
-                    (self.indexes[&index].0, c),
+                    (self.indexes[&end.index].0, c),
                     "a route fetches from its constructor's heap"
                 );
-                self.chain(&r.chain, &bind(env, var, row), b, out)?;
+                self.chain(&r.chain, &bind(env, end.var, row), b, out)?;
             }
         }
         Ok(())
     }
+}
+
+/// The entries of `index` an index end reached, each with its constructor, and the routes that
+/// bind them to `var`.
+struct IndexEnd<'a> {
+    index: IndexId,
+    routes: &'a [Route],
+    var: Var,
+    rows: Vec<(u32, Value)>,
 }

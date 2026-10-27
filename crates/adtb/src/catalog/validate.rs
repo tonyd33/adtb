@@ -162,7 +162,9 @@ fn violating<R: Runtime>(
             return Ok(vec![format!("its query faults with {}", f.name())]);
         }
         Err(exec::Error::Rejected(why)) => return Ok(vec![format!("its query rejects: {why}")]),
-        Err(exec::Error::StatementLimit(exec::Exceeded::Memory { limit })) => {
+        Err(exec::Error::StatementLimit(
+            exec::Exceeded::Memory { limit } | exec::Exceeded::Spill { grant: limit, .. },
+        )) => {
             return Ok(vec![format!(
                 "its validation needs more than the query memory of {limit} bytes"
             )]);

@@ -29,7 +29,7 @@ use crate::mvcc::{
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
-use crate::runtime::Runtime;
+use crate::runtime::{IoError, Runtime};
 use crate::storage::{PageError, Pager, Pid, Position};
 use crate::vacuum;
 
@@ -89,6 +89,8 @@ pub enum Error {
     StatementLimit(exec::Exceeded),
     Serialization(SerializationFailure),
     Page(PageError),
+    /// The statement's spill file could not be made, written or read.
+    Spill(IoError),
     /// The commit log is corrupt or its ids are spent.
     Transactions(String),
     Corrupt(String),
@@ -162,6 +164,7 @@ impl From<exec::Error> for Error {
             exec::Error::StatementLimit(x) => Error::StatementLimit(x),
             exec::Error::Serialization(f) => Error::Serialization(f),
             exec::Error::Page(p) => Error::Page(p),
+            exec::Error::Spill(io) => Error::Spill(io),
             exec::Error::Corrupt(c) => Error::Corrupt(c),
             exec::Error::Unsupported(u) => Error::Unsupported(u),
             exec::Error::Rejected(detail) => Error::Rejected(Rejection::BadInput {
