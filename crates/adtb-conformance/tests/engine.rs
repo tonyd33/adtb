@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use adtb_conformance::{panic_message, parse, run_engine, scripts};
+use adtb_conformance::{panic_message, parse, run_engine_in, scripts};
 use adtb_sim::{Config, Outcome, Sim};
 
 const SEED: u64 = 0;
@@ -54,7 +54,9 @@ fn differences(path: &Path) -> Vec<String> {
     };
     let mut found = Vec::new();
     let ran = panic::catch_unwind(AssertUnwindSafe(|| {
-        Sim::new(SEED, Config::default()).run(|rt| found = run_engine(rt, &script))
+        Sim::new(SEED, Config::default()).run(|rt| {
+            found = run_engine_in(rt, &script, path.parent().unwrap_or(Path::new("")));
+        })
     }));
     match ran {
         Ok(Outcome::Finished) => found.iter().map(ToString::to_string).collect(),

@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 
 use adtb_lang::schema::Schema;
+use adtb_lang::textual::Textual;
 use adtb_lang::types::Ty;
 
-use super::{Found, Shape, Sum, allowed, key_value_ty, record, shape};
-use crate::textual;
-use crate::unicode::nfc;
-use crate::value::Value;
+use super::{
+    Found, Shape, Sum, allowed, ctor, key_value_ty, none, parse, record, shape, some, text,
+};
 
 struct Cell {
     text: String,
@@ -23,7 +23,11 @@ impl Cell {
 
 /// Returns each record of `text` after its header, as the file holds it, with its row read at
 /// `row` or why it does not convert. Fails when the text is not CSV.
-pub(super) fn records(schema: &Schema, text: &str, row: &Ty) -> Result<Vec<Found>, String> {
+pub(super) fn records<V: Textual>(
+    schema: &Schema,
+    text: &str,
+    row: &Ty,
+) -> Result<Vec<Found<V>>, String> {
     let mut all = split(text)?.into_iter();
     let Some((_, header)) = all.next() else {
         return Ok(Vec::new());
@@ -157,21 +161,21 @@ impl Reader<'_, '_> {
             .all(|(_, c)| c.is_null())
     }
 
-    fn scalar(&self, at: &str, ty: &Ty) -> Result<Value, String> {
+    fn scalar<V: Textual>(&self, at: &str, ty: &Ty) -> Result<V, String> {
         let c = self.cell(at)?;
-        textual::parse(self.schema, &c.text, ty).map_err(|e| format!("column `{at}`: {e}"))
+        parse(self.schema, &c.text, ty).map_err(|e| format!("column `{at}`: {e}"))
     }
 
     /// Reads the value of type `ty` the columns at `at` hold, `""` naming the row itself.
-    fn read(&self, at: &str, ty: &Ty) -> Result<Value, String> {
+    fn read<V: Textual>(&self, at: &str, ty: &Ty) -> Result<V, String> {
         match shape(self.schema, ty) {
             Shape::Scalar | Shape::Bool => self.scalar(at, ty),
-            Shape::Text => Ok(Value::Text(nfc(&self.cell(at)?.text))),
+            Shape::Text => Ok(text(&self.cell(at)?.text)),
             Shape::Option(inner) => {
                 if self.absent(at) {
-                    Ok(Value::none())
+                    Ok(none())
                 } else {
-                    Ok(Value::some(self.read(at, &inner)?))
+                    Ok(some(self.read(at, &inner)?))
                 }
             }
             Shape::Names(names, set) => {
@@ -182,9 +186,9 @@ impl Reader<'_, '_> {
                     .ok_or_else(|| format!("column `{at}`: `{name}` is not a constructor"))?;
                 let i = allowed(i as u32, name, set.as_ref())
                     .map_err(|e| format!("column `{at}`: {e}"))?;
-                Ok(Value::Ctor(i, Vec::new()))
+                Ok(ctor(i, Vec::new()))
             }
-            Shape::Key(rel) => Ok(Value::key(self.read(at, &key_value_ty(self.schema, rel))?)),
+            Shape::Key(rel) => Ok(V::of_key(self.read(at, &key_value_ty(self.schema, rel))?)),
             Shape::Newtype(base) => self.read(at, &base),
             Shape::Record(fields, declared) => Ok(record(self.fields(at, &fields)?, declared)),
             Shape::Sum(sum) => {
@@ -197,7 +201,11 @@ impl Reader<'_, '_> {
         }
     }
 
-    fn fields(&self, at: &str, fields: &[(String, Ty)]) -> Result<Vec<(String, Value)>, String> {
+    fn fields<V: Textual>(
+        &self,
+        at: &str,
+        fields: &[(String, Ty)],
+    ) -> Result<Vec<(String, V)>, String> {
         fields
             .iter()
             .map(|(n, t)| Ok((n.clone(), self.read(&join(at, n), t)?)))
@@ -206,7 +214,7 @@ impl Reader<'_, '_> {
 
     /// Reads a sum from its tag columns: `tag`, its header fields, and `C.g` for each field `g`
     /// of each constructor `C`, null unless the tag is `C`.
-    fn tagged(&self, at: &str, sum: &Sum) -> Result<Value, String> {
+    fn tagged<V: Textual>(&self, at: &str, sum: &Sum) -> Result<V, String> {
         let tag_at = join(at, "tag");
         let tag = &self.cell(&tag_at)?.text;
         let c = sum
@@ -226,6 +234,6 @@ impl Reader<'_, '_> {
         let (name, own) = &sum.ctors[c as usize];
         let mut fields = self.fields(at, &sum.header)?;
         fields.extend(self.fields(&join(at, name), own)?);
-        Ok(Value::Ctor(c, fields))
+        Ok(ctor(c, fields))
     }
 }

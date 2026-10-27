@@ -1,12 +1,13 @@
 //! NDJSON files: one JSON value per line, read by the JSON mapping.
 
 use adtb_lang::schema::Schema;
+use adtb_lang::textual::Textual;
 use adtb_lang::types::{Base, Ty};
 
-use super::{Found, Shape, Sum, allowed, key_value_ty, record, shape};
-use crate::textual;
-use crate::unicode::nfc;
-use crate::value::Value;
+use super::{
+    Found, Shape, Sum, allowed, ctor as of_ctor, key_value_ty, none, parse, record, shape, some,
+    text,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Json {
@@ -30,7 +31,11 @@ impl Json {
 }
 
 /// Returns each nonblank line of `text`, with its row read at `row` or why it does not convert.
-pub(super) fn records(schema: &Schema, text: &str, row: &Ty) -> Result<Vec<Found>, String> {
+pub(super) fn records<V: Textual>(
+    schema: &Schema,
+    text: &str,
+    row: &Ty,
+) -> Result<Vec<Found<V>>, String> {
     Ok(text
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -43,8 +48,8 @@ pub(super) fn records(schema: &Schema, text: &str, row: &Ty) -> Result<Vec<Found
         .collect())
 }
 
-fn read(schema: &Schema, j: &Json, ty: &Ty) -> Result<Value, String> {
-    let parse = |text: &str| textual::parse(schema, text, ty).map_err(|e| e.to_string());
+fn read<V: Textual>(schema: &Schema, j: &Json, ty: &Ty) -> Result<V, String> {
+    let parse = |t: &str| parse(schema, t, ty);
     match shape(schema, ty) {
         Shape::Scalar => match (j, ty) {
             (
@@ -56,21 +61,21 @@ fn read(schema: &Schema, j: &Json, ty: &Ty) -> Result<Value, String> {
             _ => Err(format!("{j:?} is not a value of {ty:?}")),
         },
         Shape::Bool => match j {
-            Json::Bool(b) => Ok(Value::bool(*b)),
+            Json::Bool(b) => Ok(of_ctor(u32::from(*b), Vec::new())),
             _ => Err(format!("{j:?} is not a Bool")),
         },
         Shape::Text => match j {
-            Json::String(s) => Ok(Value::Text(nfc(s))),
+            Json::String(s) => Ok(text(s)),
             _ => Err(format!("{j:?} is not a Text")),
         },
         Shape::Option(inner) => match j {
-            Json::String(s) if s == "None" => Ok(Value::none()),
+            Json::String(s) if s == "None" => Ok(none()),
             Json::Object(ms) if ms.len() == 1 && ms[0].0 == "Some" => {
                 let value = ms[0]
                     .1
                     .member("value")
                     .ok_or("`Some` has no member `value`")?;
-                Ok(Value::some(read(schema, value, &inner)?))
+                Ok(some(read(schema, value, &inner)?))
             }
             _ => Err(format!("{j:?} is not an Option")),
         },
@@ -80,11 +85,11 @@ fn read(schema: &Schema, j: &Json, ty: &Ty) -> Result<Value, String> {
                     .iter()
                     .position(|n| n == s)
                     .ok_or_else(|| format!("`{s}` is not a constructor"))?;
-                Ok(Value::Ctor(allowed(i as u32, s, set.as_ref())?, Vec::new()))
+                Ok(of_ctor(allowed(i as u32, s, set.as_ref())?, Vec::new()))
             }
             _ => Err(format!("{j:?} is not a constructor name")),
         },
-        Shape::Key(rel) => Ok(Value::key(read(schema, j, &key_value_ty(schema, rel))?)),
+        Shape::Key(rel) => Ok(V::of_key(read(schema, j, &key_value_ty(schema, rel))?)),
         Shape::Newtype(base) => read(schema, j, &base),
         Shape::Record(fields, declared) => Ok(record(members(schema, j, &fields)?, declared)),
         Shape::Sum(sum) => ctor(schema, j, &sum),
@@ -94,11 +99,11 @@ fn read(schema: &Schema, j: &Json, ty: &Ty) -> Result<Value, String> {
 
 /// Reads the members of object `j` named by `fields`; a missing member of an `Option` type is
 /// `None`.
-fn members(
+fn members<V: Textual>(
     schema: &Schema,
     j: &Json,
     fields: &[(String, Ty)],
-) -> Result<Vec<(String, Value)>, String> {
+) -> Result<Vec<(String, V)>, String> {
     if !matches!(j, Json::Object(_)) {
         return Err(format!("{j:?} is not an object"));
     }
@@ -107,7 +112,7 @@ fn members(
         .map(|(n, t)| {
             let v = match (j.member(n), shape(schema, t)) {
                 (Some(m), _) => read(schema, m, t).map_err(|e| format!("member `{n}`: {e}"))?,
-                (None, Shape::Option(_)) => Value::none(),
+                (None, Shape::Option(_)) => none(),
                 (None, _) => return Err(format!("no member `{n}`")),
             };
             Ok((n.clone(), v))
@@ -117,7 +122,7 @@ fn members(
 
 /// Reads a constructor value: its name for one with no fields, else an object of one member
 /// named by it holding its fields.
-fn ctor(schema: &Schema, j: &Json, sum: &Sum) -> Result<Value, String> {
+fn ctor<V: Textual>(schema: &Schema, j: &Json, sum: &Sum) -> Result<V, String> {
     let (name, payload) = match j {
         Json::String(s) => (s.as_str(), None),
         Json::Object(ms) if ms.len() == 1 => (ms[0].0.as_str(), Some(&ms[0].1)),
@@ -132,7 +137,7 @@ fn ctor(schema: &Schema, j: &Json, sum: &Sum) -> Result<Value, String> {
         None if fields.is_empty() => Vec::new(),
         None => return Err(format!("`{name}` has fields")),
     };
-    Ok(Value::Ctor(c, values))
+    Ok(of_ctor(c, values))
 }
 
 struct Parser<'t> {

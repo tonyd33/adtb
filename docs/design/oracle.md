@@ -48,7 +48,10 @@ A CSV or NDJSON file scan reads the files `with_files` gives, a
 with their contents; without one it reads the file system, a relative
 path against the working directory. `Disk::new(root)` reads the file
 system with relative paths against `root`, and `InMemory` holds files
-by name. A component of a path holding `*` or `?` matches every name it
+by name. `Files`, `Disk` and `InMemory` are those of `adtb-file`, whose
+`records` returns each record of the files a path names, in order, with
+its file, its number, its text as the file holds it, and its row or why
+it does not convert; the engine reads files through them. A component of a path holding `*` or `?` matches every name it
 matches. A file that cannot be read, or whose text is not UTF-8, is
 `BadInput` naming it with line 0. Records are numbered from 1 across
 every file the path names, in name order. A file scan does not pin the

@@ -28,10 +28,10 @@ impl From<btree::Error> for Error {
     }
 }
 
-/// The heaps and indexes of one sum.
+/// The heaps of some constructors of one sum, and the indexes over them.
 ///
-/// Invariants: the heaps share one large-value store, and every index entry's constructor is
-/// one of `heaps`.
+/// Invariants: the heaps share one large-value store. An index entry of a constructor outside
+/// `heaps` is kept.
 #[derive(Debug)]
 pub struct Sum<'a> {
     /// Each constructor's heap.

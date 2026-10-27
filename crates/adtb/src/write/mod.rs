@@ -2,7 +2,9 @@ mod apply;
 mod check;
 mod delta;
 mod eval;
+mod explain;
 mod fresh;
+mod input;
 mod polarity;
 mod schema;
 mod sequence;
@@ -11,22 +13,29 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 
+use adtb_file::Disk;
 use adtb_lang::kernel::{Terms, Tm, Var};
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 use adtb_sys::lock::Lock;
 
+use crate::btree::Index;
 use crate::exec::{self, Budget, Scheduler, StoredHeap, StoredIndex, Val};
+use crate::key::CtorId;
 use crate::mvcc::{
     Access, Limits, Safety, Scope, SerialId, SerializationFailure, Serializer, Snapshot,
     SnapshotId, Transactions, Waits, Xid,
 };
+use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::{PageError, Pager, Pid, Position};
+use crate::vacuum;
 
 pub use adtb_lang::schema::Stage;
+
+pub use input::Local;
 
 use schema::Rels;
 use sequence::Sequences;
@@ -90,6 +99,8 @@ pub enum Error {
     /// The schema has a constraint without an index-bounded incremental check; each constraint
     /// refused, with why.
     Refused(Vec<(String, String)>),
+    /// The files a path names differ from those an earlier scan of it in the transaction read.
+    FileChanged(String),
 }
 
 impl Error {
@@ -97,7 +108,11 @@ impl Error {
     pub fn ends_transaction(&self) -> bool {
         matches!(
             self,
-            Error::Serialization(_) | Error::Page(_) | Error::Transactions(_) | Error::Corrupt(_)
+            Error::Serialization(_)
+                | Error::Page(_)
+                | Error::Transactions(_)
+                | Error::Corrupt(_)
+                | Error::FileChanged(_)
         )
     }
 }
@@ -222,6 +237,23 @@ impl Txn {
     }
 }
 
+/// The statements of one call: terms of `terms` over `schema`, each variable of `params` bound
+/// to its value.
+#[derive(Clone, Copy, Debug)]
+pub struct Text<'a> {
+    /// The database's schema, or one that extends it with the transaction's temp relations.
+    pub schema: &'a Schema,
+    pub terms: &'a Terms,
+    pub items: &'a [Tm],
+    pub params: &'a [(Var, Val)],
+    /// The instant, in microseconds, every `generate clock` of the statements takes.
+    pub clock: i64,
+}
+
+/// What runs between the statements of a call: given the number of statements run so far,
+/// before the first and after each.
+pub type Between<'h> = dyn FnMut(usize, &mut Local) -> Result<(), Error> + 'h;
+
 /// What bounds the statements of one call, past the database's own bounds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Bounds {
@@ -268,6 +300,9 @@ pub struct Database<R: Runtime> {
     pool: Option<Arc<Scheduler<R>>>,
     options: exec::Options,
     grant: usize,
+    files: Disk,
+    /// Held while a vacuum runs, so that one runs at a time.
+    vacuuming: Lock<()>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Database<R> {
@@ -372,8 +407,16 @@ impl<R: Runtime> Database<R> {
             pool: setup.pool,
             options: setup.options,
             grant: setup.grant,
+            files: Disk::default(),
+            vacuuming: Lock::new(()),
             rt,
         })
+    }
+
+    /// Returns the database reading the files of file scans through `files`.
+    pub fn with_files(mut self, files: Disk) -> Self {
+        self.files = files;
+        self
     }
 
     pub fn pager(&self) -> &Pager<R> {
@@ -459,51 +502,158 @@ impl<R: Runtime> Database<R> {
         params: &[(Var, Val)],
         clock: i64,
     ) -> Result<Outcome, Error> {
-        match self.statements(tx, terms, &[t], params, clock, Bounds::default()) {
+        let text = Text {
+            schema: &self.schema,
+            terms,
+            items: &[t],
+            params,
+            clock,
+        };
+        match self.statements(tx, text, &mut Local::default(), Bounds::default()) {
             Ok(mut done) => Ok(done.remove(0)),
             Err(f) => Err(f.error),
         }
     }
 
-    /// Run terms `items` of `terms` in order as statements of `tx`, each reading the change sets
-    /// of the ones before it and bounded by `bounds`, as [`statement`](Database::statement) runs
-    /// one. Returns each one's outcome.
+    /// Run the items of `text` in order as statements of `tx`, each reading the change sets of
+    /// the ones before it and bounded by `bounds`, as [`statement`](Database::statement) runs
+    /// one, over `local`, what `tx` holds outside the file. Returns each one's outcome.
     ///
     /// On an `Err` that [ends the transaction](Error::ends_transaction), abort `tx`. On any other
-    /// `Err` none of the items has an effect and `tx` goes on.
+    /// `Err` none of the items has an effect, on the file or on `local`, and `tx` goes on.
     pub fn statements(
         &self,
         tx: &Txn,
-        terms: &Terms,
-        items: &[Tm],
-        params: &[(Var, Val)],
-        clock: i64,
+        text: Text<'_>,
+        local: &mut Local,
         bounds: Bounds,
     ) -> Result<Vec<Outcome>, Failed> {
-        let options = exec::Options {
-            fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
-            ..self.options
-        };
-        let mut ran = Vec::with_capacity(items.len());
-        let mut out = Vec::with_capacity(items.len());
-        for (item, t) in items.iter().enumerate() {
-            let s = eval::Stmt::new(self, tx, terms, *t, clock, options);
-            match s.run(params) {
-                Ok(o) => {
-                    out.push(o);
+        self.statements_with(tx, text, local, bounds, &mut |_, _| Ok(()))
+    }
+
+    /// Run the items of `text` as [`statements`](Database::statements) does, running `between`
+    /// before the first and after each. A failure of `between` fails the call as a failure of
+    /// the next item does.
+    pub fn statements_with(
+        &self,
+        tx: &Txn,
+        text: Text<'_>,
+        local: &mut Local,
+        bounds: Bounds,
+        between: &mut Between<'_>,
+    ) -> Result<Vec<Outcome>, Failed> {
+        let mut ran = Vec::with_capacity(text.items.len());
+        let mut out = Vec::with_capacity(text.items.len());
+        let before = local.clone();
+        for item in 0..=text.items.len() {
+            let done = between(item, local).and_then(|()| match text.items.get(item) {
+                Some(t) => {
+                    let s = self.stmt(tx, text, *t, bounds);
+                    let o = s.run(text.params, local);
                     ran.push(s);
+                    o.map(|o| out.push(o))
                 }
+                None => Ok(()),
+            });
+            if let Err(error) = done {
+                *local = before;
+                if !error.ends_transaction() {
+                    self.undo(&ran).map_err(|error| Failed { item, error })?;
+                }
+                return Err(Failed { item, error });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Run the items of `text` as [`statements`](Database::statements) does, then undo every
+    /// one, leaving `tx` and `local` as they were. Returns each one's outcome.
+    pub fn trial(
+        &self,
+        tx: &Txn,
+        text: Text<'_>,
+        local: &mut Local,
+        bounds: Bounds,
+    ) -> Result<Vec<Outcome>, Failed> {
+        let before = local.clone();
+        let mut ran = Vec::with_capacity(text.items.len());
+        let mut out = Vec::with_capacity(text.items.len());
+        for (item, t) in text.items.iter().enumerate() {
+            let s = self.stmt(tx, text, *t, bounds);
+            let o = s.run(text.params, local);
+            ran.push(s);
+            match o {
+                Ok(o) => out.push(o),
                 Err(error) => {
+                    *local = before;
                     if !error.ends_transaction() {
-                        for s in std::iter::once(&s).chain(ran.iter().rev()) {
-                            s.undo().map_err(|error| Failed { item, error })?;
-                        }
+                        self.undo(&ran).map_err(|error| Failed { item, error })?;
                     }
                     return Err(Failed { item, error });
                 }
             }
         }
+        *local = before;
+        let item = text.items.len();
+        self.undo(&ran).map_err(|error| Failed { item, error })?;
         Ok(out)
+    }
+
+    /// Returns the operators of term `t` of `text` as a statement of `tx` would run it.
+    pub fn explain(&self, tx: &Txn, text: Text<'_>, t: Tm) -> Result<Node, Error> {
+        let params: Vec<Var> = text.params.iter().map(|(v, _)| *v).collect();
+        self.stmt(tx, text, t, Bounds::default()).explain(&params)
+    }
+
+    /// Vacuums each constructor relation of `rel` in turn. Returns the id of each constructor
+    /// with what its vacuum did.
+    pub fn vacuum(&self, rel: RelId) -> Result<Vec<(CtorId, vacuum::Report)>, Error> {
+        let _one = self.vacuuming.lock(&self.rt);
+        let r = &self.rels[&rel];
+        let ids: BTreeMap<u32, CtorId> = self.indexes[&r.key_index]
+            .ctors
+            .iter()
+            .map(|(id, c)| (*c, *id))
+            .collect();
+        let indexes: Vec<&Index> = r
+            .indexes
+            .iter()
+            .map(|(i, _)| &self.indexes[i].index)
+            .collect();
+        let mut out = Vec::with_capacity(r.ctors.len());
+        for (c, ctor) in r.ctors.iter().enumerate() {
+            let id = ids[&(c as u32)];
+            let sum = vacuum::Sum {
+                heaps: vec![(id, &*self.heaps[&ctor.heap].heap)],
+                indexes: indexes.clone(),
+            };
+            let report = vacuum::vacuum(
+                &self.pager,
+                &self.txns,
+                &sum,
+                self.grant,
+                &vacuum::Progress::new(),
+            )
+            .map_err(|e| match e {
+                vacuum::Error::Page(p) => Error::Page(p),
+                vacuum::Error::Index(i) => Error::from(i),
+            })?;
+            out.push((id, report));
+        }
+        Ok(out)
+    }
+
+    fn stmt<'a>(&'a self, tx: &'a Txn, text: Text<'a>, t: Tm, bounds: Bounds) -> eval::Stmt<'a, R> {
+        let options = exec::Options {
+            fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
+            ..self.options
+        };
+        eval::Stmt::new(self, tx, text.schema, text.terms, t, text.clock, options)
+    }
+
+    /// Undoes the effects of `ran` on the file, the last first.
+    fn undo(&self, ran: &[eval::Stmt<'_, R>]) -> Result<(), Error> {
+        ran.iter().rev().try_for_each(eval::Stmt::undo)
     }
 
     /// Returns every row of every relation variable the catalog describes, as `tx` reads them.

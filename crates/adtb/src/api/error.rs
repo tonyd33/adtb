@@ -271,6 +271,9 @@ impl Error {
                 Error::invalid(format!("{what} does not run in this engine yet"))
             }
             write::Error::Internal(what) => Error::rejected(RejectReason::Internal { what }),
+            write::Error::FileChanged(path) => Error::Retry {
+                reason: RetryReason::FileChanged { path },
+            },
             write::Error::Refused(why) => Error::rejected(RejectReason::SchemaRefused {
                 operator: String::new(),
                 detail: why

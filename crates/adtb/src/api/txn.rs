@@ -1,10 +1,12 @@
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 
 use crate::exec::Val;
 use crate::runtime::Runtime;
-use crate::write::{Bounds, Txn};
+use crate::write::{Bounds, Local, Txn};
 
 use super::error::FatalReason;
 use super::text::{DynRows, Prepared};
@@ -57,6 +59,10 @@ pub struct AdHocTransaction<'a, R: Runtime = adtb_sys::os::OsRuntime> {
     id: TxnId,
     read_only: bool,
     state: State,
+    /// The schema extended with the temp relations the transaction's texts declared, once one
+    /// has.
+    temps: Option<Arc<Schema>>,
+    local: Local,
 }
 
 impl<R: Runtime> Database<R> {
@@ -85,6 +91,8 @@ impl<R: Runtime> Database<R> {
             id,
             read_only: opts.read_only,
             state: State::Open(tx),
+            temps: None,
+            local: Local::default(),
         })
     }
 
@@ -144,7 +152,8 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         if opts.deadline.is_some() || opts.limit.is_some() {
             return Err(unsupported("a deadline or statement limit on a call"));
         }
-        let p = Prepared::new(&e.schema, &e.program, text, params)?;
+        let schema = self.temps.as_ref().unwrap_or(&e.schema);
+        let p = Prepared::new(schema, &e.program, &e.bundles, text, params)?;
         if p.deferrable {
             return Err(Error::invalid(
                 "a read_only deferrable block does not run inside an interactive transaction",
@@ -156,15 +165,12 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         let bounds = Bounds {
             fix_rounds: opts.fix_rounds,
         };
-        let ran =
-            e.db.statements(tx, p.terms(), p.items(), p.params(), e.clock(), bounds);
-        let (err, ends) = match ran.map(|outcomes| p.results(&e.schema, outcomes)) {
-            Ok(Ok(rows)) => return Ok(rows),
-            Ok(Err(err)) => (err, true),
-            Err(f) => (
-                e.write_error(self.id, f.error.clone()),
-                f.error.ends_transaction(),
-            ),
+        let (err, ends) = match e.statements(self.id, tx, &p, &mut self.local, bounds) {
+            Ok(rows) => {
+                self.temps = Some(p.schema().clone());
+                return Ok(rows);
+            }
+            Err(failed) => failed,
         };
         if ends {
             self.end(err.clone())?;

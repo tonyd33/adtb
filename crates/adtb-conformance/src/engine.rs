@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use adtb::runtime::Runtime;
 use adtb::{
     AdHocTransaction, CallOptions, CreateOptions, Database, DynRows, Error, Log, OpenOptions,
@@ -13,8 +15,14 @@ use crate::{Difference, Directive, FIX_ROUNDS, Kind, Script, differ, modules, re
 const FILE: &str = "conformance.adt";
 
 /// Runs `script` against a fresh database file of the engine under `rt` and returns every
-/// directive whose outcome differs from the script.
+/// directive whose outcome differs from the script. A file scan reads a relative path against
+/// the working directory.
 pub fn run_engine<R: Runtime>(rt: R, script: &Script) -> Vec<Difference> {
+    run_engine_in(rt, script, Path::new(""))
+}
+
+/// Runs `script` as [`run_engine`] does, a file scan reading a relative path against `dir`.
+pub fn run_engine_in<R: Runtime>(rt: R, script: &Script, dir: &Path) -> Vec<Difference> {
     let mut directives = script.directives.as_slice();
     let mut log = Log::default();
     if let [first, rest @ ..] = directives
@@ -26,6 +34,7 @@ pub fn run_engine<R: Runtime>(rt: R, script: &Script) -> Vec<Difference> {
     let options = OpenOptions {
         create: Some(CreateOptions::default()),
         fix_rounds: Some(FIX_ROUNDS),
+        file_root: Some(dir.to_path_buf()),
         ..OpenOptions::default()
     };
     let db = match Database::open_in(rt, FILE, &log, &options) {
@@ -134,7 +143,13 @@ fn directive<R: Runtime>(db: &Database<R>, d: &Directive) -> Result<(), Differen
         Kind::Query { rowsort, rows } => {
             if parse_adhoc(&d.body, Options::default())
                 .ok()
-                .is_ok_and(|items| items.len() != 1)
+                .is_ok_and(|items| {
+                    items
+                        .iter()
+                        .filter(|i| !matches!(i, AdhocItem::Temp(_)))
+                        .count()
+                        != 1
+                })
             {
                 return Err(differ(d.line, "a query holds one statement"));
             }

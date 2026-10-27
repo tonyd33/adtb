@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use adtb_file::{Disk, Files, Record};
 use adtb_lang::check::Program;
 use adtb_lang::kernel::{Agg, Const, FileFormat, Kind, Terms, Tm, Transition, Var};
 use adtb_lang::schema::{Schema, TypeDefKind};
@@ -9,7 +10,6 @@ use adtb_lang::textual::PrintError;
 use adtb_lang::types::{Base, CtorSet, FnId, RelId, Ty, TypeId};
 
 use crate::big::Big;
-use crate::file::{self, Disk, Files, Record};
 use crate::num::{digits38, in_range};
 use crate::prim;
 use crate::stmt::{Rejection, Stage, Stmt};
@@ -246,11 +246,25 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Returns the records of the files `path` names, in `format`, read at `row`.
-    pub(crate) fn file_records(&self, format: FileFormat, path: &str, row: &Ty) -> R<Vec<Record>> {
-        match self.files {
-            Some(Source(files)) => file::records(self.schema, files, format, path, row),
-            None => file::records(self.schema, &Disk::default(), format, path, row),
-        }
+    /// A file that cannot be read fails the scan with `BadInput` naming it at line 0.
+    pub(crate) fn file_records(
+        &self,
+        format: FileFormat,
+        path: &str,
+        row: &Ty,
+    ) -> R<Vec<Record<Value>>> {
+        let read = match self.files {
+            Some(Source(files)) => adtb_file::records(self.schema, files, format, path, row),
+            None => adtb_file::records(self.schema, &Disk::default(), format, path, row),
+        };
+        read.map_err(|e| match e {
+            adtb_file::Error::Unreadable { source, detail } => Abort::Reject(Rejection::BadInput {
+                source,
+                line: 0,
+                detail,
+            }),
+            adtb_file::Error::NotYet(what) => Abort::NotYet(what.to_string()),
+        })
     }
 
     /// Sets the measure of stored rows; without one no row is too large.

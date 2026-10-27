@@ -2,8 +2,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
+use adtb_file::Record;
 use adtb_lang::kernel::{Conflict, Kind, Terms, Tm, Var};
-use adtb_lang::schema::{Generator, OnDelete, Stage};
+use adtb_lang::schema::{Generator, OnDelete, Schema, Stage};
 use adtb_lang::types::{RelId, Ty};
 
 use crate::exec::types::ctors;
@@ -13,6 +14,7 @@ use crate::runtime::Runtime;
 
 use super::apply::Undo;
 use super::fresh::{self, Occurrences};
+use super::input::{self, Input, Local, is_temp, temp_key};
 use super::schema::{RefField, Rel};
 use super::{Database, Error, Outcome, Rejection, Rows, Txn};
 
@@ -24,6 +26,14 @@ pub enum Eff {
     Ins(RelId, Val),
     Del(RelId, Val),
     Rep(RelId, Val, Val),
+}
+
+impl Eff {
+    fn rel(&self) -> RelId {
+        match self {
+            Eff::Ins(r, _) | Eff::Del(r, _) | Eff::Rep(r, ..) => *r,
+        }
+    }
 }
 
 pub type Effects = BTreeSet<Eff>;
@@ -102,7 +112,17 @@ type PlanKey = (Arena, Tm, Vec<Var>);
 pub struct Stmt<'a, R: Runtime> {
     pub db: &'a Database<R>,
     pub tx: &'a Txn,
+    /// The database's schema, or one extending it with the transaction's temp relations.
+    schema: &'a Schema,
     terms: Terms,
+    /// What each variable standing for a temp relation's rows or a file scan stands for.
+    inputs: BTreeMap<Var, Input>,
+    /// The records of each file scan.
+    scans: RefCell<BTreeMap<Var, Vec<Record<Val>>>>,
+    /// Why each file scan holding a record that does not convert fails.
+    unconverted: RefCell<BTreeMap<Var, Rejection>>,
+    /// What the transaction holds outside the file, while the statement runs.
+    local: RefCell<Local>,
     fresh: Occurrences,
     root: Tm,
     clock: i64,
@@ -118,6 +138,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     pub fn new(
         db: &'a Database<R>,
         tx: &'a Txn,
+        schema: &'a Schema,
         terms: &Terms,
         root: Tm,
         clock: i64,
@@ -126,10 +147,16 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let mut terms = terms.clone();
         let mut fresh = Occurrences::new();
         let root = fresh::rewrite(&mut terms, root, &[], &mut fresh);
+        let inputs = input::rewrite(schema, &mut terms, root);
         Stmt {
             db,
             tx,
+            schema,
             terms,
+            inputs,
+            scans: RefCell::default(),
+            unconverted: RefCell::default(),
+            local: RefCell::default(),
             fresh,
             root,
             clock,
@@ -147,7 +174,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         Stmt {
             db,
             tx,
+            schema: &db.schema,
             terms: Terms::default(),
+            inputs: BTreeMap::new(),
+            scans: RefCell::default(),
+            unconverted: RefCell::default(),
+            local: RefCell::default(),
             fresh: Occurrences::new(),
             root: Tm(0),
             clock: 0,
@@ -174,8 +206,21 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
     }
 
-    pub fn run(&self, params: &[(Var, Val)]) -> Result<Outcome, Error> {
-        let env: Env = params.iter().cloned().collect();
+    /// Runs the statement, each variable of `params` bound, over `local`, what its transaction
+    /// holds outside the file.
+    ///
+    /// On an `Err`, `local` may hold scans of the statement and changes to temp relations of
+    /// its writes, and the statement's effects on the file are left for [`undo`](Stmt::undo).
+    pub fn run(&self, params: &[(Var, Val)], local: &mut Local) -> Result<Outcome, Error> {
+        std::mem::swap(&mut *self.local.borrow_mut(), local);
+        let out = self.run_here(params);
+        std::mem::swap(&mut *self.local.borrow_mut(), local);
+        out
+    }
+
+    fn run_here(&self, params: &[(Var, Val)]) -> Result<Outcome, Error> {
+        let mut env: Env = params.iter().cloned().collect();
+        self.bind_inputs(&mut env)?;
         let mut effects = Effects::new();
         let t = self.root;
         let result = match self.terms.kind(t) {
@@ -192,11 +237,86 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 });
             }
         };
-        self.boundary(effects, result)
+        let (temps, kept): (Effects, Effects) = effects
+            .into_iter()
+            .partition(|e| is_temp(self.schema, e.rel()));
+        let out = self.boundary(kept, result)?;
+        let temps: Vec<&Eff> = temps.iter().collect();
+        self.local.borrow_mut().apply(self.schema, &temps)?;
+        Ok(out)
+    }
+
+    /// Binds in `env` the variable of each read of a temp relation to its rows, and of each file
+    /// scan to its rows when every record converts.
+    fn bind_inputs(&self, env: &mut Env) -> Result<(), Error> {
+        let bound: BTreeSet<Var> = env.keys().copied().collect();
+        let mut facts = crate::plan::Facts::default();
+        for (v, input) in &self.inputs {
+            match input {
+                Input::Temp { rel, ctors } => {
+                    let rows = self.local.borrow().rows(*rel, ctors.as_ref())?;
+                    env.insert(*v, Val::set(rows));
+                }
+                Input::File { format, path, row } => {
+                    if !facts.free(&self.terms, *path).is_subset(&bound) {
+                        return Err(Error::Unsupported(
+                            "a file scan whose path depends on a row".into(),
+                        ));
+                    }
+                    let Val::Text(at) = self.eval(Arena::Statement, *path, env)? else {
+                        return Err(Error::Internal("a file scan's path is a Text".into()));
+                    };
+                    let records = self.local.borrow_mut().scan(
+                        self.schema,
+                        &self.db.files,
+                        *format,
+                        &at,
+                        row,
+                    )?;
+                    let mut rows = BTreeSet::new();
+                    let mut failed = None;
+                    for r in &records {
+                        match &r.row {
+                            Ok(x) => {
+                                rows.insert(x.clone());
+                            }
+                            Err(detail) => {
+                                failed = Some(Rejection::BadInput {
+                                    source: r.source.clone(),
+                                    line: r.line,
+                                    detail: detail.clone(),
+                                });
+                                break;
+                            }
+                        }
+                    }
+                    match failed {
+                        Some(why) => {
+                            self.unconverted.borrow_mut().insert(*v, why);
+                        }
+                        None => {
+                            env.insert(*v, Val::set(rows));
+                        }
+                    }
+                    self.scans.borrow_mut().insert(*v, records);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Returns the value of term `t` of arena `a` in `env`, its placeholders filled.
     pub fn eval(&self, a: Arena, t: Tm, env: &Env) -> Result<Val, Error> {
+        if a == Arena::Statement {
+            let unconverted = self.unconverted.borrow();
+            let mut facts = crate::plan::Facts::default();
+            if let Some(why) = unconverted
+                .iter()
+                .find_map(|(v, why)| facts.mentions(&self.terms, t, &[*v]).then_some(why))
+            {
+                return Err(Error::Rejected(why.clone()));
+            }
+        }
         let params: Vec<Var> = env.keys().copied().collect();
         let key = (a, t, params.clone());
         let cached = self.plans.borrow().get(&key).cloned();
@@ -204,20 +324,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             Some(p) => p,
             None => {
                 let db = self.db;
-                let p = crate::plan::plan(
-                    &db.schema,
-                    &db.normal,
-                    &db.catalog,
-                    self.arena(a),
-                    t,
-                    &params,
-                    crate::plan::Options::default(),
-                )
-                .map_err(|e| match e {
-                    crate::plan::Error::Internal(what) => Error::Internal(what),
-                    e => Error::Unsupported(e.to_string()),
-                })?;
-                let x = Arc::new(exec::compile(&db.schema, &db.catalog, &p, None)?);
+                let p = self.plan_in(a, t, &params)?;
+                let x = Arc::new(exec::compile(self.schema, &db.catalog, &p, None)?);
                 self.plans.borrow_mut().insert(key, x.clone());
                 x
             }
@@ -227,6 +335,44 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let v = exec::execute(self.db.rt.clone(), program, call, &bound)?;
         let ty = self.arena(a).ty(t).clone();
         self.fill(a, &ty, v)
+    }
+
+    fn plan_in(&self, a: Arena, t: Tm, params: &[Var]) -> Result<crate::plan::Plan, Error> {
+        crate::plan::plan(
+            self.schema,
+            &self.db.normal,
+            &self.db.catalog,
+            self.arena(a),
+            t,
+            params,
+            crate::plan::Options::default(),
+        )
+        .map_err(|e| match e {
+            crate::plan::Error::Internal(what) => Error::Internal(what),
+            e => Error::Unsupported(e.to_string()),
+        })
+    }
+
+    /// Returns the plan of term `t` of the statement, its free variables among `params`.
+    pub fn plan_of(&self, t: Tm, params: &[Var]) -> Result<crate::plan::Plan, Error> {
+        self.plan_in(Arena::Statement, t, params)
+    }
+
+    pub fn schema(&self) -> &'a Schema {
+        self.schema
+    }
+
+    pub fn terms(&self) -> &Terms {
+        &self.terms
+    }
+
+    pub fn root(&self) -> Tm {
+        self.root
+    }
+
+    /// Returns the variables standing for reads of temp relations and file scans.
+    pub fn input_vars(&self) -> impl Iterator<Item = Var> + '_ {
+        self.inputs.keys().copied()
     }
 
     fn fill(&self, a: Arena, ty: &Ty, v: Val) -> Result<Val, Error> {
@@ -245,7 +391,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             self.drawn.borrow_mut().insert(key, v.clone());
             Ok(v)
         };
-        fresh::fill(&self.db.schema, ty, v, &mut draw)
+        fresh::fill(self.schema, ty, v, &mut draw)
     }
 
     fn draw(&self, g: Generator, r: RelId) -> Result<Val, Error> {
@@ -406,7 +552,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 if !rejected.is_empty() {
                     let load = self.load(into)?;
                     for j in rejected {
-                        out.insert(Eff::Ins(into, self.rejected_row(into, load, j)));
+                        out.insert(Eff::Ins(into, self.rejected_row(into, load, j)?));
                     }
                 }
                 Ok(bound)
@@ -420,7 +566,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     /// Returns the rows an insert's `rows` term computes. When `rows` ranges over one source
     /// relation and its evaluation fails, each record is computed on its own, in the order of
     /// the source's key: a record whose computation reaches `reject` goes to `rejected`, or
-    /// rejects the statement with `BadInput` naming it when there is none.
+    /// rejects the statement with `BadInput` naming it when there is none. Over a file scan,
+    /// each record is computed on its own in the order of the files, and a record that does not
+    /// convert is rejected as well.
     fn records(
         &self,
         rows: Tm,
@@ -430,6 +578,13 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let source = match self.terms.kind(rows) {
             Kind::For(x, src, body) => match self.terms.kind(*src) {
                 Kind::Rel(r, _) => Some((*x, *r, *src, *body)),
+                Kind::Var(v) => match self.inputs.get(v) {
+                    Some(Input::Temp { rel, .. }) => Some((*x, *rel, *src, *body)),
+                    Some(Input::File { .. }) => {
+                        return self.file_records(*v, (*x, *body), env, rejected);
+                    }
+                    None => None,
+                },
                 _ => None,
             },
             _ => None,
@@ -447,7 +602,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
         keyed.sort_by(|a, b| a.0.cmp(&b.0));
         let records: Vec<Val> = keyed.into_iter().map(|(_, p)| p).collect();
-        let source = self.db.schema.relation(r0).name.clone();
+        let source = self.schema.relation(r0).name.clone();
         let mut out = BTreeSet::new();
         for (i, p) in records.into_iter().enumerate() {
             let line = i as i64 + 1;
@@ -459,7 +614,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                         js.push(Rejected {
                             line,
                             source: source.clone(),
-                            raw: exec::print(&self.db.schema, &ty, &p)?,
+                            raw: exec::print(self.schema, &ty, &p)?,
                             reason: detail,
                         });
                     }
@@ -477,19 +632,69 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         Ok(out)
     }
 
+    /// Returns the rows `body` computes for each record of the file scan `scan`, bound to `x`. A
+    /// record that does not convert, or whose computation reaches `reject`, goes to `rejected`,
+    /// or rejects the statement with `BadInput` naming it when there is none.
+    fn file_records(
+        &self,
+        scan: Var,
+        (x, body): (Var, Tm),
+        env: &Env,
+        mut rejected: Option<&mut Vec<Rejected>>,
+    ) -> Result<BTreeSet<Val>, Error> {
+        let records = self.scans.borrow().get(&scan).cloned().ok_or_else(|| {
+            Error::Internal("every file scan of a statement is read before it runs".into())
+        })?;
+        let mut out = BTreeSet::new();
+        for r in records {
+            let reason = match r.row {
+                Ok(p) => match self.set(body, &bind(env, x, p)) {
+                    Ok(vs) => {
+                        out.extend(vs);
+                        continue;
+                    }
+                    Err(Error::Rejected(Rejection::BadInput { detail, .. })) => detail,
+                    Err(e) => return Err(e),
+                },
+                Err(reason) => reason,
+            };
+            match &mut rejected {
+                Some(js) => js.push(Rejected {
+                    line: r.line,
+                    source: r.source,
+                    raw: r.raw,
+                    reason,
+                }),
+                None => {
+                    return Err(Error::Rejected(Rejection::BadInput {
+                        source: r.source,
+                        line: r.line,
+                        detail: reason,
+                    }));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Returns the `load` of the rows the statement inserts into `into`: one value per
     /// statement, past every value issued before and every one `into` holds.
     fn load(&self, into: RelId) -> Result<i64, Error> {
         if let Some(l) = self.load.get() {
             return Ok(l);
         }
-        let at = self.rel(into).ctors[0]
-            .fields
+        let at = self
+            .rejected_fields(into)?
             .iter()
-            .position(|(n, _)| n == "load")
+            .position(|n| n == "load")
             .expect("`RejectedRow` has a `load`");
+        let rows: Vec<Val> = if is_temp(self.schema, into) {
+            self.local.borrow().rows(into, None)?.into_iter().collect()
+        } else {
+            self.rows(into, None)?.into_iter().map(|(_, v)| v).collect()
+        };
         let mut held = 0;
-        for (_, v) in self.rows(into, None)? {
+        for v in rows {
             if let Val::Int(l) = v.fields()?[at] {
                 held = held.max(l);
             }
@@ -499,11 +704,20 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         Ok(l)
     }
 
-    fn rejected_row(&self, into: RelId, load: i64, j: Rejected) -> Val {
-        let fields = self.rel(into).ctors[0]
-            .fields
+    /// Returns the names of the fields of a row of `into`, a relation of `RejectedRow`, in
+    /// declaration order.
+    fn rejected_fields(&self, into: RelId) -> Result<Vec<String>, Error> {
+        let elem = &self.schema.relation(into).elem;
+        let cs = ctors(self.schema, elem)
+            .ok_or_else(|| Error::Internal("`RejectedRow` is a declared record".into()))?;
+        Ok(cs[0].iter().map(|(n, _)| n.clone()).collect())
+    }
+
+    fn rejected_row(&self, into: RelId, load: i64, j: Rejected) -> Result<Val, Error> {
+        let fields = self
+            .rejected_fields(into)?
             .iter()
-            .map(|(n, _)| match n.as_str() {
+            .map(|n| match n.as_str() {
                 "load" => Val::Int(load),
                 "line" => Val::Int(j.line),
                 "source" => Val::text(&j.source),
@@ -512,7 +726,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 other => panic!("`RejectedRow` has no field `{other}`"),
             })
             .collect();
-        Val::ctor(0, fields)
+        Ok(Val::ctor(0, fields))
     }
 
     fn upsert(
@@ -577,6 +791,16 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     /// Returns the rows of `rel` in the snapshot whose values of `on` equal those of `n`.
     fn conflicts(&self, rel: RelId, on: Conflict, n: &Val) -> Result<Vec<Val>, Error> {
         match on {
+            Conflict::Key if is_temp(self.schema, rel) => {
+                let k = self.key_of(rel, n)?;
+                Ok(self
+                    .local
+                    .borrow()
+                    .by_key(rel, &k)
+                    .cloned()
+                    .into_iter()
+                    .collect())
+            }
             Conflict::Key => {
                 let k = self.key_of(rel, n)?;
                 Ok(self
@@ -628,6 +852,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
 
     /// Returns the key of `row`, a row of `rel`.
     pub fn key_of(&self, rel: RelId, row: &Val) -> Result<Val, Error> {
+        if is_temp(self.schema, rel) {
+            return temp_key(self.schema, rel, row);
+        }
         let r = self.rel(rel);
         let at = &r.ctors[row.ctor_of()? as usize].key_at;
         let fs = row.fields()?;
@@ -706,6 +933,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     /// Returns whether `v` is a row of `rel` the statement's reads see.
     fn in_snapshot(&self, rel: RelId, v: &Val) -> Result<bool, Error> {
         let k = self.key_of(rel, v)?;
+        if is_temp(self.schema, rel) {
+            return Ok(self.local.borrow().by_key(rel, &k) == Some(v));
+        }
         Ok(self.by_key(rel, &k)?.is_some_and(|(_, _, u)| u == *v))
     }
 

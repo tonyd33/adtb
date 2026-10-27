@@ -1,4 +1,1 @@
 # Files the reference interpreter passes and the engine fails: a path under conformance/, then why.
-interop/03-file-scans.test the engine does not run file scans
-interop/04-loading.test the engine does not run file scans
-interop/05-temp-relations.test the engine does not run temp relations or file scans

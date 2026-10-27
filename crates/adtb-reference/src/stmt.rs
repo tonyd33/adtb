@@ -1,13 +1,13 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
+use adtb_file::Record;
 use adtb_lang::kernel::{Conflict, Kind, PathStep, Prim, Terms, Tm, Var};
 use adtb_lang::schema::Generator;
 use adtb_lang::types::{RelId, Ty};
 
 use crate::eval::{Abort, Arena, Change, Database, Env, Here, Interpreter, R, Run, case_arm};
 use crate::eval::{bool_of, internal};
-use crate::file::Record;
 use crate::textual::print;
 use crate::value::Value;
 
@@ -515,7 +515,7 @@ impl Run<'_, '_> {
         &self,
         h: &Here,
         source: (Var, Tm),
-        records: Vec<Record>,
+        records: Vec<Record<Value>>,
         env: &Env,
         mut rejected: Option<&mut Vec<Rejected>>,
     ) -> R<BTreeSet<Value>> {

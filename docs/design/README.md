@@ -54,9 +54,10 @@ different dependencies, consumers or stability promises:
 | Crate | Contents | Depends on |
 | --- | --- | --- |
 | `adtb-lang` | Lexer, parser, type checker, exhaustiveness, desugaring to the kernel, the textual value syntax ([kernel.md §9](kernel.md#9-textual-syntax)); no I/O | standard library, Unicode normalisation and regular expression syntax |
-| `adtb-reference` | The reference interpreter ([oracle.md](oracle.md)) | `adtb-lang`, Unicode, collation, regular expression and zone tables |
+| `adtb-file` | The readers of CSV and NDJSON files at a declared row type, over any value type of the textual syntax, and the files a path names ([oracle.md §1](oracle.md#1-evaluation-contract)) | `adtb-lang`, Unicode normalisation |
+| `adtb-reference` | The reference interpreter ([oracle.md](oracle.md)) | `adtb-lang`, `adtb-file`, Unicode, collation, regular expression and zone tables |
 | `adtb-sys` | Every `unsafe` block: page memory, direct I/O buffers, `io_uring`, atomic page reads ([sys.md](sys.md)); the runtime interfaces: I/O, clock, threads, entropy ([runtime.md](runtime.md)) | `libc` and allowlisted system crates |
-| `adtb` | Engine core: catalog, planner, executor, transactions, storage, over the I/O interface of [runtime.md](runtime.md) | `adtb-lang`, `adtb-sys` |
+| `adtb` | Engine core: catalog, planner, executor, transactions, storage, over the I/O interface of [runtime.md](runtime.md) | `adtb-lang`, `adtb-file`, `adtb-sys` |
 | `adtb-sim` | Simulated storage, network, clock, randomness and scheduler, fault injection ([runtime.md §5](runtime.md#5-simulated-storage)), and the tests that run the engine over them; nothing depends on it | `adtb` |
 | `adtb-conformance` | The conformance runner over the script format of [../spec/conformance.md](../spec/conformance.md); the suite itself is `conformance/` at the root, one directory per spec part | `adtb-lang`, `adtb-reference`, and `adtb` once the engine runs scripts |
 | `adtb-isolation` | The isolation checker over list-append histories and the scripted anomaly scenarios ([runtime.md §6](runtime.md#6-isolation-histories)) | standard library |
@@ -70,6 +71,7 @@ design files of their own.
 | --- | --- | --- | --- |
 | Typed kernel terms | `adtb-lang` | `adtb`, `adtb-reference`, code generators | [kernel.md](kernel.md) |
 | Textual value syntax | `adtb-lang` | `adtb`, `adtb-reference` | [kernel.md §9](kernel.md#9-textual-syntax) |
+| File records | `adtb-file` | `adtb`, `adtb-reference` | [oracle.md §1](oracle.md#1-evaluation-contract) |
 | Safe page memory and I/O buffers | `adtb-sys` | `adtb` | [sys.md](sys.md) |
 | I/O, time, threads, randomness | I/O backends, `adtb-sim` | `adtb` | [runtime.md](runtime.md) |
 | File, pages, log, recovery | pager and log | heaps, indexes, replication, backup, verify | [storage.md](storage.md) |

@@ -1,13 +1,16 @@
+mod command;
 mod error;
 #[cfg(target_os = "linux")]
 mod file;
 mod text;
 mod txn;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use adtb_lang::check::Program;
+use adtb_file::Disk;
+use adtb_lang::check::{Bundles, Program};
 use adtb_lang::evolve::Logged;
 use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
@@ -19,7 +22,7 @@ use crate::exec::{self, Budget, Val};
 use crate::mvcc::Limits;
 use crate::runtime::Runtime;
 use crate::storage::{self, LATCHES_PER_THREAD, Pager};
-use crate::write::{self, Bindings, Bounds, Setup, Txn};
+use crate::write::{self, Bindings, Bounds, Local, Setup, Text, Txn};
 
 pub use error::{Error, FatalReason, Fault, Limit, OpenError, RejectReason, RetryReason};
 pub use text::DynRows;
@@ -66,6 +69,9 @@ pub struct OpenOptions {
     pub workers: Option<usize>,
     /// The rounds a fixpoint may take before its statement is rejected for its limit.
     pub fix_rounds: Option<usize>,
+    /// The directory a file scan resolves a relative path against; the working directory when
+    /// `None`.
+    pub file_root: Option<PathBuf>,
 }
 
 impl OpenOptions {
@@ -150,6 +156,8 @@ struct Engine<R: Runtime> {
     rt: R,
     schema: Arc<Schema>,
     program: Arc<Program>,
+    /// The registered queries of the live bundles, which `explain B::q(args)` names.
+    bundles: Bundles,
     pager: Pager<R>,
     db: write::Database<R>,
     #[cfg(target_os = "linux")]
@@ -210,7 +218,7 @@ impl<R: Runtime> Database<R> {
         }
         let e = &*self.engine;
         e.reads_after(opts.after)?;
-        let p = Prepared::new(&e.schema, &e.program, text, params)?;
+        let p = Prepared::new(&e.schema, &e.program, &e.bundles, text, params)?;
         let bounds = Bounds {
             fix_rounds: opts.fix_rounds,
         };
@@ -360,7 +368,8 @@ impl<R: Runtime> Engine<R> {
                 sequences,
             },
         )
-        .map_err(corrupt)?;
+        .map_err(corrupt)?
+        .with_files(options.file_root.clone().map(Disk::new).unwrap_or_default());
         if sequences.is_none() {
             Catalog::name_sequences(&pager, root, db.sequences_root()).map_err(corrupt)?;
         }
@@ -368,6 +377,7 @@ impl<R: Runtime> Engine<R> {
             rt,
             schema,
             program,
+            bundles: Bundles::default(),
             pager,
             db,
             #[cfg(target_os = "linux")]
@@ -382,6 +392,44 @@ impl<R: Runtime> Engine<R> {
 
     fn write_error(&self, txn: TxnId, e: write::Error) -> Error {
         Error::of_write(&self.schema, txn, e)
+    }
+
+    /// Runs the items of `p` as statements of `tx`, the transaction `id`, over `local`. Returns
+    /// the rows of each item that yields a result, or the client error of the failure, and
+    /// whether that failure ends the transaction.
+    fn statements(
+        &self,
+        id: TxnId,
+        tx: &Txn,
+        p: &Prepared,
+        local: &mut Local,
+        bounds: Bounds,
+    ) -> Result<Vec<DynRows>, (Error, bool)> {
+        let schema = p.schema();
+        let text = Text {
+            schema,
+            terms: p.terms(),
+            items: p.items(),
+            params: p.params(),
+            clock: self.clock(),
+        };
+        let mut ran: Vec<(usize, DynRows)> = Vec::new();
+        let mut between = |at: usize, local: &mut Local| -> Result<(), write::Error> {
+            for c in p.commands().iter().filter(|c| c.at == at) {
+                ran.push((at, self.command(tx, p, &c.command, local, bounds)?));
+            }
+            Ok(())
+        };
+        match self
+            .db
+            .statements_with(tx, text, local, bounds, &mut between)
+        {
+            Ok(outcomes) => p.results(schema, outcomes, ran).map_err(|e| (e, true)),
+            Err(f) => {
+                let ends = f.error.ends_transaction();
+                Err((Error::of_write(schema, id, f.error), ends))
+            }
+        }
     }
 
     fn begin(&self, id: TxnId) -> Result<Txn, Error> {
@@ -423,13 +471,9 @@ impl<R: Runtime> Engine<R> {
     /// Run `p` in `tx`, the transaction `id`, bounded by `bounds`, and commit it, or abort it on
     /// any failure.
     fn run(&self, id: TxnId, tx: Txn, p: &Prepared, bounds: Bounds) -> Result<Vec<DynRows>, Error> {
-        let ran = self
-            .db
-            .statements(&tx, p.terms(), p.items(), p.params(), self.clock(), bounds);
-        let rows = match ran {
-            Ok(outcomes) => p.results(&self.schema, outcomes),
-            Err(f) => Err(self.write_error(id, f.error)),
-        };
+        let rows = self
+            .statements(id, &tx, p, &mut Local::default(), bounds)
+            .map_err(|(e, _)| e);
         match rows {
             Ok(rows) => {
                 self.db.commit(tx).map_err(|e| self.write_error(id, e))?;

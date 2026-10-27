@@ -4,6 +4,7 @@
 //! applies the rewrites it names in place of the ones its caller passes.
 
 mod catalog;
+pub mod explain;
 mod lower;
 mod terms;
 
