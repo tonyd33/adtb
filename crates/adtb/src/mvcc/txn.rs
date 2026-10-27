@@ -115,6 +115,8 @@ pub struct Shared<R: Runtime> {
     history: OnceLock<Past>,
     /// The first damage found keeping a marker; every read of the past fails with it after.
     lost: OnceLock<btree::Error>,
+    /// The end of the log once the latest marker was kept, held while one is being kept.
+    marked: Lock<Lsn>,
 }
 
 impl<R: Runtime> Transactions<R> {
@@ -161,6 +163,7 @@ impl<R: Runtime> Transactions<R> {
             quarantine: OnceLock::new(),
             history: OnceLock::new(),
             lost: OnceLock::new(),
+            marked: Lock::new(Lsn(0)),
         }))
     }
 
@@ -329,9 +332,11 @@ impl<R: Runtime> Transactions<R> {
                 time,
                 snapshot: snapshot.clone(),
             };
+            let mut end = self.marked.lock(&self.rt);
             if let Err(e) = past.record_marker(pager, &marker) {
                 self.lost.get_or_init(|| e);
             }
+            *end = pager.appended();
         }
         lsn
     }
@@ -449,13 +454,13 @@ impl<R: Runtime> Transactions<R> {
     }
 
     /// Returns the marker a read of the past at `at` reads, held so that what it sees stays until
-    /// [`Transactions::unpin`]: the latest marker at or before `at`.
+    /// [`Transactions::unpin`]: the latest marker at or before `at`, durable before it returns.
     ///
     /// Fails with [`PastError::Unavailable`] when `at` is after `upto` or no marker within the
     /// window is at or before it, and with [`PastError::Damaged`] when the record is damaged or
     /// a marker could not be kept.
     pub fn pin(&self, pager: &Pager<R>, at: Position, upto: Position) -> Result<Marker, PastError> {
-        let found = self.pin_with(|past| {
+        let found = self.pin_with(pager, |past| {
             if at > upto {
                 return Ok(None);
             }
@@ -472,7 +477,7 @@ impl<R: Runtime> Transactions<R> {
         time: SystemTime,
         upto: Position,
     ) -> Result<Marker, PastError> {
-        let found = self.pin_with(|past| {
+        let found = self.pin_with(pager, |past| {
             let m = past.marker_by_time(pager, nanos(time))?;
             Ok(m.filter(|m| m.at <= upto))
         });
@@ -481,6 +486,7 @@ impl<R: Runtime> Transactions<R> {
 
     fn pin_with(
         &self,
+        pager: &Pager<R>,
         find: impl FnOnce(&Past) -> Result<Option<Marker>, btree::Error>,
     ) -> Result<Option<Marker>, PastError> {
         let Some(past) = self.history.get() else {
@@ -490,6 +496,10 @@ impl<R: Runtime> Transactions<R> {
             return Err(PastError::Damaged(*e));
         }
         let found = find(past).map_err(PastError::Damaged)?;
+        if found.is_some() {
+            let end = *self.marked.lock(&self.rt);
+            pager.flush_below(end);
+        }
         let mut st = self.state.lock(&self.rt);
         let Some(m) = found.filter(|m| m.time >= self.cutoff_in(&st)) else {
             return Ok(None);

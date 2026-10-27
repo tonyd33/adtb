@@ -65,6 +65,8 @@ impl Flags {
     pub const HOT_UPDATED: Flags = Flags(4);
     /// No index entry names this version.
     pub const HEAP_ONLY: Flags = Flags(8);
+    /// A copy of this version is in its constructor's history heap.
+    pub const KEPT: Flags = Flags(16);
 
     pub fn contains(self, other: Flags) -> bool {
         self.0 & other.0 == other.0

@@ -159,6 +159,23 @@ impl From<crate::heap::Error> for Error {
     }
 }
 
+impl From<vacuum::Error> for Error {
+    fn from(e: vacuum::Error) -> Error {
+        match e {
+            vacuum::Error::Page(p) | vacuum::Error::Heap(crate::heap::Error::Page(p)) => {
+                Error::Page(p)
+            }
+            vacuum::Error::Index(i) => Error::from(i),
+            vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => {
+                Error::Internal(format!(
+                    "a version vacuum moves fits its history heap, as it fit its current heap: \
+                     {len} bytes over the limit of {limit}"
+                ))
+            }
+        }
+    }
+}
+
 impl From<crate::btree::Error> for Error {
     fn from(e: crate::btree::Error) -> Error {
         match e {
@@ -721,11 +738,7 @@ impl<R: Runtime> Database<R> {
                 heaps: vec![(id, &*self.heaps[&ctor.heap].heap)],
                 indexes: indexes.clone(),
             };
-            let report = self.vacuum_sum(r, &sum).map_err(|e| match e {
-                vacuum::Error::Page(p) => Error::Page(p),
-                vacuum::Error::Index(i) => Error::from(i),
-                vacuum::Error::Heap(h) => Error::Internal(format!("vacuum wrote history: {h:?}")),
-            })?;
+            let report = self.vacuum_sum(r, &sum)?;
             out.push((id, report));
         }
         Ok(out)

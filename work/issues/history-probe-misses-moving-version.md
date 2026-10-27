@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: resolved
 kind: bug
 priority: 792
 summary: "a keyed read of the past misses a row while vacuum moves its version to history, and after a crash in that gap, because vacuum deletes index entries before copying"
+closed: 2026-10-27
 tags:
   - quality
   - engine
@@ -20,3 +21,13 @@ Latent until `history-catalog` wires the history layer in; only tests call it to
 The tests pass because `reads_of_the_past_beside_a_vacuum_moving_their_versions_read_every_row_once` (`crates/adtb-sim/tests/history.rs:962`) and `a_crash_at_every_flush_while_vacuum_moves_versions_loses_no_past_row` (`history.rs:757`) read only through `read_at` (the full scan in `history::rows`); `probe_at` is called only in the quiet test at `history.rs:475`.
 
 Fix: in `clean`, run `history::keep` for every page of `dead` before the index retain. Call `probe_at` beside `read_at` in the concurrent test and in the crash loop, before and after the second vacuum.
+
+## 2026-10-27: done
+
+`clean` in `crates/adtb/src/vacuum/run.rs` now runs `history::keep` over every page of the dead set before it retains the current indexes. `crates/adtb-sim/tests/history.rs` probes by key beside the moving vacuum and at every crash point, before and after the second vacuum; both failed before the fix. The crash test now vacuums with a budget of one byte, so each page is its own copy, retain and prune round.
+
+## 2026-10-27: resolved
+
+## 2026-10-27: landed
+
+Landed with the qhist track.

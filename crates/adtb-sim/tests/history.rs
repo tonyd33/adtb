@@ -267,13 +267,19 @@ impl Db {
     }
 
     fn vacuum_keeping(&self) -> Report {
+        self.vacuum_keeping_by(usize::MAX)
+    }
+
+    /// Vacuum, moving versions to history, cleaning each time the dead TIDs found take `budget`
+    /// bytes.
+    fn vacuum_keeping_by(&self, budget: usize) -> Report {
         let history = self.history();
         vacuum::vacuum_keeping(
             &self.pager,
             &self.txns,
             &self.sum(),
             &history,
-            usize::MAX,
+            budget,
             &vacuum::Progress::new(),
         )
         .expect("vacuum")
@@ -354,6 +360,35 @@ impl Db {
         found.map(|row| pair(&row).1)
     }
 
+    /// Returns the value a read of the past at `at` finds for each key of `keys`, probing by key
+    /// under one marker.
+    fn probes_at(
+        &self,
+        at: Position,
+        keys: impl IntoIterator<Item = i64>,
+    ) -> Result<State, PastError> {
+        let marker = self.txns.pin(&self.pager, at, self.upto())?;
+        let history = self.history();
+        let mut out = State::new();
+        for k in keys {
+            let found = history::probe(
+                &self.pager,
+                &self.txns,
+                &marker,
+                CTOR,
+                (self.heap(), &self.index),
+                &history,
+                &[Value::I64(k)],
+            )
+            .expect("probe");
+            if let Some(row) = found {
+                out.insert(k, pair(&row).1);
+            }
+        }
+        self.txns.unpin(&marker);
+        Ok(out)
+    }
+
     /// Returns the number of versions of the current heap and of the history heap.
     fn versions(&self) -> (usize, usize) {
         let count = |h: &Heap| h.headers(&self.pager).expect("headers").len();
@@ -390,14 +425,24 @@ impl Db {
         problems
     }
 
-    /// Returns each version of the history key index named twice, by key and writers.
+    /// Returns each version of the history heap named twice by the history key index, by key and
+    /// writers, and each version no entry names.
     fn duplicated(&self) -> Vec<String> {
         let entries = self
             .past_index
             .scan_prefix(&self.pager, &[])
             .expect("history entries");
-        let mut seen = BTreeSet::new();
+        let named: BTreeSet<Tid> = entries.iter().map(|e| e.tid).collect();
         let mut out = Vec::new();
+        self.past_heap
+            .scan(&self.pager, |v| {
+                if !named.contains(&v.tid) {
+                    let id = (pair(&v.row).0, v.header.xmin, v.header.xmax);
+                    out.push(format!("history holds {id:?} at {:?} unindexed", v.tid));
+                }
+            })
+            .expect("history scan");
+        let mut seen = BTreeSet::new();
         for e in entries {
             let v = self
                 .past_heap
@@ -443,6 +488,15 @@ fn check_reads(db: &Db, marks: &[(Position, State)], why: &str) {
             .read_at(*at)
             .unwrap_or_else(|e| panic!("{why}: read at {at:?}: {e:?}"));
         assert_eq!(want, &got, "{why}: rows at {at:?}");
+    }
+}
+
+fn check_probes(db: &Db, marks: &[(Position, State)], keys: i64, why: &str) {
+    for (at, want) in marks {
+        let got = db
+            .probes_at(*at, 0..keys)
+            .unwrap_or_else(|e| panic!("{why}: probes at {at:?}: {e:?}"));
+        assert_eq!(want, &got, "{why}: rows probed at {at:?}");
     }
 }
 
@@ -761,13 +815,15 @@ fn a_crash_at_every_flush_while_vacuum_moves_versions_loses_no_past_row() {
         seed,
         |db| history_of(db, seed, 400, 600),
         |db| {
-            assert!(db.vacuum_keeping().moved > 0);
+            let report = db.vacuum_keeping_by(1);
+            assert!(report.moved > 0 && report.rounds > 3, "{report:?}");
         },
     );
     let recording = sim.recording();
     let points = crash_points(&recording, start);
     assert!(points.len() > 20, "{} crash points", points.len());
     let mut moved = BTreeSet::new();
+    let mut unindexed = 0;
     for at in points {
         let s = seed + at as u64;
         let files = recording.images(at, 1, s).swap_remove(0);
@@ -776,9 +832,22 @@ fn a_crash_at_every_flush_while_vacuum_moves_versions_loses_no_past_row() {
             let db = Db::open(rt, roots, LONG);
             moved.insert(db.versions().1);
             let some: Vec<(Position, State)> = marks.iter().step_by(16).cloned().collect();
+            let fewer: Vec<(Position, State)> = some.iter().step_by(5).cloned().collect();
             check_reads(&db, &some, &format!("crash at {at}"));
+            check_probes(&db, &fewer, 600, &format!("crash at {at}"));
+            unindexed += db
+                .duplicated()
+                .iter()
+                .filter(|p| p.contains("unindexed"))
+                .count();
             db.vacuum_keeping();
             check_reads(&db, &some, &format!("vacuum again after a crash at {at}"));
+            check_probes(
+                &db,
+                &fewer,
+                600,
+                &format!("vacuum again after a crash at {at}"),
+            );
             assert_eq!(db.live.len(), db.versions().0, "crash at {at}");
             let problems = db.verify_file();
             assert!(problems.is_empty(), "crash at {at}: {problems:?}");
@@ -788,6 +857,7 @@ fn a_crash_at_every_flush_while_vacuum_moves_versions_loses_no_past_row() {
         moved.len() > 3,
         "crashes leave history at only {moved:?} versions"
     );
+    assert!(unindexed > 0, "no crash left a copy without its entry");
 }
 
 #[test]
@@ -985,6 +1055,19 @@ fn reads_of_the_past_beside_a_vacuum_moving_their_versions_read_every_row_once()
                             Ok(got) if &got == want => {}
                             other => wrong.lock().unwrap().push(format!("at {at:?}: {other:?}")),
                         }
+                        let keys = (n as i64 % 10..300).step_by(10);
+                        let some: State = want
+                            .iter()
+                            .filter(|(k, _)| keys.clone().any(|j| j == **k))
+                            .map(|(k, v)| (*k, *v))
+                            .collect();
+                        match db.probes_at(*at, keys) {
+                            Ok(got) if got == some => {}
+                            other => wrong
+                                .lock()
+                                .unwrap()
+                                .push(format!("probed at {at:?}: {other:?}")),
+                        }
                         reads.fetch_add(1, Ordering::Relaxed);
                         rt2.yield_now();
                     }
@@ -1003,4 +1086,57 @@ fn reads_of_the_past_beside_a_vacuum_moving_their_versions_read_every_row_once()
         assert!(wrong.is_empty(), "{wrong:#?}");
         check_reads(&db, &marks, "after vacuum");
     });
+}
+
+#[test]
+fn a_marker_a_read_of_the_past_used_survives_a_crash() {
+    let seed = 16;
+    let mut sim = Sim::new(seed, Config::default());
+    sim.record();
+    let mut out = None;
+    finished(&mut sim, |rt| {
+        let (mut db, roots) = Db::create(rt.clone(), LONG);
+        db.write(&[(1, Some(1))]);
+        db.mark();
+        db.write(&[(1, Some(2))]);
+        let at = db.mark();
+        assert_eq!(State::from([(1, 2)]), db.read_at(at).expect("read"));
+        out = Some((rt.recorded(), roots, at));
+    });
+    let (read, roots, at) = out.unwrap();
+    let recording = sim.recording();
+    for point in (read..=recording.len()).step_by(7).chain([recording.len()]) {
+        let s = seed + point as u64;
+        let files = recording.images(point, 1, s).swap_remove(0);
+        let mut sim = Sim::with_files(s, crash_config(), files);
+        finished(&mut sim, |rt| {
+            let db = Db::open(rt, roots, LONG);
+            assert_eq!(
+                Ok(State::from([(1, 2)])),
+                db.read_at(at),
+                "crash at {point}"
+            );
+        });
+    }
+}
+
+#[test]
+fn a_history_heap_write_that_fails_on_a_page_is_a_page_error() {
+    let damaged = adtb::storage::PageError {
+        pid: Pid(7),
+        damage: adtb::storage::Damage::Unreadable,
+    };
+    let e = adtb::write::Error::from(vacuum::Error::Heap(adtb::heap::Error::Page(damaged)));
+    assert!(
+        matches!(e, adtb::write::Error::Page(p) if p == damaged),
+        "{e:?}"
+    );
+    let e = adtb::write::Error::from(vacuum::Error::Heap(adtb::heap::Error::TooLarge {
+        len: 9000,
+        limit: 4000,
+    }));
+    assert!(
+        matches!(&e, adtb::write::Error::Internal(text) if text.contains("history heap")),
+        "{e:?}"
+    );
 }

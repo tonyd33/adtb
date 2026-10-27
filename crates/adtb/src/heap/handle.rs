@@ -961,21 +961,75 @@ impl Heap {
         self.put_version(pager, Header::new(xid), row, judge)
     }
 
-    /// Insert `row` as a version whose header is `header`, with no successor, as
-    /// [`Heap::insert`] does. Returns its TID.
+    /// Insert a copy of `v`, a version of `from` read at `v.tid`, with no successor, and flag the
+    /// original kept, both in one update. Returns the copy's TID, or `None`, copying nothing, when
+    /// `from` no longer holds that version.
     ///
-    /// Panics if `row` is not a row of the newest format.
-    pub fn insert_version<R: Runtime>(
+    /// Panics if `from` is this heap or `v.row` is not a row of the newest format.
+    pub fn copy_version<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        header: Header,
-        row: &[Value],
-    ) -> Result<Tid, Error> {
+        from: &Heap,
+        v: &Version,
+    ) -> Result<Option<Tid>, Error> {
+        assert_ne!(self.id, from.id, "a version is copied to another heap");
         let header = Header {
             next: None,
-            ..header
+            ..v.header
         };
-        self.put_version(pager, header, row, None)
+        let (body, held) = self.body(pager, header.xmin, &v.row, &[])?;
+        let version = version_bytes(header, &body);
+        let o = Pid(v.tid.page());
+        loop {
+            let n = self.candidate(pager, version.len())?;
+            let pre = self.preconvert(pager, n, header.xmin)?;
+            let mut stage = Stage::new();
+            for p in latch_order(o, n) {
+                stage.page(pager, p)?;
+            }
+            if !from.mark_kept(&mut stage, pager, v)? {
+                return Ok(None);
+            }
+            match self.try_put(&mut stage, pager, n, &version, Flags::NONE, pre)? {
+                Put::Done(t, c) => {
+                    self.retain_all(pager, &held, &c.gained)?;
+                    let above = finish(&mut stage, pager, Some((self, n)), &[(self, n)])?;
+                    stage.commit(pager)?;
+                    above.settle(pager)?;
+                    self.hint.store(n.0, Ordering::Relaxed);
+                    self.release_all(pager, &c.dropped)?;
+                    return Ok(Some(t));
+                }
+                Put::Stale => continue,
+                Put::Full => {}
+            }
+            drop(stage);
+            self.refused(pager, n)?;
+        }
+    }
+
+    /// Flag the version `v` names kept on its page in `stage`. Returns false, changing nothing,
+    /// when the page no longer holds a version there written as `v.header` says.
+    fn mark_kept<'p, R: Runtime>(
+        &self,
+        stage: &mut Stage<'p, R>,
+        pager: &'p Pager<R>,
+        v: &Version,
+    ) -> Result<bool, PageError> {
+        let page = stage.page(pager, Pid(v.tid.page()))?;
+        if !page::is_heap(page) || storage::owner(page) != self.id {
+            return Ok(false);
+        }
+        let slot = usize::from(v.tid.slot());
+        let Slot::Normal { flags, at } = page::get(page, slot) else {
+            return Ok(false);
+        };
+        let h = Header::read(&page[at]);
+        if (h.xmin, h.xmax) != (v.header.xmin, v.header.xmax) {
+            return Ok(false);
+        }
+        page::set_flags(page, slot, flags.with(Flags::KEPT));
+        Ok(true)
     }
 
     fn put_version<R: Runtime>(

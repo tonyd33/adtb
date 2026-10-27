@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::btree::Index;
-use crate::heap::{Fate, Header, Heap, Version, walk};
+use crate::heap::{Fate, Flags, Header, Heap, Version, walk};
 use crate::key::{CtorId, Entry, Value};
 use crate::mvcc::{Marker, Status, Transactions, Xid};
 use crate::runtime::Runtime;
@@ -78,8 +78,8 @@ pub(crate) fn judge_past<R: Runtime>(
 
 /// Copy every version on page `pid` of `heap`, constructor `ctor`'s, that the window bounded by
 /// `horizon` keeps to `ctor`'s history heap in `into`, with its entry in the history key index.
-/// A version the history heap holds already, with the same writers and key, is not copied
-/// again. Returns the number of versions copied.
+/// A version flagged kept whose copy is left is not copied again: the copy gets the index entry
+/// it lacks. Returns the number of versions copied.
 pub(crate) fn keep<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
@@ -98,17 +98,38 @@ pub(crate) fn keep<R: Runtime>(
             continue;
         }
         let key = (into.key)(ctor, &v.row);
-        if held(pager, into, past, ctor, &key, &v.header)? {
-            continue;
-        }
-        let tid = past.insert_version(pager, v.header, &v.row)?;
+        let earlier = if v.flags.contains(Flags::KEPT) {
+            held(pager, into, past, ctor, &key, &v.header)?
+        } else {
+            Held::Not
+        };
+        let tid = match earlier {
+            Held::Indexed => continue,
+            Held::Unindexed(tid) => tid,
+            Held::Not => match past.copy_version(pager, heap, &v)? {
+                Some(tid) => {
+                    copied += 1;
+                    tid
+                }
+                None => continue,
+            },
+        };
         into.index.insert(pager, &Entry { key, ctor, tid })?;
-        copied += 1;
     }
     Ok(copied)
 }
 
-/// Returns whether `past` holds a version of `ctor` keyed `key` written as `header` says.
+/// Where `past` holds the copy of a version flagged kept.
+enum Held {
+    /// An entry of the history key index names the copy.
+    Indexed,
+    /// The copy at this TID has no entry.
+    Unindexed(crate::key::Tid),
+    Not,
+}
+
+/// Returns where `past` holds the copy of a version of `ctor` keyed `key` written as `header`
+/// says, looking through the history key index and then through every version of `past`.
 fn held<R: Runtime>(
     pager: &Pager<R>,
     into: &History,
@@ -116,18 +137,25 @@ fn held<R: Runtime>(
     ctor: CtorId,
     key: &[Value],
     header: &Header,
-) -> Result<bool, Error> {
+) -> Result<Held, Error> {
+    let writers = (header.xmin, header.xmax);
     for e in into.index.probe(pager, key)? {
         if e.ctor != ctor {
             continue;
         }
         if let Some(v) = past.read(pager, e.tid)?
-            && (v.header.xmin, v.header.xmax) == (header.xmin, header.xmax)
+            && (v.header.xmin, v.header.xmax) == writers
         {
-            return Ok(true);
+            return Ok(Held::Indexed);
         }
     }
-    Ok(false)
+    let mut found = Held::Not;
+    past.scan(pager, |v| {
+        if (v.header.xmin, v.header.xmax) == writers && (into.key)(ctor, &v.row) == key {
+            found = Held::Unindexed(v.tid);
+        }
+    })?;
+    Ok(found)
 }
 
 fn sees<R: Runtime>(

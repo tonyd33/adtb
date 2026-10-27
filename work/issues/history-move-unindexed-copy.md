@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: resolved
 kind: bug
 priority: 895
 summary: "a crash between a history heap insert and its key index insert leaves an unindexed copy that the next vacuum copies again, and the crash test cannot see it"
+closed: 2026-10-27
 tags:
   - quality
   - engine
@@ -18,3 +19,13 @@ tags:
 The crash test's `duplicated` check (`crates/adtb-sim/tests/history.rs:393-411`) walks only the history index's entries, so it cannot see an unindexed version.
 
 Fix: make the heap insert and the index insert one pager update, or have `held` fall back to the page. In the test, also count history heap versions no index entry names.
+
+## 2026-10-27: done
+
+`Heap::copy_version` replaces `Heap::insert_version`: it inserts the copy and sets a new slot flag, `Flags::KEPT`, on the original in one pager update. `history::keep` copies only unflagged versions; a flagged one whose copy has no history index entry gets its entry, found by a scan of the history heap, which only happens after a crash. The crash test's `duplicated` also reports history versions no entry names, and the test asserts that some crash point left such a copy before the second vacuum repaired it.
+
+## 2026-10-27: resolved
+
+## 2026-10-27: landed
+
+Landed with the qhist track.

@@ -21,3 +21,11 @@ tags:
 - `catalog::settings` holds no default rows, though the spec says it holds one row of each constructor.
 - Every relation, engine relations included, gets history structures at create, whatever the window.
 - The reference interpreter refuses `at`, so no conformance file covers reads of the past.
+
+## 2026-10-27: done (first item only)
+
+A marker is now durable before a read uses it. `log_safe_snapshot` records the log end after keeping a marker, under a lock it holds while keeping one, and `pin` and `pin_time` force the log to that end before they return a marker. The new `Pager::appended` and `Pager::flush_below` support this. `a_marker_a_read_of_the_past_used_survives_a_crash` in `crates/adtb-sim/tests/history.rs` failed before the fix. The other items remain open.
+
+## 2026-10-27: markers
+
+The first item landed with the qhist track: a marker is durable before a read uses it. The rest stays open.

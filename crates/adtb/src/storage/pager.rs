@@ -902,6 +902,16 @@ impl<R: Runtime> Pager<R> {
         self.force_below(lsn);
     }
 
+    /// Returns the LSN the next record appended takes.
+    pub fn appended(&self) -> Lsn {
+        self.log().next_lsn()
+    }
+
+    /// Write and force every record below `end`.
+    pub fn flush_below(&self, end: Lsn) {
+        self.force_below(end);
+    }
+
     /// Wait until the record at `lsn` is durable, and return its commit position.
     ///
     /// The first waiter that finds no batch being forced leads: it takes every record appended

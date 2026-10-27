@@ -173,6 +173,7 @@ and is logged as one.
 | retagged-in | This version was inserted by a retag |
 | hot-updated | The successor is a heap-only version on this page |
 | heap-only | No index entry names this version |
+| kept | A copy of this version is in its constructor's history heap (§10.3) |
 
 The heap gives `xmin`, `xmax` and `next` to its callers as the raw
 values stored, and decides no visibility. A writer that sets a
@@ -819,6 +820,11 @@ Invariants:
 - No pruning, vacuum or expiry frees a version a held marker sees, or
   a version kept by the window, without first copying it to its
   history heap.
+- A version of a current heap is flagged kept in the same page update
+  that inserts its copy into its history heap.
+- Vacuum copies every version it moves, and gives each copy its history
+  key index entry, before it deletes the version's entries from the
+  current indexes.
 
 Postconditions:
 
@@ -830,6 +836,9 @@ Postconditions:
 - A crash while vacuum moves versions leaves each version in its
   current heap, its history heap, or both; a later vacuum copies none
   twice and frees it from the current heap.
+- A marker is durable before a read of the past reads at it: after a
+  crash, a read at a position within the window reads the marker any
+  read at it read before.
 
 ### 10.4 Removing a constructor
 

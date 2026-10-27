@@ -470,8 +470,9 @@ fn shared_store(sum: &Sum) -> LargeStore {
     large
 }
 
-/// Delete the index entries of every TID in `dead`, then prune each of its pages, freeing those
-/// TIDs, and empty `dead`.
+/// Copy the versions of `dead` the retention window keeps to their history heaps, when the rule
+/// moves them, then delete the index entries of every TID in `dead`, then prune each of its pages,
+/// freeing those TIDs, and empty `dead`.
 fn clean<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
@@ -488,6 +489,14 @@ fn clean<R: Runtime>(
     for (_, heap) in &sum.heaps {
         progress.set(heap.id().0, |s| s.phase = Phase::Indexes);
     }
+    if let Rule::Current(Some(into)) = marks.rule {
+        for &(ctor, heap) in &sum.heaps {
+            let w = marks.of(txns, heap.id().0);
+            for (pid, _) in dead.pages(heap.id().0) {
+                report.moved += history::keep(pager, txns, heap, ctor, into, &w, pid)?;
+            }
+        }
+    }
     let heap_of: BTreeMap<CtorId, u32> = sum.heaps.iter().map(|(c, h)| (*c, h.id().0)).collect();
     for index in &sum.indexes {
         report.entries += index.retain(pager, |e| {
@@ -496,14 +505,11 @@ fn clean<R: Runtime>(
                 .is_some_and(|&heap| dead.contains(heap, e.tid))
         })?;
     }
-    for &(ctor, heap) in &sum.heaps {
+    for &(_, heap) in &sum.heaps {
         let id = heap.id().0;
         progress.set(id, |s| s.phase = Phase::Prune);
         let w = marks.of(txns, id);
         for (pid, slots) in dead.pages(id) {
-            if let Rule::Current(Some(into)) = marks.rule {
-                report.moved += history::keep(pager, txns, heap, ctor, into, &w, pid)?;
-            }
             let judge = |p: &Pager<R>, h: &Header| marks.judge(txns, p, &w, h);
             let done = heap.prune(pager, pid, judge, &slots, true)?;
             report.freed += done.freed;
