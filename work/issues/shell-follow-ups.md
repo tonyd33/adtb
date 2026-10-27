@@ -16,3 +16,7 @@ From the shell track:
 - No test drives the interactive mode through a terminal; it needs `script` from util-linux or a pty dependency.
 - `Violated.report` prints as a row count, since its `Report` encoding is undefined in process (`api-follow-ups`).
 - The schema file must be migration syntax with each `add relation` after its type; a declaration file is refused (`prealpha-schema-from-declarations`).
+
+## 2026-10-26: declaration files
+
+A schema file is now accepted by `--schema`, in any declaration order (`shell-usability`). That item is done.

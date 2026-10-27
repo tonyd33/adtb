@@ -1,9 +1,10 @@
+mod schema;
 mod session;
 mod text;
 
 use std::ffi::OsString;
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use adtb::{CreateOptions, Log, OpenOptions};
@@ -11,9 +12,20 @@ use adtb::{CreateOptions, Log, OpenOptions};
 use session::{Command, Session};
 use text::Shape;
 
-const USAGE: &str = "usage: adtb FILE
-       adtb --create --schema SCHEMA FILE
-       adtb FILE -c TEXT";
+const USAGE: &str = "usage: adtb [--create] [--schema FILE]... FILE [-c TEXT]";
+
+const HELP: &str = "usage: adtb [--create] [--schema FILE]... FILE [-c TEXT]
+
+Open the database FILE and run ad hoc text against it: TEXT when -c
+gives one, else the texts read from stdin, with a prompt on a terminal.
+
+  --create         create FILE when it does not exist
+  --schema FILE    the next migration of the database's log; the first
+                   may instead be a schema file of declarations
+  -c TEXT          run TEXT and exit
+  -h, --help       print this help
+
+At the prompt, \\help lists the shell's commands.";
 
 const PROMPT: &str = "adtb> ";
 const CONTINUE: &str = "  ... ";
@@ -22,17 +34,27 @@ const CONTINUE: &str = "  ... ";
 struct Args {
     file: PathBuf,
     create: bool,
-    schema: Option<PathBuf>,
+    help: bool,
+    log: Vec<PathBuf>,
     text: Option<String>,
 }
 
 impl Args {
     fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
-        let (mut file, mut create, mut schema, mut text) = (None, false, None, None);
+        let (mut file, mut create, mut log, mut text) = (None, false, Vec::new(), None);
         while let Some(arg) = args.next() {
             match arg.to_str() {
+                Some("-h" | "--help") => {
+                    return Ok(Args {
+                        file: PathBuf::new(),
+                        create: false,
+                        help: true,
+                        log: Vec::new(),
+                        text: None,
+                    });
+                }
                 Some("--create") => create = true,
-                Some("--schema") => schema = Some(args.next().ok_or("--schema needs a file")?),
+                Some("--schema") => log.push(args.next().ok_or("--schema needs a file")?.into()),
                 Some("-c") => {
                     let t = args.next().ok_or("-c needs a text")?;
                     text = Some(
@@ -48,7 +70,8 @@ impl Args {
         Ok(Args {
             file: file.ok_or("no FILE")?.into(),
             create,
-            schema: schema.map(PathBuf::from),
+            help: false,
+            log,
             text,
         })
     }
@@ -62,6 +85,12 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if args.help {
+        return match writeln!(io::stdout(), "{HELP}") {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        };
+    }
     match shell(&args) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
@@ -82,17 +111,22 @@ fn report(message: &str) {
 /// whether every text succeeded, or why the shell could not run.
 fn shell(args: &Args) -> Result<bool, String> {
     let file = &args.file;
-    let log = match &args.schema {
-        Some(path) => Log::new([
-            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?
-        ]),
-        None => Log::default(),
-    };
+    let log = log(&args.log)?;
     let options = OpenOptions {
         create: args.create.then(CreateOptions::default),
         ..OpenOptions::default()
     };
-    let db = adtb::open(file, &log, &options).map_err(|e| format!("{}: {e}", file.display()))?;
+    let fresh = args.create && !file.exists() && !log_dir(file).exists();
+    let db = match adtb::open(file, &log, &options) {
+        Ok(db) => db,
+        Err(e) => {
+            let why = format!("{}: {e}", file.display());
+            if fresh {
+                remove(file).map_err(|r| format!("{why}\n{}: {r}", file.display()))?;
+            }
+            return Err(why);
+        }
+    };
     let interactive = args.text.is_none() && io::stdin().is_terminal();
     let mut session = Session::new(&db, io::stdout(), io::stderr());
     let ran = match &args.text {
@@ -105,6 +139,36 @@ fn shell(args: &Args) -> Result<bool, String> {
     ran.map_err(|e| e.to_string())?;
     db.close().map_err(|e| e.to_string())?;
     Ok(ok)
+}
+
+/// Returns the log of the migration files at `paths`, the first of which may be a schema file.
+fn log(paths: &[PathBuf]) -> Result<Log, String> {
+    let mut texts = Vec::with_capacity(paths.len());
+    for (i, path) in paths.iter().enumerate() {
+        let in_file = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+        let text = std::fs::read_to_string(path).map_err(|e| in_file(&e))?;
+        texts.push(match i {
+            0 => schema::first_migration(&text).map_err(|e| in_file(&e))?,
+            _ => text,
+        });
+    }
+    Ok(Log::new(texts))
+}
+
+/// Returns the log directory beside database file `file`.
+fn log_dir(file: &Path) -> PathBuf {
+    let mut dir = file.as_os_str().to_owned();
+    dir.push("-log");
+    dir.into()
+}
+
+/// Remove database file `file` and its log directory.
+fn remove(file: &Path) -> io::Result<()> {
+    std::fs::remove_file(file)?;
+    match std::fs::remove_dir_all(log_dir(file)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }
 
 /// Read `input` a line at a time, running each text and each command, prompting on stdout

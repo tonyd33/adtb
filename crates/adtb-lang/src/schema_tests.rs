@@ -117,6 +117,18 @@ fn duplicate_names_are_refused() {
 }
 
 #[test]
+fn another_languages_type_name_suggests_the_prelude_type() {
+    assert_error(
+        &[&module("type A = { f: Int }")],
+        "no type `Int`; did you mean `I64`?",
+    );
+    assert_error(
+        &[&module("type A = { f: String }")],
+        "no type `String`; did you mean `Text`?",
+    );
+}
+
+#[test]
 fn fields_have_named_types() {
     assert_error(
         &[&module("type A = { f: { g: I64 } }")],

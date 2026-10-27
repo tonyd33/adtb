@@ -4,9 +4,20 @@ use std::io::{self, Write};
 use adtb::{AdHocTransaction, CallOptions, Database, TxnCallOptions, TxnOptions};
 use adtb_lang::textual::print;
 
+const HELP: &str = "\\begin     open a transaction that the texts after it run in
+\\commit    commit the open transaction
+\\rollback  roll back the open transaction
+\\help      print this list
+\\q         quit
+
+Any other line is ad hoc text: a query, a write, a `transact` block
+or a migration. A text runs when it parses; a blank line runs what
+has been typed so far.";
+
 /// A line the shell acts on itself rather than passing to the engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
+    Help,
     Quit,
     Begin,
     Commit,
@@ -17,6 +28,7 @@ impl Command {
     /// Returns the command `line` names, or `None` when it is ad hoc text.
     pub fn of(line: &str) -> Option<Command> {
         match line.trim() {
+            "\\help" | "\\?" => Some(Command::Help),
             "\\q" => Some(Command::Quit),
             "\\begin" => Some(Command::Begin),
             "\\commit" => Some(Command::Commit),
@@ -87,6 +99,11 @@ impl<'db, O: Write, E: Write> Session<'db, O, E> {
     /// Act on `c`. Returns whether the shell reads on.
     pub fn command(&mut self, c: Command) -> io::Result<bool> {
         let done = match (c, self.txn.take()) {
+            (Command::Help, txn) => {
+                self.txn = txn;
+                writeln!(self.out, "{HELP}")?;
+                return Ok(true);
+            }
             (Command::Quit, txn) => {
                 self.txn = txn;
                 return Ok(false);

@@ -438,6 +438,9 @@ impl Checker<'_> {
                         let tm = self.add(Kind::Var(v), ty.clone());
                         return Ok(Out { tm, ty, rows: None });
                     }
+                    if self.ambiguous(&q.name.text) {
+                        return Err(diag(q.span(), e));
+                    }
                     return Err(diag(
                         q.span(),
                         format!(

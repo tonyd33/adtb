@@ -302,6 +302,15 @@ impl<'a> Checker<'a> {
         crate::resolve::lookup_type(self.schema, &self.vis, name)
     }
 
+    /// Returns whether more than one visible module declares a value named `name`.
+    fn ambiguous(&self, name: &str) -> bool {
+        let declaring = self.vis.modules.iter();
+        declaring
+            .filter(|&&m| self.schema.module(m).values.contains_key(name))
+            .count()
+            > 1
+    }
+
     fn lookup_value(&self, name: &ast::QName) -> Result<ValueDef, String> {
         let v = crate::resolve::lookup_value(self.schema, &self.vis, name);
         if let Ok(ValueDef::Relation(r)) = v

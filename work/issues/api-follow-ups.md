@@ -32,3 +32,7 @@ From the in-process API track:
 
 Landed as tylxvzor.
 Read-only deferrable transactions, call and transaction options, `TxnId`, abort on drop and the counters page leak are done. What is left is in api-follow-ups-2.
+
+## 2026-10-26: Display for errors
+
+`api::Error` and its reasons now display as messages for a person, one per line, naming the operator of a `SchemaRefused` when it has one. The one-line value of the prelude sum, which `Display` printed before, is `Error::value()`. Done in `shell-usability`.

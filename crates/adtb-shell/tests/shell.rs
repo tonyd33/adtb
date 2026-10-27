@@ -147,11 +147,9 @@ fn a_failing_text_prints_its_error_and_exits_with_one() {
     assert_eq!(Some(1), out.status.code(), "{out:?}");
     let err = stderr(&out);
     assert_eq!(1, err.lines().count(), "one line: {err}");
-    assert!(
-        err.starts_with(
-            r#"Rejected { reason: Violated { constraint: "test::identities.unique(gid) in Google", "#
-        ),
-        "{err}"
+    assert_eq!(
+        "constraint `test::identities.unique(gid) in Google` is violated by 2 rows\n",
+        err
     );
 }
 
@@ -162,7 +160,7 @@ fn a_text_that_does_not_check_is_rejected_as_invalid() {
     let out = run(&db, "from u in nowhere select u");
     assert_eq!(Some(1), out.status.code(), "{out:?}");
     assert!(
-        stderr(&out).starts_with("Rejected { reason: Invalid { detail: \""),
+        stderr(&out).starts_with("`nowhere` is a parameter of this text"),
         "{out:?}"
     );
 }
@@ -366,5 +364,173 @@ fn opening_a_missing_file_without_create_fails() {
 fn a_bad_argument_prints_the_usage() {
     let out = adtb(&["--nope"], "");
     assert_eq!(Some(2), out.status.code(), "{out:?}");
-    assert!(stderr(&out).contains("usage: adtb FILE"), "{out:?}");
+    assert!(stderr(&out).contains("usage: adtb "), "{out:?}");
+}
+
+const PETS: &str = "module demo
+relation pets : Pet key name
+type Pet { name: Text } = Cat { lives: I64 } | Dog { good: Bool }
+";
+
+/// Returns a fresh directory holding `name.adt` with `text` for each of `files`, and the path
+/// of a database file in it.
+fn scratch_with(dir: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
+    let (_, db) = scratch(dir);
+    let dir = db.parent().expect("a directory").to_path_buf();
+    for (name, text) in files {
+        std::fs::write(dir.join(format!("{name}.adt")), text).unwrap();
+    }
+    (dir, db)
+}
+
+#[test]
+fn a_schema_file_of_declarations_creates_a_database() {
+    let (dir, db) = scratch_with("declarations", &[("pets", PETS)]);
+    let schema = dir.join("pets.adt");
+    create(&schema, &db);
+    let out = run(&db, r#"insert pets.Cat { name: "tom", lives: 9 }"#);
+    assert!(out.status.success(), "{out:?}");
+    let out = run(&db, "from p in pets select p");
+    assert_eq!(vec![r#"Cat { name: "tom", lives: 9 }"#], stdout(&out));
+}
+
+#[test]
+fn a_later_schema_flag_applies_the_next_migration() {
+    let added = "module demo\nadd field Pet.Cat.age: I64 fill 0\n";
+    let (dir, db) = scratch_with("next", &[("pets", PETS), ("age", added)]);
+    let (pets, age) = (dir.join("pets.adt"), dir.join("age.adt"));
+    create(&pets, &db);
+    let out = run(&db, r#"insert pets.Cat { name: "tom", lives: 9 }"#);
+    assert!(out.status.success(), "{out:?}");
+    let out = adtb(
+        &[
+            "--schema",
+            pets.to_str().unwrap(),
+            "--schema",
+            age.to_str().unwrap(),
+            db.to_str().unwrap(),
+            "-c",
+            "from p in pets select p",
+        ],
+        "",
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        vec![r#"Cat { name: "tom", lives: 9, age: 0 }"#],
+        stdout(&out)
+    );
+}
+
+#[test]
+fn a_refused_create_leaves_nothing_at_the_path() {
+    let bad =
+        "module demo\ntype P = { id: Key ps, n: Int }\nrelation ps : P key id generate sequence\n";
+    let (dir, db) = scratch_with("refused", &[("bad", bad)]);
+    let out = adtb(
+        &[
+            "--create",
+            "--schema",
+            dir.join("bad.adt").to_str().unwrap(),
+            db.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(Some(1), out.status.code(), "{out:?}");
+    assert!(!db.exists(), "{db:?}");
+    assert!(!dir.join("db.adt-log").exists(), "{dir:?}");
+}
+
+#[test]
+fn a_refused_migration_prints_one_line_per_message() {
+    let bad =
+        "module demo\ntype P = { id: Key ps, n: Int }\nrelation ps : P key id generate sequence\n";
+    let (dir, db) = scratch_with("messages", &[("bad", bad)]);
+    let out = adtb(
+        &[
+            "--create",
+            "--schema",
+            dir.join("bad.adt").to_str().unwrap(),
+            db.to_str().unwrap(),
+        ],
+        "",
+    );
+    let err = stderr(&out);
+    assert!(
+        err.contains(":\n  no type `Int`; did you mean `I64`?\n"),
+        "{err}"
+    );
+    assert!(!err.contains("Rejected"), "{err}");
+}
+
+#[test]
+fn a_schema_file_that_does_not_parse_reports_where() {
+    let bad = "module demo\ntype P = { id: Key ps\nrelation ps : P key id\n";
+    let (dir, db) = scratch_with("parse", &[("bad", bad)]);
+    let path = dir.join("bad.adt");
+    let out = adtb(
+        &[
+            "--create",
+            "--schema",
+            path.to_str().unwrap(),
+            db.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(Some(1), out.status.code(), "{out:?}");
+    assert_eq!(
+        format!("{}: 3:1: expected `}}`, found `relation`\n", path.display()),
+        stderr(&out)
+    );
+    assert!(!db.exists(), "{db:?}");
+}
+
+#[test]
+fn an_unqualified_name_two_modules_declare_says_to_qualify_it() {
+    let a = "module a\ntype X = { id: Key xs }\nrelation xs : X key id generate sequence\n";
+    let b = "module b\nadd module b\nadd type X = { id: Key xs }\nadd relation xs : X key id generate sequence\n";
+    let (dir, db) = scratch_with("ambiguous", &[("a", a), ("b", b)]);
+    let out = adtb(
+        &[
+            "--create",
+            "--schema",
+            dir.join("a.adt").to_str().unwrap(),
+            "--schema",
+            dir.join("b.adt").to_str().unwrap(),
+            db.to_str().unwrap(),
+            "-c",
+            "from x in xs select x",
+        ],
+        "",
+    );
+    assert_eq!(Some(1), out.status.code(), "{out:?}");
+    assert_eq!(
+        "`xs` is declared in modules `a` and `b`; qualify it\n",
+        stderr(&out)
+    );
+    let out = run(&db, "from x in a::xs select x");
+    assert!(out.status.success(), "{out:?}");
+}
+
+#[test]
+fn help_prints_the_flags() {
+    let out = adtb(&["--help"], "");
+    assert!(out.status.success(), "{out:?}");
+    let help = String::from_utf8(out.stdout).unwrap();
+    assert!(help.starts_with("usage: adtb"), "{help}");
+    assert!(help.contains("--schema FILE"), "{help}");
+}
+
+#[test]
+fn backslash_help_lists_the_commands() {
+    let (schema, db) = scratch("help");
+    create(&schema, &db);
+    let out = adtb(&[db.to_str().unwrap()], "\\help\n");
+    assert!(out.status.success(), "{out:?}");
+    let help = stdout(&out);
+    for command in ["\\begin", "\\commit", "\\rollback", "\\help", "\\q"] {
+        assert!(
+            help.iter().any(|l| l.starts_with(command)),
+            "{command} in {help:?}"
+        );
+    }
 }

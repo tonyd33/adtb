@@ -370,7 +370,7 @@ impl Schema {
             "Set" => TypeName::Set,
             "Group" => TypeName::Group,
             "Tag" => TypeName::Tag,
-            _ => return Err(format!("no type `{text}`")),
+            _ => return Err(no_type(text)),
         })
     }
 
@@ -902,6 +902,22 @@ pub fn build_ahead(
     } else {
         Err(names)
     }
+}
+
+/// Returns the error for type name `text`, naming the prelude type that another language's
+/// spelling `text` usually means.
+fn no_type(text: &str) -> String {
+    let meant = match text {
+        "Int" | "Integer" | "Long" | "BigInt" | "Int64" => "I64",
+        "Int32" => "I32",
+        "Float" | "Double" => "F64",
+        "String" | "Str" | "Varchar" => "Text",
+        "Boolean" => "Bool",
+        "Blob" => "Bytes",
+        "Timestamp" => "Instant",
+        _ => return format!("no type `{text}`"),
+    };
+    format!("no type `{text}`; did you mean `{meant}`?")
 }
 
 /// Returns the prelude's declaration of the type former `Tag`, with no constructors of its own.
