@@ -4,5 +4,4 @@ crates/adtb-lang/src/evolve/ctor.rs
 crates/adtb-lang/src/evolve/mod.rs
 crates/adtb-lang/src/evolve/revert.rs
 crates/adtb-lang/src/schema.rs
-crates/adtb/src/catalog/mod.rs
 crates/adtb/src/plan/lower/mod.rs
