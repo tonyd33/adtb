@@ -5,6 +5,7 @@ mod files;
 mod pool;
 mod queue;
 mod timer;
+mod uring;
 
 #[cfg(test)]
 mod tests;
@@ -24,6 +25,8 @@ use self::files::Files;
 use self::pool::Pool;
 use self::queue::{Ring, Waiter};
 use self::timer::Timers;
+pub use self::uring::Unavailable;
+use self::uring::Uring;
 use crate::runtime::{
     Clock, Completion, Entropy, Instant, Io, Op, Runtime, ThreadId, Threads, Ticket,
 };
@@ -33,6 +36,8 @@ use crate::runtime::{
 pub enum Backend {
     /// A pool of this many threads, each running one blocking system call at a time.
     Pool { threads: usize },
+    /// One io_uring of this many submission entries, on Linux 5.15 or later.
+    Uring { entries: u32 },
 }
 
 /// The runtime over the host's clocks, threads, entropy and the files under one directory.
@@ -54,13 +59,22 @@ impl fmt::Debug for OsRuntime {
 #[derive(Debug)]
 struct Shared {
     files: Arc<Files>,
-    pool: Arc<Pool>,
+    engine: Engine,
     timers: Arc<Timers>,
+}
+
+#[derive(Debug)]
+enum Engine {
+    Pool(Arc<Pool>),
+    Uring(Arc<Uring>),
 }
 
 impl Drop for Shared {
     fn drop(&mut self) {
-        self.pool.stop();
+        match &self.engine {
+            Engine::Pool(pool) => pool.stop(),
+            Engine::Uring(ring) => ring.stop(),
+        }
         self.timers.stop();
     }
 }
@@ -68,31 +82,48 @@ impl Drop for Shared {
 impl OsRuntime {
     /// Returns a runtime whose paths are relative to the directory `root`.
     ///
-    /// Panics if `backend` asks for no threads.
+    /// Panics if `backend` asks for no threads or no entries, or if the host refuses io_uring.
     pub fn new(root: impl Into<PathBuf>, backend: Backend) -> OsRuntime {
+        OsRuntime::try_new(root, backend).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Returns a runtime whose paths are relative to the directory `root`, or why the host
+    /// refused its backend.
+    ///
+    /// Only a [`Backend::Uring`] is refused. Panics if `backend` asks for no threads or no
+    /// entries.
+    pub fn try_new(root: impl Into<PathBuf>, backend: Backend) -> Result<OsRuntime, Unavailable> {
         OsRuntime::start(Files::new(root.into(), None), backend)
     }
 
     /// Returns a runtime whose paths are relative to the directory `root`, injecting `faults`
     /// into every op on its files.
     ///
-    /// Panics if `backend` asks for no threads, or if the atomic unit is not a whole number of
-    /// sectors.
+    /// Panics if `backend` is not a [`Backend::Pool`] or asks for no threads, or if the atomic
+    /// unit is not a whole number of sectors.
     pub fn with_faults(root: impl Into<PathBuf>, backend: Backend, faults: Faults) -> OsRuntime {
+        assert!(
+            matches!(backend, Backend::Pool { .. }),
+            "faults are injected only beneath the pool backend"
+        );
         OsRuntime::start(Files::new(root.into(), Some(faults)), backend)
+            .expect("the pool backend is never refused")
     }
 
-    fn start(files: Files, backend: Backend) -> OsRuntime {
+    fn start(files: Files, backend: Backend) -> Result<OsRuntime, Unavailable> {
         let files = Arc::new(files);
-        let Backend::Pool { threads } = backend;
-        OsRuntime {
+        let engine = match backend {
+            Backend::Pool { threads } => Engine::Pool(Pool::start(Arc::clone(&files), threads)),
+            Backend::Uring { entries } => Engine::Uring(Uring::start(Arc::clone(&files), entries)?),
+        };
+        Ok(OsRuntime {
             threads: Arc::default(),
             backend: Arc::new(Shared {
-                pool: Pool::start(Arc::clone(&files), threads),
+                engine,
                 files,
                 timers: Timers::start(),
             }),
-        }
+        })
     }
 
     /// Stop the files as a power loss would.
@@ -318,7 +349,10 @@ impl Io for OsIo {
         };
         match op {
             Op::Timer { at } => self.backend.timers.add(at, waiter),
-            op => self.backend.pool.push(op, waiter),
+            op => match &self.backend.engine {
+                Engine::Pool(pool) => pool.push(op, waiter),
+                Engine::Uring(ring) => ring.push(op, waiter),
+            },
         }
         ticket
     }

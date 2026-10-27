@@ -90,12 +90,17 @@ allow = [
     "arrayref",
     "arrayvec",
     "constant_time_eq",
+    # Compile-time platform selection, for BLAKE3 and io-uring.
     "cfg-if",
     # Runtime CPU feature detection for BLAKE3's SIMD paths.
     "cpufeatures",
     # The host's clocks, entropy and file system calls for adtb-sys's real runtime, and the
     # system interface cpufeatures reads CPU features through on some targets.
     "libc",
+    # The io_uring submission and completion rings for adtb-sys's io_uring backend.
+    "io-uring",
+    # Typed flag sets io-uring builds its submission entries from.
+    "bitflags",
     # Build-time compiler driver for BLAKE3's assembly, and what it uses.
     "cc",
     "find-msvc-tools",

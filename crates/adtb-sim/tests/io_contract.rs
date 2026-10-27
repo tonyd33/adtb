@@ -251,6 +251,50 @@ fn every_op_completes_once<R: Runtime>(rt: &R) {
     }
 }
 
+fn queues_on_many_threads_complete<R: Runtime>(rt: &R) {
+    let workers: Vec<_> = (0..4u8)
+        .map(|w| {
+            let rt2 = rt.clone();
+            rt.spawn("worker", move || {
+                let rt = &rt2;
+                let mut io = rt.io();
+                let (file, _) = open(rt, &mut io, &format!("w{w}"), true).unwrap();
+                let tickets: BTreeSet<Ticket> = (0..16u8)
+                    .map(|i| {
+                        let buf = AlignedBuf::from_slice(&block(w * 16 + i));
+                        io.submit(Op::Write {
+                            file,
+                            offset: u64::from(i) * BLOCK as u64,
+                            buf,
+                        })
+                    })
+                    .collect();
+                let mut pending = tickets;
+                while !pending.is_empty() {
+                    match io.poll() {
+                        Some(c) => {
+                            assert!(pending.remove(&c.ticket), "{:?} completed twice", c.ticket);
+                            assert_eq!(Ok(Done::Written), c.result);
+                        }
+                        None => rt.park(),
+                    }
+                }
+                for i in 0..16u8 {
+                    let at = u64::from(i) * BLOCK as u64;
+                    assert_eq!(
+                        block(w * 16 + i),
+                        read(rt, &mut io, file, at, BLOCK),
+                        "worker {w} block {i}"
+                    );
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        rt.join(w);
+    }
+}
+
 fn timer_fires_once_due<R: Runtime>(rt: &R) {
     let mut io = rt.io();
     let start = rt.now();
@@ -342,6 +386,11 @@ fn on_pool(name: &str, body: fn(&OsRuntime)) {
     body(&rt);
 }
 
+fn on_uring(name: &str, body: fn(&OsRuntime)) {
+    let rt = OsRuntime::new(scratch(name), Backend::Uring { entries: 4 });
+    body(&rt);
+}
+
 fn on_faulty_pool(name: &str, body: fn(&OsRuntime)) {
     let rt = OsRuntime::with_faults(
         scratch(name),
@@ -362,6 +411,17 @@ macro_rules! contract {
                 fn $name() {
                     super::on_pool(
                         concat!("pool-", stringify!($name)),
+                        super::$name::<adtb_sys::os::OsRuntime>,
+                    )
+                }
+            )*
+        }
+        mod uring {
+            $(
+                #[test]
+                fn $name() {
+                    super::on_uring(
+                        concat!("uring-", stringify!($name)),
                         super::$name::<adtb_sys::os::OsRuntime>,
                     )
                 }
@@ -392,9 +452,55 @@ contract!(
     removed_files_are_gone_but_open,
     closed_files_reopen,
     every_op_completes_once,
+    queues_on_many_threads_complete,
     timer_fires_once_due,
     clock_never_goes_backwards,
     entropy_varies,
     threads_park_join_and_keep_tokens,
     unpark_after_exit_does_nothing,
 );
+
+fn unaligned_requests_fail(rt: &OsRuntime) {
+    let mut io = rt.io();
+    let (file, _) = open(rt, &mut io, "f", true).unwrap();
+    write(rt, &mut io, file, 0, &block(1));
+    let unaligned = [
+        Op::Write {
+            file,
+            offset: 1,
+            buf: AlignedBuf::from_slice(&block(2)),
+        },
+        Op::Write {
+            file,
+            offset: 0,
+            buf: AlignedBuf::from_slice(&[3; 100]),
+        },
+        Op::Read {
+            file,
+            offset: 1,
+            buf: AlignedBuf::zeroed(BLOCK),
+        },
+        Op::Read {
+            file,
+            offset: 0,
+            buf: AlignedBuf::zeroed(100),
+        },
+    ];
+    for op in unaligned {
+        let shown = format!("{op:?}");
+        let c = complete(rt, &mut io, op);
+        assert_eq!(Err(IoError::Failed), c.result, "{shown}");
+        assert!(c.buf.is_some(), "a failed {shown} returns its buffer");
+    }
+    assert_eq!(block(1), read(rt, &mut io, file, 0, BLOCK));
+}
+
+#[test]
+fn unaligned_requests_fail_on_the_pool() {
+    on_pool("pool-unaligned", unaligned_requests_fail);
+}
+
+#[test]
+fn unaligned_requests_fail_on_the_uring() {
+    on_uring("uring-unaligned", unaligned_requests_fail);
+}

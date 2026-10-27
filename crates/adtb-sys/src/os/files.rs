@@ -18,7 +18,7 @@ pub(crate) struct Files {
 
 pub(crate) type Outcome = (Option<AlignedBuf>, Result<Done, IoError>);
 
-fn error(e: &io::Error) -> IoError {
+pub(crate) fn error(e: &io::Error) -> IoError {
     match e.kind() {
         ErrorKind::NotFound => IoError::NotFound,
         _ => IoError::Failed,
@@ -128,10 +128,18 @@ impl Files {
             .open(self.path(path))
             .map_err(|e| error(&e))?;
         let len = file.metadata().map_err(|e| error(&e))?.len();
+        Ok(Done::Opened {
+            file: self.insert(file),
+            len,
+        })
+    }
+
+    /// Returns the id `file` is open under from now on.
+    pub(crate) fn insert(&self, file: File) -> FileId {
         let mut open = self.open.write().unwrap_or_else(PoisonError::into_inner);
         let id = FileId(u32::try_from(open.len()).expect("a process opens fewer than 2^32 files"));
         open.push(Some(Arc::new(file)));
-        Ok(Done::Opened { file: id, len })
+        id
     }
 
     /// Fill `buf` from `offset`, stopping at the end of the file.
@@ -178,7 +186,7 @@ fn sync_dir(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
 
-fn allocate(file: &File, len: u64) -> io::Result<()> {
+pub(crate) fn allocate(file: &File, len: u64) -> io::Result<()> {
     if file.metadata()?.len() >= len {
         return Ok(());
     }
