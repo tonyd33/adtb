@@ -3,12 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use adtb_lang::check::Program;
-use adtb_lang::kernel::{Agg, Const, Kind, Terms, Tm, Transition, Var};
+use adtb_lang::kernel::{Agg, Const, FileFormat, Kind, Terms, Tm, Transition, Var};
 use adtb_lang::schema::{Schema, TypeDefKind};
 use adtb_lang::textual::PrintError;
 use adtb_lang::types::{Base, CtorSet, FnId, RelId, Ty, TypeId};
 
 use crate::big::Big;
+use crate::file::{self, Disk, Files, Record};
 use crate::num::{digits38, in_range};
 use crate::prim;
 use crate::stmt::{Rejection, Stage, Stmt};
@@ -17,6 +18,10 @@ use crate::value::{Value, canon32, canon64};
 
 /// A database: the rows of each constructor relation, by relation variable and constructor index.
 pub type Database = BTreeMap<(RelId, u32), BTreeSet<Value>>;
+
+/// Returns the size of the stored form of a row of a constructor of a relation, and the row
+/// limit that constructor's rows must fit, both in bytes.
+pub type RowLimit<'a> = dyn Fn(RelId, u32, &Value) -> (usize, usize) + 'a;
 
 /// A constructor of the prelude sum `Fault`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,6 +170,24 @@ pub struct Closure {
     env: Env,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Measure<'a>(pub(crate) &'a RowLimit<'a>);
+
+impl std::fmt::Debug for Measure<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Measure")
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Source<'a>(pub(crate) &'a dyn Files);
+
+impl std::fmt::Debug for Source<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Source")
+    }
+}
+
 /// The reference interpreter over one database value.
 #[derive(Debug)]
 pub struct Interpreter<'a> {
@@ -175,6 +198,8 @@ pub struct Interpreter<'a> {
     change: Option<&'a Change>,
     pub(crate) fix_limit: usize,
     pub(crate) closed: BTreeMap<(TypeId, u32), Stage>,
+    pub(crate) row_limit: Option<Measure<'a>>,
+    files: Option<Source<'a>>,
     pub(crate) compiled: Rc<Compiled>,
 }
 
@@ -188,6 +213,8 @@ impl<'a> Interpreter<'a> {
             change: None,
             fix_limit: 10_000,
             closed: BTreeMap::new(),
+            row_limit: None,
+            files: None,
             compiled: Rc::default(),
         }
     }
@@ -208,6 +235,27 @@ impl<'a> Interpreter<'a> {
     /// Sets the constructors not open for writes, each with its stage.
     pub fn with_closed(mut self, closed: BTreeMap<(TypeId, u32), Stage>) -> Self {
         self.closed = closed;
+        self
+    }
+
+    /// Sets the files a file scan reads; without them it reads the file system, a relative path
+    /// against the working directory.
+    pub fn with_files(mut self, files: &'a dyn Files) -> Self {
+        self.files = Some(Source(files));
+        self
+    }
+
+    /// Returns the records of the files `path` names, in `format`, read at `row`.
+    pub(crate) fn file_records(&self, format: FileFormat, path: &str, row: &Ty) -> R<Vec<Record>> {
+        match self.files {
+            Some(Source(files)) => file::records(self.schema, files, format, path, row),
+            None => file::records(self.schema, &Disk::default(), format, path, row),
+        }
+    }
+
+    /// Sets the measure of stored rows; without one no row is too large.
+    pub fn with_row_limit(mut self, limit: &'a RowLimit<'a>) -> Self {
+        self.row_limit = Some(Measure(limit));
         self
     }
 

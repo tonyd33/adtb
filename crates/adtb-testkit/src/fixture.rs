@@ -10,7 +10,7 @@ use adtb_lang::schema::{Schema, ValueDef, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::{RelId, Ty, TypeId};
 use adtb_reference::{
-    Abort, Database, Fault, Interpreter, Outcome, Rejection, Stage, Supply, Value,
+    Abort, Database, Fault, InMemory, Interpreter, Outcome, Rejection, Stage, Supply, Value,
 };
 
 #[derive(Debug)]
@@ -21,6 +21,8 @@ pub struct Fixture {
     pub supply: Supply,
     /// The constructors not open for writes.
     pub closed: BTreeMap<(TypeId, u32), Stage>,
+    /// The files a file scan reads.
+    pub files: InMemory,
 }
 
 impl Fixture {
@@ -40,6 +42,7 @@ impl Fixture {
             db: Database::new(),
             supply: Supply::default(),
             closed: BTreeMap::new(),
+            files: InMemory::default(),
         }
     }
 
@@ -61,7 +64,9 @@ impl Fixture {
     }
 
     pub fn interp(&self) -> Interpreter<'_> {
-        Interpreter::new(&self.schema, &self.program, &self.db).with_closed(self.closed.clone())
+        Interpreter::new(&self.schema, &self.program, &self.db)
+            .with_closed(self.closed.clone())
+            .with_files(&self.files)
     }
 
     /// Adds to relation `rel` the rows the set expression `rows` denotes.
@@ -157,6 +162,72 @@ impl Fixture {
             self.db = o.db.clone();
         }
         out
+    }
+
+    /// Runs ad hoc text `text` as one transaction: its items in order, with the temp relations
+    /// it declares. Returns each item's result. When every item succeeds, the state after the
+    /// last, less the rows of its temp relations, becomes the fixture's database; otherwise the
+    /// error is the ordinal, from 1, of the item that aborted, every item of the text counted,
+    /// and its abort, and nothing is kept.
+    pub fn text(&mut self, text: &str) -> Result<Vec<Value>, (usize, Abort)> {
+        let items: Vec<AdhocItem> = parse_adhoc(text, Options::default())
+            .ok()
+            .unwrap_or_else(|ds| panic!("`{text}` does not parse: {ds:?}"));
+        let adhoc = check_adhoc(&self.schema, &self.program, &items, &BTreeMap::new())
+            .unwrap_or_else(|ds| panic!("`{text}` does not check: {ds:?}"));
+        let ordinals: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| {
+                matches!(
+                    i,
+                    AdhocItem::Expr(_) | AdhocItem::Write(_) | AdhocItem::Transact(_)
+                )
+            })
+            .map(|(k, _)| k + 1)
+            .collect();
+        let schema = adhoc.schema(&self.schema);
+        let normal = adtb_lang::norm::adhoc(schema, &self.program, &adhoc)
+            .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
+        let mut db = self.db.clone();
+        let mut normal_db = self.db.clone();
+        let mut normal_supply = self.supply.clone();
+        let mut out = Vec::new();
+        let mut failed = None;
+        for (i, (&item, &normal_item)) in adhoc.items.iter().zip(&normal.items).enumerate() {
+            let run = |db: &Database, terms, item, supply: &mut Supply| {
+                Interpreter::new(schema, &self.program, db)
+                    .with_closed(self.closed.clone())
+                    .with_files(&self.files)
+                    .run(terms, item, &[], supply)
+            };
+            let got = run(&db, &adhoc.terms, item, &mut self.supply);
+            let normal_got = run(&normal_db, &normal.terms, normal_item, &mut normal_supply);
+            assert_eq!(
+                got,
+                normal_got,
+                "item {} of `{text}` and its normal form agree",
+                i + 1
+            );
+            match got {
+                Ok(o) => {
+                    db = o.db;
+                    normal_db = normal_got.expect("the normal form agrees").db;
+                    out.push(o.result);
+                }
+                Err(a) => {
+                    failed = Some((ordinals[i], a));
+                    break;
+                }
+            }
+        }
+        if let Some(f) = failed {
+            return Err(f);
+        }
+        let declared = self.schema.relations.len();
+        db.retain(|(r, _), _| (r.0 as usize) < declared);
+        self.db = db;
+        Ok(out)
     }
 
     pub fn run(&mut self, text: &str) -> Result<Outcome, Abort> {

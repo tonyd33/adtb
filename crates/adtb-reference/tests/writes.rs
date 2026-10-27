@@ -1142,3 +1142,125 @@ fn an_upsert_on_a_value_level_path_meets_only_rows_holding_the_constructor() {
             else update old set Invoice { old with n: 0 }");
     assert_eq!(2, count(&f, "invoices"));
 }
+
+// Rows too large
+
+/// Runs the one statement of `text` over the fixture with a row limit of `limit` bytes, a row's
+/// size the length of its textual syntax.
+fn run_limited(
+    f: &mut Fixture,
+    text: &str,
+    limit: usize,
+) -> Result<adtb_reference::Outcome, Abort> {
+    use adtb_lang::check::check_adhoc;
+    use adtb_lang::parse::{Options, parse_adhoc};
+    let items = parse_adhoc(text, Options::default())
+        .ok()
+        .expect("the text parses");
+    let adhoc =
+        check_adhoc(&f.schema, &f.program, &items, &Default::default()).expect("the text checks");
+    let schema = &f.schema;
+    let measure = |r: adtb_lang::types::RelId, _: u32, v: &Value| {
+        let ty = schema.relation(r).elem.clone();
+        let size = adtb_reference::textual::print(schema, v, &ty)
+            .expect("a row prints")
+            .len();
+        (size, limit)
+    };
+    let out = f.interp().with_row_limit(&measure).run(
+        &adhoc.terms,
+        adhoc.items[0],
+        &[],
+        &mut f.supply.clone(),
+    );
+    if let Ok(o) = &out {
+        f.db = o.db.clone();
+    }
+    out
+}
+
+fn too_large(r: Result<adtb_reference::Outcome, Abort>) -> (String, String, i64, i64) {
+    match r {
+        Err(Abort::Reject(Rejection::RowTooLarge {
+            relation,
+            ctor,
+            size,
+            limit,
+        })) => (relation, ctor, size, limit),
+        other => panic!("not too large: {other:?}"),
+    }
+}
+
+#[test]
+fn a_new_row_over_the_row_limit_is_row_too_large() {
+    let mut f = fixture();
+    let long = "y".repeat(60);
+    let (relation, ctor, size, limit) = too_large(run_limited(
+        &mut f,
+        &format!(r#"insert users {{ id: users.key(9), name: "{long}" }}"#),
+        60,
+    ));
+    assert_eq!(
+        ("users", "User", 60),
+        (relation.as_str(), ctor.as_str(), limit)
+    );
+    assert!(size > limit, "{size} over {limit}");
+    run_limited(
+        &mut f,
+        r#"insert users { id: users.key(9), name: "z" }"#,
+        60,
+    )
+    .expect("a short row fits");
+}
+
+#[test]
+fn an_update_or_retag_to_a_row_over_the_limit_is_row_too_large() {
+    let mut f = fixture();
+    let long = "y".repeat(60);
+    too_large(run_limited(
+        &mut f,
+        &format!(
+            r#"update u in users where key u == users.key(1) set User {{ u with name: "{long}" }}"#
+        ),
+        60,
+    ));
+    let (relation, ctor, _, _) = too_large(run_limited(
+        &mut f,
+        &format!(
+            r#"update i in identities where match i | Google g -> g.gid == "g-ann" | EmailPass _ -> false | Apple _ -> false
+               set match i
+                 | Google g -> Apple {{ sub: "{long}" }}
+                 | EmailPass e -> e
+                 | Apple a -> a"#
+        ),
+        120,
+    ));
+    assert_eq!(("identities", "Apple"), (relation.as_str(), ctor.as_str()));
+}
+
+#[test]
+fn a_row_too_large_takes_precedence_over_keys_and_constraints() {
+    let mut f = fixture();
+    let long = "y".repeat(60);
+    too_large(run_limited(
+        &mut f,
+        &format!(r#"insert users {{ id: users.key(1), name: "{long}" }}"#),
+        60,
+    ));
+    too_large(run_limited(
+        &mut f,
+        &format!(r#"insert badges {{ owner: users.key(99), label: "{long}" }}"#),
+        60,
+    ));
+}
+
+#[test]
+fn rows_the_statement_does_not_write_are_not_measured() {
+    let mut f = fixture();
+    run_limited(
+        &mut f,
+        r#"insert users { id: users.key(9), name: "z" }"#,
+        40,
+    )
+    .expect("only the new row is measured");
+}

@@ -210,3 +210,8 @@ fn constraints() {
 fn conformance() {
     conforms("conformance");
 }
+
+#[test]
+fn interop() {
+    conforms("interop");
+}

@@ -23,7 +23,7 @@ use adtb_lang::parse::{Options, parse_adhoc, parse_schema};
 use adtb_lang::schema::{Schema, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::Ty;
-use adtb_reference::{Abort, Database, Interpreter, Rejection, Supply, Value, textual};
+use adtb_reference::{Abort, Database, Disk, Interpreter, Rejection, Supply, Value, textual};
 
 pub use engine::run_engine;
 
@@ -159,11 +159,18 @@ struct Run {
     program: Program,
     db: Database,
     supply: Supply,
+    files: Disk,
 }
 
 /// Runs `script` against a fresh database of the reference interpreter and returns every
-/// directive whose outcome differs from the script.
+/// directive whose outcome differs from the script. A file scan reads a relative path against
+/// the working directory.
 pub fn run_reference(script: &Script) -> Vec<Difference> {
+    run_reference_in(script, Path::new(""))
+}
+
+/// Runs `script` as [`run_reference`] does, a file scan reading a relative path against `dir`.
+pub fn run_reference_in(script: &Script, dir: &Path) -> Vec<Difference> {
     let mut out = Vec::new();
     let mut state: Option<Run> = None;
     for (k, d) in script.directives.iter().enumerate() {
@@ -172,7 +179,7 @@ pub fn run_reference(script: &Script) -> Vec<Difference> {
                 out.push(differ(d.line, "`schema` is the first directive"));
                 return out;
             }
-            match schema(&d.body) {
+            match schema(&d.body, dir) {
                 Ok(s) => state = Some(s),
                 Err(e) => {
                     out.push(differ(d.line, format!("the schema is refused: {e}")));
@@ -183,7 +190,7 @@ pub fn run_reference(script: &Script) -> Vec<Difference> {
         }
         let st = match &mut state {
             Some(s) => s,
-            None => match schema("") {
+            None => match schema("", dir) {
                 Ok(s) => state.insert(s),
                 Err(e) => {
                     out.push(differ(d.line, format!("the prelude is refused: {e}")));
@@ -198,8 +205,9 @@ pub fn run_reference(script: &Script) -> Vec<Difference> {
     out
 }
 
-/// Builds the schema whose module files `body` holds, each starting with its `module` line.
-fn schema(body: &str) -> Result<Run, String> {
+/// Builds the schema whose module files `body` holds, each starting with its `module` line, its
+/// file scans reading under `dir`.
+fn schema(body: &str, dir: &Path) -> Result<Run, String> {
     let mut files: Vec<(FileId, SchemaFile)> = Vec::new();
     for (i, text) in modules(body).iter().enumerate() {
         let file = parse_schema(text, Options::default())
@@ -214,6 +222,7 @@ fn schema(body: &str) -> Result<Run, String> {
         program,
         db: Database::new(),
         supply: Supply::default(),
+        files: Disk::new(dir),
     })
 }
 
@@ -335,14 +344,16 @@ impl Run {
                 return Ok((vec![Ended::Refused("Invalid".into(), detail)], 1));
             }
         };
+        let schema = adhoc.schema(&self.schema);
         let mut out = Vec::new();
         for &item in &adhoc.items {
             let ty = match adhoc.terms.ty(item) {
                 Ty::Change => Ty::Unit,
                 t => t.clone(),
             };
-            let it =
-                Interpreter::new(&self.schema, &self.program, &self.db).with_fix_limit(FIX_ROUNDS);
+            let it = Interpreter::new(schema, &self.program, &self.db)
+                .with_fix_limit(FIX_ROUNDS)
+                .with_files(&self.files);
             match it.run(&adhoc.terms, item, &[], &mut self.supply) {
                 Ok(o) => {
                     let changed = !o.change.inserted.is_empty() || !o.change.deleted.is_empty();
@@ -361,6 +372,8 @@ impl Run {
                 }
             }
         }
+        let declared = self.schema.relations.len();
+        self.db.retain(|(r, _), _| (r.0 as usize) < declared);
         Ok((out, adhoc.items.len()))
     }
 
@@ -451,6 +464,7 @@ fn refusal(a: Abort) -> (String, String) {
                 Rejection::NotOpen { .. } => "NotOpen",
                 Rejection::UserError { .. } => "UserError",
                 Rejection::BadInput { .. } => "BadInput",
+                Rejection::RowTooLarge { .. } => "RowTooLarge",
             };
             (name.into(), format!("{r:?}"))
         }
@@ -498,7 +512,10 @@ pub fn run_file(path: &Path) -> Vec<String> {
         Err(e) => return vec![format!("{shown}: {e}")],
     };
     let found = match parse(&text) {
-        Ok(s) => panic::catch_unwind(|| run_reference(&s)).unwrap_or_else(|p| {
+        Ok(s) => panic::catch_unwind(|| {
+            run_reference_in(&s, path.parent().unwrap_or_else(|| Path::new("")))
+        })
+        .unwrap_or_else(|p| {
             vec![differ(
                 0,
                 format!("the interpreter panics: {}", panic_message(&*p)),

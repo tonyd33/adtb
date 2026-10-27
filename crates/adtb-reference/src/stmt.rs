@@ -5,10 +5,9 @@ use adtb_lang::kernel::{Conflict, Kind, PathStep, Prim, Terms, Tm, Var};
 use adtb_lang::schema::Generator;
 use adtb_lang::types::{RelId, Ty};
 
-use crate::eval::{
-    Abort, Arena, Change, Database, Env, Here, Interpreter, R, Run, case_arm, not_yet,
-};
+use crate::eval::{Abort, Arena, Change, Database, Env, Here, Interpreter, R, Run, case_arm};
 use crate::eval::{bool_of, internal};
+use crate::file::Record;
 use crate::textual::print;
 use crate::value::Value;
 
@@ -40,6 +39,13 @@ pub enum Rejection {
         source: String,
         line: i64,
         detail: String,
+    },
+    /// A new row of constructor `ctor` of `relation` stores in `size` bytes, over `limit`.
+    RowTooLarge {
+        relation: String,
+        ctor: String,
+        size: i64,
+        limit: i64,
     },
 }
 
@@ -446,7 +452,16 @@ impl Run<'_, '_> {
         let source = match terms.kind(rows) {
             Kind::For(x, src, body) => match terms.kind(*src) {
                 Kind::Rel(r, s) => Some((*x, *r, s.clone(), *body)),
-                Kind::Prim(Prim::ReadFile { .. }, _) => return not_yet("a file scan"),
+                Kind::Prim(Prim::ReadFile { format, .. }, args) => {
+                    let Value::Text(path) = self.eval(h, args[0], env)? else {
+                        return internal("a file scan's path is a Text");
+                    };
+                    let Ty::Set(row) = terms.ty(*src).subst(&h.targs) else {
+                        return internal("a file scan is a set");
+                    };
+                    let records = self.it.file_records(*format, &path, &row)?;
+                    return self.file_records(h, (*x, *body), records, env, rejected);
+                }
                 _ => None,
             },
             _ => None,
@@ -493,6 +508,50 @@ impl Run<'_, '_> {
 
     /// Evaluates the upsert `t` over its proposed `rows`, adding its effects to `out`. Returns
     /// its binding.
+    /// Returns the rows the body of `source`, a binder over a file's records, computes for each
+    /// record. A record that does not convert, or whose computation reaches `reject`, goes to
+    /// `rejected`, or rejects the statement with `BadInput` when there is none.
+    fn file_records(
+        &self,
+        h: &Here,
+        source: (Var, Tm),
+        records: Vec<Record>,
+        env: &Env,
+        mut rejected: Option<&mut Vec<Rejected>>,
+    ) -> R<BTreeSet<Value>> {
+        let (x, body) = source;
+        let mut out = BTreeSet::new();
+        for r in records {
+            let reason = match r.row {
+                Ok(p) => match self.set(h, body, &env.bind(x, p)) {
+                    Ok(vs) => {
+                        out.extend(vs);
+                        continue;
+                    }
+                    Err(Abort::Reject(Rejection::BadInput { detail, .. })) => detail,
+                    Err(e) => return Err(e),
+                },
+                Err(reason) => reason,
+            };
+            match &mut rejected {
+                Some(js) => js.push(Rejected {
+                    line: r.line,
+                    source: r.source,
+                    raw: r.raw,
+                    reason,
+                }),
+                None => {
+                    return Err(Abort::Reject(Rejection::BadInput {
+                        source: r.source,
+                        line: r.line,
+                        detail: reason,
+                    }));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     fn upsert(
         &self,
         h: &Here,

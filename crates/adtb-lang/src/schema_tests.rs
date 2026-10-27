@@ -578,6 +578,16 @@ fn every_constructor_is_enabled_in_a_schema_built_from_declarations() {
 }
 
 #[test]
+fn row_too_large_takes_the_field_ids_after_internal() {
+    let s = build_src(&[]).unwrap();
+    let field = |t, c, f: &str| s.ids.fields.get(&(t, c, f.to_string())).copied();
+    let reject = s.prelude_type("RejectReason");
+    let too_large = s.ty(reject).ctor_index("RowTooLarge").unwrap();
+    assert_eq!(Some(70), field(reject, Some(too_large), "relation"));
+    assert_eq!(Some(73), field(reject, Some(too_large), "limit"));
+}
+
+#[test]
 fn engine_fields_and_keys_take_their_fixed_ids() {
     let s = build_src(&[]).unwrap();
     let field = |t, c, f: &str| s.ids.fields.get(&(t, c, f.to_string())).copied();
@@ -632,8 +642,8 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
     assert_eq!(Some(69), field(reject, Some(internal), "what"));
     let limit = s.prelude_type("Limit");
     let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
-    assert_eq!(Some(556), field(limit, Some(rounds), "rounds"));
-    assert_eq!(Some(556), s.ids.fields.values().max().copied());
+    assert_eq!(Some(560), field(limit, Some(rounds), "rounds"));
+    assert_eq!(Some(560), s.ids.fields.values().max().copied());
     assert_eq!(
         Some(60),
         s.ids
@@ -655,7 +665,7 @@ fn the_engine_fields_of_catalog_and_sys_start_after_the_prelude() {
         .filter(|((t, _, _), _)| s.module(s.ty(*t).module).name != "prelude")
         .map(|(_, id)| *id)
         .min();
-    assert_eq!(Some(88), catalog_min);
+    assert_eq!(Some(92), catalog_min);
 }
 
 fn relation(s: &Schema, name: &str) -> RelId {

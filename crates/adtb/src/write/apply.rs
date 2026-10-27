@@ -4,7 +4,7 @@ use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
 use crate::exec::{Val, to_stored};
-use crate::heap::{Flags, Heap, Link, walk};
+use crate::heap::{self, Flags, Heap, Link, walk};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Probe, Status, Write, Xid, check_write, probe_unique};
 use crate::plan::{HeapId, IndexId};
@@ -13,7 +13,20 @@ use crate::storage::PageError;
 use crate::vacuum;
 
 use super::eval::{Stmt, Violations, pairs, violate, violate_key};
-use super::{Error, Rows};
+use super::{Error, Rejection, Rows};
+
+/// Returns the write error of heap error `e`, met writing a row of constructor `ctor` of `rel`.
+fn too_large(rel: RelId, ctor: u32) -> impl Fn(heap::Error) -> Error {
+    move |e| match e {
+        heap::Error::TooLarge { len, limit } => Error::Rejected(Rejection::RowTooLarge {
+            relation: rel,
+            ctor,
+            size: len,
+            limit,
+        }),
+        e => e.into(),
+    }
+}
 
 /// A heap change a failed statement takes back.
 #[derive(Clone, Copy, Debug)]
@@ -140,7 +153,8 @@ impl<R: Runtime> Stmt<'_, R> {
                         xid,
                         &row,
                         &indexed,
-                    )?;
+                    )
+                    .map_err(too_large(*rel, c))?;
                     self.undo
                         .borrow_mut()
                         .extend([Undo::Restore(heap, tid), Undo::Kill(heap, up.tid)]);
@@ -162,7 +176,8 @@ impl<R: Runtime> Stmt<'_, R> {
                     let from = r.ctors[c as usize].heap;
                     let at = self
                         .heap(from)
-                        .retag(pager, tid, xid.0, self.heap(to), &row)?;
+                        .retag(pager, tid, xid.0, self.heap(to), &row)
+                        .map_err(too_large(*rel, *d))?;
                     self.undo
                         .borrow_mut()
                         .extend([Undo::Restore(from, tid), Undo::Kill(to, at)]);
@@ -178,7 +193,8 @@ impl<R: Runtime> Stmt<'_, R> {
                 (None, Some((d, n))) => {
                     let heap = r.ctors[*d as usize].heap;
                     let row = self.stored(heap, n)?;
-                    let tid = vacuum::insert(pager, &self.db.txns, self.heap(heap), xid, &row)?;
+                    let tid = vacuum::insert(pager, &self.db.txns, self.heap(heap), xid, &row)
+                        .map_err(too_large(*rel, *d))?;
                     self.undo.borrow_mut().push(Undo::Kill(heap, tid));
                     self.inserted_into(heap)?;
                     written.push(Written {

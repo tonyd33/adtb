@@ -47,6 +47,11 @@ fn conformance() {
     passes("conformance");
 }
 
+#[test]
+fn interop() {
+    passes("interop");
+}
+
 fn expand(body: &str, schema: &str, run: &str) -> String {
     let mut out = String::new();
     for line in body.lines() {

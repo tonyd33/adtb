@@ -1,0 +1,40 @@
+# A file scan reads the rows of immutable files at a declared row type.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type LogRow = { user: Key users, bytes: I64 }
+  type Via = Email { addr: Text } | Phone { num: Text }
+  type Contact = { name: Text, via: Via }
+  type Person = { id: I64, name: Text, nick: Option Text }
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert users { id: users.key(2), name: "bo" }
+# A glob names every file it matches, read as one relation.
+query rowsort
+  from r in read_csv("data/logs/2026-10-*.csv", LogRow), u in users
+  where r.user == key u
+  group r by u.name into g
+  select { name: g.key, bytes: sum(x.bytes for x in g) }
+----
+{ bytes: 125, name: "ann" }
+{ bytes: 50, name: "bo" }
+# A value-level sum reads from tag columns or from a text cell.
+query
+  from c in read_csv("data/contacts.csv", Contact) select c.via
+----
+Email { addr: "a@b.example" }
+Phone { num: "555" }
+query
+  from c in read_csv("data/contacts-text.csv", Contact) select c.via
+----
+Email { addr: "a@b.example" }
+# NDJSON reads the JSON mapping; a missing member of an Option field is None.
+query rowsort
+  from p in read_ndjson("data/users.ndjson", Person) select p.nick
+----
+None
+Some { value: "c" }
+# A file whose content does not convert fails at read.
+error BadInput
+  from r in read_csv("data/bad.csv", LogRow) select r.bytes

@@ -172,6 +172,12 @@ pub enum RejectReason {
     Internal {
         what: String,
     },
+    RowTooLarge {
+        relation: String,
+        ctor: String,
+        size: i64,
+        limit: i64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -464,6 +470,20 @@ impl fmt::Display for RejectReason {
             R::MigrationInProgress => ("MigrationInProgress", &[]),
             R::DumpDamaged { offset } => ("DumpDamaged", &[("offset", offset)]),
             R::Internal { what } => ("Internal", &[("what", &Txt(what))]),
+            R::RowTooLarge {
+                relation,
+                ctor,
+                size,
+                limit,
+            } => (
+                "RowTooLarge",
+                &[
+                    ("relation", &Txt(relation)),
+                    ("ctor", &Txt(ctor)),
+                    ("size", size),
+                    ("limit", limit),
+                ],
+            ),
         };
         ctor(f, name, fields)
     }
@@ -557,6 +577,19 @@ fn rejection(schema: &Schema, r: Rejection) -> RejectReason {
             source,
             line,
             detail,
+        },
+        Rejection::RowTooLarge {
+            relation,
+            ctor,
+            size,
+            limit,
+        } => RejectReason::RowTooLarge {
+            relation: qualified(schema, relation),
+            ctor: schema.ty(schema.relation(relation).elem_def).ctors()[ctor as usize]
+                .name
+                .clone(),
+            size: i64::try_from(size).unwrap_or(i64::MAX),
+            limit: i64::try_from(limit).unwrap_or(i64::MAX),
         },
     }
 }

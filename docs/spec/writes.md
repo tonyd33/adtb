@@ -159,6 +159,29 @@ order of the items does not choose it
 
 Rulings: write/surface/txdata, write/primitive/delta, write/unit/multi, write/bulk/from-query, spec/writes/insert-existing/violation, spec/writes/let-write/four-forms, spec/writes/abort-choice/any-abort
 
+### 1.6 Rows too large
+
+The engine stores each row within a row limit, in bytes, which it
+derives from the database's format settings, so two databases may have
+different limits. A statement whose change set holds a new row, by
+insert, update or retag, whose stored form is larger than the limit
+fails with `RowTooLarge { relation, ctor, size, limit }`
+([catalog.md](catalog.md#4-error-sums)): `relation` names the row's
+relation variable, `ctor` its constructor, `size` is the size of its
+stored form in bytes and `limit` the limit. When several rows are too
+large, the one named is any of them.
+
+The test is made on the normalised change set after `NotOpen` and
+before any key or constraint is checked, so a statement with a row too
+large fails with `RowTooLarge` whatever key or constraint it would
+violate or fault in
+([semantics.md §6.6](semantics.md#66-statements)).
+
+A migration that declares a constructor whose smallest row's stored
+form is larger than the limit is refused ([evolution.md §3.2](evolution.md#32-checks-at-apply)).
+
+Rulings: spec/row-too-large/refuse-at-write
+
 ## 2. Insert
 
 ### 2.1 Forms

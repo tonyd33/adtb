@@ -465,19 +465,26 @@ fn rows_too_large_for_a_page_are_refused() {
         let (mut db, _) = Db::create(rt, 4);
         let pager = &mut db.pager;
         let large = db.heaps[EMAIL].large();
+        let over = |e: Result<_, Error>| match e {
+            Err(Error::TooLarge { len, limit }) => assert!(len > limit, "{len} over {limit}"),
+            other => panic!("not too large: {other:?}"),
+        };
         let wide = vec![scalar(Scalar::Decimal(0)); 300];
-        assert!(matches!(
-            Heap::create(pager, 20, wide, large),
-            Err(Error::TooLarge { .. })
-        ));
+        over(Heap::create(pager, 20, wide.clone(), large).map(|_| ()));
+        over(adtb::heap::fits(pager.page_size(), wide));
+        let narrow = vec![scalar(Scalar::Decimal(0)); 100];
+        assert_eq!(Ok(()), adtb::heap::fits(pager.page_size(), narrow));
+        let empties = vec![scalar(Scalar::Text); 4000];
+        over(Heap::create(pager, 22, empties, large).map(|_| ()));
         let many = vec![scalar(Scalar::Text); 400];
         let heap = Heap::create(pager, 21, many, large).unwrap();
         let row = vec![Value::Text("y".repeat(30)); 400];
-        assert!(matches!(
-            heap.insert(pager, 1, &row),
-            Err(Error::TooLarge { .. })
-        ));
+        over(heap.insert(pager, 1, &row).map(|_| ()));
         assert!(heap.pages(pager).unwrap().is_empty());
+        assert!(
+            large.pages(pager).unwrap().is_empty(),
+            "a refused row writes no large value"
+        );
     });
 }
 

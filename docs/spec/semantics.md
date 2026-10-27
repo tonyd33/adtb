@@ -988,6 +988,8 @@ run(s, σ) =
                    of a value-level constructor E not open for writes, and the
                    row of its key in D(r), if any, does not hold a value equal
                    to w at p
+  ⊗RowTooLarge     if some v ∈ Δ*⁺(r.C) has a stored form over the engine's row
+                   limit ([writes.md §1.6](writes.md#16-rows-too-large))
   (R_c)_{c ∈ cons(Σ)} ⇐ gather(⟦c⟧(D, Δ*, D*))_{c ∈ cons(Σ)} ;
   viol = { c ∈ cons(Σ) | R_c ≠ ∅ }
        ∪ { the key of r | some ins(r, v) ∈ E* with key_r(v) = key_r(u₀),
@@ -1012,7 +1014,7 @@ replaces `D` by `D*` for the statements after it in its transaction.
 `D` is the snapshot: a test that would meet a row committed by another
 transaction after the snapshot is not decided here; it ends the
 transaction with a serialization failure (§8.4). `NotOpen`,
-`KeyViolation`, `Violated`, `KeyChanged` and `UserError` are
+`RowTooLarge`, `KeyViolation`, `Violated`, `KeyChanged` and `UserError` are
 constructors of `RejectReason` ([catalog.md](catalog.md#4-error-sums)).
 
 ### 6.7 Inserts with rejects
@@ -1041,7 +1043,7 @@ Any other abort of `conv(p)` is the outcome of the write. Both sets of
 rows are effects of the one statement, so a constraint violation
 rejects the statement with its rejects.
 
-Rulings: write/primitive/delta, write/surface/txdata, write/unit/multi, write/retag/assign, write/retag/old/in-scope, write/transact/block, write/insert/returns/rows, write/bulk/from-query, write/delete-action/cascade, write/delete-action/restrict, write/delete-action/retag-referrer, fk/retag/recheck, model/deferred-check, constraint/timing/multi-assign, types/keygen/promise/distinct, spec/writes/insert-existing/violation, spec/writes/action-compose/one-value, spec/writes/action-reach/pre-state, spec/writes/abort-choice/any-abort, spec/writes/violation-name/canonical-least, spec/writes/rejects/per-row, spec/writes/rejects-source/one-source, spec/writes/action-identical/identical-only, spec/writes/action-own-writes/statement-wins, spec/evolution/deprecated-value/same-path
+Rulings: write/primitive/delta, write/surface/txdata, write/unit/multi, write/retag/assign, write/retag/old/in-scope, write/transact/block, write/insert/returns/rows, write/bulk/from-query, write/delete-action/cascade, write/delete-action/restrict, write/delete-action/retag-referrer, fk/retag/recheck, model/deferred-check, constraint/timing/multi-assign, types/keygen/promise/distinct, spec/writes/insert-existing/violation, spec/writes/action-compose/one-value, spec/writes/action-reach/pre-state, spec/writes/abort-choice/any-abort, spec/writes/violation-name/canonical-least, spec/writes/rejects/per-row, spec/writes/rejects-source/one-source, spec/writes/action-identical/identical-only, spec/writes/action-own-writes/statement-wins, spec/evolution/deprecated-value/same-path, spec/row-too-large/refuse-at-write
 
 ## 7. Constraints
 

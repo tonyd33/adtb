@@ -7,6 +7,7 @@ use crate::eval::{Abort, Fault, Interpreter, R, internal};
 use crate::num::{
     Rounding, dec_add, dec_div, dec_mul, dec_rescale, dec_round, digits38, float_scaled, in_range,
 };
+use crate::stmt::Rejection;
 use crate::textual;
 use crate::time::{MICROS_PER_DAY, add_period, at_day, date_in_range};
 use crate::value::{Value, canon32, canon64};
@@ -309,7 +310,24 @@ pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> 
             .ok_or(Abort::Fault(Fault::InvalidText)),
         Prim::ToText => Ok(Text(textual::to_text(it.schema, &v[0], &tys[0])?)),
         Prim::Print => Ok(Text(textual::print(it.schema, &v[0], &tys[0])?)),
-        Prim::ReadFile { .. } => crate::eval::not_yet("a file scan"),
+        Prim::ReadFile { format, .. } => {
+            let Ty::Set(row) = ty else {
+                return internal(format!("a file scan at {ty:?}"));
+            };
+            it.file_records(format, text(&v[0])?, row)?
+                .into_iter()
+                .map(|r| {
+                    r.row.map_err(|detail| {
+                        Abort::Reject(Rejection::BadInput {
+                            source: r.source,
+                            line: r.line,
+                            detail,
+                        })
+                    })
+                })
+                .collect::<R<_>>()
+                .map(Set)
+        }
         Prim::Parse => Ok(
             match textual::parse(it.schema, text(&v[0])?, option_arg(ty)?) {
                 Ok(x) => Value::some(x),

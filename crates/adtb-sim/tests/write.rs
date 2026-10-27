@@ -149,6 +149,12 @@ fn reference_error(a: &Abort) -> Failed {
             Rejection::KeyChanged { relation } => plain(format!("KeyChanged {relation}")),
             Rejection::NotOpen { ctor, stage } => plain(format!("NotOpen {ctor} {stage:?}")),
             Rejection::UserError { message } => plain(format!("UserError {message}")),
+            Rejection::RowTooLarge {
+                relation,
+                ctor,
+                size,
+                limit,
+            } => plain(format!("RowTooLarge {relation} {ctor} {size} {limit}")),
             other => plain(format!("{other:?}")),
         },
         other => plain(format!("{other:?}")),
@@ -188,6 +194,16 @@ fn engine_error(schema: &Schema, e: &write::Error) -> Failed {
             } => plain(format!(
                 "BadInput {{ source: {source:?}, line: {line}, detail: {detail:?} }}"
             )),
+            WRejection::RowTooLarge {
+                relation,
+                ctor,
+                size,
+                limit,
+            } => {
+                let rel = schema.relation(*relation);
+                let ctor = &schema.ty(rel.elem_def).ctors()[*ctor as usize].name;
+                plain(format!("RowTooLarge {} {ctor} {size} {limit}", rel.name))
+            }
         },
         other => plain(format!("{other:?}")),
     }

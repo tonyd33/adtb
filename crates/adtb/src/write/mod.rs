@@ -62,6 +62,14 @@ pub enum Rejection {
         line: i64,
         detail: String,
     },
+    /// A new row of constructor `ctor` of `relation` stores in `size` bytes, over the heap's
+    /// `limit`.
+    RowTooLarge {
+        relation: RelId,
+        ctor: u32,
+        size: usize,
+        limit: usize,
+    },
 }
 
 /// Why a statement or a commit failed.
@@ -110,9 +118,9 @@ impl From<crate::heap::Error> for Error {
     fn from(e: crate::heap::Error) -> Error {
         match e {
             crate::heap::Error::Page(p) => Error::Page(p),
-            crate::heap::Error::TooLarge { len } => {
-                Error::Unsupported(format!("a row version of {len} bytes"))
-            }
+            crate::heap::Error::TooLarge { len, limit } => Error::Unsupported(format!(
+                "a row version of {len} bytes, over the limit of {limit}"
+            )),
         }
     }
 }

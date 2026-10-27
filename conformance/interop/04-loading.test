@@ -1,0 +1,58 @@
+# A load is an insert whose source query reads a file.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  type GoogleRow = { id: Key identities, user: Key users, gid: Text }
+  type BadRow = { id: I64, user: I64, gid: Text }
+  relation load_rejects : RejectedRow key (load, line)
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert users { id: users.key(2), name: "bo" }
+  insert users { id: users.key(3), name: "cy" }
+run
+  insert identities.Google from (
+    from r in read_csv("data/google.csv", GoogleRow)
+    select Google { id: r.id, user: r.user, gid: r.gid })
+query
+  from g in identities.Google select g.gid
+----
+"g-ann"
+"g-bo"
+# A record that does not convert goes to the rejects relation, numbered from 1.
+run
+  insert identities.Google from (
+    from r in read_csv("data/bad.csv", GoogleRow)
+    select Google { id: identities.key(100 + value(r.id)), user: r.user, gid: r.gid })
+  rejects into load_rejects
+query
+  from j in load_rejects select { line: j.line, source: j.source, raw: j.raw }
+----
+{ line: 2, raw: "x,2,g-bo", source: "data/bad.csv" }
+query
+  from g in identities.Google select value(key g)
+----
+10
+11
+110
+# Without a rejects relation the load fails with BadInput.
+error BadInput
+  insert identities.Google from (
+    from r in read_csv("data/bad.csv", GoogleRow)
+    select Google { id: identities.key(200 + value(r.id)), user: r.user, gid: r.gid })
+# An NDJSON file of a sum's rows loads onto its constructors.
+run
+  delete i in identities where value(key i) >= 100
+  insert identities from (from r in read_ndjson("data/identities.ndjson", Identity) select r)
+query
+  from i in identities select value(key i)
+----
+10
+11
+20
+21

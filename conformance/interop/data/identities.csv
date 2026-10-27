@@ -1,0 +1,5 @@
+line,user,kind,email,hash,gid,sub
+1,1,EmailPass,ann@example.com,0x01,,
+2,2,gogle,,,g-bo,
+3,3,Apple,,,,
+4,3,Okta,,,,

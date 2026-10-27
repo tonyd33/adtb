@@ -4,7 +4,9 @@ use std::rc::Rc;
 use adtb_lang::schema::{OnDelete, Stage as SchemaStage, TypeDefKind};
 use adtb_lang::types::{CtorSet, RelId, Ty, TypeId};
 
-use crate::eval::{Abort, Arena, Change, Database, Env, Interpreter, R, Run, bool_of, into_set};
+use crate::eval::{
+    Abort, Arena, Change, Database, Env, Interpreter, Measure, R, Run, bool_of, into_set,
+};
 use crate::stmt::{Eff, Effects, Outcome, Rejection, Stage};
 use crate::textual::print;
 use crate::value::Value;
@@ -266,6 +268,31 @@ impl Interpreter<'_> {
         }
     }
 
+    /// Refuses the first new row of `plus` whose stored form the row limit measures as too large.
+    fn check_size(&self, plus: &Database) -> R<()> {
+        let Some(Measure(measure)) = self.row_limit else {
+            return Ok(());
+        };
+        for (&(r, c), rows) in plus {
+            for v in rows {
+                let (size, limit) = measure(r, c, v);
+                if size > limit {
+                    let rel = self.schema.relation(r);
+                    let ctor = self.schema.ty(rel.elem_def).ctors()[c as usize]
+                        .name
+                        .clone();
+                    return Err(Abort::Reject(Rejection::RowTooLarge {
+                        relation: rel.name.clone(),
+                        ctor,
+                        size: i64::try_from(size).unwrap_or(i64::MAX),
+                        limit: i64::try_from(limit).unwrap_or(i64::MAX),
+                    }));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Refuses an inserted or retagged row in a constructor not open for writes, and a stored
     /// value of a value-level constructor not open for writes that the pre-state row of its key
     /// does not hold at the same path.
@@ -409,6 +436,7 @@ impl Run<'_, '_> {
         }
         let delta = normalise(delta);
         it.check_open(&delta.plus)?;
+        it.check_size(&delta.plus)?;
         let db = apply(d, &delta);
         let change = Change {
             prior: d.clone(),

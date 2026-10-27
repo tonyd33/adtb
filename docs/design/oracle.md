@@ -8,7 +8,8 @@ runner.
 ## 1. Evaluation contract
 
 ```text
-Interpreter::new(schema, program, db)      // plus with_caller, with_change, with_fix_limit, with_closed
+Interpreter::new(schema, program, db)      // plus with_caller, with_change, with_fix_limit, with_closed,
+                                           // with_files, with_row_limit
   .eval(terms, t, params) -> Result<Value, Abort>
 ```
 
@@ -31,14 +32,25 @@ Postconditions:
   steps than its limit of `rounds`; the statement is rejected with
   `StatementLimit { limit: Rounds { rounds } }`.
 - `Err(Abort::NotYet(form))`: the term holds a form the interpreter
-  does not evaluate yet: `at`, a Wasm or host function, or a file
-  scan.
+  does not evaluate yet: `at`, a Wasm or host function, or a Parquet
+  or Arrow IPC file scan.
 - `Err(Abort::Internal(what))`: evaluation reached a value or term the
   preconditions rule out, such as `Unreachable`, a primitive applied to
   operands of another type, or a `case` with no arm for its
   scrutinee's constructor; `what` names the invariant. The statement
   is rejected with `Internal { what }`. `try` does not catch it, and a
   checked primitive does not turn it into `None`.
+
+A CSV or NDJSON file scan reads the files `with_files` gives, a
+`Files` that returns the files a path names, by name in name order,
+with their contents; without one it reads the file system, a relative
+path against the working directory. `Disk::new(root)` reads the file
+system with relative paths against `root`, and `InMemory` holds files
+by name. A component of a path holding `*` or `?` matches every name it
+matches. A file that cannot be read, or whose text is not UTF-8, is
+`BadInput` naming it with line 0. Records are numbered from 1 across
+every file the path names, in name order. A file scan does not pin the
+files it reads across statements.
 
 `caller` denotes the value given by `with_caller`. In a constraint
 body, `inserted`, `deleted` and `prior` read the transition given by
@@ -75,15 +87,22 @@ Postconditions:
   constructor relation.
 - `Err(Abort::Reject(r))`: the statement is rejected with the
   `RejectReason` constructor `r` names: `UserError` for `fail`,
-  `KeyChanged`, `BadInput`, `NotOpen`, `KeyViolation` with the key in the
-  textual syntax, or `Violated` with the constraint's canonical name and
-  every row its query returns. Of several violations, the least name is
+  `KeyChanged`, `BadInput`, `NotOpen`, `RowTooLarge`, `KeyViolation`
+  with the key in the textual syntax, or `Violated` with the
+  constraint's canonical name and every row its query returns. Of several violations, the least name is
   reported. Relation names are unqualified, constraint names qualified
   by module.
 - `Err(Abort::Fault(f))`: a write, a delete action's fill or a
   constraint faulted. A fault in a constraint is the outcome whatever
   else the statement violates.
 - On every `Err`, nothing is applied.
+
+`with_row_limit(measure)` gives the size of a row's stored form and the
+limit its constructor's rows must fit, `measure(relation, ctor, row)`
+returning `(size, limit)` in bytes. Each new row of `Δ*` is measured
+after `NotOpen` and before keys and constraints; the first, by relation,
+constructor and row, whose size is over its limit is `RowTooLarge`.
+Without a measure no row is too large.
 
 Constraint checking is naive: every key, unique, reference, domain,
 check and declared constraint of the schema is evaluated over the

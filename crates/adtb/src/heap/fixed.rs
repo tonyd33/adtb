@@ -14,6 +14,11 @@ fn flags_at(n: usize, slot: usize) -> usize {
     USED + 8 * n.div_ceil(64) + 2 * slot
 }
 
+/// Returns the widest slot a page of `page_size` bytes holds one of.
+pub fn max_width(page_size: usize) -> usize {
+    (page_size - slots_at(1)) & !7
+}
+
 /// Returns the number of slots of `width` bytes a page of `page_size` bytes holds.
 pub fn capacity(page_size: usize, width: usize) -> usize {
     let mut n = ((page_size - USED) / width).min(usize::from(u16::MAX));

@@ -27,9 +27,11 @@ struct Format {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Page(PageError),
-    /// A version of `len` bytes does not fit a page even with its large values out of line.
+    /// A version of `len` bytes is longer than the `limit` a page holds, even with its large
+    /// values out of line.
     TooLarge {
         len: usize,
+        limit: usize,
     },
 }
 
@@ -161,15 +163,31 @@ impl std::fmt::Debug for Heap {
     }
 }
 
+/// Returns the arrangement of the pages of a heap of `layout`, or `TooLarge` when even its
+/// smallest version does not fit a page of `page_size` bytes.
 fn arrangement_of(layout: &Layout, page_size: usize) -> Result<Arrangement, Error> {
     if !layout.is_fixed() {
+        let len = HEADER_LEN + layout.least_body_len();
+        let limit = slotted::max_version(page_size);
+        if len > limit {
+            return Err(Error::TooLarge { len, limit });
+        }
         return Ok(Arrangement::Slotted);
     }
     let width = HEADER_LEN + align8(layout.fixed_width());
     if fixed::capacity(page_size, width) == 0 {
-        return Err(Error::TooLarge { len: width });
+        return Err(Error::TooLarge {
+            len: width,
+            limit: fixed::max_width(page_size),
+        });
     }
     Ok(Arrangement::Fixed { width })
+}
+
+/// Refuses with `TooLarge` a heap of fields `row` whose smallest version does not fit a page
+/// of `page_size` bytes.
+pub fn fits(page_size: usize, row: Vec<FieldType>) -> Result<(), Error> {
+    arrangement_of(&Layout::new(row), page_size).map(|_| ())
 }
 
 fn version_bytes(header: Header, body: &[u8]) -> Vec<u8> {
@@ -471,6 +489,22 @@ impl Heap {
             }
             stored.push(s.unwrap_or(Stored::Inline(bytes)));
         }
+        let max = match f.arrangement {
+            Arrangement::Fixed { width } => width,
+            Arrangement::Slotted => slotted::max_version(self.page_size),
+        };
+        let least = HEADER_LEN
+            + f.layout.least_body_len()
+            + stored
+                .iter()
+                .map(|s| s.len().min(POINTER_LEN))
+                .sum::<usize>();
+        if least > max {
+            return Err(Error::TooLarge {
+                len: least,
+                limit: max,
+            });
+        }
         let limit = self.page_size / 4;
         while HEADER_LEN + f.layout.body_len(&stored) > limit {
             let largest = stored
@@ -486,14 +520,6 @@ impl Heap {
                 unreachable!()
             };
             stored[j] = Stored::Out(self.large.write(pager, xid, bytes)?);
-        }
-        let len = HEADER_LEN + f.layout.body_len(&stored);
-        let max = match f.arrangement {
-            Arrangement::Fixed { width } => width,
-            Arrangement::Slotted => slotted::max_version(self.page_size),
-        };
-        if len > max {
-            return Err(Error::TooLarge { len });
         }
         let held = stored
             .iter()

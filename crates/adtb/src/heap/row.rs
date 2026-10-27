@@ -64,7 +64,7 @@ pub enum Stored {
 }
 
 impl Stored {
-    fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         match self {
             Stored::Inline(b) => b.len(),
             Stored::Out(_) => POINTER_LEN,
@@ -595,6 +595,15 @@ impl Layout {
             return self.fixed_len;
         }
         self.vars_at() + vars.iter().map(Stored::len).sum::<usize>()
+    }
+
+    /// Returns the length of the shortest body: every variable-width field empty and inline.
+    pub fn least_body_len(&self) -> usize {
+        if self.vars == 0 {
+            self.fixed_len
+        } else {
+            self.vars_at()
+        }
     }
 
     /// Returns a row body: the fixed part, a table of `u16` end offsets of the variable-width

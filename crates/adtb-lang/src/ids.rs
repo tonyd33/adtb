@@ -681,6 +681,7 @@ pub const TYPES: &[FixedType] = &[
             ("MigrationInProgress", 372),
             ("DumpDamaged", 460),
             ("Internal", 465),
+            ("RowTooLarge", 467),
         ],
     ),
     (

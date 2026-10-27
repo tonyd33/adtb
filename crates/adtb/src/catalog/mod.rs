@@ -256,6 +256,28 @@ fn ctor_count(schema: &Schema, r: RelId) -> u32 {
 
 /// Returns the constructor relations of `schema` that have catalog ids, by relation and
 /// constructor index.
+/// Returns why each constructor relation of `schema` that `rewritten` names cannot store its
+/// smallest row on a page of `page_size` bytes.
+fn oversized(page_size: usize, schema: &Schema, rewritten: &BTreeSet<u64>) -> Vec<String> {
+    let mut why = Vec::new();
+    for (r, c) in ctor_relations(schema) {
+        if !rewritten.contains(&schema.ids.relations[&r]) {
+            continue;
+        }
+        if let Err(heap::Error::TooLarge { len, limit }) =
+            heap::fits(page_size, row_type(schema, r, c))
+        {
+            let rel = schema.relation(r);
+            let ctor = &schema.ty(rel.elem_def).ctors()[c as usize].name;
+            why.push(format!(
+                "constructor relation {}.{ctor} stores its smallest row in {len} bytes, over the row limit of {limit}",
+                rel.name
+            ));
+        }
+    }
+    why
+}
+
 fn ctor_relations(schema: &Schema) -> Vec<(RelId, u32)> {
     schema
         .ids
@@ -841,6 +863,7 @@ impl Catalog {
             }
             at = after;
         }
+        why.extend(oversized(pager.page_size(), &schema, &rewritten));
         if !why.is_empty() {
             return Err(Error::Refused(why));
         }

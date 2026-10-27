@@ -1,0 +1,76 @@
+# A temp relation holds rows for the rest of the ad hoc text that declares it.
+schema
+  module test
+  type User = { id: Key users, name: Text }
+  relation users : User key id generate sequence
+  type Identity { id: Key identities, user: Key users }
+    = EmailPass { email: Text, hash: Bytes }
+    | Google    { gid: Text }
+    | Apple     { sub: Text }
+  relation identities : Identity key id generate sequence
+  type IdentityStage = { line: I64, user: I64, kind: Text,
+                         email: Option Text, hash: Option Bytes,
+                         gid: Option Text, sub: Option Text }
+  relation kept_rejects : RejectedRow key (load, line)
+run
+  insert users { id: users.key(1), name: "ann" }
+  insert users { id: users.key(2), name: "bo" }
+  insert users { id: users.key(3), name: "cy" }
+# Rows land in staging, are repaired, then move as one insert with rejects.
+run
+  temp relation identity_stage : IdentityStage key line
+  temp relation identity_rejects : RejectedRow key (load, line)
+  insert identity_stage from (
+    from t in read_csv("data/identities.csv", IdentityStage) select t)
+  update s in identity_stage where s.kind == "gogle" set IdentityStage { s with kind: "Google" }
+  insert identities from (
+    from s in identity_stage
+    select match (Tag Identity).parse(s.kind)
+      | Some { value: EmailPass } -> (match s.email
+          | Some { value: e } -> (match s.hash
+              | Some { value: h } -> EmailPass { user: users.key(s.user), email: e, hash: h }
+              | None              -> reject "no hash")
+          | None              -> reject "no email")
+      | Some { value: Google } -> (match s.gid
+          | Some { value: g } -> Google { user: users.key(s.user), gid: g }
+          | None              -> reject "no gid")
+      | Some { value: Apple } -> (match s.sub
+          | Some { value: a } -> Apple { user: users.key(s.user), sub: a }
+          | None              -> reject "no sub")
+      | None -> reject "unknown kind")
+  rejects into identity_rejects
+  insert kept_rejects from (from j in identity_rejects select j)
+query rowsort
+  from i in identities select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
+----
+"ann@example.com"
+"g-bo"
+query
+  from j in kept_rejects select { line: j.line, reason: j.reason }
+----
+{ line: 3, reason: "no sub" }
+{ line: 4, reason: "unknown kind" }
+# A temp relation's key is checked like any key.
+error KeyViolation
+  temp relation names : User key id
+  insert names { id: users.key(1), name: "a" }
+  insert names { id: users.key(1), name: "b" }
+# Without a key clause the whole row is the key.
+query
+  temp relation pairs : { a: I64, b: I64 }
+  (count(p for p in pairs))
+----
+0
+# A temp relation is gone when its text ends, so a later text declares it again.
+run
+  temp relation names : User key id
+  insert names { id: users.key(1), name: "a" }
+query
+  temp relation names : User key id
+  (count(n for n in names))
+----
+0
+# A temp relation takes no name a module of the text declares.
+error Invalid
+  temp relation users : User key id
+  (count(u for u in users))

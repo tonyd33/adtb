@@ -1045,3 +1045,126 @@ fn a_crash_as_the_first_open_names_its_counters_page_leaks_no_page() {
         );
     }
 }
+
+/// A migration of `shop` adding `wides`, a record of `n` fields of type `ty`.
+fn wide(n: usize, ty: &str) -> String {
+    let fields: String = (0..n).map(|i| format!(", f{i}: {ty}")).collect();
+    format!(
+        "module shop\nadd type Wide = {{ id: I64{fields} }}\nadd relation wides : Wide key id\n"
+    )
+}
+
+/// An insert of row `k` of `wides`, every one of its `n` text fields holding `t`.
+fn wide_row(k: i64, n: usize, t: &str) -> String {
+    let fields: String = (0..n).map(|i| format!(", f{i}: \"{t}\"")).collect();
+    format!("insert wides {{ id: {k}{fields} }}")
+}
+
+fn open_wide(rt: &SimRuntime, n: usize) -> Database<SimRuntime> {
+    Database::open_in(
+        rt.clone(),
+        "app.adt",
+        &Log::new([SHOP.to_string(), wide(n, "Text")]),
+        &options(),
+    )
+    .expect("the database opens")
+}
+
+fn assert_too_large(e: &Error) {
+    match reason(e) {
+        RejectReason::RowTooLarge {
+            relation,
+            ctor,
+            size,
+            limit,
+        } => {
+            assert_eq!("shop::wides", relation);
+            assert_eq!("Wide", ctor);
+            assert!(size > limit, "{size} over {limit}");
+        }
+        other => panic!("not too large: {other:?}"),
+    }
+}
+
+#[test]
+fn a_row_too_large_is_rejected_naming_its_relation_constructor_size_and_limit() {
+    once(0, |rt| {
+        let db = open_wide(&rt, 600);
+        let long = "y".repeat(30);
+        let err = db
+            .query_text(&wide_row(1, 600, &long), &[], &CallOptions::default())
+            .expect_err("the row does not fit");
+        assert_too_large(&err);
+        assert!(query(&db, "from w in wides select w.id").is_empty());
+        db.query_text(&wide_row(1, 600, ""), &[], &CallOptions::default())
+            .expect("a row of empty fields fits");
+        assert_eq!(vec!["1"], query(&db, "from w in wides select w.id"));
+    });
+}
+
+#[test]
+fn an_update_to_a_row_too_large_is_rejected() {
+    once(1, |rt| {
+        let db = open_wide(&rt, 600);
+        db.query_text(&wide_row(1, 600, ""), &[], &CallOptions::default())
+            .expect("a row of empty fields fits");
+        let long = "y".repeat(30);
+        let err = db
+            .query_text(
+                &format!(
+                    "update w in wides where w.id == 1 set Wide {{ w with {} }}",
+                    (0..600)
+                        .map(|i| format!("f{i}: \"{long}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                &[],
+                &CallOptions::default(),
+            )
+            .expect_err("the new row does not fit");
+        assert_too_large(&err);
+        assert_eq!(
+            vec![r#""""#],
+            query(&db, "from w in wides select w.f0"),
+            "the old row stays"
+        );
+    });
+}
+
+#[test]
+fn a_row_too_large_takes_precedence_over_a_key_violation() {
+    once(2, |rt| {
+        let db = open_wide(&rt, 600);
+        db.query_text(&wide_row(1, 600, ""), &[], &CallOptions::default())
+            .expect("a row of empty fields fits");
+        let long = "y".repeat(30);
+        let err = db
+            .query_text(&wide_row(1, 600, &long), &[], &CallOptions::default())
+            .expect_err("the key is held and the row does not fit");
+        assert_too_large(&err);
+    });
+}
+
+#[test]
+fn a_migration_declaring_a_constructor_that_can_never_fit_is_refused_naming_it() {
+    for (seed, (n, ty)) in [(600, "Decimal 0"), (4000, "Text")].into_iter().enumerate() {
+        once(seed as u64, |rt| {
+            let got = Database::open_in(
+                rt,
+                "app.adt",
+                &Log::new([SHOP.to_string(), wide(n, ty)]),
+                &options(),
+            );
+            match got {
+                Err(OpenError::MigrationRefused {
+                    version: 2,
+                    reason:
+                        Error::Rejected {
+                            reason: RejectReason::SchemaRefused { detail, .. },
+                        },
+                }) => assert!(detail.contains("wides.Wide"), "seed {seed}: {detail}"),
+                other => panic!("seed {seed}: {n} fields of {ty} are not refused: {other:?}"),
+            }
+        });
+    }
+}
