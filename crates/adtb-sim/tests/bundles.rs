@@ -752,12 +752,26 @@ fn a_bundle_whose_lease_and_grace_have_passed_is_expired() {
             query: String::new(),
         };
         assert_eq!(expired, unbound(&db, "web-1.0"));
+        assert_eq!(
+            "the lease of bundle `web-1.0` expired",
+            expired.to_string(),
+            "a bind names no query"
+        );
         match web.call(1, &[], &CallOptions::default()) {
             Err(Error::Rejected {
-                reason: RejectReason::BundleExpired { bundle, query },
+                reason: reason @ RejectReason::BundleExpired { .. },
             }) => {
-                assert_eq!("web-1.0", bundle);
-                assert_eq!("names", query);
+                assert_eq!(
+                    RejectReason::BundleExpired {
+                        bundle: "web-1.0".into(),
+                        query: "names".into()
+                    },
+                    reason
+                );
+                assert_eq!(
+                    "the lease of bundle `web-1.0` expired before `names`",
+                    reason.to_string()
+                );
             }
             other => panic!("the call is not refused expired: {other:?}"),
         }
@@ -892,6 +906,90 @@ fn a_renewal_is_recorded_and_survives_reopen() {
             renewed(&db),
             "a reopen within an eighth of the lease writes nothing"
         );
+    });
+}
+
+#[test]
+fn a_call_refused_untranslatable_does_not_renew_the_lease() {
+    once(37, |rt| {
+        let db = opened(
+            &rt,
+            &[V1, RENAME_NAME],
+            vec![bundle("web-1.0", &[V1], " lease 1d", NAMES)],
+        );
+        let web = db.registered("web-1.0").expect("web-1.0 binds");
+        let renewed = || query(&db, "from b in catalog::bundles select b.renewed");
+        let before = renewed();
+        sleep(&rt, 4 * HOUR);
+        let refused = web.call(1, &[], &CallOptions::default());
+        assert!(
+            matches!(
+                refused.as_ref().map_err(reason),
+                Err(RejectReason::Untranslatable { .. })
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(before, renewed(), "a refused call writes no renewal");
+    });
+}
+
+const IDENTITIES: &str = "import auth
+query identities () -> I64 = count(i for i in identities)
+";
+
+#[test]
+fn a_bundle_live_before_the_open_that_ships_it_again_blocks_an_enable_it_reads() {
+    let mut sim = Sim::new(39, Config::default());
+    run(&mut sim, |rt| {
+        opened(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", IDENTITIES)]);
+    });
+    run(&mut sim, |rt| {
+        let got = open(
+            &rt,
+            &[V1, ADD_APPLE, ENABLE_APPLE],
+            vec![bundle("web-1.0", &[V1], "", IDENTITIES)],
+        );
+        match got {
+            Err(OpenError::MigrationRefused { version: 3, reason }) => {
+                assert!(reason.to_string().contains("web-1.0"), "{reason}");
+            }
+            other => panic!("the enable is not refused for web-1.0: {other:?}"),
+        }
+    });
+}
+
+const NO_BLANK: &str =
+    "module auth\nadd constraint no_blank = from u in users where u.name == \"\" select u\n";
+const DROP_NO_BLANK: &str = "module auth\ndrop constraint no_blank\n";
+
+#[test]
+#[ignore = "the write path enforces the version program, not the catalog's pending drops"]
+fn a_drop_stays_pending_while_a_bundle_live_before_the_open_reads_it() {
+    let mut sim = Sim::new(40, Config::default());
+    run(&mut sim, |rt| {
+        opened(
+            &rt,
+            &[V1, NO_BLANK],
+            vec![bundle("web-1.0", &[V1, NO_BLANK], "", NAMES)],
+        );
+    });
+    run(&mut sim, |rt| {
+        let db = opened(
+            &rt,
+            &[V1, NO_BLANK, DROP_NO_BLANK],
+            vec![bundle("web-1.0", &[V1, NO_BLANK], "", NAMES)],
+        );
+        let blank = db.query_text(
+            "insert users { name: \"\", tier: Free }",
+            &[],
+            &CallOptions::default(),
+        );
+        match blank {
+            Err(Error::Rejected {
+                reason: RejectReason::Violated { constraint, .. },
+            }) => assert_eq!("auth::no_blank", constraint),
+            other => panic!("the pending-dropped constraint is not enforced: {other:?}"),
+        }
     });
 }
 

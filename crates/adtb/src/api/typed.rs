@@ -639,7 +639,14 @@ impl<B: BundleDef, R: Runtime> Bundle<B, R> {
         let mut attempt = 1;
         loop {
             let mut t = self.begin(opts)?;
-            let value = f(&mut t)?;
+            let value = match f(&mut t) {
+                Ok(value) => value,
+                Err(_) if t.txn.serialization_failed() && attempt < attempts => {
+                    attempt += 1;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             match t.txn.commit(None) {
                 Ok(position) => {
                     return Ok(Committed {

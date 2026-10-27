@@ -57,6 +57,9 @@ struct Column {
 struct Staged {
     /// The constructor relation as ad hoc text names it.
     target: String,
+    rel: RelId,
+    /// The positions among `columns` of the key fields, in name order.
+    key: Vec<usize>,
     columns: Vec<Column>,
     schema: Arc<ArrowSchema>,
     /// The positions among `columns` of each batch's fields, with its rows, each a value per
@@ -111,6 +114,11 @@ impl<R: Runtime> Load<'_, R> {
     /// with `KeyViolation`, a broken constraint with `Violated`, and a collision with a row
     /// committed since the load opened with `Serialization`. The engine does not rerun it.
     pub fn commit(mut self) -> Result<LoadReport, Error> {
+        for s in &self.staged {
+            if let Some(key) = s.shared_key() {
+                return Err(Error::key_violation(&self.txn.engine.schema, s.rel, &key));
+            }
+        }
         let mut text = String::from("transact\n");
         let mut params = Vec::new();
         let mut rows = 0;
@@ -187,6 +195,32 @@ impl Appender<'_> {
 }
 
 impl Staged {
+    /// Returns the least key that two staged rows give.
+    fn shared_key(&self) -> Option<Val> {
+        let mut seen = BTreeSet::new();
+        let mut shared = BTreeSet::new();
+        for (fields, rows) in &self.rows {
+            let Some(at) = self
+                .key
+                .iter()
+                .map(|k| fields.iter().position(|f| f == k))
+                .collect::<Option<Vec<usize>>>()
+            else {
+                continue;
+            };
+            for row in rows {
+                let key = match at.as_slice() {
+                    [j] => row[*j].clone(),
+                    _ => Val::record(at.iter().map(|&j| row[j].clone()).collect()),
+                };
+                if !seen.insert(key.clone()) {
+                    shared.insert(key);
+                }
+            }
+        }
+        shared.into_iter().next()
+    }
+
     /// Returns the type and value of a parameter holding `rows`, each a value per field of
     /// `fields`: a set of records of those fields and an ordinal, which keeps equal rows apart.
     fn param(&self, fields: &[usize], rows: &[Vec<Val>]) -> (Ty, Val) {
@@ -291,8 +325,17 @@ fn staged(schema: &Schema, target: &str) -> Result<Staged, Error> {
             filled,
         });
     }
+    let mut key_names: Vec<&String> = r.key.iter().collect();
+    key_names.sort();
+    let key = key_names
+        .iter()
+        .map(|k| columns.iter().position(|c| c.name == **k))
+        .collect::<Option<Vec<usize>>>()
+        .ok_or_else(unknown)?;
     let qualified = format!("{}::{}", schema.module(r.module).name, r.name);
     Ok(Staged {
+        rel,
+        key,
         target: match ctor_name {
             Some(c) => format!("{qualified}.{c}"),
             None => qualified,

@@ -1,0 +1,4 @@
+module shop
+add type Status = Open | Closed
+add type Ticket = { id: Key tickets, status: Status }
+add relation tickets : Ticket key id generate sequence

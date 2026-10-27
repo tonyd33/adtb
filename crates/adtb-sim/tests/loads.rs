@@ -245,6 +245,59 @@ fn two_staged_rows_with_one_key_fail_with_a_key_violation_at_commit() {
 }
 
 #[test]
+fn two_identical_staged_rows_with_one_key_fail_with_a_key_violation_at_commit() {
+    once(5, |rt| {
+        let db = open(&rt);
+        let mut load = db.load(&LoadOptions::default()).expect("a load");
+        let row = vec![Stored::I64(7), text("a"), text("x")];
+        push(
+            &mut load,
+            "notes",
+            &["id", "body", "tag"],
+            &[row.clone(), row],
+        )
+        .expect("rows land in staging unconstrained");
+        let err = load.commit().expect_err("one key twice");
+        assert_eq!(
+            &RejectReason::KeyViolation {
+                relation: "shop::notes".into(),
+                key: "notes.key(7)".into()
+            },
+            reason(&err)
+        );
+        assert!(query(&db, "from n in notes select n.body").is_empty());
+    });
+}
+
+#[test]
+fn a_row_equal_to_another_once_its_default_is_filled_still_violates_the_key() {
+    once(5, |rt| {
+        let db = open(&rt);
+        let mut load = db.load(&LoadOptions::default()).expect("a load");
+        push(
+            &mut load,
+            "notes",
+            &["id", "body", "tag"],
+            &[vec![Stored::I64(7), text("a"), text("none")]],
+        )
+        .expect("a row with its tag");
+        push(
+            &mut load,
+            "notes",
+            &["id", "body"],
+            &[vec![Stored::I64(7), text("a")]],
+        )
+        .expect("a row with the default tag");
+        let err = load.commit().expect_err("one key twice");
+        assert!(
+            matches!(reason(&err), RejectReason::KeyViolation { .. }),
+            "{err:?}"
+        );
+        assert!(query(&db, "from n in notes select n.body").is_empty());
+    });
+}
+
+#[test]
 fn a_batch_of_another_schema_is_refused_at_push_and_stages_nothing() {
     once(6, |rt| {
         let db = open(&rt);

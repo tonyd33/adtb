@@ -264,12 +264,14 @@ Postconditions of `Catalog::migrate` with live readers:
 Postcondition of `Catalog::release`: every pending drop whose last
 holder the released bundle was takes effect.
 
-`Catalog::open` starts with no readers and no pending drops: an
-embedded open supersedes the bundles of earlier opens before it
-migrates ([../spec/evolution.md §8.4](../spec/evolution.md#84-embedded-databases)),
-so no embedded open holds a migration or a drop back. The write path
-an open binds is built from the version's program, which equals the
-schema keeping pending drops, since nothing is pending at open.
+`Catalog::open` starts with no readers and no pending drops. Before
+it migrates, an embedded open supersedes the bundles of earlier opens
+that it does not ship
+([../spec/evolution.md §8.4](../spec/evolution.md#84-embedded-databases))
+and registers as a reader, at its pin, each bundle it ships that was
+live before it. Only those hold a migration or a drop back; a bundle
+the open records for the first time does not. The write path an open
+binds is built from the version's program.
 
 Rulings: engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version
 

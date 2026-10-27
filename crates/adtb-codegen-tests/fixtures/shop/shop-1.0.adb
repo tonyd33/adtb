@@ -1,4 +1,4 @@
-bundle shop-1.0 pins 2 (08618e7e1fd8626261883c11e14f29e52fc2b960d93d87f0930b9cf0fea999c0) edition "2026-10"
+bundle shop-1.0 pins 3 (22906797ba63eccd8495de3d1dc2122e8b2a406b98e10522994f222b14bb572b) edition "2026-10"
 import shop
 import fn method
 fn label (c: Customer) -> Text = c.name
@@ -43,3 +43,10 @@ txn tag (k: Key customers, label: Text) -> Key tags =
   transact
     let t = insert tags { customer: k, label: label }
     return key t
+txn open_ticket (s: Status) -> Key tickets =
+  transact
+    let t = insert tickets { status: s }
+    return key t
+query statuses () -> Set (Tag Status) = from t in tickets select tag(t.status)
+query with_status (g: Tag Status) -> Set (Key tickets) =
+  from t in tickets where tag(t.status) == g select key t

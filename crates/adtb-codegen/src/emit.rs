@@ -11,6 +11,10 @@ use adtb_lang::types::{Base, RelId, Ty, TypeId};
 use crate::Error;
 use crate::names::{camel, ident};
 
+#[cfg(test)]
+#[path = "emit_tests.rs"]
+mod tests;
+
 const HOST: &str = "::adtb::typed::HostValue";
 const TYPED: &str = "::adtb::typed";
 const DERIVES: &str = "#[derive(Clone, Debug, PartialEq)]";
@@ -201,17 +205,16 @@ impl<'s> Module<'s> {
         Error::new(format!("`{}` has no host type", self.schema.show_ty(ty)))
     }
 
-    /// Emit the tag type of declared sum `t`: one variant per constructor, in name order.
+    /// Emit the tag type of declared sum `t`: one variant per constructor, in declaration order.
     fn tag(&mut self, t: TypeId) -> Result<(), Error> {
         let d = self.schema.ty(t);
         let name = format!("{}Tag", d.name);
         self.declare(&name, &format!("the tag type of `{}`", d.name))?;
-        let mut names: Vec<(String, Vec<Field>)> = d
+        let names: Vec<(String, Vec<Field>)> = d
             .ctors()
             .iter()
             .map(|c| (c.name.clone(), Vec::new()))
             .collect();
-        names.sort_by(|a, b| a.0.cmp(&b.0));
         enum_items(&mut self.out, &name, "", &names);
         Ok(())
     }
@@ -296,13 +299,21 @@ impl<'s> Module<'s> {
             format!("<{}>", bs.join(", "))
         };
         let name = &d.name;
-        let id = schema.ids.types.get(&t).copied().unwrap_or_default();
-        let ctor_ids: Vec<String> = (0..d.ctors().len().max(1))
+        let no_id = |what: String| Error::new(format!("{what} has no catalog id"));
+        let id = schema
+            .ids
+            .types
+            .get(&t)
+            .ok_or_else(|| no_id(format!("type `{name}`")))?;
+        let ctor_ids = (0..d.ctors().len().max(1))
             .map(|c| {
-                let id = schema.ids.ctors.get(&(t, c as u32)).copied();
-                id.unwrap_or_default().to_string()
+                let id = schema.ids.ctors.get(&(t, c as u32));
+                id.map(u64::to_string).ok_or_else(|| {
+                    let ctor = d.ctors().get(c).map_or(name.as_str(), |c| &c.name);
+                    no_id(format!("constructor `{name}.{ctor}`"))
+                })
             })
-            .collect();
+            .collect::<Result<Vec<String>, Error>>()?;
         match &d.kind {
             TypeDefKind::Newtype { base, .. } => {
                 let rep = self.host_ty(base, &format!("{name}Value"), &params)?;
@@ -389,7 +400,11 @@ impl<'s> Module<'s> {
                 self.host_ty(&Ty::Record(fs), &format!("{marker}Key"), &[])?
             }
         };
-        let id = schema.ids.relations.get(&rel).copied().unwrap_or_default();
+        let id = schema
+            .ids
+            .relations
+            .get(&rel)
+            .ok_or_else(|| Error::new(format!("relation `{}` has no catalog id", r.name)))?;
         let out = &mut self.out;
         writeln!(
             out,

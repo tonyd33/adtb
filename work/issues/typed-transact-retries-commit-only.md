@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: resolved
 kind: bug
 priority: 793
 summary: "the typed Bundle::transact retries a serialization failure only at commit, not one a call inside the closure returns"
+closed: 2026-10-27
 tags:
   - quality
   - engine
@@ -18,3 +19,13 @@ tags:
 Repro: two typed `transact` blocks that read and write the same row concurrently under the simulator; the loser fails inside `f` and is not rerun.
 
 Fix: after `f` fails, check whether `t.txn` ended on a serialization failure (its `State::Ended` error) and rerun while attempts remain, or require `B::Error` to expose the wrapped `adtb::Error`. Add the test.
+
+## 2026-10-27: done
+
+The typed `Bundle::transact` now reruns `f` when `f` fails and its transaction ended on a serialization failure (`AdHocTransaction::serialization_failed`). Test: `calls::transact_reruns_a_closure_whose_call_meets_a_serialization_failure`, which failed before the fix.
+
+## 2026-10-27: resolved
+
+## 2026-10-27: landed
+
+Landed with the qwrong track.

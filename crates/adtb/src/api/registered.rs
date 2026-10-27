@@ -5,15 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
 
 use adtb_lang::ast::{BundleItem, FnDecl, Import, QName};
-use adtb_lang::check::{Bundles, Program, check_adhoc, check_query_in, check_txn_in};
+use adtb_lang::check::{Bundles, Program, check_adhoc};
 use adtb_lang::evolve::Source;
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 use adtb_lang::norm::{self, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc, parse_bundle, parse_bundle_body};
-use adtb_lang::resolve::{Visible, lookup_value};
-use adtb_lang::schema::{Schema, ValueDef};
-use adtb_lang::signature;
-use adtb_lang::types::Ty;
+use adtb_lang::schema::Schema;
+use adtb_lang::signature::{self, Item};
+use adtb_lang::types::{FnId, Ty};
 
 use crate::catalog::{self, Catalog};
 use crate::exec::Val;
@@ -166,6 +165,16 @@ impl Checked {
     pub(super) fn bundle(&self) -> Option<(&Header, Vec<CallRow>)> {
         let calls = self.entries.iter().map(|e| e.row.clone()).collect();
         self.header.as_ref().map(|h| (h, calls))
+    }
+
+    /// Returns the catalog reader of a bundle's registration, at the version it pins.
+    fn reader(&self) -> Option<catalog::Reader> {
+        let h = self.header.as_ref()?;
+        let mut reads = Reads::default();
+        for e in &self.entries {
+            reads.add(&self.schema, &e.terms, e.body);
+        }
+        Some(reads.reader(&self.schema, &h.name, h.pins, h.hides_new))
     }
 
     /// Record the queries and transactions of a bundle whose calls run in `bundles`.
@@ -358,22 +367,61 @@ fn pinned(catalog: &Catalog, h: &Header) -> Result<Option<Pin>, Error> {
 
 /// Returns the constructor the bundle `c` would read that is enabled now and absent at its pin.
 fn stale(catalog: &Catalog, c: &Checked) -> Result<Option<String>, Error> {
-    let Some(h) = &c.header else {
+    let Some(reader) = c.reader() else {
         return Ok(None);
     };
-    let mut reads = Reads::default();
-    for e in &c.entries {
-        reads.add(&c.schema, &e.terms, e.body);
-    }
-    let reader = reads.reader(&c.schema, &h.name, h.pins, h.hides_new);
-    catalog.stale(&reader).map_err(|e| match e {
+    catalog.stale(&reader).map_err(catalog_error)
+}
+
+fn catalog_error(e: catalog::Error) -> Error {
+    match e {
         catalog::Error::Refused(why) | catalog::Error::Unaccepted(_, why) => {
             Error::invalid(why.join("\n"))
         }
         other => Error::rejected(RejectReason::Internal {
             what: format!("{other:?}"),
         }),
-    })
+    }
+}
+
+/// Register as a reader of `catalog` each bundle of `regs` that `live` names, at the version it
+/// pins.
+pub(super) fn readers(
+    catalog: &mut Catalog,
+    regs: &[Registration],
+    live: &BTreeSet<String>,
+) -> Result<(), OpenError> {
+    let schema = Arc::new(catalog.schema().clone());
+    let program = catalog.program().clone();
+    for r in regs {
+        let Some(h) = r.header.as_ref().filter(|h| live.contains(&h.name)) else {
+            continue;
+        };
+        let refused = |reason: Error| OpenError::RegistrationRefused {
+            bundle: r.name.clone(),
+            reason,
+        };
+        let reader = {
+            let c = match pinned(catalog, h).map_err(refused)? {
+                Some(pin) => checked(&pin.over(), r, false),
+                None => checked(
+                    &Over {
+                        source: catalog.source(),
+                        schema: &schema,
+                        program: &program,
+                    },
+                    r,
+                    true,
+                ),
+            }
+            .map_err(refused)?;
+            c.reader().expect("a bundle's registration has a header")
+        };
+        catalog
+            .register(reader)
+            .map_err(|e| refused(catalog_error(e)))?;
+    }
+    Ok(())
 }
 
 /// Check and normalise registration `r` over `over`, the version the database is at when
@@ -399,72 +447,40 @@ fn checked(over: &Over<'_>, r: &Registration, current: bool) -> Result<Checked, 
         .iter()
         .map(|f| format!("\n{}", spanned(&r.text, f.span)))
         .collect();
+    let decl = |span, name: &adtb_lang::ast::Ident, result: &adtb_lang::ast::Type| {
+        let signature = r
+            .text
+            .get(name.span.end as usize..result.span.end as usize)
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        (signature, format!("{}{functions}", spanned(&r.text, span)))
+    };
+    let calls =
+        signature::calls(schema, program, &vis, &imports, &items).map_err(Error::invalid)?;
     let mut entries = Vec::new();
-    for i in &imports {
-        if let Import::Fn(f) = i {
-            entries.push(imported(schema, program, &vis, f)?);
-        }
-    }
-    for item in &items {
-        let decl = |span, name: &adtb_lang::ast::Ident, result: &adtb_lang::ast::Type| {
-            let signature = r
-                .text
-                .get(name.span.end as usize..result.span.end as usize)
-                .unwrap_or_default()
-                .trim()
-                .to_owned();
-            (signature, format!("{}{functions}", spanned(&r.text, span)))
-        };
-        match item {
-            BundleItem::Query(q) => {
-                let failed = |m: String| Error::invalid(format!("query `{}`: {m}", q.name.text));
-                if q.limit.is_some() {
-                    return Err(failed(
-                        "a declared limit does not run in this engine yet".into(),
-                    ));
-                }
-                let checked = check_query_in(schema, program, vis.clone(), q)
-                    .map_err(|d| failed(d.message))?;
+    for c in calls {
+        let mut e = match c.item {
+            Item::Fn(f, id) => imported(schema, program, f, id)?,
+            Item::Query(q, checked) => {
                 let normal = norm::query(schema, program, &checked).map_err(no_normal)?;
                 let (signature, text) = decl(q.span, &q.name, &q.result);
                 let mut e = entry(&q.name.text, Callable::Query, q.params.len(), normal);
                 e.row.signature = signature;
                 e.row.text = text;
-                entries.push(e);
+                e
             }
-            BundleItem::Txn(t) => {
-                let failed = |m: String| Error::invalid(format!("txn `{}`: {m}", t.name.text));
-                if t.limit.is_some() {
-                    return Err(failed(
-                        "a declared limit does not run in this engine yet".into(),
-                    ));
-                }
-                let checked =
-                    check_txn_in(schema, program, vis.clone(), t).map_err(|d| failed(d.message))?;
+            Item::Txn(t, checked) => {
                 let normal = norm::txn(schema, program, &checked).map_err(no_normal)?;
                 let (signature, text) = decl(t.span, &t.name, &t.result);
                 let mut e = entry(&t.name.text, Callable::Txn, t.params.len(), normal);
                 e.row.signature = signature;
                 e.row.text = text;
-                entries.push(e);
+                e
             }
-            BundleItem::Fn(_) => {}
-            BundleItem::Feed(_) | BundleItem::Aggregate(_) => {
-                return Err(Error::invalid(
-                    "only queries, transactions and functions register in this engine",
-                ));
-            }
-        }
-    }
-    let mut seen = BTreeSet::new();
-    if let Some(e) = entries.iter().find(|e| !seen.insert(e.name.as_str())) {
-        return Err(Error::invalid(format!(
-            "`{}` is declared twice in the registration",
-            e.name
-        )));
-    }
-    for (i, e) in entries.iter_mut().enumerate() {
-        e.row.ordinal = i64::try_from(i + 1).expect("a registration holds fewer than 2^63 calls");
+        };
+        e.row.ordinal = i64::from(c.signature.ordinal);
+        entries.push(e);
     }
     Ok(Checked {
         name: r.name.clone(),
@@ -524,17 +540,10 @@ fn shape(terms: &Terms, t: Tm) -> (bool, Option<u64>) {
     (terms.writes(t), retry)
 }
 
-/// Returns the entry that calls the schema function `f`, imported into a registration that reads
-/// the modules of `vis`.
-fn imported(schema: &Schema, program: &Program, vis: &Visible, f: &QName) -> Result<Entry, Error> {
+/// Returns the entry that calls the schema function `id`, imported by the name `f`.
+fn imported(schema: &Schema, program: &Program, f: &QName, id: FnId) -> Result<Entry, Error> {
     let failed = |m: String| Error::invalid(format!("fn `{}`: {m}", f.name.text));
-    let Ok(ValueDef::Function(id)) = lookup_value(schema, vis, f) else {
-        return Err(failed("no schema function of this name to import".into()));
-    };
-    let def = &schema.functions[id.0 as usize];
-    if !def.type_params.is_empty() {
-        return Err(failed("a generic function is not called by ordinal".into()));
-    }
+    let def = schema.function(id);
     let names: Vec<String> = (0..def.params.len()).map(|i| format!("arg{i}")).collect();
     let text = format!(
         "{}::{}({})",
@@ -624,7 +633,7 @@ impl<R: Runtime> Database<R> {
     /// `UnknownBundle` for a name no registration of this open has.
     pub fn registered(&self, name: &str) -> Result<Registered<R>, Error> {
         let _open = self.engine.enter()?;
-        self.engine.bind(name, "")?;
+        self.engine.bind(name)?;
         self.engine
             .registered
             .iter()
@@ -711,15 +720,15 @@ impl<R: Runtime> Registered<R> {
     }
 
     /// Returns the callable `ordinal`, refusing a call of a bundle that is retired, superseded
-    /// or expired, renewing its lease in `e` when a renewal is due, and refusing a call of a
-    /// bundle pinned before the version the database is at.
+    /// or expired and a call of a bundle pinned before the version the database is at, and
+    /// renewing the lease of one it does not refuse in `e` when a renewal is due.
     fn entry(&self, e: &Engine<R>, ordinal: u32) -> Result<&Entry, Error> {
         let checked = self.checked();
         let entry = usize::try_from(ordinal)
             .ok()
             .and_then(|i| checked.entries.get(i.checked_sub(1)?))
             .ok_or_else(|| Error::rejected(RejectReason::UnknownQuery))?;
-        e.bind(&checked.name, &entry.name)?;
+        let due = e.admit(&checked.name, &entry.name)?;
         if !checked.current {
             return Err(Error::rejected(RejectReason::Untranslatable {
                 query: format!("{}::{}", checked.name, entry.name),
@@ -727,6 +736,9 @@ impl<R: Runtime> Registered<R> {
                          engine serves a bundle only at the version the database is at"
                     .into(),
             }));
+        }
+        if due {
+            e.renew(&checked.name);
         }
         Ok(entry)
     }

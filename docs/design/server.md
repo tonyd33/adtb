@@ -82,7 +82,11 @@ Postconditions:
   function takes no ordinal and is visible only to its registration.
 - Binding a bundle and every call on it refuse a retired, superseded or
   expired bundle, and renew its lease when an eighth of the lease has
-  passed since the renewal `catalog::bundles` records.
+  passed since the renewal `catalog::bundles` records. A refused bind or
+  call writes no renewal. A renewal is its own transaction, written
+  while no other write of a bundle's row runs and skipped while one
+  does; one that fails leaves the lease as it was and does not fail the
+  bind or call.
 - A call runs for `opts.assert`, else for `Service { name: "owner" }`,
   the schema-owner role the handle acts as. Asserting a `Service` value
   is refused with `Denied`. A schema function a call reaches sees the

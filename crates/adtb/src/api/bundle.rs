@@ -1,7 +1,7 @@
 //! Bundles: the header of a bundle file, the rows of `catalog::bundles` and `catalog::registered`
 //! that hold their deployment state, leases, retirement and supersession.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ast::{self, BundleHeader, BundleName, ExprKind, HeaderClause, Lit};
 use adtb_lang::check::Command;
@@ -174,6 +174,15 @@ pub(super) struct Stored {
 }
 
 impl Stored {
+    /// Returns the name of each bundle live at `now` under the file settings `s`.
+    pub(super) fn live(&self, now: i64, s: &Settings) -> BTreeSet<String> {
+        self.bundles
+            .values()
+            .filter(|r| r.live(now, s))
+            .map(|r| r.header.name.clone())
+            .collect()
+    }
+
     fn next_bundle(&self) -> i64 {
         self.bundles.values().map(|r| r.id).max().unwrap_or(0) + 1
     }
@@ -676,26 +685,51 @@ pub(super) fn register<R: Runtime>(
 }
 
 impl<R: Runtime> Engine<R> {
-    /// Refuse a bind or call of bundle `name`, the call's query `query`, when the bundle is
-    /// retired, superseded or expired, and renew its lease when a renewal is due. A name that
-    /// is no bundle's is not refused.
-    pub(super) fn bind(&self, name: &str, query: &str) -> Result<(), Error> {
-        let now = self.clock();
-        let s = *self.settings.lock(&self.rt);
-        let mut deployed = self.deployed.lock(&self.rt);
-        let Some(row) = deployed.get(name) else {
-            return Ok(());
-        };
-        if let Some(reason) = row.refusal(now, &s, query) {
-            return Err(Error::rejected(reason));
-        }
-        if row.renewal_due(now, &s) {
-            let mut next = row.clone();
-            next.renewed = now;
-            self.replace_bundle(row, &next)?;
-            deployed.insert(name.to_owned(), next);
+    /// Refuse a bind of bundle `name` when it is retired, superseded or expired, and renew its
+    /// lease when a renewal is due. A name that is no bundle's is not refused.
+    pub(super) fn bind(&self, name: &str) -> Result<(), Error> {
+        if self.admit(name, "")? {
+            self.renew(name);
         }
         Ok(())
+    }
+
+    /// Refuse a bind or call of bundle `name`, the call's query `query`, when the bundle is
+    /// retired, superseded or expired. Returns whether a renewal of its lease is due. A name
+    /// that is no bundle's is not refused.
+    pub(super) fn admit(&self, name: &str, query: &str) -> Result<bool, Error> {
+        let now = self.clock();
+        let s = *self.settings.lock(&self.rt);
+        let deployed = self.deployed.lock(&self.rt);
+        let Some(row) = deployed.get(name) else {
+            return Ok(false);
+        };
+        match row.refusal(now, &s, query) {
+            Some(reason) => Err(Error::rejected(reason)),
+            None => Ok(row.renewal_due(now, &s)),
+        }
+    }
+
+    /// Renew the lease of bundle `name` when a renewal is due and no other write of a bundle's
+    /// row is under way.
+    pub(super) fn renew(&self, name: &str) {
+        let Some(_writer) = self.bundle_writer.try_lock() else {
+            return;
+        };
+        let now = self.clock();
+        let s = *self.settings.lock(&self.rt);
+        let Some(row) = self.deployed.lock(&self.rt).get(name).cloned() else {
+            return;
+        };
+        if row.refusal(now, &s, "").is_some() || !row.renewal_due(now, &s) {
+            return;
+        }
+        let mut next = row.clone();
+        next.renewed = now;
+        // A renewal that fails leaves the lease as it was, for a later call to renew.
+        if self.replace_bundle(&row, &next).is_ok() {
+            self.deployed.lock(&self.rt).insert(name.to_owned(), next);
+        }
     }
 
     /// Runs `c` when it is a command on deployment state, `retire bundle` or `supersede
@@ -711,26 +745,31 @@ impl<R: Runtime> Engine<R> {
 
     /// Retire bundle `name`. Returns its row.
     pub(super) fn retire(&self, name: &str) -> Result<DynRows, Error> {
+        let _writer = self.bundle_writer.lock(&self.rt);
         let now = self.clock();
-        let mut deployed = self.deployed.lock(&self.rt);
-        let row = known(&deployed, name)?;
+        let row = known(&self.deployed.lock(&self.rt), name)?.clone();
         let mut next = row.clone();
         if !matches!(row.state, State::Retired(_)) {
             next.state = State::Retired(now);
-            self.replace_bundle(row, &next)?;
+            self.replace_bundle(&row, &next)?;
         }
         let out = self.bundle_rows(&next);
-        deployed.insert(name.to_owned(), next);
+        self.deployed.lock(&self.rt).insert(name.to_owned(), next);
         Ok(out)
     }
 
     /// Supersede bundle `name` by `by`, a live bundle of its family. Returns the row of `name`.
     pub(super) fn supersede(&self, name: &str, by: &str) -> Result<DynRows, Error> {
+        let _writer = self.bundle_writer.lock(&self.rt);
         let now = self.clock();
         let s = *self.settings.lock(&self.rt);
-        let mut deployed = self.deployed.lock(&self.rt);
-        let row = known(&deployed, name)?;
-        let successor = known(&deployed, by)?;
+        let (row, successor) = {
+            let deployed = self.deployed.lock(&self.rt);
+            (
+                known(&deployed, name)?.clone(),
+                known(&deployed, by)?.clone(),
+            )
+        };
         if name == by || successor.header.family != row.header.family || !successor.live(now, &s) {
             return Err(Error::invalid(format!(
                 "bundle {name} is superseded only by another live bundle of family {}",
@@ -743,10 +782,10 @@ impl<R: Runtime> Engine<R> {
         let mut next = row.clone();
         if row.state == State::Active {
             next.state = State::Superseded(now);
-            self.replace_bundle(row, &next)?;
+            self.replace_bundle(&row, &next)?;
         }
         let out = self.bundle_rows(&next);
-        deployed.insert(name.to_owned(), next);
+        self.deployed.lock(&self.rt).insert(name.to_owned(), next);
         Ok(out)
     }
 

@@ -236,6 +236,9 @@ struct Engine<R: Runtime> {
     registered: Vec<Arc<registered::Checked>>,
     /// The rows of `catalog::bundles`, by bundle name, as the latest commit holds them.
     deployed: Lock<BTreeMap<String, bundle::Row>>,
+    /// Held across every write of a row of `catalog::bundles`, so that the row a writer reads
+    /// from `deployed` is the one its write replaces.
+    bundle_writer: Lock<()>,
     /// The file settings, as the latest commit holds them.
     settings: Lock<Settings>,
     pager: Pager<R>,
@@ -464,15 +467,12 @@ impl<R: Runtime> Engine<R> {
         let regs = &options.registrations;
         registered::downgrade(&catalog, regs)?;
         let mut stored = bundle::stored(&catalog, &pager, &txns)?;
+        let settings = Settings::stored(&catalog, &pager, &txns)?;
+        let opened = micros(pager.wall());
+        let live = stored.live(opened, &settings);
         let headers: Vec<&bundle::Header> = regs.iter().filter_map(Registration::header).collect();
-        bundle::record(
-            &catalog,
-            &pager,
-            &txns,
-            &mut stored,
-            &headers,
-            micros(pager.wall()),
-        )?;
+        bundle::record(&catalog, &pager, &txns, &mut stored, &headers, opened)?;
+        registered::readers(&mut catalog, regs, &live)?;
         let applied = catalog.source().log.len();
         options
             .host_fns
@@ -482,7 +482,6 @@ impl<R: Runtime> Engine<R> {
         migrate(&mut catalog, &pager, &txns, log)?;
         let schema = catalog.schema().clone();
         let program = catalog.program().clone();
-        let settings = Settings::stored(&catalog, &pager, &txns)?;
         let normal = norm::program(&schema, &program).map_err(corrupt)?;
         options.host_fns.bound(&schema, &normal)?;
         let plan = catalog.plan();
@@ -543,6 +542,7 @@ impl<R: Runtime> Engine<R> {
             bundles,
             registered: registered.into_iter().map(Arc::new).collect(),
             deployed: Lock::new(deployed),
+            bundle_writer: Lock::new(()),
             settings: Lock::new(settings),
             pager,
             db,

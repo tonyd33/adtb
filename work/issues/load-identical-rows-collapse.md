@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: resolved
 kind: bug
 priority: 791
 summary: "a load of two identical rows with an explicit key may insert one row and report two, instead of failing with KeyViolation"
+closed: 2026-10-27
 tags:
   - quality
   - engine
@@ -23,3 +24,13 @@ The tests miss the case: `equal_rows_of_a_load_are_each_inserted` (`crates/adtb-
 Repro: push `[I64(7), "a", "x"]` twice into `notes` with `id` given, commit, expect `KeyViolation` and no row inserted.
 
 Fix: carry the ordinal through to the key check (or build the change set directly instead of generating text), and add the test.
+
+## 2026-10-27: done
+
+Confirmed: two identical rows with a given key inserted one row and reported two. `Load::commit` now refuses, before it runs anything, a load where two staged rows of one constructor relation give one key, with `KeyViolation` at the least such key (`Staged::shared_key`, `Error::key_violation`). This also covers rows from batches of different field sets that are equal once defaults are filled. Tests: `loads::two_identical_staged_rows_with_one_key_fail_with_a_key_violation_at_commit` and `loads::a_row_equal_to_another_once_its_default_is_filled_still_violates_the_key`.
+
+## 2026-10-27: resolved
+
+## 2026-10-27: landed
+
+Landed with the qwrong track.

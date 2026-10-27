@@ -139,6 +139,15 @@ fn ordinals_agree_with_the_registration() {
             ("set_nick", <queries::set_nick as adtb::Callable>::ORDINAL),
             ("tags_of", <queries::tags_of as adtb::Callable>::ORDINAL),
             ("tag", <queries::tag as adtb::Callable>::ORDINAL),
+            (
+                "open_ticket",
+                <queries::open_ticket as adtb::Callable>::ORDINAL,
+            ),
+            ("statuses", <queries::statuses as adtb::Callable>::ORDINAL),
+            (
+                "with_status",
+                <queries::with_status as adtb::Callable>::ORDINAL,
+            ),
         ];
         for (name, o) in generated {
             assert_eq!(ordinal(name), o, "the ordinal of {name}");
@@ -411,6 +420,73 @@ fn transact_reruns_a_closure_and_returns_its_commit() {
             .collect::<Result<_, _>>()
             .expect("every name is Text");
         assert_eq!(vec!["dee".to_owned()], names);
+    });
+}
+
+#[test]
+fn a_tag_takes_the_constructors_in_declaration_order() {
+    once(0, |rt| {
+        let db = open(&rt);
+        let app = app(&db);
+        let open = app
+            .call(queries::open_ticket, (schema::Status::Open,), &opts())
+            .expect("a ticket opens")
+            .value;
+        let tags: Vec<queries::StatusTag> = app
+            .call(queries::statuses, (), &opts())
+            .expect("the statuses")
+            .collect::<Result<_, _>>()
+            .expect("every row is a StatusTag");
+        assert_eq!(vec![queries::StatusTag::Open], tags);
+        agree(
+            &db,
+            tags.into_iter().map(Ok),
+            "from t in tickets select tag(t.status)",
+        );
+        let keys: Vec<Key<schema::Tickets>> = app
+            .call(queries::with_status, (queries::StatusTag::Open,), &opts())
+            .expect("the open tickets")
+            .collect::<Result<_, _>>()
+            .expect("every row is a key");
+        assert_eq!(vec![open], keys, "the tag argument names Open");
+    });
+}
+
+#[test]
+fn transact_reruns_a_closure_whose_call_meets_a_serialization_failure() {
+    once(0, |rt| {
+        let db = open(&rt);
+        let s = seed(&db);
+        let app = app(&db);
+        let mut runs = 0;
+        let done = app
+            .transact(&TxnOptions::default(), 3, |t| {
+                runs += 1;
+                t.call(
+                    queries::customer,
+                    (s.ann.clone(),),
+                    &TxnCallOptions::default(),
+                )?;
+                if runs == 1 {
+                    app.call(
+                        queries::set_nick,
+                        (s.ann.clone(), Some("x".into())),
+                        &opts(),
+                    )?;
+                }
+                let nick = t
+                    .call(
+                        queries::set_nick,
+                        (s.ann.clone(), Some("y".into())),
+                        &TxnCallOptions::default(),
+                    )?
+                    .value;
+                Ok(nick)
+            })
+            .expect("the second run commits");
+        assert_eq!(2, runs, "the closure runs again");
+        assert_eq!(2, done.attempts);
+        assert_eq!(Some("y".to_owned()), done.value);
     });
 }
 

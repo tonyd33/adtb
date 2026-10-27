@@ -251,6 +251,17 @@ impl Error {
         )
     }
 
+    /// Returns the `KeyViolation` of two rows of `relation` with `key`, of a database of `schema`.
+    pub(super) fn key_violation(schema: &Schema, relation: RelId, key: &Val) -> Error {
+        Error::rejected(rejection(
+            schema,
+            Rejection::KeyViolation {
+                relation,
+                key: key.clone(),
+            },
+        ))
+    }
+
     /// Returns the client error of write-path error `e`, met by transaction `txn` of a database
     /// of `schema`.
     pub(super) fn of_write(schema: &Schema, txn: TxnId, e: write::Error) -> Error {
@@ -471,6 +482,9 @@ impl fmt::Display for RejectReason {
                 write!(f, "bundle `{bundle}` does not match catalog {catalog}")
             }
             R::Retired { bundle } => write!(f, "bundle `{bundle}` is retired"),
+            R::BundleExpired { bundle, query } if query.is_empty() => {
+                write!(f, "the lease of bundle `{bundle}` expired")
+            }
             R::BundleExpired { bundle, query } => {
                 write!(f, "the lease of bundle `{bundle}` expired before `{query}`")
             }

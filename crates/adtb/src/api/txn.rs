@@ -250,6 +250,11 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         }
     }
 
+    /// Returns whether the engine ended the transaction with a serialization failure.
+    pub(super) fn serialization_failed(&self) -> bool {
+        matches!(&self.state, State::Ended(e) if e.is_serialization())
+    }
+
     /// Abort the transaction, leaving every later call and the commit to fail with `err`.
     fn end(&mut self, err: Error) -> Result<(), Error> {
         match std::mem::replace(&mut self.state, State::Ended(err)) {

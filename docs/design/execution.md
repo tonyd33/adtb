@@ -703,7 +703,10 @@ ends; `Options::spill_bytes` bounds it. Spill buffers are outside the
 grant, at most a chunk per writer or reader. Spilling goes straight to
 the file: no temporary pages of the pool are used yet, and spill files
 are not encrypted yet. A spill file that cannot be made, written or read
-fails the statement with that I/O error, not `StatementLimit`.
+fails the statement with that I/O error, not `StatementLimit`, except
+`IoError::Full`: a device with no space left for the spill file fails
+the statement with `StatementLimit(Exceeded::Memory)` at the grant's
+limit.
 
 - The values a query's pipelines emit are a distinct set that holds at
   most an eighth of the grant in memory and writes the rest as sorted

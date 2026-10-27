@@ -150,6 +150,14 @@ fn a_query_that_does_not_check_is_refused_with_its_name() {
 }
 
 #[test]
+fn a_declared_limit_is_refused_as_registration_refuses_it() {
+    let body = "query slow () limit 30s -> Set Text = from c in customers select c.name\n";
+    let got = refusal(&[V1], &file(1, "2026-10", body));
+    assert!(got.contains("query `slow`"), "{got}");
+    assert!(got.contains("limit"), "{got}");
+}
+
+#[test]
 fn a_feed_is_refused() {
     let got = refusal(&[V1], &file(1, "2026-10", "feed changes of customers\n"));
     assert!(got.contains("register"), "{got}");

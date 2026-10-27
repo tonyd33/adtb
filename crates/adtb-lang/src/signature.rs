@@ -2,12 +2,12 @@
 //! builds: what a code generator emits typed calls from.
 
 use crate::ast::{self, BundleItem, FnDecl, Import, Operator, OperatorKind, QName};
-use crate::check::{Program, check_query_in, check_txn_in};
+use crate::check::{Program, Query, Txn, check_query_in, check_txn_in};
 use crate::evolve::Source;
 use crate::parse::{Options, parse_bundle, parse_migration};
 use crate::resolve::{Visible, lookup_value};
 use crate::schema::{Schema, ValueDef};
-use crate::types::Ty;
+use crate::types::{FnId, Ty};
 
 /// A migration of a log that does not apply, numbered from 1.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +55,22 @@ pub struct Signature {
     pub result: Ty,
 }
 
+/// What a callable of a bundle calls.
+#[derive(Debug)]
+pub enum Item<'a> {
+    /// A schema function the bundle imports, named as the bundle writes it.
+    Fn(&'a QName, FnId),
+    Query(&'a ast::QueryDecl, Query),
+    Txn(&'a ast::TxnDecl, Txn),
+}
+
+/// One callable of a bundle and what it calls.
+#[derive(Debug)]
+pub struct Call<'a> {
+    pub signature: Signature,
+    pub item: Item<'a>,
+}
+
 /// A bundle file checked over the source of the version it pins.
 #[derive(Debug)]
 pub struct Bundle {
@@ -68,8 +84,7 @@ pub struct Bundle {
 /// the header pins.
 ///
 /// Fails with the message of the first error: a file that does not parse, a module import of no
-/// user module, a function that does not check, a callable that does not check or is declared
-/// twice, a generic imported function, and a feed or aggregate, which take no ordinal here.
+/// user module, a function that does not check, and each refusal of [`calls`].
 pub fn bundle(source: &Source, text: &str) -> Result<Bundle, String> {
     let file = parse_bundle(text, Options::default())
         .ok()
@@ -86,27 +101,66 @@ pub fn bundle(source: &Source, text: &str) -> Result<Bundle, String> {
         .collect();
     let (schema, program) =
         with_functions(source, &base, &vis, &fns, text)?.unwrap_or((base, base_program));
+    let calls = calls(&schema, &program, &vis, &file.imports, &file.items)?
+        .into_iter()
+        .map(|c| c.signature)
+        .collect();
+    Ok(Bundle {
+        header: file.header,
+        schema,
+        calls,
+    })
+}
+
+/// Returns the callables of a bundle of `imports` and `items` checked over `schema` and
+/// `program` seeing `vis`: each `import fn` in import order, then each query and transaction in
+/// item order, with ordinals from 1.
+///
+/// Fails with the message of the first error: a callable that does not check, declares a limit
+/// or is declared twice, a generic imported function, and a feed or aggregate.
+pub fn calls<'a>(
+    schema: &Schema,
+    program: &Program,
+    vis: &Visible,
+    imports: &'a [Import],
+    items: &'a [BundleItem],
+) -> Result<Vec<Call<'a>>, String> {
     let mut calls = Vec::new();
-    for i in &file.imports {
+    for i in imports {
         if let Import::Fn(f) = i {
-            calls.push(imported(&schema, &vis, f)?);
+            calls.push(imported(schema, vis, f)?);
         }
     }
-    for item in &file.items {
+    let no_limit = "a declared limit does not run in this engine yet";
+    for item in items {
         match item {
             BundleItem::Query(q) => {
-                let checked = check_query_in(&schema, &program, vis.clone(), q)
-                    .map_err(|d| format!("query `{}`: {}", q.name.text, d.message))?;
+                let failed = |m: &str| format!("query `{}`: {m}", q.name.text);
+                if q.limit.is_some() {
+                    return Err(failed(no_limit));
+                }
+                let checked = check_query_in(schema, program, vis.clone(), q)
+                    .map_err(|d| failed(&d.message))?;
                 let names = q.params.iter().map(|p| p.name.text.clone()).collect();
                 let ty = checked.terms.ty(checked.term);
-                calls.push(declared(&q.name.text, CallKind::Query, names, ty));
+                calls.push(Call {
+                    signature: declared(&q.name.text, CallKind::Query, names, ty),
+                    item: Item::Query(q, checked),
+                });
             }
             BundleItem::Txn(t) => {
-                let checked = check_txn_in(&schema, &program, vis.clone(), t)
-                    .map_err(|d| format!("txn `{}`: {}", t.name.text, d.message))?;
+                let failed = |m: &str| format!("txn `{}`: {m}", t.name.text);
+                if t.limit.is_some() {
+                    return Err(failed(no_limit));
+                }
+                let checked = check_txn_in(schema, program, vis.clone(), t)
+                    .map_err(|d| failed(&d.message))?;
                 let names = t.params.iter().map(|p| p.name.text.clone()).collect();
                 let ty = checked.terms.ty(checked.term);
-                calls.push(declared(&t.name.text, CallKind::Txn, names, ty));
+                calls.push(Call {
+                    signature: declared(&t.name.text, CallKind::Txn, names, ty),
+                    item: Item::Txn(t, checked),
+                });
             }
             BundleItem::Fn(_) => {}
             BundleItem::Feed(_) | BundleItem::Aggregate(_) => {
@@ -117,18 +171,16 @@ pub fn bundle(source: &Source, text: &str) -> Result<Bundle, String> {
         }
     }
     for (i, c) in calls.iter().enumerate() {
-        if calls[..i].iter().any(|d| d.name == c.name) {
-            return Err(format!("`{}` is declared twice in the bundle", c.name));
+        let name = &c.signature.name;
+        if calls[..i].iter().any(|d| d.signature.name == *name) {
+            return Err(format!("`{name}` is declared twice in the bundle"));
         }
     }
     for (i, c) in calls.iter_mut().enumerate() {
-        c.ordinal = u32::try_from(i + 1).expect("a bundle holds fewer than 2^32 callables");
+        c.signature.ordinal =
+            u32::try_from(i + 1).expect("a bundle holds fewer than 2^32 callables");
     }
-    Ok(Bundle {
-        header: file.header,
-        schema,
-        calls,
-    })
+    Ok(calls)
 }
 
 /// Returns the user modules `imports` names, in import order.
@@ -190,8 +242,8 @@ pub fn with_functions(
     source.check().map(Some).map_err(file_diags)
 }
 
-/// Returns the signature of the schema function `f` a bundle seeing `vis` imports.
-fn imported(schema: &Schema, vis: &Visible, f: &QName) -> Result<Signature, String> {
+/// Returns the call of the schema function `f` a bundle seeing `vis` imports.
+fn imported<'a>(schema: &Schema, vis: &Visible, f: &'a QName) -> Result<Call<'a>, String> {
     let failed = |m: &str| format!("fn `{}`: {m}", f.name.text);
     let Ok(ValueDef::Function(id)) = lookup_value(schema, vis, f) else {
         return Err(failed("no schema function of this name to import"));
@@ -200,12 +252,16 @@ fn imported(schema: &Schema, vis: &Visible, f: &QName) -> Result<Signature, Stri
     if !def.type_params.is_empty() {
         return Err(failed("a generic function is not called by ordinal"));
     }
-    Ok(Signature {
+    let signature = Signature {
         ordinal: 0,
         name: f.name.text.clone(),
         kind: CallKind::Fn,
         params: def.params.clone(),
         result: def.result.clone(),
+    };
+    Ok(Call {
+        signature,
+        item: Item::Fn(f, id),
     })
 }
 

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: resolved
 kind: bug
 priority: 790
 summary: "a generated Tag enum orders its variants by name, so it decodes a tag whose sum is not declared in name order as the wrong constructor"
+closed: 2026-10-27
 tags:
   - quality
   - lang
@@ -22,3 +23,13 @@ No test sees it: every fixture sum in `crates/adtb-codegen-tests/fixtures/shop` 
 Repro: a bundle query `() -> Set (Tag Status) = from s in ss select tag(s)` over one `Open` row decodes as `StatusTag::Closed`.
 
 Fix: drop the sort and emit variants in declaration order, as declared sums already do; fix the doc comment. Add a fixture sum declared out of name order with a callable over its `Tag` to `crates/adtb-codegen-tests`.
+
+## 2026-10-27: done
+
+The tag emitter keeps declaration order (`Emitter::tag`, `crates/adtb-codegen/src/emit.rs`). The shop fixture gains migration `0003.adt` (`Status = Open | Closed`, relation `tickets`) and the bundle pins version 3 with `open_ticket`, `statuses` and `with_status`. Test: `calls::a_tag_takes_the_constructors_in_declaration_order`, which failed before the fix with `[Closed]`.
+
+## 2026-10-27: resolved
+
+## 2026-10-27: landed
+
+Landed with the qwrong track.
