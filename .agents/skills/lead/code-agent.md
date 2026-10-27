@@ -7,7 +7,7 @@ workspace your brief names. Never discard anything; no destructive jj
 or git commands; do not commit.
 
 Read first: your brief, then only the design and spec sections it
-names, by heading: `grep -n '^#' FILE`, then `sed -n A,Bp FILE` for
+names, by heading: `rg -n '^#' FILE`, then `sed -n A,Bp FILE` for
 one section. Never `cat` a whole `docs/` file. Read `AGENTS.md` and
 `docs/design/README.md` once. Rulings: `quandary rulings | grep -iE
 'TERMS'` from inside `work/research/`, with terms from your brief,
@@ -20,18 +20,17 @@ for the crate's modules and sizes, `work/tools/codemap CRATE MODULE`
 (a module may be a file: `codemap adtb heap/page.rs`) for a module's
 files and pub items with line numbers, and `work/tools/codemap --tests
 [CRATE]` for test binaries and their test counts. That replaces
-`ls`, `wc -l` and `grep 'pub fn'`. For one file's full outline, the LSP
-documentSymbol call works in your workspace; LSP references and
-workspace symbols answer against the main checkout, not your workspace,
-so use `grep -rn` for callers.
+`ls`, `wc -l` and searches for public declarations. If an LSP is
+available, verify which checkout it indexes before using its outline,
+references or workspace symbols. Use `rg` in your workspace for callers
+when symbol tools are unavailable or index another checkout.
 
-Reading code: locate with `grep -n` (symbols, `pub fn`, `impl`), then
-read at most about 150 lines per `sed -n`. Never `cat` several files
-in one call. Keep every command's output under about 300 lines; output
-over about 30KB is saved to a file, and reading it back costs the
-same. Do not re-read code you just edited. Put independent reads in
-one call. Context is re-read on every turn, so each extra kilobyte is
-paid for the rest of the session.
+Reading code: locate symbols with `rg -n`, then read at most about
+150 lines per range. Never `cat` several files in one call. Keep command
+output under about 300 lines; redirect larger output to a log and read
+the relevant ranges. Check the active harness's output limits rather
+than relying on automatic truncation or storage. Avoid rereading material
+already in context. Batch independent reads in one call.
 
 Tiers: `docs/spec/` is what users observe; `docs/design/` is the
 contract between subsystems; everything else stays inside your crate.
@@ -83,10 +82,10 @@ there, so use `jj diff` and `jj log`. Engine integration tests are in
 where MAIN is the main checkout (a later `-C` resolves against the
 first).
 
-Editing: read the range you will change with the Read tool (offset and
-limit, about 150 lines), then change it with Edit; Edit refuses a file
-you only read through `sed`. A scripted rewrite asserts its pattern
-matched exactly once.
+Editing: read the range you will change, about 150 lines, with an
+available file reader or bounded shell read. Apply a focused patch with
+the available editing tool, respecting any tool-specific read requirement.
+A scripted rewrite asserts its pattern matched exactly once.
 
 While iterating, run only the affected test binary (`cargo nextest run
 -p CRATE --test NAME FILTER`, or `-p CRATE --lib MODULE::` for unit
@@ -105,29 +104,52 @@ denies, among others, `type_complexity` (name a `type` alias),
 `uninlined_format_args` and `self_named_module_files` (a module with
 children is `foo/mod.rs`, never `foo.rs` beside `foo/`).
 
-Full check before reporting, run once at the end:
+For a code track, run the authoritative `check` once before reporting,
+unless the brief assigns narrower checks and names who owns the rest.
+From your workspace root in the dev shell:
 
-```
-cargo clippy --workspace --all-targets -- -D warnings 2>&1 | grep -E '^(error|warning)' -A8 | head -80
-cargo fmt --check && echo fmt-ok
-cargo deny check 2>&1 | tail -2
-work/tools/size-check.sh
-work/tools/suite
-work/tools/house-check
+```sh
+DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check && work/tools/house-check
 ```
 
-`work/tools/suite` stops below 30 GB free and lists the build
-directories (then run `cargo clean` in your own workspace and report
-it). It builds the tests, then waits for a machine-wide lock so only
-one suite runs at a time, and says so when it queues. It prints only
-the failing and timed-out tests, the Summary and the output path
-(`target/suite.txt`, ending in `suite: exit N`). Start it with
-run_in_background; you are notified when it exits, so do not poll or
-sleep. A test that times out in the full run and passes alone is load,
-not a failure: report it and do not rerun the suite. `house-check`
-prints `FILE:LINE: RULE: TEXT` for each added line that breaks a
-comment rule, and lists each added plain `//` comment for you to keep
-only if it states an invariant. Report each result.
+The explicit roots keep generated dev-shell wrappers on your workspace.
+`check` owns root clippy, formatting and the suite; campaign lint parity,
+clippy, formatting and tests; dependency policy and source-size limits.
+Report each failed or unfinished check. The lead owns post-land `check`.
+For prose-only changes, use the brief's checks and review the diff.
+
+Do not filter a running check through `grep`, `head` or `tail` for its
+status. Redirect output to a log, capture the command's exit status before
+inspecting that log, and return that status. For example, in a subshell:
+
+```sh
+(
+  mkdir -p target || exit 1
+  if DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check >target/check.log 2>&1; then
+    check_status=0
+  else
+    check_status=$?
+  fi
+  tail -80 target/check.log
+  exit "$check_status"
+)
+```
+
+`work/tools/suite` stops below 30 GB free and lists build directories;
+clean only your workspace's build artifacts and report it. It builds the
+tests, then waits for a machine-wide lock so only one suite runs at a time.
+It prints failures, timeouts, the summary and the output path
+(`target/suite.txt`, ending in `suite: exit N`). Use the harness's
+asynchronous execution when available, collect the final exit status and
+inspect the output. If it returns a session handle, wait on that handle;
+if it provides completion notifications, use them. Avoid busy polling.
+
+For a timeout, report the test, suite conditions and any isolated outcome.
+An isolated pass leaves the cause unresolved unless other evidence proves
+it; it does not make the full suite pass. Do not repeat the full suite
+without a specific diagnostic reason. `house-check` prints added lines
+that break a comment rule and lists added plain `//` comments; retain only
+comments stating a non-obvious invariant. Report its result.
 
 Report: files changed, what works, tests and which fail, contracts you
 wrote into design files, spec gaps, and anything you stopped on. Plain

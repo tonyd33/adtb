@@ -73,6 +73,8 @@ Keep your context for rulings, briefs and review. Agents write the code.
 
 ## Context
 
-When your context passes about 200k tokens, record the state in
-`work/HANDOFF.md` and the tickets, and continue in a fresh session from
-them.
+Checkpoint at meaningful task boundaries and before the active session
+approaches its context limit or compaction threshold. Use the capacity
+and warnings the harness exposes; do not assume a fixed token budget.
+Record the state in `work/HANDOFF.md` and the tickets so a fresh session
+can continue from them.
