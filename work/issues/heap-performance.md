@@ -2,7 +2,7 @@
 created-at: 2026-10-25
 status: open
 kind: feature
-priority: 550
+priority: 890
 summary: "the heap copies whole pages per change, decodes large values to compare keys, and recomputes record offsets on every encode"
 depends-on:
   - slotted-heap

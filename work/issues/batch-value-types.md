@@ -2,7 +2,7 @@
 created-at: 2026-10-25
 status: open
 kind: feature
-priority: 712
+priority: 891
 summary: "batches carry a second value type, Datum, because key::Value has no list; offsets are i32 with no large variant"
 depends-on:
   - batches

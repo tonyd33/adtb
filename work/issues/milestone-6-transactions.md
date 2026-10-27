@@ -18,6 +18,7 @@ depends-on:
   - unique-checks
   - commit-path
   - isolation-checker
+  - vacuum-threads-xid-not-reserved
 tags:
   - milestone
 ---
@@ -33,3 +34,7 @@ once `page-buffer-contract.md` is done.
 
 Open on 2026-10-25: `commit-log-snapshots.md`, `ssi.md`,
 `unique-checks.md`, `commit-path.md`, `isolation-checker.md`.
+
+## 2026-10-26: gate
+
+The deep-profile vacuum crash (vacuum-threads-xid-not-reserved) gates the exit.

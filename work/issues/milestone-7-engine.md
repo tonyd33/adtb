@@ -13,7 +13,6 @@ depends-on:
   - exec-primitives
   - exec-follow-ups
   - planner-follow-ups
-  - batch-value-types
   - textual-syntax-in-engine
   - milestone-2-reference
   - milestone-6-transactions
@@ -29,6 +28,13 @@ depends-on:
   - constraint-maintenance
   - in-process-api
   - engine-differential-tests
+  - campaign-release-1-2-refused-by-engine
+  - file-pin-dropped-on-failed-statement
+  - vacuum-temp-relation-panics
+  - explain-analyze-change-incomplete
+  - csv-trailing-blank-line-row
+  - file-scan-bom
+  - differential-refused-agrees
 tags:
   - milestone
 ---
@@ -48,3 +54,7 @@ Open on 2026-10-25: `id-assignment-gaps.md`, `schema-catalog-ids.md`,
 `schema-first-migration.md`, `batches.md`, `planner.md`,
 `executor.md`, `write-path.md`, `constraint-maintenance.md`,
 `in-process-api.md`, `engine-differential-tests.md`.
+
+## 2026-10-26: gate
+
+heap-performance and batch-value-types are follow-up work, not exit blockers. The exit also takes the wrong-answer and panic bugs the 2026-10-26 quality review found in this milestone's code, and the campaign app's release 1.2 log opening in the engine.

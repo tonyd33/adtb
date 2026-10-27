@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 500
 summary: "milestone 5 (heaps and indexes) has not exited: no heaps, key encoding, B-link trees, vacuum or verify"
+closed: 2026-10-26
 depends-on:
   - vm-root-race
   - latch-bound-overruns
@@ -13,7 +14,6 @@ depends-on:
   - verify-depth
   - blink-page-deletion
   - heap-row-contract
-  - heap-performance
   - blink-incomplete-split
   - blink-superlinear
   - blink-space-reuse
@@ -40,3 +40,9 @@ start once `page-buffer-contract.md` is done.
 Open on 2026-10-25: `slotted-heap.md`, `hash-anonymous-types.md`,
 `key-encoding.md`, `blink-tree.md`, `vacuum.md`,
 `verify-structural.md`.
+
+## 2026-10-26: resolved
+
+## 2026-10-26: exited
+
+Every dependency is resolved. heap-performance no longer gates the milestone: measured at 7 to 10% of heap-heavy profiles, it is follow-up work at priority 890.
