@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-28
-status: open
+status: in-progress
+branch: uuid-format
 kind: bug
 priority: 799
 summary: UUID formatting rejects in-memory values that only violate a write-time predicate
@@ -90,3 +91,24 @@ fresh implementation/spec owner, executable examples before spec reading review,
 correct contradictory tests, regression default controls plus storage-domain
 refusal, independent review and full checks. Lookup lands first. No provider
 expansion while these general engine issues remain.
+
+## 2026-10-28: confirmed design, implementation dispatched
+
+User explicitly approved uuid-domain-format. After completing frozen Principal
+integration, adopted with quandary adopt uuid-domain-format --confirmed;
+quandary check0. Current accepts spec/uuid-domain-format/lossless. No other
+ruling changed. Fresh workspace /home/tony/code/adtb-uuid-format (uuid-format),
+base follows1be643fa plus this metadata, sole code/spec writer. Brief
+work/briefs/brief-uuid-format.md. No new dependencies or shared signature changes.
+
+Acceptance: common lang textual reader/printer used by both consumers; lengths
+0,1,15,16,17+, total print/text, exact bytes/roundtrip,16-byte canonicalization,
+strict uuid(Text), malformed/trailing parse refusals, ordinary newtypes and
+stored-value domain refusal/valid16 write controls. Correct old internal tests
+that classify short Bytes as mistyped. Observable contract in prelude2.7 and
+interop1, cross-subsystem kernel9; newtype write rules unchanged. Run affected
+lang/engine/public tests, strict changed-crate clippy/fmt/house/size;
+adtb-lang spec_corpus and full conformance BEFORE fresh spec reading review.
+Lead owns independent implementability review and full post-land root/app/policy/
+docs check (explicit narrow branch exception). Current Principal repair lands
+first and is now fully verified. Keep all previous failures and input receipts.

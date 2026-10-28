@@ -1,7 +1,7 @@
 ---
 created-at: 2026-10-28
-status: in-progress
-branch: principal-lookup
+status: resolved
+closed: 2026-10-28
 kind: bug
 priority: 799
 summary: bundles without a module import resolve the default Principal instead of the custom root type
@@ -79,3 +79,19 @@ compilation. Receipts/review/handoff in work/briefs/*principal-lookup*. Logs und
 scope above are durable if ignored notes are missing. Next: lead land via
 work/tools/land principal-lookup 'fix: resolve the root principal in every scope',
 then full root/campaign/policy/docs check; resolve only after that result.
+
+## 2026-10-28: resolved
+
+Landed1be643fa via work/tools/land after fresh independent review. Rebase delta
+versus testedda86e552 contains only6ticket/design-evidence files; all5source paths
+byte-identical. Full MAIN check collected0 on clean
+2a118de56dd7e3863c5b6885d11227c75e16b44b, parent1be643fa,17:47:34Z–17:51:11Z
+(217s).2,392root tests passed/8skipped50.106s;47campaign passed/1skipped21.177s.
+All lint/fmt/parity/dependency/size/docs passed. Docs10tests10.165s,420syntax
+inputs,61pages/6730links/4995fragments/0failures. Tracked and root/app local
+Cargo config hashes + revision unchanged throughout. No remaining source/check
+blocker. Permission/queue/execution-only timing unknown. Evidence
+ target/principal-lookup-integration/{check.log,check.status,inputs-*,revision-*}
+logSHA256548dc267a8605ed86dac2f344f64a5f62570710ab0e1b2a1e1fb6a27deb3f50a.
+Receipt work/briefs/receipt-principal-lookup-main.md. Pushing deferred per user
+because Tangled is down; local landing is complete.
