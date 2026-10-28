@@ -352,7 +352,7 @@ impl<R: Runtime> Database<R> {
     /// Keep history for a retention window of `window` from now on: begin keeping it when it is
     /// not kept and `window` is not zero.
     ///
-    /// Fails if the record of the window is damaged.
+    /// Fail if the record of the window is damaged.
     pub fn set_retention(&self, window: Duration) -> Result<(), Error> {
         let _one = self.vacuuming.lock(&self.rt);
         if self.txns.history().is_some() {

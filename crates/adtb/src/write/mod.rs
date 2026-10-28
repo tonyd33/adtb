@@ -490,7 +490,7 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the database calling the host functions of `hosts`.
     ///
-    /// Panics if a statement has run.
+    /// Panic if a statement has run.
     pub fn with_hosts(mut self, hosts: Arc<exec::Hosts>) -> Self {
         for d in &mut self.denials {
             for (_, p) in &mut d.deltas {
@@ -512,7 +512,7 @@ impl<R: Runtime> Database<R> {
     /// Returns the database keeping history in `retained`, for a retention window of `window`:
     /// keeping it from now on when `window` is not zero.
     ///
-    /// Fails if the record of the window is damaged.
+    /// Fail if the record of the window is damaged.
     pub fn with_history(mut self, retained: Retained, window: Duration) -> Result<Self, Error> {
         self.retained = Some(Arc::new(retained));
         self.set_retention(window)?;

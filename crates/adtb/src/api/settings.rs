@@ -63,7 +63,7 @@ impl Settings {
         Ok(out)
     }
 
-    /// Takes the setting `row`, a row of `catalog::settings`, in place of the one it replaces.
+    /// Take the setting `row`, a row of `catalog::settings`, in place of the one it replaces.
     pub(super) fn set(&mut self, schema: &Schema, row: &Val) {
         let Val::Ctor(c, fields) = row else {
             return;

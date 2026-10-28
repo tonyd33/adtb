@@ -985,7 +985,7 @@ pub fn check_query_in(
 
 /// Returns the relation variable a feed of a bundle of `module` names and the constructors it streams.
 ///
-/// Fails when the relation does not resolve, a selected name is no constructor or named set of it,
+/// Fail when the relation does not resolve, a selected name is no constructor or named set of it,
 /// or the relation is volatile.
 pub fn check_feed(
     schema: &Schema,

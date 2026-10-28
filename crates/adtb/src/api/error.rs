@@ -381,7 +381,7 @@ impl fmt::Display for Position {
     }
 }
 
-/// Writes the error as messages for a person, one per line, without the sum's syntax.
+/// Write the error as messages for a person, one per line, without the sum's syntax.
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

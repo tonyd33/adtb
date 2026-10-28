@@ -109,7 +109,7 @@ pub fn lookup_value(schema: &Schema, vis: &Visible, name: &QName) -> Result<Valu
 
 /// Returns the relation variable `name` denotes among the modules of `vis`.
 ///
-/// Fails when `name` does not resolve or denotes something other than a relation.
+/// Fail when `name` does not resolve or denotes something other than a relation.
 pub fn lookup_relation(schema: &Schema, vis: &Visible, name: &QName) -> Result<RelId, String> {
     match lookup_value(schema, vis, name)? {
         ValueDef::Relation(rel) => Ok(rel),

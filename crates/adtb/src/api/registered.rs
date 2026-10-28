@@ -50,7 +50,7 @@ impl Registration {
     /// Returns the registration of the bundle file `text`, named by its header and checked at
     /// the version it pins.
     ///
-    /// Fails with `Invalid` when `text` does not parse as a bundle file, and when its header
+    /// Fail with `Invalid` when `text` does not parse as a bundle file, and when its header
     /// states a clause this engine does not run.
     pub fn bundle(text: impl Into<String>) -> Result<Registration, Error> {
         let text = text.into();
@@ -267,7 +267,7 @@ pub(super) fn register(
     Ok(out)
 }
 
-/// Refuses a callable of `c` with an `at` block pinned at a version after `version`.
+/// Refuse a callable of `c` with an `at` block pinned at a version after `version`.
 fn pinned_within(c: &Checked, version: u64) -> Result<(), Error> {
     for e in &c.entries {
         let mut seen = BTreeSet::new();
@@ -290,7 +290,7 @@ fn pinned_within(c: &Checked, version: u64) -> Result<(), Error> {
     Ok(())
 }
 
-/// Refuses an open whose bundles pin a version before the file's and would read a constructor
+/// Refuse an open whose bundles pin a version before the file's and would read a constructor
 /// enabled since. A bundle that does not check at its pin is left for registration to refuse.
 pub(super) fn downgrade(catalog: &Catalog, regs: &[Registration]) -> Result<(), OpenError> {
     let version = catalog.source().version;
@@ -629,7 +629,7 @@ impl<R: Runtime> Database<R> {
     /// Returns the registration `name` the database was opened with, binding to it and renewing
     /// its lease when it is a bundle.
     ///
-    /// Fails with `Retired`, `BundleSuperseded` or `BundleExpired` for a bundle that is, and with
+    /// Fail with `Retired`, `BundleSuperseded` or `BundleExpired` for a bundle that is, and with
     /// `UnknownBundle` for a name no registration of this open has.
     pub fn registered(&self, name: &str) -> Result<Registered<R>, Error> {
         let _open = self.engine.enter()?;

@@ -47,7 +47,7 @@ pub(super) struct Stops<'a> {
 }
 
 impl<'a> Stops<'a> {
-    /// Refuses a call whose token is cancelled with `Cancelled`, and one whose deadline has
+    /// Refuse a call whose token is cancelled with `Cancelled`, and one whose deadline has
     /// passed on `rt`'s wall clock with `DeadlineExceeded`.
     pub(super) fn check<R: Runtime>(&self, rt: &R) -> Result<(), Error> {
         if self.cancel.is_some_and(CancelToken::is_cancelled) {

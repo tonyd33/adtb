@@ -327,7 +327,7 @@ impl Source {
     /// Returns the operators of migration `number` of the log in ordinal order, resolved against the
     /// source after it.
     ///
-    /// Fails with the operators whose data the source lacks, at their spans, or with the operands
+    /// Fail with the operators whose data the source lacks, at their spans, or with the operands
     /// whose names do not resolve. Panics if the log holds no migration `number`.
     pub fn resolved(&self, number: u64) -> Result<Vec<ResolvedOp>, Vec<Diag>> {
         let i = self

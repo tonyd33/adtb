@@ -90,7 +90,7 @@ impl HostFns {
         out
     }
 
-    /// Refuses a supplied function whose name `schema` declares with a host body at another
+    /// Refuse a supplied function whose name `schema` declares with a host body at another
     /// determinism, at a type no batch column holds, or at a version other than the declared
     /// one, unless a migration of `pending` redefines it at the supplied version.
     pub(super) fn check(&self, schema: &Schema, pending: &[&str]) -> Result<(), OpenError> {
@@ -104,7 +104,7 @@ impl HostFns {
         Ok(())
     }
 
-    /// Refuses, once migrations have applied, what [`check`](HostFns::check) refuses with no
+    /// Refuse, once migrations have applied, what [`check`](HostFns::check) refuses with no
     /// migration pending, and a declared host function with no body when `normal` reaches it
     /// from an index, a constraint, a check, a stored view, a default or a computed field.
     pub(super) fn bound(&self, schema: &Schema, normal: &NormalProgram) -> Result<(), OpenError> {

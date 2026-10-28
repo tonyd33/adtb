@@ -1,4 +1,4 @@
-//! Generates the typed calls of the campaign manager's bundles.
+//! Generate the typed calls of the campaign manager's bundles.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

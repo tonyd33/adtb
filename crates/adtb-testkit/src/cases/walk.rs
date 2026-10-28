@@ -297,7 +297,7 @@ const DRAWN: [Operator; 31] = [
     Operator::RedefineFn,
 ];
 
-/// Applies a schema operator not in `skip` drawn at random to a relation of `w`, and returns
+/// Apply a schema operator not in `skip` drawn at random to a relation of `w`, and return
 /// the relation it touches, `None` for a function, and the operator. A relation or function in
 /// `touched` is not touched again, so an operator of a migration names nothing an earlier one
 /// of it touches, but for the types a merge or a nest adds. A relation takes one of the
@@ -459,7 +459,7 @@ fn add_constructor(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>
     Some(lines)
 }
 
-/// Moves a constructor of a sum `r` to the write state `operator` names, from a state that
+/// Move a constructor of a sum `r` to the write state `operator` names, from a state that
 /// operator leaves.
 fn state(rng: &mut Rng, w: &mut World, r: usize, operator: Operator) -> Option<Vec<String>> {
     if !w.rels[r].sum {
@@ -703,7 +703,7 @@ enum Route {
     Renaming,
 }
 
-/// Splits a constructor of a sum `r` by an invertible routing, each field but the one it routes
+/// Split a constructor of a sum `r` by an invertible routing, each field but the one it routes
 /// by carried whole under a fresh name.
 fn split(rng: &mut Rng, w: &mut World, r: usize, route: Route) -> Option<Vec<String>> {
     let c = unscoped(rng, &w.rels[r])?;
@@ -795,7 +795,7 @@ fn split(rng: &mut Rng, w: &mut World, r: usize, route: Route) -> Option<Vec<Str
     Some(lines)
 }
 
-/// Splits a constructor of a sum `r` with at least one field into one product without its last
+/// Split a constructor of a sum `r` with at least one field into one product without its last
 /// field.
 fn lossy_split(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     let c = unscoped(rng, &w.rels[r])?;
@@ -871,7 +871,7 @@ fn joined(a: State, b: State) -> State {
     }
 }
 
-/// Merges two constructors of a sum `r` into one, its discriminator of a sum added alongside,
+/// Merge two constructors of a sum `r` into one, its discriminator of a sum added alongside,
 /// each source's fields carried whole and the other source's fields filled with literals.
 fn merge(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     let (a, b) = pair(rng, w, r, true)?;
@@ -959,7 +959,7 @@ fn merge(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     Some(lines)
 }
 
-/// Nests two constructors of a sum `r` into one holding a value of a sum added alongside, of
+/// Nest two constructors of a sum `r` into one holding a value of a sum added alongside, of
 /// constructors of the same names and fields.
 fn nest(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     let (a, b) = pair(rng, w, r, false)?;
@@ -1002,7 +1002,7 @@ fn nest(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     Some(lines)
 }
 
-/// Unnests a constructor of a sum `r` holding one field of a sum the walk declares, when no
+/// Unnest a constructor of a sum `r` holding one field of a sum the walk declares, when no
 /// other constructor of `r` is named as a constructor of that sum.
 fn unnest(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     let c = unscoped(rng, &w.rels[r])?;
@@ -1058,7 +1058,7 @@ fn fill_match(rng: &mut Rng, w: &World, rel: &Rel, cs: &[usize], ty: &T) -> (Str
     (text, vals)
 }
 
-/// Moves a field of a constructor of a sum `r` that no other constructor has to the header.
+/// Move a field of a constructor of a sum `r` that no other constructor has to the header.
 fn move_up(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     let rel = &w.rels[r];
     if !rel.sum || rel.ctors.len() < 2 {
@@ -1091,7 +1091,7 @@ fn move_up(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     Some(vec![line])
 }
 
-/// Moves a header field of a sum `r` down to one of its constructors, or to several but not all
+/// Move a header field of a sum `r` down to one of its constructors, or to several but not all
 /// when `many` holds, losing its values in the others.
 fn move_down(rng: &mut Rng, w: &mut World, r: usize, many: bool) -> Option<Op> {
     let rel = &w.rels[r];
@@ -1205,7 +1205,7 @@ fn drop_index(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     Some(vec![op])
 }
 
-/// Adds a unique over a free integer or text field whose values the rows in its scope hold
+/// Add a unique over a free integer or text field whose values the rows in its scope hold
 /// once each.
 fn add_unique(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     let (ctor, f) = free(rng, &w.rels[r])?;
@@ -1273,7 +1273,7 @@ fn drop_default(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     )])
 }
 
-/// Adds a check bounding a free integer header field below by the least integer a case draws,
+/// Add a check bounding a free integer header field below by the least integer a case draws,
 /// over the relation or, of a sum, over one constructor.
 fn add_check(rng: &mut Rng, w: &mut World, r: usize) -> Option<Vec<String>> {
     let rel = &w.rels[r];

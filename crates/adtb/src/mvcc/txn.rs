@@ -225,7 +225,7 @@ impl<R: Runtime> Transactions<R> {
 
     /// Commit `x` and record its time when history is kept.
     ///
-    /// Fails, leaving `x` running, if the database is quarantined or the record of the window is
+    /// Fail, leaving `x` running, if the database is quarantined or the record of the window is
     /// damaged.
     ///
     /// Panics if `x` is not running.
@@ -431,9 +431,9 @@ impl<R: Runtime> Transactions<R> {
     /// Postconditions: every commit from now on records a time no less than the latest `past`
     /// records, whatever the clock reads.
     ///
-    /// Fails if a page of `past` is damaged.
+    /// Fail if a page of `past` is damaged.
     ///
-    /// Panics if history is kept already.
+    /// Panic if history is kept already.
     pub fn keep_history(
         &self,
         pager: &Pager<R>,
@@ -503,7 +503,7 @@ impl<R: Runtime> Transactions<R> {
     /// Returns the marker a read of the past at `at` reads, held so that what it sees stays until
     /// [`Transactions::unpin`]: the latest marker at or before `at`, durable before it returns.
     ///
-    /// Fails with [`PastError::Unavailable`] when `at` is after `upto` or no marker within the
+    /// Fail with [`PastError::Unavailable`] when `at` is after `upto` or no marker within the
     /// window is at or before it, and with [`PastError::Damaged`] when the record is damaged or
     /// a marker could not be kept.
     pub fn pin(&self, pager: &Pager<R>, at: Position, upto: Position) -> Result<Marker, PastError> {
@@ -572,7 +572,7 @@ impl<R: Runtime> Transactions<R> {
 
     /// Release the hold [`Transactions::pin`] took on `marker`.
     ///
-    /// Panics if `marker` is not held.
+    /// Panic if `marker` is not held.
     pub fn unpin(&self, marker: &Marker) {
         let mut st = self.state.lock(&self.rt);
         let n = st

@@ -50,7 +50,7 @@ pub struct BundleSource<'a> {
 /// `log` builds, and of one module per bundle of `bundles`, holding `BUNDLE`, `Error` and one
 /// value per callable.
 ///
-/// Fails when the log does not replay, a bundle does not check at the version it pins or names
+/// Fail when the log does not replay, a bundle does not check at the version it pins or names
 /// another edition than [`EDITION`], a signature holds a type with no host type, or two items
 /// of one module take one Rust name.
 pub fn generate(log: &[&str], bundles: &[BundleSource<'_>]) -> Result<String, Error> {

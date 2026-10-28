@@ -967,7 +967,7 @@ impl Heap {
     /// original kept, both in one update. Returns the copy's TID, or `None`, copying nothing, when
     /// `from` no longer holds that version.
     ///
-    /// Panics if `from` is this heap or `v.row` is not a row of the newest format.
+    /// Panic if `from` is this heap or `v.row` is not a row of the newest format.
     pub fn copy_version<R: Runtime>(
         &self,
         pager: &Pager<R>,
@@ -1393,7 +1393,7 @@ impl Heap {
     /// Preconditions: the heap has no page left, and nothing refers to it once the update is
     /// applied.
     ///
-    /// Panics if the heap has a page left.
+    /// Panic if the heap has a page left.
     pub fn drop_empty<R: Runtime>(self, pager: &Pager<R>) -> Result<(), PageError> {
         assert!(self.is_empty(pager)?, "heap {} has pages left", self.id);
         let mut gone = pager.reserve();

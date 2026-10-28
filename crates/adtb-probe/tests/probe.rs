@@ -10,7 +10,7 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// Runs the probe with `args` and `stdin`, returning its exit code and stdout.
+/// Run the probe with `args` and `stdin`, returning its exit code and stdout.
 fn probe_with(args: &[&str], stdin: &str) -> (i32, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_adtb-probe"))
         .args(args)

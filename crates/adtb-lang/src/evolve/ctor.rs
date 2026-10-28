@@ -119,7 +119,7 @@ impl Cx<'_> {
         edits
     }
 
-    /// Rewrites record `t`, declaration `i`, as a sum of one constructor named after it, the key
+    /// Rewrite record `t`, declaration `i`, as a sum of one constructor named after it, the key
     /// fields of its relations moving to the header.
     fn record_to_sum(
         &mut self,
@@ -1548,7 +1548,7 @@ impl Cx<'_> {
         self.retype_products(&schema, def, &sources, std::slice::from_ref(&m))
     }
 
-    /// Refuses an arm of an author's merge that does not give discriminator `disc` as its own
+    /// Refuse an arm of an author's merge that does not give discriminator `disc` as its own
     /// constructor name.
     fn own_names(&self, arms: &[ast::Arm], disc: &str) -> R<()> {
         for arm in arms {

@@ -46,7 +46,7 @@ pub fn is_temp(schema: &Schema, rel: RelId) -> bool {
     schema.module(schema.relation(rel).module).name == TEMP_MODULE
 }
 
-/// Replaces each read of a temp or volatile relation and each file scan reachable from `root` by
+/// Replace each read of a temp or volatile relation and each file scan reachable from `root` by
 /// a variable of its own. Returns what each variable stands for.
 pub fn rewrite(schema: &Schema, terms: &mut Terms, root: Tm) -> BTreeMap<Var, Input> {
     let mut out = BTreeMap::new();

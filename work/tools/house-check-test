@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+checker=${1:-$(cd "$(dirname "$0")" && pwd)/house-check}
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+jj git init "$scratch" >/dev/null 2>&1
+cd "$scratch"
+printf '%s\n' '/// Writes the unchanged item.' 'fn unchanged() {}' '/// Runs the removed item.' 'fn removed() {}' >fixture.rs
+jj new -m 'test: seed unchanged and removed docs' >/dev/null 2>&1
+
+expect() {
+  local expected_status=$1 expected=$2 actual_status actual
+  if actual=$("$checker" "$scratch" 2>&1); then
+    actual_status=0
+  else
+    actual_status=$?
+  fi
+  if [[ $actual_status != "$expected_status" || $actual != "$expected" ]]; then
+    printf 'expected status %s, got %s\n' "$expected_status" "$actual_status" >&2
+    diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") >&2 || true
+    exit 1
+  fi
+}
+
+cat >fixture.rs <<'RS'
+/// Writes the unchanged item.
+fn unchanged() {}
+/// Returns the item.
+/// Write the item.
+//! Read the item.
+/// Pass each row onward.
+/// Values held by this item.
+/// Fields in declaration order.
+//! Writes, delete actions and reads.
+//! Calls in process.
+/// Records of a key and value.
+//! Calls through generated code.
+/// Sets of rows.
+/// Inserts and deletes.
+/// Reads from disk are counted.
+/// Reads that count visibility decisions.
+/// Runs of consecutive keys.
+/// Names a generated item may not take.
+/// Preconditions: the key exists.
+/// Postconditions: the item exists.
+fn added() {}
+RS
+expect 0 ''
+
+printf '%s\n' '/// Writes the item.' '//! Parses the input.' '    /// Applies an operator.' '/// Checks that the item exists.' '/// Refuses, once checked, the item.' '/// writes the item.' '/// Reads from disk into the buffer.' '/// Normalises the kernel.' '//! Compiles the statement.' >>fixture.rs
+expect 1 'fixture.rs:22: third-person doc verb: /// Writes the item.
+fixture.rs:23: third-person doc verb: //! Parses the input.
+fixture.rs:24: third-person doc verb:     /// Applies an operator.
+fixture.rs:25: third-person doc verb: /// Checks that the item exists.
+fixture.rs:26: third-person doc verb: /// Refuses, once checked, the item.
+fixture.rs:27: third-person doc verb: /// writes the item.
+fixture.rs:28: third-person doc verb: /// Reads from disk into the buffer.
+fixture.rs:29: third-person doc verb: /// Normalises the kernel.
+fixture.rs:30: third-person doc verb: //! Compiles the statement.'
+
+cat >fixture.rs <<'RS'
+/// Writes the unchanged item.
+fn unchanged() {}
+/// Returns the UTF-8 text.
+// The key stays unique.
+/// **Bold** text.
+/// Read §1.
+/// Apply RULE-ID.
+RS
+printf '/// Emit an em dash: \342\200\224\n' >>fixture.rs
+expect 1 'fixture.rs:4: comment, keep only for an invariant: // The key stays unique.
+fixture.rs:5: bold in a comment: /// **Bold** text.
+fixture.rs:6: section sign in a comment: /// Read §1.
+fixture.rs:7: rule id in a comment: /// Apply RULE-ID.
+fixture.rs:8: em dash: /// Emit an em dash: '"$(printf '\342\200\224')"
+
+printf '%s\n' 'Writes an ordinary text file.' >notes.txt
+cat >fixture.rs <<'RS'
+/// Writes the unchanged item.
+fn unchanged() {}
+/// Write the new item.
+fn added() {}
+RS
+expect 0 ''
+printf 'house-check fixtures passed\n'

@@ -82,7 +82,7 @@ impl Drop for Shared {
 impl OsRuntime {
     /// Returns a runtime whose paths are relative to the directory `root`.
     ///
-    /// Panics if `backend` asks for no threads or no entries, or if the host refuses io_uring.
+    /// Panic if `backend` asks for no threads or no entries, or if the host refuses io_uring.
     pub fn new(root: impl Into<PathBuf>, backend: Backend) -> OsRuntime {
         OsRuntime::try_new(root, backend).unwrap_or_else(|e| panic!("{e}"))
     }
@@ -99,7 +99,7 @@ impl OsRuntime {
     /// Returns a runtime whose paths are relative to the directory `root`, injecting `faults`
     /// into every op on its files.
     ///
-    /// Panics if `backend` is not a [`Backend::Pool`] or asks for no threads, or if the atomic
+    /// Panic if `backend` is not a [`Backend::Pool`] or asks for no threads, or if the atomic
     /// unit is not a whole number of sectors.
     pub fn with_faults(root: impl Into<PathBuf>, backend: Backend, faults: Faults) -> OsRuntime {
         assert!(

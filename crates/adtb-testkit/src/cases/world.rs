@@ -423,8 +423,8 @@ impl World {
         )
     }
 
-    /// Replaces constructors `sources` of relation `r` by `products`, which take the position
-    /// of the first source in the declaration order, and routes each row of a source through
+    /// Replace constructors `sources` of relation `r` by `products`, which take the position
+    /// of the first source in the declaration order, and route each row of a source through
     /// `route` to the index of its product among `products` and its fields.
     ///
     /// Preconditions:

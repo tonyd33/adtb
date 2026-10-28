@@ -310,7 +310,7 @@ impl Uring {
     /// Returns a ring of `entries` submission entries over `files`, with its reaping thread
     /// started.
     ///
-    /// Panics if `entries` is zero.
+    /// Panic if `entries` is zero.
     pub(crate) fn start(files: Arc<Files>, entries: u32) -> Result<Arc<Uring>, Unavailable> {
         assert!(entries > 0, "an io_uring has at least one entry");
         let ring = IoUring::new(entries).map_err(Unavailable::Refused)?;
@@ -350,7 +350,7 @@ impl Uring {
 
     /// Start `op`, completing it through `waiter`.
     ///
-    /// Panics on a `Timer`, which no file operation completes.
+    /// Panic on a `Timer`, which no file operation completes.
     pub(crate) fn push(&self, op: Op, waiter: Waiter) {
         let path = |p: &str| c_path(&self.files.path(p));
         let work = match op {

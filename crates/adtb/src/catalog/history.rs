@@ -111,7 +111,7 @@ impl Kept {
     /// Returns the history structures `root` and `names` name, for the constructor relations
     /// `heaps` holds and the relations `keys` gives a key index.
     ///
-    /// Fails with [`Error::Missing`] when `names` names no history structure for one of them.
+    /// Fail with [`Error::Missing`] when `names` names no history structure for one of them.
     pub(super) fn open<R: Runtime>(
         pager: &Pager<R>,
         schema: &Schema,

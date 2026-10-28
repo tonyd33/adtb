@@ -34,12 +34,12 @@ impl Catalog {
     /// stores them in, write the catalog rows of the new version, and keep its text. Returns once
     /// the migration is durable.
     ///
-    /// Fails with [`Error::Refused`], changing nothing, if the migration does not apply to the
+    /// Fail with [`Error::Refused`], changing nothing, if the migration does not apply to the
     /// schema, if a constraint of the result has no index-bounded incremental check, or if the
     /// data contradicts an operator: a constructor or relation it removes holds rows, a unique or
     /// key it adds finds a duplicate, a constructor it disables holds rows, a fill, routing or
     /// index expression faults on a row, or a constraint or check it adds, or one reading a
-    /// relation it rewrites, has violating rows in the final state. Fails with
+    /// relation it rewrites, has violating rows in the final state. Fail with
     /// [`Error::Internal`] when admitting or validating a constraint breaks a guarantee of the
     /// checker. On any other failure the transaction is aborted, and the catalog must be opened
     /// again.
@@ -116,7 +116,7 @@ impl Catalog {
         Ok(())
     }
 
-    /// Refuses `schema`, whose checked program is `program`, when a constraint of it has no
+    /// Refuse `schema`, whose checked program is `program`, when a constraint of it has no
     /// index-bounded incremental check over the heaps [`Catalog::heap_ids`] assigns a migration
     /// rewriting the relations `rewritten` names, and its indexes; each reason.
     fn admits(
@@ -630,7 +630,7 @@ impl Catalog {
     }
 }
 
-/// Refuses the rows `b.data` gives the relations `b.rewritten` names when two of them share a key
+/// Refuse the rows `b.data` gives the relations `b.rewritten` names when two of them share a key
 /// of a unique of `specs`, each keyed by `keyed`: each unique and the keys rows share.
 fn duplicates(
     schema: &Schema,

@@ -241,7 +241,7 @@ fn world(app: &Current) -> World {
     }
 }
 
-/// Builds the world of [`world`] through the bundle of release 1.0.
+/// Build the world of [`world`] through the bundle of release 1.0.
 fn world_1_0(app: &App<v1_0::Bundle>) -> World {
     let campaign = app
         .call(

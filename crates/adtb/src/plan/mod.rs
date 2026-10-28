@@ -73,7 +73,7 @@ pub struct AtRead {
     pub point: Tm,
     /// The version `body` is typed at, or `None` for the version of the state `point` names.
     pub pins: Option<u64>,
-    /// Reads every relation by a scan of its heaps or by a key lookup, never by another index.
+    /// Read every relation by a scan of its heaps or by a key lookup, never by another index.
     pub body: Eval,
     /// The heaps `body` reads.
     pub heaps: BTreeSet<HeapId>,

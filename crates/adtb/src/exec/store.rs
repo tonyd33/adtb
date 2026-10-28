@@ -161,7 +161,7 @@ pub trait PastReads<R: Runtime>: Send + Sync {
     /// `Instant`, for a block reading `heaps` and typed at version `pins`, or at the version of
     /// that state for `None`. The state stays readable while the store lives.
     ///
-    /// Fails with [`Error::HistoryUnavailable`] when the state is outside the retention window,
+    /// Fail with [`Error::HistoryUnavailable`] when the state is outside the retention window,
     /// after the reader's snapshot, or before history of a heap read begins, and with
     /// [`Error::WrongVersion`] when a heap read is stored otherwise at that state than at `pins`.
     fn store(

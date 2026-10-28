@@ -992,8 +992,8 @@ fn a_drop_stays_pending_while_a_bundle_live_before_the_open_reads_it() {
     });
 }
 
-/// Opens a file at `[V1, NO_BLANK]` shipping `web-1.0` pinned there, then reopens it with
-/// `DROP_NO_BLANK` applied while `web-1.0` holds it pending, and runs `body` at a third open
+/// Open a file at `[V1, NO_BLANK]` shipping `web-1.0` pinned there, then reopen it with
+/// `DROP_NO_BLANK` applied while `web-1.0` holds it pending, and run `body` at a third open
 /// shipping `shipped`.
 fn third_open_after_a_pending_drop(
     seed: u64,

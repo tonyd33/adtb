@@ -95,7 +95,7 @@ pub enum Ins {
     Caller {
         dst: u32,
     },
-    /// Calls a host function once for every selected row.
+    /// Call a host function once for every selected row.
     Host {
         call: Box<HostCall>,
         args: Vec<Opd>,
@@ -563,7 +563,7 @@ impl<'a> Compiler<'a> {
 
     /// Returns the call of host function `func` with `args` for a result of type `ty`.
     ///
-    /// Fails with `Unsupported` for a function of another kind and for one whose argument or
+    /// Fail with `Unsupported` for a function of another kind and for one whose argument or
     /// result types no batch column holds.
     fn host(&self, func: FnId, args: &[Tm], ty: &Ty) -> Result<HostCall, Error> {
         let def = self.schema.function(func);

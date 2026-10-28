@@ -503,7 +503,7 @@ fn two_call_sites_of_a_volatile_host_function_with_the_same_text_draw_apart() {
     });
 }
 
-/// Commits `text` as one transaction. Returns its commit position.
+/// Commit `text` as one transaction. Returns its commit position.
 fn commit(db: &Database<SimRuntime>, text: &str) -> Position {
     let mut t = db
         .begin(&TxnOptions::default())

@@ -128,7 +128,7 @@ pub fn parse_bundle(src: &str, opts: Options) -> Parsed<BundleFile> {
     })
 }
 
-/// Parses the imports and items of a bundle file with no header.
+/// Parse the imports and items of a bundle file with no header.
 pub fn parse_bundle_body(src: &str, opts: Options) -> Parsed<(Vec<Import>, Vec<BundleItem>)> {
     run(src, opts, |p| {
         let mut imports = Vec::new();

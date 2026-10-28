@@ -28,7 +28,7 @@ pub(super) enum Inverse {
     /// A move to the header, as source text naming the first of `from`, of the field of every
     /// constructor of `from`.
     MoveUp { text: Written, from: Vec<String> },
-    /// Removes the constructor an `add constructor` added, with its arms, then sets the type back
+    /// Remove the constructor an `add constructor` added, with its arms, then set the type back
     /// to `record`, the text of the record it was.
     Unadd {
         path: ast::CtorPath,
@@ -43,7 +43,7 @@ pub(super) enum Inverse {
     },
     /// Sets write states back, `None` removing the state.
     States(Vec<(bool, StateKey, Option<State>)>),
-    /// Sets what each role holds of a privilege back.
+    /// Set what each role holds of a privilege back.
     Grants(Vec<HeldGrant>),
     /// Sets the declaration of a kind and name to a text, `None` removing it.
     Decl {
@@ -53,7 +53,7 @@ pub(super) enum Inverse {
         text: Option<String>,
         states: Vec<(StateKey, State)>,
     },
-    /// Adds module `name` with the declaration texts `decls`, or with `present` false removes it.
+    /// Add module `name` with the declaration texts `decls`, or with `present` false remove it.
     Module {
         name: String,
         present: bool,
@@ -1574,7 +1574,7 @@ impl Cx<'_> {
         out
     }
 
-    /// Sets type `ty`, a sum of one constructor named after it, to record text `text`, its header
+    /// Set type `ty`, a sum of one constructor named after it, to record text `text`, its header
     /// fields keeping their ids as fields of that constructor.
     fn unsum(&mut self, ty: &QName, text: String) -> R<()> {
         let (i, _) = self.type_decl(ty)?;
@@ -1591,7 +1591,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    /// Applies operators given as source text in the migration's module as `how` says, then sets
+    /// Apply operators given as source text in the migration's module as `how` says, then set
     /// each check of `checks`, by module and name, to its text within the last operator's step.
     fn undo_ops(&mut self, text: &Written, how: How, checks: &[(String, String, String)]) -> R<()> {
         let span = self.span;
@@ -1673,7 +1673,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    /// Applies one step of an inverse to the source.
+    /// Apply one step of an inverse to the source.
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per inverse kind; each arm would have to be a function"

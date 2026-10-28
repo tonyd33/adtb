@@ -74,7 +74,7 @@ impl Source {
 }
 
 impl Cx<'_> {
-    /// Adds each privilege to the role's log grants, keeping one entry per privilege.
+    /// Add each privilege to the role's log grants, keeping one entry per privilege.
     pub(super) fn grant(&mut self, g: &ast::Grant) -> R<()> {
         for privilege in self.granted(&g.privileges)? {
             match self
@@ -102,7 +102,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    /// Resolves the privileges of a log grant or revoke to the catalog ids of what they name.
+    /// Resolve the privileges of a log grant or revoke to the catalog ids of what they name.
     fn granted(&self, privileges: &[ast::Privilege]) -> R<Vec<Granted>> {
         let schema = self.schema()?;
         let vis = crate::resolve::Visible::module(

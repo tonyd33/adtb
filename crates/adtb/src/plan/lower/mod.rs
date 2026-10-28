@@ -121,7 +121,7 @@ fn plan_in(input: &Input<'_>, options: Options, bounded: bool) -> Result<Plan, E
     })
 }
 
-/// Refuses a term reaching a call of a function other than a host function: a Wasm function or
+/// Refuse a term reaching a call of a function other than a host function: a Wasm function or
 /// one that takes or returns a function, which no plan runs.
 fn user_code(schema: &Schema, terms: &Terms, root: Tm) -> Result<(), Error> {
     let mut seen = std::collections::HashSet::new();

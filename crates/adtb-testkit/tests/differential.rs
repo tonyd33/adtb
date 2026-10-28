@@ -345,7 +345,7 @@ fn fails(env: &Env, law: Law, q: &Query) -> Option<Failure> {
     }
 }
 
-/// Runs `body` over the reference and the engine holding `case`, a panic reported as a failure.
+/// Run `body` over the reference and the engine holding `case`, a panic reported as a failure.
 fn with_case<T>(seed: u64, case: &Case, body: impl FnOnce(&Env) -> T) -> Result<T, Failure> {
     panic::catch_unwind(AssertUnwindSafe(|| {
         let fx = reference(case);
@@ -875,7 +875,7 @@ fn laws(seed: u64, w: &Walk) -> Option<String> {
 /// otherwise. An open applying a revert takes about two seconds.
 const LAW_WALKS: u64 = 2;
 
-/// Sweeps `walks` walks of `steps` migrations of one run drawing no operator of `skip`, each
+/// Sweep `walks` walks of `steps` migrations of one run drawing no operator of `skip`, each
 /// checked by `check`.
 fn sweep_walks(
     name: &str,
@@ -887,7 +887,7 @@ fn sweep_walks(
     sweep_seeds(name, seeds_of(walks).collect(), steps, skip, check);
 }
 
-/// Sweeps the walks of `seeds` as [`sweep_walks`] does.
+/// Sweep the walks of `seeds` as [`sweep_walks`] does.
 fn sweep_seeds(
     name: &str,
     seeds: Vec<u64>,

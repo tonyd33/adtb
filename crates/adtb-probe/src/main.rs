@@ -43,7 +43,6 @@ whether they agree. TEXT `-` reads the text from stdin.
 Exits 0 when the sides agree, 1 when they differ or a side fails to
 load, 2 when the schema or the text is refused.";
 
-/// The line of each directive of the script a probe runs, which names its outcome.
 const SCHEMA: usize = 1;
 const DATA: usize = 2;
 const BEFORE: usize = 3;
@@ -138,7 +137,7 @@ fn render_files(label: &str, files: &[(usize, String)], ds: &[FileDiag]) -> Stri
         .collect()
 }
 
-/// Checks the schema and the text as the reference does, and returns the text's items.
+/// Check the schema and the text as the reference does, and return the text's items.
 fn check(label: &str, schema: &str, text: &str) -> Result<Vec<AdhocItem>, String> {
     let files = modules(schema);
     let mut parsed = Vec::new();

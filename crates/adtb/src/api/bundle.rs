@@ -594,7 +594,7 @@ pub(super) fn record<R: Runtime>(
     Ok(())
 }
 
-/// Refuses the registration of `header` with `calls`: a retired bundle's name, and a name
+/// Refuse the registration of `header` with `calls`: a retired bundle's name, and a name
 /// recorded with other content.
 pub(super) fn admitted(stored: &Stored, header: &Header, calls: &[CallRow]) -> Result<(), Error> {
     let Some(row) = stored.bundles.get(&header.name) else {
@@ -732,7 +732,7 @@ impl<R: Runtime> Engine<R> {
         }
     }
 
-    /// Runs `c` when it is a command on deployment state, `retire bundle` or `supersede
+    /// Run `c` when it is a command on deployment state, `retire bundle` or `supersede
     /// bundle`, which no transaction holds. Returns its rows, `None` for any other command.
     pub(super) fn deployment_command(&self, c: &Command) -> Option<Result<DynRows, Error>> {
         let name = |b: &BundleName| format!("{}-{}", b.family, b.version);

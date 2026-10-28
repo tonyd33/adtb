@@ -992,7 +992,7 @@ const GROUP_SPILLS: &str = "from s in stock group s by s.g into g
 
 const SPILL_GRANT: usize = 32 << 10;
 
-/// Runs every case under the simulator with a grant of `grant` bytes, and returns each case's
+/// Run every case under the simulator with a grant of `grant` bytes, and return each case's
 /// outcome with the bytes it spilled.
 fn run_spilling(
     seed: u64,
@@ -1115,8 +1115,8 @@ fn a_build_past_its_grant_with_no_spill_space_is_rejected_for_its_statement_limi
 const BUILD_SPILLS: &str =
     "from s in stock, n in notes where n.item == key s select { s: s.id, n: n.id }";
 
-/// Runs every case under the simulator with a grant of `SPILL_GRANT` bytes and `faults` set
-/// once the database is loaded, and returns each case's error.
+/// Run every case under the simulator with a grant of `SPILL_GRANT` bytes and `faults` set
+/// once the database is loaded, and return each case's error.
 fn spill_errors(f: &Fixture, cases: &[Case], opts: XOptions, faults: Faults) -> Vec<Option<Error>> {
     with_store(0, f, 0, |rt, store, _| {
         rt.set_faults(faults);

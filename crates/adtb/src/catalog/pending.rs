@@ -103,7 +103,7 @@ impl Readers {
     /// `pending` held by the bundles stored with them, and the source that keeps every
     /// pending-dropped object.
     ///
-    /// Fails with [`Error::Corrupt`] when a drop names a version the log does not hold, and with
+    /// Fail with [`Error::Corrupt`] when a drop names a version the log does not hold, and with
     /// [`Error::Unaccepted`] when a migration of the log does not apply keeping the drops.
     pub(super) fn reopened(source: &Source, pending: Vec<Pending>) -> Result<Readers, Error> {
         let Some(first) = pending.iter().map(|p| p.dropped).min() else {
@@ -144,7 +144,7 @@ impl Catalog {
     /// Release the live reader of `bundle`. Every pending drop it was the last to hold takes
     /// effect. Returns once the release is durable.
     ///
-    /// Fails with [`Error::Refused`] when no reader of `bundle` is live, and with
+    /// Fail with [`Error::Refused`] when no reader of `bundle` is live, and with
     /// [`Error::Unchecked`] when the schema without the drops that take effect does not check.
     pub fn release<R: Runtime>(
         &mut self,
@@ -163,7 +163,7 @@ impl Catalog {
     /// Release every hold of a pending drop by a bundle that is not a live reader. Every pending
     /// drop left with no holder takes effect. Returns once the release is durable.
     ///
-    /// Fails with [`Error::Unchecked`] when the schema without the drops that take effect does
+    /// Fail with [`Error::Unchecked`] when the schema without the drops that take effect does
     /// not check.
     pub fn settle<R: Runtime>(
         &mut self,

@@ -661,7 +661,7 @@ fn a_file_that_changes_within_a_transaction_aborts_it_with_file_changed() {
     });
 }
 
-/// Asserts that `e` is a `FileChanged` retry naming `path`.
+/// Assert that `e` is a `FileChanged` retry naming `path`.
 fn assert_file_changed(e: &Error, path: &str) {
     assert!(
         matches!(

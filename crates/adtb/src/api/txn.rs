@@ -183,7 +183,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         Ok(rows)
     }
 
-    /// Runs the items of `p` as one call of the transaction under `opts` and the transaction's
+    /// Run the items of `p` as one call of the transaction under `opts` and the transaction's
     /// own deadline and limit. Returns the rows of each item that yields a result, in item
     /// order.
     pub(super) fn run(

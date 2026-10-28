@@ -83,7 +83,7 @@ pub struct Bundle {
 /// Returns the bundle file `text` checked over `source`, which the caller replays to the version
 /// the header pins.
 ///
-/// Fails with the message of the first error: a file that does not parse, a module import of no
+/// Fail with the message of the first error: a file that does not parse, a module import of no
 /// user module, a function that does not check, and each refusal of [`calls`].
 pub fn bundle(source: &Source, text: &str) -> Result<Bundle, String> {
     let file = parse_bundle(text, Options::default())
@@ -116,7 +116,7 @@ pub fn bundle(source: &Source, text: &str) -> Result<Bundle, String> {
 /// `program` seeing `vis`: each `import fn` in import order, then each query and transaction in
 /// item order, with ordinals from 1.
 ///
-/// Fails with the message of the first error: a callable that does not check, declares a limit
+/// Fail with the message of the first error: a callable that does not check, declares a limit
 /// or is declared twice, a generic imported function, and a feed or aggregate.
 pub fn calls<'a>(
     schema: &Schema,
@@ -203,7 +203,7 @@ pub fn visible(schema: &Schema, imports: &[Import]) -> Result<Visible, String> {
 /// Returns the schema and program of `source`, whose schema is `schema`, with the bundle
 /// functions `fns` of `text` added to the first module of `vis`; `None` when there are none.
 ///
-/// Refuses a function whose name is that of a schema function `vis` sees, and one that fails to
+/// Refuse a function whose name is that of a schema function `vis` sees, and one that fails to
 /// check.
 pub fn with_functions(
     source: &Source,

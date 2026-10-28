@@ -234,7 +234,7 @@ pub(super) fn broken(e: exec::Error) -> Error {
 /// Returns the keying of index `spec` of `schema`, whose normal program is `normal`, its
 /// expression elements calling the host function bodies of `hosts`.
 ///
-/// Fails with [`Error::Refused`] if the executor cannot compile an expression element, or with
+/// Fail with [`Error::Refused`] if the executor cannot compile an expression element, or with
 /// [`Error::Internal`] or [`Error::Corrupt`] on a guarantee of the checker or of a stored row.
 pub(super) fn index_keys(
     schema: &Schema,
@@ -257,7 +257,7 @@ pub(super) fn index_keys(
 /// Returns the key stored row `row` of constructor `c` has in an index keyed by `keys` whose key
 /// schema is `schema`, or `None` when the index holds no entry for it.
 ///
-/// Fails with [`Error::Refused`] when an expression element faults on the row.
+/// Fail with [`Error::Refused`] when an expression element faults on the row.
 pub(super) fn row_key(
     keys: &IndexKeys,
     schema: &KeySchema,

@@ -612,7 +612,7 @@ impl Source {
         self.migrate_keeping(m, text, &[])
     }
 
-    /// Applies a migration as [`Source::migrate`] does, putting back after each operator every
+    /// Apply a migration as [`Source::migrate`] does, putting back after each operator every
     /// declaration of `kept` it removes, as it was before that operator and with its catalog id.
     pub fn migrate_keeping(
         &self,
@@ -715,7 +715,7 @@ impl Source {
             .collect()
     }
 
-    /// Applies one operator of a migration of `module` whose text is `text`.
+    /// Apply one operator of a migration of `module` whose text is `text`.
     ///
     /// On a refusal the source is left as it was.
     pub fn apply(&mut self, module: &str, op: &Operator, text: &str) -> Result<(), Vec<Diag>> {

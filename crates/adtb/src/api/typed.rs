@@ -38,7 +38,7 @@ pub trait BundleDef {
 
     /// Returns the registration open takes for the bundle.
     ///
-    /// Fails with `Invalid` when the header states a clause the engine does not run.
+    /// Fail with `Invalid` when the header states a clause the engine does not run.
     fn registration(&self) -> Result<Registration, Error> {
         Registration::bundle(Self::TEXT)
     }
@@ -576,7 +576,7 @@ impl<B, R: Runtime> Clone for Bundle<B, R> {
 impl<R: Runtime> Database<R> {
     /// Returns the handle of bundle `def`, binding to it and renewing its lease.
     ///
-    /// Fails as [`Database::registered`] does, and with `VersionMismatch` when the registered
+    /// Fail as [`Database::registered`] does, and with `VersionMismatch` when the registered
     /// bundle of that name pins another version.
     pub fn bundle<B: BundleDef>(&self, _def: &B) -> Result<Bundle<B, R>, B::Error> {
         let reg = self.registered(B::NAME)?;

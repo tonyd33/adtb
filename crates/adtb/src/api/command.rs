@@ -358,7 +358,7 @@ impl<R: Runtime> Engine<R> {
         Ok(rows(schema, elem, vec![row]))
     }
 
-    /// Replaces the rows `old` names of `rel` by `row`, in a transaction of its own.
+    /// Replace the rows `old` names of `rel` by `row`, in a transaction of its own.
     pub(super) fn swap_row(
         &self,
         schema: &Schema,

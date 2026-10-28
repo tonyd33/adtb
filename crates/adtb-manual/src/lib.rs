@@ -1,4 +1,4 @@
-//! Runs the Rust examples of the user manual: each `rust` block of a page is a program whose
+//! Run the Rust examples of the user manual: each `rust` block of a page is a program whose
 //! `main` a test calls, and the `text` block right after it, if any, is what it prints.
 
 use std::fmt::Debug;

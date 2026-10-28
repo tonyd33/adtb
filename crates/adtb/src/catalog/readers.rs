@@ -203,7 +203,7 @@ impl Readers {
 impl Catalog {
     /// Record `reader` as live.
     ///
-    /// Fails with [`Error::Refused`] when a reader of the same bundle is live, when its version
+    /// Fail with [`Error::Refused`] when a reader of the same bundle is live, when its version
     /// is not one of the log's, or when a name it reads or writes does not resolve at its
     /// version.
     pub fn register(&mut self, reader: Reader) -> Result<(), Error> {
@@ -236,7 +236,7 @@ impl Catalog {
     /// version, as `relation.Ctor` or `Type.Ctor`, under the rules by which a live reader blocks
     /// its enable.
     ///
-    /// Fails with [`Error::Refused`] when the reader's version is not one of the log's or a name
+    /// Fail with [`Error::Refused`] when the reader's version is not one of the log's or a name
     /// it reads or writes does not resolve at its version.
     pub fn stale(&self, reader: &Reader) -> Result<Option<String>, Error> {
         let refused = |why: String| Error::Refused(vec![why]);
@@ -301,7 +301,7 @@ impl Catalog {
     /// live readers, the drops they hold back, and the source that keeps every pending-dropped
     /// object.
     ///
-    /// Fails with [`Error::Refused`] when a live reader refuses the migration, naming the
+    /// Fail with [`Error::Refused`] when a live reader refuses the migration, naming the
     /// reader, or when the migration leaves a pending-dropped object without an image, naming
     /// the object.
     pub(super) fn held(
@@ -784,7 +784,7 @@ fn declares(schema: &Schema, p: &Pending) -> bool {
 
 /// Returns `source` with the objects of `drops` dropped, at its own version and log.
 ///
-/// Fails with [`Error::Unchecked`] when a drop does not apply.
+/// Fail with [`Error::Unchecked`] when a drop does not apply.
 pub(super) fn without(source: &Source, drops: &[Pending]) -> Result<Source, Error> {
     let mut next = source.clone();
     for p in drops {

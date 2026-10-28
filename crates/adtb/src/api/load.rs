@@ -92,7 +92,7 @@ impl<R: Runtime> Load<'_, R> {
     /// Returns the appender of constructor relation `target`, as ad hoc text names it:
     /// `r.C`, or `r` for a relation of a record type, its module qualifying `r` where needed.
     ///
-    /// Fails with `Invalid` when `target` names no constructor relation.
+    /// Fail with `Invalid` when `target` names no constructor relation.
     pub fn appender<C: CtorRelation>(&mut self, target: C) -> Result<Appender<'_>, Error> {
         let fresh = staged(self.txn.engine.schema.as_ref(), target.target())?;
         let at = match self.staged.iter().position(|s| s.target == fresh.target) {
@@ -110,7 +110,7 @@ impl<R: Runtime> Load<'_, R> {
     /// Insert every staged row of every appender as one change set and commit. Returns the rows
     /// inserted and the commit position.
     ///
-    /// Fails, inserting nothing, as an insert of the rows fails: a key two staged rows share
+    /// Fail, inserting nothing, as an insert of the rows fails: a key two staged rows share
     /// with `KeyViolation`, a broken constraint with `Violated`, and a collision with a row
     /// committed since the load opened with `Serialization`. The engine does not rerun it.
     pub fn commit(mut self) -> Result<LoadReport, Error> {
@@ -166,7 +166,7 @@ impl Appender<'_> {
 
     /// Stage the rows of `batch`, unconstrained until the load commits.
     ///
-    /// Fails with `SchemaMismatch`, staging nothing, unless the batch holds the fields of
+    /// Fail with `SchemaMismatch`, staging nothing, unless the batch holds the fields of
     /// [`schema`](Appender::schema), in order and at their types, less any a key generator or
     /// a default fills.
     pub fn push(&mut self, batch: &RecordBatch) -> Result<(), Error> {

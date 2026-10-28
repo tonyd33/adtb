@@ -67,7 +67,7 @@ fn run_text(db: &Database<SimRuntime>, text: &str) {
         .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
 }
 
-/// Commits `text` as one transaction. Returns its commit position.
+/// Commit `text` as one transaction. Returns its commit position.
 fn commit(db: &Database<SimRuntime>, text: &str) -> Position {
     let mut t = db
         .begin(&TxnOptions::default())
@@ -77,7 +77,7 @@ fn commit(db: &Database<SimRuntime>, text: &str) -> Position {
     t.commit(None).expect("the transaction commits")
 }
 
-/// Runs a read-only query, whose safe snapshot is kept for reads of the past.
+/// Run a read-only query, whose safe snapshot is kept for reads of the past.
 fn mark(db: &Database<SimRuntime>) {
     rows(db, "from i in items select key i");
 }
@@ -135,7 +135,7 @@ fn unavailable(e: &Error) -> Position {
     }
 }
 
-/// Opens the stock database keeping an hour of history, with `ann` and `bo` committed at the
+/// Open the stock database keeping an hour of history, with `ann` and `bo` committed at the
 /// first position returned and `ann` renamed `cy` and `bo` closed at the second, a safe snapshot
 /// kept after each.
 fn history(rt: &SimRuntime) -> (Database<SimRuntime>, Position, Position) {

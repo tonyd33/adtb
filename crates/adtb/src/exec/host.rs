@@ -59,7 +59,7 @@ impl HostCall {
     /// Returns the result of each row, or the fault of every row when the body fails, panics, or
     /// returns a batch of another type or length.
     ///
-    /// Fails with `MissingFunction` when no body is bound, and with `OtherVersion` when the body
+    /// Fail with `MissingFunction` when no body is bound, and with `OtherVersion` when the body
     /// bound is supplied at another version than the declaration names.
     pub fn call(
         &self,

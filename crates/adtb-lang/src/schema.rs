@@ -1195,7 +1195,7 @@ impl Builder<'_> {
         }
     }
 
-    /// Refuses a declared `Principal` other than a sum of `EndUser`, `Service { name: Text }` and
+    /// Refuse a declared `Principal` other than a sum of `EndUser`, `Service { name: Text }` and
     /// `Anonymous`, with no header fields.
     fn check_principal(&mut self, file: FileId, span: Span) {
         let def = self.schema.ty(self.schema.principal);

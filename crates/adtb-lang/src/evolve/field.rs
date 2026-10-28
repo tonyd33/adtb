@@ -382,7 +382,7 @@ impl Cx<'_> {
         }
     }
 
-    /// Moves field `path.field` of every constructor of `from` to the header of `path.ty`, the
+    /// Move field `path.field` of every constructor of `from` to the header of `path.ty`, the
     /// constructors that lack it taking `fill`.
     pub(super) fn move_up(
         &mut self,

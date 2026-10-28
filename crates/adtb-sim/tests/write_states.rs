@@ -44,7 +44,7 @@ fn fails(db: &Database<SimRuntime>, text: &str) -> Error {
     }
 }
 
-/// Asserts that `text` is refused as a write into a constructor that is not open, naming `ctor`
+/// Assert that `text` is refused as a write into a constructor that is not open, naming `ctor`
 /// in state `stage`.
 fn not_open(db: &Database<SimRuntime>, text: &str, ctor: &str, stage: &str) {
     match fails(db, text) {
@@ -99,8 +99,8 @@ const ROWS: &str = r#"transact
   insert post_badges.Plain { name: "new" }
   insert accounts { provider: Local, note: "a" }"#;
 
-/// Opens a database at `SHOP` holding `ROWS`, then reopens it with `later` appended to the log,
-/// and runs `body` over the result of that open.
+/// Open a database at `SHOP` holding `ROWS`, then reopen it with `later` appended to the log,
+/// and run `body` over the result of that open.
 fn after(seed: u64, later: &[&str], body: impl FnOnce(Result<Database<SimRuntime>, OpenError>)) {
     let mut sim = Sim::new(seed, Config::default());
     run(&mut sim, |rt| {
@@ -409,7 +409,7 @@ fn a_value_constructor_a_stored_value_holds_is_neither_disabled_nor_removed() {
     assert!(detail.contains("Okta"), "{detail}");
 }
 
-/// Opens a database at `SHOP` and `before`, writes `stored`, then returns the refusal of
+/// Open a database at `SHOP` and `before`, write `stored`, then return the refusal of
 /// reopening it with `later` appended.
 fn refused_after(seed: u64, before: &[&str], stored: &str, later: &[&str]) -> (u64, String) {
     let mut sim = Sim::new(seed, Config::default());
@@ -699,7 +699,7 @@ const ENABLE_APPLE: &str = "module auth\nenable identities.Apple\n";
 const ADD_OKTA_TYPE: &str = "module auth\nadd constructor Provider.Okta\n";
 const ENABLE_OKTA: &str = "module auth\nenable Provider.Okta\n";
 
-/// Opens a database at `log` holding `AUTH_ROWS`, then opens its catalog and runs `body` over
+/// Open a database at `log` holding `AUTH_ROWS`, then open its catalog and run `body` over
 /// it.
 fn at_catalog<T>(
     seed: u64,

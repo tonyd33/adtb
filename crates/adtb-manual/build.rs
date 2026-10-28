@@ -1,5 +1,5 @@
-//! Writes the files and the Rust examples of the manual's pages under `OUT_DIR`, one directory
-//! per page laid out as the reader's crate, and runs the Rust API page's build script there.
+//! Write the files and the Rust examples of the manual's pages under `OUT_DIR`, one directory
+//! per page laid out as the reader's crate, and run the Rust API page's build script there.
 //!
 //! A fenced block whose info string is a language and a path, such as `adt migrations/0001.adt`,
 //! is a file of the reader's crate. A block whose info string is `rust` is an example: a program

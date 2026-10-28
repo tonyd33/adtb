@@ -562,7 +562,7 @@ impl<R: Runtime> Engine<R> {
         Error::of_write(&self.schema, txn, e)
     }
 
-    /// Runs the items of `p` as statements of `tx`, the transaction `id`, over `local`. Returns
+    /// Run the items of `p` as statements of `tx`, the transaction `id`, over `local`. Returns
     /// the rows of each item that yields a result, or the client error of the failure, and
     /// whether that failure ends the transaction.
     fn statements(
@@ -764,7 +764,7 @@ fn micros(t: SystemTime) -> i64 {
     }
 }
 
-/// Refuses a log whose migrations at or below the file's version differ from the file's by
+/// Refuse a log whose migrations at or below the file's version differ from the file's by
 /// hash, naming the first that does.
 fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
     let stored = &catalog.source().log;

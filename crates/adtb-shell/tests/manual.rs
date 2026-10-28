@@ -188,7 +188,7 @@ fn printed(dir: &Path, session: &Session) -> Printed {
     }
 }
 
-/// Runs every session of `page`, a path under `docs/manual`, and returns what each that prints
+/// Run every session of `page`, a path under `docs/manual`, and return what each that prints
 /// other than the page shows printed. Returns `None` when the page shows no session.
 fn check(manual: &Path, page: &Path) -> Option<Vec<String>> {
     let text =

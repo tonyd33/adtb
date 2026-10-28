@@ -1,4 +1,4 @@
-//! Generates the typed calls of the fixture shop and of the campaign app.
+//! Generate the typed calls of the fixture shop and of the campaign app.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
