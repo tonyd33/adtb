@@ -54,3 +54,13 @@ work/briefs/brief-engine-update-loss.md. Root cause not yet diagnosed; stale
 retry computation is a hypothesis, not a finding. Application worker stopped
 feature work and is writing final handoff. Server-wire paused with unverified
 partial codec snapshot2950faa3; handoff-server-wire.md preserves next steps.
+
+## 2026-10-28: minimal counter reproduces
+
+Engine workspace adds crates/adtb-sim/tests/update_concurrency.rs. Before any
+fix, two concurrent registered counter increments reproduced the loss in
+0.30 seconds at iteration21: both committed positions5348589/5348188,
+attempts2/1, counter43 expected44. Log target/update-before2.log in sibling
+engine-update-loss. This removes campaign, HTTP and turn aggregate dependencies.
+Root cause remains under investigation; version claim/rollback ownership is
+a hypothesis. Deterministic interleaving and general fix are next.
