@@ -331,6 +331,148 @@ fn ordered_types_have_ordered_fields() {
 }
 
 #[test]
+fn ordered_nested_instantiations_are_finite() {
+    let schema = build_src(&[&module(
+        "type Holder ordered = { value: Option (Option I8) }",
+    )])
+    .expect("nested finite ordered instantiations build");
+    let m = schema.module_named("m").unwrap();
+    assert!(schema.is_ordered(&Ty::Data {
+        def: schema.module(m).types["Holder"],
+        args: Vec::new(),
+        ctors: None,
+    }));
+}
+
+#[test]
+fn ordered_shared_graph_does_not_expand_every_path() {
+    let mut source = "module m\ntype T0 ordered = { leaf: I8 }\n".to_owned();
+    for level in 1..=30 {
+        let previous = level - 1;
+        source.push_str(&format!(
+            "type T{level} ordered = {{ left: T{previous}, right: T{previous} }}\n"
+        ));
+    }
+    let parsed = parse_schema(&source, Options::default()).ok().unwrap();
+    let schema = build(&[(FileId(0), parsed)]).expect("the ordered type graph builds");
+    crate::check::check_schema(&schema).expect("the ordered graph typechecks");
+    let m = schema.module_named("m").unwrap();
+    assert!(schema.is_ordered(&Ty::Data {
+        def: schema.module(m).types["T30"],
+        args: Vec::new(),
+        ctors: None,
+    }));
+}
+
+#[test]
+fn ordered_requirements_use_the_instantiation_and_current_parameter_context() {
+    let schema = build_src(&[&module(
+        "type Last a b ordered = { value: b }\ntype Phantom a = new I64",
+    )])
+    .unwrap();
+    let m = schema.module_named("m").unwrap();
+    let last = schema.module(m).types["Last"];
+    let at_zero = Ty::Data {
+        def: last,
+        args: vec![Ty::Base(Base::Period), Ty::Param(0)],
+        ctors: None,
+    };
+    assert!(schema.is_ordered_with(&at_zero, &|index| index == 0));
+    assert!(!schema.is_ordered_with(&at_zero, &|_| false));
+    assert!(schema.is_ordered_with(&at_zero, &|_| true));
+    let at_one = Ty::Data {
+        def: last,
+        args: vec![Ty::Param(0), Ty::Param(1)],
+        ctors: None,
+    };
+    assert!(schema.is_ordered_with(&at_one, &|index| index == 1));
+    assert!(!schema.is_ordered_with(&at_one, &|index| index == 0));
+    assert!(!schema.is_ordered(&Ty::Data {
+        def: last,
+        args: vec![Ty::Base(Base::I8), Ty::Base(Base::Period)],
+        ctors: None,
+    }));
+    assert!(schema.is_ordered(&Ty::Data {
+        def: schema.module(m).types["Phantom"],
+        args: vec![Ty::Base(Base::Period)],
+        ctors: None,
+    }));
+    assert_error(&[&module("type Invalid a = new a")], "over a base type");
+}
+
+#[test]
+fn ordered_recursive_declarations_are_refused_without_unfolding_arguments() {
+    for source in [
+        "type Loop ordered = { next: Loop }",
+        "type Loop a ordered = { next: Loop (Option a) }",
+        "type A a ordered = { next: B (Option a) }\ntype B b ordered = { next: A b }",
+    ] {
+        assert_error(&[&module(source)], "reaches itself");
+    }
+}
+
+#[test]
+fn ordered_fields_do_not_reuse_another_instantiation_or_schema_state() {
+    assert_error(
+        &[&module(
+            "type Invalid ordered = { good: Option I8, bad: Option Period }",
+        )],
+        "unordered type",
+    );
+    let mut schema = build_src(&[&module("type Stage ordered = A | B")]).unwrap();
+    let m = schema.module_named("m").unwrap();
+    let stage = schema.module(m).types["Stage"];
+    let ty = Ty::Data {
+        def: stage,
+        args: Vec::new(),
+        ctors: None,
+    };
+    let tag = Ty::Tag(Box::new(ty.clone()));
+    assert!(schema.is_ordered(&ty));
+    assert!(schema.is_ordered(&tag));
+    schema.types[stage.0 as usize].ordered = false;
+    assert!(!schema.is_ordered(&ty));
+    assert!(!schema.is_ordered(&tag));
+    assert!(!schema.is_ordered(&Ty::Record(vec![])));
+    assert!(!schema.is_ordered(&Ty::Unit));
+}
+
+#[test]
+fn ordered_composite_key_graphs_share_requirements() {
+    let mut source = "module m\ntype K0 ordered = { id: I8 }\nrelation k0 : K0 key id\n".to_owned();
+    for level in 1..=30 {
+        let previous = level - 1;
+        source.push_str(&format!(
+            "type K{level} ordered = {{ left: Key k{previous}, right: Key k{previous} }}\nrelation k{level} : K{level} key (left, right)\n"
+        ));
+    }
+    let schema = build_src(&[&source]).expect("the shared key graph builds");
+    crate::check::check_schema(&schema).expect("the shared key graph typechecks");
+    assert!(schema.is_ordered(&Ty::Key {
+        rel: relation(&schema, "k30"),
+        ctors: None,
+    }));
+}
+
+#[test]
+fn ordered_keys_require_a_finite_ordered_representation() {
+    let schema = build_src(&[&module(
+        "type Root = { id: Key roots }\nrelation roots : Root key id\ntype Calendar = { id: Period }\nrelation calendars : Calendar key id\ntype Alpha = { target: Key betas }\nrelation alphas : Alpha key target\ntype Beta = { target: Key alphas }\nrelation betas : Beta key target",
+    )])
+    .unwrap();
+    for (name, ordered) in [("roots", true), ("calendars", false), ("alphas", false)] {
+        assert_eq!(
+            ordered,
+            schema.is_ordered(&Ty::Key {
+                rel: relation(&schema, name),
+                ctors: None,
+            }),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn on_delete_actions() {
     let base = "type U = { id: Key us }\nrelation us : U key id generate sequence\n";
     build_src(&[&module(&format!(

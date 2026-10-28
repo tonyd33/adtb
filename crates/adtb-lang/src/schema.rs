@@ -500,56 +500,15 @@ impl Schema {
 
     /// Returns whether `ty` is ordered, where `param` says whether type parameter `i` is.
     pub fn is_ordered_with(&self, ty: &Ty, param: &dyn Fn(u32) -> bool) -> bool {
-        self.ordered_at(ty, param, &mut Vec::new())
-    }
-
-    fn ordered_at(&self, ty: &Ty, param: &dyn Fn(u32) -> bool, seen: &mut Vec<TypeId>) -> bool {
-        match ty {
-            Ty::Base(b) => b.is_ordered(),
-            Ty::Param(i) => param(*i),
-            Ty::Data { def, args, .. } => {
-                if seen.contains(def) {
-                    return false;
-                }
-                let t = self.ty(*def);
-                seen.push(*def);
-                let ok = match &t.kind {
-                    TypeDefKind::Newtype { base, .. } => self.ordered_at(base, param, seen),
-                    TypeDefKind::Sum { header, ctors, .. } => {
-                        t.ordered
-                            && header
-                                .iter()
-                                .chain(ctors.iter().flat_map(|c| c.fields.iter()))
-                                .all(|f| self.ordered_at(&f.ty.subst(args), param, seen))
-                    }
-                };
-                seen.pop();
-                ok
-            }
-            Ty::Key { rel, .. } => {
-                let r = self.relation(*rel);
-                let def = self.ty(r.elem_def);
-                r.key.iter().all(|k| match def.field(0, k) {
-                    Some(f) => match &f.ty {
-                        Ty::Key { rel: own, .. } if own == rel => true,
-                        fty => self.ordered_at(&fty.subst(r.elem_args()), param, seen),
-                    },
-                    None => false,
-                })
-            }
-            Ty::Tag(t) => match t.as_ref() {
-                Ty::Data { def, .. } => self.ty(*def).ordered,
-                _ => false,
-            },
-            Ty::Set(_)
-            | Ty::NonEmpty(_)
-            | Ty::Group(..)
-            | Ty::Record(_)
-            | Ty::Sum { .. }
-            | Ty::Fn(..)
-            | Ty::Unit
-            | Ty::Change => false,
+        Order {
+            schema: self,
+            definitions: BTreeMap::new(),
+            keys: BTreeMap::new(),
+            active_definitions: BTreeSet::new(),
+            active_keys: BTreeSet::new(),
         }
+        .parameters(ty)
+        .is_some_and(|required| required.into_iter().all(param))
     }
 
     pub fn show_ty(&self, ty: &Ty) -> String {
@@ -665,6 +624,99 @@ impl Schema {
             Ty::Unit => "()".to_string(),
             Ty::Change => "a write".to_string(),
         }
+    }
+}
+
+type OrderParams = BTreeSet<u32>;
+
+struct Order<'s> {
+    schema: &'s Schema,
+    definitions: BTreeMap<TypeId, Option<OrderParams>>,
+    keys: BTreeMap<RelId, Option<OrderParams>>,
+    active_definitions: BTreeSet<TypeId>,
+    active_keys: BTreeSet<RelId>,
+}
+
+impl Order<'_> {
+    fn parameters(&mut self, ty: &Ty) -> Option<OrderParams> {
+        match ty {
+            Ty::Base(base) => base.is_ordered().then(OrderParams::new),
+            Ty::Param(index) => Some([*index].into()),
+            Ty::Data { def, args, .. } => self.definition(*def)?.into_iter().try_fold(
+                OrderParams::new(),
+                |mut required, index| {
+                    required.extend(self.parameters(args.get(index as usize)?)?);
+                    Some(required)
+                },
+            ),
+            Ty::Key { rel, .. } => self.key(*rel),
+            Ty::Tag(ty) => match ty.as_ref() {
+                Ty::Data { def, .. } => self.schema.ty(*def).ordered.then(OrderParams::new),
+                _ => None,
+            },
+            Ty::Set(_)
+            | Ty::NonEmpty(_)
+            | Ty::Group(..)
+            | Ty::Record(_)
+            | Ty::Sum { .. }
+            | Ty::Fn(..)
+            | Ty::Unit
+            | Ty::Change => None,
+        }
+    }
+
+    fn definition(&mut self, def: TypeId) -> Option<OrderParams> {
+        if let Some(required) = self.definitions.get(&def) {
+            return required.clone();
+        }
+        if !self.active_definitions.insert(def) {
+            return None;
+        }
+        let declaration = self.schema.ty(def);
+        let required = match &declaration.kind {
+            TypeDefKind::Newtype { base, .. } => self.parameters(base),
+            TypeDefKind::Sum { header, ctors, .. } if declaration.ordered => header
+                .iter()
+                .chain(ctors.iter().flat_map(|ctor| &ctor.fields))
+                .try_fold(OrderParams::new(), |mut required, field| {
+                    required.extend(self.parameters(&field.ty)?);
+                    Some(required)
+                }),
+            TypeDefKind::Sum { .. } => None,
+        };
+        assert!(
+            self.active_definitions.remove(&def),
+            "an ordering declaration remains active until its requirements are complete"
+        );
+        self.definitions.insert(def, required.clone());
+        required
+    }
+
+    fn key(&mut self, rel: RelId) -> Option<OrderParams> {
+        if let Some(required) = self.keys.get(&rel) {
+            return required.clone();
+        }
+        if !self.active_keys.insert(rel) {
+            return None;
+        }
+        let relation = self.schema.relation(rel);
+        let definition = self.schema.ty(relation.elem_def);
+        let required = relation
+            .key
+            .iter()
+            .try_fold(OrderParams::new(), |mut required, name| {
+                let field = definition.field(0, name)?;
+                if !matches!(&field.ty, Ty::Key { rel: own, .. } if *own == rel) {
+                    required.extend(self.parameters(&field.ty.subst(relation.elem_args()))?);
+                }
+                Some(required)
+            });
+        assert!(
+            self.active_keys.remove(&rel),
+            "an ordering key remains active until its requirements are complete"
+        );
+        self.keys.insert(rel, required.clone());
+        required
     }
 }
 
