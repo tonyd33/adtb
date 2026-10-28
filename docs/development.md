@@ -133,7 +133,11 @@ Read [AGENTS.md](../AGENTS.md) with any coding agent. Project workflows are
 in `.agents/skills/`; a harness can read their `SKILL.md` files directly.
 Keep resumable task state in tickets under `work/issues/` and supporting
 notes in tracked files, including paths, commands and unresolved failures.
-`work/HANDOFF.md` is an optional, ignored local handoff.
+Verify essential paths with `jj file list PATH...`; an ignored ticket or
+brief is not part of a clone merely because a local tool can read it.
+Use [the evidence workflow](../.agents/skills/lead/verification.md) for check
+receipts and durable task state. `work/HANDOFF.md` is an optional, ignored
+local checkpoint, not the sole task record or a source of new permissions.
 
 The quality-review workflow defaults to the `reviewed..@` jj range. Check
 `jj bookmark list --all-remotes` for the review baseline. If `reviewed` is

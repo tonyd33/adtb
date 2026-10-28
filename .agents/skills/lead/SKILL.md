@@ -13,6 +13,11 @@ Keep your context for rulings, briefs and review. Agents write the code.
   design space, not to a track.
 - Give each agent one track, in its own workspace beside the main
   checkout: `jj workspace add --name NAME ../adtb-NAME`.
+- Before dispatch, confirm the worker can write that workspace and access
+  the shared jj metadata under the active harness's permissions. Workspace
+  creation alone does not grant worker access. Obtain required approval or
+  provision access before implementation; report permission wait as blocked,
+  not as a tool failure.
 - Before starting a track, list the files the running tracks change. A
   track that changes a shared signature (pager, heap or B-link tree calls)
   does not run beside tracks that call it: land it first and branch the
@@ -22,6 +27,9 @@ Keep your context for rulings, briefs and review. Agents write the code.
 
 - Write the brief to `work/briefs/brief-NAME.md` in the main checkout.
   jj ignores that directory; earlier briefs there, if any, are templates.
+  Keep essential scope, acceptance commands and landing dependencies in a
+  tracked ticket or supporting note using [the evidence workflow](verification.md).
+  The local brief must not be the only copy needed to resume.
 - Tell the agent to read [code-agent.md](code-agent.md) and its brief,
   both by absolute path.
 - A brief names the rulings it relies on, the design and spec sections by
@@ -40,8 +48,10 @@ Keep your context for rulings, briefs and review. Agents write the code.
   tier it belongs to before accepting it.
 - File the gaps agents report as tickets.
 - Once an agent has reported, message it again only when it must act.
-  Save each report's handoff note to `work/briefs/handoff-NAME.md`.
-  Follow-up work goes to a new agent whose brief points at that note.
+  Save each report's handoff note and verification receipts to
+  `work/briefs/handoff-NAME.md`; update the durable task state with unresolved
+  failures, dependencies and the next action. Follow-up work goes to a new
+  agent whose brief points at that note.
   Fix trivial rebase fallout yourself.
 
 ## Land
@@ -76,5 +86,7 @@ Keep your context for rulings, briefs and review. Agents write the code.
 Checkpoint at meaningful task boundaries and before the active session
 approaches its context limit or compaction threshold. Use the capacity
 and warnings the harness exposes; do not assume a fixed token budget.
-Record the state in `work/HANDOFF.md` and the tickets so a fresh session
-can continue from them.
+Follow [the evidence workflow](verification.md) for receipts and durable
+state. Keep `work/HANDOFF.md` short and current, archiving superseded
+narrative without losing unfinished work. On resume, verify the live state;
+historical permissions in a handoff are not authorization for a new session.

@@ -116,6 +116,10 @@ The explicit roots keep generated dev-shell wrappers on your workspace.
 `check` owns root clippy, formatting and the suite; campaign lint parity,
 clippy, formatting and tests; dependency policy and source-size limits.
 Report each failed or unfinished check. The lead owns post-land `check`.
+Record a [verification receipt](verification.md#verification-receipt) with
+its tested state, command/scope, outcome, log and remaining owner. Separate
+observed permission wait from execution and total elapsed time; mark timings
+unknown when the harness cannot measure them.
 For prose-only changes, use the brief's checks and review the diff.
 
 Do not filter a running check through `grep`, `head` or `tail` for its
@@ -154,7 +158,8 @@ comments stating a non-obvious invariant. Report its result.
 Report: files changed, what works, tests and which fail, contracts you
 wrote into design files, spec gaps, and anything you stopped on. Plain
 prose. End with a handoff note of at most 15 lines: the files and
-functions a successor must know, with line ranges. Your session ends
+functions a successor must know, with line ranges, verification receipt
+or link, incomplete checks and next action. Your session ends
 with the report; follow-up work goes to a new agent that reads that
 note.
 
