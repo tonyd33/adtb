@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: bug
 priority: 898
 summary: docs serve watches source bodies but never regenerates navigation or copied grammar
-branch: docs-nav
+closed: 2026-10-27
 tags:
   - quality
   - tooling
@@ -39,3 +39,29 @@ shutdown against real HTTP output. No new dependencies. Scope verification:
 work/tools/docs-site check, real serve regression, house and diff review; full
 Rust integration remains the lead's responsibility. Detailed ignored brief
 work/briefs/brief-docs-nav.md is not the only durable scope record.
+
+## 2026-10-28: resolved
+
+Landed2bc9c2be after exact lead review of6cb5ae4cfb1db1c3dd487fa3a6aba4b756c44866
+on f305ffaf. Serving observes authored input edits, regenerates navigation/assets
+with atomic derived-file publication, preserves valid SUMMARY during incomplete
+index edits, logs once and recovers; subprocess status and both stop signals
+reap mdBook. Generated local empty.gitignore keeps mdBook0.5.4 portable poller
+from pruning the ignored source view. Native watcher idle loop was rejected,
+not shipped. No dependency/engine/spec changes; hosting remains separate.
+
+Actual HTTP regression verifies add/remove/reorder, body/title, grammar/home,
+invalid-index recovery, stable mtimes AND build count while idle, child failure,
+SIGTERM/SIGINT and closed listener. Original script fails added-page HTTP witness;
+logs retained. Final worker docs/house0,8tests420syntax61pages6730links4995fragments,
+stable6cb5ae4c inputs,11.506s. Lead scoped main docs0 with same counts,11.084s,
+at cleanb4ff5c06af7ee3f0103c503f715248f3791fda1f parent2bc9c2be; revision and all
+tracked/localconfig SHA256 inputs unchanged before/after. Command main root:
+direnv exec . env DEVENV_ROOT=/home/tony/code/adtb
+CARGO_TARGET_DIR=/home/tony/code/adtb/target python3 -B target/check-docs-nav-main.py
+Runner calls work/tools/docs-site check. Evidence target/docs-nav-main-check/.
+Python3.14.7/mdBook0.5.4/defaultconfiguration; permission/queue/execution-only
+unknown. Branch rootRust check intentionally not run; combined full check belongs
+to lead after priority engine sequence repair. This is a docs-scope pass only.
+
+## 2026-10-27: resolved
