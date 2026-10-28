@@ -194,7 +194,7 @@ type Uuid = new Bytes where bytes_len(self) == 16
 | Function | Result | Faults |
 | --- | --- | --- |
 | `uuid (t: Text) -> Uuid` | the UUID written in the canonical 8-4-4-4-12 hexadecimal form, either case | `InvalidText` for any other text |
-| `text (u: Uuid) -> Text` | the canonical form, lowercase | none |
+| `text (u: Uuid) -> Text` | for sixteen bytes, the lowercase 8-4-4-4-12 form; for any other length, `Uuid(0x...)` as printed ([interop.md §1](interop.md#1-textual-value-syntax)) | none |
 
 A `uuidv7` key is represented as a `Uuid`
 ([model.md](model.md#73-generated-keys)).

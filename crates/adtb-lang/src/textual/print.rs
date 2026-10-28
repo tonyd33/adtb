@@ -80,12 +80,12 @@ fn duration(d: i64) -> String {
     format!("{}{unit}", d / per)
 }
 
-fn uuid(b: &[u8]) -> R<String> {
+fn uuid(b: &[u8]) -> Option<String> {
     if b.len() != 16 {
-        return mistyped(format!("a `Uuid` is 16 bytes, found {}", b.len()));
+        return None;
     }
     let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    Ok(format!(
+    Some(format!(
         "{}-{}-{}-{}-{}",
         &hex[0..8],
         &hex[8..12],
@@ -203,11 +203,14 @@ fn scalar_text(s: Scalar<'_>, b: Base) -> R<String> {
     })
 }
 
-/// Returns `text(v)` for `v` of form `form`: a number or time value as its literal, a `Uuid` in
-/// its 8-4-4-4-12 form, and a newtype over `Text` as its text. Any other value is printed.
+/// Returns `text(v)` for `v` of form `form`: a number or time value as its literal, a sixteen-byte
+/// `Uuid` in its 8-4-4-4-12 form, and a newtype over `Text` as its text. Print any other value.
 pub fn to_text<V: Textual>(v: &V, form: &Form) -> R<String> {
     match form {
-        Form::Uuid => uuid(bytes(v)?),
+        Form::Uuid => match uuid(bytes(v)?) {
+            Some(text) => Ok(text),
+            None => print(v, form),
+        },
         Form::Newtype { base, .. } => match base.as_ref() {
             Form::Base(Base::Text) => scalar_text(scalar(v)?, Base::Text),
             f => to_text(v, f),
@@ -242,6 +245,14 @@ fn write_fields<V: Textual>(out: &mut String, names: &[(String, Form)], v: &V) -
     Ok(())
 }
 
+fn write_newtype<V: Textual>(out: &mut String, v: &V, name: &str, base: &Form) -> R<()> {
+    out.push_str(name);
+    out.push('(');
+    write_val(out, v, base)?;
+    out.push(')');
+    Ok(())
+}
+
 fn write_val<V: Textual>(out: &mut String, v: &V, form: &Form) -> R<()> {
     match form {
         Form::Base(Base::Text) => match scalar(v)? {
@@ -250,15 +261,13 @@ fn write_val<V: Textual>(out: &mut String, v: &V, form: &Form) -> R<()> {
         },
         Form::Base(Base::Bytes | Base::SortKey) => hex(out, bytes(v)?),
         Form::Base(b) => out.push_str(&scalar_text(scalar(v)?, *b)?),
-        Form::Uuid => {
-            write!(out, "uuid(\"{}\")", uuid(bytes(v)?)?).expect("a String accepts every write");
-        }
-        Form::Newtype { name, base } => {
-            out.push_str(name);
-            out.push('(');
-            write_val(out, v, base)?;
-            out.push(')');
-        }
+        Form::Uuid => match uuid(bytes(v)?) {
+            Some(text) => {
+                write!(out, "uuid(\"{text}\")").expect("a String accepts every write");
+            }
+            None => write_newtype(out, v, "Uuid", &Form::Base(Base::Bytes))?,
+        },
+        Form::Newtype { name, base } => write_newtype(out, v, name, base)?,
         Form::Span(point) => {
             let fs = fields(v, 2)?;
             let (start, end) = (fs[0], fs[1]);

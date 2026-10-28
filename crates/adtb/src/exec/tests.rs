@@ -587,11 +587,8 @@ fn a_stored_or_key_value_of_another_type_is_an_internal_error() {
 fn printing_a_value_not_of_its_form_is_an_internal_error() {
     let what = broken_op(Op::Print(Arc::new(Form::Base(Base::Text))), &[Val::Int(1)]);
     assert!(what.contains("is text"), "{what}");
-    let what = broken_op(
-        Op::ToText(Arc::new(Form::Uuid)),
-        &[Val::Bytes(Arc::from([0u8; 3]))],
-    );
-    assert!(what.contains("16 bytes"), "{what}");
+    let what = broken_op(Op::ToText(Arc::new(Form::Uuid)), &[Val::Int(1)]);
+    assert!(what.contains("is bytes"), "{what}");
     let set = Form::Set {
         elem: Box::new(Form::Base(Base::I64)),
         nonempty: false,

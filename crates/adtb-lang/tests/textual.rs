@@ -503,7 +503,6 @@ fn a_value_not_of_its_form_does_not_print() {
         ("F64", int()),
         ("Decimal 2", int()),
         ("Bytes", text()),
-        ("Uuid", Tree::Atom(Atom::Bytes(vec![0; 3]))),
         ("Uuid", int()),
         ("Email", int()),
         ("Bool", int()),
@@ -523,5 +522,59 @@ fn a_value_not_of_its_form_does_not_print() {
         let f = form(&s, name);
         assert!(print(&v, &f).is_err(), "{v:?} prints at {name}");
         assert!(to_text(&v, &f).is_err(), "{v:?} is text at {name}");
+    }
+}
+
+#[test]
+fn uuid_bytes_roundtrip_at_every_length_boundary() {
+    let s = schema();
+    let f = form(&s, "Uuid");
+    for len in [0, 1, 15, 16, 17, 257] {
+        let bytes: Vec<u8> = (0u8..=255).cycle().take(len).collect();
+        let payload: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let generic = format!("Uuid(0x{payload})");
+        let value = Tree::Atom(Atom::Bytes(bytes));
+        let (printed, text) = if len == 16 {
+            let text = "00010203-0405-0607-0809-0a0b0c0d0e0f".to_owned();
+            (format!("uuid(\"{text}\")"), text)
+        } else {
+            (generic.clone(), generic.clone())
+        };
+        assert_eq!(Ok(printed.clone()), print(&value, &f), "length {len}");
+        assert_eq!(Ok(text), to_text(&value, &f), "length {len}");
+        assert_eq!(Ok(value.clone()), parse(&generic, &f), "length {len}");
+        assert_eq!(Ok(value.clone()), parse(&printed, &f), "length {len}");
+        let upper: Tree = parse(&format!("Uuid(0x{})", payload.to_uppercase()), &f)
+            .expect("the Bytes reader accepts uppercase hex");
+        assert_eq!(value, upper, "length {len}");
+        assert_eq!(Ok(printed), print(&upper, &f), "length {len}");
+    }
+}
+
+#[test]
+fn uuid_reading_preserves_the_grouped_form_and_refuses_near_misses() {
+    let f = Form::Uuid;
+    let grouped = "uuid(\"00010203-0405-0607-0809-0A0B0C0D0E0F\")";
+    let value: Tree = parse(grouped, &f).expect("the UUID wrapper accepts either case");
+    assert_eq!(
+        Ok("uuid(\"00010203-0405-0607-0809-0a0b0c0d0e0f\")".into()),
+        print(&value, &f)
+    );
+    for text in [
+        "Uuid(0x0)",
+        "Uuid(0xgg)",
+        "Uuid(0x00",
+        "Uuid(0x00))",
+        "Uuid(0x00) trailing",
+        "Uuid(\"x\")",
+        "Uuidx(0x00)",
+        "Uuid (0x00)",
+        "uuid(0x00)",
+        "uuid(\"78\")",
+        "uuid(\"00010203-0405-0607-0809-0a0b0c0d0e0g\")",
+        "uuid(\"00010203-0405-0607-0809-0a0b0c0d0e0f\") trailing",
+        "00010203-0405-0607-0809-0a0b0c0d0e0f",
+    ] {
+        assert!(parse::<Tree>(text, &f).is_err(), "{text}");
     }
 }

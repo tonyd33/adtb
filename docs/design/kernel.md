@@ -657,9 +657,16 @@ Postconditions:
 - `parse` returns `Ok(v)` only for a value of the form; other text
   gives a `ParseError` holding the byte offset where reading stopped.
   At `Opaque` it fails with "this type has no textual syntax".
+- `Uuid` has every `Bytes` representation in memory. `print` uses
+  `uuid("8-4-4-4-12")` for sixteen bytes and `Uuid(0x...)` for every
+  other length, without padding or truncation. `parse` accepts both
+  wrappers at every byte length the wrapper represents; it does not
+  check the newtype's write-time domain. A scalar of another kind
+  remains a shape error.
 - `to_text` is the `ToText` primitive: a number or time value as its
-  literal, a `Uuid` in its 8-4-4-4-12 form, a newtype over `Text` as
-  its text; any other value as `print` gives it.
+  literal, a sixteen-byte `Uuid` in its lowercase 8-4-4-4-12 form,
+  any other `Uuid` as `print` gives it, a newtype over `Text` as its
+  text; any other value as `print` gives it.
 - `read_document` of `print_document(doc)` is `Ok(doc)`. A document's
   header is returned as written; translating a document written at
   another version is the caller's.

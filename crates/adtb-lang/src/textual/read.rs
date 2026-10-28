@@ -637,6 +637,9 @@ impl<'s> Reader<'s> {
     }
 
     fn uuid<V: Textual>(&mut self) -> P<V> {
+        if self.rest().starts_with("Uuid") {
+            return self.newtype("Uuid", &Form::Base(Base::Bytes));
+        }
         self.expect("uuid")?;
         if !self.glued("(") {
             return self.fail("expected `(`");
@@ -688,24 +691,26 @@ impl<'s> Reader<'s> {
         Ok(V::of_set(out))
     }
 
+    fn newtype<V: Textual>(&mut self, name: &str, base: &Form) -> P<V> {
+        let at = self.pos;
+        if self.name()? != name {
+            self.pos = at;
+            return self.fail(format!("expected `{name}(`"));
+        }
+        if !self.glued("(") {
+            return self.fail("expected `(`");
+        }
+        let v = self.value(base)?;
+        self.expect(")")?;
+        Ok(v)
+    }
+
     pub(super) fn value<V: Textual>(&mut self, form: &Form) -> P<V> {
         self.ws();
         match form {
             Form::Base(b) => self.base(*b),
             Form::Uuid => self.uuid(),
-            Form::Newtype { name, base } => {
-                let at = self.pos;
-                if self.name()? != name {
-                    self.pos = at;
-                    return self.fail(format!("expected `{name}(`"));
-                }
-                if !self.glued("(") {
-                    return self.fail("expected `(`");
-                }
-                let v = self.value(base)?;
-                self.expect(")")?;
-                Ok(v)
-            }
+            Form::Newtype { name, base } => self.newtype(name, base),
             Form::Span(point) => self.span(point),
             Form::Sum { ctors, allowed } => self.sum(ctors, allowed.as_deref()),
             Form::Tag(names) => {

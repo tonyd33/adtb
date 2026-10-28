@@ -58,6 +58,14 @@ those of [syntax.md](syntax.md#25-literals):
   (general category Cc) prints as `\u{..}` in lowercase hex, and
   every other character prints as itself. A reader accepts a control
   character written as itself or escaped.
+- A sixteen-byte `Uuid` prints as `uuid("8-4-4-4-12")`, with lowercase
+  hexadecimal digits. A `Uuid` of any other byte length prints as
+  `Uuid(0x...)`, with its complete `Bytes` representation in the form
+  of §1.3; the empty value prints as `Uuid(0x)`. `Uuid.parse` accepts
+  both wrappers, including `Uuid(0x...)` with sixteen bytes. Printing
+  such a value uses the `uuid("8-4-4-4-12")` form. Neither printing nor
+  reading checks the newtype's write-time domain
+  ([constraints.md §2.3](constraints.md#23-domains)).
 - Time values, `Period`, `Bytes`, `SortKey` and `Span` print in the
   forms of §1.3.
 - A `Set T` value prints as `[v1, v2, ...]`, each element once, in
@@ -144,6 +152,8 @@ which returns `Option T` ([syntax.md](syntax.md#25-literals)):
 Instant.parse("2026-10-25T09:30:00.000000Z")   -- Some { value: ... } : Option Instant
 Period.parse("P1M0D")
 Bytes.parse("0x00ff")
+Uuid.parse("Uuid(0x78)")
+print(Uuid(bytes("x")))                     -- "Uuid(0x78)"
 ```
 
 Rulings: spec/textual-forms/interop, spec/bytes-form/hex, spec/textual-forms/sortkey/hex, spec/textual-forms/span/call

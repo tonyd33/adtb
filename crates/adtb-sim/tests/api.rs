@@ -1190,3 +1190,76 @@ fn an_explicit_maximum_sequence_key_commits_and_exhaustion_survives_reopen() {
         });
     }
 }
+
+#[test]
+fn uuid_formatting_is_total_but_storage_checks_its_domain() {
+    once(0, |rt| {
+        let log = Log::new([
+            "module app\nadd module app\nadd type Token = { id: Key tokens, value: Uuid }\nadd relation tokens : Token key id generate sequence",
+        ]);
+        let db = Database::open_in(rt, "uuid.adt", &log, &options(1)).expect("the database opens");
+        for payload in [
+            "",
+            "x",
+            "abcdefghijklmno",
+            "abcdefghijklmnop",
+            "abcdefghijklmnopq",
+        ] {
+            let value = format!("Uuid(bytes({payload:?}))");
+            let printed = if payload.len() == 16 {
+                "uuid(\"61626364-6566-6768-696a-6b6c6d6e6f70\")".to_owned()
+            } else {
+                let hex: String = payload.bytes().map(|b| format!("{b:02x}")).collect();
+                format!("Uuid(0x{hex})")
+            };
+            assert_eq!(vec![printed.clone()], query(&db, &value), "{value}");
+            assert_eq!(
+                vec![format!("{printed:?}")],
+                query(&db, &format!("print({value})")),
+                "{value}"
+            );
+            let text = if payload.len() == 16 {
+                "61626364-6566-6768-696a-6b6c6d6e6f70"
+            } else {
+                &printed
+            };
+            assert_eq!(
+                vec![format!("{text:?}")],
+                query(&db, &format!("text({value})"))
+            );
+            assert_eq!(
+                vec!["True"],
+                query(
+                    &db,
+                    &format!("Uuid.parse(print({value})) == Some {{ value: {value} }}")
+                )
+            );
+            let mut rows = result(&db, &format!("unwrap({value})"));
+            assert_eq!(
+                Some(Ok(Value::Bytes(payload.as_bytes().into()))),
+                rows.next()
+            );
+            assert!(rows.next().is_none());
+            let insert = format!("insert tokens {{ id: tokens.key(1), value: {value} }}");
+            let written = db.query_text(&insert, &[], &CallOptions::default());
+            if payload.len() == 16 {
+                written.expect("sixteen-byte UUID values are stored");
+                db.query_text("delete t in tokens", &[], &CallOptions::default())
+                    .expect("the stored control is removed");
+            } else {
+                let error = written.expect_err("the write boundary checks the UUID domain");
+                match reason(&error) {
+                    RejectReason::Violated {
+                        constraint, report, ..
+                    } => {
+                        assert_eq!("prelude::Uuid.domain", constraint);
+                        assert!(!report.is_empty(), "{error:?}");
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            assert!(query(&db, "tokens").is_empty());
+        }
+        db.close().expect("the database closes");
+    });
+}

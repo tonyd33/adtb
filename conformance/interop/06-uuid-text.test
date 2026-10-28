@@ -1,0 +1,165 @@
+# UUID formatting covers all in-memory Bytes representations; storage checks the domain.
+schema
+  module test
+  type Token = { id: Key tokens, value: Uuid }
+  relation tokens : Token key id generate sequence
+query
+  Uuid(bytes(""))
+----
+Uuid(0x)
+query
+  unwrap(Uuid(bytes("")))
+----
+0x
+query
+  text(Uuid(bytes("")))
+----
+"Uuid(0x)"
+query
+  print(Uuid(bytes("")))
+----
+"Uuid(0x)"
+query
+  Uuid.parse(print(Uuid(bytes("")))) == Some { value: Uuid(bytes("")) }
+----
+True
+error Violated
+  insert tokens { id: tokens.key(1), value: Uuid(bytes("")) }
+query
+  Uuid(bytes("x"))
+----
+Uuid(0x78)
+query
+  unwrap(Uuid(bytes("x")))
+----
+0x78
+query
+  text(Uuid(bytes("x")))
+----
+"Uuid(0x78)"
+query
+  print(Uuid(bytes("x")))
+----
+"Uuid(0x78)"
+query
+  Uuid.parse(print(Uuid(bytes("x")))) == Some { value: Uuid(bytes("x")) }
+----
+True
+error Violated
+  insert tokens { id: tokens.key(1), value: Uuid(bytes("x")) }
+query
+  Uuid(bytes("abcdefghijklmno"))
+----
+Uuid(0x6162636465666768696a6b6c6d6e6f)
+query
+  unwrap(Uuid(bytes("abcdefghijklmno")))
+----
+0x6162636465666768696a6b6c6d6e6f
+query
+  text(Uuid(bytes("abcdefghijklmno")))
+----
+"Uuid(0x6162636465666768696a6b6c6d6e6f)"
+query
+  print(Uuid(bytes("abcdefghijklmno")))
+----
+"Uuid(0x6162636465666768696a6b6c6d6e6f)"
+query
+  Uuid.parse(print(Uuid(bytes("abcdefghijklmno")))) == Some { value: Uuid(bytes("abcdefghijklmno")) }
+----
+True
+error Violated
+  insert tokens { id: tokens.key(1), value: Uuid(bytes("abcdefghijklmno")) }
+query
+  Uuid(bytes("abcdefghijklmnop"))
+----
+uuid("61626364-6566-6768-696a-6b6c6d6e6f70")
+query
+  unwrap(Uuid(bytes("abcdefghijklmnop")))
+----
+0x6162636465666768696a6b6c6d6e6f70
+query
+  text(Uuid(bytes("abcdefghijklmnop")))
+----
+"61626364-6566-6768-696a-6b6c6d6e6f70"
+query
+  print(Uuid(bytes("abcdefghijklmnop")))
+----
+"uuid(\"61626364-6566-6768-696a-6b6c6d6e6f70\")"
+query
+  Uuid.parse(print(Uuid(bytes("abcdefghijklmnop")))) == Some { value: Uuid(bytes("abcdefghijklmnop")) }
+----
+True
+query
+  Uuid(bytes("abcdefghijklmnopq"))
+----
+Uuid(0x6162636465666768696a6b6c6d6e6f7071)
+query
+  unwrap(Uuid(bytes("abcdefghijklmnopq")))
+----
+0x6162636465666768696a6b6c6d6e6f7071
+query
+  text(Uuid(bytes("abcdefghijklmnopq")))
+----
+"Uuid(0x6162636465666768696a6b6c6d6e6f7071)"
+query
+  print(Uuid(bytes("abcdefghijklmnopq")))
+----
+"Uuid(0x6162636465666768696a6b6c6d6e6f7071)"
+query
+  Uuid.parse(print(Uuid(bytes("abcdefghijklmnopq")))) == Some { value: Uuid(bytes("abcdefghijklmnopq")) }
+----
+True
+error Violated
+  insert tokens { id: tokens.key(1), value: Uuid(bytes("abcdefghijklmnopq")) }
+query
+  Uuid(bytes("abcdefghijklmnopqrstuvwxyz0123456789"))
+----
+Uuid(0x6162636465666768696a6b6c6d6e6f707172737475767778797a30313233343536373839)
+query
+  unwrap(Uuid(bytes("abcdefghijklmnopqrstuvwxyz0123456789")))
+----
+0x6162636465666768696a6b6c6d6e6f707172737475767778797a30313233343536373839
+query
+  text(Uuid(bytes("abcdefghijklmnopqrstuvwxyz0123456789")))
+----
+"Uuid(0x6162636465666768696a6b6c6d6e6f707172737475767778797a30313233343536373839)"
+query
+  print(Uuid(bytes("abcdefghijklmnopqrstuvwxyz0123456789")))
+----
+"Uuid(0x6162636465666768696a6b6c6d6e6f707172737475767778797a30313233343536373839)"
+query
+  Uuid.parse(print(Uuid(bytes("abcdefghijklmnopqrstuvwxyz0123456789")))) == Some { value: Uuid(bytes("abcdefghijklmnopqrstuvwxyz0123456789")) }
+----
+True
+error Violated
+  insert tokens { id: tokens.key(1), value: Uuid(bytes("abcdefghijklmnopqrstuvwxyz0123456789")) }
+query
+  Uuid.parse("Uuid(0x6162636465666768696A6B6C6D6E6F70)") == Some { value: uuid("61626364-6566-6768-696a-6b6c6d6e6f70") }
+----
+True
+query
+  print(match Uuid.parse("Uuid(0x6162636465666768696a6b6c6d6e6f70)") | None -> Uuid(bytes("")) | Some { value: u } -> u)
+----
+"uuid(\"61626364-6566-6768-696a-6b6c6d6e6f70\")"
+query
+  Uuid.parse("Uuid(0x0)")
+----
+None
+query
+  Uuid.parse("Uuid(0x78) trailing")
+----
+None
+query
+  try uuid("Uuid(0x78)")
+----
+Err { error: InvalidText }
+query
+  try uuid("78")
+----
+Err { error: InvalidText }
+run
+  insert tokens { id: tokens.key(1), value: Uuid(bytes("abcdefghijklmnop")) }
+query
+  from t in tokens select t.value
+----
+uuid("61626364-6566-6768-696a-6b6c6d6e6f70")
