@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: bug
 priority: 865
 summary: "new doc comments in api, evolve, parse, the probe and the testkit are in the third person instead of the imperative"
-branch: docreg
+closed: 2026-10-27
 tags:
   - quality
 ---
@@ -36,3 +36,26 @@ Sweep the third-person doc comments this range added to the imperative, and add 
 ## 2026-10-27: ruling
 
 The sweep takes in the third-person doc comments added in reviewed..b045483e too (evolve, the shell, the testkit, `admitted`, `deployment_command`, `downgrade` and the rest), and the `house-check` rule lands with it.
+
+## 2026-10-27: resolved
+
+Landed `a619e678`, `docs: enforce imperative API comments`. Corrected the
+introduced doc comments across 57 Rust files, including coordinated verbs,
+and removed the misplaced probe constant-group doc. Recovered the historical
+review boundary at `901d4e80` because the reviewed bookmark had since moved.
+All changed Rust lines are documentation comments.
+
+House-check recognizes the repository's third-person verb vocabulary with
+plural-noun cues, allowing Returns and imperative wording. This is a bounded
+lexical check; ambiguous phrases and unknown verbs still require reading review.
+`work/tools/house-check-test` fails against the old checker and passes against
+the landed checker. Fixtures verify exact locations/statuses, outer/inner and
+indented docs, unchanged/removed lines, noun cases and the existing rules.
+
+Post-land main `check` exited 0: 2329 root tests passed (8 skipped),
+27 campaign tests passed (1 skipped), root/campaign clippy and formatting,
+dependency policy and size checks passed. Shell syntax, fixtures and the
+full-commit house check passed. Evidence: `target/docreg-check.log` and
+`work/briefs/handoff-docreg.md`.
+
+## 2026-10-27: resolved
