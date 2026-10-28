@@ -1,10 +1,13 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: bug
 priority: 898
 summary: docs serve watches source bodies but never regenerates navigation or copied grammar
-tags: [quality, tooling]
+branch: docs-watch
+tags:
+  - quality
+  - tooling
 ---
 
 # Docs serve retains stale generated navigation
