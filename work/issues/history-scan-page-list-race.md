@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: bug
 priority: 799
 summary: a historical scan misses a retained row when vacuum moves it to a history page allocated after the scan captured its page list
-branch: pastrace
+closed: 2026-10-27
 tags:
   - quality
   - engine
@@ -35,3 +35,15 @@ Expected: 1,000 rows, each once. This violates `docs/design/mvcc.md:830-833`, wh
 Fix the handoff between the two walks: enumerate the history pages after the current walk has finished, and retain deduplication of versions observed in both locations. Add a deterministic regression through `Store::scan` or an API `at` query, with an initially empty history heap. The concurrent test at `crates/adtb-sim/tests/history.rs:1028-1089` exercises `history::rows`, which enumerates each heap when it reaches it, not `Store::scan_past`. `crates/adtb-sim/tests/past.rs:363-376` vacuums between reads, not during one.
 
 The standalone reproduction source is `/tmp/opencode/quality27-history-scan.rs` in this review session; the steps above do not depend on retaining it. Existing past/history/write-state tests pass: 87 passed, one skipped.
+
+## 2026-10-27: resolved
+
+`3a6d6639` enumerates history pages after the current scan. A deterministic 1000-row regression returned 999 rows before the fix and passes afterward, including duplicate suppression and early stop.
+
+Independent review found no blockers. Combined main check exited 0:
+2329 root tests passed (8 skipped), 27 campaign tests passed (1 skipped),
+root/campaign clippy and fmt, dependency policy and size checks passed.
+House checks passed. Evidence: target/integrated-maintenance-check.log
+and work/briefs/review-batch-final.md.
+
+## 2026-10-27: resolved
