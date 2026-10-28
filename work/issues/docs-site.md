@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-26
-status: in-progress
+status: resolved
 kind: feature
 priority: 881
 summary: "the manual, spec and design docs are markdown files in the repo with no site to read them in a browser"
-branch: docs-site-local
+closed: 2026-10-27
 depends-on:
   - user-manual
 tags:
@@ -38,3 +38,24 @@ and verifies the local generator, unchanged source Markdown, navigation,
 links/anchors, search, adt highlighting, one-command build and devenv serving.
 It does not require a live hosted site or selecting a host. Keep the browser
 review of getting-started as the user acceptance step.
+
+## 2026-10-27: local milestone accepted
+
+Tony approved mdBook in proposed point docs-local, adopted into current, then
+read the running getting-started page and accepted the local milestone.
+Landed `2fcf6fe9`: unchanged source Markdown, generated reading-order navigation,
+local search/themes, adt highlighting and loopback build/serve integration.
+Default `check` now validates site links and syntax fixtures.
+
+Lead post-land full check passed: 2,329 root tests (8 skipped), 31 campaign
+tests (1 skipped), lint/format/dependency/size checks, seven docs fixtures,
+420 highlighting inputs and 6,710 internal links (4,975 fragments), zero
+failures. All 57 authored source pages included. Browser desktop/mobile,
+search across all sections, anchors and live reload passed. Log:
+target/docs-site-integrated-check.log. Handoff: work/briefs/handoff-docs-site-local.md.
+
+Run `docs-build` or `devenv processes up docs` in the development shell.
+Hosting remains a separate task in docs-site-hosting. The manual's broader
+reader exercise/sign-off is distinct from this accepted site milestone.
+
+## 2026-10-27: resolved
