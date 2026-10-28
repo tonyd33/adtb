@@ -1,10 +1,13 @@
 ---
 created-at: 2026-10-28
-status: open
+status: in-progress
 kind: bug
 priority: 698
 summary: two successful concurrent registered updates may persist only one advancement
-tags: [engine, test]
+branch: engine-update-loss
+tags:
+  - engine
+  - test
 ---
 
 # Two successful concurrent updates may lose an advancement
@@ -35,3 +38,19 @@ Next: confirm minimal engine-layer regression under crates/adtb-sim/tests;
 dispatch one fresh engine workspace for root cause and principled fix. Keep
 campaign failed run recorded even if isolated reruns pass. Lead owns review,
 full branch/main checks and verified landing before feature work resumes.
+
+## 2026-10-28: direct engine reproduction confirmed
+
+Campaign-live snapshot 9135c16ed6385687b5d5de7497b6dba04c7aafe2 adds
+tests/live_retry.rs. Two native threads Barrier-synchronize typed v1_5/schema5
+next_turn calls, no HTTP or new bundle. Loop32 failed at iteration9: both
+calls committed, epoch1 lsn8489756 and8489404, attempts2 and1; final(10,2),
+expected(11,1), with both initiative slots present. Evidence:
+/home/tony/code/adtb-campaign-live/target/live-direct-repro.log.
+
+Engine-update-loss workspace starts at5320aaa7; fresh agent owns minimal
+engine-layer reproduction, invariant diagnosis and principled fix. Brief
+work/briefs/brief-engine-update-loss.md. Root cause not yet diagnosed; stale
+retry computation is a hypothesis, not a finding. Application worker stopped
+feature work and is writing final handoff. Server-wire paused with unverified
+partial codec snapshot2950faa3; handoff-server-wire.md preserves next steps.
