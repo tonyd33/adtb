@@ -244,7 +244,9 @@ backup), [design/storage.md](design/storage.md) §8 and §10.5,
 - Dump, restore, online backup, point-in-time restore.
 - Fault-injecting file system tests on the real backends
   ([design/runtime.md §7.2](design/runtime.md#72-fault-injection-under-the-real-engine)).
-- Benchmarks against SQLite on the embedded OLTP workloads.
+- Reproducible comparative benchmarks against SQLite on embedded OLTP
+  workloads, followed by profiling and measured optimization rounds
+  ([schedule below](#comparative-benchmarks-and-optimization)).
 
 Exit: the suite and every test method pass; benchmarks are published
 with the release.
@@ -260,6 +262,8 @@ parts).
 - Roles, authentication sources, grants, peer mappings, audit with
   the ledger.
 - Real-process isolation checks under kills and pauses.
+- Extend the comparative benchmarks to client/server peers once the
+  first authenticated server path passes parity and lifecycle checks.
 
 Exit: the parity tests between the in-process API and the wire pass
 (wire.md §14, embedding.md §11).
@@ -321,6 +325,50 @@ exits: the engine passes the single-version suite with the
 differential and partition tests. Milestone 8 is then proven on that
 application, whose first schema changes are the first real
 migrations. No application runs on the reference interpreter.
+
+### Comparative benchmarks and optimization
+
+The lead schedules the first embedded comparison after the current
+authority, permission and checked-binding correctness work is verified
+and the campaign workload reliably exercises concurrent writes and
+reopen. Run it before broader server expansion; it need not wait for
+every operations feature of milestone 9. This early measurement phase
+is an exception to the strict milestone sequence above. SQLite is the
+first baseline under the embedded OLTP ruling. Select further peers
+and supported versions when the benchmark track starts.
+
+Use both ordinary transactional controls and workloads that exercise
+constructor selection, relationships, retagging and enforced
+invariants. Include startup/reopen and schema evolution separately
+from steady-state queries and transactions. Match logical results,
+isolation, durability and constraint enforcement; include the cost of
+equivalent encodings and checks in each peer. Record unsupported cases
+explicitly. Measure through real application APIs and the real runtime;
+simulator timing and scheduler microbenchmarks are diagnostic evidence.
+
+Freeze a reproducible baseline before optimization: versioned workload
+and data generators, engine revisions, peer versions, hardware and
+configuration, cache state, repeated runs and raw results. Report
+throughput, latency percentiles including p99, retries/aborts, CPU,
+memory, I/O and storage footprint across dataset sizes and concurrency
+levels. Count retries and queueing in application latency; report setup
+and preparation costs separately. Publish variation, strengths and
+losses rather than only a favorable aggregate.
+
+Then repeat a bounded cycle: profile the largest measured bottleneck,
+dispatch a principled fix to its owning subsystem, preserve correctness
+and durability, and rerun the affected workload plus the comparison
+suite. Retain before/after results and reject changes whose improvement
+is not repeatable or whose regressions outweigh it. Any correctness
+failure preempts tuning and invalidates affected measurements.
+
+Add a separate client/server comparison after the first authenticated
+server supports correct binding, bounded admission/results and
+cancellation. Match execution models and expose protocol overhead;
+keep embedded and server results distinct. Rerun relevant comparisons
+after major engine changes and before embedded beta/server releases.
+Track the work in `work/issues/comparative-benchmarks.md`; the lead
+reevaluates readiness at each correctness milestone checkpoint.
 
 ## Tracking
 
