@@ -98,3 +98,21 @@ check on stable inputs, fresh exact review then land/maincheck. No new features
 or engine workaround. First cold/full build slot belongs to campaign; role
 provider waits and lands second after rebase. Brief-campaign-load-resume.md;
 prior failures/interrupted143 are retained and not recast as full verification.
+
+## 2026-10-28: final policy integration and preserved failed check
+
+Rebased app sourcec16c962e/base15004a7f received fresh independent full9path
+architecture/correctness clearance. Focused default11.050s/deep8seeds64.946s
+(two replays/seed), strict appclippy/fmt/house all0 with stable inputs/revision.
+Final prose4b02d72c updates only these timing values; executable app delta empty.
+First authoritative fullcheck4b02d72c collected exit2 after2366root/8skipped and
+47campaign/1skipped passed. Campaign cargo-deny refused the approved local dev
+edges absent from shared ROOT deny.toml; root dependency policy passed; later
+docs/size/house unfinished. Failed evidence target/load-resume-full-before-policy.
+
+Campaign successor additionally owns exactly3allow entries in root deny.toml:
+adtb-sim, adtb-testkit and transitive adtb-reference. No new external package or
+version, no role-track overlap. Both targeted root/campaign cargo-deny passed0
+on fde15497/base15004a7f,stable inputs. Final fullcheck now running on that frozen
+state, not yet passed. Lead will review exact policy delta and combined maincheck.
+The first reported app-local deny path was corrected: no such policy file exists.
