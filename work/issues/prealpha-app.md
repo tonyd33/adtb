@@ -41,3 +41,22 @@ Tony chose the runner-up instead: a local-first tabletop RPG campaign manager, f
 ## 2026-10-26: shape
 
 Tony: the GM edits and players get a read-only view of what their party has discovered. System-agnostic, with no stat blocks or rules. It runs as a local web server opened in a browser, so phones and tablets on the LAN can join. Version 1 covers session prep (NPCs, locations, factions, quests, linked notes), running a session live (initiative, encounter tracker, fast lookup) and campaign history (session logs, timeline, what the party knows, quest outcomes). Maps come later.
+
+## 2026-10-27: engine-first priority
+
+Tony: finish `api-doc-register`, then prioritize campaign work ahead of
+`version-translation`. Campaign is primarily a tool for finding engine bugs.
+Any engine issue exposed during campaign work takes full priority over the
+application. Fix it on principle in the engine, rather than adding an
+application workaround merely to unblock campaign development.
+
+Suspend application feature expansion when an engine issue appears. Record
+the reproduction and relevant contract, dispatch an engine track with a
+regression, review and verify the general fix, then resume campaign work.
+Design gaps still go through proposed quandary points and user confirmation.
+
+Next application track: a runnable local server using the current typed bundle,
+with create campaign, add NPC, player join and reveal as one browser flow.
+Validate player-secret filtering, concurrent requests and persistence across
+restart. Read `apps/campaign/docs/design.md` sections 2, 4, 8 and 9, and the
+current `apps/campaign/docs/gaps.md`; report engine gaps before adapting the app.

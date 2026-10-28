@@ -1,10 +1,12 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: bug
 priority: 865
 summary: "new doc comments in api, evolve, parse, the probe and the testkit are in the third person instead of the imperative"
-tags: [quality]
+branch: docreg
+tags:
+  - quality
 ---
 
 # New doc comments are written in the third person
