@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 850
 summary: no application exercises adtb end to end
+branch: campaign-first
 depends-on:
   - milestone-7-engine
 tags:

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: in-progress
 kind: feature
 priority: 881
 summary: "the manual, spec and design docs are markdown files in the repo with no site to read them in a browser"
+branch: docs-site-research
 depends-on:
   - user-manual
 tags:
