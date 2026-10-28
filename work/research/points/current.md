@@ -456,6 +456,7 @@ accept:
   project/arch/unsafe/miri-io/sim-storage: {title: Run the engine under Miri over the simulated storage, reason: Miri over simulated storage; the system module natively with sanitizers}
   project/arch/unsafe/miri-io/sys-tests: {title: Test the unsafe system module natively with sanitizers, reason: Miri over simulated storage; the system module natively with sanitizers}
   project/concurrency/app-threads: {title: Tens of threads of one application, reason: 'embedded first: one process owns the file; other processes use the server'}
+  project/docs-site/mdbook: {title: mdBook with generated navigation and an adt Highlight.js grammar, reason: 'The real-file prototype preserves links and anchors, supplies search and adt highlighting, and fits the Rust/Nix environment with less custom integration and dependency maintenance than Starlight or Pandoc. Hosting remains separate.'}
   project/nongoals/columnar-store: {title: No columnar storage format, reason: non-goals for an embedded engine competing with SQLite}
   project/nongoals/distributed: {title: No sharding or distributed transactions, reason: non-goals for an embedded engine competing with SQLite}
   project/nongoals/multi-process: {title: No several OS processes writing one database file, reason: non-goals for an embedded engine competing with SQLite}
