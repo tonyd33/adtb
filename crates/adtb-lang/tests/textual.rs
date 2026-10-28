@@ -26,6 +26,7 @@ type Login { id: Key logins, user: Key users }
 relation logins : Login key id generate uuidv7
 type Email = new Text
 type Cents = new I64
+type Digest = new Bytes
 type Profile = { user: Key users, email: Email }
 relation profiles : Profile key user
 type Stage ordered = Draft | Sent { at: I64 } | Paid { at: I64, ref: Text }
@@ -437,12 +438,36 @@ fn to_text_gives_the_bare_form_of_scalars_uuids_and_text_newtypes() {
     assert_eq!(Ok("a@b".to_string()), to_text(&email, &form(&s, "Email")));
     assert_eq!(
         Ok("12".to_string()),
+        to_text(&Tree::Atom(Atom::Int(12)), &form(&s, "I64"))
+    );
+    assert_eq!(
+        Ok("Cents(12)".to_string()),
         to_text(&Tree::Atom(Atom::Int(12)), &form(&s, "Cents"))
     );
     assert_eq!(
         Ok("1970-01-02T00:00:00.000000Z".to_string()),
         to_text(&Tree::Atom(Atom::Instant(DAY)), &form(&s, "Instant"))
     );
+}
+
+#[test]
+fn to_text_preserves_non_text_newtype_wrappers() {
+    let s = schema();
+    let cases = [
+        (
+            "Digest",
+            Tree::Atom(Atom::Bytes(vec![0, 128, 255])),
+            "Digest(0x0080ff)",
+        ),
+        ("Digest", Tree::Atom(Atom::Bytes(vec![])), "Digest(0x)"),
+        ("Cents", Tree::Atom(Atom::Int(-12)), "Cents(-12)"),
+    ];
+    for (name, value, expected) in cases {
+        let f = form(&s, name);
+        assert_eq!(Ok(expected.to_string()), print(&value, &f), "{name}");
+        assert_eq!(Ok(expected.to_string()), to_text(&value, &f), "{name}");
+        assert_eq!(Ok(value), parse(expected, &f), "{name}");
+    }
 }
 
 #[test]
@@ -505,6 +530,8 @@ fn a_value_not_of_its_form_does_not_print() {
         ("Bytes", text()),
         ("Uuid", int()),
         ("Email", int()),
+        ("Cents", text()),
+        ("Digest", int()),
         ("Bool", int()),
         ("Bool", Tree::Ctor(2, Vec::new())),
         ("Tag Stage", Tree::Ctor(3, Vec::new())),

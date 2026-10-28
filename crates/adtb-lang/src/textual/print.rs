@@ -213,7 +213,7 @@ pub fn to_text<V: Textual>(v: &V, form: &Form) -> R<String> {
         },
         Form::Newtype { base, .. } => match base.as_ref() {
             Form::Base(Base::Text) => scalar_text(scalar(v)?, Base::Text),
-            f => to_text(v, f),
+            _ => print(v, form),
         },
         Form::Base(Base::Text | Base::Bytes | Base::SortKey) => print(v, form),
         Form::Base(b) => scalar_text(scalar(v)?, *b),
