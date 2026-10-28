@@ -64,3 +64,30 @@ attempts2/1, counter43 expected44. Log target/update-before2.log in sibling
 engine-update-loss. This removes campaign, HTTP and turn aggregate dependencies.
 Root cause remains under investigation; version claim/rollback ownership is
 a hypothesis. Deterministic interleaving and general fix are next.
+
+## 2026-10-28: diagnosis, repair and independent review
+
+Trace confirmed a check/mutation race: writers38 and37 both passed writable
+on the same original version. Writer38 installed a successor; writer37 then
+overwrote its xmax/next. Writer38 committed,37 aborted, and retry39 missed the
+committed successor. No stale retry cache was involved. Deterministic seed4,
+switch_rate0.3, two threads of8 increments failed the baseline in0.172s with
+two visible values[2,15] instead of singleton16. Retained evidence:
+target/update-sim-baseline.{log,status} and update-trace.log in engine sibling.
+
+Fix snapshot970d78681594de354987a027b65142c409072379 adds checked Tid+Header
+claims compared under the exclusive predecessor latch before heap mutation.
+Changed claims become serialization failures. All production transactional
+update/delete/retag/catalog-delete and rollback paths use checked targets;
+raw low-level heap calls require exclusive ownership. Existing Stage/WAL
+atomicity is preserved. docs/design/mvcc.md records the subsystem contract;
+no normative or model ruling changed.
+
+Five focused tests passed before final helper relocation. Tests include native
+paired increments/reopen, deterministic actual overlap, stale same/cross-page
+claims and recovery/rollback protection. Sequential stale-target tests usually
+reject early; a separate late cross-page interleaving is not forced. Independent
+review of the exact final snapshot found no actionable blocker, including the
+static Stage proof for that path. Report: work/briefs/review-update-ownership.md.
+Reviewer ran scoped house-check, not builds/tests. Branch authoritative check
+is running on the final snapshot; receipt and main integration still pending.
