@@ -56,6 +56,12 @@ Keep your context for rulings, briefs and review. Agents write the code.
 
 ## Land
 
+Review architecture as well as behavior. Before accepting custom orchestration,
+compare it with the underlying tool's native configuration and extension points.
+Each wrapper, watcher and staging layer needs a concrete unmet requirement.
+Ask a fresh reviewer to challenge those layers and their responsibility placement.
+Passing tests do not justify unnecessary machinery.
+
 1. Review the workspace's diff against its brief and the rulings, and run
    `work/tools/house-check ../adtb-NAME`.
 2. Run `work/tools/land NAME 'SUBJECT'` with the workspace name, not its
