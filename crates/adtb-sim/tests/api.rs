@@ -1143,3 +1143,50 @@ fn a_migration_declaring_a_constructor_that_can_never_fit_is_refused_naming_it()
         });
     }
 }
+
+#[test]
+fn an_explicit_maximum_sequence_key_commits_and_exhaustion_survives_reopen() {
+    let mut sim = Sim::new(0, Config::default());
+    run(&mut sim, |rt| {
+        let db = open(&rt);
+        db.query_text(
+            "insert notes { id: notes.key(9223372036854775807), body: \"maximum\" }",
+            &[],
+            &CallOptions::default(),
+        )
+        .expect("an explicit maximum key commits");
+        db.close().expect("close");
+    });
+    for phase in 0..2 {
+        run(&mut sim, |rt| {
+            let db = open(&rt);
+            assert_eq!(
+                vec!["9223372036854775807".to_owned()],
+                query(&db, "from n in notes select value(key n)"),
+                "phase {phase}"
+            );
+            let result = db.query_text(
+                "insert notes { body: \"generated\" }",
+                &[],
+                &CallOptions::default(),
+            );
+            match result {
+                Err(Error::Rejected {
+                    reason: RejectReason::Invalid { detail },
+                }) => {
+                    assert_eq!(
+                        "the generated counter exhausted its integer range", detail,
+                        "phase {phase}"
+                    );
+                }
+                other => panic!("phase {phase}: exhausted sequence returned {other:?}"),
+            }
+            assert_eq!(
+                vec!["\"maximum\"".to_owned()],
+                query(&db, "from n in notes select n.body"),
+                "phase {phase}: refused generation leaves the explicit maximum row"
+            );
+            db.close().expect("close");
+        });
+    }
+}

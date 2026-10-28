@@ -307,6 +307,9 @@ impl Error {
             write::Error::Unsupported(what) => {
                 Error::invalid(format!("{what} does not run in this engine yet"))
             }
+            write::Error::SequenceExhausted => {
+                Error::invalid("the generated counter exhausted its integer range")
+            }
             write::Error::Internal(what) => Error::rejected(RejectReason::Internal { what }),
             write::Error::HistoryUnavailable { oldest } => {
                 Error::rejected(RejectReason::HistoryUnavailable {

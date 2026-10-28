@@ -13,8 +13,9 @@ const BLOCK: i64 = 64;
 /// The id of the counter of `load` values.
 pub const LOADS: u32 = u32::MAX;
 
-/// A counter's next value and the first value its durable reservation does not cover.
-#[derive(Clone, Copy, Debug)]
+/// A counter's next candidate and the exclusive end of its durable reservation.
+/// The maximum candidate marks exhaustion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Counter {
     next: i64,
     reserved: i64,
@@ -80,35 +81,56 @@ impl Sequences {
         id: u32,
         floor: i64,
     ) -> Result<i64, Error> {
-        let c = self.counters.entry(id).or_insert(Counter {
-            next: 1,
-            reserved: 1,
-        });
-        c.next = c.next.max(floor);
-        let v = c.next;
-        c.next += 1;
+        let mut c = self.counter(id);
+        let v = c.next.max(floor);
+        c.next = v.checked_add(1).ok_or(Error::SequenceExhausted)?;
         if c.next > c.reserved {
             c.reserved = v.saturating_add(BLOCK);
-            self.persist(pager)?;
         }
+        self.replace(pager, id, c)?;
         Ok(v)
     }
 
     /// Advance counter `id` past `held`, durably.
+    /// Keep the maximum bound as exhaustion for a maximum explicit key.
     pub fn advance<R: Runtime>(
         &mut self,
         pager: &Pager<R>,
         id: u32,
         held: i64,
     ) -> Result<(), Error> {
-        let c = self.counters.entry(id).or_insert(Counter {
+        let mut c = self.counter(id);
+        c.next = c.next.max(held.saturating_add(1));
+        c.reserved = c.reserved.max(c.next);
+        self.replace(pager, id, c)
+    }
+
+    fn counter(&self, id: u32) -> Counter {
+        self.counters.get(&id).copied().unwrap_or(Counter {
             next: 1,
             reserved: 1,
-        });
-        c.next = c.next.max(held.saturating_add(1));
-        if c.next > c.reserved {
-            c.reserved = c.next;
-            self.persist(pager)?;
+        })
+    }
+
+    fn replace<R: Runtime>(
+        &mut self,
+        pager: &Pager<R>,
+        id: u32,
+        counter: Counter,
+    ) -> Result<(), Error> {
+        let previous = self.counters.insert(id, counter);
+        if previous.is_none_or(|old| old.reserved != counter.reserved)
+            && let Err(error) = self.persist(pager)
+        {
+            match previous {
+                Some(old) => {
+                    self.counters.insert(id, old);
+                }
+                None => {
+                    self.counters.remove(&id);
+                }
+            }
+            return Err(error);
         }
         Ok(())
     }
@@ -134,3 +156,7 @@ impl Sequences {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "sequence_tests.rs"]
+mod tests;

@@ -106,6 +106,7 @@ pub enum Error {
     Corrupt(String),
     /// The statement needs a form the engine does not run yet.
     Unsupported(String),
+    SequenceExhausted,
     /// The plan or a value breaks the invariant this text names, one the checker guarantees.
     Internal(String),
     /// The schema has a constraint without an index-bounded incremental check; each constraint
