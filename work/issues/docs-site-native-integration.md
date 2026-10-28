@@ -91,3 +91,13 @@ system-write-guard (no Rust/builddependency change in this docs track). Noactive
 servers/checks or unresolved docs failure. Hosting remains separate.
 
 ## 2026-10-27: resolved
+
+## 2026-10-28: combined integration verified
+
+After system-write guard `d2716fb0`, the complete main check passed with native
+mdBook:2366 engine tests,46 campaign tests, all lint/dependency/size checks and
+10 Python docs tests,420 syntax inputs,61 pages,6730 links,4995 fragments.
+Stable tested main working copy `d8f46ebd225392b61d287cf78a5e5a51eb16dd3d`;
+397s,05:25:28Z–05:32:05Z. Exact command and evidence are in
+system-relations-program-writes and target/system-guard-integration. The earlier
+outstanding combined Rust check is now complete.

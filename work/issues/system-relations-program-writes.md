@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: bug
 priority: 699
 summary: ordinary program writes can modify catalog and sys relations instead of Denied
-branch: system-write-guard
+closed: 2026-10-27
 tags:
   - engine
   - test
@@ -87,3 +87,54 @@ made. bundle-registration-refusal-side-effects is closed wontfix with evidence.
 The original guard worker remains active on the same track, correcting the test
 to check no callable registration/renewal while preserving required headers.
 Ordinary program DML on catalog/sys still must return typed Denied.
+
+## 2026-10-28: resolved
+
+Landed `d2716fb0`, `fix: deny program writes to system relations`. Language
+acceptance owns one resolved-module policy before normalization and volatile
+checks. It traverses the checked graph iteratively, including nested/dead writes,
+and exhaustively classifies write variants. Small typed diagnostics preserve
+`Denied` through signature checking and API conversion. Native/typed appenders
+reuse the target policy at binding, including empty loads. The obsolete API
+walker was removed; no message matching, permission framework, public bypass,
+dependency or normative change was added. Trusted internal deployment, settings
+and maintenance writers retain their existing paths.
+
+Fresh independent architecture/correctness review cleared exact source
+`cf4f5d8db9824933cc3c4e4858aef30cb4e5e963` on
+`3c2ffb06cd33f40ea5b01ab33e9356af806d9f06`. Nine public simulator regressions
+cover the accepted catalog-insert witness, system relation/constructor targets,
+no-op and nested writes, mixed-call atomicity, interactive continuation,
+registered/bundle/typed/Arrow entry points, native bulk binding, and legal user,
+temp, system-read and native-command controls. New tests took0.252–0.599s each
+in the full run. Fixed seed and existing higher-order suite coverage are limits;
+no socket or schedule-sweep claim. Embedded-open headers/supersession retain
+required early durability; only callable publication/renewal is checked atomic.
+The rejected no-header oracle and its correction are preserved.
+
+Authoritative branch check exited0 in409.557s,05:16:29.551432Z–05:23:19.108884Z.
+All tracked/local Cargo hashes and revision were unchanged. Results:2366 engine
+passed/8 skipped,46 campaign passed/1 skipped, all clippy/fmt/lint parity/dependency/
+size/docs checks passed. Native docs:10 Python tests,420 syntax inputs,61 pages,
+6730 links,4995 fragments,0 failures. Branch log SHA256:
+`dc09891ed70275177f554f62f85138f50c7e96f42ccdffb0198509c141717b29`.
+
+The lead verified the landed tree equals the reviewed source, then main's full
+check exited0 from2026-10-28T05:25:28Z to05:32:05Z (397s). Tested clean working
+copy `d8f46ebd225392b61d287cf78a5e5a51eb16dd3d`, parent `d2716fb0`; tracked/local
+configuration hashes and revision match before/after. Same counts and all checks
+passed, including the corrected native docs integration. Exact command from main:
+
+```sh
+direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
+```
+
+Rust1.98.1/Cargo1.98.0, configured default profiles/features. Permission, queue
+and execution-only timing are unknown. Main log SHA256:
+`be8492557625be0e5f5d3d43efbe4dbe48e8fa322eff0c673b1c4788de3b7e43`.
+Evidence: `target/system-guard-integration/`, `target/system-write-guard-evidence/`;
+receipt/handoff and independent review under `work/briefs/`. All failures and
+incorrect-oracle history remain. Only completed worker `target/debug` was removed
+after preserving and verifying non-debug evidence. No active checks or workers.
+
+## 2026-10-27: resolved
