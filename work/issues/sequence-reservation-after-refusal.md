@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: bug
 priority: 699
 summary: a refused sequence reservation can be returned successfully without durable coverage on retry
-branch: sequence-repair
+closed: 2026-10-27
 ---
 
 # Sequence reservation after refusal
@@ -57,3 +57,43 @@ not an unimplemented form: minimal internal sequence-exhaustion error in
 write/mod.rs plus api/error.rs conversion to existing API Invalid approved;
 no new normative error constructor. Existing counter-capacity limitation remains
 separate from correct failure atomicity. No concurrent shared API writer.
+
+## 2026-10-28: resolved
+
+Landed96744632, fix: preserve sequence reservations on refusal. Candidate Counter
+state is copied, checked and rolled back completely on persist error (remove
+new entries too), so refusal cannot suppress a later durable reservation. Checked
+draw successor returns specific SequenceExhausted, mapped truthfully to existing
+API Invalid. ExplicitMAX keys remain legal with durable exhausted sentinel;
+page format and successful reservation amortization unchanged. No app/role
+workaround, dependency, normative spec or other design changes.
+
+Exact independent review38867188a4defc432d43869b8bcc24a877b40949 on
+0568954960368a17a4dba2f17c67b45222a5bb67 found no actionable blocker. Seven
+unit tests cover repeated capacity/read-page errors, exact map/page preservation,
+unaffected counters, overflow/explicitMAX, lower bounds, force amortization and
+actual fault-backed crash/WAL replay. API test preserves explicitMAX row and
+checks exact exhaustion refusal across two reopens; existing sim crash/non-reissue
+test also passes. New units0.173–0.352s each/API0.930s in full suite. No exhaustive
+schedule sweep or680relation API fixture; no new reversible fsync-failure claim.
+
+Branch authoritative check0,404.305s,04:02:05.831693Z–04:08:49.945706Z; all
+tracked/localCargo hashes and revision unchanged.2357root/8skip,46campaign/1skip,
+allclippy/fmt/lintparity/deny/size/docs0. Docs8fixtures/420syntax/61pages/6730links/
+4995fragments0fail. LogSHA256f01230bf674e3ac24d3c79772e8139815a56d23b3921f4342a5a07313872252b.
+Lead verified landed tree identical to38867188, then authoritative main check0,
+2026-10-28T04:10:28Z–04:15:34Z,306s, same counts/allchecks. Clean tested WC
+86f0fd9e3b134f96dddeca6ceab58c30b0704873 parent96744632; tracked/localconfig
+hashes and revision unchanged before/after. Command main root: direnv exec
+/home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check.
+Rust1.98.1/cargo1.98.0/defaultfeatures/profiles; permission/queue/execution-only
+unknown. Main logSHA25630d431991bc034e0306b6390e84ab869d969466bbdf2c295b25619e148e590e9.
+Evidence target/sequence-repair-integration/, target/sequence-repair-evidence/;
+receipt/handoff-sequence-repair.md and independent review in work/briefs.
+Earlier failed baseline/oracle/lint logs retained, not erased by successful runs.
+
+All engine processes ended. Preserve source/logs/fixtures; only completed sibling
+target/debug removed after verified evidence copies for disk headroom. Paused
+campaign/provider may now resume with fresh agents on this general repair.
+
+## 2026-10-27: resolved

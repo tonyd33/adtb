@@ -69,3 +69,19 @@ repair is isolated in sequence-repair; see sequence-reservation-after-refusal.
 No role provider landed; no app workaround. Role worker records baseline private
 unit witnesses and candidate evidence, then handoff. Fresh provider successor
 must rebase onto verified repair and finish foundation acceptance/full checks.
+
+## 2026-10-28: resume foundation after verified sequence repair
+
+General engine fix96744632 is reviewed and full branch/main checked. Fresh
+successor resumes role-authority draft6de7df13; rebase onto currentmain, preserving
+baseline witnesses/patch/logs as evidence. Resolve overlapping sequence test
+include/addition to the landed general implementation/tests, never reintroduce
+baseline or old candidate. Complete ONLY settled canonical role/capability
+foundation, no public role execution. Initial draft provider tests have unused
+imports and a stdMutex spanning runtime call; fix before execution. Write real
+provider contract and implemented-vs-planned status. Read prior handoff and
+receipt-role-authority-paused.md. Full persistence/atomic/crash/concurrency tests,
+strict lint/fullcheck and independent review/main integration still required.
+Campaign-load-finish consumes unchanged embedded API; land campaign first, then
+rebase provider onto it before provider fullcheck. One sharedAPI owner remains
+role-authority; no transport consumer yet.

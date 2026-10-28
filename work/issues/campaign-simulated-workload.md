@@ -57,3 +57,14 @@ receipt-campaign-load.md. Fresh successor after engine repair: rebase, change
 numbers.sort to sort_unstable, rerun final default/deep affected checks and strict
 lint/fmt/house, then full branch check, independent review and main integration.
 Default is a measured small sweep exception to2s; no scale/crash/p99 claim.
+
+## 2026-10-28: resume after verified engine repair
+
+General repair96744632 passed independent review and full branch/main checks
+2357root/46campaign/allstaticdocs. Fresh successor resumes preserved campaign-load
+snapshot79f120a6, rebases onto currentmain and finishes existing bounded workload
+scope. No feature expansion. Apply trivial sort_unstable correction, inspect
+all persisted/committed winner and privacy assertions, measure exact default
+runtime and final deterministic replay/deep evidence, then fullcheck/review/main
+integration. No implementation workaround. Fresh brief-campaign-load-finish.md
+points to prior handoff/receipt; durable acceptance remains this ticket.
