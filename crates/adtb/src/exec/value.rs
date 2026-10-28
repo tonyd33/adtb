@@ -184,7 +184,11 @@ impl Val {
     }
 
     pub fn text(t: &str) -> Val {
-        Val::Text(Arc::from(t))
+        if unicode_normalization::is_nfc(t) {
+            Val::Text(Arc::from(t))
+        } else {
+            Val::Text(Arc::from(super::prim::unicode::nfc(t)))
+        }
     }
 
     /// Returns whether this is `True`.

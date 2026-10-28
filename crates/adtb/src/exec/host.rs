@@ -100,7 +100,7 @@ impl HostCall {
 /// Returns `v` with every text normalized to NFC, as construction normalizes it.
 pub(crate) fn canonical(v: Val) -> Val {
     match v {
-        Val::Text(t) => Val::text(&super::prim::unicode::nfc(&t)),
+        Val::Text(t) => Val::text(&t),
         Val::Ctor(c, fs) => Val::ctor(c, fs.iter().cloned().map(canonical).collect()),
         Val::Record(fs) => Val::record(fs.iter().cloned().map(canonical).collect()),
         other => other,

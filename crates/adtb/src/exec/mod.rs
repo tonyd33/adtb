@@ -26,6 +26,7 @@ pub use sched::{Scheduler, Task};
 pub use store::{AtSnapshot, Histories, PastReads, Reads, Store, StoredHeap, StoredIndex};
 pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};
 pub use value::{F32, F64, Val};
+pub(crate) use wide::decimal_fits;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;

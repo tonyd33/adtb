@@ -13,6 +13,7 @@ mod stop;
 mod text;
 mod txn;
 pub mod typed;
+mod value;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -742,13 +743,18 @@ impl<R: Runtime> Engine<R> {
                 .map(|_| *c),
             _ => None,
         };
+        let principal = Ty::Data {
+            def: self.schema.principal,
+            args: Vec::new(),
+            ctors: None,
+        };
         match arity {
             Some(c) if c == service => Err(Error::rejected(RejectReason::Denied {
                 detail: "a service principal is the role the handle acts as; it is never asserted"
                     .into(),
             })),
-            Some(_) => Ok(v.clone()),
-            None => Err(Error::invalid(
+            Some(_) if value::valid(&self.schema, &principal, v) => Ok(v.clone()),
+            Some(_) | None => Err(Error::invalid(
                 "an asserted principal is a value of the schema's `Principal`",
             )),
         }
