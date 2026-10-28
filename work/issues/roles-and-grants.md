@@ -5,7 +5,7 @@ kind: feature
 priority: 830
 summary: "no roles or grants exist, so the registration privilege check and every grant check have nothing to check"
 branch: role-authority
-depends-on: [asserted-principal-value-domain]
+depends-on: [asserted-principal-value-domain, custom-principal-global-lookup]
 tags:
   - engine
 ---
@@ -199,3 +199,19 @@ logs and fixtures remain. Handoff/receipt-role-authority-resume.md and blocked
 review-role-authority.md describe the12-file unverified draft, exact three history
 failures and pending native initialization/typed validation/review/full checks.
 No role provider landing or server-readiness claim.
+
+## 2026-10-28: shared principal engine repair landed
+
+General engine validationbe84b407 is independently reviewed and full branch/main
+verified (2,387root/47campaign/allstaticdocs). Ordered-type prerequisite928b7d38
+and fixture-only repairfda78edb are independently reviewed/fullmainchecked too.
+Before provider expansion, fix the separately observed custom root Principal
+lookup bug under the existing root-first ruling. No-import registration must
+work; an import workaround is not a user precondition.
+
+Preserved provider efdd791f remains unlanded/unverified overall. Fresh successor
+after engine prerequisites rebases, removes redundant printer-based assertion
+validation in favor of shared Engine::principal, completes native empty-only
+owner initialization, resolves retained legacy full-counter timeouts/double-close
+hypothesis, then reruns private/public/spec/conformance/fresh review/full checks.
+No producer/task/transport or nonowner execution claims follow from validation.

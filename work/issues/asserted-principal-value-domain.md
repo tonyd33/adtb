@@ -1,11 +1,13 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: resolved
 kind: bug
 priority: 799
 summary: asserted principals are accepted without validating nested value domains
-branch: principal-validation
-depends-on: [ordered-schema-shared-graph, campaign-live-fixture-lifecycle]
+closed: 2026-10-28
+depends-on:
+  - ordered-schema-shared-graph
+  - campaign-live-fixture-lifecycle
 tags:
   - engine
   - quality
@@ -125,3 +127,45 @@ session. Later policy/size/docs/house unfinished. Keep this failed run and both
 original code/test files unchanged. Fresh isolated fixture repair lands/mainchecks
 first, then principal rebases and reruns full branch before landing/maincheck.
 No role/campaign feature expansion, forced schedule or error suppression.
+
+## 2026-10-28: resolved
+
+Landedbe84b407, fix: validate asserted principal values. One iterative shared
+Schema/Ty/Val validator checks exact recursive representation before cloning an
+assertion in Engine::principal, covering ad hoc, registered and Begin. Existing
+Service Denied precedence/default owner remain. Scalar ranges/canonical Text,
+ctor selections/arities/header/generic substitution, records/sets/key shapes and
+intrinsic Span order are checked using existing helpers and bounded DAG traversal.
+Newtype predicates remain write-only. Standard Val::text now normalizes NFC with
+its canonical fast path; directly affected host normalization delegates to it.
+Existing decimal38 predicate is reused with unsigned_abs. No dependency/spec edit.
+
+Reviewed sourcef987/base928b7d38 focused6commands0/stable115.612579s:4units,
+10public principal cases,29registered tests, strictadtb+simclippy/fmt/house.
+Unchanged legitimate DAG0.010s; original timeout retained and fixed by separate
+verified ordering repair. Fresh independent8path review clear. After separate
+fixture lifecycle repair, source2de0c4f9 onfda78edb passed authoritative full+house0
+/stable94.763905s,2387root/47app/allstaticdocs. All8principal paths byte-identical
+to reviewed source; earlier full100/lifecycle violation evidence remains.
+
+Lead main fullcheck0 on clean78ddfb802476dea7c76865ab7ea119970202dca0, parent
+be84b407,17:04:08Z–17:10:46Z,398s. Exact command from root: direnv exec
+/home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check.
+Root2,387tests/8skipped50.652s; campaign47/1skipped20.809s. All lint/fmt/parity,
+dependency,size and native docs passed. Docs10tests10.237s/420syntax/61pages/
+6730links/4995fragments/0failures. All tracked/local root+app Cargo config hashes
+and revision unchanged. Rust1.98.1/Cargo1.98.0, configured defaults; permission/
+queue/execution-onlyunknown. Main log target/principal-validation-integration/
+check.log SHA256206f0e029e60f0fc30ce205e42d870bb1e1b2d625e1a5fdc07045e6936131e97.
+
+Receipts/review in work/briefs/receipt-principal-validation.md,
+receipt-principal-validation-main.md and review-principal-final.md.177nondebug
+files+609archivedfixtures copied and SHA256verified in target/principal-validation-
+evidence before completeddebugcleanup; originalsources/logs/fixtures retained.
+Current later changes are ticket/knowledge metadata only, no executable/book
+input change. General registered argument validation, prior bundle lease renewal
+ordering, custom root Principal lookup and UUID formatting remain separate open
+issues. Provider role-only printer workaround remains unlanded and must be
+removed on future rebase to this shared engine boundary.
+
+## 2026-10-28: resolved
