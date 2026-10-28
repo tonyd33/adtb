@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 830
 summary: "no roles or grants exist, so the registration privilege check and every grant check have nothing to check"
-branch: role-authority
+branch: role-native
 depends-on: [asserted-principal-value-domain, custom-principal-global-lookup, uuid-domain-textual-roundtrip]
 tags:
   - engine
@@ -249,3 +249,26 @@ fixtures. Preserve the three existing past/history regression oracles and both
 The native initialization plan and authority scope above remain unchanged. Fresh
 exact-source review and branch/main full checks are still required before landing
 any foundation slice. Broader permissions/binding/tasks/transport remain unfinished.
+
+## 2026-10-28: fresh native initialization successor
+
+User directed continuation. Fresh role-native workspace duplicates preserved
+efdd791f onto verified main782701b9 without conflicts; initial change76787f55.
+Old role-authority source and all failure receipts remain unchanged. One writer
+owns the complete inherited12-file foundation and shared API; no other code
+track runs. No dependencies added or broader permissions/transport scope opened.
+
+Finish native owner initialization via existing Catalog::committed_rows/deploy
+before live engine assembly and after open refusal gates; existing owner causes
+no write, empty legacy state gets reserved private owner1 without counter draw,
+nonempty ownerless state is malformed. Consume shared Engine::principal and
+remove printer validation. Diagnose both retained closed-FileId timeout receipts;
+do not treat them as capacity-refusal proof or mask an engine lifecycle defect.
+Preserve unchanged past/history oracles and private canonical sequence fixture.
+
+Acceptance: focused authority/private/public and past tests, strict affected
+clippy/fmt/house/size, executable spec and conformance before fresh reading review,
+full frozen branch check, independent architecture/exact-source review, lead
+post-land full check. Record exact revisions, stable input/config manifests,
+commands/status/logs/timing and unresolved failures. Local brief and predecessor
+receipts are under work/briefs; durable scope is this ticket and its prior sections.
