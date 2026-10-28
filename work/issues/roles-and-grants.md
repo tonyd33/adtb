@@ -119,3 +119,16 @@ review. Exact source architecture/correctness review, scoped checks and full
 branch/main checks required; receipt must state all unfinished surfaces.
 Do not change adopted header-before-migration ordering based on the closed false
 bundle rollback oracle. Brief-role-authority-resume.md and prior handoff/receipts.
+
+## 2026-10-28: family ownership remains a later provider
+
+Foundation audit confirms api/bundle::record currently assigns every canonical
+bundle row to permanent OWNER_ROLE, and no nonowner registration surface exists.
+Applications3.1 defines family ownership by first registrant, which cannot be
+inferred from lowest header ID: unchecked headers precede successful registration.
+Do not invent that inference or change adopted header ordering. The bounded role
+provider retains conservative canonical owner-row refusal, plus permanent-owner
+and log-grant refusal. Nonowner bundle/family ownership, retired-bundle-sensitive
+drop behavior and durable family-owner identity remain deferred with their
+registration provider; no complete family/drop policy is claimed by foundation.
+Any later exposure must implement those rights before accepting nonowner calls.
