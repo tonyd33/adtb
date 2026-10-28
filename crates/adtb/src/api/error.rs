@@ -2,6 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use adtb_lang::schema::Schema;
+use adtb_lang::span::{Diag, DiagKind};
 use adtb_lang::textual::{Form, PrintError, print};
 use adtb_lang::types::{Base, RelId, Ty};
 
@@ -229,6 +230,32 @@ impl Error {
     pub(super) fn invalid(detail: impl Into<String>) -> Error {
         Error::rejected(RejectReason::Invalid {
             detail: detail.into(),
+        })
+    }
+
+    pub(super) fn diagnostic(diag: Diag) -> Error {
+        match diag.kind {
+            DiagKind::Invalid => Self::invalid(diag.message),
+            DiagKind::Denied => Self::rejected(RejectReason::Denied {
+                detail: diag.message,
+            }),
+        }
+    }
+
+    pub(super) fn diagnostics(diags: Vec<Diag>) -> Error {
+        let kind = if diags.iter().any(|diag| diag.kind == DiagKind::Denied) {
+            DiagKind::Denied
+        } else {
+            DiagKind::Invalid
+        };
+        Self::diagnostic(Diag {
+            kind,
+            span: adtb_lang::span::Span::default(),
+            message: diags
+                .into_iter()
+                .map(|diag| diag.message)
+                .collect::<Vec<_>>()
+                .join("\n"),
         })
     }
 

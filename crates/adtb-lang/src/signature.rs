@@ -7,6 +7,7 @@ use crate::evolve::Source;
 use crate::parse::{Options, parse_bundle, parse_migration};
 use crate::resolve::{Visible, lookup_value};
 use crate::schema::{Schema, ValueDef};
+use crate::span::{Diag, Span};
 use crate::types::{FnId, Ty};
 
 /// A migration of a log that does not apply, numbered from 1.
@@ -101,7 +102,8 @@ pub fn bundle(source: &Source, text: &str) -> Result<Bundle, String> {
         .collect();
     let (schema, program) =
         with_functions(source, &base, &vis, &fns, text)?.unwrap_or((base, base_program));
-    let calls = calls(&schema, &program, &vis, &file.imports, &file.items)?
+    let calls = calls(&schema, &program, &vis, &file.imports, &file.items)
+        .map_err(|diag| diag.message)?
         .into_iter()
         .map(|c| c.signature)
         .collect();
@@ -116,19 +118,19 @@ pub fn bundle(source: &Source, text: &str) -> Result<Bundle, String> {
 /// `program` seeing `vis`: each `import fn` in import order, then each query and transaction in
 /// item order, with ordinals from 1.
 ///
-/// Fail with the message of the first error: a callable that does not check, declares a limit
-/// or is declared twice, a generic imported function, and a feed or aggregate.
+/// Fail with the first diagnostic: a callable that does not check, declares a limit or is
+/// declared twice, a generic imported function, and a feed or aggregate.
 pub fn calls<'a>(
     schema: &Schema,
     program: &Program,
     vis: &Visible,
     imports: &'a [Import],
     items: &'a [BundleItem],
-) -> Result<Vec<Call<'a>>, String> {
+) -> Result<Vec<Call<'a>>, Diag> {
     let mut calls = Vec::new();
     for i in imports {
         if let Import::Fn(f) = i {
-            calls.push(imported(schema, vis, f)?);
+            calls.push(imported(schema, vis, f).map_err(|message| Diag::new(f.span(), message))?);
         }
     }
     let no_limit = "a declared limit does not run in this engine yet";
@@ -137,10 +139,13 @@ pub fn calls<'a>(
             BundleItem::Query(q) => {
                 let failed = |m: &str| format!("query `{}`: {m}", q.name.text);
                 if q.limit.is_some() {
-                    return Err(failed(no_limit));
+                    return Err(Diag::new(q.span, failed(no_limit)));
                 }
-                let checked = check_query_in(schema, program, vis.clone(), q)
-                    .map_err(|d| failed(&d.message))?;
+                let checked =
+                    check_query_in(schema, program, vis.clone(), q).map_err(|mut diag| {
+                        diag.message = failed(&diag.message);
+                        diag
+                    })?;
                 let names = q.params.iter().map(|p| p.name.text.clone()).collect();
                 let ty = checked.terms.ty(checked.term);
                 calls.push(Call {
@@ -151,10 +156,13 @@ pub fn calls<'a>(
             BundleItem::Txn(t) => {
                 let failed = |m: &str| format!("txn `{}`: {m}", t.name.text);
                 if t.limit.is_some() {
-                    return Err(failed(no_limit));
+                    return Err(Diag::new(t.span, failed(no_limit)));
                 }
-                let checked = check_txn_in(schema, program, vis.clone(), t)
-                    .map_err(|d| failed(&d.message))?;
+                let checked =
+                    check_txn_in(schema, program, vis.clone(), t).map_err(|mut diag| {
+                        diag.message = failed(&diag.message);
+                        diag
+                    })?;
                 let names = t.params.iter().map(|p| p.name.text.clone()).collect();
                 let ty = checked.terms.ty(checked.term);
                 calls.push(Call {
@@ -164,16 +172,20 @@ pub fn calls<'a>(
             }
             BundleItem::Fn(_) => {}
             BundleItem::Feed(_) | BundleItem::Aggregate(_) => {
-                return Err(
-                    "only queries, transactions and functions register in this engine".into(),
-                );
+                return Err(Diag::new(
+                    Span::default(),
+                    "only queries, transactions and functions register in this engine",
+                ));
             }
         }
     }
     for (i, c) in calls.iter().enumerate() {
         let name = &c.signature.name;
         if calls[..i].iter().any(|d| d.signature.name == *name) {
-            return Err(format!("`{name}` is declared twice in the bundle"));
+            return Err(Diag::new(
+                Span::default(),
+                format!("`{name}` is declared twice in the bundle"),
+            ));
         }
     }
     for (i, c) in calls.iter_mut().enumerate() {

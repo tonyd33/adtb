@@ -25,6 +25,17 @@ terms and share nothing else.
 
 `program` is the result of `check_schema(schema)`.
 
+Checking diagnostics carry `DiagKind::Invalid` for invalid syntax, types or
+acceptance rules, and `DiagKind::Denied` for a program write targeting an
+engine-defined relation. Ad hoc, query and transaction checks classify those
+writes before normalisation or volatile-read analysis, including writes in
+unreached branches and reachable function bodies. `signature::calls` preserves
+the category; `signature::bundle` retains its textual error interface.
+`analysis::writable_relation(schema, relation)` applies the same target rule to
+native bindings such as bulk appenders, returning a denied diagnostic on refusal.
+These checks accept client programs; engine-owned command and deployment writers
+construct their internal changes separately.
+
 Postconditions on a `Program`:
 
 - `constraints[i]` is the denial query of `schema.constraints[i]`, and

@@ -8,6 +8,7 @@ use crate::span::{Diag, FileDiag, FileId, Span};
 
 mod aggregate;
 mod fix;
+mod system;
 mod totality;
 mod volatile;
 
@@ -16,6 +17,7 @@ mod tests;
 
 pub use aggregate::ranges_over_bindings;
 pub use fix::{bounded, stratified};
+pub use system::writable_relation;
 pub use totality::Totality;
 pub use volatile::{reads_volatile, write_depends_on_volatile};
 
@@ -189,6 +191,18 @@ const VOLATILE_WRITE: &str = "a write must not depend on a volatile relation: no
 /// Normalises checked ad hoc text and applies the acceptance rules over the normal forms of its
 /// items and its commands' terms, `spans` giving each item's span.
 pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span]) -> Vec<Diag> {
+    let items = a.items.iter().zip(spans).map(|(t, span)| (*t, *span));
+    let commands = a
+        .commands
+        .iter()
+        .flat_map(|c| c.command.terms().into_iter().map(|t| (t, c.span)));
+    let denied: Vec<_> = items
+        .chain(commands)
+        .filter_map(|(term, span)| system::program(schema, p, &a.terms, [term], span).err())
+        .collect();
+    if !denied.is_empty() {
+        return denied;
+    }
     let n = match norm::adhoc(schema, p, a) {
         Ok(n) => n,
         Err(e) => {
@@ -222,12 +236,14 @@ pub(crate) fn adhoc_diags(schema: &Schema, p: &Program, a: &Adhoc, spans: &[Span
 
 /// Normalises a checked registered query and applies the acceptance rules over its normal form.
 pub(crate) fn query_diag(schema: &Schema, p: &Program, q: &Query, span: Span) -> Result<(), Diag> {
+    system::program(schema, p, &q.terms, [q.term], span)?;
     let n = norm::query(schema, p, q).map_err(|e| Diag::new(span, e.message))?;
     accept(&n.terms, &[n.body]).map_err(|m| Diag::new(span, m))
 }
 
 /// Normalises a checked registered transaction and applies the acceptance rules over its normal form.
 pub(crate) fn txn_diag(schema: &Schema, p: &Program, t: &Txn, span: Span) -> Result<(), Diag> {
+    system::program(schema, p, &t.terms, [t.term], span)?;
     let n = norm::txn(schema, p, t).map_err(|e| Diag::new(span, e.message))?;
     accept(&n.terms, &[n.body]).map_err(|m| Diag::new(span, m))?;
     if write_depends_on_volatile(schema, &n.terms, n.body) {

@@ -96,7 +96,7 @@ impl Prepared {
             .map(|(n, ty, _)| ((*n).to_owned(), ty.clone()))
             .collect();
         let adhoc = check_adhoc_recording(schema, program, &items, &types, bundles, None)
-            .map_err(|ds| Error::invalid(messages(ds.iter().map(|d| &d.message))))?;
+            .map_err(Error::diagnostics)?;
         let normal = norm::adhoc(adhoc.schema(schema), program, &adhoc).map_err(|e| {
             Error::rejected(super::error::RejectReason::Internal {
                 what: format!("checked ad hoc text has no normal form: {e:?}"),

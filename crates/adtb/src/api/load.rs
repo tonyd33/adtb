@@ -301,6 +301,7 @@ fn staged(schema: &Schema, target: &str) -> Result<Staged, Error> {
         None if def.ctors().len() == 1 => 0,
         None => return Err(unknown()),
     };
+    adtb_lang::analysis::writable_relation(schema, rel).map_err(Error::diagnostic)?;
     let r = schema.relation(rel);
     let generated: BTreeSet<&str> = match (&r.generate, r.key.as_slice()) {
         (Some(_), [k]) => BTreeSet::from([k.as_str()]),

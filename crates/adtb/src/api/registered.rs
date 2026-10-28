@@ -457,7 +457,7 @@ fn checked(over: &Over<'_>, r: &Registration, current: bool) -> Result<Checked, 
         (signature, format!("{}{functions}", spanned(&r.text, span)))
     };
     let calls =
-        signature::calls(schema, program, &vis, &imports, &items).map_err(Error::invalid)?;
+        signature::calls(schema, program, &vis, &imports, &items).map_err(Error::diagnostic)?;
     let mut entries = Vec::new();
     for c in calls {
         let mut e = match c.item {
@@ -559,8 +559,12 @@ fn imported(schema: &Schema, program: &Program, f: &QName, id: FnId) -> Result<E
         .cloned()
         .zip(def.params.iter().map(|(_, t)| t.clone()))
         .collect();
-    let adhoc = check_adhoc(schema, program, &items, &types)
-        .map_err(|ds| failed(joined(ds.iter().map(|d| d.message.as_str()))))?;
+    let adhoc = check_adhoc(schema, program, &items, &types).map_err(|mut ds| {
+        if let Some(first) = ds.first_mut() {
+            first.message = format!("fn `{}`: {}", f.name.text, first.message);
+        }
+        Error::diagnostics(ds)
+    })?;
     let normal = norm::adhoc(schema, program, &adhoc).map_err(no_normal)?;
     let [body] = normal.items.as_slice() else {
         return Err(no_normal("a call is one item"));

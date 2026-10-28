@@ -33,10 +33,17 @@ impl fmt::Debug for Span {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagKind {
+    Invalid,
+    Denied,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diag {
     pub span: Span,
     pub message: String,
+    pub kind: DiagKind,
 }
 
 impl Diag {
@@ -44,6 +51,15 @@ impl Diag {
         Diag {
             span,
             message: message.into(),
+            kind: DiagKind::Invalid,
+        }
+    }
+
+    pub(crate) fn denied(span: Span, message: impl Into<String>) -> Diag {
+        Diag {
+            span,
+            message: message.into(),
+            kind: DiagKind::Denied,
         }
     }
 
