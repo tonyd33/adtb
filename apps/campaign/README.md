@@ -69,8 +69,9 @@ applies to each request. Played-session GM pages retain prep, logs and recaps.
 
 This slice uses escaped text, normal forms, previews after saving and manual
 player refresh. Rich Markdown, completion, automatic updates, midfight roster
-changes, death recording, quest/timeline screens and simulated load remain
-future work.
+changes, death recording, quest/timeline screens and full-scale load remain
+future work. A [deterministic collision workload](docs/load.md) exercises
+registered calls, engine retries, player visibility and persistence.
 
 Run the HTTP flow tests with:
 

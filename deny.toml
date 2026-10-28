@@ -109,12 +109,15 @@ allow = [
     "cc",
     "find-msvc-tools",
     "shlex",
-    # Local engine dependencies of the separately built campaign workspace.
+    # Local engine and test dependencies of the separately built campaign workspace.
     "adtb",
     "adtb-codegen",
     "adtb-file",
     "adtb-lang",
+    "adtb-reference",
+    "adtb-sim",
     "adtb-sys",
+    "adtb-testkit",
     # Local campaign HTTP routing, forms, escaped HTML, async runtime and their dependencies.
     "atomic-waker",
     "axum",

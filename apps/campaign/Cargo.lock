@@ -43,11 +43,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "adtb-reference"
+version = "0.1.0"
+dependencies = [
+ "adtb-file",
+ "adtb-lang",
+ "icu_casemap",
+ "icu_collator",
+ "icu_locale_core",
+ "icu_segmenter",
+ "jiff",
+ "regex",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "adtb-sim"
+version = "0.1.0"
+dependencies = [
+ "adtb",
+ "adtb-sys",
+]
+
+[[package]]
 name = "adtb-sys"
 version = "0.1.0"
 dependencies = [
  "io-uring",
  "libc",
+]
+
+[[package]]
+name = "adtb-testkit"
+version = "0.1.0"
+dependencies = [
+ "adtb-lang",
+ "adtb-reference",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -158,6 +190,8 @@ dependencies = [
  "adtb",
  "adtb-codegen",
  "adtb-lang",
+ "adtb-sim",
+ "adtb-testkit",
  "axum",
  "http-body-util",
  "maud",
