@@ -46,3 +46,14 @@ DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" cargo nextest run -p adtb
 --lib write::sequence::tests. Retained logs target/sequence-baseline-regressions.
 {log,status}, source write/sequence_tests.rs. Fresh repair worker independently
 confirms before fix. Role/provider and campaign remain paused.
+
+## 2026-10-28: boundary behavior and error ownership
+
+Preserve explicit i64::MAX key inserts: stored MAX is an exhausted candidate
+sentinel, no format change. Generated draws refuse without mutation/panic and
+remain exhausted after reopen. Do not reject the valid explicit-key domain to
+avoid arithmetic. Add exact API and crash/regression tests. Exhaustion is real,
+not an unimplemented form: minimal internal sequence-exhaustion error in
+write/mod.rs plus api/error.rs conversion to existing API Invalid approved;
+no new normative error constructor. Existing counter-capacity limitation remains
+separate from correct failure atomicity. No concurrent shared API writer.
