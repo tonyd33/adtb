@@ -5,7 +5,7 @@ kind: feature
 priority: 830
 summary: "no roles or grants exist, so the registration privilege check and every grant check have nothing to check"
 branch: role-authority
-depends-on: [asserted-principal-value-domain, custom-principal-global-lookup]
+depends-on: [asserted-principal-value-domain, custom-principal-global-lookup, uuid-domain-textual-roundtrip]
 tags:
   - engine
 ---
@@ -215,3 +215,18 @@ validation in favor of shared Engine::principal, completes native empty-only
 owner initialization, resolves retained legacy full-counter timeouts/double-close
 hypothesis, then reruns private/public/spec/conformance/fresh review/full checks.
 No producer/task/transport or nonowner execution claims follow from validation.
+
+## 2026-10-28: root lookup verified, UUID formatter repair first
+
+Shared root lookup landed1be643fa with full main2392root/47campaign and all static/
+docs checks passed. Asserted-value and root-name prerequisites are resolved.
+Independent UUID evidence confirmed that a valid short Uuid constructs and unwraps
+but shared text/print fail Internal. User approved and lead adopted
+spec/uuid-domain-format/lossless; fresh uuid-format track owns shared formatter/
+parser and contract repair before provider resumption. Add that explicit dependency
+so ready state reflects engine-first priority. Preserved efdd791f provider remains
+unlanded and overall unverified, native owner initialization correction and
+closed-FileId fixture diagnosis still unfinished. No new provider feature work.
+After prerequisite, fresh successor must remove printer validation and rely on
+shared Engine::principal, complete native bootstrap and all existing past guards,
+then receive fresh exact-source review and full checks.
