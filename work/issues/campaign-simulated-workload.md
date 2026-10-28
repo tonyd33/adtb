@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: feature
 priority: 850
 summary: campaign has no repeatable deterministic load workload checking persisted transaction and secrecy invariants
-branch: campaign-load
+closed: 2026-10-28
 ---
 
 # Feature: Campaign simulated workload
@@ -116,3 +116,40 @@ version, no role-track overlap. Both targeted root/campaign cargo-deny passed0
 on fde15497/base15004a7f,stable inputs. Final fullcheck now running on that frozen
 state, not yet passed. Lead will review exact policy delta and combined maincheck.
 The first reported app-local deny path was corrected: no such policy file exists.
+
+## 2026-10-28: resolved
+
+Landed e4d7aa6c, test(campaign): add deterministic collision workload. Final
+source fde154972241a16ea58daa4e15df1e929de89eb8 on15004a7f passed fresh
+architecture/correctness review; lead separately reviewed measured timing prose
+and exactly three approved local dependency allow entries. The post-rebase delta
+is only two ticket metadata files. No app production, bundle or migration edit.
+
+Final branch full check and house passed0 on stable inputs/revision,90.538s,
+14:56:42Z–14:58:12Z. Engine2366/8skipped, campaign47/1skipped; all lint, dependency,
+size and native docs checks passed. Focused default seed4 replayed twice11.050s;
+deep seeds4..11 replayed twice64.946s, typed ledger/trace/file bytes identical.
+New test took14.264s in the full campaign suite; this bounded sweep exception to
+2s is documented. Initial full exit2 at campaign dependency policy is retained,
+not counted as a pass; final policy correction and rerun are explicit.
+
+Lead main full check also passed0 on clean494a53b3b076e2b84920ff2432c5d10f4a4986ac,
+parent e4d7aa6c: exact command from root direnv exec /home/tony/code/adtb env
+DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check. UTC14:59:59Z–15:02:08Z,
+129s; permission/queue/execution-only unknown. Engine2366/8skipped50.079s,
+campaign47/1skipped20.652s, all static checks passed. Docs10tests10.247s,
+420syntax inputs/61pages/6730links/4995fragments/0failures. All tracked and local
+root/app Cargo config hashes and revision match before/after. Dev shell
+Rust1.98.1/Cargo1.98.0, configured defaults. Main log target/campaign-load-
+integration/check.log SHA256bde608f4688bbba31ee9959848d954b08367869dd2bca2ee577e39b894c04611.
+
+Receipts receipt-campaign-load-resume.md and receipt-campaign-load-main.md; fresh
+reports review-campaign-final.md and review-quality28.md in work/briefs. Original
+sources/logs/fixtures retained;964nondebug files copied and SHA256verified under
+target/campaign-load-resume-evidence before completed debug cleanup. Duplicate
+backup fixture trees are verified in tmp.tar.gz; original sibling tmp retained.
+No engine failure or workaround observed. Full200campaign scale, kill/roster,
+crash/fault injection, complete isolation history and native latency/p99 remain
+uncovered; broad prealpha-app stays open.
+
+## 2026-10-28: resolved
