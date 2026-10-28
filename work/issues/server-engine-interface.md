@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: in-progress
 kind: feature
 priority: 1001
 summary: "docs/design/server.md leaves undecided how the server submits a call to adtb and receives its batches, and how it binds a connection to a bundle"
+branch: server-boundary
 tags:
   - server
   - design
@@ -83,3 +84,23 @@ admission and suspension, cancellation/commit and interactive wait liveness.
 Exact Rust signatures need review before implementation consumers branch.
 Keep embedded owner calls compatible. No runtime dependency or transport
 implementation is implied by approval.
+
+## 2026-10-28: provider contract track prepared
+
+Workspace server-boundary at ../adtb-server-boundary starts9cfcae7f; fresh
+agent owns only docs/design/server.md. Concrete role/session/bind/task/result
+contracts and cancel/commit/backpressure/interactive wait states come first,
+with reviewed illustrative Rust ownership and a provider-first implementation
+split. No executable code signatures, dependencies, transports or spec changes
+in this bounded track. Acceptance: map authority/resource ownership for every
+state transition, immutable pinned metadata, runtime-independent notifications,
+one retry owner and real suspension/wait liveness; give queue/cancel/grant/
+credit/commit tests for implementation. House/docs link checks for prose only;
+full Rust suite intentionally not required. Lead reviews before landing and
+provider/consumer implementation branches. Current separate campaign/wire
+tracks touch disjoint files. Any engine bug restores engine-first priority.
+
+Fresh dispatch attempted twice but rejected by harness agent-thread limit.
+Workspace/probe/brief are prepared; implementation has not begun. Lead will
+dispatch when capacity becomes available, preserving the fresh-agent rule.
+This is a harness-capacity wait, not a permission or implementation failure.
