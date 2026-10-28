@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: resolved
 kind: bug
 priority: 699
 summary: ordered type checking repeatedly expands shared type graphs
-branch: ordered-schema
+closed: 2026-10-28
 tags:
   - engine
   - lang
@@ -73,3 +73,29 @@ branch full engine/campaign/docs check was explicitly assigned to lead instead;
 post-land main integration is still REQUIRED, not yet passed. Principal validator
 remains frozen and must rebase/rerun its unchanged legitimate DAG fixture only
 after this repair and main integration.
+
+## 2026-10-28: resolved
+
+Landed928b7d38, fix(lang): bound ordered schema graph traversal, after exact
+independent review and all659language checks. Lead broader main check passed0
+on clean797531477236bb9b894e9e5999781b556e115640, parent928b7d38. Exact root
+command: direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD"
+CARGO_TARGET_DIR="$PWD/target" check.16:27:02Z–16:33:50Z,408s; all tracked/local
+root+app Cargo config hashes and revision stable. Rust1.98.1/Cargo1.98.0,
+configured defaults; permission/queue/execution-only unknown.
+
+Engine2,373tests/8skipped49.912s; campaign47/1skipped21.140s; all lint, dependency,
+size and native docs checks passed. Docs10tests/420syntax/61pages/6730links/
+4995fragments/0failures. Main log target/ordered-schema-integration/check.log
+SHA2567d8c0817e21e6b744844318130f9947dbecf5b605ceeb5e1417f4862e2b0019f.
+Post-rebase delta versus reviewedbranch is only four ticket/index metadata files.
+Receipts/review: work/briefs/{receipt-ordered-schema,receipt-ordered-schema-main,
+review-ordered-schema}.md; worker evidence backed up and SHA256verified under
+target/ordered-schema-evidence, original source/logs retained.
+
+Principal validator build slot released after mainpass. Its original legitimate
+30-level fixture remains unchanged and must pass affected/full verification on
+the rebased source. This closes the general ordering issue, not the separate
+principal or provider tickets.
+
+## 2026-10-28: resolved
