@@ -1,6 +1,8 @@
 mod auth;
 mod gm;
+mod links;
 mod player;
+mod prep_views;
 mod views;
 
 use std::path::Path;
@@ -13,7 +15,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 
-use crate::{MIGRATIONS, v1_4};
+use crate::{MIGRATIONS, v1_5};
 
 #[derive(Clone)]
 pub struct Server {
@@ -23,7 +25,7 @@ pub struct Server {
 
 struct State {
     db: Database,
-    bundle: Bundle<v1_4::Bundle>,
+    bundle: Bundle<v1_5::Bundle>,
     auth: auth::Auth,
     workers: Arc<tokio::sync::Semaphore>,
 }
@@ -37,7 +39,7 @@ impl std::fmt::Debug for Server {
 #[derive(Debug)]
 enum Error {
     Http(StatusCode, &'static str),
-    Database(v1_4::Error),
+    Database(v1_5::Error),
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -51,17 +53,17 @@ impl IntoResponse for Error {
                 writeln!(std::io::stderr(), "campaign database call: {error:?}")
                     .unwrap_or_default();
                 match error {
-                    v1_4::Error::Retry { .. } => (
+                    v1_5::Error::Retry { .. } => (
                         StatusCode::SERVICE_UNAVAILABLE,
                         "Database busy; retry this action.",
                     )
                         .into_response(),
-                    v1_4::Error::Rejected { .. } => (
+                    v1_5::Error::Rejected { .. } => (
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "The database refused this action.",
                     )
                         .into_response(),
-                    v1_4::Error::Fatal { .. } => {
+                    v1_5::Error::Fatal { .. } => {
                         (StatusCode::INTERNAL_SERVER_ERROR, "Database failure.").into_response()
                     }
                 }
@@ -70,8 +72,8 @@ impl IntoResponse for Error {
     }
 }
 
-impl From<v1_4::Error> for Error {
-    fn from(error: v1_4::Error) -> Self {
+impl From<v1_5::Error> for Error {
+    fn from(error: v1_5::Error) -> Self {
         Self::Database(error)
     }
 }
@@ -85,7 +87,7 @@ impl Server {
             create: Some(CreateOptions::default()),
             workers: Some(2),
             registrations: vec![
-                v1_4::BUNDLE
+                v1_5::BUNDLE
                     .registration()
                     .map_err(|e| format!("register: {e:?}"))?,
             ],
@@ -94,7 +96,7 @@ impl Server {
         let db = adtb::open(path, &Log::new(MIGRATIONS), &options)
             .map_err(|e| format!("open: {e:?}"))?;
         let bundle = db
-            .bundle(&v1_4::BUNDLE)
+            .bundle(&v1_5::BUNDLE)
             .map_err(|e| format!("bundle: {e:?}"))?;
         Ok(Self {
             state: Arc::new(State {
@@ -138,7 +140,7 @@ impl Server {
 
 async fn blocking<T: Send + 'static>(
     state: Arc<State>,
-    call: impl FnOnce(Bundle<v1_4::Bundle>) -> Result<T> + Send + 'static,
+    call: impl FnOnce(Bundle<v1_5::Bundle>) -> Result<T> + Send + 'static,
 ) -> Result<T> {
     let permit = state
         .workers

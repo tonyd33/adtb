@@ -8,7 +8,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 
 use super::{Error, Result, State as AppState, auth, blocking, views};
-use crate::v1_4;
+use crate::v1_5;
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -21,7 +21,7 @@ async fn join(State(state): State<Arc<AppState>>, Path(token): Path<String>) -> 
     let given = token.clone();
     blocking(state, move |bundle| {
         bundle
-            .call(v1_4::seat, (given,), &CallOptions::default())?
+            .call(v1_5::seat, (given,), &CallOptions::default())?
             .next()
             .transpose()?
             .ok_or(Error::Http(
@@ -51,7 +51,7 @@ async fn home(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<
     let token = seat_token(&headers)?;
     blocking(state, move |bundle| {
         let seat = bundle
-            .call(v1_4::seat, (token,), &CallOptions::default())?
+            .call(v1_5::seat, (token,), &CallOptions::default())?
             .next()
             .transpose()?
             .ok_or(Error::Http(
@@ -59,7 +59,7 @@ async fn home(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<
                 "This seat has been revoked.",
             ))?;
         let entities = bundle
-            .call(v1_4::known_entities, (seat.party,), &CallOptions::default())?
+            .call(v1_5::known_entities, (seat.party,), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(views::player(&seat.name, &entities))
     })
@@ -74,7 +74,7 @@ async fn entity(
     let token = seat_token(&headers)?;
     blocking(state, move |bundle| {
         let seat = bundle
-            .call(v1_4::seat, (token,), &CallOptions::default())?
+            .call(v1_5::seat, (token,), &CallOptions::default())?
             .next()
             .transpose()?
             .ok_or(Error::Http(
@@ -83,7 +83,7 @@ async fn entity(
             ))?;
         let page = bundle
             .call(
-                v1_4::known_entity,
+                v1_5::known_entity,
                 (seat.party, Key(entity)),
                 &CallOptions::default(),
             )?

@@ -11,3 +11,6 @@ button { cursor: pointer; }
 a { color: light-dark(#145f80, #8ed1ef); overflow-wrap: anywhere; }
 li { margin-block: .6rem; }
 .prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+details { margin-block: 1rem; }
+summary { cursor: pointer; font-weight: 600; }
+.unresolved { text-decoration: underline wavy; text-decoration-color: light-dark(#a43622, #ffab91); }

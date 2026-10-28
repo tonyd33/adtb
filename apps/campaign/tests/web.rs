@@ -1,108 +1,8 @@
-use std::path::PathBuf;
+mod support;
 
-use axum::Router;
-use axum::body::Body;
-use axum::http::{HeaderMap, Request, StatusCode};
+use axum::http::StatusCode;
 use campaign::web::Server;
-use http_body_util::BodyExt;
-use tower::ServiceExt;
-
-struct Reply {
-    status: StatusCode,
-    headers: HeaderMap,
-    body: String,
-}
-
-async fn request(router: &Router, method: &str, path: &str, cookie: &str, body: &str) -> Reply {
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(path)
-                .header("cookie", cookie)
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(body.to_owned()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let (parts, body) = response.into_parts();
-    Reply {
-        status: parts.status,
-        headers: parts.headers,
-        body: String::from_utf8(body.collect().await.unwrap().to_bytes().to_vec()).unwrap(),
-    }
-}
-
-fn field<'a>(html: &'a str, before: &str, after: &str) -> &'a str {
-    html.split_once(before)
-        .unwrap_or_else(|| panic!("missing {before:?} in {html}"))
-        .1
-        .split_once(after)
-        .unwrap()
-        .0
-}
-
-fn csrf(html: &str) -> &str {
-    field(html, "name=\"csrf\" value=\"", "\"")
-}
-fn location(reply: &Reply) -> &str {
-    reply.headers["location"].to_str().unwrap()
-}
-fn cookie(reply: &Reply) -> &str {
-    reply.headers["set-cookie"]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-}
-
-fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("web")
-        .join(name);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.join("campaign.adt")
-}
-
-async fn login(server: &Server, router: &Router) -> (String, String) {
-    let reply = request(router, "GET", &server.login_path(), "", "").await;
-    assert_eq!(reply.status, StatusCode::SEE_OTHER);
-    assert_eq!(location(&reply), "/gm");
-    assert!(
-        reply.headers["set-cookie"]
-            .to_str()
-            .unwrap()
-            .contains("HttpOnly; SameSite=Strict")
-    );
-    let gm = cookie(&reply).to_owned();
-    let home = request(router, "GET", "/gm", &gm, "").await;
-    assert_eq!(home.status, StatusCode::OK);
-    (gm, csrf(&home.body).to_owned())
-}
-
-async fn create(router: &Router, gm: &str, token: &str) -> (String, String) {
-    let reply = request(
-        router,
-        "POST",
-        "/gm/campaigns",
-        gm,
-        &format!("csrf={token}&title=Ashes&pitch=A+fallen+empire&party=Lanterns"),
-    )
-    .await;
-    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
-    let path = location(&reply).to_owned();
-    let page = request(router, "GET", &path, gm, "").await;
-    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
-    let party = field(&page.body, "option value=\"", "\"").to_owned();
-    (path, party)
-}
+use support::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gm_player_flow_and_restart() {
@@ -261,7 +161,7 @@ async fn server_upgrades_a_file_with_the_original_1_3_bundle() {
     let path = scratch("original-bundle");
     let db = adtb::open(
         &path,
-        &Log::new(MIGRATIONS),
+        &Log::new(MIGRATIONS[..4].iter().copied()),
         &OpenOptions {
             create: Some(CreateOptions::default()),
             registrations: vec![v1_3::BUNDLE.registration().unwrap()],
@@ -304,28 +204,28 @@ async fn server_upgrades_a_file_with_the_original_1_3_bundle() {
 
 async fn assert_revoked_seat(path: &std::path::Path, cookie: &str) {
     use adtb::{BundleDef, CallOptions, Log, OpenOptions};
-    use campaign::{MIGRATIONS, v1_4};
+    use campaign::{MIGRATIONS, v1_5};
     let token = cookie.strip_prefix("seat=").unwrap().to_owned();
     let db = adtb::open(
         path,
         &Log::new(MIGRATIONS),
         &OpenOptions {
-            registrations: vec![v1_4::BUNDLE.registration().unwrap()],
+            registrations: vec![v1_5::BUNDLE.registration().unwrap()],
             workers: Some(2),
             ..OpenOptions::default()
         },
     )
     .unwrap();
-    let bundle = db.bundle(&v1_4::BUNDLE).unwrap();
+    let bundle = db.bundle(&v1_5::BUNDLE).unwrap();
     let seat = bundle
-        .call(v1_4::seat, (token.clone(),), &CallOptions::default())
+        .call(v1_5::seat, (token.clone(),), &CallOptions::default())
         .unwrap()
         .next()
         .unwrap()
         .unwrap();
     bundle
         .call(
-            v1_4::unseat,
+            v1_5::unseat,
             (seat.player, adtb::typed::Date(20750)),
             &CallOptions::default(),
         )

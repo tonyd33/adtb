@@ -1,0 +1,13 @@
+module campaign
+add constraint npc_location_in_campaign =
+  from n in entities.Npc, p in entities.Places
+  where n.location == Some { value: key p } and p.campaign != n.campaign
+  select n
+add constraint fallen_location_in_campaign =
+  from n in entities.Fallen, p in entities.Places
+  where n.location == Some { value: key p } and p.campaign != n.campaign
+  select n
+add constraint item_holder_in_campaign =
+  from i in entities.Item, c in entities.Characters
+  where i.holder == Some { value: key c } and c.campaign != i.campaign
+  select i

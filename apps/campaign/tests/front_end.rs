@@ -187,7 +187,7 @@ fn release_1_3_adds_quest_states() {
 }
 
 /// The bundle of each release, with the version it pins.
-const BUNDLES: [(&str, usize); 3] = [(BUNDLE_1_0, 1), (BUNDLE, 4), (WEB_BUNDLE, 4)];
+const BUNDLES: [(&str, usize); 3] = [(BUNDLE_1_0, 1), (BUNDLE, 4), (WEB_BUNDLE, 5)];
 
 #[test]
 fn every_bundle_parses() {
@@ -244,4 +244,14 @@ fn checks_at(text: &str, pin: usize) {
         failures.len(),
         failures.join("\n")
     );
+}
+
+#[test]
+fn browser_bundle_pins_the_current_schema_hash() {
+    let source = version(MIGRATIONS.len());
+    let schema = source.schema().unwrap();
+    let hash = adtb::catalog::version_hash(&schema, &source);
+    let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+    let bundle = parse_bundle(WEB_BUNDLE, Options::default()).ok().unwrap();
+    assert_eq!(bundle.header.pins.hash.as_deref(), Some(hex.as_str()));
 }

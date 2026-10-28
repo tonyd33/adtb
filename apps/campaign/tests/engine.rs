@@ -15,7 +15,7 @@ use adtb_lang::parse::{Options, parse_type};
 use adtb_lang::resolve::Visible;
 use adtb_lang::textual::{Form, parse, print};
 use adtb_lang::types::Ty;
-use campaign::schema::{Campaigns, Entities, Quests, Sessions};
+use campaign::v1_3::{Campaigns, Entities, Quests, Sessions};
 use campaign::{MIGRATIONS, v1_0, v1_3, v1_4};
 
 fn scratch(name: &str) -> PathBuf {
@@ -58,11 +58,11 @@ fn migration_open_timings() {
     let path = scratch("open-timings");
     let start = std::time::Instant::now();
     let db = open_db(path.clone(), MIGRATIONS.len(), Vec::new());
-    eprintln!("campaign 1.3 fresh apply: {:?}", start.elapsed());
+    eprintln!("campaign current fresh apply: {:?}", start.elapsed());
     db.close().expect("close fresh database");
     let start = std::time::Instant::now();
     let db = open_db(path, MIGRATIONS.len(), Vec::new());
-    eprintln!("campaign 1.3 reopen: {:?}", start.elapsed());
+    eprintln!("campaign current reopen: {:?}", start.elapsed());
     db.close().expect("close reopened database");
 }
 
@@ -107,7 +107,7 @@ impl<B: BundleDef> App<B> {
 impl Current {
     /// Open a new database under `name` at release 1.3.
     fn open(name: &str) -> Current {
-        App::at(scratch(name), MIGRATIONS.len(), &v1_3::BUNDLE)
+        App::at(scratch(name), 4, &v1_3::BUNDLE)
     }
 }
 
@@ -402,7 +402,7 @@ fn prep_builds_a_world_the_gm_can_look_up() {
 
 #[test]
 fn text_edit_preserves_existing_shared_and_hidden_links() {
-    let app = App::at(scratch("text-links"), MIGRATIONS.len(), &v1_4::BUNDLE);
+    let app = App::at(scratch("text-links"), 4, &v1_4::BUNDLE);
     let campaign = app
         .call(
             v1_4::new_campaign,
@@ -419,37 +419,31 @@ fn text_edit_preserves_existing_shared_and_hidden_links() {
     let warden = app
         .call(
             v1_4::add_npc,
-            (campaign.clone(), "Warden".into(), "Summary".into(), None),
+            (campaign, "Warden".into(), "Summary".into(), None),
         )
         .value;
-    let w = World {
-        campaign,
-        party,
-        keep,
-        warden,
-    };
     app.call(
         v1_4::write_entity,
         (
-            w.warden.clone(),
+            warden.clone(),
             "Old".into(),
             "Shared".into(),
             "Secret".into(),
-            vec![w.keep.clone()],
-            vec![w.party.clone()],
+            vec![keep],
+            vec![party],
         ),
     );
-    let before = one(app.call(v1_4::entity_page, (w.warden.clone(),)));
+    let before = one(app.call(v1_4::entity_page, (warden.clone(),)));
     app.call(
         v1_4::write_entity_text,
         (
-            w.warden.clone(),
+            warden.clone(),
             "New summary".into(),
             "New shared".into(),
             "New secret".into(),
         ),
     );
-    let after = one(app.call(v1_4::entity_page, (w.warden,)));
+    let after = one(app.call(v1_4::entity_page, (warden,)));
     assert_eq!(after.mentions, before.mentions);
     assert_eq!(
         (
@@ -798,7 +792,7 @@ fn release_1_3_calls_through_its_bundle_over_a_release_1_0_file() {
     );
     old.db.close().expect("close");
 
-    let app = App::at(path, MIGRATIONS.len(), &v1_3::BUNDLE);
+    let app = App::at(path, 4, &v1_3::BUNDLE);
     let superseded = app.db.bundle(&v1_0::BUNDLE).map(drop);
     assert!(
         matches!(

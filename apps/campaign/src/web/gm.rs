@@ -9,8 +9,8 @@ use axum::response::{Html, Redirect};
 use axum::routing::{get, post};
 use serde::Deserialize;
 
-use super::{Error, Result, State as AppState, auth, blocking, views};
-use crate::v1_4;
+use super::{Error, Result, State as AppState, auth, blocking, links, views};
+use crate::v1_5;
 
 pub(super) fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
@@ -18,6 +18,7 @@ pub(super) fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/gm/campaigns", post(create))
         .route("/gm/campaigns/{campaign}", get(campaign))
         .route("/gm/campaigns/{campaign}/npcs", post(add_npc))
+        .route("/gm/campaigns/{campaign}/entities", post(add_entity))
         .route(
             "/gm/campaigns/{campaign}/entities/{entity}",
             get(entity).post(write_entity),
@@ -35,10 +36,17 @@ struct Create {
     party: String,
 }
 #[derive(Deserialize)]
-struct Npc {
+struct NewEntity {
     csrf: String,
     name: String,
+    #[serde(default)]
     summary: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    reference: String,
+    #[serde(default)]
+    agenda: String,
 }
 #[derive(Deserialize)]
 struct Text {
@@ -80,7 +88,7 @@ async fn home(State(state): State<Arc<AppState>>) -> Result<Html<String>> {
     let csrf = state.auth.csrf().to_owned();
     blocking(state, move |bundle| {
         let campaigns = bundle
-            .call(v1_4::campaigns, (), &CallOptions::default())?
+            .call(v1_5::campaigns, (), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(views::home(&campaigns, &csrf))
     })
@@ -95,7 +103,7 @@ async fn create(State(state): State<Arc<AppState>>, Form(form): Form<Create>) ->
     let id = blocking(state, move |bundle| {
         Ok(bundle
             .call(
-                v1_4::new_campaign,
+                v1_5::new_campaign,
                 (form.title, form.pitch, form.party),
                 &CallOptions::default(),
             )?
@@ -114,21 +122,21 @@ async fn campaign(
     let csrf = state.auth.csrf().to_owned();
     blocking(state, move |bundle| {
         let campaigns = bundle
-            .call(v1_4::campaigns, (), &CallOptions::default())?
+            .call(v1_5::campaigns, (), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let title = campaigns
             .iter()
             .find_map(|c| match c {
-                v1_4::CampaignsRow::Ongoing { id: key, title }
-                | v1_4::CampaignsRow::Over { id: key, title, .. } => (key.0 == id).then_some(title),
+                v1_5::CampaignsRow::Ongoing { id: key, title }
+                | v1_5::CampaignsRow::Over { id: key, title, .. } => (key.0 == id).then_some(title),
             })
             .ok_or(Error::Http(StatusCode::NOT_FOUND, "Campaign not found."))?;
         let parties = bundle
-            .call(v1_4::parties, (Key(id),), &CallOptions::default())?
+            .call(v1_5::parties, (Key(id),), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let entities = bundle
             .call(
-                v1_4::lookup,
+                v1_5::prep_entities,
                 (Key(id), search.q.clone()),
                 &CallOptions::default(),
             )?
@@ -143,25 +151,114 @@ async fn campaign(
 async fn add_npc(
     State(state): State<Arc<AppState>>,
     Path(campaign): Path<i64>,
-    Form(form): Form<Npc>,
+    Form(mut form): Form<NewEntity>,
+) -> Result<Redirect> {
+    form.kind = "npc".to_owned();
+    add_entity(State(state), Path(campaign), Form(form)).await
+}
+
+async fn add_entity(
+    State(state): State<Arc<AppState>>,
+    Path(campaign): Path<i64>,
+    Form(form): Form<NewEntity>,
 ) -> Result<Redirect> {
     state.auth.check_csrf(&form.csrf)?;
     text(&form.name, 200, true)?;
     text(&form.summary, 1000, false)?;
+    text(&form.agenda, 64000, false)?;
+    let reference = if form.reference.is_empty() {
+        None
+    } else {
+        Some(form.reference.parse::<i64>().map_err(|_| {
+            Error::Http(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Choose a valid reference.",
+            )
+        })?)
+    };
     let entity = blocking(state, move |bundle| {
-        Ok(bundle
-            .call(
-                v1_4::add_npc,
-                (Key(campaign), form.name, form.summary, None),
-                &CallOptions::default(),
-            )?
-            .value
-            .0)
+        let opts = CallOptions::default();
+        let c = Key(campaign);
+        let key = match form.kind.as_str() {
+            "npc" => {
+                bundle
+                    .call(
+                        v1_5::add_npc,
+                        (c, form.name, form.summary, reference.map(Key)),
+                        &opts,
+                    )?
+                    .value
+            }
+            "region" => {
+                bundle
+                    .call(
+                        v1_5::add_region,
+                        (c, form.name, form.summary, reference.map(Key)),
+                        &opts,
+                    )?
+                    .value
+            }
+            "settlement" => {
+                bundle
+                    .call(
+                        v1_5::add_settlement,
+                        (c, form.name, form.summary, reference.map(Key)),
+                        &opts,
+                    )?
+                    .value
+            }
+            "site" => {
+                bundle
+                    .call(
+                        v1_5::add_site,
+                        (c, form.name, form.summary, reference.map(Key)),
+                        &opts,
+                    )?
+                    .value
+            }
+            "faction" => {
+                bundle
+                    .call(
+                        v1_5::add_faction,
+                        (c, form.name, form.summary, form.agenda),
+                        &opts,
+                    )?
+                    .value
+            }
+            "party" => bundle.call(v1_5::add_party, (c, form.name), &opts)?.value,
+            "item" => {
+                bundle
+                    .call(
+                        v1_5::add_item,
+                        (c, form.name, form.summary, reference.map(Key)),
+                        &opts,
+                    )?
+                    .value
+            }
+            _ => {
+                return Err(Error::Http(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Choose an entity kind.",
+                ));
+            }
+        };
+        Ok(key.0)
     })
     .await?;
     Ok(Redirect::to(&format!(
         "/gm/campaigns/{campaign}/entities/{entity}"
     )))
+}
+
+fn require_campaign(page: &v1_5::EntityPageRow, campaign: i64) -> Result<()> {
+    if page.campaign.0 == campaign {
+        Ok(())
+    } else {
+        Err(Error::Http(
+            StatusCode::NOT_FOUND,
+            "Entity not found in this campaign.",
+        ))
+    }
 }
 
 async fn entity(
@@ -171,12 +268,13 @@ async fn entity(
     let csrf = state.auth.csrf().to_owned();
     blocking(state, move |bundle| {
         let page = bundle
-            .call(v1_4::entity_page, (Key(entity),), &CallOptions::default())?
+            .call(v1_5::entity_page, (Key(entity),), &CallOptions::default())?
             .next()
             .transpose()?
             .ok_or(Error::Http(StatusCode::NOT_FOUND, "Entity not found."))?;
+        require_campaign(&page, campaign)?;
         let parties = bundle
-            .call(v1_4::parties, (Key(campaign),), &CallOptions::default())?
+            .call(v1_5::parties, (Key(campaign),), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(views::entity(campaign, entity, &page, &parties, &csrf))
     })
@@ -193,9 +291,25 @@ async fn write_entity(
     text(&form.body, 64000, false)?;
     text(&form.secret, 64000, false)?;
     blocking(state, move |bundle| {
+        let page = bundle
+            .call(v1_5::entity_page, (Key(entity),), &CallOptions::default())?
+            .next()
+            .transpose()?
+            .ok_or(Error::Http(StatusCode::NOT_FOUND, "Entity not found."))?;
+        require_campaign(&page, campaign)?;
+        let shown = links::names(&form.body);
+        let hidden = links::names(&form.secret);
         bundle.call(
-            v1_4::write_entity_text,
-            (Key(entity), form.summary, form.body, form.secret),
+            v1_5::write_entity,
+            (
+                Key(campaign),
+                Key(entity),
+                form.summary,
+                form.body,
+                form.secret,
+                shown,
+                hidden,
+            ),
             &CallOptions::default(),
         )?;
         Ok(())
@@ -223,7 +337,7 @@ async fn seat(
     let link = format!("/join/{token}");
     blocking(state, move |bundle| {
         bundle.call(
-            v1_4::seat_player,
+            v1_5::seat_player,
             (
                 Key(campaign),
                 form.name,
@@ -245,8 +359,14 @@ async fn reveal(
 ) -> Result<Redirect> {
     state.auth.check_csrf(&form.csrf)?;
     blocking(state, move |bundle| {
+        let page = bundle
+            .call(v1_5::entity_page, (Key(entity),), &CallOptions::default())?
+            .next()
+            .transpose()?
+            .ok_or(Error::Http(StatusCode::NOT_FOUND, "Entity not found."))?;
+        require_campaign(&page, campaign)?;
         bundle.call(
-            v1_4::reveal,
+            v1_5::reveal,
             (Key(form.party), Key(entity), None),
             &CallOptions::default(),
         )?;

@@ -115,3 +115,48 @@ Preserve campaign-prep/target/check.log, prep-migration.log, prep-browser.log
 and browser screenshots in the sibling workspace. No campaign code landed.
 Next session must review the diff, finish full verification, then land only
 verified work and run main's post-land check. Main local docs server stopped.
+
+## 2026-10-28: prep resumption scope and gates
+
+Continue only campaign-prep in `/home/tony/code/adtb-campaign-prep`.
+Original source snapshot `1c0b7a1f` was preserved and rebased without conflicts
+onto main `652b3d28388bfb2d0e52dbe4e336f1dd97fb91f4`; no implementation
+changes were made during reconciliation. No active workers/checks were found;
+64 GB was free. Preserve all old target logs, browser artifacts and source.
+
+Scope: prep forms for Region, Settlement, Site, Faction, Party, Item and NPC;
+applicable references; exhaustive name lookup and Unicode search; shared/secret
+`[[Name]]` and `[[Name|label]]` links saved atomically in the retried registered
+transaction; mentions/backlinks and known-only player rendering. Additive schema
+5 supplies missing application same-campaign constraints for NPC/Fallen
+locations and Item holders. New campaign-1.5 pins schema 5; all earlier bundle
+and migration bytes remain immutable. No new dependencies, engine changes,
+version translation, live sessions or other feature expansion.
+
+Acceptance requires persisted-row and HTTP coverage of kinds/references across
+reopen, more than 20 names, Unicode search, atomic shared/secret replacement and
+removal, duplicate mentions, concurrent text/link agreement, aliases, malformed
+syntax, escaping, unknown names, cross-campaign refusal, player visibility and
+backlinks, valid old-file upgrade and refusal of invalid old-file rows. Review
+bounded desktop/mobile evidence against unchanged inputs or refresh it.
+
+Next: one fresh verification owner and independent code review of the final
+branch. Worker must establish actual sibling and shared-jj access before work;
+permission failure blocks the worker. From the campaign workspace root run:
+
+```sh
+direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
+work/tools/house-check
+```
+
+Retain a new status-preserving log and a receipt with full tested/base ids,
+input stability, exact scope, final exit status, incomplete stages and timing.
+The full check includes final campaign formatting, clippy and tests, not only
+focused prep tests. The earlier exit 143 remains unresolved until diagnosed;
+a new successful run does not establish its cause. Suspected engine defects
+stop application work for a reproduction/report, never an app workaround.
+
+Landing depends on independent review and successful final branch checks;
+propose the commit subject first. The lead owns the post-land main integration
+check and dated result. No push, artifact cleanup or unrelated tracks. The
+broader application ticket remains open after this bounded prep slice.

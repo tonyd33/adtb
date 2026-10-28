@@ -7,10 +7,11 @@ use adtb_codegen::{BundleSource, generate, read_log};
 
 const LOG: &str = "schema/migrations";
 
-const BUNDLES: [(&str, &str); 3] = [
+const BUNDLES: [(&str, &str); 4] = [
     ("v1_0", "bundles/campaign-1.0.adb"),
     ("v1_3", "bundles/campaign-1.3.adb"),
     ("v1_4", "bundles/campaign-1.4.adb"),
+    ("v1_5", "bundles/campaign-1.5.adb"),
 ];
 
 fn main() {
