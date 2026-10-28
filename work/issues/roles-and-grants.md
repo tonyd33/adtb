@@ -85,3 +85,21 @@ strict lint/fullcheck and independent review/main integration still required.
 Campaign-load-finish consumes unchanged embedded API; land campaign first, then
 rebase provider onto it before provider fullcheck. One sharedAPI owner remains
 role-authority; no transport consumer yet.
+
+## 2026-10-28: approved peer mapping lifecycle
+
+User explicitly approved proposedpoint role-drop-peers; adopted into current
+through quandary. Ruling security/role-drop-peers/remove: atomically delete
+peer_mappings rows naming a dropped role, preserve other mappings and ordinals,
+change none on refused drop. Recreating the name requires explicit new mapping;
+old external credentials must not inherit replacement identity. Existing catalog
+representation unchanged. Canonical-row regression must demonstrate old retention
+before applying correction; no authentication transport expansion.
+
+Role-authority successor owns the one normative clarification in security.md2.1
+reflecting this approved observable rule, plus design/server provider contract.
+Read spec-revision skill, no additional normative choices: existing adopted
+security/role-drop-peers question is the authority, do not duplicate or rename it.
+Before fresh reading review run spec_corpus and conf conformance and retain exact
+receipts, then reviewer writes algorithm/undecided inputs for changed paragraph.
+Implementation/branchmainfull acceptance and all deferred surfaces unchanged.

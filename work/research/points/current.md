@@ -573,6 +573,7 @@ accept:
   security/retire-priv/owner-or-admin: {title: The bundle's owner or an administrator, reason: 'retiring stops clients, so it belongs to whoever deploys them'}
   security/rights/definer: {title: The bundle's rights; the caller needs only the call grant, reason: the caller needs only the call grant; the bundle's rights reach the rows}
   security/rights/deputy/caller-bound: {title: The engine passes the authenticated caller as an implicit parameter no client can set, reason: the authenticated principal is an implicit parameter no client sets}
+  security/role-drop-peers/remove: {title: Delete mappings to the role in the same atomic role drop, reason: Deleting mappings with the removed role prevents old external credentials from inheriting a recreated identity. It keeps the existing catalog representation and makes renewed trust an explicit administrative act; intentional role replacement pays the small cost of reprovisioning its mappings.}
   security/schema-priv/owner: {title: One schema-owner role, reason: one schema-owner role appends operators}
   security/subject/queries: {title: Grants on registered queries and bundles; calling one is the privilege, reason: applications are granted registered queries; the ad hoc role is granted constructor sets}
   security/subject/relations: {title: 'Grants on relation variables and constructor sets, checked against what a query reads', reason: applications are granted registered queries; the ad hoc role is granted constructor sets}
