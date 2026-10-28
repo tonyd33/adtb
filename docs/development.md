@@ -86,7 +86,8 @@ an internet connection. No Node installation is required.
 The site reads the existing Markdown sources through a generated, ignored
 source view. Manual navigation follows its README reading order; the spec and
 design follow their README file indexes. Add a new page to its section index,
-then restart the docs process to regenerate navigation.
+and the running docs process regenerates navigation and copied assets.
+An incomplete index edit reports an error and recovers after the next valid edit.
 `docs-check` checks every generated internal link, fragment and page, and tests
 the highlighting grammar against the lexer keywords and shared syntax corpus.
 The default `check` includes `docs-check`. Hosting is a separate task.

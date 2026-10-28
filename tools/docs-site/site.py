@@ -1,10 +1,11 @@
 import argparse
 import json
-import os
+import signal
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 from links import check
 
@@ -19,10 +20,12 @@ SECTIONS = [('manual', 'Manual'), ('spec', 'Specification'), ('design', 'Design'
 def ordered_pages(section):
     directory = ROOT / 'docs' / section
     index = (directory / 'README.md').read_text()
-    if section == 'spec':
-        index = index.split('## Parts\n', 1)[1].split('\n## ', 1)[0]
-    elif section == 'design':
-        index = index.split('## 7. Files\n', 1)[1].split('\n## ', 1)[0]
+    heading = {'spec': '## Parts\n', 'design': '## 7. Files\n'}.get(section)
+    if heading:
+        _, marker, index = index.partition(heading)
+        if not marker:
+            raise ValueError(f'{section} README missing navigation heading {heading.strip()!r}')
+        index = index.split('\n## ', 1)[0]
     pages = []
     for target in re.findall(r'\]\(([^)#]+)(?:#[^)]*)?\)', index):
         path = (directory / target).resolve()
@@ -45,7 +48,14 @@ def title(path):
 
 def write_changed(path, text):
     if not path.exists() or path.read_text() != text:
-        path.write_text(text)
+        temporary = tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False)
+        pending = Path(temporary.name)
+        try:
+            with temporary:
+                temporary.write(text)
+            pending.replace(path)
+        finally:
+            pending.unlink(missing_ok=True)
 
 
 def prepare():
@@ -85,6 +95,8 @@ additional-js = ["source/adt-highlight.js"]
 runnable = false
 '''
     write_changed(STAGE / 'book.toml', config)
+    # Keep the generated source visible to mdBook's watcher under an ignored target directory.
+    write_changed(STAGE / '.gitignore', '')
 
 
 def fences():
@@ -149,15 +161,65 @@ def build():
             raise ValueError(f'{page}: missing output {output}')
 
 
+def source_state():
+    paths = [path for section, _ in SECTIONS for path in (ROOT / 'docs' / section).rglob('*.md')]
+    paths += [TOOLS / 'index.md', TOOLS / 'adt-highlight.js']
+    state = []
+    for path in sorted(paths):
+        metadata = path.stat()
+        state.append((str(path), metadata.st_mtime_ns, metadata.st_size))
+    return state
+
+
+def serve(port):
+    prepare()
+    process = None
+
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt
+
+    handlers = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        process = subprocess.Popen(['mdbook', 'serve', str(STAGE), '--dest-dir', str(STAGE / 'served'),
+                                    '--hostname', '127.0.0.1', '--port', str(port), '--watcher', 'poll'])
+        previous, reported_error = None, None
+        while True:
+            try:
+                current = source_state()
+                if current != previous:
+                    previous = current
+                    prepare()
+                    reported_error = None
+            except (ValueError, OSError) as error:
+                detail = str(error)
+                if detail != reported_error:
+                    print(f'docs: {detail}; waiting for a valid source edit', file=sys.stderr, flush=True)
+                    reported_error = detail
+            try:
+                return process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                pass
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Build, check or serve the local documentation site')
     parser.add_argument('command', choices=['build', 'check', 'serve'], nargs='?', default='build')
     parser.add_argument('--port', type=int, default=8081)
     args = parser.parse_args()
     if args.command == 'serve':
-        prepare()
-        os.execvp('mdbook', ['mdbook', 'serve', str(STAGE), '--dest-dir', str(STAGE / 'served'),
-                              '--hostname', '127.0.0.1', '--port', str(args.port)])
+        return serve(args.port)
     build()
     if args.command == 'check':
         subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(TOOLS), '-p', 'test_*.py'], check=True)
