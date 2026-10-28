@@ -102,3 +102,16 @@ Six focused real-file prep tests pass, including concurrent text/link
 agreement, more than 20 names, Unicode search, valid old-file upgrade and
 refusal of invalid old-file data. Final checks/browser evidence and review
 are still pending at this checkpoint. Read the updated handoff before resuming.
+
+## 2026-10-27: shutdown validation result
+
+The six prep integration tests and desktop/mobile Chromium walkthrough passed;
+the temporary browser server exited cleanly. House-check passed. Full check
+was interrupted with exit 143 (SIGTERM) during cold root test compilation,
+before root tests ran; root clippy had passed. The cause is unexplained and
+the check was not restarted for shutdown. This is not a full-check pass.
+
+Preserve campaign-prep/target/check.log, prep-migration.log, prep-browser.log
+and browser screenshots in the sibling workspace. No campaign code landed.
+Next session must review the diff, finish full verification, then land only
+verified work and run main's post-land check. Main local docs server stopped.
