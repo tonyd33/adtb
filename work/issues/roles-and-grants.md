@@ -59,3 +59,13 @@ are deferred provider slices; do not claim authentication/server readiness from
 this foundation. Integrating syntax through existing separate deployment commits
 would violate statement atomicity, so stage management transactionally in its own
 later slice. All broader acceptance and unfinished gaps remain on this ticket.
+
+## 2026-10-28: paused for general engine reservation prerequisite
+
+Provider edits preserved in role-authority. Audit found Sequences draw/advance
+publish in-memory reservations before persist can refuse counter-page capacity;
+role identity must not rely on unconfirmed durable reservations. General engine
+repair is isolated in sequence-repair; see sequence-reservation-after-refusal.
+No role provider landed; no app workaround. Role worker records baseline private
+unit witnesses and candidate evidence, then handoff. Fresh provider successor
+must rebase onto verified repair and finish foundation acceptance/full checks.

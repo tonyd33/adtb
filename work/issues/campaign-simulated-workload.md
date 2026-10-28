@@ -41,3 +41,19 @@ from worker root: direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD"
 CARGO_TARGET_DIR="$PWD/target" check. Retain exact tested/base ids, stable-input
 checks, final exits, logs, timing and unfinished scopes in a verification receipt.
 Any suspected engine issue takes priority over this and feature expansion.
+
+## 2026-10-28: preserved pending general engine sequence repair
+
+Paused snapshot79f120a6f21fc342fe7b08df84113228d21641ed on f305ffaf,
+/home/tony/code/adtb-campaign-load. Engine reservation issue discovered by
+role-authority audit preempts campaign. No workload-reproduced engine defect.
+Single seed4 focused pass7.078s; already-running deep8seeds collected0,63.736s,
+with each seed replayed twice and identical typed ledger/trace/database bytes.
+These passes are scoped evidence only, not final branch/full verification.
+Initial compile and incorrect refusal-oracle failures retained in target.
+
+No active campaign processes. Worker ended with handoff-campaign-load.md and
+receipt-campaign-load.md. Fresh successor after engine repair: rebase, change
+numbers.sort to sort_unstable, rerun final default/deep affected checks and strict
+lint/fmt/house, then full branch check, independent review and main integration.
+Default is a measured small sweep exception to2s; no scale/crash/p99 claim.
