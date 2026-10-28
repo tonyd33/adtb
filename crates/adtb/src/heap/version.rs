@@ -1,4 +1,8 @@
 use crate::key::Tid;
+use crate::runtime::Runtime;
+use crate::storage::{PageError, Pager, Pid};
+
+use super::page::{self, Slot};
 
 /// The length of the header every version starts with.
 pub const HEADER_LEN: usize = 24;
@@ -79,4 +83,17 @@ impl Flags {
     pub fn without(self, other: Flags) -> Flags {
         Flags(self.0 & !other.0)
     }
+}
+
+/// Returns the header of the version at `tid`, or `None` when its page is not a heap page or
+/// its slot holds no version.
+pub fn header_at<R: Runtime>(pager: &Pager<R>, tid: Tid) -> Result<Option<Header>, PageError> {
+    let page = pager.read(Pid(tid.page()))?;
+    if !page::is_heap(&page) || !page::check(&page).is_empty() {
+        return Ok(None);
+    }
+    Ok(match page::get(&page, usize::from(tid.slot())) {
+        Slot::Normal { at, .. } => Some(Header::read(&page[at])),
+        _ => None,
+    })
 }

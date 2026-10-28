@@ -13,7 +13,7 @@ use super::row::{FieldType, Layout, POINTER_LEN, Pointer, Stored};
 use super::stage::Stage;
 use super::version::{Flags, HEADER_LEN, Header};
 use super::vm::Vm;
-use super::{fixed, slotted};
+use super::{Error, WriteTarget, fixed, slotted};
 
 /// Converts a row of the previous format into a row of this one.
 pub type Upgrade = Box<dyn Fn(Vec<Value>) -> Vec<Value> + Send + Sync>;
@@ -22,23 +22,6 @@ struct Format {
     layout: Layout,
     arrangement: Arrangement,
     upgrade: Option<Upgrade>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error {
-    Page(PageError),
-    /// A version of `len` bytes is longer than the `limit` a page holds, even with its large
-    /// values out of line.
-    TooLarge {
-        len: usize,
-        limit: usize,
-    },
-}
-
-impl From<PageError> for Error {
-    fn from(e: PageError) -> Error {
-        Error::Page(e)
-    }
 }
 
 /// A row version as a heap returns it, its row in the heap's newest format.
@@ -727,17 +710,21 @@ impl Heap {
         &self,
         stage: &mut Stage<'p, R>,
         pager: &'p Pager<R>,
-        at: Tid,
+        at: impl Into<WriteTarget>,
         xid: u64,
         next: Option<Tid>,
         successor: Flags,
-    ) -> Result<(), PageError> {
+    ) -> Result<(), Error> {
+        let target = at.into();
+        let at = target.tid;
         let page = stage.page(pager, Pid(at.page()))?;
         let slot = usize::from(at.slot());
         let Slot::Normal { flags, at: range } = page::get(page, slot) else {
+            target.check(None)?;
             panic!("{at:?} holds no version");
         };
         let mut header = Header::read(&page[range.clone()]);
+        target.check(Some(header))?;
         header.xmax = xid;
         header.next = next;
         header.write(&mut page[range]);
@@ -1108,7 +1095,7 @@ impl Heap {
     pub fn update<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        at: Tid,
+        at: impl Into<WriteTarget>,
         xid: u64,
         row: &[Value],
         indexed: &[usize],
@@ -1121,15 +1108,17 @@ impl Heap {
     pub fn update_pruning<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        at: Tid,
+        at: impl Into<WriteTarget>,
         xid: u64,
         row: &[Value],
         indexed: &[usize],
         mut judge: Option<&mut Judge<'_, R>>,
     ) -> Result<Updated, Error> {
-        let (format, _, old) = self
-            .raw(pager, at)?
-            .expect("update of a slot with no version");
+        let target = at.into();
+        let at = target.tid;
+        let raw = self.raw(pager, at)?;
+        target.check(raw.as_ref().map(|(_, _, bytes)| Header::read(bytes)))?;
+        let (format, _, old) = raw.expect("update of a slot with no version");
         let (old_row, pointers) = self.decode(pager, format, &old)?;
         let old_row = self.upgrade(format, old_row);
         let keys_kept = indexed.iter().all(|&i| old_row[i] == row[i]);
@@ -1143,7 +1132,7 @@ impl Heap {
             stage.page(pager, o)?;
             match self.try_put(&mut stage, pager, o, &version, Flags::HEAP_ONLY, pre)? {
                 Put::Done(t, c) => {
-                    self.supersede(&mut stage, pager, at, xid, Some(t), Flags::HOT_UPDATED)?;
+                    self.supersede(&mut stage, pager, target, xid, Some(t), Flags::HOT_UPDATED)?;
                     self.retain_all(pager, &held, &c.gained)?;
                     let above = finish(&mut stage, pager, Some((self, o)), &[(self, o)])?;
                     stage.commit(pager)?;
@@ -1171,7 +1160,7 @@ impl Heap {
             }
             match self.try_put(&mut stage, pager, n, &version, Flags::NONE, pre)? {
                 Put::Done(t, c) => {
-                    self.supersede(&mut stage, pager, at, xid, Some(t), Flags::NONE)?;
+                    self.supersede(&mut stage, pager, target, xid, Some(t), Flags::NONE)?;
                     self.retain_all(pager, &held, &c.gained)?;
                     let marks = [(self, o), (self, n)];
                     let above = finish(&mut stage, pager, Some((self, n)), &marks)?;
@@ -1196,10 +1185,16 @@ impl Heap {
     }
 
     /// Mark the version at `at` deleted by `xid`.
-    pub fn delete<R: Runtime>(&self, pager: &Pager<R>, at: Tid, xid: u64) -> Result<(), Error> {
-        let o = Pid(at.page());
+    pub fn delete<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        at: impl Into<WriteTarget>,
+        xid: u64,
+    ) -> Result<(), Error> {
+        let target = at.into();
+        let o = Pid(target.tid.page());
         let mut stage = Stage::new();
-        self.supersede(&mut stage, pager, at, xid, None, Flags::NONE)?;
+        self.supersede(&mut stage, pager, target, xid, None, Flags::NONE)?;
         let above = finish(&mut stage, pager, None, &[(self, o)])?;
         stage.commit(pager)?;
         above.settle(pager)?;
@@ -1210,7 +1205,11 @@ impl Heap {
     ///
     /// Preconditions: the version's deleter is the caller's running transaction, and the
     /// successor it wrote, if any, is deleted by that transaction too.
-    pub fn restore<R: Runtime>(&self, pager: &Pager<R>, at: Tid) -> Result<(), Error> {
+    pub fn restore<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        at: impl Into<WriteTarget>,
+    ) -> Result<(), Error> {
         let mut stage = Stage::new();
         self.supersede(&mut stage, pager, at, 0, None, Flags::NONE)?;
         stage.commit(pager)?;
@@ -1228,16 +1227,18 @@ impl Heap {
     pub fn retag<R: Runtime>(
         &self,
         pager: &Pager<R>,
-        at: Tid,
+        at: impl Into<WriteTarget>,
         xid: u64,
         to: &Heap,
         row: &[Value],
     ) -> Result<Tid, Error> {
         assert_ne!(self.id, to.id, "a retag moves a row to another heap");
         assert_eq!(self.large, to.large, "a retag stays within one sum");
-        let (format, _, old) = self
-            .raw(pager, at)?
-            .expect("retag of a slot with no version");
+        let target = at.into();
+        let at = target.tid;
+        let raw = self.raw(pager, at)?;
+        target.check(raw.as_ref().map(|(_, _, bytes)| Header::read(bytes)))?;
+        let (format, _, old) = raw.expect("retag of a slot with no version");
         let pointers = self.pointers(format, &old);
         let (body, held) = to.body(pager, xid, row, &pointers)?;
         let version = version_bytes(Header::new(xid), &body);
@@ -1251,7 +1252,7 @@ impl Heap {
             }
             match to.try_put(&mut stage, pager, n, &version, Flags::RETAGGED_IN, pre)? {
                 Put::Done(t, c) => {
-                    self.supersede(&mut stage, pager, at, xid, Some(t), Flags::MOVED)?;
+                    self.supersede(&mut stage, pager, target, xid, Some(t), Flags::MOVED)?;
                     self.retain_all(pager, &held, &c.gained)?;
                     let marks = [(self, o), (to, n)];
                     let above = finish(&mut stage, pager, Some((to, n)), &marks)?;
@@ -1411,19 +1412,6 @@ impl Heap {
         out.extend(self.vm(&Stage::new(), pager)?.pages(pager)?);
         Ok(out)
     }
-}
-
-/// Returns the header of the version at `tid`, or `None` when its page is not a heap page or
-/// its slot holds no version.
-pub fn header_at<R: Runtime>(pager: &Pager<R>, tid: Tid) -> Result<Option<Header>, PageError> {
-    let page = pager.read(Pid(tid.page()))?;
-    if !page::is_heap(&page) || !page::check(&page).is_empty() {
-        return Ok(None);
-    }
-    Ok(match page::get(&page, usize::from(tid.slot())) {
-        Slot::Normal { at, .. } => Some(Header::read(&page[at])),
-        _ => None,
-    })
 }
 
 /// Follow the chain from the version at `start`, in heap `heap`, through each `next`, across

@@ -365,6 +365,20 @@ as a retag across heaps with different watermarks leaves. A version
 whose deleter is running always names a successor that deleter wrote,
 and a version with no deleter names none.
 
+The write layer passes a checked version target containing the TID and the
+header whose deleter it checked against the commit log. An update, delete,
+retag or restore using that target compares the complete header under the
+old page's exclusive latch before changing it. A mismatch returns a changed
+version error and commits neither the old-page change nor a successor. The
+write layer treats a mismatch as a serialization failure, so a registered
+call retries the whole transaction at a new snapshot. A restore names the
+exact header installed by the statement being undone.
+
+A heap caller passing only a TID must exclude concurrent changes to that
+version for the duration of the operation. This form supports maintenance
+under exclusive ownership and direct heap tests; a transaction writing a
+snapshot-visible version must pass a checked target.
+
 An update names the key fields of every index whose constructor set
 contains the heap's constructor. The heap decides whether the update is
 heap-only and reports it; the caller inserts index entries for the new

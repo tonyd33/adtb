@@ -178,7 +178,7 @@ pub fn update<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
     heap: &Heap,
-    at: Tid,
+    at: impl Into<heap::WriteTarget>,
     xid: Xid,
     row: &[Value],
     indexed: &[usize],

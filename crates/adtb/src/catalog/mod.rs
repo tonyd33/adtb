@@ -1024,7 +1024,7 @@ fn delete_rows<R: Runtime>(
         if m.txns
             .sees(pager, m.snapshot, None, v.header.xmin, v.header.xmax)?
         {
-            heap.delete(pager, v.tid, m.x.0)?;
+            heap.delete(pager, heap::WriteTarget::checked(v.tid, v.header), m.x.0)?;
             left.swap_remove(at);
         }
     }

@@ -159,6 +159,16 @@ impl From<crate::heap::Error> for Error {
     fn from(e: crate::heap::Error) -> Error {
         match e {
             crate::heap::Error::Page(p) => Error::Page(p),
+            crate::heap::Error::Changed { current } => {
+                Error::Serialization(SerializationFailure::new(
+                    crate::mvcc::Cause::ConcurrentWrite,
+                    current
+                        .into_iter()
+                        .map(|h| Xid(h.xmax))
+                        .filter(|x| *x != Xid::NONE)
+                        .collect(),
+                ))
+            }
             crate::heap::Error::TooLarge { len, limit } => Error::Unsupported(format!(
                 "a row version of {len} bytes, over the limit of {limit}"
             )),
@@ -173,6 +183,7 @@ impl From<vacuum::Error> for Error {
                 Error::Page(p)
             }
             vacuum::Error::Index(i) => Error::from(i),
+            vacuum::Error::Heap(e @ crate::heap::Error::Changed { .. }) => Error::from(e),
             vacuum::Error::Heap(crate::heap::Error::TooLarge { len, limit }) => {
                 Error::Internal(format!(
                     "a version vacuum moves fits its history heap, as it fit its current heap: \

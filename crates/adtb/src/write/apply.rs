@@ -4,7 +4,7 @@ use adtb_lang::schema::Generator;
 use adtb_lang::types::RelId;
 
 use crate::exec::{StoredHeap, Val, to_stored};
-use crate::heap::{self, Flags, Heap, Link, walk};
+use crate::heap::{self, Flags, Heap, Link, WriteTarget, walk};
 use crate::key::{Entry, Tid, Value};
 use crate::mvcc::{Probe, Status, Write, Xid, check_write, probe_unique};
 use crate::plan::{HeapId, IndexId};
@@ -34,7 +34,7 @@ pub enum Undo {
     /// Delete the version the statement inserted.
     Kill(HeapId, Tid),
     /// Clear the deleter the statement gave the version.
-    Restore(HeapId, Tid),
+    Restore(HeapId, WriteTarget),
 }
 
 /// A version the statement wrote that needs entries in the indexes over its constructor.
@@ -118,7 +118,7 @@ impl<R: Runtime> Stmt<'_, R> {
 
     /// Returns the TID of the version of `rel`'s row with key `key` the statement read, once no
     /// other running transaction writes it.
-    fn writable(&self, rel: RelId, key: &Val) -> Result<(u32, Tid), Error> {
+    fn writable(&self, rel: RelId, key: &Val) -> Result<(u32, WriteTarget), Error> {
         let xid = self.tx.writer()?;
         loop {
             let (c, tid, _) = self
@@ -138,12 +138,25 @@ impl<R: Runtime> Stmt<'_, R> {
                         .ser
                         .lock(&self.db.rt)
                         .write_tuple(self.tx.sid, id, tid)?;
-                    return Ok((c, tid));
+                    return Ok((c, WriteTarget::checked(tid, header)));
                 }
                 Write::Wait(x) => self.db.waits.wait(Some(xid), x)?,
                 Write::Fail(f) => return Err(f.into()),
             }
         }
+    }
+
+    fn restorable(&self, heap: HeapId, tid: Tid, xid: Xid) -> Result<WriteTarget, Error> {
+        let header = self
+            .heap(heap)
+            .read(&self.db.pager, tid)?
+            .expect("a version the statement changed remains present")
+            .header;
+        assert_eq!(
+            header.xmax, xid.0,
+            "the statement owns the version it restores"
+        );
+        Ok(WriteTarget::checked(tid, header))
     }
 
     fn inserted_into(&self, heap: HeapId) -> Result<(), Error> {
@@ -184,7 +197,9 @@ impl<R: Runtime> Stmt<'_, R> {
                     let (c, tid) = self.writable(*rel, key)?;
                     let heap = r.ctors[c as usize].heap;
                     self.heap(heap).delete(pager, tid, xid.0)?;
-                    self.undo.borrow_mut().push(Undo::Restore(heap, tid));
+                    self.undo
+                        .borrow_mut()
+                        .push(Undo::Restore(heap, self.restorable(heap, tid.tid, xid)?));
                 }
                 (Some((c, _)), Some((d, n))) if c == d => {
                     let (c, tid) = self.writable(*rel, key)?;
@@ -205,9 +220,10 @@ impl<R: Runtime> Stmt<'_, R> {
                         &indexed,
                     )
                     .map_err(too_large(*rel, c))?;
-                    self.undo
-                        .borrow_mut()
-                        .extend([Undo::Restore(heap, tid), Undo::Kill(heap, up.tid)]);
+                    self.undo.borrow_mut().extend([
+                        Undo::Restore(heap, self.restorable(heap, tid.tid, xid)?),
+                        Undo::Kill(heap, up.tid),
+                    ]);
                     self.inserted_into(heap)?;
                     if !up.heap_only {
                         written.push(Written {
@@ -228,9 +244,10 @@ impl<R: Runtime> Stmt<'_, R> {
                         .heap(from)
                         .retag(pager, tid, xid.0, self.heap(to), &row)
                         .map_err(too_large(*rel, *d))?;
-                    self.undo
-                        .borrow_mut()
-                        .extend([Undo::Restore(from, tid), Undo::Kill(to, at)]);
+                    self.undo.borrow_mut().extend([
+                        Undo::Restore(from, self.restorable(from, tid.tid, xid)?),
+                        Undo::Kill(to, at),
+                    ]);
                     self.inserted_into(to)?;
                     written.push(Written {
                         rel: *rel,
@@ -289,7 +306,20 @@ impl<R: Runtime> Stmt<'_, R> {
         let pager = &self.db.pager;
         for u in self.undo.borrow_mut().drain(..).rev() {
             match u {
-                Undo::Kill(heap, tid) => self.heap(heap).delete(pager, tid, self.tx.writer()?.0)?,
+                Undo::Kill(heap, tid) => {
+                    let header = self
+                        .heap(heap)
+                        .read(pager, tid)?
+                        .expect("a version the statement inserted remains present")
+                        .header;
+                    let xid = self.tx.writer()?;
+                    assert_eq!(
+                        header.xmin, xid.0,
+                        "the statement owns the version it removes"
+                    );
+                    self.heap(heap)
+                        .delete(pager, WriteTarget::checked(tid, header), xid.0)?;
+                }
                 Undo::Restore(heap, tid) => self.heap(heap).restore(pager, tid)?,
             }
         }

@@ -77,6 +77,8 @@ impl SerializationFailure {
 /// Why a transaction failed with a serialization failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cause {
+    /// A version changed between its write check and acquiring its exclusive latch.
+    ConcurrentWrite,
     /// A row or key it writes was written by a transaction that committed after its snapshot.
     LaterCommit,
     /// A rw-antidependency completed a dangerous structure that it was chosen to break.
