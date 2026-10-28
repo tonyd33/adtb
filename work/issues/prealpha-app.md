@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 850
 summary: no application exercises adtb end to end
+branch: campaign-live
 depends-on:
   - milestone-7-engine
 tags:
@@ -214,3 +215,40 @@ Those separate resumption limitations are not claimed resolved.
 This prep slice is complete. The broader application and simulated workload
 remain unfinished; leave this ticket open and unassigned pending user direction.
 No further application, engine, docs-watch or SkillOpt track was started.
+
+## 2026-10-28: live-session slice authorized
+
+User asked Codex lead to resume and proceed. Workspace campaign-live at
+/home/tony/code/adtb-campaign-live starts from d191d0f1. One implementation
+agent owns apps/campaign; no overlapping writer. Local detailed brief:
+work/briefs/brief-campaign-live.md. Existing standing commit/land permission
+applies; no push or hosting work.
+
+Scope: plan/list sessions by party, edit prep, start a session, prepare an
+encounter and cast/extras, enter initiative rolls, advance turns/rounds, edit
+standing/tracker, end encounters/sessions and read played-session detail.
+Player Now/recaps use player-only typed queries; manual refresh is sufficient.
+No SSE, quest/timeline UI, midfight join/leave, kill UI or version translation.
+Initial initiative sorts descending roll with stable creation-order ties.
+Preserve prior bundles/migrations; new callable changes use campaign-1.6 at
+schema 5. Any application migration requires a concrete reported model gap.
+
+Acceptance includes real-file HTTP lifecycle/reopen and prior1.5-file upgrade,
+persisted turn/round checks, concurrent turns advancing exactly twice,
+concurrent plans with distinct numbers, competing starts leaving one live
+session, secret/prep/log/tracker filtering, authorization/CSRF/revocation and
+cross-campaign/party/session/encounter input refusal. State whether concurrent
+tests force or merely permit overlap. Any engine issue stops app expansion
+for a principled engine repro/fix, never an application workaround.
+
+From workspace root, run focused campaign tests while iterating, then:
+
+```sh
+direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
+work/tools/house-check
+```
+
+Retain status-preserving logs and verification receipt with full tested/base
+ids, unchanged-input checks and incomplete stages. Lead owns independent
+review, verified landing and main post-land full check. Keep evidence and
+unfinished work in handoff-campaign-live.md and this tracked ticket.
