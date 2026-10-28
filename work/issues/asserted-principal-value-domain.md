@@ -96,3 +96,14 @@ gates, exact review/full branch and lead main integration. Role provider remains
 paused. Fresh language workspace owns sole cold build slot; principal has no
 active build/check process. All baseline/setup/compile/timeout receipts remain in
 work/briefs/receipt-principal-validation.md and original target logs.
+
+## 2026-10-28: correction to no-import baseline diagnosis
+
+The earlier statement that afd90d40 merely lacked a required fixture import was
+too quick. Security1.1 and adopted spec/schema-principal/root-first make that
+no-import bundle valid. Its RegistrationRefused expectedPrincipal/foundPrincipal
+is separate public engine lookup evidence, tracked in custom-principal-global-
+lookup. It still does not prove the value-validation hole because it fails at
+registration first. The imported9d3e76bf fixture is valid and independently proves
+the nested assertion bug; this repair must not claim root lookup fixed. Original
+logs and source IDs are retained; current fullcheck stays frozen.
