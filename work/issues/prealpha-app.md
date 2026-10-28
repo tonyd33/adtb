@@ -252,3 +252,17 @@ Retain status-preserving logs and verification receipt with full tested/base
 ids, unchanged-input checks and incomplete stages. Lead owns independent
 review, verified landing and main post-land full check. Keep evidence and
 unfinished work in handoff-campaign-live.md and this tracked ticket.
+
+## 2026-10-28: live slice paused for engine defect
+
+Preserve campaign-live snapshot9135c16e and handoff-campaign-live.md. Full
+campaign run failed44pass/1fail/1skip; direct unchanged1.5 counter/turn calls
+confirmed concurrent-update-lost-advancement. Fresh engine-update-loss agent
+owns engine-layer regression/fix. No application workarounds or landing.
+Wire track also paused. Engine correctness has full priority.
+
+Live browser passed, but full check was not run and current source is not
+verified for landing. Outstanding application review: lifecycle pre-read vs
+write races and strict date digit validation. After verified general engine
+fix lands, dispatch fresh application successor using preserved handoff, fix
+those review points, rerun full campaign/root checks and independent review.
