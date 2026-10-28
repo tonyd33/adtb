@@ -23,6 +23,9 @@ in
     pkgs.gnused
     pkgs.jujutsu
     pkgs.jq
+    pkgs.mdbook
+    pkgs.python3
+    pkgs.quickjs
     pkgs.ripgrep
     pkgs.util-linux
     pkgs.cargo-deny
@@ -46,6 +49,15 @@ in
     cargo deny check
     cargo deny --manifest-path "$app" check
     size-check
+    docs-check
+  '';
+
+  scripts.docs-build.exec = ''
+    "$DEVENV_ROOT/work/tools/docs-site" build
+  '';
+
+  scripts.docs-check.exec = ''
+    "$DEVENV_ROOT/work/tools/docs-site" check
   '';
 
   scripts.tix.exec = ''
@@ -97,6 +109,22 @@ in
 
   # https://devenv.sh/processes/
   # processes.dev.exec = "${lib.getExe pkgs.watchexec} -n -- ls -la";
+  processes.docs =
+    let
+      docsPort = config.processes.docs.ports.http.value;
+    in
+    {
+      ports.http.allocate = 8081;
+      exec = ''
+        "$DEVENV_ROOT/work/tools/docs-site" serve --port ${toString docsPort}
+      '';
+      proxy.hostname = "adtb-docs.localhost";
+      ready.http.get = {
+        port = docsPort;
+        path = "/";
+      };
+    };
+
   processes.quandary =
     let
       quandaryPort = config.processes.quandary.ports.http.value;

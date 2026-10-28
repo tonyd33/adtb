@@ -71,6 +71,26 @@ Use `work/tools/workspace-gc` to inspect build directories. Builds normally
 stay in each workspace's `target/`; `CARGO_TARGET_DIR` can select another
 location.
 
+## Read the documentation locally
+
+In the development shell, run `docs-build` to build the manual, specification
+and design documentation into `target/docs-site/html/`. Run
+`devenv processes up docs` to serve it with live reload at
+<http://127.0.0.1:8081/> (or the port devenv assigns if it is occupied).
+The manual's first page is `/manual/getting-started.html`.
+
+For a standalone server, run `work/tools/docs-site serve --port 8081`.
+The site binds only to loopback. Search, themes and highlighting work without
+an internet connection. No Node installation is required.
+
+The site reads the existing Markdown sources through a generated, ignored
+source view. Manual navigation follows its README reading order; the spec and
+design follow their README file indexes. Add a new page to its section index,
+then restart the docs process to regenerate navigation.
+`docs-check` checks every generated internal link, fragment and page, and tests
+the highlighting grammar against the lexer keywords and shared syntax corpus.
+The default `check` includes `docs-check`. Hosting is a separate task.
+
 ## Optional editor integration
 
 Use any editor. Personal configuration belongs in the ignored

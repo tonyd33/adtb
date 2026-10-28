@@ -1,0 +1,11 @@
+module shelter
+-- from 42 "Text" is a comment
+query residents (minimum: Int) =
+  from r in people where r.age >= minimum
+  select { name: r.name, message: "from Text 42 -- \\" }
+let pause = 30min
+let n = 12.50
+let exponent = 1.5e-3
+let constructor = Some { value: 42 }
+let from_here = falsehood
+let greeting = "Hello \"quoted\" -- from 42"

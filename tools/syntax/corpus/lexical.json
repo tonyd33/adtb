@@ -1,0 +1,38 @@
+[
+  [
+    "keyword",
+    "module"
+  ],
+  [
+    "comment",
+    "-- from 42 \"Text\" is a comment"
+  ],
+  [
+    "type",
+    "Int"
+  ],
+  [
+    "keyword",
+    "from"
+  ],
+  [
+    "number",
+    "30min"
+  ],
+  [
+    "number",
+    "12.50"
+  ],
+  [
+    "number",
+    "1.5e-3"
+  ],
+  [
+    "type",
+    "Some"
+  ],
+  [
+    "string",
+    "\"Hello \\\"quoted\\\" -- from 42\""
+  ]
+]
