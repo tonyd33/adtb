@@ -54,3 +54,21 @@ bound calls with cancellation and genuine backpressure; TCP requires TLS1.3
 and ALPN. Independent wire framing began under server-wire-framing, then
 paused for confirmed concurrent-update-lost-advancement. No server capability
 implementation before that correctness fix and boundary review.
+
+## 2026-10-28: concrete boundary proposal awaiting confirmation
+
+Proposed point server-owned-tasks extends current and accepts
+net/task-boundary/owned plus net/task-resumption-cost/implement. Lead recommends
+an engine-owned runtime-independent task/result handle, with resumable waits
+and bounded production implemented before claiming server credit support.
+Alternative runtime-specific futures and server-owned blocking adapters are
+recorded, along with the machinery-cost objection. Current is unchanged; user
+confirmation required before provider implementation. Details and code evidence:
+work/research/questions/net/task-boundary/task-boundary.md,
+work/research/questions/net/task-resumption-cost/task-resumption-cost.md and
+work/research/notes/server-task-boundary-evidence.md. No runtime dependencies
+approved by this proposal. Exact API signatures need one provider owner/review.
+Campaign-live and pure wire framing are independent and resumed after verified
+engine repair ef7361f9. Scope for first actual server remains authenticated Unix
+bound calls with genuine cancellation/credit, zero optional client request ids;
+full parity, TCP/TLS, translation and hosting are separate follow-on work.

@@ -48,3 +48,12 @@ work/tools/house-check
 Record tested/base full ids, input stability, exact scope/command, collected
 status, retained logs and incomplete stages. Lead owns review and post-land
 combined full check. No full network-server milestone claimed by codec alone.
+
+## 2026-10-28: codec resumed after engine repair
+
+Fresh successor continues preserved server-wire, rebased onto verified main
+eb2f61637b74; partial source ff0a106d remains untested. Scope and acceptance
+above unchanged: pure primitives/framing only. Finish audit, structured length
+mismatch, resource/compression contracts and golden/adversarial tests; affected
+tests/clippy then stable full check. No sockets or engine-interface changes.
+Engine-first rule still applies. Lead owns review, landing and main integration.

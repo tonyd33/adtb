@@ -266,3 +266,15 @@ verified for landing. Outstanding application review: lifecycle pre-read vs
 write races and strict date digit validation. After verified general engine
 fix lands, dispatch fresh application successor using preserved handoff, fix
 those review points, rerun full campaign/root checks and independent review.
+
+## 2026-10-28: live-session work resumed after engine repair
+
+General engine lost-update repair ef7361f9 is landed, independently reviewed and
+full branch/main check verified2334root/40campaign/allstaticdocs. Fresh successor
+continues preserved campaign-live workspace, rebased onto eb2f61637b74. Source
+snapshot e899dfe4 retains previous implementation and both failing witnesses.
+Scope/acceptance remain the prior live-session section. Resolve atomic lifecycle
+application rules and strict date-digit parsing; preserve failing-run evidence,
+rerun direct/live witnesses, browser and final full check. No engine workarounds.
+Any new engine issue stops expansion and restores general engine fix priority.
+Lead owns independent review, landing and main integration.

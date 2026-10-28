@@ -4,7 +4,7 @@ status: resolved
 kind: bug
 priority: 698
 summary: two successful concurrent registered updates may persist only one advancement
-closed: 2026-10-27
+closed: 2026-10-28
 tags:
   - engine
   - test
@@ -92,7 +92,7 @@ static Stage proof for that path. Report: work/briefs/review-update-ownership.md
 Reviewer ran scoped house-check, not builds/tests. Branch authoritative check
 is running on the final snapshot; receipt and main integration still pending.
 
-## 2026-10-27: resolved
+## 2026-10-28: resolved
 
 Landed ef7361f9 (fix(mvcc): claim version headers atomically) after independent
 review of exact branch970d78681594de354987a027b65142c409072379. Branch full
