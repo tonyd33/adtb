@@ -21,10 +21,10 @@ pub use adtb_sys::runtime;
 pub use api::open;
 pub use api::{
     AdHocTransaction, Appender, ArrowSchema, ArrowStream, CallOptions, Called, CancelToken,
-    Committed, CreateOptions, Database, Determinism, Durability, DynRows, Error, FatalReason,
-    Fault, Field, HostFns, InTxn, Limit, Load, LoadOptions, LoadReport, Log, OpenError,
-    OpenOptions, Position, RecordBatch, Registered, Registration, RejectReason, RetryReason,
-    TxnCallOptions, TxnId, TxnOptions,
+    Capability, Committed, CreateOptions, Database, Determinism, Durability, DynRows, Error,
+    FatalReason, Fault, Field, HostFns, InTxn, Limit, Load, LoadOptions, LoadReport, Log,
+    OpenError, OpenOptions, Position, RecordBatch, Registered, Registration, RejectReason,
+    RetryReason, RoleAuthority, RoleSession, TxnCallOptions, TxnId, TxnOptions,
 };
 pub use api::{BundleDef, Callable, CtorRelation, Key, Pending, Rows, typed};
 pub use exec::HostError;

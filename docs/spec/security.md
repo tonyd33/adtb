@@ -141,6 +141,12 @@ its report. `drop role R` is refused while any grant operator in the
 log names `R`, or `R` owns a bundle that is not retired or owns a
 family (§3.2).
 
+Dropping a role atomically deletes the peer mappings naming it.
+Other roles' peer mappings and their ordinals are unchanged. A refused
+drop changes none of them.
+Recreating the same role name does not restore its peer mappings;
+new mappings must be added explicitly.
+
 ### 2.2 Sources
 
 Each listener of a server states which authentication sources it

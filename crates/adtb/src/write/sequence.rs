@@ -158,5 +158,27 @@ impl Sequences {
 }
 
 #[cfg(test)]
+pub(crate) fn full_counter_page<R: Runtime>(pager: &Pager<R>, omitted: u32) -> Result<Pid, Error> {
+    let pid = Sequences::create(pager)?;
+    let mut sequences = Sequences::open(pager, pid)?;
+    let room = (pager.page_size() - HEADER_LEN - 4) / 12;
+    sequences.counters = (0..=u32::try_from(room).expect("the counter slot count fits u32"))
+        .filter(|id| *id != omitted)
+        .map(|id| {
+            (
+                id,
+                Counter {
+                    next: 1,
+                    reserved: 1 + BLOCK,
+                },
+            )
+        })
+        .collect();
+    assert_eq!(room, sequences.counters.len());
+    sequences.persist(pager)?;
+    Ok(pid)
+}
+
+#[cfg(test)]
 #[path = "sequence_tests.rs"]
 mod tests;

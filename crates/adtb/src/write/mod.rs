@@ -43,6 +43,9 @@ pub use past::Retained;
 use schema::Rels;
 use sequence::Sequences;
 
+#[cfg(test)]
+pub(crate) use sequence::full_counter_page;
+
 /// Why a statement was rejected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Rejection {
@@ -804,6 +807,20 @@ impl<R: Runtime> Database<R> {
             }
         }
         Ok(out)
+    }
+
+    /// Returns the rows of `rel` visible to `tx`.
+    pub(crate) fn relation_rows(&self, tx: &Txn, rel: RelId) -> Result<Vec<Val>, Error> {
+        eval::Stmt::reader(self, tx)
+            .rows(rel, None)
+            .map(|rows| rows.into_iter().map(|(_, row)| row).collect())
+    }
+
+    /// Returns the next deployment row id of `rel`, at least `floor`.
+    pub(crate) fn deployment_id(&self, rel: RelId, floor: i64) -> Result<i64, Error> {
+        self.sequences
+            .lock(&self.rt)
+            .draw(&self.pager, rel.0, floor)
     }
 
     /// Commit `tx`. Returns its commit position once the log is durable past its commit and

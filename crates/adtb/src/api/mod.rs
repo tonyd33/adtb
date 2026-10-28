@@ -8,6 +8,7 @@ mod host;
 mod load;
 mod reads;
 mod registered;
+mod server;
 mod settings;
 mod stop;
 mod text;
@@ -15,7 +16,7 @@ mod txn;
 pub mod typed;
 mod value;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -41,6 +42,7 @@ pub use error::{Error, FatalReason, Fault, Limit, OpenError, RejectReason, Retry
 pub use host::{Determinism, HostFns};
 pub use load::{Appender, Load, LoadOptions, LoadReport};
 pub use registered::{Called, InTxn, Registered, Registration};
+pub use server::{Capability, RoleAuthority, RoleSession};
 pub use stop::CancelToken;
 pub use text::DynRows;
 pub use txn::{AdHocTransaction, Committed, TxnCallOptions, TxnOptions};
@@ -242,6 +244,7 @@ struct Engine<R: Runtime> {
     bundle_writer: Lock<()>,
     /// The file settings, as the latest commit holds them.
     settings: Lock<Settings>,
+    role_mentions: BTreeSet<String>,
     pager: Pager<R>,
     db: write::Database<R>,
     /// Whether the engine is open. A call holds it shared while it runs; close holds it
@@ -499,6 +502,7 @@ impl<R: Runtime> Engine<R> {
             .filter_map(registered::Checked::bundle)
             .collect();
         let deployed = bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)?;
+        server::initialize(&catalog, &pager, &txns)?;
         let mut bundles = Bundles::default();
         for c in &registered {
             c.explained(&mut bundles);
@@ -537,7 +541,8 @@ impl<R: Runtime> Engine<R> {
         if sequences.is_none() {
             Catalog::name_sequences(&pager, root, db.sequences_root()).map_err(corrupt)?;
         }
-        Ok(Engine {
+        let role_mentions = server::mentioned(catalog.source());
+        let engine = Engine {
             rt,
             schema,
             program,
@@ -546,12 +551,14 @@ impl<R: Runtime> Engine<R> {
             deployed: Lock::new(deployed),
             bundle_writer: Lock::new(()),
             settings: Lock::new(settings),
+            role_mentions,
             pager,
             db,
             open: RwLock::new(true),
             #[cfg(target_os = "linux")]
             held: Lock::new(None),
-        })
+        };
+        Ok(engine)
     }
 
     /// Returns a new transaction id.

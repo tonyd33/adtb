@@ -173,6 +173,35 @@ interactive transactions. Role and binding identity are checked by
 the engine on every later submitted operation; cached handles do not
 bypass lifecycle or grant changes.
 
+Embedded open initializes the permanent owner when the roles relation is
+empty. Owner initialization preserves an existing owner's identity without
+a deployment write. A nonempty roles relation without the owner is refused
+as malformed.
+
+`Database::role_authority()` returns the trusted embedded owner's
+administration provider. Its `create_role`, `drop_role`,
+`grant_capability` and `revoke_capability` operations use the canonical
+catalog roles and deployment grants. A successful mutation and its
+`Grant` audit event commit together. A refused mutation leaves those
+rows unchanged. Deployment identities are never reused after deletion
+or reopening; failed operations may consume identities.
+
+`RoleAuthority::session` issues an opaque session after the trusted
+caller authenticates the supplied role. Sessions hold an immutable
+role identity scoped to their database. `require` checks current role
+existence, identity, capability and any requested grant option from
+one serializable observation; dormant, log and targeted grants do not
+authorize capabilities. Dropping and recreating a role does not
+revive its sessions. A grant revocation affects later checks through
+an existing session.
+
+`RoleAuthority::principal` derives Service from the authenticated role
+when no assertion is supplied. An assertion requires the current
+`assert` capability, must have the schema's Principal type, and cannot
+be Service. These providers check authority and derive identities;
+they do not execute queries or authorize an operation performed later
+under another handle.
+
 ### 3.2 Checked binding
 
 Binding takes a role session, bundle name, expected schema position
@@ -445,12 +474,23 @@ Non-binding.
 
 The embedded facade already binds and renews registered calls, runs
 transaction retries, and propagates stop options. It currently
-materializes DynRows and ArrowStream, uses owner authority, and has no
-server role/binding descriptor, owned call queue or transaction
-registry. The scheduler runs closures to completion and transaction
-waits park a thread. Those implementations do not yet satisfy §1 or
-§3's planned boundary. The synchronous facade must retain its public
-behavior while the providers are added.
+materializes DynRows and ArrowStream and uses owner authority. The
+role administration, capability checks and principal derivation of
+§3.1 are implemented. Role-backed query execution, relation and field
+grants, definer registration checks, call and family grants, checked
+binding descriptors, authentication and complete audit recording
+remain unimplemented. Existing bundle rows are owned by the permanent
+embedded owner. Nonowner bundle and family ownership, including the
+retirement-sensitive role-drop check, awaits that provider; current
+role drops conservatively refuse any role named as a bundle owner.
+The implemented authority provider is not an execution authorization
+boundary for the existing owner facade.
+
+There is no owned call queue or transaction registry. The scheduler
+runs closures to completion and transaction waits park a thread.
+Those implementations do not yet satisfy §1 or §3's remaining planned
+boundary. The synchronous facade must retain its public behavior
+while the providers are added.
 
 ### 5.2 Provider-first slices
 
