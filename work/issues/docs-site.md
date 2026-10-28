@@ -29,3 +29,12 @@ Requirements:
 - A build of the site can be published: pick a host (Tangled, GitHub Pages or a static host Tony names) and document the one command that publishes it. Publishing stays a manual step Tony runs.
 
 Done when the site builds and serves locally with every page of the three sections, the link check passes in the default test run, and Tony has read the manual's getting-started page on it in a browser.
+
+## 2026-10-27: local first milestone
+
+Tony: running the documentation locally is a sufficient first milestone.
+Hosting is a separate task, tracked in `docs-site-hosting`. This track chooses
+and verifies the local generator, unchanged source Markdown, navigation,
+links/anchors, search, adt highlighting, one-command build and devenv serving.
+It does not require a live hosted site or selecting a host. Keep the browser
+review of getting-started as the user acceptance step.
