@@ -5,6 +5,7 @@ use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type
 use crate::schema::build;
 
 mod adhoc;
+mod principal;
 mod writes;
 
 const RUNNING: &str = r"

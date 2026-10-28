@@ -177,3 +177,65 @@ fn writes_bind_rows() {
     adhoc("transact\n  let u = insert users { name: n }\n  return key u").unwrap();
     assert!(adhoc("insert nowhere { name: n }").is_err());
 }
+
+#[test]
+fn root_principal_resolves_from_empty_imports_and_the_prelude() {
+    let file = parse_schema(
+        "module identity\ntype Principal = EndUser { level: I8 } | Service { name: Text } | Anonymous",
+        Options::default(),
+    )
+    .ok()
+    .unwrap();
+    for custom in [false, true] {
+        let files = if custom {
+            vec![(FileId(0), file.clone())]
+        } else {
+            Vec::new()
+        };
+        let schema = build(&files).unwrap();
+        let name = QName {
+            module: None,
+            name: Ident {
+                text: "Principal".into(),
+                span: Span::default(),
+            },
+        };
+        let expected = Ok(TypeName::Decl(schema.principal));
+        assert_eq!(expected, schema.lookup_type(crate::schema::PRELUDE, &name));
+        for vis in [
+            Visible {
+                modules: Vec::new(),
+            },
+            Visible::all(&schema),
+            Visible::module(crate::schema::PRELUDE),
+        ] {
+            assert_eq!(
+                expected,
+                lookup_type(&schema, &vis, &name),
+                "custom={custom}, {vis:?}"
+            );
+        }
+        if custom {
+            let qualified = QName {
+                module: Some(Ident {
+                    text: "identity".into(),
+                    span: Span::default(),
+                }),
+                ..name
+            };
+            assert_eq!(
+                Err("module `identity` declares no type `Principal`".into()),
+                lookup_type(
+                    &schema,
+                    &Visible {
+                        modules: Vec::new()
+                    },
+                    &qualified
+                )
+            );
+        } else {
+            assert_eq!(schema.principal, schema.prelude_type("Principal"));
+            assert_eq!(37, schema.ids.types[&schema.principal]);
+        }
+    }
+}

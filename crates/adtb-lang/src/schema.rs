@@ -339,7 +339,7 @@ impl Schema {
         self.module(PRELUDE).types[name]
     }
 
-    /// Resolves a type name seen from `module`: the module, then the root `Principal`, then the prelude and built-ins.
+    /// Resolve unqualified `Principal` from the root, and other type names from the module, prelude or built-ins.
     pub fn lookup_type(&self, module: ModuleId, name: &ast::QName) -> Result<TypeName, String> {
         let text = name.name.text.as_str();
         if let Some(m) = &name.module {
@@ -353,11 +353,11 @@ impl Schema {
                 .map(|&t| TypeName::Decl(t))
                 .ok_or_else(|| format!("module `{}` declares no type `{text}`", m.text));
         }
-        if let Some(&t) = self.module(module).types.get(text) {
-            return Ok(TypeName::Decl(t));
-        }
         if text == "Principal" {
             return Ok(TypeName::Decl(self.principal));
+        }
+        if let Some(&t) = self.module(module).types.get(text) {
+            return Ok(TypeName::Decl(t));
         }
         if let Some(&t) = self.module(PRELUDE).types.get(text) {
             return Ok(TypeName::Decl(t));

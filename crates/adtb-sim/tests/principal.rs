@@ -35,6 +35,138 @@ fn open_with(rt: SimRuntime, declarations: &str, field: &str) -> Database<SimRun
     .expect("the custom principal schema opens")
 }
 
+#[test]
+fn a_custom_root_principal_registers_without_a_module_import() {
+    once(431, |rt| {
+        let db = Database::open_in(
+            rt,
+            "root-principal.adt",
+            &Log::new([
+                "module identity\nadd module identity\nadd type Principal = EndUser { level: I8 } | Service { name: Text } | Anonymous",
+            ]),
+            &OpenOptions {
+                registrations: vec![Registration::new(
+                    "principal",
+                    "query me () -> Principal = caller",
+                )],
+                ..options(2)
+            },
+        )
+        .expect("the root principal resolves without an import");
+        let schema = db.schema();
+        assert_eq!(1024, schema.ids.types[&schema.principal]);
+        for (ctor, id) in [("EndUser", 1025), ("Service", 1026), ("Anonymous", 1027)] {
+            assert_eq!(
+                id,
+                schema.ids.ctors[&(
+                    schema.principal,
+                    schema.ty(schema.principal).ctor_index(ctor).unwrap()
+                )]
+            );
+        }
+        accepted_by_every_entry(&db, Value::Int(127));
+    });
+}
+
+#[test]
+fn root_principal_constructors_and_functions_resolve_with_unrelated_imports() {
+    once(432, |rt| {
+        let db = Database::open_in(
+            rt,
+            "root-contexts.adt",
+            &Log::new([
+                "module identity\nadd module identity\nadd type Principal = EndUser { level: I8 } | Service { name: Text } | Anonymous\nadd module consumer",
+                "module consumer\ndefine fn me () -> Principal = caller",
+            ]),
+            &OpenOptions {
+                registrations: vec![
+                    Registration::new("principal", "import consumer\nquery me () -> Principal = caller"),
+                    Registration::new("identity", "import identity\nquery me () -> Principal = caller"),
+                    Registration::new("constructors", "query end_user () -> Principal = Principal.EndUser { level: 127 }\nquery anonymous () -> Principal = Anonymous\nquery level () -> I8 = match caller | Principal.EndUser e -> e.level | Service _ -> 0 | Anonymous -> -1"),
+                ],
+                ..options(2)
+            },
+        ).expect("Principal resolves in every root context");
+        accepted_by_every_entry(&db, Value::Int(127));
+        let asserted = assertion(&db, Value::Int(127));
+        let opts = CallOptions {
+            assert: Some(asserted.clone()),
+            ..CallOptions::default()
+        };
+        assert_eq!(
+            vec![asserted.clone()],
+            values(db.query_text("consumer::me()", &[], &opts).unwrap())
+        );
+        assert_eq!(
+            vec![asserted.clone()],
+            values(
+                db.query_text("Principal.EndUser { level: 127 }", &[], &opts)
+                    .unwrap()
+            )
+        );
+        for (family, ordinal, expected) in [
+            ("identity", 1, asserted.clone()),
+            ("constructors", 1, asserted),
+            (
+                "constructors",
+                2,
+                Value::tag(
+                    db.schema()
+                        .ty(db.schema().principal)
+                        .ctor_index("Anonymous")
+                        .unwrap(),
+                ),
+            ),
+            ("constructors", 3, Value::Int(127)),
+        ] {
+            let adtb::Called::Rows(rows) = db
+                .registered(family)
+                .unwrap()
+                .call(ordinal, &[], &opts)
+                .unwrap()
+            else {
+                panic!("the query returns rows");
+            };
+            assert_eq!(
+                vec![expected],
+                rows.collect::<Result<Vec<_>, _>>().unwrap(),
+                "{family}::{ordinal}"
+            );
+        }
+    });
+}
+
+#[test]
+fn the_default_root_principal_keeps_its_fixed_ids_without_imports() {
+    once(433, |rt| {
+        let db = Database::open_in(
+            rt,
+            "default-principal.adt",
+            &Log::new(["module identity\nadd module identity"]),
+            &OpenOptions {
+                registrations: vec![Registration::new(
+                    "principal",
+                    "query me () -> Principal = caller",
+                )],
+                ..options(2)
+            },
+        )
+        .unwrap();
+        let schema = db.schema();
+        assert_eq!(37, schema.ids.types[&schema.principal]);
+        for (ctor, id) in [("EndUser", 38), ("Service", 39), ("Anonymous", 40)] {
+            assert_eq!(
+                id,
+                schema.ids.ctors[&(
+                    schema.principal,
+                    schema.ty(schema.principal).ctor_index(ctor).unwrap()
+                )]
+            );
+        }
+        accepted_by_every_entry(&db, Value::text("user"));
+    });
+}
+
 fn assertion(db: &Database<SimRuntime>, field: Value) -> Value {
     let end_user = db
         .schema()
