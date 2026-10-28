@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-28
-status: open
+status: in-progress
+branch: uuid-audit
 kind: bug
 priority: 799
 summary: UUID formatting rejects in-memory values that only violate a write-time predicate
@@ -49,3 +50,9 @@ will not claim this formatting issue fixed. This is distinct from the existing
 Uuid.parse string-syntax symptom in refusal-message-follow-ups and the mistyped
 printer cases in textual-follow-ups. Local audit report: work/briefs/
 review-principal-validation-draft.md; no own executable check by reviewer.
+
+## 2026-10-28: resumed engine-first track
+
+Evidence-only exact-main5debace3 reproduction and contract audit. Preserve one-byte and valid16-byte unwrap/text/print/parse outcomes, current canonical grammar and write-time domain distinction. No production/spec change or ruling. Compilation waits for lookup build slot. Lead decides any proposed point after executable evidence.
+
+Workspace /home/tony/code/adtb-uuid-audit; local brief work/briefs/brief-uuid-audit.md. Preserve baseline and failed evidence; receipt must name exact tested inputs, statuses and unresolved checks. No dependencies added.

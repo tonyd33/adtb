@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-28
-status: open
+status: in-progress
+branch: principal-lookup
 kind: bug
 priority: 799
 summary: bundles without a module import resolve the default Principal instead of the custom root type
@@ -45,3 +46,9 @@ No import workaround, changed adopted root semantics or new design choice.
 Current asserted-principal-value-domain remains separate and does not claim this
 resolved; finish its frozen checks before another source change. All provider
 and campaign expansion remains paused behind engine correctness.
+
+## 2026-10-28: resumed engine-first track
+
+Repair shared root name resolution from main5debace3; no import workaround or spec change. Minimal current-main failing regression, default/custom/import and public registration controls; affected lang/sim tests, strict clippy, fmt, house and size checks. Lead owns fresh independent review and full post-land check. Other UUID track is evidence-only; lookup lands first.
+
+Workspace /home/tony/code/adtb-principal-lookup; local brief work/briefs/brief-principal-lookup.md. Preserve baseline and failed evidence; receipt must name exact tested inputs, statuses and unresolved checks. No dependencies added.
