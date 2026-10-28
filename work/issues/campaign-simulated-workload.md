@@ -68,3 +68,21 @@ all persisted/committed winner and privacy assertions, measure exact default
 runtime and final deterministic replay/deep evidence, then fullcheck/review/main
 integration. No implementation workaround. Fresh brief-campaign-load-finish.md
 points to prior handoff/receipt; durable acceptance remains this ticket.
+
+## 2026-10-28: independent oracle findings, verification interrupted
+
+Fresh review of f02b917b on06676b27 found two meaningful oracle gaps, no observed
+engine defect: Source was always permitted in playerknown results before reveal,
+and party_encounter only searched secret sentinels without checking campaign2
+has no encounter. Correct explicit phaseknown expectations (Source absent before
+its revealphase, eitherduring, presentafter; othercampaign phasefixed), and exact
+encounter identity/cardinality/roster plus emptyotherparty. Keep committedwinner,
+seededretry and replay checks. No app/engine/query workaround.
+
+Worker verified isolated processgroup then interrupted obsolete fullcheckSIGTERM143;
+source/hashes stablef02b at interruption. Rootclippy passed22.42s; root tests,
+campaign/static stages unfinished; NO overall pass. Retain target/load-final-full-
+before-privacy-review/. Prior focused5commands0 onf4abc5e6,166.413s, default10.874s
+and deep8replayseeds64.845s are scoped evidence only. Final correctedsource must
+pass affected/default/deep/lint/fmt/house, freshdelta review and authoritative
+fullcheck/mainintegration. Rebase onto currentmain before finalcheck.
