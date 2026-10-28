@@ -9,12 +9,125 @@ Calls from the server become tasks on the engine's worker scheduler
 ([execution.md §7.1](execution.md#71-adaptive-compilation-and-morsels)),
 the same scheduler that runs the engine's own pipelines.
 
-TODO: the interface by which the server submits a call to `adtb` and receives its batches is undecided.
+The server boundary below is approved but not yet implemented. It is
+separate from the synchronous embedded-owner entry points of §4; those
+remain usable with their existing meaning. The names in the operation
+tables describe ownership, not additional public Rust methods available
+in the current crate.
+
+### 1.1 Submission and ownership
+
+Precondition: the server supplies an engine-issued role session and
+call options. A registered call also supplies a binding (§3) and
+arguments decoded using its immutable layout. Unbound ad hoc text is
+submitted for the engine's schema and grant checks under the role
+session. Wire decoding does not confer authority.
+
+| Operation | Engine contract |
+| --- | --- |
+| Submit | Take ownership of arguments and options and return one owned task, or refuse without executing the call. Reserve a bounded queue entry before accepting queued work. |
+| Observe | Return available metadata, a result batch, completion, or pending; never run a statement on the observing I/O thread. A pending observation registers a wake notification without a lost-wakeup window. |
+| Supply capacity | Allow bounded result production under the call's memory grant. Capacity is a memory reservation, not wire credit. |
+| Release batch | Release its reservation once the transport has consumed or discarded it. Holding a batch keeps its reservation charged. |
+| Acknowledge drain | Mark the result delivered only after its last encoded bytes have been sent. Releasing an engine batch after encoding is not this acknowledgement. |
+| Cancel or drop task | Request cancellation without waiting for a worker; resolve effects and release resources as §1.3 states. |
+
+The task owns its admitted call, retry state, result buffers and
+completion record. It owns a self-contained call's snapshot or an
+operation claim on a registry transaction (§3.3). Sessions and bindings
+are owned handles; a task retains what it needs without borrowing a
+socket, connection callback stack or mutable embedded transaction.
+None of these handles keeps a closed database usable.
+
+### 1.2 States and result capacity
+
+| State | Resources and progress |
+| --- | --- |
+| Queued | A bounded admission entry and owned request; no execution worker. Cancellation or deadline removes the entry. |
+| Running | Engine workers execute finite units under the call's grant and bundle quota. |
+| Waiting on a dependency | Retain the call's transaction state, release its worker, and resume when the dependency or a stop condition is ready. |
+| Waiting on output | Retain the call and read snapshot, with bounded buffered output and reservations; resume production when capacity is available. After production ends, wait for drain acknowledgement or abandonment. |
+| Committed with output remaining | Preserve the write's commit position and attempts while draining bounded result storage. No later cancellation changes the commit. |
+| Finished | Retain completion metadata while the task handle exists; release execution, snapshot, admission and unused buffer resources. Outstanding handed-out batches retain their own reservations until released. |
+
+Admission and grant accounting follow
+[../spec/catalog.md §8](../spec/catalog.md#8-resource-control).
+A task waiting for a lock, transaction, I/O, safe snapshot or capacity
+must not occupy the worker needed to satisfy that dependency. Such
+waits retain no page latch. Queue limits and deadlines apply while a
+call is queued, as well as while executing where applicable. Owned
+queued arguments and task metadata count against admission bounds;
+a queue entry limit alone does not bound their storage.
+
+The server owns compression, frame splitting, wire credit and its
+encoding buffers. It must reserve those buffers and stop supplying
+production capacity when downstream space is exhausted. Already
+handed-out engine batches and server buffers remain charged to their
+respective bounds. The engine stops producing at the bounded handoff;
+materializing the complete read result before that handoff does not
+satisfy the contract. A read snapshot stays held until its result is
+drained or abandoned, including while wire credit is exhausted.
+
+No result of a self-contained write reaches the server before commit.
+Attempt-local output is charged to the grant, spilled or refused under
+the existing resource limits; a failed retry publishes none of it.
+Committed output can then drain without holding the write transaction
+open. Completion identifies the pinned result layout and distinguishes
+a self-contained read's snapshot position, a committed write's position
+and attempt count, and an interactive call's provisional result. The
+server counts elements actually sent for wire End.
+
+### 1.3 Cancellation, completion and notification
+
+Postconditions:
+
+- Cancellation before a self-contained write commits discards the
+  attempt and its output. Cancellation after commit preserves the
+  committed completion; it never reports an uncommitted cancellation.
+- A query can yield rows before a later failure; that failure is the
+  completion. Cancelling or abandoning it releases its snapshot and
+  unconsumed output. No success completion is invented for partial
+  failed output.
+- Cancelling an interactive call rolls back that call's effects and
+  releases its active-operation claim, leaving its transaction open.
+  A serialization failure instead aborts the transaction (§3.3).
+- On disconnect the server drops its call handles, not its database's
+  transaction registry. Begin, Commit and Rollback run to their own
+  engine outcomes: wire Cancel is ignored, and losing their reply
+  observer does not cancel the operation. A disconnect cannot reverse
+  a completed commit.
+- For stream idle expiry the server requests abandonment of remaining
+  output. An uncommitted call fails with StreamIdle; a committed call
+  retains its commit completion and marks its output incomplete, as
+  [../spec/wire.md §5.8](../spec/wire.md#58-stream-idle-limit) states.
+- Once an outcome is settled, status observations return the same
+  outcome. Delivering batches consumes them once; observing completion
+  does not replay them. Dropping the handle releases its completion
+  record; durable request replay, when requested, is separate (§3).
+
+The engine's commit decision and cancellation decision have one
+ordering: the provider, rather than the transport, determines which
+won. Final delivery needs no result capacity, so an exhausted stream
+cannot prevent error or commit metadata from becoming observable.
+
+Notifications signal that an observation may make progress; they
+carry no execution ownership and may be coalesced or spurious. The
+consumer rechecks state after registering interest. Notifications must
+not invoke transport code while an engine latch or state lock is held.
+The boundary accepts no socket-runtime executor or runtime-specific
+future; adapters may connect its readiness to their own event loop.
+
+Rulings: net/server/async, net/task-boundary/owned,
+net/task-resumption-cost/implement, net/flow/held/idle-limit
 
 ## 2. Retry
 
-The server reruns a registered transaction on a serialization failure
-before replying ([../spec/transactions.md §5.5](../spec/transactions.md#55-retry)).
+The server delegates a self-contained registered transaction's retry
+to the engine task. The engine reruns the whole unit at a fresh
+snapshot on serialization failure, up to the effective retry limit;
+the server must not wrap it in a second retry loop. Completion reports
+the attempts made. The same applies to self-contained writing ad hoc
+text as [../spec/wire.md §6.4](../spec/wire.md#64-server-retry) states.
 An interactive transaction is never rerun by the engine.
 
 Rulings: engine/retry/retry-block
@@ -36,7 +149,95 @@ states. Postconditions the engine provides to the server:
   window.
 - The recorded ids and low-water marks are a system relation.
 
-TODO: how the server binds a connection to a bundle through `adtb` ([../spec/wire.md §3.4](../spec/wire.md#34-binding-and-ready)) is undecided.
+### 3.1 Role sessions
+
+Precondition: trusted server code establishes transport credentials
+using a listener's accepted source and mapping. A Hello role name or
+an asserted principal alone is not authentication. The embedded owner
+handle authorizes the trusted server integration; it is not the
+identity of an incoming network call.
+
+The engine issues an opaque role session scoped to one database and
+its authenticated role. It verifies role existence and state, derives
+Service from that role, checks assertion authorization, and owns grant
+enforcement and audit recording. The server supplies authentication
+and connection context for successful and failed attempts; it does
+not substitute an asserted Service for a role session. Registered
+relation access uses the bundle owner's rights; the authenticated role
+needs the call grant, not those relation grants. Authentication failure
+disclosure follows
+[../spec/security.md §2.2](../spec/security.md#22-sources).
+
+Dropping a role session releases connection-local authority, not open
+interactive transactions. Role and binding identity are checked by
+the engine on every later submitted operation; cached handles do not
+bypass lifecycle or grant changes.
+
+### 3.2 Checked binding
+
+Binding takes a role session, bundle name, expected schema position
+and hash, and expected catalog position and hash when supplied. The
+engine returns an opaque binding and immutable descriptors for the
+bundle's edition, callable ordinals, argument/result types and stable
+constructor identifiers. The server uses those descriptors for wire
+conversion, never the later current Database::schema().
+
+Postconditions:
+
+- Validation checks bundle existence, both pinned version identities,
+  lifecycle and role call grants as one binding decision. A mismatch
+  returns the corresponding existing wire error and no binding.
+- Only a successful decision makes renewal eligible. An invalid or
+  denied bind writes no renewal. Renewal retains §4's throttling,
+  concurrency and failure behavior; renewal eligibility and returned
+  descriptors refer to the same validated bundle identity.
+- Binding metadata includes the effective edition, lease expiry and
+  engine-owned idle/transaction limits needed for Ready. Protocol,
+  codec, transport limits and authentication-final bytes belong to the
+  server. Metadata is an immutable observation, not a promise that a
+  future call cannot expire or be refused.
+- Before execution the engine checks the binding's lifecycle and the
+  role's authority for that operation. Queue acceptance is no promise
+  of future authorization. Arguments and assertions are validated
+  before a refused call can renew a lease or execute.
+- An ad hoc role session has no bundle binding. Ad hoc operations
+  still undergo the engine's schema, grant and principal checks.
+
+This boundary preserves the earlier-pin refusal in §4 until version
+translation is implemented; a development listener does not replace
+an older pin with current metadata to make it run.
+
+### 3.3 Owned interactive transactions
+
+The engine owns a registry of transactions, independent of sockets.
+Its lookup key includes the database, authenticated role and canonical
+binding identity (the same bundle and pins, or unbound), not the
+particular role-session or connection handle. Begin stores the
+asserted principal and effective limits with the transaction.
+
+| Operation | Registry contract |
+| --- | --- |
+| Begin | Admit work and return an opaque transaction id after creation; no result borrows a connection stack. |
+| Call, Commit or Rollback | Check role/binding identity, acquire the transaction's active-operation claim, and retain the claim while queued, running or draining that operation's result. |
+| Same-connection continuation | Serialize requests in receive order without starting a second operation on that transaction. |
+| Other-connection continuation | Refuse with TransactionBusy while another connection owns queued, running or result-draining work; otherwise permit the same role and binding to continue. |
+| Connection loss | Cancel ordinary calls and release their claims after call rollback; control operations finish as §1.3 states. Retain the registry transaction until its own end or expiry. |
+| Time or idle expiry | Abort using engine time and retain the expired outcome needed to answer later requests with TransactionExpired. |
+
+Unknown, ended and wrong-role/binding lookups are indistinguishable
+as UnknownTransaction. Check role and binding before disclosing an
+expired transaction as TransactionExpired. A failed ordinary call
+removes only its own effects, whereas a serialization failure ends the
+whole transaction. Commit and rollback
+release the transaction's resources at their engine decision. A
+client-side transaction id grants no authority by itself.
+
+The registry must admit transaction completion work without depending
+on a worker parked by another call waiting for that transaction. Its
+expiry and cancellation paths also progress while result capacity is
+zero. Registry retention and durable request deduplication are
+separate lifetimes; a lost non-idempotent commit reply is not proof
+that the transaction did not commit.
 
 ## 4. Registrations
 
@@ -240,6 +441,34 @@ Postconditions:
 
 Non-binding.
 
-The server has an asynchronous I/O front end: I/O threads read and
-write frames, and each call becomes a task on the engine's morsel
-scheduler.
+### 5.1 Implementation status
+
+The embedded facade already binds and renews registered calls, runs
+transaction retries, and propagates stop options. It currently
+materializes DynRows and ArrowStream, uses owner authority, and has no
+server role/binding descriptor, owned call queue or transaction
+registry. The scheduler runs closures to completion and transaction
+waits park a thread. Those implementations do not yet satisfy §1 or
+§3's planned boundary. The synchronous facade must retain its public
+behavior while the providers are added.
+
+### 5.2 Provider-first slices
+
+The listed paths name ownership for future briefs, not concurrent
+writers. Each provider lands before its consumers; one writer owns
+shared api exports and scheduler signatures at a time.
+
+| Slice | Ownership and acceptance |
+| --- | --- |
+| Authority and binding | `crates/adtb/src/api/server/{mod,session,binding}.rs`, `api/mod.rs` exports, catalog role/grant providers and simulator API tests. Verify authenticated role vs assertion, immutable pinned layouts, version/hash refusal, revoke/retire/expiry after bind, and no renewal on rejected arguments or denied operations. |
+| Resumable engine work | `crates/adtb/src/exec/sched.rs`, executor handoff modules, `mvcc/wait.rs`, runtime readiness providers and simulator/real-thread tests. Verify bounded admission/priority, queued cancellation/deadline, lost-wakeup races and a queued commit making progress when every other call awaits a transaction. |
+| Result/task ownership | `crates/adtb/src/api/server/{task,result}.rs` and executor batch handoff, preserving `api/{text,arrow,typed}.rs` facades. Verify slow readers stop actual production within grants, snapshots remain held through encoded-but-unsent data until drain/drop, transferred batches stay charged, no failed-attempt rows escape, and cancel/commit/idle races retain the correct outcome. |
+| Interactive registry | `crates/adtb/src/api/server/transaction.rs`, `api/txn.rs` integration and simulator tests after task and authority APIs land. Verify same-role/binding reconnection, wrong-authority hiding, busy/FIFO behavior, call rollback vs serialization abort, limits and disconnect. |
+| Transport consumer | `crates/adtb-server/src/connection/` and Unix transport modules after providers land. Verify actual peer authentication, wire credit/compression accounting and disconnect/cancel parity against provider tests. |
+
+A first Unix development milestone uses an explicitly provisioned
+current-version bundle and zero optional client request ids. It still
+requires real role/grant checks, cancellation and bounded result
+production. Durable request replay, complete protocol parity and TCP
+TLS/authentication remain separate work; omitting their implementation
+does not weaken their eventual contracts.
