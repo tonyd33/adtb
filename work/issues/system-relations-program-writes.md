@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: bug
 priority: 699
 summary: ordinary program writes can modify catalog and sys relations instead of Denied
+branch: system-write-guard
 tags:
   - engine
   - test
@@ -37,3 +38,24 @@ paths, user-relation writes and legitimate deployment/command behavior unchanged
 failing baseline then regression/generalfix, independent review and full branch/
 main checks. Use targeted tests/lint/fmt/house while iterating; retain snapshots/
 logs/stability/exits/timings. Exact implementation ownership in fresh brief.
+
+## 2026-10-28: exact-main baseline and settled boundary
+
+Rebuilt probe via cargo run --profiletest using currentmaina795a2c4 code and own
+main target, then insert+readback returned PeerMapping, exit0. No rootRust edits
+during diagnostic; whole-tree beforehash not captured for this probe. Exact command
+work/tools/adtb-probe --schema role-authority/target/authority-diagnostics/schema.adt
+--engine with the two statements in system-write.adt. Logs main target/system-
+write-baseline/probe.{log,status}. Fresh system-write-guard workspace on a795a2c4
+owns regressions/generalfix and firstRustbuildslot; further exact unit baseline
+required. Brief brief-system-write-guard.md.
+
+Approved implementation owner: single private API relation/program policy checks
+typed checked kernels BEFORE normalization, follows checked function bodies with
+cycle-safe traversal, uses engine-moduleidentity. Shared public program admission
+at Prepared::new and registeredchecked/imported path; directnative appender checks
+targetbinding through same policy. Cover textual/interactive/registered/typed/
+Arrow/load no-op and nested/indirect writes. Legitimate internal catalogdeploy,
+bootstrap, commands and trusted owner mutations use their internal paths; no
+publicmagic bypass token, storageblanketblock, perendpointduplicated guards or
+newpermissionframework. Existing typedDenied constructor/propagation only.
