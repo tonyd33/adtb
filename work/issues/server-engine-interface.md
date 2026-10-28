@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-26
-status: in-progress
+status: resolved
 kind: feature
 priority: 1001
 summary: "docs/design/server.md leaves undecided how the server submits a call to adtb and receives its batches, and how it binds a connection to a bundle"
-branch: server-boundary
+closed: 2026-10-28
 tags:
   - server
   - design
@@ -111,3 +111,17 @@ Fresh dispatch succeeded after wire worker completed. Agent owns prepared
 server-boundary workspace/docs-only scope; access reverified. No executable
 provider implementation yet. Campaign branch is independently checking its
 final live slice; codec landed b27a1eb1 with full branch/main checks passed.
+
+## 2026-10-28: resolved
+
+Landed4fc009a2, docs/design/server.md sections1–3 specify the approved
+engine-owned authority/binding/task/result and interactive registry contracts.
+Lead exactf1555a31 review resolved drain-busy and unbound-ad-hoc consistency;
+branch and scoped main docs checks passed0,7fixtures/420syntax/61pages/
+6730links/4995fragments. Full combined main check after campaign also passed0,
+2349root/46campaign/allstaticdocs. No provider implementation or runtime
+behavior is certified by this design-only resolution. roles-and-grants remains
+open for authority; server-owned-call-tasks tracks resumable implementation.
+Exact Rust API signatures remain provider review work. First actual server
+milestone remains authenticated Unix bound calls with real cancellation and
+backpressure. No sockets or TLS stack landed.

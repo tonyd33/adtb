@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: open
 kind: feature
 priority: 850
 summary: no application exercises adtb end to end
-branch: campaign-live
 depends-on:
   - milestone-7-engine
 tags:
@@ -278,3 +277,34 @@ application rules and strict date-digit parsing; preserve failing-run evidence,
 rerun direct/live witnesses, browser and final full check. No engine workarounds.
 Any new engine issue stops expansion and restores general engine fix priority.
 Lead owns independent review, landing and main integration.
+
+## 2026-10-28: live-session slice landed and verified
+
+Landed ae5b0575: immutable bundle1.6 pins unchanged schema5; GM session
+plan/prep/start, encounter roster/initiative/turn/standing/end, session date/log/
+recap, and player Now/Recaps pages with manual refresh. Existing migrations
+and prior bundles unchanged. Lifecycle/complete-roster guards are atomic app
+predicates inside registered transactions; strict date digits reject signed
+segments. No engine workaround. Both preserved lost-update witnesses pass
+against general engine fix ef7361f9. Desktop/mobile browser checks passed.
+
+Lead reviewed exact3a96e18ee8c38ab22da319ff9dae1204627ac4c5 on base
+eb2f61637b74519a877d046c6e0aa55414f5787b; house-check passed. Branch full
+check exit0,376s,2334root/46campaign/allstaticdocs. Combined main check
+exit0,2026-10-28T03:31:05Z to03:33:07Z,122s elapsed at clean WC
+edd1cc03742a2c3f0d36d2522cf9c7dc47f6ae6d (parent ae5b0575).
+Main2349root/8skip,46campaign/1skip, all static/docs; inputs/revision match
+before/after. Exact command from main root: direnv exec /home/tony/code/adtb
+env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check. Rust1.98.1,
+default profiles/features; permission/queue/execution-only timing unknown.
+Evidence target/campaign-live-integration/{check.log,check.status,inputs-*,
+revision-*}; branch receipt work/briefs/receipt-campaign-live-final.md.
+Native witness32pairs~3.8s; migration-heavy HTTP fixtures8–12s. No forced
+deterministic app interleaving is claimed. Original failed logs/tests retained.
+
+Broad application ticket remains open: simulated application load, quests/
+timeline/history and richer editing are unfinished. Recommend next campaign
+track prioritize a repeatable load workload and persistence/transaction
+invariants for engine bug finding. Engine bugs still preempt all app feature
+expansion and require general engine regression/fix/review/full verification.
+No active campaign workspace after landing; future work gets fresh agent/brief.
