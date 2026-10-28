@@ -76,3 +76,14 @@ return structuredDiag there directly, bundle retainspublicStringcontract via
 reuses same exported relationpolicy. Remove obsoleteAPIwalker, no parallelwrapper,
 stringmessage matching or newpermissionframework. Narrowlangspan/signature/analysis
 andAPI errorconversion ownership added to guardtrack. No normativechange/dependency.
+
+## 2026-10-28: embedded-open oracle corrected
+
+The guard's initial no-header-after-denial assertion was wrong. A fresh audit
+checked applications.md8, embedding.md2.1 and spec/embedded-open/register-first:
+early unchecked header recording and supersession deliberately survive later
+failure; only step-5 callable registrations are atomic. No provider repair was
+made. bundle-registration-refusal-side-effects is closed wontfix with evidence.
+The original guard worker remains active on the same track, correcting the test
+to check no callable registration/renewal while preserving required headers.
+Ordinary program DML on catalog/sys still must return typed Denied.
