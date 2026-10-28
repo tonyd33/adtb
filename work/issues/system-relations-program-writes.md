@@ -59,3 +59,20 @@ Arrow/load no-op and nested/indirect writes. Legitimate internal catalogdeploy,
 bootstrap, commands and trusted owner mutations use their internal paths; no
 publicmagic bypass token, storageblanketblock, perendpointduplicated guards or
 newpermissionframework. Existing typedDenied constructor/propagation only.
+
+## 2026-10-28: refined lowest-tier diagnostic ownership
+
+Exactcurrent public API baseline failed nextest100: expectedDenied gotOk([]),
+0.147s after60s coldcompile; source baselineonlytest on a795a2c4, production
+unchanged. Worker target/system-write-baseline retainsstate/revision/log/status.
+API-only postcheck proved too late: check_adhoc/check_txn volatile-dependency
+analysis rejects sys writes as Invalid before checkedkernel reachesAPI.
+
+Approved refined owner supersedes earlier APIwalker plan: structural systemwrite
+policy in languageanalysis before volatile checks/normalization, minimal typed
+DiagKind Invalid/Denied preserving existingrendering. signature::calls has2callers;
+return structuredDiag there directly, bundle retainspublicStringcontract via
+.message, engine mapscategory to existingAPI Denied. Directappender targetbinding
+reuses same exported relationpolicy. Remove obsoleteAPIwalker, no parallelwrapper,
+stringmessage matching or newpermissionframework. Narrowlangspan/signature/analysis
+andAPI errorconversion ownership added to guardtrack. No normativechange/dependency.

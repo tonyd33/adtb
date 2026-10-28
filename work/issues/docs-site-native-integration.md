@@ -37,3 +37,14 @@ extension points and fresh review challenging each customlayer's unmet requireme
 green tests are not a design justification. Fresh independent architecture AND
 correctness review, scoped docs/syntax/link/HTTP checks plus main verification gate
 landing. Retain exact tested/base IDs, stable inputs, exits/logs and remaining limits.
+
+## 2026-10-28: native candidate and independent review
+
+Workerfinal e58482ec096867ca4d9059904715fea803173ee5/base d157a20d: site.py deleted;
+checked-inbook.toml/docsSUMMARY, stateless nativeJSONBook navpreprocessor, direct
+mdbookexec and separatevalidators. All removed layers remain absent. Native+wrapper
+buildfrom/tmp,10Python/420syntax/61pages6730links4995fragments andhouse pass0,
+13.354s, all tracked/localconfig hashes+revision unchanged. This is scope evidence,
+not landing. Independent reviewer proposed nativebaseline and finds no architecture
+blocker: only navderivation needscustomproduction code. Reviewer exactfinal tests/
+report and reused desktop/mobile browser smoke still completing before landing.
