@@ -61,3 +61,24 @@ with create campaign, add NPC, player join and reveal as one browser flow.
 Validate player-secret filtering, concurrent requests and persistence across
 restart. Read `apps/campaign/docs/design.md` sections 2, 4, 8 and 9, and the
 current `apps/campaign/docs/gaps.md`; report engine gaps before adapting the app.
+
+## 2026-10-27: first browser flow landed
+
+Landed `dd126af5`: runnable GM login/create campaign/NPC/text edit, player seat
+join, reveal and shared-only player pages. Current `campaign-1.4` bundle pins
+unchanged schema version 4; original bundle bytes preserved. A real-file test
+opens a database registered with the original 1.3 bundle in the new server.
+
+Workspace and lead post-land full checks passed: 2,329 root tests (8 skipped),
+31 campaign tests (1 skipped), clippy, formatting, root and campaign dependency
+policy, source-size and house checks. TCP and Chromium desktop/mobile flow
+passed, including secret filtering, CSRF/authorization, escaping, restart and
+seat revocation. Lead log: target/campaign-first-check.log. Handoff:
+work/briefs/handoff-campaign-first.md. Real-file HTTP tests exceed the usual
+2-second test target because migration/reopen setup dominates (roughly 4–10s).
+
+No engine defect was reproduced. Initial same-name bundle modification was
+caught in review and corrected as an application release error; the engine's
+refusal was correct. First slice remains deliberately small: manual refresh,
+plain text and no full prep/live/history UI or simulated application workload.
+The broader ticket remains in progress with the engine-first policy above.
