@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-28
-status: open
+status: in-progress
+branch: textual-to-text
 kind: bug
 priority: 799
 tags: [lang, quality, test]
@@ -50,3 +51,19 @@ consumer tests, strict changed-crate clippy/fmt/house/size, independent review a
 lead full check. No new design ruling or spec change is currently indicated;
 report an actual contradictory contract before changing one. Provider features
 remain behind general engine correctness; native bootstrap remains its own repair.
+
+## 2026-10-28: bounded shared contract repair dispatched
+
+Fresh successor textual-to-text after reviewed UUID source lands; base includes
+that code and current rulings. Own /home/tony/code/adtb-textual-to-text, one writer,
+local brief work/briefs/brief-textual-to-text.md. Read/edit while lead runs frozen
+UUID integration; no cargo compilation until lead releases slot. Landing order
+UUID first, then this shared textual library fix after UUID full check passes.
+Existing lang textual test explicitly expects bare Cents; revise its contradictory
+expectation rather than deleting coverage, preserve Text/UUID/base controls and
+add Bytes-newtype fallback. Existing kernel9/doc are the consumer contract; no
+query builtin expansion, dependencies or spec change. Capture failure on old
+implementation using tests first, then common fix. Assigned branch scope affected
+lang/textual/consumer tests, strict lang clippy/fmt/house/size; lead owns fresh
+review and full post-land root/app/policy/docs check. Keep exact frozen IDs,
+source/build/config inputs and honest status/timing receipts.
