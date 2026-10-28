@@ -1,0 +1,23 @@
+[book]
+title = "adtb documentation"
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "target/docs-site/html"
+create-missing = false
+use-default-preprocessors = false
+extra-watch-dirs = ["tools/docs-site/navigation.py"]
+
+[preprocessor.navigation]
+command = "python3 -B tools/docs-site/navigation.py"
+before = ["links"]
+
+[preprocessor.links]
+
+[output.html]
+no-section-label = true
+additional-js = ["tools/docs-site/adt-highlight.js"]
+
+[output.html.playground]
+runnable = false

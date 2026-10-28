@@ -83,11 +83,13 @@ For a standalone server, run `work/tools/docs-site serve --port 8081`.
 The site binds only to loopback. Search, themes and highlighting work without
 an internet connection. No Node installation is required.
 
-The site reads the existing Markdown sources through a generated, ignored
-source view. Manual navigation follows its README reading order; the spec and
-design follow their README file indexes. Add a new page to its section index,
-and the running docs process regenerates navigation and copied assets.
-An incomplete index edit reports an error and recovers after the next valid edit.
+The checked-in `book.toml` reads `docs/` directly. `docs/SUMMARY.md` names the
+landing page and the three sections; a stateless mdBook preprocessor expands
+their README indexes into chapters. Add a page to its section index and native
+`mdbook serve` rebuilds the navigation. It also watches the highlighting asset
+directly. An incomplete index edit reports a build error and recovers after
+the next valid edit. `mdbook build` and `mdbook serve --hostname 127.0.0.1`
+also work directly from the repository root.
 `docs-check` checks every generated internal link, fragment and page, and tests
 the highlighting grammar against the lexer keywords and shared syntax corpus.
 The default `check` includes `docs-check`. Hosting is a separate task.
