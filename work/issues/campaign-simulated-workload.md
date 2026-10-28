@@ -86,3 +86,15 @@ before-privacy-review/. Prior focused5commands0 onf4abc5e6,166.413s, default10.8
 and deep8replayseeds64.845s are scoped evidence only. Final correctedsource must
 pass affected/default/deep/lint/fmt/house, freshdelta review and authoritative
 fullcheck/mainintegration. Rebase onto currentmain before finalcheck.
+
+## 2026-10-28: final continuation after catalog guard
+
+Fresh successor in campaign-load resumes459ee9ff and rebases onto main15004a7f.
+General guardd2716fb0 is independently reviewed and combined-main fullcheck0
+(2366root/46campaign/allstaticdocs), so the engine-first pause is satisfied.
+Ownership remains nine app paths; preserve corrected privacy/encounter oracles.
+Refresh default/deep replay, timing prose, lint/fmt/house and authoritative branch
+check on stable inputs, fresh exact review then land/maincheck. No new features
+or engine workaround. First cold/full build slot belongs to campaign; role
+provider waits and lands second after rebase. Brief-campaign-load-resume.md;
+prior failures/interrupted143 are retained and not recast as full verification.

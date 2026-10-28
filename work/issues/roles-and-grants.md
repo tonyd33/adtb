@@ -103,3 +103,19 @@ security/role-drop-peers question is the authority, do not duplicate or rename i
 Before fresh reading review run spec_corpus and conf conformance and retain exact
 receipts, then reviewer writes algorithm/undecided inputs for changed paragraph.
 Implementation/branchmainfull acceptance and all deferred surfaces unchanged.
+
+## 2026-10-28: resume bounded provider after catalog guard
+
+Fresh successor in role-authority resumes81c2bbc2 and rebases onto main15004a7f,
+which contains full-verified general system-write guardd2716fb0. Preserve draft;
+replace forbidden raw-catalog fixtures with private trusted setup/native calls,
+complete approved atomic role-drop peer cleanup and security2.1 clarification,
+and actual design provider contract. Existing broad and bounded scope remain
+unchanged; no role execution exposed. Campaign lands first; provider may audit/
+edit now but heavy builds wait for lead release, then rebase before verification.
+Private fixture failure must demonstrate retained mappings before correction.
+Spec_corpus and conf conformance precede fresh algorithm/undecided-input reading
+review. Exact source architecture/correctness review, scoped checks and full
+branch/main checks required; receipt must state all unfinished surfaces.
+Do not change adopted header-before-migration ordering based on the closed false
+bundle rollback oracle. Brief-role-authority-resume.md and prior handoff/receipts.
