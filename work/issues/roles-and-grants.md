@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: open
 kind: feature
 priority: 830
-summary: "no roles or grants exist, so the registration privilege check and every grant check have nothing to check"
-branch: role-native
+summary: "role authority exists; relation/field and call/family grants, definer checks and nonowner execution remain unfinished"
 depends-on: [asserted-principal-value-domain, custom-principal-global-lookup, uuid-domain-textual-roundtrip]
 tags:
   - engine
@@ -272,3 +271,90 @@ full frozen branch check, independent architecture/exact-source review, lead
 post-land full check. Record exact revisions, stable input/config manifests,
 commands/status/logs/timing and unresolved failures. Local brief and predecessor
 receipts are under work/briefs; durable scope is this ticket and its prior sections.
+
+## 2026-10-28: authority foundation landed and fully verified
+
+Landed `3cb67a82d3f4fa59d3478346bad320857db5b4a0`, `feat: add role authority
+foundation`. Preserved `efdd791f` is now superseded evidence, not a draft to
+resume. A fresh role-native author completed native initialization and shared
+assertion validation. A fresh isolated reviewer cleared all 13 paths, source and
+configuration manifests, architecture, tests and the adopted peer-removal spec
+algorithm. No dependencies or rulings changed. This ticket returns to open: the
+bounded foundation is complete; permissions and execution remain unfinished.
+
+Canonical roles and deployment-capability grants persist independently of schema
+hashes. Trusted embedded-owner administration issues opaque sessions scoped to a
+database and immutable role identity. It checks live grants and assertion rights,
+refuses stale/foreign/closed handles, and commits role/grant/credential/peer changes
+with successful Grant audit through normal SSI transactions. Dropping a role
+removes its peer mappings while preserving other roles' exact rows and ordinals.
+
+Native initialization uses existing Catalog::committed_rows/deploy after open
+refusal, migration and registration gates, before live engine construction.
+An existing owner keeps its identity without a deployment write; empty ownerless
+legacy state gets private owner 1 without a generated counter draw; nonempty
+ownerless state is malformed. Assertions use shared Engine::principal, with no
+printer validation. No authority cache, global administration mutex or pager
+wrapper was added.
+
+Bounded baseline `c0b02290` supplied the missing lifecycle cause: actual
+full-counter capacity refusal, then Engine::shut closes the pager, then open
+cleanup closes it again and the FileId 0 worker panics. The 8-second diagnostic
+with 3-second kill grace ended with -9 and explicit child cleanup. It is failure
+evidence, not a passing gate. Native placement removes the draft's late fallible
+ownership path. Both original 70-second timeouts and the failed history oracles
+remain preserved; those three history tests were not edited.
+
+Full branch check passed frozen `e7e1a2fa9407a8bfcc9279c609c709c7f1c34166` on
+`782701b9c652184c02a2767dfc6ac9042f35c7a2`, with all 2,567 tracked/configuration
+inputs unchanged. Command from `/home/tony/code/adtb-role-native`:
+
+    direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target python3 target/verify-native.py full
+
+Collected exit 0 in 443.319588 seconds, from 2026-10-28T18:49:40.760557Z to
+18:57:04.080145Z: 2,414 root tests passed, eight skipped (52.811 seconds);
+47 campaign tests passed, one skipped (20.911 seconds). Lint, formatting, policy,
+size, docs and final house checks passed. Focused checks first passed eight native,
+ten public and 28 unchanged history tests plus strict affected checks. Nine spec
+tests and all 234 conformance files passed BEFORE fresh reading review.
+All 18 new default tests ran under two seconds. Full-counter legacy reopen keeps
+every reservation byte and owner 1; existing owner 91 survives and later IDs
+exceed 92. Two ownerless refusals followed by native reopen exercise cleanup.
+Tiny-memory-zero remains a guard, not a claim that the old code had that defect.
+
+Final reviewed `84e48259a5dcb19da1efcace49793beb09b4f9f6` adds only two prose
+corrections to the full-checked source: deployment_id states its supplied-floor
+contract, and the server contract omits internal owner-ID/native mechanics.
+Separate formatting/house/size checks and fresh delta/hash review passed.
+Rebasing to landed `3cb67a82` adds only ticket/index metadata; all 13 source paths
+are identical to the final reviewed source.
+
+Full main check passed clean `34ee57cc85226eb61cdec103dedd42a72c3e8deb`, parent
+`3cb67a82`. Command from `/home/tony/code/adtb`:
+
+    direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
+
+Collected exit 0 from 2026-10-28T19:00:02Z to 19:06:30Z (388 seconds, one-second
+precision). All tracked inputs, local root/app Cargo configuration and revision
+stayed unchanged. All 2,414 root tests passed, eight skipped (50.909 seconds);
+47 campaign tests passed, one skipped (22.883 seconds). Lint, formatting, parity,
+dependency, size and docs checks passed. Docs: ten tests in 10.144 seconds,
+420 syntax inputs, 61 pages, 6,734 links, 4,999 fragments, no failures.
+Permission, queue and execution-only timings are unknown. Session 25921 collected
+exit 0. Log `target/role-native-integration/check.log` SHA256:
+`ea45235459998c0bda8816c5a2d5c7d75236e4198ef7a6c6708b93b83f5109f3`.
+Local receipts, review and handoff: `work/briefs/*role-native*.md`.
+
+The completed branch debug cache was removed after a process audit and SHA-verified
+backup of 796 nondebug files; original source, logs and fixtures remain. Earlier
+completed fixtures were losslessly archived with individual SHA checks and restore
+commands under `target/role-native-fixture-archives`. Unknown openperf and active
+main cache were untouched. About 49 GB free after the check. Pushing remains
+deferred because the user reports Tangled down.
+
+Next: relation/field and call/family permissions, registration/definer checks and
+durable family-owner identity, then checked role binding and nonowner execution.
+Syntax integration with statement atomicity, full audit/ledger and authentication
+remain open. Engine-owned bounded resumable tasks/results follow authority and
+binding; the codec alone is not a running server. No owner fallback is approved.
+Preexisting native-open operating-error classification is not fixed here.
