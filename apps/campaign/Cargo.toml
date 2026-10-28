@@ -12,11 +12,17 @@ publish = false
 
 [dependencies]
 adtb = { path = "../../crates/adtb" }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "form", "query"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "signal"] }
+maud = "0.27"
+serde = { version = "1", features = ["derive"] }
 
 [build-dependencies]
 adtb-codegen = { path = "../../crates/adtb-codegen" }
 
 [dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 adtb-lang = { path = "../../crates/adtb-lang" }
 
 [lints]

@@ -389,23 +389,26 @@ registers the bundle. A file from an older release is upgraded on
 first open; the release's own older bundle is superseded by that open,
 so it holds back none of the release's `enable` operators.
 
-`build.rs` runs `adtb-codegen` over the log and both bundle files. The
+`build.rs` runs `adtb-codegen` over the log and the bundle files. The
 library holds what it generates: module `schema` with the host types
-of release 1.3, and modules `v1_0` and `v1_3` with each bundle's
+of release 1.3, and modules `v1_0`, `v1_3` and `v1_4` with each bundle's
 `BUNDLE`, error type and one value per query and transaction. The app
-opens with `v1_3::BUNDLE.registration()`, binds it with
-`Database::bundle`, and calls `bundle.call(v1_3::lookup, (c, q), &opts)`,
+opens with `v1_4::BUNDLE.registration()`, binds it with
+`Database::bundle`, and calls `bundle.call(v1_4::lookup, (c, q), &opts)`,
 getting typed rows back; `tests/engine.rs` does exactly this.
 
 ### 9.2 Registered queries and transactions
 
-All in `bundles/campaign-1.3.adb`.
+The browser app calls `bundles/campaign-1.4.adb`, pinned at schema version 4.
+The original `campaign-1.3.adb` remains immutable; version 1.4 adds the web
+queries and text-only transaction without changing the schema. Opening the
+app registers 1.4 and supersedes earlier app bundles.
 
 | Screen | Queries | Transactions |
 | --- | --- | --- |
 | Campaigns | `campaigns` | `new_campaign` |
-| Campaign home and search | `lookup`, `quest_log` | `add_npc`, `add_region`, `add_settlement`, `add_site`, `add_faction`, `add_party`, `add_item`, `give_item` |
-| Entity page | `entity_page` | `write_entity`, `rename`, `join`, `leave`, `reveal`, `forget` |
+| Campaign home and search | `lookup`, `parties`, `quest_log` | `add_npc`, `add_region`, `add_settlement`, `add_site`, `add_faction`, `add_party`, `add_item`, `give_item` |
+| Entity page | `entity_page` | `write_entity_text`, `write_entity`, `rename`, `join`, `leave`, `reveal`, `forget` |
 | Session prep | `session_board`, `roster` | `plan_session`, `write_prep`, `add_encounter`, `add_cast`, `add_extra` |
 | Live view | `live_session`, `tracker`, `roster` | `start_session`, `start_encounter`, `next_turn`, `join_fight`, `leave_fight`, `set_standing`, `kill`, `end_encounter`, `end_session`, `reveal`, `reveal_quest` |
 | Quests | `quest_log` | `add_quest`, `take_quest`, `shelve_quest`, `resume_quest`, `close_quest`, `abandon_quest`, `reveal_quest` |
@@ -414,6 +417,11 @@ All in `bundles/campaign-1.3.adb`.
 | Notes | | `write_note` |
 | Seats | `seat` | `seat_player`, `unseat` |
 | Player pages | `known_entities`, `known_entity`, `party_quests`, `party_timeline`, `recaps`, `party_encounter`, `known_maps` | none |
+
+The first text-only editor uses `write_entity_text`, which leaves link rows
+untouched. `write_entity` also replaces the shared and hidden links for the
+later link-aware editor. `parties` lists all campaign parties independently of
+the search result limit.
 
 Every GM action is one registered transaction, so each is one
 statement: one change set, checked against every constraint at its

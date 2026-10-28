@@ -16,7 +16,7 @@ use adtb_lang::resolve::Visible;
 use adtb_lang::textual::{Form, parse, print};
 use adtb_lang::types::Ty;
 use campaign::schema::{Campaigns, Entities, Quests, Sessions};
-use campaign::{MIGRATIONS, v1_0, v1_3};
+use campaign::{MIGRATIONS, v1_0, v1_3, v1_4};
 
 fn scratch(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
@@ -397,6 +397,67 @@ fn prep_builds_a_world_the_gm_can_look_up() {
         }],
         keep.mentioned_in,
         "the keep is mentioned by the warden"
+    );
+}
+
+#[test]
+fn text_edit_preserves_existing_shared_and_hidden_links() {
+    let app = App::at(scratch("text-links"), MIGRATIONS.len(), &v1_4::BUNDLE);
+    let campaign = app
+        .call(
+            v1_4::new_campaign,
+            ("Campaign".into(), "Pitch".into(), "Party".into()),
+        )
+        .value;
+    let party = one(app.call(v1_4::parties, (campaign.clone(),))).id;
+    let keep = app
+        .call(
+            v1_4::add_region,
+            (campaign.clone(), "Keep".into(), "Region".into(), None),
+        )
+        .value;
+    let warden = app
+        .call(
+            v1_4::add_npc,
+            (campaign.clone(), "Warden".into(), "Summary".into(), None),
+        )
+        .value;
+    let w = World {
+        campaign,
+        party,
+        keep,
+        warden,
+    };
+    app.call(
+        v1_4::write_entity,
+        (
+            w.warden.clone(),
+            "Old".into(),
+            "Shared".into(),
+            "Secret".into(),
+            vec![w.keep.clone()],
+            vec![w.party.clone()],
+        ),
+    );
+    let before = one(app.call(v1_4::entity_page, (w.warden.clone(),)));
+    app.call(
+        v1_4::write_entity_text,
+        (
+            w.warden.clone(),
+            "New summary".into(),
+            "New shared".into(),
+            "New secret".into(),
+        ),
+    );
+    let after = one(app.call(v1_4::entity_page, (w.warden,)));
+    assert_eq!(after.mentions, before.mentions);
+    assert_eq!(
+        (
+            after.summary.as_str(),
+            after.body.as_str(),
+            after.secret.as_str()
+        ),
+        ("New summary", "New shared", "New secret")
     );
 }
 

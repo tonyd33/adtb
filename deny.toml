@@ -17,6 +17,8 @@ allow = [
     "Apache-2.0",
     # The licence of arrayref, a BLAKE3 dependency.
     "BSD-2-Clause",
+    # The campaign router matchit combines MIT and BSD-3-Clause.
+    "BSD-3-Clause",
 ]
 confidence-threshold = 0.9
 
@@ -25,6 +27,8 @@ multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
 allow-workspace = true
+# Remove when maud_macros and proc-macro2-diagnostics use syn 3.
+skip = [{ name = "syn", version = "=2.0.119" }]
 allow = [
     # NFC normalization of text values.
     "unicode-normalization",
@@ -105,6 +109,59 @@ allow = [
     "cc",
     "find-msvc-tools",
     "shlex",
+    # Local engine dependencies of the separately built campaign workspace.
+    "adtb",
+    "adtb-codegen",
+    "adtb-file",
+    "adtb-lang",
+    "adtb-sys",
+    # Local campaign HTTP routing, forms, escaped HTML, async runtime and their dependencies.
+    "atomic-waker",
+    "axum",
+    "axum-core",
+    "bytes",
+    "errno",
+    "form_urlencoded",
+    "futures-core",
+    "futures-task",
+    "futures-util",
+    "http",
+    "http-body",
+    "http-body-util",
+    "httparse",
+    "httpdate",
+    "hyper",
+    "hyper-util",
+    "itoa",
+    "log",
+    "matchit",
+    "maud",
+    "maud_macros",
+    "memchr",
+    "mime",
+    "mio",
+    "percent-encoding",
+    "pin-project-lite",
+    "proc-macro2-diagnostics",
+    "ryu",
+    "serde",
+    "serde_core",
+    "serde_derive",
+    "serde_path_to_error",
+    "serde_urlencoded",
+    "signal-hook-registry",
+    "slab",
+    "socket2",
+    "sync_wrapper",
+    "tokio",
+    "tokio-macros",
+    "tower",
+    "tower-layer",
+    "tower-service",
+    "version_check",
+    "wasi",
+    "windows-link",
+    "windows-sys",
 ]
 
 [sources]

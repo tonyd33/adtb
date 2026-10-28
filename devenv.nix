@@ -44,6 +44,7 @@ in
     cargo fmt --manifest-path "$app" --all --check
     cargo nextest run --manifest-path "$app" --config-file "$DEVENV_ROOT/.config/nextest.toml"
     cargo deny check
+    cargo deny --manifest-path "$app" check
     size-check
   '';
 

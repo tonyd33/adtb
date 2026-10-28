@@ -7,7 +7,7 @@ use adtb_lang::lex::{Tok, lex};
 use adtb_lang::parse::{Options, parse_bundle, parse_migration, parse_schema};
 use adtb_lang::schema::build;
 use adtb_lang::span::{Diag, FileDiag, FileId};
-use campaign::{BUNDLE, BUNDLE_1_0, MIGRATIONS, MODULE, SCHEMA};
+use campaign::{BUNDLE, BUNDLE_1_0, MIGRATIONS, MODULE, SCHEMA, WEB_BUNDLE};
 
 fn rendered(src: &str, ds: &[Diag]) -> String {
     ds.iter()
@@ -187,7 +187,7 @@ fn release_1_3_adds_quest_states() {
 }
 
 /// The bundle of each release, with the version it pins.
-const BUNDLES: [(&str, usize); 2] = [(BUNDLE_1_0, 1), (BUNDLE, 4)];
+const BUNDLES: [(&str, usize); 3] = [(BUNDLE_1_0, 1), (BUNDLE, 4), (WEB_BUNDLE, 4)];
 
 #[test]
 fn every_bundle_parses() {
