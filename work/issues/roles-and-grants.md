@@ -132,3 +132,44 @@ and log-grant refusal. Nonowner bundle/family ownership, retired-bundle-sensitiv
 drop behavior and durable family-owner identity remain deferred with their
 registration provider; no complete family/drop policy is claimed by foundation.
 Any later exposure must implement those rights before accepting nonowner calls.
+
+## 2026-10-28: provider review and native initialization correction
+
+Campaign workload e4d7aa6c passed final branch/main checks and landed first.
+Authority source30d1cb7d/basee4d7aa6c passed seven stable-input focused commands: 
+5private native tests,8public simulator tests, strict clippy/fmt,9spec examples,
+233conformance files on reference+engine,house;109.910s. Replaced custom row
+ordering with existing header-aware catalog layout, removed redundant global
+authority lock, separated requested audit flag from retained grant option, and
+fixed test projection to retain audit row identity. Setup/compile/oracle failures
+are preserved in target/authority-resume-* and receipt-role-authority-resume.md.
+Actual peer-retention baseline5d79a7ee failed100: web ordinals1/7 survived drop
+while other ordinal3 stayed unchanged. Matching deletes are now staged atomically
+with role/grant/credential/audit changes. Native forced-overlap test proves an
+internal SSI retry followed by role-absent Denied, with no orphan grant/audit.
+
+Fresh independent review of all11paths found one initialization blocker, no
+other provider/spec blocker. Generic bootstrap reserves a user counter slot and
+flattens an ordinary capacity refusal into Corrupt. Source-inferred full-counter
+case needs an exact legacy reopen witness before correction. Tiny-memory0 open
+guard on78c16ee2 passed0 on old bootstrap, so memory refusal is NOT reproduced.
+
+First fullcheck30d1cb7d collected100/stable,306.686s:2376of2379engine tests passed,
+8skipped;3existing history tests failed because store::run(write=true) bootstrap
+commits even when owner exists and no rows change. Campaign/later stages did
+not finish. Preserve failures; do not modify those history oracles.
+
+Lead approved correction: initialize permanent owner through existing native
+Catalog::committed_rows/deploy during Engine::on after refusal/migration gates
+and before normal write-path assembly. Preserve existing owner identity and
+return without deployment when already initialized. Reserve internal ownerID1
+only for empty ownerless legacy roles; nonempty ownerless canonical state is
+malformed. No user counter draw, query-budget override, new public error variant
+or fabricated migration/registration refusal. Live administrative mutations stay
+on canonical SSI transactions. Add native legacy/full-counter and tiny-memory
+guards, preserving baseline distinctions; rerun affected/spec/full checks then
+fresh exact delta review and main integration. Narrow cfg(test) private sequence
+fixture uses canonical persist, never handwritten bytes or public bypass.
+
+Broader native-open error taxonomy is preexisting and not claimed fixed by this
+metadata placement correction. Full roles/grants/binding/server remain unfinished.
