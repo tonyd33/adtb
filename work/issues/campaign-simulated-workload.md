@@ -1,0 +1,43 @@
+---
+created-at: 2026-10-27
+status: in-progress
+kind: feature
+priority: 850
+summary: campaign has no repeatable deterministic load workload checking persisted transaction and secrecy invariants
+branch: campaign-load
+---
+
+# Feature: Campaign simulated workload
+
+## Report
+
+Campaign live calls now work locally, but no deterministic application actor
+workload checks concurrency, persisted invariants and player secrecy across
+seeded schedules and reopen. This is the next campaign milestone because the
+application primarily exposes engine defects. Any suspected engine violation
+stops expansion for a minimal regression and a principled general engine fix.
+No app locks, swallowed errors or alternate queries to mask a defect.
+
+## 2026-10-28: authorized bounded track
+
+Workspace campaign-load at /home/tony/code/adtb-campaign-load, base f305ffaf.
+Own apps/campaign tests/load and documentation plus necessary local path dev
+edges to existing adtb-sim and adtb-testkit (no new external crate family).
+One owner; engine role-authority uses unchanged embedded API and lands its
+provider before future transport consumers. Local brief brief-campaign-load.md.
+
+Exercise registered campaign1.6 via deterministic SimRuntime/open_in over two
+isolated campaigns, small default seed count and established profile::sweep
+mechanism for deep runs. Capture attempts/committed outcomes and reproducible
+seed/operation history. Check conflicting next_turn advancement, unique plan
+numbers, competing starts, duplicate reveal idempotence, shared/secret text and
+link agreement, known-only player views and persistence after reopen. Force or
+measure actual simulated overlap; distinguish unforced cases. No full200campaign
+population, crash injection or p99 latency claim from the bounded first slice.
+
+Acceptance: affected campaign tests, strict clippy/fmt/house and authoritative
+branch check, lead independent review and post-land integration check. Command
+from worker root: direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD"
+CARGO_TARGET_DIR="$PWD/target" check. Retain exact tested/base ids, stable-input
+checks, final exits, logs, timing and unfinished scopes in a verification receipt.
+Any suspected engine issue takes priority over this and feature expansion.
