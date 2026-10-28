@@ -10,7 +10,7 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 
 use super::{Error, Result, State as AppState, auth, blocking, links, views};
-use crate::v1_5;
+use crate::v1_6;
 
 pub(super) fn routes(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
@@ -88,7 +88,7 @@ async fn home(State(state): State<Arc<AppState>>) -> Result<Html<String>> {
     let csrf = state.auth.csrf().to_owned();
     blocking(state, move |bundle| {
         let campaigns = bundle
-            .call(v1_5::campaigns, (), &CallOptions::default())?
+            .call(v1_6::campaigns, (), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(views::home(&campaigns, &csrf))
     })
@@ -103,7 +103,7 @@ async fn create(State(state): State<Arc<AppState>>, Form(form): Form<Create>) ->
     let id = blocking(state, move |bundle| {
         Ok(bundle
             .call(
-                v1_5::new_campaign,
+                v1_6::new_campaign,
                 (form.title, form.pitch, form.party),
                 &CallOptions::default(),
             )?
@@ -122,21 +122,21 @@ async fn campaign(
     let csrf = state.auth.csrf().to_owned();
     blocking(state, move |bundle| {
         let campaigns = bundle
-            .call(v1_5::campaigns, (), &CallOptions::default())?
+            .call(v1_6::campaigns, (), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let title = campaigns
             .iter()
             .find_map(|c| match c {
-                v1_5::CampaignsRow::Ongoing { id: key, title }
-                | v1_5::CampaignsRow::Over { id: key, title, .. } => (key.0 == id).then_some(title),
+                v1_6::CampaignsRow::Ongoing { id: key, title }
+                | v1_6::CampaignsRow::Over { id: key, title, .. } => (key.0 == id).then_some(title),
             })
             .ok_or(Error::Http(StatusCode::NOT_FOUND, "Campaign not found."))?;
         let parties = bundle
-            .call(v1_5::parties, (Key(id),), &CallOptions::default())?
+            .call(v1_6::parties, (Key(id),), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let entities = bundle
             .call(
-                v1_5::prep_entities,
+                v1_6::prep_entities,
                 (Key(id), search.q.clone()),
                 &CallOptions::default(),
             )?
@@ -183,7 +183,7 @@ async fn add_entity(
             "npc" => {
                 bundle
                     .call(
-                        v1_5::add_npc,
+                        v1_6::add_npc,
                         (c, form.name, form.summary, reference.map(Key)),
                         &opts,
                     )?
@@ -192,7 +192,7 @@ async fn add_entity(
             "region" => {
                 bundle
                     .call(
-                        v1_5::add_region,
+                        v1_6::add_region,
                         (c, form.name, form.summary, reference.map(Key)),
                         &opts,
                     )?
@@ -201,7 +201,7 @@ async fn add_entity(
             "settlement" => {
                 bundle
                     .call(
-                        v1_5::add_settlement,
+                        v1_6::add_settlement,
                         (c, form.name, form.summary, reference.map(Key)),
                         &opts,
                     )?
@@ -210,7 +210,7 @@ async fn add_entity(
             "site" => {
                 bundle
                     .call(
-                        v1_5::add_site,
+                        v1_6::add_site,
                         (c, form.name, form.summary, reference.map(Key)),
                         &opts,
                     )?
@@ -219,17 +219,17 @@ async fn add_entity(
             "faction" => {
                 bundle
                     .call(
-                        v1_5::add_faction,
+                        v1_6::add_faction,
                         (c, form.name, form.summary, form.agenda),
                         &opts,
                     )?
                     .value
             }
-            "party" => bundle.call(v1_5::add_party, (c, form.name), &opts)?.value,
+            "party" => bundle.call(v1_6::add_party, (c, form.name), &opts)?.value,
             "item" => {
                 bundle
                     .call(
-                        v1_5::add_item,
+                        v1_6::add_item,
                         (c, form.name, form.summary, reference.map(Key)),
                         &opts,
                     )?
@@ -250,7 +250,7 @@ async fn add_entity(
     )))
 }
 
-fn require_campaign(page: &v1_5::EntityPageRow, campaign: i64) -> Result<()> {
+fn require_campaign(page: &v1_6::EntityPageRow, campaign: i64) -> Result<()> {
     if page.campaign.0 == campaign {
         Ok(())
     } else {
@@ -268,13 +268,13 @@ async fn entity(
     let csrf = state.auth.csrf().to_owned();
     blocking(state, move |bundle| {
         let page = bundle
-            .call(v1_5::entity_page, (Key(entity),), &CallOptions::default())?
+            .call(v1_6::entity_page, (Key(entity),), &CallOptions::default())?
             .next()
             .transpose()?
             .ok_or(Error::Http(StatusCode::NOT_FOUND, "Entity not found."))?;
         require_campaign(&page, campaign)?;
         let parties = bundle
-            .call(v1_5::parties, (Key(campaign),), &CallOptions::default())?
+            .call(v1_6::parties, (Key(campaign),), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(views::entity(campaign, entity, &page, &parties, &csrf))
     })
@@ -292,7 +292,7 @@ async fn write_entity(
     text(&form.secret, 64000, false)?;
     blocking(state, move |bundle| {
         let page = bundle
-            .call(v1_5::entity_page, (Key(entity),), &CallOptions::default())?
+            .call(v1_6::entity_page, (Key(entity),), &CallOptions::default())?
             .next()
             .transpose()?
             .ok_or(Error::Http(StatusCode::NOT_FOUND, "Entity not found."))?;
@@ -300,7 +300,7 @@ async fn write_entity(
         let shown = links::names(&form.body);
         let hidden = links::names(&form.secret);
         bundle.call(
-            v1_5::write_entity,
+            v1_6::write_entity,
             (
                 Key(campaign),
                 Key(entity),
@@ -337,7 +337,7 @@ async fn seat(
     let link = format!("/join/{token}");
     blocking(state, move |bundle| {
         bundle.call(
-            v1_5::seat_player,
+            v1_6::seat_player,
             (
                 Key(campaign),
                 form.name,
@@ -360,13 +360,13 @@ async fn reveal(
     state.auth.check_csrf(&form.csrf)?;
     blocking(state, move |bundle| {
         let page = bundle
-            .call(v1_5::entity_page, (Key(entity),), &CallOptions::default())?
+            .call(v1_6::entity_page, (Key(entity),), &CallOptions::default())?
             .next()
             .transpose()?
             .ok_or(Error::Http(StatusCode::NOT_FOUND, "Entity not found."))?;
         require_campaign(&page, campaign)?;
         bundle.call(
-            v1_5::reveal,
+            v1_6::reveal,
             (Key(form.party), Key(entity), None),
             &CallOptions::default(),
         )?;

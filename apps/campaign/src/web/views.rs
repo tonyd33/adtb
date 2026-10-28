@@ -1,9 +1,9 @@
 use axum::response::Html;
 use maud::{DOCTYPE, Markup, html};
 
-use crate::v1_5;
+use crate::v1_6;
 
-fn page(title: &str, content: Markup) -> Html<String> {
+pub(super) fn page(title: &str, content: Markup) -> Html<String> {
     Html(
         html! {
             (DOCTYPE)
@@ -25,19 +25,19 @@ pub(super) fn csrf(token: &str) -> Markup {
     html! { input type="hidden" name="csrf" value=(token); }
 }
 
-fn parties(rows: &[v1_5::PartiesRow]) -> Markup {
+fn parties(rows: &[v1_6::PartiesRow]) -> Markup {
     html! { label { "Party" select name="party" required {
         @for party in rows { option value=(party.id.0) { (party.name) } }
     } } }
 }
 
-pub(super) fn home(rows: &[v1_5::CampaignsRow], token: &str) -> Html<String> {
+pub(super) fn home(rows: &[v1_6::CampaignsRow], token: &str) -> Html<String> {
     page(
         "Campaigns",
         html! {
             ul { @for row in rows {
                 @let (id, title) = match row {
-                    v1_5::CampaignsRow::Ongoing { id, title } | v1_5::CampaignsRow::Over { id, title, .. } => (id, title),
+                    v1_6::CampaignsRow::Ongoing { id, title } | v1_6::CampaignsRow::Over { id, title, .. } => (id, title),
                 };
                 li { a href=(format!("/gm/campaigns/{}", id.0)) { (title) } }
             } }
@@ -57,15 +57,15 @@ pub(super) fn home(rows: &[v1_5::CampaignsRow], token: &str) -> Html<String> {
 pub(super) fn campaign(
     id: i64,
     title: &str,
-    groups: &[v1_5::PartiesRow],
-    entities: &[v1_5::PrepEntitiesRow],
+    groups: &[v1_6::PartiesRow],
+    entities: &[v1_6::PrepEntitiesRow],
     query: &str,
     token: &str,
 ) -> Html<String> {
     page(
         title,
         html! {
-            nav { a href="/gm" { "All campaigns" } }
+            nav { a href="/gm" { "All campaigns" } " · " a href=(format!("/gm/campaigns/{id}/sessions")) { "Sessions" } }
             form method="get" { label { "Find an entity" input name="q" value=(query); } button { "Search" } }
             ul { @for row in entities.iter().filter(|row| row.matches_query) { li {
                 a href=(format!("/gm/campaigns/{id}/entities/{}", row.id.0)) { (row.name) }
@@ -87,8 +87,8 @@ pub(super) fn campaign(
 pub(super) fn entity(
     campaign: i64,
     entity: i64,
-    row: &v1_5::EntityPageRow,
-    groups: &[v1_5::PartiesRow],
+    row: &v1_6::EntityPageRow,
+    groups: &[v1_6::PartiesRow],
     token: &str,
 ) -> Html<String> {
     page(
@@ -126,11 +126,11 @@ pub(super) fn entity(
                 h2 { "Linked from" }
                 ul { @for source in &row.mentioned_in { li {
                     @match source {
-                        v1_5::EntityPageRowMentionedIn::InEntity { id, name } => { a href=(format!("/gm/campaigns/{campaign}/entities/{}", id.0)) { (name) } }
-                        v1_5::EntityPageRowMentionedIn::InSession { number, .. } => { "Session " (number) }
-                        v1_5::EntityPageRowMentionedIn::InQuest { title, .. }
-                        | v1_5::EntityPageRowMentionedIn::InEvent { title, .. }
-                        | v1_5::EntityPageRowMentionedIn::InNote { title, .. } => { (title) }
+                        v1_6::EntityPageRowMentionedIn::InEntity { id, name } => { a href=(format!("/gm/campaigns/{campaign}/entities/{}", id.0)) { (name) } }
+                        v1_6::EntityPageRowMentionedIn::InSession { number, .. } => { "Session " (number) }
+                        v1_6::EntityPageRowMentionedIn::InQuest { title, .. }
+                        | v1_6::EntityPageRowMentionedIn::InEvent { title, .. }
+                        | v1_6::EntityPageRowMentionedIn::InNote { title, .. } => { (title) }
                     }
                 } } }
                 h2 { "Groups" }
@@ -158,19 +158,20 @@ pub(super) fn invite(campaign: i64, link: &str) -> Html<String> {
     )
 }
 
-pub(super) fn player(name: &str, rows: &[v1_5::KnownEntitiesRow]) -> Html<String> {
+pub(super) fn player(name: &str, rows: &[v1_6::KnownEntitiesRow]) -> Html<String> {
     page(
         "Party discoveries",
         html! {
+            nav { a href="/play/now" { "Now" } " · " a href="/play/recaps" { "Recaps" } }
             p { "Playing as " (name) }
             p { "Refresh this page to see new discoveries." }
             @if rows.is_empty() { p { "Your party has no discoveries yet." } }
             ul { @for row in rows {
                 @let (id, name, summary) = match row {
-                    v1_5::KnownEntitiesRow::Person { id, name, summary, .. }
-                    | v1_5::KnownEntitiesRow::Place { id, name, summary }
-                    | v1_5::KnownEntitiesRow::Org { id, name, summary }
-                    | v1_5::KnownEntitiesRow::Thing { id, name, summary } => (id, name, summary),
+                    v1_6::KnownEntitiesRow::Person { id, name, summary, .. }
+                    | v1_6::KnownEntitiesRow::Place { id, name, summary }
+                    | v1_6::KnownEntitiesRow::Org { id, name, summary }
+                    | v1_6::KnownEntitiesRow::Thing { id, name, summary } => (id, name, summary),
                 };
                 li { a href=(format!("/play/entities/{}", id.0)) { (name) } " · " (summary) }
             } }
@@ -178,7 +179,7 @@ pub(super) fn player(name: &str, rows: &[v1_5::KnownEntitiesRow]) -> Html<String
     )
 }
 
-pub(super) fn player_entity(row: &v1_5::KnownEntityRow) -> Html<String> {
+pub(super) fn player_entity(row: &v1_6::KnownEntityRow) -> Html<String> {
     page(
         &row.name,
         html! {

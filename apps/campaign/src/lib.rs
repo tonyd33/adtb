@@ -21,7 +21,7 @@ pub const BUNDLE_1_0: &str = include_str!("../bundles/campaign-1.0.adb");
 pub const BUNDLE: &str = include_str!("../bundles/campaign-1.3.adb");
 
 /// The browser app's registered calls, pinned at schema version 5.
-pub const WEB_BUNDLE: &str = include_str!("../bundles/campaign-1.5.adb");
+pub const WEB_BUNDLE: &str = include_str!("../bundles/campaign-1.6.adb");
 
 include!(concat!(env!("OUT_DIR"), "/campaign.rs"));
 

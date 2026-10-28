@@ -30,7 +30,7 @@ Stop with Ctrl-C to close the database cleanly. Restart with the same path to
 keep the campaigns, text, discoveries and player seat tokens. Existing player
 cookies continue to work; the new startup link signs in the GM again. A GM
 login link is consumed once, and GM cookies expire on a server restart.
-The app registers `campaign-1.5`, pinned at schema version 5. Migration 0005
+The app registers `campaign-1.6`, pinned at schema version 5. Migration 0005
 checks that NPC and fallen-character locations and item holders belong to the
 same campaign. Prior migrations and bundles stay immutable; open supersedes
 the prior app registration while preserving valid data. An older file with a
@@ -54,9 +54,23 @@ links and backlinks only for discoveries their party knows, from shared text.
 An alias of an undiscovered target is plain text. Renaming through an external
 call keeps stored keys but old name spellings render as plain text until edited.
 
+Open **Sessions** from the campaign page to plan a session for a party, write
+GM prep, and start play. Prepare an encounter, add existing characters or
+extras, then enter a roll for every combatant. Higher rolls act first; ties
+keep creation order. **Next turn** advances the acting slot and starts a new
+round after the last slot. Standings and free tracker text persist in the file.
+End an encounter with its aftermath, or end the session with a date, GM log and
+player recap. Ending a session also resolves any running encounter.
+
+Players use **Now** for labels, standings and the current turn, and **Recaps**
+for their party's played sessions. These pages never receive prep, setup, GM
+logs or tracker text. Refresh manually to see updates. Existing seat revocation
+applies to each request. Played-session GM pages retain prep, logs and recaps.
+
 This slice uses escaped text, normal forms, previews after saving and manual
-player refresh. Rich Markdown, completion, live updates, session tools, quests
-and history pages remain future work.
+player refresh. Rich Markdown, completion, automatic updates, midfight roster
+changes, death recording, quest/timeline screens and simulated load remain
+future work.
 
 Run the HTTP flow tests with:
 

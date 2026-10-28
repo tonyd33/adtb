@@ -14,3 +14,5 @@ li { margin-block: .6rem; }
 details { margin-block: 1rem; }
 summary { cursor: pointer; font-weight: 600; }
 .unresolved { text-decoration: underline wavy; text-decoration-color: light-dark(#a43622, #ffab91); }
+
+.acting { border-left: .3rem solid #326b58; padding-left: .6rem; background: #eaf5ee; }

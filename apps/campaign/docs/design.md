@@ -391,16 +391,16 @@ so it holds back none of the release's `enable` operators.
 
 `build.rs` runs `adtb-codegen` over the log and the bundle files. The
 library holds what it generates: module `schema` with the current host types,
-and modules `v1_0`, `v1_3`, `v1_4` and `v1_5` with each bundle's
+and modules `v1_0`, `v1_3`, `v1_4`, `v1_5` and `v1_6` with each bundle's
 `BUNDLE`, error type and one value per query and transaction. The app
-opens with `v1_5::BUNDLE.registration()`, binds it with
-`Database::bundle`, and calls `bundle.call(v1_5::lookup, (c, q), &opts)`,
+opens with `v1_6::BUNDLE.registration()`, binds it with
+`Database::bundle`, and calls `bundle.call(v1_6::lookup, (c, q), &opts)`,
 getting typed rows back; `tests/engine.rs` does exactly this.
 
 ### 9.2 Registered queries and transactions
 
-The browser app calls `bundles/campaign-1.5.adb`, pinned at schema version 5.
-The original 1.0, 1.3 and 1.4 bundles remain immutable. Opening registers 1.5
+The browser app calls `bundles/campaign-1.6.adb`, pinned at schema version 5.
+The original 1.0, 1.3, 1.4 and 1.5 bundles remain immutable. Opening registers 1.6
 and supersedes earlier app bundles. Migration 0005 adds the missing same-campaign
 checks for NPC/Fallen locations and item holders.
 
@@ -409,8 +409,8 @@ checks for NPC/Fallen locations and item holders.
 | Campaigns | `campaigns` | `new_campaign` |
 | Campaign home and search | `prep_entities`, `lookup`, `parties`, `quest_log` | `add_npc`, `add_region`, `add_settlement`, `add_site`, `add_faction`, `add_party`, `add_item`, `give_item` |
 | Entity page | `entity_page` | `write_entity_text`, `write_entity`, `rename`, `join`, `leave`, `reveal`, `forget` |
-| Session prep | `session_board`, `roster` | `plan_session`, `write_prep`, `add_encounter`, `add_cast`, `add_extra` |
-| Live view | `live_session`, `tracker`, `roster` | `start_session`, `start_encounter`, `next_turn`, `join_fight`, `leave_fight`, `set_standing`, `kill`, `end_encounter`, `end_session`, `reveal`, `reveal_quest` |
+| Session prep | `session_list`, `session_page`, `session_board`, `roster` | `plan_session`, `write_session_prep`, `write_prep`, `add_encounter`, `add_cast`, `add_extra` |
+| Live view | `encounter_page`, `live_session`, `tracker`, `roster` | `start_session`, `start_encounter`, `next_turn`, `join_fight`, `leave_fight`, `set_standing`, `kill`, `end_encounter`, `end_session`, `reveal`, `reveal_quest` |
 | Quests | `quest_log` | `add_quest`, `take_quest`, `shelve_quest`, `resume_quest`, `close_quest`, `abandon_quest`, `reveal_quest` |
 | Maps | `map_view` | `add_map`, `pin_entity`, `add_marker`, `reveal_map` |
 | Timeline | `timeline` | `log_backstory`, `log_in_play` |
@@ -424,6 +424,15 @@ inside one registered transaction, including engine retries. Unknown names
 produce no link row. `prep_entities` and `parties` list all campaign entities
 and parties independently of the limited `lookup` query. The original 1.4
 text-only editor's `write_entity_text` leaves link rows untouched.
+
+The live-session browser slice uses manual refresh for GM and player pages.
+Its plain prep editor uses `write_session_prep`, preserving existing link rows.
+Session and encounter projections include ownership for URL validation. Lifecycle guards run
+inside the registered transactions: played sessions reject prep and encounter
+creation, prepared encounters accept roster additions only before their session
+ends, and starting checks that the submitted rolls cover the current roster.
+Tracker changes require an underway encounter. A stale browser form is refused
+rather than changing a later lifecycle state.
 
 Every GM action is one registered transaction, so each is one
 statement: one change set, checked against every constraint at its

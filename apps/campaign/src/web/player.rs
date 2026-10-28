@@ -8,20 +8,22 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 
 use super::{Error, Result, State as AppState, auth, blocking, views};
-use crate::v1_5;
+use crate::v1_6;
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/join/{token}", get(join))
         .route("/play", get(home))
         .route("/play/entities/{entity}", get(entity))
+        .route("/play/now", get(now))
+        .route("/play/recaps", get(recaps))
 }
 
 async fn join(State(state): State<Arc<AppState>>, Path(token): Path<String>) -> Result<Response> {
     let given = token.clone();
     blocking(state, move |bundle| {
         bundle
-            .call(v1_5::seat, (given,), &CallOptions::default())?
+            .call(v1_6::seat, (given,), &CallOptions::default())?
             .next()
             .transpose()?
             .ok_or(Error::Http(
@@ -51,7 +53,7 @@ async fn home(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<
     let token = seat_token(&headers)?;
     blocking(state, move |bundle| {
         let seat = bundle
-            .call(v1_5::seat, (token,), &CallOptions::default())?
+            .call(v1_6::seat, (token,), &CallOptions::default())?
             .next()
             .transpose()?
             .ok_or(Error::Http(
@@ -59,7 +61,7 @@ async fn home(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<
                 "This seat has been revoked.",
             ))?;
         let entities = bundle
-            .call(v1_5::known_entities, (seat.party,), &CallOptions::default())?
+            .call(v1_6::known_entities, (seat.party,), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(views::player(&seat.name, &entities))
     })
@@ -74,7 +76,7 @@ async fn entity(
     let token = seat_token(&headers)?;
     blocking(state, move |bundle| {
         let seat = bundle
-            .call(v1_5::seat, (token,), &CallOptions::default())?
+            .call(v1_6::seat, (token,), &CallOptions::default())?
             .next()
             .transpose()?
             .ok_or(Error::Http(
@@ -83,7 +85,7 @@ async fn entity(
             ))?;
         let page = bundle
             .call(
-                v1_5::known_entity,
+                v1_6::known_entity,
                 (seat.party, Key(entity)),
                 &CallOptions::default(),
             )?
@@ -91,6 +93,48 @@ async fn entity(
             .transpose()?
             .ok_or(Error::Http(StatusCode::NOT_FOUND, "Entity not found."))?;
         Ok(views::player_entity(&page))
+    })
+    .await
+}
+
+async fn now(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<Html<String>> {
+    let token = seat_token(&headers)?;
+    blocking(state, move |bundle| {
+        let seat = bundle
+            .call(v1_6::seat, (token,), &CallOptions::default())?
+            .next()
+            .transpose()?
+            .ok_or(Error::Http(
+                StatusCode::UNAUTHORIZED,
+                "This seat has been revoked.",
+            ))?;
+        let rows = bundle
+            .call(
+                v1_6::party_encounter,
+                (seat.party,),
+                &CallOptions::default(),
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(super::live_views::now(&rows))
+    })
+    .await
+}
+
+async fn recaps(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<Html<String>> {
+    let token = seat_token(&headers)?;
+    blocking(state, move |bundle| {
+        let seat = bundle
+            .call(v1_6::seat, (token,), &CallOptions::default())?
+            .next()
+            .transpose()?
+            .ok_or(Error::Http(
+                StatusCode::UNAUTHORIZED,
+                "This seat has been revoked.",
+            ))?;
+        let rows = bundle
+            .call(v1_6::recaps, (seat.party,), &CallOptions::default())?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(super::live_views::recaps(&rows))
     })
     .await
 }

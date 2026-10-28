@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+mod scratch;
+pub use scratch::scratch;
 
 use axum::Router;
 use axum::body::Body;
@@ -57,18 +58,6 @@ pub fn cookie(reply: &Reply) -> &str {
         .split(';')
         .next()
         .unwrap()
-}
-
-pub fn scratch(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("web")
-        .join(name);
-    match std::fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => panic!("clear {dir:?}: {e}"),
-        _ => {}
-    }
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.join("campaign.adt")
 }
 
 pub async fn login(server: &Server, router: &Router) -> (String, String) {

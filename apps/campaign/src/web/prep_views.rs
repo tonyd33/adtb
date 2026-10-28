@@ -1,9 +1,9 @@
 use maud::{Markup, html};
 
 use super::views::csrf;
-use crate::v1_5;
+use crate::v1_6;
 
-pub(super) fn forms(id: i64, entities: &[v1_5::PrepEntitiesRow], token: &str) -> Markup {
+pub(super) fn forms(id: i64, entities: &[v1_6::PrepEntitiesRow], token: &str) -> Markup {
     html! {
         section { h2 { "Create entity" }
             p { "Create an entity, then edit its shared and secret text. Invite a player to create their character." }
