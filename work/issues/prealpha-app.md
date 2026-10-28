@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: open
 kind: feature
 priority: 850
 summary: no application exercises adtb end to end
-branch: campaign-prep
 depends-on:
   - milestone-7-engine
 tags:
@@ -160,3 +159,58 @@ Landing depends on independent review and successful final branch checks;
 propose the commit subject first. The lead owns the post-land main integration
 check and dated result. No push, artifact cleanup or unrelated tracks. The
 broader application ticket remains open after this bounded prep slice.
+
+## 2026-10-28: prep slice landed and integrated
+
+Landed `4c4b522f061850d0a8aaf151850ea3a780f0278e`,
+`feat: add campaign prep and atomic entity links`, after independent fresh Pi
+review found no actionable correctness/security findings or suspected engine
+defects. All earlier bundle and migration bytes remain unchanged. No app
+workaround, engine change, new dependency or version translation was introduced.
+
+Branch verification tested `d6a0b7994dd3f1ed53454fd4893ddebe2f3b5ea5`
+on base `652b3d28388bfb2d0e52dbe4e336f1dd97fb91f4`; the landed tree is
+identical to that tested tree. The full authoritative check exited 0 in 264 s:
+2,329 root tests passed (8 skipped), 40 campaign tests passed (1 skipped), root
+and campaign clippy/format/lint parity, dependency policy, size and documentation
+checks passed. House-check passed. Inputs were unchanged at check boundaries.
+Receipt: preserved sibling `target/receipt-pi-resume.md`; log:
+`target/check-pi-resume.log`; original interrupted suite archived as
+`target/suite-before-pi-resume.txt`. The earlier exit 143 remains unexplained;
+this successful run does not diagnose its cause.
+
+The lead then ran the same authoritative command from main on the landed
+commit (empty working copy `1140b00202f9df4b0bd253416f66b5ea0220a616`):
+
+```sh
+direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
+```
+
+Main integration exited 0 in 124 s, from 2026-10-28T01:58:19Z to
+02:00:23Z. All 2,329 root and 40 campaign tests passed, with the same skips;
+all lint, formatting, dependency, size and documentation stages passed.
+Documentation checked 61 pages, 6,710 links and 4,975 fragments with no failures.
+Tracked inputs and local build configuration were unchanged at check boundaries.
+Main tix check and scoped house-check passed. Evidence is in main
+`target/campaign-prep-orchestration/main-check.{log,status,timing}` and
+`main-inputs-{before,after}.sha256`; root suite remains `target/suite.txt`.
+Permission wait was not observed; execution-only and queue timing are unknown.
+
+Historical desktop/mobile browser evidence was inspected and reused explicitly
+on unchanged app, engine and build inputs since source snapshot `1c0b7a1f`;
+it was not rerun. Script/log/screenshots remain in the preserved campaign-prep
+`target/`. Independent review noted that concurrent HTTP tests check persisted
+agreement without forcing a retry, and fresh invalid-reference tests are
+narrower than old-file refusal coverage. No implementation defect was established.
+
+The landing tool forgot the campaign-prep jj registration, but its directory,
+source and artifacts were retained. Prior test fixtures were archived before
+reruns; no campaign-prep cleanup or push occurred. Main's prior verification
+artifacts were also archived before integration. The review-only workspace and
+its report are retained. Branch tix/quandary validation encountered pre-existing
+missing local-only records; current main tix and validated rulings were used.
+Those separate resumption limitations are not claimed resolved.
+
+This prep slice is complete. The broader application and simulated workload
+remain unfinished; leave this ticket open and unassigned pending user direction.
+No further application, engine, docs-watch or SkillOpt track was started.
