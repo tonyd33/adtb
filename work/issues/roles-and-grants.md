@@ -230,3 +230,22 @@ closed-FileId fixture diagnosis still unfinished. No new provider feature work.
 After prerequisite, fresh successor must remove printer validation and rely on
 shared Engine::principal, complete native bootstrap and all existing past guards,
 then receive fresh exact-source review and full checks.
+
+## 2026-10-28: engine prerequisites verified; native initialization next
+
+The three explicit dependencies are now resolved. Root Principal lookup landed
+1be643fa, approved total UUID formatting landed 1f403049, and the separate shared
+newtype textual contract repair landed 2a44d5ab. The final combined main check
+passed all 2,396 workspace tests and 47 campaign tests, plus lint, policy and docs;
+full checked state and evidence are in textual-newtype-to-text-contract.
+
+Provider source efdd791f on e4d7aa6c remains unlanded and overall unverified in
+/home/tony/code/adtb-role-authority. No provider change was made in these tracks.
+Next fresh successor must rebase that preserved draft, remove printer validation
+and consume shared Engine::principal, finish native empty-only owner initialization
+before live statement assembly, and diagnose the legacy full-counter/closed-FileId
+fixtures. Preserve the three existing past/history regression oracles and both
+70-second timeout receipts; neither timeout established a capacity-refusal proof.
+The native initialization plan and authority scope above remain unchanged. Fresh
+exact-source review and branch/main full checks are still required before landing
+any foundation slice. Broader permissions/binding/tasks/transport remain unfinished.

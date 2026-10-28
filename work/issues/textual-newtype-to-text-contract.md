@@ -1,7 +1,7 @@
 ---
 created-at: 2026-10-28
-status: in-progress
-branch: textual-to-text
+status: resolved
+closed: 2026-10-28
 kind: bug
 priority: 799
 tags: [lang, quality, test]
@@ -67,3 +67,41 @@ implementation using tests first, then common fix. Assigned branch scope affecte
 lang/textual/consumer tests, strict lang clippy/fmt/house/size; lead owns fresh
 review and full post-land root/app/policy/docs check. Keep exact frozen IDs,
 source/build/config inputs and honest status/timing receipts.
+
+## 2026-10-28: resolved
+
+Landed 2a44d5ab0facfa4c18ce128aefa1efee054e2831. The shared generic Newtype arm
+uses print(v, form) for non-Text newtypes; the Text special case is unchanged.
+No query builtin, contract, spec, ruling, dependency or signature changed. Existing
+Cents coverage was corrected and retained; schema-derived Bytes controls include
+empty/high bytes, roundtrip and wrong scalar kinds. The original baseline on
+b2445dc7854b5fb5178ff68516acfa26550a99a8 collected 100: ten passed, two failed.
+Frozen e0659096d9ff3948a759c746a650ee1b84c87e3f passed language textual tests (12),
+reference textual tests (16), engine textual tests (3), strict language clippy,
+format, house and size. The new test took 0.009 seconds. All tracked/config inputs
+remained unchanged during each check. Fresh independent review found no findings
+and rehashed all 2,560 files, 14 config paths and 12 evidence pairs.
+
+The full check passed on clean main working copy
+51a19354230b830a89023a81ae61cc439347e51f, parent 2a44d5ab.
+Command from main, retained in target/textual-to-text-integration.sh:
+
+```
+direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
+```
+
+Rust 1.98.1 / Cargo 1.98.0; default configured features and profiles. Collected
+exit 0. Start 2026-10-28T18:13:43Z, end 2026-10-28T18:16:06Z: 143 seconds, with one-second
+timestamp precision. Permission, queue and execution-only times are unknown.
+All 2,396 root tests passed, eight skipped (50.521 seconds). All 47 campaign
+tests passed, one skipped (20.744 seconds). Clippy, format, parity, dependency,
+size and docs checks passed. Docs: ten tests in 10.238 seconds, 420 syntax inputs,
+61 pages, 6,734 links, 4,999 fragments, no failures.
+
+All tracked inputs, local root/app Cargo configs and revision remained unchanged.
+Evidence under target/textual-to-text-integration/; check.log SHA256:
+1e618e72f228e0b650da12d1387792e9999dcb25c09ad9ef70fca7a793c1550f.
+
+No unfinished integration scope remains. Historical baseline failures and source
+remain preserved. Subsequent ticket-only updates use tix/house validation; they
+change no executable or book input. Pushing is deferred while Tangled is down.
