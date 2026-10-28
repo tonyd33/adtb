@@ -39,3 +39,37 @@ lang clippy/fmt/house and measured bounded regression, fresh exact review. Lead
 explicitly owns broader root/campaign/docs check after landing, avoiding another
 full cold engine build in this language workspace. Evidence must retain exact
 source/base/hash stability, commands/final exits/logs/timings and unfinished scopes.
+
+## 2026-10-28: exact baseline and reviewed language repair
+
+Baseline92666609f36238fc7da94847098baa16497ccd80 on55220629 reproduced the valid
+finite nested Option refusal (exit100,0.008s) and the30-level shared type graph
+timeout (exit100,60.005s). Temporary stage markers reached parse/build/
+check_ordered entered but never completion, proving the schema stage independently
+of principal validation. Total110.862419s including50.30s cold compilation,
+16:12:07Z–16:13:58Z. All tracked/local config hashes and revision unchanged.
+Baseline logs/receipt retained under target/ordered-baseline.
+
+Final source e4460037e04980f8ce7a1b1713d5e959102bcd76/base55220629 changes only
+schema.rs and schema_tests.rs. Query-local declaration requirements are composed
+through actual args and the current parameter callback; declaration and completed
+key requirements are memoized separately. Active guards reject genuine cycles
+without expanding growing args. No persistent Schema cache or public signature,
+dependency or normative change. Newtype base-parameter admission remains rejected;
+missing substitution there was not an admitted bug. No fixture/timeout bypass.
+
+All assigned language gates passed0 on stable final inputs:659tests including
+641unit+9spec+9textual, strict lang clippy, fmt and house; additional size0.
+Tests2.124s, total37.546583s,16:21:45Z–16:22:22Z. Seven new regressions each
+0.009–0.014s; nominal30-level graph0.012s, composite-key graph0.011s. Generic,
+phantom/required-param, callback/schema-state and recursive/key controls passed.
+No separate old-key failing executable baseline is claimed. Key tests concern
+language ordering, not materialization of huge engine keys. Rust1.98.1/Cargo1.98.0,
+configured defaults. Log SHA256f5ef656bd17a5cd44983debc74fa6cfe728de35deab038505353fb350efa071d.
+
+Fresh independent exact-source review reports no blocker; report/receipts under
+work/briefs/review-ordered-schema.md and receipt-ordered-schema.md. Author's
+branch full engine/campaign/docs check was explicitly assigned to lead instead;
+post-land main integration is still REQUIRED, not yet passed. Principal validator
+remains frozen and must rebase/rerun its unchanged legitimate DAG fixture only
+after this repair and main integration.
