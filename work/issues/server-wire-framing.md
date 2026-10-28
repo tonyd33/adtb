@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: feature
 priority: 1002
 summary: adtb-server has no checked wire primitives or incremental frame codec
-branch: server-wire
+closed: 2026-10-28
 tags:
   - server
   - test
@@ -57,3 +57,24 @@ above unchanged: pure primitives/framing only. Finish audit, structured length
 mismatch, resource/compression contracts and golden/adversarial tests; affected
 tests/clippy then stable full check. No sockets or engine-interface changes.
 Engine-first rule still applies. Lead owns review, landing and main integration.
+
+## 2026-10-28: resolved
+
+Landed b27a1eb1 after lead exact eb53dbb1 review and branch check exit0:
+2349root/8skipped,40campaign/1skipped, all static/docs. Main integration also
+passed collected exit0 at clean WC e4d97725bfa1cc0aa986d91350b9c4c68c137648
+(parent b27a1eb1),2026-10-28T03:21:23Z to03:22:41Z,78s elapsed. Revision and
+tracked/local-config hashes match before/after. Exact main command: direnv exec
+/home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check.
+Root2349passed/8skip, campaign40passed/1skip, all static/docs stages passed.
+Rust1.98.1/default profiles/features; permission/queue/execution-only unknown.
+Logs/status/hashes in target/server-wire-integration/. Branch evidence copied
+to main target/server-wire-evidence/; only completed sibling target/debug
+removed14GB for campaign headroom. Source and original logs remain.
+
+Codec includes15golden/adversarial tests, canonical primitives and ordered
+option lists, bounded incremental framing/chunks/reassembly with typed errors.
+Bounds measure logical accepted body bytes/items/partial streams, not total
+process memory or caller-retained completed messages. No sockets, authentication,
+compression execution, body Value/Arrow encoding or connection lifecycle/fair
+scheduling is implemented. Those remain separate server/engine work.

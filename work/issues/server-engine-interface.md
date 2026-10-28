@@ -104,3 +104,10 @@ Fresh dispatch attempted twice but rejected by harness agent-thread limit.
 Workspace/probe/brief are prepared; implementation has not begun. Lead will
 dispatch when capacity becomes available, preserving the fresh-agent rule.
 This is a harness-capacity wait, not a permission or implementation failure.
+
+## 2026-10-28: provider contract agent active
+
+Fresh dispatch succeeded after wire worker completed. Agent owns prepared
+server-boundary workspace/docs-only scope; access reverified. No executable
+provider implementation yet. Campaign branch is independently checking its
+final live slice; codec landed b27a1eb1 with full branch/main checks passed.
