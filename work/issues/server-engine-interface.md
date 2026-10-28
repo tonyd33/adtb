@@ -72,3 +72,14 @@ Campaign-live and pure wire framing are independent and resumed after verified
 engine repair ef7361f9. Scope for first actual server remains authenticated Unix
 bound calls with genuine cancellation/credit, zero optional client request ids;
 full parity, TCP/TLS, translation and hosting are separate follow-on work.
+
+## 2026-10-28: owned-task boundary approved
+
+User approved server-owned-tasks; adopted into current with quandary adopt
+--confirmed. Accepted net/task-boundary/owned and
+net/task-resumption-cost/implement. Canonical contract work can proceed: one
+provider owner specifies role/binding authority, task/result ownership, bounded
+admission and suspension, cancellation/commit and interactive wait liveness.
+Exact Rust signatures need review before implementation consumers branch.
+Keep embedded owner calls compatible. No runtime dependency or transport
+implementation is implied by approval.
