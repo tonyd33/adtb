@@ -5,7 +5,7 @@ kind: bug
 priority: 799
 summary: asserted principals are accepted without validating nested value domains
 branch: principal-validation
-depends-on: [ordered-schema-shared-graph]
+depends-on: [ordered-schema-shared-graph, campaign-live-fixture-lifecycle]
 tags:
   - engine
   - quality
@@ -107,3 +107,21 @@ lookup. It still does not prove the value-validation hole because it fails at
 registration first. The imported9d3e76bf fixture is valid and independently proves
 the nested assertion bug; this repair must not claim root lookup fixed. Original
 logs and source IDs are retained; current fullcheck stays frozen.
+
+## 2026-10-28: full verification blocked by existing campaign fixture
+
+After verified ordering repair928b7d38, principal rebased cleanly to
+f987476fc777ed7aafdf23fc18e8e8e28137cbee; both test files byte-identical to caab9c70.
+All six focused commands passed0 with stable inputs/revision,115.612579s:
+4generic units (unchanged DAG0.010s),10public principal tests,29registered tests,
+strict adtb+sim all-target clippy/fmt/house. Fresh exact8path independent source
+and focused review clear; no fullpass claimed.
+
+Authoritative fullcheck f987476f collected100/stable,406.417s: all2,387root tests
+passed/8skipped51.146s; campaign46/47passed with one existing live test failed.
+The failure is a confirmed test lifecycle leak, tracked in campaign-live-fixture-
+lifecycle; engine correctly refused a second proposed Underway for the same
+session. Later policy/size/docs/house unfinished. Keep this failed run and both
+original code/test files unchanged. Fresh isolated fixture repair lands/mainchecks
+first, then principal rebases and reruns full branch before landing/maincheck.
+No role/campaign feature expansion, forced schedule or error suppression.
