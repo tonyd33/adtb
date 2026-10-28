@@ -1,7 +1,7 @@
 ---
 created-at: 2026-10-28
-status: in-progress
-branch: uuid-format
+status: resolved
+closed: 2026-10-28
 kind: bug
 priority: 799
 summary: UUID formatting rejects in-memory values that only violate a write-time predicate
@@ -112,3 +112,42 @@ adtb-lang spec_corpus and full conformance BEFORE fresh spec reading review.
 Lead owns independent implementability review and full post-land root/app/policy/
 docs check (explicit narrow branch exception). Current Principal repair lands
 first and is now fully verified. Keep all previous failures and input receipts.
+
+## 2026-10-28: resolved
+
+Landed 1f403049e1113c59c9e08ccff95517a7dbf3d078 after the assigned checks and a
+fresh independent code/spec review. All nine source files are identical to frozen
+0cea33e5ae69645c266a5e5c049263ff9473dcdb; the rebase changed three ticket files.
+The fix reuses generic wrapper helpers in the shared reader/printer. No consumer
+special case, allocated schema/Form layer, dependency or storage rule was added.
+
+The language tests passed (11), engine textual tests (3), public API regression
+(1), executor shape test (1), and strict clippy/fmt/house/size checks. New tests
+took 0.007, 0.010 and 0.160 seconds. Spec corpus (9) and all 234 conformance files
+on both consumers passed before the independent reading review. The reviewer
+verified nine source hashes, 24 build inputs, five absent configs and 12 log
+receipts. The author's initial hash manifest covered build inputs; frozen jj
+states and final source hashes identify tested source. A dedicated nested short
+UUID test was not added; shared recursion was inspected and existing nested UUID
+coverage remains.
+
+The full main check passed with exit 0 on clean working copy
+e27bb67674b600c29aec67bb07c7bec5269e4bfd, parent 1f403049. Command from main:
+
+```
+direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
+```
+
+It ran from 18:04:26Z to 18:07:33Z on 2026-10-28 (187 seconds; timestamps have
+one-second precision). Permission, queue and execution-only durations are unknown.
+All 2,395 root tests passed, with eight skipped (53.322 seconds); all 47 campaign
+tests passed, with one skipped (21.335 seconds). Lint, format, parity, dependency,
+size and docs checks passed. Docs ran ten tests in 10.301 seconds and checked
+420 syntax inputs, 61 pages, 6,734 links and 4,999 fragments with no failures.
+All tracked inputs, local root/app Cargo configs and revision remained unchanged.
+
+Evidence: target/uuid-format-integration/; check.log SHA256
+b58765949ec812cd3d417e145bc4f56303371541b84d601994acdc5f87ee9000.
+Local receipt: work/briefs/receipt-uuid-format-main.md. Historical audit failures
+remain preserved. No UUID integration work remains. The separate generic-newtype
+API discrepancy is tracked in textual-newtype-to-text-contract.
