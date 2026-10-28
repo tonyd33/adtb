@@ -82,3 +82,23 @@ caught in review and corrected as an application release error; the engine's
 refusal was correct. First slice remains deliberately small: manual refresh,
 plain text and no full prep/live/history UI or simulated application workload.
 The broader ticket remains in progress with the engine-first policy above.
+
+## 2026-10-27: prep slice awaiting review
+
+Work is preserved in jj workspace campaign-prep at
+/home/tony/code/adtb-campaign-prep. Brief and live checkpoint are
+work/briefs/brief-campaign-prep.md and handoff-campaign-prep.md in the main
+checkout. User requests a shutdown handoff; finish existing validation only,
+then resume review and landing in a later session. No new feature tracks.
+
+The slice adds prep entity forms, atomic name-resolved shared/secret links,
+backlinks and filtered player rendering. Additive migration 0005 enforces
+the existing application's same-campaign rule for NPC/Fallen locations and
+Item holders; these constraints were missing from the app schema. This is
+not an engine defect. New immutable campaign-1.5 pins schema 5; historical
+bundle tests retain their actual schema 4. Version translation stays deferred.
+
+Six focused real-file prep tests pass, including concurrent text/link
+agreement, more than 20 names, Unicode search, valid old-file upgrade and
+refusal of invalid old-file data. Final checks/browser evidence and review
+are still pending at this checkpoint. Read the updated handoff before resuming.
