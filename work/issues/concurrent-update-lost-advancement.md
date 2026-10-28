@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: resolved
 kind: bug
 priority: 698
 summary: two successful concurrent registered updates may persist only one advancement
-branch: engine-update-loss
+closed: 2026-10-27
 tags:
   - engine
   - test
@@ -91,3 +91,21 @@ review of the exact final snapshot found no actionable blocker, including the
 static Stage proof for that path. Report: work/briefs/review-update-ownership.md.
 Reviewer ran scoped house-check, not builds/tests. Branch authoritative check
 is running on the final snapshot; receipt and main integration still pending.
+
+## 2026-10-27: resolved
+
+Landed ef7361f9 (fix(mvcc): claim version headers atomically) after independent
+review of exact branch970d78681594de354987a027b65142c409072379. Branch full
+check passed2334root/40campaign/allstaticdocs, exit0. Lead post-land check
+also passed, collected exit0, on clean WC e5e6788dc586e61f7f57cc3a4574780a0eeeead2
+(parent ef7361f9), 2026-10-28T02:52:36Z to02:57:53Z,317s elapsed.
+Root2334passed/8skipped, campaign40passed/1skipped, all lint/dependency/size/docs
+checks passed. Before/after revision and tracked-source/local-config hashes
+matched. Command from main root: direnv exec /home/tony/code/adtb env
+DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check. Toolchain1.98.1,
+configured default profiles/features. Permission/queue/execution-only timing
+unknown. Evidence: target/engine-update-loss-integration/{check.log,check.status,
+revision-before.txt,revision-after.txt,inputs-before.sha256,inputs-after.sha256}.
+Focused regressions and coverage limits described above remain applicable.
+No engine checks remain outstanding for this repair. Campaign and independent
+wire codec may resume; another engine issue restores full engine priority.
