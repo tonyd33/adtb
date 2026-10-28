@@ -40,6 +40,27 @@ impl<'a> Fixture<'a> {
     fn call<C: Callable<Bundle = v1_6::Bundle>>(&self, c: C, args: C::Args) -> C::Output {
         self.bundle.call(c, args, &CallOptions::default()).unwrap()
     }
+    fn finish(&self) {
+        self.call(v1_6::end_encounter, (self.encounter.clone(), "".into()));
+        assert!(
+            self.call(v1_6::tracker, (self.encounter.clone(),))
+                .next()
+                .is_none()
+        );
+        let page = self
+            .call(v1_6::session_page, (self.session.clone(),))
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            page.encounters
+                .iter()
+                .find(|encounter| encounter.id == self.encounter)
+                .unwrap()
+                .state,
+            "Resolved"
+        );
+    }
     fn roll(&self) -> Vec<v1_6::StartEncounterRollsArg> {
         vec![v1_6::StartEncounterRollsArg {
             combatant: self.combatant.clone(),
@@ -183,31 +204,89 @@ pub fn stale_rosters_and_ended_lifecycles_are_rejected_inside_registered_calls(
     );
 }
 
+#[derive(Clone, Copy, Debug)]
+enum RosterStartOrder {
+    Concurrent,
+    StartFirst,
+    AddFirst,
+}
+
 pub fn concurrent_roster_addition_and_start_cannot_both_commit(
     bundle: &Bundle<v1_6::Bundle>,
     session: Key<v1_6::Sessions>,
 ) {
+    for order in [
+        RosterStartOrder::Concurrent,
+        RosterStartOrder::StartFirst,
+        RosterStartOrder::AddFirst,
+    ] {
+        roster_addition_and_start(bundle, session.clone(), order);
+        let following = Fixture::new(bundle, session.clone());
+        following.call(
+            v1_6::start_encounter,
+            (following.encounter.clone(), following.roll()),
+        );
+        assert_eq!(
+            following
+                .call(v1_6::tracker, (following.encounter.clone(),))
+                .next()
+                .unwrap()
+                .unwrap()
+                .order
+                .len(),
+            1,
+            "after {order:?}"
+        );
+        following.finish();
+    }
+}
+
+fn roster_addition_and_start(
+    bundle: &Bundle<v1_6::Bundle>,
+    session: Key<v1_6::Sessions>,
+    order: RosterStartOrder,
+) {
     let f = Fixture::new(bundle, session);
-    let barrier = Barrier::new(2);
-    let (start, add) = std::thread::scope(|scope| {
-        let start = scope.spawn(|| {
-            barrier.wait();
-            f.bundle.call(
-                v1_6::start_encounter,
-                (f.encounter.clone(), f.roll()),
-                &CallOptions::default(),
-            )
-        });
-        let add = scope.spawn(|| {
-            barrier.wait();
-            f.bundle.call(
-                v1_6::add_extra,
-                (f.encounter.clone(), "B".into(), "Extra".into()),
-                &CallOptions::default(),
-            )
-        });
-        (start.join().unwrap(), add.join().unwrap())
-    });
+    let start = || {
+        f.bundle.call(
+            v1_6::start_encounter,
+            (f.encounter.clone(), f.roll()),
+            &CallOptions::default(),
+        )
+    };
+    let add = || {
+        f.bundle.call(
+            v1_6::add_extra,
+            (f.encounter.clone(), "B".into(), "Extra".into()),
+            &CallOptions::default(),
+        )
+    };
+    let (start, add) = match order {
+        RosterStartOrder::Concurrent => {
+            let barrier = Barrier::new(2);
+            std::thread::scope(|scope| {
+                let start = scope.spawn(|| {
+                    barrier.wait();
+                    start()
+                });
+                let add = scope.spawn(|| {
+                    barrier.wait();
+                    add()
+                });
+                (start.join().unwrap(), add.join().unwrap())
+            })
+        }
+        RosterStartOrder::StartFirst => (start(), add()),
+        RosterStartOrder::AddFirst => {
+            let add = add();
+            (start(), add)
+        }
+    };
+    match order {
+        RosterStartOrder::StartFirst => assert!(start.is_ok(), "start={start:?}"),
+        RosterStartOrder::AddFirst => assert!(add.is_ok(), "add={add:?}"),
+        RosterStartOrder::Concurrent => {}
+    }
     assert_ne!(start.is_ok(), add.is_ok(), "start={start:?}, add={add:?}");
     let roster = f
         .call(v1_6::roster, (f.encounter.clone(),))
@@ -226,5 +305,16 @@ pub fn concurrent_roster_addition_and_start_cannot_both_commit(
         refused(start, "Enter one roll for every combatant");
         assert_eq!(roster.len(), 2);
         assert!(tracker.is_none());
+        let rolls = roster
+            .into_iter()
+            .zip(1_i64..)
+            .map(|(combatant, slot)| v1_6::StartEncounterRollsArg {
+                combatant: combatant.id,
+                roll: 20,
+                slot,
+            })
+            .collect();
+        f.call(v1_6::start_encounter, (f.encounter.clone(), rolls));
     }
+    f.finish();
 }
