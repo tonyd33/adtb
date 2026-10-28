@@ -173,3 +173,28 @@ fixture uses canonical persist, never handwritten bytes or public bypass.
 
 Broader native-open error taxonomy is preexisting and not claimed fixed by this
 metadata placement correction. Full roles/grants/binding/server remain unfinished.
+
+## 2026-10-28: paused for shared engine assertion validation
+
+Fresh review found the existing shared Engine::principal accepts only outer
+constructor/arity before cloning nested fields. The draft provider's textual
+printer is also not a type validator. General engine ticket
+asserted-principal-value-domain now takes full priority on main; no role-only
+workaround is authorized. This repair lands first, then a fresh provider successor
+rebases and reuses the shared boundary before completing native initialization.
+
+Preserved role source efdd791fdb6d0d964fe340354b32f180403fe955 on e4d7aa6c,
+including private test-only canonical full-counter fixture. Neither native
+bootstrap correction nor principal validator was implemented. Two legacy reopen
+fixtures timed out100 at70s with closed FileId worker panics, first reused runtime
+and then fresh runtime. These are NOT successful capacity-refusal witnesses;
+possible draft double-close after failed bootstrap remains source-inferred.
+No leaked test groups remain. Tiny-memory guard passed on old bootstrap.
+
+All evidence retained in source workspace and main target/role-authority-resume-
+evidence:162copied nondebug files plus537archived tmp fixtures individually
+SHA256verified before removing only completed debug cache. Original sources,
+logs and fixtures remain. Handoff/receipt-role-authority-resume.md and blocked
+review-role-authority.md describe the12-file unverified draft, exact three history
+failures and pending native initialization/typed validation/review/full checks.
+No role provider landing or server-readiness claim.
