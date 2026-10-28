@@ -5,6 +5,7 @@ kind: bug
 priority: 799
 summary: asserted principals are accepted without validating nested value domains
 branch: principal-validation
+depends-on: [ordered-schema-shared-graph]
 tags:
   - engine
   - quality
@@ -70,3 +71,28 @@ no-extra-allocation already-NFC fast path; raw enum bypasses are checked at the
 boundary. Add direct constructor and valid/raw principal controls, simplifying
 redundant existing Text normalization where directly affected. This is limited
 execution-value construction scope, not a broad Unicode or argument refactor.
+
+## 2026-10-28: ordered checker prerequisite, no test bypass
+
+First complete validator source caab9c7036b6e4d392490266dc7afc50dde7c242 on
+c14a6594 has the shared iterative validator, bounded pair-memoized Span order
+check, constructor NFC fast path and reused decimal predicate. Fresh exact
+source review has no concrete blocker so far, but verification is NOT complete.
+The affected runner stopped100 after three unit tests passed and its legitimate
+30-level ordered graph fixture timed out60.004s; total87.219s includes compilation,
+source/config hashes and revision stayed unchanged. Later gates did not run.
+
+Source audit identifies Schema builder check_ordered before the first valid()
+call, recursively unfolding both fields of every shared predecessor. Exact stage
+isolation/general repair now belongs to ordered-schema-shared-graph. Do not
+bypass checking with manually trusted ordered flags, reduce depth to hide the
+case, raise timeout or count three scoped passes as final. Original fixture and
+timeout are preserved. Source-inferred finite generic and newtype order cases
+are acceptance candidates for the language repair, not yet proven bugs.
+
+Landing order: language repair and full main integration first; then this worker
+rebases frozen caab9c70 and reruns the unchanged legitimate DAG test, all affected
+gates, exact review/full branch and lead main integration. Role provider remains
+paused. Fresh language workspace owns sole cold build slot; principal has no
+active build/check process. All baseline/setup/compile/timeout receipts remain in
+work/briefs/receipt-principal-validation.md and original target logs.

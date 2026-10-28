@@ -5,6 +5,7 @@ kind: feature
 priority: 830
 summary: "no roles or grants exist, so the registration privilege check and every grant check have nothing to check"
 branch: role-authority
+depends-on: [asserted-principal-value-domain]
 tags:
   - engine
 ---
