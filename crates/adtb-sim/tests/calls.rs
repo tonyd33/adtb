@@ -95,6 +95,7 @@ fn sleep<R: Runtime>(rt: &R, d: Duration) {
 fn entry(priority: Priority, start: u64, bytes: usize, deadline: Option<Instant>) -> Entry {
     Entry {
         priority,
+        rank: 0,
         start: Instant::from_nanos(start),
         bytes,
         deadline,
@@ -1189,13 +1190,12 @@ fn a_waiting_write_stops_at_its_deadline<R: Runtime>(rt: &R) {
     )
     .unwrap();
     log.until(|es| es.iter().any(|e| matches!(e, Event::Stopped(..))));
-    assert_eq!(
-        vec![
-            Event::Ran("late"),
-            Event::Waiting("late"),
-            Event::Stopped("late", Stopped::DeadlineExceeded),
-        ],
-        log.events()
+    let stopped = Event::Stopped("late", Stopped::DeadlineExceeded);
+    let events = log.events();
+    assert!(
+        events == [Event::Ran("late"), Event::Waiting("late"), stopped.clone()]
+            || events == [stopped],
+        "a waiting or a queued call stops at its deadline: {events:?}"
     );
     items.db.commit(t0).unwrap();
     pool.admit(plain(1), Box::new(write("next", BUMP, &items, &log)))
@@ -1246,6 +1246,191 @@ fn a_rerun_keeps_the_statement_limit_of_its_first_run() {
         assert_eq!(ints(&[0]), items.values());
         pool.shutdown();
     });
+}
+
+/// A rerun runs the statements before the one that suspended without the statement limit: a
+/// wait past the limit fails the suspended statement, not an earlier one.
+#[test]
+fn a_rerun_limits_only_the_statement_that_suspended() {
+    sim_seeds("rerun limit item", |rt| {
+        let items = items(rt, ONE);
+        let t0 = items.db.begin().unwrap();
+        items.bump(&t0);
+        let after = Duration::from_millis(30);
+        let tx = items.db.begin().unwrap();
+        let bounds = Bounds {
+            limit: Some(after),
+            suspend: true,
+            ..Bounds::default()
+        };
+        let Err(Failed {
+            item: 1,
+            error: write::Error::Blocked { rerun, .. },
+        }) = items.run(&tx, INSERT_THEN_BUMP, bounds.clone())
+        else {
+            panic!("the second statement suspends")
+        };
+        sleep(rt, after * 2);
+        items.db.abort(t0).unwrap();
+        let rerun = Bounds {
+            rerun: Some(rerun),
+            ..bounds
+        };
+        assert_eq!(
+            Err(Failed {
+                item: 1,
+                error: write::Error::StatementLimit(Exceeded::Time { after }),
+            }),
+            items.run(&tx, INSERT_THEN_BUMP, rerun)
+        );
+        items.db.abort(tx).unwrap();
+    });
+}
+
+/// A wait shorter than the limit leaves the rerun of the earlier statements out of the
+/// suspended statement's limit.
+#[test]
+fn a_rerun_within_the_limit_finishes() {
+    sim_seeds("rerun within limit", |rt| {
+        let items = items(rt, ONE);
+        let t0 = items.db.begin().unwrap();
+        items.bump(&t0);
+        let after = Duration::from_millis(30);
+        let tx = items.db.begin().unwrap();
+        let bounds = Bounds {
+            limit: Some(after),
+            suspend: true,
+            ..Bounds::default()
+        };
+        let Err(Failed {
+            error: write::Error::Blocked { rerun, .. },
+            ..
+        }) = items.run(&tx, INSERT_THEN_BUMP, bounds.clone())
+        else {
+            panic!("the second statement suspends")
+        };
+        sleep(rt, after / 3);
+        items.db.abort(t0).unwrap();
+        let rerun = Bounds {
+            rerun: Some(rerun),
+            ..bounds
+        };
+        assert!(items.run(&tx, INSERT_THEN_BUMP, rerun).is_ok());
+        items.db.commit(tx).unwrap();
+    });
+}
+
+/// A cancel racing shutdown stops the call once, with one of the two.
+fn a_cancel_racing_shutdown_stops_once<R: Runtime>(rt: &R) {
+    let pool = Scheduler::start(rt.clone(), 1);
+    let log = Log::new(rt);
+    let waits = Arc::new(Waits::new(rt.clone()));
+    waits.started(X);
+    let call = pool.admit(plain(0), gate("g", X, &waits, &log)).unwrap();
+    log.until(|es| es.contains(&Event::Waiting("g")));
+    let canceller = {
+        let rt2 = rt.clone();
+        rt.spawn("cancel", move || {
+            rt2.yield_now();
+            call.cancel();
+        })
+    };
+    pool.shutdown();
+    rt.join(canceller);
+    let stops = log.count(|e| matches!(e, Event::Stopped("g", _)));
+    assert_eq!(1, stops, "{:?}", log.events());
+}
+
+#[test]
+fn a_cancel_racing_shutdown_stops_once_sim() {
+    sim_seeds("cancel shutdown", a_cancel_racing_shutdown_stops_once);
+}
+
+#[test]
+fn a_cancel_racing_shutdown_stops_once_real() {
+    a_cancel_racing_shutdown_stops_once(&real());
+}
+
+/// Dropping a scheduler without shutting it down stops its waiting calls.
+fn a_dropped_scheduler_stops_its_calls<R: Runtime>(rt: &R) {
+    let pool = Scheduler::start(rt.clone(), 1);
+    let log = Log::new(rt);
+    let waits = Arc::new(Waits::new(rt.clone()));
+    waits.started(X);
+    pool.admit(plain(0), gate("g", X, &waits, &log)).unwrap();
+    log.until(|es| es.contains(&Event::Waiting("g")));
+    drop(pool);
+    assert!(log.has(&Event::Stopped("g", Stopped::ShutDown)));
+}
+
+#[test]
+fn a_dropped_scheduler_stops_its_calls_sim() {
+    sim_seeds("dropped scheduler", a_dropped_scheduler_stops_its_calls);
+}
+
+#[test]
+fn a_dropped_scheduler_stops_its_calls_real() {
+    a_dropped_scheduler_stops_its_calls(&real());
+}
+
+/// A call waiting with an alarm is woken at it, though its dependency is not ready.
+fn an_alarm_wakes_a_waiting_call<R: Runtime>(rt: &R) {
+    let pool = Scheduler::start(rt.clone(), 1);
+    let log = Log::new(rt);
+    let at = rt.now() + Duration::from_millis(20);
+    pool.admit(
+        plain(0),
+        Box::new(Alarm {
+            at,
+            runs: 0,
+            log: log.clone(),
+        }),
+    )
+    .unwrap();
+    log.until(|es| es.contains(&Event::Done("alarm")));
+    assert!(rt.now() >= at);
+    assert_eq!(
+        vec![
+            Event::Ran("alarm"),
+            Event::Ran("alarm"),
+            Event::Done("alarm")
+        ],
+        log.events()
+    );
+    pool.shutdown();
+}
+
+/// A call that waits once with an alarm and no dependency, then finishes.
+struct Alarm<R: Runtime> {
+    at: Instant,
+    runs: usize,
+    log: Arc<Log<R>>,
+}
+
+impl<R: Runtime> Resumable for Alarm<R> {
+    fn run(&mut self, _: &Waker) -> Step {
+        self.log.push(Event::Ran("alarm"));
+        self.runs += 1;
+        if self.runs == 1 {
+            return Step::WaitUntil(self.at);
+        }
+        self.log.push(Event::Done("alarm"));
+        Step::Done
+    }
+
+    fn stop(self: Box<Self>, why: Stopped) {
+        self.log.push(Event::Stopped("alarm", why));
+    }
+}
+
+#[test]
+fn an_alarm_wakes_a_waiting_call_sim() {
+    sim_seeds("alarm", an_alarm_wakes_a_waiting_call);
+}
+
+#[test]
+fn an_alarm_wakes_a_waiting_call_real() {
+    an_alarm_wakes_a_waiting_call(&real());
 }
 
 /// Of two transactions each holding the item the other next writes, the second to wait fails

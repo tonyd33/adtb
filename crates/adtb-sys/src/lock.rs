@@ -44,6 +44,15 @@ impl<T> RwLock<T> {
         RwLock(std::sync::RwLock::new(value))
     }
 
+    /// Returns the guard if no reader or writer holds the lock, without waiting.
+    pub fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
+        match self.0.try_write() {
+            Ok(g) => Some(g),
+            Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
     /// Wait while a writer holds the lock, then share it with other readers.
     pub fn read(&self, threads: &impl Threads) -> RwLockReadGuard<'_, T> {
         loop {

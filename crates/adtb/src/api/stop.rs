@@ -1,7 +1,9 @@
 //! Cancellation tokens, deadlines and statement limits: what stops a call before it ends.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::Waker;
 use std::time::{Duration, SystemTime};
 
 use crate::runtime::Runtime;
@@ -12,7 +14,15 @@ use super::error::{Error, RejectReason};
 /// A token that stops every call carrying it. Clones share one token; once cancelled it stays
 /// cancelled.
 #[derive(Clone, Debug, Default)]
-pub struct CancelToken(Arc<AtomicBool>);
+pub struct CancelToken(Arc<Token>);
+
+#[derive(Debug, Default)]
+struct Token {
+    cancelled: Arc<AtomicBool>,
+    /// The wakers woken on cancel, by registration.
+    wakers: Mutex<BTreeMap<u64, Waker>>,
+    next: AtomicU64,
+}
 
 impl PartialEq for CancelToken {
     fn eq(&self, other: &CancelToken) -> bool {
@@ -30,11 +40,41 @@ impl CancelToken {
     /// Stop every call carrying the token, from any thread. Each returns `Cancelled`, and a call
     /// started with it later returns `Cancelled` without running.
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0.cancelled.store(true, Ordering::Release);
+        let wakers = std::mem::take(&mut *self.wakers());
+        for w in wakers.into_values() {
+            w.wake();
+        }
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Register `waker` to be woken once the token is cancelled, at once if it is. Returns the
+    /// registration, for [`forget`](CancelToken::forget).
+    pub(super) fn on_cancel(&self, waker: Waker) -> u64 {
+        let id = self.0.next.fetch_add(1, Ordering::Relaxed);
+        self.wakers().insert(id, waker);
+        if self.is_cancelled() {
+            let w = self.wakers().remove(&id);
+            if let Some(w) = w {
+                w.wake();
+            }
+        }
+        id
+    }
+
+    /// Withdraw the registration `id`.
+    pub(super) fn forget(&self, id: u64) {
+        self.wakers().remove(&id);
+    }
+
+    fn wakers(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Waker>> {
+        self.0
+            .wakers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -69,10 +109,11 @@ impl<'a> Stops<'a> {
         Bounds {
             fix_rounds,
             limit: self.limit,
-            cancel: self.cancel.map(|t| t.0.clone()),
+            cancel: self.cancel.map(|t| t.0.cancelled.clone()),
             deadline,
             suspend: false,
             rerun: None,
+            grant: None,
         }
     }
 

@@ -37,8 +37,7 @@ pub(super) struct Header {
     /// The lease the header states, in microseconds.
     pub(super) lease: Option<i64>,
     pub(super) hides_new: bool,
-    /// The constructor of `catalog::Priority` the header names.
-    pub(super) priority: String,
+    pub(super) priority: exec::Priority,
 }
 
 impl Header {
@@ -58,12 +57,21 @@ impl Header {
             edition: h.edition.clone(),
             lease: None,
             hides_new: false,
-            priority: "Regular".into(),
+            priority: exec::Priority::Regular,
         };
         for clause in &h.clauses {
             match clause {
                 HeaderClause::Lease(e) => header.lease = Some(lease(e)?),
-                HeaderClause::Priority(p) => header.priority = priority(&p.text)?,
+                HeaderClause::Priority(p) => {
+                    header.priority = priority(&p.text)
+                        .filter(|c| *c != exec::Priority::AdHoc)
+                        .ok_or_else(|| {
+                            Error::invalid(format!(
+                                "a bundle's priority is background or regular, not `{}`",
+                                p.text
+                            ))
+                        })?;
+                }
                 HeaderClause::HideNewConstructors => header.hides_new = true,
                 HeaderClause::Budget(_) => {
                     return Err(super::unsupported("a bundle's budget clause"));
@@ -90,13 +98,28 @@ fn lease(e: &ast::Expr) -> Result<i64, Error> {
         .ok_or_else(|| Error::invalid(format!("`{amount}{unit}` is no lease")))
 }
 
-/// Returns the constructor of `catalog::Priority` the header word `p` names.
-fn priority(p: &str) -> Result<String, Error> {
-    ["AdHoc", "Background", "Regular"]
-        .into_iter()
-        .find(|c| c.eq_ignore_ascii_case(p))
-        .map(str::to_owned)
-        .ok_or_else(|| Error::invalid(format!("no priority `{p}`")))
+/// Each priority class with its constructor of `catalog::Priority`.
+const PRIORITIES: [(&str, exec::Priority); 3] = [
+    ("AdHoc", exec::Priority::AdHoc),
+    ("Background", exec::Priority::Background),
+    ("Regular", exec::Priority::Regular),
+];
+
+/// Returns the priority class the word `p` names, in any case.
+fn priority(p: &str) -> Option<exec::Priority> {
+    PRIORITIES
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(p))
+        .map(|(_, c)| *c)
+}
+
+/// Returns the constructor of `catalog::Priority` that names class `c`.
+fn priority_name(c: exec::Priority) -> &'static str {
+    PRIORITIES
+        .iter()
+        .find(|(_, x)| *x == c)
+        .map(|(name, _)| *name)
+        .expect("every priority class has a constructor")
 }
 
 /// The state of a bundle's row.
@@ -277,7 +300,7 @@ impl<'s> Tables<'s> {
             ("renewed", Val::Instant(row.renewed)),
             (
                 "priority",
-                Val::ctor(self.ctor("Priority", &h.priority), Vec::new()),
+                Val::ctor(self.ctor("Priority", priority_name(h.priority)), Vec::new()),
             ),
             ("memory_share", Val::none()),
             ("workers", Val::none()),
@@ -336,7 +359,10 @@ impl<'s> Tables<'s> {
             },
             hides_new: matches!(f.get("hides_new"), Some(v) if v.truth().unwrap_or(false)),
             priority: match f.get("priority") {
-                Some(Val::Ctor(c, _)) => self.ctor_name("Priority", *c),
+                Some(Val::Ctor(c, _)) => {
+                    let ctor = self.ctor_name("Priority", *c);
+                    priority(&ctor).ok_or_else(|| format!("bundle {name} has priority {ctor}"))?
+                }
                 other => return Err(format!("bundle {name} has priority {other:?}")),
             },
             name,

@@ -10,6 +10,7 @@ mod sched;
 mod sink;
 mod spill;
 mod store;
+mod stream;
 pub(crate) mod types;
 mod value;
 mod wide;
@@ -28,6 +29,7 @@ pub use sched::{
 };
 pub use store::{AtSnapshot, Histories, PastReads, Reads, Store, StoredHeap, StoredIndex};
 pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};
+pub use stream::{Produced, Production, produce};
 pub use value::{F32, F64, Val};
 pub(crate) use wide::decimal_fits;
 

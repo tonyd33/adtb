@@ -306,6 +306,28 @@ fn a_bundle_pinned_at_a_version_the_log_lacks_refuses_open() {
 }
 
 #[test]
+fn a_bundle_declaring_ad_hoc_priority_is_refused() {
+    let text = file("web-1.0", &[V1], " priority adhoc", NAMES);
+    match Registration::bundle(&text) {
+        Err(Error::Rejected {
+            reason: RejectReason::Invalid { detail },
+        }) => assert!(detail.contains("adhoc"), "{detail}"),
+        other => panic!("the registration is not refused as invalid: {other:?}"),
+    }
+}
+
+#[test]
+fn a_bundle_declaring_background_priority_registers() {
+    once(102, |rt| {
+        opened(
+            &rt,
+            &[V1],
+            vec![bundle("web-1.0", &[V1], " priority background", NAMES)],
+        );
+    });
+}
+
+#[test]
 fn a_bundle_whose_pinned_hash_differs_refuses_open_with_the_position_and_both_hashes() {
     once(7, |rt| {
         let wrong = hash(&[V1, ADD_APPLE]);

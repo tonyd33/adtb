@@ -6,7 +6,7 @@ use std::sync::Arc;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 
-use crate::batch::{self, Batch};
+use crate::batch::{self, Batch, BatchBuilder};
 use crate::catalog::layout::{self, batch_type, is_record, repr};
 use crate::exec::types::ctor_set;
 use crate::exec::{self, Val};
@@ -15,7 +15,7 @@ use super::error::{Error, RejectReason};
 use super::text::DynRows;
 
 /// The rows of one batch of a result stream.
-const BATCH_ROWS: usize = 1024;
+pub(super) const BATCH_ROWS: usize = 1024;
 
 /// A field of an Arrow schema: its name and the type of its column.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,6 +110,36 @@ pub(super) fn stream(schema: &Schema, rows: DynRows) -> Result<ArrowStream, Erro
     Ok(ArrowStream {
         schema: arrow,
         batches: batches.into_iter(),
+    })
+}
+
+/// Returns the schema of the record batches of a result whose elements are of type `elem`, and
+/// how an element fills its columns.
+pub(super) fn layout(schema: &Schema, elem: &Ty) -> Result<(Arc<ArrowSchema>, exec::Rows), Error> {
+    let (fields, by) = columns(schema, elem)?;
+    Ok((Arc::new(ArrowSchema { fields }), by))
+}
+
+/// Returns `rows` as one record batch over `arrow`, each filling its columns as `by` states.
+pub(super) fn record_batch(
+    arrow: &Arc<ArrowSchema>,
+    by: exec::Rows,
+    rows: Vec<Val>,
+) -> Result<RecordBatch, Error> {
+    let n = rows.len();
+    let mut batches = exec::batches(
+        &Val::List(Arc::from(rows)),
+        &arrow.batch_schema(),
+        by,
+        n.max(1),
+    )
+    .map_err(|e| internal(&format!("{e:?}")))?;
+    let batch = batches
+        .pop()
+        .unwrap_or_else(|| BatchBuilder::new(arrow.batch_schema()).finish());
+    Ok(RecordBatch {
+        schema: arrow.clone(),
+        batch,
     })
 }
 

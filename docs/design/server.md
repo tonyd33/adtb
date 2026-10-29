@@ -490,17 +490,30 @@ role drops conservatively refuse any role named as a bundle owner.
 The implemented authority provider is not an execution authorization
 boundary for the existing owner facade.
 
-There is no owned task handle or transaction registry. The scheduler
+`Registered::submit` and `RoleSession::submit_text` return an owned
+`Task` for the embedded owner's role and refuse every other role with
+`Denied`; the engine starts its task scheduler on the first submit. A
+task's single read-only set query is produced a unit at a time under
+supplied capacity and holds its snapshot until the drain is
+acknowledged, dropped or cancelled; every other result is formed whole,
+a write's after its commit, and handed out in batches as capacity
+allows. Ad hoc commands run within one step and may occupy its worker.
+The statement limit of a produced read counts only the time its units
+run, not its waits for capacity; a slow reader meets the stream idle
+limit instead.
+There is no transaction registry. The scheduler
 admits resumable calls within bounded queue entries and bytes, orders
-them by priority class then transaction start, and hands a refused call
+them by priority class, then the call's priority within the class,
+then transaction start, and hands a refused call
 back to its caller, refusing a call larger than the byte bound as
 never admissible. It stops a queued, ready or
 waiting call on cancellation, deadline or shutdown, and never starts or
 resumes a call past its deadline. A transaction wait, including
 a deferrable read's wait for a safe snapshot, can suspend its call and
-release the worker; the synchronous facade still parks its thread.
-I/O and capacity waits still block, and the memory grant does not yet
-decide when the queue's head runs. The synchronous facade must retain
+release the worker, and a call waiting with a statement limit is woken
+when the limit runs out; the synchronous facade still parks its thread.
+I/O waits, commit's wait for durability among them, still block, and
+the memory grant does not yet decide when the queue's head runs. The synchronous facade must retain
 its public behavior while the providers are added.
 
 ### 5.2 Provider-first slices

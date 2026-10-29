@@ -9,6 +9,7 @@ mod past;
 mod polarity;
 mod schema;
 mod sequence;
+mod stream;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -41,6 +42,7 @@ pub use adtb_lang::schema::Stage;
 pub use delta::{CheckPlan, Part};
 pub use input::Local;
 pub use past::Retained;
+pub use stream::{Produced, Production};
 
 use schema::Rels;
 use sequence::Sequences;
@@ -354,16 +356,28 @@ pub struct Bounds {
     pub suspend: bool,
     /// The `rerun` of the `Blocked` failure of an earlier run of the same statements.
     pub rerun: Option<Rerun>,
+    /// The grant every execution of the statements takes its memory from, else one admitted
+    /// for each.
+    pub grant: Option<Arc<exec::Grant>>,
 }
 
 /// Where the statement limit of a rerun of suspended statements starts.
 ///
-/// A rerun never restarts the limit: each statement up to the latest one an earlier run reached
-/// is limited from the first start of that latest statement.
+/// A rerun runs the statements before the latest one an earlier run reached without the limit,
+/// and limits that latest one from its first start, later by the time the rerun took to reach
+/// it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rerun {
     through: usize,
     since: Instant,
+}
+
+impl Rerun {
+    /// Returns when a statement limit of `limit` runs out for the statement that suspended, if
+    /// no rerun time is added to it.
+    pub fn limit_at(&self, limit: Duration) -> Instant {
+        self.since + limit
+    }
 }
 
 /// What stops one statement's executions early.
@@ -375,6 +389,31 @@ pub struct Stop {
     /// Fail with `Blocked`, carrying this, at a wait for another transaction, instead of
     /// parking the thread.
     pub suspend: Option<Rerun>,
+    /// The grant every execution takes its memory from, else one admitted for each.
+    pub grant: Option<Arc<exec::Grant>>,
+}
+
+impl Stop {
+    /// Returns what stops a statement under `bounds`, its statement limit counted from `since`
+    /// and unlimited without it, failing with `Blocked` carrying `suspend` at a wait.
+    fn of(bounds: &Bounds, since: Option<Instant>, suspend: Option<Rerun>) -> Stop {
+        let limit = since
+            .zip(bounds.limit)
+            .map(|(since, after)| exec::Deadline {
+                at: since + after,
+                error: exec::Error::StatementLimit(exec::Exceeded::Time { after }),
+            });
+        let deadline = bounds.deadline.map(|at| exec::Deadline {
+            at,
+            error: exec::Error::DeadlineExceeded,
+        });
+        Stop {
+            cancel: bounds.cancel.clone().unwrap_or_default(),
+            deadline: [limit, deadline].into_iter().flatten().min_by_key(|d| d.at),
+            suspend,
+            grant: bounds.grant.clone(),
+        }
+    }
 }
 
 /// The heaps and indexes of the relation variables a catalog describes.
@@ -748,10 +787,11 @@ impl<R: Runtime> Database<R> {
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
         let before = local.clone();
+        let started = self.rt.now();
         for item in 0..=text.items.len() {
             let done = between(item, local).and_then(|()| match text.items.get(item) {
                 Some(t) => {
-                    let s = self.stmt(tx, text, *t, item, &bounds);
+                    let s = self.stmt(tx, text, *t, item, &bounds, started);
                     let o = s.run(text.params, local);
                     ran.push(s);
                     o.map(|o| out.push(o))
@@ -782,8 +822,9 @@ impl<R: Runtime> Database<R> {
         let before = local.clone();
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
+        let started = self.rt.now();
         for (item, t) in text.items.iter().enumerate() {
-            let s = self.stmt(tx, text, *t, item, &bounds);
+            let s = self.stmt(tx, text, *t, item, &bounds, started);
             let o = s.run(text.params, local);
             ran.push(s);
             match o {
@@ -806,7 +847,7 @@ impl<R: Runtime> Database<R> {
     /// Returns the operators of term `t` of `text` as a statement of `tx` would run it.
     pub fn explain(&self, tx: &Txn, text: Text<'_>, t: Tm) -> Result<Node, Error> {
         let params: Vec<Var> = text.params.iter().map(|(v, _)| *v).collect();
-        self.stmt(tx, text, t, 0, &Bounds::default())
+        self.stmt(tx, text, t, 0, &Bounds::default(), self.rt.now())
             .explain(&params)
     }
 
@@ -841,7 +882,8 @@ impl<R: Runtime> Database<R> {
         Ok(out)
     }
 
-    /// Returns term `t`, item `item` of `text`, as a statement of `tx` bounded by `bounds`.
+    /// Returns term `t`, item `item` of `text`, as a statement of `tx` bounded by `bounds`, in
+    /// a run of the statements that started at `started`.
     fn stmt<'a>(
         &'a self,
         tx: &'a Txn,
@@ -849,31 +891,35 @@ impl<R: Runtime> Database<R> {
         t: Tm,
         item: usize,
         bounds: &Bounds,
+        started: Instant,
     ) -> eval::Stmt<'a, R> {
         let options = exec::Options {
             fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
             ..self.options
         };
-        let rerun = match bounds.rerun {
-            Some(r) if item <= r.through => r,
-            _ => Rerun {
-                through: item,
-                since: self.rt.now(),
-            },
+        let now = self.rt.now();
+        let (rerun, limited) = match bounds.rerun {
+            Some(r) if item < r.through => (r, false),
+            Some(r) if item == r.through => (
+                Rerun {
+                    through: item,
+                    since: r.since + now.saturating_since(started),
+                },
+                true,
+            ),
+            _ => (
+                Rerun {
+                    through: item,
+                    since: now,
+                },
+                true,
+            ),
         };
-        let limit = bounds.limit.map(|after| exec::Deadline {
-            at: rerun.since + after,
-            error: exec::Error::StatementLimit(exec::Exceeded::Time { after }),
-        });
-        let deadline = bounds.deadline.map(|at| exec::Deadline {
-            at,
-            error: exec::Error::DeadlineExceeded,
-        });
-        let stop = Stop {
-            cancel: bounds.cancel.clone().unwrap_or_default(),
-            deadline: [limit, deadline].into_iter().flatten().min_by_key(|d| d.at),
-            suspend: bounds.suspend.then_some(rerun),
-        };
+        let stop = Stop::of(
+            bounds,
+            limited.then_some(rerun.since),
+            bounds.suspend.then_some(rerun),
+        );
         eval::Stmt::new(self, tx, text, t, options, stop)
     }
 
@@ -971,6 +1017,15 @@ impl<R: Runtime> Database<R> {
         Ok(())
     }
 
+    /// Returns a grant of the database's per-call memory from its budget.
+    pub fn admit_grant(&self) -> Result<Arc<exec::Grant>, Error> {
+        self.budget
+            .admit(self.grant)
+            .ok_or(Error::StatementLimit(exec::Exceeded::Memory {
+                limit: self.budget.limit(),
+            }))
+    }
+
     /// Returns the page of the database's generated counters, for [`Setup::sequences`] when
     /// it is opened again.
     pub fn sequences_root(&self) -> Pid {
@@ -1025,12 +1080,10 @@ impl<R: Runtime> Database<R> {
         options: exec::Options,
         stop: &Stop,
     ) -> Result<exec::Call<R>, Error> {
-        let grant =
-            self.budget
-                .admit(self.grant)
-                .ok_or(Error::StatementLimit(exec::Exceeded::Memory {
-                    limit: self.budget.limit(),
-                }))?;
+        let grant = match &stop.grant {
+            Some(g) => g.clone(),
+            None => self.admit_grant()?,
+        };
         Ok(exec::Call {
             store: store.clone(),
             grant,

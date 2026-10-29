@@ -27,5 +27,6 @@ pub use api::{
     RetryReason, RoleAuthority, RoleSession, TxnCallOptions, TxnId, TxnOptions,
 };
 pub use api::{BundleDef, Callable, CtorRelation, Key, Pending, Rows, typed};
+pub use api::{Completion, Format, Layout, Observation, ResultBatch, Task, TaskOptions};
 pub use exec::HostError;
 pub use exec::Val as Value;

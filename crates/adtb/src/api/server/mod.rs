@@ -1,7 +1,10 @@
+mod call;
 mod initialize;
+mod result;
 mod session;
 mod store;
 mod tables;
+mod task;
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Weak};
@@ -16,7 +19,9 @@ use super::{Database, Engine, Error, OWNER_ROLE, RejectReason, TxnId};
 use store::Changes;
 use tables::{Grant, Role, Tables};
 
+pub use result::{Completion, Format, Layout, ResultBatch};
 pub use session::RoleSession;
+pub use task::{Observation, Task, TaskOptions};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Capability {

@@ -20,6 +20,7 @@ mod value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::task::Waker;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adtb_file::Disk;
@@ -32,9 +33,9 @@ use adtb_lang::types::Ty;
 use adtb_sys::lock::{Lock, RwLock};
 
 use crate::catalog::{self, Catalog};
-use crate::exec::{self, Budget, Val};
-use crate::mvcc::Limits;
-use crate::runtime::Runtime;
+use crate::exec::{self, Budget, Scheduler, Val};
+use crate::mvcc::{Limits, Xid};
+use crate::runtime::{Runtime, ThreadId};
 use crate::storage::{self, LATCHES_PER_THREAD, Pager};
 use crate::write::{self, Bindings, Bounds, Local, Setup, Text, Txn};
 
@@ -43,7 +44,10 @@ pub use error::{Error, FatalReason, Fault, Limit, OpenError, RejectReason, Retry
 pub use host::{Determinism, HostFns};
 pub use load::{Appender, Load, LoadOptions, LoadReport};
 pub use registered::{Called, InTxn, Registered, Registration};
-pub use server::{Capability, RoleAuthority, RoleSession};
+pub use server::{
+    Capability, Completion, Format, Layout, Observation, ResultBatch, RoleAuthority, RoleSession,
+    Task, TaskOptions,
+};
 pub use stop::CancelToken;
 pub use text::DynRows;
 pub use txn::{AdHocTransaction, Committed, TxnCallOptions, TxnOptions};
@@ -231,6 +235,14 @@ impl<R: Runtime> Clone for Database<R> {
     }
 }
 
+/// Why [`Engine::resumable`] stopped short.
+enum Halted {
+    /// A statement must wait for transaction `on` to end; a rerun passes `rerun`.
+    Blocked { on: Xid, rerun: write::Rerun },
+    /// The client error, and whether it ends the transaction.
+    Failed(Error, bool),
+}
+
 struct Engine<R: Runtime> {
     rt: R,
     schema: Arc<Schema>,
@@ -251,9 +263,24 @@ struct Engine<R: Runtime> {
     /// Whether the engine is open. A call holds it shared while it runs; close holds it
     /// exclusively.
     open: RwLock<bool>,
+    /// Held across a whole close, the files' release included.
+    closing: Lock<()>,
+    /// The close in progress, shared with every submitted call.
+    close: Closes,
+    /// The workers that run submitted tasks, started on the first submit.
+    sched: Lock<Option<Arc<Scheduler<R>>>>,
+    workers: usize,
     #[cfg(target_os = "linux")]
     held: Lock<Option<file::Held>>,
 }
+
+/// A close in progress: the thread running it, and the wakers of the calls it stopped.
+pub(super) struct Close {
+    by: ThreadId,
+    pub(super) kept: Vec<Waker>,
+}
+
+pub(super) type Closes = Arc<Lock<Option<Close>>>;
 
 impl<R: Runtime> std::fmt::Debug for Engine<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -282,16 +309,63 @@ impl<R: Runtime> Engine<R> {
         }
     }
 
-    /// Close the engine once every running call has returned: write every changed page, take a
-    /// checkpoint, close the files and release the lock on the database file. Every later call
-    /// is refused.
+    /// Close the engine once every running call has returned: stop every submitted task, write
+    /// every changed page, take a checkpoint, close the files and release the lock on the
+    /// database file. Every later call is refused.
+    ///
+    /// A close on a scheduler thread, or on the thread already closing the engine, returns at
+    /// once while another close runs. The observers of the calls the close stops are woken once
+    /// it has ended.
     fn shut(&self) {
-        let mut open = self.open.write(&self.rt);
-        if std::mem::replace(&mut *open, false) {
+        let me = self.rt.current();
+        if self
+            .close
+            .lock(&self.rt)
+            .as_ref()
+            .is_some_and(|c| c.by == me)
+        {
+            return;
+        }
+        let on_worker = self
+            .sched
+            .lock(&self.rt)
+            .as_ref()
+            .is_some_and(|s| s.runs_on(me));
+        let closing = if on_worker {
+            let Some(closing) = self.closing.try_lock() else {
+                return;
+            };
+            closing
+        } else {
+            self.closing.lock(&self.rt)
+        };
+        *self.close.lock(&self.rt) = Some(Close {
+            by: me,
+            kept: Vec::new(),
+        });
+        let was_open = std::mem::replace(&mut *self.open.write(&self.rt), false);
+        let sched = self.sched.lock(&self.rt).clone();
+        if let Some(s) = sched {
+            s.shutdown();
+        }
+        if was_open {
             self.pager.close();
             #[cfg(target_os = "linux")]
             drop(self.held.lock(&self.rt).take());
         }
+        let kept = self.close.lock(&self.rt).take().map(|c| c.kept);
+        drop(closing);
+        for w in kept.into_iter().flatten() {
+            w.wake();
+        }
+    }
+
+    /// Returns the scheduler that runs submitted tasks, starting it on the first call.
+    fn scheduler(&self) -> Arc<Scheduler<R>> {
+        self.sched
+            .lock(&self.rt)
+            .get_or_insert_with(|| Scheduler::start(self.rt.clone(), self.workers))
+            .clone()
     }
 }
 
@@ -349,6 +423,9 @@ impl<R: Runtime> Database<R> {
     /// a checkpoint, close the files and release the lock on the database file. Interactive
     /// transactions still open end uncommitted, and every later call through any handle on the
     /// database, a clone or a registration, is refused as the database is closed.
+    ///
+    /// A close on a thread that runs submitted tasks, or on the thread already closing the
+    /// database, returns at once while another close runs, before the file is released.
     pub fn close(self) -> Result<(), Error> {
         self.engine.shut();
         Ok(())
@@ -566,6 +643,10 @@ impl<R: Runtime> Engine<R> {
             pager,
             db,
             open: RwLock::new(true),
+            closing: Lock::new(()),
+            close: Arc::default(),
+            sched: Lock::new(None),
+            workers: options.workers(),
             #[cfg(target_os = "linux")]
             held: Lock::new(None),
         };
@@ -592,6 +673,26 @@ impl<R: Runtime> Engine<R> {
         local: &mut Local,
         bounds: Bounds,
     ) -> Result<Vec<DynRows>, (Error, bool)> {
+        self.resumable(id, tx, p, local, bounds)
+            .map_err(|f| match f {
+                Halted::Blocked { on, rerun } => (
+                    Error::of_write(p.schema(), id, write::Error::Blocked { on, rerun }),
+                    false,
+                ),
+                Halted::Failed(e, ends) => (e, ends),
+            })
+    }
+
+    /// Run the items of `p` as [`statements`](Engine::statements) does, except that a
+    /// statement suspending on a transaction wait halts with `Blocked`.
+    fn resumable(
+        &self,
+        id: TxnId,
+        tx: &Txn,
+        p: &Prepared,
+        local: &mut Local,
+        bounds: Bounds,
+    ) -> Result<Vec<DynRows>, Halted> {
         let schema = p.schema();
         let text = Text {
             schema,
@@ -622,11 +723,20 @@ impl<R: Runtime> Engine<R> {
             .db
             .statements_with(tx, text, local, bounds.clone(), &mut between);
         match (done, refused) {
-            (Err(_), Some(e)) => Err((e, false)),
-            (Ok(outcomes), _) => p.results(schema, outcomes, ran).map_err(|e| (e, true)),
+            (Err(_), Some(e)) => Err(Halted::Failed(e, false)),
+            (Ok(outcomes), _) => p
+                .results(schema, outcomes, ran)
+                .map_err(|e| Halted::Failed(e, true)),
+            (
+                Err(write::Failed {
+                    error: write::Error::Blocked { on, rerun },
+                    ..
+                }),
+                None,
+            ) => Err(Halted::Blocked { on, rerun }),
             (Err(f), None) => {
                 let ends = f.error.ends_transaction();
-                Err((Error::of_write(schema, id, f.error), ends))
+                Err(Halted::Failed(Error::of_write(schema, id, f.error), ends))
             }
         }
     }
@@ -693,8 +803,7 @@ impl<R: Runtime> Engine<R> {
                     attempts: 1,
                 });
         }
-        let limit = self.settings.lock(&self.rt).retries;
-        let reruns = opts.retry.map_or(p.retry.unwrap_or(limit), u64::from);
+        let reruns = self.reruns(p, opts.retry);
         let mut attempts = 1;
         loop {
             stops.check(&self.rt)?;
@@ -713,6 +822,15 @@ impl<R: Runtime> Engine<R> {
                 }
             }
         }
+    }
+
+    /// Returns how often a call of `p` reruns on a serialization failure: `retry`, else `p`'s
+    /// `retry n`, else the file setting `RetryLimit`.
+    fn reruns(&self, p: &Prepared, retry: Option<u32>) -> u64 {
+        retry.map_or_else(
+            || p.retry.unwrap_or(self.settings.lock(&self.rt).retries),
+            u64::from,
+        )
     }
 
     /// Run `p` in `tx`, the transaction `id`, bounded by `bounds`, and commit it, or abort it on

@@ -40,6 +40,8 @@ impl Default for Admission {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub priority: Priority,
+    /// The call's priority within its class, higher first.
+    pub rank: u8,
     /// The start of the call's transaction.
     pub start: Instant,
     /// The memory the call's owned arguments and metadata hold.
@@ -55,6 +57,8 @@ pub enum Step {
     Done,
     /// The call registered its waker with a dependency and runs again once woken.
     Wait,
+    /// As `Wait`, and the call is also woken at the instant.
+    WaitUntil(Instant),
 }
 
 /// Why a call was stopped without running again.
@@ -62,7 +66,6 @@ pub enum Step {
 pub enum Stopped {
     Cancelled,
     DeadlineExceeded,
-    /// The scheduler shut down.
     ShutDown,
 }
 
@@ -73,7 +76,6 @@ pub enum Refusal {
     Overloaded,
     /// The call's bytes alone pass the admission byte bound. It is never admitted.
     TooLarge,
-    /// The scheduler has shut down.
     ShutDown,
 }
 
@@ -108,8 +110,9 @@ pub trait Resumable: Send + 'static {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct CallId(u64);
 
-/// Highest priority first, then the oldest transaction, then the earliest admitted.
-type Order = (Reverse<Priority>, Instant, CallId);
+/// Highest class first, then highest rank, then the oldest transaction, then the earliest
+/// admitted.
+type Order = (Reverse<Priority>, Reverse<u8>, Instant, CallId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
@@ -125,6 +128,8 @@ struct Slot {
     /// `None` while the call runs.
     call: Option<Box<dyn Resumable>>,
     waker: Waker,
+    /// When a waiting call is woken, whether or not its dependency is ready.
+    alarm: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -134,6 +139,8 @@ struct Calls {
     ready: BTreeSet<Order>,
     /// The deadline of each call with one that is not running.
     deadlines: BTreeSet<(Instant, CallId)>,
+    /// The alarm of each waiting call with one.
+    alarms: BTreeSet<(Instant, CallId)>,
     queued: usize,
     queued_bytes: usize,
     next: CallId,
@@ -146,7 +153,7 @@ struct Calls {
 impl Calls {
     fn order(&self, id: CallId) -> Order {
         let e = &self.slots[&id].entry;
-        (Reverse(e.priority), e.start, id)
+        (Reverse(e.priority), Reverse(e.rank), e.start, id)
     }
 
     /// Remove call `id`, which is not running. Returns it.
@@ -156,6 +163,9 @@ impl Calls {
         self.ready.remove(&order);
         if let Some(d) = slot.entry.deadline {
             self.deadlines.remove(&(d, id));
+        }
+        if let Some(a) = slot.alarm {
+            self.alarms.remove(&(a, id));
         }
         if slot.state == State::Queued {
             self.queued -= 1;
@@ -173,7 +183,7 @@ impl Calls {
         tasks: &mut VecDeque<Task>,
     ) -> Option<(CallId, Box<dyn Resumable>, Waker)> {
         let id = loop {
-            let (_, _, id) = self.ready.pop_first()?;
+            let (_, _, _, id) = self.ready.pop_first()?;
             if self.slots[&id].entry.deadline.is_some_and(|d| d <= now) {
                 tasks.push_back(stopping(self.remove(id), Stopped::DeadlineExceeded));
             } else {
@@ -204,6 +214,24 @@ impl Calls {
         self.deadlines.insert((d, id));
         self.armed.is_none_or(|a| d < a)
     }
+
+    /// Make waiting call `id` ready, withdrawing its alarm.
+    fn ready(&mut self, id: CallId) {
+        let slot = self.slots.get_mut(&id).expect("a waiting call has a slot");
+        slot.state = State::Ready;
+        if let Some(a) = slot.alarm.take() {
+            self.alarms.remove(&(a, id));
+        }
+        let order = self.order(id);
+        self.ready.insert(order);
+    }
+
+    /// Returns the earliest deadline or alarm.
+    fn next_timer(&self) -> Option<Instant> {
+        let d = self.deadlines.first().map(|(d, _)| *d);
+        let a = self.alarms.first().map(|(a, _)| *a);
+        d.into_iter().chain(a).min()
+    }
 }
 
 fn stopping(call: Box<dyn Resumable>, why: Stopped) -> Task {
@@ -229,6 +257,8 @@ pub struct Scheduler<R: Runtime> {
     rt: R,
     inner: Arc<Inner>,
     workers: Lock<Vec<ThreadId>>,
+    /// The worker and deadline threads it started.
+    threads: Vec<ThreadId>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Scheduler<R> {
@@ -244,6 +274,16 @@ pub struct Admitted<R: Runtime> {
     id: CallId,
 }
 
+impl<R: Runtime> Clone for Admitted<R> {
+    fn clone(&self) -> Self {
+        Admitted {
+            rt: self.rt.clone(),
+            inner: self.inner.clone(),
+            id: self.id,
+        }
+    }
+}
+
 impl<R: Runtime> std::fmt::Debug for Admitted<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Admitted")
@@ -254,7 +294,8 @@ impl<R: Runtime> std::fmt::Debug for Admitted<R> {
 
 impl<R: Runtime> Admitted<R> {
     /// Stop the call with `Cancelled`: at once if it is queued or waiting, else when its
-    /// running step returns `Wait`. Does nothing once the call has finished or stopped.
+    /// running step returns `Wait` or `WaitUntil`. Does nothing once the call has finished or
+    /// stopped.
     pub fn cancel(&self) {
         if let Some(inner) = self.inner.upgrade() {
             inner.stop_call(&self.rt, self.id, Stopped::Cancelled);
@@ -312,12 +353,22 @@ impl<R: Runtime> Scheduler<R> {
         Arc::new(Scheduler {
             rt,
             inner,
-            workers: Lock::new(ids),
+            workers: Lock::new(ids.clone()),
+            threads: ids,
         })
+    }
+
+    /// Returns whether `thread` is one of the scheduler's own threads.
+    pub fn runs_on(&self, thread: ThreadId) -> bool {
+        self.threads.contains(&thread)
     }
 
     pub fn runtime(&self) -> &R {
         &self.rt
+    }
+
+    pub fn admission(&self) -> Admission {
+        self.inner.admission
     }
 
     pub fn submit(&self, task: Task) {
@@ -360,6 +411,7 @@ impl<R: Runtime> Scheduler<R> {
                     state: State::Queued,
                     call: Some(call),
                     waker,
+                    alarm: None,
                 },
             );
             c.queued += 1;
@@ -397,8 +449,9 @@ impl<R: Runtime> Scheduler<R> {
     }
 
     /// Stop every queued, ready and waiting call with `ShutDown`, and every running call once
-    /// its step returns `Wait`; refuse every later call. Then stop the workers once no task is
-    /// left, wait for them to return, and run any task still queued on the calling thread.
+    /// its step returns `Wait` or `WaitUntil`; refuse every later call. Then stop the workers
+    /// once no task is left, wait for every one but the calling thread to return, and run any
+    /// task still queued on the calling thread.
     pub fn shutdown(&self) {
         {
             let mut q = self.inner.queue.lock(&self.rt);
@@ -419,10 +472,19 @@ impl<R: Runtime> Scheduler<R> {
         for &w in &workers {
             self.rt.unpark(w);
         }
+        let me = self.rt.current();
         for w in workers {
-            self.rt.join(w);
+            if w != me {
+                self.rt.join(w);
+            }
         }
         while self.help() {}
+    }
+}
+
+impl<R: Runtime> Drop for Scheduler<R> {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -440,7 +502,8 @@ impl Inner {
     }
 
     fn unpark_deadlines<R: Runtime>(&self, rt: &R) {
-        if let Some(t) = *self.deadline_thread.lock(rt) {
+        let thread = *self.deadline_thread.lock(rt);
+        if let Some(t) = thread {
             rt.unpark(t);
         }
     }
@@ -452,15 +515,14 @@ impl Inner {
                 return;
             };
             match &mut slot.state {
-                State::Waiting => slot.state = State::Ready,
+                State::Waiting => {}
                 State::Running { woken, .. } => {
                     *woken = true;
                     return;
                 }
                 State::Queued | State::Ready => return,
             }
-            let order = c.order(id);
-            c.ready.insert(order);
+            c.ready(id);
         }
         self.unpark_idle(rt);
     }
@@ -505,14 +567,20 @@ impl Inner {
             return;
         }
         slot.call = Some(call);
+        slot.state = State::Waiting;
+        let alarm = match step {
+            Step::WaitUntil(at) if !woken => Some(at),
+            _ => None,
+        };
+        slot.alarm = alarm;
+        let mut early = false;
         if woken {
-            slot.state = State::Ready;
-            let order = c.order(id);
-            c.ready.insert(order);
-        } else {
-            slot.state = State::Waiting;
+            c.ready(id);
+        } else if let Some(at) = alarm {
+            c.alarms.insert((at, id));
+            early = c.armed.is_none_or(|a| at < a);
         }
-        let early = c.watch_deadline(id);
+        early |= c.watch_deadline(id);
         drop(c);
         if early {
             self.unpark_deadlines(rt);
@@ -585,7 +653,13 @@ fn keep_deadlines<R: Runtime>(rt: &R, inner: &Inner) {
                 q.push_back(stopping(c.remove(id), Stopped::DeadlineExceeded));
                 expired = true;
             }
-            if let Some(&(at, _)) = c.deadlines.first()
+            while let Some(&(a, id)) = c.alarms.first()
+                && a <= now
+            {
+                c.ready(id);
+                expired = true;
+            }
+            if let Some(at) = c.next_timer()
                 && timers.values().all(|&t| at < t)
             {
                 timers.insert(io.submit(Op::Timer { at }), at);

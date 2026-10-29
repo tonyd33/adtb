@@ -16,7 +16,7 @@ use adtb_lang::translate::{Map, Pinned, Untranslatable};
 use adtb_lang::types::{FnId, Ty};
 
 use crate::catalog::{self, Catalog};
-use crate::exec::Val;
+use crate::exec::{Priority, Val};
 use crate::runtime::Runtime;
 
 use super::arrow::{self, ArrowStream};
@@ -1006,4 +1006,77 @@ fn one<R: Runtime>(e: &Engine<R>, entry: &Entry, mut out: Vec<DynRows>) -> DynRo
             vec![Val::record(Vec::new())],
         )
     })
+}
+
+/// A call of a registration checked against its signature, for a task to run.
+pub(super) struct Bound {
+    pub(super) prepared: Prepared,
+    pub(super) priority: Priority,
+    /// Whether the call renews the bundle's lease once it starts.
+    pub(super) due: bool,
+    checked: Arc<Checked>,
+    entry: usize,
+}
+
+impl<R: Runtime> Registered<R> {
+    /// Returns the call of `ordinal` with `args` for `caller`, checked as
+    /// [`call`](Registered::call) checks it.
+    pub(super) fn bound(
+        &self,
+        e: &Engine<R>,
+        ordinal: u32,
+        args: &[Val],
+        caller: Val,
+    ) -> Result<Bound, Error> {
+        let (_, prepared, due) = self.admitted(e, ordinal, args, false, || Ok(caller))?;
+        Ok(Bound {
+            prepared,
+            priority: self
+                .checked
+                .header
+                .as_ref()
+                .map_or(Priority::Regular, |h| h.priority),
+            due,
+            entry: ordinal as usize - 1,
+            checked: self.checked.clone(),
+        })
+    }
+
+    pub(super) fn engine_ref(&self) -> &Weak<Engine<R>> {
+        &self.engine
+    }
+}
+
+impl Bound {
+    pub(super) fn name(&self) -> &str {
+        &self.checked.name
+    }
+
+    /// Returns the schema the registration is checked against.
+    pub(super) fn schema(&self) -> &Arc<Schema> {
+        &self.checked.schema
+    }
+
+    /// Returns the one result among `rows`, the rows of the call's one item, encoded at the
+    /// version the registration is checked at.
+    pub(super) fn result<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        rows: Vec<DynRows>,
+    ) -> Result<DynRows, Error> {
+        let entry = &self.checked.entries[self.entry];
+        self.checked.encoded(entry, one(e, entry, rows))
+    }
+
+    /// Returns `elems`, elements of type `ty` of the call's set result over `schema`, encoded at
+    /// the version the registration is checked at.
+    pub(super) fn elements(
+        &self,
+        schema: &Schema,
+        ty: Ty,
+        elems: Vec<Val>,
+    ) -> Result<DynRows, Error> {
+        let entry = &self.checked.entries[self.entry];
+        self.checked.encoded(entry, rows(schema, ty, elems))
+    }
 }

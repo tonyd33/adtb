@@ -472,7 +472,10 @@ Preconditions:
   releases its worker and undoes every statement the call ran; once
   the awaited transaction ends, the caller reruns them on the same
   transaction and snapshot. The rerun does not restart the statement
-  time limit: the wait counts toward it as a parked wait does.
+  time limit: the wait counts toward it as a parked wait does. The
+  statements before the one that suspended rerun without the limit,
+  and the suspended statement's limit is later by the time their rerun
+  took, so a suspended and a parked call reach the limit alike.
 
 Postconditions:
 

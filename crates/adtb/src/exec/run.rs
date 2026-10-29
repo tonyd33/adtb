@@ -54,7 +54,7 @@ pub(super) struct Run {
 }
 
 impl Run {
-    fn new(query: Arc<Query>, env: Frame) -> Run {
+    pub(super) fn new(query: Arc<Query>, env: Frame) -> Run {
         let builds = query.builds.iter().map(|_| Lock::new(None)).collect();
         let stops = query.total && matches!(query.sink, Sink::Exists | Sink::IsEmpty);
         Run {
@@ -71,7 +71,7 @@ impl Run {
     }
 
     /// Returns an empty set for values the query's pipelines emit.
-    fn out(&self, grant: &Arc<Grant>) -> Result<Distinct, Error> {
+    pub(super) fn out(&self, grant: &Arc<Grant>) -> Result<Distinct, Error> {
         Distinct::stopping(grant, self.stopped.clone())
     }
 
@@ -457,7 +457,7 @@ impl<R: Runtime> Ctx<R> {
     }
 
     /// Collects into `out` the pipelines `s` selects, each with its environment.
-    fn spine(
+    pub(super) fn spine(
         self: &Arc<Self>,
         s: &Spine,
         mut env: Frame,
@@ -631,7 +631,7 @@ impl<R: Runtime> Ctx<R> {
         }
     }
 
-    fn morsel(
+    pub(super) fn morsel(
         self: &Arc<Self>,
         run: &Run,
         p: &Pipeline,
