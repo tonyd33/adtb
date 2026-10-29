@@ -22,7 +22,9 @@ pub use host::{HostBody, HostCall, HostError, Hosts};
 pub use ir::{Program, compile};
 pub use memory::{Arena, Budget, Grant};
 pub(crate) use prim::print;
-pub use sched::{Scheduler, Task};
+pub use sched::{
+    Admission, Admitted, Entry, Overloaded, Priority, Resumable, Scheduler, Step, Stopped, Task,
+};
 pub use store::{AtSnapshot, Histories, PastReads, Reads, Store, StoredHeap, StoredIndex};
 pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};
 pub use value::{F32, F64, Val};

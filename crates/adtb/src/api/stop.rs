@@ -71,6 +71,7 @@ impl<'a> Stops<'a> {
             limit: self.limit,
             cancel: self.cancel.map(|t| t.0.clone()),
             deadline,
+            suspend: false,
         }
     }
 

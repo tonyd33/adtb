@@ -16,7 +16,7 @@ pub use past::{Commit, Marker, Past};
 pub use snapshot::Snapshot;
 pub use ssi::{Access, Limits, Safety, SerialId, Serializer};
 pub use txn::{PastError, RESERVATION, Transactions};
-pub use wait::Waits;
+pub use wait::{Waits, Watch};
 pub use watermark::{Holds, Scope, SnapshotId};
 
 /// A transaction id. Ids are assigned in increasing order and never reused.

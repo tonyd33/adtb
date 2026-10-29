@@ -493,7 +493,10 @@ the server become tasks on the same scheduler
 `exec::Scheduler` starts its workers through the runtime, so the
 simulator schedules them. They take tasks from one shared queue, and a
 call's own thread runs queued tasks while it waits for its query; no
-worker keeps a queue of its own to steal from yet. The pipelines of a
+worker keeps a queue of its own to steal from yet. Workers also run
+admitted calls in steps, after any queued task: a step ends when the
+call finishes or registers its waker with a dependency, and a woken
+call queues again in the admission order. The pipelines of a
 query evaluated once per statement become tasks: the scan of a heap is
 one task per range of `range_pages` of its pages, which runs a morsel at
 a time over the rows of its range and reads a page only once the

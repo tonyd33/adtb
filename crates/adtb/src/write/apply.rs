@@ -140,10 +140,19 @@ impl<R: Runtime> Stmt<'_, R> {
                         .write_tuple(self.tx.sid, id, tid)?;
                     return Ok((c, WriteTarget::checked(tid, header)));
                 }
-                Write::Wait(x) => self.db.waits.wait(Some(xid), x)?,
+                Write::Wait(x) => self.wait(xid, x)?,
                 Write::Fail(f) => return Err(f.into()),
             }
         }
+    }
+
+    /// Wait, as `xid`, for transaction `on` to end, or fail with `Blocked` when the statement
+    /// suspends instead.
+    fn wait(&self, xid: Xid, on: Xid) -> Result<(), Error> {
+        if self.stop.suspend {
+            return Err(Error::Blocked { on });
+        }
+        Ok(self.db.waits.wait(Some(xid), on)?)
     }
 
     fn restorable(&self, heap: HeapId, tid: Tid, xid: Xid) -> Result<WriteTarget, Error> {
@@ -378,7 +387,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 }
                 if let Some(x) = wait {
                     drop(latch);
-                    self.db.waits.wait(Some(xid), x)?;
+                    self.wait(xid, x)?;
                     continue;
                 }
                 if conflicts.is_empty() {

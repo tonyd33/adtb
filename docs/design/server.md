@@ -486,11 +486,15 @@ role drops conservatively refuse any role named as a bundle owner.
 The implemented authority provider is not an execution authorization
 boundary for the existing owner facade.
 
-There is no owned call queue or transaction registry. The scheduler
-runs closures to completion and transaction waits park a thread.
-Those implementations do not yet satisfy §1 or §3's remaining planned
-boundary. The synchronous facade must retain its public behavior
-while the providers are added.
+There is no owned task handle or transaction registry. The scheduler
+admits resumable calls within bounded queue entries and bytes, orders
+them by priority class then transaction start, and stops a queued or
+waiting call on cancellation or deadline. A transaction wait, including
+a deferrable read's wait for a safe snapshot, can suspend its call and
+release the worker; the synchronous facade still parks its thread.
+I/O and capacity waits still block, and the memory grant does not yet
+decide when the queue's head runs. The synchronous facade must retain
+its public behavior while the providers are added.
 
 ### 5.2 Provider-first slices
 

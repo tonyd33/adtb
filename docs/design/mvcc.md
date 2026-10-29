@@ -467,7 +467,10 @@ Preconditions:
   step with respect to every other insert of the same key, so of two
   concurrent inserters of a key, one finds the other's entry.
 - Nothing latched is held across a wait; a wait parks through the
-  runtime ([runtime.md §1](runtime.md#1-time-threads-and-randomness)).
+  runtime ([runtime.md §1](runtime.md#1-time-threads-and-randomness)),
+  or suspends its call, which releases its worker, undoes the
+  statement and runs it again on the same snapshot once the awaited
+  transaction ends.
 
 Postconditions:
 

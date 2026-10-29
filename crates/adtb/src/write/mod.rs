@@ -119,6 +119,10 @@ pub enum Error {
     FileChanged(String),
     Cancelled,
     DeadlineExceeded,
+    /// A statement run with [`Bounds::suspend`] must wait for transaction `on` to end.
+    Blocked {
+        on: Xid,
+    },
     /// A statement reached a host function, by its name, with no body bound.
     MissingFunction(String),
     /// A read of the past names a state the engine keeps no history of; `oldest` is the oldest
@@ -281,6 +285,15 @@ pub struct Failed {
     pub error: Error,
 }
 
+/// What a deferrable read-only transaction waits for before it reads.
+#[derive(Debug)]
+pub enum Deferral {
+    /// Its snapshot is safe.
+    Safe(Txn),
+    /// Its snapshot is safe or unsafe once transaction `on` ends.
+    Wait { tx: Txn, on: Xid },
+}
+
 /// A transaction, read-write or read-only.
 #[derive(Debug)]
 pub struct Txn {
@@ -333,6 +346,8 @@ pub struct Bounds {
     pub cancel: Option<Arc<AtomicBool>>,
     /// The instant of the runtime's clock at which the statements fail with `DeadlineExceeded`.
     pub deadline: Option<Instant>,
+    /// Fail with `Blocked` at a wait for another transaction, instead of parking the thread.
+    pub suspend: bool,
 }
 
 /// What stops one statement's executions early.
@@ -341,6 +356,8 @@ pub struct Stop {
     /// Set to stop them with `Cancelled`.
     pub cancel: Arc<AtomicBool>,
     pub deadline: Option<exec::Deadline>,
+    /// Fail with `Blocked` at a wait for another transaction, instead of parking the thread.
+    pub suspend: bool,
 }
 
 /// The heaps and indexes of the relation variables a catalog describes.
@@ -571,39 +588,68 @@ impl<R: Runtime> Database<R> {
     /// taking a new snapshot each time one is found unsafe, and then never fails with a
     /// serialization failure.
     pub fn begin_read(&self, deferrable: bool) -> Result<Txn, Error> {
-        loop {
-            let tx = {
-                let mut ser = self.ser.lock(&self.rt);
-                let (hold, snapshot) = self.txns.take(Scope::Every)?;
-                let sid = ser.begin(if deferrable {
-                    Access::Deferrable
-                } else {
-                    Access::ReadOnly
-                });
-                self.readers
-                    .lock(&self.rt)
-                    .insert(sid, (hold, snapshot.clone()));
-                self.log_safe(&mut ser);
-                Txn {
-                    xid: None,
-                    sid,
-                    snapshot,
-                    hold,
-                }
-            };
-            if !deferrable {
-                return Ok(tx);
-            }
-            loop {
-                let safety = self.ser.lock(&self.rt).safety(tx.sid);
-                match safety {
-                    Safety::Safe => return Ok(tx),
-                    Safety::Unsafe => break,
-                    Safety::Pending(writers) => self.waits.wait(None, writers[0])?,
-                }
-            }
-            self.abort(tx)?;
+        let mut tx = self.begin_reader(deferrable)?;
+        if !deferrable {
+            return Ok(tx);
         }
+        loop {
+            match self.defer(tx)? {
+                Deferral::Safe(t) => return Ok(t),
+                Deferral::Wait { tx: t, on } => {
+                    self.waits.wait(None, on)?;
+                    tx = t;
+                }
+            }
+        }
+    }
+
+    /// Begin a deferrable read-only transaction, its snapshot not yet known to be safe.
+    pub fn begin_deferrable(&self) -> Result<Txn, Error> {
+        self.begin_reader(true)
+    }
+
+    /// Decide the snapshot of deferrable transaction `tx`. Returns it once its snapshot is
+    /// safe, or with the writer its snapshot waits for. Aborts it when its snapshot is unsafe
+    /// and decides a new one in its place.
+    pub fn defer(&self, mut tx: Txn) -> Result<Deferral, Error> {
+        loop {
+            let safety = self.ser.lock(&self.rt).safety(tx.sid);
+            match safety {
+                Safety::Safe => return Ok(Deferral::Safe(tx)),
+                Safety::Pending(writers) => {
+                    return Ok(Deferral::Wait { tx, on: writers[0] });
+                }
+                Safety::Unsafe => {
+                    self.abort(tx)?;
+                    tx = self.begin_reader(true)?;
+                }
+            }
+        }
+    }
+
+    fn begin_reader(&self, deferrable: bool) -> Result<Txn, Error> {
+        let mut ser = self.ser.lock(&self.rt);
+        let (hold, snapshot) = self.txns.take(Scope::Every)?;
+        let sid = ser.begin(if deferrable {
+            Access::Deferrable
+        } else {
+            Access::ReadOnly
+        });
+        self.readers
+            .lock(&self.rt)
+            .insert(sid, (hold, snapshot.clone()));
+        self.log_safe(&mut ser);
+        Ok(Txn {
+            xid: None,
+            sid,
+            snapshot,
+            hold,
+        })
+    }
+
+    /// Returns the waits of the database's transactions for each other.
+    pub fn waits(&self) -> &Waits<R> {
+        &self.waits
     }
 
     /// Log a safe snapshot marker for every read-only transaction `ser` has found safe.
@@ -788,6 +834,7 @@ impl<R: Runtime> Database<R> {
         let stop = Stop {
             cancel: bounds.cancel.clone().unwrap_or_default(),
             deadline: [limit, deadline].into_iter().flatten().min_by_key(|d| d.at),
+            suspend: bounds.suspend,
         };
         eval::Stmt::new(self, tx, text, t, options, stop)
     }
