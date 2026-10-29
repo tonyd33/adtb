@@ -98,3 +98,13 @@ The lead's branch check on 91168f3c (base d8d9c197) passed: root 2667 passed, 7 
 Also fixed in the same pass: production continuing after abandon, a concurrent `close` returning before the file is released, a caller cancel token not stopping a queued task, admission bytes leaving out owned `Prepared` terms, the streamed ad hoc layout source, the priority class decided by a string comparison, the duplicated retry-count and limit construction, and timing-dependent tests.
 
 Left for later: a pipeline with no heap source (index lookup, unnest) is one production unit, bounded only by the grant; an alarm wake drops its watch without `withdraw`; during `Engine::drop` a call whose upgrade fails drops its `Txn` without abort; `Overloaded` carries `retry_after: 0`; commit still blocks in `wait_durable`; streamed units run serially; ad hoc commands occupy a worker for one step.
+
+## 2026-10-29: delta review blocks cda2c6c4
+
+The review fixes in cda2c6c4 fixed B1-B5 and the ruled N items in principle. A fresh delta review (work/briefs/review-server-results2.md, local) blocks on two:
+
+- R1: shutdown wakes stopping calls' observers while `Engine.closing` is held; a waker that calls `close` spins forever, and a worker's post-step wake that closes deadlocks against the join. Ruling: wake after `closing` drops; a `close` on a worker that finds `closing` held returns without waiting.
+- R2: cancelling, expiring or dropping a task cancels the caller's shared `CancelToken`, so sibling tasks and later calls with it fail `Cancelled`. Ruling: each task gets its own token, chained from the caller's.
+
+Also: a bundle header may declare `priority adhoc` though catalog.md 8.2 allows only background or regular (refuse with `Invalid`); test order, seed count and a fixed output path in tests. The reviewer found no host function called under a page latch; a simulator livelock the writer saw with a gated host function over a heap scan is kept as an ignored reproducing test for its own ticket.
+Non-blocking, left: observers wake only at step end; time between units within a step is outside the statement limit; a spurious wake of a deferring call registers a second watch.
