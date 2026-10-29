@@ -231,9 +231,9 @@ impl Source {
 
 impl Cx<'_> {
     /// Add each privilege to the role's log grants, keeping one entry per privilege and making
-    /// it no longer dormant, and settle
-    /// each grant of the role that a structural operator of this migration could not carry to a
-    /// constructor the privilege covers.
+    /// it no longer dormant, with the grant option this grant states when it was dormant, and
+    /// settle each grant of the role that a structural operator of this migration could not
+    /// carry to a constructor the privilege covers.
     pub(super) fn grant(&mut self, g: &ast::Grant) -> R<()> {
         for (privilege, covered) in self.granted(&g.privileges)? {
             self.src
@@ -245,10 +245,11 @@ impl Cx<'_> {
                 .iter_mut()
                 .find(|x| x.role == g.to.text && x.privilege == privilege)
             {
-                Some(held) => {
-                    held.grant_option |= g.grant_option;
+                Some(held) if held.dormant => {
+                    held.grant_option = g.grant_option;
                     held.dormant = false;
                 }
+                Some(held) => held.grant_option |= g.grant_option,
                 None => self.src.grants.push(LogGrant {
                     role: g.to.text.clone(),
                     privilege,

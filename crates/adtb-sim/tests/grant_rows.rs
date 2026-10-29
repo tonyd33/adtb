@@ -856,3 +856,114 @@ fn a_regrant_freezing_another_field_set_leaves_the_dormant_row_dormant() {
         assert!(logged[2].0 > logged[1].0 && !logged[2].2, "{logged:?}");
     });
 }
+
+/// Returns a catalog at `SHOP` with role `ghost` missing, after `replayed` and then, once
+/// `ghost` exists, `migrated`, with the rows of `catalog::grants` before `drop field
+/// Customer.email` and after it.
+fn merged(seed: u64, replayed: &[&str], migrated: &[&str]) -> (Vec<LogRow>, Vec<LogRow>) {
+    let mut sim = Sim::new(seed, Config::default());
+    let mut got = None;
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &pager_options(FRAMES)).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        for text in std::iter::once(&SHOP).chain(replayed) {
+            catalog
+                .replay(&pager, &txns, text)
+                .unwrap_or_else(|e| panic!("seed {seed}: `{text}` replays: {e:?}"));
+        }
+        grants::create_role(&catalog, &pager, &txns, 1, "ghost");
+        for text in migrated {
+            catalog
+                .migrate(&pager, &txns, text)
+                .unwrap_or_else(|e| panic!("seed {seed}: `{text}` applies: {e:?}"));
+        }
+        let before = stored(&catalog, &pager, &txns).0;
+        catalog
+            .migrate(&pager, &txns, "module shop\ndrop field Customer.email\n")
+            .expect("the drop merges the grants");
+        got = Some((before, stored(&catalog, &pager, &txns).0));
+    });
+    got.expect("the run finished")
+}
+
+const EMAIL: &str = "module shop\nadd field Customer.email: Text fill \"\"\n";
+
+#[test]
+fn a_prune_merge_takes_no_grant_option_from_a_dormant_entry_first() {
+    let (before, after) = merged(
+        154,
+        &["module shop\ngrant read customers to ghost with grant option\n"],
+        &[EMAIL, "module shop\ngrant read customers to ghost\n"],
+    );
+    assert_eq!(2, before.len(), "{before:?}");
+    assert_eq!((1, true, true), before[0]);
+    let active = before[1];
+    assert!(!active.1 && !active.2, "{before:?}");
+    assert_eq!(vec![active], after);
+}
+
+#[test]
+fn a_prune_merge_takes_no_grant_option_from_a_dormant_entry_second() {
+    let (before, after) = merged(
+        155,
+        &[
+            "module shop\ngrant read customers (name) to ghost\n",
+            EMAIL,
+            "module shop\ngrant read customers (name, email) to ghost with grant option\n",
+        ],
+        &["module shop\ngrant read customers (name) to ghost\n"],
+    );
+    assert_eq!(2, before.len(), "{before:?}");
+    assert_eq!((1, false, false), before[0], "{before:?}");
+    assert!(before[1].1 && before[1].2, "{before:?}");
+    assert_eq!(vec![(1, false, false)], after);
+}
+
+#[test]
+fn a_prune_merge_of_two_active_entries_combines_their_grant_options() {
+    let (before, after) = merged(
+        156,
+        &[],
+        &[
+            "module shop\ngrant read customers (name) to ghost with grant option\n",
+            EMAIL,
+            "module shop\ngrant read customers (name, email) to ghost\n",
+        ],
+    );
+    assert_eq!(2, before.len(), "{before:?}");
+    assert!(before.iter().all(|r| !r.2), "{before:?}");
+    assert_eq!(vec![(before[0].0, true, false)], after);
+}
+
+#[test]
+fn an_activating_regrant_gives_the_row_its_own_grant_option() {
+    for (option, seed) in [("", 157), (" with grant option", 158)] {
+        let mut sim = Sim::new(seed, Config::default());
+        finished(&mut sim, |rt| {
+            let pager = Pager::create(rt.clone(), &pager_options(FRAMES)).expect("create");
+            let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+            catalog.replay(&pager, &txns, SHOP).expect("the schema");
+            catalog
+                .replay(
+                    &pager,
+                    &txns,
+                    "module shop\ngrant read customers to ghost with grant option\n",
+                )
+                .expect("the dormant grant");
+            assert_eq!(vec![(1, true, true)], stored(&catalog, &pager, &txns).0);
+            grants::create_role(&catalog, &pager, &txns, 1, "ghost");
+            catalog
+                .migrate(
+                    &pager,
+                    &txns,
+                    &format!("module shop\ngrant read customers to ghost{option}\n"),
+                )
+                .expect("the regrant");
+            assert_eq!(
+                vec![(1, !option.is_empty(), false)],
+                stored(&catalog, &pager, &txns).0,
+                "seed {seed}"
+            );
+        });
+    }
+}

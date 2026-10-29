@@ -197,7 +197,10 @@ Postconditions:
   privilege clears it; an unlisted grant whose frozen field set differs
   is another privilege and leaves the dormant entry as it is. When
   pruning merges entries, the merged entry is active if any of them is
-  and keeps an active entry's row. Every inverse restores it exactly:
+  and keeps an active entry's row. A grant option held only while
+  dormant never becomes active: a merge takes the option of its active
+  entries only, and the grant that clears dormancy gives the entry its
+  own option. Every inverse restores it exactly:
   reverting a revoke puts the grant back as dormant as it was, and
   reverting the regrant that cleared it makes the row dormant again.
   Creating a role changes no dormant row.
