@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
+branch: version-translation
 kind: feature
 priority: 822
 summary: "a bundle pinned to an earlier version cannot run: reads are not mapped back through the operators' inverses and writes are not mapped forward"
@@ -23,3 +24,7 @@ The schema operator law of `oracle.md` section 5.7 for queries pinned to a versi
 ## 2026-10-27: bundles landed
 
 A bundle pinned before the current version registers and is checked at its pin, and its calls are refused `Untranslatable`. A migration is not yet refused for a live bundle whose query has no translation (section 7.2).
+
+## 2026-10-28: dispatched
+
+A fresh writer owns this in workspace version-translation on main 1790a065, alone. It writes a plan first (work/briefs/plan-version-translation.md, local), then slices in order: the translation pass and serving calls for rename, add field with section 7.4 fills, unread drop field, add constructor, state changes and no-change operators; section 7.2 refusal at apply; split, merge, nest, unnest, move field, rekey and sets; definitions at the pin. A slice not reached stays refused `Untranslatable`. Gates: targeted adtb, adtb-lang, adtb-sim and adtb-testkit tests, clippy, fmt, house-check, size-check; the lead runs the full check. Local brief: work/briefs/brief-version-translation.md.
