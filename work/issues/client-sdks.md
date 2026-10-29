@@ -5,7 +5,7 @@ kind: feature
 priority: 1050
 summary: "no SDK lets a TypeScript, Python, Go or Java program connect to an adtb server or call a bundle through typed generated code"
 depends-on:
-  - milestone-10-server
+  - server-owned-call-tasks
 tags:
   - engine
   - test

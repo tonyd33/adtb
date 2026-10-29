@@ -7,6 +7,7 @@ summary: "milestone 10 (the server) has not started: adtb-server is an empty cra
 depends-on:
   - milestone-8-embedded-alpha
   - server-engine-interface
+  - client-sdks
 tags:
   - milestone
 ---
