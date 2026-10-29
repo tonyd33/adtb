@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-26
-status: in-progress
+status: resolved
 kind: feature
 priority: 851
 summary: "the campaign front end tests for releases 1.1 to 1.3 assert only the version number, not the folded schema"
-branch: campaign-tests
+closed: 2026-10-28
 tags:
   - quality
   - test
@@ -21,3 +21,9 @@ Fix: assert the declared constructors and sets of each folded source, as `folds_
 ## 2026-10-28: dispatched
 
 A fresh writer owns this in workspace campaign-tests, on main cd020ae0, beside permission-successor (adtb-lang) and the other new track. Local brief: work/briefs/brief-campaign-tests.md.
+
+## 2026-10-28: resolved
+
+## 2026-10-28: landed
+
+Landed as afb0b0bc (test(campaign): assert exact refusals, stored constructors and the folded schema of each release). The writer showed each new assertion fails when its property is broken. Branch check on 1e7faf8e and post-land main check on afb0b0bc both passed: root 2438 passed, 8 skipped; apps/campaign 47 passed, 1 skipped; main check 3m40s, log target/check-main-campaign-tests.log.
