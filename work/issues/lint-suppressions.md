@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-28
 status: in-progress
-branch: lint-audit
 kind: feature
 priority: 120
 summary: "about 87 lint expects and 7 size-allowlist entries stand in the source, and each one is a precedent other agents copy"
+branch: lint-batch2
 tags:
   - quality
 ---
