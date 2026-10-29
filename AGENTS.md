@@ -64,7 +64,10 @@ Tracked work lives in `work/issues/` and is managed with `tix`; the
 format and priority scheme are in `work/issues/README.md`. Design
 decisions are not tickets: they go through the design space. Check
 `tix list --ready` before starting work, and run `tix check` after
-editing a ticket. The devenv shell puts `tix` on PATH with `-C work/issues` set. Outside
+editing a ticket. A ticket file `tix new` creates can be ignored by a
+global gitignore and so stay untracked: run
+`jj file track --include-ignored work/issues/STEM.md` and confirm it with
+`jj file list work/issues/STEM.md`. The devenv shell puts `tix` on PATH with `-C work/issues` set. Outside
 it, run it from the repository root as:
 
 ```

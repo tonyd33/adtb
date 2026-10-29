@@ -20,3 +20,7 @@ devenv.local.yaml
 
 # Generated editor config
 /.nvim.lua
+
+# Campaign server database at its default path
+/campaign.adt
+/campaign.adt-log/
