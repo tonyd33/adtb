@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: open
 kind: bug
-priority: 831
-summary: "the permission provider renormalizes the program per statement, over-charges carried data in widened anonymous sums, and charges Rejects an insert on every destination constructor"
-branch: permission-follow-ups
+priority: 430
+summary: the permission provider over-charges rows an at reads inside a fix or For body
 depends-on:
   - typed-permission-requirements
 tags:
@@ -37,3 +36,11 @@ Landed with permission-keyof-join-panic and permission-change-path-blowup after 
 Remaining:
 - crates/adtb-lang/src/permission/eval.rs: `REJECTED_ROW = 0` picks the `RejectedRow` constructor by position; base's loop over `ctors()` already charged exactly one constructor. Revert to the loop. `rejects_requires_insert_on_its_one_constructor` filters to inserts instead of asserting an exact set.
 - Over-charges: rows an `at` reads inside a fix body or a multi-constructor For body lose their key-distinct mark (keeping it needs analysis of what the point depends on); `prior(r)` outside a constraint is treated as another state.
+
+## 2026-10-29: rejects charge reverted to the constructor loop
+
+Landed 7b4c5ee5 after a lead review; branch check on 89eac469 passed (root 2726 passed, 7 skipped; campaign 47). `REJECTED_ROW` is gone and `rejects` charges an insert on each constructor of the destination row type; `rejects_requires_insert_on_its_one_constructor` asserts the exact set, with the near miss `insert_without_rejects_requires_no_destination_insert`.
+
+Remaining, over-charges only:
+- Rows an `at` reads inside a fix body (aggregate.rs `fix`) or a For body (eval.rs `for_each`) lose their key-distinct mark. Keeping it needs proof that the point does not depend on the bound variable or the fix binders.
+- `prior(r)` outside a constraint is unreachable: the checker refuses it there and no permission entry point analyzes a constraint. Nothing to fix until one does.
