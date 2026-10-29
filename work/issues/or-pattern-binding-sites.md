@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: resolved
 kind: bug
 priority: 560
 summary: "an or-pattern binds one kernel variable at several exclusive sites, against the one-binding-site rule of design kernel.md section 2"
-branch: or-patterns
+closed: 2026-10-29
 ---
 
 # Bug: or-pattern variables bound at several sites
@@ -39,3 +39,9 @@ Frozen 8718388c passed the lead's branch check (root 2641 passed, 7 skipped; cam
 ## 2026-10-29: third review blocks 5263f185
 
 5263f185 substitutes a branching bound used once and sinks a kept copyable `Let` onto both sides of an equality conjunct (`Facts::sink_let`, crates/adtb/src/plan/terms.rs). A fresh review found a range probe lost: `fn near (a: I64, b: I64) -> Bool = a >= b and a < b + 10` called with a branching argument plans a scan where base planned `Range probe ms (n)`. Lead ruling: `sink_let` distributes over every scalar operator, not only `Eq`, and is guarded on copyable rather than total; the `near` witness becomes a plan test.
+
+## 2026-10-29: landed
+
+Landed as fe0855c7 after four reviews; the fourth cleared c10f488b. Branch check on 1f9f1cc5 (parent a4e1b45f, the landed parent) passed: root 2648 passed, 7 skipped; apps/campaign 47 passed, 1 skipped; all static checks passed. Each or-pattern name is bound once by a `Let` over a selector `Case` that returns the matched alternative's value; the normaliser keeps a branching copyable bound as a `Let` only when it is used more than once; `Facts::sink_let` distributes a kept copyable `Let` over every primitive at a condition's root in plan/lower and write/delta, so probes and admissions match base. Remaining binding-site exceptions are in kernel-binding-site-exceptions.
+
+## 2026-10-29: resolved

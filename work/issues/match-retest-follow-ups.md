@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: open
 kind: bug
 priority: 780
 summary: "semantics.md 10.2 still gives the old match desugaring chain, and three internal errors still say only exhaustiveness excludes an Unreachable"
-branch: or-patterns
 ---
 
 # Bug: match retest follow-ups
@@ -24,3 +23,7 @@ From the review of the match retest lowering (work/briefs/review-match-retest.md
 ## Fix
 
 Reword the three error texts, assert the two tests' terms in full, and take the spec wording through spec-revision.
+
+## 2026-10-29: code items landed
+
+The three error texts, the two tests asserted in full (`a_guarded_chain_ends_unreachable` renamed `a_false_guard_falls_through_to_the_next_arm`) and the guard variable binding sites landed with or-pattern-binding-sites in fe0855c7. Only the semantics.md section 10.2 wording remains, for spec-revision.
