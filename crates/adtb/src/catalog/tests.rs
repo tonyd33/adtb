@@ -470,7 +470,7 @@ fn the_migrations_row_holds_the_version_its_hash_and_its_text() {
 #[test]
 fn a_stored_migration_that_does_not_parse_is_not_accepted() {
     let texts = BTreeMap::from([(1, FIRST.to_string()), (2, "module app\nadd".to_string())]);
-    let Err(Error::Unaccepted(version, why)) = fold(&texts) else {
+    let Err(Error::Unaccepted(version, why)) = fold(&texts, &BTreeMap::new()) else {
         panic!("the log folds")
     };
     assert_eq!(2, version);
@@ -480,7 +480,7 @@ fn a_stored_migration_that_does_not_parse_is_not_accepted() {
 #[test]
 fn a_stored_migration_that_does_not_apply_is_not_accepted() {
     let texts = BTreeMap::from([(1, FIRST.to_string()), (2, FIRST.to_string())]);
-    let Err(Error::Unaccepted(version, why)) = fold(&texts) else {
+    let Err(Error::Unaccepted(version, why)) = fold(&texts, &BTreeMap::new()) else {
         panic!("the log folds")
     };
     assert_eq!(2, version);
@@ -490,7 +490,7 @@ fn a_stored_migration_that_does_not_apply_is_not_accepted() {
 #[test]
 fn a_stored_log_that_applies_folds() {
     let texts = BTreeMap::from([(1, FIRST.to_string())]);
-    let (source, _, _) = fold(&texts).expect("the log folds");
+    let (source, _, _) = fold(&texts, &BTreeMap::new()).expect("the log folds");
     assert_eq!(1, source.version);
 }
 

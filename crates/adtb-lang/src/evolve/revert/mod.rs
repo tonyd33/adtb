@@ -88,13 +88,13 @@ fn grants_back(before: &Source, after: &Source) -> (Option<Inverse>, Option<Inve
         grants
             .iter()
             .position(|x| x.role == g.role && x.privilege == g.privilege)
-            .map(|i| (i, grants[i].grant_option))
+            .map(|i| (i, grants[i].grant_option, grants[i].dormant))
     };
     let mut back = Vec::new();
     for g in before.grants.iter().chain(&after.grants) {
         let was = held(&before.grants, g);
         let is = held(&after.grants, g);
-        let changed = was.map(|(_, o)| o) != is.map(|(_, o)| o);
+        let changed = was.map(|(_, o, d)| (o, d)) != is.map(|(_, o, d)| (o, d));
         if changed
             && !back
                 .iter()

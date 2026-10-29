@@ -603,3 +603,256 @@ fn a_crash_at_every_flush_of_recording_a_legacy_grant_keeps_or_writes_its_row() 
         assert!(logged.len() <= 1, "{logged:?}");
     }
 }
+
+/// Returns a catalog at `SHOP` whose log then grants `read` on customers to the missing role
+/// `ghost`, replayed so the grant's row, id 1, is dormant.
+fn dormant_ghost(rt: &SimRuntime) -> (Catalog, Pager<SimRuntime>, Transactions<SimRuntime>) {
+    let pager = Pager::create(rt.clone(), &pager_options(FRAMES)).expect("create");
+    let (mut catalog, txns) = Catalog::create(rt.clone(), &pager).expect("the catalog");
+    catalog.replay(&pager, &txns, SHOP).expect("the schema");
+    catalog
+        .replay(
+            &pager,
+            &txns,
+            "module shop\ngrant read customers to ghost\n",
+        )
+        .expect("the dormant grant");
+    assert_eq!(
+        (vec![(1, false, true)], Vec::new()),
+        stored(&catalog, &pager, &txns)
+    );
+    (catalog, pager, txns)
+}
+
+fn refused_for_ghost(got: Result<(), CatalogError>) {
+    assert_eq!(
+        Err(CatalogError::Refused(vec![
+            "a grant names role `ghost`, which does not exist".into()
+        ])),
+        got
+    );
+}
+
+#[test]
+fn a_grant_operator_naming_a_missing_role_is_refused_even_when_it_merges() {
+    let mut sim = Sim::new(148, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut catalog, pager, txns) = dormant_ghost(&rt);
+        refused_for_ghost(catalog.migrate(
+            &pager,
+            &txns,
+            "module shop\ngrant read customers to ghost with grant option\n",
+        ));
+        refused_for_ghost(catalog.migrate(
+            &pager,
+            &txns,
+            "module shop\ngrant insert customers to ghost\nrevoke insert customers from ghost\n",
+        ));
+        assert_eq!(2, catalog.source().version);
+        assert_eq!(
+            (vec![(1, false, true)], Vec::new()),
+            stored(&catalog, &pager, &txns)
+        );
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module shop\nrevoke read customers from ghost\n",
+            )
+            .expect("a revoke may name a missing role");
+        assert_eq!((Vec::new(), Vec::new()), stored(&catalog, &pager, &txns));
+    });
+}
+
+#[test]
+fn a_merge_of_an_active_and_a_dormant_grant_keeps_the_active_row() {
+    let mut sim = Sim::new(149, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut catalog, pager, txns) = dormant_ghost(&rt);
+        grants::create_role(&catalog, &pager, &txns, 1, "ghost");
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module shop\nadd field Customer.email: Text fill \"\"\n",
+            )
+            .expect("the field");
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module shop\ngrant read customers to ghost\n",
+            )
+            .expect("a grant over the new field set");
+        let (before, _) = stored(&catalog, &pager, &txns);
+        assert_eq!(2, before.len(), "{before:?}");
+        let active = before[1];
+        assert!(!active.2, "{before:?}");
+        catalog
+            .migrate(&pager, &txns, "module shop\ndrop field Customer.email\n")
+            .expect("the drop merges the two grants");
+        assert_eq!((vec![active], Vec::new()), stored(&catalog, &pager, &txns));
+    });
+}
+
+#[test]
+fn a_merge_of_two_dormant_grants_keeps_one_dormant_row() {
+    let mut sim = Sim::new(150, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut catalog, pager, txns) = dormant_ghost(&rt);
+        catalog
+            .replay(
+                &pager,
+                &txns,
+                "module shop\nadd field Customer.email: Text fill \"\"\n",
+            )
+            .expect("the field");
+        catalog
+            .replay(
+                &pager,
+                &txns,
+                "module shop\ngrant read customers to ghost\n",
+            )
+            .expect("a second dormant grant");
+        let (before, _) = stored(&catalog, &pager, &txns);
+        assert_eq!(2, before.len(), "{before:?}");
+        catalog
+            .replay(&pager, &txns, "module shop\ndrop field Customer.email\n")
+            .expect("the drop merges the two grants");
+        assert_eq!(
+            (vec![(1, false, true)], Vec::new()),
+            stored(&catalog, &pager, &txns)
+        );
+    });
+}
+
+#[test]
+fn reverting_a_revoke_restores_the_grant_as_dormant_as_it_was_across_a_reopen() {
+    let mut sim = Sim::new(151, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut catalog, pager, txns) = dormant_ghost(&rt);
+        grants::create_role(&catalog, &pager, &txns, 1, "ghost");
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module shop\nrevoke read customers from ghost\n",
+            )
+            .expect("the revoke");
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module shop\ngrant insert customers to ghost\n",
+            )
+            .expect("an active grant");
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module shop\nrevoke insert customers from ghost\n",
+            )
+            .expect("its revoke");
+        drop(catalog);
+        drop(txns);
+        pager.close();
+    });
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &pager_options(FRAMES)).expect("reopen");
+        let (mut catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+        catalog
+            .migrate(&pager, &txns, "module shop\nrevert 0003\n")
+            .expect("the revert of the dormant grant's revoke");
+        let (logged, _) = stored(&catalog, &pager, &txns);
+        assert_eq!(1, logged.len(), "{logged:?}");
+        assert!(logged[0].0 > 1 && logged[0].2, "back dormant: {logged:?}");
+        catalog
+            .migrate(&pager, &txns, "module shop\nrevert 0005\n")
+            .expect("the revert of the active grant's revoke");
+        let (logged, _) = stored(&catalog, &pager, &txns);
+        assert_eq!(2, logged.len(), "{logged:?}");
+        assert!(!logged[1].2, "back active: {logged:?}");
+    });
+}
+
+#[test]
+fn reverting_an_activating_regrant_makes_the_row_dormant_again() {
+    let mut sim = Sim::new(152, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut catalog, pager, txns) = dormant_ghost(&rt);
+        grants::create_role(&catalog, &pager, &txns, 1, "ghost");
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module shop\ngrant read customers to ghost\n",
+            )
+            .expect("the regrant");
+        assert_eq!(vec![(1, false, false)], stored(&catalog, &pager, &txns).0);
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module shop\ngrant read customers to ghost with grant option\n",
+            )
+            .expect("an option on the active grant");
+        drop(catalog);
+        drop(txns);
+        pager.close();
+    });
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &pager_options(FRAMES)).expect("reopen");
+        let (mut catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+        catalog
+            .migrate(&pager, &txns, "module shop\nrevert 0004\n")
+            .expect("the revert of the option");
+        assert_eq!(
+            vec![(1, false, false)],
+            stored(&catalog, &pager, &txns).0,
+            "reverting a grant over an active entry leaves it active"
+        );
+        catalog
+            .migrate(&pager, &txns, "module shop\nrevert 0003\n")
+            .expect("the revert of the regrant");
+        assert_eq!(vec![(1, false, true)], stored(&catalog, &pager, &txns).0);
+    });
+}
+
+#[test]
+fn a_regrant_freezing_another_field_set_leaves_the_dormant_row_dormant() {
+    let mut sim = Sim::new(153, Config::default());
+    finished(&mut sim, |rt| {
+        let (mut catalog, pager, txns) = dormant_ghost(&rt);
+        catalog
+            .replay(
+                &pager,
+                &txns,
+                "module shop\ngrant insert customers to ghost\n",
+            )
+            .expect("a second dormant grant");
+        grants::create_role(&catalog, &pager, &txns, 1, "ghost");
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module shop\nadd field Customer.email: Text fill \"\"\n",
+            )
+            .expect("the field");
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module shop\ngrant read customers to ghost\ngrant insert customers to ghost\n",
+            )
+            .expect("the regrants");
+        let (logged, _) = stored(&catalog, &pager, &txns);
+        assert_eq!(3, logged.len(), "{logged:?}");
+        assert_eq!(
+            (1, false, true),
+            logged[0],
+            "another frozen set: {logged:?}"
+        );
+        assert!(!logged[1].2, "the same insert grant activates: {logged:?}");
+        assert!(logged[2].0 > logged[1].0 && !logged[2].2, "{logged:?}");
+    });
+}

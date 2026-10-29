@@ -73,6 +73,9 @@ const INDEX_ROOT: u32 = 1;
 const ORDER_KEY: u32 = 2;
 /// The constructor of a row of the roots heap holding a migration's text.
 const MIGRATION: u32 = 3;
+/// The constructor of a row of the roots heap naming a role whose log grants became dormant at
+/// a version.
+const DORMANT: u32 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -201,6 +204,13 @@ fn roots_row() -> Vec<FieldType> {
         ]
         .into_iter()
         .chain(pending::held_ctors())
+        .chain([ctor(
+            DORMANT,
+            vec![
+                FieldType::Scalar(Scalar::I64),
+                FieldType::Scalar(Scalar::Text),
+            ],
+        )])
         .collect(),
     )]
 }
@@ -348,6 +358,8 @@ struct Named {
     history: history::Names,
     /// The pending drops and the bundles holding each.
     pending: Vec<Pending>,
+    /// The roles whose log grants became dormant at each version.
+    dormant: BTreeMap<u64, BTreeSet<String>>,
 }
 
 impl Named {
@@ -376,6 +388,12 @@ impl Named {
             }
             (MIGRATION, [version, Value::Text(text)]) => {
                 self.migrations.insert(uint(version)?, text.clone());
+            }
+            (DORMANT, [version, Value::Text(role)]) => {
+                self.dormant
+                    .entry(uint(version)?)
+                    .or_default()
+                    .insert(role.clone());
             }
             (HISTORY_HEAP | HISTORY_INDEX, fields) => self.history.add(*ctor, fields)?,
             (ctor, fields) if pending::holds(ctor) => {
@@ -426,8 +444,12 @@ fn visible<R: Runtime>(
 }
 
 /// Returns the source the migrations `texts` fold to, in version order from the empty schema,
-/// and its schema and checked program.
-fn fold(texts: &BTreeMap<u64, String>) -> Result<(Source, Schema, Program), Error> {
+/// and its schema and checked program. Each grant of a role `dormant` names at a version is
+/// dormant once the migration of that version applies.
+fn fold(
+    texts: &BTreeMap<u64, String>,
+    dormant: &BTreeMap<u64, BTreeSet<String>>,
+) -> Result<(Source, Schema, Program), Error> {
     let mut source = Source::default();
     for (&version, text) in texts {
         let refused = |why: Vec<String>| Error::Unaccepted(version, why);
@@ -437,6 +459,11 @@ fn fold(texts: &BTreeMap<u64, String>) -> Result<(Source, Schema, Program), Erro
         source = source
             .migrate(&file, text)
             .map_err(|r| refused(reasons(r)))?;
+        if let Some(roles) = dormant.get(&version) {
+            for g in &mut source.grants {
+                g.dormant |= roles.contains(&g.role);
+            }
+        }
     }
     let (schema, program) = source.check().map_err(|ds| {
         Error::Unaccepted(
@@ -651,7 +678,7 @@ impl Catalog {
         let large = LargeStore::open(root.large.0, root.large.1);
         let roots = Heap::open(pager, root.roots.0, root.roots.1, roots_row(), large)?;
         let named = named(pager, &txns, &roots)?;
-        let (source, schema, program) = fold(&named.migrations)?;
+        let (source, schema, program) = fold(&named.migrations, &named.dormant)?;
         check_order_keys(&schema, &named.keys)?;
         let readers = Readers::reopened(&source, named.pending)?;
         let mut heaps = BTreeMap::new();

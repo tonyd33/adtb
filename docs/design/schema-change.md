@@ -134,8 +134,7 @@ catalog.migrate(&pager, &txns, text) -> Result<(), Error>
 catalog.replay(&pager, &txns, text) -> Result<[Dormant], Error>
 catalog.record_grants(&pager, &txns) -> Result<[Dormant], Error>
 Dormant { id, grantee, privilege, target }
-LogGrant { role, privilege, grant_option, row }
-Source { grants, restated, .. }
+LogGrant { role, privilege, grant_option, row, dormant }
 ```
 
 Preconditions:
@@ -165,15 +164,26 @@ Postconditions:
   changes, and delete the row of each grant it removes. A grant an
   operator keeps (a rename, a carry, a change of grant option) keeps
   its row id, held as `LogGrant::row`; a grant the migration adds, or
-  a revert puts back, takes a new id. They change no `Deployment` row.
+  a revert puts back, takes a new id. Each row's `dormant` is its
+  grant's `LogGrant::dormant`. They change no `Deployment` row.
 - A row id is drawn from the counter with a floor one past the largest
   id of the relation in the drawing transaction's snapshot. A refused
   migration may have drawn ids and writes no row; no id is drawn
   twice, across any number of opens and crashes.
-- `migrate` refuses, changing nothing, a migration that adds a grant
-  to a role `catalog::roles` does not hold in the migration's
-  snapshot. `replay` applies it and writes the grant's row with
-  `dormant: True`, and returns each such row.
+- `migrate` refuses, changing nothing, a migration with a grant
+  operator naming a role `catalog::roles` does not hold in the
+  migration's snapshot, whether the grant is new or merges into a held
+  one, and one that puts back an active grant of such a role. A revoke
+  may name a missing role. `replay` applies the migration and makes
+  dormant every grant whose role is missing, and returns each grant it
+  made dormant.
+- Since roles exist only once the engine is open, and the schema owner
+  is created after the first open's migrations, a new database refuses
+  a log that grants to any role; a deployment opens the file, creates
+  the roles, then opens it with the grants.
+- `replay` stays as the entry point a restore uses to fold a log onto
+  a new file, keeping grants to roles it lacks as dormant rows; the
+  engine's open does not call it.
 - `record_grants` writes, as one durable transaction, a `Log` row for
   each grant of the source that has none, dormant when its role does
   not exist, and returns the dormant ones. It writes nothing when every
@@ -182,12 +192,20 @@ Postconditions:
   grantee, privilege, target and grant option it projects to; a grant
   with no such row has no id. It fails with `Error::Corrupt` when a
   `Log` row matches no grant.
-- Creating a role changes no dormant row. A grant operator of a later
-  `migrate` or `replay` that names the role, once it exists, and the
-  same privilege clears the row's dormant mark and keeps its id; a grant
-  of another privilege leaves it dormant. `LogGrant::row` of each grant
-  such an operator states again is in `Source::restated` until the next
-  migration. Dormancy is not part of the version hash.
+- Dormancy is grant state of `Source`, outside the version hash, so
+  the language's paths carry it. A grant operator naming a held
+  privilege clears it; an unlisted grant whose frozen field set differs
+  is another privilege and leaves the dormant entry as it is. When
+  pruning merges entries, the merged entry is active if any of them is
+  and keeps an active entry's row. Every inverse restores it exactly:
+  reverting a revoke puts the grant back as dormant as it was, and
+  reverting the regrant that cleared it makes the row dormant again.
+  Creating a role changes no dormant row.
+- Each role whose grants `replay` or `record_grants` made dormant is
+  recorded with the version in the roots heap, in the same transaction;
+  `open` makes every grant of that role dormant once the migration of
+  that version folds, so the source of every version, and every
+  revert, sees the dormancy it had.
 
 ## 2. Staged states
 

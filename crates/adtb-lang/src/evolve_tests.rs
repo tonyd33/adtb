@@ -2177,6 +2177,7 @@ fn log_grants_are_stored_in_the_source_by_catalog_id() {
         ),
         grant_option: true,
         row: None,
+        dormant: false,
     };
     let delete = LogGrant {
         role: "support".into(),
@@ -2186,6 +2187,7 @@ fn log_grants_are_stored_in_the_source_by_catalog_id() {
         }),
         grant_option: true,
         row: None,
+        dormant: false,
     };
     assert_eq!(vec![read.clone(), delete.clone()], s.grants);
     let s = applies(&s, "module auth\nrename relation identities to logins");
@@ -2204,6 +2206,7 @@ fn log_grants_are_stored_in_the_source_by_catalog_id() {
             privilege: Granted::CallFn(schema.ids.functions[&f]),
             grant_option: false,
             row: None,
+            dormant: false,
         }),
         s.grants.last()
     );

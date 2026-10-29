@@ -846,7 +846,8 @@ impl Source {
     }
 
     /// Drop from each grant the objects that no longer exist, and each grant left naming no
-    /// relation, set, function or constructor, and keep one entry per privilege of a role.
+    /// relation, set, function or constructor, and keep one entry per privilege of a role: an
+    /// active one when any of those merged is active, with its row.
     fn prune_grants(&mut self) {
         let kinds = [
             IdKind::Relation,
@@ -877,12 +878,19 @@ impl Source {
                 .iter_mut()
                 .find(|x| x.role == g.role && x.privilege == privilege)
             {
-                Some(x) => x.grant_option |= g.grant_option,
+                Some(x) => {
+                    x.grant_option |= g.grant_option;
+                    if x.dormant && !g.dormant {
+                        x.row = g.row;
+                        x.dormant = false;
+                    }
+                }
                 None => kept.push(LogGrant {
                     role: g.role.clone(),
                     privilege,
                     grant_option: g.grant_option,
                     row: g.row,
+                    dormant: g.dormant,
                 }),
             }
         }

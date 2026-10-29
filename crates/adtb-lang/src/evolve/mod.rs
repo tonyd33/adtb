@@ -87,8 +87,6 @@ pub struct Source {
     /// The privileges the log's `grant` and `revoke` operators leave each role holding, in the
     /// order they were first granted.
     pub grants: Vec<LogGrant>,
-    /// The rows of the grants that a grant operator of the migration being applied states again.
-    pub restated: BTreeSet<i64>,
     /// The write state of each constructor relation, keyed by the relation's module, the relation and the constructor.
     pub states: BTreeMap<StateKey, State>,
     /// The write state of each value-level constructor, keyed by the type's module, the type and the constructor.

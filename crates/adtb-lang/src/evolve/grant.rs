@@ -11,6 +11,9 @@ pub struct LogGrant {
     /// The id of the `catalog::grants` row of this grant, once the catalog gives it one. An
     /// operator that keeps the grant keeps its id; a grant an operator adds has none.
     pub row: Option<i64>,
+    /// Whether the grant allows nothing because its role did not exist when the catalog wrote
+    /// its row. A grant operator naming the grant's privilege clears it.
+    pub dormant: bool,
 }
 
 /// A privilege on schema objects, each named by its catalog id.
@@ -177,13 +180,13 @@ pub(super) fn translated(
         .expect("a translation maps every id")
 }
 
-/// What a role holds of a privilege: its place among the grants and its grant option, `None`
-/// when it holds nothing.
+/// What a role holds of a privilege: its place among the grants, its grant option and its
+/// dormancy, `None` when it holds nothing.
 #[derive(Clone, Debug)]
 pub(super) struct HeldGrant {
     pub(super) role: String,
     pub(super) privilege: Granted,
-    pub(super) held: Option<(usize, bool)>,
+    pub(super) held: Option<(usize, bool, bool)>,
 }
 
 impl Source {
@@ -203,17 +206,21 @@ impl Source {
                 .iter()
                 .position(|x| x.role == h.role && x.privilege == privilege);
             match (at, h.held) {
-                (Some(i), Some((_, grant_option))) => self.grants[i].grant_option = grant_option,
+                (Some(i), Some((_, grant_option, dormant))) => {
+                    self.grants[i].grant_option = grant_option;
+                    self.grants[i].dormant = dormant;
+                }
                 (Some(i), None) => {
                     self.grants.remove(i);
                 }
-                (None, Some((i, grant_option))) => self.grants.insert(
+                (None, Some((i, grant_option, dormant))) => self.grants.insert(
                     i.min(self.grants.len()),
                     LogGrant {
                         role: h.role,
                         privilege,
                         grant_option,
                         row: None,
+                        dormant,
                     },
                 ),
                 (None, None) => {}
@@ -223,7 +230,8 @@ impl Source {
 }
 
 impl Cx<'_> {
-    /// Add each privilege to the role's log grants, keeping one entry per privilege, and settle
+    /// Add each privilege to the role's log grants, keeping one entry per privilege and making
+    /// it no longer dormant, and settle
     /// each grant of the role that a structural operator of this migration could not carry to a
     /// constructor the privilege covers.
     pub(super) fn grant(&mut self, g: &ast::Grant) -> R<()> {
@@ -239,13 +247,14 @@ impl Cx<'_> {
             {
                 Some(held) => {
                     held.grant_option |= g.grant_option;
-                    self.src.restated.extend(held.row);
+                    held.dormant = false;
                 }
                 None => self.src.grants.push(LogGrant {
                     role: g.to.text.clone(),
                     privilege,
                     grant_option: g.grant_option,
                     row: None,
+                    dormant: false,
                 }),
             }
         }

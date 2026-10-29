@@ -13,7 +13,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 use crate::write::{self, Sequences};
 
-use super::{Catalog, Error, Migrating, OWNER_ROLE, delete_rows, layout};
+use super::{Catalog, DORMANT, Error, Migrating, OWNER_ROLE, delete_rows, int, layout};
 
 /// A log grant whose role did not exist when its row was written. It allows nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,7 +35,6 @@ pub(super) enum Grantees {
 struct Stored {
     id: i64,
     log: bool,
-    dormant: bool,
     row: Vec<Value>,
 }
 
@@ -72,13 +71,7 @@ impl Shape {
     }
 
     /// Returns the `Log` row of grant `g` with row id `id`.
-    fn log_row(
-        &self,
-        schema: &Schema,
-        g: &LogGrant,
-        id: i64,
-        dormant: bool,
-    ) -> Result<Vec<Value>, Error> {
+    fn log_row(&self, schema: &Schema, g: &LogGrant, id: i64) -> Result<Vec<Value>, Error> {
         let target = target(schema, g)?;
         let Value::Sum { ctor: some, .. } = tag(schema, "prelude", "Option", "Some") else {
             unreachable!("a tag is a sum");
@@ -97,7 +90,7 @@ impl Shape {
                 "grantee" => Value::Text(g.role.clone()),
                 "grantor" => Value::Text(OWNER_ROLE.to_owned()),
                 "grant_option" => boolean(schema, g.grant_option),
-                "dormant" => boolean(schema, dormant),
+                "dormant" => boolean(schema, g.dormant),
                 other => panic!("catalog RoleGrant has no field {other}"),
             })
             .collect())
@@ -159,9 +152,8 @@ impl Catalog {
         snapshot: &Snapshot,
     ) -> Result<Vec<Stored>, Error> {
         let shape = Shape::of(&self.schema);
-        let (id, kind, dormant) = (shape.at("id"), shape.at("kind"), shape.at("dormant"));
+        let (id, kind) = (shape.at("id"), shape.at("kind"));
         let log = tag(&self.schema, "catalog", "GrantKind", "Log");
-        let yes = boolean(&self.schema, true);
         self.rows(pager, txns, snapshot, shape.grants)?
             .into_iter()
             .map(|(_, row)| {
@@ -171,7 +163,6 @@ impl Catalog {
                 Ok(Stored {
                     id: at,
                     log: row.get(kind) == Some(&log),
-                    dormant: row.get(dormant) == Some(&yes),
                     row,
                 })
             })
@@ -216,7 +207,7 @@ impl Catalog {
             let at = self.source.grants.iter().position(|g| {
                 g.row.is_none()
                     && shape
-                        .log_row(&self.schema, g, s.id, s.dormant)
+                        .log_row(&self.schema, g, s.id)
                         .is_ok_and(|row| row == s.row)
             });
             let Some(at) = at else {
@@ -272,17 +263,18 @@ impl Catalog {
     /// Write as `m.x` the `Log` rows of `grants`, the grants of `into`'s source, over those of
     /// this catalog that `m.snapshot` sees: keep or update the row of each grant whose id names
     /// one, delete every other `Log` row, and insert a row with a new id for each other grant,
-    /// giving it that id. A kept dormant row whose id `restated` holds and whose role
-    /// `m.snapshot` sees is no longer dormant. Returns each dormant row inserted.
+    /// giving it that id. Each row is dormant as its grant is. When `mode` keeps dormant rows,
+    /// first make dormant each grant whose role `m.snapshot` does not see, and record each such
+    /// role at `into`'s version for [`Catalog::open`]. Returns each grant made dormant.
     ///
-    /// Fail with [`Error::Refused`], having drawn no id, when `mode` refuses and a grant to
-    /// insert names a role `m.snapshot` does not see.
+    /// Fail with [`Error::Refused`], having drawn no id, when `mode` refuses and a role of
+    /// `named` or of an active grant to insert is one `m.snapshot` does not see.
     pub(super) fn write_grants<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
         into: &Catalog,
         grants: &mut [LogGrant],
-        restated: &BTreeSet<i64>,
+        named: &BTreeSet<String>,
         mode: Grantees,
     ) -> Result<Vec<Dormant>, Error> {
         let schema = &into.schema;
@@ -299,17 +291,45 @@ impl Catalog {
             })
             .collect();
         let roles = self.role_names(m.pager, m.txns, m.snapshot)?;
-        if mode == Grantees::Refuse {
-            let missing: Vec<String> = fresh
-                .iter()
-                .map(|&i| &grants[i].role)
-                .filter(|r| !roles.contains(*r))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .map(|r| format!("a grant names role `{r}`, which does not exist"))
-                .collect();
-            if !missing.is_empty() {
-                return Err(Error::Refused(missing));
+        let mut dormant = Vec::new();
+        match mode {
+            Grantees::Refuse => {
+                let missing: Vec<String> = named
+                    .iter()
+                    .chain(
+                        fresh
+                            .iter()
+                            .map(|&i| &grants[i])
+                            .filter(|g| !g.dormant)
+                            .map(|g| &g.role),
+                    )
+                    .filter(|r| !roles.contains(*r))
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .map(|r| format!("a grant names role `{r}`, which does not exist"))
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(Error::Refused(missing));
+                }
+            }
+            Grantees::Dormant => {
+                let mut marked = BTreeSet::new();
+                for (i, g) in grants.iter_mut().enumerate() {
+                    if g.dormant || roles.contains(&g.role) {
+                        continue;
+                    }
+                    g.dormant = true;
+                    marked.insert(g.role.clone());
+                    dormant.push((i, g.role.clone()));
+                }
+                for role in marked {
+                    let fields = vec![int(into.source.version), Value::Text(role)];
+                    let mark = Value::Sum {
+                        ctor: DORMANT,
+                        fields,
+                    };
+                    self.roots.insert(m.pager, m.x.0, &[mark])?;
+                }
             }
         }
         let mut deleted = Vec::new();
@@ -319,8 +339,7 @@ impl Catalog {
             .filter(|g| g.row.is_some_and(|id| kept.contains(&id)))
         {
             let s = old[&g.row.expect("a kept grant has a row")];
-            let dormant = s.dormant && !(restated.contains(&s.id) && roles.contains(&g.role));
-            let row = shape.log_row(schema, g, s.id, dormant)?;
+            let row = shape.log_row(schema, g, s.id)?;
             if row != s.row {
                 deleted.push(s.row.clone());
                 inserted.push(row);
@@ -331,7 +350,6 @@ impl Catalog {
                 .filter(|s| !kept.contains(&s.id))
                 .map(|s| s.row.clone()),
         );
-        let mut dormant = Vec::new();
         if !fresh.is_empty() {
             let floor = stored
                 .iter()
@@ -351,24 +369,25 @@ impl Catalog {
                 let id = counters
                     .draw(m.pager, shape.grants.0, floor)
                     .map_err(drawn)?;
-                let g = &mut grants[i];
-                g.row = Some(id);
-                let missing = !roles.contains(&g.role);
-                if missing {
-                    dormant.push(Dormant {
-                        id,
-                        grantee: g.role.clone(),
-                        privilege: g.privilege.privilege_name().to_owned(),
-                        target: target(schema, g)?,
-                    });
-                }
-                inserted.push(shape.log_row(schema, g, id, missing)?);
+                grants[i].row = Some(id);
+                inserted.push(shape.log_row(schema, &grants[i], id)?);
             }
         }
         delete_rows(m, into.heap(shape.grants, shape.ctor), &deleted)?;
         for row in &inserted {
             into.insert(m.pager, m.x, shape.grants, shape.ctor, row)?;
         }
-        Ok(dormant)
+        dormant
+            .into_iter()
+            .map(|(i, grantee)| {
+                let g = &grants[i];
+                Ok(Dormant {
+                    id: g.row.expect("every grant has a row once written"),
+                    grantee,
+                    privilege: g.privilege.privilege_name().to_owned(),
+                    target: target(schema, g)?,
+                })
+            })
+            .collect()
     }
 }

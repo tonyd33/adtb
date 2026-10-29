@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use adtb_lang::ast::MigrationFile;
+use adtb_lang::ast::{MigrationFile, OperatorKind};
 use adtb_lang::check::Program;
 use adtb_lang::evolve::{Code, Resolved, RowMap, Source};
 use adtb_lang::norm::{self, NormalProgram};
@@ -293,8 +293,15 @@ impl Catalog {
             },
         )?;
         let mut grants = std::mem::take(&mut built.source.grants);
-        let restated = std::mem::take(&mut built.source.restated);
-        let dormant = self.write_grants(m, &built, &mut grants, &restated, grantees);
+        let named: BTreeSet<String> = file
+            .operators
+            .iter()
+            .filter_map(|op| match &op.kind {
+                OperatorKind::Grant(g) => Some(g.to.text.clone()),
+                _ => None,
+            })
+            .collect();
+        let dormant = self.write_grants(m, &built, &mut grants, &named, grantees);
         built.source.grants = grants;
         let dormant = dormant?;
         pending::rewrite(m, &self.roots, &self.readers.pending, &readers.pending)?;
