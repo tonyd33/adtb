@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: feature
 priority: 850
 summary: "a dropped unique, or a relaxing rekey's old key, is refused while a reader holds it instead of applying and staying pending"
-branch: pending-unique
+closed: 2026-10-28
 tags:
   - engine
 ---
@@ -34,3 +34,9 @@ Running: the lead's full branch check and a fresh independent review.
 State: /home/tony/code/adtb-pending-unique, tested 79554f8da1df2fe5b1b121a208c7e0f7e529773f, base cd020ae0; commit id unchanged after the run.
 Outcome: passed, exit 0. Root 2454 passed, 7 skipped (one fewer skipped than main: the un-ignored pending unique test); apps/campaign 47 passed, 1 skipped; clippy, fmt, deny, size-check and docs-check passed; 3m12s. Log target/check-lead.log in the workspace.
 Remaining: the independent review (running), landing, main check.
+
+## 2026-10-28: landed
+
+Independent review (work/briefs/review-pending-unique.md, local) found nothing blocking; its non-blocking findings are in pending-unique-follow-ups. Landed as 7c524015 on main. Main check passed, exit 0: root 2518 passed, 7 skipped; apps/campaign 47 passed, 1 skipped; 6m42s. Log target/check-main-pending-unique.log.
+
+## 2026-10-28: resolved
