@@ -100,3 +100,24 @@ without a type and incompatible nonempty operands refused. No type inference
 from current data/nominal target guessing, no origin syntax exception. Final
 ordinary checked-body provenance remains authority. This narrow shared typing
 prerequisite is in the same checker repair track; no spec policy change.
+
+## 2026-10-28: frozen for user-requested session restart
+
+Author candidate1ed18a4b1be6a2a502c40e9d4787cc3291d4e444/base87527a90
+in /home/tony/code/adtb-fix-row-provenance is UNLANDED.654/654 lang unit
+tests, strict langclippy, fmt/house/size all exit0. Last authorized public API
+check `suite -p adtb-sim --test api fixpoint_write_targets_preserve_the_snapshot_relation`
+collected0:1pass/47filtered,0.173s; build1m28s. Asserts exact identity update,
+changed-field mutual fix update with key predicate, filtered recursive delete,
+correct survivor fields and untouched other relation of SAME row type/key.
+2578tracked/localconfig hashes recorded; final after-hashes in author receipt.
+
+No fullbranch, broader simulator gates, fresh independent review, landing or
+lead main integration claimed. All remain REQUIRED after restart; user requested
+wind-down, no new review/feature tracks started. Root keeps tickets in-progress
+on existing branch. Author saves local main work/briefs/receipt-fix-row-provenance.md
+and <=15line handoff-fix-row-provenance.md, raw target/provenance-* logs/manifests.
+Original failing baselines and corrected fixture/lint failures remain retained.
+No Rust process after final gate;41GBfree/own target2GB, no cache cleanup.
+Fresh provider successor still waits for verified shared repair, preserves old
+c4f0391d draft and original witness. Never resume ended author for followup.

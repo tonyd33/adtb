@@ -58,3 +58,16 @@ correctness certificate claimed. Reviewed bookmark must stop at audited b1f483cc
 never include unlanded checker/provider. Later source requires separate review.
 
 ## 2026-10-28: resolved
+
+### Fresh tracked-only ticket validation
+
+Root explicitly tracked the five historical local guidance tickets plus newly
+created review/safety task files. In existing review workspace, after preserving
+original clean75b30af3/source report, root created fresh empty0b39a0d2 ondf5ea2dd
+containing only tracked inputs. Exact command `direnv exec /home/tony/code/adtb
+tix -C /home/tony/code/adtb-quality-authority-review/work/issues check` exited0;
+jj status remained clean. Thus no local-only ticket file is needed for this
+index. No Rust/source change; no broad fullmain rerun needed for ticket metadata.
+reviewed now points to exact audited b1f483cc (code87527a90), not later metadata
+or unlanded checker/provider. Source review portability failure remains retained
+as an original failed check, followed by this distinct correction/validation.
