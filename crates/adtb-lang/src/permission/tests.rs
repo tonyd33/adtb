@@ -1380,15 +1380,18 @@ fn carried_rows_in_a_widened_anonymous_sum_are_not_read() {
 #[test]
 fn rejects_requires_insert_on_its_one_constructor() {
     let s = schema("");
-    let text =
-        r#"insert left from (from x in read_csv("input.csv", Row) select x) rejects into rejects"#;
-    let got = requirements(&s, &[], text);
-    let inserts: Vec<_> = got
-        .iter()
-        .filter(|r| matches!(r, Requirement::Insert(t) if t.relation == target(&s, "rejects", "RejectedRow").relation))
-        .collect();
-    assert_eq!(
-        inserts,
-        vec![&Requirement::Insert(target(&s, "rejects", "RejectedRow"))]
-    );
+    let text = "insert right from (from x in left select x) rejects into rejects";
+    let mut want = reads(&s, "left", "Row", &["public", "secret"]);
+    want.insert(Requirement::Insert(target(&s, "right", "Row")));
+    want.insert(Requirement::Insert(target(&s, "rejects", "RejectedRow")));
+    assert_exact(&requirements(&s, &[], text), want);
+}
+
+#[test]
+fn insert_without_rejects_requires_no_destination_insert() {
+    let s = schema("");
+    let text = "insert right from (from x in left select x)";
+    let mut want = reads(&s, "left", "Row", &["public", "secret"]);
+    want.insert(Requirement::Insert(target(&s, "right", "Row")));
+    assert_exact(&requirements(&s, &[], text), want);
 }

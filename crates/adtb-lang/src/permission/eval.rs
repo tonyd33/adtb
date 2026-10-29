@@ -2,9 +2,6 @@ use super::value::Shape;
 use super::*;
 use crate::kernel::{Kind, Prim};
 
-/// The one constructor of `RejectedRow`, the row type of every `rejects into` destination.
-const REJECTED_ROW: u32 = 0;
-
 impl Analyzer<'_> {
     pub(super) fn eval(&mut self, arena: Arena, tm: Tm, env: &Env) -> Result<Value, Error> {
         let node = self.terms(arena).node(tm).clone();
@@ -239,10 +236,17 @@ impl Analyzer<'_> {
         env: &Env,
     ) -> Result<Value, Error> {
         let value = self.eval(arena, insert, env)?;
-        let target = self.target(into, REJECTED_ROW)?;
-        self.requirements
-            .required
-            .insert(Requirement::Insert(target));
+        let count = self
+            .schema
+            .ty(self.schema.relation(into).elem_def)
+            .ctors()
+            .len();
+        for c in 0..count as u32 {
+            let target = self.target(into, c)?;
+            self.requirements
+                .required
+                .insert(Requirement::Insert(target));
+        }
         Ok(value)
     }
 
