@@ -123,6 +123,47 @@ fn a_removed_constructor_has_no_image_and_an_added_one_no_preimage() {
 }
 
 #[test]
+fn hide_new_narrows_references_and_rows_to_the_pinned_constructors() {
+    const ADD_APPLE: &str = "module auth\nadd constructor Identity.Apple { sub: Text }\n";
+    let (_, from, _) = checked(&[V1]);
+    let (_, to, _) = checked(&[V1, ADD_APPLE]);
+    let map = Map::new(&from, &to);
+    let identities = RelId(
+        from.relations
+            .iter()
+            .position(|r| r.name == "identities")
+            .expect("identities") as u32,
+    );
+    let identity = named(&from, "Identity");
+    let key = Ty::Key {
+        rel: identities,
+        ctors: None,
+    };
+    let row = Ty::Data {
+        def: identity,
+        args: Vec::new(),
+        ctors: None,
+    };
+    assert_eq!(Ok(key.clone()), map.ty(&key, false));
+    let pinned = Some(vec![0, 1]);
+    assert_eq!(
+        Ok(Ty::Key {
+            rel: identities,
+            ctors: pinned.clone()
+        }),
+        map.ty(&key, true)
+    );
+    assert_eq!(
+        Ok(Ty::Data {
+            def: identity,
+            args: Vec::new(),
+            ctors: pinned
+        }),
+        map.ty(&row, true)
+    );
+}
+
+#[test]
 fn a_dropped_field_has_no_image() {
     let (_, from, _) = checked(&[V1]);
     let (_, to, _) = checked(&[V1, DROP_GID]);

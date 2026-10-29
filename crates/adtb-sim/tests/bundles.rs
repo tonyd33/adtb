@@ -9,8 +9,8 @@ use std::time::Duration;
 use adtb::catalog::version_hash;
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
 use adtb::{
-    CallOptions, Called, Database, Error, Log, OpenError, OpenOptions, Registration, RejectReason,
-    Value,
+    CallOptions, Called, Database, Error, Fault, Log, OpenError, OpenOptions, Registration,
+    RejectReason, Value,
 };
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
@@ -634,21 +634,104 @@ fn a_bundle_following_a_reference_that_admits_an_enabled_constructor_is_stale() 
     });
 }
 
+const HIDING: &str = "import auth
+query ids () -> Set Key users = from i in identities select i.user
+query whose () -> Set Key users = from s in sessions select s.who.user
+query whole () -> Set Identity = from s in sessions select (match s.who
+  | EmailPass e -> e
+  | Google g -> g)
+query names () -> Set Text = from s in sessions select (match s.who
+  | EmailPass e -> e.email
+  | Google g -> g.gid)
+";
+
+/// Open `[V1, ADD_APPLE, ENABLE_APPLE]` with `HIDING` registered under `hide new constructors`,
+/// holding a user, a Google identity, an Apple identity and a session of the Google one.
+fn hiding(rt: &SimRuntime) -> Database<SimRuntime> {
+    let db = opened(
+        rt,
+        &[V1, ADD_APPLE, ENABLE_APPLE],
+        vec![bundle("web-1.0", &[V1], " hide new constructors", HIDING)],
+    );
+    write(
+        &db,
+        r#"insert users { id: users.key(1), name: "ann", tier: Free }
+           insert identities.Google { id: identities.key(1), user: users.key(1), gid: "g-ann" }
+           insert identities.Apple { id: identities.key(2), user: users.key(1), sub: "a-ann" }
+           insert sessions { id: sessions.key(1), who: identities.key(1) }"#,
+    )
+    .expect("the rows insert");
+    db
+}
+
+/// Returns the fault call `ordinal` of `web-1.0` ends in.
+fn fault(db: &Database<SimRuntime>, ordinal: u32) -> Fault {
+    let web = db.registered("web-1.0").expect("web-1.0 binds");
+    match web.call(ordinal, &[], &CallOptions::default()) {
+        Err(e) => match reason(&e) {
+            RejectReason::Faulted { fault } => *fault,
+            other => panic!("call {ordinal} is refused otherwise: {other:?}"),
+        },
+        Ok(got) => panic!("call {ordinal} does not fault: {got:?}"),
+    }
+}
+
 #[test]
 fn hide_new_constructors_exempts_whole_reads_and_references() {
     once(24, |rt| {
-        let both = "import auth
-query ids () -> Set Key users = from i in identities select i.user
-query whose () -> Set Key users = from s in sessions select s.who.user
-";
-        let log = [V1, ADD_APPLE, ENABLE_APPLE];
-        let db = opened(
-            &rt,
-            &log,
-            vec![bundle("web-1.0", &[V1], " hide new constructors", both)],
-        );
+        let db = hiding(&rt);
         assert!(db.registered("web-1.0").is_ok());
+        let ann = query(&db, "users.key(1)");
+        assert_eq!(
+            ann,
+            rows(call(&db, "web-1.0", 1, &[])),
+            "the Apple row is hidden"
+        );
+        assert_eq!(ann, rows(call(&db, "web-1.0", 2, &[])));
     });
+}
+
+#[test]
+fn a_hide_new_constructors_bundle_reads_a_known_row_through_a_reference() {
+    once(91, |rt| {
+        let db = hiding(&rt);
+        assert_eq!(
+            query(&db, "identities.key(1).user"),
+            rows(call(&db, "web-1.0", 2, &[]))
+        );
+        assert_eq!(
+            query(&db, "from i in identities.Google select i"),
+            rows(call(&db, "web-1.0", 3, &[]))
+        );
+        assert_eq!(vec![r#""g-ann""#], rows(call(&db, "web-1.0", 4, &[])));
+    });
+}
+
+/// Returns the fault call `ordinal` of `web-1.0` ends in once a session references the Apple
+/// identity.
+fn hidden_fault(rt: &SimRuntime, ordinal: u32) -> Fault {
+    let db = hiding(rt);
+    write(
+        &db,
+        "insert sessions { id: sessions.key(2), who: identities.key(2) }",
+    )
+    .expect("the session of the Apple identity inserts");
+    fault(&db, ordinal)
+}
+
+#[test]
+fn a_hide_new_constructors_bundle_faults_reading_a_field_through_a_reference_to_a_hidden_row() {
+    once(92, |rt| assert_eq!(Fault::NoSuchRow, hidden_fault(&rt, 2)));
+}
+
+#[test]
+fn a_hide_new_constructors_bundle_faults_returning_a_hidden_row_whole() {
+    once(93, |rt| assert_eq!(Fault::NoSuchRow, hidden_fault(&rt, 3)));
+}
+
+#[test]
+fn a_hide_new_constructors_bundle_faults_matching_a_hidden_row() {
+    once(94, |rt| assert_eq!(Fault::NoSuchRow, hidden_fault(&rt, 4)));
 }
 
 #[test]

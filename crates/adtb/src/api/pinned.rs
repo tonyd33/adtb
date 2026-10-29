@@ -42,7 +42,7 @@ fn recode(map: &Map<'_>, ty: &Ty, v: &Val, forward: bool) -> Val {
             };
             let to_args = args
                 .iter()
-                .map(|a| map.ty(a))
+                .map(|a| map.ty(a, false))
                 .collect::<Result<Vec<_>, _>>()
                 .expect("a carried value's type has a counterpart at both versions");
             let pinned = Map::fields(map.from, *def, args, pin);

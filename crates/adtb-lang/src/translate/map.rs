@@ -169,29 +169,36 @@ impl<'a> Map<'a> {
         self.to.normalize_ctors(to, out)
     }
 
-    /// Returns `ty` at the later version.
-    pub fn ty(&self, ty: &Ty) -> Result<Ty, Loss> {
+    /// Returns `ty` at the later version, its constructor sets narrowed to the earlier version's
+    /// constructors when `hide_new`.
+    pub fn ty(&self, ty: &Ty, hide_new: bool) -> Result<Ty, Loss> {
         Ok(match ty {
             Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change => ty.clone(),
             Ty::Data { def, args, ctors } => Ty::Data {
                 def: self.def(*def).ok_or(Loss::Type(*def))?,
-                args: args.iter().map(|a| self.ty(a)).collect::<Result<_, _>>()?,
-                ctors: self.set(*def, ctors, false),
+                args: args
+                    .iter()
+                    .map(|a| self.ty(a, hide_new))
+                    .collect::<Result<_, _>>()?,
+                ctors: self.set(*def, ctors, hide_new),
             },
             Ty::Key { rel, ctors } => {
                 let def = self.from.relation(*rel).elem_def;
                 Ty::Key {
                     rel: self.relation(*rel).ok_or(Loss::Relation(*rel))?,
-                    ctors: self.set(def, ctors, false),
+                    ctors: self.set(def, ctors, hide_new),
                 }
             }
-            Ty::Set(t) => Ty::Set(Box::new(self.ty(t)?)),
-            Ty::NonEmpty(t) => Ty::NonEmpty(Box::new(self.ty(t)?)),
-            Ty::Group(k, t) => Ty::Group(Box::new(self.ty(k)?), Box::new(self.ty(t)?)),
-            Ty::Tag(t) => Ty::Tag(Box::new(self.ty(t)?)),
+            Ty::Set(t) => Ty::Set(Box::new(self.ty(t, hide_new)?)),
+            Ty::NonEmpty(t) => Ty::NonEmpty(Box::new(self.ty(t, hide_new)?)),
+            Ty::Group(k, t) => Ty::Group(
+                Box::new(self.ty(k, hide_new)?),
+                Box::new(self.ty(t, hide_new)?),
+            ),
+            Ty::Tag(t) => Ty::Tag(Box::new(self.ty(t, hide_new)?)),
             Ty::Record(fs) => Ty::Record(
                 fs.iter()
-                    .map(|(n, t)| Ok((n.clone(), self.ty(t)?)))
+                    .map(|(n, t)| Ok((n.clone(), self.ty(t, hide_new)?)))
                     .collect::<Result<_, Loss>>()?,
             ),
             Ty::Sum { ctors, sel } => Ty::Sum {
@@ -200,14 +207,17 @@ impl<'a> Map<'a> {
                     .map(|(n, fs)| {
                         let fs = fs
                             .iter()
-                            .map(|(f, t)| Ok((f.clone(), self.ty(t)?)))
+                            .map(|(f, t)| Ok((f.clone(), self.ty(t, hide_new)?)))
                             .collect::<Result<_, Loss>>()?;
                         Ok((n.clone(), fs))
                     })
                     .collect::<Result<_, Loss>>()?,
                 sel: sel.clone(),
             },
-            Ty::Fn(a, b) => Ty::Fn(Box::new(self.ty(a)?), Box::new(self.ty(b)?)),
+            Ty::Fn(a, b) => Ty::Fn(
+                Box::new(self.ty(a, hide_new)?),
+                Box::new(self.ty(b, hide_new)?),
+            ),
         })
     }
 

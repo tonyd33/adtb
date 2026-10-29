@@ -89,7 +89,7 @@ impl<'p, 'a> Walk<'p, 'a> {
 
     fn ty(&self, ty: &Ty) -> R<Ty> {
         self.map
-            .ty(ty)
+            .ty(ty, self.p.hide_new)
             .map_err(|l| self.p.lost(&l, "reaches a value of"))
     }
 
