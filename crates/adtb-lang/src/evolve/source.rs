@@ -32,7 +32,7 @@ impl Source {
         Ok(src)
     }
 
-    pub(super) fn all_states(schema: &Schema, stage: Stage) -> BTreeMap<StateKey, State> {
+    fn all_states(schema: &Schema, stage: Stage) -> BTreeMap<StateKey, State> {
         let mut out = BTreeMap::new();
         for r in &schema.relations {
             if schema.module(r.module).engine {
@@ -345,7 +345,7 @@ impl Source {
     ///
     /// Preconditions:
     /// - `applied` holds, for each operator of `m`, whether [`Source::migrate`] applied it.
-    pub(super) fn copied_from(
+    fn copied_from(
         &self,
         m: &MigrationFile,
         text: &str,
@@ -428,7 +428,7 @@ impl Source {
         r
     }
 
-    pub(super) fn rekey_leaves_no_old_reference(
+    fn rekey_leaves_no_old_reference(
         &self,
         module: &str,
         relation: &QName,

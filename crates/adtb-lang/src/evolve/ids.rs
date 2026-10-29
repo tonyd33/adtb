@@ -189,7 +189,7 @@ impl Source {
     }
 
     fn rename_ctor_ids(&mut self, before: &Source, m: &str, t: &str, from: &str, to: &str) {
-        let rels = relations_of(before, m, t);
+        let rels = relation_paths(before, m, t);
         rewrite(&mut self.ids, &|k| {
             if k == format!("ctor {m}::{t}.{from}") {
                 return Some(format!("ctor {m}::{t}.{to}"));
@@ -222,7 +222,7 @@ impl Source {
             None if is_record(before, m, t) => format!("{t}.{t}."),
             None => format!("{t}."),
         };
-        let rels = relations_of(before, m, t);
+        let rels = relation_paths(before, m, t);
         rewrite(&mut self.ids, &|k| {
             if k == format!("field {m}::{at}{from}") {
                 return Some(format!("field {m}::{at}{to}"));
@@ -304,7 +304,7 @@ impl Source {
 }
 
 /// Returns the paths of the relations `before` declares over type `t` of module `m`.
-fn relations_of(before: &Source, m: &str, t: &str) -> Vec<String> {
+fn relation_paths(before: &Source, m: &str, t: &str) -> Vec<String> {
     let Ok(schema) = before.built() else {
         return Vec::new();
     };

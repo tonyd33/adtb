@@ -146,7 +146,7 @@ impl Cx<'_> {
     }
 
     /// The schema object a file of the source declares, named for a refusal.
-    pub(super) fn object_name(&self, file: FileId) -> String {
+    fn object_name(&self, file: FileId) -> String {
         match self.src.parsed(file.0 as usize) {
             Some(d) => {
                 let (kind, name) = key_of(&d);
@@ -283,7 +283,7 @@ impl Cx<'_> {
         }
     }
 
-    pub(super) fn reserved_module(&self, m: &ast::Ident) -> R<()> {
+    fn reserved_module(&self, m: &ast::Ident) -> R<()> {
         if m.text == "prelude" || ENGINE_MODULES.contains(&m.text.as_str()) {
             return self.err_at(m.span, format!("no module may be named `{}`", m.text));
         }
@@ -293,13 +293,13 @@ impl Cx<'_> {
         Ok(())
     }
 
-    pub(super) fn add_module(&mut self, m: &ast::Ident) -> R<()> {
+    fn add_module(&mut self, m: &ast::Ident) -> R<()> {
         self.reserved_module(m)?;
         self.src.modules.insert(m.text.clone());
         Ok(())
     }
 
-    pub(super) fn drop_module(&mut self, m: &ast::Ident) -> R<()> {
+    fn drop_module(&mut self, m: &ast::Ident) -> R<()> {
         if !self.src.modules.contains(&m.text) {
             return self.err_at(m.span, format!("no module `{}`", m.text));
         }
@@ -318,7 +318,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    pub(super) fn install(&mut self, m: &ast::Ident, from: &str) -> R<()> {
+    fn install(&mut self, m: &ast::Ident, from: &str) -> R<()> {
         self.reserved_module(m)?;
         let Some(package) = self.src.packages.get(from) else {
             return self.err(format!("the package `{from}` is not available"));
@@ -378,7 +378,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    pub(super) fn known_module(&self) -> R<()> {
+    fn known_module(&self) -> R<()> {
         if self.src.modules.contains(&self.module) {
             Ok(())
         } else {
@@ -390,7 +390,7 @@ impl Cx<'_> {
     }
 
     /// Adds the declaration written at `span` of the migration, after its verb.
-    pub(super) fn add_decl(&mut self, kind: &str, name: &str, span: Span) -> R<()> {
+    fn add_decl(&mut self, kind: &str, name: &str, span: Span) -> R<()> {
         self.known_module()?;
         if self.src.find(kind, &self.module, name).is_some() {
             return self.err_at(
@@ -407,7 +407,7 @@ impl Cx<'_> {
     /// Refuses the operator when declaration `i` fails to check against the source it is in.
     ///
     /// The failures of other declarations are left to the recheck at the end of the migration.
-    pub(super) fn checks_where_written(&self, i: usize) -> R<()> {
+    fn checks_where_written(&self, i: usize) -> R<()> {
         let Err(ds) = self.src.check() else {
             return Ok(());
         };
@@ -419,7 +419,7 @@ impl Cx<'_> {
         if own.is_empty() { Ok(()) } else { Err(own) }
     }
 
-    pub(super) fn redefine(&mut self, kind: &str, name: &ast::Ident, span: Span) -> R<()> {
+    fn redefine(&mut self, kind: &str, name: &ast::Ident, span: Span) -> R<()> {
         let Some(i) = self.src.find(kind, &self.module, &name.text) else {
             return self.err_at(
                 name.span,
@@ -434,7 +434,7 @@ impl Cx<'_> {
         self.checks_where_written(i)
     }
 
-    pub(super) fn drop_decl(&mut self, kind: &str, q: &QName) -> R<()> {
+    fn drop_decl(&mut self, kind: &str, q: &QName) -> R<()> {
         let m = self.module_of(q);
         let Some(i) = self.src.find(kind, &m, &q.name.text) else {
             return self.err_at(
@@ -446,7 +446,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    pub(super) fn add_type(&mut self, t: &ast::TypeDecl) -> R<()> {
+    fn add_type(&mut self, t: &ast::TypeDecl) -> R<()> {
         self.add_decl("type", &t.name.text, t.span)?;
         let names: Vec<String> = match &t.body {
             ast::TypeBody::Record(_) | ast::TypeBody::New(..) => vec![t.name.text.clone()],
@@ -465,7 +465,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    pub(super) fn drop_type(&mut self, q: &QName) -> R<()> {
+    fn drop_type(&mut self, q: &QName) -> R<()> {
         let (i, decl) = self.type_decl(q)?;
         let schema = match self.schema() {
             Ok(s) => s,
@@ -522,7 +522,7 @@ impl Cx<'_> {
     }
 
     /// Removes type declaration `i`, `decl`, and its value-level states.
-    pub(super) fn remove_type(&mut self, i: usize, decl: &ast::TypeDecl) {
+    fn remove_type(&mut self, i: usize, decl: &ast::TypeDecl) {
         let module = self.src.decls[i].module.clone();
         self.src.remove_decl(i);
         self.src
@@ -530,7 +530,7 @@ impl Cx<'_> {
             .retain(|(m, t, _), _| !(*m == module && *t == decl.name.text));
     }
 
-    pub(super) fn rename_type(&mut self, q: &QName, to: &ast::Ident) -> R<()> {
+    fn rename_type(&mut self, q: &QName, to: &ast::Ident) -> R<()> {
         let (_, decl) = self.type_decl(q)?;
         let module = self.module_of(q);
         if self.src.find("type", &module, &to.text).is_some() {
@@ -612,7 +612,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    pub(super) fn add_relation(&mut self, r: &ast::RelationDecl) -> R<()> {
+    fn add_relation(&mut self, r: &ast::RelationDecl) -> R<()> {
         if r.name.module.is_some() {
             return self.err_at(
                 r.name.span(),
@@ -643,7 +643,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    pub(super) fn drop_relation(&mut self, q: &QName) -> R<()> {
+    fn drop_relation(&mut self, q: &QName) -> R<()> {
         let (i, _) = self.relation_decl(q)?;
         let schema = self.schema()?;
         let rel = self.rel_id(&schema, q)?;
@@ -691,7 +691,7 @@ impl Cx<'_> {
         Ok(())
     }
 
-    pub(super) fn rename_relation(&mut self, q: &QName, to: &ast::Ident) -> R<()> {
+    fn rename_relation(&mut self, q: &QName, to: &ast::Ident) -> R<()> {
         let (i, decl) = self.relation_decl(q)?;
         let module = self.module_of(q);
         let schema = self.schema()?;
@@ -783,13 +783,13 @@ impl Cx<'_> {
         }
     }
 
-    pub(super) fn drop_set(&mut self, name: &ast::Ident, rel: &QName) -> R<()> {
+    fn drop_set(&mut self, name: &ast::Ident, rel: &QName) -> R<()> {
         let (i, _) = self.set_decl(name, rel)?;
         self.src.remove_decl(i);
         Ok(())
     }
 
-    pub(super) fn rename_set(&mut self, name: &ast::Ident, rel: &QName, to: &ast::Ident) -> R<()> {
+    fn rename_set(&mut self, name: &ast::Ident, rel: &QName, to: &ast::Ident) -> R<()> {
         let (i, decl) = self.set_decl(name, rel)?;
         let schema = self.schema()?;
         let r = self.rel_id(&schema, rel)?;
@@ -834,7 +834,7 @@ impl Cx<'_> {
 
     /// Calls `f` with each constructor or named set name that a declaration selects from relation `r`:
     /// in `Key r.S` types, the scopes of `r`'s own clauses, and checks on `r`. Spans are local to the declaration's text.
-    pub(super) fn each_selection(
+    fn each_selection(
         &self,
         schema: &Schema,
         r: RelId,
@@ -890,7 +890,7 @@ impl Cx<'_> {
         }
     }
 
-    pub(super) fn script(&mut self, w: &ast::Write) -> R<()> {
+    fn script(&mut self, w: &ast::Write) -> R<()> {
         let (schema, program) = self.checked()?;
         let mut refs = Vec::new();
         check::check_adhoc_recording(
@@ -946,7 +946,7 @@ impl Cx<'_> {
         }
     }
 
-    pub(super) fn stage(&mut self, t: &CtorTarget, verb: &str) -> R<()> {
+    fn stage(&mut self, t: &CtorTarget, verb: &str) -> R<()> {
         let (relation, key, shown) = self.stage_key(t)?;
         let map = if relation {
             &mut self.src.states

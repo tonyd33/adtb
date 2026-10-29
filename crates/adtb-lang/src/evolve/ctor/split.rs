@@ -9,7 +9,7 @@ struct SplitImage<'a> {
     carries: &'a Carries,
 }
 
-/// Returns the clause `cl` restates over each product that keeps every one of its fields.
+/// Returns `cl` restated over each product that keeps every one of its fields.
 fn split_images(image: &SplitImage, cl: &ScopedClause, header: &BTreeSet<&str>) -> Vec<String> {
     let mut images = Vec::new();
     for p in image.products {
@@ -132,7 +132,7 @@ impl Cx<'_> {
         self.retype_products(&schema, def, std::slice::from_ref(&source), &products)
     }
 
-    /// Returns the edits that restate each clause over the split constructor over its products,
+    /// Returns the edits that rescope each clause over the split constructor to its products,
     /// and add `replacements` to every relation over the type.
     fn split_clauses(
         &self,

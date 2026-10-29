@@ -12,11 +12,15 @@ use crate::span::{Diag, FileDiag, FileId, Span};
 use crate::types::*;
 
 mod adhoc;
+mod call;
 mod expr;
 mod pat;
 mod prelude;
+mod query;
+mod record;
 mod rel;
 mod rows;
+mod txn;
 mod ty;
 mod write;
 
@@ -26,8 +30,8 @@ mod tests;
 use rows::RowOrigin;
 
 pub use adhoc::{AdhocCommand, Bundles, Command, Explained, RestorePoint};
+pub use txn::{Txn, check_txn, check_txn_in};
 pub use ty::{join, subtype};
-pub use write::{Txn, check_txn, check_txn_in};
 
 type R<T> = Result<T, Diag>;
 
@@ -516,209 +520,205 @@ pub fn schema_refs(schema: &Schema) -> Vec<(FileId, Span, Ref)> {
     refs
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "checking function bodies, relation defaults, computed fields and index fields would each have to be a pass"
-)]
 fn bodies(
     schema: &Schema,
     order: &[FnId],
-    mut record: Option<&mut Vec<(FileId, Span, Ref)>>,
+    record: Option<&mut Vec<(FileId, Span, Ref)>>,
 ) -> (Program, Vec<FileDiag>) {
-    let mut program = Program {
+    let mut b = Bodies {
+        schema,
+        record,
+        program: Program {
+            terms: Terms::default(),
+            functions: vec![None; schema.functions.len()],
+            constraints: Vec::new(),
+            checks: Vec::new(),
+            domains: BTreeMap::new(),
+            retags: BTreeMap::new(),
+            defaults: BTreeMap::new(),
+            computed: BTreeMap::new(),
+            index_fields: BTreeMap::new(),
+            aggregates: vec![None; schema.aggregates.len()],
+            fn_rows: Vec::new(),
+        },
+        diags: Vec::new(),
+        fn_rows: vec![None; schema.functions.len()],
         terms: Terms::default(),
-        functions: vec![None; schema.functions.len()],
-        constraints: Vec::new(),
-        checks: Vec::new(),
-        domains: BTreeMap::new(),
-        retags: BTreeMap::new(),
-        defaults: BTreeMap::new(),
-        computed: BTreeMap::new(),
-        index_fields: BTreeMap::new(),
-        aggregates: vec![None; schema.aggregates.len()],
-        fn_rows: Vec::new(),
     };
-    let mut diags = Vec::new();
-    let mut fn_rows = vec![None; schema.functions.len()];
-    let mut terms = Terms::default();
-    let mut run = |module: ModuleId,
-                   ctx: Context,
-                   file: FileId,
-                   terms: &mut Terms,
-                   fn_rows: &[Option<RelId>],
-                   f: &mut dyn FnMut(&mut Checker) -> R<Tm>|
-     -> Option<Tm> {
-        let mut c = Checker::new(schema, Visible::module(module), ctx);
-        c.terms = std::mem::take(terms);
-        c.fn_rows = fn_rows.to_vec();
-        if record.is_some() {
+    b.functions(order);
+    b.aggregates();
+    b.constraints();
+    b.checks();
+    b.domains();
+    for (i, r) in schema.relations.iter().enumerate() {
+        b.relation(RelId(i as u32), r);
+    }
+    b.finish()
+}
+
+struct Bodies<'s, 'r> {
+    schema: &'s Schema,
+    record: Option<&'r mut Vec<(FileId, Span, Ref)>>,
+    program: Program,
+    diags: Vec<FileDiag>,
+    fn_rows: Vec<Option<RelId>>,
+    terms: Terms,
+}
+
+impl Bodies<'_, '_> {
+    fn run(
+        &mut self,
+        module: ModuleId,
+        ctx: Context,
+        file: FileId,
+        f: &mut dyn FnMut(&mut Checker) -> R<Tm>,
+    ) -> Option<Tm> {
+        let mut c = Checker::new(self.schema, Visible::module(module), ctx);
+        c.terms = std::mem::take(&mut self.terms);
+        c.fn_rows = self.fn_rows.clone();
+        if self.record.is_some() {
             c.refs = Some(RefCell::new(Vec::new()));
             c.coverage = false;
         }
         let r = f(&mut c);
-        *terms = std::mem::take(&mut c.terms);
-        if let (Some(out), Some(refs)) = (record.as_deref_mut(), c.refs.take()) {
+        self.terms = std::mem::take(&mut c.terms);
+        if let (Some(out), Some(refs)) = (self.record.as_deref_mut(), c.refs.take()) {
             out.extend(refs.into_inner().into_iter().map(|(s, r)| (file, s, r)));
         }
         match r {
             Ok(t) => Some(t),
             Err(d) => {
-                diags.push(FileDiag { file, diag: d });
+                self.diags.push(FileDiag { file, diag: d });
                 None
             }
         }
-    };
-    for &id in order {
-        let def = schema.function(id);
-        let ast::FnBody::Expr(body) = &def.body else {
-            continue;
-        };
-        let mut rows = None;
-        let tm = run(
-            def.module,
-            Context::Function,
-            def.file,
-            &mut terms,
-            &fn_rows,
-            &mut |c| {
+    }
+
+    fn functions(&mut self, order: &[FnId]) {
+        let schema = self.schema;
+        for &id in order {
+            let def = schema.function(id);
+            let ast::FnBody::Expr(body) = &def.body else {
+                continue;
+            };
+            let mut rows = None;
+            let tm = self.run(def.module, Context::Function, def.file, &mut |c| {
                 let (tm, r) = c.function(def, body)?;
                 rows = r;
                 Ok(tm)
-            },
-        );
-        fn_rows[id.0 as usize] = rows;
-        program.functions[id.0 as usize] = tm;
+            });
+            self.fn_rows[id.0 as usize] = rows;
+            self.program.functions[id.0 as usize] = tm;
+        }
     }
-    for (i, def) in schema.aggregates.iter().enumerate() {
-        let mut parts = None;
-        run(
-            def.module,
-            Context::Function,
-            def.file,
-            &mut terms,
-            &fn_rows,
-            &mut |c| {
+
+    fn aggregates(&mut self) {
+        let schema = self.schema;
+        for (i, def) in schema.aggregates.iter().enumerate() {
+            let mut parts = None;
+            self.run(def.module, Context::Function, def.file, &mut |c| {
                 let p = c.aggregate_decl(def)?;
                 parts = Some(p);
                 Ok(p.init)
-            },
-        );
-        program.aggregates[i] = parts;
-    }
-    for con in &schema.constraints {
-        if let Some(tm) = run(
-            con.module,
-            Context::Constraint,
-            con.file,
-            &mut terms,
-            &fn_rows,
-            &mut |c| c.constraint(&con.query),
-        ) {
-            program.constraints.push(tm);
+            });
+            self.program.aggregates[i] = parts;
         }
     }
-    for chk in &schema.checks {
-        if chk.relation.0 == u32::MAX {
-            continue;
-        }
-        if let Some(tm) = run(
-            chk.module,
-            Context::Schema,
-            chk.file,
-            &mut terms,
-            &fn_rows,
-            &mut |c| c.check_clause(chk.relation, chk.ctors.clone(), &chk.predicate),
-        ) {
-            program.checks.push(tm);
+
+    fn constraints(&mut self) {
+        let schema = self.schema;
+        for con in &schema.constraints {
+            if let Some(tm) = self.run(con.module, Context::Constraint, con.file, &mut |c| {
+                c.constraint(&con.query)
+            }) {
+                self.program.constraints.push(tm);
+            }
         }
     }
-    for (i, t) in schema.types.iter().enumerate() {
-        if let TypeDefKind::Newtype {
-            base,
-            domain: Some(d),
-        } = &t.kind
-        {
-            let mut var = None;
-            if let Some(tm) = run(
-                t.module,
-                Context::Schema,
-                t.file,
-                &mut terms,
-                &fn_rows,
-                &mut |c| {
+
+    fn checks(&mut self) {
+        let schema = self.schema;
+        for chk in &schema.checks {
+            if chk.relation.0 == u32::MAX {
+                continue;
+            }
+            if let Some(tm) = self.run(chk.module, Context::Schema, chk.file, &mut |c| {
+                c.check_clause(chk.relation, chk.ctors.clone(), &chk.predicate)
+            }) {
+                self.program.checks.push(tm);
+            }
+        }
+    }
+
+    fn domains(&mut self) {
+        let schema = self.schema;
+        for (i, t) in schema.types.iter().enumerate() {
+            if let TypeDefKind::Newtype {
+                base,
+                domain: Some(d),
+            } = &t.kind
+            {
+                let mut var = None;
+                if let Some(tm) = self.run(t.module, Context::Schema, t.file, &mut |c| {
                     c.scope.push();
                     let v = c.bind("self", base.clone(), None);
                     var = Some(v);
                     let ty = c.bool_ty();
                     let out = c.check(d, &ty)?;
                     Ok(out.tm)
-                },
-            ) {
-                program
-                    .domains
-                    .insert(TypeId(i as u32), (var.expect("bound"), tm));
+                }) {
+                    self.program
+                        .domains
+                        .insert(TypeId(i as u32), (var.expect("bound"), tm));
+                }
             }
         }
     }
-    for (i, r) in schema.relations.iter().enumerate() {
-        let rel = RelId(i as u32);
+
+    fn relation(&mut self, rel: RelId, r: &crate::schema::RelationDef) {
         for (j, d) in r.defaults.iter().enumerate() {
             if let DefaultValue::Expr(e) = &d.value
-                && let Some(tm) = run(
-                    r.module,
-                    Context::Schema,
-                    r.file,
-                    &mut terms,
-                    &fn_rows,
-                    &mut |c| c.default_clause(rel, d.ctor, &d.field, e),
-                )
+                && let Some(tm) = self.run(r.module, Context::Schema, r.file, &mut |c| {
+                    c.default_clause(rel, d.ctor, &d.field, e)
+                })
             {
-                program.defaults.insert((rel, j), tm);
+                self.program.defaults.insert((rel, j), tm);
             }
         }
         for (j, comp) in r.computed.iter().enumerate() {
             let mut var = None;
-            if let Some(tm) = run(
-                r.module,
-                Context::Schema,
-                r.file,
-                &mut terms,
-                &fn_rows,
-                &mut |c| {
-                    c.scope.push();
-                    var = Some(c.bind("self", r.elem.clone(), Some(rel)));
-                    Ok(c.check(&comp.expr, &comp.ty)?.tm)
-                },
-            ) {
-                program.computed.insert((rel, j), (var.expect("bound"), tm));
+            if let Some(tm) = self.run(r.module, Context::Schema, r.file, &mut |c| {
+                c.scope.push();
+                var = Some(c.bind("self", r.elem.clone(), Some(rel)));
+                Ok(c.check(&comp.expr, &comp.ty)?.tm)
+            }) {
+                self.program
+                    .computed
+                    .insert((rel, j), (var.expect("bound"), tm));
             }
         }
         for (j, ix) in r.indexes.iter().enumerate() {
             for (k, e) in ix.fields.iter().enumerate() {
                 let mut path = Vec::new();
-                if let Some(value) = run(
-                    r.module,
-                    Context::Schema,
-                    r.file,
-                    &mut terms,
-                    &fn_rows,
-                    &mut |c| {
-                        let f = c.index_field(rel, ix.scope.clone(), e)?;
-                        path = f.path;
-                        Ok(f.value)
-                    },
-                ) {
-                    program
+                if let Some(value) = self.run(r.module, Context::Schema, r.file, &mut |c| {
+                    let f = c.index_field(rel, ix.scope.clone(), e)?;
+                    path = f.path;
+                    Ok(f.value)
+                }) {
+                    self.program
                         .index_fields
                         .insert((rel, j, k), IndexField { value, path });
                 }
             }
         }
     }
-    program.retags = write::delete_actions(schema, &mut terms, &mut diags);
-    program.terms = terms;
-    program.fn_rows = fn_rows;
-    (program, diags)
+
+    fn finish(mut self) -> (Program, Vec<FileDiag>) {
+        self.program.retags = write::delete_actions(self.schema, &mut self.terms, &mut self.diags);
+        self.program.terms = self.terms;
+        self.program.fn_rows = self.fn_rows;
+        (self.program, self.diags)
+    }
 }
 
 /// A body over one row, as a fill or a routing gives it.

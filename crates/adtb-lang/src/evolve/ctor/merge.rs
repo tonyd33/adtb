@@ -113,7 +113,7 @@ impl Cx<'_> {
         self.retype_products(&schema, def, &sources, std::slice::from_ref(&m))
     }
 
-    /// Returns the edits that restate each clause over the merged constructors over the merged one.
+    /// Returns the edits that rescope each clause over the merged constructors to the merged one.
     fn merged_clauses(&self, schema: &Schema, image: &MergeImage) -> R<Edits> {
         let mut clause_edits: Edits = BTreeMap::new();
         let mut added: BTreeMap<usize, Vec<Written>> = BTreeMap::new();

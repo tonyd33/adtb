@@ -962,7 +962,7 @@ impl Checker<'_> {
         (0..params.len() as u32).all(|i| {
             fields
                 .iter()
-                .any(|(f, fty, _)| given.contains(&f.as_str()) && expr::mentions(fty, i))
+                .any(|(f, fty, _)| given.contains(&f.as_str()) && call::mentions(fty, i))
         })
     }
 

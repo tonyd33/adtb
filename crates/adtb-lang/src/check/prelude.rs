@@ -103,19 +103,33 @@ impl Checker<'_> {
         )
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        clippy::cognitive_complexity,
-        reason = "one arm per prelude function; each family of arms would have to be its own checker"
-    )]
     pub(super) fn prelude_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Out> {
-        let text = Ty::Base(Base::Text);
-        let i64t = Ty::Base(Base::I64);
-        match name {
-            "count" | "sum" | "min" | "max" | "avg" => Err(diag(
+        if matches!(name, "count" | "sum" | "min" | "max" | "avg") {
+            return Err(diag(
                 span,
                 format!("`{name}` is an aggregate: `{name}(e for x in q)`"),
-            )),
+            ));
+        }
+        let families = [
+            Self::span_call,
+            Self::text_call,
+            Self::checked_call,
+            Self::decimal_call,
+            Self::convert_call,
+            Self::string_call,
+            Self::time_call,
+            Self::change_call,
+        ];
+        for family in families {
+            if let Some(out) = family(self, name, es, span)? {
+                return Ok(out);
+            }
+        }
+        Err(diag(span, format!("`{name}` is not a function")))
+    }
+
+    fn span_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+        let out = match name {
             "span" => {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
@@ -180,6 +194,15 @@ impl Checker<'_> {
                 let bt = self.bool_ty();
                 Ok(self.prim(p, vec![x.tm, y.tm], bt))
             }
+            _ => return Ok(None),
+        };
+        out.map(Some)
+    }
+
+    fn text_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+        let text = Ty::Base(Base::Text);
+        let i64t = Ty::Base(Base::I64);
+        let out = match name {
             "uuid" => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
@@ -224,6 +247,50 @@ impl Checker<'_> {
                 }
                 Ok(self.prim(Prim::ToText, vec![x.tm], text))
             }
+            "bytes_len" => {
+                let [a] = self.arity(name, es, 1, span)? else {
+                    unreachable!()
+                };
+                let x = self.synth(a)?;
+                if !matches!(x.ty, Ty::Base(Base::Text | Base::Bytes)) {
+                    return Err(self.wrong(name, &[&x.ty], span));
+                }
+                Ok(self.prim(Prim::BytesLen, vec![x.tm], i64t))
+            }
+            "scalar_len" | "grapheme_len" => {
+                let [a] = self.arity(name, es, 1, span)? else {
+                    unreachable!()
+                };
+                let x = self.base_arg(a, Base::Text)?;
+                let p = if name == "scalar_len" {
+                    Prim::ScalarLen
+                } else {
+                    Prim::GraphemeLen
+                };
+                Ok(self.prim(p, vec![x], i64t))
+            }
+            "utf8" => {
+                let [a] = self.arity(name, es, 1, span)? else {
+                    unreachable!()
+                };
+                let x = self.base_arg(a, Base::Bytes)?;
+                let ty = self.option_ty(text);
+                Ok(self.prim(Prim::Utf8, vec![x], ty))
+            }
+            "bytes" => {
+                let [a] = self.arity(name, es, 1, span)? else {
+                    unreachable!()
+                };
+                let x = self.base_arg(a, Base::Text)?;
+                Ok(self.prim(Prim::Bytes, vec![x], Ty::Base(Base::Bytes)))
+            }
+            _ => return Ok(None),
+        };
+        out.map(Some)
+    }
+
+    fn checked_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+        let out = match name {
             "checked_add" | "checked_sub" | "checked_mul" => {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
@@ -283,6 +350,14 @@ impl Checker<'_> {
                 let ty = self.option_ty(x.ty.clone());
                 Ok(self.prim(Prim::CheckedNeg, vec![x.tm], ty))
             }
+            _ => return Ok(None),
+        };
+        out.map(Some)
+    }
+
+    fn decimal_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+        let i64t = Ty::Base(Base::I64);
+        let out = match name {
             "div" => {
                 let [a, b, u, r] = self.arity(name, es, 4, span)? else {
                     unreachable!()
@@ -354,6 +429,14 @@ impl Checker<'_> {
                 let ty = x.ty.clone();
                 Ok(self.prim(Prim::Abs, vec![x.tm], ty))
             }
+            _ => return Ok(None),
+        };
+        out.map(Some)
+    }
+
+    fn convert_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+        let i64t = Ty::Base(Base::I64);
+        let out = match name {
             "i8" | "i16" | "i32" | "i64" | "checked_i8" | "checked_i16" | "checked_i32"
             | "checked_i64" => {
                 let checked = name.starts_with("checked_");
@@ -460,28 +543,14 @@ impl Checker<'_> {
                 let ty = self.key_value_ty(rel).map_err(|e| diag(span, e))?;
                 Ok(self.prim(Prim::KeyValue, vec![x.tm], ty))
             }
-            "bytes_len" => {
-                let [a] = self.arity(name, es, 1, span)? else {
-                    unreachable!()
-                };
-                let x = self.synth(a)?;
-                if !matches!(x.ty, Ty::Base(Base::Text | Base::Bytes)) {
-                    return Err(self.wrong(name, &[&x.ty], span));
-                }
-                Ok(self.prim(Prim::BytesLen, vec![x.tm], i64t))
-            }
-            "scalar_len" | "grapheme_len" => {
-                let [a] = self.arity(name, es, 1, span)? else {
-                    unreachable!()
-                };
-                let x = self.base_arg(a, Base::Text)?;
-                let p = if name == "scalar_len" {
-                    Prim::ScalarLen
-                } else {
-                    Prim::GraphemeLen
-                };
-                Ok(self.prim(p, vec![x], i64t))
-            }
+            _ => return Ok(None),
+        };
+        out.map(Some)
+    }
+
+    fn string_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+        let text = Ty::Base(Base::Text);
+        let out = match name {
             "starts_with" | "ends_with" | "contains" => {
                 let [a, b] = self.arity(name, es, 2, span)? else {
                     unreachable!()
@@ -534,21 +603,13 @@ impl Checker<'_> {
                 let y = self.base_arg(b, Base::Text)?;
                 Ok(self.prim(Prim::Collate, vec![x, y], Ty::Base(Base::SortKey)))
             }
-            "utf8" => {
-                let [a] = self.arity(name, es, 1, span)? else {
-                    unreachable!()
-                };
-                let x = self.base_arg(a, Base::Bytes)?;
-                let ty = self.option_ty(text);
-                Ok(self.prim(Prim::Utf8, vec![x], ty))
-            }
-            "bytes" => {
-                let [a] = self.arity(name, es, 1, span)? else {
-                    unreachable!()
-                };
-                let x = self.base_arg(a, Base::Text)?;
-                Ok(self.prim(Prim::Bytes, vec![x], Ty::Base(Base::Bytes)))
-            }
+            _ => return Ok(None),
+        };
+        out.map(Some)
+    }
+
+    fn time_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+        let out = match name {
             "micros" | "millis" | "seconds" | "minutes" | "hours" | "days" | "weeks" | "months"
             | "years" => {
                 let [a] = self.arity(name, es, 1, span)? else {
@@ -616,6 +677,14 @@ impl Checker<'_> {
                 let x = self.base_arg(a, Base::ZonedDateTime)?;
                 Ok(self.prim(Prim::ToInstant, vec![x], Ty::Base(Base::Instant)))
             }
+            _ => return Ok(None),
+        };
+        out.map(Some)
+    }
+
+    fn change_call(&mut self, name: &str, es: &[Expr], span: Span) -> R<Option<Out>> {
+        let text = Ty::Base(Base::Text);
+        let out = match name {
             "tag" => {
                 let [a] = self.arity(name, es, 1, span)? else {
                     unreachable!()
@@ -674,8 +743,9 @@ impl Checker<'_> {
                 o.rows = Some(rel);
                 Ok(o)
             }
-            _ => Err(diag(span, format!("`{name}` is not a function"))),
-        }
+            _ => return Ok(None),
+        };
+        out.map(Some)
     }
 
     /// `read_csv(path, T)` and the other file scans, each read at the declared row type `T`.

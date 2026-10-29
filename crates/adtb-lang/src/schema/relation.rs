@@ -318,7 +318,8 @@ impl Builder<'_> {
         (names, generate)
     }
 
-    /// Returns the default a `default` clause declares, `None` when it names no field.
+    /// Returns the default a `default` clause declares, `None` when it names an unknown constructor
+    /// or no field.
     fn default_clause(
         &mut self,
         file: FileId,

@@ -8,7 +8,7 @@ impl Builder<'_> {
         });
     }
 
-    pub(super) fn module_id(&mut self, name: &str) -> ModuleId {
+    fn module_id(&mut self, name: &str) -> ModuleId {
         if let Some(m) = self.schema.module_named(name) {
             return m;
         }
@@ -59,7 +59,7 @@ impl Builder<'_> {
         self.check_ordered();
     }
 
-    pub(super) fn declare_ahead(&mut self) {
+    fn declare_ahead(&mut self) {
         for a in self.ahead {
             let Some(module) = self.schema.module_named(&a.module) else {
                 continue;
@@ -74,12 +74,7 @@ impl Builder<'_> {
         }
     }
 
-    pub(super) fn check_type_name(
-        &mut self,
-        file: FileId,
-        name: &ast::Ident,
-        principal_seen: bool,
-    ) {
+    fn check_type_name(&mut self, file: FileId, name: &ast::Ident, principal_seen: bool) {
         let text = name.text.as_str();
         if RESERVED_TYPE_NAMES.contains(&text) {
             self.err(file, name.span, format!("`{text}` is a reserved type name"));
@@ -94,7 +89,7 @@ impl Builder<'_> {
 
     /// Refuse a declared `Principal` other than a sum of `EndUser`, `Service { name: Text }` and
     /// `Anonymous`, with no header fields.
-    pub(super) fn check_principal(&mut self, file: FileId, span: Span) {
+    fn check_principal(&mut self, file: FileId, span: Span) {
         let def = self.schema.ty(self.schema.principal);
         let shaped = |name: &str, fields: Option<&[(&str, Ty)]>| {
             def.ctors().iter().any(|c| {
@@ -124,7 +119,7 @@ impl Builder<'_> {
         }
     }
 
-    pub(super) fn check_fn_name(&mut self, file: FileId, name: &ast::Ident) {
+    fn check_fn_name(&mut self, file: FileId, name: &ast::Ident) {
         if PRELUDE_FUNCTIONS.contains(&name.text.as_str()) {
             self.err(
                 file,
@@ -134,13 +129,7 @@ impl Builder<'_> {
         }
     }
 
-    pub(super) fn declare_value(
-        &mut self,
-        file: FileId,
-        module: ModuleId,
-        name: &ast::Ident,
-        v: ValueDef,
-    ) {
+    fn declare_value(&mut self, file: FileId, module: ModuleId, name: &ast::Ident, v: ValueDef) {
         let m = &mut self.schema.modules[module.0 as usize];
         if m.values.insert(name.text.clone(), v).is_some() {
             let msg = format!("`{}` is declared twice in module `{}`", name.text, m.name);
@@ -148,7 +137,7 @@ impl Builder<'_> {
         }
     }
 
-    pub(super) fn aggregate_signature(&mut self, i: usize) {
+    fn aggregate_signature(&mut self, i: usize) {
         let (file, module, a) = {
             let d = &self.schema.aggregates[i];
             (d.file, d.module, d.decl.clone())
@@ -192,13 +181,7 @@ impl Builder<'_> {
         def.state = Ty::Record(fields);
     }
 
-    pub(super) fn fn_signature(
-        &mut self,
-        file: FileId,
-        module: ModuleId,
-        id: FnId,
-        f: &ast::FnDecl,
-    ) {
+    fn fn_signature(&mut self, file: FileId, module: ModuleId, id: FnId, f: &ast::FnDecl) {
         let mut tparams = Vec::new();
         let mut names = Vec::new();
         for tp in &f.type_params {
@@ -252,7 +235,7 @@ impl Builder<'_> {
         def.result = result;
     }
 
-    pub(super) fn store(&mut self, file: FileId, module: ModuleId, s: &ast::StoreDecl) {
+    fn store(&mut self, file: FileId, module: ModuleId, s: &ast::StoreDecl) {
         match self.schema.lookup_value(module, &s.view) {
             Ok(ValueDef::Function(f)) => {
                 let def = &self.schema.functions[f.0 as usize];
@@ -277,7 +260,7 @@ impl Builder<'_> {
         }
     }
 
-    pub(super) fn checks(&mut self) {
+    fn checks(&mut self) {
         let files = self.files;
         let mut i = 0;
         for (file, sf) in files {
@@ -310,7 +293,7 @@ impl Builder<'_> {
         }
     }
 
-    pub(super) fn check_recursion(&mut self) {
+    fn check_recursion(&mut self) {
         let n = self.schema.types.len();
         let mut state = vec![0u8; n];
         let mut errs = Vec::new();
@@ -370,7 +353,7 @@ impl Builder<'_> {
     }
 
     /// References are direct fields, `Key r.S` or `Option (Key r.S)`, of types used only as relation element types.
-    pub(super) fn check_references(&mut self) {
+    fn check_references(&mut self) {
         let mut errs = Vec::new();
         let has_refs: Vec<bool> = self
             .schema
@@ -451,7 +434,7 @@ impl Builder<'_> {
         }
     }
 
-    pub(super) fn check_ordered(&mut self) {
+    fn check_ordered(&mut self) {
         let mut errs = Vec::new();
         for t in &self.schema.types {
             if !t.ordered {

@@ -44,7 +44,7 @@ fn ops(s: String) -> R<Vec<Inverse>> {
 
 impl Cx<'_> {
     /// The inverse of `op` of migration `logged`, computed against `before`, the schema before it.
-    pub(in crate::evolve) fn inverse(
+    pub(super) fn inverse(
         &self,
         before: &Source,
         logged: &Logged,
