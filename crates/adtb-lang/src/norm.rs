@@ -305,11 +305,16 @@ enum Then {
     Bind { var: Var, body: Tm, cx: Cx, ty: Ty },
 }
 
-/// A binder or a write of a [`Normaliser::spine`] already normalised, waiting for its body.
+/// A binder, a write or a condition of a [`Normaliser::spine`] already normalised, waiting for
+/// its body.
 enum Wrap {
     Block(Tm, Ty),
     LetBang(Var, Tm, Ty),
     Let(Var, Tm, Ty),
+    /// An `If` with its condition and then branch; the body is its else branch.
+    If(Tm, Val, Ty),
+    /// The tail whose normal form the body is, memoised once known.
+    Memo(MemoKey),
 }
 
 type MemoKey = (usize, Tm, Vec<Ty>, Vec<Option<Tm>>);
@@ -627,8 +632,7 @@ impl<'a> Normaliser<'a> {
             | Kind::Skip => Ok(self.val(node.kind.clone(), ty)),
             Kind::Field(x, l) => self.field_step(t, *x, l, ty, cx),
             Kind::Case { scrutinee, arms } => self.case_step(*scrutinee, arms, ty, cx),
-            Kind::If(..) => self.if_step(t, cx),
-            Kind::Let(..) | Kind::LetBang(..) | Kind::Block(..) => self.spine(t, cx),
+            Kind::If(..) | Kind::Let(..) | Kind::LetBang(..) | Kind::Block(..) => self.spine(t, cx),
             Kind::Lam(v, b) => Ok(Val::Lam {
                 var: *v,
                 body: *b,
@@ -692,14 +696,45 @@ impl<'a> Normaliser<'a> {
         }
     }
 
-    /// Normalises a chain of `Let`, `LetBang` and `Block` through their bodies in a loop.
+    /// Normalise a chain of `Let`, `LetBang`, `Block` and `If` through their bodies and else
+    /// branches in a loop, memoising each tail where the chain turns between `If` and the others.
     fn spine(&mut self, mut t: Tm, cx: &Cx) -> Result<Val, String> {
         let mut cx = cx.clone();
         let mut wraps = Vec::new();
+        let mut in_if = matches!(self.node(cx.arena, t).kind, Kind::If(..));
         let inner = loop {
             let node = self.node(cx.arena, t);
+            let is_if = matches!(node.kind, Kind::If(..));
+            let links = matches!(
+                node.kind,
+                Kind::If(..) | Kind::Let(..) | Kind::LetBang(..) | Kind::Block(..)
+            );
+            if links && is_if != in_if {
+                in_if = is_if;
+                let key = self.key(t, &cx);
+                if let Some(k) = &key
+                    && let Some(o) = self.memo.get(k)
+                {
+                    break Val::Tm(*o);
+                }
+                if let Some(k) = key {
+                    wraps.push(Wrap::Memo(k));
+                }
+            }
             let ty = node.ty.subst(&cx.targs);
             match &node.kind {
+                Kind::If(c, a, b) => {
+                    let c = self.tm(*c, &cx)?;
+                    if let Some((k, _)) = self.ctor_value(c)
+                        && self.is_bool(c)
+                    {
+                        t = if k == 1 { *a } else { *b };
+                        continue;
+                    }
+                    let a = self.norm(*a, &cx)?;
+                    wraps.push(Wrap::If(c, a, ty));
+                    t = *b;
+                }
                 Kind::Block(a, b) => {
                     let a = self.tm(*a, &cx)?;
                     wraps.push(Wrap::Block(a, ty));
@@ -746,9 +781,21 @@ impl<'a> Normaliser<'a> {
             .try_fold(inner, |v, w| self.wrap(w, v))
     }
 
-    /// Returns `body` under the binder or the write `w` stands for.
+    /// Returns `body` under the binder, the write or the condition `w` stands for.
     fn wrap(&mut self, w: Wrap, body: Val) -> Result<Val, String> {
         Ok(match w {
+            Wrap::If(c, a, ty) => match (a, body) {
+                (Val::Tm(a), Val::Tm(b)) => self.val(Kind::If(c, a, b), ty),
+                (a, b) => Val::If(c, Rc::new(a), Rc::new(b)),
+            },
+            Wrap::Memo(k) => {
+                if let Val::Tm(o) = &body
+                    && !self.draws(*o)
+                {
+                    self.memo.insert(k, *o);
+                }
+                body
+            }
             Wrap::Block(a, ty) => {
                 let b = self.first_order(body)?;
                 self.val(Kind::Block(a, b), ty)
@@ -844,34 +891,6 @@ impl<'a> Normaliser<'a> {
             return Ok(self.val(Kind::Case { scrutinee: s, arms }, ty));
         }
         Ok(Val::Case(s, Rc::new(out)))
-    }
-
-    /// Normalises a chain of `If` through their else branches in a loop.
-    fn if_step(&mut self, mut t: Tm, cx: &Cx) -> Result<Val, String> {
-        let mut open = Vec::new();
-        let inner = loop {
-            let node = self.node(cx.arena, t);
-            let Kind::If(c, a, b) = &node.kind else {
-                break self.norm(t, cx)?;
-            };
-            let c = self.tm(*c, cx)?;
-            if let Some((k, _)) = self.ctor_value(c)
-                && self.is_bool(c)
-            {
-                t = if k == 1 { *a } else { *b };
-                continue;
-            }
-            let a = self.norm(*a, cx)?;
-            open.push((c, a, node.ty.subst(&cx.targs)));
-            t = *b;
-        };
-        Ok(open
-            .into_iter()
-            .rev()
-            .fold(inner, |b, (c, a, ty)| match (a, b) {
-                (Val::Tm(a), Val::Tm(b)) => self.val(Kind::If(c, a, b), ty),
-                (a, b) => Val::If(c, Rc::new(a), Rc::new(b)),
-            }))
     }
 
     fn app_step(&mut self, f: Tm, a: Tm, ty: Ty, cx: &Cx) -> Result<Val, String> {

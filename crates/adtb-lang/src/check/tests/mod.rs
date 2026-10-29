@@ -1112,6 +1112,21 @@ fn adhoc_result_sums_are_inferred() {
 }
 
 #[test]
+fn a_constructor_of_four_thousand_fields_is_checked_for_coverage() {
+    let fields: Vec<String> = (0..4000).map(|i| format!("f{i}: I64")).collect();
+    let ty = format!("type Wide = A {{ {} }} | B", fields.join(", "));
+    on_small_stack(|| {
+        accepts(&format!(
+            "{ty}\nfn f (w: Wide) -> I64 = match w | A {{ f3999: 1 }} -> 1 | A _ -> 2 | B -> 3"
+        ));
+        refuses(
+            &format!("{ty}\nfn f (w: Wide) -> I64 = match w | A {{ f3999: 1 }} -> 1 | B -> 3"),
+            "match does not cover `A _`",
+        );
+    });
+}
+
+#[test]
 fn a_result_sum_is_matched_exhaustively() {
     accepts(
         "fn rs () -> Set (A { n: I64 } | B { m: Text }) = [A { n: 1 }]

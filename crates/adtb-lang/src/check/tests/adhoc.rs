@@ -660,6 +660,40 @@ fn two_thousand_match_arms_check_and_normalise() {
 }
 
 #[test]
+fn four_thousand_match_arms_and_alternatives_check_and_normalise() {
+    let arms = |arm: &dyn Fn(usize) -> String| -> String { (0..4000).map(arm).collect() };
+    let alts: Vec<String> = (0..4000).map(|i| i.to_string()).collect();
+    let texts = [
+        (
+            "literal arms",
+            format!(
+                "from r in raws select match r.n{} | _ -> 0",
+                arms(&|i| format!(" | {i} -> {i}"))
+            ),
+        ),
+        (
+            "guarded arms",
+            format!(
+                "from r in raws select match r.n{} | _ -> 0",
+                arms(&|i| format!(" | x if x == {i} -> {i}"))
+            ),
+        ),
+        (
+            "alternatives",
+            format!(
+                "from r in raws select match r.n | {} -> 1 | _ -> 0",
+                alts.join(" | ")
+            ),
+        ),
+    ];
+    on_small_stack(|| {
+        for (what, text) in &texts {
+            normalises(what, text);
+        }
+    });
+}
+
+#[test]
 fn a_chain_of_nested_chains_counts_its_height() {
     let mut e = "1".to_string();
     for _ in 0..2 {

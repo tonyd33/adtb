@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::*;
 use crate::ast::{Arm, Expr, ExprKind, Lit, Pattern, PatternKind, Payload, UnOp};
 use crate::kernel::{Kind, Prim};
@@ -46,6 +48,7 @@ impl Pat {
 }
 
 /// A value no arm covers, printed as a pattern.
+#[derive(Clone)]
 enum Witness {
     Any,
     Ctor {
@@ -90,6 +93,47 @@ struct Cx<'b> {
 struct Cont {
     k: Tm,
     f: Tm,
+}
+
+/// A subproblem of the usefulness search: whether `q` matches a value no row of `rows` matches.
+struct Task<'r> {
+    rows: Cow<'r, [Vec<Pat>]>,
+    /// The columns of `q`, last first.
+    q: Vec<Pat>,
+    /// The types of the columns, last first.
+    tys: Vec<Ty>,
+    /// The last step of the trail from the search's root to this task.
+    at: Option<usize>,
+}
+
+/// How a subproblem's witness becomes its parent's.
+enum Step {
+    /// Prepend this value.
+    Front(Witness),
+    /// Take the leading values as the fields `cols` of constructor `name`.
+    Ctor { name: String, cols: Vec<String> },
+}
+
+/// Returns the witness of the search's root, given that the task at `at` has the empty witness.
+fn witness(trail: &[(Step, Option<usize>)], mut at: Option<usize>) -> Vec<Witness> {
+    let mut w = Vec::new();
+    while let Some(i) = at {
+        let (step, up) = &trail[i];
+        match step {
+            Step::Front(x) => w.insert(0, x.clone()),
+            Step::Ctor { name, cols } => {
+                let rest = w.split_off(cols.len());
+                let fields = cols.iter().cloned().zip(w).collect();
+                w = vec![Witness::Ctor {
+                    name: name.clone(),
+                    fields,
+                }];
+                w.extend(rest);
+            }
+        }
+        at = *up;
+    }
+    w
 }
 
 pub(super) struct ArmIr {
@@ -200,15 +244,18 @@ impl Checker<'_> {
         }
         if is_sum && !self.adhoc() {
             let rows: Vec<Vec<Pat>> = irs.iter().map(|a| vec![a.pat.clone()]).collect();
-            self.wild_rule(&rows, std::slice::from_ref(&sty))?;
+            self.wild_rule(rows, vec![sty.clone()])?;
         }
         let mut covered: Vec<Vec<Pat>> = Vec::new();
         for ((_, guarded), ir) in arms.iter().zip(&irs) {
             let alts = ir.pat.alts();
-            let mut seen = covered.clone();
+            let before = covered.len();
             for alt in &alts {
                 let q = vec![(*alt).clone()];
-                if self.useful(&seen, &q, std::slice::from_ref(&sty)).is_none() {
+                if self
+                    .useful(&covered, &q, std::slice::from_ref(&sty))
+                    .is_none()
+                {
                     return Err(diag(
                         alt.span(),
                         if alts.len() == 1 {
@@ -218,8 +265,9 @@ impl Checker<'_> {
                         },
                     ));
                 }
-                seen.push(q);
+                covered.push(q);
             }
+            covered.truncate(before);
             if !guarded {
                 covered.push(vec![ir.pat.clone()]);
             }
@@ -624,41 +672,44 @@ impl Checker<'_> {
     }
 
     /// Refuses `_` or a binder at a sum position where another arm names a constructor.
-    fn wild_rule(&self, rows: &[Vec<Pat>], tys: &[Ty]) -> R<()> {
-        let Some((ty, rest_tys)) = tys.split_first() else {
-            return Ok(());
-        };
-        if rows.is_empty() {
-            return Ok(());
-        }
-        let heads: Vec<&Pat> = rows.iter().flat_map(|r| r[0].alts()).collect();
-        let sig = self.signature(ty);
-        let names = heads.iter().any(|p| matches!(p, Pat::Ctor { .. }));
-        match sig {
-            Some(sig) if names => {
-                if let Some(w) = heads.iter().find(|p| matches!(p, Pat::Wild { .. })) {
-                    return Err(diag(
-                        w.span(),
-                        format!(
-                            "`_` and a binder do not stand for constructors of {}; another arm names a constructor here, so every arm does",
-                            self.show(ty)
-                        ),
-                    ));
-                }
-                for (c, _) in sig {
-                    let cols = self.ctor_cols(ty, c);
-                    let spec = self.specialize(rows, &Head::Ctor(c), &cols);
-                    let mut tys: Vec<Ty> = cols.into_iter().map(|(_, t)| t).collect();
-                    tys.extend(rest_tys.iter().cloned());
-                    self.wild_rule(&spec, &tys)?;
-                }
-                Ok(())
+    fn wild_rule(&self, rows: Vec<Vec<Pat>>, tys: Vec<Ty>) -> R<()> {
+        let mut stack = vec![(rows, tys)];
+        while let Some((rows, tys)) = stack.pop() {
+            let Some((ty, rest_tys)) = tys.split_first() else {
+                continue;
+            };
+            if rows.is_empty() {
+                continue;
             }
-            _ => {
-                let next: Vec<Vec<Pat>> = rows.iter().map(|r| r[1..].to_vec()).collect();
-                self.wild_rule(&next, rest_tys)
+            let heads: Vec<&Pat> = rows.iter().flat_map(|r| r[0].alts()).collect();
+            let sig = self.signature(ty);
+            let names = heads.iter().any(|p| matches!(p, Pat::Ctor { .. }));
+            match sig {
+                Some(sig) if names => {
+                    if let Some(w) = heads.iter().find(|p| matches!(p, Pat::Wild { .. })) {
+                        return Err(diag(
+                            w.span(),
+                            format!(
+                                "`_` and a binder do not stand for constructors of {}; another arm names a constructor here, so every arm does",
+                                self.show(ty)
+                            ),
+                        ));
+                    }
+                    for (c, _) in sig.into_iter().rev() {
+                        let cols = self.ctor_cols(ty, c);
+                        let spec = self.specialize(&rows, &Head::Ctor(c), &cols);
+                        let mut tys: Vec<Ty> = cols.into_iter().map(|(_, t)| t).collect();
+                        tys.extend(rest_tys.iter().cloned());
+                        stack.push((spec, tys));
+                    }
+                }
+                _ => {
+                    let next: Vec<Vec<Pat>> = rows.iter().map(|r| r[1..].to_vec()).collect();
+                    stack.push((next, rest_tys.to_vec()));
+                }
             }
         }
+        Ok(())
     }
 
     /// Rows of `rows` whose head matches `head`, the head replaced by its fields.
@@ -700,83 +751,133 @@ impl Checker<'_> {
 
     /// Returns a value `q` matches that no row of `rows` matches, if one exists.
     fn useful(&self, rows: &[Vec<Pat>], q: &[Pat], tys: &[Ty]) -> Option<Vec<Witness>> {
-        let Some((head, rest)) = q.split_first() else {
-            return rows.is_empty().then(Vec::new);
+        let mut trail: Vec<(Step, Option<usize>)> = Vec::new();
+        let mut stack = vec![Task {
+            rows: Cow::Borrowed(rows),
+            q: q.iter().rev().cloned().collect(),
+            tys: tys.iter().rev().cloned().collect(),
+            at: None,
+        }];
+        while let Some(task) = stack.pop() {
+            if task.q.is_empty() {
+                if task.rows.is_empty() {
+                    return Some(witness(&trail, task.at));
+                }
+                continue;
+            }
+            let children = self.useful_children(task, &mut trail);
+            stack.extend(children.into_iter().rev());
+        }
+        None
+    }
+
+    /// Returns the subproblems `task` is useful exactly when one of them is, in the order they are
+    /// tried, recording in `trail` how each one's witness becomes the task's.
+    fn useful_children<'r>(
+        &self,
+        task: Task<'r>,
+        trail: &mut Vec<(Step, Option<usize>)>,
+    ) -> Vec<Task<'r>> {
+        let Task {
+            rows,
+            mut q,
+            mut tys,
+            at,
+        } = task;
+        let head = q.pop().expect("a task with a column");
+        let head_ty = tys.pop().expect("a type per column");
+        let ty = &head_ty;
+        let mut step = |s: Step| {
+            trail.push((s, at));
+            Some(trail.len() - 1)
         };
-        let ty = &tys[0];
-        let with_cols = |cols: &[(String, Ty)]| -> Vec<Ty> {
-            cols.iter()
-                .map(|(_, t)| t.clone())
-                .chain(tys[1..].iter().cloned())
-                .collect()
-        };
-        let ctor_name = |c: u32| -> String {
-            self.signature(ty)
+        let ctor = |c: u32, cols: &[(String, Ty)]| Step::Ctor {
+            name: self
+                .signature(ty)
                 .and_then(|s| s.into_iter().find(|(i, _)| *i == c))
                 .map(|(_, n)| n)
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            cols: cols.iter().map(|(n, _)| n.clone()).collect(),
         };
-        let rebuild = |c: u32, cols: &[(String, Ty)], mut w: Vec<Witness>| -> Vec<Witness> {
-            let rest = w.split_off(cols.len());
-            let fields = cols.iter().map(|(n, _)| n.clone()).zip(w).collect();
-            let mut out = vec![Witness::Ctor {
-                name: ctor_name(c),
-                fields,
-            }];
-            out.extend(rest);
-            out
+        let open = |c: u32, cols: &[(String, Ty)], fields: Vec<Pat>, at: Option<usize>| {
+            let mut q = q.clone();
+            q.extend(fields.into_iter().rev());
+            Task {
+                rows: Cow::Owned(self.specialize(&rows, &Head::Ctor(c), cols)),
+                q,
+                tys: tys
+                    .iter()
+                    .cloned()
+                    .chain(cols.iter().rev().map(|(_, t)| t.clone()))
+                    .collect(),
+                at,
+            }
         };
-        match head {
-            Pat::Or(alts) => alts.iter().find_map(|a| {
-                let mut q2 = vec![a.clone()];
-                q2.extend(rest.iter().cloned());
-                self.useful(rows, &q2, tys)
-            }),
+        match &head {
+            Pat::Or(alts) => alts
+                .iter()
+                .map(|a| {
+                    let mut q = q.clone();
+                    q.push(a.clone());
+                    let mut tys = tys.clone();
+                    tys.push(ty.clone());
+                    Task {
+                        rows: rows.clone(),
+                        q,
+                        tys,
+                        at,
+                    }
+                })
+                .collect(),
             Pat::Ctor {
                 set, fields, span, ..
-            } => set.iter().find_map(|&c| {
-                let cols = self.ctor_cols(ty, c);
-                let mut q2: Vec<Pat> = cols
-                    .iter()
-                    .map(|(n, _)| {
-                        fields
-                            .iter()
-                            .find(|(f, _)| f == n)
-                            .map(|(_, p)| p.clone())
-                            .unwrap_or(Pat::wild(*span))
-                    })
-                    .collect();
-                q2.extend(rest.iter().cloned());
-                let spec = self.specialize(rows, &Head::Ctor(c), &cols);
-                let w = self.useful(&spec, &q2, &with_cols(&cols))?;
-                Some(rebuild(c, &cols, w))
-            }),
+            } => set
+                .iter()
+                .map(|&c| {
+                    let cols = self.ctor_cols(ty, c);
+                    let q2 = cols
+                        .iter()
+                        .map(|(n, _)| {
+                            fields
+                                .iter()
+                                .find(|(f, _)| f == n)
+                                .map(|(_, p)| p.clone())
+                                .unwrap_or(Pat::wild(*span))
+                        })
+                        .collect();
+                    let at = step(ctor(c, &cols));
+                    open(c, &cols, q2, at)
+                })
+                .collect(),
             Pat::Lit { tm, .. } => {
-                let spec = self.specialize(rows, &Head::Lit(*tm), &[]);
-                let mut w = self.useful(&spec, rest, &tys[1..])?;
-                w.insert(0, Witness::Any);
-                Some(w)
+                let spec = self.specialize(&rows, &Head::Lit(*tm), &[]);
+                let at = step(Step::Front(Witness::Any));
+                vec![Task {
+                    rows: Cow::Owned(spec),
+                    q,
+                    tys,
+                    at,
+                }]
             }
             Pat::Wild { span, .. } => {
                 let mut named: Vec<u32> = Vec::new();
-                for r in rows {
+                for r in rows.iter() {
                     for p in r[0].alts() {
                         if let Pat::Ctor { set, .. } = p {
                             named.extend(set.iter().copied());
                         }
                     }
                 }
-                let sig = self.signature(ty);
-                match sig {
+                match self.signature(ty) {
                     Some(sig) if !sig.is_empty() && sig.iter().all(|(c, _)| named.contains(c)) => {
-                        sig.iter().find_map(|&(c, _)| {
-                            let cols = self.ctor_cols(ty, c);
-                            let mut q2: Vec<Pat> = cols.iter().map(|_| Pat::wild(*span)).collect();
-                            q2.extend(rest.iter().cloned());
-                            let spec = self.specialize(rows, &Head::Ctor(c), &cols);
-                            let w = self.useful(&spec, &q2, &with_cols(&cols))?;
-                            Some(rebuild(c, &cols, w))
-                        })
+                        sig.iter()
+                            .map(|&(c, _)| {
+                                let cols = self.ctor_cols(ty, c);
+                                let q2 = cols.iter().map(|_| Pat::wild(*span)).collect();
+                                let at = step(ctor(c, &cols));
+                                open(c, &cols, q2, at)
+                            })
+                            .collect()
                     }
                     sig => {
                         let default: Vec<Vec<Pat>> = rows
@@ -789,7 +890,6 @@ impl Checker<'_> {
                                     .collect::<Vec<_>>()
                             })
                             .collect();
-                        let mut w = self.useful(&default, rest, &tys[1..])?;
                         let missing = match sig {
                             Some(sig) if !named.is_empty() => sig
                                 .iter()
@@ -807,8 +907,13 @@ impl Checker<'_> {
                                 }),
                             _ => None,
                         };
-                        w.insert(0, missing.unwrap_or(Witness::Any));
-                        Some(w)
+                        let at = step(Step::Front(missing.unwrap_or(Witness::Any)));
+                        vec![Task {
+                            rows: Cow::Owned(default),
+                            q,
+                            tys,
+                            at,
+                        }]
                     }
                 }
             }
@@ -968,41 +1073,38 @@ impl Checker<'_> {
 
     /// Compiles the arms that can match constructor `c` of the scrutinee, every arm when `c` is `None`, to tests tried in order and ending in `Unreachable`.
     fn chain(&mut self, c: Option<u32>, y: Tm, y_ty: &Ty, arms: &[ArmIr], res: &Ty) -> Tm {
-        let Some((first, rest)) = arms.split_first() else {
-            return self.add(Kind::Unreachable, res.clone());
-        };
-        let alts: Vec<Pat> = first
-            .pat
-            .alts()
-            .into_iter()
-            .filter(|p| match (p, c) {
-                (Pat::Ctor { set, .. }, Some(c)) => set.contains(&c),
-                _ => true,
-            })
-            .cloned()
-            .collect();
-        let f = self.chain(c, y, y_ty, rest, res);
-        if alts.is_empty() {
-            return f;
-        }
-        let body = first.body.as_ref().expect("checked").tm;
-        let k = match first.guard {
-            Some(g) => self.add(Kind::If(g, body, f), res.clone()),
-            None => body,
-        };
-        let cx = Cx {
-            binds: &first.binds,
-            res,
-        };
-        let mut out = f;
-        for p in alts.iter().rev() {
-            let cont = Cont { k, f: out };
-            out = match (p, c) {
-                (Pat::Ctor { .. }, Some(c)) => self.compile_fields(y, y_ty, c, p, &cx, cont),
-                _ => self.compile(y, y_ty, p, &cx, cont),
+        let mut f = self.add(Kind::Unreachable, res.clone());
+        for arm in arms.iter().rev() {
+            let alts: Vec<&Pat> = arm
+                .pat
+                .alts()
+                .into_iter()
+                .filter(|p| match (p, c) {
+                    (Pat::Ctor { set, .. }, Some(c)) => set.contains(&c),
+                    _ => true,
+                })
+                .collect();
+            if alts.is_empty() {
+                continue;
+            }
+            let body = arm.body.as_ref().expect("checked").tm;
+            let k = match arm.guard {
+                Some(g) => self.add(Kind::If(g, body, f), res.clone()),
+                None => body,
             };
+            let cx = Cx {
+                binds: &arm.binds,
+                res,
+            };
+            for p in alts.into_iter().rev() {
+                let cont = Cont { k, f };
+                f = match (p, c) {
+                    (Pat::Ctor { .. }, Some(c)) => self.compile_fields(y, y_ty, c, p, &cx, cont),
+                    _ => self.compile(y, y_ty, p, &cx, cont),
+                };
+            }
         }
-        out
+        f
     }
 
     /// Matches `y` against `p`, continuing with `k`, under the binders of `p`, on a match and with `f` otherwise.
