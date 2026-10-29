@@ -134,6 +134,19 @@ struct Frame {
     next: Env,
 }
 
+impl Drop for Frame {
+    /// Drop the frames this one alone holds in a loop, in constant stack.
+    fn drop(&mut self) {
+        let mut next = self.next.0.take();
+        while let Some(f) = next {
+            next = match Rc::try_unwrap(f) {
+                Ok(mut f) => f.next.0.take(),
+                Err(_) => None,
+            };
+        }
+    }
+}
+
 impl Env {
     pub(crate) fn bind(&self, var: Var, value: Value) -> Env {
         Env(Some(Rc::new(Frame {
@@ -514,11 +527,40 @@ impl Run<'_, '_> {
         self.apply_all(g, args)
     }
 
+    /// Returns the value of term `t` under `env`. Follow the taken branch of each `case`, `if`
+    /// and `let` in a loop: the stack grows only with the nesting of other terms.
+    pub(crate) fn eval(&self, h: &Here, t: Tm, env: &Env) -> R<Value> {
+        let (mut t, mut env) = (t, env.clone());
+        loop {
+            t = match self.terms(h.arena).kind(t) {
+                Kind::Case { scrutinee, arms } => {
+                    let v = self.eval(h, *scrutinee, &env)?;
+                    let (x, body) = case_arm(arms, &v)?;
+                    env = env.bind(x, v);
+                    body
+                }
+                Kind::If(c, a, b) => {
+                    if bool_of(&self.eval(h, *c, &env)?)? {
+                        *a
+                    } else {
+                        *b
+                    }
+                }
+                Kind::Let(x, e, b) => {
+                    let v = self.eval(h, *e, &env)?;
+                    env = env.bind(*x, v);
+                    *b
+                }
+                _ => return self.step(h, t, &env),
+            };
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per term kind; each arm would have to be a function"
     )]
-    pub(crate) fn eval(&self, h: &Here, t: Tm, env: &Env) -> R<Value> {
+    fn step(&self, h: &Here, t: Tm, env: &Env) -> R<Value> {
         let terms = self.terms(h.arena);
         let it = self.it;
         match terms.kind(t) {
@@ -562,22 +604,7 @@ impl Run<'_, '_> {
                 };
                 Ok(Value::Ctor(*ctor, given))
             }
-            Kind::Case { scrutinee, arms } => {
-                let v = self.eval(h, *scrutinee, env)?;
-                let (x, body) = case_arm(arms, &v)?;
-                self.eval(h, body, &env.bind(x, v))
-            }
-            Kind::If(c, a, b) => {
-                if bool_of(&self.eval(h, *c, env)?)? {
-                    self.eval(h, *a, env)
-                } else {
-                    self.eval(h, *b, env)
-                }
-            }
-            Kind::Let(x, e, b) => {
-                let v = self.eval(h, *e, env)?;
-                self.eval(h, *b, &env.bind(*x, v))
-            }
+            Kind::Case { .. } | Kind::If(..) | Kind::Let(..) => self.eval(h, t, env),
             Kind::Lam(x, b) => Ok(Value::Fn(Rc::new(Closure {
                 here: h.clone(),
                 var: *x,

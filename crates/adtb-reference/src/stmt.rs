@@ -296,25 +296,58 @@ impl Run<'_, '_> {
 
     /// Evaluates block term `t`, adding the effects of its writes to `out`. Returns its result.
     fn block(&self, h: &Here, t: Tm, env: &Env, out: &mut Effects) -> R<Value> {
-        match self.terms(h.arena).kind(t) {
-            Kind::Block(w, k) => {
-                self.write(h, *w, env, out)?;
-                self.block(h, *k, env, out)
-            }
-            Kind::LetBang(x, w, k) => {
-                let v = self.bind_write(h, *w, env, out)?;
-                self.block(h, *k, &env.bind(*x, v), out)
-            }
-            Kind::Let(x, e, k) => {
-                let v = self.eval(h, *e, env)?;
-                self.block(h, *k, &env.bind(*x, v), out)
-            }
-            _ => self.eval(h, t, env),
+        let (mut t, mut env) = (t, env.clone());
+        loop {
+            t = match self.terms(h.arena).kind(t) {
+                Kind::Block(w, k) => {
+                    self.write(h, *w, &env, out)?;
+                    *k
+                }
+                Kind::LetBang(x, w, k) => {
+                    let v = self.bind_write(h, *w, &env, out)?;
+                    env = env.bind(*x, v);
+                    *k
+                }
+                Kind::Let(x, e, k) => {
+                    let v = self.eval(h, *e, &env)?;
+                    env = env.bind(*x, v);
+                    *k
+                }
+                _ => return self.eval(h, t, &env),
+            };
         }
     }
 
-    /// Evaluates write `t`, adding its effects to `out`.
+    /// Add the effects of write `t` to `out`. Follow the taken branch of each `case`, `if` and
+    /// `let` in a loop.
     pub(crate) fn write(&self, h: &Here, t: Tm, env: &Env, out: &mut Effects) -> R<()> {
+        let (mut t, mut env) = (t, env.clone());
+        loop {
+            t = match self.terms(h.arena).kind(t) {
+                Kind::If(c, a, b) => {
+                    if bool_of(&self.eval(h, *c, &env)?)? {
+                        *a
+                    } else {
+                        *b
+                    }
+                }
+                Kind::Case { scrutinee, arms } => {
+                    let v = self.eval(h, *scrutinee, &env)?;
+                    let (x, w) = case_arm(arms, &v)?;
+                    env = env.bind(x, v);
+                    w
+                }
+                Kind::Let(x, e, w) => {
+                    let v = self.eval(h, *e, &env)?;
+                    env = env.bind(*x, v);
+                    *w
+                }
+                _ => return self.write_step(h, t, &env, out),
+            };
+        }
+    }
+
+    fn write_step(&self, h: &Here, t: Tm, env: &Env, out: &mut Effects) -> R<()> {
         let terms = self.terms(h.arena);
         match terms.kind(t) {
             Kind::Skip => Ok(()),
@@ -342,23 +375,7 @@ impl Run<'_, '_> {
                 };
                 Err(Abort::Reject(Rejection::UserError { message }))
             }
-            Kind::If(c, a, b) => {
-                let w = if bool_of(&self.eval(h, *c, env)?)? {
-                    *a
-                } else {
-                    *b
-                };
-                self.write(h, w, env, out)
-            }
-            Kind::Case { scrutinee, arms } => {
-                let v = self.eval(h, *scrutinee, env)?;
-                let (x, w) = case_arm(arms, &v)?;
-                self.write(h, w, &env.bind(x, v), out)
-            }
-            Kind::Let(x, e, w) => {
-                let v = self.eval(h, *e, env)?;
-                self.write(h, *w, &env.bind(*x, v), out)
-            }
+            Kind::If(..) | Kind::Case { .. } | Kind::Let(..) => self.write(h, t, env, out),
             Kind::Unreachable => internal("evaluation reached a position exhaustiveness excludes"),
             k => internal(format!("{k:?} is not a write")),
         }

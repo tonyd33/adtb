@@ -472,14 +472,14 @@ insert tags.Large { item: items.key(2), label: "l" }"#;
 /// Seeds per run of the fuzzed statements; about one in four draws unmutated ad hoc text.
 const FUZZ_SEEDS: u64 = 2000;
 
-/// The stack of the fuzzed statements, deep enough for a scalar `match` of many arms.
-const FUZZ_STACK: usize = 1 << 28;
+/// The stack of the fuzzed statements, the default size of a spawned thread.
+const FUZZ_STACK: usize = 2 << 20;
 
 /// Runs every unmutated ad hoc statement the front-end fuzzer draws, over a database of a few rows.
 #[test]
 #[expect(
     clippy::disallowed_methods,
-    reason = "the fuzzed statements need a deeper stack than a test thread's"
+    reason = "only a spawned thread fixes the stack size the fuzzed statements run on"
 )]
 fn fuzzed_statement_results_inhabit_their_types() {
     let run = thread::Builder::new()
