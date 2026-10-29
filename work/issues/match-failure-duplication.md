@@ -30,3 +30,7 @@ Binding the failure continuation with a kernel `Let` is wrong for writes: docs/d
 ## 2026-10-29: design space
 
 Question `lang/patterns/failure-sharing` (work/research/questions/lang/patterns/failure-sharing/), evidence in work/research/notes/match-failure-duplication-evidence.md, proposed point `match-failure-retest`, not adopted. Recommended option `lang/patterns/failure-sharing/retest`: each arm lowers to `If(test_i, body_i, F)`, with the pattern's tests and the guard in a short-circuit `and`, and the body destructuring the value again (`Unreachable` on excluded constructors), so `F` appears once per arm and no kernel form or consumer changes. The guard is checked under its own binder variables. Unguarded arms with two field literals or a nested constructor are exponential today too.
+
+## 2026-10-29: ruled
+
+The user confirmed proposed point match-failure-retest; it is adopted into `current` (question lang/patterns/failure-sharing, option retest). Each arm lowers to `If(test, body, F)` with the pattern's tests and guard as one short-circuit condition and the body retesting the scrutinee, `Unreachable` on excluded constructors; the guard is checked under its own binder variables; kernel.md restates `Unreachable` as a position the checker proves unreached. Ready to implement.

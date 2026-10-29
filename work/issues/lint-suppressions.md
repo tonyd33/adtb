@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: resolved
 kind: feature
 priority: 120
 summary: "about 87 lint expects and 7 size-allowlist entries stand in the source, and each one is a precedent other agents copy"
-branch: lint-batch4
+closed: 2026-10-29
 tags:
   - quality
 ---
@@ -62,3 +62,9 @@ Batch 4:
 ## 2026-10-29: batch 4 dispatched
 
 Workspace lint-batch4 on main df51cb14 takes the batch 4 list above. Local brief: work/briefs/brief-lint-batch4.md.
+
+## 2026-10-29: batch 4 landed
+
+Landed as 187dcb6c after a clear review (work/briefs/review-lint-batch4.md, local); the main check passed on it. Expects went from 21 to 18 and work/tools/size-allowlist is empty: check/expr.rs is split into record.rs, call.rs and query.rs, check/write.rs into txn.rs, `prelude_call` dispatches over eight family checkers, `bodies` is a `Bodies` struct, and 38 items are narrowed to private. Kernel output was byte-identical over all conformance schemas and texts. The audit's rows are all done; 15 moved doc comments are still in third person.
+
+## 2026-10-29: resolved
