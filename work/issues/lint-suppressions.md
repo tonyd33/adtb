@@ -4,7 +4,6 @@ status: in-progress
 kind: feature
 priority: 120
 summary: "about 87 lint expects and 7 size-allowlist entries stand in the source, and each one is a precedent other agents copy"
-branch: lint-batch3
 tags:
   - quality
 ---
@@ -47,3 +46,14 @@ Landed as cb259572; the main check passed on it. Expects went from 37 to 36: the
 ## 2026-10-29: batch 3 dispatched
 
 version-translation landed, so batch 3 runs in workspace lint-batch3 on main 0c489c2c: the audit's adtb-lang rows and size splits except under crates/adtb-lang/src/check/ (checker-match-recursion edits it), moving crates/adtb-lang/tests/running into adtb-testkit, folding the bundles.rs `query`, and any expect version-translation added. The check/ rows follow in a later batch. Local brief: work/briefs/brief-lint-batch3.md.
+
+## 2026-10-29: batch 3 landed
+
+Landed as 482661ac after a clear review (work/briefs/review-lint-batch3.md, local); the main check passed on it. Expects went from 36 to 21: the adtb-lang rows outside check/ are done, evolve/ctor, evolve/mod.rs, evolve/revert and schema.rs are split into submodules, 13 enums box their large variants (one expect kept on `WriteKind`), and crates/adtb-lang/tests/running and its corpus moved into adtb-testkit as `running` and `spec`.
+
+Batch 4:
+- the check/ rows: check/prelude.rs `prelude_call`, check/expr.rs `build_ctor`, check/mod.rs `bodies`, and the check/expr.rs and check/write.rs size splits;
+- narrow 34 `pub(super)` items that compile private (18 in evolve/cx.rs, 3 in evolve/source.rs, 13 in schema/build.rs) and evolve/revert/inverse.rs `inverse` to `pub(super)`;
+- schema/relation.rs about line 321: the doc omits `None` for an unknown constructor;
+- doc wording at evolve/ctor/merge.rs:116, split.rs:135 and split.rs:12;
+- evolve/ids.rs free `relations_of` (paths) beside `Cx::relations_of` (tuples): rename one.
