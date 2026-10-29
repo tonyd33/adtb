@@ -1,0 +1,20 @@
+---
+created-at: 2026-10-29
+status: open
+kind: bug
+priority: 560
+summary: "an or-pattern binds one kernel variable at several exclusive sites, against the one-binding-site rule of design kernel.md section 2"
+---
+
+# Bug: or-pattern variables bound at several sites
+
+depends on: none
+needed by: none
+
+## Report
+
+Found while analysing match-failure-duplication. An or-pattern's alternatives bind the same kernel `Var` at several exclusive sites (crates/adtb-lang/src/check/pat.rs about line 1116, under the loop at 1123-1128). docs/design/kernel.md section 2 states one binding site per variable. Passes that key facts by variable may merge the alternatives' facts.
+
+## Fix
+
+Give each alternative its own variables and join them in the body, or state in kernel.md the exclusive-sites exception and the passes that rely on it. Decide together with match-failure-duplication's guard-variable rule (proposed point match-failure-retest).

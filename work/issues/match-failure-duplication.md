@@ -26,3 +26,7 @@ Bind the failure continuation once in the pattern lowering (crates/adtb-lang/src
 ## 2026-10-29: lead note
 
 Binding the failure continuation with a kernel `Let` is wrong for writes: docs/design/kernel.md 4.x says `Let(v, e, w)` evaluates `e` first, and a `Let` whose bound expression contains `Fresh` is kept, so a write continuation would run eagerly. The kernel has no lazy join point. Candidate directions: fold a guard into the arm's own test (`If(and(test, g), e, F)` where the guard's binders allow), a kernel join-point form, or memoising the normaliser and tree walkers on term identity so a shared `F` is visited once. This is a design question: take it through the design space (a proposed point extending `current`) before implementing.
+
+## 2026-10-29: design space
+
+Question `lang/patterns/failure-sharing` (work/research/questions/lang/patterns/failure-sharing/), evidence in work/research/notes/match-failure-duplication-evidence.md, proposed point `match-failure-retest`, not adopted. Recommended option `lang/patterns/failure-sharing/retest`: each arm lowers to `If(test_i, body_i, F)`, with the pattern's tests and the guard in a short-circuit `and`, and the body destructuring the value again (`Unreachable` on excluded constructors), so `F` appears once per arm and no kernel form or consumer changes. The guard is checked under its own binder variables. Unguarded arms with two field literals or a nested constructor are exponential today too.
