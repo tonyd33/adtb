@@ -392,7 +392,7 @@ impl Distinct {
     pub fn new(grant: &Arc<Grant>) -> Result<Distinct, Error> {
         Ok(Distinct {
             set: BTreeSet::new(),
-            arena: grant.take(0)?,
+            arena: grant.arena(),
             cap: grant.limit() / 8,
             runs: Vec::new(),
             stop: None,
@@ -461,7 +461,7 @@ impl Distinct {
         if self.runs.is_empty() {
             return Ok(self.set);
         }
-        let mut held = self.arena.grant().take(0)?;
+        let mut held = self.arena.grant().arena();
         let mut m = self.merge(sp)?;
         let mut out = BTreeSet::new();
         while let Some(v) = m.pop()? {

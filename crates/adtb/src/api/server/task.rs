@@ -19,7 +19,7 @@ use super::super::{
 };
 use super::call::{Call, Work};
 use super::result::{Completion, Format, Layout, ResultBatch};
-use super::{RoleAuthority, RoleSession};
+use super::{RoleAuthority, RoleSession, denied};
 
 /// The bytes a queued task's metadata counts for besides its arguments.
 const TASK_BYTES: usize = 256;
@@ -356,9 +356,7 @@ impl<R: Runtime> RoleSession<R> {
 /// owner.
 fn owner<R: Runtime>(session: &RoleSession<R>, assert: Option<&Val>) -> Result<Val, Error> {
     if session.name != OWNER_ROLE {
-        return Err(Error::rejected(RejectReason::Denied {
-            detail: "a task runs only for the embedded owner's role".into(),
-        }));
+        return Err(denied("a task runs only for the embedded owner's role"));
     }
     RoleAuthority {
         engine: session.engine.clone(),

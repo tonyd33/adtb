@@ -314,7 +314,7 @@ impl<R: Runtime> Call<R> {
             more: true,
             pending: VecDeque::new(),
             sent: BTreeSet::new(),
-            held: self.arena()?,
+            held: self.arena(),
             schema: p.schema().clone(),
             elem,
         };
@@ -331,7 +331,7 @@ impl<R: Runtime> Call<R> {
         for r in rows {
             let layout = Arc::new(Layout::new(&schema, r.ty().clone(), self.opts.format)?);
             let vals: Vec<Val> = r.collect::<Result<_, _>>()?;
-            let mut held = self.arena()?;
+            let mut held = self.arena();
             held.grow(vals.iter().map(Val::size).sum())
                 .map_err(|err| e.write_error(TxnId(0), err.into()))?;
             out.push_back((layout, Source::Whole(vals.into_iter(), held)));
@@ -339,9 +339,11 @@ impl<R: Runtime> Call<R> {
         Ok(out)
     }
 
-    fn arena(&self) -> Result<Arena, Error> {
-        let grant = self.grant.as_ref().expect("a started call has its grant");
-        grant.take(0).map_err(|err| internal(&format!("{err:?}")))
+    fn arena(&self) -> Arena {
+        self.grant
+            .as_ref()
+            .expect("a started call has its grant")
+            .arena()
     }
 
     /// Run the write's attempts until one commits, fails, or waits for a transaction.
@@ -549,7 +551,7 @@ impl<R: Runtime> Call<R> {
             if let Source::Whole(_, held) = source {
                 held.release(bytes);
             }
-            let mut held = self.arena()?;
+            let mut held = self.arena();
             held.grow(bytes)
                 .map_err(|err| e.write_error(id, err.into()))?;
             let batch = layout.batch(rows, held)?;
@@ -722,10 +724,4 @@ impl<R: Runtime> Resumable for Call<R> {
         };
         now.into_iter().for_each(Waker::wake);
     }
-}
-
-fn internal(what: &str) -> Error {
-    Error::rejected(super::super::RejectReason::Internal {
-        what: what.to_owned(),
-    })
 }

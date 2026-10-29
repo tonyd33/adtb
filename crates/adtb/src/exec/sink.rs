@@ -334,7 +334,7 @@ impl<R: Runtime> Ctx<R> {
             }
         }
         drop(m);
-        let mut held = self.grant.take(0)?;
+        let mut held = self.grant.arena();
         let mut out = BTreeSet::new();
         let mut emit = |k: Val, members: BTreeSet<Val>| -> Result<(), Error> {
             let computed = aggs
@@ -358,7 +358,7 @@ impl<R: Runtime> Ctx<R> {
         };
         let mut groups = pairs.merge(&self.spill)?;
         let mut cur: Option<(Val, BTreeSet<Val>)> = None;
-        let mut members_held = self.grant.take(0)?;
+        let mut members_held = self.grant.arena();
         while let Some(p) = groups.pop()? {
             let fs = p.fields()?;
             let (k, e) = (fs[0].clone(), fs[1].clone());
@@ -390,7 +390,7 @@ impl<R: Runtime> Ctx<R> {
     ) -> Result<Vec<Val>, Error> {
         let desc: Arc<[bool]> = keys.iter().map(|(_, d)| *d).collect();
         let mut best: BTreeSet<Ranked> = BTreeSet::new();
-        let mut held = self.grant.take(0)?;
+        let mut held = self.grant.arena();
         let mut m = set.merge(&self.spill)?;
         loop {
             let chunk = m.chunk(self.options.morsel_rows.max(1))?;

@@ -106,7 +106,7 @@ impl<R: Runtime> Ctx<R> {
         let parts = if build.key.is_empty() { 1 } else { PARTS };
         let cap = self.grant.limit() / 4;
         let mut rows: HashMap<Vec<Val>, Vec<Val>> = HashMap::new();
-        let mut arena = self.grant.take(0)?;
+        let mut arena = self.grant.arena();
         let mut spilled: Option<Vec<Writer>> = None;
         let mut m = elems.merge(&self.spill)?;
         loop {
@@ -280,7 +280,7 @@ impl<R: Runtime> Ctx<R> {
         next: &mut Option<Vec<Val>>,
     ) -> Result<(Chunk, bool), Error> {
         let cap = self.grant.limit().saturating_sub(self.grant.used()) / 2;
-        let mut arena = self.grant.take(0)?;
+        let mut arena = self.grant.arena();
         let mut rows: HashMap<Vec<Val>, Vec<Val>> = HashMap::new();
         let more = loop {
             let Some(rec) = next.take().map_or_else(|| elems.read(), |r| Ok(Some(r)))? else {

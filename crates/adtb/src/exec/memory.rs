@@ -86,6 +86,14 @@ impl Grant {
         self.spilled.fetch_add(bytes, Ordering::AcqRel);
     }
 
+    /// Returns an arena of this grant holding nothing.
+    pub fn arena(self: &Arc<Grant>) -> Arena {
+        Arena {
+            grant: self.clone(),
+            bytes: 0,
+        }
+    }
+
     /// Take `bytes` of the grant until the returned arena is dropped. Fails with the statement
     /// limit, taking nothing, when the grant has less than `bytes` left.
     pub fn take(self: &Arc<Grant>, bytes: usize) -> Result<Arena, Error> {

@@ -390,7 +390,7 @@ impl<R: Runtime> Ctx<R> {
             e
         };
         let limit = self.options.fix_rounds;
-        let mut held = self.grant.take(0)?;
+        let mut held = self.grant.arena();
         let mut hold = |sets: &[Val]| -> Result<(), Error> {
             let bytes: usize = sets.iter().map(Val::size).sum();
             let more = bytes.saturating_sub(held.bytes());
