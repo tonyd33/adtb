@@ -15,7 +15,7 @@ use adtb::{
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{once, options, printed, result, run};
+use api::{once, options, query, run};
 
 const NOTES: &str = r#"module shop
 add module shop
@@ -87,12 +87,6 @@ fn opened(rt: &SimRuntime, log: &[&str], fns: HostFns) -> Database<SimRuntime> {
 
 fn deterministic() -> HostFns {
     slugify("1.0", Determinism::Deterministic, &Arc::default())
-}
-
-fn query(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    let mut out = printed(result(db, text));
-    out.sort();
-    out
 }
 
 fn write(db: &Database<SimRuntime>, text: &str) -> Result<(), Error> {

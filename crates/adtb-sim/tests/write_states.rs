@@ -12,7 +12,7 @@ use adtb::{CallOptions, Database, Error, Log, OpenError};
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{options, result, run, sorted};
+use api::{options, query, run};
 
 fn open(rt: &SimRuntime, log: &[&str]) -> Result<Database<SimRuntime>, OpenError> {
     Database::open_in(
@@ -25,10 +25,6 @@ fn open(rt: &SimRuntime, log: &[&str]) -> Result<Database<SimRuntime>, OpenError
 
 fn opened(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
     open(rt, log).unwrap_or_else(|e| panic!("the database opens at {}: {e:?}", log.len()))
-}
-
-fn query(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    sorted(result(db, text))
 }
 
 fn write(db: &Database<SimRuntime>, text: &str) {

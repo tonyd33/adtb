@@ -56,6 +56,11 @@ pub fn result(db: &Database<SimRuntime>, text: &str) -> DynRows {
     out.remove(0)
 }
 
+/// Returns each row of the one result of `text` run in `db`, printed and sorted.
+pub fn query(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
+    sorted(result(db, text))
+}
+
 /// Returns every result of `text` run in `db`.
 pub fn results(db: &Database<SimRuntime>, text: &str) -> Vec<DynRows> {
     db.query_text(text, &[], &CallOptions::default())

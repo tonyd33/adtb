@@ -12,7 +12,7 @@ const WIDTH: i64 = 4000;
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "only a spawned thread fixes the stack size a test body runs on"
+    reason = "goes if the test thread's stack may follow `RUST_MIN_STACK`"
 )]
 fn on_small_stack(body: impl FnOnce() + Send + 'static) {
     thread::Builder::new()

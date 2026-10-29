@@ -14,7 +14,7 @@ use adtb::verify::{self, Depth};
 use adtb::{CallOptions, Database, Error, Log, OpenError, OpenOptions};
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{options, result, run, sorted};
+use api::{options, query, run};
 use harness::{finished, options as pager_options};
 
 const SHOP: &str = r"module shop
@@ -40,11 +40,6 @@ fn open(rt: &SimRuntime, log: &[&str]) -> Result<Database<SimRuntime>, OpenError
 
 fn opened(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
     open(rt, log).unwrap_or_else(|e| panic!("the database opens at {}: {e:?}", log.len()))
-}
-
-/// Returns each row of the one result of `text` run in `db`, printed and sorted.
-fn query(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    sorted(result(db, text))
 }
 
 fn write(db: &Database<SimRuntime>, text: &str) {

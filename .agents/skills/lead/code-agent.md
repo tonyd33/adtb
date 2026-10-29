@@ -53,9 +53,9 @@ numbers, rule ids, file citations or markdown bold in comments. Match
 the style of the existing crates.
 
 Quality rules: Fix the code. Add an `#[expect]` only when the rule is
-wrong for that spot, and name it in the report. No new function over
-150 lines. A panic on an invariant
-names the invariant it guards. Use newtype ids (`Xid`, constructor
+wrong for that spot, and name it in the report; never add `#[allow]`.
+No new function over 150 lines. A panic on an invariant names the
+invariant it guards. Use newtype ids (`Xid`, constructor
 indexes) rather than bare `u64`/`u32`. Reuse what exists before
 writing a helper: the byte readers in `storage/header.rs` and
 `storage/record.rs`, and the simulator test-support library

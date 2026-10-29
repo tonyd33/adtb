@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::ops::Range;
 use std::path::Path;
-use std::{panic, thread};
 
 use adtb_conformance as conformance;
 use adtb_lang::ast::{AdhocItem, QueryDecl, TxnDecl};
@@ -472,27 +471,9 @@ insert tags.Large { item: items.key(2), label: "l" }"#;
 /// Seeds per run of the fuzzed statements; about one in four draws unmutated ad hoc text.
 const FUZZ_SEEDS: u64 = 2000;
 
-/// The stack of the fuzzed statements, the default size of a spawned thread.
-const FUZZ_STACK: usize = 2 << 20;
-
 /// Runs every unmutated ad hoc statement the front-end fuzzer draws, over a database of a few rows.
 #[test]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "only a spawned thread fixes the stack size the fuzzed statements run on"
-)]
 fn fuzzed_statement_results_inhabit_their_types() {
-    let run = thread::Builder::new()
-        .name("fuzzed statements".into())
-        .stack_size(FUZZ_STACK)
-        .spawn(fuzzed_statements)
-        .expect("the fuzz thread starts");
-    if let Err(p) = run.join() {
-        panic::resume_unwind(p);
-    }
-}
-
-fn fuzzed_statements() {
     let src = fuzz::SCHEMA
         .strip_prefix("module app\n")
         .expect("the fuzz schema is module `app`");

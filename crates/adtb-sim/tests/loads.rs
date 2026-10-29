@@ -14,7 +14,7 @@ use adtb::{
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{once, options, printed, result, run};
+use api::{once, options, query, run};
 
 const SHOP: &str = r#"module shop
 add module shop
@@ -41,12 +41,6 @@ fn log() -> Log {
 
 fn open(rt: &SimRuntime) -> Database<SimRuntime> {
     Database::open_in(rt.clone(), "app.adt", &log(), &options(4)).expect("the database opens")
-}
-
-fn query(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    let mut out = printed(result(db, text));
-    out.sort();
-    out
 }
 
 fn reason(e: &Error) -> &RejectReason {

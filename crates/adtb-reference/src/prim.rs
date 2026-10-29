@@ -246,7 +246,7 @@ fn span_of(v: &Value) -> R<(&Value, &Value)> {
 /// Applies primitive `p` to its argument values `vs`, of types `tys`, at the node's type `ty`.
 #[expect(
     clippy::too_many_lines,
-    reason = "one arm per primitive; each family of primitives would have to be a function"
+    reason = "goes if each family of primitives becomes its own function"
 )]
 pub fn apply(it: &Interpreter, p: Prim, vs: Vec<Value>, ty: &Ty, tys: &[Ty]) -> R<Value> {
     use Value::*;

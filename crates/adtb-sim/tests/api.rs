@@ -13,7 +13,7 @@ use adtb::{
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{in_txn, is_invalid, once, options, printed, result, run};
+use api::{in_txn, is_invalid, once, options, printed, query, result, run};
 
 const SHOP: &str = r"module shop
 add module shop
@@ -57,11 +57,6 @@ fn text(t: &str) -> Value {
 
 fn name(n: &str) -> [(&'static str, Ty, Value); 1] {
     [("n", Ty::Base(Base::Text), text(n))]
-}
-
-/// Returns each row of the one result of `text` run in `db`, printed.
-fn query(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    printed(result(db, text))
 }
 
 fn sign_up(db: &Database<SimRuntime>, n: &str) {

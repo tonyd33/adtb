@@ -558,7 +558,7 @@ impl Run<'_, '_> {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one arm per term kind; each arm would have to be a function"
+        reason = "goes if each term kind's arm becomes its own function"
     )]
     fn step(&self, h: &Here, t: Tm, env: &Env) -> R<Value> {
         let terms = self.terms(h.arena);

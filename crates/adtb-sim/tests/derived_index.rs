@@ -13,7 +13,7 @@ use adtb::{
 };
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{once, options, result, run, sorted};
+use api::{once, options, query, run};
 
 const BILLING: &str = r"module billing
 add module billing
@@ -42,10 +42,6 @@ fn open_with(rt: &SimRuntime, log: &[&str]) -> Database<SimRuntime> {
 
 fn open(rt: &SimRuntime) -> Database<SimRuntime> {
     open_with(rt, &[BILLING])
-}
-
-fn query(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    sorted(result(db, text))
 }
 
 fn write(db: &Database<SimRuntime>, text: &str) -> Result<(), Error> {
