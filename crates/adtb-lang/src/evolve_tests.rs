@@ -1,6 +1,9 @@
 use super::*;
 use crate::parse::parse_migration;
 
+#[path = "evolve_grant_tests.rs"]
+mod grants;
+
 const RUNNING: &str = r"
 module auth
 type User = { id: Key users, name: Text }
@@ -2167,7 +2170,10 @@ fn log_grants_are_stored_in_the_source_by_catalog_id() {
                 relation: identities,
                 sel: GrantSel::Ctors(vec![ctor("EmailPass"), ctor("Google")]),
             },
-            Some(vec![user]),
+            GrantFields {
+                ids: vec![user],
+                listed: true,
+            },
         ),
         grant_option: true,
     };

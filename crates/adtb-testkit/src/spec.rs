@@ -224,16 +224,14 @@ fn source_of(entries: &[Entry]) -> Result<Source, Vec<String>> {
         })
         .collect();
     Source::new(decls).map_err(|ds| {
-        let src = Source {
-            decls: entries
-                .iter()
-                .map(|e| SourceDecl {
-                    module: e.module.clone(),
-                    text: e.text.clone(),
-                })
-                .collect(),
-            ..Source::default()
-        };
+        let mut src = Source::default();
+        src.decls = entries
+            .iter()
+            .map(|e| SourceDecl {
+                module: e.module.clone(),
+                text: e.text.clone(),
+            })
+            .collect();
         ds.iter()
             .map(|d| render_in(&src, entries, None, d))
             .collect()

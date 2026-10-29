@@ -392,10 +392,37 @@ whose element type is the operator's type.
 | `drop unique`, `drop index` | a clause of that kind with the same fields, token for token, and the same constructor set exists | it is gone |
 | `rekey relation r key (...) carry ...` | the carried fields are exactly the fields outside `r`'s own type typed `Key r` or `Key r.S`; at the end of the migration no field of `r`'s own type typed `Key r` lies outside the new key | `r`'s key clause is the new key, with no generator |
 | `add default`, `drop default`, `add computed`, `redefine computed`, `drop computed` | the default or computed field exists, for a drop or redefine | the clause is added, replaced or gone |
-| `grant`, `revoke` | each relation names a relation variable of a user module; each function a schema function; each listed field is a field of the header or of a selected constructor; no capability or bundle call privilege | `grants` holds each privilege of a `grant` for its role once, by the catalog ids of what it names, with the grant option when any grant of it gave one; a `revoke` removes each privilege it lists from the role; the declarations are unchanged |
+| `grant`, `revoke` | each relation names a relation variable of a user module; each function a schema function; each listed field is a field of the header or of a selected constructor; no capability or bundle call privilege | `grants` holds each privilege of a `grant` for its role once, by the catalog ids of what it names, with the grant option when any grant of it gave one; a `read` or `update` without a field list holds the ids of the fields its constructors have now, marked unlisted; a `revoke` removes from the role each privilege it lists, and with no field list each unlisted one on the same target; the declarations are unchanged |
 | `adopt tzdb` | none | the source is unchanged |
 | `script w` | `w` checks as ad hoc text against the schema the operators before it produce | the source is unchanged |
 | `revert n` | `n` is in the log and holds no `script`; no later migration names an object `n` creates; each inverse that adds a field the log holds no value for has a `fill` | the inverses of `n`'s operators, last first, apply as the table states, computed against the source before each; an added constructor goes with its arms, a removed one comes back at its place with its states and its constraints' arms, a split or merge is inverted when its routing binds or fixes every field and carries each binding whole and, for a split, routes some row to every product, else refused, a split naming each product no arm reaches |
+
+After each operator, `grants` holds:
+
+- No id of an object that is gone. A grant whose relation variable,
+  set or function is gone, or whose constructor list is left empty, is
+  gone.
+- For each unlisted `read` or `update` on a whole relation variable,
+  the fields of each constructor `add constructor` added to it since.
+  A grant on a named set gains no field of a constructor that joins
+  the set.
+- Across a split, merge, nest or unnest, each grant covering a
+  product's sources: the product, when it covers every source whose
+  rows go to the product, with the product's fields that each such
+  source's routing gives only by carrying whole a field the grant
+  covers, the same fields from each source. A nesting field is carried
+  from every field of its source; each field of an unnested product is
+  carried from the nesting field.
+- For `move field T.f to T.(C | D)`, each grant on `f` also on the
+  field of each listed constructor.
+- After `revert n`, the grants each inverted operator found, an object
+  the inverse makes again named by its new id.
+
+A migration is refused while a structural operator leaves a grant
+covering some but not all of a product's sources, or covering them
+with different fields, unless a later `grant` of the same migration
+gives the same role the same privilege on a target covering the
+product. The refusal names the sources and the product.
 
 Preconditions of `apply` and `steps` for the operators of one migration
 applied one at a time: `expecting` was called with all of them on the

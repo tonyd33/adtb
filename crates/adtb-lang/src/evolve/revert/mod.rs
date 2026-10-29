@@ -45,8 +45,12 @@ pub(super) enum Inverse {
     },
     /// Sets write states back, `None` removing the state.
     States(Vec<(bool, StateKey, Option<State>)>),
-    /// Set what each role holds of a privilege back.
-    Grants(Vec<HeldGrant>),
+    /// Set what each role holds of a privilege back, each privilege naming objects by the ids
+    /// `ids` gives their paths.
+    Grants {
+        back: Vec<HeldGrant>,
+        ids: BTreeMap<String, u64>,
+    },
     /// Sets the declaration of a kind and name to a text, `None` removing it.
     Decl {
         module: String,
@@ -72,6 +76,38 @@ pub(super) enum Inverse {
         ctor: Option<String>,
         order: Vec<String>,
     },
+}
+
+/// Returns the step that sets back each privilege an operator changed for a role, as `before`
+/// held it, from `after`; `None` when it changed none.
+fn grants_back(before: &Source, after: &Source) -> Option<Inverse> {
+    let held = |grants: &[LogGrant], g: &LogGrant| {
+        grants
+            .iter()
+            .position(|x| x.role == g.role && x.privilege == g.privilege)
+            .map(|i| (i, grants[i].grant_option))
+    };
+    let mut back = Vec::new();
+    for g in before.grants.iter().chain(&after.grants) {
+        let was = held(&before.grants, g);
+        let is = held(&after.grants, g);
+        let changed = was.map(|(_, o)| o) != is.map(|(_, o)| o);
+        if changed
+            && !back
+                .iter()
+                .any(|h: &HeldGrant| h.role == g.role && h.privilege == g.privilege)
+        {
+            back.push(HeldGrant {
+                role: g.role.clone(),
+                privilege: g.privilege.clone(),
+                held: was,
+            });
+        }
+    }
+    (!back.is_empty()).then(|| Inverse::Grants {
+        back,
+        ids: before.ids.clone(),
+    })
 }
 
 /// The objects an operator creates, by kind and name, the module first.
@@ -336,7 +372,8 @@ impl Cx<'_> {
         state.expecting(&logged.module, &logged.operators);
         let mut steps = Vec::new();
         for op in &logged.operators {
-            steps.push(self.inverse(&state, &logged, op, fills)?);
+            let mut step = self.inverse(&state, &logged, op, fills)?;
+            let before = state.clone();
             if let Err(ds) = state.apply(&logged.module, op, &logged.text) {
                 return Err(ds
                     .into_iter()
@@ -345,6 +382,8 @@ impl Cx<'_> {
                     })
                     .collect());
             }
+            step.extend(grants_back(&before, &state));
+            steps.push(step);
         }
         for step in steps.into_iter().rev() {
             for inv in step {
@@ -385,45 +424,6 @@ impl Cx<'_> {
     }
 
     /// The step that puts the fields of a part of `path`'s type back in the order `before` declares them.
-    /// The inverse of grant or revoke `op` of migration `logged`: each privilege it changed for
-    /// a role, as `before` held it.
-    fn grants_back(&self, before: &Source, logged: &Logged, op: &Operator) -> R<Inverse> {
-        let mut after = before.clone();
-        after
-            .apply(&logged.module, op, &logged.text)
-            .map_err(|ds| {
-                ds.into_iter()
-                    .map(|d| {
-                        Diag::new(self.span, format!("the log does not replay: {}", d.message))
-                    })
-                    .collect::<Vec<_>>()
-            })?;
-        let held = |grants: &[LogGrant], g: &LogGrant| {
-            grants
-                .iter()
-                .position(|x| x.role == g.role && x.privilege == g.privilege)
-                .map(|i| (i, grants[i].grant_option))
-        };
-        let mut back = Vec::new();
-        for g in before.grants.iter().chain(&after.grants) {
-            let was = held(&before.grants, g);
-            let is = held(&after.grants, g);
-            let changed = was.map(|(_, o)| o) != is.map(|(_, o)| o);
-            if changed
-                && !back
-                    .iter()
-                    .any(|h: &HeldGrant| h.role == g.role && h.privilege == g.privilege)
-            {
-                back.push(HeldGrant {
-                    role: g.role.clone(),
-                    privilege: g.privilege.clone(),
-                    held: was,
-                });
-            }
-        }
-        Ok(Inverse::Grants(back))
-    }
-
     pub(super) fn reorder(
         &self,
         before: &Source,
@@ -969,6 +969,7 @@ impl Cx<'_> {
                 (kind, _) => sub.operator(kind),
             }
             .map_err(|ds| wrap(ds, &full[op.span.range()]))?;
+            self.src.carry = None;
             self.src.rename_ids(&before, &self.module, &op.kind);
             self.src.reconcile_ids();
             if let Some(steps) = self.steps {
@@ -1041,8 +1042,8 @@ impl Cx<'_> {
                 }
                 Ok(())
             }
-            Inverse::Grants(back) => {
-                self.src.hold(back);
+            Inverse::Grants { back, ids } => {
+                self.src.hold(back, &ids);
                 Ok(())
             }
             Inverse::Decl {

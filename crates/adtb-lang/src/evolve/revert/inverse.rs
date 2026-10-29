@@ -107,10 +107,9 @@ impl Cx<'_> {
             | OperatorKind::DropCheck(..)
             | OperatorKind::Store(..)
             | OperatorKind::Unstore(..) => self.body_inverse(&at),
-            OperatorKind::Grant(_) | OperatorKind::Revoke(_) => {
-                Ok(vec![self.grants_back(before, logged, op)?])
+            OperatorKind::Grant(_) | OperatorKind::Revoke(_) | OperatorKind::AdoptTzdb { .. } => {
+                Ok(Vec::new())
             }
-            OperatorKind::AdoptTzdb { .. } => Ok(Vec::new()),
             OperatorKind::Script(_) => self.err("a `script` has no inverse"),
             OperatorKind::Revert { migration, .. } => {
                 let n: u64 = migration.parse().unwrap_or(u64::MAX);

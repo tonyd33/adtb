@@ -827,67 +827,12 @@ impl Cx<'_> {
         .map_err(|d| vec![d])?;
         self.note(schema, &refs);
         let mut carries = Vec::new();
-        for a in arms {
-            let Some(p) = a.patterns.first() else {
-                continue;
-            };
-            let ast::PatternKind::Ctor {
-                path,
-                ctor,
-                payload,
-            } = &p.kind
-            else {
-                continue;
-            };
-            let from = ctor.as_ref().unwrap_or(&path.name).text.clone();
-            let mut bound: BTreeMap<String, String> = BTreeMap::new();
-            let mut binder = None;
-            match payload {
-                Some(ast::Payload::Bind(x)) => binder = Some(x.text.clone()),
-                Some(ast::Payload::Record(fs)) => {
-                    for f in fs {
-                        match &f.pattern {
-                            None => {
-                                bound.insert(f.field.text.clone(), f.field.text.clone());
-                            }
-                            Some(ast::Pattern {
-                                kind: ast::PatternKind::Bind(x),
-                                ..
-                            }) => {
-                                bound.insert(x.text.clone(), f.field.text.clone());
-                            }
-                            _ => {}
-                        }
+        for img in arms.iter().map(arm_image) {
+            if let (Some(from), Some(to)) = (&img.from, &img.to) {
+                for (g, f) in &img.given {
+                    if let Some(f) = f {
+                        carries.push((from.clone(), f.clone(), to.clone(), g.clone()));
                     }
-                }
-                _ => {}
-            }
-            let ast::ExprKind::Ctor {
-                path: bp,
-                ctor: bc,
-                record: Some(ast::RecordExpr::Fields(given, _)),
-            } = &a.body.kind
-            else {
-                continue;
-            };
-            let to = bc.as_ref().unwrap_or(&bp.name).text.clone();
-            for (g, e) in given {
-                let carried = match &e.kind {
-                    ast::ExprKind::Field(x, f) => match &x.kind {
-                        ast::ExprKind::Name(q)
-                            if q.module.is_none() && Some(&q.name.text) == binder.as_ref() =>
-                        {
-                            Some(f.text.clone())
-                        }
-                        _ => None,
-                    },
-                    ast::ExprKind::Name(q) if q.module.is_none() => {
-                        bound.get(&q.name.text).cloned()
-                    }
-                    _ => None,
-                };
-                if let Some(f) = carried {
-                    carries.push((from.clone(), f, to.clone(), g.text.clone()));
                 }
             }
         }
@@ -1230,4 +1175,83 @@ fn reselected(
         }
     }
     Some(Some(out))
+}
+
+/// Returns what routing arm `a` matches, makes, and carries whole.
+pub(super) fn arm_image(a: &ast::Arm) -> carry::ArmImage {
+    let mut from = None;
+    let mut bound: BTreeMap<String, String> = BTreeMap::new();
+    let mut binder = None;
+    if let Some(ast::Pattern {
+        kind:
+            ast::PatternKind::Ctor {
+                path,
+                ctor,
+                payload,
+            },
+        ..
+    }) = a.patterns.first()
+    {
+        from = Some(ctor.as_ref().unwrap_or(&path.name).text.clone());
+        match payload {
+            Some(ast::Payload::Bind(x)) => binder = Some(x.text.clone()),
+            Some(ast::Payload::Record(fs)) => {
+                for f in fs {
+                    match &f.pattern {
+                        None => {
+                            bound.insert(f.field.text.clone(), f.field.text.clone());
+                        }
+                        Some(ast::Pattern {
+                            kind: ast::PatternKind::Bind(x),
+                            ..
+                        }) => {
+                            bound.insert(x.text.clone(), f.field.text.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let (to, given) = match &a.body.kind {
+        ast::ExprKind::Ctor {
+            path: bp,
+            ctor: bc,
+            record,
+        } => {
+            let to = bc.as_ref().unwrap_or(&bp.name).text.clone();
+            match record {
+                None => (Some(to), Vec::new()),
+                Some(ast::RecordExpr::Fields(given, _)) => {
+                    let given = given
+                        .iter()
+                        .map(|(g, e)| {
+                            let carried = match &e.kind {
+                                ast::ExprKind::Field(x, f) => match &x.kind {
+                                    ast::ExprKind::Name(q)
+                                        if from.is_some()
+                                            && q.module.is_none()
+                                            && Some(&q.name.text) == binder.as_ref() =>
+                                    {
+                                        Some(f.text.clone())
+                                    }
+                                    _ => None,
+                                },
+                                ast::ExprKind::Name(q) if q.module.is_none() => {
+                                    bound.get(&q.name.text).cloned()
+                                }
+                                _ => None,
+                            };
+                            (g.text.clone(), carried)
+                        })
+                        .collect();
+                    (Some(to), given)
+                }
+                Some(_) => (None, Vec::new()),
+            }
+        }
+        _ => (None, Vec::new()),
+    };
+    carry::ArmImage { from, to, given }
 }

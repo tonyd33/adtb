@@ -109,6 +109,24 @@ impl Cx<'_> {
         edits = Self::merged(edits, self.replace_ctors(i, &t, &sources, &m_text));
         let arm_edits = self.arm_replacements(&schema, &refs, def, &src_ix, clauses)?;
         edits = Self::merged(edits, arm_edits);
+        let shape = (
+            m.clone(),
+            mfields.iter().map(|f| f.name.clone()).collect::<Vec<_>>(),
+        );
+        let (reaches, given) = match arms {
+            Some(a) => {
+                let images: Vec<_> = a.iter().map(arm_image).collect();
+                carry::routed(&images, &sources, std::slice::from_ref(&shape))
+            }
+            None => carry::by_name(&carries, &sources, &shape),
+        };
+        self.plan_carry(
+            "merge",
+            &schema,
+            (def, ty),
+            (&sources, std::slice::from_ref(&m)),
+            (&reaches, &given),
+        );
         self.apply_edits(edits);
         self.retype_products(&schema, def, &sources, std::slice::from_ref(&m))
     }

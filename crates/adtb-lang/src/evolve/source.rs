@@ -290,6 +290,7 @@ impl Source {
         let mut next = self.clone();
         next.version += 1;
         next.expecting(&m.module.text, &m.operators);
+        next.unstated.clear();
         let mut refusal = Refusal::default();
         let mut rekeyed = Vec::new();
         let mut applied = Vec::with_capacity(m.operators.len());
@@ -307,6 +308,11 @@ impl Source {
                 next.keep(&prior, kept);
             }
         }
+        refusal.operators.extend(
+            std::mem::take(&mut next.unstated)
+                .into_iter()
+                .map(|u| Diag::new(u.span, u.message)),
+        );
         for (relation, span) in rekeyed {
             if let Err(d) = next.rekey_leaves_no_old_reference(&m.module.text, &relation, span) {
                 refusal.operators.push(d);
@@ -422,6 +428,7 @@ impl Source {
             Ok(()) => {
                 self.rename_ids(&before, module, &op.kind);
                 self.reconcile_ids();
+                self.carry_grants(&before, module, &op.kind);
             }
             Err(_) => *self = before,
         }

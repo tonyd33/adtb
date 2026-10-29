@@ -128,6 +128,16 @@ impl Cx<'_> {
             &products,
             false,
         )?;
+        let images: Vec<_> = arms.iter().map(arm_image).collect();
+        let shapes: Vec<_> = into.iter().map(carry::ctor_fields).collect();
+        let routed = carry::routed(&images, std::slice::from_ref(&source), &shapes);
+        self.plan_carry(
+            "split",
+            &schema,
+            (def, &path.ty),
+            (std::slice::from_ref(&source), &products),
+            (&routed.0, &routed.1),
+        );
         self.apply_edits(edits);
         self.retype_products(&schema, def, std::slice::from_ref(&source), &products)
     }
@@ -347,6 +357,26 @@ impl Cx<'_> {
         edits = Self::merged(edits, self.replace_ctors(i, &t, &sources, &n_text));
         let arm_edits = self.arm_replacements(&schema, &refs, def, &src_ix, clauses)?;
         edits = Self::merged(edits, arm_edits);
+        let mut given = carry::Given::new();
+        for s in &sources {
+            let k = td.ctor_index(s).expect("a source");
+            given.insert(
+                (s.clone(), n.clone(), f.clone()),
+                td.ctors()[k as usize]
+                    .fields
+                    .iter()
+                    .map(|x| Some(x.name.clone()))
+                    .collect(),
+            );
+        }
+        let reaches = sources.iter().map(|s| (s.clone(), n.clone())).collect();
+        self.plan_carry(
+            "nest",
+            &schema,
+            (def, ty),
+            (&sources, std::slice::from_ref(&n)),
+            (&reaches, &given),
+        );
         self.apply_edits(edits);
         Ok(())
     }
@@ -485,6 +515,23 @@ impl Cx<'_> {
             &products,
             false,
         )?;
+        let mut given = carry::Given::new();
+        for x in st.ctors() {
+            for g in &x.fields {
+                given.insert(
+                    (n.clone(), x.name.clone(), g.name.clone()),
+                    vec![Some(field.name.clone())],
+                );
+            }
+        }
+        let reaches = products.iter().map(|p| (n.clone(), p.clone())).collect();
+        self.plan_carry(
+            "unnest",
+            &schema,
+            (def, &path.ty),
+            (std::slice::from_ref(&n), &products),
+            (&reaches, &given),
+        );
         self.apply_edits(edits);
         Ok(())
     }

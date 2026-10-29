@@ -15,6 +15,7 @@ use crate::schema::{self, ENGINE_MODULES, Schema, TypeDefKind, ValueDef};
 use crate::span::{Diag, FileDiag, FileId, Span};
 use crate::types::*;
 
+mod carry;
 mod ctor;
 mod cx;
 mod field;
@@ -37,7 +38,7 @@ mod tests;
 
 pub use crate::schema::Stage;
 use grant::HeldGrant;
-pub use grant::{GrantSel, GrantTarget, Granted, LogGrant};
+pub use grant::{GrantFields, GrantSel, GrantTarget, Granted, LogGrant};
 pub use keep::Kept;
 pub use resolved::{
     ArmTarget, Clause, Code, Function, IndexKind, Place, Resolved, ResolvedOp, Target,
@@ -100,6 +101,11 @@ pub struct Source {
     /// The relation variables, by module and name, that the operators of the migration being
     /// applied add.
     pub ahead: Vec<schema::Ahead>,
+    /// How the operator being applied carries grants, once the constructors it makes have ids.
+    carry: Option<carry::Carry>,
+    /// The grants the structural operators of the migration being applied could not carry and
+    /// no later grant operator of it has stated.
+    unstated: Vec<carry::Unstated>,
 }
 
 /// Text of the migration being replayed that an operator copied into a declaration.
