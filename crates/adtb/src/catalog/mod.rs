@@ -78,6 +78,12 @@ pub enum Error {
     Missing(String),
     /// The migration does not apply; each reason.
     Refused(Vec<String>),
+    /// The migration does not apply; the text of the first operator the data refuses, or of the
+    /// operator whose step fails, and each reason.
+    RefusedBy {
+        operator: String,
+        why: Vec<String>,
+    },
     /// A stored page or row does not read as the catalog writes it; what is wrong.
     Corrupt(String),
     /// A stored migration does not parse or apply under this engine; its version and each

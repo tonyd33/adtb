@@ -830,6 +830,13 @@ fn migrate<R: Runtime>(
                     detail: why.join("\n"),
                 },
             ),
+            catalog::Error::RefusedBy { operator, why } => refused(
+                version,
+                RejectReason::SchemaRefused {
+                    operator,
+                    detail: why.join("\n"),
+                },
+            ),
             catalog::Error::Internal(what) => refused(version, RejectReason::Internal { what }),
             catalog::Error::MissingFunction(name) => OpenError::HostFnMissing { name },
             catalog::Error::OtherVersion(name) => OpenError::HostFnMismatch { name },

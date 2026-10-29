@@ -8,6 +8,7 @@ use adtb_lang::evolve::{Code, Resolved, RowMap, Source};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_lang::schema::{self, Schema, Stage};
+use adtb_lang::translate::operator_text;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
 use crate::btree::Index;
@@ -34,11 +35,12 @@ impl Catalog {
     /// the migration is durable.
     ///
     /// Fail with [`Error::Refused`], changing nothing, if the migration does not apply to the
-    /// schema, if a constraint of the result has no index-bounded incremental check, or if the
-    /// data contradicts an operator: a constructor or relation it removes holds rows, a unique or
-    /// key it adds finds a duplicate, a constructor it disables holds rows, a fill, routing or
-    /// index expression faults on a row, or a constraint or check it adds, or one reading a
-    /// relation it rewrites, has violating rows in the final state. Fail with
+    /// schema, if a constraint of the result has no index-bounded incremental check, or if a
+    /// constraint or check it adds, or one reading a relation it rewrites, has violating rows in
+    /// the final state. Fail with [`Error::RefusedBy`], changing nothing and naming the first
+    /// operator the data refuses, if the data contradicts an operator: a constructor or relation
+    /// it removes holds rows, a unique or key it adds finds a duplicate, a constructor it
+    /// disables holds rows, or a fill, routing or index expression faults on a row. Fail with
     /// [`Error::Internal`] when admitting or validating a constraint breaks a guarantee of the
     /// checker. On any other failure the transaction is aborted, and the catalog must be opened
     /// again.
@@ -182,17 +184,27 @@ impl Catalog {
         at.expecting(module, &file.operators);
         let mut before = self.schema.clone();
         let mut why = Vec::new();
+        let mut blamed = None;
         for op in &file.operators {
+            let refused_by = |blamed: Option<String>, why: Vec<String>| Error::RefusedBy {
+                operator: blamed.unwrap_or_else(|| operator_text(text, op)),
+                why,
+            };
+            let held = why.len();
             let mut after = at.clone();
             let steps = match after.steps(module, op, text) {
                 Ok(s) => s,
                 Err(ds) => {
-                    return Err(Error::Refused(ds.into_iter().map(|d| d.message).collect()));
+                    why.extend(ds.into_iter().map(|d| d.message));
+                    return Err(refused_by(blamed, why));
                 }
             };
             for step in steps {
-                let Some(schema) = steps::built(&step, op, text)? else {
-                    continue;
+                let schema = match steps::built(&step, op, text) {
+                    Ok(Some(schema)) => schema,
+                    Ok(None) => continue,
+                    Err(Error::Refused(w)) => return Err(refused_by(blamed, [why, w].concat())),
+                    Err(e) => return Err(e),
                 };
                 why.extend(self.emptied(m, &before, &schema, &step.maps, &data)?);
                 let moved = match moved::moved(&before, &schema, &step.maps, &data, &self.hosts) {
@@ -205,16 +217,24 @@ impl Catalog {
                 };
                 match change::step(&before, &schema, &mut data, moved) {
                     Ok(()) => {}
-                    Err(Error::Refused(w)) => return Err(Error::Refused([why, w].concat())),
+                    Err(Error::Refused(w)) => {
+                        return Err(refused_by(blamed, [why, w].concat()));
+                    }
                     Err(e) => return Err(e),
                 }
                 before = schema;
+            }
+            if blamed.is_none() && why.len() > held {
+                blamed = Some(operator_text(text, op));
             }
             at = after;
         }
         why.extend(oversized(m.pager.page_size(), &next.schema, rewritten));
         if !why.is_empty() {
-            return Err(Error::Refused(why));
+            return Err(match blamed {
+                Some(operator) => Error::RefusedBy { operator, why },
+                None => Error::Refused(why),
+            });
         }
         let mut built = self.build(
             m,

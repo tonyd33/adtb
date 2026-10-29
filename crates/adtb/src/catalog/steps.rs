@@ -1,6 +1,7 @@
 use adtb_lang::ast::Operator;
 use adtb_lang::evolve::Step;
 use adtb_lang::schema::Schema;
+use adtb_lang::translate::operator_text;
 
 use super::Error;
 
@@ -14,11 +15,7 @@ pub fn built(step: &Step, op: &Operator, text: &str) -> Result<Option<Schema>, E
         Ok(schema) => Ok(Some(schema)),
         Err(_) if step.maps.is_empty() => Ok(None),
         Err(ds) => {
-            let shown = text
-                .get(op.span.start as usize..op.span.end as usize)
-                .and_then(|s| s.lines().next())
-                .unwrap_or_default()
-                .trim();
+            let shown = operator_text(text, op);
             Err(Error::Refused(
                 ds.into_iter()
                     .map(|d| {

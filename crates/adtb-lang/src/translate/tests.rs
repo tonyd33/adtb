@@ -339,3 +339,26 @@ fn a_removed_constructor_is_blamed_on_its_removal_not_a_set_listing_it() {
         reason
     );
 }
+
+#[test]
+fn a_read_of_the_past_or_of_a_file_is_refused_naming_no_operator() {
+    let at = "query q (t: Instant) -> Set Text = at instant t { from u in users select u.name }";
+    assert_eq!(
+        Err(Untranslatable {
+            operator: None,
+            reason: "it reads the past in an `at` block".into(),
+        }),
+        translated(&[V1, ADD_SEATS], 1, at).map(|_| ())
+    );
+    let file = r#"txn q () -> I64 =
+  transact
+    insert users from read_csv("users.csv", User)
+    return 0"#;
+    assert_eq!(
+        Err(Untranslatable {
+            operator: None,
+            reason: "it reads a file".into(),
+        }),
+        translated(&[V1, ADD_SEATS], 1, file).map(|_| ())
+    );
+}

@@ -34,7 +34,8 @@ pub(super) struct Walk<'p, 'a> {
     memo: HashMap<(Tm, Option<Site>), Tm>,
     /// The rows a fill reads, each a constructor value under construction.
     rows: HashMap<Var, Rc<Given>>,
-    /// The `let`-bound variables an insert stores as a row, with the relation it stores into.
+    /// The `let`-bound variables an insert stores as a row, with the relation of the insert the
+    /// `let` builds its value for.
     stored: HashMap<Var, RelId>,
 }
 
@@ -111,7 +112,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             return Ok(x);
         }
         let x = match site {
-            Some(s) if self.stored_whole(t) => {
+            Some(s) if self.stored_whole(t, s) => {
                 let x = self.tm(out, t, None)?;
                 self.rebuilt(out, t, x, s)?
             }
@@ -121,13 +122,20 @@ impl<'p, 'a> Walk<'p, 'a> {
         Ok(x)
     }
 
-    /// Returns whether `t`, at a write's site, stores a value it does not build: no constructor,
-    /// no branch carrying the site on, and no `let`-bound variable whose value is built there.
-    fn stored_whole(&self, t: Tm) -> bool {
+    /// Returns whether `t`, at write site `site`, stores a value it does not build: no
+    /// constructor, no branch carrying the site on, and no `let`-bound variable whose value is
+    /// built for `site`.
+    fn stored_whole(&self, t: Tm, site: Site) -> bool {
         let kind = self.src.kind(t);
         match kind {
             Kind::Ctor { .. } | Kind::Case { .. } | Kind::Unreachable | Kind::EmptySet => false,
-            Kind::Var(v) => !self.stored.contains_key(v) && !self.rows.contains_key(v),
+            Kind::Var(v) => {
+                !self.rows.contains_key(v)
+                    && self
+                        .stored
+                        .get(v)
+                        .is_none_or(|&rel| Site { rel, old: None } != site)
+            }
             _ => !carries(kind).contains(&true),
         }
     }
@@ -151,10 +159,10 @@ impl<'p, 'a> Walk<'p, 'a> {
                 return self.case(out, &src_ty, scrutinee, &arms, site);
             }
             Kind::At { .. } => {
-                return Err(refused(self.p.blame(|_| false), "it reads the past"));
+                return Err(refused(None, "it reads the past in an `at` block"));
             }
             Kind::Prim(Prim::ReadFile { .. }, _) => {
-                return Err(refused(self.p.blame(|_| false), "it reads files"));
+                return Err(refused(None, "it reads a file"));
             }
             Kind::Insert(rel, rows) => {
                 self.written(rel, self.src.ty(rows), None)?;
@@ -643,7 +651,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                     let normal = self.p.normal()?;
                     let Some(&t) = normal.defaults.get(&(rel, i)) else {
                         return Err(refused(
-                            self.p.blame(|_| false),
+                            None,
                             format!("the default of `{name}` has no term"),
                         ));
                     };

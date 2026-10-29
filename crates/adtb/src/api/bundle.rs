@@ -594,17 +594,16 @@ pub(super) fn record<R: Runtime>(
     Ok(())
 }
 
-/// Refuse the registration of `header` with `calls`: a retired bundle's name, and a name
-/// recorded with other content.
+/// Refuse the registration of `header` with `calls`: a retired bundle's name with `Retired`,
+/// and a name recorded with other content.
 pub(super) fn admitted(stored: &Stored, header: &Header, calls: &[CallRow]) -> Result<(), Error> {
     let Some(row) = stored.bundles.get(&header.name) else {
         return Ok(());
     };
     if let State::Retired(_) = row.state {
-        return Err(Error::invalid(format!(
-            "bundle {} is retired, and a retired bundle's name is never registered again",
-            header.name
-        )));
+        return Err(Error::rejected(RejectReason::Retired {
+            bundle: header.name.clone(),
+        }));
     }
     let before = stored.calls_of(row.id);
     let same_calls = before.is_empty() || before.iter().copied().eq(calls.iter());

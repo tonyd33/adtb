@@ -1597,3 +1597,26 @@ fn a_reader_naming_nothing_at_its_version_is_not_registered() {
         assert!(catalog.release(pager, txns, "unknown").is_err());
     });
 }
+
+#[test]
+fn a_disable_of_a_constructor_that_holds_rows_is_refused_naming_the_disable() {
+    let both = "module shop\nadd constructor Payment.Wire { iban: Text }\ndisable payments.Card\n";
+    after(973, &[both], |got| match got {
+        Err(OpenError::MigrationRefused {
+            version,
+            reason:
+                Error::Rejected {
+                    reason: RejectReason::SchemaRefused { operator, detail },
+                },
+        }) => {
+            assert_eq!(2, version);
+            assert_eq!("disable payments.Card", operator);
+            assert!(
+                detail.contains("constructor relation payments.Card holds rows"),
+                "{detail}"
+            );
+        }
+        Err(other) => panic!("not a refused migration: {other:?}"),
+        Ok(_) => panic!("the disable applies"),
+    });
+}

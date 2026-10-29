@@ -1313,11 +1313,15 @@ fn a_retired_bundle_is_never_registered_again_and_is_not_superseded() {
         assert_eq!(vec!["web-1.0 retired"], states(&db));
     });
     run(&mut sim, |rt| {
-        let detail = invalid(
-            open(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", NAMES)]),
-            "web-1.0",
+        assert_eq!(
+            RejectReason::Retired {
+                bundle: "web-1.0".into()
+            },
+            refusal(
+                open(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", NAMES)]),
+                "web-1.0"
+            )
         );
-        assert!(detail.contains("retired"), "{detail}");
     });
 }
 
@@ -2749,6 +2753,29 @@ fn a_bundle_superseded_by_command_with_no_translation_registered_again_is_refuse
     });
 }
 
+#[test]
+fn a_retired_bundle_with_no_translation_registered_again_is_refused_retired() {
+    let pin = [V1, ADD_HASH];
+    let mut sim = Sim::new(95, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &pin, vec![bundle("web-1.0", &pin, "", HASHES)]);
+        query(&db, "retire bundle web-1.0");
+    });
+    run(&mut sim, |rt| {
+        let got = open(
+            &rt,
+            &[V1, ADD_HASH, DROP_HASH],
+            vec![bundle("web-1.0", &pin, "", HASHES)],
+        );
+        assert_eq!(
+            RejectReason::Retired {
+                bundle: "web-1.0".into()
+            },
+            refusal(got, "web-1.0")
+        );
+    });
+}
+
 const SHOP: &str = r"module shop
 add module shop
 add type Price { sku: Text } = Priced { cents: I64 } | Gratis
@@ -2807,4 +2834,136 @@ fn archived(db: &Database<SimRuntime>) -> Vec<String> {
   | Priced p -> p.sku ++ ":" ++ p.currency
   | Gratis g -> g.sku"#,
     )
+}
+
+const ITEMS: &str = r"module shop
+add module shop
+add type Item = { sku: Text, cents: I64 }
+add relation items : Item key sku
+add relation olds : Item key sku
+";
+
+#[test]
+fn a_let_bound_value_inserted_into_two_relations_takes_each_relations_default() {
+    let both = "import shop
+txn both (s: Text, n: I64) -> Text =
+  transact
+    let i = Item { sku: s, cents: 10 / n }
+    insert items i
+    insert olds i
+    return s
+";
+    once(96, |rt| {
+        let log = [
+            ITEMS,
+            "module shop\nadd field Item.currency: Text fill \"USD\"\n",
+            "module shop\nadd default items.currency = \"ITM\"\n",
+            "module shop\nadd default olds.currency = \"OLD\"\n",
+        ];
+        let db = opened(&rt, &log, vec![bundle("shop-1.0", &[ITEMS], "", both)]);
+        match call(&db, "shop-1.0", 1, &[Value::text("a"), Value::Int(2)]) {
+            Called::Committed(_) => {}
+            other => panic!("both commits nothing: {other:?}"),
+        }
+        assert_eq!(
+            vec!["\"a:ITM\""],
+            query(&db, r#"from i in items select i.sku ++ ":" ++ i.currency"#)
+        );
+        assert_eq!(
+            vec!["\"a:OLD\""],
+            query(&db, r#"from i in olds select i.sku ++ ":" ++ i.currency"#)
+        );
+    });
+}
+
+/// A bundle that reads the past.
+const PAST: &str = "import auth
+query past (t: Instant) -> Set Text = at instant t { from u in users select u.name }
+";
+
+#[test]
+fn a_bundle_reading_the_past_registered_after_a_migration_is_refused_naming_the_at_block() {
+    once(97, |rt| {
+        let got = open(
+            &rt,
+            &[V1, ADD_VERIFIED],
+            vec![bundle("web-1.0", &[V1], "", PAST)],
+        );
+        match refusal(got, "web-1.0") {
+            RejectReason::Untranslatable { query, detail } => {
+                assert_eq!("web-1.0::past", query);
+                assert_eq!("it reads the past in an `at` block", detail);
+            }
+            other => panic!("refused otherwise: {other:?}"),
+        }
+    });
+}
+
+#[test]
+fn a_migration_across_which_a_live_bundle_reads_the_past_is_refused_naming_the_at_block() {
+    let mut sim = Sim::new(98, Config::default());
+    run(&mut sim, |rt| {
+        opened(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", PAST)]);
+    });
+    run(&mut sim, |rt| {
+        let (operator, detail) = refused_migration(
+            open(
+                &rt,
+                &[V1, ADD_VERIFIED],
+                vec![bundle("web-1.0", &[V1], "", PAST)],
+            ),
+            2,
+        );
+        assert_eq!("", operator);
+        assert!(
+            detail.contains("`past`") && detail.contains("`at` block"),
+            "{detail}"
+        );
+    });
+}
+
+#[test]
+fn a_migration_a_live_bundle_cannot_resolve_is_refused_naming_its_query() {
+    let mut sim = Sim::new(99, Config::default());
+    run(&mut sim, |rt| {
+        opened(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", NAMES)]);
+    });
+    run(&mut sim, |rt| {
+        let adopted = "module auth\nadopt tzdb \"2026b\" from \"tz-2026b.tzif\"\n";
+        let (operator, detail) = refused_migration(
+            open(
+                &rt,
+                &[V1, adopted],
+                vec![bundle("web-1.0", &[V1], "", NAMES)],
+            ),
+            2,
+        );
+        assert_eq!("adopt tzdb \"2026b\" from \"tz-2026b.tzif\"", operator);
+        assert!(detail.contains("`names`"), "{detail}");
+    });
+}
+
+#[test]
+fn explain_of_a_call_of_a_translated_bundle_is_refused_as_not_registered() {
+    let tiered = "import auth
+query tiered (t: Tier) -> Set Text = from u in users where u.tier == t select u.name
+";
+    once(100, |rt| {
+        let db = opened(
+            &rt,
+            &[V1, RENAME_PAID],
+            vec![bundle("web-1.0", &[V1], "", tiered)],
+        );
+        for call in [
+            "explain web-1.0::tiered(Pro)",
+            "explain web-1.0::tiered(Paid)",
+        ] {
+            let explained = db.query_text(call, &[], &CallOptions::default());
+            let shown = format!("{explained:?}");
+            assert!(
+                shown.contains("bundle `web-1.0` is not registered"),
+                "{call}: {shown}"
+            );
+        }
+    });
 }

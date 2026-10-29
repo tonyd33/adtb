@@ -208,10 +208,8 @@ impl<'a> Pinned<'a> {
         )
     }
 
-    /// Returns the text of the first operator `p` holds of, else of a revert since the pin, else
-    /// of the first operator of the last migration since the pin.
+    /// Returns the text of the first operator `p` holds of, else of a revert since the pin.
     fn blame(&self, p: impl Fn(&Op) -> bool) -> Option<String> {
-        let last = self.ops.last().map(|o| o.at.0);
         self.ops
             .iter()
             .find(|o| p(o))
@@ -220,7 +218,6 @@ impl<'a> Pinned<'a> {
                     .iter()
                     .find(|o| matches!(o.op, Resolved::Revert { .. }))
             })
-            .or_else(|| self.ops.iter().find(|o| Some(o.at.0) == last))
             .map(|o| o.text.clone())
     }
 
@@ -255,11 +252,12 @@ impl<'a> Pinned<'a> {
     /// Returns the text of the first operator that redefines or drops function or aggregate
     /// `id`.
     fn blame_function(&self, id: Option<u64>) -> Option<String> {
+        let id = id?;
         self.blame(|o| match &o.op {
             Resolved::RedefineFn { function, .. }
             | Resolved::DropFn { function }
             | Resolved::DropAggregate { function }
-            | Resolved::DefineAggregate { function, .. } => Some(*function) == id,
+            | Resolved::DefineAggregate { function, .. } => *function == id,
             _ => false,
         })
     }
@@ -487,7 +485,7 @@ impl<'a> Pinned<'a> {
 }
 
 /// Returns the first line of operator `op` of migration `text`.
-fn operator_text(text: &str, op: &crate::ast::Operator) -> String {
+pub fn operator_text(text: &str, op: &crate::ast::Operator) -> String {
     text.get(op.span.start as usize..op.span.end as usize)
         .and_then(|s| s.lines().next())
         .unwrap_or_default()

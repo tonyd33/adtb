@@ -293,6 +293,8 @@ pub(super) fn register(
             None => checked(&over, r),
         }
         .map_err(refused)?;
+        let (_, calls) = c.bundle().expect("a bundle's registration has a header");
+        bundle::admitted(stored, h, &calls).map_err(refused)?;
         if let Some(pin) = &at_pin {
             let served = translations(&c, &pin.source, schema, catalog.source(), program).map_err(
                 |(query, u)| refused(untranslatable(stored, h, now, s, &c.name, &query, &u)),
@@ -302,8 +304,6 @@ pub(super) fn register(
             }
         }
         pinned_within(&c, version).map_err(refused)?;
-        let (_, calls) = c.bundle().expect("a bundle's registration has a header");
-        bundle::admitted(stored, h, &calls).map_err(refused)?;
         if let Some(ctor) = stale(catalog, &c).map_err(refused)? {
             return Err(refused(bundle::stale(stored, h, now, s, ctor)));
         }
@@ -522,18 +522,8 @@ pub(super) fn recheck(catalog: &Catalog, text: &str, live: &[Live]) -> Result<()
     for l in live {
         if let Err((query, u)) = translations(&l.checked, &l.source, &schema, &next, &program) {
             let pins = l.checked.header.as_ref().map_or(0, |h| h.pins);
-            let first = || {
-                file.operators
-                    .first()
-                    .map_or(text, |op| spanned(text, op.span))
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .trim()
-                    .to_owned()
-            };
             return Err(RejectReason::SchemaRefused {
-                operator: u.operator.clone().unwrap_or_else(first),
+                operator: u.operator.clone().unwrap_or_default(),
                 detail: format!(
                     "bundle {} pins {pins}: `{query}` has no translation: {}",
                     l.checked.name, u.reason
@@ -554,9 +544,12 @@ fn translations(
     now_source: &Source,
     program: &Program,
 ) -> Result<Vec<Served>, (String, Untranslatable)> {
+    let Some(first) = c.entries.first() else {
+        return Ok(Vec::new());
+    };
     let hides = c.header.as_ref().is_some_and(|h| h.hides_new);
     let p = Pinned::new(&c.schema, pin, now, now_source, program, hides)
-        .map_err(|u| (String::new(), u))?;
+        .map_err(|u| (first.name.clone(), u))?;
     let mut out = Vec::with_capacity(c.entries.len());
     for e in &c.entries {
         let q = NormalQuery {
