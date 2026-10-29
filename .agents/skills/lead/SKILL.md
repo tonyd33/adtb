@@ -83,6 +83,9 @@ Passing tests do not justify unnecessary machinery.
    `target/debug` and `target/tmp`, each by its literal absolute path in
    its own command. They hold build output and test scratch, about 22 GB
    per workspace. Keep the other files and directories under `target/`.
+6. Push `main` to GitHub: `jj git push --remote origin --bookmark main`.
+   `origin` is git@github.com:tonyd33/adtb.git; `tangled` is the old
+   remote and is no longer pushed.
 
 Any other deletion needs the user's approval. When `check` refuses under
 the free-space guard, first list the candidates without deleting: the
