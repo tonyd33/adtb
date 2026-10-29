@@ -27,8 +27,11 @@ fn directory() -> PathBuf {
 }
 
 fn opened(log: &Log) -> Database {
-    let path = directory();
-    let rt = OsRuntime::new(&path, Backend::Pool { threads: 1 });
+    opened_in(&directory(), log)
+}
+
+fn opened_in(path: &std::path::Path, log: &Log) -> Database {
+    let rt = OsRuntime::new(path, Backend::Pool { threads: 1 });
     Database::open_in(
         rt,
         "roles.adt",
@@ -224,11 +227,16 @@ fn dropping_a_role_removes_peer_mappings_before_name_reuse() {
 
 #[test]
 fn a_refused_drop_leaves_peer_mappings_and_authority_unchanged() {
-    let schema = "module example\nadd module example\nadd type Item = { id: Key items }\nadd relation items : Item key id\ngrant read items to web\n";
-    let db = opened(&Log::new([schema]));
+    let schema = "module example\nadd module example\nadd type Item = { id: Key items }\nadd relation items : Item key id\n";
+    let grant = "module example\ngrant read items to web\n";
+    let path = directory();
+    let db = opened_in(&path, &Log::new([schema]));
     let authority = db.role_authority();
     authority.create_role("web").unwrap();
     authority.create_role("other").unwrap();
+    db.close().unwrap();
+    let db = opened_in(&path, &Log::new([schema, grant]));
+    let authority = db.role_authority();
     authority
         .grant_capability("web", Capability::Assert, true)
         .unwrap();

@@ -19,6 +19,7 @@ use crate::plan::HeapId;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
+use super::grants::{Dormant, Grantees};
 use super::history::{Rebuilding, key_indexes};
 use super::{
     Built, CatCtorId, CatRelId, Catalog, Changing, Checked, Data, Error, HEAP_ROOT, Hash,
@@ -45,6 +46,12 @@ impl Catalog {
     /// checker. On any other failure the transaction is aborted, and the catalog must be opened
     /// again.
     ///
+    /// Fail with [`Error::Refused`], changing nothing, if the migration adds a grant to a role
+    /// `catalog::roles` does not hold. Write, in the migration's transaction, the `Log` rows of
+    /// `catalog::grants` for the grants the migration adds, changes and removes.
+    ///
+    /// Precondition: no `write::Database` holds the page of id counters.
+    ///
     /// Postcondition: [`Catalog::open`] after a crash finds either the whole migration or
     /// nothing of it, and no page of the structures the migration replaced or created but did not
     /// commit.
@@ -54,6 +61,31 @@ impl Catalog {
         txns: &Transactions<R>,
         text: &str,
     ) -> Result<(), Error> {
+        self.apply(pager, txns, text, Grantees::Refuse).map(|_| ())
+    }
+
+    /// Apply `text` as [`Catalog::migrate`] does, except that a grant to a role
+    /// `catalog::roles` does not hold is applied with a dormant row. Returns each dormant row
+    /// written, those [`Catalog::record_grants`] writes first among them.
+    ///
+    /// Precondition: no `write::Database` holds the page of id counters.
+    pub fn replay<R: Runtime>(
+        &mut self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+        text: &str,
+    ) -> Result<Vec<Dormant>, Error> {
+        self.apply(pager, txns, text, Grantees::Dormant)
+    }
+
+    fn apply<R: Runtime>(
+        &mut self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+        text: &str,
+        grantees: Grantees,
+    ) -> Result<Vec<Dormant>, Error> {
+        let mut dormant = self.record_grants(pager, txns)?;
         let refused = |why: Vec<String>| Err(Error::Refused(why));
         let file = match parse_migration(text, Options::default()).ok() {
             Ok(f) => f,
@@ -63,6 +95,9 @@ impl Catalog {
             Ok(s) => s,
             Err(r) => return refused(reasons(r)),
         };
+        if next.grants.iter().any(|g| g.row.is_none()) {
+            self.counters(pager)?;
+        }
         let (schema, program) = match next.check() {
             Ok(checked) => checked,
             Err(ds) => return refused(ds.into_iter().map(|d| d.diag.message).collect()),
@@ -91,17 +126,22 @@ impl Catalog {
             x,
             snapshot: &snapshot,
         };
-        let prepared = Prepared { next, operators };
-        let built = self.replay(&m, &file, text, prepared, &rewritten, readers);
+        let prepared = Prepared {
+            next,
+            operators,
+            grantees,
+        };
+        let built = self.mapped(&m, &file, text, prepared, &rewritten, readers);
         txns.release(id);
-        let built = built.and_then(|c| {
+        let built = built.and_then(|(c, written)| {
             update_root(pager, self.root, |r| r.next_heap = c.next_heap)?;
-            Ok(c)
+            Ok((c, written))
         });
         match built {
-            Ok(c) => {
+            Ok((c, written)) => {
                 txns.commit(pager, x)?;
                 *self = c;
+                dormant.extend(written);
             }
             Err(e) => {
                 txns.abort(pager, x)?;
@@ -114,7 +154,7 @@ impl Catalog {
         self.free_leaked(pager, txns)?;
         let lsn = update_root(pager, self.root, |r| r.changing = Changing::None)?;
         pager.wait_durable(lsn);
-        Ok(())
+        Ok(dormant)
     }
 
     /// Refuse `schema`, whose checked program is `program`, when a constraint of it has no
@@ -151,8 +191,9 @@ impl Catalog {
 
     /// Returns the catalog of `next`, the source after migration `file`, as `m.x` writes it: the
     /// rows of every relation `rewritten` names mapped through each of the migration's operators
-    /// in turn from the rows `m.snapshot` sees.
-    fn replay<R: Runtime>(
+    /// in turn from the rows `m.snapshot` sees, and the `Log` rows of its grants. Returns too
+    /// each dormant grant row written.
+    fn mapped<R: Runtime>(
         &self,
         m: &Migrating<'_, R>,
         file: &MigrationFile,
@@ -160,8 +201,12 @@ impl Catalog {
         prepared: Prepared,
         rewritten: &BTreeSet<CatRelId>,
         readers: Readers,
-    ) -> Result<Catalog, Error> {
-        let Prepared { next, operators } = prepared;
+    ) -> Result<(Catalog, Vec<Dormant>), Error> {
+        let Prepared {
+            next,
+            operators,
+            grantees,
+        } = prepared;
         let mut data = Data::new();
         for &rid in rewritten {
             let Some(r) = relation(&self.schema, rid) else {
@@ -247,13 +292,17 @@ impl Catalog {
                 operators: &operators,
             },
         )?;
+        let mut grants = std::mem::take(&mut built.source.grants);
+        let dormant = self.write_grants(m, &built, &mut grants, grantees);
+        built.source.grants = grants;
+        let dormant = dormant?;
         pending::rewrite(m, &self.roots, &self.readers.pending, &readers.pending)?;
         built.readers = readers;
         let why = built.violations(m, self.checking().0, rewritten)?;
         if !why.is_empty() {
             return Err(Error::Refused(why));
         }
-        Ok(built)
+        Ok((built, dormant))
     }
 
     /// Returns why `data` refuses the step from `a` to `b`, which moves rows by `maps`, beyond
@@ -814,4 +863,5 @@ type HeapIds = BTreeMap<(RelId, u32), u32>;
 struct Prepared {
     next: Checked,
     operators: Vec<oplog::OperatorRow>,
+    grantees: Grantees,
 }

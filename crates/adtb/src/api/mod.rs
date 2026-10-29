@@ -57,8 +57,7 @@ use settings::Settings;
 use stop::Stops;
 use text::Prepared;
 
-/// The schema-owner role an in-process handle acts as.
-const OWNER_ROLE: &str = "owner";
+use crate::catalog::OWNER_ROLE;
 
 const PAGE_SIZE: u32 = 8192;
 const DEFAULT_POOL_FRAMES: usize = 1024;
@@ -572,14 +571,14 @@ impl<R: Runtime> Engine<R> {
             .check(catalog.schema(), &host::pending(log, applied))?;
         let hosts = Arc::new(options.host_fns.hosts());
         catalog.set_hosts(hosts.clone());
+        let sequences = catalog.counters(&pager).map_err(corrupt)?;
+        catalog.record_grants(&pager, &txns).map_err(corrupt)?;
         migrate(&mut catalog, &pager, &txns, log, &live)?;
         let (schema, program) = catalog.checking();
         let (schema, program) = (schema.clone(), program.clone());
         let normal = norm::program(&schema, &program).map_err(corrupt)?;
         options.host_fns.bound(&schema, &normal)?;
         let plan = catalog.plan();
-        let root = catalog.root();
-        let sequences = catalog.sequences();
         let (heaps, indexes) = catalog.bindings();
         let schema = Arc::new(schema);
         let now = micros(pager.wall());
@@ -597,9 +596,6 @@ impl<R: Runtime> Engine<R> {
         }
         let defaults = exec::Options::default();
         let retained = catalog.retained(&pager, &txns).map_err(corrupt)?;
-        if sequences.is_none() {
-            Catalog::naming_sequences(&pager, root).map_err(corrupt)?;
-        }
         let db = write::Database::new(
             rt.clone(),
             Setup {
@@ -617,7 +613,7 @@ impl<R: Runtime> Engine<R> {
                     ..defaults
                 },
                 limits: Limits::default(),
-                sequences,
+                sequences: Some(sequences),
             },
         )
         .map_err(corrupt)?
@@ -626,9 +622,6 @@ impl<R: Runtime> Engine<R> {
         .with_volatile(settings::process_options(&schema, &options.shown()))
         .with_history(retained, settings.window)
         .map_err(corrupt)?;
-        if sequences.is_none() {
-            Catalog::name_sequences(&pager, root, db.sequences_root()).map_err(corrupt)?;
-        }
         let role_mentions = server::mentioned(catalog.source());
         let engine = Engine {
             rt,

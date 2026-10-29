@@ -8,6 +8,9 @@ pub struct LogGrant {
     pub role: String,
     pub privilege: Granted,
     pub grant_option: bool,
+    /// The id of the `catalog::grants` row of this grant, once the catalog gives it one. An
+    /// operator that keeps the grant keeps its id; a grant an operator adds has none.
+    pub row: Option<i64>,
 }
 
 /// A privilege on schema objects, each named by its catalog id.
@@ -210,6 +213,7 @@ impl Source {
                         role: h.role,
                         privilege,
                         grant_option,
+                        row: None,
                     },
                 ),
                 (None, None) => {}
@@ -238,6 +242,7 @@ impl Cx<'_> {
                     role: g.to.text.clone(),
                     privilege,
                     grant_option: g.grant_option,
+                    row: None,
                 }),
             }
         }

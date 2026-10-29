@@ -882,6 +882,7 @@ impl Source {
                     role: g.role.clone(),
                     privilege,
                     grant_option: g.grant_option,
+                    row: g.row,
                 }),
             }
         }

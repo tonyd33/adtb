@@ -45,7 +45,7 @@ pub use past::Retained;
 pub use stream::{Produced, Production};
 
 use schema::Rels;
-use sequence::Sequences;
+pub(crate) use sequence::Sequences;
 
 #[cfg(test)]
 pub(crate) use sequence::full_counter_page;

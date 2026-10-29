@@ -322,15 +322,21 @@ fn refused_mutations_leave_roles_grants_and_audit_unchanged() {
 #[test]
 fn operator_log_mentions_prevent_dropping_the_role_even_after_revoke() {
     once(106, |rt| {
-        let first = "module example\nadd module example\nadd type Item = { id: Key items, value: I64 }\nadd relation items : Item key id\ngrant read items to web\n";
-        let second = "module example\nrevoke read items from web\n";
-        let db = Database::open_in(rt, "roles.adt", &Log::new([first, second]), &options(2))
-            .expect("database opens with historical grants");
-        let authority = db.role_authority();
-        authority
+        let grant = "module example\ngrant read items to web\n";
+        let revoke = "module example\nrevoke read items from web\n";
+        let db = opened_schema(&rt);
+        db.role_authority()
             .create_role("web")
-            .expect("create role referenced by replay");
-        denied(authority.drop_role("web"));
+            .expect("create role the log names");
+        db.close().expect("close");
+        let db = Database::open_in(
+            rt,
+            "roles.adt",
+            &Log::new([SCHEMA, grant, revoke]),
+            &options(2),
+        )
+        .expect("database opens with historical grants");
+        denied(db.role_authority().drop_role("web"));
     });
 }
 

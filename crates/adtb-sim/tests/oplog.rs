@@ -14,6 +14,7 @@ use adtb::verify::{self, Depth};
 use adtb::{CallOptions, Database, Error, Log, OpenError, OpenOptions};
 use adtb_sim::{Config, Sim, SimRuntime};
 
+use adtb_simkit::grants;
 use api::{options, query, run};
 use harness::{finished, options as pager_options};
 
@@ -479,7 +480,9 @@ const FRAMES: usize = 64;
 
 /// Applies `SHOP`, then inserts two customers and, recording, applies `second` through the
 /// catalog. Returns the simulation and the number of events recorded when `second` started.
-fn second_migration(seed: u64, second: &str) -> (Sim, usize) {
+/// Returns a recorded simulation of `SHOP`, a role for each of `roles` and then `second`, and
+/// the recorded write the second migration starts at.
+fn second_migration(seed: u64, roles: &[&str], second: &str) -> (Sim, usize) {
     let mut sim = Sim::new(seed, Config::default());
     sim.record();
     let mut start = 0;
@@ -489,6 +492,9 @@ fn second_migration(seed: u64, second: &str) -> (Sim, usize) {
         catalog
             .migrate(&pager, &txns, SHOP)
             .expect("the first migration");
+        for (id, role) in (2..).zip(roles) {
+            grants::create_role(&catalog, &pager, &txns, id, role);
+        }
         start = rt.recorded();
         catalog
             .migrate(&pager, &txns, second)
@@ -522,7 +528,7 @@ fn reopened(seed: u64, files: std::collections::BTreeMap<String, Vec<u8>>) -> u6
 fn a_crash_at_every_flush_of_a_second_migration_reopens_to_all_or_none_of_it() {
     let seed = 30;
     let rename = "module shop\nrename relation customers to clients\nadd index (name) in clients\n";
-    let (sim, start) = second_migration(seed, rename);
+    let (sim, start) = second_migration(seed, &[], rename);
     let recording = sim.recording();
     let flushes: Vec<usize> = recording
         .flushes()
@@ -546,7 +552,11 @@ fn a_crash_at_every_flush_of_a_second_migration_reopens_to_all_or_none_of_it() {
 #[test]
 fn a_crash_between_flushes_of_a_second_migration_reopens_to_all_or_none_of_it() {
     let seed = 31;
-    let (sim, start) = second_migration(seed, "module shop\ndrop index (customer) in payments\n");
+    let (sim, start) = second_migration(
+        seed,
+        &[],
+        "module shop\ndrop index (customer) in payments\n",
+    );
     let recording = sim.recording();
     let n = recording.len();
     let mut versions = BTreeSet::new();
@@ -1562,8 +1572,22 @@ fn unstoring_or_reverting_a_store_keeps_the_view_readable_and_drops_its_relation
 #[test]
 fn a_grant_and_its_revert_apply_and_log_the_grant() {
     let grant = "module shop\ngrant read customers to support with grant option\n";
-    after(89, &[grant, "module shop\nrevert 0002\n"], |db| {
-        let db = db.expect("the grant and its revert apply");
+    let mut sim = Sim::new(89, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP]);
+        db.role_authority()
+            .create_role("support")
+            .expect("support is created");
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP, grant, "module shop\nrevert 0002\n"]);
+        assert_eq!(
+            Vec::<String>::new(),
+            query(
+                &db,
+                "from g in catalog::grants where g.grantee == \"support\" select g.id"
+            )
+        );
         assert_eq!(
             vec![r#""read shop::customers support True""#],
             query(
@@ -1611,7 +1635,7 @@ define fn named () -> Set { id: Key customers, name: Text } =
 store named key id
 grant read customers to support
 ";
-    let (sim, start) = second_migration(seed, derived);
+    let (sim, start) = second_migration(seed, &["support"], derived);
     let recording = sim.recording();
     let flushes: Vec<usize> = recording
         .flushes()
