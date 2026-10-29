@@ -100,6 +100,9 @@ Postconditions:
   output. An uncommitted call fails with StreamIdle; a committed call
   retains its commit completion and marks its output incomplete, as
   [../spec/wire.md §5.8](../spec/wire.md#58-stream-idle-limit) states.
+- Cancellation, idle expiry or a drop after the drain acknowledgement
+  changes nothing: a read still commits and settles as read, and a
+  write keeps its complete commit completion.
 - Once an outcome is settled, status observations return the same
   outcome. Delivering batches consumes them once; observing completion
   does not replay them. Dropping the handle releases its completion
@@ -493,11 +496,14 @@ boundary for the existing owner facade.
 `Registered::submit` and `RoleSession::submit_text` return an owned
 `Task` for the embedded owner's role and refuse every other role with
 `Denied`; the engine starts its task scheduler on the first submit. A
-task's single read-only set query is produced a unit at a time under
-supplied capacity and holds its snapshot until the drain is
-acknowledged, dropped or cancelled; every other result is formed whole,
-a write's after its commit, and handed out in batches as capacity
-allows. Ad hoc commands run within one step and may occupy its worker.
+read holds its snapshot until the drain is acknowledged, dropped or
+cancelled. A task that is one read-only query of set type is produced a
+unit at a time under supplied capacity when the query reads no temp,
+volatile or file rows, generates no values, and compiles to a root
+query forming a set. Every other result is formed whole, bounded only
+by the call's grant, a write's after its commit, and handed out in
+batches as capacity allows. Ad hoc commands run within one step and
+may occupy its worker.
 The statement limit of a produced read counts only the time its units
 run, not its waits for capacity; a slow reader meets the stream idle
 limit instead.

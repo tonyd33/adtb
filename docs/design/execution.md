@@ -514,14 +514,16 @@ stops within one morsel per worker. A result stream with no credit
 stops its executing pipeline when the pipeline's output buffer is full.
 The executor checks a call's cancel flag before each morsel and each
 round of a fixpoint, and once one task of a query fails, the query's
-tasks not yet started do not run. A server task's single read-only
-query whose root forms a set is produced a unit at a time: a pipeline
-with no source, a range of `range_pages` pages of one heap, then the
-rows a partitioned join deferred. A unit runs only while the task has
-capacity, so production stops within one unit past it; each element is
-handed out once, the elements sent held in the call's grant. Every
-other result is formed whole and handed out as capacity allows. The
-units of a produced result run in turn on the task's worker.
+tasks not yet started do not run. A server task that is one read-only
+query of set type, reading no temp, volatile or file rows, generating
+no values, and compiled to a root query forming a set, is produced a
+unit at a time: a pipeline with no source, a range of `range_pages`
+pages of one heap, then the rows a partitioned join deferred. A unit
+runs only while the task has capacity, so production stops within one
+unit past it; each element is handed out once, the elements sent held
+in the call's grant. Every other result is formed whole, bounded only
+by the call's grant, and handed out as capacity allows. The units of a
+produced result run in turn on the task's worker.
 
 Rulings: exec/model/adaptive, exec/parallel/morsel, exec/parallel/small-heaps/pack
 
