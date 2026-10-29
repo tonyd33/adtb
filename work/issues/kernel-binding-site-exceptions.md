@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 565
 summary: "checked terms still bind one variable at several sites outside patterns, and the normaliser's For fusion and copy of the copyable test can drift"
+branch: binding-sites
 ---
 
 # Bug: kernel variables with several binding sites outside patterns
@@ -24,3 +25,7 @@ Also: `Facts::copyable` and `draws` (crates/adtb/src/plan/terms.rs) copy the nor
 ## Fix
 
 Give each site its own variable, assert the rule on checked terms, and share one copyable predicate between norm and plan.
+
+## 2026-10-29: dispatched
+
+A fresh writer in workspace binding-sites on main 2125596c959f gives every site its own variable, runs the one-binding-site assertion on checked terms and normal forms over the checker corpus, and shares one copyable predicate between norm and plan. Results unchanged across conformance, differential and plan tests.

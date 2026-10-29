@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 831
 summary: "the permission analyzer evaluates a composite KeyOf to rows, so joining it with any other Key value panics"
+branch: permission-fixes
 tags:
   - quality
   - lang
