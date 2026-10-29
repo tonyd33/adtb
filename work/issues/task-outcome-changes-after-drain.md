@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 999
 summary: "an idle expiry or cancel after a task's output is drained still changes its settled outcome: a committed write turns incomplete and a drained read fails"
+branch: task-fixes
 tags:
   - quality
   - engine

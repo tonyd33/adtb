@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 1010
 summary: "Database::produce and exec::produce copy the statement path's planning, error mapping, compile, host binding and context setup"
+branch: task-fixes
 tags:
   - quality
   - engine

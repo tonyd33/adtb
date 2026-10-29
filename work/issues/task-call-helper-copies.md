@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 1011
 summary: "the task call copies arrow.rs internal and server denied, and flattens a typed grant error to Debug text for an infallible take(0)"
+branch: task-fixes
 tags:
   - quality
   - engine

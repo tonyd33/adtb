@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 1005
 summary: no task test streams a set whose elements repeat across units or that runs the deferred-join drain unit
+branch: task-fixes
 tags:
   - quality
   - test

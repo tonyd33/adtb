@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 1012
 summary: "server.md and execution.md say a task's single read-only set query is produced a unit at a time, but reads of temp, volatile or file rows and generating queries are formed whole"
+branch: task-fixes
 tags:
   - quality
   - design
