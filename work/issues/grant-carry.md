@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: resolved
 kind: feature
 priority: 825
 summary: "structural operators and their inverses do not carry log grants, and a grant without a field list does not freeze its fields at apply"
-branch: grant-carry
+closed: 2026-10-29
 tags:
   - lang
 ---
@@ -82,3 +82,9 @@ B7 and B9 hold; B8 behaves as ruled (work/briefs/review-grant-carry4.md, local).
 - B10: a later operator drops a retag's excluded pairs instead of carrying them (`carry_plan` maps no held pair; pruning drops pairs naming a gone constructor), so a second split, a merge or a nest gives back a retag ruling 10 removed. Ruling 13: excluded pairs follow their constructors through every later operator, each replaced constructor becoming every product it reaches. A merge or nest whose sources differ in the excluded pairs a retag grant holds is refused unless the migration restates that retag, as ruling 5.
 - Non-blocking to fix: a test that a merge of two mutually excluded products withholds `update` on the discriminator; schema-change.md states rulings 13 and that a guarded split needs `update` on every field of the source to keep a retag whole.
 - Left: a regrant after a division holds both the whole retag and the excluded one.
+
+## 2026-10-29: landed
+
+The fifth fresh review cleared 6e0e90a7 with no blocking finding. Landed as 4783c762..d603b317 (six commits). Branch check on 6e0e90a7 passed (root 2775, campaign 47); main check on d603b317 passed (root 2776 passed, 7 skipped; campaign 47 passed). Non-blocking items and the security.md wording go to grant-carry-follow-ups. Next slice of roles-and-grants: Log rows in `catalog::grants` from `Source::grants`, the shared grant id allocator, missing-role refusal, dormancy and live bundle rechecks.
+
+## 2026-10-29: resolved
