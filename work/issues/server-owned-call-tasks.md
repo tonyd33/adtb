@@ -84,3 +84,17 @@ Plan: work/briefs/plan-server-results.md (local). Rulings, by the plan's questio
 - Q9: ad hoc commands run within one step as today; recorded as deferred.
 - Q10: write/stream.rs and the write/mod.rs changes are in this track; or-patterns owns only write/eval.rs there.
 - Q11: no owner fallback. A task submitted under any role other than the embedded owner is refused with `Denied` until role-backed execution lands; the owner's session runs as today.
+
+## 2026-10-29: result/task review blocks 91168f3c
+
+The lead's branch check on 91168f3c (base d8d9c197) passed: root 2667 passed, 7 skipped; campaign 47 passed, 1 skipped. A fresh review (work/briefs/review-server-results.md, local) blocks on five findings, all ruled to fix as proposed:
+
+- B1: a finished task keeps its whole memory grant while its handle lives; four held handles starve every later call.
+- B2: a deferrable read task parks its worker in `begin_read`; with one worker this deadlocks. Use `begin_deferrable`, `defer` and `watch`.
+- B3: a streamed read's statement limit counts time waiting for capacity, so a slow reader fails `StatementLimit` where `Registered::call` returns every row. Ruling: the limit counts execution only; slow readers are governed by the stream idle limit (wire.md 5.8).
+- B4: a call stating no priority ranks lowest in its class. Ruling: it ranks highest (`u8::MAX`); a stated priority can only lower it (catalog.md 8.1).
+- B5: observer wakes run under the `Engine.open` read guard; an inline waker re-entering the engine deadlocks against `close`.
+
+Also fixed in the same pass: production continuing after abandon, a concurrent `close` returning before the file is released, a caller cancel token not stopping a queued task, admission bytes leaving out owned `Prepared` terms, the streamed ad hoc layout source, the priority class decided by a string comparison, the duplicated retry-count and limit construction, and timing-dependent tests.
+
+Left for later: a pipeline with no heap source (index lookup, unnest) is one production unit, bounded only by the grant; an alarm wake drops its watch without `withdraw`; during `Engine::drop` a call whose upgrade fails drops its `Txn` without abort; `Overloaded` carries `retry_after: 0`; commit still blocks in `wait_durable`; streamed units run serially; ad hoc commands occupy a worker for one step.
