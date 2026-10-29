@@ -461,22 +461,30 @@ impl Planner<'_> {
     }
 
     /// Splits a set term into the conditions guarding it, in evaluation order, and the term they guard.
-    fn peel(&self, mut t: Tm) -> (Vec<Tm>, Tm) {
+    fn peel(&mut self, mut t: Tm) -> (Vec<Tm>, Tm) {
         let mut conds = Vec::new();
-        while let Kind::If(c, a, b) = self.t.kind(t)
-            && self.is_empty_set(*b)
+        while let &Kind::If(c, a, b) = self.t.kind(t)
+            && self.is_empty_set(b)
         {
-            self.conjuncts(*c, &mut conds);
-            t = *a;
+            self.conjuncts(c, &mut conds);
+            t = a;
         }
         (conds, t)
     }
 
-    fn conjuncts(&self, c: Tm, out: &mut Vec<Tm>) {
-        match self.t.kind(c) {
-            Kind::If(a, b, f) if self.literal(*f) == Some(false) => {
-                self.conjuncts(*a, out);
-                self.conjuncts(*b, out);
+    /// Add the conjuncts of `c` to `out`, a `let` of a copyable value at the root moved onto each.
+    fn conjuncts(&mut self, c: Tm, out: &mut Vec<Tm>) {
+        match *self.t.kind(c) {
+            Kind::If(a, b, f) if self.literal(f) == Some(false) => {
+                self.conjuncts(a, out);
+                self.conjuncts(b, out);
+            }
+            Kind::Let(x, e, b) if self.facts.copyable(&mut self.total, &self.t, e) => {
+                let from = out.len();
+                self.conjuncts(b, out);
+                for k in &mut out[from..] {
+                    *k = self.facts.sink_let(&mut self.t, x, e, *k);
+                }
             }
             _ => out.push(c),
         }

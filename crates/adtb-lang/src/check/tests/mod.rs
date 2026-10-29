@@ -5,6 +5,7 @@ use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type
 use crate::schema::build;
 
 mod adhoc;
+mod or_patterns;
 mod principal;
 mod row_provenance;
 mod writes;
@@ -77,9 +78,89 @@ fn schema(extra: &str) -> Result<Schema, Vec<String>> {
 fn program(extra: &str) -> Result<(Schema, Program), Vec<String>> {
     let s = schema(extra)?;
     match check_schema(&s) {
-        Ok(p) => Ok((s, p)),
+        Ok(p) => {
+            one_binding_site(&s, &p);
+            Ok((s, p))
+        }
         Err(ds) => Err(ds.into_iter().map(|d| d.diag.message).collect()),
     }
+}
+
+/// Assert that no variable of `terms` has two binding sites under any one of `roots`.
+fn assert_one_binding_site(what: &str, terms: &Terms, roots: &[Tm]) {
+    for r in roots {
+        if let Some((v, a, b)) = terms.rebound([*r]) {
+            panic!(
+                "{what}: `{}` is bound at two binding sites, {:?} and {:?}",
+                terms.var_info(v).name,
+                terms.kind(a),
+                terms.kind(b)
+            );
+        }
+    }
+}
+
+/// Returns the checked bodies of `p`.
+fn program_roots(p: &Program) -> Vec<Tm> {
+    p.functions
+        .iter()
+        .flatten()
+        .chain(&p.constraints)
+        .chain(&p.checks)
+        .chain(p.domains.values().map(|(_, t)| t))
+        .chain(p.retags.values())
+        .chain(p.defaults.values())
+        .chain(p.computed.values().map(|(_, t)| t))
+        .chain(p.index_fields.values().map(|f| &f.value))
+        .copied()
+        .chain(
+            p.aggregates
+                .iter()
+                .flatten()
+                .flat_map(|a| [a.init, a.step, a.merge, a.finish]),
+        )
+        .collect()
+}
+
+/// Assert that every variable of the normal forms of the bodies of `p` has one binding site.
+fn one_binding_site(s: &Schema, p: &Program) {
+    let n = crate::norm::program(s, p).unwrap_or_else(|e| panic!("normalises: {e:?}"));
+    let roots: Vec<Tm> = n
+        .functions
+        .iter()
+        .flatten()
+        .map(|(_, t)| t)
+        .chain(&n.constraints)
+        .chain(&n.checks)
+        .chain(n.domains.values().map(|(_, t)| t))
+        .chain(n.retags.values().map(|(_, t)| t))
+        .chain(n.defaults.values())
+        .chain(n.computed.values().map(|(_, t)| t))
+        .chain(n.index_fields.values().map(|(_, f)| &f.value))
+        .copied()
+        .chain(
+            n.aggregates
+                .iter()
+                .flatten()
+                .flat_map(|a| [a.init, a.step.1, a.merge.1, a.finish.1]),
+        )
+        .collect();
+    assert_one_binding_site("normalised", &n.terms, &roots);
+}
+
+/// Returns the items and command terms of ad hoc text.
+fn adhoc_roots(items: &[Tm], commands: &[AdhocCommand]) -> Vec<Tm> {
+    items
+        .iter()
+        .copied()
+        .chain(commands.iter().flat_map(|c| c.command.terms()))
+        .collect()
+}
+
+/// Assert that every variable of the normal forms of ad hoc `a` has one binding site.
+fn adhoc_one_binding_site(s: &Schema, p: &Program, a: &Adhoc) {
+    let n = crate::norm::adhoc(a.schema(s), p, a).unwrap_or_else(|e| panic!("normalises: {e:?}"));
+    assert_one_binding_site("normalised", &n.terms, &adhoc_roots(&n.items, &n.commands));
 }
 
 fn accepts(extra: &str) {
@@ -168,7 +249,10 @@ fn adhoc_in(
     let items = parsed.ok().expect("parsed");
     let program = check_schema(&s).expect("the schema checks");
     match check_adhoc_recording(&s, &program, &items, &tys, &known, None) {
-        Ok(a) => Ok((s, a)),
+        Ok(a) => {
+            adhoc_one_binding_site(&s, &program, &a);
+            Ok((s, a))
+        }
         Err(ds) => Err(ds.into_iter().map(|d| d.message).collect()),
     }
 }
@@ -202,8 +286,10 @@ fn adhoc_over(extra: &str, text: &str) -> Result<Adhoc, Vec<String>> {
     let s = schema(extra).expect("the schema builds");
     let program = check_schema(&s).expect("the schema checks");
     let items = parse_adhoc(text, Options::default()).ok().expect("parsed");
-    check_adhoc(&s, &program, &items, &BTreeMap::new())
-        .map_err(|ds| ds.into_iter().map(|d| d.message).collect())
+    let a = check_adhoc(&s, &program, &items, &BTreeMap::new())
+        .map_err(|ds| ds.into_iter().map(|d| d.message).collect::<Vec<_>>())?;
+    adhoc_one_binding_site(&s, &program, &a);
+    Ok(a)
 }
 
 /// Checks a registered query `text` against the running schema extended by `extra`.
@@ -232,6 +318,87 @@ fn query_refuses(text: &str, needle: &str) {
     match query("", text) {
         Ok(()) => panic!("{text}\naccepted; expected an error containing {needle:?}"),
         Err(e) => assert!(e.contains(needle), "{text}\nerror {e:?} lacks {needle:?}"),
+    }
+}
+
+/// Returns `t` printed in full, each variable named by its name and the order of its first
+/// occurrence.
+fn sexp(terms: &Terms, t: Tm) -> String {
+    let mut p = Printer {
+        terms,
+        names: BTreeMap::new(),
+        out: String::new(),
+    };
+    p.tm(t);
+    p.out
+}
+
+struct Printer<'t> {
+    terms: &'t Terms,
+    names: BTreeMap<Var, String>,
+    out: String,
+}
+
+impl Printer<'_> {
+    fn var(&mut self, v: Var) {
+        let n = self.names.len();
+        let name = self
+            .names
+            .entry(v)
+            .or_insert_with(|| format!("{}{n}", self.terms.var_info(v).name));
+        self.out.push_str(name);
+    }
+
+    fn list(&mut self, xs: &[Tm]) {
+        for x in xs {
+            self.out.push(' ');
+            self.tm(*x);
+        }
+    }
+
+    fn tm(&mut self, t: Tm) {
+        match self.terms.kind(t) {
+            Kind::Var(v) => self.var(*v),
+            Kind::Const(Const::Int(i)) => self.out.push_str(&i.to_string()),
+            Kind::Const(Const::Text(x)) => self.out.push_str(&format!("{x:?}")),
+            Kind::Ctor { ctor, fields } if fields.is_empty() => {
+                self.out.push_str(&format!("#{ctor}"));
+            }
+            Kind::Field(e, l) => {
+                self.tm(*e);
+                self.out.push_str(&format!(".{l}"));
+            }
+            Kind::Let(x, e, b) => {
+                self.out.push_str("(let ");
+                self.var(*x);
+                self.list(&[*e, *b]);
+                self.out.push(')');
+            }
+            Kind::Case { scrutinee, arms } => {
+                self.out.push_str("(case");
+                self.list(&[*scrutinee]);
+                for (c, x, e) in arms {
+                    self.out.push_str(&format!(" ({c} "));
+                    self.var(*x);
+                    self.list(&[*e]);
+                    self.out.push(')');
+                }
+                self.out.push(')');
+            }
+            Kind::Prim(p, args) => {
+                self.out.push_str(&format!("({p:?}"));
+                self.list(args);
+                self.out.push(')');
+            }
+            Kind::Unreachable => self.out.push_str("unreachable"),
+            k => {
+                let shown = format!("{k:?}");
+                let head = shown.split(['(', ' ', '{']).next().unwrap_or_default();
+                self.out.push_str(&format!("({}", head.to_lowercase()));
+                self.list(&k.children());
+                self.out.push(')');
+            }
+        }
     }
 }
 
@@ -1208,7 +1375,7 @@ fn a_match_on_a_constructor_set_cases_over_the_set() {
 }
 
 #[test]
-fn a_guarded_chain_ends_unreachable() {
+fn a_false_guard_falls_through_to_the_next_arm() {
     let (s, p) = program(
         "fn f (i: Identity) -> Text = match i
            | Google g if g.gid == \"corp\" -> \"staff\"
@@ -1217,24 +1384,13 @@ fn a_guarded_chain_ends_unreachable() {
            | Apple _                     -> \"guest\"",
     )
     .unwrap();
-    let Kind::Let(_, _, case) = p.terms.kind(body_of(&s, &p, "f")) else {
-        panic!("a let");
-    };
-    let Kind::Case { arms, .. } = p.terms.kind(*case) else {
-        panic!("a case");
-    };
-    let google = arms.iter().find(|(c, _, _)| *c == 1).unwrap().2;
-    let Kind::If(test, body, rest) = p.terms.kind(google) else {
-        panic!("a guarded arm is an if, found {:?}", p.terms.kind(google));
-    };
-    let Kind::Let(in_guard, _, _) = p.terms.kind(*test) else {
-        panic!("the guard binds g, found {:?}", p.terms.kind(*test));
-    };
-    let Kind::Let(in_body, _, _) = p.terms.kind(*body) else {
-        panic!("the body binds g, found {:?}", p.terms.kind(*body));
-    };
-    assert_ne!(in_guard, in_body);
-    assert!(matches!(p.terms.kind(*rest), Kind::Const(_)));
+    assert_eq!(
+        sexp(&p.terms, body_of(&s, &p, "f")),
+        "(let ξ0 i1 (case ξ0 \
+           (0 ξ2 \"guest\") \
+           (1 ξ3 (if (let g4 ξ3 (Eq g4.gid \"corp\")) (let g5 ξ3 \"staff\") \"guest\")) \
+           (2 ξ6 \"guest\")))"
+    );
 }
 
 #[test]
@@ -1246,37 +1402,14 @@ fn a_nested_pattern_cases_on_the_field() {
            | Pending                    -> \"pending\"",
     )
     .unwrap();
-    let Kind::Let(_, _, case) = p.terms.kind(body_of(&s, &p, "f")) else {
-        panic!("a let");
-    };
-    let Kind::Case { arms, .. } = p.terms.kind(*case) else {
-        panic!("a case");
-    };
-    let shipped = arms.iter().find(|(c, _, _)| *c == 1).unwrap().2;
-    let Kind::If(test, courier, mail) = p.terms.kind(shipped) else {
-        panic!(
-            "the courier arm tests the field, found {:?}",
-            p.terms.kind(shipped)
-        );
-    };
-    let Kind::Case {
-        scrutinee,
-        arms: via,
-    } = p.terms.kind(*test)
-    else {
-        panic!("a case on the field, found {:?}", p.terms.kind(*test));
-    };
-    assert!(matches!(p.terms.kind(*scrutinee), Kind::Field(_, f) if f == "via"));
-    assert_eq!(via.len(), 2);
-    for (arm, unreached) in [(courier, 1), (mail, 0)] {
-        let Kind::Case { arms: via, .. } = p.terms.kind(*arm) else {
-            panic!(
-                "a body cases on the field again, found {:?}",
-                p.terms.kind(*arm)
-            );
-        };
-        assert!(matches!(p.terms.kind(via[unreached].2), Kind::Unreachable));
-    }
+    assert_eq!(
+        sexp(&p.terms, body_of(&s, &p, "f")),
+        "(let ξ0 s1 (case ξ0 \
+           (0 ξ2 \"pending\") \
+           (1 ξ3 (if (case ξ3.via (0 ξ4 #1) (1 ξ5 #0)) \
+             (case ξ3.via (0 ξ6 (let c7 ξ6 c7.name)) (1 ξ8 unreachable)) \
+             (case ξ3.via (0 ξ9 unreachable) (1 ξ10 (let m11 ξ10 m11.tracking)))))))"
+    );
 }
 
 #[test]

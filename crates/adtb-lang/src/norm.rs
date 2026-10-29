@@ -319,6 +319,9 @@ enum Wrap {
 
 type MemoKey = (usize, Tm, Vec<Ty>, Vec<Option<Tm>>);
 
+/// Each free variable of a term with its number of occurrences.
+type FreeVars = Rc<Vec<(Var, usize)>>;
+
 struct Normaliser<'a> {
     schema: &'a Schema,
     src: [&'a Terms; 2],
@@ -327,7 +330,7 @@ struct Normaliser<'a> {
     tot: Totality<'a>,
     draws: HashMap<Tm, bool>,
     free: HashMap<(usize, Var), Var>,
-    fv: [HashMap<Tm, Rc<Vec<Var>>>; 2],
+    fv: [HashMap<Tm, FreeVars>; 2],
     memo: HashMap<MemoKey, Tm>,
 }
 
@@ -455,7 +458,7 @@ impl<'a> Normaliser<'a> {
         }
     }
 
-    fn free_vars(&mut self, arena: usize, t: Tm) -> Rc<Vec<Var>> {
+    fn free_vars(&mut self, arena: usize, t: Tm) -> FreeVars {
         let mut stack = vec![t];
         while let Some(&s) = stack.last() {
             if self.fv[arena].contains_key(&s) {
@@ -478,19 +481,23 @@ impl<'a> Normaliser<'a> {
         self.fv[arena][&t].clone()
     }
 
-    /// Returns the free variables of `t`, whose children's are known.
-    fn own_free_vars(&self, arena: usize, t: Tm) -> Rc<Vec<Var>> {
+    /// Returns the free variables of `t` with their numbers of occurrences, whose children's are known.
+    fn own_free_vars(&self, arena: usize, t: Tm) -> FreeVars {
         let node = self.node(arena, t);
-        let mut out: Vec<Var> = Vec::new();
-        let add = |n: &Self, s: Tm, bound: &[Var], out: &mut Vec<Var>| {
-            for v in n.fv[arena][&s].iter() {
-                if !bound.contains(v) && !out.contains(v) {
-                    out.push(*v);
+        let mut out: Vec<(Var, usize)> = Vec::new();
+        let add = |n: &Self, s: Tm, bound: &[Var], out: &mut Vec<(Var, usize)>| {
+            for &(v, k) in n.fv[arena][&s].iter() {
+                if bound.contains(&v) {
+                    continue;
+                }
+                match out.iter_mut().find(|(w, _)| *w == v) {
+                    Some((_, c)) => *c = c.saturating_add(k),
+                    None => out.push((v, k)),
                 }
             }
         };
         match &node.kind {
-            Kind::Var(v) => out.push(*v),
+            Kind::Var(v) => out.push((*v, 1)),
             Kind::Lam(v, b) => add(self, *b, &[*v], &mut out),
             Kind::Let(v, a, b) | Kind::LetBang(v, a, b) | Kind::For(v, a, b) => {
                 add(self, *a, &[], &mut out);
@@ -569,7 +576,7 @@ impl<'a> Normaliser<'a> {
     fn key(&mut self, t: Tm, cx: &Cx) -> Option<MemoKey> {
         let fv = self.free_vars(cx.arena, t);
         let mut vals = Vec::with_capacity(fv.len());
-        for v in fv.iter() {
+        for (v, _) in fv.iter() {
             match cx.env.get(*v) {
                 Some(Val::Tm(x)) => vals.push(Some(*x)),
                 Some(_) => return None,
@@ -744,7 +751,7 @@ impl<'a> Normaliser<'a> {
                 }
                 Kind::Let(v, a, b) => {
                     match self.norm(*a, &cx)? {
-                        Val::Tm(bound) if self.copyable(bound) => {
+                        Val::Tm(bound) if self.substitutes(bound, *v, *b, &cx) => {
                             cx = cx.with(*v, Val::Tm(bound));
                         }
                         Val::Tm(bound) => {
@@ -798,11 +805,30 @@ impl<'a> Normaliser<'a> {
                 let b = self.first_order(body)?;
                 self.val(Kind::LetBang(x, a, b), ty)
             }
-            Wrap::Let(x, bound, ty) => match body {
-                Val::Tm(r) => self.val(Kind::Let(x, bound, r), ty),
-                v => Val::Let(x, bound, Rc::new(v)),
-            },
+            Wrap::Let(x, bound, ty) => self.kept_let(x, bound, body, ty),
         })
+    }
+
+    fn kept_let(&mut self, x: Var, bound: Tm, body: Val, ty: Ty) -> Val {
+        match body {
+            Val::Tm(r) => self.val(Kind::Let(x, bound, r), ty),
+            v => Val::Let(x, bound, Rc::new(v)),
+        }
+    }
+
+    /// Returns whether binding `var` to `t` in `body` substitutes `t` at each use: `t` is copyable,
+    /// and it does not branch or `body` uses `var` at most once.
+    fn substitutes(&mut self, t: Tm, var: Var, body: Tm, cx: &Cx) -> bool {
+        self.copyable(t)
+            && (!matches!(self.out.kind(t), Kind::If(..) | Kind::Case { .. })
+                || self.uses(cx.arena, body, var) <= 1)
+    }
+
+    fn uses(&mut self, arena: usize, t: Tm, var: Var) -> usize {
+        self.free_vars(arena, t)
+            .iter()
+            .find_map(|&(v, k)| (v == var).then_some(k))
+            .unwrap_or(0)
     }
 
     fn val(&mut self, kind: Kind, ty: Ty) -> Val {
@@ -867,11 +893,25 @@ impl<'a> Normaliser<'a> {
             let cx = cx.with(*v, Val::Tm(s));
             return self.norm(*e, &cx);
         }
+        if let Some(c) = sole_ctor(self.schema, self.out.ty(s))
+            && self.copyable(s)
+            && let Some((_, v, e)) = arms.iter().find(|(a, _, _)| *a == c)
+        {
+            let cx = cx.with(*v, Val::Tm(s));
+            return self.norm(*e, &cx);
+        }
+        let named = match self.node(cx.arena, scrutinee).kind {
+            Kind::Var(y) => Some(y),
+            _ => None,
+        };
         let mut out = Vec::with_capacity(arms.len());
         for (c, v, e) in arms {
             let x = self.fresh(*v, cx);
             let xt = self.var_tm(x);
-            let cx = cx.with(*v, Val::Tm(xt));
+            let mut cx = cx.with(*v, Val::Tm(xt));
+            if let Some(y) = named {
+                cx = cx.with(y, Val::Tm(xt));
+            }
             out.push((*c, x, self.norm(*e, &cx)?));
         }
         if out.iter().all(|(_, _, v)| matches!(v, Val::Tm(_))) {
@@ -1102,10 +1142,11 @@ impl<'a> Normaliser<'a> {
         matches!(self.out.ty(t), Ty::Data { def, .. } if *def == self.tot.schema().prelude_type("Bool"))
     }
 
-    /// Binds `var` to `bound` in `body`: substituting a copyable value, keeping a `let` for any other.
+    /// Bind `var` to `bound` in `body`: substituting a copyable value that does not branch or is
+    /// used at most once, keeping a `let` for any other.
     fn bind(&mut self, var: Var, bound: Val, body: Tm, cx: &Cx, ty: Ty) -> Result<Val, String> {
         match bound {
-            Val::Tm(b) if self.copyable(b) => {
+            Val::Tm(b) if self.substitutes(b, var, body, cx) => {
                 let cx = cx.with(var, Val::Tm(b));
                 self.norm(body, &cx)
             }
@@ -1113,10 +1154,8 @@ impl<'a> Normaliser<'a> {
                 let x = self.fresh(var, cx);
                 let xt = self.var_tm(x);
                 let cx = cx.with(var, Val::Tm(xt));
-                match self.norm(body, &cx)? {
-                    Val::Tm(r) => Ok(Val::Tm(self.add(Kind::Let(x, b, r), ty))),
-                    v => Ok(Val::Let(x, b, Rc::new(v))),
-                }
+                let body = self.norm(body, &cx)?;
+                Ok(self.kept_let(x, b, body, ty))
             }
             f if self.spine_copyable(&f) => {
                 let cx = cx.with(var, f);
@@ -1259,5 +1298,24 @@ impl Then {
         match self {
             Then::Apply(_, ty) | Then::Bind { ty, .. } => ty,
         }
+    }
+}
+
+/// Returns the one constructor a value of `ty` can have, when its type has one or narrows it to one.
+fn sole_ctor(schema: &Schema, ty: &Ty) -> Option<u32> {
+    let one = |cs: &[u32]| match cs {
+        [c] => Some(*c),
+        _ => None,
+    };
+    match ty {
+        Ty::Data {
+            ctors: Some(cs), ..
+        }
+        | Ty::Sum { sel: Some(cs), .. } => one(cs),
+        Ty::Data {
+            def, ctors: None, ..
+        } => (schema.ty(*def).ctors().len() == 1).then_some(0),
+        Ty::Sum { ctors, sel: None } => (ctors.len() == 1).then_some(0),
+        _ => None,
     }
 }

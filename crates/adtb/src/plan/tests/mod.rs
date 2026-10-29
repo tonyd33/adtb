@@ -1260,3 +1260,85 @@ fn a_flattened_nested_result_keeps_its_partial_conditions_per_row() {
         &[],
     );
 }
+
+fn memberships() -> Fixture {
+    let mut f = Fixture::new(
+        "type Membership = { id: Key memberships, user: Text }
+relation memberships : Membership key id generate sequence unique (user)
+type Assignment = { id: Key assignments, mine: Bool, user: Text, other: Text }
+relation assignments : Assignment key id generate sequence
+fn same (a: Text, b: Text) -> Bool = a == b
+fn same2 (a: Text, b: Text) -> Bool = a == b and b == a
+",
+    );
+    f.rows(
+        "memberships",
+        r#"[Membership { id: memberships.key(1), user: "ann" },
+            Membership { id: memberships.key(2), user: "bo" }]"#,
+        &[],
+    );
+    f.rows(
+        "assignments",
+        r#"[Assignment { id: assignments.key(1), mine: false, user: "ann", other: "bo" },
+            Assignment { id: assignments.key(2), mine: true, user: "bo", other: "cy" }]"#,
+        &[],
+    );
+    f
+}
+
+#[test]
+fn a_condition_on_a_branching_argument_probes_the_index() {
+    let f = memberships();
+    for same in ["same", "same2"] {
+        let text = format!(
+            "from a in assignments where key a == assignments.key(2) select \
+             (from m in memberships where {same}(m.user, if a.mine then a.user else a.other) select key m)"
+        );
+        agrees(&f, &text, &[]);
+        let p = adhoc_plan(&f, &text, &[], Rewrites::ALL);
+        let shown = explain::Describe::new(&f.schema, &f.catalog)
+            .plan(&p)
+            .text();
+        assert!(
+            shown.contains("Probe memberships (user)") && !shown.contains("Scan memberships"),
+            "`{same}` probes memberships:\n{shown}"
+        );
+    }
+}
+
+#[test]
+fn a_range_condition_on_a_branching_argument_probes_the_range() {
+    let mut f = Fixture::new(
+        "type M = { id: Key ms, n: I64 }
+relation ms : M key id generate sequence index (n)
+type A = { id: Key as_, mine: Bool, x: I64, y: I64 }
+relation as_ : A key id generate sequence
+fn near (a: I64, b: I64) -> Bool = a >= b and a < b + 10
+",
+    );
+    f.rows(
+        "ms",
+        "[M { id: ms.key(1), n: 3 }, M { id: ms.key(2), n: 12 }, M { id: ms.key(3), n: 25 }]",
+        &[],
+    );
+    f.rows(
+        "as_",
+        "[A { id: as_.key(1), mine: true, x: 10, y: 0 }, A { id: as_.key(2), mine: false, x: 0, y: 1 }]",
+        &[],
+    );
+    for k in [1, 2] {
+        let text = format!(
+            "from a in as_ where key a == as_.key({k}) select \
+             (from m in ms where near(m.n, if a.mine then a.x else a.y) select key m)"
+        );
+        agrees(&f, &text, &[]);
+        let p = adhoc_plan(&f, &text, &[], Rewrites::ALL);
+        let shown = explain::Describe::new(&f.schema, &f.catalog)
+            .plan(&p)
+            .text();
+        assert!(
+            shown.contains("Range probe ms (n)") && !shown.contains("Scan ms"),
+            "`as_.key({k})` probes the range of ms:\n{shown}"
+        );
+    }
+}

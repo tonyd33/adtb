@@ -376,7 +376,9 @@ impl Run<'_, '_> {
                 Err(Abort::Reject(Rejection::UserError { message }))
             }
             Kind::If(..) | Kind::Case { .. } | Kind::Let(..) => self.write(h, t, env, out),
-            Kind::Unreachable => internal("evaluation reached a position exhaustiveness excludes"),
+            Kind::Unreachable => internal(
+                "evaluation reached a position that exhaustiveness or a dominating test excludes",
+            ),
             k => internal(format!("{k:?} is not a write")),
         }
     }

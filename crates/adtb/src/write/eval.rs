@@ -536,7 +536,8 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 self.write(w, &bind(env, x, v), out)
             }
             Kind::Unreachable => Err(Error::Internal(
-                "evaluation reaches no position exhaustiveness excludes".into(),
+                "evaluation reaches no position that exhaustiveness or a dominating test excludes"
+                    .into(),
             )),
             k => Err(Error::Internal(format!(
                 "a write term is a write, found {k:?}"

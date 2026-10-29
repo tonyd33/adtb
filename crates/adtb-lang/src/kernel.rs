@@ -394,6 +394,51 @@ impl Terms {
         let ty = self.ty(leaf).clone();
         (0..depth).fold(leaf, |t, _| self.add(Kind::If(test, t, t), ty.clone()))
     }
+
+    /// Returns a variable that two binding sites among the terms reachable from `roots` bind,
+    /// with the terms that bind it.
+    #[cfg(test)]
+    pub(crate) fn rebound(&self, roots: impl IntoIterator<Item = Tm>) -> Option<(Var, Tm, Tm)> {
+        let mut seen = HashSet::new();
+        let mut bound = BTreeMap::new();
+        let mut stack: Vec<Tm> = roots.into_iter().collect();
+        while let Some(t) = stack.pop() {
+            if !seen.insert(t) {
+                continue;
+            }
+            let k = self.kind(t);
+            if !matches!(k, Kind::Var(_)) {
+                let mut again = None;
+                k.with_vars(&mut |v| {
+                    if let Some(first) = bound.insert(v, t) {
+                        again = again.or(Some((v, first, t)));
+                    }
+                    v
+                });
+                if again.is_some() {
+                    return again;
+                }
+            }
+            stack.extend(k.children());
+        }
+        None
+    }
+
+    /// Returns the number of terms under `t`, `t` included, counting a shared term once per path
+    /// to it, or `None` past `limit`.
+    #[cfg(test)]
+    pub(crate) fn tree_size(&self, t: Tm, limit: usize) -> Option<usize> {
+        let mut n = 0;
+        let mut stack = vec![t];
+        while let Some(s) = stack.pop() {
+            n += 1;
+            if n > limit {
+                return None;
+            }
+            stack.extend(self.children(s));
+        }
+        Some(n)
+    }
 }
 
 impl Kind {

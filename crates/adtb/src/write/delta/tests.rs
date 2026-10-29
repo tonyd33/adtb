@@ -246,3 +246,43 @@ constraint single =
         ]
     );
 }
+
+#[test]
+fn a_condition_on_a_branching_argument_is_admitted_through_probes() {
+    for same in ["same", "same2"] {
+        let f = Fixture::new(&format!(
+            "type Membership = {{ id: Key memberships, user: Text, org: Text }}
+relation memberships : Membership key id generate sequence index (org)
+type Assignment = {{ id: Key assignments, mine: Bool, user: Text, org: Text, alt: Text }}
+relation assignments : Assignment key id generate sequence index (user)
+fn same (a: Text, b: Text) -> Bool = a == b
+fn same2 (a: Text, b: Text) -> Bool = a == b and b == a
+constraint assigned_member =
+  from a in assignments
+  where not exists m in memberships
+    where m.user == a.user and {same}(m.org, if a.mine then a.org else a.alt)
+  select a
+"
+        ));
+        let mut terms = f.normal.terms.clone();
+        let checks = compile(&f.schema, &f.normal, &mut terms, &f.catalog)
+            .unwrap_or_else(|e| panic!("`{same}`: the constraint is admitted: {e:?}"));
+        let shown: Vec<String> = checks[0]
+            .deltas
+            .iter()
+            .map(|d| d.explain(&f.schema, &f.catalog).plan.text())
+            .collect();
+        assert!(!shown.is_empty(), "`{same}`: the constraint has checks");
+        for s in &shown {
+            assert!(
+                s.contains("Probe memberships (org)") && !s.contains("Scan"),
+                "`{same}`: a check reads through probes:\n{s}"
+            );
+        }
+        assert!(
+            shown.iter().any(|s| s.contains("Probe assignments (user)")),
+            "`{same}`: a check on memberships probes assignments:\n{}",
+            shown.join("\n")
+        );
+    }
+}

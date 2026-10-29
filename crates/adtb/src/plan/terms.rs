@@ -1,6 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
+use adtb_lang::analysis::Totality;
+use adtb_lang::ast::FnBody;
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 
 /// Returns `kind` with its children replaced by `cs`, given in the order of `Terms::children`.
@@ -199,6 +201,8 @@ pub struct Facts {
     free: HashMap<Tm, Rc<BTreeSet<Var>>>,
     scalar: HashMap<Tm, bool>,
     binders: HashMap<Tm, Rc<BTreeSet<Var>>>,
+    sunk: HashMap<(Var, Tm, Tm), Tm>,
+    draws: HashMap<Tm, bool>,
 }
 
 impl Facts {
@@ -240,6 +244,65 @@ impl Facts {
     pub fn mentions(&mut self, terms: &Terms, t: Tm, vs: &[Var]) -> bool {
         let f = self.free(terms, t);
         vs.iter().any(|v| f.contains(v))
+    }
+
+    /// Returns whether `t` may be duplicated or dropped: it is total and neither draws a fresh
+    /// value nor calls a volatile host function.
+    pub fn copyable(&mut self, total: &mut Totality, terms: &Terms, t: Tm) -> bool {
+        total.total(terms, t) && !self.draws(total, terms, t)
+    }
+
+    fn draws(&mut self, total: &Totality, terms: &Terms, t: Tm) -> bool {
+        if let Some(&d) = self.draws.get(&t) {
+            return d;
+        }
+        let d = match terms.kind(t) {
+            Kind::Fresh(..) => true,
+            Kind::Call { func, .. }
+                if matches!(
+                    total.schema().function(*func).body,
+                    FnBody::Host {
+                        deterministic: false,
+                        ..
+                    }
+                ) =>
+            {
+                true
+            }
+            _ => terms
+                .children(t)
+                .into_iter()
+                .any(|c| self.draws(total, terms, c)),
+        };
+        self.draws.insert(t, d);
+        d
+    }
+
+    /// Returns `let x = e in c`, the `let` moved onto the operands of every operator at the root
+    /// of `c` and dropped where `x` is not free.
+    ///
+    /// Preconditions:
+    /// - `e` is copyable.
+    pub fn sink_let(&mut self, terms: &mut Terms, x: Var, e: Tm, c: Tm) -> Tm {
+        if !self.mentions(terms, c, &[x]) {
+            return c;
+        }
+        if let Some(&s) = self.sunk.get(&(x, e, c)) {
+            return s;
+        }
+        let ty = terms.ty(c).clone();
+        let s = match terms.kind(c).clone() {
+            Kind::Prim(p, args) => {
+                let args = args
+                    .into_iter()
+                    .map(|a| self.sink_let(terms, x, e, a))
+                    .collect();
+                terms.add(Kind::Prim(p, args), ty)
+            }
+            _ => terms.add(Kind::Let(x, e, c), ty),
+        };
+        self.sunk.insert((x, e, c), s);
+        s
     }
 
     /// Returns whether `t` is a scalar expression: it reads nothing and holds no comprehension.

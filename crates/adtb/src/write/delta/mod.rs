@@ -366,12 +366,19 @@ impl Compiler<'_> {
         }
     }
 
-    fn conjuncts(&self, c: Tm, out: &mut Vec<Tm>) {
-        match self.terms.kind(c) {
-            Kind::If(a, b, f) if self.is_false(*f) => {
-                let (a, b) = (*a, *b);
+    /// Add the conjuncts of `c` to `out`, a `let` of a copyable value at the root moved onto each.
+    fn conjuncts(&mut self, c: Tm, out: &mut Vec<Tm>) {
+        match *self.terms.kind(c) {
+            Kind::If(a, b, f) if self.is_false(f) => {
                 self.conjuncts(a, out);
                 self.conjuncts(b, out);
+            }
+            Kind::Let(x, e, b) if self.facts.copyable(&mut self.total, self.terms, e) => {
+                let from = out.len();
+                self.conjuncts(b, out);
+                for k in &mut out[from..] {
+                    *k = self.facts.sink_let(self.terms, x, e, *k);
+                }
             }
             _ => out.push(c),
         }
@@ -915,20 +922,20 @@ impl Compiler<'_> {
 
     /// Returns the leading generators and conditions of the top level of `q`, and what they
     /// range over.
-    fn chain(&self, q: Tm) -> (Vec<Link>, Tm) {
+    fn chain(&mut self, q: Tm) -> (Vec<Link>, Tm) {
         let mut links = Vec::new();
         let mut t = q;
         loop {
-            match self.terms.kind(t) {
+            match *self.terms.kind(t) {
                 Kind::For(x, src, body) => {
-                    links.push(Link::Gen(*x, *src));
-                    t = *body;
+                    links.push(Link::Gen(x, src));
+                    t = body;
                 }
-                Kind::If(c, a, b) if matches!(self.terms.kind(*b), Kind::EmptySet) => {
+                Kind::If(c, a, b) if matches!(self.terms.kind(b), Kind::EmptySet) => {
                     let mut cs = Vec::new();
-                    self.conjuncts(*c, &mut cs);
+                    self.conjuncts(c, &mut cs);
                     links.extend(cs.into_iter().map(Link::Cond));
-                    t = *a;
+                    t = a;
                 }
                 _ => return (links, t),
             }
@@ -1221,7 +1228,7 @@ impl Compiler<'_> {
     }
 
     /// Returns the conditions guarding `body` directly, and what they guard.
-    fn peel(&self, mut body: Tm) -> (Vec<Tm>, Tm) {
+    fn peel(&mut self, mut body: Tm) -> (Vec<Tm>, Tm) {
         let mut conds = Vec::new();
         while let Kind::If(c, a, b) = self.terms.kind(body)
             && matches!(self.terms.kind(*b), Kind::EmptySet)

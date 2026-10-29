@@ -64,7 +64,10 @@ fn run(params: &[(&str, &str)], text: &str) -> Result<(Schema, Adhoc), Vec<Strin
     let items = parsed.ok().expect("parsed");
     let program = check_schema(&s).expect("the schema checks");
     match check_adhoc(&s, &program, &items, &tys) {
-        Ok(a) => Ok((s, a)),
+        Ok(a) => {
+            adhoc_one_binding_site(&s, &program, &a);
+            Ok((s, a))
+        }
         Err(ds) => Err(ds.into_iter().map(|d| d.message).collect()),
     }
 }
@@ -1092,6 +1095,18 @@ fn compound_writes() {
         "match s | Draft -> skip | Sent x -> insert users { name: n } | Paid p -> fail \"paid\"",
     );
     assert!(matches!(a.terms.kind(a.items[0]), Kind::Let(..)));
+}
+
+#[test]
+fn a_write_or_pattern_binds_each_name_once() {
+    let (_, a) = ok(
+        &[("s", "Status"), ("t", "Instant"), ("n", "Text")],
+        "match s
+           | Sent x | Paid x if x.at > t -> insert users { name: n }
+           | Sent _ | Paid _             -> skip
+           | Draft                       -> skip",
+    );
+    assert_one_binding_site("checked", &a.terms, &adhoc_roots(&a.items, &a.commands));
 }
 
 #[test]

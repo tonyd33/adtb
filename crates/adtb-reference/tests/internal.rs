@@ -108,7 +108,7 @@ fn evaluating_unreachable_is_an_internal_error() {
     let mut terms = Terms::default();
     let t = terms.add(Kind::Unreachable, int_ty());
     assert_eq!(
-        "evaluation reached a position exhaustiveness excludes",
+        "evaluation reached a position that exhaustiveness or a dominating test excludes",
         broken(&f, &terms, t)
     );
 }

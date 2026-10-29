@@ -814,7 +814,9 @@ impl Run<'_, '_> {
                 }
             }
             Kind::At { .. } => not_yet("`at` reads history, and this database value has none"),
-            Kind::Unreachable => internal("evaluation reached a position exhaustiveness excludes"),
+            Kind::Unreachable => internal(
+                "evaluation reached a position that exhaustiveness or a dominating test excludes",
+            ),
             Kind::Fresh(g, r) => {
                 let stmt = self
                     .stmt

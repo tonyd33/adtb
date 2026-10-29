@@ -83,10 +83,26 @@ enum Head {
     Lit(Tm),
 }
 
+/// What a pattern's binders do.
+#[derive(Clone, Copy)]
+enum Binding<'b> {
+    None,
+    /// Bind each name of the map with a `Let`; a name it leaves out binds nothing.
+    Lets(&'b BTreeMap<String, Var>),
+    /// Continue with the value of the name in place of the continuation.
+    Value(&'b str),
+}
+
 struct Cx<'b> {
-    /// The variables the pattern's binders bind; `None` binds nothing.
-    binds: Option<&'b BTreeMap<String, Var>>,
+    binds: Binding<'b>,
     res: &'b Ty,
+}
+
+/// An arm's guard and body, each under a `Let` per name of the arm that selects the name's value from the scrutinee.
+#[derive(Clone, Copy)]
+struct Selected {
+    guard: Option<Tm>,
+    body: Tm,
 }
 
 /// Where matching continues: `k` on a match, `f` otherwise.
@@ -323,6 +339,10 @@ impl Checker<'_> {
             })
         };
         let xi = self.fresh(sty.clone());
+        let selected: Vec<Option<Selected>> = irs
+            .iter()
+            .map(|arm| self.selected(xi, &sty, arm, &ty))
+            .collect();
         let body = match self.signature(&sty) {
             Some(sig) => {
                 let mut case_arms = Vec::new();
@@ -330,7 +350,7 @@ impl Checker<'_> {
                     let row = ty::restrict(self.schema, &sty, vec![c]);
                     let x = self.fresh(row.clone());
                     let xt = self.var_tm(x);
-                    let m = self.chain(Some(c), xt, &row, &irs, &ty);
+                    let m = self.chain(Some(c), xt, &row, &irs, &selected, &ty);
                     case_arms.push((c, x, m));
                 }
                 let xt = self.var_tm(xi);
@@ -344,7 +364,7 @@ impl Checker<'_> {
             }
             None => {
                 let xt = self.var_tm(xi);
-                self.chain(None, xt, &sty, &irs, &ty)
+                self.chain(None, xt, &sty, &irs, &selected, &ty)
             }
         };
         let o = self.out(Kind::Let(xi, s.tm, body), ty);
@@ -1102,13 +1122,22 @@ impl Checker<'_> {
 
     /// Compile the arms that can match constructor `c` of the scrutinee, every arm when `c` is `None`, to tests tried in order and ending in `Unreachable`.
     /// Each arm is `If(test, body, rest)`: `test` holds its pattern's tests and then its guard, and `body` matches the pattern again to bind its names.
-    fn chain(&mut self, c: Option<u32>, y: Tm, y_ty: &Ty, arms: &[ArmIr], res: &Ty) -> Tm {
+    /// An arm with a `selected` entry takes its guard and body from it and binds nothing in `test`.
+    fn chain(
+        &mut self,
+        c: Option<u32>,
+        y: Tm,
+        y_ty: &Ty,
+        arms: &[ArmIr],
+        selected: &[Option<Selected>],
+        res: &Ty,
+    ) -> Tm {
         let unreachable = self.add(Kind::Unreachable, res.clone());
         let yes = self.bool_tm(true);
         let no = self.bool_tm(false);
         let bt = self.bool_ty();
         let mut f = unreachable;
-        for arm in arms.iter().rev() {
+        for (arm, selected) in arms.iter().zip(selected).rev() {
             let alts: Vec<&Pat> = arm
                 .pat
                 .alts()
@@ -1121,18 +1150,35 @@ impl Checker<'_> {
             if alts.is_empty() {
                 continue;
             }
-            let tests = Cx {
-                binds: arm.guard.map(|_| &arm.guard_binds),
-                res: &bt,
+            let (test, body) = match selected {
+                Some(sel) => {
+                    let tests = Cx {
+                        binds: Binding::None,
+                        res: &bt,
+                    };
+                    let k = sel.guard.unwrap_or(yes);
+                    let test = self.alts(c, y, y_ty, &alts, &tests, Cont { k, f: no });
+                    (test, sel.body)
+                }
+                None => {
+                    let tests = Cx {
+                        binds: match arm.guard {
+                            Some(_) => Binding::Lets(&arm.guard_binds),
+                            None => Binding::None,
+                        },
+                        res: &bt,
+                    };
+                    let k = arm.guard.unwrap_or(yes);
+                    let test = self.alts(c, y, y_ty, &alts, &tests, Cont { k, f: no });
+                    let binds = Cx {
+                        binds: Binding::Lets(&arm.binds),
+                        res,
+                    };
+                    let k = arm.body.as_ref().expect("checked").tm;
+                    let body = self.alts(c, y, y_ty, &alts, &binds, Cont { k, f: unreachable });
+                    (test, body)
+                }
             };
-            let k = arm.guard.unwrap_or(yes);
-            let test = self.alts(c, y, y_ty, &alts, &tests, Cont { k, f: no });
-            let binds = Cx {
-                binds: Some(&arm.binds),
-                res,
-            };
-            let k = arm.body.as_ref().expect("checked").tm;
-            let body = self.alts(c, y, y_ty, &alts, &binds, Cont { k, f: unreachable });
             // Coverage proves an unguarded arm before `Unreachable` matches.
             let total = test == yes || (f == unreachable && arm.guard.is_none());
             f = if total {
@@ -1157,16 +1203,152 @@ impl Checker<'_> {
         f
     }
 
+    /// Returns the guard and body of `arm` under its binders, each bound once from the scrutinee
+    /// variable `xi`, when matching the pattern along each of its paths would bind a name more
+    /// than once.
+    fn selected(&mut self, xi: Var, sty: &Ty, arm: &ArmIr, res: &Ty) -> Option<Selected> {
+        if arm.binds.is_empty() || !self.forks(sty, &arm.pat) {
+            return None;
+        }
+        let bt = self.bool_ty();
+        let guard = arm
+            .guard
+            .map(|g| self.select_binds(xi, sty, &arm.pat, &arm.guard_binds, g, &bt));
+        let body = arm.body.as_ref().expect("checked").tm;
+        let body = self.select_binds(xi, sty, &arm.pat, &arm.binds, body, res);
+        Some(Selected { guard, body })
+    }
+
+    /// Returns whether a pattern on a value of `sty` has more than one path that binds its names.
+    fn forks(&self, sty: &Ty, p: &Pat) -> bool {
+        let alts = p.alts();
+        if alts.len() > 1 {
+            return true;
+        }
+        let top = match (self.signature(sty), alts[0]) {
+            (Some(sig), Pat::Ctor { set, .. }) => {
+                sig.iter().filter(|(c, _)| set.contains(c)).count()
+            }
+            (Some(sig), _) => sig.len(),
+            (None, _) => 1,
+        };
+        top > 1 || nested_fork(alts[0])
+    }
+
+    /// Wrap `k` in a `Let` for each of `binds` whose value is selected from `xi` by the alternatives of `p`.
+    fn select_binds(
+        &mut self,
+        xi: Var,
+        sty: &Ty,
+        p: &Pat,
+        binds: &BTreeMap<String, Var>,
+        k: Tm,
+        res: &Ty,
+    ) -> Tm {
+        let alts = p.alts();
+        let mut out = k;
+        for (name, v) in binds.iter().rev() {
+            let vty = self.terms.var_info(*v).ty.clone();
+            let sel = self.selector(xi, sty, &alts, name, &vty);
+            out = self.add(Kind::Let(*v, sel, out), res.clone());
+        }
+        out
+    }
+
+    /// Returns the value `name` takes in the first of `alts` that matches `xi`: a `Case` on `xi`
+    /// for a sum, `Unreachable` where no alternative matches.
+    fn selector(&mut self, xi: Var, sty: &Ty, alts: &[&Pat], name: &str, ty: &Ty) -> Tm {
+        let xt = self.var_tm(xi);
+        let Some(sig) = self.signature(sty) else {
+            return self.select_chain(None, xt, sty, alts, name, ty);
+        };
+        let mut arms = Vec::new();
+        for (c, _) in sig {
+            let row = ty::restrict(self.schema, sty, vec![c]);
+            let x = self.fresh(row.clone());
+            let y = self.var_tm(x);
+            let here: Vec<&Pat> = alts
+                .iter()
+                .copied()
+                .filter(|p| match p {
+                    Pat::Ctor { set, .. } => set.contains(&c),
+                    _ => true,
+                })
+                .collect();
+            let body = self.select_chain(Some(c), y, &row, &here, name, ty);
+            arms.push((c, x, body));
+        }
+        self.add(
+            Kind::Case {
+                scrutinee: xt,
+                arms,
+            },
+            ty.clone(),
+        )
+    }
+
+    /// Returns the value `name` takes in the first of `alts` that matches `y`, binding no variable;
+    /// the last is taken untested, and an alternative that selects the same value as those after
+    /// it is not tested.
+    fn select_chain(
+        &mut self,
+        c: Option<u32>,
+        y: Tm,
+        y_ty: &Ty,
+        alts: &[&Pat],
+        name: &str,
+        ty: &Ty,
+    ) -> Tm {
+        let unreachable = self.add(Kind::Unreachable, ty.clone());
+        let yes = self.bool_tm(true);
+        let no = self.bool_tm(false);
+        let bt = self.bool_ty();
+        let mut out = unreachable;
+        let cx = Cx {
+            binds: Binding::Value(name),
+            res: ty,
+        };
+        let settled = Cont {
+            k: unreachable,
+            f: unreachable,
+        };
+        for p in alts.iter().rev() {
+            let bound = self.alts(c, y, y_ty, &[*p], &cx, settled);
+            if out == unreachable {
+                out = bound;
+                continue;
+            }
+            if crate::kernel::alpha_equal(&self.terms, bound, &self.terms, out) {
+                continue;
+            }
+            let tests = Cx {
+                binds: Binding::None,
+                res: &bt,
+            };
+            let test = self.alts(c, y, y_ty, &[*p], &tests, Cont { k: yes, f: no });
+            out = if test == yes {
+                bound
+            } else {
+                self.add(Kind::If(test, bound, out), ty.clone())
+            };
+        }
+        out
+    }
+
     fn is_bool(&self, t: Tm, value: bool) -> bool {
         matches!(self.terms.kind(t), Kind::Ctor { ctor, fields } if *ctor == u32::from(value) && fields.is_empty())
             && self.terms.ty(t) == &self.bool_ty()
     }
 
-    /// Bind `n` to `y` around `k` when `cx` binds.
+    /// Bind `n` to `y` around `k` when `cx` binds `n`, or return `y` when `cx` selects `n`.
     fn let_binder(&mut self, cx: &Cx, n: &str, y: Tm, k: Tm) -> Tm {
         match cx.binds {
-            Some(binds) => self.add(Kind::Let(binds[n], y, k), cx.res.clone()),
-            None => k,
+            Binding::Lets(binds) => match binds.get(n) {
+                Some(v) => self.add(Kind::Let(*v, y, k), cx.res.clone()),
+                None => k,
+            },
+            Binding::Value(s) if s == n => y,
+            Binding::Value(_) | Binding::None => k,
         }
     }
 
@@ -1225,7 +1407,8 @@ impl Checker<'_> {
             unreachable!("compile_fields takes a constructor pattern")
         };
         let cols = self.ctor_cols(y_ty, c);
-        let mut out = cont.k;
+        let selects = matches!((cx.binds, binder), (Binding::Value(s), Some(n)) if s == n);
+        let mut out = if selects { y } else { cont.k };
         for (name, sub) in fields.iter().rev() {
             let fty = cols
                 .iter()
@@ -1236,8 +1419,31 @@ impl Checker<'_> {
             out = self.compile(fy, &fty, sub, cx, Cont { k: out, f: cont.f });
         }
         match binder {
-            Some(n) => self.let_binder(cx, n, y, out),
-            None => out,
+            Some(n) if !selects => self.let_binder(cx, n, y, out),
+            _ => out,
         }
+    }
+}
+
+/// Returns whether a constructor pattern of several constructors under `p` binds a name.
+fn nested_fork(p: &Pat) -> bool {
+    let Pat::Ctor { fields, .. } = p else {
+        return false;
+    };
+    fields.iter().any(|(_, f)| match f {
+        Pat::Ctor { set, .. } if set.len() > 1 && binds_any(f) => true,
+        f => nested_fork(f),
+    })
+}
+
+/// Returns whether `p` binds a name.
+fn binds_any(p: &Pat) -> bool {
+    match p {
+        Pat::Wild { binder, .. } => binder.is_some(),
+        Pat::Lit { .. } => false,
+        Pat::Ctor { binder, fields, .. } => {
+            binder.is_some() || fields.iter().any(|(_, f)| binds_any(f))
+        }
+        Pat::Or(alts) => alts.iter().any(binds_any),
     }
 }
