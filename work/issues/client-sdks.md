@@ -6,6 +6,7 @@ priority: 1050
 summary: "no SDK lets a TypeScript, Python, Go, Java or Haskell program connect to an adtb server or call a bundle through typed generated code"
 depends-on:
   - server-owned-call-tasks
+  - nix-package
 tags:
   - engine
   - test
