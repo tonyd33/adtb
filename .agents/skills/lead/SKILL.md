@@ -72,7 +72,8 @@ Ask a fresh reviewer to challenge those layers and their responsibility placemen
 Passing tests do not justify unnecessary machinery.
 
 1. Review the workspace's diff against its brief and the rulings, and run
-   `work/tools/house-check ../adtb-NAME`.
+   `work/tools/house-check ../adtb-NAME --from BASE --to NAME@` with the track's base.
+   Without a range it checks only the working copy, which is empty once the agent commits.
 2. Run `work/tools/land NAME 'SUBJECT'` with the workspace name, not its
    directory. Propose SUBJECT to the user first unless they allowed
    commits without it. It snapshots the workspace, refuses while the
