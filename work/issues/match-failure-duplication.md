@@ -22,3 +22,7 @@ Found by the checker-match-recursion writer (work/briefs/receipt-checker-recursi
 ## Fix
 
 Bind the failure continuation once in the pattern lowering (crates/adtb-lang/src/check/pat.rs `compile`/`chain`) and refer to it from both failure positions, so the kernel term is linear in arms. The checker's kernel output changes shape, so check docs/design/kernel.md for any promise about match lowering first; if it states one, take the change through the design space. Tests: a 4000-arm guarded literal match normalises on a 2 MiB thread, and a 64-arm guarded write match with a generated key normalises in under 1 s.
+
+## 2026-10-29: lead note
+
+Binding the failure continuation with a kernel `Let` is wrong for writes: docs/design/kernel.md 4.x says `Let(v, e, w)` evaluates `e` first, and a `Let` whose bound expression contains `Fresh` is kept, so a write continuation would run eagerly. The kernel has no lazy join point. Candidate directions: fold a guard into the arm's own test (`If(and(test, g), e, F)` where the guard's binders allow), a kernel join-point form, or memoising the normaliser and tree walkers on term identity so a shared `F` is visited once. This is a design question: take it through the design space (a proposed point extending `current`) before implementing.

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 250
 summary: "a hide new constructors bundle follows a reference into a constructor its pin lacks, so a deref returns a value or panics instead of faulting NoSuchRow"
+branch: hide-new-deref
 tags:
   - quality
   - engine
@@ -28,3 +29,7 @@ Repro sketch (from the code, not run): in `crates/adtb-sim/tests/bundles.rs`, op
 `hide_new_constructors_exempts_whole_reads_and_references` (`bundles.rs:637`) only registers its queries and never calls them.
 
 Fix: under `hide_new`, translate `Ty::Key` and `Ty::Data` constructor sets to the pinned constructors, as `Map::set` does for `Kind::Rel`. Add call tests for a deref, a whole-row return and a match through a reference to a hidden row.
+
+## 2026-10-29: dispatched
+
+A fresh writer fixes this in workspace hide-new-deref, call tests first. Local brief: work/briefs/brief-hide-new-deref.md.
