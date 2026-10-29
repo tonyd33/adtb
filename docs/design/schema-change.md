@@ -403,16 +403,19 @@ After each operator, `grants` holds:
   set or function is gone, or whose constructor list is left empty, is
   gone.
 - For each unlisted `read` or `update` on a whole relation variable,
-  the fields of each constructor `add constructor` added to it since.
-  A grant on a named set gains no field of a constructor that joins
-  the set.
+  the fields of each constructor `add constructor` added since; on a
+  named set, the fields of each constructor that joined the set since,
+  as the constructor had them when added. A listed grant on a named
+  set also holds each field of a joining constructor whose name it
+  lists.
 - Across a split, merge, nest or unnest, each grant covering a
   product's sources: the product, when it covers every source whose
   rows go to the product, with the product's fields that each such
   source's routing gives only by carrying whole a field the grant
-  covers, the same fields from each source. A nesting field is carried
-  from every field of its source; each field of an unnested product is
-  carried from the nesting field.
+  covers, the same fields from each source, and a merge's
+  discriminator. A nesting field is carried from every field of its
+  source; each field of an unnested product is carried from the
+  nesting field.
 - For `move field T.f to T.(C | D)`, each grant on `f` also on the
   field of each listed constructor.
 - After `revert n`, the grants each inverted operator found, an object

@@ -22,6 +22,8 @@ pub(super) struct Carry {
     /// For each source, product and field of the product, how each routing of the source's
     /// rows gives the field: the id of the field it carries whole, `None` when it computes it.
     given: BTreeMap<(u64, String, String), Vec<Option<u64>>>,
+    /// The fields of the products that tell which source a row came from.
+    discriminators: Vec<String>,
 }
 
 /// For each source, product and field of the product, by name, how each routing of the
@@ -165,7 +167,7 @@ impl Cx<'_> {
         schema: &Schema,
         (def, ty): (TypeId, &QName),
         (sources, products): (&[String], &[String]),
-        (reaches, given): (&Reaches, &Given),
+        (reaches, given, discriminators): (&Reaches, &Given, &[String]),
     ) {
         let td = schema.ty(def);
         let ids = &schema.ids;
@@ -224,6 +226,7 @@ impl Cx<'_> {
                     Some(((ctor(s)?, p.clone(), g.clone()), entries))
                 })
                 .collect(),
+            discriminators: discriminators.to_vec(),
         });
     }
 }
@@ -242,8 +245,8 @@ impl Carry {
     ///
     /// A product receives the grant when the target covers every source whose rows go to it,
     /// and every such source the same fields of it: those the routing gives only by carrying
-    /// whole a covered field. When the target covers some of those sources but not all, or
-    /// them with different fields, the product is unstated.
+    /// whole a covered field, and a merge's discriminator. When the target covers some of those
+    /// sources but not all, or them with different fields, the product is unstated.
     fn target(
         &self,
         t: &GrantTarget,
@@ -301,8 +304,13 @@ impl Carry {
                     out.unstated.push((*pid, p.clone()));
                     continue;
                 }
-                out.fields
-                    .extend(first.iter().filter_map(|g| field_id(p, g)));
+                out.fields.extend(
+                    first
+                        .iter()
+                        .copied()
+                        .chain(self.discriminators.iter().map(String::as_str))
+                        .filter_map(|g| field_id(p, g)),
+                );
             }
             out.ctors.push(*pid);
         }
@@ -411,8 +419,9 @@ impl Source {
         self.unstated.extend(unstated);
     }
 
-    /// Give each grant without a field list on a whole relation variable over type `t` of module
-    /// `m` the fields of its new constructor `c`.
+    /// Give the fields of new constructor `c` of type `t` of module `m` to each grant without a
+    /// field list on a whole relation variable over `t` or on a named set `c` joins, and to each
+    /// grant with a list on a set `c` joins the fields of `c` it lists by name.
     fn widen(&mut self, m: &str, t: &str, c: &str) {
         let Ok(schema) = self.schema() else {
             return;
@@ -423,6 +432,9 @@ impl Source {
         else {
             return;
         };
+        let Some(ci) = schema.ty(def).ctor_index(c) else {
+            return;
+        };
         let rels: BTreeSet<u64> = schema
             .ids
             .relations
@@ -430,20 +442,58 @@ impl Source {
             .filter(|(r, _)| schema.relation(**r).elem_def == def)
             .map(|(_, &id)| id)
             .collect();
-        let prefix = format!("field {m}::{t}.{c}.");
-        let fields: Vec<u64> = self
+        let joined: BTreeSet<u64> = schema
             .ids
+            .sets
             .iter()
-            .filter(|(p, _)| p.starts_with(&prefix))
+            .filter(|((r, name), _)| {
+                schema.relation(*r).elem_def == def
+                    && schema
+                        .relation(*r)
+                        .sets
+                        .iter()
+                        .any(|x| x.name == *name && x.ctors.contains(&ci))
+            })
             .map(|(_, &id)| id)
             .collect();
-        for g in &mut self.grants {
-            if let Granted::Read(t, fs) | Granted::Update(t, fs) = &mut g.privilege
-                && t.sel == GrantSel::Whole
-                && !fs.listed
-                && rels.contains(&t.relation)
-            {
-                fs.ids.extend(&fields);
+        let prefix = format!("field {m}::{t}.{c}.");
+        let fields: Vec<(&str, u64)> = self
+            .ids
+            .iter()
+            .filter_map(|(p, &id)| Some((p.strip_prefix(&prefix)?, id)))
+            .collect();
+        let name = |id: u64| {
+            self.ids
+                .iter()
+                .find(|(p, x)| **x == id && p.starts_with(IdKind::Field.prefix()))
+                .and_then(|(p, _)| p.rsplit('.').next())
+        };
+        let mut gained: Vec<(usize, Vec<u64>)> = Vec::new();
+        for (k, g) in self.grants.iter().enumerate() {
+            let (Granted::Read(t, fs) | Granted::Update(t, fs)) = &g.privilege else {
+                continue;
+            };
+            let open = match t.sel {
+                GrantSel::Whole => rels.contains(&t.relation),
+                GrantSel::Set(s) => joined.contains(&s),
+                GrantSel::Ctors(_) => false,
+            };
+            if !open || (fs.listed && t.sel == GrantSel::Whole) {
+                continue;
+            }
+            let listed: BTreeSet<&str> = fs.ids.iter().filter_map(|&f| name(f)).collect();
+            gained.push((
+                k,
+                fields
+                    .iter()
+                    .filter(|(n, _)| !fs.listed || listed.contains(n))
+                    .map(|&(_, id)| id)
+                    .collect(),
+            ));
+        }
+        for (k, ids) in gained {
+            if let Granted::Read(_, fs) | Granted::Update(_, fs) = &mut self.grants[k].privilege {
+                fs.ids.extend(ids);
                 fs.ids.sort_unstable();
                 fs.ids.dedup();
             }

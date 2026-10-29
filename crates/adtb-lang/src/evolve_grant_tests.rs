@@ -154,21 +154,88 @@ grant read identities.EmailPass (email, hash) to support",
 }
 
 #[test]
-fn a_grant_on_a_named_set_covers_a_constructor_that_joins_it_but_not_its_fields() {
+fn a_grant_on_a_named_set_without_fields_covers_a_joining_constructor_with_its_fields() {
     let s = applies(
         &grants(),
-        "module auth\ngrant read identities.OAuth to support",
+        "module auth\ngrant read identities.OAuth, update identities.(Google | Apple) to support",
     );
-    let frozen = "support read identities set OAuth frozen [Apple.sub, Google.gid, id, user]";
-    assert_eq!(vec![frozen], held(&s));
+    assert_eq!(
+        vec![
+            "support read identities set OAuth frozen [Apple.sub, Google.gid, id, user]",
+            "support update identities (Apple | Google) frozen [Apple.sub, Google.gid, id, user]",
+        ],
+        held(&s)
+    );
     let s = applies(
         &s,
-        "module auth\nadd constructor Identity.Github { login: Text }\n  joins identities.OAuth",
+        "module auth\nadd constructor Identity.Github { login: Text, org: Text }\n  joins identities.OAuth",
     );
-    assert_eq!(vec![frozen], held(&s));
     assert_eq!(
         "set OAuth of identities = Google | Apple | Github",
         flat(&decl(&s, "set", "identities.OAuth"))
+    );
+    assert_eq!(
+        vec![
+            "support read identities set OAuth frozen [Apple.sub, Github.login, Github.org, Google.gid, id, user]",
+            "support update identities (Apple | Google) frozen [Apple.sub, Google.gid, id, user]",
+        ],
+        held(&s)
+    );
+    let s = applies(
+        &s,
+        "module auth\nadd constructor Identity.Gitlab { login: Text }",
+    );
+    assert_eq!(
+        "support read identities set OAuth frozen [Apple.sub, Github.login, Github.org, Google.gid, id, user]",
+        held(&s)[0]
+    );
+}
+
+const SHARED: &str = r"
+module auth
+type User = { id: Key users, name: Text }
+type Identity { id: Key identities, user: Key users }
+  = EmailPass { email: Text, hash: Bytes }
+  | Google    { sub: Text, label: Text }
+  | Apple     { sub: Text }
+relation users : User key id generate sequence
+relation identities : Identity key id generate uuidv7
+set OAuth of identities = Google | Apple
+";
+
+#[test]
+fn a_listed_grant_on_a_named_set_covers_the_listed_fields_a_joining_constructor_has() {
+    let s = applies(
+        &source(SHARED),
+        "module auth\ngrant read identities.OAuth (user, sub) to support",
+    );
+    assert_eq!(
+        vec!["support read identities set OAuth listed [Apple.sub, Google.sub, user]"],
+        held(&s)
+    );
+    let s = applies(
+        &s,
+        "module auth\nadd constructor Identity.Github { sub: Text, label: Text }\n  joins identities.OAuth",
+    );
+    assert_eq!(
+        vec!["support read identities set OAuth listed [Apple.sub, Github.sub, Google.sub, user]"],
+        held(&s)
+    );
+}
+
+#[test]
+fn a_listed_grant_on_a_named_set_covers_no_field_a_joining_constructor_lacks() {
+    let s = applies(
+        &source(SHARED),
+        "module auth\ngrant read identities.OAuth (user, sub) to support",
+    );
+    let s = applies(
+        &s,
+        "module auth\nadd constructor Identity.Github { login: Text, label: Text }\n  joins identities.OAuth",
+    );
+    assert_eq!(
+        vec!["support read identities set OAuth listed [Apple.sub, Google.sub, user]"],
+        held(&s)
     );
 }
 
@@ -369,10 +436,34 @@ grant read identities to audit",
     let s = applies(&s, MERGE);
     assert_eq!(
         vec![
-            "support read identities (Social) frozen [Social.sub, id, user]",
+            "support read identities (Social) frozen [Social.provider, Social.sub, id, user]",
             "support delete identities set OAuth",
-            "web read identities (EmailPass | Social) listed [user]",
-            "audit read identities * frozen [EmailPass.email, EmailPass.hash, Social.sub, id, user]",
+            "web read identities (EmailPass | Social) listed [Social.provider, user]",
+            "audit read identities * frozen [EmailPass.email, EmailPass.hash, Social.provider, Social.sub, id, user]",
+        ],
+        held(&s)
+    );
+}
+
+#[test]
+fn a_merge_does_not_cover_the_discriminator_for_a_grant_missing_a_source() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant read identities.(EmailPass | Google) to support",
+    );
+    refuses(
+        &s,
+        MERGE,
+        "the merge of `Google`, `Apple` into `Social` cannot carry the `read` grant of `support` on `identities`",
+    );
+    let s = applies(
+        &s,
+        &format!("{MERGE}\ngrant read identities.Social (sub) to support"),
+    );
+    assert_eq!(
+        vec![
+            "support read identities (EmailPass) frozen [EmailPass.email, EmailPass.hash, id, user]",
+            "support read identities (Social) listed [Social.sub]",
         ],
         held(&s)
     );

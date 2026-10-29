@@ -136,7 +136,7 @@ impl Cx<'_> {
             &schema,
             (def, &path.ty),
             (std::slice::from_ref(&source), &products),
-            (&routed.0, &routed.1),
+            (&routed.0, &routed.1, &[]),
         );
         self.apply_edits(edits);
         self.retype_products(&schema, def, std::slice::from_ref(&source), &products)
@@ -375,7 +375,7 @@ impl Cx<'_> {
             &schema,
             (def, ty),
             (&sources, std::slice::from_ref(&n)),
-            (&reaches, &given),
+            (&reaches, &given, &[]),
         );
         self.apply_edits(edits);
         Ok(())
@@ -530,7 +530,7 @@ impl Cx<'_> {
             &schema,
             (def, &path.ty),
             (std::slice::from_ref(&n), &products),
-            (&reaches, &given),
+            (&reaches, &given, &[]),
         );
         self.apply_edits(edits);
         Ok(())
