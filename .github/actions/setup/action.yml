@@ -1,0 +1,23 @@
+name: Setup
+description: Install Nix and load the devenv shell into the job env via direnv.
+
+runs:
+  using: composite
+  steps:
+    - uses: cachix/install-nix-action@v31
+      with:
+        nix_path: nixpkgs=channel:nixos-unstable
+
+    - name: Install devenv.sh
+      shell: bash
+      run: nix profile add nixpkgs#devenv
+
+    - name: Install direnv
+      shell: bash
+      run: nix profile add nixpkgs#direnv
+
+    - name: Load shell into env
+      shell: bash
+      run: |
+        direnv allow .
+        direnv export gha | tee -a "$GITHUB_ENV"
