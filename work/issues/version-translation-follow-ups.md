@@ -1,10 +1,9 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: open
 kind: bug
 priority: 870
 summary: "translation blames an unrelated operator for at blocks and file reads, explain skips translated bundles, and the pinned law cannot add fields to nested sums"
-branch: vt-follow-ups
 ---
 
 # Bug: version translation follow-ups
@@ -48,3 +47,7 @@ The follow-up candidate fixed items 10, 1, 8, 3 and the quality items; a fresh r
 - 13. `SchemaRefused.operator` is now empty when nothing is to blame (final-state checks, typing refusals); the spec does not say when it may be empty. Reword through the spec-revision workflow.
 - `replay` (crates/adtb/src/catalog/migration.rs about lines 193-208) drops the accumulated `why` on the `after.steps` and `steps::built` error paths; `Catalog::migrate`'s doc names only `Error::Refused`; the `RefusedBy` doc should say the first operator with a data refusal.
 - Item 3's test passes on base: the `let` is inlined before translation, so it has no witness.
+
+## 2026-10-29: items 10, 1, 8, 3 and the quality items landed
+
+Landed as bfaa7fec. Its branch check passed on base abc56b49, which is its parent on main, so the landed tree is the one checked. A retired bundle registered again is refused `Retired` before translation; a refusal with no operator to blame names the construct (`at` block, file read) with an empty `operator`; `catalog::Error::RefusedBy` names the first operator the data refuses; `Pinned::new` failures name the query; a `let` value inserted into two relations takes each relation's default. Item 2 was reverted (translated bundles stay out of `explained`). Still open: 2, 4, 5, 6, 7, 9, 11, 12, 13.
