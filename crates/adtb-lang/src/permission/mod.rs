@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::check::{Adhoc, Program, Query, Txn};
 use crate::kernel::{Terms, Tm, Var};
+use crate::norm::NormalProgram;
 use crate::schema::Schema;
 use crate::types::*;
 
@@ -70,13 +71,15 @@ pub enum Error {
 /// Returns the requirements of a checked registered query.
 pub fn query(schema: &Schema, program: &Program, query: &Query) -> Result<Requirements, Error> {
     let normal = crate::norm::query(schema, program, query).map_err(Error::Normalization)?;
-    analyze(schema, program, &normal.terms, normal.body, &normal.params)
+    let program = normal_program(schema, program)?;
+    analyze(schema, &program, &normal.terms, normal.body, &normal.params)
 }
 
 /// Returns the requirements of a checked registered transaction.
 pub fn txn(schema: &Schema, program: &Program, txn: &Txn) -> Result<Requirements, Error> {
     let normal = crate::norm::txn(schema, program, txn).map_err(Error::Normalization)?;
-    analyze(schema, program, &normal.terms, normal.body, &normal.params)
+    let program = normal_program(schema, program)?;
+    analyze(schema, &program, &normal.terms, normal.body, &normal.params)
 }
 
 /// Returns the requirements of each statement in checked ad hoc text.
@@ -88,21 +91,25 @@ pub fn adhoc(
     let schema = adhoc.schema(schema);
     let normal = crate::norm::adhoc(schema, program, adhoc).map_err(Error::Normalization)?;
     let params: Vec<Var> = normal.params.values().copied().collect();
+    let program = normal_program(schema, program)?;
     normal
         .items
         .iter()
-        .map(|&root| analyze(schema, program, &normal.terms, root, &params))
+        .map(|&root| analyze(schema, &program, &normal.terms, root, &params))
         .collect()
+}
+
+fn normal_program(schema: &Schema, program: &Program) -> Result<NormalProgram, Error> {
+    crate::norm::program(schema, program).map_err(Error::Normalization)
 }
 
 fn analyze(
     schema: &Schema,
-    program: &Program,
+    program: &NormalProgram,
     terms: &Terms,
     root: Tm,
     params: &[Var],
 ) -> Result<Requirements, Error> {
-    let program = crate::norm::program(schema, program).map_err(Error::Normalization)?;
     let mut analyzer = Analyzer {
         schema,
         arenas: [terms, &program.terms],
@@ -152,14 +159,6 @@ impl Analyzer<'_> {
         let mut reads = Vec::new();
         value.each_read(&mut |r| reads.push(r.clone()));
         self.charge(reads);
-        let mut fieldless = Vec::new();
-        value.each_fieldless(&mut |rel, c| fieldless.push((rel, c)));
-        for (rel, c) in fieldless {
-            let target = self
-                .target(rel, c)
-                .expect("a stored row's constructor identity resolved when it was read");
-            self.range(target);
-        }
     }
 
     fn charge(&mut self, reads: Vec<Requirement>) {

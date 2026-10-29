@@ -9,6 +9,64 @@ pub(super) struct Change {
     pub new: Option<Value>,
 }
 
+/// The effects of a write over the ways it can complete without failing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Changes {
+    /// Whether some completion does not fail.
+    pub reachable: bool,
+    pub made: Vec<Change>,
+    /// Old rows that every completion replaces.
+    pub replaced: Vec<(RelId, Value)>,
+}
+
+impl Changes {
+    pub fn made(made: Vec<Change>) -> Self {
+        Self {
+            reachable: true,
+            made,
+            replaced: Vec::new(),
+        }
+    }
+
+    /// Append the effects of `next`, which runs in the same transaction.
+    pub fn then(&mut self, next: Self) {
+        if !next.reachable {
+            *self = Self::default();
+        }
+        if !self.reachable {
+            return;
+        }
+        self.made.extend(next.made);
+        self.replaced.extend(next.replaced);
+    }
+
+    /// Join the effects of `other`, which completes instead of `self`.
+    ///
+    /// Postconditions:
+    /// - `made` holds every change either makes.
+    /// - `replaced` holds only rows both replace.
+    pub fn or(&mut self, other: Self) {
+        if !other.reachable {
+            return;
+        }
+        if !self.reachable {
+            *self = other;
+            return;
+        }
+        for change in other.made {
+            if !self.made.contains(&change) {
+                self.made.push(change);
+            }
+        }
+        self.replaced.retain(|(rel, row)| {
+            other
+                .replaced
+                .iter()
+                .any(|(r, o)| r == rel && row.copy.is_some() && o.copy == row.copy)
+        });
+    }
+}
+
 pub(super) type Env = BTreeMap<Var, Value>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,7 +87,7 @@ pub(super) enum Shape {
     Scalar,
     Set(Box<Value>),
     Rows(BTreeMap<Option<u32>, Fields>),
-    Change(Vec<Vec<Change>>),
+    Change(Changes),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -66,9 +124,9 @@ impl Value {
         }
     }
 
-    pub fn change(paths: Vec<Vec<Change>>) -> Self {
+    pub fn change(changes: Changes) -> Self {
         Self {
-            shape: Shape::Change(paths),
+            shape: Shape::Change(changes),
             ..Self::default()
         }
     }
@@ -142,26 +200,6 @@ impl Value {
         }
     }
 
-    /// Call `f` with the relation and constructor of each stored row alternative that has no fields.
-    pub fn each_fieldless(&self, f: &mut impl FnMut(RelId, u32)) {
-        match &self.shape {
-            Shape::Set(x) => x.each_fieldless(f),
-            Shape::Rows(rows) => {
-                for (ctor, fields) in rows {
-                    if let (Some(c), true) = (ctor, fields.is_empty()) {
-                        for &rel in &self.stored {
-                            f(rel, *c);
-                        }
-                    }
-                    for value in fields.values() {
-                        value.each_fieldless(f);
-                    }
-                }
-            }
-            Shape::Bottom | Shape::Scalar | Shape::Change(_) => {}
-        }
-    }
-
     /// Drop the keyed marks of rows read in a snapshot numbered above `floor`.
     pub fn unkey_after(&mut self, floor: u64) {
         if self.keyed.is_some_and(|k| k.snapshot > floor) {
@@ -178,7 +216,7 @@ impl Value {
         }
     }
 
-    /// Call `f` with each read that can tell two such values apart, skipping keyed rows.
+    /// Call `f` with each read that can tell two elements of a set apart, skipping keyed rows.
     pub fn each_distinguishing_read(&self, f: &mut impl FnMut(&Requirement)) {
         if self.keyed.is_some() {
             return;
@@ -231,13 +269,7 @@ impl Value {
                 }
             }
             (Shape::Scalar, Shape::Scalar) => {}
-            (Shape::Change(a), Shape::Change(b)) => {
-                for path in b {
-                    if !a.contains(&path) {
-                        a.push(path);
-                    }
-                }
-            }
+            (Shape::Change(a), Shape::Change(b)) => a.or(b),
             _ => panic!("joined permission values have compatible checked types"),
         }
     }

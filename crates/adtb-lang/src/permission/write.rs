@@ -1,4 +1,4 @@
-use super::value::{Change, CopyToken, Shape};
+use super::value::{Change, Changes, CopyToken, Shape};
 use super::*;
 use crate::kernel::Kind;
 
@@ -31,7 +31,7 @@ impl Analyzer<'_> {
                 new: Some(row),
             });
         }
-        let mut out = Value::change(vec![changes]);
+        let mut out = Value::change(Changes::made(changes));
         out.binding = Some(Box::new(rows.clone()));
         Ok(out)
     }
@@ -56,7 +56,7 @@ impl Analyzer<'_> {
                 new: None,
             });
         }
-        Ok(Value::change(vec![changes]))
+        Ok(Value::change(Changes::made(changes)))
     }
 
     pub(super) fn replace(
@@ -90,11 +90,15 @@ impl Analyzer<'_> {
                 bound.join(new.clone());
             }
         }
-        let mut paths = vec![changes];
-        if rows.may_empty {
-            paths.push(Vec::new());
+        let mut effects = Changes::made(changes);
+        if !rows.may_empty {
+            effects.replaced = effects
+                .made
+                .iter()
+                .filter_map(|change| Some((rel, change.old.clone()?)))
+                .collect();
         }
-        let mut out = Value::change(paths);
+        let mut out = Value::change(effects);
         out.binding = Some(Box::new(Value::set(bound)));
         Ok(out)
     }
@@ -157,23 +161,21 @@ impl Analyzer<'_> {
             .relation(rel, ctors.as_deref(), None, false)?
             .elements();
         let mut bound = proposed.elements();
-        let mut effects = Vec::new();
+        let mut effects = Changes::made(Vec::new());
         for new in proposed.elements().alternatives() {
-            effects.push(vec![Change {
+            effects.made.push(Change {
                 rel,
                 old: None,
                 new: Some(new.clone()),
-            }]);
+            });
             for old in old.alternatives() {
                 let mut inner = env.clone();
                 inner.insert(old_var, old.clone());
                 inner.insert(new_var, new.clone());
                 let result = self.eval(arena, otherwise, &inner)?;
-                if let Shape::Change(paths) = result.shape {
-                    for path in paths {
-                        bound.join(self.upsert_bound(rel, &old, &path));
-                        effects.push(path);
-                    }
+                if let Shape::Change(changes) = result.shape {
+                    bound.join(upsert_bound(rel, &old, &changes));
+                    effects.or(changes);
                 }
             }
         }
@@ -182,54 +184,22 @@ impl Analyzer<'_> {
         Ok(out)
     }
 
-    fn upsert_bound(&self, rel: RelId, old: &Value, path: &[Change]) -> Value {
-        let mut out = Value::default();
-        let mut replaced = false;
-        for change in path {
-            if change.rel != rel {
-                continue;
-            }
-            if let Some(new) = &change.new {
-                let same = change.old.as_ref().is_some_and(|r| same_row(r, old));
-                if same {
-                    replaced = true;
-                    out.join(new.clone());
-                } else if change.old.is_none() {
-                    out.join(new.clone());
-                }
-            }
-        }
-        if !replaced {
-            out.join(old.clone());
-        }
-        out
-    }
-
     pub(super) fn parallel(
         &mut self,
         arena: Arena,
         writes: &[Tm],
         env: &Env,
     ) -> Result<Value, Error> {
-        let mut paths = vec![Vec::new()];
+        let mut out = Changes::made(Vec::new());
         for &write in writes {
             let value = self.eval(arena, write, env)?;
-            let next = match value.shape {
+            out.then(match value.shape {
                 Shape::Change(next) => next,
-                Shape::Bottom => Vec::new(),
+                Shape::Bottom => Changes::default(),
                 _ => return Err(Error::InvalidKernel("parallel joins writes")),
-            };
-            let mut combined = Vec::new();
-            for before in &paths {
-                for after in &next {
-                    let mut path = before.clone();
-                    path.extend(after.iter().cloned());
-                    combined.push(path);
-                }
-            }
-            paths = combined;
+            });
         }
-        Ok(Value::change(paths))
+        Ok(Value::change(out))
     }
 }
 
@@ -243,6 +213,31 @@ fn constructor(value: &Value) -> Result<u32, Error> {
             "write analyzes one constructor alternative",
         )),
     }
+}
+
+/// Returns what an upsert into `rel` binds for the conflicting row `old` when its otherwise
+/// branch has `changes`: the rows that replace `old` or are inserted, and `old` unless every
+/// completion replaces it.
+fn upsert_bound(rel: RelId, old: &Value, changes: &Changes) -> Value {
+    let mut out = Value::default();
+    if !changes.reachable {
+        return out;
+    }
+    for change in changes.made.iter().filter(|c| c.rel == rel) {
+        if let Some(new) = &change.new
+            && change.old.as_ref().is_none_or(|r| same_row(r, old))
+        {
+            out.join(new.clone());
+        }
+    }
+    let replaced = changes
+        .replaced
+        .iter()
+        .any(|(r, row)| *r == rel && same_row(row, old));
+    if !replaced {
+        out.join(old.clone());
+    }
+    out
 }
 
 fn same_row(a: &Value, b: &Value) -> bool {

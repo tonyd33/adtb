@@ -797,7 +797,8 @@ impl Checker<'_> {
             let mut given = Vec::new();
             for (f, fty) in fields {
                 let yt = self.var_tm(y);
-                given.push((f.clone(), self.add(Kind::Field(yt, f.clone()), fty.clone())));
+                let ft = self.terms.transport_field(yt, f.clone(), fty.clone());
+                given.push((f.clone(), ft));
             }
             let i = index_in(into, name);
             let row = ty::restrict(self.schema, to, vec![i]);

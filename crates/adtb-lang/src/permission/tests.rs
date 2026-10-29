@@ -1103,6 +1103,33 @@ fn an_update_through_an_alias_charges_a_field_taken_from_another_row() {
 }
 
 #[test]
+fn an_update_charges_a_field_taken_from_another_row_through_a_fix() {
+    let s = schema("");
+    let text = format!(
+        "{PARTIAL_ALIAS}Row {{ x with secret: match max(y.secret for y in (fix r = rows union r in r)) | Some m -> m.value | None -> x.secret }}"
+    );
+    let mut want = reads(&s, "left", "Row", &["secret"]);
+    want.insert(Requirement::UpdateField(
+        target(&s, "left", "Row"),
+        field(&s, "left", "Row", "secret"),
+    ));
+    assert_exact(&requirements(&s, &[], &text), want);
+}
+
+#[test]
+fn an_upsert_update_of_old_charges_a_field_taken_from_another_row() {
+    let s = schema("");
+    let text = r#"insert left { id: 1, public: "p", secret: "s" } unless conflict on key else update old set Row { old with secret: match max(y.secret for y in left) | Some m -> m.value | None -> old.secret }"#;
+    let mut want = reads(&s, "left", "Row", &["secret"]);
+    want.insert(Requirement::Insert(target(&s, "left", "Row")));
+    want.insert(Requirement::UpdateField(
+        target(&s, "left", "Row"),
+        field(&s, "left", "Row", "secret"),
+    ));
+    assert_exact(&requirements(&s, &[], text), want);
+}
+
+#[test]
 fn an_update_through_an_alias_carries_its_own_row_unchanged() {
     let s = schema("");
     let text = format!(r#"{PARTIAL_ALIAS}Row {{ x with public: "p" }}"#);
@@ -1112,43 +1139,6 @@ fn an_update_through_an_alias_carries_its_own_row_unchanged() {
         field(&s, "left", "Row", "public"),
     ));
     assert_exact(&requirements(&s, &[], &text), want);
-}
-
-#[test]
-fn consuming_a_stored_row_ranges_its_fieldless_constructors() {
-    let s = schema("");
-    let program = check_schema(&s).expect("schema checks");
-    let normal = crate::norm::program(&s, &program).expect("program normalizes");
-    let mut analyzer = Analyzer {
-        schema: &s,
-        arenas: [&normal.terms, &normal.terms],
-        aggregates: &normal.aggregates,
-        requirements: Requirements::default(),
-        next_id: 0,
-        snapshot: 0,
-    };
-    let flow = RelId(
-        s.relations
-            .iter()
-            .position(|r| r.name == "flow")
-            .expect("relation") as u32,
-    );
-    let void = s
-        .ty(s.relation(flow).elem_def)
-        .ctor_index("Void")
-        .expect("constructor");
-    analyzer
-        .relation(flow, Some(&[void]), None, false)
-        .expect("relation reads");
-    assert_exact(&analyzer.requirements, BTreeSet::new());
-    let mut row = Value::row(Some(void), BTreeMap::new());
-    row.stored.insert(flow);
-    analyzer.consume(&row);
-    assert_exact(&analyzer.requirements, reads(&s, "flow", "Void", &[]));
-    analyzer.requirements = Requirements::default();
-    row.stored.clear();
-    analyzer.consume(&row);
-    assert_exact(&analyzer.requirements, BTreeSet::new());
 }
 
 const EXTRA: &str = "type Quota = { id: I64, n: I64, when: Instant }
@@ -1228,7 +1218,7 @@ fn key_of_charges_only_what_follows_it() {
 fn constraint(s: &Schema) -> Requirements {
     let program = check_schema(s).expect("schema checks");
     let normal = crate::norm::program(s, &program).expect("program normalizes");
-    analyze(s, &program, &normal.terms, normal.constraints[0], &[]).expect("requirements analyze")
+    analyze(s, &normal, &normal.terms, normal.constraints[0], &[]).expect("requirements analyze")
 }
 
 #[test]
@@ -1261,4 +1251,144 @@ fn dereferencing_a_restricted_key_reads_only_its_constructors() {
     let mut want = reads(&s, "pins", "Pin", &["draft"]);
     want.extend(reads(&s, "flow", "Draft", &["public"]));
     assert_exact(&requirements(&s, &[], text), want);
+}
+
+const COMPOSITE: &str = "type P = { a: I64, b: I64 }
+relation ps : P key (a, b)
+type L = { id: I64, target: Key ps }
+relation ls : L key id";
+
+#[test]
+fn a_composite_key_of_joins_with_stored_keys() {
+    let s = schema(COMPOSITE);
+    let text = "[ps.key(a: 1, b: 2)] union (from l in ls select l.target)";
+    assert_exact(
+        &requirements(&s, &[], text),
+        reads(&s, "ls", "L", &["target"]),
+    );
+}
+
+#[test]
+fn a_composite_key_of_carries_its_operand_reads() {
+    let s = schema(COMPOSITE);
+    let text = "from l in ls select ps.key(a: l.id, b: 2)";
+    assert_exact(&requirements(&s, &[], text), reads(&s, "ls", "L", &[]));
+    let text = "from l in ls where l.target == ps.key(a: l.id, b: 2) select l.id";
+    assert_exact(
+        &requirements(&s, &[], text),
+        reads(&s, "ls", "L", &["target"]),
+    );
+    let text = "exists l in ls where ps.key(a: l.id, b: 2) == ps.key(a: 1, b: 2)";
+    assert_exact(&requirements(&s, &[], text), reads(&s, "ls", "L", &[]));
+}
+
+#[test]
+fn a_long_sequence_of_updates_that_may_match_nothing_analyzes() {
+    let s = schema("");
+    let updates: Vec<String> = (0..30)
+        .map(|i| format!("update x in left where x.id == {i} set Row {{ x with public: \"p\" }}"))
+        .collect();
+    let text = format!("({})", updates.join(", "));
+    let got = requirements(&s, &[], &text);
+    let mut want = reads(&s, "left", "Row", &[]);
+    want.insert(Requirement::UpdateField(
+        target(&s, "left", "Row"),
+        field(&s, "left", "Row", "public"),
+    ));
+    assert_exact(&got, want);
+}
+
+#[test]
+fn an_upsert_binding_after_a_long_sequence_reads_only_unreplaced_old_rows() {
+    let s = schema("");
+    let updates: String = (0..30)
+        .map(|i| {
+            format!("update x in right where x.id == {i} set Row {{ x with public: \"p\" }}, ")
+        })
+        .collect();
+    let insert = Requirement::Insert(target(&s, "left", "Row"));
+    let update_public =
+        |r: &str| Requirement::UpdateField(target(&s, r, "Row"), field(&s, r, "Row", "public"));
+    let text = format!(
+        r#"transact let x = insert left {{ id: 1, public: "p", secret: "s" }} unless conflict on key else ({updates}update old set Row {{ old with public: "q" }}) return x.public"#
+    );
+    let mut want = reads(&s, "right", "Row", &[]);
+    want.extend([
+        insert.clone(),
+        update_public("left"),
+        update_public("right"),
+    ]);
+    assert_exact(&requirements(&s, &[], &text), want);
+    let text = format!(
+        r#"transact let x = insert left {{ id: 1, public: "p", secret: "s" }} unless conflict on key else ({updates}skip) return x.public"#
+    );
+    let mut want = reads(&s, "right", "Row", &[]);
+    want.extend(reads(&s, "left", "Row", &["public"]));
+    want.extend([insert, update_public("right")]);
+    assert_exact(&requirements(&s, &[], &text), want);
+}
+
+#[test]
+fn an_upsert_binding_reads_the_old_row_through_any_branch_that_keeps_it() {
+    let s = schema("");
+    let insert = Requirement::Insert(target(&s, "left", "Row"));
+    let update = Requirement::UpdateField(
+        target(&s, "left", "Row"),
+        field(&s, "left", "Row", "public"),
+    );
+    let text = r#"transact let x = insert left { id: 1, public: "p", secret: "s" } unless conflict on key else if new.id > 0 then update old set Row { old with public: "q" } else skip return x.public"#;
+    let mut want = reads(&s, "left", "Row", &["public"]);
+    want.extend([insert.clone(), update.clone()]);
+    assert_exact(&requirements(&s, &[], text), want);
+    let text = r#"transact let x = insert left { id: 1, public: "p", secret: "s" } unless conflict on key else if new.id > 0 then update old set Row { old with public: "q" } else fail "taken" return x.public"#;
+    assert_exact(
+        &requirements(&s, &[], text),
+        BTreeSet::from([insert, update]),
+    );
+}
+
+#[test]
+fn an_upsert_binding_replaced_on_every_branch_does_not_read_the_old_row() {
+    let s = schema("");
+    let text = r#"transact let x = insert left { id: 1, public: "p", secret: "s" } unless conflict on key else if new.id > 0 then update old set Row { old with public: "q" } else update old set Row { old with public: "r" } return x.public"#;
+    assert_exact(
+        &requirements(&s, &[], text),
+        BTreeSet::from([
+            Requirement::Insert(target(&s, "left", "Row")),
+            Requirement::UpdateField(
+                target(&s, "left", "Row"),
+                field(&s, "left", "Row", "public"),
+            ),
+        ]),
+    );
+}
+
+#[test]
+fn carried_rows_in_a_widened_anonymous_sum_are_not_read() {
+    let s = schema("");
+    for text in [
+        "exists y in ((fix s = (from x in left select A { r: x }) union s in s) union (from x in right select B { r: x })) where true",
+        "count(y for y in ((fix s = (from x in left select A { r: x }) union s in s) union (from x in right select B { r: x })))",
+    ] {
+        let mut want = reads(&s, "left", "Row", &[]);
+        want.extend(reads(&s, "right", "Row", &[]));
+        let got: BTreeSet<_> = requirements(&s, &[], text).iter().cloned().collect();
+        assert_eq!(got, want, "{text}");
+    }
+}
+
+#[test]
+fn rejects_requires_insert_on_its_one_constructor() {
+    let s = schema("");
+    let text =
+        r#"insert left from (from x in read_csv("input.csv", Row) select x) rejects into rejects"#;
+    let got = requirements(&s, &[], text);
+    let inserts: Vec<_> = got
+        .iter()
+        .filter(|r| matches!(r, Requirement::Insert(t) if t.relation == target(&s, "rejects", "RejectedRow").relation))
+        .collect();
+    assert_eq!(
+        inserts,
+        vec![&Requirement::Insert(target(&s, "rejects", "RejectedRow"))]
+    );
 }

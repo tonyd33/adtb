@@ -1,4 +1,4 @@
-use super::value::{CopyToken, Keyed, Shape};
+use super::value::{Changes, CopyToken, Keyed, Shape};
 use super::*;
 use crate::ids::Slot;
 use crate::kernel::Transition;
@@ -10,7 +10,7 @@ impl Analyzer<'_> {
             Ty::Base(_) | Ty::Key { .. } | Ty::Param(_) | Ty::Fn(..) => Value::scalar(),
             Ty::Set(t) | Ty::NonEmpty(t) => Value::set(self.unknown(t)),
             Ty::Unit => Value::row(None, BTreeMap::new()),
-            Ty::Change => Value::change(vec![Vec::new()]),
+            Ty::Change => Value::change(Changes::made(Vec::new())),
             Ty::Record(fields) => Value::row(
                 None,
                 fields
