@@ -6,9 +6,7 @@ priority: 425
 summary: "the planner, code generation, constraint deltas and the permission evaluator do work once per path through a shared kernel subterm, exponential in a chain of inlined functions"
 ---
 
-# Kernel path sharing
-
-## Report
+# Bug: kernel passes do work once per path through shared subterms
 
 depends on: none
 needed by: none
