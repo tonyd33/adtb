@@ -28,3 +28,9 @@ Also from the review: aggregate `selects` is still exponential when a shared ter
 ## Fix
 
 Decide per pass between a memo keyed by term and path state, sharing in the output (plans and code as DAGs), or bounding inlining. Add a test of each witness.
+
+## 2026-10-29: from kernel-binding-site-exceptions
+
+- The normal form of nested groups whose value reads an outer generator doubles per level (base too): each use instantiates the group value at its own row. A linear form would compute the value once per row as a field of the group's row record, which changes totality.
+- The normaliser memo (norm.rs `key`) no longer memoises terms after `into` that read the group, since the group function is a `Val::Lam`.
+- `Terms::renamed` and `for_over`/`then` spines leave O(depth x size) unreachable copies in the arena; `Frees` memory is the sum of free-set sizes.
