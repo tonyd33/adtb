@@ -87,3 +87,16 @@ body remains authority for fix Out.rows; no companion override of existing
 key-preservation/snapshot/write-produced veto. Private Empty term/variable
 metadata distinguishes absence from unknown without changing public Out.rows.
 Full acceptance/review still pending; no source fix or passing claim yet.
+
+### Empty-arm contextual typing prerequisite
+
+Agent found existing synthesized union eagerly synthesizes [] without the
+known sibling set type, and fix type seeding likewise treats [] as a type seed
+before contextual checking. Required empty-arm neutrality cases expose this
+separate checker obstacle. Retain exact failing cases before adjusting ordinary
+contextual typing. Reuse existing deferred/arm_against transfer where applicable;
+handle empty literals on either side and nested association, leave both-empty
+without a type and incompatible nonempty operands refused. No type inference
+from current data/nominal target guessing, no origin syntax exception. Final
+ordinary checked-body provenance remains authority. This narrow shared typing
+prerequisite is in the same checker repair track; no spec policy change.
