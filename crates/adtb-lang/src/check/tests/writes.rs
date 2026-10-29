@@ -106,7 +106,13 @@ fn txn(text: &str) -> Result<(Schema, Txn), String> {
     let module = s.module_named("auth").expect("module auth");
     let program = check_schema(&s).expect("the schema checks");
     match check_txn(&s, &program, module, &t) {
-        Ok(t) => Ok((s, t)),
+        Ok(t) => {
+            assert_one_binding_site("checked", &t.terms, &[t.term]);
+            let n =
+                crate::norm::txn(&s, &program, &t).unwrap_or_else(|e| panic!("normalises: {e:?}"));
+            assert_one_binding_site("normalised", &n.terms, &[n.body]);
+            Ok((s, t))
+        }
         Err(d) => Err(d.message),
     }
 }

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::ast;
-use crate::kernel::{IndexField, Kind, PathStep, Terms, Tm, Var};
+use crate::kernel::{Frees, IndexField, Kind, PathStep, Terms, Tm, Var};
 use crate::resolve::{Scope, Visible};
 use crate::schema::{
     DefaultValue, PRELUDE, Schema, TypeDefKind, TypeMode, TypeName, TypeScope, ValueDef,
@@ -25,7 +25,7 @@ mod ty;
 mod write;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use rows::RowOrigin;
 
@@ -126,10 +126,8 @@ struct Local {
 /// What a group binder `g` stands for after `into`.
 #[derive(Debug)]
 struct GroupInfo {
-    /// The binders before `group`, each with its field in a row of the group.
-    binders: Vec<(String, Var)>,
-    /// The grouped value, over the binders' variables.
-    value: Tm,
+    /// The function from a row of the group to its grouped value.
+    value: Var,
     value_ty: Ty,
     value_rows: Option<RelId>,
     rows_ty: Ty,
@@ -138,6 +136,8 @@ struct GroupInfo {
 pub struct Checker<'a> {
     pub schema: &'a Schema,
     pub terms: Terms,
+    /// The free variables of terms of `terms`.
+    frees: Frees,
     vis: Visible,
     ctx: Context,
     scope: Scope<Local>,
@@ -191,6 +191,7 @@ impl<'a> Checker<'a> {
         Checker {
             schema,
             terms: Terms::default(),
+            frees: Frees::default(),
             vis,
             ctx,
             scope: Scope::default(),

@@ -465,21 +465,26 @@ impl Checker<'_> {
         Ok(Out { tm, ty, rows: None })
     }
 
-    /// `tm`, over the variables of `binders`, for one record of their values.
+    /// `tm`, over the variables of `binders`, for one record of their values, each bound afresh.
     pub(super) fn over_record(&mut self, binders: &[(String, Var)], row: Tm, tm: Tm) -> Tm {
         let ty = self.terms.ty(tm).clone();
-        let mut out = tm;
+        let fresh: BTreeMap<Var, Var> = binders
+            .iter()
+            .map(|(_, v)| (*v, self.terms.var_like(*v)))
+            .collect();
+        let mut out = self.terms.renamed(tm, &fresh, &mut self.frees);
         for (label, v) in binders.iter().rev() {
             let vty = self.terms.var_info(*v).ty.clone();
             let f = self.terms.transport_field(row, label.clone(), vty);
-            out = self.add(Kind::Let(*v, f, out), ty.clone());
+            out = self.add(Kind::Let(fresh[v], f, out), ty.clone());
         }
         out
     }
 
     /// The grouped value for one row of a group.
     pub(super) fn group_value(&mut self, g: &GroupInfo, row: Tm) -> Tm {
-        self.over_record(&g.binders.clone(), row, g.value)
+        let f = self.var_tm(g.value);
+        self.add(Kind::App(f, row), g.value_ty.clone())
     }
 
     /// A group binder used as a set: the values of its grouped expression.

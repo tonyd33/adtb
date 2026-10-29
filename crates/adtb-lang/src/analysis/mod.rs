@@ -13,7 +13,7 @@ mod totality;
 mod volatile;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use aggregate::ranges_over_bindings;
 pub use fix::{bounded, stratified};

@@ -214,6 +214,15 @@ fn an_anonymous_sum_of_one_constructor_selects_without_a_case() {
 }
 
 #[test]
+fn a_tag_of_one_constructor_selects_without_a_case() {
+    let (_, normal) = printed(
+        "type T = A { n: I64 }
+         fn f (t: T) -> I64 = match tag(t) | A -> t.n",
+    );
+    assert_eq!(normal, "t0.n");
+}
+
+#[test]
 fn an_or_pattern_of_many_alternatives_stays_linear() {
     for apart in [false, true] {
         let (c16, n16) = sizes(16, 40, apart);

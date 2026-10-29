@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use super::*;
 use crate::ast::{BundleItem, ExampleItem};
+use crate::check::tests::{adhoc_roots, assert_one_binding_site, program_roots};
 use crate::check::{Checker, Context, check_adhoc, check_query, check_schema, check_txn};
 use crate::kernel::{Agg, Const, Prim, Var};
 use crate::norm::{NormalAdhoc, NormalProgram, NormalQuery};
@@ -53,7 +54,10 @@ fn schema(extra: &str) -> Schema {
 fn program(extra: &str) -> Result<(Schema, Program), Vec<String>> {
     let s = schema(extra);
     match check_schema(&s) {
-        Ok(p) => Ok((s, p)),
+        Ok(p) => {
+            assert_one_binding_site("checked", &p.terms, &program_roots(&p));
+            Ok((s, p))
+        }
         Err(ds) => Err(ds.into_iter().map(|d| d.diag.message).collect()),
     }
 }
@@ -108,7 +112,10 @@ fn adhoc(extra: &str, params: &[(&str, &str)], text: &str) -> Result<(Schema, Ad
     let items = parsed.ok().expect("parsed");
     let program = check_schema(&s).expect("the schema checks");
     match check_adhoc(&s, &program, &items, &tys) {
-        Ok(a) => Ok((s, a)),
+        Ok(a) => {
+            assert_one_binding_site("checked", &a.terms, &adhoc_roots(&a.items, &a.commands));
+            Ok((s, a))
+        }
         Err(ds) => Err(ds.into_iter().map(|d| d.message).collect()),
     }
 }
@@ -168,7 +175,7 @@ fn query(extra: &str, text: &str) -> Result<(), String> {
 }
 
 /// Every term reachable from `root`.
-fn reachable(terms: &Terms, root: Tm) -> Vec<Tm> {
+pub(crate) fn reachable(terms: &Terms, root: Tm) -> Vec<Tm> {
     let mut seen = HashSet::new();
     let mut stack = vec![root];
     let mut out = Vec::new();
@@ -1184,4 +1191,46 @@ fn ad_hoc_text_over_a_doubling_chain_of_functions_checks() {
             panic!("`{text}` is refused: {e:?}");
         }
     }
+}
+
+#[test]
+fn a_fresh_draw_is_total_and_not_copyable() {
+    let (s, n) = adhoc_normal("", &[], r#"insert users { name: "eve" }"#);
+    let fresh = reachable(&n.terms, n.items[0])
+        .into_iter()
+        .find(|t| matches!(n.terms.kind(*t), Kind::Fresh(..)))
+        .expect("a fresh draw");
+    let mut tot = Totality::new(&s, false);
+    assert!(tot.total(&n.terms, fresh));
+    assert!(tot.draws(&n.terms, fresh));
+    assert!(!tot.copyable(&n.terms, fresh));
+}
+
+#[test]
+fn a_call_of_a_host_function_draws_only_when_volatile() {
+    let extra = r#"fn pure (t: Text) -> Text = host "pure" version "1" deterministic"#;
+    let (s, n) = adhoc_normal(
+        &format!("{STAMPS}\n{extra}"),
+        &[],
+        r#"[stamp("x"), pure("x")]"#,
+    );
+    let mut tot = Totality::new(&s, false);
+    let call = |name: &str| {
+        reachable(&n.terms, n.items[0])
+            .into_iter()
+            .find(|t| matches!(n.terms.kind(*t), Kind::Call { func, .. } if s.function(*func).name == name))
+            .expect("a call")
+    };
+    assert!(tot.draws(&n.terms, call("stamp")));
+    assert!(!tot.draws(&n.terms, call("pure")));
+}
+
+#[test]
+fn a_constant_is_copyable() {
+    let (s, n) = adhoc_normal("", &[], "[1]");
+    let constant = reachable(&n.terms, n.items[0])
+        .into_iter()
+        .find(|t| matches!(n.terms.kind(*t), Kind::Const(_)))
+        .expect("a constant");
+    assert!(Totality::new(&s, false).copyable(&n.terms, constant));
 }

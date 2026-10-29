@@ -5,6 +5,7 @@ use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type
 use crate::schema::build;
 
 mod adhoc;
+mod binding_sites;
 mod or_patterns;
 mod principal;
 mod row_provenance;
@@ -79,6 +80,7 @@ fn program(extra: &str) -> Result<(Schema, Program), Vec<String>> {
     let s = schema(extra)?;
     match check_schema(&s) {
         Ok(p) => {
+            assert_one_binding_site("checked", &p.terms, &program_roots(&p));
             one_binding_site(&s, &p);
             Ok((s, p))
         }
@@ -86,22 +88,20 @@ fn program(extra: &str) -> Result<(Schema, Program), Vec<String>> {
     }
 }
 
-/// Assert that no variable of `terms` has two binding sites under any one of `roots`.
-fn assert_one_binding_site(what: &str, terms: &Terms, roots: &[Tm]) {
-    for r in roots {
-        if let Some((v, a, b)) = terms.rebound([*r]) {
-            panic!(
-                "{what}: `{}` is bound at two binding sites, {:?} and {:?}",
-                terms.var_info(v).name,
-                terms.kind(a),
-                terms.kind(b)
-            );
-        }
+/// Assert that no variable of `terms` has two binding sites among the terms under `roots`.
+pub(crate) fn assert_one_binding_site(what: &str, terms: &Terms, roots: &[Tm]) {
+    if let Some((v, a, b)) = terms.rebound(roots.iter().copied()) {
+        panic!(
+            "{what}: `{}` is bound at two binding sites, {:?} and {:?}",
+            terms.var_info(v).name,
+            terms.kind(a),
+            terms.kind(b)
+        );
     }
 }
 
 /// Returns the checked bodies of `p`.
-fn program_roots(p: &Program) -> Vec<Tm> {
+pub(crate) fn program_roots(p: &Program) -> Vec<Tm> {
     p.functions
         .iter()
         .flatten()
@@ -149,7 +149,7 @@ fn one_binding_site(s: &Schema, p: &Program) {
 }
 
 /// Returns the items and command terms of ad hoc text.
-fn adhoc_roots(items: &[Tm], commands: &[AdhocCommand]) -> Vec<Tm> {
+pub(crate) fn adhoc_roots(items: &[Tm], commands: &[AdhocCommand]) -> Vec<Tm> {
     items
         .iter()
         .copied()
@@ -159,6 +159,7 @@ fn adhoc_roots(items: &[Tm], commands: &[AdhocCommand]) -> Vec<Tm> {
 
 /// Assert that every variable of the normal forms of ad hoc `a` has one binding site.
 fn adhoc_one_binding_site(s: &Schema, p: &Program, a: &Adhoc) {
+    assert_one_binding_site("checked", &a.terms, &adhoc_roots(&a.items, &a.commands));
     let n = crate::norm::adhoc(a.schema(s), p, a).unwrap_or_else(|e| panic!("normalises: {e:?}"));
     assert_one_binding_site("normalised", &n.terms, &adhoc_roots(&n.items, &n.commands));
 }
@@ -303,9 +304,12 @@ fn query(extra: &str, text: &str) -> Result<(), String> {
     };
     let module = s.module_named("auth").expect("module auth");
     let program = check_schema(&s).expect("the schema checks");
-    check_query(&s, &program, module, &q)
-        .map(|_| ())
-        .map_err(|d| d.message)
+    let checked = check_query(&s, &program, module, &q).map_err(|d| d.message)?;
+    assert_one_binding_site("checked", &checked.terms, &[checked.term]);
+    let n =
+        crate::norm::query(&s, &program, &checked).unwrap_or_else(|e| panic!("normalises: {e:?}"));
+    assert_one_binding_site("normalised", &n.terms, &[n.body]);
+    Ok(())
 }
 
 fn query_accepts(text: &str) {
@@ -1932,7 +1936,11 @@ fn a_group_desugars_to_group_over_binder_records() {
         "fn f () -> Set (Key users) = from o in orders group o by o.user into g select g.key",
     )
     .unwrap();
-    let Kind::For(_, src, _) = p.terms.kind(body_of(&s, &p, "f")) else {
+    let Kind::Let(_, value, body) = p.terms.kind(body_of(&s, &p, "f")) else {
+        panic!("a let of the grouped value");
+    };
+    assert!(matches!(p.terms.kind(*value), Kind::Lam(..)));
+    let Kind::For(_, src, _) = p.terms.kind(*body) else {
         panic!("a for");
     };
     let Kind::Group { source, .. } = p.terms.kind(*src) else {

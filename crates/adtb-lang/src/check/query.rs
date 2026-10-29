@@ -3,9 +3,10 @@ use super::*;
 use crate::ast::{BinOp, Expr, ExprKind};
 use crate::kernel::{Agg, Kind};
 
-/// A clause of a comprehension, elaborated: a generator or a filter.
+/// A clause of a comprehension, elaborated: a generator, a binding or a filter.
 enum Frame {
     For(Var, Tm),
+    Let(Var, Tm),
     Where(Tm),
 }
 
@@ -97,6 +98,7 @@ impl Checker<'_> {
         for f in frames.into_iter().rev() {
             inner = match f {
                 Frame::For(v, src) => self.add(Kind::For(v, src, inner), set_ty.clone()),
+                Frame::Let(v, bound) => self.add(Kind::Let(v, bound, inner), set_ty.clone()),
                 Frame::Where(p) => {
                     let none = self.add(Kind::EmptySet, set_ty.clone());
                     self.add(Kind::If(p, inner, none), set_ty.clone())
@@ -104,6 +106,15 @@ impl Checker<'_> {
             };
         }
         inner
+    }
+
+    /// `for x' in source do body`, `x'` a new variable that `body` reads in place of `x`.
+    pub(super) fn for_afresh(&mut self, x: Var, source: Tm, body: Tm, ty: Ty) -> Tm {
+        let x2 = self.terms.var_like(x);
+        let body = self
+            .terms
+            .renamed(body, &BTreeMap::from([(x, x2)]), &mut self.frees);
+        self.add(Kind::For(x2, source, body), ty)
     }
 
     /// The record of `binders` a group or aggregate ranges over, labelled by name.
@@ -162,6 +173,12 @@ impl Checker<'_> {
             let xi = self.fresh(rec_ty.clone());
             let xt = self.var_tm(xi);
             let by = self.over_record(&labels, xt, key.tm);
+            let row = self.fresh(rec_ty.clone());
+            let row_tm = self.var_tm(row);
+            let of_row = self.over_record(&labels, row_tm, value.tm);
+            let fn_ty = Ty::Fn(Box::new(rec_ty.clone()), Box::new(value.ty.clone()));
+            let lam = self.add(Kind::Lam(row, of_row), fn_ty.clone());
+            let value_fn = self.fresh(fn_ty);
             let rows_ty = Ty::NonEmpty(Box::new(rec_ty));
             let zeta_ty = Ty::Record(vec![
                 ("key".into(), key.ty),
@@ -185,14 +202,14 @@ impl Checker<'_> {
                     ty: zeta_ty,
                     rows: None,
                     group: Some(Rc::new(GroupInfo {
-                        binders: labels,
-                        value: value.tm,
+                        value: value_fn,
                         value_ty: value.ty,
                         value_rows: value.rows,
                         rows_ty,
                     })),
                 },
             );
+            frames.push(Frame::Let(value_fn, lam));
             frames.push(Frame::For(zeta, group_tm));
             binders = vec![zeta];
             self.clauses(after, &mut frames, &mut binders)?;
@@ -294,13 +311,22 @@ impl Checker<'_> {
             }
             out.push((o.tm, k.desc, k.expr.span));
         }
-        let x = match self.terms.kind(body.select.tm) {
-            Kind::Var(v) => *v,
-            _ => self.fresh(body.select.ty.clone()),
+        let selected = match self.terms.kind(body.select.tm) {
+            Kind::Var(v) => Some(*v),
+            _ => None,
+        };
+        let x = match selected {
+            Some(v) => self.terms.var_like(v),
+            None => self.fresh(body.select.ty.clone()),
         };
         let mut keys_out = Vec::new();
         for (tm, desc, span) in out {
-            let tm = self.over_selected(tm, body.select.tm, x);
+            let tm = match selected {
+                Some(v) => self
+                    .terms
+                    .renamed(tm, &BTreeMap::from([(v, x)]), &mut self.frees),
+                None => self.over_selected(tm, body.select.tm, x),
+            };
             if self.mentions_any(tm, &body.binders, x) {
                 return Err(diag(
                     span,
@@ -787,7 +813,7 @@ impl Checker<'_> {
                     let one = self.add(Kind::Singleton(xt), set_ty.clone());
                     let none = self.add(Kind::EmptySet, set_ty.clone());
                     let body = self.add(Kind::If(pt.tm, one, none), set_ty.clone());
-                    self.add(Kind::For(v, src.tm, body), set_ty)
+                    self.for_afresh(v, src.tm, body, set_ty)
                 }
             };
             (v, source, false, Vec::new())

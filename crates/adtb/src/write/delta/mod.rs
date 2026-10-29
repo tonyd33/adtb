@@ -373,7 +373,7 @@ impl Compiler<'_> {
                 self.conjuncts(a, out);
                 self.conjuncts(b, out);
             }
-            Kind::Let(x, e, b) if self.facts.copyable(&mut self.total, self.terms, e) => {
+            Kind::Let(x, e, b) if self.total.copyable(self.terms, e) => {
                 let from = out.len();
                 self.conjuncts(b, out);
                 for k in &mut out[from..] {

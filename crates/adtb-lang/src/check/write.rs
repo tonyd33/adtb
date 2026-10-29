@@ -1074,7 +1074,7 @@ impl Checker<'_> {
         Ok((rel, rows, f, new.ty))
     }
 
-    /// `for x in rows do if p then {x} else {}`, with `x` in scope.
+    /// `for x' in rows do if p then {x'} else {}`, `p` checked with `x` in scope.
     fn row_filter(&mut self, x: Var, rows: Tm, elem: &Ty, p: &Expr) -> R<Tm> {
         forbid_nested(p)?;
         let bt = self.bool_ty();
@@ -1084,7 +1084,7 @@ impl Checker<'_> {
         let one = self.singleton(xt, elem);
         let none = self.add(Kind::EmptySet, set_ty.clone());
         let body = self.add(Kind::If(p.tm, one, none), set_ty.clone());
-        Ok(self.add(Kind::For(x, rows, body), set_ty))
+        Ok(self.for_afresh(x, rows, body, set_ty))
     }
 
     /// Checks a delete; returns its relation and the rows it names.

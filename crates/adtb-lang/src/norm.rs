@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::analysis::Totality;
 use crate::check::{Adhoc, AdhocCommand, Program, Query, Txn};
-use crate::kernel::{Agg, IndexField, Kind, Node, Terms, Tm, Var};
+use crate::kernel::{Agg, Frees, IndexField, Kind, Node, Terms, Tm, Var};
 use crate::schema::Schema;
 use crate::types::*;
 
@@ -327,8 +327,8 @@ struct Normaliser<'a> {
     src: [&'a Terms; 2],
     fns: &'a [Option<Tm>],
     out: Terms,
+    out_frees: Frees,
     tot: Totality<'a>,
-    draws: HashMap<Tm, bool>,
     free: HashMap<(usize, Var), Var>,
     fv: [HashMap<Tm, FreeVars>; 2],
     memo: HashMap<MemoKey, Tm>,
@@ -341,8 +341,8 @@ impl<'a> Normaliser<'a> {
             src,
             fns,
             out: Terms::default(),
+            out_frees: Frees::default(),
             tot: Totality::new(schema, false),
-            draws: HashMap::new(),
             free: HashMap::new(),
             fv: [HashMap::new(), HashMap::new()],
             memo: HashMap::new(),
@@ -354,37 +354,30 @@ impl<'a> Normaliser<'a> {
         terms.node(t)
     }
 
-    /// Returns whether `t` may be duplicated or dropped: it is total, draws no fresh value and
-    /// calls no volatile host function.
     fn copyable(&mut self, t: Tm) -> bool {
-        self.tot.total(&self.out, t) && !self.draws(t)
+        self.tot.copyable(&self.out, t)
     }
 
     fn draws(&mut self, t: Tm) -> bool {
-        if let Some(&d) = self.draws.get(&t) {
-            return d;
-        }
-        let d = match self.out.kind(t) {
-            Kind::Fresh(..) => true,
-            Kind::Call { func, .. }
-                if matches!(
-                    self.schema.function(*func).body,
-                    crate::ast::FnBody::Host {
-                        deterministic: false,
-                        ..
-                    }
-                ) =>
-            {
-                true
-            }
-            _ => self.out.children(t).into_iter().any(|c| self.draws(c)),
-        };
-        self.draws.insert(t, d);
-        d
+        self.tot.draws(&self.out, t)
     }
 
     fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
         self.out.add(kind, ty)
+    }
+
+    /// Returns `t` with each variable its root binds replaced by a new one.
+    fn bound_afresh(&mut self, t: Tm) -> Tm {
+        let mut bound = Vec::new();
+        self.out.kind(t).with_vars(&mut |v| {
+            bound.push(v);
+            v
+        });
+        let map = bound
+            .into_iter()
+            .map(|v| (v, self.out.var_like(v)))
+            .collect();
+        self.out.renamed(t, &map, &mut self.out_frees)
     }
 
     /// Returns a new output variable for binder `v` of `cx`'s arena.
@@ -1242,21 +1235,28 @@ impl<'a> Normaliser<'a> {
                             _ => unreachable!("checked first-order"),
                         })
                         .collect();
-                    return Ok(Val::Tm(self.add(Kind::Case { scrutinee: s, arms }, ty)));
+                    let t = self.add(Kind::Case { scrutinee: s, arms }, ty);
+                    return Ok(Val::Tm(self.bound_afresh(t)));
                 }
                 Ok(Val::Case(s, Rc::new(out)))
             }
             Val::Let(x, b, v) => {
                 let ty = k.ty().clone();
                 match self.then((*v).clone(), k)? {
-                    Val::Tm(r) => Ok(Val::Tm(self.add(Kind::Let(x, b, r), ty))),
+                    Val::Tm(r) => {
+                        let t = self.add(Kind::Let(x, b, r), ty);
+                        Ok(Val::Tm(self.bound_afresh(t)))
+                    }
                     v => Ok(Val::Let(x, b, Rc::new(v))),
                 }
             }
             Val::Fix(binds, v) => {
                 let ty = k.ty().clone();
                 match self.then((*v).clone(), k)? {
-                    Val::Tm(r) => Ok(Val::Tm(self.add(Kind::Fix(binds, r), ty))),
+                    Val::Tm(r) => {
+                        let t = self.add(Kind::Fix(binds, r), ty);
+                        Ok(Val::Tm(self.bound_afresh(t)))
+                    }
                     v => Ok(Val::Fix(binds, Rc::new(v))),
                 }
             }
@@ -1278,7 +1278,8 @@ impl<'a> Normaliser<'a> {
             }
             Kind::For(y, a, b) => {
                 let inner = self.for_over(var, b, body, cx, ty)?;
-                Ok(self.add(Kind::For(y, a, inner), ty.clone()))
+                let t = self.add(Kind::For(y, a, inner), ty.clone());
+                Ok(self.bound_afresh(t))
             }
             Kind::If(c, a, b) => {
                 let a = self.for_over(var, a, body, cx, ty)?;
@@ -1316,6 +1317,7 @@ fn sole_ctor(schema: &Schema, ty: &Ty) -> Option<u32> {
             def, ctors: None, ..
         } => (schema.ty(*def).ctors().len() == 1).then_some(0),
         Ty::Sum { ctors, sel: None } => (ctors.len() == 1).then_some(0),
+        Ty::Tag(inner) => sole_ctor(schema, inner),
         _ => None,
     }
 }

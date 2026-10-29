@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::schema::Generator;
 use crate::types::*;
@@ -300,6 +301,16 @@ pub enum Search {
     Into(Vec<Tm>),
 }
 
+/// The state of one [`Terms::renamed`]: each variable's image and each term's copy.
+struct Renaming {
+    vars: BTreeMap<Var, Var>,
+    copies: HashMap<Tm, Tm>,
+}
+
+/// The free variables of terms of one arena, kept across calls.
+#[derive(Debug, Default)]
+pub(crate) struct Frees(HashMap<Tm, Rc<BTreeSet<Var>>>);
+
 /// An arena of typed kernel terms. A term may be shared by several parents.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Terms {
@@ -326,6 +337,12 @@ impl Terms {
             ty,
         });
         Var(self.vars.len() as u32 - 1)
+    }
+
+    /// Returns a new variable with the name and type of `v`.
+    pub(crate) fn var_like(&mut self, v: Var) -> Var {
+        let info = self.var_info(v).clone();
+        self.var(&info.name, info.ty)
     }
 
     pub fn node(&self, t: Tm) -> &Node {
@@ -385,6 +402,88 @@ impl Terms {
     /// Returns whether `t` or a subterm of it is a write term.
     pub fn writes(&self, t: Tm) -> bool {
         self.any(t, Kind::is_write)
+    }
+
+    /// Returns a copy of `t` that reads and binds each variable of `map` as its image and binds
+    /// afresh every variable a copied subterm binds, sharing each subterm that neither binds nor
+    /// has free a variable so renamed.
+    ///
+    /// Preconditions:
+    /// - `frees` holds free variables of terms of this arena only.
+    /// - No node of this arena is ever rewritten in place.
+    pub(crate) fn renamed(&mut self, t: Tm, map: &BTreeMap<Var, Var>, frees: &mut Frees) -> Tm {
+        let mut r = Renaming {
+            vars: map.clone(),
+            copies: HashMap::new(),
+        };
+        self.copy_renamed(t, &mut r, frees)
+    }
+
+    /// Returns the variables free in `t`.
+    fn frees(&self, t: Tm, memo: &mut Frees) -> Rc<BTreeSet<Var>> {
+        if let Some(f) = memo.0.get(&t) {
+            return Rc::clone(f);
+        }
+        let f = match self.kind(t) {
+            Kind::Var(v) => BTreeSet::from([*v]),
+            k => {
+                let mut f = BTreeSet::new();
+                for c in k.children() {
+                    f.extend(self.frees(c, memo).iter().copied());
+                }
+                for v in self.binders(t) {
+                    f.remove(&v);
+                }
+                f
+            }
+        };
+        let f = Rc::new(f);
+        memo.0.insert(t, Rc::clone(&f));
+        f
+    }
+
+    /// Returns the variables `t` itself binds.
+    fn binders(&self, t: Tm) -> Vec<Var> {
+        let mut out = Vec::new();
+        let k = self.kind(t);
+        if !matches!(k, Kind::Var(_)) {
+            k.with_vars(&mut |v| {
+                out.push(v);
+                v
+            });
+        }
+        out
+    }
+
+    fn copy_renamed(&mut self, t: Tm, r: &mut Renaming, frees: &mut Frees) -> Tm {
+        if let Some(&c) = r.copies.get(&t) {
+            return c;
+        }
+        let renames = self.frees(t, frees).iter().any(|v| r.vars.contains_key(v))
+            || self.binders(t).iter().any(|v| r.vars.contains_key(v));
+        if !renames {
+            return t;
+        }
+        let node = self.node(t).clone();
+        let kind = node.kind.with_vars(&mut |v| match r.vars.get(&v) {
+            Some(&x) => x,
+            None => {
+                let x = self.var_like(v);
+                r.vars.insert(v, x);
+                x
+            }
+        });
+        let children: Vec<Tm> = kind
+            .children()
+            .into_iter()
+            .map(|c| self.copy_renamed(c, r, frees))
+            .collect();
+        let c = self.add(kind.with_children(&children), node.ty);
+        if self.transport_fields.contains(&t) {
+            self.transport_fields.insert(c);
+        }
+        r.copies.insert(t, c);
+        c
     }
 
     /// Returns `depth` nested `if`s on `test` over `leaf`, each holding the one below as both

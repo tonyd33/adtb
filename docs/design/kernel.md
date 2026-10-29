@@ -557,6 +557,8 @@ Postconditions on a normal form, beyond those of §1:
 ```text
 fn Totality::new(schema: &Schema, hiding: bool) -> Totality
 fn Totality::total(&mut self, terms: &Terms, t: Tm) -> bool
+fn Totality::draws(&mut self, terms: &Terms, t: Tm) -> bool
+fn Totality::copyable(&mut self, terms: &Terms, t: Tm) -> bool
 ```
 
 `total` returns whether `t` cannot abort, by
@@ -573,6 +575,10 @@ all, and may move it past a guard, unless it contains `Fresh`, which
 is evaluated as often as §4.1 states. A partial term keeps its order
 relative to other partial terms and stays under every guard that
 dominated it.
+
+`draws` returns whether `t` contains `Fresh` or a call of a host
+function not declared deterministic. `copyable` returns whether `t` is
+total and does not draw.
 
 Partial, besides the primitive faults of
 [../spec/prelude.md](../spec/prelude.md): integer and decimal `sum`, a

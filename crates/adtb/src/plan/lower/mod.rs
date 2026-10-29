@@ -479,7 +479,7 @@ impl Planner<'_> {
                 self.conjuncts(a, out);
                 self.conjuncts(b, out);
             }
-            Kind::Let(x, e, b) if self.facts.copyable(&mut self.total, &self.t, e) => {
+            Kind::Let(x, e, b) if self.total.copyable(&self.t, e) => {
                 let from = out.len();
                 self.conjuncts(b, out);
                 for k in &mut out[from..] {

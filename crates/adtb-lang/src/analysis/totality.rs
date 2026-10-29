@@ -12,6 +12,7 @@ pub struct Totality<'s> {
     schema: &'s Schema,
     hiding: bool,
     memo: HashMap<Tm, bool>,
+    draws: HashMap<Tm, bool>,
 }
 
 impl<'s> Totality<'s> {
@@ -21,6 +22,7 @@ impl<'s> Totality<'s> {
             schema,
             hiding,
             memo: HashMap::new(),
+            draws: HashMap::new(),
         }
     }
 
@@ -44,6 +46,42 @@ impl<'s> Totality<'s> {
         };
         self.memo.insert(t, r);
         r
+    }
+
+    /// Returns whether `t` may be duplicated or dropped: it is total and neither draws a fresh
+    /// value nor calls a volatile host function.
+    ///
+    /// Preconditions:
+    /// - as [`Totality::total`].
+    pub fn copyable(&mut self, terms: &Terms, t: Tm) -> bool {
+        self.total(terms, t) && !self.draws(terms, t)
+    }
+
+    /// Returns whether evaluating `t` draws a fresh value or calls a volatile host function.
+    ///
+    /// Preconditions:
+    /// - as [`Totality::total`].
+    pub fn draws(&mut self, terms: &Terms, t: Tm) -> bool {
+        if let Some(&d) = self.draws.get(&t) {
+            return d;
+        }
+        let d = match terms.kind(t) {
+            Kind::Fresh(..) => true,
+            Kind::Call { func, .. }
+                if matches!(
+                    self.schema.function(*func).body,
+                    crate::ast::FnBody::Host {
+                        deterministic: false,
+                        ..
+                    }
+                ) =>
+            {
+                true
+            }
+            _ => terms.children(t).into_iter().any(|c| self.draws(terms, c)),
+        };
+        self.draws.insert(t, d);
+        d
     }
 
     /// Returns whether the form at the root of `t` may abort whatever its operands do.
