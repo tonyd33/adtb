@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: resolved
 kind: feature
 priority: 300
 summary: "the checker recurses once per match arm in Checker::chain, so a match of 4000 arms overflows a 2 MiB thread at opt-level 0"
-branch: checker-recursion
+closed: 2026-10-29
 ---
 
 # Feature: bound the checker's stack by nesting
@@ -16,3 +16,9 @@ branch: checker-recursion
 ## 2026-10-29: dispatched
 
 A fresh writer owns this in workspace checker-recursion. version-translation has not landed, but it changes only translate/, schema.rs and lib.rs in adtb-lang, so the writer stays out of those files and lists any recursion there for a ticket. Pattern: the reference's tail-position loops. Gates: suite over adtb-lang, adtb-reference and adtb-testkit, wide.rs at opt-level 0, clippy, fmt, house-check, size-check. Local brief: work/briefs/brief-checker-recursion.md.
+
+## 2026-10-29: landed
+
+Landed as 761788fb after a clear review; the main check passed on it. `Checker::chain` loops over arms, `wild_rule` and `useful` walk constructor fields with an explicit stack in the same depth-first order, and the normaliser's `spine` folds `If`/`Let` tails into one loop with the memo lookups where the old calls were. Kernel output is unchanged. crates/adtb-reference/tests/wide.rs passes at opt-level 0 (5/5; 2/5 overflowed before). Left: match-failure-duplication (a guarded arm that also tests a literal or field copies its failure continuation) and checker-wide-types (thousands of parameters or constructors).
+
+## 2026-10-29: resolved
