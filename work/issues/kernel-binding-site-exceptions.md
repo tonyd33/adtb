@@ -33,3 +33,7 @@ A fresh writer in workspace binding-sites on main 2125596c959f gives every site 
 ## 2026-10-29: review sends it back
 
 Frozen 5b795cf5 gives every site its own variable, asserts the rule on checked terms and normal forms across the corpus, and shares `Totality::copyable`/`draws` between norm and plan. A fresh review (work/briefs/review-binding-sites.md, local) found a size blowup: `Terms::renamed` copies every subterm reading a variable bound under its root, so each use of a group binder copies the whole group value; nested groups double distinct nodes per level where base was linear. Lead ruling: copy a subterm only when it has a free variable in the current renaming, with memoised free-variable sets, in `renamed` and in the normaliser's `bound_afresh`; a distinct-node test at two depths.
+
+## 2026-10-29: delta review sends it back again
+
+ca6c226c (rebased 86967099, branch check passed: root 2723 passed, campaign 47) shares closed subterms in `Terms::renamed`, making the closed group witness linear. A second review found a group value that reads an outer generator is still copied whole at each use, so nested dependent groups double checked nodes per level where base shared one value per use. Lead ruling: bind a group value once as a function of the row and apply it at each use; the same for the other per-use copies; distinct-node tests at three depths with a constant increment per level, including a variant whose normal form base kept linear.
