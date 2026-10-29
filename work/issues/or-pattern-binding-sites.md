@@ -18,3 +18,7 @@ Found while analysing match-failure-duplication. An or-pattern's alternatives bi
 ## Fix
 
 Give each alternative its own variables and join them in the body, or state in kernel.md the exclusive-sites exception and the passes that rely on it. Decide together with match-failure-duplication's guard-variable rule (proposed point match-failure-retest).
+
+## 2026-10-29: from the kernel-dag-tree-walks review
+
+`write_depends_on_volatile` (crates/adtb-lang/src/analysis/volatile.rs) walks with a visited set and is correct only because each variable has one binding site in a normal form. If exclusive binding sites reach normal forms, the shared continuation `k` in `Let(x, clean, k)` and `Let(x, volatile_read, k)` is visited once and the dependence is missed. Keep one binding site per variable, or make that walk path-sensitive.
