@@ -604,15 +604,22 @@ clauses. These run in the engine:
 | `add unique (f) in r.C`, `drop unique ...`, `add index ...`, `drop index ...` | uniques and indexes |
 | `rekey relation r key (...)` | change a relation's key |
 | `define fn ...`, `redefine fn ...`, `drop fn f` | functions |
+| `add default r.f = e`, `add default r.C.f = e`, `drop default r.f`, `drop default r.C.f` | defaults for omitted fields on later inserts |
+| `add computed r.f: T = e`, `redefine computed r.f: T = e`, `drop computed r.f` | fields evaluated on read, with `self` bound to the row |
 | `add check ...`, `drop check c`, `add constraint ...`, `drop constraint c` | checks and constraints |
 | `revert N` | undo migration `N` of the log, by its position |
 
 `fill` gives existing rows a value for a new field; it is not a default
 for later inserts. The `arm` clauses give the new constructor's arm of
-each schema function that matches on the type. A schema file's
-`default` clauses are applied, but the operators `add default`,
-`add computed` and `script` are not yet available: the engine refuses
-them with `this operator has no resolved form yet`.
+each schema function that matches on the type. Defaults and computed
+fields can be declared in a schema file or added by migration.
+
+`store f [key ...] [index ...]` and `unstore f` are accepted for a
+schema function with no parameters. `store` records the view in the
+catalog, but reads still evaluate its query; physical storage,
+incremental maintenance and the index-bounded maintenance admission
+check are not implemented yet. The engine refuses `script` with
+"the engine does not run a `script` yet".
 
 See [syntax.md §8](../../spec/syntax.md#8-schema-operators),
 [evolution.md §4](../../spec/evolution.md#4-operators) and

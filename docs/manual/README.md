@@ -80,8 +80,9 @@ specification describes:
 - Operations: `print schema`, `verify`, `export`, dump and restore,
   backups and `reindex`, which the engine refuses today with "does not
   run in this engine yet".
-- Migration scripts, stored views, and defaults and computed fields
-  added by migration: the `script`, `store`, `add default` and
-  `add computed` operators, which the engine refuses with "this
-  operator has no resolved form yet". The `default` and `computed`
-  clauses of a schema file do run.
+- Migration scripts: the engine refuses `script` with "the engine does
+  not run a `script` yet".
+- Physical storage and incremental maintenance of stored views: `store`
+  is accepted and records the view in the catalog, but reads evaluate
+  its query. The engine does not yet enforce the index-bounded
+  maintenance requirement.

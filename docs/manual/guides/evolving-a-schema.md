@@ -273,6 +273,57 @@ does. The specification describes
 [nest and unnest](../../spec/evolution.md#48-nest-and-unnest) pair,
 which move constructors into and out of a value-level sum field.
 
+## Defaults and computed fields
+
+`add default` fills an omitted field on later inserts. It leaves
+existing rows alone; `fill` supplies their values when the field is
+added. `add computed` adds a field evaluated from each row on read.
+Here is a separate history showing all three:
+
+```adt items.adt
+module inventory
+
+type Item = { id: I64, price: I64 }
+relation items : Item key id
+```
+
+```console
+$ adtb --create --schema items.adt items.db -c 'insert items { id: 1, price: 10 }'
+```
+
+```adt derived.adt
+module inventory
+add field Item.tax: I64 fill 2
+add default items.tax = 3
+add computed items.total: I64 = self.price + self.tax
+```
+
+```console
+$ adtb --schema items.adt --schema derived.adt items.db
+adtb> insert items { id: 2, price: 20 }
+adtb> insert items { id: 3, price: 30, tax: 4 }
+adtb> from i in items select { id: i.id, tax: i.tax, total: i.total } order by i.id
+{ id: 1, tax: 2, total: 12 }
+{ id: 2, tax: 3, total: 23 }
+{ id: 3, tax: 4, total: 34 }
+adtb> update i in items where i.id == 2 set { i with price: 21 }
+adtb> from i in items where i.id == 2 select i.total
+24
+adtb> \q
+```
+
+The first row keeps its fill of `2`. The second takes the default of
+`3`, and the third supplies its own tax. `total` uses the current row:
+it changes when `price` changes and is never supplied in an insert.
+Defaults belong to the relation (`items.tax`); the physical field
+belongs to the type (`Item.tax`). `items.Item.tax` would give a
+default for only that constructor of the relation.
+
+Use `drop default items.tax` to require the field again on later
+inserts, `redefine computed items.total: I64 = ...` to change the
+expression, or `drop computed items.total` to remove the computed
+field.
+
 ## What the engine refuses at apply
 
 A migration is checked against the data before it applies, and a
@@ -305,5 +356,6 @@ you will see:
   differs from the log's". Applied migrations never change; write a
   new one.
 
-The `script` operator, which runs a write inside a migration, and the
-`add default` operator do not run in this engine yet.
+The `script` operator is intended to run a write inside a migration,
+but the engine refuses it with "the engine does not run a `script`
+yet".
