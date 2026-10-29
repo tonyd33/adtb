@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
+branch: server-resumable
 depends-on: [server-engine-interface]
 tags: [engine, server, test]
 kind: feature
@@ -37,3 +38,7 @@ Use simulator plus real threads and full branch/main check, clippy/fmt/house.
 No runtime dependency or fake materialize-then-throttle implementation approved.
 First Unix milestone may use current pins and zero optional request IDs; durable
 request replay, TLS TCP and full parity remain separate required later work.
+
+## 2026-10-28: dispatched
+
+A fresh writer owns the second slice of design server.md section 5.2, resumable engine work, in workspace server-resumable on main 1eb25c53: bounded admission by priority class then transaction start, queued cancel and deadline, transaction waits that release the worker and hold no latch, and a queued commit progressing while every other call waits. It plans the scheduler and wait signatures first (work/briefs/plan-server-resumable.md, local) and owns those signatures. The other slices are not started. Gates: targeted adtb and adtb-sim tests with simulator and real-thread cases, clippy, fmt, house-check, size-check; the lead runs the full check. Local brief: work/briefs/brief-server-resumable.md.

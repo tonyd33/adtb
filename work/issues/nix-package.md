@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-28
-status: open
+status: in-progress
+branch: nix-package
 kind: feature
 priority: 1040
 summary: "adtb has no Nix package, so nothing outside the dev shell can build or install its binaries and library"
@@ -21,3 +22,7 @@ The repository has a devenv shell and no flake outputs. Nothing builds adtb repr
 - The devenv shell and the flake share one nixpkgs pin.
 - CI builds the package (`.github/workflows/`, setup through `.github/actions/setup`).
 - Land with or before client-sdks: each SDK's end-to-end tests start a server from this package.
+
+## 2026-10-28: dispatched
+
+A fresh writer owns this in workspace nix-package on main 1eb25c53, with no Rust source changes: flake packages for the binaries, one nixpkgs pin with devenv, `nix flake check`, a CI workflow through .github/actions/setup with the Cachix token, and a docs/development.md section. Gates: `nix build .#`, `nix run .#NAME -- --help`, `nix flake check`, the dev shell still loads. Local brief: work/briefs/brief-nix-package.md.
