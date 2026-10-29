@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: resolved
 kind: bug
 priority: 831
 summary: "the permission analyzer evaluates a composite KeyOf to rows, so joining it with any other Key value panics"
-branch: permission-fixes
+closed: 2026-10-29
 tags:
   - quality
   - lang
@@ -21,3 +21,9 @@ Repro (from the code, not run): schema `type P = { a: I64, b: I64 }`, `relation 
 Latent: no crate outside adtb-lang calls `permission::` yet.
 
 Fix: make `KeyOf` return a scalar that carries the key operand's reads, as `Kind::Key` does. Add the repro as a test.
+
+## 2026-10-29: landed
+
+Landed with permission-provider-follow-ups after a clear fresh review; branch check on 4f266022 passed (root 2710 passed, 7 skipped; campaign 47). The base failure is a test in crates/adtb-lang/src/permission/ tests.
+
+## 2026-10-29: resolved

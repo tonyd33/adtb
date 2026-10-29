@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: resolved
 kind: bug
 priority: 832
 summary: "the permission analyzer takes the product of change paths over a write sequence, so N updates that may match nothing give 2^N paths"
-branch: permission-fixes
+closed: 2026-10-29
 tags:
   - quality
   - lang
@@ -23,3 +23,9 @@ Fix: keep paths only where an upsert needs them, or merge `Par` and `If` into on
 ## 2026-10-29: dispatched
 
 A fresh writer in workspace permission-fixes on main 2125596c959f fixes this with permission-keyof-join-panic and permission-provider-follow-ups: no exponential product of change paths, no under-charge, a 30-update transaction test. Gates: adtb-lang suite, clippy, fmt, house-check, size-check; the lead runs the full check.
+
+## 2026-10-29: landed
+
+Landed with permission-provider-follow-ups after a clear fresh review; branch check on 4f266022 passed (root 2710 passed, 7 skipped; campaign 47). The base failure is a test in crates/adtb-lang/src/permission/ tests.
+
+## 2026-10-29: resolved

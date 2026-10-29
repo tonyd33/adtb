@@ -36,6 +36,9 @@ Keep your context for rulings, briefs and review. Agents write the code.
   Keep essential scope, acceptance commands and landing dependencies in a
   tracked ticket or supporting note using [the evidence workflow](verification.md).
   The local brief must not be the only copy needed to resume.
+- Name every report, receipt and handoff path a brief asks for so it does
+  not exist yet: add a round suffix (`review-NAME2.md`). An agent's Write
+  replaces an ignored file with no copy left.
 - Tell the agent to read [code-agent.md](code-agent.md) and its brief,
   both by absolute path.
 - A brief names the rulings it relies on, the design and spec sections by

@@ -29,3 +29,11 @@ From work/briefs/review-permission-fixes.md (local):
 - Add `top` over `left union right` to the two-relation test, and B2 variants through a fix source and through an upsert's `old`.
 - The `each_distinguishing_read` doc comment says "two such values" with nothing to refer to; say "two elements of a set".
 - Over-charges, never under-charges: rows an `at` reads inside a fix body or a multi-constructor For body lose their key-distinct mark, and `prior(r)` outside a constraint is treated as another state.
+
+## 2026-10-29: landed with the permission analyzer fixes
+
+Landed with permission-keyof-join-panic and permission-change-path-blowup after a clear fresh review; branch check on 4f266022 passed (root 2710 passed, 7 skipped; campaign 47). `norm::program` runs once per analyzed program; `retag_anon` builds transport fields; `each_fieldless` and its synthetic test are removed; the doc comment is fixed; the B2 variants are added. Not possible: `top` over `left union right` is refused by the checker as indeterminate.
+
+Remaining:
+- crates/adtb-lang/src/permission/eval.rs: `REJECTED_ROW = 0` picks the `RejectedRow` constructor by position; base's loop over `ctors()` already charged exactly one constructor. Revert to the loop. `rejects_requires_insert_on_its_one_constructor` filters to inserts instead of asserting an exact set.
+- Over-charges: rows an `at` reads inside a fix body or a multi-constructor For body lose their key-distinct mark (keeping it needs analysis of what the point depends on); `prior(r)` outside a constraint is treated as another state.
