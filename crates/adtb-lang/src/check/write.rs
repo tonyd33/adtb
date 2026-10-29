@@ -1388,7 +1388,10 @@ impl Checker<'_> {
                         self.no_writes(e.span)?;
                     }
                     self.scope.push();
-                    let v = self.bind(&name.text, o.ty.clone(), o.rows);
+                    let v = self.bind_origin(&name.text, o.ty.clone(), self.row_origin(&o));
+                    if self.mentions_proposed(o.tm) {
+                        self.proposed.insert(v);
+                    }
                     if self.snapshot_value(&o) {
                         self.snapshot.insert(v);
                     }

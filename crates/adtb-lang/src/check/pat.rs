@@ -254,9 +254,9 @@ impl Checker<'_> {
             arms: irs,
         } = m;
         let rows = {
-            let mut rs = irs.iter().map(|a| a.body.as_ref().expect("checked").rows);
-            let first = rs.next().flatten();
-            first.filter(|r| rs.all(|x| x == Some(*r)))
+            irs.iter().fold(RowOrigin::Empty, |origin, arm| {
+                origin.join(self.row_origin(arm.body.as_ref().expect("checked")))
+            })
         };
         let xi = self.fresh(sty.clone());
         let body = match self.signature(&sty) {
@@ -283,9 +283,8 @@ impl Checker<'_> {
                 self.chain(None, xt, &sty, &irs, &ty)
             }
         };
-        let mut o = self.out(Kind::Let(xi, s.tm, body), ty);
-        o.rows = rows;
-        o
+        let o = self.out(Kind::Let(xi, s.tm, body), ty);
+        self.with_row_origin(o, rows)
     }
 
     /// Elaborates an arm's alternatives and joins the types of the names they bind.
@@ -820,6 +819,7 @@ impl Checker<'_> {
     pub(super) fn deferred(&self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Set(_) | ExprKind::Lambda(..) => true,
+            ExprKind::Binary(ast::BinOp::Union, _, _) => expr::empty_union(e),
             ExprKind::Ctor { .. } => !self.ctor_synthesizes(e),
             _ => expr::is_literal(e),
         }

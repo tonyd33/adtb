@@ -16,11 +16,14 @@ mod expr;
 mod pat;
 mod prelude;
 mod rel;
+mod rows;
 mod ty;
 mod write;
 
 #[cfg(test)]
 mod tests;
+
+use rows::RowOrigin;
 
 pub use adhoc::{AdhocCommand, Bundles, Command, Explained, RestorePoint};
 pub use ty::{join, subtype};
@@ -148,6 +151,8 @@ pub struct Checker<'a> {
     once: bool,
     /// Variables bound to rows of the snapshot, which `update x` and `delete x` may name.
     snapshot: BTreeSet<Var>,
+    empty_row_terms: BTreeSet<Tm>,
+    empty_row_vars: BTreeSet<Var>,
     /// Variables bound to rows a write proposes, which are never rows of the snapshot.
     proposed: BTreeSet<Var>,
     read_only: bool,
@@ -192,6 +197,8 @@ impl<'a> Checker<'a> {
             hoist: Vec::new(),
             once: true,
             snapshot: BTreeSet::new(),
+            empty_row_terms: BTreeSet::new(),
+            empty_row_vars: BTreeSet::new(),
             proposed: BTreeSet::new(),
             read_only: false,
             refs: None,
@@ -247,7 +254,11 @@ impl<'a> Checker<'a> {
 
     fn var_tm(&mut self, v: Var) -> Tm {
         let ty = self.terms.var_info(v).ty.clone();
-        self.add(Kind::Var(v), ty)
+        let tm = self.add(Kind::Var(v), ty);
+        if self.empty_row_vars.contains(&v) {
+            self.empty_row_terms.insert(tm);
+        }
+        tm
     }
 
     fn bool_ty(&self) -> Ty {

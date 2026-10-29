@@ -125,10 +125,9 @@ impl Checker<'_> {
             ExprKind::Binary(BinOp::Union, a, b) if self.elem_ty(expected).is_some() => {
                 let x = self.check(a, expected)?;
                 let y = self.check(b, expected)?;
-                let rows = x.rows.filter(|r| y.rows == Some(*r));
-                let mut o = self.out(Kind::Union(x.tm, y.tm), expected.clone());
-                o.rows = rows;
-                o
+                let rows = self.row_origin(&x).join(self.row_origin(&y));
+                let o = self.out(Kind::Union(x.tm, y.tm), expected.clone());
+                self.with_row_origin(o, rows)
             }
             ExprKind::Set(es) => self.set_literal(es, Some(expected), e.span)?,
             ExprKind::Call { callee, args, pins } => {
@@ -620,6 +619,23 @@ impl Checker<'_> {
         }
     }
 
+    fn union_pair(&mut self, a: &Expr, b: &Expr) -> R<(Out, Out)> {
+        if empty_union(a) {
+            let y = self.synth(b)?;
+            let want = self.elem_ty(&y.ty).map(|t| Ty::Set(Box::new(t)));
+            Ok((self.arm_against(a, want.as_ref())?, y))
+        } else {
+            let x = self.synth(a)?;
+            let y = if empty_union(b) {
+                let want = self.elem_ty(&x.ty).map(|t| Ty::Set(Box::new(t)));
+                self.arm_against(b, want.as_ref())?
+            } else {
+                self.synth(b)?
+            };
+            Ok((x, y))
+        }
+    }
+
     fn binary(
         &mut self,
         op: BinOp,
@@ -643,8 +659,7 @@ impl Checker<'_> {
                 Ok(self.out(kind, bt))
             }
             BinOp::Union => {
-                let x = self.synth(a)?;
-                let y = self.synth(b)?;
+                let (x, y) = self.union_pair(a, b)?;
                 let j = match (&x.ty, &y.ty) {
                     (Ty::Set(_) | Ty::NonEmpty(_), Ty::Set(_) | Ty::NonEmpty(_)) => {
                         self.join(&x.ty, &y.ty)
@@ -663,11 +678,10 @@ impl Checker<'_> {
                         ),
                     )
                 })?;
-                let rows = x.rows.filter(|r| y.rows == Some(*r));
+                let rows = self.row_origin(&x).join(self.row_origin(&y));
                 let (x, y) = (self.widen(x, &j), self.widen(y, &j));
-                let mut o = self.out(Kind::Union(x.tm, y.tm), j);
-                o.rows = rows;
-                Ok(o)
+                let o = self.out(Kind::Union(x.tm, y.tm), j);
+                Ok(self.with_row_origin(o, rows))
             }
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 let (x, y) = self.operator_operands(op, a, b, None)?;
@@ -1065,9 +1079,8 @@ impl Checker<'_> {
             }
         };
         let narrowed = ty::restrict(self.schema, &elem, set.clone());
-        let mut out = self.out(Kind::Restrict(o.tm, set), Ty::Set(Box::new(narrowed)));
-        out.rows = o.rows;
-        Ok(out)
+        let out = self.out(Kind::Restrict(o.tm, set), Ty::Set(Box::new(narrowed)));
+        Ok(self.with_row_origin(out, self.row_origin(&o)))
     }
 
     fn backlink(&mut self, x: &Expr, rref: &ast::RelationRef, f: &ast::Ident) -> R<Out> {
@@ -1902,10 +1915,9 @@ impl Checker<'_> {
                 (self.widen(x, &j), self.widen(y, &j), j)
             }
         };
-        let rows = x.rows.filter(|r| y.rows == Some(*r));
-        let mut o = self.out(Kind::If(cond.tm, x.tm, y.tm), ty);
-        o.rows = rows;
-        Ok(o)
+        let rows = self.row_origin(&x).join(self.row_origin(&y));
+        let o = self.out(Kind::If(cond.tm, x.tm, y.tm), ty);
+        Ok(self.with_row_origin(o, rows))
     }
 
     fn lambda(
@@ -2033,7 +2045,7 @@ impl Checker<'_> {
                 ast::Clause::From(gens) => {
                     for g in gens {
                         let (src, elem) = self.generator_source(&g.source)?;
-                        let v = self.bind(&g.binder.text, elem, src.rows);
+                        let v = self.bind_origin(&g.binder.text, elem, self.row_origin(&src));
                         frames.push(Frame::For(v, src.tm));
                         binders.push(v);
                     }
@@ -2170,14 +2182,27 @@ impl Checker<'_> {
             Kind::Var(v) => body.binders.contains(v),
             _ => false,
         };
-        let rows = body.select.rows.filter(|_| key_preserving);
+        let empty = body
+            .frames
+            .iter()
+            .any(|frame| matches!(frame, Frame::For(_, source) if self.empty_row_term(*source)));
+        let rows = if empty {
+            RowOrigin::Empty
+        } else if key_preserving {
+            self.row_origin(&body.select)
+        } else {
+            RowOrigin::Unknown
+        };
         let tm = self.assemble(body.frames, one, &set_ty);
         self.scope.pop();
-        Out {
-            tm,
-            ty: set_ty,
+        self.with_row_origin(
+            Out {
+                tm,
+                ty: set_ty,
+                rows: None,
+            },
             rows,
-        }
+        )
     }
 
     pub(super) fn comprehension(
@@ -2383,7 +2408,7 @@ impl Checker<'_> {
             None => None,
         };
         let ty = source.ty.clone();
-        let mut o = self.out(
+        let o = self.out(
             Kind::Present {
                 var: x,
                 source: source.tm,
@@ -2393,8 +2418,7 @@ impl Checker<'_> {
             },
             ty,
         );
-        o.rows = source.rows;
-        Ok(o)
+        Ok(self.with_row_origin(o, self.row_origin(&source)))
     }
 
     /// Returns the type `after` expects of a cursor synthesized at `ty`: an `Option` of a record
@@ -2459,7 +2483,7 @@ impl Checker<'_> {
             }
         }
         let ty = source.ty.clone();
-        let mut out = self.out(
+        let out = self.out(
             Kind::Present {
                 var: x,
                 source: source.tm,
@@ -2469,8 +2493,7 @@ impl Checker<'_> {
             },
             ty,
         );
-        out.rows = source.rows;
-        Ok(out)
+        Ok(self.with_row_origin(out, self.row_origin(&source)))
     }
 
     fn top(
@@ -2504,7 +2527,7 @@ impl Checker<'_> {
             ));
         }
         let ty = source.ty.clone();
-        let mut o = self.out(
+        let o = self.out(
             Kind::Top {
                 count: n.tm,
                 keys: ks,
@@ -2513,11 +2536,11 @@ impl Checker<'_> {
             },
             ty,
         );
-        o.rows = source.rows;
-        Ok(o)
+        Ok(self.with_row_origin(o, self.row_origin(&source)))
     }
 
     fn fix(&mut self, binds: &[(ast::Ident, Expr)], body: &Expr, expected: Option<&Ty>) -> R<Out> {
+        let origins = self.fix_origins(binds, &BTreeMap::new())?;
         let names: Vec<String> = binds.iter().map(|(n, _)| n.text.clone()).collect();
         let mut tys: Vec<Option<Ty>> = vec![None; binds.len()];
         let mut from_select = false;
@@ -2527,6 +2550,9 @@ impl Checker<'_> {
                 let mut operands = Vec::new();
                 union_operands(e, &mut operands);
                 for op in operands {
+                    if empty_union(op) {
+                        continue;
+                    }
                     let unknown: Vec<&str> = names
                         .iter()
                         .zip(&tys)
@@ -2538,9 +2564,9 @@ impl Checker<'_> {
                         continue;
                     }
                     self.scope.push();
-                    for (n, t) in names.iter().zip(&tys) {
+                    for ((n, t), origin) in names.iter().zip(&tys).zip(&origins) {
                         if let Some(t) = t {
-                            self.bind(n, Ty::Set(Box::new(t.clone())), None);
+                            self.bind_origin(n, Ty::Set(Box::new(t.clone())), *origin);
                         }
                     }
                     let el = if reads_unknown {
@@ -2604,8 +2630,8 @@ impl Checker<'_> {
         }
         self.scope.push();
         let mut vars = Vec::new();
-        for (n, t) in names.iter().zip(&tys) {
-            vars.push(self.bind(n, Ty::Set(Box::new(t.clone().expect("solved"))), None));
+        for ((n, t), origin) in names.iter().zip(&tys).zip(&origins) {
+            vars.push(self.bind_origin(n, Ty::Set(Box::new(t.clone().expect("solved"))), *origin));
         }
         let mut bound = Vec::new();
         let r = (|| -> R<Out> {
@@ -2622,9 +2648,8 @@ impl Checker<'_> {
         self.scope.pop();
         let b = r?;
         let ty = b.ty.clone();
-        let mut o = self.out(Kind::Fix(bound, b.tm), ty);
-        o.rows = b.rows;
-        Ok(o)
+        let o = self.out(Kind::Fix(bound, b.tm), ty);
+        Ok(self.with_row_origin(o, self.row_origin(&b)))
     }
 
     /// Returns the type of the `select` of comprehension `op` when it reads none of `unknown`, its
@@ -3096,6 +3121,14 @@ pub(super) enum Target {
 
 fn mentions_any_param(t: &Ty, n: usize) -> bool {
     (0..n as u32).any(|i| mentions(t, i))
+}
+
+pub(super) fn empty_union(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Set(es) => es.is_empty(),
+        ExprKind::Binary(BinOp::Union, a, b) => empty_union(a) && empty_union(b),
+        _ => false,
+    }
 }
 
 /// Flattens `a union b union ...` into its operands.

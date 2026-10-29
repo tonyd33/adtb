@@ -727,11 +727,15 @@ impl Checker<'_> {
             return o;
         }
         let tm = self.renumber(o.tm, to);
-        Out {
-            tm,
-            ty: to.clone(),
-            rows: o.rows,
-        }
+        let origin = self.row_origin(&o);
+        self.with_row_origin(
+            Out {
+                tm,
+                ty: to.clone(),
+                rows: None,
+            },
+            origin,
+        )
     }
 
     fn renumber(&mut self, t: Tm, to: &Ty) -> Tm {

@@ -6,6 +6,7 @@ use crate::schema::build;
 
 mod adhoc;
 mod principal;
+mod row_provenance;
 mod writes;
 
 const RUNNING: &str = r"

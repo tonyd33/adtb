@@ -1263,3 +1263,42 @@ fn uuid_formatting_is_total_but_storage_checks_its_domain() {
         db.close().expect("the database closes");
     });
 }
+
+#[test]
+fn fixpoint_write_targets_preserve_the_snapshot_relation() {
+    once(0, |rt| {
+        let log = Log::new(["module app
+             add module app
+             add type Row = { id: I64, public: Text, secret: Text }
+             add relation left : Row key id
+             add relation right : Row key id"]);
+        let db = Database::open_in(rt, "fix-rows.adt", &log, &options(2))
+            .expect("the provenance database opens");
+        for statement in [
+            r#"insert left Row { id: 1, public: "left one", secret: "left secret" }"#,
+            r#"insert left Row { id: 2, public: "left two", secret: "left secret" }"#,
+            r#"insert right Row { id: 1, public: "right one", secret: "right secret" }"#,
+            "update x in (fix rows = left union rows in rows) set x",
+            r#"update x in (
+                 fix a = b, b = (from seed in left where seed.id == 1 select seed) union a
+                 in from x in a where key x == left.key(1) select x)
+               set Row { x with public: "changed" }"#,
+            "delete x in (
+               fix rows = (from seed in left where seed.id == 2 select seed)
+                          union (from x in rows select x)
+               in rows union [])",
+        ] {
+            db.query_text(statement, &[], &CallOptions::default())
+                .unwrap_or_else(|e| panic!("{statement}: {e:?}"));
+        }
+        assert_eq!(
+            vec![r#"Row { id: 1, public: "changed", secret: "left secret" }"#],
+            query(&db, "left")
+        );
+        assert_eq!(
+            vec![r#"Row { id: 1, public: "right one", secret: "right secret" }"#],
+            query(&db, "right")
+        );
+        db.close().expect("the provenance database closes");
+    });
+}
