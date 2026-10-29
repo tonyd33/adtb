@@ -23,6 +23,7 @@ Found by the second review of version-translation (work/briefs/review-version-tr
 6. A deep law sweep in one run hits nextest's 60 s timeout after 8 to 10 walks; the law takes 11.2 s alone.
 7. A nested constructor built inside a write after it gained a field is refused "outside a write".
 8. When the catalog itself refuses a migration (for example "holds rows; it cannot be disabled"), `SchemaRefused.operator` is empty.
+9. docs/spec/catalog.md's errors table row for `BundleExpired` says an expired or superseded bundle "registered again fails the checks of a re-registration", which reads as every failing check. Section 4 of the same file (about line 599) and evolution.md 7.3 say a stale one is refused `BundleStale` and one with no translation `BundleExpired`; the code follows that. Lead ruling: the table row is imprecise, not the code. Reword it through the spec-revision workflow.
 
 ## Fix
 
