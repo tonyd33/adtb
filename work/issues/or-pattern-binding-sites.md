@@ -35,3 +35,7 @@ Frozen 8718388c passed the lead's branch check (root 2641 passed, 7 skipped; cam
 ## 2026-10-29: delta review blocks 53745f9b
 
 53745f9b keeps every copyable `Let` whose bound is an `If` or `Case`, not only selectors. The lead's branch check passed (root 2645 passed; campaign 47), but a fresh delta review found a lost index probe and a constraint base admitted now refused, when a function is called with a branching argument: plan/lower `peel`/`conjuncts` and the incremental-check analysis do not see through the kept `Let`. Lead ruling: substitute a branching copyable bound used at most once, keep it only when used more than once, and make `peel`/`conjuncts` and the delta analysis see through a kept copyable `Let` at a condition's root; the reviewer's two witnesses and a two-use variant become crates/adtb tests.
+
+## 2026-10-29: third review blocks 5263f185
+
+5263f185 substitutes a branching bound used once and sinks a kept copyable `Let` onto both sides of an equality conjunct (`Facts::sink_let`, crates/adtb/src/plan/terms.rs). A fresh review found a range probe lost: `fn near (a: I64, b: I64) -> Bool = a >= b and a < b + 10` called with a branching argument plans a scan where base planned `Range probe ms (n)`. Lead ruling: `sink_let` distributes over every scalar operator, not only `Eq`, and is guarded on copyable rather than total; the `near` witness becomes a plan test.
