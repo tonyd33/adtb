@@ -237,3 +237,10 @@ The precision gaps N4, N5 and N6 are in permission-provider-follow-ups. Everythi
 ## 2026-10-28: interrupted by a machine crash
 
 The review-fix writer froze 68a9625decead714aa953e55e66acac77d6b4f35 (from 34e5e03f, main 27b77539) and started its full check. The machine crashed during that check (log target/check-fixes.log stops after clippy), and the writer's receipt was lost; its handoff work/briefs/handoff-permission-review-fixes.md (local) survived. The lead reruns the full check on 68a9625d, and a fresh reviewer reads 34e5e03f..68a9625d without builds.
+
+## 2026-10-28: lead full branch check of the review fixes
+
+State: /home/tony/code/adtb-permission-successor, tested 68a9625decead714aa953e55e66acac77d6b4f35, base main 27b77539; commit id unchanged after the run.
+- First run failed to link the adtb lib test (`ld.lld: error: undefined hidden symbol` in adtb::api::server, code this track does not change), from incremental objects left by the crash. Log target/check-lead-fixes.log.
+- Rerun with `CARGO_INCREMENTAL=0` passed, exit 0: root 2502 passed, 8 skipped; apps/campaign 47 passed, 1 skipped; clippy, fmt, deny, size-check and docs-check passed; 7m50s. Log target/check-lead-fixes2.log.
+Remaining: the fresh review of 34e5e03f..68a9625d (running), landing, main check.
