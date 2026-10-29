@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-28
-status: open
+status: in-progress
 kind: feature
 priority: 829
 summary: no typed provider extracts and checks complete relation/field/write privilege requirements
+branch: permission-requirements
 depends-on:
   - registered-argument-values
 tags:
@@ -84,3 +85,61 @@ No wildcard that silently omits a new kernel form. Preserve existing language
 semantics and optimizer behavior. New default tests stay under two seconds unless
 using configured sweeps. Strict affected lint/fmt/house/size, full frozen branch,
 fresh independent architecture/contract review and full main verification.
+
+## 2026-10-28: implementation dispatched
+
+User directed continuation. Fresh permission-requirements workspace starts
+060ff07d on999926a8 (all prior registered admission fixes verified). One writer
+owns shared language signatures, new provider, narrow checker metadata, necessary
+callers/tests and design/kernel.md contract. No other code/build track runs.
+
+Before production edits the writer presents an algorithm/API/ownership map for
+lead review. Direction: capture semantic access/carry/write purpose at checking
+and compute requirements before optimizer normalization erases it, or carry an
+equivalent small typed effect summary. No duplicate parser/AST, shadow language,
+reader-metadata authorization or blanket field/constructor approximation. The
+complete pure provider scope and acceptance above remain unchanged. No public
+execution, canonical persistence, new dependency or normative change is approved.
+
+Acceptance commands: targeted adtb-lang permission/checker tests, strict affected
+clippy, cargo fmt --all --check, house/size checks, design example/docs checks as
+applicable, one frozen full branch check, fresh independent exact-source and
+architecture review, lead work/tools/land and full main check. Record source and
+configuration hashes, commands/exits/logs/timing, failures and any unfinished
+stage. Report new tests' default runtimes. Confirmed engine bugs preempt expansion.
+Local brief work/briefs/brief-permission-requirements.md; durable scope lives here.
+
+## 2026-10-28: approved purpose-preserving normalization boundary
+
+Writer's first architecture proposal was reviewed before production edits.
+Use the existing language normalizer while preserving checker access/carry purpose
+as Terms metadata. Requirements wrappers accept checked Query/Txn/Adhoc, normalize
+internally, then analyze only those purpose-preserving graphs. No public analyzer
+over arbitrary execution Terms and no second higher-order/partial evaluator.
+This follows queries12.4's normal-form constructor reads and existing erased-total-
+argument behavior. Explicit projection that collapses onto a carry Field clones
+an explicit residual node; it must not mutate a shared carry's purpose globally.
+All relevant copy/rewrite/arena paths must preserve this contract.
+
+Typed atoms cover constructor/field reads, insert/delete, update fields, exact
+retag edges and ReadFiles. Applied effective read grants implicitly cover declared
+key fields, not storage's physical whole-row identity. Same-site/binder IDs alone
+do not prove row identity across repeated relation/function reads. Exact-copy
+tokens preserve actual old-row copies, unrelated reads get distinct evidence,
+and joins only retain equal exact-copy evidence. Field-recursive types are refused
+by schema checking; references stay opaque, so type-shaped monotone joins have
+finite height. No arbitrary iteration/depth cutoff or guessed identity is allowed.
+
+Implicit upsert conflict/index/constraint lookup does not charge a user Read by
+itself; explicit old fields/whole-row use charges their origins, and proposed new
+values carry only actual source reads. Pair Insert-only conflict-skip with explicit
+old-read negatives and returned old-value coverage. This is implementation of
+existing privilege/constraint separation, not a new normative ruling.
+
+User requested parallel work. Disjoint campaign-seat-cleanup owns only app player
+helper, manual-derived owns three manual pages. No shared public API signature
+they consume changes here. They land MANUAL -> CAMPAIGN -> PERMISSIONS; permission
+writer rebases onto verified predecessors before final acceptance. Rust builds
+are serialized: campaign app checks first, manual shell/oplog second, permissions
+next on explicit lead release. Source editing proceeds concurrently. Lead owns
+scoped manual/docs and full main checks; no other actor may write language files.
