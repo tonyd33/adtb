@@ -29,3 +29,7 @@ Give each site its own variable, assert the rule on checked terms, and share one
 ## 2026-10-29: dispatched
 
 A fresh writer in workspace binding-sites on main 2125596c959f gives every site its own variable, runs the one-binding-site assertion on checked terms and normal forms over the checker corpus, and shares one copyable predicate between norm and plan. Results unchanged across conformance, differential and plan tests.
+
+## 2026-10-29: review sends it back
+
+Frozen 5b795cf5 gives every site its own variable, asserts the rule on checked terms and normal forms across the corpus, and shares `Totality::copyable`/`draws` between norm and plan. A fresh review (work/briefs/review-binding-sites.md, local) found a size blowup: `Terms::renamed` copies every subterm reading a variable bound under its root, so each use of a group binder copies the whole group value; nested groups double distinct nodes per level where base was linear. Lead ruling: copy a subterm only when it has a free variable in the current renaming, with memoised free-variable sets, in `renamed` and in the normaliser's `bound_afresh`; a distinct-node test at two depths.
