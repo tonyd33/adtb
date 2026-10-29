@@ -262,7 +262,7 @@ parts).
 - Roles, authentication sources, grants, peer mappings, audit with
   the ledger.
 - Real-process isolation checks under kills and pauses.
-- Client SDKs for TypeScript, Python, Go and Java, plus the existing
+- Client SDKs for TypeScript, Python, Go, Java and Haskell, plus the existing
   Rust generator retargeted to the wire. Each SDK has a client for the
   wire protocol: connect and authenticate, calls, transactions with
   retry, feeds and errors. It also has a generator that turns a bundle
