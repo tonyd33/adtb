@@ -4,6 +4,7 @@ status: in-progress
 kind: feature
 priority: 120
 summary: "about 87 lint expects and 7 size-allowlist entries stand in the source, and each one is a precedent other agents copy"
+branch: lint-batch3
 tags:
   - quality
 ---
@@ -42,3 +43,7 @@ Landed as 6686d1cb after a clear review (work/briefs/review-lint-fix.md, local);
 ## 2026-10-29: batch 2 landed
 
 Landed as cb259572; the main check passed on it. Expects went from 37 to 36: the soundness fuzz test runs on the harness thread, the kept reasons in the reference say what removes them, house-check-test covers the new rules, the design README names the `plan-fixture` dependencies, code-agent.md again says never to add `#[allow]`, and `query` is folded into adtb-simkit except in bundles.rs. Batch 3 (the adtb-lang rows and splits) waits for version-translation; it also folds the bundles.rs `query`.
+
+## 2026-10-29: batch 3 dispatched
+
+version-translation landed, so batch 3 runs in workspace lint-batch3 on main 0c489c2c: the audit's adtb-lang rows and size splits except under crates/adtb-lang/src/check/ (checker-match-recursion edits it), moving crates/adtb-lang/tests/running into adtb-testkit, folding the bundles.rs `query`, and any expect version-translation added. The check/ rows follow in a later batch. Local brief: work/briefs/brief-lint-batch3.md.
