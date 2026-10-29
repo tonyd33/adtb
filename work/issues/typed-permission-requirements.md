@@ -207,3 +207,14 @@ The successor froze 73e5750339f374fd344d5f197f1ac475739c072c on main 27b77539:
 Ruling: a `match` on an upsert's `old` binder charges ReadConstructor on every constructor its arms name, as ranging over those constructors would. Which arm runs is observable through the write, the result or a failure, so it reveals old's constructor. The implicit conflict lookup charges nothing by itself only because it reveals no more than a uniqueness refusal would, and a constructor test reveals more. This applies the existing rule that a role's matches range only over the constructors it is granted; no new normative behaviour. The frozen test upsert_constructor_arms_charge_only_their_own_edges pins the opposite and must change: keep its retag-edge assertions and add the ReadConstructor requirements.
 
 Next: a fresh writer applies the ruling with paired tests; then one full branch check, a fresh independent review, landing and a main check.
+
+## 2026-10-28: old-match ruling implemented; ruling extended to every constructor observation
+
+Frozen 1c8989cc10506f38eaf0252a749df1dc710a0220 on main 27b77539:
+- Full check passed: root 2483 passed, 8 skipped; campaign 47 passed, 1 skipped.
+- Permission 45/45 and adtb-lang 720/720 passed; strict clippy, fmt, house-check and size-check passed.
+- Rows now carry the relations they were read from (`Value.stored`). A `case` on a stored row charges each arm's constructor and its key reads through the existing range path.
+- Field and whole-row uses of `old` already charged what ranging does.
+- Receipt work/briefs/receipt-permission-oldmatch.md (local).
+
+Ruling: every observation of a stored row's constructor charges ReadConstructor and the key reads on the constructors it can distinguish, as ranging does. This covers `match`, `tag` and any other constructor test, on an upsert's `old` or any stored row. `tag(old)` charged nothing at 1c8989cc and is fixed before landing.
