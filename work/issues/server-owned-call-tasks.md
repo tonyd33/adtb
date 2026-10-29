@@ -52,3 +52,11 @@ Left for later slices: the memory grant deciding when the head runs, bundle work
 ## 2026-10-29: resumable engine slice landed
 
 Landed as 7d7aa7d5 after review fixes; the main check passed on b241565d. Slice 2 of design server.md section 5.2 is done. The ticket stays open for the result/task slice, which consumes `Scheduler::admit`, `Resumable` and `Waits::watch`, and for the items left above. The next slice also fixes `admit` dropping refused calls; follow-ups are in resumable-calls-follow-ups.
+
+## 2026-10-29: for the result/task slice, from resumable-calls-follow-ups
+
+- Map `Refusal::TooLarge`, `Refusal::ShutDown` and `Stopped::ShutDown` to wire errors; the two refusals are not retryable.
+- On a rerun, earlier statements' rerun time counts against the limit of the statement that suspended (crates/adtb/src/write/mod.rs about 857-866). This is stricter than the blocking path and never looser; state it in docs/design/mvcc.md near line 474 with a test, or exclude rerun time if a call is refused that blocking would finish.
+- No path enforces the statement limit during a wait; `Rerun.since` is private, so the slice cannot set `Entry::deadline` to when the limit runs out.
+- `Scheduler` has no `Drop`; one dropped without `shutdown` never stops its calls.
+- Tests: `a_waiting_write_stops_at_its_deadline_real` (crates/adtb-sim/tests/calls.rs about 1185) asserts exact events against a 100 ms deadline and can see only `[Stopped]` under load; the blocking deadlock variant (about 1304-1316) relies on the simulator's interleaving and ran 8 seeds, not the deep profile's 64; no test races a cancel against shutdown. The `ShutDown` doc comments in exec/sched.rs (about 65 and 76) restate the name.

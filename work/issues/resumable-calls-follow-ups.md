@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: resolved
 kind: feature
 priority: 1004
 summary: "a refused admit drops the call and any open transaction it owns, shutdown never stops waiting calls, and the resumable call tests miss multi-statement and deadline cases"
-branch: calls-follow-ups
+closed: 2026-10-29
 tags:
   - engine
 ---
@@ -32,3 +32,9 @@ From the independent review of the resumable engine slice of server-owned-call-t
 ## 2026-10-29: dispatched
 
 A fresh writer fixes every item above in workspace calls-follow-ups on main a917867e, before the result/task slice consumes `admit`. Lead rulings: `admit` returns the refused call inside the error; a call larger than the admission byte bound is refused with a non-retryable error; `shutdown` runs `stop` on every queued and waiting call and a later cancel is a no-op; `take` stops a call whose deadline has passed instead of starting or resuming it. The statement limit bounds one statement execution (catalog.md section 8.3), and a suspended wait is part of that execution as a blocking wait is, so a rerun does not restart the statement limit. Gates: targeted adtb and adtb-sim calls tests, simulator and real-thread, clippy, fmt, house-check, size-check; the lead runs the full check.
+
+## 2026-10-29: landed
+
+Landed as 2f2c2f61 after a clear fresh review; the branch check on d8c37801 (parent 370e51c2, the landed parent) passed: root 2628 passed, 7 skipped; apps/campaign 47 passed, 1 skipped; all static checks passed. `admit` returns `Refused { reason, call }` with `Refusal::{Overloaded, TooLarge, ShutDown}`; `shutdown` stops every queued, ready and waiting call with `Stopped::ShutDown`; `take` stops a call past its deadline; `Error::Blocked` carries a `Rerun` the caller passes back in `Bounds::rerun`, and no statement limit restarts on a rerun. Five new tests failed on base (deadline at take, shutdown, rerun limit). Remaining items moved to server-owned-call-tasks.
+
+## 2026-10-29: resolved
