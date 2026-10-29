@@ -745,6 +745,64 @@ fn idle_after_commit_marks_output_incomplete() {
 }
 
 #[test]
+fn a_drained_write_keeps_its_outcome() {
+    sim_once(|rt| {
+        let f = open(rt, 0);
+        let task = f.submit(3, read_opts());
+        let (rows, done) = drive(rt, &task);
+        assert_eq!(1, rows.len());
+        assert!(
+            matches!(
+                done,
+                Completion::Committed {
+                    incomplete: false,
+                    ..
+                }
+            ),
+            "{done:?}"
+        );
+        task.expire_idle(Duration::from_secs(1));
+        task.cancel();
+        let (_, waker) = wakes(rt);
+        let Observation::Done(again) = next(rt, &task, &waker) else {
+            panic!("the task stays done")
+        };
+        assert_eq!(done, again);
+    });
+}
+
+/// A request after the drain acknowledgement leaves a read to commit: its whole result was
+/// sent.
+#[test]
+fn a_drained_read_keeps_its_outcome() {
+    sim_seeds("drained read", |rt| {
+        let f = open(rt, 100);
+        let task = f.submit(1, read_opts());
+        let (_, waker) = wakes(rt);
+        task.supply(usize::MAX);
+        let mut rows = Vec::new();
+        loop {
+            match next(rt, &task, &waker) {
+                Observation::Layout(_) => {}
+                Observation::Batch(b) => {
+                    rows.extend(b.rows().expect("a rows batch").iter().cloned());
+                }
+                Observation::End => break,
+                o => panic!("unexpected {o:?}"),
+            }
+        }
+        task.drained();
+        task.expire_idle(Duration::from_secs(1));
+        task.cancel();
+        let Observation::Done(done) = next(rt, &task, &waker) else {
+            panic!("the task ends")
+        };
+        assert!(matches!(done, Completion::Read { .. }), "{done:?}");
+        assert_eq!(100, ints(&rows).len());
+    });
+}
+
+#[test]
 fn closing_the_database_stops_its_tasks() {
     sim_once(|rt| {
         let f = open(rt, 3000);
