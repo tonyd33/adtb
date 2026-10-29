@@ -573,22 +573,17 @@ impl Checker<'_> {
                 let mut m = self.match_patterns(s, &heads, e.span)?;
                 let mut joined: Option<Ty> = None;
                 for (arm, ir) in arms.iter().zip(m.arms.iter_mut()) {
+                    let guard = self.arm_guard(ir, arm.guard.as_ref(), |c, g| {
+                        let bt = c.bool_ty();
+                        Ok(c.check(g, &bt)?.tm)
+                    })?;
                     self.scope.push();
                     for (name, local) in &ir.locals {
                         self.scope.bind(name, local.clone());
                     }
-                    let r = (|| -> R<(Option<Tm>, Out)> {
-                        let guard = match &arm.guard {
-                            Some(g) => {
-                                let bt = self.bool_ty();
-                                Some(self.check(g, &bt)?.tm)
-                            }
-                            None => None,
-                        };
-                        Ok((guard, self.new_value(&arm.body, expected, site)?))
-                    })();
+                    let body = self.new_value(&arm.body, expected, site);
                     self.scope.pop();
-                    let (guard, body) = r?;
+                    let body = body?;
                     joined = Some(match joined {
                         None => body.ty.clone(),
                         Some(j) => self.join(&j, &body.ty).unwrap_or_else(|| expected.clone()),
@@ -1141,27 +1136,26 @@ impl Checker<'_> {
         let over_snapshot = self.snapshot_value(&m.scrutinee);
         let mut eff: Option<Effect> = None;
         for (arm, ir) in arms.iter().zip(m.arms.iter_mut()) {
-            self.scope.push();
-            for (name, local) in &ir.locals {
+            for (_, local) in ir.locals.iter().chain(&ir.guard_locals) {
                 if over_snapshot && local.rows.is_some() {
                     self.snapshot.insert(local.var);
                 }
-                self.scope.bind(name, local.clone());
             }
             let saved = std::mem::replace(&mut self.once, false);
-            let r = (|| -> R<(Option<Tm>, Tm, Effect)> {
-                let guard = match &arm.guard {
-                    Some(g) => {
-                        let bt = self.bool_ty();
-                        Some(self.write_expr(g, Some(&bt), false)?.tm)
-                    }
-                    None => None,
-                };
-                let (tm, e) = self.write_effect(&arm.body)?;
-                Ok((guard, tm, e))
-            })();
+            let guard = self.arm_guard(ir, arm.guard.as_ref(), |c, g| {
+                let bt = c.bool_ty();
+                Ok(c.write_expr(g, Some(&bt), false)?.tm)
+            });
+            let r = guard.and_then(|guard| {
+                self.scope.push();
+                for (name, local) in &ir.locals {
+                    self.scope.bind(name, local.clone());
+                }
+                let r = self.write_effect(&arm.body);
+                self.scope.pop();
+                r.map(|(tm, e)| (guard, tm, e))
+            });
             self.once = saved;
-            self.scope.pop();
             let (guard, tm, e) = r?;
             eff = Some(match eff {
                 None => e,

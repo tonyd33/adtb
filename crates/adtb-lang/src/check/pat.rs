@@ -84,7 +84,8 @@ enum Head {
 }
 
 struct Cx<'b> {
-    binds: &'b BTreeMap<String, Var>,
+    /// The variables the pattern's binders bind; `None` binds nothing.
+    binds: Option<&'b BTreeMap<String, Var>>,
     res: &'b Ty,
 }
 
@@ -140,6 +141,9 @@ pub(super) struct ArmIr {
     pat: Pat,
     binds: BTreeMap<String, Var>,
     pub(super) locals: Vec<(String, Local)>,
+    /// The binders as the guard sees them, each a variable of its own.
+    guard_binds: BTreeMap<String, Var>,
+    pub(super) guard_locals: Vec<(String, Local)>,
     pub(super) guard: Option<Tm>,
     pub(super) body: Option<Out>,
 }
@@ -239,8 +243,20 @@ impl Checker<'_> {
         let sty = s.ty.clone();
         let is_sum = self.signature(&sty).is_some();
         let mut irs = Vec::new();
-        for (patterns, _) in arms {
-            irs.push(self.arm_patterns(patterns, &sty, s.rows, is_sum, by_key)?);
+        for (patterns, guarded) in arms {
+            let mut ir = self.arm_patterns(patterns, &sty, s.rows, is_sum, by_key)?;
+            if *guarded {
+                for (name, local) in &ir.locals {
+                    let var = self.terms.var(name, local.ty.clone());
+                    ir.guard_binds.insert(name.clone(), var);
+                    let local = Local {
+                        var,
+                        ..local.clone()
+                    };
+                    ir.guard_locals.push((name.clone(), local));
+                }
+            }
+            irs.push(ir);
         }
         if is_sum && !self.adhoc() {
             let rows: Vec<Vec<Pat>> = irs.iter().map(|a| vec![a.pat.clone()]).collect();
@@ -426,6 +442,8 @@ impl Checker<'_> {
             pat,
             binds,
             locals,
+            guard_binds: BTreeMap::new(),
+            guard_locals: Vec::new(),
             guard: None,
             body: None,
         })
@@ -999,32 +1017,26 @@ impl Checker<'_> {
                 if first_pass[i] != pass {
                     continue;
                 }
+                let guard = self.arm_guard(&irs[i], arm.guard.as_ref(), |c, g| {
+                    let bt = c.bool_ty();
+                    Ok(c.check(g, &bt)?.tm)
+                })?;
                 self.scope.push();
                 for (name, local) in &irs[i].locals {
                     self.scope.bind(name, local.clone());
                 }
-                let r = (|| -> R<(Option<Tm>, Out)> {
-                    let guard = match &arm.guard {
-                        Some(g) => {
-                            let bt = self.bool_ty();
-                            Some(self.check(g, &bt)?.tm)
-                        }
-                        None => None,
-                    };
-                    let body = match &joined {
-                        Some(t) if expected.is_some() => {
-                            let t = t.clone();
-                            self.check(&arm.body, &t)?
-                        }
-                        j => {
-                            let j = j.clone();
-                            self.arm_against(&arm.body, j.as_ref())?
-                        }
-                    };
-                    Ok((guard, body))
-                })();
+                let body = match &joined {
+                    Some(t) if expected.is_some() => {
+                        let t = t.clone();
+                        self.check(&arm.body, &t)
+                    }
+                    j => {
+                        let j = j.clone();
+                        self.arm_against(&arm.body, j.as_ref())
+                    }
+                };
                 self.scope.pop();
-                let (guard, body) = r?;
+                let body = body?;
                 if expected.is_none() {
                     joined = Some(match &joined {
                         None => body.ty.clone(),
@@ -1043,6 +1055,23 @@ impl Checker<'_> {
             ir.body = Some(self.widen(body, &joined));
         }
         Ok(joined)
+    }
+
+    /// Check guard `g` with `check` under the arm's guard binders.
+    pub(super) fn arm_guard(
+        &mut self,
+        ir: &ArmIr,
+        g: Option<&Expr>,
+        check: impl FnOnce(&mut Self, &Expr) -> R<Tm>,
+    ) -> R<Option<Tm>> {
+        let Some(g) = g else { return Ok(None) };
+        self.scope.push();
+        for (name, local) in &ir.guard_locals {
+            self.scope.bind(name, local.clone());
+        }
+        let r = check(self, g);
+        self.scope.pop();
+        r.map(Some)
     }
 
     /// The error for arms of types `a` and `b` that have no join, naming the fields missing from either.
@@ -1071,9 +1100,14 @@ impl Checker<'_> {
         )
     }
 
-    /// Compiles the arms that can match constructor `c` of the scrutinee, every arm when `c` is `None`, to tests tried in order and ending in `Unreachable`.
+    /// Compile the arms that can match constructor `c` of the scrutinee, every arm when `c` is `None`, to tests tried in order and ending in `Unreachable`.
+    /// Each arm is `If(test, body, rest)`: `test` holds its pattern's tests and then its guard, and `body` matches the pattern again to bind its names.
     fn chain(&mut self, c: Option<u32>, y: Tm, y_ty: &Ty, arms: &[ArmIr], res: &Ty) -> Tm {
-        let mut f = self.add(Kind::Unreachable, res.clone());
+        let unreachable = self.add(Kind::Unreachable, res.clone());
+        let yes = self.bool_tm(true);
+        let no = self.bool_tm(false);
+        let bt = self.bool_ty();
+        let mut f = unreachable;
         for arm in arms.iter().rev() {
             let alts: Vec<&Pat> = arm
                 .pat
@@ -1087,37 +1121,71 @@ impl Checker<'_> {
             if alts.is_empty() {
                 continue;
             }
-            let body = arm.body.as_ref().expect("checked").tm;
-            let k = match arm.guard {
-                Some(g) => self.add(Kind::If(g, body, f), res.clone()),
-                None => body,
+            let tests = Cx {
+                binds: arm.guard.map(|_| &arm.guard_binds),
+                res: &bt,
             };
-            let cx = Cx {
-                binds: &arm.binds,
+            let k = arm.guard.unwrap_or(yes);
+            let test = self.alts(c, y, y_ty, &alts, &tests, Cont { k, f: no });
+            let binds = Cx {
+                binds: Some(&arm.binds),
                 res,
             };
-            for p in alts.into_iter().rev() {
-                let cont = Cont { k, f };
-                f = match (p, c) {
-                    (Pat::Ctor { .. }, Some(c)) => self.compile_fields(y, y_ty, c, p, &cx, cont),
-                    _ => self.compile(y, y_ty, p, &cx, cont),
-                };
-            }
+            let k = arm.body.as_ref().expect("checked").tm;
+            let body = self.alts(c, y, y_ty, &alts, &binds, Cont { k, f: unreachable });
+            // Coverage proves an unguarded arm before `Unreachable` matches.
+            let total = test == yes || (f == unreachable && arm.guard.is_none());
+            f = if total {
+                body
+            } else {
+                self.add(Kind::If(test, body, f), res.clone())
+            };
         }
         f
+    }
+
+    /// Match `y` against the alternatives `alts` in order, continuing with `cont.k` under the binders of the first that matches.
+    fn alts(&mut self, c: Option<u32>, y: Tm, y_ty: &Ty, alts: &[&Pat], cx: &Cx, cont: Cont) -> Tm {
+        let mut f = cont.f;
+        for p in alts.iter().rev() {
+            let cont = Cont { k: cont.k, f };
+            f = match (p, c) {
+                (Pat::Ctor { .. }, Some(c)) => self.compile_fields(y, y_ty, c, p, cx, cont),
+                _ => self.compile(y, y_ty, p, cx, cont),
+            };
+        }
+        f
+    }
+
+    fn is_bool(&self, t: Tm, value: bool) -> bool {
+        matches!(self.terms.kind(t), Kind::Ctor { ctor, fields } if *ctor == u32::from(value) && fields.is_empty())
+            && self.terms.ty(t) == &self.bool_ty()
+    }
+
+    /// Bind `n` to `y` around `k` when `cx` binds.
+    fn let_binder(&mut self, cx: &Cx, n: &str, y: Tm, k: Tm) -> Tm {
+        match cx.binds {
+            Some(binds) => self.add(Kind::Let(binds[n], y, k), cx.res.clone()),
+            None => k,
+        }
     }
 
     /// Matches `y` against `p`, continuing with `k`, under the binders of `p`, on a match and with `f` otherwise.
     fn compile(&mut self, y: Tm, y_ty: &Ty, p: &Pat, cx: &Cx, cont: Cont) -> Tm {
         let Cont { k, f } = cont;
+        let settled = matches!(self.terms.kind(f), Kind::Unreachable);
         match p {
             Pat::Wild { binder: None, .. } => k,
             Pat::Wild {
                 binder: Some(n), ..
-            } => self.add(Kind::Let(cx.binds[n], y, k), cx.res.clone()),
+            } => self.let_binder(cx, n, y, k),
+            Pat::Lit { .. } if settled || k == f => k,
             Pat::Lit { tm, .. } => {
                 let bt = self.bool_ty();
                 let test = self.add(Kind::Prim(Prim::Eq, vec![y, *tm]), bt);
+                if self.is_bool(k, true) && self.is_bool(f, false) {
+                    return test;
+                }
                 self.add(Kind::If(test, k, f), cx.res.clone())
             }
             Pat::Or(alts) => {
@@ -1143,6 +1211,9 @@ impl Checker<'_> {
                     };
                     arms.push((d, x, body));
                 }
+                if settled && arms.iter().all(|(_, _, b)| *b == k || *b == f) {
+                    return k;
+                }
                 self.add(Kind::Case { scrutinee: y, arms }, cx.res.clone())
             }
         }
@@ -1165,7 +1236,7 @@ impl Checker<'_> {
             out = self.compile(fy, &fty, sub, cx, Cont { k: out, f: cont.f });
         }
         match binder {
-            Some(n) => self.add(Kind::Let(cx.binds[n], y, out), cx.res.clone()),
+            Some(n) => self.let_binder(cx, n, y, out),
             None => out,
         }
     }

@@ -1224,12 +1224,16 @@ fn a_guarded_chain_ends_unreachable() {
         panic!("a case");
     };
     let google = arms.iter().find(|(c, _, _)| *c == 1).unwrap().2;
-    let Kind::Let(_, _, guarded) = p.terms.kind(google) else {
-        panic!("the guarded arm binds g, found {:?}", p.terms.kind(google));
+    let Kind::If(test, body, rest) = p.terms.kind(google) else {
+        panic!("a guarded arm is an if, found {:?}", p.terms.kind(google));
     };
-    let Kind::If(_, _, rest) = p.terms.kind(*guarded) else {
-        panic!("a guard is an if");
+    let Kind::Let(in_guard, _, _) = p.terms.kind(*test) else {
+        panic!("the guard binds g, found {:?}", p.terms.kind(*test));
     };
+    let Kind::Let(in_body, _, _) = p.terms.kind(*body) else {
+        panic!("the body binds g, found {:?}", p.terms.kind(*body));
+    };
+    assert_ne!(in_guard, in_body);
     assert!(matches!(p.terms.kind(*rest), Kind::Const(_)));
 }
 
@@ -1249,19 +1253,30 @@ fn a_nested_pattern_cases_on_the_field() {
         panic!("a case");
     };
     let shipped = arms.iter().find(|(c, _, _)| *c == 1).unwrap().2;
+    let Kind::If(test, courier, mail) = p.terms.kind(shipped) else {
+        panic!(
+            "the courier arm tests the field, found {:?}",
+            p.terms.kind(shipped)
+        );
+    };
     let Kind::Case {
         scrutinee,
         arms: via,
-    } = p.terms.kind(shipped)
+    } = p.terms.kind(*test)
     else {
-        panic!("a case on the field, found {:?}", p.terms.kind(shipped));
+        panic!("a case on the field, found {:?}", p.terms.kind(*test));
     };
     assert!(matches!(p.terms.kind(*scrutinee), Kind::Field(_, f) if f == "via"));
     assert_eq!(via.len(), 2);
-    let Kind::Case { arms: rest, .. } = p.terms.kind(via[1].2) else {
-        panic!("the mail arm continues with the next arm's case");
-    };
-    assert!(matches!(p.terms.kind(rest[0].2), Kind::Unreachable));
+    for (arm, unreached) in [(courier, 1), (mail, 0)] {
+        let Kind::Case { arms: via, .. } = p.terms.kind(*arm) else {
+            panic!(
+                "a body cases on the field again, found {:?}",
+                p.terms.kind(*arm)
+            );
+        };
+        assert!(matches!(p.terms.kind(via[unreached].2), Kind::Unreachable));
+    }
 }
 
 #[test]

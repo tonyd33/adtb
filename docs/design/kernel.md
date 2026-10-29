@@ -275,7 +275,7 @@ caller's, before reading a type that may hold one.
 | `Present { var, source, keys, take, after }` | the final result of an ad hoc statement or a registered query body, nested nowhere else; `take : I64`; `after : Option K` for one key of type `K`, or an `Option` of a record with one field per key, whose fields in name order match the keys in order; `τ = ty(source)`, delivered as a sequence |
 | `Fix(binds, b)` | each body has its binder's type; `τ = ty(b)` |
 | `At { instant, point, body }` | `ty(point)` is `Instant`, or `Position` when `instant` is false; `τ = ty(body)` |
-| `Unreachable` | a position exhaustiveness proves no evaluation reaches, at any type; reaching it is a broken invariant |
+| `Unreachable` | a position the checker proves no evaluation reaches, by exhaustiveness or by a test that dominates it, at any type; reaching it is a broken invariant |
 | writes and blocks | as §4 states |
 
 A `Record` or `Ctor` evaluates its fields in the order the node lists

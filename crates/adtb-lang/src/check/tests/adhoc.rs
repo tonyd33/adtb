@@ -679,6 +679,13 @@ fn four_thousand_match_arms_and_alternatives_check_and_normalise() {
             ),
         ),
         (
+            "guarded literal arms",
+            format!(
+                "from r in raws select match r.n{} | _ -> 0",
+                arms(&|i| format!(" | {i} if r.id == raws.key({i}) -> {i}"))
+            ),
+        ),
+        (
             "alternatives",
             format!(
                 "from r in raws select match r.n | {} -> 1 | _ -> 0",
@@ -691,6 +698,138 @@ fn four_thousand_match_arms_and_alternatives_check_and_normalise() {
             normalises(what, text);
         }
     });
+}
+
+/// Returns the checked and the normalised ad hoc `text` over parameters `n: I64` and `m: I64`.
+fn checked_and_normal(text: &str) -> (Adhoc, crate::norm::NormalAdhoc) {
+    let (s, a) = adhoc(&[("n", "I64"), ("m", "I64")], text)
+        .unwrap_or_else(|e| panic!("{text}\ndoes not check: {e:?}"));
+    let p = check_schema(&s).expect("the schema checks");
+    let n = crate::norm::adhoc(&s, &p, &a)
+        .unwrap_or_else(|e| panic!("{text}\nhas no normal form: {e:?}"));
+    (a, n)
+}
+
+/// Returns the number of distinct terms under `t`.
+fn distinct(terms: &Terms, t: Tm) -> usize {
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![t];
+    while let Some(s) = stack.pop() {
+        if seen.insert(s) {
+            stack.extend(terms.children(s));
+        }
+    }
+    seen.len()
+}
+
+/// Returns the size of `t` as a tree, or `cap` when it is at least `cap`.
+fn tree_size(terms: &Terms, t: Tm, cap: usize) -> usize {
+    let mut size = 0;
+    let mut stack = vec![t];
+    while let Some(s) = stack.pop() {
+        size += 1;
+        if size == cap {
+            break;
+        }
+        stack.extend(terms.children(s));
+    }
+    size
+}
+
+/// Returns match texts of `n` arms that each test more than once: guarded literal arms of a
+/// query and of a write, two field literals, and a nested constructor with a guard.
+fn multi_test_matches(n: usize) -> Vec<(&'static str, String)> {
+    let arms = |arm: &dyn Fn(usize) -> String| -> String { (0..n).map(arm).collect() };
+    vec![
+        (
+            "guarded literals",
+            format!(
+                "match n{} | _ -> 0",
+                arms(&|i| format!(" | {i} if m > {i} -> {i}"))
+            ),
+        ),
+        (
+            "guarded write",
+            format!(
+                "transact match n{} | _ -> skip",
+                arms(&|i| format!(" | {i} if m > {i} -> insert users {{ name: \"{i}\" }}"))
+            ),
+        ),
+        (
+            "two field literals",
+            format!(
+                "from o in orders select match o{} | _ -> 0",
+                arms(&|i| format!(" | Order {{ total: {i}, qty: {i} }} -> {i}"))
+            ),
+        ),
+        (
+            "nested constructor",
+            format!(
+                "from v in invoices select match v{} | _ -> 0",
+                arms(&|i| format!(" | Invoice {{ status: Draft }} if m > {i} -> {i}"))
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn match_kernel_terms_grow_linearly_in_multi_test_arms() {
+    const CAP: usize = 1 << 20;
+    let small = multi_test_matches(12);
+    let large = multi_test_matches(24);
+    for ((what, s), (_, l)) in small.iter().zip(&large) {
+        let (sa, sn) = checked_and_normal(s);
+        let (la, ln) = checked_and_normal(l);
+        let checked = (
+            tree_size(&sa.terms, sa.items[0], CAP),
+            tree_size(&la.terms, la.items[0], CAP),
+        );
+        let normal = (
+            distinct(&sn.terms, sn.items[0]),
+            distinct(&ln.terms, ln.items[0]),
+        );
+        assert!(
+            checked.1 < 3 * checked.0,
+            "{what}: the checked tree grows from {} to {} terms",
+            checked.0,
+            checked.1
+        );
+        assert!(
+            normal.1 < 3 * normal.0,
+            "{what}: the normal form grows from {} to {} distinct terms",
+            normal.0,
+            normal.1
+        );
+    }
+}
+
+/// Returns how long `f` takes.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "goes when adtb-lang tests can read the engine's clock interface"
+)]
+fn timed(f: impl FnOnce()) -> std::time::Duration {
+    let start = std::time::Instant::now();
+    f();
+    start.elapsed()
+}
+
+#[test]
+fn a_guarded_write_match_of_64_arms_normalises_in_a_second() {
+    let text = &multi_test_matches(64)[1].1;
+    let took = timed(|| {
+        checked_and_normal(text);
+    });
+    assert!(took.as_secs_f64() < 1.0, "took {took:?}");
+}
+
+#[test]
+fn a_query_match_of_64_two_literal_arms_checks_in_a_second() {
+    let text = &multi_test_matches(64)[2].1;
+    let took = timed(|| {
+        checked_and_normal(text);
+    });
+    assert!(took.as_secs_f64() < 1.0, "took {took:?}");
 }
 
 #[test]
