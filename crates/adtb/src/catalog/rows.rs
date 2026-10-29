@@ -122,28 +122,36 @@ pub struct IndexSpec {
     pub clause: String,
 }
 
+impl IndexSpec {
+    /// Returns the key index `id` of relation `r` of `schema` over `fields`.
+    pub fn key(schema: &Schema, r: RelId, id: u64, fields: Vec<String>) -> IndexSpec {
+        let clause = if let [k] = fields.as_slice() {
+            format!("key {k}")
+        } else {
+            format!("key ({})", fields.join(", "))
+        };
+        IndexSpec {
+            id,
+            relation: r,
+            unique: true,
+            ctors: all_ctors(schema, r),
+            elements: fields.iter().cloned().map(Element::Field).collect(),
+            fields,
+            kind: "PrimaryKey",
+            clause,
+        }
+    }
+}
+
 /// Returns every index of the relations of `schema` with catalog ids, by index id: the key
 /// indexes, the declared uniques and indexes, and the implied indexes.
 pub fn indexes(schema: &Schema) -> BTreeMap<u64, IndexSpec> {
     let mut out = BTreeMap::new();
     for (&r, &id) in &schema.ids.keys {
-        let rel = schema.relation(r);
-        let key = if let [k] = rel.key.as_slice() {
-            format!("key {k}")
-        } else {
-            format!("key ({})", rel.key.join(", "))
-        };
-        let spec = IndexSpec {
+        out.insert(
             id,
-            relation: r,
-            unique: true,
-            ctors: all_ctors(schema, r),
-            fields: rel.key.clone(),
-            elements: rel.key.iter().cloned().map(Element::Field).collect(),
-            kind: "PrimaryKey",
-            clause: key,
-        };
-        out.insert(id, spec);
+            IndexSpec::key(schema, r, id, schema.relation(r).key.clone()),
+        );
     }
     for (&(r, i), &id) in &schema.ids.indexes {
         let def = &schema.relation(r).indexes[i];

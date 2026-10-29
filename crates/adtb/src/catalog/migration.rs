@@ -76,10 +76,10 @@ impl Catalog {
             program: Arc::new(program),
         };
         let readers = self.held(&file, text, &next)?;
-        let rewritten = change::rewritten(&self.schema, &next.schema);
         let (schema, program) = readers
             .enforced()
             .map_or((&next.schema, &next.program), |e| (&e.schema, &e.program));
+        let rewritten = change::rewritten(self.checking().0, schema);
         self.admits(schema, program, &rewritten)?;
         let x = txns.begin(pager)?;
         update_root(pager, self.root, |r| r.changing = Changing::Schema(x))?;
@@ -223,6 +223,7 @@ impl Catalog {
                 next,
                 data: &data,
                 rewritten,
+                readers: Some(&readers),
                 old: rows::objects(&self.schema, &self.source),
                 operators: &operators,
             },
@@ -406,17 +407,20 @@ impl Catalog {
             hosts: self.hosts.clone(),
             kept: self.kept.clone(),
         };
-        let specs = indexes(&next.schema);
-        let normal =
-            index_program(&next.schema, &next.program, specs.values()).map_err(Error::Internal)?;
+        let (held, held_program) = b
+            .readers
+            .and_then(Readers::enforced)
+            .map_or((&b.next.schema, &b.next.program), |e| {
+                (&e.schema, &e.program)
+            });
+        let pending = b.readers.map_or(&[][..], |r| &r.pending);
+        let specs = pending::kept_indexes(held, pending).map_err(Error::Internal)?;
+        let normal = index_program(held, held_program, specs.values()).map_err(Error::Internal)?;
         let mut keyed = BTreeMap::new();
         for (id, spec) in &specs {
-            keyed.insert(
-                *id,
-                index_keys(&next.schema, normal.as_ref(), spec, &self.hosts)?,
-            );
+            keyed.insert(*id, index_keys(held, normal.as_ref(), spec, &self.hosts)?);
         }
-        duplicates(&next.schema, &next.keys, normal.as_ref(), &specs, &keyed, b)?;
+        duplicates(held, &next.keys, normal.as_ref(), &specs, &keyed, b)?;
         let old: BTreeMap<(CatRelId, CatCtorId), (RelId, u32)> = self
             .heaps
             .keys()
@@ -463,8 +467,8 @@ impl Catalog {
             let index = Index::create(
                 pager,
                 owner(id),
-                key_schema(&next.schema, normal.as_ref(), &next.keys, &spec)?,
-                index_ctors(&next.schema, &spec),
+                key_schema(held, normal.as_ref(), &next.keys, &spec)?,
+                index_ctors(held, &spec),
             )?;
             named.push((INDEX_ROOT, vec![int(id), int(index.tree().root().0)]));
             next.indexes.insert(id, (spec, index, keys));

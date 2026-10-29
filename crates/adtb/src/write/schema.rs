@@ -4,7 +4,7 @@ use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::{Generator, OnDelete, ReferenceIndex, Schema};
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
-use crate::catalog::{IndexKeys, field_path};
+use crate::catalog::{IndexKeys, IndexSpec, field_path};
 use crate::exec::types::ctors;
 use crate::exec::{Conv, conv};
 use crate::plan::{Catalog, HeapId, IndexDesc, IndexId, declared_elements};
@@ -205,7 +205,7 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
         let mut indexes = Vec::new();
         for d in &desc.indexes {
             let keys = IndexKeys::new(schema, Some(normal), *rel, &d.ctors, &d.elements)?;
-            let name = if d.id == desc.key_index {
+            let mut name = if d.id == desc.key_index {
                 Some(format!("{}.key", qualified(schema, *rel)))
             } else {
                 uniques
@@ -213,9 +213,24 @@ pub fn rels(schema: &Schema, normal: &NormalProgram, catalog: &Catalog) -> Resul
                     .find(|u| u.index == d.id)
                     .map(|u| u.name.clone())
             };
+            let clause = match (specs.get(&d.id.0), d.fields()) {
+                (Some(spec), _) => spec.clause.clone(),
+                (None, Some(fields)) if d.unique => {
+                    let fields = fields.into_iter().map(str::to_string).collect();
+                    let clause = IndexSpec::key(schema, *rel, d.id.0, fields).clause;
+                    name = Some(format!("{}.{clause}", qualified(schema, *rel)));
+                    clause
+                }
+                (None, _) => {
+                    return Err(Error::Internal(format!(
+                        "index {} of relation {} is neither declared nor an old key",
+                        d.id.0, r.name
+                    )));
+                }
+            };
             let indexed = Indexed {
                 desc: d.clone(),
-                clause: specs[&d.id.0].clause.clone(),
+                clause,
                 keys,
                 name,
             };

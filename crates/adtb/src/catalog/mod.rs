@@ -50,7 +50,6 @@ pub use rows::{IndexSpec, Rows, applied, declared, field_path, indexed_fields, i
 use change::Data;
 use history::{HISTORY_HEAP, HISTORY_INDEX, Kept, key_indexes};
 use ids::{CatCtorId, CatRelId, ctor_id, ctor_index, rel_id, relation};
-use pending::{HELD_CHECK, HELD_CONSTRAINT};
 use readers::{Pending, Readers};
 use root::{Changing, Root};
 
@@ -163,41 +162,35 @@ pub fn engine_schema() -> Schema {
 
 fn roots_row() -> Vec<FieldType> {
     let ids = |n: usize| vec![FieldType::Scalar(Scalar::I64); n];
-    let held = || {
-        let text = FieldType::Scalar(Scalar::Text);
-        vec![
-            FieldType::Scalar(Scalar::I64),
-            text.clone(),
-            text.clone(),
-            text,
-        ]
-    };
     let ctor = |id: u32, fields: Vec<FieldType>| heap::CtorType {
         id: CtorId(id),
         fields,
     };
-    vec![FieldType::Sum(vec![
-        ctor(HEAP_ROOT, ids(4)),
-        ctor(INDEX_ROOT, ids(2)),
-        ctor(
-            ORDER_KEY,
-            vec![
-                FieldType::Scalar(Scalar::I64),
-                FieldType::Scalar(Scalar::Bytes),
-            ],
-        ),
-        ctor(
-            MIGRATION,
-            vec![
-                FieldType::Scalar(Scalar::I64),
-                FieldType::Scalar(Scalar::Text),
-            ],
-        ),
-        ctor(HISTORY_HEAP, ids(4)),
-        ctor(HISTORY_INDEX, ids(3)),
-        ctor(HELD_CONSTRAINT, held()),
-        ctor(HELD_CHECK, held()),
-    ])]
+    vec![FieldType::Sum(
+        [
+            ctor(HEAP_ROOT, ids(4)),
+            ctor(INDEX_ROOT, ids(2)),
+            ctor(
+                ORDER_KEY,
+                vec![
+                    FieldType::Scalar(Scalar::I64),
+                    FieldType::Scalar(Scalar::Bytes),
+                ],
+            ),
+            ctor(
+                MIGRATION,
+                vec![
+                    FieldType::Scalar(Scalar::I64),
+                    FieldType::Scalar(Scalar::Text),
+                ],
+            ),
+            ctor(HISTORY_HEAP, ids(4)),
+            ctor(HISTORY_INDEX, ids(3)),
+        ]
+        .into_iter()
+        .chain(pending::held_ctors())
+        .collect(),
+    )]
 }
 
 fn int(n: u64) -> Value {
@@ -373,8 +366,8 @@ impl Named {
                 self.migrations.insert(uint(version)?, text.clone());
             }
             (HISTORY_HEAP | HISTORY_INDEX, fields) => self.history.add(*ctor, fields)?,
-            (HELD_CONSTRAINT | HELD_CHECK, fields) => {
-                pending::add(&mut self.pending, *ctor, fields)?;
+            (ctor, fields) if pending::holds(ctor) => {
+                pending::add(&mut self.pending, ctor, fields)?;
             }
             (ctor, fields) => {
                 return Err(Error::Corrupt(format!(
@@ -578,6 +571,7 @@ impl Catalog {
                 },
                 data: &Data::new(),
                 rewritten: &every,
+                readers: None,
                 old: Rows::new(),
                 operators: &[],
             },
@@ -659,8 +653,11 @@ impl Catalog {
             let heap = Heap::open(pager, id, at, row_type(&schema, r, c), large)?;
             heaps.insert((r, c), Arc::new(heap));
         }
-        let specs = indexes(&schema);
-        let normal = index_program(&schema, &program, specs.values()).map_err(Error::Corrupt)?;
+        let (held, held_program) = readers
+            .enforced()
+            .map_or((&schema, &program), |e| (&e.schema, &*e.program));
+        let specs = pending::kept_indexes(held, &readers.pending).map_err(Error::Corrupt)?;
+        let normal = index_program(held, held_program, specs.values()).map_err(Error::Corrupt)?;
         let mut stored = BTreeMap::new();
         for (id, spec) in specs {
             let Some(&at) = named.indexes.get(&id) else {
@@ -668,11 +665,11 @@ impl Catalog {
             };
             let index = Index::open(
                 BTree::open(at, owner(id)),
-                key_schema(&schema, normal.as_ref(), &named.keys, &spec)
+                key_schema(held, normal.as_ref(), &named.keys, &spec)
                     .map_err(|e| Error::Corrupt(format!("{e:?}")))?,
-                index_ctors(&schema, &spec),
+                index_ctors(held, &spec),
             );
-            let keys = index_keys(&schema, normal.as_ref(), &spec, &Arc::default())
+            let keys = index_keys(held, normal.as_ref(), &spec, &Arc::default())
                 .map_err(|e| Error::Corrupt(format!("{e:?}")))?;
             stored.insert(id, (spec, index, keys));
         }
@@ -965,6 +962,8 @@ struct Built<'a> {
     data: &'a Data,
     /// The ids of the relations whose heaps and indexes are made again.
     rewritten: &'a BTreeSet<CatRelId>,
+    /// The readers after the migration, whose pending drops the indexes keep.
+    readers: Option<&'a Readers>,
     /// The catalog rows of the catalog before the migration, by its relations.
     old: Rows,
     operators: &'a [oplog::OperatorRow],

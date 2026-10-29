@@ -1062,6 +1062,104 @@ fn a_drop_that_took_effect_stays_in_effect_when_its_holder_is_shipped_again() {
     });
 }
 
+/// An object added by migration `added` and dropped, pending while a bundle holds it, by
+/// migration `dropped`: `first` writes a row and `again` a row the object refuses beside it.
+struct Dropping {
+    added: &'static str,
+    dropped: &'static str,
+    first: &'static str,
+    again: &'static str,
+}
+
+const UNIQUE: Dropping = Dropping {
+    added: "module auth\nadd unique (name) in users\n",
+    dropped: "module auth\ndrop unique (name) in users\n",
+    first: "insert users { name: \"ann\", tier: Free }",
+    again: "insert users { name: \"ann\", tier: Free }",
+};
+
+const OLD_KEY: Dropping = Dropping {
+    added: "module auth\nadd type Label = { name: Text, lang: Text }\nadd relation labels : Label key name\n",
+    dropped: "module auth\nrekey relation labels key (name, lang)\n",
+    first: "insert labels { name: \"hi\", lang: \"en\" }",
+    again: "insert labels { name: \"hi\", lang: \"fr\" }",
+};
+
+fn write(db: &Database<SimRuntime>, text: &str) -> Result<(), Error> {
+    db.query_text(text, &[], &CallOptions::default()).map(drop)
+}
+
+/// Open a file at `[V1, d.added]` holding the row `d.first` writes and shipping `web-1.0` pinned
+/// there, then reopen it with `d.dropped` applied while `web-1.0` holds the drop pending, and run
+/// `held` over that open and `third` over a third open shipping `shipped`.
+fn after_a_pending_drop(
+    seed: u64,
+    d: &Dropping,
+    shipped: impl FnOnce(&[&str]) -> Vec<Registration>,
+    held: impl FnOnce(&Database<SimRuntime>),
+    third: impl FnOnce(&Database<SimRuntime>),
+) {
+    let pins = [V1, d.added];
+    let pinned = || bundle("web-1.0", &pins, "", NAMES);
+    let log = [V1, d.added, d.dropped];
+    let mut sim = Sim::new(seed, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &pins, vec![pinned()]);
+        write(&db, d.first).expect("the first row inserts");
+    });
+    run(&mut sim, |rt| held(&opened(&rt, &log, vec![pinned()])));
+    run(&mut sim, |rt| third(&opened(&rt, &log, shipped(&pins))));
+}
+
+fn violates(object: &str, got: Result<(), Error>) {
+    match got {
+        Err(Error::Rejected {
+            reason: RejectReason::Violated { constraint, .. },
+        }) => assert!(constraint.contains(object), "{constraint}"),
+        other => panic!("the pending-dropped {object} is not enforced: {other:?}"),
+    }
+}
+
+fn enforced_while_held(seed: u64, d: &Dropping, object: &str) {
+    after_a_pending_drop(
+        seed,
+        d,
+        |pins| vec![bundle("web-1.0", pins, "", NAMES)],
+        |db| violates(object, write(db, d.again)),
+        |db| violates(object, write(db, d.again)),
+    );
+}
+
+fn in_effect_once_superseded(seed: u64, d: &Dropping, object: &str) {
+    after_a_pending_drop(
+        seed,
+        d,
+        |_| Vec::new(),
+        |db| violates(object, write(db, d.again)),
+        |db| write(db, d.again).expect("the drop has taken effect"),
+    );
+}
+
+#[test]
+fn a_pending_dropped_unique_is_enforced_for_writers_while_a_bundle_holds_it() {
+    enforced_while_held(47, &UNIQUE, "unique");
+}
+
+#[test]
+fn a_pending_dropped_unique_takes_effect_at_the_open_that_supersedes_its_last_holder() {
+    in_effect_once_superseded(48, &UNIQUE, "unique");
+}
+
+#[test]
+fn a_relaxed_old_key_is_enforced_for_writers_while_a_bundle_holds_it() {
+    enforced_while_held(49, &OLD_KEY, "key name");
+}
+
+#[test]
+fn a_relaxed_old_key_takes_effect_at_the_open_that_supersedes_its_last_holder() {
+    in_effect_once_superseded(50, &OLD_KEY, "key name");
+}
+
 #[test]
 fn an_expired_bundle_registered_again_is_live_with_a_new_lease() {
     let mut sim = Sim::new(36, Config::default());
