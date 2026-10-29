@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: resolved
 kind: bug
 priority: 999
 summary: "an idle expiry or cancel after a task's output is drained still changes its settled outcome: a committed write turns incomplete and a drained read fails"
-branch: task-fixes
+closed: 2026-10-29
 tags:
   - quality
   - engine
@@ -23,3 +23,9 @@ Read. After `drained()` and before the call's `drain` step commits the read and 
 Repro (crates/adtb-sim/tests/tasks.rs style): submit `bump` (ordinal 3), drive to `Done(Committed { incomplete: false, .. })`, call `task.expire_idle(Duration::from_secs(1))`, observe again: `Done(Committed { incomplete: true, .. })`.
 
 Fix: treat a request after the drain acknowledgement as a no-op (in `request`, return early once `s.drained`; `abandon` only while output remains), and add the repro and its read variant to tasks.rs.
+
+## 2026-10-29: resolved
+
+Landed in bb507838..b085c460 (task-fixes) after a clear fresh review (work/briefs/review-task-fixes.md, local) and a lead follow-up guarding on `drained && produced`. Branch check on 30bc4d3b passed (root 2782 passed, 7 skipped; campaign 47); main check skipped, the landed parent differing from the base only in tickets.
+
+## 2026-10-29: resolved
