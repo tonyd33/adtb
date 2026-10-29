@@ -218,3 +218,18 @@ Frozen 1c8989cc10506f38eaf0252a749df1dc710a0220 on main 27b77539:
 - Receipt work/briefs/receipt-permission-oldmatch.md (local).
 
 Ruling: every observation of a stored row's constructor charges ReadConstructor and the key reads on the constructors it can distinguish, as ranging does. This covers `match`, `tag` and any other constructor test, on an upsert's `old` or any stored row. `tag(old)` charged nothing at 1c8989cc and is fixed before landing.
+
+## 2026-10-28: independent review blocks 34e5e03f
+
+A fresh reviewer read 27b77539..34e5e03f (report work/briefs/review-permission-requirements.md, local) and found two under-charges:
+
+- B1: set deduplication is never charged. Sets merge equal elements by whole value, so `count(x for x in left union right)` and `count(y for y in (from x in left select Row { x with id: 0 }))` depend on fields the provider does not charge. The same holds for sum over a union, user aggregates, count over group rows and `top n` ties. Fix: mark rows read from one relation as key-distinct, keep the mark through a join only when both sides carry it, and make aggregates and `top` consume elements without the mark.
+- B2: the copy tokens in shape.rs are shared by every row of one range evaluation, so an update through a partial let alias can overwrite `secret` with another row's value and still look unchanged. UpdateField is then not charged. Fix: mint fresh field tokens on the bound old row in `replace`, keeping the row-level token that upsert bindings use.
+
+Also fixed in the same track:
+- N1: a whole-row comparison misses the constructor read of a fieldless constructor.
+- N2: two tests compare provider calls with each other instead of asserting exact sets.
+- N7: `upsert` takes unused parameters.
+- N3: test gaps for top/present take and after, at, try, key-of, transitions, and deref through a restricted key.
+
+The precision gaps N4, N5 and N6 are in permission-provider-follow-ups. Everything else on the review list held. house-check passed.
