@@ -71,6 +71,24 @@ Use `work/tools/workspace-gc` to inspect build directories. Builds normally
 stay in each workspace's `target/`; `CARGO_TARGET_DIR` can select another
 location.
 
+## Build with Nix
+
+`flake.nix` builds the binaries outside the dev shell, for x86_64 Linux. It
+takes nixpkgs from `devenv.lock` and checks that its Rust matches
+`rust-toolchain.toml`, so updating devenv updates both.
+
+```sh
+nix build .#                      # every binary, in result/bin
+nix run .# -- --help              # the adtb shell
+nix run .#adtb-probe -- --help
+nix flake check                   # the packages and the test suite
+```
+
+The packages are `adtb-shell` (the `adtb` binary), `adtb-codegen`,
+`adtb-probe`, `adtb-conformance` and `default`, which holds all four. Nix
+reads the Git index, so a file new in the working copy is invisible to the
+flake until Git tracks it: `git add --intent-to-add FILE`.
+
 ## Read the documentation locally
 
 In the development shell, run `docs-build` to build the manual, specification
