@@ -492,8 +492,11 @@ boundary for the existing owner facade.
 
 There is no owned task handle or transaction registry. The scheduler
 admits resumable calls within bounded queue entries and bytes, orders
-them by priority class then transaction start, and stops a queued or
-waiting call on cancellation or deadline. A transaction wait, including
+them by priority class then transaction start, and hands a refused call
+back to its caller, refusing a call larger than the byte bound as
+never admissible. It stops a queued, ready or
+waiting call on cancellation, deadline or shutdown, and never starts or
+resumes a call past its deadline. A transaction wait, including
 a deferrable read's wait for a safe snapshot, can suspend its call and
 release the worker; the synchronous facade still parks its thread.
 I/O and capacity waits still block, and the memory grant does not yet

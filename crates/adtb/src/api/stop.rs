@@ -72,6 +72,7 @@ impl<'a> Stops<'a> {
             cancel: self.cancel.map(|t| t.0.clone()),
             deadline,
             suspend: false,
+            rerun: None,
         }
     }
 

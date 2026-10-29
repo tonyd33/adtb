@@ -11,6 +11,7 @@ use adtb::heap::{FieldType, Heap, HeapNo, LargeStore};
 use adtb::key::{CtorId, Dir, Entry, F32, F64, KeySchema, Tid, Value as KValue};
 use adtb::mvcc::{Access, Limits, Scope, Serializer, Transactions};
 use adtb::plan::Catalog;
+use adtb::runtime::Runtime;
 use adtb::storage::Pager;
 use adtb_lang::norm::NormalProgram;
 use adtb_lang::schema::Schema;
@@ -22,9 +23,9 @@ use adtb_sys::lock::Lock;
 use crate::harness;
 
 /// A database's pager and transactions, with its heaps and indexes as the executor binds them.
-pub type Bound = (
-    Pager<SimRuntime>,
-    Arc<Transactions<SimRuntime>>,
+pub type Bound<R = SimRuntime> = (
+    Pager<R>,
+    Arc<Transactions<R>>,
     BTreeMap<adtb::plan::HeapId, StoredHeap>,
     BTreeMap<adtb::plan::IndexId, StoredIndex>,
 );
@@ -264,25 +265,31 @@ fn mutated(schema: &Schema, rel: RelId, row: &Value) -> Option<Value> {
     changed.then_some(Value::Ctor(*c, fs))
 }
 
+pub fn row_ty(f: &World, rel: RelId, c: u32) -> Vec<(String, Ty)> {
+    ctors_of(f.schema, &f.schema.relation(rel).elem)[c as usize]
+        .1
+        .clone()
+}
+
 #[derive(Debug)]
-pub struct Db {
-    pub pager: Pager<SimRuntime>,
+pub struct Db<R: Runtime = SimRuntime> {
+    pub pager: Pager<R>,
     pub heaps: BTreeMap<adtb::plan::HeapId, Heap>,
     pub rows: BTreeMap<adtb::plan::HeapId, Vec<FieldType>>,
     /// The heap of every constructor of each heap's relation.
     pub sums: BTreeMap<adtb::plan::HeapId, Vec<HeapNo>>,
     pub indexes: BTreeMap<adtb::plan::IndexId, (StoredIndex, IndexKeys, RelId)>,
-    pub txns: Arc<Transactions<SimRuntime>>,
+    pub txns: Arc<Transactions<R>>,
 }
 
-impl Db {
-    pub fn create(rt: &SimRuntime, f: &World) -> Db {
+impl<R: Runtime> Db<R> {
+    pub fn create(rt: &R, f: &World) -> Db<R> {
         Db::build(rt, f, None).expect("a new database").0
     }
 
     /// Create the database of `f`, or reopen it at `roots` after recovery. Returns `None` when
     /// the pager cannot open the file.
-    pub fn build(rt: &SimRuntime, f: &World, roots: Option<&Roots>) -> Option<(Db, Roots)> {
+    pub fn build(rt: &R, f: &World, roots: Option<&Roots>) -> Option<(Db<R>, Roots)> {
         let pager = match roots {
             None => Pager::create(rt.clone(), &harness::options(256)).expect("create"),
             Some(_) => Pager::open(rt.clone(), &harness::options(256)).ok()?.0,
@@ -366,7 +373,7 @@ impl Db {
     }
 
     /// Returns the heaps and indexes as the executor and the write path bind them.
-    pub fn bindings(self) -> Bound {
+    pub fn bindings(self) -> Bound<R> {
         let rows = self.rows;
         let sums = self.sums;
         let heaps = self
@@ -390,12 +397,6 @@ impl Db {
             .map(|(i, (st, _, _))| (i, st))
             .collect();
         (self.pager, self.txns, heaps, indexes)
-    }
-
-    pub fn row_ty(f: &World, rel: RelId, c: u32) -> Vec<(String, Ty)> {
-        ctors_of(f.schema, &f.schema.relation(rel).elem)[c as usize]
-            .1
-            .clone()
     }
 
     fn entries(&self, rel: RelId, c: u32, row: &[KValue], tid: Tid) {
@@ -428,7 +429,7 @@ impl Db {
 
     fn put(&mut self, f: &World, rel: RelId, c: u32, row: &Value, xid: u64) -> Tid {
         let h = f.catalog.heap(rel, c);
-        let tys = Db::row_ty(f, rel, c);
+        let tys = row_ty(f, rel, c);
         let Value::Ctor(_, fs) = row else {
             unreachable!()
         };
@@ -455,7 +456,7 @@ impl Db {
 
     pub fn replace(&mut self, f: &World, rel: RelId, c: u32, at: Tid, row: &Value, xid: u64) {
         let h = f.catalog.heap(rel, c);
-        let tys = Db::row_ty(f, rel, c);
+        let tys = row_ty(f, rel, c);
         let Value::Ctor(_, fs) = row else {
             unreachable!()
         };
@@ -501,13 +502,13 @@ impl Db {
     /// Store the fixture's rows, each under versions no snapshot taken afterwards sees: an
     /// earlier value updated to it, and copies inserted by an aborted, a deleted and a running
     /// transaction.
-    pub fn load(rt: &SimRuntime, f: &World) -> Db {
+    pub fn load(rt: &R, f: &World) -> Db<R> {
         Db::load_with(rt, f, true)
     }
 
     /// Store the fixture's rows as [`Db::load`] does, leaving the last transaction running only
     /// when `running`.
-    pub fn load_with(rt: &SimRuntime, f: &World, running: bool) -> Db {
+    pub fn load_with(rt: &R, f: &World, running: bool) -> Db<R> {
         let mut db = Db::create(rt, f);
         let mut all: Vec<(RelId, u32, Value)> = Vec::new();
         for ((r, c), rows) in f.db {
@@ -563,7 +564,7 @@ impl Db {
         db
     }
 
-    pub fn store(self, rt: &SimRuntime) -> Arc<Store<SimRuntime>> {
+    pub fn store(self, rt: &R) -> Arc<Store<R>> {
         let (_, snapshot) = self.txns.take(Scope::Every).expect("a snapshot");
         let mut serializer = Serializer::new(Limits::default());
         let serial = serializer.begin(Access::ReadOnly);

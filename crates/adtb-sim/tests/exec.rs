@@ -688,7 +688,7 @@ fn a_set_of_rows_comes_back_as_batches_of_the_heap_schema() {
     let f = running();
     let cases = cases_of(&f, "from u in users select u", &[]);
     let users = f.rel("users");
-    let row: Vec<FieldType> = Db::row_ty(&world(&f), users, 0)
+    let row: Vec<FieldType> = row_ty(&world(&f), users, 0)
         .iter()
         .map(|(_, t)| field_type(&f.schema, t))
         .collect();
@@ -717,7 +717,7 @@ fn a_set_of_rows_comes_back_as_batches_of_the_heap_schema() {
         .iter()
         .flat_map(|b| (0..b.len()).map(|i| b.row(i)))
         .collect();
-    let tys = Db::row_ty(&world(&f), users, 0);
+    let tys = row_ty(&world(&f), users, 0);
     let want: Vec<Vec<KValue>> = f.db[&(users, 0)]
         .iter()
         .map(|r| {
@@ -733,7 +733,7 @@ fn a_set_of_rows_comes_back_as_batches_of_the_heap_schema() {
 fn a_mistyped_value_is_an_internal_error_in_batches() {
     let f = running();
     let users = f.rel("users");
-    let row: Vec<FieldType> = Db::row_ty(&world(&f), users, 0)
+    let row: Vec<FieldType> = row_ty(&world(&f), users, 0)
         .iter()
         .map(|(_, t)| field_type(&f.schema, t))
         .collect();

@@ -149,8 +149,8 @@ impl<R: Runtime> Stmt<'_, R> {
     /// Wait, as `xid`, for transaction `on` to end, or fail with `Blocked` when the statement
     /// suspends instead.
     fn wait(&self, xid: Xid, on: Xid) -> Result<(), Error> {
-        if self.stop.suspend {
-            return Err(Error::Blocked { on });
+        if let Some(rerun) = self.stop.suspend {
+            return Err(Error::Blocked { on, rerun });
         }
         Ok(self.db.waits.wait(Some(xid), on)?)
     }

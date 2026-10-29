@@ -62,11 +62,34 @@ pub enum Step {
 pub enum Stopped {
     Cancelled,
     DeadlineExceeded,
+    /// The scheduler shut down.
+    ShutDown,
 }
 
-/// The admission queue was full.
+/// Why [`Scheduler::admit`] refused a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Overloaded;
+pub enum Refusal {
+    /// The admission queue was full. The same call may be admitted later.
+    Overloaded,
+    /// The call's bytes alone pass the admission byte bound. It is never admitted.
+    TooLarge,
+    /// The scheduler has shut down.
+    ShutDown,
+}
+
+/// A call [`Scheduler::admit`] refused, handed back to be stopped or admitted again.
+pub struct Refused {
+    pub reason: Refusal,
+    pub call: Box<dyn Resumable>,
+}
+
+impl std::fmt::Debug for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Refused")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
 
 /// A call the scheduler runs in steps on its workers.
 pub trait Resumable: Send + 'static {
@@ -76,12 +99,14 @@ pub trait Resumable: Send + 'static {
     /// held. Every step of one call is passed the same waker.
     fn run(&mut self, waker: &Waker) -> Step;
 
-    /// End a call that will not run again: it was cancelled, or its deadline passed, while it
-    /// was queued or waiting. Withdraw any registration of its waker.
+    /// End a call that will not run again: it was cancelled, its deadline passed or the
+    /// scheduler shut down while it was queued, ready or waiting, or while it ran a step that
+    /// then returned `Wait`. Withdraw any registration of its waker.
     fn stop(self: Box<Self>, why: Stopped);
 }
 
-type CallId = u64;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct CallId(u64);
 
 /// Highest priority first, then the oldest transaction, then the earliest admitted.
 type Order = (Reverse<Priority>, Instant, CallId);
@@ -114,6 +139,8 @@ struct Calls {
     next: CallId,
     /// The earliest timer the deadline thread has in flight.
     armed: Option<Instant>,
+    /// Set by shutdown: no call is admitted or runs another step.
+    closed: bool,
 }
 
 impl Calls {
@@ -138,9 +165,21 @@ impl Calls {
             .expect("a call that is not running is held by its slot")
     }
 
-    /// Returns the first ready call, marked running.
-    fn take(&mut self) -> Option<(CallId, Box<dyn Resumable>, Waker)> {
-        let (_, _, id) = self.ready.pop_first()?;
+    /// Returns the first ready call whose deadline has not passed at `now`, marked running.
+    /// Queue on `tasks` the stop of each ready call before it whose deadline has passed.
+    fn take(
+        &mut self,
+        now: Instant,
+        tasks: &mut VecDeque<Task>,
+    ) -> Option<(CallId, Box<dyn Resumable>, Waker)> {
+        let id = loop {
+            let (_, _, id) = self.ready.pop_first()?;
+            if self.slots[&id].entry.deadline.is_some_and(|d| d <= now) {
+                tasks.push_back(stopping(self.remove(id), Stopped::DeadlineExceeded));
+            } else {
+                break id;
+            }
+        };
         let slot = self.slots.get_mut(&id).expect("a ready call has a slot");
         if slot.state == State::Queued {
             self.queued -= 1;
@@ -165,6 +204,10 @@ impl Calls {
         self.deadlines.insert((d, id));
         self.armed.is_none_or(|a| d < a)
     }
+}
+
+fn stopping(call: Box<dyn Resumable>, why: Stopped) -> Task {
+    Box::new(move || call.stop(why))
 }
 
 struct Inner {
@@ -283,17 +326,28 @@ impl<R: Runtime> Scheduler<R> {
 
     /// Queue `call` to run once it is first in the ready order and a worker is free.
     ///
-    /// Refuse `call`, queueing nothing, when the calls admitted and not yet started would pass
-    /// the scheduler's admission bounds.
-    pub fn admit(&self, entry: Entry, call: Box<dyn Resumable>) -> Result<Admitted<R>, Overloaded> {
+    /// Refuse `call`, queueing nothing and handing it back: with `ShutDown` once the scheduler
+    /// has shut down, with `TooLarge` when its bytes alone pass the admission byte bound, and
+    /// with `Overloaded` when the calls admitted and not yet started would pass the admission
+    /// bounds.
+    pub fn admit(&self, entry: Entry, call: Box<dyn Resumable>) -> Result<Admitted<R>, Refused> {
         let bound = self.inner.admission;
         let (id, early) = {
             let mut c = self.inner.calls.lock(&self.rt);
-            if c.queued >= bound.entries || c.queued_bytes + entry.bytes > bound.bytes {
-                return Err(Overloaded);
+            let refusal = if c.closed {
+                Some(Refusal::ShutDown)
+            } else if entry.bytes > bound.bytes {
+                Some(Refusal::TooLarge)
+            } else if c.queued >= bound.entries || c.queued_bytes + entry.bytes > bound.bytes {
+                Some(Refusal::Overloaded)
+            } else {
+                None
+            };
+            if let Some(reason) = refusal {
+                return Err(Refused { reason, call });
             }
             let id = c.next;
-            c.next += 1;
+            c.next = CallId(id.0 + 1);
             let waker = Waker::from(Arc::new(Wakeup {
                 rt: self.rt.clone(),
                 inner: Arc::downgrade(&self.inner),
@@ -342,9 +396,24 @@ impl<R: Runtime> Scheduler<R> {
         self.inner.ran.load(Ordering::Acquire)
     }
 
-    /// Stop the workers once no task or ready call is left, and wait for them to return.
-    /// Calls still waiting are dropped without running again.
+    /// Stop every queued, ready and waiting call with `ShutDown`, and every running call once
+    /// its step returns `Wait`; refuse every later call. Then stop the workers once no task is
+    /// left, wait for them to return, and run any task still queued on the calling thread.
     pub fn shutdown(&self) {
+        {
+            let mut q = self.inner.queue.lock(&self.rt);
+            let mut c = self.inner.calls.lock(&self.rt);
+            c.closed = true;
+            let idle: Vec<CallId> = c
+                .slots
+                .iter()
+                .filter(|(_, s)| !matches!(s.state, State::Running { .. }))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in idle {
+                q.push_back(stopping(c.remove(id), Stopped::ShutDown));
+            }
+        }
         self.inner.stop.store(true, Ordering::Release);
         let workers = std::mem::take(&mut *self.workers.lock(&self.rt));
         for &w in &workers {
@@ -353,6 +422,7 @@ impl<R: Runtime> Scheduler<R> {
         for w in workers {
             self.rt.join(w);
         }
+        while self.help() {}
     }
 }
 
@@ -396,7 +466,8 @@ impl Inner {
     }
 
     fn stop_call<R: Runtime>(&self, rt: &R, id: CallId, why: Stopped) {
-        let call = {
+        {
+            let mut q = self.queue.lock(rt);
             let mut c = self.calls.lock(rt);
             let Some(slot) = c.slots.get_mut(&id) else {
                 return;
@@ -405,15 +476,16 @@ impl Inner {
                 stop.get_or_insert(why);
                 return;
             }
-            c.remove(id)
-        };
-        self.submit(rt, Box::new(move || call.stop(why)));
+            q.push_back(stopping(c.remove(id), why));
+        }
+        self.unpark_idle(rt);
     }
 
     /// Run one step of call `id`, then queue it again, leave it waiting, stop it or drop it.
     fn step<R: Runtime>(&self, rt: &R, id: CallId, mut call: Box<dyn Resumable>, waker: &Waker) {
         let step = call.run(waker);
         let mut c = self.calls.lock(rt);
+        let closed = c.closed;
         let slot = c.slots.get_mut(&id).expect("a running call keeps its slot");
         let State::Running { woken, stop } = slot.state else {
             unreachable!("only the worker running a call changes it from running");
@@ -423,7 +495,10 @@ impl Inner {
             return;
         }
         let passed = slot.entry.deadline.is_some_and(|d| d <= rt.now());
-        if let Some(why) = stop.or(passed.then_some(Stopped::DeadlineExceeded)) {
+        let why = stop
+            .or(passed.then_some(Stopped::DeadlineExceeded))
+            .or(closed.then_some(Stopped::ShutDown));
+        if let Some(why) = why {
             c.slots.remove(&id);
             drop(c);
             call.stop(why);
@@ -453,20 +528,29 @@ enum Next {
 
 fn work<R: Runtime>(rt: &R, inner: &Inner) {
     loop {
-        let next = {
+        let (next, stopped) = {
             let mut q = inner.queue.lock(rt);
             match q.pop_front() {
-                Some(t) => Next::Task(t),
-                None => match inner.calls.lock(rt).take() {
-                    Some((id, call, waker)) => Next::Call(id, call, waker),
-                    None if inner.stop.load(Ordering::Acquire) => return,
-                    None => {
-                        inner.idle.lock(rt).push(rt.current());
-                        Next::Park
-                    }
-                },
+                Some(t) => (Next::Task(t), false),
+                None => {
+                    let taken = inner.calls.lock(rt).take(rt.now(), &mut q);
+                    let stopped = !q.is_empty();
+                    let next = match taken {
+                        Some((id, call, waker)) => Next::Call(id, call, waker),
+                        None if stopped => continue,
+                        None if inner.stop.load(Ordering::Acquire) => return,
+                        None => {
+                            inner.idle.lock(rt).push(rt.current());
+                            Next::Park
+                        }
+                    };
+                    (next, stopped)
+                }
             }
         };
+        if stopped {
+            inner.unpark_idle(rt);
+        }
         match next {
             Next::Task(t) => {
                 t();
@@ -491,13 +575,15 @@ fn keep_deadlines<R: Runtime>(rt: &R, inner: &Inner) {
             return;
         }
         let expired = {
+            let mut q = inner.queue.lock(rt);
             let mut c = inner.calls.lock(rt);
             let now = rt.now();
-            let mut expired = Vec::new();
+            let mut expired = false;
             while let Some(&(d, id)) = c.deadlines.first()
                 && d <= now
             {
-                expired.push(c.remove(id));
+                q.push_back(stopping(c.remove(id), Stopped::DeadlineExceeded));
+                expired = true;
             }
             if let Some(&(at, _)) = c.deadlines.first()
                 && timers.values().all(|&t| at < t)
@@ -507,8 +593,8 @@ fn keep_deadlines<R: Runtime>(rt: &R, inner: &Inner) {
             c.armed = timers.values().min().copied();
             expired
         };
-        for call in expired {
-            inner.submit(rt, Box::new(move || call.stop(Stopped::DeadlineExceeded)));
+        if expired {
+            inner.unpark_idle(rt);
         }
         rt.park();
     }

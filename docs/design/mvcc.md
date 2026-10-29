@@ -468,9 +468,11 @@ Preconditions:
   concurrent inserters of a key, one finds the other's entry.
 - Nothing latched is held across a wait; a wait parks through the
   runtime ([runtime.md §1](runtime.md#1-time-threads-and-randomness)),
-  or suspends its call, which releases its worker, undoes the
-  statement and runs it again on the same snapshot once the awaited
-  transaction ends.
+  or suspends its call. A suspended wait fails the statement, which
+  releases its worker and undoes every statement the call ran; once
+  the awaited transaction ends, the caller reruns them on the same
+  transaction and snapshot. The rerun does not restart the statement
+  time limit: the wait counts toward it as a parked wait does.
 
 Postconditions:
 
@@ -620,8 +622,9 @@ A read-only snapshot is pending until every read-write transaction
 running when it was taken has ended. It is unsafe once one of them
 commits with a rw-antidependency on a transaction that committed before
 the snapshot; it is safe when all have ended and none did so. A
-deferrable transaction waits, parked through the runtime, until its
-snapshot is decided, and takes a new snapshot when it is unsafe. Any
+deferrable transaction waits until its snapshot is decided, parked
+through the runtime or with its call suspended, and takes a new
+snapshot when it is unsafe. Any
 read-only transaction whose snapshot becomes safe drops its SIREAD
 locks and records nothing more.
 

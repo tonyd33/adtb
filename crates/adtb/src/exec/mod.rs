@@ -23,7 +23,8 @@ pub use ir::{Program, compile};
 pub use memory::{Arena, Budget, Grant};
 pub(crate) use prim::print;
 pub use sched::{
-    Admission, Admitted, Entry, Overloaded, Priority, Resumable, Scheduler, Step, Stopped, Task,
+    Admission, Admitted, Entry, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped,
+    Task,
 };
 pub use store::{AtSnapshot, Histories, PastReads, Reads, Store, StoredHeap, StoredIndex};
 pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};

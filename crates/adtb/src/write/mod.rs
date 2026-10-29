@@ -13,6 +13,7 @@ mod sequence;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::task::Waker;
 use std::time::Duration;
 
 use adtb_file::Disk;
@@ -27,7 +28,7 @@ use crate::exec::{self, Budget, Scheduler, StoredHeap, StoredIndex, Val};
 use crate::key::CtorId;
 use crate::mvcc::{
     Access, Limits, Safety, Scope, SerialId, SerializationFailure, Serializer, Snapshot,
-    SnapshotId, Transactions, Waits, Xid,
+    SnapshotId, Transactions, Waits, Watch, Xid,
 };
 use crate::plan::explain::Node;
 use crate::plan::{Catalog, HeapId, IndexId};
@@ -120,9 +121,11 @@ pub enum Error {
     FileChanged(String),
     Cancelled,
     DeadlineExceeded,
-    /// A statement run with [`Bounds::suspend`] must wait for transaction `on` to end.
+    /// A statement run with [`Bounds::suspend`] must wait for transaction `on` to end. A rerun
+    /// of the statements passes `rerun` as [`Bounds::rerun`].
     Blocked {
         on: Xid,
+        rerun: Rerun,
     },
     /// A statement reached a host function, by its name, with no body bound.
     MissingFunction(String),
@@ -341,7 +344,7 @@ pub type Between<'h> = dyn FnMut(usize, &mut Local) -> Result<(), Error> + 'h;
 pub struct Bounds {
     /// The rounds a fixpoint may take, else the database's limit.
     pub fix_rounds: Option<usize>,
-    /// How long each statement may run, from its start.
+    /// How long each statement may run, from its start, or from [`Bounds::rerun`].
     pub limit: Option<Duration>,
     /// Set to stop the statements with `Cancelled`.
     pub cancel: Option<Arc<AtomicBool>>,
@@ -349,6 +352,18 @@ pub struct Bounds {
     pub deadline: Option<Instant>,
     /// Fail with `Blocked` at a wait for another transaction, instead of parking the thread.
     pub suspend: bool,
+    /// The `rerun` of the `Blocked` failure of an earlier run of the same statements.
+    pub rerun: Option<Rerun>,
+}
+
+/// Where the statement limit of a rerun of suspended statements starts.
+///
+/// A rerun never restarts the limit: each statement up to the latest one an earlier run reached
+/// is limited from the first start of that latest statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rerun {
+    through: usize,
+    since: Instant,
 }
 
 /// What stops one statement's executions early.
@@ -357,8 +372,9 @@ pub struct Stop {
     /// Set to stop them with `Cancelled`.
     pub cancel: Arc<AtomicBool>,
     pub deadline: Option<exec::Deadline>,
-    /// Fail with `Blocked` at a wait for another transaction, instead of parking the thread.
-    pub suspend: bool,
+    /// Fail with `Blocked`, carrying this, at a wait for another transaction, instead of
+    /// parking the thread.
+    pub suspend: Option<Rerun>,
 }
 
 /// The heaps and indexes of the relation variables a catalog describes.
@@ -648,9 +664,20 @@ impl<R: Runtime> Database<R> {
         })
     }
 
-    /// Returns the waits of the database's transactions for each other.
-    pub fn waits(&self) -> &Waits<R> {
-        &self.waits
+    /// Register `waker` to be woken once transaction `on` has ended, as [`Waits::watch`] does.
+    /// `me` is the waiting transaction, if it has an xid.
+    pub fn watch(
+        &self,
+        me: Option<Xid>,
+        on: Xid,
+        waker: &Waker,
+    ) -> Result<Watch, SerializationFailure> {
+        self.waits.watch(me, on, waker)
+    }
+
+    /// Withdraw the registration of `waker` on `on` made as `me`, if `on` has not ended.
+    pub fn withdraw(&self, me: Option<Xid>, on: Xid, waker: &Waker) {
+        self.waits.withdraw(me, on, waker);
     }
 
     /// Log a safe snapshot marker for every read-only transaction `ser` has found safe.
@@ -724,7 +751,7 @@ impl<R: Runtime> Database<R> {
         for item in 0..=text.items.len() {
             let done = between(item, local).and_then(|()| match text.items.get(item) {
                 Some(t) => {
-                    let s = self.stmt(tx, text, *t, &bounds);
+                    let s = self.stmt(tx, text, *t, item, &bounds);
                     let o = s.run(text.params, local);
                     ran.push(s);
                     o.map(|o| out.push(o))
@@ -756,7 +783,7 @@ impl<R: Runtime> Database<R> {
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
         for (item, t) in text.items.iter().enumerate() {
-            let s = self.stmt(tx, text, *t, &bounds);
+            let s = self.stmt(tx, text, *t, item, &bounds);
             let o = s.run(text.params, local);
             ran.push(s);
             match o {
@@ -779,7 +806,8 @@ impl<R: Runtime> Database<R> {
     /// Returns the operators of term `t` of `text` as a statement of `tx` would run it.
     pub fn explain(&self, tx: &Txn, text: Text<'_>, t: Tm) -> Result<Node, Error> {
         let params: Vec<Var> = text.params.iter().map(|(v, _)| *v).collect();
-        self.stmt(tx, text, t, &Bounds::default()).explain(&params)
+        self.stmt(tx, text, t, 0, &Bounds::default())
+            .explain(&params)
     }
 
     /// Vacuums each constructor relation of `rel` in turn. Returns the id of each constructor
@@ -813,19 +841,28 @@ impl<R: Runtime> Database<R> {
         Ok(out)
     }
 
+    /// Returns term `t`, item `item` of `text`, as a statement of `tx` bounded by `bounds`.
     fn stmt<'a>(
         &'a self,
         tx: &'a Txn,
         text: Text<'a>,
         t: Tm,
+        item: usize,
         bounds: &Bounds,
     ) -> eval::Stmt<'a, R> {
         let options = exec::Options {
             fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
             ..self.options
         };
+        let rerun = match bounds.rerun {
+            Some(r) if item <= r.through => r,
+            _ => Rerun {
+                through: item,
+                since: self.rt.now(),
+            },
+        };
         let limit = bounds.limit.map(|after| exec::Deadline {
-            at: self.rt.now() + after,
+            at: rerun.since + after,
             error: exec::Error::StatementLimit(exec::Exceeded::Time { after }),
         });
         let deadline = bounds.deadline.map(|at| exec::Deadline {
@@ -835,7 +872,7 @@ impl<R: Runtime> Database<R> {
         let stop = Stop {
             cancel: bounds.cancel.clone().unwrap_or_default(),
             deadline: [limit, deadline].into_iter().flatten().min_by_key(|d| d.at),
-            suspend: bounds.suspend,
+            suspend: bounds.suspend.then_some(rerun),
         };
         eval::Stmt::new(self, tx, text, t, options, stop)
     }

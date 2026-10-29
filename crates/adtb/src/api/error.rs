@@ -338,7 +338,7 @@ impl Error {
                 Error::invalid("the generated counter exhausted its integer range")
             }
             write::Error::Internal(what) => Error::rejected(RejectReason::Internal { what }),
-            write::Error::Blocked { on } => Error::rejected(RejectReason::Internal {
+            write::Error::Blocked { on, .. } => Error::rejected(RejectReason::Internal {
                 what: format!("a statement suspended on {on:?} outside a resumable call"),
             }),
             write::Error::HistoryUnavailable { oldest } => {

@@ -2,7 +2,7 @@ use adtb::plan::fixture as planfix;
 
 use adtb_simkit::support;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,10 +10,10 @@ use std::task::{Wake, Waker};
 use std::time::Duration;
 
 use adtb::exec::{
-    self, Admission, Budget, Entry, Overloaded, Priority, Resumable, Scheduler, Step, Stopped,
-    Task, Val,
+    self, Admission, Budget, Entry, Exceeded, Priority, Refusal, Refused, Resumable, Scheduler,
+    Step, Stopped, Task, Val,
 };
-use adtb::mvcc::{Limits, Waits, Watch, Xid};
+use adtb::mvcc::{Cause, Limits, Waits, Watch, Xid};
 use adtb::runtime::{Instant, Io, Op, Runtime, ThreadId, Threads};
 use adtb::write::{self, Bindings, Bounds, Database, Deferral, Failed, Local, Setup, Text, Txn};
 use adtb::{CallOptions, CreateOptions, Log as SchemaLog, OpenOptions, Registration};
@@ -36,7 +36,7 @@ enum Event {
     Waiting(&'static str),
     Done(&'static str),
     Stopped(&'static str, Stopped),
-    Failed(&'static str, String),
+    Failed(&'static str, write::Error),
 }
 
 /// What the calls of one test did, waking the thread that made it on each event.
@@ -258,25 +258,59 @@ fn admission_bounds_entries_and_bytes<R: Runtime>(rt: &R) {
     let a = pool.admit(bytes(40), note("a", &log)).unwrap();
     pool.admit(bytes(40), note("b", &log)).unwrap();
     assert_eq!(
-        Overloaded,
-        pool.admit(bytes(30), note("c", &log)).unwrap_err()
+        Refusal::Overloaded,
+        pool.admit(bytes(30), note("c", &log)).unwrap_err().reason
     );
     pool.admit(bytes(20), note("c", &log)).unwrap();
     assert_eq!(
-        Overloaded,
-        pool.admit(bytes(0), note("d", &log)).unwrap_err()
+        Refusal::Overloaded,
+        pool.admit(bytes(0), note("d", &log)).unwrap_err().reason
     );
     a.cancel();
     pool.admit(bytes(40), note("e", &log)).unwrap();
     assert_eq!(
-        Overloaded,
-        pool.admit(bytes(0), note("f", &log)).unwrap_err()
+        Refusal::Overloaded,
+        pool.admit(bytes(0), note("f", &log)).unwrap_err().reason
     );
     assert!(pool.help(), "the cancelled call's stop is a task");
     assert_eq!(vec![Event::Stopped("a", Stopped::Cancelled)], log.events());
     a.cancel();
     assert!(!pool.help());
     pool.shutdown();
+}
+
+/// A refused call is handed back; one larger than the byte bound is refused as too large with
+/// nothing queued, and every call after shutdown is refused.
+fn a_refused_call_is_handed_back<R: Runtime>(rt: &R) {
+    let pool = Scheduler::start_with(
+        rt.clone(),
+        0,
+        Admission {
+            entries: 1,
+            bytes: 100,
+        },
+    );
+    let log = Log::new(rt);
+    let big = pool
+        .admit(entry(Priority::Regular, 0, 101, None), note("big", &log))
+        .unwrap_err();
+    assert_eq!(Refusal::TooLarge, big.reason);
+    big.call.stop(Stopped::Cancelled);
+    pool.admit(plain(0), note("a", &log)).unwrap();
+    let full = pool.admit(plain(0), note("b", &log)).unwrap_err();
+    assert_eq!(Refusal::Overloaded, full.reason);
+    pool.shutdown();
+    let closed = pool.admit(plain(0), full.call).unwrap_err();
+    assert_eq!(Refusal::ShutDown, closed.reason);
+    closed.call.stop(Stopped::Cancelled);
+    assert_eq!(
+        vec![
+            Event::Stopped("big", Stopped::Cancelled),
+            Event::Stopped("a", Stopped::ShutDown),
+            Event::Stopped("b", Stopped::Cancelled),
+        ],
+        log.events()
+    );
 }
 
 fn calls_run_by_priority_then_start<R: Runtime>(rt: &R) {
@@ -361,8 +395,8 @@ fn queued_calls_stop_on_cancel_and_deadline<R: Runtime>(rt: &R) {
     pool.admit(plain(0), note("d", &log)).unwrap();
     pool.admit(plain(0), note("e", &log)).unwrap();
     assert_eq!(
-        Overloaded,
-        pool.admit(plain(0), note("f", &log)).unwrap_err()
+        Refusal::Overloaded,
+        pool.admit(plain(0), note("f", &log)).unwrap_err().reason
     );
     pool.shutdown();
 }
@@ -499,8 +533,107 @@ fn a_queued_end_runs_while_every_call_waits<R: Runtime>(rt: &R) {
         }),
     )
     .unwrap();
+    log.until(|es| {
+        es.contains(&Event::Done("end")) && names.iter().all(|n| es.contains(&Event::Done(n)))
+    });
+    pool.shutdown();
+}
+
+/// A call whose deadline has passed when a worker would take it stops instead of running.
+fn a_call_past_its_deadline_never_runs<R: Runtime>(rt: &R) {
+    let pool = Scheduler::start(rt.clone(), 2);
+    let log = Log::new(rt);
+    let names = ["p0", "p1", "p2", "p3"];
+    for name in names {
+        pool.admit(
+            entry(Priority::Regular, 0, 0, Some(rt.now())),
+            note(name, &log),
+        )
+        .unwrap();
+    }
+    log.until(|es| {
+        es.iter()
+            .filter(|e| matches!(e, Event::Done(_) | Event::Stopped(..)))
+            .count()
+            == names.len()
+    });
+    for name in names {
+        assert!(
+            log.has(&Event::Stopped(name, Stopped::DeadlineExceeded)),
+            "{name}: {:?}",
+            log.events()
+        );
+    }
+    pool.shutdown();
+}
+
+/// Shutdown stops every queued and waiting call, and a cancel after it does nothing.
+fn shutdown_stops_queued_and_waiting_calls<R: Runtime>(rt: &R) {
+    let log = Log::new(rt);
+    let idle = Scheduler::start(rt.clone(), 0);
+    let queued = idle.admit(plain(0), note("queued", &log)).unwrap();
+    idle.shutdown();
+    assert_eq!(
+        vec![Event::Stopped("queued", Stopped::ShutDown)],
+        log.events()
+    );
+    queued.cancel();
+    assert!(!idle.help(), "a cancel after shutdown queues nothing");
+
+    let pool = Scheduler::start(rt.clone(), 1);
+    let waits = Arc::new(Waits::new(rt.clone()));
+    waits.started(X);
+    let late = rt.now() + Duration::from_secs(3600);
+    let waiting = pool
+        .admit(
+            entry(Priority::Regular, 0, 0, Some(late)),
+            gate("waiting", X, &waits, &log),
+        )
+        .unwrap();
+    log.until(|es| es.contains(&Event::Waiting("waiting")));
+    pool.shutdown();
+    assert!(log.has(&Event::Stopped("waiting", Stopped::ShutDown)));
+    waiting.cancel();
+    assert!(!pool.help(), "a cancel after shutdown queues nothing");
+    waits.ended(X);
+    assert!(!log.has(&Event::Done("waiting")));
+}
+
+/// Admit `call`, admitting it again while the admission queue is full.
+fn admit_retrying<R: Runtime>(pool: &Scheduler<R>, entry: Entry, mut call: Box<dyn Resumable>) {
+    while let Err(Refused { reason, call: back }) = pool.admit(entry, call) {
+        assert_eq!(Refusal::Overloaded, reason);
+        call = back;
+        pool.runtime().yield_now();
+    }
+}
+
+/// More calls wait than the admission bound admits.
+fn waiting_calls_leave_the_admission_bound<R: Runtime>(rt: &R) {
+    let pool = Scheduler::start_with(
+        rt.clone(),
+        2,
+        Admission {
+            entries: 2,
+            bytes: 1 << 20,
+        },
+    );
+    let log = Log::new(rt);
+    let waits = Arc::new(Waits::new(rt.clone()));
+    waits.started(X);
+    let names = ["w0", "w1", "w2", "w3", "w4", "w5"];
+    for (i, name) in names.into_iter().enumerate() {
+        admit_retrying(&pool, plain(i as u64), gate(name, X, &waits, &log));
+    }
+    log.until(|es| names.iter().all(|n| es.contains(&Event::Waiting(n))));
+    let end = End {
+        name: "end",
+        on: X,
+        waits,
+        log: log.clone(),
+    };
+    admit_retrying(&pool, entry(Priority::AdHoc, 9, 0, None), Box::new(end));
     log.until(|es| names.iter().all(|n| es.contains(&Event::Done(n))));
-    assert!(log.has(&Event::Done("end")));
     pool.shutdown();
 }
 
@@ -528,6 +661,18 @@ fn real() -> OsRuntime {
     OsRuntime::new(dir, Backend::Pool { threads: 2 })
 }
 
+/// Returns a runtime over a new directory of its own, `name`.
+fn real_in(name: &str) -> OsRuntime {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("calls-db")
+        .join(name);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    std::fs::create_dir_all(&dir).unwrap();
+    OsRuntime::new(dir, Backend::Pool { threads: 2 })
+}
+
 #[test]
 fn admission_bounds_entries_and_bytes_sim() {
     sim_seeds("admission", admission_bounds_entries_and_bytes);
@@ -536,6 +681,16 @@ fn admission_bounds_entries_and_bytes_sim() {
 #[test]
 fn admission_bounds_entries_and_bytes_real() {
     admission_bounds_entries_and_bytes(&real());
+}
+
+#[test]
+fn a_refused_call_is_handed_back_sim() {
+    sim_seeds("refused", a_refused_call_is_handed_back);
+}
+
+#[test]
+fn a_refused_call_is_handed_back_real() {
+    a_refused_call_is_handed_back(&real());
 }
 
 #[test]
@@ -605,15 +760,56 @@ fn a_queued_end_runs_while_every_call_waits_real() {
     }
 }
 
+#[test]
+fn a_call_past_its_deadline_never_runs_sim() {
+    sim_seeds("past deadline", a_call_past_its_deadline_never_runs);
+}
+
+#[test]
+fn a_call_past_its_deadline_never_runs_real() {
+    let rt = real();
+    for _ in 0..20 {
+        a_call_past_its_deadline_never_runs(&rt);
+    }
+}
+
+#[test]
+fn shutdown_stops_queued_and_waiting_calls_sim() {
+    sim_seeds("shutdown", shutdown_stops_queued_and_waiting_calls);
+}
+
+#[test]
+fn shutdown_stops_queued_and_waiting_calls_real() {
+    shutdown_stops_queued_and_waiting_calls(&real());
+}
+
+#[test]
+fn waiting_calls_leave_the_admission_bound_sim() {
+    sim_seeds("past the bound", waiting_calls_leave_the_admission_bound);
+}
+
+#[test]
+fn waiting_calls_leave_the_admission_bound_real() {
+    waiting_calls_leave_the_admission_bound(&real());
+}
+
 const ITEMS: &str =
     "type Item = { id: Key items, n: I64 }\nrelation items : Item key id generate sequence\n";
+const ONE: &str = "[Item { id: items.key(1), n: 0 }]";
+const TWO: &str = "[Item { id: items.key(1), n: 0 }, Item { id: items.key(2), n: 10 }]";
 const BUMP: &str = "update i in items set { i with n: i.n + 1 }";
+const BUMP_FIRST: &str = "update i in items where i.id == items.key(1) set { i with n: i.n + 1 }";
+const BUMP_SECOND: &str = "update i in items where i.id == items.key(2) set { i with n: i.n + 1 }";
+const INSERT_THEN_BUMP: &str =
+    "insert items { id: items.key(9), n: 5 }\nupdate i in items set { i with n: i.n + 1 }";
 const READ: &str = "from i in items select i.n";
+const IDS: &str = "from i in items select i.id";
+const TEXTS: [&str; 6] = [BUMP, BUMP_FIRST, BUMP_SECOND, INSERT_THEN_BUMP, READ, IDS];
 
-/// A statement ready for the engine.
+/// Statements ready for the engine.
 struct Prepared {
     terms: Terms,
-    item: Tm,
+    items: Vec<Tm>,
 }
 
 fn prepare(f: &Fixture, text: &str) -> Prepared {
@@ -625,22 +821,21 @@ fn prepare(f: &Fixture, text: &str) -> Prepared {
     let normal = norm::adhoc(&f.schema, &f.program, &adhoc)
         .unwrap_or_else(|e| panic!("`{text}` has no normal form: {e:?}"));
     Prepared {
-        item: normal.items[0],
+        items: normal.items,
         terms: normal.terms,
     }
 }
 
-/// A database of one item, `n` 0, with the bump and read statements over it.
-struct Items {
+/// A database of the items `rows`, with each of [`TEXTS`] prepared over it.
+struct Items<R: Runtime> {
     schema: Arc<Schema>,
-    db: Database<SimRuntime>,
-    bump: Prepared,
-    read: Prepared,
+    db: Database<R>,
+    texts: BTreeMap<&'static str, Prepared>,
 }
 
-fn items(rt: &SimRuntime) -> Arc<Items> {
+fn items<R: Runtime>(rt: &R, rows: &str) -> Arc<Items<R>> {
     let mut f = Fixture::new(ITEMS);
-    f.rows("items", "[Item { id: items.key(1), n: 0 }]");
+    f.rows("items", rows);
     let catalog = Arc::new(planfix::catalog(&f.schema));
     let normal: Arc<NormalProgram> =
         Arc::new(norm::program(&f.schema, &f.program).expect("the schema normalises"));
@@ -671,121 +866,136 @@ fn items(rt: &SimRuntime) -> Arc<Items> {
     )
     .expect("a database over the fixture");
     Arc::new(Items {
-        bump: prepare(&f, BUMP),
-        read: prepare(&f, READ),
+        texts: TEXTS.into_iter().map(|t| (t, prepare(&f, t))).collect(),
         schema,
         db,
     })
 }
 
-impl Items {
-    fn text<'a>(&'a self, p: &'a Prepared) -> Text<'a> {
+impl<R: Runtime> Items<R> {
+    fn text<'a>(&'a self, src: &str) -> Text<'a> {
+        let p = &self.texts[src];
         Text {
             schema: &self.schema,
             terms: &p.terms,
-            items: std::slice::from_ref(&p.item),
+            items: &p.items,
             params: &[],
             clock: 0,
             caller: None,
         }
     }
 
-    fn bump(&self, tx: &Txn) {
+    fn run(&self, tx: &Txn, src: &str, bounds: Bounds) -> Result<Vec<write::Outcome>, Failed> {
         self.db
-            .statements(
-                tx,
-                self.text(&self.bump),
-                &mut Local::default(),
-                Bounds::default(),
-            )
-            .unwrap();
+            .statements(tx, self.text(src), &mut Local::default(), bounds)
     }
 
-    fn values(&self) -> Val {
+    fn bump(&self, tx: &Txn) {
+        self.run(tx, BUMP, Bounds::default()).unwrap();
+    }
+
+    /// Returns the set `src` reads in a transaction of its own.
+    fn read(&self, src: &str) -> Val {
         let tx = self.db.begin_read(false).unwrap();
-        let mut out = self
-            .db
-            .statements(
-                &tx,
-                self.text(&self.read),
-                &mut Local::default(),
-                Bounds::default(),
-            )
-            .unwrap();
+        let mut out = self.run(&tx, src, Bounds::default()).unwrap();
         self.db.commit(tx).unwrap();
         out.remove(0).result
     }
+
+    fn values(&self) -> Val {
+        self.read(READ)
+    }
 }
 
-/// Bumps the item in a transaction of its own, suspending at transaction waits, then commits.
-struct Bump {
+fn ints(ns: &[i64]) -> Val {
+    Val::set(ns.iter().map(|n| Val::Int(*n)).collect())
+}
+
+/// A call that runs `src` as the statements of one transaction, suspending at transaction
+/// waits, then commits.
+struct Write<R: Runtime> {
     name: &'static str,
-    items: Arc<Items>,
+    items: Arc<Items<R>>,
+    src: &'static str,
+    bounds: Bounds,
+    /// The transaction, begun at the first step when `None`.
     tx: Option<Txn>,
-    log: Arc<Log<SimRuntime>>,
+    /// The transaction the waker is registered on, with the waker.
+    watched: Option<(Xid, Waker)>,
+    log: Arc<Log<R>>,
 }
 
-impl Bump {
-    fn failed(&mut self, error: &write::Error) -> Step {
-        let tx = self.tx.take().expect("a failing bump has its transaction");
+fn write<R: Runtime>(
+    name: &'static str,
+    src: &'static str,
+    items: &Arc<Items<R>>,
+    log: &Arc<Log<R>>,
+) -> Write<R> {
+    Write {
+        name,
+        items: items.clone(),
+        src,
+        bounds: Bounds::default(),
+        tx: None,
+        watched: None,
+        log: log.clone(),
+    }
+}
+
+impl<R: Runtime> Write<R> {
+    fn failed(&mut self, error: write::Error) -> Step {
+        let tx = self.tx.take().expect("a failing write has its transaction");
         self.items.db.abort(tx).unwrap();
-        self.log.push(Event::Failed(self.name, kind(error)));
+        self.log.push(Event::Failed(self.name, error));
         Step::Done
     }
 }
 
-fn kind(e: &write::Error) -> String {
-    let debug = format!("{e:?}");
-    debug
-        .split(['(', ' ', '{'])
-        .next()
-        .unwrap_or_default()
-        .to_string()
-}
-
-impl Resumable for Bump {
+impl<R: Runtime> Resumable for Write<R> {
     fn run(&mut self, waker: &Waker) -> Step {
         self.log.push(Event::Ran(self.name));
+        self.watched = None;
         let items = self.items.clone();
         let tx = self
             .tx
             .get_or_insert_with(|| items.db.begin().expect("a transaction"));
-        let bounds = Bounds {
-            suspend: true,
-            ..Bounds::default()
-        };
         loop {
-            let ran = items.db.statements(
-                tx,
-                items.text(&items.bump),
-                &mut Local::default(),
-                bounds.clone(),
-            );
-            match ran {
+            let bounds = Bounds {
+                suspend: true,
+                ..self.bounds.clone()
+            };
+            match items.run(tx, self.src, bounds) {
                 Ok(_) => {
-                    let tx = self.tx.take().expect("a bump has its transaction");
+                    let tx = self.tx.take().expect("a write has its transaction");
                     items.db.commit(tx).unwrap();
                     self.log.push(Event::Done(self.name));
                     return Step::Done;
                 }
                 Err(Failed {
-                    error: write::Error::Blocked { on },
+                    error: write::Error::Blocked { on, rerun },
                     ..
-                }) => match items.db.waits().watch(tx.xid(), on, waker) {
-                    Ok(Watch::Ended) => {}
-                    Ok(Watch::Pending) => {
-                        self.log.push(Event::Waiting(self.name));
-                        return Step::Wait;
+                }) => {
+                    self.bounds.rerun = Some(rerun);
+                    match items.db.watch(tx.xid(), on, waker) {
+                        Ok(Watch::Ended) => {}
+                        Ok(Watch::Pending) => {
+                            self.watched = Some((on, waker.clone()));
+                            self.log.push(Event::Waiting(self.name));
+                            return Step::Wait;
+                        }
+                        Err(f) => return self.failed(f.into()),
                     }
-                    Err(f) => return self.failed(&f.into()),
-                },
-                Err(Failed { error, .. }) => return self.failed(&error),
+                }
+                Err(Failed { error, .. }) => return self.failed(error),
             }
         }
     }
 
     fn stop(mut self: Box<Self>, why: Stopped) {
         if let Some(tx) = self.tx.take() {
+            if let Some((on, w)) = &self.watched {
+                self.items.db.withdraw(tx.xid(), *on, w);
+            }
             self.items.db.abort(tx).unwrap();
         }
         self.log.push(Event::Stopped(self.name, why));
@@ -793,14 +1003,14 @@ impl Resumable for Bump {
 }
 
 /// A call that commits or aborts a transaction another thread began.
-struct Finish {
-    items: Arc<Items>,
+struct Finish<R: Runtime> {
+    items: Arc<Items<R>>,
     tx: Option<Txn>,
     commit: bool,
-    log: Arc<Log<SimRuntime>>,
+    log: Arc<Log<R>>,
 }
 
-impl Resumable for Finish {
+impl<R: Runtime> Resumable for Finish<R> {
     fn run(&mut self, _: &Waker) -> Step {
         let tx = self.tx.take().expect("a finish runs once");
         if self.commit {
@@ -821,20 +1031,18 @@ const BUMPS: [&str; 4] = ["b0", "b1", "b2", "b3"];
 
 /// Four bumps wait on a transaction holding the item, on two workers; a queued call then ends
 /// that transaction. Returns the log.
-fn bumps_behind(rt: &SimRuntime, commit: bool) -> (Arc<Items>, Arc<Log<SimRuntime>>) {
-    let items = items(rt);
+fn bumps_behind<R: Runtime>(rt: &R, commit: bool) -> (Arc<Items<R>>, Arc<Log<R>>) {
+    let items = items(rt, ONE);
     let pool = Scheduler::start(rt.clone(), 2);
     let log = Log::new(rt);
     let t0 = items.db.begin().unwrap();
     items.bump(&t0);
     for (i, name) in BUMPS.into_iter().enumerate() {
-        let bump = Bump {
-            name,
-            items: items.clone(),
-            tx: None,
-            log: log.clone(),
-        };
-        pool.admit(plain(10 + i as u64), Box::new(bump)).unwrap();
+        pool.admit(
+            plain(10 + i as u64),
+            Box::new(write(name, BUMP, &items, &log)),
+        )
+        .unwrap();
     }
     log.until(|es| BUMPS.iter().all(|n| es.contains(&Event::Waiting(n))));
     let finish = Finish {
@@ -856,70 +1064,291 @@ fn bumps_behind(rt: &SimRuntime, commit: bool) -> (Arc<Items>, Arc<Log<SimRuntim
     (items, log)
 }
 
-#[test]
-fn a_queued_commit_runs_while_every_write_waits() {
-    sim_seeds("queued commit", |rt| {
-        let (items, log) = bumps_behind(rt, true);
-        for n in BUMPS {
-            assert!(
-                log.has(&Event::Failed(n, "Serialization".into())),
-                "{n}: {:?}",
-                log.events()
-            );
-        }
-        assert_eq!(Val::set(BTreeSet::from([Val::Int(1)])), items.values());
-    });
+fn a_queued_commit_runs_while_every_write_waits<R: Runtime>(rt: &R) {
+    let (items, log) = bumps_behind(rt, true);
+    for n in BUMPS {
+        assert!(
+            log.events()
+                .iter()
+                .any(|e| matches!(e, Event::Failed(m, write::Error::Serialization(_)) if *m == n)),
+            "{n}: {:?}",
+            log.events()
+        );
+    }
+    assert_eq!(ints(&[1]), items.values());
 }
 
 #[test]
-fn waiting_writes_resume_after_an_abort() {
-    sim_seeds("queued abort", |rt| {
-        let (items, log) = bumps_behind(rt, false);
-        let done = log.count(|e| matches!(e, Event::Done(n) if n.starts_with('b')));
-        assert_eq!(1, done, "{:?}", log.events());
-        assert_eq!(Val::set(BTreeSet::from([Val::Int(1)])), items.values());
-    });
+fn a_queued_commit_runs_while_every_write_waits_sim() {
+    sim_seeds(
+        "queued commit",
+        a_queued_commit_runs_while_every_write_waits,
+    );
+}
+
+#[test]
+fn a_queued_commit_runs_while_every_write_waits_real() {
+    a_queued_commit_runs_while_every_write_waits(&real_in("queued-commit"));
+}
+
+fn waiting_writes_resume_after_an_abort<R: Runtime>(rt: &R) {
+    let (items, log) = bumps_behind(rt, false);
+    let done = log.count(|e| matches!(e, Event::Done(n) if n.starts_with('b')));
+    assert_eq!(1, done, "{:?}", log.events());
+    assert_eq!(ints(&[1]), items.values());
+}
+
+#[test]
+fn waiting_writes_resume_after_an_abort_sim() {
+    sim_seeds("queued abort", waiting_writes_resume_after_an_abort);
+}
+
+#[test]
+fn waiting_writes_resume_after_an_abort_real() {
+    waiting_writes_resume_after_an_abort(&real_in("queued-abort"));
 }
 
 #[test]
 fn a_cancelled_waiting_write_leaves_the_others_waiting() {
     sim_seeds("cancel write", |rt| {
-        let items = items(rt);
+        let items = items(rt, ONE);
         let pool = Scheduler::start(rt.clone(), 1);
         let log = Log::new(rt);
         let t0 = items.db.begin().unwrap();
         items.bump(&t0);
-        let bump = |name| {
-            Box::new(Bump {
-                name,
-                items: items.clone(),
-                tx: None,
-                log: log.clone(),
-            })
-        };
-        let b0 = pool.admit(plain(0), bump("b0")).unwrap();
-        pool.admit(plain(1), bump("b1")).unwrap();
+        let b0 = pool
+            .admit(plain(0), Box::new(write("b0", BUMP, &items, &log)))
+            .unwrap();
+        pool.admit(plain(1), Box::new(write("b1", BUMP, &items, &log)))
+            .unwrap();
         log.until(|es| es.contains(&Event::Waiting("b0")) && es.contains(&Event::Waiting("b1")));
         b0.cancel();
         log.until(|es| es.contains(&Event::Stopped("b0", Stopped::Cancelled)));
         items.db.abort(t0).unwrap();
         log.until(|es| es.contains(&Event::Done("b1")));
         assert!(!log.has(&Event::Done("b0")));
-        assert_eq!(Val::set(BTreeSet::from([Val::Int(1)])), items.values());
+        assert_eq!(ints(&[1]), items.values());
         pool.shutdown();
+    });
+}
+
+/// A call of two statements suspends at its second, and once woken reruns both, the first's
+/// insert undone in between.
+fn a_two_statement_call_suspends_and_resumes<R: Runtime>(rt: &R) {
+    let items = items(rt, ONE);
+    let pool = Scheduler::start(rt.clone(), 1);
+    let log = Log::new(rt);
+    let t0 = items.db.begin().unwrap();
+    items.bump(&t0);
+    pool.admit(
+        plain(0),
+        Box::new(write("two", INSERT_THEN_BUMP, &items, &log)),
+    )
+    .unwrap();
+    log.until(|es| es.contains(&Event::Waiting("two")));
+    items.db.abort(t0).unwrap();
+    log.until(|es| {
+        es.iter()
+            .any(|e| matches!(e, Event::Done(_) | Event::Failed(..)))
+    });
+    assert_eq!(
+        vec![
+            Event::Ran("two"),
+            Event::Waiting("two"),
+            Event::Ran("two"),
+            Event::Done("two"),
+        ],
+        log.events()
+    );
+    assert_eq!(ints(&[1, 6]), items.values());
+    assert_eq!(2, items.read(IDS).as_set().unwrap().len());
+    pool.shutdown();
+}
+
+#[test]
+fn a_two_statement_call_suspends_and_resumes_sim() {
+    sim_seeds("two statements", a_two_statement_call_suspends_and_resumes);
+}
+
+#[test]
+fn a_two_statement_call_suspends_and_resumes_real() {
+    a_two_statement_call_suspends_and_resumes(&real_in("two-statements"));
+}
+
+/// A write waiting for a transaction stops at its deadline, aborting its own.
+fn a_waiting_write_stops_at_its_deadline<R: Runtime>(rt: &R) {
+    let items = items(rt, ONE);
+    let pool = Scheduler::start(rt.clone(), 1);
+    let log = Log::new(rt);
+    let t0 = items.db.begin().unwrap();
+    items.bump(&t0);
+    let deadline = rt.now() + Duration::from_millis(100);
+    pool.admit(
+        entry(Priority::Regular, 0, 0, Some(deadline)),
+        Box::new(write("late", BUMP, &items, &log)),
+    )
+    .unwrap();
+    log.until(|es| es.iter().any(|e| matches!(e, Event::Stopped(..))));
+    assert_eq!(
+        vec![
+            Event::Ran("late"),
+            Event::Waiting("late"),
+            Event::Stopped("late", Stopped::DeadlineExceeded),
+        ],
+        log.events()
+    );
+    items.db.commit(t0).unwrap();
+    pool.admit(plain(1), Box::new(write("next", BUMP, &items, &log)))
+        .unwrap();
+    log.until(|es| es.contains(&Event::Done("next")));
+    assert_eq!(ints(&[2]), items.values());
+    pool.shutdown();
+}
+
+#[test]
+fn a_waiting_write_stops_at_its_deadline_sim() {
+    sim_seeds("waiting deadline", a_waiting_write_stops_at_its_deadline);
+}
+
+#[test]
+fn a_waiting_write_stops_at_its_deadline_real() {
+    a_waiting_write_stops_at_its_deadline(&real_in("waiting-deadline"));
+}
+
+/// A suspended wait counts toward the statement's time limit: the rerun fails once the limit
+/// from the first run has passed.
+#[test]
+fn a_rerun_keeps_the_statement_limit_of_its_first_run() {
+    sim_seeds("rerun limit", |rt| {
+        let items = items(rt, ONE);
+        let pool = Scheduler::start(rt.clone(), 1);
+        let log = Log::new(rt);
+        let t0 = items.db.begin().unwrap();
+        items.bump(&t0);
+        let after = Duration::from_millis(30);
+        let mut w = write("limited", BUMP, &items, &log);
+        w.bounds.limit = Some(after);
+        pool.admit(plain(0), Box::new(w)).unwrap();
+        log.until(|es| es.contains(&Event::Waiting("limited")));
+        sleep(rt, after * 2);
+        items.db.abort(t0).unwrap();
+        log.until(|es| {
+            es.iter()
+                .any(|e| matches!(e, Event::Done(_) | Event::Failed(..)))
+        });
+        assert_eq!(
+            Some(&Event::Failed(
+                "limited",
+                write::Error::StatementLimit(Exceeded::Time { after })
+            )),
+            log.events().last()
+        );
+        assert_eq!(ints(&[0]), items.values());
+        pool.shutdown();
+    });
+}
+
+/// Of two transactions each holding the item the other next writes, the second to wait fails
+/// with a deadlock and the first goes on, whether the waits suspend or block.
+fn a_deadlock_fails_the_second_waiter<R: Runtime>(rt: &R, suspend: bool, settle: Duration) {
+    let items = items(rt, TWO);
+    let log = Log::new(rt);
+    let t1 = items.db.begin().unwrap();
+    items.run(&t1, BUMP_FIRST, Bounds::default()).unwrap();
+    let t2 = items.db.begin().unwrap();
+    items.run(&t2, BUMP_SECOND, Bounds::default()).unwrap();
+    let mut first = write("first", BUMP_SECOND, &items, &log);
+    first.tx = Some(t1);
+    let mut second = write("second", BUMP_FIRST, &items, &log);
+    second.tx = Some(t2);
+    let finished = |es: &[Event]| {
+        es.iter()
+            .filter(|e| matches!(e, Event::Done(_) | Event::Failed(..)))
+            .count()
+            == 2
+    };
+    if suspend {
+        let pool = Scheduler::start(rt.clone(), 1);
+        pool.admit(plain(0), Box::new(first)).unwrap();
+        log.until(|es| es.contains(&Event::Waiting("first")));
+        pool.admit(plain(1), Box::new(second)).unwrap();
+        log.until(finished);
+        pool.shutdown();
+    } else {
+        let a = rt.spawn("first", move || blocking(first));
+        sleep(rt, settle);
+        let b = rt.spawn("second", move || blocking(second));
+        log.until(finished);
+        rt.join(a);
+        rt.join(b);
+    }
+    let ends: Vec<Event> = log
+        .events()
+        .into_iter()
+        .filter(|e| matches!(e, Event::Done(_) | Event::Failed(..)))
+        .collect();
+    assert!(
+        matches!(
+            &ends[..],
+            [
+                Event::Failed("second", write::Error::Serialization(f)),
+                Event::Done("first"),
+            ] if f.cause == Cause::Deadlock
+        ),
+        "{ends:?}"
+    );
+    assert_eq!(ints(&[1, 11]), items.values());
+}
+
+/// Run `w`'s statements once, parking at transaction waits, then commit or abort.
+fn blocking<R: Runtime>(mut w: Write<R>) {
+    let tx =
+        w.tx.take()
+            .expect("a blocking write is given its transaction");
+    match w.items.run(&tx, w.src, w.bounds.clone()) {
+        Ok(_) => {
+            w.items.db.commit(tx).unwrap();
+            w.log.push(Event::Done(w.name));
+        }
+        Err(Failed { error, .. }) => {
+            w.items.db.abort(tx).unwrap();
+            w.log.push(Event::Failed(w.name, error));
+        }
+    }
+}
+
+#[test]
+fn a_deadlock_between_suspended_calls_fails_the_second_waiter_sim() {
+    sim_seeds("suspended deadlock", |rt| {
+        a_deadlock_fails_the_second_waiter(rt, true, Duration::ZERO);
+    });
+}
+
+#[test]
+fn a_deadlock_between_suspended_calls_fails_the_second_waiter_real() {
+    a_deadlock_fails_the_second_waiter(&real_in("suspended-deadlock"), true, Duration::ZERO);
+}
+
+#[test]
+fn a_deadlock_between_blocked_writes_fails_the_second_waiter_sim() {
+    sim_seeds("blocking deadlock", |rt| {
+        a_deadlock_fails_the_second_waiter(rt, false, Duration::from_millis(20));
     });
 }
 
 /// Waits, suspended, for a deferrable read-only transaction's snapshot to be safe.
 struct Defer {
-    items: Arc<Items>,
+    items: Arc<Items<SimRuntime>>,
     tx: Option<Txn>,
+    /// The transaction the waker is registered on, with the waker.
+    watched: Option<(Xid, Waker)>,
     log: Arc<Log<SimRuntime>>,
 }
 
 impl Resumable for Defer {
     fn run(&mut self, waker: &Waker) -> Step {
         let db = &self.items.db;
+        self.watched = None;
         loop {
             let tx = self.tx.take().expect("a deferral holds its transaction");
             match db.defer(tx).unwrap() {
@@ -930,7 +1359,8 @@ impl Resumable for Defer {
                 }
                 Deferral::Wait { tx, on } => {
                     self.tx = Some(tx);
-                    if db.waits().watch(None, on, waker).unwrap() == Watch::Pending {
+                    if db.watch(None, on, waker).unwrap() == Watch::Pending {
+                        self.watched = Some((on, waker.clone()));
                         self.log.push(Event::Waiting("defer"));
                         return Step::Wait;
                     }
@@ -940,6 +1370,9 @@ impl Resumable for Defer {
     }
 
     fn stop(mut self: Box<Self>, why: Stopped) {
+        if let Some((on, w)) = &self.watched {
+            self.items.db.withdraw(None, *on, w);
+        }
         if let Some(tx) = self.tx.take() {
             self.items.db.abort(tx).unwrap();
         }
@@ -950,7 +1383,7 @@ impl Resumable for Defer {
 #[test]
 fn a_deferrable_read_waits_suspended_for_a_safe_snapshot() {
     sim_seeds("deferrable", |rt| {
-        let items = items(rt);
+        let items = items(rt, ONE);
         let pool = Scheduler::start(rt.clone(), 1);
         let log = Log::new(rt);
         let writer = items.db.begin().unwrap();
@@ -958,6 +1391,7 @@ fn a_deferrable_read_waits_suspended_for_a_safe_snapshot() {
         let defer = Defer {
             items: items.clone(),
             tx: Some(items.db.begin_deferrable().unwrap()),
+            watched: None,
             log: log.clone(),
         };
         pool.admit(plain(0), Box::new(defer)).unwrap();
