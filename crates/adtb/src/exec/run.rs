@@ -71,7 +71,7 @@ impl Run {
     }
 
     /// Returns an empty set for values the query's pipelines emit.
-    pub(super) fn out(&self, grant: &Arc<Grant>) -> Result<Distinct, Error> {
+    pub(super) fn out(&self, grant: &Arc<Grant>) -> Distinct {
         Distinct::stopping(grant, self.stopped.clone())
     }
 
@@ -496,7 +496,7 @@ impl<R: Runtime> Ctx<R> {
             && let Some(c) = &count
             && c.int()? <= 0
         {
-            return self.sink(&q.sink, Distinct::new(&self.grant)?, &env, count);
+            return self.sink(&q.sink, Distinct::new(&self.grant), &env, count);
         }
         let mut chosen = Vec::new();
         self.spine(&q.spine, env.clone(), par, &mut chosen)?;
@@ -504,14 +504,14 @@ impl<R: Runtime> Ctx<R> {
         match &self.pool {
             Some(pool) if par => self.parallel(pool, &run, chosen)?,
             _ => {
-                let mut out = run.out(&self.grant)?;
+                let mut out = run.out(&self.grant);
                 for (p, e) in &chosen {
                     self.pipeline(&run, p, e, &mut out)?;
                 }
                 run.emit(&self.rt, &self.spill, out)?;
             }
         }
-        let mut set = run.out(&self.grant)?;
+        let mut set = run.out(&self.grant);
         self.drain(&run, &mut set)?;
         for b in &run.builds {
             b.lock(&self.rt).take();
@@ -548,7 +548,7 @@ impl<R: Runtime> Ctx<R> {
         }
         if !small.is_empty() {
             self.spawn(pool, run, move |cx, run| {
-                let mut out = run.out(&cx.grant)?;
+                let mut out = run.out(&cx.grant);
                 for (p, env) in &small {
                     cx.pipeline(run, p, env, &mut out)?;
                 }
@@ -598,7 +598,7 @@ impl<R: Runtime> Ctx<R> {
         let Source::Scan { heap, .. } = &p.source else {
             unreachable!("a range task scans")
         };
-        let mut out = run.out(&self.grant)?;
+        let mut out = run.out(&self.grant);
         self.store
             .scan_pages(*heap, pages, self.options.morsel_rows, |b| {
                 self.morsel(run, p, env, &b, &mut out)

@@ -98,7 +98,7 @@ impl<R: Runtime> Production<R> {
             .deadline = deadline;
         let (cx, run) = (&self.cx, &self.run);
         cx.check_cancel()?;
-        let mut set = run.out(&cx.grant)?;
+        let mut set = run.out(&cx.grant);
         match unit {
             Unit::Pipeline(p, env) => cx.pipeline(run, &p, &env, &mut set)?,
             Unit::Pages(p, env, pages) => {

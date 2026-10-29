@@ -107,9 +107,9 @@ impl State {
     }
 
     /// Abandon the output of a committed call: discard unobserved batches and mark the commit
-    /// incomplete. A no-op once the output has drained.
+    /// incomplete. A no-op once the output has been produced and drained.
     pub(super) fn abandon(&mut self) {
-        if self.drained {
+        if self.drained && self.produced {
             return;
         }
         self.out.clear();
@@ -159,11 +159,12 @@ impl<R: Runtime> Shared<R> {
         std::mem::take(&mut self.state.lock(&self.rt).deferred)
     }
 
-    /// Record the owner's request `r`, and stop the call unless it has committed, settled or
-    /// drained: cancel its running statement through `token` and withdraw it from the scheduler.
+    /// Record the owner's request `r`, and stop the call unless it has committed, settled, or
+    /// produced and drained its output: cancel its running statement through `token` and
+    /// withdraw it from the scheduler.
     fn request(&self, admitted: &Admitted<R>, r: Request, token: &CancelToken) {
         let stop = self.with(|s| {
-            if s.drained || (s.settled.is_some() && !s.committed) {
+            if (s.drained && s.produced) || (s.settled.is_some() && !s.committed) {
                 return (false, [None, None]);
             }
             if s.committed {

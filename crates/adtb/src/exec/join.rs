@@ -91,7 +91,7 @@ impl<R: Runtime> Ctx<R> {
             return Ok(t.clone());
         }
         let build: &Build = &run.query.builds[i];
-        let mut out = Distinct::new(&self.grant)?;
+        let mut out = Distinct::new(&self.grant);
         for p in &build.pipelines {
             self.pipeline(run, p, &run.env, &mut out)?;
         }

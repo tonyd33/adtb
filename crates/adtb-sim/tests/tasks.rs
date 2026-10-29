@@ -889,6 +889,54 @@ fn a_drained_read_keeps_its_outcome() {
     });
 }
 
+/// A transport that acknowledges the drain before the end of the batches can still cancel.
+#[test]
+fn an_early_drained_then_cancelled_read_settles() {
+    sim_once(|rt| {
+        let f = open(rt, 3000);
+        let task = f.submit(1, read_opts());
+        let (_, waker) = wakes(rt);
+        task.supply(1);
+        while !matches!(next(rt, &task, &waker), Observation::Batch(_)) {}
+        task.drained();
+        task.cancel();
+        let mut done = None;
+        for _ in 0..200 {
+            match task.observe(&waker) {
+                Observation::Done(c) => {
+                    done = Some(c);
+                    break;
+                }
+                _ => sleep(rt, Duration::from_millis(1)),
+            }
+        }
+        assert_eq!(
+            Some(Completion::Failed(Error::Rejected {
+                reason: RejectReason::Cancelled
+            })),
+            done
+        );
+    });
+}
+
+/// A task dropped after a drain acknowledged before the end of the batches releases its
+/// snapshot.
+#[test]
+fn an_early_drained_then_dropped_read_releases_its_snapshot() {
+    sim_once(|rt| {
+        let f = open(rt, 3000);
+        let task = f.submit(1, read_opts());
+        let (_, waker) = wakes(rt);
+        task.supply(1);
+        while !matches!(next(rt, &task, &waker), Observation::Batch(_)) {}
+        text(&f.db, "delete i in items");
+        task.drained();
+        drop(task);
+        sleep(rt, Duration::from_millis(5));
+        assert_eq!(3000, f.vacuumed());
+    });
+}
+
 #[test]
 fn closing_the_database_stops_its_tasks() {
     sim_once(|rt| {

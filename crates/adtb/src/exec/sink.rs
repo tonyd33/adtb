@@ -319,7 +319,7 @@ impl<R: Runtime> Ctx<R> {
         order: &[Option<Option<usize>>],
         env: &Frame,
     ) -> Result<Val, Error> {
-        let mut pairs = Distinct::new(&self.grant)?;
+        let mut pairs = Distinct::new(&self.grant);
         let mut m = set.merge(&self.spill)?;
         loop {
             let chunk = m.chunk(self.options.morsel_rows.max(1))?;

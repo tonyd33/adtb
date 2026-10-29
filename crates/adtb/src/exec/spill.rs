@@ -389,22 +389,22 @@ pub struct Distinct {
 }
 
 impl Distinct {
-    pub fn new(grant: &Arc<Grant>) -> Result<Distinct, Error> {
-        Ok(Distinct {
+    pub fn new(grant: &Arc<Grant>) -> Distinct {
+        Distinct {
             set: BTreeSet::new(),
             arena: grant.arena(),
             cap: grant.limit() / 8,
             runs: Vec::new(),
             stop: None,
-        })
+        }
     }
 
     /// Returns an empty set that sets `stop`, if any, on its first insert.
-    pub fn stopping(grant: &Arc<Grant>, stop: Option<Arc<AtomicBool>>) -> Result<Distinct, Error> {
-        Ok(Distinct {
+    pub fn stopping(grant: &Arc<Grant>, stop: Option<Arc<AtomicBool>>) -> Distinct {
+        Distinct {
             stop,
-            ..Distinct::new(grant)?
-        })
+            ..Distinct::new(grant)
+        }
     }
 
     pub fn is_empty(&self) -> bool {
