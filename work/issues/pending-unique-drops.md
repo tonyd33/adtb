@@ -22,3 +22,9 @@ A fresh writer owns this in workspace pending-unique, on main cd020ae0, beside p
 ## 2026-10-28: interrupted by a machine crash
 
 The writer had started its full check (target/check-pending-unique.log stops after clippy) when the machine crashed. It left no receipt or handoff. The draft is uncommitted in workspace pending-unique at 30bb1467 (6 files, about 675 lines added), unverified. A fresh writer verifies and finishes it with capped build jobs and no full check; the lead runs the full check after.
+
+## 2026-10-28: resumed writer froze the source
+
+Frozen 79554f8da1df2fe5b1b121a208c7e0f7e529773f on main cd020ae0 (workspace pending-unique). The crashed draft was complete for `drop unique`; the resumed writer added the relaxing rekey's old key, which stays as a physical unique index while held, and removed the old refusal. It also made write/schema.rs `rels` name an index the schema does not declare by its key clause.
+Targeted gates passed: suite over write_states, bundles and package(adtb) 449/449 with ignored tests run; strict workspace clippy, fmt, house-check, size-check. No test is left ignored. Receipt work/briefs/receipt-pending-unique.md (local).
+Running: the lead's full branch check and a fresh independent review.
