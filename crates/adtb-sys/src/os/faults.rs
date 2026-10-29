@@ -139,10 +139,6 @@ impl Injector {
     }
 
     fn draw(&mut self, p: f64) -> bool {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "53 bits fit an f64's mantissa exactly"
-        )]
         let unit = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
         unit < p
     }

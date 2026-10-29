@@ -1,5 +1,4 @@
-#[expect(dead_code, reason = "this binary uses part of the device helpers")]
-mod common;
+use adtb_simkit::common;
 
 use std::collections::BTreeSet;
 use std::time::Duration;

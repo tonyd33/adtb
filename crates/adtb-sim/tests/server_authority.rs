@@ -1,9 +1,4 @@
-#[expect(
-    dead_code,
-    reason = "split the shared API helpers into independently imported modules"
-)]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

@@ -3,7 +3,8 @@
 #                                       that breaks a house rule, as FILE:LINE: RULE: TEXT
 #
 # DIR defaults to the workspace holding this script.
-# Rules: an em dash anywhere; in Rust comments, markdown bold, a section sign, a rule id
+# Rules: an em dash anywhere; an added size-allowlist entry; an added lint expectation in Rust;
+# in Rust comments, markdown bold, a section sign, a rule id
 # or a recognized third-person doc verb. List added ordinary comments for invariant review.
 # Pass `-r REV` or
 # `--from A --to B` to check other changes than the working copy's. Exits 1 when it prints.
@@ -34,6 +35,8 @@ jj diff --git "$@" | awk '
     line++
     text = substr($0, 2)
     if (index(text, "\342\200\224")) report("em dash")
+    if (file == "work/tools/size-allowlist") report("size allowlist entry")
+    if (file ~ /\.rs$/ && text ~ /#!?\[expect\(/) report("lint suppression: fix the code or justify it in the report")
     if (file !~ /\.rs$/) next
     at = match(text, /(^|[ \t])\/\//)
     if (!at) next

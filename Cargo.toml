@@ -19,6 +19,7 @@ adtb-lang = { path = "crates/adtb-lang" }
 adtb-isolation = { path = "crates/adtb-isolation" }
 adtb-reference = { path = "crates/adtb-reference" }
 adtb-sim = { path = "crates/adtb-sim" }
+adtb-simkit = { path = "crates/adtb-simkit" }
 adtb-sys = { path = "crates/adtb-sys" }
 adtb-testkit = { path = "crates/adtb-testkit" }
 

@@ -1,8 +1,6 @@
+use adtb_simkit::engine;
+use adtb_simkit::seeds;
 use std::ops::Range;
-#[expect(dead_code, reason = "this binary never reopens the engine")]
-mod engine;
-#[path = "support/seeds.rs"]
-mod seeds;
 
 use std::sync::{Arc, Mutex};
 

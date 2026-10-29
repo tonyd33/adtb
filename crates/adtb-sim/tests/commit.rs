@@ -8,10 +8,8 @@ use adtb_sim::{
     Config, Faults, Finding, FindingKind, Ledger, Outcome, Recovered, Sim, SimRuntime, check,
 };
 
-#[path = "support/crash.rs"]
-mod crash;
-#[path = "support/harness.rs"]
-mod harness;
+use adtb_simkit::crash;
+use adtb_simkit::harness;
 
 use crash::{crash_after, run_process, silence_fatal_panics};
 use harness::finished;

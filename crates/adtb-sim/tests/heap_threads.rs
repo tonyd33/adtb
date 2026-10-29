@@ -7,8 +7,7 @@ use adtb::runtime::Threads;
 use adtb::storage::{Options, PageError, PageKind, Pager, Pid};
 use adtb_sim::{Config, Sim, SimRuntime};
 
-#[path = "support/harness.rs"]
-mod harness;
+use adtb_simkit::harness;
 
 use harness::{PAGE, finished};
 

@@ -61,6 +61,17 @@ pub enum Op {
     },
 }
 
+impl Op {
+    pub fn key(&self) -> i64 {
+        match self {
+            Op::Insert { key, .. }
+            | Op::Update { key, .. }
+            | Op::Delete { key }
+            | Op::Retag { key, .. } => *key,
+        }
+    }
+}
+
 /// Apply `op` to the model `state`.
 pub fn replay(state: &mut Rows, op: &Op) {
     match op {

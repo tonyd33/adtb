@@ -13,17 +13,11 @@ use adtb::vacuum::{self, Phase, Progress, Sum};
 use adtb::verify::{self, Inventory};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 
-#[path = "support/crash.rs"]
-mod crash;
-#[path = "support/harness.rs"]
-mod harness;
-#[path = "support/recovery.rs"]
-mod recovery;
-#[path = "support/rows.rs"]
-#[expect(dead_code, reason = "this binary keeps its own row layout")]
-mod rows;
-#[path = "support/seeds.rs"]
-mod seeds;
+use adtb_simkit::crash;
+use adtb_simkit::harness;
+use adtb_simkit::recovery;
+use adtb_simkit::rows;
+use adtb_simkit::seeds;
 
 use crash::{crash_after, run_process, silence_fatal_panics};
 use harness::{finished, options};
@@ -617,10 +611,6 @@ fn vacuum_runs_beside_writers_and_readers_holding_snapshots() {
     }
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "the crash loop reports its coverage on stderr"
-)]
 /// Returns the rounds that crashed and those that crashed while a vacuum ran.
 fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
     silence_fatal_panics();
@@ -671,13 +661,6 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
         );
     }
     let w = world.lock().unwrap();
-    eprintln!(
-        "seed {seed}: {crashes} crashes, {} during vacuum, {} transactions, {} acknowledged, {} vacuums",
-        w.crashed_vacuuming,
-        w.ops.len(),
-        w.acked.len(),
-        w.vacuums
-    );
     (crashes, w.crashed_vacuuming)
 }
 

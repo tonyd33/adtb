@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 #[expect(
     clippy::print_stdout,
-    reason = "the runner reports its findings on stdout"
+    reason = "goes if the runner stops being a binary that reports on its streams"
 )]
 fn main() -> ExitCode {
     let mut failed = false;

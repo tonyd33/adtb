@@ -5,8 +5,7 @@ use adtb::runtime::{Clock, Io, Op, Runtime, Threads};
 use adtb::storage::{Options, Pager, Quarantine};
 use adtb_sim::{Config, Outcome, Sim};
 
-#[path = "support/harness.rs"]
-mod harness;
+use adtb_simkit::harness;
 
 use harness::{NAME, PAGE, finished};
 

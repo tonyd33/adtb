@@ -1,20 +1,9 @@
+use adtb::plan::fixture as planfix;
 use std::ops::Range;
-mod plan {
-    pub use adtb::plan::*;
-}
 
-#[path = "../../adtb/src/plan/tests/fixture.rs"]
-#[expect(dead_code, reason = "this binary uses part of the planner fixture")]
-mod planfix;
+use adtb_simkit::support;
 
-#[expect(
-    dead_code,
-    reason = "this binary binds databases for writes and loads none for reads"
-)]
-mod support;
-
-#[expect(dead_code, reason = "this binary uses part of the device helpers")]
-mod common;
+use adtb_simkit::common;
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,8 +26,8 @@ use adtb_testkit::fixture::Fixture;
 use adtb_testkit::uuid;
 use adtb_testkit::writes::fixture;
 
-use support::harness::finished;
-use support::seeds::share;
+use adtb_simkit::harness::{PAGE, finished};
+use adtb_simkit::seeds::{share, sweep};
 use support::{Db, World, to_ref, to_val};
 
 /// One statement of a case: its text, its parameters as name, type and value, and the clock it
@@ -798,7 +787,7 @@ fn check_all(seeds: Range<u64>, mode: Mode) {
     let mut runs = 0;
     for case in &cases() {
         let want = reference(case);
-        for seed in support::sweep(seeds.clone()) {
+        for seed in sweep(seeds.clone()) {
             runs += 1;
             match panic::catch_unwind(AssertUnwindSafe(|| engine(seed, case, mode))) {
                 Ok(got) => {
@@ -978,7 +967,7 @@ fn concurrent_writers_keep_keys_and_uniques_and_lose_no_update() {
     ]);
     let failing = Arc::new(prep(&f, FAILING, false));
     let mut commits = 0;
-    for seed in support::sweep(SEEDS) {
+    for seed in sweep(SEEDS) {
         let mut sim = Sim::new(seed, Config::default());
         let done: Arc<std::sync::Mutex<Vec<Done>>> = Arc::default();
         let mut finals = None;
@@ -1267,8 +1256,8 @@ fn behind_a_damaged_commit_log(
         }
         let mut io = rt.io();
         let (file, _) = common::open(&rt, &mut io, "app.adt", false).expect("the data file");
-        let at = status.0 * support::harness::PAGE as u64;
-        common::write(&rt, &mut io, file, at, &[0xa5; support::harness::PAGE]).expect("a write");
+        let at = status.0 * PAGE as u64;
+        common::write(&rt, &mut io, file, at, &[0xa5; PAGE]).expect("a write");
         common::sync(&rt, &mut io, file).expect("a sync");
         let ended = db.statement(&first, &s.p.terms, s.p.item, &params, 0);
         out = Some((status, ended.map(|_| ()).map_err(|e| format!("{e:?}"))));

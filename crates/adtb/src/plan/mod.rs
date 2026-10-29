@@ -5,6 +5,8 @@
 
 mod catalog;
 pub mod explain;
+#[cfg(any(test, feature = "plan-fixture"))]
+pub mod fixture;
 mod lower;
 mod terms;
 

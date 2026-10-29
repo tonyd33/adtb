@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use io_uring::{IoUring, Probe, opcode, squeue, types};
 
-use super::abort_on_panic;
 use super::files::{self, Files, Outcome};
+use super::host_thread;
 use super::pool::Pool;
 use super::queue::Waiter;
 use crate::runtime::{AlignedBuf, Done, IoError, Op};
@@ -333,14 +333,7 @@ impl Uring {
             files,
         });
         let run = Arc::clone(&uring);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the real runtime's I/O threads are host threads"
-        )]
-        std::thread::Builder::new()
-            .name("adtb-uring".to_owned())
-            .spawn(move || abort_on_panic(|| run.reap()))
-            .expect("the host refused an I/O thread");
+        host_thread("adtb-uring".to_owned(), move || run.reap());
         Ok(uring)
     }
 

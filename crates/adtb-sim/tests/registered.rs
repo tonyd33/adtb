@@ -1,9 +1,7 @@
 //! Registered queries and transactions in process: registration at open, calls by ordinal, the
 //! principal a call runs for, and the recheck of a registration when the schema changes.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use adtb::{
     CallOptions, Called, Database, Error, InTxn, Log, OpenError, OpenOptions, Registration,

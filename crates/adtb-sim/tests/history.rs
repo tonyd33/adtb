@@ -14,10 +14,8 @@ use adtb::vacuum::{self, Report, Sum};
 use adtb::verify::{self, Inventory};
 use adtb_sim::{Config, Faults, Sim, SimRuntime};
 
-#[path = "support/harness.rs"]
-mod harness;
-#[path = "support/recovery.rs"]
-mod recovery;
+use adtb_simkit::harness;
+use adtb_simkit::recovery;
 
 use harness::{finished, options};
 use recovery::verify_after_crash;

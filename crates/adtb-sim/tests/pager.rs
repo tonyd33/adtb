@@ -13,10 +13,8 @@ use adtb_sim::{
     check,
 };
 
-#[path = "support/crash.rs"]
-mod crash;
-#[path = "support/seeds.rs"]
-mod seeds;
+use adtb_simkit::crash;
+use adtb_simkit::seeds;
 
 use crash::{crash_after, run_process, silence_fatal_panics};
 use seeds::{share, sweep};
@@ -560,10 +558,6 @@ fn crash_loop(
     tally
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "the seed sweep reports its coverage on stderr"
-)]
 fn seeds(range: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool) -> Tally {
     let mut total = Tally::default();
     for seed in sweep(range) {
@@ -573,7 +567,6 @@ fn seeds(range: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool
         total.findings += t.findings;
         total.unopenable += t.unopenable;
     }
-    eprintln!("{total:?}");
     total
 }
 

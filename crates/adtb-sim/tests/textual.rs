@@ -1,20 +1,9 @@
 //! The textual syntax over the engine's values: they read back as printed, and print exactly as
 //! the reference prints the same values, whether built directly or read back from the engine.
 
-mod plan {
-    pub use adtb::plan::*;
-}
+use adtb::plan::fixture;
 
-#[path = "../../adtb/src/plan/tests/fixture.rs"]
-#[expect(dead_code, reason = "this binary uses part of the planner fixture")]
-mod fixture;
-
-#[expect(
-    dead_code,
-    unused_imports,
-    reason = "this binary uses part of the shared support"
-)]
-mod support;
+use adtb_simkit::support;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;

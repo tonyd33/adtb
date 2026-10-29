@@ -72,10 +72,6 @@ pub(super) fn judge<E>(
 /// entries are gone.
 ///
 /// Panics if a slot `cleaned` accepts still leads to a live version.
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "finding the chain heads and walking each chain would have to be separate functions"
-)]
 pub(super) fn plan(
     page: &[u8],
     pid: u64,
@@ -86,24 +82,7 @@ pub(super) fn plan(
     let slots: Vec<Slot> = (0..n).map(|s| page::get(page, s)).collect();
     let fate: Vec<Option<Fate>> = fates.iter().map(|f| f.map(|(f, _)| f)).collect();
     let cleared: Vec<bool> = fates.iter().map(|f| f.is_some_and(|(_, c)| c)).collect();
-    let mut links = vec![None; n];
-    for (s, slot) in slots.iter().enumerate() {
-        let Slot::Normal { flags, at } = slot else {
-            continue;
-        };
-        let header = Header::read(&page[at.clone()]);
-        if !cleared[s]
-            && flags.contains(Flags::HOT_UPDATED)
-            && let Some(next) = header.next
-            && next.page() == pid
-        {
-            let t = usize::from(next.slot());
-            if matches!(&slots.get(t), Some(Slot::Normal { flags, .. }) if flags.contains(Flags::HEAP_ONLY))
-            {
-                links[s] = Some(t);
-            }
-        }
-    }
+    let links = links(page, pid, &slots, &cleared);
     let fixed = matches!(page::arrangement(page), Arrangement::Fixed { .. });
     let mut out: Vec<Option<Slot>> = vec![None; n];
     let mut chained = vec![false; n];
@@ -125,13 +104,7 @@ pub(super) fn plan(
             }
             _ => continue,
         };
-        let mut members = vec![start];
-        while let Some(t) = links[*members.last().unwrap()] {
-            if members.contains(&t) {
-                break;
-            }
-            members.push(t);
-        }
+        let members = chain(&links, start);
         for &m in &members {
             chained[m] = true;
         }
@@ -189,6 +162,42 @@ pub(super) fn plan(
         }
     }
     plan
+}
+
+/// Returns, for each slot, the slot on the same page holding its heap-only successor, if any. A
+/// version whose deleter is cleared has none.
+fn links(page: &[u8], pid: u64, slots: &[Slot], cleared: &[bool]) -> Vec<Option<usize>> {
+    let mut links = vec![None; slots.len()];
+    for (s, slot) in slots.iter().enumerate() {
+        let Slot::Normal { flags, at } = slot else {
+            continue;
+        };
+        let header = Header::read(&page[at.clone()]);
+        if !cleared[s]
+            && flags.contains(Flags::HOT_UPDATED)
+            && let Some(next) = header.next
+            && next.page() == pid
+        {
+            let t = usize::from(next.slot());
+            if matches!(&slots.get(t), Some(Slot::Normal { flags, .. }) if flags.contains(Flags::HEAP_ONLY))
+            {
+                links[s] = Some(t);
+            }
+        }
+    }
+    links
+}
+
+/// Returns the slots of the chain that starts at `start`, following `links` until a slot repeats.
+fn chain(links: &[Option<usize>], start: usize) -> Vec<usize> {
+    let mut members = vec![start];
+    while let Some(t) = links[*members.last().unwrap()] {
+        if members.contains(&t) {
+            break;
+        }
+        members.push(t);
+    }
+    members
 }
 
 pub(super) fn apply(page: &mut [u8], plan: &Plan) {

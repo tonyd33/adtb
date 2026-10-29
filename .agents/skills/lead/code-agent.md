@@ -52,13 +52,14 @@ invariant a reader cannot derive); doc comments in the imperative or
 numbers, rule ids, file citations or markdown bold in comments. Match
 the style of the existing crates.
 
-Quality rules: never add `#[allow]`; use `#[expect(lint, reason =
-"...")]`. No new function over 150 lines. A panic on an invariant
+Quality rules: Fix the code. Add an `#[expect]` only when the rule is
+wrong for that spot, and name it in the report. No new function over
+150 lines. A panic on an invariant
 names the invariant it guards. Use newtype ids (`Xid`, constructor
 indexes) rather than bare `u64`/`u32`. Reuse what exists before
 writing a helper: the byte readers in `storage/header.rs` and
-`storage/record.rs`, and the test-support modules under
-`crates/adtb-sim/tests/support`. Every loop over seeds puts the seed in
+`storage/record.rs`, and the simulator test-support library
+`crates/adtb-simkit`. Every loop over seeds puts the seed in
 its assertion message. Never discard a `Result` with `let _ =`.
 
 Tests: write the full spec of the feature, including tests that fail;

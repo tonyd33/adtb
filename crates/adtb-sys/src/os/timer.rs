@@ -3,7 +3,7 @@ use std::collections::BinaryHeap;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use super::queue::Waiter;
-use super::{abort_on_panic, monotonic};
+use super::{host_thread, monotonic};
 use crate::runtime::{Done, Instant};
 
 /// The pending timers of one runtime, fired by one thread of their own.
@@ -52,14 +52,7 @@ impl Timers {
     pub(crate) fn start() -> Arc<Timers> {
         let timers = Arc::new(Timers::default());
         let run = Arc::clone(&timers);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the real runtime's timer thread is one of the host's threads"
-        )]
-        std::thread::Builder::new()
-            .name("adtb-timers".into())
-            .spawn(move || abort_on_panic(|| run.fire()))
-            .expect("the host refused the timer thread");
+        host_thread("adtb-timers".into(), move || run.fire());
         timers
     }
 

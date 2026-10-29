@@ -1,9 +1,4 @@
-#[expect(
-    dead_code,
-    reason = "sharing API helpers across binaries would remove unused helpers"
-)]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use adtb::{
     CallOptions, Database, Error, Log, OpenError, RejectReason, TxnCallOptions, TxnOptions,

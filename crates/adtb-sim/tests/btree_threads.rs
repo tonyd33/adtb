@@ -9,15 +9,10 @@ use adtb::runtime::{Entropy, Threads};
 use adtb::storage::{PageKind, Pager, Pid, kind};
 use adtb_sim::{Config, Faults, Outcome, Recording, Sim, SimRuntime};
 
-#[path = "support/crash.rs"]
-#[expect(dead_code, reason = "this binary injects no failed writes")]
-mod crash;
-#[path = "support/draw.rs"]
-mod draw;
-#[path = "support/harness.rs"]
-mod harness;
-#[path = "support/seeds.rs"]
-mod seeds;
+use adtb_simkit::crash;
+use adtb_simkit::draw;
+use adtb_simkit::harness;
+use adtb_simkit::seeds;
 
 use crash::crash_after;
 use draw::below;

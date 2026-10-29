@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
-use super::abort_on_panic;
 use super::files::Files;
+use super::host_thread;
 use super::queue::Waiter;
 use crate::runtime::Op;
 
@@ -33,14 +33,7 @@ impl Pool {
         });
         for i in 0..threads {
             let run = Arc::clone(&pool);
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "the real runtime's I/O threads are host threads"
-            )]
-            std::thread::Builder::new()
-                .name(format!("adtb-io-{i}"))
-                .spawn(move || abort_on_panic(|| run.work()))
-                .expect("the host refused an I/O thread");
+            host_thread(format!("adtb-io-{i}"), move || run.work());
         }
         pool
     }

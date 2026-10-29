@@ -1,9 +1,7 @@
 //! File scans of CSV and NDJSON files, loads from them, and temp relations, through the
 //! in-process API of the engine.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +11,7 @@ use adtb::{
 };
 use adtb_sim::SimRuntime;
 
-use api::{in_txn, once, options, printed, result, sorted};
+use api::{failure, in_txn, in_txn_results, last, once, options, printed, result, results, sorted};
 
 const SCHEMA: &str = r"module test
 add module test
@@ -66,7 +64,7 @@ fn with_db<T>(root: &Path, body: impl FnOnce(&Database<SimRuntime>) -> T) -> T {
         };
         let db = Database::open_in(rt, "files.adt", &Log::new([SCHEMA]), &opts)
             .expect("the database opens");
-        run(
+        results(
             &db,
             r#"insert users { id: users.key(1), name: "ann" }
                insert users { id: users.key(2), name: "bo" }"#,
@@ -75,29 +73,9 @@ fn with_db<T>(root: &Path, body: impl FnOnce(&Database<SimRuntime>) -> T) -> T {
     })
 }
 
-fn run(db: &Database<SimRuntime>, text: &str) {
-    db.query_text(text, &[], &CallOptions::default())
-        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
-}
-
 /// Returns the rows of the one result of `text`, printed and sorted.
 fn rows(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
     sorted(result(db, text))
-}
-
-/// Returns the rows of the last result of `text`, printed in order.
-fn last(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    let mut out = db
-        .query_text(text, &[], &CallOptions::default())
-        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
-    printed(out.pop().expect("the text has a result"))
-}
-
-fn failure(db: &Database<SimRuntime>, text: &str) -> Error {
-    match db.query_text(text, &[], &CallOptions::default()) {
-        Ok(_) => panic!("`{text}` succeeds"),
-        Err(e) => e,
-    }
 }
 
 /// Returns the file, line and detail of the `BadInput` rejection `e`.
@@ -343,7 +321,7 @@ fn a_scan_whose_path_is_a_parameter_reads_that_file() {
 fn a_load_inserts_the_rows_of_a_file() {
     let root = dir("load", &[("s.csv", "id,name\n1,ann\n2,bo\n")]);
     with_db(&root, |db| {
-        run(
+        results(
             db,
             r#"insert outs from (from r in read_csv("s.csv", Small) select r)"#,
         );
@@ -358,7 +336,7 @@ fn a_load_inserts_the_rows_of_a_file() {
 fn a_load_with_rejects_routes_failed_records_to_the_rejects_relation() {
     let root = dir("rejects", &[("s.csv", "id,name\n1,ann\nx,bo\n3,\n4,dee\n")]);
     with_db(&root, |db| {
-        run(
+        results(
             db,
             r#"insert outs from (
                  from r in read_csv("s.csv", Small)
@@ -408,8 +386,8 @@ fn each_load_with_rejects_has_a_load_of_its_own() {
     with_db(&root, |db| {
         let load = r#"insert outs from (from r in read_csv("s.csv", Small) select r)
                       rejects into out_rejects"#;
-        run(db, load);
-        run(db, load);
+        results(db, load);
+        results(db, load);
         assert_eq!(
             strings(&["2"]),
             rows(
@@ -737,7 +715,7 @@ fn a_temp_relation_holds_rows_for_the_rest_of_its_text() {
 fn a_temp_relation_is_gone_when_its_text_ends() {
     let root = dir("temp-gone", &[]);
     with_db(&root, |db| {
-        run(
+        results(
             db,
             r#"temp relation stage : Small key id
                insert stage { id: 1, name: "ann" }"#,
@@ -884,8 +862,8 @@ fn a_temp_relation_belongs_to_its_interactive_transaction() {
         let mut t = db
             .begin(&TxnOptions::default())
             .expect("a transaction begins");
-        in_txn_run(&mut t, "temp relation stage : Small key id");
-        in_txn_run(&mut t, r#"insert stage { id: 1, name: "ann" }"#);
+        in_txn_results(&mut t, "temp relation stage : Small key id");
+        in_txn_results(&mut t, r#"insert stage { id: 1, name: "ann" }"#);
         assert_eq!(
             strings(&[r#""ann""#]),
             in_txn(&mut t, "from s in stage select s.name"),
@@ -928,7 +906,7 @@ fn a_failed_call_keeps_none_of_its_writes_to_temp_relations() {
         let mut t = db
             .begin(&TxnOptions::default())
             .expect("a transaction begins");
-        in_txn_run(
+        in_txn_results(
             &mut t,
             r#"temp relation stage : Small key id
                insert stage { id: 1, name: "ann" }"#,
@@ -964,7 +942,7 @@ fn a_staged_load_lands_in_a_temp_relation_then_moves_with_rejects() {
         &[("s.csv", "line,id,name\n1,1,ann\n2,2,\n3,3,cy\n")],
     );
     with_db(&root, |db| {
-        run(
+        results(
             db,
             r#"temp relation stage : Staged key line
                temp relation stage_rejects : RejectedRow key (load, line)
@@ -988,9 +966,4 @@ fn a_staged_load_lands_in_a_temp_relation_then_moves_with_rejects() {
             )
         );
     });
-}
-
-fn in_txn_run(t: &mut adtb::AdHocTransaction<'_, SimRuntime>, text: &str) {
-    t.query_text(text, &[], &TxnCallOptions::default())
-        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
 }

@@ -1,9 +1,7 @@
 //! Write states of constructors, readers first, pending drops and staged migrations over the
 //! simulator.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use adtb::RejectReason;
 use adtb::catalog::{Catalog, Error as CatalogError, PendingDrop, Read, Reader};

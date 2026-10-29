@@ -1,9 +1,4 @@
-#[expect(
-    dead_code,
-    reason = "split API helpers into modules imported by every consumer"
-)]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
 use adtb::{

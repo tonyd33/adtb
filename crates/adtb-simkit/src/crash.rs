@@ -5,7 +5,7 @@ use std::time::Duration;
 use adtb_sim::{Outcome, Sim, SimRuntime};
 
 /// The start of the message a simulated process panics with when a write or force fails.
-pub const FATAL: &str = "fatal I/O error";
+const FATAL: &str = "fatal I/O error";
 
 /// Keep panics that start with [`FATAL`] off stderr for the rest of the process.
 pub fn silence_fatal_panics() {

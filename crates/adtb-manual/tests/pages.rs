@@ -1,10 +1,9 @@
 //! The Rust examples of the manual's pages, each run as a test.
 
-#![expect(
+#[expect(
     dead_code,
-    reason = "each example declares the generated code and uses part of it"
+    reason = "goes if the manual's examples use every item their bundle generates"
 )]
-
 mod rust_api {
     include!(concat!(
         env!("OUT_DIR"),

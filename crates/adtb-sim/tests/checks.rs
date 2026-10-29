@@ -1,7 +1,5 @@
-#[expect(dead_code, reason = "this binary uses part of the device helpers")]
-mod common;
-#[path = "support/seeds.rs"]
-mod seeds;
+use adtb_simkit::common;
+use adtb_simkit::seeds;
 
 use std::ops::Range;
 use std::time::Duration;

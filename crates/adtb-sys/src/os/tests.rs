@@ -13,7 +13,7 @@ fn is_live(id: ThreadId) -> bool {
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "a host thread the runtime did not spawn"
+    reason = "goes if a foreign thread can be observed without spawning one"
 )]
 fn on_host_thread<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
     thread::spawn(body).join().unwrap()

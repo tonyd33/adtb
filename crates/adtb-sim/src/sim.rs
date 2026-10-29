@@ -654,7 +654,7 @@ impl Threads for SimRuntime {
         };
         #[expect(
             clippy::disallowed_methods,
-            reason = "each simulated thread runs on a host thread"
+            reason = "goes if simulated threads stop running on host threads"
         )]
         let handle = thread::Builder::new()
             .name(format!("sim-{id}-{name}"))

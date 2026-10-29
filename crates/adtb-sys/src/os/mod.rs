@@ -213,6 +213,18 @@ fn abort_on_panic(body: impl FnOnce()) {
     }
 }
 
+/// Run `body` on a new host thread named `name`, aborting the process if it panics.
+fn host_thread(name: String, body: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "goes if the real runtime stops taking its threads from std"
+    )]
+    thread::Builder::new()
+        .name(name)
+        .spawn(move || abort_on_panic(body))
+        .expect("the host refused a thread")
+}
+
 static NEXT_THREAD: AtomicU64 = AtomicU64::new(0);
 
 /// Every live thread that has an id, by id.
@@ -270,22 +282,15 @@ impl Threads for OsRuntime {
         let id = fresh_id();
         // The thread removes its entry under this lock when it exits.
         let mut live = live();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the real runtime's threads are host threads"
-        )]
-        let handle = thread::Builder::new()
-            .name(name.to_owned())
-            .spawn(move || {
-                CURRENT.with(|c| {
-                    assert!(
-                        c.set(Current(id)).is_ok(),
-                        "a new host thread has no id yet"
-                    );
-                });
-                abort_on_panic(body);
-            })
-            .expect("the host refused a thread");
+        let handle = host_thread(name.to_owned(), move || {
+            CURRENT.with(|c| {
+                assert!(
+                    c.set(Current(id)).is_ok(),
+                    "a new host thread has no id yet"
+                );
+            });
+            body();
+        });
         live.insert(id, handle.thread().clone());
         drop(live);
         self.threads.lock().insert(id, handle);

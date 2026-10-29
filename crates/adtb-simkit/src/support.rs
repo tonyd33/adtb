@@ -19,10 +19,7 @@ use adtb_reference::{Database, Value};
 use adtb_sim::SimRuntime;
 use adtb_sys::lock::Lock;
 
-pub mod harness;
-pub mod seeds;
-
-pub use seeds::sweep;
+use crate::harness;
 
 /// A database's pager and transactions, with its heaps and indexes as the executor binds them.
 pub type Bound = (
@@ -44,6 +41,7 @@ pub struct Roots {
 }
 
 /// The schema, catalog and rows a database is loaded from.
+#[derive(Debug)]
 pub struct World<'a> {
     pub schema: &'a Schema,
     pub normal: &'a NormalProgram,
@@ -52,7 +50,7 @@ pub struct World<'a> {
 }
 
 /// Returns the constructors of a sum type, each with its header and own fields.
-pub fn ctors_of(schema: &Schema, ty: &Ty) -> Vec<(String, Vec<(String, Ty)>)> {
+fn ctors_of(schema: &Schema, ty: &Ty) -> Vec<(String, Vec<(String, Ty)>)> {
     match repr(schema, ty) {
         Ty::Data { def, args, .. } => {
             let d = schema.ty(def);
@@ -243,7 +241,7 @@ pub fn to_ref(schema: &Schema, ty: &Ty, v: &Val) -> Value {
 }
 
 /// Returns `row` with each field outside the key that is text, an `I64` or an instant changed.
-pub fn mutated(schema: &Schema, rel: RelId, row: &Value) -> Option<Value> {
+fn mutated(schema: &Schema, rel: RelId, row: &Value) -> Option<Value> {
     let Value::Ctor(c, fs) = row else {
         panic!("a row is a constructor value")
     };
@@ -266,6 +264,7 @@ pub fn mutated(schema: &Schema, rel: RelId, row: &Value) -> Option<Value> {
     changed.then_some(Value::Ctor(*c, fs))
 }
 
+#[derive(Debug)]
 pub struct Db {
     pub pager: Pager<SimRuntime>,
     pub heaps: BTreeMap<adtb::plan::HeapId, Heap>,
@@ -399,7 +398,7 @@ impl Db {
             .clone()
     }
 
-    pub fn entries(&self, rel: RelId, c: u32, row: &[KValue], tid: Tid) {
+    fn entries(&self, rel: RelId, c: u32, row: &[KValue], tid: Tid) {
         for (st, keying, r) in self.indexes.values() {
             if *r != rel {
                 continue;
@@ -427,7 +426,7 @@ impl Db {
         }
     }
 
-    pub fn put(&mut self, f: &World, rel: RelId, c: u32, row: &Value, xid: u64) -> Tid {
+    fn put(&mut self, f: &World, rel: RelId, c: u32, row: &Value, xid: u64) -> Tid {
         let h = f.catalog.heap(rel, c);
         let tys = Db::row_ty(f, rel, c);
         let Value::Ctor(_, fs) = row else {

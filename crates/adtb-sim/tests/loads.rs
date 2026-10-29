@@ -2,9 +2,7 @@
 //! checked against the row types of their constructor relations, and inserted as one change set
 //! at commit, all or nothing, a crash included.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use std::sync::Arc;
 

@@ -209,11 +209,6 @@ fn unsupported<T>(what: impl std::fmt::Display) -> Result<T, Error> {
 
 /// Chooses the operation `p` performs on operands of types `args` with result type `ty`; `consts`
 /// holds the value of each operand that is a literal.
-#[expect(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    reason = "the choice for each family of primitives would have to be a function"
-)]
 pub fn choose(
     schema: &Schema,
     p: Prim,
@@ -221,16 +216,6 @@ pub fn choose(
     consts: &[Option<Val>],
     ty: &Ty,
 ) -> Result<Op, Error> {
-    let b = |t: &Ty| base(schema, t);
-    let arg = |i: usize| args.get(i).and_then(b);
-    let arith = match p {
-        Prim::Add | Prim::CheckedAdd => Some(Arith::Add),
-        Prim::Sub | Prim::CheckedSub => Some(Arith::Sub),
-        Prim::Mul | Prim::CheckedMul => Some(Arith::Mul),
-        Prim::Div | Prim::CheckedDiv => Some(Arith::Div),
-        Prim::Rem | Prim::CheckedRem => Some(Arith::Rem),
-        _ => None,
-    };
     let checked = matches!(
         p,
         Prim::CheckedAdd
@@ -246,91 +231,180 @@ pub fn choose(
     } else {
         ty.clone()
     };
-    let op = match p {
-        _ if arith.is_some() => {
-            let a = arith.unwrap();
-            match (arg(0), arg(1)) {
-                (Some(x), _) if Width::of(x).is_some() => {
-                    let w = b(&result).and_then(Width::of).ok_or_else(|| {
-                        Error::Internal("integer arithmetic has an integer result".into())
-                    })?;
-                    Op::Int(a, w)
-                }
-                (Some(Base::Decimal(s)), Some(Base::Decimal(t))) => match a {
-                    Arith::Add => Op::DecAdd { s, t, sub: false },
-                    Arith::Sub => Op::DecAdd { s, t, sub: true },
-                    Arith::Mul => Op::DecMul,
-                    _ => return unsupported(format!("{p:?} on decimals")),
-                },
-                (Some(Base::F32 | Base::F64), _) => Op::Float(a),
-                (Some(Base::Duration), Some(Base::Duration)) => match a {
-                    Arith::Add => Op::DurAdd,
-                    Arith::Sub => Op::DurSub,
-                    _ => return unsupported(format!("{p:?} on durations")),
-                },
-                (Some(Base::Duration), Some(_)) => match a {
-                    Arith::Mul => Op::DurMul,
-                    Arith::Div => Op::DurDiv,
-                    _ => return unsupported(format!("{p:?} on a duration")),
-                },
-                (Some(Base::Period), Some(Base::Period)) => match a {
-                    Arith::Add => Op::PeriodAdd,
-                    Arith::Sub => Op::PeriodSub,
-                    _ => return unsupported(format!("{p:?} on periods")),
-                },
-                (Some(Base::Period), Some(_)) if a == Arith::Mul => Op::PeriodMul,
-                (Some(Base::Instant | Base::DateTime), Some(Base::Duration)) => match a {
-                    Arith::Add => Op::PointShift { sub: false },
-                    Arith::Sub => Op::PointShift { sub: true },
-                    _ => return unsupported(format!("{p:?} on a point in time")),
-                },
-                (Some(Base::ZonedDateTime), Some(Base::Duration)) => match a {
-                    Arith::Add => Op::ZonedShift { sub: false },
-                    Arith::Sub => Op::ZonedShift { sub: true },
-                    _ => return unsupported(format!("{p:?} on a zoned date-time")),
-                },
-                (Some(Base::Instant), Some(Base::Instant))
-                | (Some(Base::DateTime), Some(Base::DateTime))
-                    if a == Arith::Sub =>
-                {
-                    Op::PointDiff
-                }
-                (Some(Base::Date), Some(Base::Date)) if a == Arith::Sub => Op::DateDiff,
-                _ => return unsupported(format!("{p:?} on {args:?}")),
+    let op = match arith(p) {
+        Some(a) => arith_op(schema, p, a, args, &result)?,
+        None => other_op(schema, p, args, consts, ty)?,
+    };
+    Ok(if checked {
+        Op::Checked(Box::new(op))
+    } else {
+        op
+    })
+}
+
+fn arith(p: Prim) -> Option<Arith> {
+    match p {
+        Prim::Add | Prim::CheckedAdd => Some(Arith::Add),
+        Prim::Sub | Prim::CheckedSub => Some(Arith::Sub),
+        Prim::Mul | Prim::CheckedMul => Some(Arith::Mul),
+        Prim::Div | Prim::CheckedDiv => Some(Arith::Div),
+        Prim::Rem | Prim::CheckedRem => Some(Arith::Rem),
+        _ => None,
+    }
+}
+
+fn arith_op(schema: &Schema, p: Prim, a: Arith, args: &[Ty], result: &Ty) -> Result<Op, Error> {
+    let b = |t: &Ty| base(schema, t);
+    let arg = |i: usize| args.get(i).and_then(b);
+    Ok(match (arg(0), arg(1)) {
+        (Some(x), _) if Width::of(x).is_some() => {
+            let w = b(result).and_then(Width::of).ok_or_else(|| {
+                Error::Internal("integer arithmetic has an integer result".into())
+            })?;
+            Op::Int(a, w)
+        }
+        (Some(Base::Decimal(s)), Some(Base::Decimal(t))) => match a {
+            Arith::Add => Op::DecAdd { s, t, sub: false },
+            Arith::Sub => Op::DecAdd { s, t, sub: true },
+            Arith::Mul => Op::DecMul,
+            _ => return unsupported(format!("{p:?} on decimals")),
+        },
+        (Some(Base::F32 | Base::F64), _) => Op::Float(a),
+        (Some(Base::Duration), Some(Base::Duration)) => match a {
+            Arith::Add => Op::DurAdd,
+            Arith::Sub => Op::DurSub,
+            _ => return unsupported(format!("{p:?} on durations")),
+        },
+        (Some(Base::Duration), Some(_)) => match a {
+            Arith::Mul => Op::DurMul,
+            Arith::Div => Op::DurDiv,
+            _ => return unsupported(format!("{p:?} on a duration")),
+        },
+        (Some(Base::Period), Some(Base::Period)) => match a {
+            Arith::Add => Op::PeriodAdd,
+            Arith::Sub => Op::PeriodSub,
+            _ => return unsupported(format!("{p:?} on periods")),
+        },
+        (Some(Base::Period), Some(_)) if a == Arith::Mul => Op::PeriodMul,
+        (Some(Base::Instant | Base::DateTime), Some(Base::Duration)) => match a {
+            Arith::Add => Op::PointShift { sub: false },
+            Arith::Sub => Op::PointShift { sub: true },
+            _ => return unsupported(format!("{p:?} on a point in time")),
+        },
+        (Some(Base::ZonedDateTime), Some(Base::Duration)) => match a {
+            Arith::Add => Op::ZonedShift { sub: false },
+            Arith::Sub => Op::ZonedShift { sub: true },
+            _ => return unsupported(format!("{p:?} on a zoned date-time")),
+        },
+        (Some(Base::Instant), Some(Base::Instant))
+        | (Some(Base::DateTime), Some(Base::DateTime))
+            if a == Arith::Sub =>
+        {
+            Op::PointDiff
+        }
+        (Some(Base::Date), Some(Base::Date)) if a == Arith::Sub => Op::DateDiff,
+        _ => return unsupported(format!("{p:?} on {args:?}")),
+    })
+}
+
+fn sign_op(p: Prim, x: Option<Base>, args: &[Ty]) -> Result<Op, Error> {
+    let abs = p == Prim::Abs;
+    Ok(match x {
+        Some(x) if Width::of(x).is_some() => {
+            let w = Width::of(x).unwrap();
+            if abs { Op::IntAbs(w) } else { Op::IntNeg(w) }
+        }
+        Some(Base::Decimal(_)) => {
+            if abs {
+                Op::DecAbs
+            } else {
+                Op::DecNeg
             }
         }
-        Prim::Neg | Prim::CheckedNeg | Prim::Abs => {
-            let abs = p == Prim::Abs;
-            match arg(0) {
-                Some(x) if Width::of(x).is_some() => {
-                    let w = Width::of(x).unwrap();
-                    if abs { Op::IntAbs(w) } else { Op::IntNeg(w) }
-                }
-                Some(Base::Decimal(_)) => {
-                    if abs {
-                        Op::DecAbs
-                    } else {
-                        Op::DecNeg
-                    }
-                }
-                Some(Base::F32 | Base::F64) => {
-                    if abs {
-                        Op::FloatAbs
-                    } else {
-                        Op::FloatNeg
-                    }
-                }
-                Some(Base::Duration) => {
-                    if abs {
-                        Op::DurAbs
-                    } else {
-                        Op::DurNeg
-                    }
-                }
-                Some(Base::Period) if !abs => Op::PeriodNeg,
-                _ => return unsupported(format!("{p:?} on {args:?}")),
+        Some(Base::F32 | Base::F64) => {
+            if abs {
+                Op::FloatAbs
+            } else {
+                Op::FloatNeg
             }
         }
+        Some(Base::Duration) => {
+            if abs {
+                Op::DurAbs
+            } else {
+                Op::DurNeg
+            }
+        }
+        Some(Base::Period) if !abs => Op::PeriodNeg,
+        _ => return unsupported(format!("{p:?} on {args:?}")),
+    })
+}
+
+fn order_op(p: Prim, x: Option<Base>, y: Option<Base>) -> Result<Op, Error> {
+    let (want, or_eq) = match p {
+        Prim::Lt => (Ordering::Less, false),
+        Prim::Le => (Ordering::Less, true),
+        Prim::Gt => (Ordering::Greater, false),
+        _ => (Ordering::Greater, true),
+    };
+    Ok(match (x, y) {
+        (Some(Base::Decimal(s)), Some(Base::Decimal(t))) if s != t => {
+            Op::DecCmp { s, t, want, or_eq }
+        }
+        (Some(Base::ZonedDateTime), _) => {
+            return unsupported("ordering zoned date-times by their instants");
+        }
+        _ => Op::Cmp(want, or_eq),
+    })
+}
+
+fn convert_op(schema: &Schema, checked: bool, x: Option<Base>, ty: &Ty) -> Result<Op, Error> {
+    let to = if checked {
+        option_arg(schema, ty)
+            .ok_or_else(|| Error::Internal("a checked conversion returns an Option".into()))?
+    } else {
+        ty.clone()
+    };
+    let op = match (x, base(schema, &to)) {
+        (Some(x), Some(y)) if Width::of(x).is_some() && Width::of(y).is_some() => {
+            Op::IntToInt(Width::of(y).unwrap())
+        }
+        (Some(x), Some(Base::Decimal(s))) if Width::of(x).is_some() => Op::IntToDec(s),
+        (Some(x), Some(Base::F32)) if Width::of(x).is_some() => Op::IntToF32,
+        (Some(x), Some(Base::F64)) if Width::of(x).is_some() => Op::IntToF64,
+        (Some(Base::F32), Some(Base::F64)) => Op::F32ToF64,
+        (Some(Base::F64), Some(Base::F32)) => Op::F64ToF32,
+        (Some(Base::Decimal(s)), Some(y)) if Width::of(y).is_some() => {
+            Op::DecToInt(s, Width::of(y).unwrap())
+        }
+        (Some(Base::F32 | Base::F64), Some(y)) if Width::of(y).is_some() => {
+            Op::FloatToInt(Width::of(y).unwrap())
+        }
+        (Some(Base::F32 | Base::F64), Some(Base::Decimal(s))) => Op::FloatToDec(s),
+        (Some(Base::Decimal(s)), Some(y @ (Base::F32 | Base::F64))) => Op::DecToFloat {
+            s,
+            single: y == Base::F32,
+        },
+        (x, y) => return unsupported(format!("a conversion from {x:?} to {y:?}")),
+    };
+    Ok(if checked {
+        Op::Checked(Box::new(op))
+    } else {
+        op
+    })
+}
+
+fn other_op(
+    schema: &Schema,
+    p: Prim,
+    args: &[Ty],
+    consts: &[Option<Val>],
+    ty: &Ty,
+) -> Result<Op, Error> {
+    let b = |t: &Ty| base(schema, t);
+    let arg = |i: usize| args.get(i).and_then(b);
+    Ok(match p {
+        Prim::Neg | Prim::CheckedNeg | Prim::Abs => sign_op(p, arg(0), args)?,
         Prim::Eq | Prim::Ne => match (arg(0), arg(1)) {
             (Some(Base::Decimal(s)), Some(Base::Decimal(t))) if s != t => Op::DecEq {
                 s,
@@ -340,63 +414,13 @@ pub fn choose(
             _ if p == Prim::Eq => Op::Eq,
             _ => Op::Ne,
         },
-        Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge => {
-            let (want, or_eq) = match p {
-                Prim::Lt => (Ordering::Less, false),
-                Prim::Le => (Ordering::Less, true),
-                Prim::Gt => (Ordering::Greater, false),
-                _ => (Ordering::Greater, true),
-            };
-            match (arg(0), arg(1)) {
-                (Some(Base::Decimal(s)), Some(Base::Decimal(t))) if s != t => {
-                    Op::DecCmp { s, t, want, or_eq }
-                }
-                (Some(Base::ZonedDateTime), _) => {
-                    return unsupported("ordering zoned date-times by their instants");
-                }
-                _ => Op::Cmp(want, or_eq),
-            }
-        }
+        Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge => order_op(p, arg(0), arg(1))?,
         Prim::Concat => match arg(0) {
             Some(Base::Text) => Op::ConcatText,
             _ => Op::ConcatBytes,
         },
         Prim::Wrap | Prim::Unwrap | Prim::KeyValue => Op::Same,
-        Prim::Convert { checked: c } => {
-            let to = if c {
-                option_arg(schema, ty).ok_or_else(|| {
-                    Error::Internal("a checked conversion returns an Option".into())
-                })?
-            } else {
-                ty.clone()
-            };
-            let op = match (arg(0), b(&to)) {
-                (Some(x), Some(y)) if Width::of(x).is_some() && Width::of(y).is_some() => {
-                    Op::IntToInt(Width::of(y).unwrap())
-                }
-                (Some(x), Some(Base::Decimal(s))) if Width::of(x).is_some() => Op::IntToDec(s),
-                (Some(x), Some(Base::F32)) if Width::of(x).is_some() => Op::IntToF32,
-                (Some(x), Some(Base::F64)) if Width::of(x).is_some() => Op::IntToF64,
-                (Some(Base::F32), Some(Base::F64)) => Op::F32ToF64,
-                (Some(Base::F64), Some(Base::F32)) => Op::F64ToF32,
-                (Some(Base::Decimal(s)), Some(y)) if Width::of(y).is_some() => {
-                    Op::DecToInt(s, Width::of(y).unwrap())
-                }
-                (Some(Base::F32 | Base::F64), Some(y)) if Width::of(y).is_some() => {
-                    Op::FloatToInt(Width::of(y).unwrap())
-                }
-                (Some(Base::F32 | Base::F64), Some(Base::Decimal(s))) => Op::FloatToDec(s),
-                (Some(Base::Decimal(s)), Some(y @ (Base::F32 | Base::F64))) => Op::DecToFloat {
-                    s,
-                    single: y == Base::F32,
-                },
-                (x, y) => return unsupported(format!("a conversion from {x:?} to {y:?}")),
-            };
-            if c {
-                return Ok(Op::Checked(Box::new(op)));
-            }
-            op
-        }
+        Prim::Convert { checked: c } => convert_op(schema, c, arg(0), ty)?,
         Prim::Rescale => match (arg(0), b(ty)) {
             (Some(Base::Decimal(from)), Some(Base::Decimal(to))) => Op::Rescale { from, to },
             _ => return unsupported("`rescale` off decimals"),
@@ -477,11 +501,6 @@ pub fn choose(
             per: 12,
         },
         other => return unsupported(format!("the primitive {other:?}")),
-    };
-    Ok(if checked {
-        Op::Checked(Box::new(op))
-    } else {
-        op
     })
 }
 

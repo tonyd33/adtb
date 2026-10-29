@@ -6,8 +6,7 @@ use adtb::runtime::{Entropy, Threads};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_sys::pages::PageMemory;
 
-#[path = "support/seeds.rs"]
-mod seeds;
+use adtb_simkit::seeds;
 
 use seeds::{share, sweep};
 

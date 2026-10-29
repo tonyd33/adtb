@@ -9,8 +9,7 @@ use adtb::verify::{self, Report};
 use adtb_lang::types::RelId;
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 
-#[path = "support/harness.rs"]
-mod harness;
+use adtb_simkit::harness;
 
 use harness::{PAGE, finished, options};
 

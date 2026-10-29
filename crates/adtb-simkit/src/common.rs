@@ -94,7 +94,7 @@ pub fn sector(fill: u8) -> Vec<u8> {
     vec![fill; SECTOR]
 }
 
-pub fn fnv(bytes: &[u8]) -> u64 {
+fn fnv(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
         h ^= u64::from(b);

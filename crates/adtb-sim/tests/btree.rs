@@ -17,17 +17,11 @@ use adtb::storage::{Options, Pager, Pid};
 use adtb::verify::Inventory;
 use adtb_sim::{Config, Faults, Outcome, Recording, Sim, SimIo, SimRuntime};
 
-#[path = "support/crash.rs"]
-#[expect(dead_code, reason = "this binary injects no failed writes")]
-mod crash;
-#[path = "support/draw.rs"]
-mod draw;
-#[path = "support/harness.rs"]
-mod harness;
-#[path = "support/recovery.rs"]
-mod recovery;
-#[path = "support/seeds.rs"]
-mod seeds;
+use adtb_simkit::crash;
+use adtb_simkit::draw;
+use adtb_simkit::harness;
+use adtb_simkit::recovery;
+use adtb_simkit::seeds;
 
 use crash::crash_after;
 use draw::below;

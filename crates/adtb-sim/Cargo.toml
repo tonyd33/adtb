@@ -11,9 +11,11 @@ adtb.workspace = true
 adtb-sys.workspace = true
 
 [dev-dependencies]
+adtb = { workspace = true, features = ["plan-fixture"] }
 adtb-isolation.workspace = true
 adtb-lang.workspace = true
 adtb-reference.workspace = true
+adtb-simkit.workspace = true
 adtb-testkit.workspace = true
 adtb-sys = { workspace = true, features = ["latch-checks"] }
 

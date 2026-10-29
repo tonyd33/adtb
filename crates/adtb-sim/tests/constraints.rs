@@ -1,17 +1,6 @@
-mod plan {
-    pub use adtb::plan::*;
-}
+use adtb::plan::fixture as planfix;
 
-#[path = "../../adtb/src/plan/tests/fixture.rs"]
-#[expect(dead_code, reason = "this binary uses part of the planner fixture")]
-mod planfix;
-
-#[expect(
-    dead_code,
-    unused_imports,
-    reason = "this binary uses part of the shared support"
-)]
-mod support;
+use adtb_simkit::support;
 
 #[path = "constraints/paths.rs"]
 mod paths;
@@ -422,7 +411,7 @@ fn migrate(first: &str, second: Option<&str>) -> Vec<Result<(), CatalogError>> {
     let mut sim = Sim::new(3, Config::default());
     let mut got = Vec::new();
     let outcome = sim.run(|rt| {
-        let pager = Pager::create(rt.clone(), &support::harness::options(256)).expect("create");
+        let pager = Pager::create(rt.clone(), &adtb_simkit::harness::options(256)).expect("create");
         let (mut catalog, txns) = Stored::create(rt, &pager).expect("the catalog");
         got.push(catalog.migrate(&pager, &txns, first));
         if let Some(text) = second {

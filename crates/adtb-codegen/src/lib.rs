@@ -218,8 +218,8 @@ fn callable(m: &mut Module<'_>, c: &Signature, out: &mut String) -> Result<(), E
     };
     if lower_type_name(&c.name) {
         out.push_str(
-            "#[expect(non_camel_case_types, reason = \"a callable takes the name its bundle \
-             file declares\")]\n",
+            "#[expect(non_camel_case_types, reason = \"goes if bundles must name callables in \
+             UpperCamelCase\")]\n",
         );
     }
     write!(

@@ -1,12 +1,8 @@
 //! Calls in process over the simulator: cancellation tokens and deadlines, closing a database
 //! with registrations and clones still held, and results as Arrow record batches.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
-#[expect(dead_code, reason = "this binary uses part of the seed helpers")]
-#[path = "support/seeds.rs"]
-mod seeds;
+use adtb_simkit::api;
+use adtb_simkit::seeds;
 
 use std::time::Duration;
 

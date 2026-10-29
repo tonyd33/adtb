@@ -10,16 +10,11 @@ use adtb_sim::{
 };
 use adtb_testkit::Rng;
 
-#[path = "support/crash.rs"]
-mod crash;
-#[path = "support/draw.rs"]
-mod draw;
-#[path = "support/harness.rs"]
-mod harness;
-#[path = "support/recovery.rs"]
-mod recovery;
-#[path = "support/seeds.rs"]
-mod seeds;
+use adtb_simkit::crash;
+use adtb_simkit::draw;
+use adtb_simkit::harness;
+use adtb_simkit::recovery;
+use adtb_simkit::seeds;
 
 use crash::{crash_after, run_process, silence_fatal_panics};
 use draw::below;

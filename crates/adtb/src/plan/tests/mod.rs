@@ -1,4 +1,3 @@
-mod fixture;
 mod interp;
 
 use std::collections::BTreeSet;
@@ -7,8 +6,8 @@ use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 use adtb_reference::{Abort, Fault, R, Value};
 use adtb_testkit::uuid;
 
+use super::fixture::{Fixture, running, variants};
 use super::*;
-use fixture::{Fixture, running, variants};
 use interp::Interp;
 
 fn plan_with(f: &Fixture, terms: &Terms, t: Tm, params: &[Var], rewrites: Rewrites) -> Plan {

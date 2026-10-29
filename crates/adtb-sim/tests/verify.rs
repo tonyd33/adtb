@@ -8,8 +8,7 @@ use adtb::storage::{PageKind, Pager, Pid};
 use adtb::verify::{self, Inventory, Problem, Report, Sum};
 use adtb_sim::{Config, Sim, SimRuntime};
 
-#[path = "support/harness.rs"]
-mod harness;
+use adtb_simkit::harness;
 
 use harness::{finished, options};
 

@@ -2,9 +2,7 @@
 //! against their declarations, called once per batch of rows from queries, writes and
 //! constraints.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -2,9 +2,7 @@
 //! agrees with the ad hoc text of the same query, and the generated ids and ordinals agree with
 //! those the database assigns.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "../../adtb-sim/tests/support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use std::sync::Arc;
 

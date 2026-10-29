@@ -36,6 +36,7 @@ dependencies = [
  "adtb-codegen",
  "adtb-lang",
  "adtb-sim",
+ "adtb-simkit",
 ]
 
 [[package]]
@@ -131,6 +132,20 @@ dependencies = [
  "adtb-isolation",
  "adtb-lang",
  "adtb-reference",
+ "adtb-simkit",
+ "adtb-sys",
+ "adtb-testkit",
+]
+
+[[package]]
+name = "adtb-simkit"
+version = "0.1.0"
+dependencies = [
+ "adtb",
+ "adtb-isolation",
+ "adtb-lang",
+ "adtb-reference",
+ "adtb-sim",
  "adtb-sys",
  "adtb-testkit",
 ]

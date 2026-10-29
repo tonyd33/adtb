@@ -1,11 +1,8 @@
 //! The operator log over the simulator: migrations after the first, their data maps, version
 //! hashes, inverses and revert.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
-#[path = "support/harness.rs"]
-mod harness;
+use adtb_simkit::api;
+use adtb_simkit::harness;
 
 use std::collections::BTreeSet;
 

@@ -2,9 +2,7 @@
 //! in-process API: building them by migration, keeping them through crashes, and checking them
 //! between concurrent writers.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use std::sync::{Arc, Mutex};
 

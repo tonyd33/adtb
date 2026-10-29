@@ -1,16 +1,12 @@
 //! Commands of ad hoc text run in process: explain, explain analyze, vacuum, reindex and set
 //! setting.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
-use adtb::{
-    CallOptions, Database, DynRows, Error, Log, RejectReason, TxnCallOptions, TxnOptions, Value,
-};
+use adtb::{Database, DynRows, Error, Log, RejectReason, TxnCallOptions, TxnOptions, Value};
 use adtb_sim::SimRuntime;
 
-use api::{in_txn, once, options, printed, result};
+use api::{failure, in_txn, is_invalid, once, options, printed, result, results, sorted};
 
 const SCHEMA: &str = r"module app
 add module app
@@ -30,7 +26,7 @@ fn with_db<T>(body: impl FnOnce(&Database<SimRuntime>) -> T) -> T {
     once(0, |rt| {
         let db = Database::open_in(rt, "commands.adt", &Log::new([SCHEMA]), &options(2))
             .expect("the database opens");
-        run(
+        results(
             &db,
             r#"insert users { id: users.key(1), name: "ann" }
                insert users { id: users.key(2), name: "bo" }
@@ -39,27 +35,6 @@ fn with_db<T>(body: impl FnOnce(&Database<SimRuntime>) -> T) -> T {
         );
         body(&db)
     })
-}
-
-fn run(db: &Database<SimRuntime>, text: &str) -> Vec<DynRows> {
-    db.query_text(text, &[], &CallOptions::default())
-        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"))
-}
-
-fn failure(db: &Database<SimRuntime>, text: &str) -> Error {
-    match db.query_text(text, &[], &CallOptions::default()) {
-        Ok(_) => panic!("`{text}` succeeds"),
-        Err(e) => e,
-    }
-}
-
-fn is_invalid(e: &Error) -> bool {
-    matches!(
-        e,
-        Error::Rejected {
-            reason: RejectReason::Invalid { .. }
-        }
-    )
 }
 
 /// Returns the `text` and `document` of the one row of an explain result.
@@ -75,15 +50,13 @@ fn explained(rows: DynRows) -> (String, String) {
 }
 
 fn names(db: &Database<SimRuntime>) -> Vec<String> {
-    let mut out = printed(result(db, "from u in users select u.name"));
-    out.sort();
-    out
+    sorted(result(db, "from u in users select u.name"))
 }
 
 #[test]
 fn explain_returns_the_plan_of_a_query_as_text_and_a_document() {
     with_db(|db| {
-        let mut out = run(db, "explain from u in users select u.name");
+        let mut out = results(db, "explain from u in users select u.name");
         assert_eq!(1, out.len(), "explain returns one result");
         let (text, document) = explained(out.remove(0));
         assert!(text.contains("Scan users.User"), "{text}");
@@ -105,7 +78,7 @@ fn explain_returns_the_plan_of_a_query_as_text_and_a_document() {
 fn explain_of_an_index_probe_routes_by_constructor() {
     with_db(|db| {
         let (text, document) = explained(
-            run(
+            results(
                 db,
                 r"explain from i in identities
                       where i.user == users.key(2)
@@ -132,7 +105,7 @@ fn explain_of_an_index_probe_routes_by_constructor() {
 fn explain_of_a_read_of_some_constructors_names_the_pruned_ones() {
     with_db(|db| {
         let (_, document) = explained(
-            run(
+            results(
                 db,
                 "explain from g in identities.Google where g.user == users.key(2) select g.gid",
             )
@@ -149,7 +122,7 @@ fn explain_of_a_read_of_some_constructors_names_the_pruned_ones() {
 #[test]
 fn explain_of_a_write_does_not_run_it() {
     with_db(|db| {
-        let (text, _) = explained(run(db, r#"explain insert users { name: "cy" }"#).remove(0));
+        let (text, _) = explained(results(db, r#"explain insert users { name: "cy" }"#).remove(0));
         assert!(text.contains("Insert users"), "{text}");
         assert_eq!(vec![r#""ann""#, r#""bo""#], names(db));
     });
@@ -159,7 +132,7 @@ fn explain_of_a_write_does_not_run_it() {
 fn explain_of_a_read_of_a_temp_relation_plans_it() {
     with_db(|db| {
         let (text, _) = explained(
-            run(
+            results(
                 db,
                 r"temp relation stage : User key id
                   explain from s in stage select s.name",
@@ -181,7 +154,7 @@ fn explain_of_a_registered_call_names_a_registered_bundle() {
 #[test]
 fn explain_results_take_their_place_among_the_items() {
     with_db(|db| {
-        let out = run(
+        let out = results(
             db,
             r"(count(u for u in users))
               explain from u in users select u.name
@@ -199,7 +172,7 @@ fn explain_results_take_their_place_among_the_items() {
 fn explain_analyze_runs_a_query_and_adds_its_actual_rows() {
     with_db(|db| {
         let (text, document) =
-            explained(run(db, "explain analyze from u in users select u.name").remove(0));
+            explained(results(db, "explain analyze from u in users select u.name").remove(0));
         assert!(text.contains("actual rows 2"), "{text}");
         assert!(document.contains("\"actual\": {\"rows\": 2"), "{document}");
         for member in ["\"loops\": ", "\"time_us\": ", "\"storage\": "] {
@@ -212,7 +185,7 @@ fn explain_analyze_runs_a_query_and_adds_its_actual_rows() {
 fn explain_analyze_of_a_write_reports_its_change_set_and_applies_nothing() {
     with_db(|db| {
         let (text, document) = explained(
-            run(
+            results(
                 db,
                 r#"explain analyze update g in identities.Google where g.gid == "g-bo"
                    set Google { g with gid: "g-2" }"#,
@@ -236,7 +209,7 @@ fn explain_analyze_of_a_write_reports_its_change_set_and_applies_nothing() {
 #[test]
 fn explain_analyze_of_a_write_to_a_temp_relation_reports_its_change() {
     with_db(|db| {
-        let got = run(
+        let got = results(
             db,
             "temp relation t : { a: I64 } key a\nexplain analyze insert t { a: 1 }",
         );
@@ -253,7 +226,7 @@ fn explain_analyze_of_a_write_to_a_temp_relation_reports_its_change() {
 fn explain_analyze_of_a_write_counts_no_actual_rows() {
     with_db(|db| {
         let (text, document) =
-            explained(run(db, r#"explain analyze insert users { name: "cy" }"#).remove(0));
+            explained(results(db, r#"explain analyze insert users { name: "cy" }"#).remove(0));
         assert!(text.contains("actual rows 0"), "{text}");
         assert!(document.contains("\"actual\": {\"rows\": 0"), "{document}");
     });
@@ -332,8 +305,8 @@ fn explain_analyze_of_a_write_needs_a_transaction_that_writes() {
 #[test]
 fn vacuum_returns_one_row_per_constructor_relation() {
     with_db(|db| {
-        run(db, "delete i in identities where value(key i) == 1");
-        let got = printed(run(db, "vacuum identities").remove(0));
+        results(db, "delete i in identities where value(key i) == 1");
+        let got = printed(results(db, "vacuum identities").remove(0));
         assert_eq!(3, got.len(), "{got:?}");
         assert!(
             got.iter()
@@ -351,8 +324,8 @@ fn vacuum_returns_one_row_per_constructor_relation() {
 #[test]
 fn vacuum_removes_versions_no_snapshot_sees() {
     with_db(|db| {
-        run(db, "delete i in identities where value(key i) == 1");
-        let got = printed(run(db, "vacuum identities").remove(0));
+        results(db, "delete i in identities where value(key i) == 1");
+        let got = printed(results(db, "vacuum identities").remove(0));
         assert!(
             got.iter().any(|r| !r.contains("removed: 0")),
             "the deleted EmailPass version is removed: {got:?}"
@@ -364,7 +337,7 @@ fn vacuum_removes_versions_no_snapshot_sees() {
 #[ignore = "the engine does not rebuild indexes yet"]
 fn reindex_rebuilds_every_index_of_a_relation_as_a_job() {
     with_db(|db| {
-        let got = printed(run(db, "reindex identities").remove(0));
+        let got = printed(results(db, "reindex identities").remove(0));
         assert_eq!(1, got.len(), "{got:?}");
         assert!(got[0].starts_with("{ job: "), "{got:?}");
     });
@@ -374,7 +347,8 @@ fn reindex_rebuilds_every_index_of_a_relation_as_a_job() {
 #[ignore = "the engine does not rebuild indexes yet"]
 fn reindex_of_one_index_clause_rebuilds_it_as_a_job() {
     with_db(|db| {
-        let got = printed(run(db, "reindex identities index (user) in Google offline").remove(0));
+        let got =
+            printed(results(db, "reindex identities index (user) in Google offline").remove(0));
         assert_eq!(1, got.len(), "{got:?}");
         assert!(got[0].starts_with("{ job: "), "{got:?}");
         assert_eq!(
@@ -438,11 +412,11 @@ fn vacuum_of_a_temp_relation_an_earlier_statement_declared_is_invalid() {
 #[test]
 fn set_setting_replaces_the_row_of_its_constructor() {
     with_db(|db| {
-        let got = printed(run(db, "set setting RetryLimit = { retries: 3 }").remove(0));
+        let got = printed(results(db, "set setting RetryLimit = { retries: 3 }").remove(0));
         assert_eq!(1, got.len(), "{got:?}");
         assert!(got[0].starts_with("RetryLimit {"), "{got:?}");
         assert!(got[0].contains("retries: 3"), "{got:?}");
-        run(db, "set setting RetryLimit = { retries: 7 }");
+        results(db, "set setting RetryLimit = { retries: 7 }");
         assert_eq!(
             vec!["7".to_owned()],
             printed(result(

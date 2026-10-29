@@ -2,9 +2,7 @@
 //! and `at instant` blocks, their refusals, vacuum moving versions to history, and a crash and
 //! reopen with history kept.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use std::time::{Duration, SystemTime};
 

@@ -19,13 +19,8 @@ use adtb_isolation::{Aborted, Database};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_sys::lock::Lock;
 
-#[path = "../support/harness.rs"]
-pub mod harness;
-#[path = "../support/recovery.rs"]
-mod recovery;
-
-use harness::finished;
-use recovery::verify_after_crash;
+use crate::harness::{self, finished};
+use crate::recovery::verify_after_crash;
 
 /// Returns the options of the engine's database file.
 pub fn options() -> Options {
@@ -78,6 +73,7 @@ pub enum Kind {
     Deferrable,
 }
 
+#[derive(Debug)]
 pub struct Tx {
     xid: Option<Xid>,
     sid: SerialId,
@@ -103,6 +99,7 @@ pub struct Roots {
 /// Each index and the serializer has its own lock, taken in that order; `Transactions` locks
 /// itself and takes no other. Taking a snapshot and recording a commit both run under the
 /// serializer's lock. No lock is held across a wait.
+#[derive(Debug)]
 pub struct Engine {
     pub rt: SimRuntime,
     pager: Pager<SimRuntime>,
@@ -442,7 +439,7 @@ impl Engine {
         Ok(None)
     }
 
-    pub fn create_counter(&self, tx: &Tx, id: i64) -> Result<(), Failure> {
+    fn create_counter(&self, tx: &Tx, id: i64) -> Result<(), Failure> {
         let xid = tx.xid.expect("a read-only transaction writes");
         loop {
             let by_id = self.by_id.lock(&self.rt);
@@ -508,14 +505,14 @@ impl Engine {
         Ok(None)
     }
 
-    pub fn get_counter(&self, tx: &Tx, id: i64) -> Result<Option<i64>, Failure> {
+    fn get_counter(&self, tx: &Tx, id: i64) -> Result<Option<i64>, Failure> {
         let by_id = self.by_id.lock(&self.rt);
         let heap = &self.counters;
         Ok(self.find_counter(tx, id, &by_id, heap)?.map(|(_, _, n)| n))
     }
 
     /// Add one to counter `id`. Returns the new value.
-    pub fn increment(&self, tx: &Tx, id: i64) -> Result<i64, Failure> {
+    fn increment(&self, tx: &Tx, id: i64) -> Result<i64, Failure> {
         let xid = tx.xid.expect("a read-only transaction writes");
         loop {
             let by_id = self.by_id.lock(&self.rt);
@@ -607,6 +604,7 @@ impl Engine {
     }
 }
 
+#[derive(Debug)]
 pub enum Req {
     Append(i64, i64),
     Read(i64),
@@ -620,18 +618,20 @@ pub enum Req {
 pub type Reply = Result<Vec<i64>, Failure>;
 
 /// A transaction running on its own simulated thread, driven one request at a time.
-pub struct Mailbox {
+#[derive(Debug)]
+struct Mailbox {
     req: Mutex<Option<Req>>,
     reply: Mutex<Option<Reply>>,
     driver: ThreadId,
 }
 
+#[derive(Debug)]
 pub struct Worker {
     mailbox: Arc<Mailbox>,
     pub thread: ThreadId,
 }
 
-pub fn take<T>(rt: &SimRuntime, slot: &Mutex<Option<T>>) -> T {
+fn take<T>(rt: &SimRuntime, slot: &Mutex<Option<T>>) -> T {
     loop {
         if let Some(v) = slot.lock().unwrap().take() {
             return v;
@@ -711,6 +711,7 @@ impl Worker {
 }
 
 /// The isolation checker's database: each transaction a worker thread.
+#[derive(Debug)]
 pub struct Client {
     pub engine: Arc<Engine>,
     pub threads: Vec<ThreadId>,

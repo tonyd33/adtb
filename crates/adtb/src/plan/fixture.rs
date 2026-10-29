@@ -18,6 +18,7 @@ use crate::plan::{
     Catalog, Element, HeapId, IndexDesc, IndexId, RelationDesc, Rewrites, declared_elements,
 };
 
+#[derive(Debug)]
 pub struct Fixture {
     pub schema: Schema,
     pub program: Program,
@@ -180,7 +181,7 @@ pub fn catalog(schema: &Schema) -> Catalog {
     out
 }
 
-pub const SCHEMA: &str = r"
+const SCHEMA: &str = r"
 type User = { id: Key users, name: Text }
 type Identity { id: Key identities, user: Key users }
   = EmailPass { email: Text, hash: Bytes }

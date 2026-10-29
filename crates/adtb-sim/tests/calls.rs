@@ -1,16 +1,6 @@
-mod plan {
-    pub use adtb::plan::*;
-}
+use adtb::plan::fixture as planfix;
 
-#[path = "../../adtb/src/plan/tests/fixture.rs"]
-#[expect(dead_code, reason = "this binary uses part of the planner fixture")]
-mod planfix;
-
-#[expect(
-    dead_code,
-    reason = "this binary binds databases for writes and loads none for reads"
-)]
-mod support;
+use adtb_simkit::support;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -37,7 +27,8 @@ use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_sys::os::{Backend, OsRuntime};
 use adtb_testkit::fixture::Fixture;
 
-use support::{Db, World, sweep};
+use adtb_simkit::seeds::sweep;
+use support::{Db, World};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Event {

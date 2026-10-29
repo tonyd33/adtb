@@ -1,10 +1,4 @@
-mod plan {
-    pub use adtb::plan::*;
-}
-
-#[path = "../../adtb/src/plan/tests/fixture.rs"]
-#[expect(dead_code, reason = "this binary uses part of the planner fixture")]
-mod fixture;
+use adtb::plan::fixture;
 
 use std::collections::BTreeSet;
 use std::ops::{Bound, ControlFlow};
@@ -31,13 +25,10 @@ use adtb_testkit::uuid;
 
 use fixture::{Fixture, running, variants};
 
-#[expect(
-    dead_code,
-    reason = "this binary reads a loaded database and binds none for writes"
-)]
-mod support;
+use adtb_simkit::support;
 
-use support::harness::finished;
+use adtb_simkit::harness::finished;
+use adtb_simkit::seeds::sweep;
 use support::*;
 
 fn world(f: &Fixture) -> World<'_> {
@@ -188,17 +179,8 @@ fn run_all(
 
 /// Checks that every case's outcome under the simulator is the reference interpreter's. Returns
 /// how many tasks the workers ran.
-#[expect(
-    clippy::print_stderr,
-    reason = "EXEC_SHOW prints a sample of results on stderr"
-)]
 fn check(seed: u64, f: &Fixture, cases: &[Case], workers: usize, opts: XOptions) -> usize {
     let (got, ran) = run_all(seed, f, cases, workers, opts);
-    if std::env::var("EXEC_SHOW").is_ok() {
-        for (c, g) in cases.iter().zip(&got).step_by(11) {
-            eprintln!("{} => {g:?}", c.name);
-        }
-    }
     let mut bad = Vec::new();
     for (c, g) in cases.iter().zip(got) {
         let want = expected(&c.want);
@@ -805,156 +787,154 @@ fn a_call_of_a_wasm_function_is_refused_before_it_reaches_the_executor_and_a_hos
     }
 }
 
+const PRIMITIVE_QUERIES: &[&str] = &[
+    "from u in users select lower(u.name)",
+    "from u in users select upper(u.name)",
+    "from u in users select u.name ++ \"\u{301}\"",
+    "from o in orders select text(o.total)",
+    "from o in orders select div(decimal(o.total, 2), decimal(o.qty + 1, 0), 2, HalfEven)",
+    "from u in users select grapheme_len(u.name)",
+    "from u in users select matches(u.name, \"^a\")",
+    "from u in users select lower(\"ÀÉΣ\" ++ u.name)",
+    "from u in users select lower(\"İ\" ++ u.name)",
+    "from u in users select upper(u.name ++ \"ßŉ\")",
+    "from u in users select fold(u.name ++ \"ẞΣς\")",
+    "from u in users select fold(upper(u.name)) == fold(u.name)",
+    "from u in users select grapheme_len(u.name ++ \"e\u{301}👍🏽\u{1f1e8}\u{1f1e6}\")",
+    "from u in users select matches(u.name, \"(?i)^A\")",
+    "from u in users select matches(u.name ++ \"\\n\", \"n$\")",
+    "from u in users select matches(u.name ++ \"\\nx\", \"(?m)n$\")",
+    "from u in users select matches(u.name ++ \"é\", \"^\\\\p{L}+$\")",
+    "from u in users select matches(u.name ++ \"\\n\", \"(?s)n.\")",
+    "from u in users select matches(u.name, \"(?U)a+\")",
+    "from u in users select collate(u.name, \"en@cldr-49\")",
+    "from u in users select collate(u.name ++ \"ö\", \"de-u-ks-level2@cldr-49\")",
+    "from u in users select collate(u.name ++ \"ö\", \"sv@cldr-49\")",
+    "from u in users select collate(upper(u.name) ++ \" 10\", \"en-u-kn-true-ka-shifted-kf-upper@cldr-49\")",
+    "from u in users select collate(u.name, \"und-u-ks-level1-kc-true-kv-punct@cldr-49\")",
+    "from u in users select utf8(bytes(u.name ++ \"é\"))",
+    "from u in users select match Bytes.parse(\"0x65cc81\") | None -> None | Some b -> utf8(bytes(u.name) ++ b.value)",
+    "from u in users select match Bytes.parse(\"0xff\") | None -> None | Some b -> utf8(bytes(u.name) ++ b.value)",
+    "from u in users select \"e\" ++ \"\u{301}\" ++ u.name",
+    "from o in orders select text(o.qty - 3)",
+    "from o in orders select text(decimal(o.total, 2) * decimal(o.qty - 3, 1))",
+    "from o in orders select text(f64(o.total) / 7.0)",
+    "from o in orders select text(f64(o.total) * 1e300)",
+    "from o in orders select text(f64(o.qty) / 1e10)",
+    "from o in orders select text(f32(o.qty) / 3.0)",
+    "from o in orders select text(f64(o.total) / f64(o.qty))",
+    "from o in orders select text(f64(o.qty) / f64(o.qty))",
+    "from o in orders select text(-f64(o.total) / f64(o.qty))",
+    "from p in posts select text(p.created_at)",
+    "from o in orders select text(micros(o.total * 36000000 - 1000))",
+    "from o in orders select text(micros(-o.total * 1000000))",
+    "from o in orders select text(days(o.qty) - months(o.qty))",
+    "from u in users select text(uuid(\"0190A4B2-7C3E-7d4f-9a21-5b6c7d8e9f0\" ++ text(scalar_len(u.name))))",
+    "from u in users select try uuid(u.name)",
+    "from u in users select print(u)",
+    "from i in identities select print(i)",
+    "from i in identities select print(tag(i))",
+    "from f in follows select print(key f)",
+    "from o in orders select print({ total: o.total, user: o.user, half: decimal(o.total, 1) * 0.5 })",
+    "from o in orders select print(checked_div(o.total, o.qty))",
+    "from u in users select print(u.name ++ \"\\\"\\\\\\n\\r\\t\\u{7}é\")",
+    "from p in posts select print(p.created_at - 7d)",
+    "from o in orders select print(f64(o.qty) / 0.0)",
+    "from u in users select User.parse(print(u))",
+    "from i in identities select Identity.parse(print(i))",
+    "from f in follows select (Key follows).parse(print(key f))",
+    "from u in users select (Key users).parse(\"app::users.key(\" ++ text(scalar_len(u.name)) ++ \")\")",
+    "from o in orders select I64.parse(\" -00\" ++ text(o.total) ++ \" \")",
+    "from o in orders select I8.parse(text(o.total * 2))",
+    "from o in orders select I64.parse(text(o.total) ++ \".0\")",
+    "from o in orders select (Decimal 2).parse(text(o.total) ++ \".5\")",
+    "from o in orders select (Decimal 2).parse(text(o.total) ++ \".555\")",
+    "from o in orders select F64.parse(text(f64(o.total) / 7.0))",
+    "from o in orders select F32.parse(text(o.total) ++ \"e37\")",
+    "from o in orders select F64.parse(text(o.total) ++ \"e400\")",
+    "from o in orders select F64.parse(\"-inf\") == Some { value: -f64(o.qty) / 0.0 }",
+    "from u in users select Text.parse(print(u.name ++ \"\\\"\\n\"))",
+    "from u in users select Text.parse(\"\\\"e\\\\u{301}\" ++ u.name ++ \"\\\"\")",
+    "from u in users select Text.parse(u.name)",
+    "from p in posts select Instant.parse(text(p.created_at))",
+    "from o in orders select DateTime.parse(\"2026-10-25T09:30:0\" ++ text(o.qty) ++ \".5\")",
+    "from o in orders select Date.parse(\"2024-02-2\" ++ text(o.qty + 5))",
+    "from o in orders select Date.parse(\"+1000\" ++ text(o.qty) ++ \"-01-01\")",
+    "from o in orders select Time.parse(\"23:59:5\" ++ text(o.qty) ++ \".25\")",
+    "from o in orders select Duration.parse(text(o.qty * 60) ++ \"s\")",
+    "from o in orders select Period.parse(\"P\" ++ text(o.qty) ++ \"M-\" ++ text(o.total) ++ \"D\")",
+    "from o in orders select ZonedDateTime.parse(\"2026-03-29T01:3\" ++ text(o.qty) ++ \":00[Europe/Lisbon]\")",
+    "from u in users select ZonedDateTime.parse(\"2026-03-29T01:30:00[\" ++ u.name ++ \"]\")",
+    "from o in orders select (Set I64).parse(\"[\" ++ text(o.qty) ++ \", 1, 3]\")",
+    "from o in orders select (Option I64).parse(\"Some {value:\" ++ text(o.qty) ++ \"}\")",
+    "from o in orders select Bool.parse(if o.qty > 2 then \"true\" else \"False\")",
+    "from o in orders select (Tag Identity).parse(if o.qty > 2 then \"Google\" else \"Nope\")",
+    "from o in orders select try div(decimal(o.total, 2), decimal(o.qty, 1), 4, HalfUp)",
+    "from o in orders select div(decimal(-o.total, 0), decimal(o.qty + 2, 0), 0, Floor)",
+    "from o in orders select div(decimal(o.total, 0), decimal(o.qty + 2, 3), 1, HalfEven)",
+    "from o in orders select try div(decimal(o.total * 10000000000000000, 0), decimal(o.qty + 1, 0), 20, Up)",
+    "from o in orders select div(decimal(o.total, 6), decimal(o.qty + 1, 0), 2, HalfUp)",
+    "from o in orders select i32(decimal(o.total, 0) * 0.15, HalfEven)",
+    "from o in orders select i64(decimal(-o.total, 0) * 0.15, Ceiling)",
+    "from o in orders select try i8(f64(o.total) * 1.5, Up)",
+    "from o in orders select checked_i8(f64(o.total) * 1.25, HalfDown)",
+    "from o in orders select checked_i64(f64(o.total) / f64(o.qty), Down)",
+    "from o in orders select decimal(f64(o.total) / 3.0, 4, HalfEven)",
+    "from o in orders select decimal(f32(o.qty) / 3.0, 6, Floor)",
+    "from o in orders select checked_decimal(f64(o.total) / f64(o.qty), 2, Down)",
+    "from o in orders select checked_decimal(f64(o.total) * 1e36, 2, Down)",
+    "from o in orders select f64(decimal(o.total, 2) * 0.01)",
+    "from o in orders select f32(decimal(o.total, 0) * 0.1)",
+    "from p in posts select in_zone(p.created_at, \"Europe/Lisbon\")",
+    "from p in posts select in_zone(p.created_at, \"US/Eastern\")",
+    "from p in posts select try in_zone(p.created_at, \"europe/lisbon\")",
+    "from p in posts select to_instant(in_zone(p.created_at, \"America/New_York\"))",
+    "from p in posts select in_zone(p.created_at, \"Asia/Kolkata\") + 1h",
+    "from p in posts select in_zone(p.created_at, \"Asia/Kolkata\") - 30min",
+    "from o in orders select match DateTime.parse(\"2026-03-29T01:\" ++ text(o.total % 60 + 10) ++ \":00\") | None -> \"none\" | Some d -> print(zoned(d.value, \"Europe/Lisbon\", Clamp))",
+    "from o in orders select match DateTime.parse(\"2026-03-29T01:\" ++ text(o.total % 60 + 10) ++ \":00\") | None -> \"none\" | Some d -> print(zoned(d.value, \"Europe/Lisbon\", Reject))",
+    "from o in orders select match DateTime.parse(\"2026-10-25T01:\" ++ text(o.total % 60 + 10) ++ \":00\") | None -> \"none\" | Some d -> print(to_instant(zoned(d.value, \"Europe/Lisbon\", Clamp)))",
+    "from o in orders select match DateTime.parse(\"2026-10-25T01:\" ++ text(o.total % 60 + 10) ++ \":00\") | None -> \"none\" | Some d -> print(zoned(d.value, \"Europe/Lisbon\", Clamp) + 1h)",
+    "from o in orders select match Date.parse(\"2024-01-31\") | None -> \"none\" | Some d -> print(add_period(d.value, months(o.qty) + days(o.qty), Clamp))",
+    "from o in orders select match Date.parse(\"2024-01-31\") | None -> \"none\" | Some d -> print(add_period(d.value, months(o.qty), Reject))",
+    "from o in orders select match DateTime.parse(\"2024-03-31T12:00:00\") | None -> \"none\" | Some d -> print(add_period(d.value, -months(o.qty), Clamp))",
+    "from o in orders select match ZonedDateTime.parse(\"2026-02-28T01:30:00[Europe/Lisbon]\") | None -> \"none\" | Some z -> print(add_period(z.value, days(o.qty + 26), Clamp))",
+    "from o in orders select match ZonedDateTime.parse(\"2026-02-28T01:30:00[Europe/Lisbon]\") | None -> \"none\" | Some z -> print(add_period(z.value, days(o.qty + 26), Reject))",
+    "from o in orders select span(o.qty, o.total)",
+    "from o in orders select try span(o.total, o.qty)",
+    "from o in orders select start(span(o.qty, o.total)) + end(span(o.qty, o.total))",
+    "from o in orders select overlaps(span(o.qty, o.total), span(40, 60))",
+    "from o in orders select covers(span(o.qty, o.total), 50)",
+    "from o in orders select covers(span(0, 100), span(o.qty, o.total))",
+    "from o in orders select print(span(o.qty, o.total))",
+    "from o in orders select (Span I64).parse(\"span(\" ++ text(o.qty) ++ \", 3)\")",
+    "from o in orders select (Span Date).parse(\"span(2024-01-0\" ++ text(o.qty + 1) ++ \", 2024-01-04)\")",
+    "from p in posts select (Span Instant).parse(print(span(p.created_at, p.created_at + 1h)))",
+    "from o in orders select Date.parse(\"+294247-01-\" ++ text(o.qty + 8))",
+    "from o in orders select Date.parse(\"-290308-12-\" ++ text(o.qty + 19))",
+    "from o in orders select Instant.parse(\"+294247-01-10T04:00:54.77580\" ++ text(o.qty + 5) ++ \"Z\")",
+    "from o in orders select Instant.parse(\"-290308-12-21T19:59:05.22419\" ++ text(o.qty) ++ \"Z\")",
+    "from o in orders select DateTime.parse(\"+294247-01-10T04:00:5\" ++ text(o.qty) ++ \".775807\")",
+    "from o in orders select DateTime.parse(\"-290308-12-21T19:59:0\" ++ text(o.qty + 3) ++ \".224192\")",
+    "from o in orders select ZonedDateTime.parse(\"+294247-01-10T04:00:5\" ++ text(o.qty) ++ \"[UTC]\")",
+    "from o in orders select match Date.parse(\"+294247-01-10\") | None -> \"none\" | Some d -> print(add_period(d.value, days(o.qty - 2), Clamp))",
+    "from o in orders select match Date.parse(\"-290308-12-21\") | None -> \"none\" | Some d -> print(add_period(d.value, -months(o.qty), Clamp))",
+    "from o in orders select match DateTime.parse(\"+294247-01-09T05:00:00\") | None -> \"none\" | Some d -> print(add_period(d.value, days(o.qty), Clamp))",
+    "from o in orders select match DateTime.parse(\"-290308-12-22T20:00:00\") | None -> \"none\" | Some d -> print(add_period(d.value, -days(o.qty), Clamp))",
+    "from o in orders select match DateTime.parse(\"-290308-12-22T19:00:00\") | None -> \"none\" | Some d -> print(add_period(d.value, -days(o.qty), Clamp))",
+    "from o in orders select match Instant.parse(\"+294247-01-10T04:00:54.775807Z\") | None -> \"none\" | Some i -> print(i.value - micros(o.qty))",
+    "from o in orders select match Instant.parse(\"+294247-01-10T04:00:54.775807Z\") | None -> \"none\" | Some i -> print(i.value + micros(o.qty))",
+    "from o in orders select match Instant.parse(\"-290308-12-21T19:59:05.224192Z\") | None -> \"none\" | Some i -> text(i.value + micros(o.qty - 2))",
+    "from o in orders select match Instant.parse(\"+294247-01-10T04:00:54.775807Z\") | None -> \"none\" | Some i -> print(in_zone(i.value - micros(o.qty), \"Asia/Kolkata\"))",
+    "from o in orders select match Instant.parse(\"-290308-12-21T19:59:05.224192Z\") | None -> \"none\" | Some i -> print(in_zone(i.value, \"America/New_York\") + micros(o.qty))",
+];
+
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the query of every primitive is listed inline; the list would have to be its own function"
-)]
 fn every_primitive_agrees_with_the_reference() {
     let f = running();
     let mut cases = Vec::new();
     let mut refused = Vec::new();
-    for q in [
-        "from u in users select lower(u.name)",
-        "from u in users select upper(u.name)",
-        "from u in users select u.name ++ \"\u{301}\"",
-        "from o in orders select text(o.total)",
-        "from o in orders select div(decimal(o.total, 2), decimal(o.qty + 1, 0), 2, HalfEven)",
-        "from u in users select grapheme_len(u.name)",
-        "from u in users select matches(u.name, \"^a\")",
-        "from u in users select lower(\"ÀÉΣ\" ++ u.name)",
-        "from u in users select lower(\"İ\" ++ u.name)",
-        "from u in users select upper(u.name ++ \"ßŉ\")",
-        "from u in users select fold(u.name ++ \"ẞΣς\")",
-        "from u in users select fold(upper(u.name)) == fold(u.name)",
-        "from u in users select grapheme_len(u.name ++ \"e\u{301}👍🏽\u{1f1e8}\u{1f1e6}\")",
-        "from u in users select matches(u.name, \"(?i)^A\")",
-        "from u in users select matches(u.name ++ \"\\n\", \"n$\")",
-        "from u in users select matches(u.name ++ \"\\nx\", \"(?m)n$\")",
-        "from u in users select matches(u.name ++ \"é\", \"^\\\\p{L}+$\")",
-        "from u in users select matches(u.name ++ \"\\n\", \"(?s)n.\")",
-        "from u in users select matches(u.name, \"(?U)a+\")",
-        "from u in users select collate(u.name, \"en@cldr-49\")",
-        "from u in users select collate(u.name ++ \"ö\", \"de-u-ks-level2@cldr-49\")",
-        "from u in users select collate(u.name ++ \"ö\", \"sv@cldr-49\")",
-        "from u in users select collate(upper(u.name) ++ \" 10\", \"en-u-kn-true-ka-shifted-kf-upper@cldr-49\")",
-        "from u in users select collate(u.name, \"und-u-ks-level1-kc-true-kv-punct@cldr-49\")",
-        "from u in users select utf8(bytes(u.name ++ \"é\"))",
-        "from u in users select match Bytes.parse(\"0x65cc81\") | None -> None | Some b -> utf8(bytes(u.name) ++ b.value)",
-        "from u in users select match Bytes.parse(\"0xff\") | None -> None | Some b -> utf8(bytes(u.name) ++ b.value)",
-        "from u in users select \"e\" ++ \"\u{301}\" ++ u.name",
-        "from o in orders select text(o.qty - 3)",
-        "from o in orders select text(decimal(o.total, 2) * decimal(o.qty - 3, 1))",
-        "from o in orders select text(f64(o.total) / 7.0)",
-        "from o in orders select text(f64(o.total) * 1e300)",
-        "from o in orders select text(f64(o.qty) / 1e10)",
-        "from o in orders select text(f32(o.qty) / 3.0)",
-        "from o in orders select text(f64(o.total) / f64(o.qty))",
-        "from o in orders select text(f64(o.qty) / f64(o.qty))",
-        "from o in orders select text(-f64(o.total) / f64(o.qty))",
-        "from p in posts select text(p.created_at)",
-        "from o in orders select text(micros(o.total * 36000000 - 1000))",
-        "from o in orders select text(micros(-o.total * 1000000))",
-        "from o in orders select text(days(o.qty) - months(o.qty))",
-        "from u in users select text(uuid(\"0190A4B2-7C3E-7d4f-9a21-5b6c7d8e9f0\" ++ text(scalar_len(u.name))))",
-        "from u in users select try uuid(u.name)",
-        "from u in users select print(u)",
-        "from i in identities select print(i)",
-        "from i in identities select print(tag(i))",
-        "from f in follows select print(key f)",
-        "from o in orders select print({ total: o.total, user: o.user, half: decimal(o.total, 1) * 0.5 })",
-        "from o in orders select print(checked_div(o.total, o.qty))",
-        "from u in users select print(u.name ++ \"\\\"\\\\\\n\\r\\t\\u{7}é\")",
-        "from p in posts select print(p.created_at - 7d)",
-        "from o in orders select print(f64(o.qty) / 0.0)",
-        "from u in users select User.parse(print(u))",
-        "from i in identities select Identity.parse(print(i))",
-        "from f in follows select (Key follows).parse(print(key f))",
-        "from u in users select (Key users).parse(\"app::users.key(\" ++ text(scalar_len(u.name)) ++ \")\")",
-        "from o in orders select I64.parse(\" -00\" ++ text(o.total) ++ \" \")",
-        "from o in orders select I8.parse(text(o.total * 2))",
-        "from o in orders select I64.parse(text(o.total) ++ \".0\")",
-        "from o in orders select (Decimal 2).parse(text(o.total) ++ \".5\")",
-        "from o in orders select (Decimal 2).parse(text(o.total) ++ \".555\")",
-        "from o in orders select F64.parse(text(f64(o.total) / 7.0))",
-        "from o in orders select F32.parse(text(o.total) ++ \"e37\")",
-        "from o in orders select F64.parse(text(o.total) ++ \"e400\")",
-        "from o in orders select F64.parse(\"-inf\") == Some { value: -f64(o.qty) / 0.0 }",
-        "from u in users select Text.parse(print(u.name ++ \"\\\"\\n\"))",
-        "from u in users select Text.parse(\"\\\"e\\\\u{301}\" ++ u.name ++ \"\\\"\")",
-        "from u in users select Text.parse(u.name)",
-        "from p in posts select Instant.parse(text(p.created_at))",
-        "from o in orders select DateTime.parse(\"2026-10-25T09:30:0\" ++ text(o.qty) ++ \".5\")",
-        "from o in orders select Date.parse(\"2024-02-2\" ++ text(o.qty + 5))",
-        "from o in orders select Date.parse(\"+1000\" ++ text(o.qty) ++ \"-01-01\")",
-        "from o in orders select Time.parse(\"23:59:5\" ++ text(o.qty) ++ \".25\")",
-        "from o in orders select Duration.parse(text(o.qty * 60) ++ \"s\")",
-        "from o in orders select Period.parse(\"P\" ++ text(o.qty) ++ \"M-\" ++ text(o.total) ++ \"D\")",
-        "from o in orders select ZonedDateTime.parse(\"2026-03-29T01:3\" ++ text(o.qty) ++ \":00[Europe/Lisbon]\")",
-        "from u in users select ZonedDateTime.parse(\"2026-03-29T01:30:00[\" ++ u.name ++ \"]\")",
-        "from o in orders select (Set I64).parse(\"[\" ++ text(o.qty) ++ \", 1, 3]\")",
-        "from o in orders select (Option I64).parse(\"Some {value:\" ++ text(o.qty) ++ \"}\")",
-        "from o in orders select Bool.parse(if o.qty > 2 then \"true\" else \"False\")",
-        "from o in orders select (Tag Identity).parse(if o.qty > 2 then \"Google\" else \"Nope\")",
-        "from o in orders select try div(decimal(o.total, 2), decimal(o.qty, 1), 4, HalfUp)",
-        "from o in orders select div(decimal(-o.total, 0), decimal(o.qty + 2, 0), 0, Floor)",
-        "from o in orders select div(decimal(o.total, 0), decimal(o.qty + 2, 3), 1, HalfEven)",
-        "from o in orders select try div(decimal(o.total * 10000000000000000, 0), decimal(o.qty + 1, 0), 20, Up)",
-        "from o in orders select div(decimal(o.total, 6), decimal(o.qty + 1, 0), 2, HalfUp)",
-        "from o in orders select i32(decimal(o.total, 0) * 0.15, HalfEven)",
-        "from o in orders select i64(decimal(-o.total, 0) * 0.15, Ceiling)",
-        "from o in orders select try i8(f64(o.total) * 1.5, Up)",
-        "from o in orders select checked_i8(f64(o.total) * 1.25, HalfDown)",
-        "from o in orders select checked_i64(f64(o.total) / f64(o.qty), Down)",
-        "from o in orders select decimal(f64(o.total) / 3.0, 4, HalfEven)",
-        "from o in orders select decimal(f32(o.qty) / 3.0, 6, Floor)",
-        "from o in orders select checked_decimal(f64(o.total) / f64(o.qty), 2, Down)",
-        "from o in orders select checked_decimal(f64(o.total) * 1e36, 2, Down)",
-        "from o in orders select f64(decimal(o.total, 2) * 0.01)",
-        "from o in orders select f32(decimal(o.total, 0) * 0.1)",
-        "from p in posts select in_zone(p.created_at, \"Europe/Lisbon\")",
-        "from p in posts select in_zone(p.created_at, \"US/Eastern\")",
-        "from p in posts select try in_zone(p.created_at, \"europe/lisbon\")",
-        "from p in posts select to_instant(in_zone(p.created_at, \"America/New_York\"))",
-        "from p in posts select in_zone(p.created_at, \"Asia/Kolkata\") + 1h",
-        "from p in posts select in_zone(p.created_at, \"Asia/Kolkata\") - 30min",
-        "from o in orders select match DateTime.parse(\"2026-03-29T01:\" ++ text(o.total % 60 + 10) ++ \":00\") | None -> \"none\" | Some d -> print(zoned(d.value, \"Europe/Lisbon\", Clamp))",
-        "from o in orders select match DateTime.parse(\"2026-03-29T01:\" ++ text(o.total % 60 + 10) ++ \":00\") | None -> \"none\" | Some d -> print(zoned(d.value, \"Europe/Lisbon\", Reject))",
-        "from o in orders select match DateTime.parse(\"2026-10-25T01:\" ++ text(o.total % 60 + 10) ++ \":00\") | None -> \"none\" | Some d -> print(to_instant(zoned(d.value, \"Europe/Lisbon\", Clamp)))",
-        "from o in orders select match DateTime.parse(\"2026-10-25T01:\" ++ text(o.total % 60 + 10) ++ \":00\") | None -> \"none\" | Some d -> print(zoned(d.value, \"Europe/Lisbon\", Clamp) + 1h)",
-        "from o in orders select match Date.parse(\"2024-01-31\") | None -> \"none\" | Some d -> print(add_period(d.value, months(o.qty) + days(o.qty), Clamp))",
-        "from o in orders select match Date.parse(\"2024-01-31\") | None -> \"none\" | Some d -> print(add_period(d.value, months(o.qty), Reject))",
-        "from o in orders select match DateTime.parse(\"2024-03-31T12:00:00\") | None -> \"none\" | Some d -> print(add_period(d.value, -months(o.qty), Clamp))",
-        "from o in orders select match ZonedDateTime.parse(\"2026-02-28T01:30:00[Europe/Lisbon]\") | None -> \"none\" | Some z -> print(add_period(z.value, days(o.qty + 26), Clamp))",
-        "from o in orders select match ZonedDateTime.parse(\"2026-02-28T01:30:00[Europe/Lisbon]\") | None -> \"none\" | Some z -> print(add_period(z.value, days(o.qty + 26), Reject))",
-        "from o in orders select span(o.qty, o.total)",
-        "from o in orders select try span(o.total, o.qty)",
-        "from o in orders select start(span(o.qty, o.total)) + end(span(o.qty, o.total))",
-        "from o in orders select overlaps(span(o.qty, o.total), span(40, 60))",
-        "from o in orders select covers(span(o.qty, o.total), 50)",
-        "from o in orders select covers(span(0, 100), span(o.qty, o.total))",
-        "from o in orders select print(span(o.qty, o.total))",
-        "from o in orders select (Span I64).parse(\"span(\" ++ text(o.qty) ++ \", 3)\")",
-        "from o in orders select (Span Date).parse(\"span(2024-01-0\" ++ text(o.qty + 1) ++ \", 2024-01-04)\")",
-        "from p in posts select (Span Instant).parse(print(span(p.created_at, p.created_at + 1h)))",
-        "from o in orders select Date.parse(\"+294247-01-\" ++ text(o.qty + 8))",
-        "from o in orders select Date.parse(\"-290308-12-\" ++ text(o.qty + 19))",
-        "from o in orders select Instant.parse(\"+294247-01-10T04:00:54.77580\" ++ text(o.qty + 5) ++ \"Z\")",
-        "from o in orders select Instant.parse(\"-290308-12-21T19:59:05.22419\" ++ text(o.qty) ++ \"Z\")",
-        "from o in orders select DateTime.parse(\"+294247-01-10T04:00:5\" ++ text(o.qty) ++ \".775807\")",
-        "from o in orders select DateTime.parse(\"-290308-12-21T19:59:0\" ++ text(o.qty + 3) ++ \".224192\")",
-        "from o in orders select ZonedDateTime.parse(\"+294247-01-10T04:00:5\" ++ text(o.qty) ++ \"[UTC]\")",
-        "from o in orders select match Date.parse(\"+294247-01-10\") | None -> \"none\" | Some d -> print(add_period(d.value, days(o.qty - 2), Clamp))",
-        "from o in orders select match Date.parse(\"-290308-12-21\") | None -> \"none\" | Some d -> print(add_period(d.value, -months(o.qty), Clamp))",
-        "from o in orders select match DateTime.parse(\"+294247-01-09T05:00:00\") | None -> \"none\" | Some d -> print(add_period(d.value, days(o.qty), Clamp))",
-        "from o in orders select match DateTime.parse(\"-290308-12-22T20:00:00\") | None -> \"none\" | Some d -> print(add_period(d.value, -days(o.qty), Clamp))",
-        "from o in orders select match DateTime.parse(\"-290308-12-22T19:00:00\") | None -> \"none\" | Some d -> print(add_period(d.value, -days(o.qty), Clamp))",
-        "from o in orders select match Instant.parse(\"+294247-01-10T04:00:54.775807Z\") | None -> \"none\" | Some i -> print(i.value - micros(o.qty))",
-        "from o in orders select match Instant.parse(\"+294247-01-10T04:00:54.775807Z\") | None -> \"none\" | Some i -> print(i.value + micros(o.qty))",
-        "from o in orders select match Instant.parse(\"-290308-12-21T19:59:05.224192Z\") | None -> \"none\" | Some i -> text(i.value + micros(o.qty - 2))",
-        "from o in orders select match Instant.parse(\"+294247-01-10T04:00:54.775807Z\") | None -> \"none\" | Some i -> print(in_zone(i.value - micros(o.qty), \"Asia/Kolkata\"))",
-        "from o in orders select match Instant.parse(\"-290308-12-21T19:59:05.224192Z\") | None -> \"none\" | Some i -> print(in_zone(i.value, \"America/New_York\") + micros(o.qty))",
-    ] {
+    for &q in PRIMITIVE_QUERIES {
         match std::panic::catch_unwind(|| cases_of(&f, q, &[])) {
             Ok(cs) => cases.extend(cs),
             Err(_) => refused.push(q),
@@ -1360,7 +1340,7 @@ fn stock_of(n: usize) -> Fixture {
 #[ignore = "a benchmark: run with --ignored --no-capture"]
 #[expect(
     clippy::disallowed_methods,
-    reason = "a benchmark times the host, not the simulated clock"
+    reason = "goes when benchmarks move to a harness outside the test suite"
 )]
 fn bench_scans_joins_and_groups() {
     let f = stock_of(4000);

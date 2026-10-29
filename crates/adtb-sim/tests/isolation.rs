@@ -1,11 +1,6 @@
+use adtb_simkit::engine;
+use adtb_simkit::seeds;
 use std::ops::Range;
-#[expect(
-    dead_code,
-    reason = "this binary drives the engine directly, without workers"
-)]
-mod engine;
-#[path = "support/seeds.rs"]
-mod seeds;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -15,7 +10,7 @@ use adtb::mvcc::Limits;
 use adtb::runtime::{Entropy, Threads};
 use adtb_isolation::{self as iso, Op, Outcome as Ended};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
-use engine::harness::finished;
+use adtb_simkit::harness::finished;
 use engine::{Engine, Kind, Roots};
 use seeds::{share, sweep};
 

@@ -32,7 +32,7 @@ fn corpus() -> Vec<String> {
 /// Runs `c` on a thread of its own named after `seed`, so a stack overflow names it too.
 #[expect(
     clippy::disallowed_methods,
-    reason = "a case that hangs is reported with its seed by the wall clock"
+    reason = "goes when each seed is its own test"
 )]
 fn run(front: &Front, seed: u64, c: &Case) -> Result<Reached, String> {
     thread::scope(|s| {

@@ -39,6 +39,16 @@ impl Eff {
 
 pub type Effects = BTreeSet<Eff>;
 
+/// The rows a statement's deletes remove.
+struct Deleted {
+    /// Each row a delete or replace removes.
+    minus_written: BTreeSet<(RelId, Val)>,
+    /// The key of each row that goes, cascades included.
+    gone: BTreeSet<(RelId, Val)>,
+    /// The row of each key a cascade removes.
+    pre_rows: BTreeMap<(RelId, Val), Val>,
+}
+
 /// What a constraint is, for the reason a violation of it gives.
 #[derive(Debug)]
 pub enum Violation {
@@ -1070,15 +1080,18 @@ impl<'a, R: Runtime> Stmt<'a, R> {
 
     /// Derives the delete actions of the written effects, forms the statement's change set,
     /// applies it, and checks it at the statement boundary.
-    #[expect(
-        clippy::cognitive_complexity,
-        reason = "deriving the deletes, forming the change set and checking it would have to be separate functions"
-    )]
     fn boundary(&self, written: Effects, result: Val) -> Result<Outcome, Error> {
+        let deleted = self.deleted(&written)?;
+        let (plus, minus) = self.change_set(written, &deleted)?;
+        self.settle(plus, minus, result)
+    }
+
+    /// Returns the rows the written effects delete, with every row a cascade deletes.
+    fn deleted(&self, written: &Effects) -> Result<Deleted, Error> {
         let mut minus_written: BTreeSet<(RelId, Val)> = BTreeSet::new();
         let mut kept_keys: BTreeSet<(RelId, Val)> = BTreeSet::new();
         let mut removed: BTreeSet<(RelId, Val)> = BTreeSet::new();
-        for e in &written {
+        for e in written {
             match e {
                 Eff::Del(r, v) => {
                     minus_written.insert((*r, v.clone()));
@@ -1126,9 +1139,24 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             }
             gone.extend(more);
         }
+        Ok(Deleted {
+            minus_written,
+            gone,
+            pre_rows,
+        })
+    }
+
+    /// Returns the rows the statement inserts and deletes: the written effects, the clears and
+    /// retags of the rows that refer to a deleted one, and the deleted rows.
+    fn change_set(&self, written: Effects, deleted: &Deleted) -> Result<(Rows, Rows), Error> {
+        let Deleted {
+            minus_written,
+            gone,
+            pre_rows,
+        } = deleted;
         let mut all = written;
         let targets: BTreeSet<RelId> = gone.iter().map(|(r, _)| *r).collect();
-        let gone_keys = by_target(&gone);
+        let gone_keys = by_target(gone);
         for (r, fields) in self.referrers(&targets) {
             for (c, u) in self.referring(r, &fields, &gone_keys)? {
                 if minus_written.contains(&(r, u.clone()))
@@ -1138,7 +1166,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 }
                 let mut reach: Vec<&RefField> = Vec::new();
                 for f in fields[c as usize].iter().copied() {
-                    if Self::names_gone(f, &u, &gone)? {
+                    if Self::names_gone(f, &u, gone)? {
                         reach.push(f);
                     }
                 }
@@ -1178,7 +1206,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 add(&mut minus, *r, v.clone())?;
             }
         }
-        for (r, k) in &gone {
+        for (r, k) in gone {
             let row = match pre_rows.get(&(*r, k.clone())) {
                 Some(u) => Some(u.clone()),
                 None => self.by_key(*r, k)?.map(|(_, _, u)| u),
@@ -1188,6 +1216,11 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             }
         }
         normalise(&mut plus, &mut minus);
+        Ok((plus, minus))
+    }
+
+    /// Apply the change set and check it at the statement boundary.
+    fn settle(&self, plus: Rows, minus: Rows, result: Val) -> Result<Outcome, Error> {
         self.check_open(&plus)?;
         self.check_sizes(&plus)?;
         let mut viol = Violations::new();

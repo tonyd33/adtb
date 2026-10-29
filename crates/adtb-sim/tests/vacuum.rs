@@ -14,16 +14,11 @@ use adtb::verify;
 use adtb::verify::Inventory;
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 
-#[path = "support/crash.rs"]
-mod crash;
-#[path = "support/harness.rs"]
-mod harness;
-#[path = "support/recovery.rs"]
-mod recovery;
-#[path = "support/rows.rs"]
-mod rows;
-#[path = "support/seeds.rs"]
-mod seeds;
+use adtb_simkit::crash;
+use adtb_simkit::harness;
+use adtb_simkit::recovery;
+use adtb_simkit::rows;
+use adtb_simkit::seeds;
 
 use crash::{crash_after, run_process, silence_fatal_panics};
 use harness::{PAGE, finished, options};
@@ -397,17 +392,6 @@ struct Held {
     snapshot: Snapshot,
     heaps: Vec<usize>,
     expected: Rows,
-}
-
-impl Op {
-    fn key(&self) -> i64 {
-        match self {
-            Op::Insert { key, .. }
-            | Op::Update { key, .. }
-            | Op::Delete { key }
-            | Op::Retag { key, .. } => *key,
-        }
-    }
 }
 
 fn generate(
@@ -1299,10 +1283,6 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
 }
 
 /// Returns the number of crashes, and of those that fell during a vacuum.
-#[expect(
-    clippy::print_stderr,
-    reason = "the crash loop reports its coverage on stderr"
-)]
 fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
     silence_fatal_panics();
     let mut sim = Sim::new(seed, Config::default());
@@ -1343,13 +1323,6 @@ fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
         );
     }
     let w = world.lock().unwrap();
-    eprintln!(
-        "seed {seed}: {crashes} crashes, {} during vacuum, {} transactions, {} acknowledged, {} vacuums",
-        w.crashed_vacuuming,
-        w.ops.len(),
-        w.acked.len(),
-        w.vacuums
-    );
     assert!(!w.acked.is_empty(), "seed {seed} acknowledged nothing");
     (crashes, w.crashed_vacuuming)
 }

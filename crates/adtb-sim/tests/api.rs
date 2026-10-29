@@ -1,9 +1,7 @@
 //! The in-process API over the simulator: open, ad hoc text, interactive transactions and the
 //! retrying closure.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use std::sync::{Arc, Mutex};
 
@@ -15,7 +13,7 @@ use adtb::{
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{in_txn, once, options, printed, result, run};
+use api::{in_txn, is_invalid, once, options, printed, result, run};
 
 const SHOP: &str = r"module shop
 add module shop
@@ -76,15 +74,6 @@ fn reason(e: &Error) -> &RejectReason {
         Error::Rejected { reason } => reason,
         other => panic!("not a rejection: {other:?}"),
     }
-}
-
-fn is_invalid(e: &Error) -> bool {
-    matches!(
-        e,
-        Error::Rejected {
-            reason: RejectReason::Invalid { .. }
-        }
-    )
 }
 
 #[test]

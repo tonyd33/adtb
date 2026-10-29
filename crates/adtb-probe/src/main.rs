@@ -381,7 +381,7 @@ fn probe(args: &Args) -> Result<(String, ExitCode), String> {
 #[expect(
     clippy::print_stdout,
     clippy::print_stderr,
-    reason = "the probe reports on stdout and its usage errors on stderr"
+    reason = "goes if the probe stops being a binary that reports on its streams"
 )]
 fn main() -> ExitCode {
     let args = match Args::parse(std::env::args_os().skip(1)) {

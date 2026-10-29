@@ -2,9 +2,7 @@
 //! pinned version, immutability, supersession at open, leases, retirement and supersession by
 //! command, and their persistence across reopen and crash.
 
-#[expect(dead_code, reason = "this binary uses part of the API helpers")]
-#[path = "support/api.rs"]
-mod api;
+use adtb_simkit::api;
 
 use std::time::Duration;
 
