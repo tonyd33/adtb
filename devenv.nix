@@ -116,7 +116,9 @@ in
     {
       ports.http.allocate = 8081;
       exec = ''
-        "$DEVENV_ROOT/work/tools/docs-site" serve --port ${toString docsPort}
+        "$DEVENV_ROOT/work/tools/docs-site" serve \
+          --port ${toString docsPort} \
+          --hostname 0.0.0.0
       '';
       proxy.hostname = "adtb-docs.localhost";
       ready.http.get = {

@@ -262,11 +262,21 @@ parts).
 - Roles, authentication sources, grants, peer mappings, audit with
   the ledger.
 - Real-process isolation checks under kills and pauses.
+- Client SDKs for TypeScript, Python, Go and Java, plus the existing
+  Rust generator retargeted to the wire. Each SDK has a client for the
+  wire protocol: connect and authenticate, calls, transactions with
+  retry, feeds and errors. It also has a generator that turns a bundle
+  file into typed calls, with ids and ordinals from `adtb-lang`'s
+  `signature` ([design/kernel.md §8](design/kernel.md#8-code-generators)).
+  Each SDK runs the wire parity tests and an end-to-end test against a
+  real server. Embedded bindings for other languages, through a C ABI
+  over the in-process API, come later and are tracked separately.
 - Extend the comparative benchmarks to client/server peers once the
   first authenticated server path passes parity and lifecycle checks.
 
 Exit: the parity tests between the in-process API and the wire pass
-(wire.md §14, embedding.md §11).
+(wire.md §14, embedding.md §11), from the Rust client and from every
+SDK.
 
 ### 11. Replication
 
