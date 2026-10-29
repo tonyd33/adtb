@@ -943,3 +943,133 @@ fn a_merge_refusal_names_the_privilege_role_relation_and_constructors() {
         migrate(&s, MERGE).map(|_| ())
     );
 }
+
+#[test]
+fn a_nest_gives_update_of_the_nesting_field_only_with_retags_between_the_sources() {
+    for grant in [
+        "grant update identities.(Google | Apple) to support",
+        "grant update identities.OAuth to support",
+    ] {
+        let s = applies(&grants(), &format!("module auth\n{grant}"));
+        let s = applies(&s, NEST);
+        let target = if grant.contains("OAuth") {
+            "set OAuth"
+        } else {
+            "(Social)"
+        };
+        assert_eq!(
+            vec![format!(
+                "support update identities {target} frozen [id, user]"
+            )],
+            held(&s),
+            "{grant}"
+        );
+    }
+    let s = applies(
+        &grants(),
+        "module auth\ngrant update identities.(Google | Apple), retag identities.OAuth -> identities.OAuth to support",
+    );
+    let s = applies(&s, NEST);
+    assert_eq!(
+        vec![
+            "support update identities (Social) frozen [Social.login, id, user]",
+            "support retag identities set OAuth -> identities set OAuth",
+        ],
+        held(&s)
+    );
+}
+
+#[test]
+fn a_split_leaves_out_retags_between_its_products_without_update_of_the_routed_fields() {
+    let s = applies(
+        &oauth(),
+        "module auth\ngrant retag identities.OAuth -> identities.(OAuth | EmailPass) to ops",
+    );
+    let after = applies(&s, SPLIT);
+    assert_eq!(
+        vec!["ops retag identities (Apple | Google) -> identities (EmailPass)"],
+        held(&after)
+    );
+    reverts_to(&s, &after);
+    let s = applies(
+        &oauth(),
+        "module auth\ngrant retag identities.OAuth -> identities.(OAuth | EmailPass), update identities.OAuth (provider) to ops",
+    );
+    let s = applies(&s, SPLIT);
+    assert_eq!(
+        vec![
+            "ops retag identities (Apple | Google) -> identities (Apple | EmailPass | Google)",
+            "ops update identities (Apple | Google) listed []",
+        ],
+        held(&s)
+    );
+}
+
+#[test]
+fn a_split_drops_a_retag_within_a_set_that_held_only_its_source() {
+    let s = applies(
+        &oauth(),
+        "module auth\ngrant retag identities.Federated -> identities.Federated to ops",
+    );
+    let after = applies(&s, SPLIT);
+    assert_eq!(Vec::<String>::new(), held(&after));
+    reverts_to(&s, &after);
+    let s = applies(
+        &oauth(),
+        "module auth\ngrant retag identities.Federated -> identities.Federated, update identities.Federated to ops",
+    );
+    let s = applies(&s, SPLIT);
+    assert_eq!(
+        vec![
+            "ops retag identities set Federated -> identities set Federated",
+            "ops update identities set Federated frozen [Apple.sub, Google.gid, id, user]",
+        ],
+        held(&s)
+    );
+}
+
+#[test]
+fn an_unnest_leaves_out_retags_between_its_products_without_update_of_the_nesting_field() {
+    let s = applies(&grants(), NEST);
+    let s = applies(
+        &s,
+        "module auth\ngrant retag identities.Social -> identities.(Social | EmailPass) to ops",
+    );
+    let after = applies(&s, "module auth\nunnest constructor Identity.Social");
+    assert_eq!(
+        vec!["ops retag identities (Apple | Google) -> identities (EmailPass)"],
+        held(&after)
+    );
+    reverts_to(&s, &after);
+    let s = applies(&grants(), NEST);
+    let s = applies(
+        &s,
+        "module auth\ngrant retag identities.Social -> identities.(Social | EmailPass), update identities.Social (login) to ops",
+    );
+    let s = applies(&s, "module auth\nunnest constructor Identity.Social");
+    assert_eq!(
+        vec![
+            "ops retag identities (Apple | Google) -> identities (Apple | EmailPass | Google)",
+            "ops update identities (Apple | Google) listed [Apple.sub, Google.gid]",
+        ],
+        held(&s)
+    );
+}
+
+#[test]
+fn a_refusal_is_stated_once_for_each_role_relation_privilege_and_product() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant retag identities.Google -> identities.Apple, read identities.Google, read identities.Google (gid) to support",
+    );
+    let Err(lines) = migrate(&s, MERGE) else {
+        panic!("the merge applies");
+    };
+    assert_eq!(
+        vec![
+            "the merge of `Google`, `Apple` into `Social` cannot carry the `retag` grant of `support` on `identities`, which does not cover each of them with the same fields; grant `retag` on `identities.Social` to `support` in the same migration",
+            "the merge of `Google`, `Apple` into `Social` cannot carry the `read` grant of `support` on `identities`, which does not cover each of them with the same fields; grant `read` on `identities.Social` to `support` in the same migration",
+        ],
+        lines
+    );
+}

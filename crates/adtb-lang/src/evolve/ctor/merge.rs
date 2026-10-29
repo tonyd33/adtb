@@ -125,7 +125,7 @@ impl Cx<'_> {
             &schema,
             (def, ty),
             (&sources, std::slice::from_ref(&m)),
-            (&reaches, &given, &disc.fields),
+            (&reaches, &given, &disc.fields, &[]),
         );
         self.apply_edits(edits);
         self.retype_products(&schema, def, &sources, std::slice::from_ref(&m))

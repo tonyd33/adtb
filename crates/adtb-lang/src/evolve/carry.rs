@@ -23,6 +23,8 @@ pub(super) struct Carry {
     given: BTreeMap<(u64, String, String), Vec<Option<u64>>>,
     /// The fields of the products that tell which source a row came from.
     discriminators: Vec<String>,
+    /// The fields of the sources whose values the routing reads to choose a row's product.
+    matched: BTreeSet<u64>,
 }
 
 /// A structural operator that carries grants.
@@ -120,6 +122,13 @@ fn targets(p: &Granted) -> Vec<&GrantTarget> {
 }
 
 impl Unstated {
+    fn same(&self, o: &Unstated) -> bool {
+        self.role == o.role
+            && self.relation == o.relation
+            && self.kind == o.kind
+            && self.product == o.product
+    }
+
     /// Returns whether privilege `p` granted to `role`, covering constructors `covered`, states
     /// the grant this one lacks.
     pub(super) fn stated_by(&self, role: &str, p: &Granted, covered: &BTreeSet<u64>) -> bool {
@@ -210,7 +219,7 @@ impl Cx<'_> {
         schema: &Schema,
         (def, ty): (TypeId, &QName),
         (sources, products): (&[String], &[String]),
-        (reaches, given, discriminators): (&Reaches, &Given, &[String]),
+        (reaches, given, discriminators, matched): (&Reaches, &Given, &[String], &[String]),
     ) {
         let td = schema.ty(def);
         let ids = &schema.ids;
@@ -270,6 +279,10 @@ impl Cx<'_> {
                 })
                 .collect(),
             discriminators: discriminators.to_vec(),
+            matched: sources
+                .iter()
+                .flat_map(|s| matched.iter().filter_map(|f| field(s, f)))
+                .collect(),
         });
     }
 }
@@ -285,7 +298,8 @@ struct Carried {
 
 impl Carry {
     /// Returns what target `t`, with fields `fields` for a `read` or `update` and whether it
-    /// covers a merge's discriminator, is carried to.
+    /// may cover a field that tells the sources apart, is carried to: a merge's discriminator
+    /// or a nesting field of several sources.
     ///
     /// A product receives the grant when the target covers every source whose rows go to it,
     /// and every such source the same fields of it: those the routing gives only by carrying
@@ -319,7 +333,7 @@ impl Carry {
                 out.unstated.push((*pid, p.clone()));
                 continue;
             }
-            if let Some((fs, discriminate)) = fields {
+            if let Some((fs, moves)) = fields {
                 if self.what == Structural::Nest && self.partly(&cov, p, fs) {
                     out.unstated.push((*pid, p.clone()));
                     continue;
@@ -341,14 +355,16 @@ impl Carry {
                     out.unstated.push((*pid, p.clone()));
                     continue;
                 }
+                let nested = moves || self.what != Structural::Nest;
                 out.fields.extend(
                     first
                         .iter()
                         .copied()
+                        .filter(|_| nested)
                         .chain(
                             self.discriminators
                                 .iter()
-                                .filter(|_| discriminate)
+                                .filter(|_| moves)
                                 .map(String::as_str),
                         )
                         .filter_map(|g| field_id(p, g)),
@@ -405,6 +421,44 @@ impl Carry {
         }
         let n = self.sources.len();
         pairs.len() == n * n.saturating_sub(1)
+    }
+
+    /// Returns whether a split or unnest carries retag `a -> b` to pairs between two of its
+    /// products, which the source being on both sides gives.
+    fn divides(&self, a: &GrantTarget, b: &GrantTarget) -> bool {
+        matches!(self.what, Structural::Split | Structural::Unnest)
+            && self.products.len() > 1
+            && self
+                .covered(a)
+                .intersection(&self.covered(b))
+                .next()
+                .is_some()
+    }
+
+    /// Returns whether `grants` give `role` `update` on every field the routing reads of each
+    /// source both sides of retag `a -> b` cover.
+    fn updates_routing(
+        &self,
+        grants: &[LogGrant],
+        role: &str,
+        a: &GrantTarget,
+        b: &GrantTarget,
+    ) -> bool {
+        let both: BTreeSet<u64> = self
+            .covered(a)
+            .intersection(&self.covered(b))
+            .copied()
+            .collect();
+        let mut fields = BTreeSet::new();
+        for g in grants.iter().filter(|g| g.role == role) {
+            if let Granted::Update(t, fs) = &g.privilege
+                && t.relation == a.relation
+                && both.is_subset(&self.covered(t))
+            {
+                fields.extend(fs.ids.iter().copied());
+            }
+        }
+        self.matched.is_subset(&fields)
     }
 
     fn unstated(&self, role: &str, relation: u64, kind: Kind, product: (u64, String)) -> Unstated {
@@ -476,16 +530,19 @@ impl Source {
             .filter_map(|p| Some((p.clone(), *ids.get(&format!("ctor {}.{p}", plan.ty))?)))
             .collect();
         let field_id = |p: &str, g: &str| ids.get(&format!("field {}.{p}.{g}", plan.ty)).copied();
-        let mut unstated = Vec::new();
+        let mut unstated: Vec<Unstated> = Vec::new();
         let held = self.grants.clone();
         let mut grants = std::mem::take(&mut self.grants);
-        for g in &mut grants {
+        let mut divided = Vec::new();
+        for (k, g) in grants.iter_mut().enumerate() {
             let kind = Kind::of(&g.privilege);
+            let role = g.role.clone();
             let mut carry = |t: &mut GrantTarget, fields: Option<&mut GrantFields>| {
-                let discriminate = kind == Kind::Read || plan.retags(&held, &g.role, t.relation);
+                let moves = kind == Kind::Read
+                    || (kind == Kind::Update && plan.retags(&held, &role, t.relation));
                 let out = plan.target(
                     t,
-                    fields.as_deref().map(|fs| (fs, discriminate)),
+                    fields.as_deref().map(|fs| (fs, moves)),
                     &products,
                     &field_id,
                 );
@@ -500,13 +557,19 @@ impl Source {
                     fs.ids.dedup();
                 }
                 for p in out.unstated {
-                    unstated.push(plan.unstated(&g.role, t.relation, kind, p));
+                    let u = plan.unstated(&role, t.relation, kind, p);
+                    if !unstated.iter().any(|x| x.same(&u)) {
+                        unstated.push(u);
+                    }
                 }
             };
             match &mut g.privilege {
                 Granted::Read(t, fs) | Granted::Update(t, fs) => carry(t, Some(fs)),
                 Granted::Insert(t) | Granted::Delete(t) => carry(t, None),
                 Granted::Retag(a, b) => {
+                    if plan.divides(a, b) && !plan.updates_routing(&held, &role, a, b) {
+                        divided.push(k);
+                    }
                     carry(a, None);
                     carry(b, None);
                 }
@@ -514,7 +577,64 @@ impl Source {
             }
         }
         self.grants = grants;
-        self.unstated.extend(unstated);
+        let product_ids: BTreeSet<u64> = products.iter().map(|(_, id)| *id).collect();
+        self.divide_retags(&divided, &product_ids);
+        for u in unstated {
+            if !self.unstated.iter().any(|x| x.same(&u)) {
+                self.unstated.push(u);
+            }
+        }
+    }
+
+    /// Replace each retag grant at `at` by retags that leave out every pair of two of
+    /// `products`: one from the constructors outside `products`, and one from those of
+    /// `products` to the constructors outside them.
+    fn divide_retags(&mut self, at: &[usize], products: &BTreeSet<u64>) {
+        if at.is_empty() {
+            return;
+        }
+        let Ok(schema) = self.schema() else {
+            return;
+        };
+        for &k in at.iter().rev() {
+            let g = self.grants.remove(k);
+            let Granted::Retag(a, b) = &g.privilege else {
+                self.grants.insert(k, g);
+                continue;
+            };
+            let from = covered_ctors(&schema, a);
+            let to = covered_ctors(&schema, b);
+            let ctors = |cs: BTreeSet<u64>| GrantTarget {
+                relation: a.relation,
+                sel: GrantSel::Ctors(cs.into_iter().collect()),
+            };
+            let outside: BTreeSet<u64> = from.difference(products).copied().collect();
+            let inside: BTreeSet<u64> = from.intersection(products).copied().collect();
+            let to_outside: BTreeSet<u64> = to.difference(products).copied().collect();
+            let mut parts = Vec::new();
+            if !outside.is_empty() {
+                parts.push(Granted::Retag(ctors(outside), b.clone()));
+            }
+            if !inside.is_empty() && !to_outside.is_empty() {
+                parts.push(Granted::Retag(
+                    ctors(inside),
+                    GrantTarget {
+                        relation: b.relation,
+                        sel: GrantSel::Ctors(to_outside.into_iter().collect()),
+                    },
+                ));
+            }
+            for (j, privilege) in parts.into_iter().enumerate() {
+                self.grants.insert(
+                    k + j,
+                    LogGrant {
+                        role: g.role.clone(),
+                        privilege,
+                        grant_option: g.grant_option,
+                    },
+                );
+            }
+        }
     }
 
     /// Give the fields of new constructor `c` of type `t` of module `m` to each grant without a

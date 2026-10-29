@@ -1247,6 +1247,35 @@ impl ArmBinding {
     }
 }
 
+/// Returns the fields of the matched row that routing arms `arms` read to choose an arm: those
+/// a pattern constrains, and every one of `fields` when an arm has a guard.
+pub(super) fn matched_fields(arms: &[ast::Arm], fields: &[String]) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    for a in arms {
+        if a.guard.is_some() {
+            out.extend(fields.iter().cloned());
+        }
+        for p in &a.patterns {
+            if let ast::PatternKind::Ctor {
+                payload: Some(ast::Payload::Record(fs)),
+                ..
+            } = &p.kind
+            {
+                out.extend(
+                    fs.iter()
+                        .filter(|f| {
+                            f.pattern
+                                .as_ref()
+                                .is_some_and(|x| !matches!(x.kind, ast::PatternKind::Bind(_)))
+                        })
+                        .map(|f| f.field.text.clone()),
+                );
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
 /// Returns the constructor fill arm `a` matches, and the field of it its value is whole.
 pub(super) fn fill_image(a: &ast::Arm) -> (Option<String>, Option<String>) {
     let b = ArmBinding::of(a);

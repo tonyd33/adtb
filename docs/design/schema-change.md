@@ -412,11 +412,18 @@ After each operator, `grants` holds:
   product's sources: the product, when it covers every source whose
   rows go to the product, with the product's fields that each such
   source's routing gives only by carrying whole a field the grant
-  covers, the same fields from each source. A merge's discriminator
-  is covered by a `read` grant, and by an `update` grant only when the
-  role holds `retag` between every ordered pair of the sources. A
-  nesting field is carried from every field of its source; each field
-  of an unnested product is carried from the nesting field.
+  covers, the same fields from each source. A merge's discriminator,
+  and the nesting field of a nest of several sources, is covered by a
+  `read` grant, and by an `update` grant only when the role holds
+  `retag` between every ordered pair of the sources. A nesting field is
+  carried from every field of its source; each field of an unnested
+  product is carried from the nesting field.
+- Across a split or unnest, a `retag` grant whose two sides both cover
+  the source, without the role holding `update` on every field of the
+  source the routing reads (the nesting field, for an unnest): retags
+  from the constructors outside the products to the second side, and
+  from the products to the second side's constructors outside them.
+  It holds no pair between two products.
 - For `move field T.f to T.(C | D)`, each grant on `f` on the field of
   each listed constructor it covers instead.
 - For `move field T.C.f to T fill e`, the header field on each grant
@@ -424,9 +431,9 @@ After each operator, `grants` holds:
   a field the grant covers, carried whole; no other grant holds it.
 - After `revert n`, the grants each inverted operator found. Each
   operator's inverse first removes the grants the operator added,
-  named by path, and after its structural inverse restores the grants
-  the operator removed, an object the inverse makes again named by its
-  new id.
+  naming each object as it was after the operator, and after its
+  structural inverse restores the grants the operator removed, an
+  object the inverse makes again named by its new id.
 
 A migration is refused while a structural operator leaves a grant
 covering some but not all of a product's sources, or covering them

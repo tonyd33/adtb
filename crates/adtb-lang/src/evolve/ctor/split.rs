@@ -136,7 +136,12 @@ impl Cx<'_> {
             &schema,
             (def, &path.ty),
             (std::slice::from_ref(&source), &products),
-            (&routed.0, &routed.1, &[]),
+            (
+                &routed.0,
+                &routed.1,
+                &[],
+                &matched_fields(arms, &td_fields(&schema, def, c)),
+            ),
         );
         self.apply_edits(edits);
         self.retype_products(&schema, def, std::slice::from_ref(&source), &products)
@@ -375,7 +380,7 @@ impl Cx<'_> {
             &schema,
             (def, ty),
             (&sources, std::slice::from_ref(&n)),
-            (&reaches, &given, &[]),
+            (&reaches, &given, &[], &[]),
         );
         self.apply_edits(edits);
         Ok(())
@@ -530,9 +535,18 @@ impl Cx<'_> {
             &schema,
             (def, &path.ty),
             (std::slice::from_ref(&n), &products),
-            (&reaches, &given, &[]),
+            (&reaches, &given, &[], std::slice::from_ref(&field.name)),
         );
         self.apply_edits(edits);
         Ok(())
     }
+}
+
+/// Returns the names of the fields of constructor `c` of type `def`.
+fn td_fields(schema: &Schema, def: TypeId, c: u32) -> Vec<String> {
+    schema.ty(def).ctors()[c as usize]
+        .fields
+        .iter()
+        .map(|f| f.name.clone())
+        .collect()
 }
