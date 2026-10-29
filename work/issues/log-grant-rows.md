@@ -31,3 +31,20 @@ Audit, local: work/briefs/report-authority-next-audit.md, "Sequenced remainder" 
 ## 2026-10-29: lead ruling on dormant activation
 
 Implemented in log-grant-rows (de970900, 33cfc45e, 50a52062); contract in docs/design/schema-change.md 1.1 "Grant rows". Ruling: creating a role never activates a dormant Log grant naming it. A grant operator in a later migration that names the now existing role and the same privilege clears the dormant mark on that row, keeping its id; it is an explicit act of a role holding `schema`, not a silent activation. spec-revision: catalog.md section 2 should state this and the `target` text form of a carried grant (current names, `frozen` field lists, `except` retag pairs), which "as written" no longer describes.
+
+## 2026-10-29: review blocks ed39a084
+
+Fresh review (work/briefs/review-log-grant-rows.md, local): ids, row ownership, open matching and target round trip hold. Three blockers, one cause: dormancy lives only in the row. Lead rulings:
+
+- B1: a grant operator that merges into an existing (dormant) entry skips the missing-role check. Every grant operator of a native migration names an existing role or the migration is refused, merges included. A revoke may name a missing role, so dormant rows can be removed.
+- B2: a prune merge keeps the first entry's row, deleting an active row in favour of a dormant one. A merged entry is active if any merged entry is, and keeps an active entry's row id.
+- B3: reverting a revoke puts the grant back active. Dormancy is part of `Source` grant state (outside the schema hash), so every inverse restores it exactly; reverting the migration whose regrant cleared dormancy makes the row dormant again.
+- An unlisted regrant whose frozen field set differs is a different privilege: a new active row, the dormant one unchanged.
+- Verify with a witness: a first open that both creates the counters page and runs a migration making a populated relation `generate sequence`; a colliding first generated insert blocks.
+- Non-blocking: dormant rows found at open are not reported (`api/mod.rs` drops `record_grants`'s result); `Catalog::replay` has no engine caller; `Source::restated` beside `unstated` (grant-carry-follow-ups); docs line that a fresh database cannot open a log granting to any role but the owner.
+
+## 2026-10-29: second review blocks 28fc0337
+
+B1 to B3 hold in principle; the constructor-10 roots row is atomic with the grant rows and outside the hash (work/briefs/review-log-grant-rows2.md, local). Branch check on 28fc0337 passed (root 2789, campaign 47).
+
+- R1: a prune merge ORs a dormant entry's grant option into the active row it keeps. Ruling: a grant option held only while dormant never becomes active. A prune merge of active and dormant entries takes the option from the active entries only; an activating regrant gives the row the regrant's own option, not the dormant entry's.
