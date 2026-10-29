@@ -68,3 +68,19 @@ Landed as 7d7aa7d5 after review fixes; the main check passed on b241565d. Slice 
 ## 2026-10-29: result/task slice dispatched
 
 A fresh writer owns slice 3 of design server.md section 5.2, result/task ownership, plus the items carried from resumable-calls-follow-ups, in workspace server-results on main d8d9c197. It writes a plan first (work/briefs/plan-server-results.md, local): task and result handle signatures over `Scheduler::admit`, where the executor materializes today and the smallest change that stops production at a bounded handoff, capacity accounting, the cancel/commit ordering, tests, and open questions with recommendations. The lead rules on the plan before implementation; rulings are recorded here. Out of scope: interactive registry, transport. Gates: targeted adtb and adtb-sim tests with simulator and real-thread cases, clippy, fmt, house-check, size-check; the lead runs the full check.
+
+## 2026-10-29: lead rulings on the result/task plan
+
+Plan: work/briefs/plan-server-results.md (local). Rulings, by the plan's question numbers:
+
+- Q1: a streamed set result keeps the set of sent elements, charged to the call's grant. A planner distinctness fact that removes it is later work.
+- Q2: only single-item read-only calls whose root is a `Set` query stream; every other call is formed whole and handed out in batches as capacity allows.
+- Q3: the engine starts its scheduler lazily on the first task submit; the embedded facade never starts it.
+- Q4: a streamed read commits its read-only transaction at drain acknowledgement, or releases it on drop or cancel; `Read.snapshot` is its snapshot position.
+- Q5: supplied capacity is additive bytes, zero at first, not restored when a batch is released.
+- Q6: rerun time is excluded from the statement limit: earlier statements rerun without the limit (still under deadline and cancel), and the suspended statement's start shifts by the rerun's duration, so a suspended call and a blocking call reach the limit alike. Stated in docs/design/mvcc.md with a test. This replaces the stricter rule landed in 2f2c2f61.
+- Q7: `Refusal::Overloaded` maps to `Retry { reason: Overloaded }`; `Refusal::TooLarge` to `Rejected { reason: StatementLimit { limit: Memory { bytes } } }`, `bytes` the admission byte bound; both `ShutDown`s to `Closed`. The TooLarge mapping is filed for the spec in spec-admission-too-large.
+- Q8: the queue key is the priority class (the bundle's, `AdHoc` for text), then the call's `u8` priority within that class, higher first (wire.md 5.1), then transaction start. The `u8` never changes the class.
+- Q9: ad hoc commands run within one step as today; recorded as deferred.
+- Q10: write/stream.rs and the write/mod.rs changes are in this track; or-patterns owns only write/eval.rs there.
+- Q11: no owner fallback. A task submitted under any role other than the embedded owner is refused with `Denied` until role-backed execution lands; the owner's session runs as today.
