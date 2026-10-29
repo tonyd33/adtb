@@ -194,3 +194,16 @@ Remaining, in order:
 5. Rerun strict adtb-lang clippy, fmt, house and size.
 6. Run one frozen full branch check.
 Then a fresh independent review, the lead's landing, and a main check. Local brief: work/briefs/brief-permission-successor.md.
+
+## 2026-10-28: successor frozen; lead ruling on matching an upsert's old row
+
+The successor froze 73e5750339f374fd344d5f197f1ac475739c072c on main 27b77539:
+- Full check passed: root 2481 passed, 8 skipped; campaign 47 passed, 1 skipped.
+- adtb-lang 718/718 and permission 43/43 passed. Strict adtb-lang clippy, fmt, house-check and size-check passed.
+- The update-over-fix test passes unchanged.
+- write::parallel overcharged a failing upsert branch, as suspected; confirmed with a paired witness and fixed.
+- Receipt work/briefs/receipt-permission-successor.md (local); log target/check-frozen.log in the workspace.
+
+Ruling: a `match` on an upsert's `old` binder charges ReadConstructor on every constructor its arms name, as ranging over those constructors would. Which arm runs is observable through the write, the result or a failure, so it reveals old's constructor. The implicit conflict lookup charges nothing by itself only because it reveals no more than a uniqueness refusal would, and a constructor test reveals more. This applies the existing rule that a role's matches range only over the constructors it is granted; no new normative behaviour. The frozen test upsert_constructor_arms_charge_only_their_own_edges pins the opposite and must change: keep its retag-edge assertions and add the ReadConstructor requirements.
+
+Next: a fresh writer applies the ruling with paired tests; then one full branch check, a fresh independent review, landing and a main check.
