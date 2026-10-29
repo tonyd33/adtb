@@ -178,18 +178,20 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         if self.read_only && p.writes {
             return Err(Error::invalid("a read-only transaction does not write"));
         }
-        let rows = self.run(&p, opts)?;
+        let rows = self.run(&p, opts, || {})?;
         self.temps = Some(p.schema().clone());
         Ok(rows)
     }
 
     /// Run the items of `p` as one call of the transaction under `opts` and the transaction's
     /// own deadline and limit. Returns the rows of each item that yields a result, in item
-    /// order.
+    /// order. Invoke `on_ready` once after checking the open engine, transaction and call options,
+    /// while holding the engine open and before beginning execution.
     pub(super) fn run(
         &mut self,
         p: &Prepared,
         opts: &TxnCallOptions,
+        on_ready: impl FnOnce(),
     ) -> Result<Vec<DynRows>, Error> {
         let e = self.engine;
         let _open = e.enter()?;
@@ -209,6 +211,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             limit: self.limit,
         });
         stops.check(&e.rt)?;
+        on_ready();
         let bounds = stops.bounds(&e.rt, opts.fix_rounds);
         let (err, ends) = match e.statements(self.id, tx, p, &mut self.local, bounds) {
             Ok(rows) => return Ok(rows),

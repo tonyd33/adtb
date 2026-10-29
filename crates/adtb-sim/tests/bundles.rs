@@ -1305,3 +1305,408 @@ fn a_crash_during_an_open_with_bundles_reopens_to_the_bundle_recorded_or_not_at_
         "a later event reopens to an earlier state: {seen:?}"
     );
 }
+
+#[test]
+fn admission_refused_arity_does_not_renew_the_lease() {
+    once(60, |rt| {
+        let db = opened(
+            &rt,
+            &[V1],
+            vec![bundle("web-1.0", &[V1], " lease 1d", NAMES)],
+        );
+        let web = db.registered("web-1.0").expect("web binds");
+        let renewed = || query(&db, "from b in catalog::bundles select b.renewed");
+        let before = renewed();
+        sleep(&rt, 4 * HOUR);
+        let got = web.call(1, &[Value::Int(1)], &CallOptions::default());
+        assert!(
+            matches!(
+                got,
+                Err(Error::Rejected {
+                    reason: RejectReason::Invalid { .. }
+                })
+            ),
+            "{got:?}"
+        );
+        assert_eq!(before, renewed(), "a refused call writes no renewal");
+    });
+}
+
+#[test]
+fn admission_principal_ordinal_and_argument_refusals_leave_renewal_unchanged() {
+    once(61, |rt| {
+        let db = opened(
+            &rt,
+            &[V1],
+            vec![bundle("web-1.0", &[V1], " lease 1d", NAMES)],
+        );
+        let web = db.registered("web-1.0").expect("web binds");
+        let renewed = || query(&db, "from b in catalog::bundles select b.renewed");
+        let before = renewed();
+        sleep(&rt, 4 * HOUR);
+        for ordinal in [0, 3, u32::MAX] {
+            let got = web.call(ordinal, &[], &CallOptions::default());
+            assert!(
+                matches!(
+                    got,
+                    Err(Error::Rejected {
+                        reason: RejectReason::UnknownQuery
+                    })
+                ),
+                "{got:?}"
+            );
+            assert_eq!(
+                before,
+                renewed(),
+                "unknown ordinal {ordinal} writes no renewal"
+            );
+        }
+        let service = db
+            .schema()
+            .ty(db.schema().principal)
+            .ctor_index("Service")
+            .expect("Service exists");
+        for (assertion, denied) in [
+            (Value::Int(1), false),
+            (Value::ctor(service, vec![Value::text("owner")]), true),
+        ] {
+            let opts = CallOptions {
+                assert: Some(assertion),
+                ..CallOptions::default()
+            };
+            let got = web.call(1, &[], &opts);
+            assert!(
+                matches!(
+                    got,
+                    Err(Error::Rejected {
+                        reason: RejectReason::Denied { .. }
+                    })
+                ) == denied,
+                "{got:?}"
+            );
+            if !denied {
+                assert!(
+                    matches!(
+                        got,
+                        Err(Error::Rejected {
+                            reason: RejectReason::Invalid { .. }
+                        })
+                    ),
+                    "{got:?}"
+                );
+            }
+            assert_eq!(before, renewed(), "a refused principal writes no renewal");
+        }
+        let got = web.call_arrow(1, &[Value::Int(1)], &CallOptions::default());
+        assert!(
+            matches!(
+                got,
+                Err(Error::Rejected {
+                    reason: RejectReason::Invalid { .. }
+                })
+            ),
+            "{got:?}"
+        );
+        assert_eq!(before, renewed(), "a refused Arrow call writes no renewal");
+        let got = web.call_arrow(2, &[Value::Int(1)], &CallOptions::default());
+        assert!(
+            matches!(
+                got,
+                Err(Error::Rejected {
+                    reason: RejectReason::Invalid { .. }
+                })
+            ),
+            "{got:?}"
+        );
+        assert_eq!(before, renewed(), "a refused value writes no renewal");
+        assert!(query(&db, "from u in auth::users select u.name").is_empty());
+        web.call(1, &[], &CallOptions::default())
+            .expect("a valid call runs");
+        assert_ne!(before, renewed(), "a valid call renews the same handle");
+    });
+}
+
+#[test]
+fn admission_interactive_refusals_leave_renewal_and_transaction_usable() {
+    once(62, |rt| {
+        let db = opened(
+            &rt,
+            &[V1],
+            vec![bundle("web-1.0", &[V1], " lease 1d", NAMES)],
+        );
+        let web = db.registered("web-1.0").expect("web binds");
+        let renewed = || query(&db, "from b in catalog::bundles select b.renewed");
+        let before = renewed();
+        sleep(&rt, 4 * HOUR);
+        let mut t = db
+            .begin(&adtb::TxnOptions {
+                read_only: true,
+                ..adtb::TxnOptions::default()
+            })
+            .expect("begin read-only");
+        for (ordinal, args) in [
+            (1, vec![Value::Int(1)]),
+            (2, vec![Value::Int(1)]),
+            (2, vec![Value::text("ann")]),
+        ] {
+            let got = t.call(&web, ordinal, &args, &adtb::TxnCallOptions::default());
+            assert!(
+                matches!(
+                    got,
+                    Err(Error::Rejected {
+                        reason: RejectReason::Invalid { .. }
+                    })
+                ),
+                "{got:?}"
+            );
+            assert_eq!(
+                before,
+                renewed(),
+                "a refused interactive call writes no renewal"
+            );
+        }
+        assert!(query(&db, "from u in auth::users select u.name").is_empty());
+        let got = t
+            .call(&web, 1, &[], &adtb::TxnCallOptions::default())
+            .expect("a refused call leaves the transaction usable");
+        let adtb::InTxn::Rows(rows) = got else {
+            panic!("names returns rows")
+        };
+        assert!(printed(rows).is_empty());
+        assert_ne!(before, renewed(), "a valid interactive call renews");
+        t.commit(None).expect("the transaction commits");
+    });
+}
+
+fn admission_options_refusal(opts: &CallOptions, expected: &RejectReason) {
+    once(63, |rt| {
+        let db = opened(
+            &rt,
+            &[V1],
+            vec![bundle("web-1.0", &[V1], " lease 1d", NAMES)],
+        );
+        let web = db.registered("web-1.0").expect("web binds");
+        let renewed = || query(&db, "from b in catalog::bundles select b.renewed");
+        let before = renewed();
+        sleep(&rt, 4 * HOUR);
+        let got = web.call(2, &[Value::text("refused")], opts);
+        assert_eq!(Some(expected), got.as_ref().err().map(reason), "{got:?}");
+        assert_eq!(before, renewed(), "a refused call option writes no renewal");
+        let got = web.call_arrow(2, &[Value::text("refused")], opts);
+        assert_eq!(Some(expected), got.as_ref().err().map(reason), "{got:?}");
+        assert_eq!(
+            before,
+            renewed(),
+            "a refused Arrow option writes no renewal"
+        );
+        assert!(query(&db, "from u in auth::users select u.name").is_empty());
+        web.call(1, &[], &CallOptions::default())
+            .expect("valid call runs");
+        assert_ne!(before, renewed(), "valid call renews");
+    });
+}
+
+#[test]
+fn admission_cancelled_call_does_not_renew() {
+    let token = adtb::CancelToken::new();
+    token.cancel();
+    admission_options_refusal(
+        &CallOptions {
+            cancel: Some(token),
+            ..CallOptions::default()
+        },
+        &RejectReason::Cancelled,
+    );
+}
+
+#[test]
+fn admission_expired_deadline_does_not_renew() {
+    admission_options_refusal(
+        &CallOptions {
+            deadline: Some(std::time::SystemTime::UNIX_EPOCH),
+            ..CallOptions::default()
+        },
+        &RejectReason::DeadlineExceeded,
+    );
+}
+
+#[test]
+fn admission_invalid_bookmark_does_not_renew() {
+    let position = adtb::Position {
+        epoch: u32::MAX,
+        lsn: u64::MAX,
+    };
+    admission_options_refusal(
+        &CallOptions {
+            after: Some(position),
+            ..CallOptions::default()
+        },
+        &RejectReason::PositionNotOnHistory { position },
+    );
+}
+
+#[test]
+fn admission_interactive_stops_do_not_renew() {
+    once(64, |rt| {
+        let db = opened(
+            &rt,
+            &[V1],
+            vec![bundle("web-1.0", &[V1], " lease 1d", NAMES)],
+        );
+        let web = db.registered("web-1.0").expect("web binds");
+        let renewed = || query(&db, "from b in catalog::bundles select b.renewed");
+        let before = renewed();
+        let mut t = db.begin(&adtb::TxnOptions::default()).expect("begin");
+        sleep(&rt, 4 * HOUR);
+        let token = adtb::CancelToken::new();
+        token.cancel();
+        for (opts, expected) in [
+            (
+                adtb::TxnCallOptions {
+                    cancel: Some(token),
+                    ..adtb::TxnCallOptions::default()
+                },
+                RejectReason::Cancelled,
+            ),
+            (
+                adtb::TxnCallOptions {
+                    deadline: Some(rt.wall()),
+                    ..adtb::TxnCallOptions::default()
+                },
+                RejectReason::DeadlineExceeded,
+            ),
+        ] {
+            let got = t.call(&web, 2, &[Value::text("refused")], &opts);
+            assert_eq!(Some(&expected), got.as_ref().err().map(reason), "{got:?}");
+            assert_eq!(
+                before,
+                renewed(),
+                "a refused interactive option writes no renewal"
+            );
+        }
+        let got = t
+            .call(&web, 1, &[], &adtb::TxnCallOptions::default())
+            .expect("a stopped call leaves the transaction open");
+        let adtb::InTxn::Rows(rows) = got else {
+            panic!("names returns rows")
+        };
+        assert!(printed(rows).is_empty());
+        assert_ne!(before, renewed(), "a valid call renews");
+        t.commit(None).expect("commit");
+    });
+}
+
+#[test]
+fn admission_expired_transaction_does_not_renew() {
+    once(65, |rt| {
+        let db = opened(
+            &rt,
+            &[V1],
+            vec![bundle("web-1.0", &[V1], " lease 1d", NAMES)],
+        );
+        let web = db.registered("web-1.0").expect("web binds");
+        let renewed = || query(&db, "from b in catalog::bundles select b.renewed");
+        let before = renewed();
+        let mut t = db
+            .begin(&adtb::TxnOptions {
+                deadline: Some(rt.wall() + HOUR),
+                ..adtb::TxnOptions::default()
+            })
+            .expect("begin");
+        sleep(&rt, 4 * HOUR);
+        let got = t.call(
+            &web,
+            2,
+            &[Value::text("refused")],
+            &adtb::TxnCallOptions::default(),
+        );
+        assert_eq!(
+            Some(&RejectReason::DeadlineExceeded),
+            got.as_ref().err().map(reason),
+            "{got:?}"
+        );
+        assert_eq!(
+            before,
+            renewed(),
+            "an expired transaction writes no renewal"
+        );
+        assert!(query(&db, "from u in auth::users select u.name").is_empty());
+        t.rollback().expect("rollback");
+    });
+}
+
+#[test]
+fn admission_ended_transaction_does_not_renew() {
+    once(66, |rt| {
+        let db = opened(
+            &rt,
+            &[V1],
+            vec![bundle("web-1.0", &[V1], " lease 1d", NAMES)],
+        );
+        let web = db.registered("web-1.0").expect("web binds");
+        web.call(2, &[Value::text("first")], &CallOptions::default())
+            .expect("seed a row");
+        let renewed = || query(&db, "from b in catalog::bundles select b.renewed");
+        let before = renewed();
+        let mut t = db.begin(&adtb::TxnOptions::default()).expect("begin");
+        let updated = db
+            .query_text(
+                r#"update u in auth::users set auth::User { u with name: "new" }"#,
+                &[],
+                &CallOptions::default(),
+            )
+            .expect("the concurrent writer commits");
+        assert!(updated.is_empty(), "an update returns no result");
+        let failed = t
+            .query_text(
+                r#"update u in auth::users set auth::User { u with name: "old" }"#,
+                &[],
+                &adtb::TxnCallOptions::default(),
+            )
+            .expect_err("the old writer fails serialization");
+        assert!(
+            matches!(
+                failed,
+                Error::Retry {
+                    reason: adtb::RetryReason::Serialization { .. }
+                }
+            ),
+            "{failed:?}"
+        );
+        sleep(&rt, 4 * HOUR);
+        let got = t.call(&web, 1, &[], &adtb::TxnCallOptions::default());
+        assert_eq!(
+            Some(&failed),
+            got.as_ref().err(),
+            "the transaction retains its original error"
+        );
+        assert_eq!(before, renewed(), "an ended transaction writes no renewal");
+        assert_eq!(
+            vec![r#""new""#],
+            query(&db, "from u in auth::users select u.name")
+        );
+        t.rollback().expect("rollback");
+    });
+}
+
+#[test]
+fn admission_closed_database_refuses_interactive_call_before_renewal() {
+    once(67, |rt| {
+        let db = opened(
+            &rt,
+            &[V1],
+            vec![bundle("web-1.0", &[V1], " lease 1d", NAMES)],
+        );
+        let web = db.registered("web-1.0").expect("web binds");
+        let mut t = db.begin(&adtb::TxnOptions::default()).expect("begin");
+        sleep(&rt, 4 * HOUR);
+        db.clone().close().expect("close the database");
+        let got = t.call(&web, 1, &[], &adtb::TxnCallOptions::default());
+        assert_eq!(
+            Some(&RejectReason::Closed),
+            got.as_ref().err().map(reason),
+            "{got:?}"
+        );
+        t.rollback().expect("rollback after close");
+    });
+}

@@ -683,10 +683,14 @@ impl<R: Runtime> Registered<R> {
     pub fn call(&self, ordinal: u32, args: &[Val], opts: &CallOptions) -> Result<Called, Error> {
         let e = self.engine()?;
         let _open = e.enter()?;
-        let entry = self.entry(&e, ordinal)?;
-        let caller = e.principal(opts.assert.as_ref())?;
-        let p = prepared(self.checked(), entry, args, caller)?;
-        let done = e.call(&p, opts)?;
+        let (entry, p, due) = self.admitted(&e, ordinal, args, false, || {
+            e.principal(opts.assert.as_ref())
+        })?;
+        let done = e.call(&p, opts, || {
+            if due {
+                e.renew(&self.checked.name);
+            }
+        })?;
         let value = one(&e, entry, done.value);
         Ok(match entry.kind {
             Callable::Txn => Called::Committed(Committed {
@@ -723,10 +727,14 @@ impl<R: Runtime> Registered<R> {
         self.engine.upgrade().ok_or_else(Error::closed)
     }
 
-    /// Returns the callable `ordinal`, refusing a call of a bundle that is retired, superseded
-    /// or expired and a call of a bundle pinned before the version the database is at, and
-    /// renewing the lease of one it does not refuse in `e` when a renewal is due.
-    fn entry(&self, e: &Engine<R>, ordinal: u32) -> Result<&Entry, Error> {
+    fn admitted(
+        &self,
+        e: &Engine<R>,
+        ordinal: u32,
+        args: &[Val],
+        read_only: bool,
+        caller: impl FnOnce() -> Result<Val, Error>,
+    ) -> Result<(&Entry, Prepared, bool), Error> {
         let checked = self.checked();
         let entry = usize::try_from(ordinal)
             .ok()
@@ -741,10 +749,13 @@ impl<R: Runtime> Registered<R> {
                     .into(),
             }));
         }
-        if due {
-            e.renew(&checked.name);
+        let caller = caller()?;
+        arguments(checked, entry, args)?;
+        if read_only && entry.writes {
+            return Err(Error::invalid("a read-only transaction does not write"));
         }
-        Ok(entry)
+        let p = prepared(checked, entry, args, caller);
+        Ok((entry, p, due))
     }
 }
 
@@ -767,12 +778,16 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
                 "a registration calls only in a transaction of its own database",
             ));
         }
-        let entry = reg.entry(self.engine, ordinal)?;
-        let p = prepared(reg.checked(), entry, args, self.caller.clone())?;
-        if self.read_only && p.writes {
-            return Err(Error::invalid("a read-only transaction does not write"));
-        }
-        let value = one(self.engine, entry, self.run(&p, opts)?);
+        let (entry, p, due) = reg.admitted(self.engine, ordinal, args, self.read_only, || {
+            Ok(self.caller.clone())
+        })?;
+        let e = self.engine;
+        let rows = self.run(&p, opts, || {
+            if due {
+                e.renew(&reg.checked.name);
+            }
+        })?;
+        let value = one(e, entry, rows);
         Ok(match entry.kind {
             Callable::Txn => InTxn::Pending(value),
             Callable::Query | Callable::Fn => InTxn::Rows(value),
@@ -780,13 +795,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     }
 }
 
-/// Returns the call of `entry` with `args` for `caller`.
-fn prepared(
-    checked: &Checked,
-    entry: &Entry,
-    args: &[Val],
-    caller: Val,
-) -> Result<Prepared, Error> {
+fn arguments(checked: &Checked, entry: &Entry, args: &[Val]) -> Result<(), Error> {
     if args.len() != entry.params.len() {
         return Err(Error::invalid(format!(
             "`{}` takes {} arguments, not {}",
@@ -795,6 +804,20 @@ fn prepared(
             args.len()
         )));
     }
+    for (i, (ty, value)) in entry.types.iter().zip(args).enumerate() {
+        if !super::value::valid(&checked.schema, ty, value) {
+            return Err(Error::invalid(format!(
+                "argument {} of `{}` is not a value of its declared parameter type",
+                i + 1,
+                entry.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Returns the call of `entry` with `args` for `caller`.
+fn prepared(checked: &Checked, entry: &Entry, args: &[Val], caller: Val) -> Prepared {
     let mut params: Vec<(Var, Val)> = entry
         .params
         .iter()
@@ -802,7 +825,7 @@ fn prepared(
         .filter_map(|(x, v)| x.map(|x| (x, v.clone())))
         .collect();
     params.extend(entry.unit.map(|u| (u, Val::record(Vec::new()))));
-    Ok(Prepared {
+    Prepared {
         schema: checked.schema.clone(),
         terms: entry.terms.clone(),
         items: vec![entry.body],
@@ -812,7 +835,7 @@ fn prepared(
         writes: entry.writes,
         retry: entry.retry,
         deferrable: false,
-    })
+    }
 }
 
 /// Returns the one result of a call of `entry` among `rows`, the rows of its one item.

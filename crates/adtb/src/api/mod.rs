@@ -331,7 +331,7 @@ impl<R: Runtime> Database<R> {
         let _open = e.enter()?;
         let caller = e.principal(opts.assert.as_ref())?;
         let p = Prepared::new(&e.schema, &e.program, &e.bundles, text, params, caller)?;
-        e.call(&p, opts).map(|done| done.value)
+        e.call(&p, opts, || {}).map(|done| done.value)
     }
 
     /// Close the database once every running call has returned: write every changed page, take
@@ -659,10 +659,17 @@ impl<R: Runtime> Engine<R> {
     ///
     /// A call whose token is cancelled, or whose deadline passes, before it commits fails with
     /// `Cancelled` or `DeadlineExceeded` and has no effect.
-    fn call(&self, p: &Prepared, opts: &CallOptions) -> Result<Committed<Vec<DynRows>>, Error> {
+    /// Invoke `on_ready` once after checking the call options, before beginning execution.
+    fn call(
+        &self,
+        p: &Prepared,
+        opts: &CallOptions,
+        on_ready: impl FnOnce(),
+    ) -> Result<Committed<Vec<DynRows>>, Error> {
         let stops = opts.stops();
         stops.check(&self.rt)?;
         self.reads_after(opts.after)?;
+        on_ready();
         let bounds = stops.bounds(&self.rt, opts.fix_rounds);
         if !p.writes {
             let id = self.txn_id();
