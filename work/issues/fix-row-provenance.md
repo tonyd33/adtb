@@ -67,3 +67,23 @@ under2s by default. Record exact source/config inputs, commands/exits/logs/timin
 and incomplete scopes. Landing manual -> campaign -> this repair -> permissions;
 rebase before final branch acceptance. No feature implementation overlaps its
 checker writes; completed app/docs sources are disjoint. Root schedules builds.
+
+## 2026-10-28: main-based executable baseline confirmed
+
+Fresh worker rebased tests-only fixture onto verified87527a90. Exact tests-only
+f6660a304bea5f4911d77d9f9dccdadefaf8f3d3 fails focused lang nextest exit100
+with original Set Row holds none refusal (0.007s); no production edit preceded
+this run. Retained target/provenance-baseline-corrected.log and tests-only patch
+in adtb-fix-row-provenance. Initial baseline fixture mistakenly appended a second
+module to RUNNING; separate original provenance-baseline.log retained. The
+corrected standalone exact app schema produced the actual checker defect.
+
+Agreed repair direction: private finite Empty/Relation/Unknown result provenance,
+shared ordinary transfer rules; precheck companion solves recursive seed origins
+because key x needs an origin before ordinary checking. Companion analyzes only
+result flow, exhaustively handles AST and conservatively refuses unknown results.
+Install stable origins into existing recursive binder checking. Final checked
+body remains authority for fix Out.rows; no companion override of existing
+key-preservation/snapshot/write-produced veto. Private Empty term/variable
+metadata distinguishes absence from unknown without changing public Out.rows.
+Full acceptance/review still pending; no source fix or passing claim yet.
