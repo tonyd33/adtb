@@ -233,3 +233,7 @@ Also fixed in the same track:
 - N3: test gaps for top/present take and after, at, try, key-of, transitions, and deref through a restricted key.
 
 The precision gaps N4, N5 and N6 are in permission-provider-follow-ups. Everything else on the review list held. house-check passed.
+
+## 2026-10-28: interrupted by a machine crash
+
+The review-fix writer froze 68a9625decead714aa953e55e66acac77d6b4f35 (from 34e5e03f, main 27b77539) and started its full check. The machine crashed during that check (log target/check-fixes.log stops after clippy), and the writer's receipt was lost; its handoff work/briefs/handoff-permission-review-fixes.md (local) survived. The lead reruns the full check on 68a9625d, and a fresh reviewer reads 34e5e03f..68a9625d without builds.

@@ -18,6 +18,9 @@ Keep your context for rulings, briefs and review. Agents write the code.
   creation alone does not grant worker access. Obtain required approval or
   provision access before implementation; report permission wait as blocked,
   not as a tool failure.
+- Run at most one full `check` on the machine at a time. `suite` locks
+  only the tests, and two concurrent checks have exhausted the machine.
+  While a check runs, tell agents to build with `CARGO_BUILD_JOBS=6`.
 - Before starting a track, list the files the running tracks change. A
   track that changes a shared signature (pager, heap or B-link tree calls)
   does not run beside tracks that call it: land it first and branch the

@@ -18,3 +18,7 @@ tags:
 ## 2026-10-28: dispatched
 
 A fresh writer owns this in workspace pending-unique, on main cd020ae0, beside permission-successor (adtb-lang) and the other new track. Local brief: work/briefs/brief-pending-unique.md.
+
+## 2026-10-28: interrupted by a machine crash
+
+The writer had started its full check (target/check-pending-unique.log stops after clippy) when the machine crashed. It left no receipt or handoff. The draft is uncommitted in workspace pending-unique at 30bb1467 (6 files, about 675 lines added), unverified. A fresh writer verifies and finishes it with capped build jobs and no full check; the lead runs the full check after.
