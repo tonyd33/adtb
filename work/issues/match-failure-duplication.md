@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 240
 summary: "a guarded match arm that also tests a literal or field copies its failure continuation, so normalising a write match is exponential in arms (22 arms time out)"
+branch: match-retest
 ---
 
 # Bug: a guarded arm copies its match failure continuation
@@ -34,3 +35,7 @@ Question `lang/patterns/failure-sharing` (work/research/questions/lang/patterns/
 ## 2026-10-29: ruled
 
 The user confirmed proposed point match-failure-retest; it is adopted into `current` (question lang/patterns/failure-sharing, option retest). Each arm lowers to `If(test, body, F)` with the pattern's tests and guard as one short-circuit condition and the body retesting the scrutinee, `Unreachable` on excluded constructors; the guard is checked under its own binder variables; kernel.md restates `Unreachable` as a position the checker proves unreached. Ready to implement.
+
+## 2026-10-29: dispatched
+
+A fresh writer implements the adopted lowering in workspace match-retest on main 5bb6ac9c. Local brief: work/briefs/brief-match-retest.md.

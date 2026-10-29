@@ -40,3 +40,11 @@ Name the construct the query cannot cross (`at`, a file read) instead of an oper
 ## 2026-10-29: dispatched
 
 A fresh writer takes items 10, 1, 8, 2, 3 and the quality-review items in workspace vt-follow-ups. Items 4, 5, 6, 7, 9 and 11 stay open for later. Local brief: work/briefs/brief-vt-follow-ups.md.
+
+## 2026-10-29: review blocking on item 2
+
+The follow-up candidate fixed items 10, 1, 8, 3 and the quality items; a fresh review (work/briefs/review-vt-follow-ups.md, local) blocks on item 2: `Checked::explained` (crates/adtb/src/api/registered.rs about lines 218-234) checks a translated bundle's explain arguments at the current version's types, but docs/spec/catalog.md about lines 1566-1570 says at the pinned version's types as a call runs, and `s.params.iter().flatten()` drops unread parameters so the arity is wrong. Lead ruling: revert item 2 (keep skipping translated bundles in `explained`) and leave it open here. Also found:
+- 12. Translation refuses `at` blocks and file reads, but evolution.md 7.2 and derived.md 6.3 say such queries are not translated through later operators, so they have a translation. Translate them unchanged.
+- 13. `SchemaRefused.operator` is now empty when nothing is to blame (final-state checks, typing refusals); the spec does not say when it may be empty. Reword through the spec-revision workflow.
+- `replay` (crates/adtb/src/catalog/migration.rs about lines 193-208) drops the accumulated `why` on the `after.steps` and `steps::built` error paths; `Catalog::migrate`'s doc names only `Error::Refused`; the `RefusedBy` doc should say the first operator with a data refusal.
+- Item 3's test passes on base: the `let` is inlined before translation, so it has no witness.
