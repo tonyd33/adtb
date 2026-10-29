@@ -1,15 +1,15 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: open
 kind: feature
 priority: 830
 summary: "role authority exists; relation/field and call/family grants, definer checks and nonowner execution remain unfinished"
-branch: authority-next-audit
 depends-on:
   - asserted-principal-value-domain
   - custom-principal-global-lookup
   - uuid-domain-textual-roundtrip
   - registered-argument-values
+  - typed-permission-requirements
 tags:
   - engine
 ---
@@ -382,3 +382,44 @@ negative/concurrency tests, dependencies and any hard calls with recommended
 resolution and reason. Preserve source; report in work/briefs/report-authority-next-audit.md
 with a short successor handoff. Lead records essential findings here before
 relying on ignored notes. No new dependencies or network authentication choices.
+
+## 2026-10-28: next provider audit completed
+
+Read-only audit of2f080796 on39dc440e finished unchanged, house0, no builds/tests.
+No new independently reproduced engine bug. The next bounded implementation is
+typed-permission-requirements, after the shared registered admission fix. This
+broad ticket returns to open with no active branch. Fresh successor must start
+from main, not the superseded role draft.
+
+Provider order: complete pure typed requirements and effective coverage first;
+canonical Log/Deployment grants with carry/dormancy/atomic rechecks second;
+successful checked registration and durable family-owner identity next;
+canonical call/family signature grants; then immutable checked binding and
+nonowner execution. Management syntax later stages the text's changes atomically,
+not one RoleAuthority commit per item. No owner fallback is an intermediate API.
+
+Important follow-on boundaries: LogGrant holds stable target IDs but no grant-row
+ID; vector positions are not identity. New Log rows must share the durable grants
+allocator with Deployment rows, reconcile by typed provenance and preserve IDs
+through applicable carry/rename/option changes without deleting Deployment rows.
+Catalog::deploy's relation-wide no-migration-writer precondition needs an explicit
+mixed-row ownership contract before both classes use catalog::grants. Native
+apply rejects missing roles; recovery/restore folding is distinct, with dormant
+grants explicitly canonical and never silently activated by recreated names.
+
+Family ownership requires a successful-registration checkpoint independent of
+unchecked headers and supporting zero-callable bundles. Header persistence still
+precedes later failure; do not infer success/ownership from the earliest header,
+an empty callable list or source display signatures. Binding uses immutable full
+parameter AND result identity at its pin, checks exact call grants in the execution
+transaction and on retries, and does not substitute current metadata for old pins.
+
+Before the later family/call-grant providers, lead must settle two observable
+witnesses through a proposed point after confirming the full surrounding rules:
+an unversioned family grant when versions have different full signatures (audit
+recommends require one unambiguous existing signature and freeze it); and legacy
+header-only state that cannot distinguish failed checking from successful empty
+registration (audit recommends explicit owner reconciliation before nonowner
+ownership claims, never a guessed backfill). Neither is a prerequisite for pure
+requirements work, no new refusal/reconciliation behavior is adopted now, and no
+decision is being delegated back to the user without a concrete lead proposal.

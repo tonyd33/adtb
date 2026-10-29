@@ -41,3 +41,36 @@ earlier-pin refusal and interactive transaction usability remain controls. No
 separate lease-lock redesign or transport workaround. Acceptance and evidence
 requirements are also in registered-argument-values. Broad roles work only audits
 in parallel and does not write shared signatures.
+
+## 2026-10-28: broader preflight ordering audit
+
+Both original baseline cases are reproduced on ca493bf0 (exit100); details and
+retained evidence are in registered-argument-values. Lead found stop/deadline,
+after-position and interactive ended-state/open checks downstream of renewal.
+Assess those pre-execution refusal paths with existing owning boundary helpers;
+preserve one engine-open guard rather than introducing nested RwLock reads or
+a pager-close workaround. A possible closed-database interactive renewal is
+source-inferred, not yet an executed crash witness. Preserve exact errors and
+transaction usability, and distinguish late execution failures from admission.
+
+## 2026-10-28: additional witnesses and narrow owning hook
+
+Retained readiness baseline reproduced renewal on initially cancelled calls,
+past standalone deadlines, invalid after-positions, cancelled interactive calls
+and expired transaction deadlines. A corrected ended-state witness returned the
+original Serialization error but changed renewed from00:00:00.135854 to
+04:00:00.149982 (exit100). Its earlier resultless-update fixture assertion failure
+was setup failure, not an engine diagnosis; both logs remain retained.
+
+The closed-database interactive control already PASSED before the hook change.
+No closed-pager crash was reproduced or claimed fixed. It remains a regression
+control while the code preserves the owning engine guard.
+
+Frozen candidate a5b883281e07474bc8373dc345d2b9c20deabb09 uses a narrow FnOnce
+renewal hook in existing Engine::call and AdHocTransaction::run, after their
+native option/bookmark/state/merged-stop checks and before execution. No new
+enter guard or duplicated readiness policy. Ordinary ad hoc calls supply a
+no-op; this hook is not a per-retry authorization check. All173affected public
+tests,4shared-validator unit tests and strict lint/fmt/house/size passed on that
+source; full branch and fresh independent review remain in progress. Do not
+interpret this as a new promise about cancellation or failures after admission.

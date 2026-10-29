@@ -48,3 +48,23 @@ contract. Focused registered/bundles and relevant shared-value tests, strict
 affected clippy/fmt/house/size, full frozen branch check, fresh independent review,
 lead landing and full main check. Record exact source/configuration hashes,
 commands/status/logs/timings and unresolved failures. Broad follow-ups remain open.
+
+## 2026-10-28: baseline reproduced and preflight audit
+
+Author retained tests-only ca493bf0cbd82cf7c8209a93d7990e37d54bcdc5, nextest exit100:
+an unused I8 parameter supplied as128 returned Ok(Committed Int1), and wrong
+arity after four simulated hours advanced the bundle's renewed timestamp from
+00:00:00.135841 to04:00:00.147272. Logs/source copies are in worker
+target/admission-baseline*. This confirms the initially source-inferred cases.
+Final shared validator/admission implementation and all checks remain in progress.
+
+Lead source audit additionally identified preflight stop/snapshot/state and
+engine-close checks occurring after current renewal: Engine::call checks stops
+and reads_after, while AdHocTransaction::run checks engine-open/state and merged
+transaction/call stops. Author must assess/reproduce those refusal paths before
+claiming complete pre-execution admission ordering. Source-inferred close race:
+a cloned Database can close the pager while an interactive handle survives, and
+registered renewal currently precedes run's enter guard. No crash reproduction
+is claimed yet. Keep checks/renewal under a single owning engine guard; nested
+read guards can deadlock against a waiting close writer. No pager workaround or
+new promise about failures after execution is authorized by this clarification.
