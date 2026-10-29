@@ -59,17 +59,8 @@ check
 policy and source-size limits. `work/tools/suite` serializes test runs
 across this machine and saves output to `target/suite.txt`.
 
-The suite and `check` require 30 GB free by default. On a smaller development
-disk, choose a lower threshold for the command:
-
-```sh
-ADTB_MIN_FREE_GB=10 work/tools/suite
-ADTB_MIN_FREE_GB=10 check
-```
-
-Use `work/tools/workspace-gc` to inspect build directories. Builds normally
-stay in each workspace's `target/`; `CARGO_TARGET_DIR` can select another
-location.
+Builds stay in each workspace's `target/`; `CARGO_TARGET_DIR` can select
+another location.
 
 ## Build with Nix
 

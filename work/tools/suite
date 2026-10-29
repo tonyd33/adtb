@@ -12,7 +12,6 @@ target=${CARGO_TARGET_DIR:-$root/target}
 out=${ADTB_SUITE_OUT:-$target/suite.txt}
 lock=${XDG_CACHE_HOME:-$HOME/.cache}/adtb/suite.lock
 
-"$root/work/tools/workspace-gc" --guard || exit 1
 mkdir -p "$target" "$(dirname "$lock")"
 cd "$root" || exit 1
 : >"$out"

@@ -18,6 +18,9 @@ Keep your context for rulings, briefs and review. Agents write the code.
   creation alone does not grant worker access. Obtain required approval or
   provision access before implementation; report permission wait as blocked,
   not as a tool failure.
+- Before each full `check`, run `work/tools/workspace-gc --guard`; it
+  fails under 30 GB free and lists the build directories. Nothing else
+  checks free disk.
 - Run at most one full `check` on the machine at a time. `suite` locks
   only the tests, and two concurrent checks have exhausted the machine.
   While a check runs, tell agents to build with `CARGO_BUILD_JOBS=6`.
@@ -87,8 +90,8 @@ Passing tests do not justify unnecessary machinery.
    `origin` is git@github.com:tonyd33/adtb.git; `tangled` is the old
    remote and is no longer pushed.
 
-Any other deletion needs the user's approval. When `check` refuses under
-the free-space guard, first list the candidates without deleting: the
+Any other deletion needs the user's approval. When `workspace-gc --guard`
+fails, first list the candidates without deleting: the
 `target/debug`, `target/release` and `target/tmp` of each forgotten
 workspace, with sizes. Ask, then delete each one by its literal absolute
 path in its own command. Never `rm -rf` a path built in a loop or from a

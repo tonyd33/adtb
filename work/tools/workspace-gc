@@ -10,7 +10,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-min_free_gb=${ADTB_MIN_FREE_GB:-30}
+min_free_gb=30
 idle_hours=${ADTB_GC_IDLE_HOURS:-2}
 mode=${1:-list}
 

@@ -36,7 +36,6 @@ in
   scripts.check.exec = ''
     set -e
     export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$DEVENV_ROOT/target}"
-    workspace-gc --guard
     cargo clippy --workspace --all-targets -- -D warnings
     cargo fmt --all --check
     suite --no-tests=pass

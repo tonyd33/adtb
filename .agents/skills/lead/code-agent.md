@@ -139,8 +139,7 @@ inspecting that log, and return that status. For example, in a subshell:
 )
 ```
 
-`work/tools/suite` stops below 30 GB free and lists build directories;
-clean only your workspace's build artifacts and report it. It builds the
+`work/tools/suite` builds the
 tests, then waits for a machine-wide lock so only one suite runs at a time.
 It prints failures, timeouts, the summary and the output path
 (`target/suite.txt`, ending in `suite: exit N`). Use the harness's
