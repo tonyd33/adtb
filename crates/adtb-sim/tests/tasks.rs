@@ -45,6 +45,10 @@ txn tick () -> Key items =
     update c in counters set { c with value: seen(c.value) + 1 }
     let u = insert items { n: 0 - 1 }
     return key u
+query residues () -> Set I64 = from i in items select i.n % 7 + i.n / 3999 * 7
+query pairs () -> Set I64 =
+  (from i in items select i.n % 100 + 100)
+    union (from i in items, j in items where j.n == i.n + 1 select j.n % 100)
 ";
 
 const UPDATE: &str = "update c in counters set { c with value: c.value + 1 }";
@@ -148,12 +152,21 @@ fn open<R: Runtime>(rt: &R, rows: usize) -> Fixture<R> {
 
 /// Returns a database with `rows` items whose tasks run on `workers` workers.
 fn open_with<R: Runtime>(rt: &R, rows: usize, workers: usize) -> Fixture<R> {
+    open_under(rt, rows, workers, None)
+}
+
+/// Returns a database with `rows` items whose tasks run on `workers` workers, each call's
+/// memory bounded by `memory`.
+fn open_under<R: Runtime>(rt: &R, rows: usize, workers: usize, memory: Option<u64>) -> Fixture<R> {
     let (seen, gate) = (Arc::new(Seen::default()), Arc::new(Gate::default()));
     let db = Database::open_in(
         rt.clone(),
         "shop.adt",
         &Log::new([SCHEMA]),
-        &options(rt, &seen, &gate, workers),
+        &OpenOptions {
+            query_memory_bytes: memory,
+            ..options(rt, &seen, &gate, workers)
+        },
     )
     .unwrap();
     text(&db, "insert counters { value: 0 }");
@@ -346,20 +359,94 @@ fn a_task_returns_what_the_call_returns() {
         let task = f.submit(1, read_opts());
         let (rows, done) = drive(rt, &task);
         assert_eq!(rows.len(), ints(&rows).len(), "each element once");
-        let adtb::Called::Rows(called) =
-            f.db.registered("shop")
-                .unwrap()
-                .call(1, &[], &CallOptions::default())
-                .unwrap()
-        else {
-            panic!("a query returns rows")
-        };
-        let called: Vec<Value> = called.collect::<Result<_, _>>().unwrap();
-        assert_eq!(ints(&called), ints(&rows));
+        assert_eq!(ints(&called(&f.db, 1)), ints(&rows));
         assert!(matches!(done, Completion::Read { .. }), "{done:?}");
         let task = f.submit(2, read_opts());
         let (rows, _) = drive(rt, &task);
         assert_eq!(vec![Value::Int(3000)], rows);
+        f.db.close().unwrap();
+    });
+}
+
+/// Returns the elements the registered call `ordinal` returns.
+fn called<R: Runtime>(db: &Database<R>, ordinal: u32) -> Vec<Value> {
+    let adtb::Called::Rows(rows) = db
+        .registered("shop")
+        .unwrap()
+        .call(ordinal, &[], &CallOptions::default())
+        .unwrap()
+    else {
+        panic!("a query returns rows")
+    };
+    rows.collect::<Result<_, _>>().unwrap()
+}
+
+/// Supply `step` bytes of capacity each time the task waits for it, releasing every batch once
+/// taken, and return the elements with, after each batch, the bytes of the batches so far and
+/// the bytes the task holds.
+fn drive_released<R: Runtime>(
+    rt: &R,
+    task: &Task<R>,
+    step: usize,
+) -> (Vec<Value>, Vec<(usize, usize)>) {
+    let (_, waker) = wakes(rt);
+    task.supply(step);
+    let (mut rows, mut bytes, mut held) = (Vec::new(), 0, Vec::new());
+    loop {
+        match task.observe(&waker) {
+            Observation::Pending => {
+                task.supply(step);
+                rt.park();
+            }
+            Observation::Layout(_) => {}
+            Observation::Batch(b) => {
+                rows.extend(b.rows().expect("a rows batch").iter().cloned());
+                bytes += b.bytes();
+                b.release();
+                held.push((bytes, task.held()));
+            }
+            Observation::End => {
+                task.drained();
+                return (rows, held);
+            }
+            Observation::Done(c) => panic!("the task ends before its batches: {c:?}"),
+        }
+    }
+}
+
+/// Elements repeating across units of pages are handed out, and charged, once.
+#[test]
+fn a_streamed_set_repeats_no_element_across_units() {
+    sim_once(|rt| {
+        let f = open(rt, ROWS);
+        let task = f.submit(6, read_opts());
+        let (rows, held) = drive_released(rt, &task, 1);
+        assert_eq!(rows.len(), ints(&rows).len(), "each element once");
+        assert_eq!(BTreeSet::from([0, 1, 2, 3, 4, 5, 6, 9]), ints(&rows));
+        for (bytes, held) in held {
+            assert_eq!(bytes, held, "the sent elements are charged once each");
+        }
+        f.db.close().unwrap();
+    });
+}
+
+/// A join whose build is partitioned defers its probes to the production's last unit, which
+/// runs after batches were handed out.
+#[test]
+fn a_streamed_partitioned_join_returns_what_the_call_returns() {
+    sim_once(|rt| {
+        let f = open_under(rt, 1000, 2, Some(256 << 10));
+        let want = ints(&called(&f.db, 7));
+        let task = f.submit(7, read_opts());
+        let (rows, held) = drive_released(rt, &task, 1);
+        assert!(held.len() > 1, "{} batches", held.len());
+        assert_eq!(rows.len(), ints(&rows).len(), "each element once");
+        assert_eq!(want, ints(&rows));
+        assert_eq!((0..200).collect::<BTreeSet<i64>>(), ints(&rows));
+        assert!(
+            rows[..100].iter().all(|v| v.int().unwrap() >= 100),
+            "the scanned elements come before the deferred ones"
+        );
         f.db.close().unwrap();
     });
 }
