@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: resolved
 kind: bug
 priority: 240
 summary: "a guarded match arm that also tests a literal or field copies its failure continuation, so normalising a write match is exponential in arms (22 arms time out)"
-branch: match-retest
+closed: 2026-10-29
 ---
 
 # Bug: a guarded arm copies its match failure continuation
@@ -39,3 +39,9 @@ The user confirmed proposed point match-failure-retest; it is adopted into `curr
 ## 2026-10-29: dispatched
 
 A fresh writer implements the adopted lowering in workspace match-retest on main 5bb6ac9c. Local brief: work/briefs/brief-match-retest.md.
+
+## 2026-10-29: landed
+
+Landed as kpktzwyl after a clear review (work/briefs/review-match-retest.md, local). Its branch check passed (2610 root, 47 campaign) on f5f111c0, its parent on main, so the landed tree is the one checked; conformance showed no differences. A 64-arm guarded write match and a 64-arm two-literal query match go from a 60 s timeout to 0.015 s, 4000 guarded arms pass on a 2 MiB thread, and kernel size is linear in arms. Follow-ups are in match-retest-follow-ups.
+
+## 2026-10-29: resolved
