@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: resolved
 kind: bug
 priority: 899
 summary: player seat lookup and revoked-seat handling are copied across four request handlers
-branch: campaign-seat-cleanup
+closed: 2026-10-28
 tags:
   - quality
 ---
@@ -45,3 +45,31 @@ intentionally replaced by app acceptance because production change is app-only.
 Landing manual-derived first, this track second, permissions last; rebase source
 if directed. Exact source/config/command/status/log/timing receipt required.
 Local brief/receipt/handoff under work/briefs/*campaign-seat-cleanup*.
+
+## 2026-10-28: resolved
+
+Landed87527a906c72383b72b365a4f88ccf3c700c5986 after manual corrections.
+Private generated-type resolve_seat replaces four identical calls in player.rs;
+canonical lookup on each request and exact error/party/visibility behavior remain.
+No authority cache, dependency, schema, public API or new mirror test. Fresh
+independent reviewer cleared exact candidate2bfba389 and all2575source hashes.
+Author app47pass/1existing skip; strictclippy/fmt/lintparity/house/size0.
+SourceSHA283713ceab344cba7720b62bc123195095768122af8870815d2d226f0e55547f
+is identical after landing. Review/receipt/handoff local work/briefs same stem.
+
+Lead fullmain on empty6af7c3cd above87527a90: direnv exec main env
+DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check, default configured
+profiles/features/toolchain. Collected exit0:2426root pass/8existing skips
+(52.065s),47campaign pass/1existing skip (21.126s), strictclippy/fmt root+app,
+lint parity, dependency policy, size and native docs all0. Docs10tests10.116s,
+422syntax/61pages/6736links/5001fragments/0failures. Existing cargo-deny
+unmatched license/skip warnings remain nonfatal. All tracked+present local
+cargo-config hashes and revision unchanged. Evidence target/campaign-seat-
+integration/{check.log,check.status,start.txt,end.txt,inputs-before.sha256,
+inputs-after.sha256,revision-before.txt,revision-after.txt}. LogSHA256:
+31a1bd50e3386e60dc906eaf405d2b7b8b1cee8734bfe1aec60ef5565e916145
+Measured UTC boundaries start/end retained; queue/permission breakdown unknown.
+No engine failure found in this cleanup. Shared fix-row-provenance prerequisite
+arose independently in unlanded permissions tests and remains in-progress.
+
+## 2026-10-28: resolved
