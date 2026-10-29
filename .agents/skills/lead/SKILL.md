@@ -76,14 +76,18 @@ Passing tests do not justify unnecessary machinery.
 4. Run `check`. Fix trivial failures yourself; ticket the rest for a new
    track. Close the ticket with a dated section. Remove
    `../adtb-NAME` once nothing in it is needed.
+5. Once the main check passes, delete the landed workspace's
+   `target/debug` and `target/tmp`, each by its literal absolute path in
+   its own command. They hold build output and test scratch, about 22 GB
+   per workspace. Keep the other files and directories under `target/`.
 
-When `check` refuses under the free-space guard, ask the user before
-deleting anything. First list the candidates without deleting: each
-`target/debug` or `target/release` of a forgotten workspace that holds a
-`.fingerprint` directory, with its size. Then delete each one by its
-literal absolute path in its own command. Never `rm -rf` a path built in a
-loop or from a variable. Keep `target/tmp` and every file at the top of
-`target/`: they hold test data and verification evidence.
+Any other deletion needs the user's approval. When `check` refuses under
+the free-space guard, first list the candidates without deleting: the
+`target/debug`, `target/release` and `target/tmp` of each forgotten
+workspace, with sizes. Ask, then delete each one by its literal absolute
+path in its own command. Never `rm -rf` a path built in a loop or from a
+variable. Keep every other file and directory under `target/`: they hold
+verification evidence.
 
 ## Quality cadence
 
