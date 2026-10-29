@@ -272,7 +272,7 @@ fn stored(
 }
 
 #[test]
-fn replay_keeps_a_grant_to_a_missing_role_as_a_dormant_row_that_stays_dormant() {
+fn replay_keeps_a_dormant_row_until_a_later_migration_grants_the_privilege_again() {
     let mut sim = Sim::new(142, Config::default());
     finished(&mut sim, |rt| {
         let pager = Pager::create(rt.clone(), &pager_options(FRAMES)).expect("create");
@@ -306,18 +306,26 @@ fn replay_keeps_a_grant_to_a_missing_role_as_a_dormant_row_that_stays_dormant() 
         );
         assert_eq!(2, catalog.source().version);
         grants::create_role(&catalog, &pager, &txns, 1, "ghost");
+        assert_eq!(
+            (vec![(1, false, true)], Vec::new()),
+            stored(&catalog, &pager, &txns),
+            "creating the role does not activate a dormant row"
+        );
         catalog
             .migrate(
                 &pager,
                 &txns,
-                "module shop\ngrant read customers to ghost with grant option\n",
+                "module shop\ngrant insert customers to ghost\n",
             )
             .expect("a grant the role now exists for applies");
+        let (logged, _) = stored(&catalog, &pager, &txns);
+        assert_eq!(2, logged.len(), "{logged:?}");
         assert_eq!(
-            (vec![(1, true, true)], Vec::new()),
-            stored(&catalog, &pager, &txns),
-            "neither the role's creation nor a regrant activates a dormant row"
+            (1, false, true),
+            logged[0],
+            "another privilege leaves it dormant"
         );
+        assert!(logged[1].0 > 1 && !logged[1].2, "{logged:?}");
         drop(catalog);
         drop(txns);
         pager.close();
@@ -325,33 +333,21 @@ fn replay_keeps_a_grant_to_a_missing_role_as_a_dormant_row_that_stays_dormant() 
     finished(&mut sim, |rt| {
         let (pager, _) = Pager::open(rt.clone(), &pager_options(FRAMES)).expect("reopen");
         let (mut catalog, txns) = Catalog::open(rt, &pager).expect("the catalog opens");
+        let (before, _) = stored(&catalog, &pager, &txns);
+        assert_eq!((1, false, true), before[0], "reopening activates nothing");
+        catalog
+            .migrate(
+                &pager,
+                &txns,
+                "module shop\ngrant read customers to ghost with grant option\n",
+            )
+            .expect("the regrant applies");
+        let (after, _) = stored(&catalog, &pager, &txns);
         assert_eq!(
-            vec![Some(1)],
-            catalog
-                .source()
-                .grants
-                .iter()
-                .map(|g| g.row)
-                .collect::<Vec<_>>()
+            vec![(1, true, false), before[1]],
+            after,
+            "the regrant activates the row and keeps its id"
         );
-        catalog
-            .migrate(
-                &pager,
-                &txns,
-                "module shop\nrevoke read customers from ghost\n",
-            )
-            .expect("the revoke applies");
-        catalog
-            .migrate(
-                &pager,
-                &txns,
-                "module shop\ngrant read customers to ghost\n",
-            )
-            .expect("the grant applies");
-        let (logged, _) = stored(&catalog, &pager, &txns);
-        assert_eq!(1, logged.len());
-        let (id, option, dormant) = logged[0];
-        assert!(id > 1 && !option && !dormant, "{logged:?}");
     });
 }
 

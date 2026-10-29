@@ -135,6 +135,7 @@ catalog.replay(&pager, &txns, text) -> Result<[Dormant], Error>
 catalog.record_grants(&pager, &txns) -> Result<[Dormant], Error>
 Dormant { id, grantee, privilege, target }
 LogGrant { role, privilege, grant_option, row }
+Source { grants, restated, .. }
 ```
 
 Preconditions:
@@ -181,9 +182,12 @@ Postconditions:
   grantee, privilege, target and grant option it projects to; a grant
   with no such row has no id. It fails with `Error::Corrupt` when a
   `Log` row matches no grant.
-- A dormant row stays dormant while its grant stands: creating the role
-  later, or granting the same privilege to it again, changes no row.
-  Dormancy is not part of the version hash.
+- Creating a role changes no dormant row. A grant operator of a later
+  `migrate` or `replay` that names the role, once it exists, and the
+  same privilege clears the row's dormant mark and keeps its id; a grant
+  of another privilege leaves it dormant. `LogGrant::row` of each grant
+  such an operator states again is in `Source::restated` until the next
+  migration. Dormancy is not part of the version hash.
 
 ## 2. Staged states
 

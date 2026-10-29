@@ -253,7 +253,7 @@ impl Catalog {
             snapshot: &snapshot,
         };
         let mut grants = self.source.grants.clone();
-        let done = self.write_grants(&m, self, &mut grants, Grantees::Dormant);
+        let done = self.write_grants(&m, self, &mut grants, &BTreeSet::new(), Grantees::Dormant);
         txns.release(id);
         match done {
             Ok(dormant) => {
@@ -272,7 +272,8 @@ impl Catalog {
     /// Write as `m.x` the `Log` rows of `grants`, the grants of `into`'s source, over those of
     /// this catalog that `m.snapshot` sees: keep or update the row of each grant whose id names
     /// one, delete every other `Log` row, and insert a row with a new id for each other grant,
-    /// giving it that id. Returns each dormant row inserted.
+    /// giving it that id. A kept dormant row whose id `restated` holds and whose role
+    /// `m.snapshot` sees is no longer dormant. Returns each dormant row inserted.
     ///
     /// Fail with [`Error::Refused`], having drawn no id, when `mode` refuses and a grant to
     /// insert names a role `m.snapshot` does not see.
@@ -281,6 +282,7 @@ impl Catalog {
         m: &Migrating<'_, R>,
         into: &Catalog,
         grants: &mut [LogGrant],
+        restated: &BTreeSet<i64>,
         mode: Grantees,
     ) -> Result<Vec<Dormant>, Error> {
         let schema = &into.schema;
@@ -317,7 +319,8 @@ impl Catalog {
             .filter(|g| g.row.is_some_and(|id| kept.contains(&id)))
         {
             let s = old[&g.row.expect("a kept grant has a row")];
-            let row = shape.log_row(schema, g, s.id, s.dormant)?;
+            let dormant = s.dormant && !(restated.contains(&s.id) && roles.contains(&g.role));
+            let row = shape.log_row(schema, g, s.id, dormant)?;
             if row != s.row {
                 deleted.push(s.row.clone());
                 inserted.push(row);

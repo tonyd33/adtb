@@ -293,7 +293,8 @@ impl Catalog {
             },
         )?;
         let mut grants = std::mem::take(&mut built.source.grants);
-        let dormant = self.write_grants(m, &built, &mut grants, grantees);
+        let restated = std::mem::take(&mut built.source.restated);
+        let dormant = self.write_grants(m, &built, &mut grants, &restated, grantees);
         built.source.grants = grants;
         let dormant = dormant?;
         pending::rewrite(m, &self.roots, &self.readers.pending, &readers.pending)?;

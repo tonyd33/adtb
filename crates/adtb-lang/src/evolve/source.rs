@@ -291,6 +291,7 @@ impl Source {
         next.version += 1;
         next.expecting(&m.module.text, &m.operators);
         next.unstated.clear();
+        next.restated.clear();
         let mut refusal = Refusal::default();
         let mut rekeyed = Vec::new();
         let mut applied = Vec::with_capacity(m.operators.len());

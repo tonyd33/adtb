@@ -237,7 +237,10 @@ impl Cx<'_> {
                 .iter_mut()
                 .find(|x| x.role == g.to.text && x.privilege == privilege)
             {
-                Some(held) => held.grant_option |= g.grant_option,
+                Some(held) => {
+                    held.grant_option |= g.grant_option;
+                    self.src.restated.extend(held.row);
+                }
                 None => self.src.grants.push(LogGrant {
                     role: g.to.text.clone(),
                     privilege,
