@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: resolved
 kind: bug
 priority: 799
 summary: key-preserving fixpoint query loses snapshot relation provenance and is refused as an update target
-branch: fix-row-provenance
+closed: 2026-10-28
 tags:
   - lang
   - engine
@@ -134,3 +134,9 @@ Remaining: fresh independent review (dispatched), landing, post-land main check.
 ## 2026-10-28: independent review
 
 A fresh reviewer read 87527a90..1ed18a4b and cleared it to land with no blocking findings: the diff matches the author's frozen diff and source hashes, house-check passes, both original-failure baselines reproduce, and the Empty/Relation/Unknown pre-pass terminates and over-approximates soundly. Non-blocking findings are in row-provenance-follow-ups.
+
+## 2026-10-28: resolved
+
+## 2026-10-28: landed
+
+Landed as 1faf0e12 (fix(lang): keep relation provenance through key-preserving fixpoints and transaction aliases) after the lead's full branch check and a fresh independent review cleared it. Post-land main check on 1faf0e12: passed, exit 0; root 2438 passed, 8 skipped; apps/campaign 47 passed, 1 skipped; clippy, fmt, deny, size-check and docs-check passed; 7m05s; log target/check-main-2026-10-28.log in the main checkout. The only working-copy change during the run was .agents/skills/lead/SKILL.md, which no check reads. Follow-ups are in row-provenance-follow-ups.

@@ -77,6 +77,14 @@ Passing tests do not justify unnecessary machinery.
    track. Close the ticket with a dated section. Remove
    `../adtb-NAME` once nothing in it is needed.
 
+When `check` refuses under the free-space guard, ask the user before
+deleting anything. First list the candidates without deleting: each
+`target/debug` or `target/release` of a forgotten workspace that holds a
+`.fingerprint` directory, with its size. Then delete each one by its
+literal absolute path in its own command. Never `rm -rf` a path built in a
+loop or from a variable. Keep `target/tmp` and every file at the top of
+`target/`: they hold test data and verification evidence.
+
 ## Quality cadence
 
 - After every 10 to 15 landed code commits past the `reviewed` bookmark

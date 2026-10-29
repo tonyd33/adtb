@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: resolved
 kind: bug
 priority: 798
 summary: a transaction let alias loses proposed-row provenance and can be used as a snapshot update or delete target
-branch: fix-row-provenance
+closed: 2026-10-28
 tags:
   - lang
   - engine
@@ -84,3 +84,9 @@ Original failing baselines and corrected fixture/lint failures remain retained.
 No Rust process after final gate;41GBfree/own target2GB, no cache cleanup.
 Fresh provider successor still waits for verified shared repair, preserves old
 c4f0391d draft and original witness. Never resume ended author for followup.
+
+## 2026-10-28: resolved
+
+## 2026-10-28: landed
+
+Landed as 1faf0e12 (fix(lang): keep relation provenance through key-preserving fixpoints and transaction aliases) after the lead's full branch check and a fresh independent review cleared it. Post-land main check on 1faf0e12: passed, exit 0; root 2438 passed, 8 skipped; apps/campaign 47 passed, 1 skipped; clippy, fmt, deny, size-check and docs-check passed; 7m05s; log target/check-main-2026-10-28.log in the main checkout. The only working-copy change during the run was .agents/skills/lead/SKILL.md, which no check reads. Follow-ups are in row-provenance-follow-ups.
