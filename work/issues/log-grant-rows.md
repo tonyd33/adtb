@@ -27,3 +27,7 @@ Out of scope: live bundle rechecks on migration and revoke (slice 2b), registrat
 ## Fix
 
 Audit, local: work/briefs/report-authority-next-audit.md, "Sequenced remainder" item 1 (lines 143 to 191) and "Acceptance" canonical integration (lines 282 to 290).
+
+## 2026-10-29: lead ruling on dormant activation
+
+Implemented in log-grant-rows (de970900, 33cfc45e, 50a52062); contract in docs/design/schema-change.md 1.1 "Grant rows". Ruling: creating a role never activates a dormant Log grant naming it. A grant operator in a later migration that names the now existing role and the same privilege clears the dormant mark on that row, keeping its id; it is an explicit act of a role holding `schema`, not a silent activation. spec-revision: catalog.md section 2 should state this and the `target` text form of a carried grant (current names, `frozen` field lists, `except` retag pairs), which "as written" no longer describes.
