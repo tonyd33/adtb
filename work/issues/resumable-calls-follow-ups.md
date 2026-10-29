@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-28
-status: open
+status: in-progress
 kind: feature
 priority: 1004
 summary: "a refused admit drops the call and any open transaction it owns, shutdown never stops waiting calls, and the resumable call tests miss multi-statement and deadline cases"
+branch: calls-follow-ups
 tags:
   - engine
 ---
@@ -27,3 +28,7 @@ From the independent review of the resumable engine slice of server-owned-call-t
 
 - `admit` (crates/adtb/src/exec/sched.rs about line 292) refuses a call larger than `Admission::bytes` as `Overloaded` even with an empty queue; clients retry `Overloaded` forever. Unreachable today. Refuse it with a non-retryable error.
 - The test `Resumable` impls `Bump::stop` (crates/adtb-sim/tests/calls.rs about line 787) and `Defer::stop` (about line 942) do not withdraw their waker, which the `Resumable::stop` doc requires.
+
+## 2026-10-29: dispatched
+
+A fresh writer fixes every item above in workspace calls-follow-ups on main a917867e, before the result/task slice consumes `admit`. Lead rulings: `admit` returns the refused call inside the error; a call larger than the admission byte bound is refused with a non-retryable error; `shutdown` runs `stop` on every queued and waiting call and a later cancel is a no-op; `take` stops a call whose deadline has passed instead of starting or resuming it. The statement limit bounds one statement execution (catalog.md section 8.3), and a suspended wait is part of that execution as a blocking wait is, so a rerun does not restart the statement limit. Gates: targeted adtb and adtb-sim calls tests, simulator and real-thread, clippy, fmt, house-check, size-check; the lead runs the full check.
