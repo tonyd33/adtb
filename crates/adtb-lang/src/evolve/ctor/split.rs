@@ -130,18 +130,20 @@ impl Cx<'_> {
         )?;
         let images: Vec<_> = arms.iter().map(arm_image).collect();
         let shapes: Vec<_> = into.iter().map(carry::ctor_fields).collect();
+        let td = schema.ty(def);
+        let readable: Vec<String> = td
+            .header()
+            .iter()
+            .chain(&td.ctors()[c as usize].fields)
+            .map(|f| f.name.clone())
+            .collect();
         let routed = carry::routed(&images, std::slice::from_ref(&source), &shapes);
         self.plan_carry(
             carry::Structural::Split,
             &schema,
             (def, &path.ty),
             (std::slice::from_ref(&source), &products),
-            (
-                &routed.0,
-                &routed.1,
-                &[],
-                &matched_fields(arms, &td_fields(&schema, def, c)),
-            ),
+            (&routed.0, &routed.1, &[], &matched_fields(arms, &readable)),
         );
         self.apply_edits(edits);
         self.retype_products(&schema, def, std::slice::from_ref(&source), &products)
@@ -540,13 +542,4 @@ impl Cx<'_> {
         self.apply_edits(edits);
         Ok(())
     }
-}
-
-/// Returns the names of the fields of constructor `c` of type `def`.
-fn td_fields(schema: &Schema, def: TypeId, c: u32) -> Vec<String> {
-    schema.ty(def).ctors()[c as usize]
-        .fields
-        .iter()
-        .map(|f| f.name.clone())
-        .collect()
 }

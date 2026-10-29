@@ -17,7 +17,9 @@ pub enum Granted {
     Insert(GrantTarget),
     Update(GrantTarget, GrantFields),
     Delete(GrantTarget),
-    Retag(GrantTarget, GrantTarget),
+    /// A retag between the two targets, except between each pair of constructor ids of the
+    /// third, held in ascending order.
+    Retag(GrantTarget, GrantTarget, Vec<(u64, u64)>),
     CallFn(u64),
 }
 
@@ -117,13 +119,22 @@ impl Granted {
             Granted::Update(t, fs) => Granted::Update(t.mapped(f)?, fs.mapped(f)),
             Granted::Insert(t) => Granted::Insert(t.mapped(f)?),
             Granted::Delete(t) => Granted::Delete(t.mapped(f)?),
-            Granted::Retag(a, b) => Granted::Retag(a.mapped(f)?, b.mapped(f)?),
+            Granted::Retag(a, b, except) => {
+                let mut pairs: Vec<(u64, u64)> = except
+                    .iter()
+                    .filter_map(|&(x, y)| Some((f(IdKind::Ctor, x)?, f(IdKind::Ctor, y)?)))
+                    .collect();
+                pairs.sort_unstable();
+                pairs.dedup();
+                Granted::Retag(a.mapped(f)?, b.mapped(f)?, pairs)
+            }
             Granted::CallFn(x) => Granted::CallFn(f(IdKind::Function, *x)?),
         })
     }
 
     /// Returns whether a revoke of `self` takes away `held`: the same privilege on the same
-    /// target, with the same field list, or with none when `self` states none.
+    /// target, with the same field list, or with none when `self` states none, whatever pairs a
+    /// held retag excepts.
     fn revokes(&self, held: &Granted) -> bool {
         let fields = |a: &GrantFields, b: &GrantFields| {
             a.listed == b.listed && (!a.listed || a.ids == b.ids)
@@ -131,6 +142,7 @@ impl Granted {
         match (self, held) {
             (Granted::Read(a, x), Granted::Read(b, y))
             | (Granted::Update(a, x), Granted::Update(b, y)) => a == b && fields(x, y),
+            (Granted::Retag(a, b, _), Granted::Retag(x, y, _)) => a == x && b == y,
             _ => self == held,
         }
     }
@@ -359,7 +371,7 @@ impl Cx<'_> {
                 ast::Privilege::Insert(r) => Granted::Insert(target(r, None)?.0),
                 ast::Privilege::Delete(r) => Granted::Delete(target(r, None)?.0),
                 ast::Privilege::Retag(a, b) => {
-                    Granted::Retag(target(a, None)?.0, target(b, None)?.0)
+                    Granted::Retag(target(a, None)?.0, target(b, None)?.0, Vec::new())
                 }
                 ast::Privilege::CallFn(f) => match crate::resolve::lookup_value(&schema, &vis, f) {
                     Ok(ValueDef::Function(g)) => {

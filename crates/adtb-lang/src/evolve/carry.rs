@@ -116,7 +116,7 @@ fn targets(p: &Granted) -> Vec<&GrantTarget> {
         Granted::Read(t, _) | Granted::Update(t, _) | Granted::Insert(t) | Granted::Delete(t) => {
             vec![t]
         }
-        Granted::Retag(a, b) => vec![a, b],
+        Granted::Retag(a, b, _) => vec![a, b],
         Granted::CallFn(_) => Vec::new(),
     }
 }
@@ -409,13 +409,17 @@ impl Carry {
     fn retags(&self, grants: &[LogGrant], role: &str, relation: u64) -> bool {
         let mut pairs = BTreeSet::new();
         for g in grants.iter().filter(|g| g.role == role) {
-            if let Granted::Retag(a, b) = &g.privilege
+            if let Granted::Retag(a, b, except) = &g.privilege
                 && a.relation == relation
                 && b.relation == relation
             {
                 let to = self.covered(b);
                 for &x in &self.covered(a) {
-                    pairs.extend(to.iter().filter(|&&y| y != x).map(|&y| (x, y)));
+                    pairs.extend(
+                        to.iter()
+                            .filter(|&&y| y != x && !except.contains(&(x, y)))
+                            .map(|&y| (x, y)),
+                    );
                 }
             }
         }
@@ -423,8 +427,8 @@ impl Carry {
         pairs.len() == n * n.saturating_sub(1)
     }
 
-    /// Returns whether a split or unnest carries retag `a -> b` to pairs between two of its
-    /// products, which the source being on both sides gives.
+    /// Returns whether a split or unnest would carry retag `a -> b` to pairs between two of its
+    /// products, the source being on both sides.
     fn divides(&self, a: &GrantTarget, b: &GrantTarget) -> bool {
         matches!(self.what, Structural::Split | Structural::Unnest)
             && self.products.len() > 1
@@ -533,8 +537,7 @@ impl Source {
         let mut unstated: Vec<Unstated> = Vec::new();
         let held = self.grants.clone();
         let mut grants = std::mem::take(&mut self.grants);
-        let mut divided = Vec::new();
-        for (k, g) in grants.iter_mut().enumerate() {
+        for g in &mut grants {
             let kind = Kind::of(&g.privilege);
             let role = g.role.clone();
             let mut carry = |t: &mut GrantTarget, fields: Option<&mut GrantFields>| {
@@ -566,73 +569,30 @@ impl Source {
             match &mut g.privilege {
                 Granted::Read(t, fs) | Granted::Update(t, fs) => carry(t, Some(fs)),
                 Granted::Insert(t) | Granted::Delete(t) => carry(t, None),
-                Granted::Retag(a, b) => {
-                    if plan.divides(a, b) && !plan.updates_routing(&held, &role, a, b) {
-                        divided.push(k);
-                    }
+                Granted::Retag(a, b, except) => {
+                    let divided = plan.divides(a, b) && !plan.updates_routing(&held, &role, a, b);
                     carry(a, None);
                     carry(b, None);
+                    if divided {
+                        for (_, x) in &products {
+                            except.extend(
+                                products
+                                    .iter()
+                                    .filter(|(_, y)| y != x)
+                                    .map(|&(_, y)| (*x, y)),
+                            );
+                        }
+                        except.sort_unstable();
+                        except.dedup();
+                    }
                 }
                 Granted::CallFn(_) => {}
             }
         }
         self.grants = grants;
-        let product_ids: BTreeSet<u64> = products.iter().map(|(_, id)| *id).collect();
-        self.divide_retags(&divided, &product_ids);
         for u in unstated {
             if !self.unstated.iter().any(|x| x.same(&u)) {
                 self.unstated.push(u);
-            }
-        }
-    }
-
-    /// Replace each retag grant at `at` by retags that leave out every pair of two of
-    /// `products`: one from the constructors outside `products`, and one from those of
-    /// `products` to the constructors outside them.
-    fn divide_retags(&mut self, at: &[usize], products: &BTreeSet<u64>) {
-        if at.is_empty() {
-            return;
-        }
-        let Ok(schema) = self.schema() else {
-            return;
-        };
-        for &k in at.iter().rev() {
-            let g = self.grants.remove(k);
-            let Granted::Retag(a, b) = &g.privilege else {
-                self.grants.insert(k, g);
-                continue;
-            };
-            let from = covered_ctors(&schema, a);
-            let to = covered_ctors(&schema, b);
-            let ctors = |cs: BTreeSet<u64>| GrantTarget {
-                relation: a.relation,
-                sel: GrantSel::Ctors(cs.into_iter().collect()),
-            };
-            let outside: BTreeSet<u64> = from.difference(products).copied().collect();
-            let inside: BTreeSet<u64> = from.intersection(products).copied().collect();
-            let to_outside: BTreeSet<u64> = to.difference(products).copied().collect();
-            let mut parts = Vec::new();
-            if !outside.is_empty() {
-                parts.push(Granted::Retag(ctors(outside), b.clone()));
-            }
-            if !inside.is_empty() && !to_outside.is_empty() {
-                parts.push(Granted::Retag(
-                    ctors(inside),
-                    GrantTarget {
-                        relation: b.relation,
-                        sel: GrantSel::Ctors(to_outside.into_iter().collect()),
-                    },
-                ));
-            }
-            for (j, privilege) in parts.into_iter().enumerate() {
-                self.grants.insert(
-                    k + j,
-                    LogGrant {
-                        role: g.role.clone(),
-                        privilege,
-                        grant_option: g.grant_option,
-                    },
-                );
             }
         }
     }

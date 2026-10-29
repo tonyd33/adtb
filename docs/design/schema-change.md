@@ -420,10 +420,13 @@ After each operator, `grants` holds:
   product is carried from the nesting field.
 - Across a split or unnest, a `retag` grant whose two sides both cover
   the source, without the role holding `update` on every field of the
-  source the routing reads (the nesting field, for an unnest): retags
-  from the constructors outside the products to the second side, and
-  from the products to the second side's constructors outside them.
-  It holds no pair between two products.
+  source the routing reads: its targets as written, excepting every
+  ordered pair of two products. The routing reads each field a pattern
+  constrains, every field of the source and of the header when an arm
+  has a guard, and the nesting field for an unnest. A constructor added
+  later is covered as the targets cover it.
+- A `read` grant covering a split's or unnest's source covers each
+  product, whether or not it covers the fields the routing reads.
 - For `move field T.f to T.(C | D)`, each grant on `f` on the field of
   each listed constructor it covers instead.
 - For `move field T.C.f to T fill e`, the header field on each grant
@@ -441,6 +444,9 @@ with different fields, or, for a nest, covering some but not all of
 a source's fields, unless a later `grant` of the same migration
 gives the same role the same privilege on a target covering the
 product. The refusal names the sources and the product.
+
+A `revoke` of a retag removes each held retag with the same targets as
+written, whatever pairs it excepts.
 
 Preconditions of `apply` and `steps` for the operators of one migration
 applied one at a time: `expecting` was called with all of them on the

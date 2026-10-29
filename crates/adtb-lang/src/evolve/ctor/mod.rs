@@ -1248,7 +1248,8 @@ impl ArmBinding {
 }
 
 /// Returns the fields of the matched row that routing arms `arms` read to choose an arm: those
-/// a pattern constrains, and every one of `fields` when an arm has a guard.
+/// a pattern constrains, and every one of `fields`, the header's included, when an arm has a
+/// guard.
 pub(super) fn matched_fields(arms: &[ast::Arm], fields: &[String]) -> Vec<String> {
     let mut out = BTreeSet::new();
     for a in arms {

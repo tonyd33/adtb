@@ -84,7 +84,22 @@ fn held(src: &Source) -> Vec<String> {
                 Granted::Update(t, fs) => format!("update {} {}", target(t), fields(fs)),
                 Granted::Insert(t) => format!("insert {}", target(t)),
                 Granted::Delete(t) => format!("delete {}", target(t)),
-                Granted::Retag(a, b) => format!("retag {} -> {}", target(a), target(b)),
+                Granted::Retag(a, b, except) if except.is_empty() => {
+                    format!("retag {} -> {}", target(a), target(b))
+                }
+                Granted::Retag(a, b, except) => {
+                    let mut pairs: Vec<String> = except
+                        .iter()
+                        .map(|&(x, y)| format!("{} -> {}", name("ctor ", x), name("ctor ", y)))
+                        .collect();
+                    pairs.sort();
+                    format!(
+                        "retag {} -> {} except [{}]",
+                        target(a),
+                        target(b),
+                        pairs.join(", ")
+                    )
+                }
                 Granted::CallFn(f) => format!("call {}", name("fn ", *f)),
             };
             let option = if g.grant_option {
@@ -987,7 +1002,9 @@ fn a_split_leaves_out_retags_between_its_products_without_update_of_the_routed_f
     );
     let after = applies(&s, SPLIT);
     assert_eq!(
-        vec!["ops retag identities (Apple | Google) -> identities (EmailPass)"],
+        vec![
+            "ops retag identities (Apple | Google) -> identities (Apple | EmailPass | Google) except [Apple -> Google, Google -> Apple]"
+        ],
         held(&after)
     );
     reverts_to(&s, &after);
@@ -1006,13 +1023,18 @@ fn a_split_leaves_out_retags_between_its_products_without_update_of_the_routed_f
 }
 
 #[test]
-fn a_split_drops_a_retag_within_a_set_that_held_only_its_source() {
+fn a_split_excepts_retags_within_a_set_that_held_only_its_source() {
     let s = applies(
         &oauth(),
         "module auth\ngrant retag identities.Federated -> identities.Federated to ops",
     );
     let after = applies(&s, SPLIT);
-    assert_eq!(Vec::<String>::new(), held(&after));
+    assert_eq!(
+        vec![
+            "ops retag identities set Federated -> identities set Federated except [Apple -> Google, Google -> Apple]"
+        ],
+        held(&after)
+    );
     reverts_to(&s, &after);
     let s = applies(
         &oauth(),
@@ -1037,7 +1059,9 @@ fn an_unnest_leaves_out_retags_between_its_products_without_update_of_the_nestin
     );
     let after = applies(&s, "module auth\nunnest constructor Identity.Social");
     assert_eq!(
-        vec!["ops retag identities (Apple | Google) -> identities (EmailPass)"],
+        vec![
+            "ops retag identities (Apple | Google) -> identities (Apple | EmailPass | Google) except [Apple -> Google, Google -> Apple]"
+        ],
         held(&after)
     );
     reverts_to(&s, &after);
@@ -1071,5 +1095,132 @@ fn a_refusal_is_stated_once_for_each_role_relation_privilege_and_product() {
             "the merge of `Google`, `Apple` into `Social` cannot carry the `read` grant of `support` on `identities`, which does not cover each of them with the same fields; grant `read` on `identities.Social` to `support` in the same migration",
         ],
         lines
+    );
+}
+
+const REGION: &str = r"
+module auth
+type User = { id: Key users, name: Text }
+type Provider = Google | Apple
+type Identity { id: Key identities, user: Key users, region: Text }
+  = EmailPass { email: Text, hash: Bytes }
+  | OAuth     { provider: Provider, sub: Text }
+relation users : User key id generate sequence
+relation identities : Identity key id generate uuidv7
+set Federated of identities = OAuth
+";
+
+#[test]
+fn a_split_routed_by_a_guard_on_a_header_field_excepts_retags_without_update_of_it() {
+    let guard = "module auth
+split constructor Identity.OAuth into Eu { sub: Text } | Us { sub: Text }
+  by match
+    | OAuth o if o.region == \"eu\" -> Eu { sub: o.sub }
+    | OAuth o -> Us { sub: o.sub }";
+    let s = applies(
+        &source(REGION),
+        "module auth\ngrant retag identities -> identities, update identities.OAuth (provider, sub) to ops",
+    );
+    let s = applies(&s, guard);
+    assert_eq!(
+        vec![
+            "ops retag identities * -> identities * except [Eu -> Us, Us -> Eu]",
+            "ops update identities (Eu | Us) listed [Eu.sub, Us.sub]",
+        ],
+        held(&s)
+    );
+}
+
+#[test]
+fn a_split_routed_by_a_header_pattern_excepts_retags_unless_update_of_it_is_held() {
+    let pattern = "module auth
+split constructor Identity.OAuth into Eu { sub: Text } | Us { sub: Text }
+  by match
+    | OAuth { region: \"eu\", sub } -> Eu { sub: sub }
+    | OAuth { sub } -> Us { sub: sub }";
+    let s = applies(
+        &source(REGION),
+        "module auth\ngrant retag identities -> identities, update identities.OAuth (provider, sub) to ops",
+    );
+    let s = applies(&s, pattern);
+    assert_eq!(
+        vec![
+            "ops retag identities * -> identities * except [Eu -> Us, Us -> Eu]",
+            "ops update identities (Eu | Us) listed [Eu.sub, Us.sub]",
+        ],
+        held(&s)
+    );
+    let s = applies(
+        &source(REGION),
+        "module auth\ngrant retag identities -> identities, update identities.OAuth (region) to ops",
+    );
+    let s = applies(&s, pattern);
+    assert_eq!(
+        vec![
+            "ops retag identities * -> identities *",
+            "ops update identities (Eu | Us) listed [region]",
+        ],
+        held(&s)
+    );
+}
+
+#[test]
+fn an_excepting_retag_is_revoked_by_its_written_text() {
+    for (grant, revoke) in [
+        (
+            "grant retag identities -> identities to ops",
+            "revoke retag identities -> identities from ops",
+        ),
+        (
+            "grant retag identities.Federated -> identities to ops",
+            "revoke retag identities.Federated -> identities from ops",
+        ),
+    ] {
+        let s = applies(&oauth(), &format!("module auth\n{grant}"));
+        let s = applies(&s, SPLIT);
+        assert_eq!(1, held(&s).len(), "{grant}");
+        assert!(
+            held(&s)[0].ends_with("except [Apple -> Google, Google -> Apple]"),
+            "{grant}"
+        );
+        let s = applies(&s, &format!("module auth\n{revoke}"));
+        assert_eq!(Vec::<String>::new(), held(&s), "{grant}");
+    }
+}
+
+#[test]
+fn an_excepting_retag_covers_a_constructor_added_later() {
+    let s = applies(
+        &oauth(),
+        "module auth\ngrant retag identities -> identities, retag identities.Federated -> identities to ops",
+    );
+    let s = applies(&s, SPLIT);
+    let s = applies(
+        &s,
+        "module auth\nadd constructor Identity.Github { login: Text }\n  joins identities.Federated",
+    );
+    assert_eq!(
+        vec![
+            "ops retag identities * -> identities * except [Apple -> Google, Google -> Apple]",
+            "ops retag identities set Federated -> identities * except [Apple -> Google, Google -> Apple]",
+        ],
+        held(&s)
+    );
+    assert_eq!(
+        "set Federated of identities = Google | Apple | Github",
+        flat(&decl(&s, "set", "identities.Federated"))
+    );
+}
+
+#[test]
+fn a_split_gives_read_of_a_product_without_the_routed_field() {
+    let s = applies(
+        &oauth(),
+        "module auth\ngrant read identities.OAuth (user, sub) to web",
+    );
+    let s = applies(&s, SPLIT);
+    assert_eq!(
+        vec!["web read identities (Apple | Google) listed [Apple.sub, Google.gid, user]"],
+        held(&s)
     );
 }
