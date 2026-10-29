@@ -412,18 +412,26 @@ After each operator, `grants` holds:
   product's sources: the product, when it covers every source whose
   rows go to the product, with the product's fields that each such
   source's routing gives only by carrying whole a field the grant
-  covers, the same fields from each source, and a merge's
-  discriminator. A nesting field is carried from every field of its
-  source; each field of an unnested product is carried from the
-  nesting field.
-- For `move field T.f to T.(C | D)`, each grant on `f` also on the
-  field of each listed constructor.
-- After `revert n`, the grants each inverted operator found, an object
-  the inverse makes again named by its new id.
+  covers, the same fields from each source. A merge's discriminator
+  is covered by a `read` grant, and by an `update` grant only when the
+  role holds `retag` between every ordered pair of the sources. A
+  nesting field is carried from every field of its source; each field
+  of an unnested product is carried from the nesting field.
+- For `move field T.f to T.(C | D)`, each grant on `f` on the field of
+  each listed constructor it covers instead.
+- For `move field T.C.f to T fill e`, the header field on each grant
+  on `C.f` for which `e` gives every other constructor the grant covers
+  a field the grant covers, carried whole; no other grant holds it.
+- After `revert n`, the grants each inverted operator found. Each
+  operator's inverse first removes the grants the operator added,
+  named by path, and after its structural inverse restores the grants
+  the operator removed, an object the inverse makes again named by its
+  new id.
 
 A migration is refused while a structural operator leaves a grant
 covering some but not all of a product's sources, or covering them
-with different fields, unless a later `grant` of the same migration
+with different fields, or, for a nest, covering some but not all of
+a source's fields, unless a later `grant` of the same migration
 gives the same role the same privilege on a target covering the
 product. The refusal names the sources and the product.
 

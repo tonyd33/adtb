@@ -186,8 +186,11 @@ fn a_grant_on_a_named_set_without_fields_covers_a_joining_constructor_with_its_f
         "module auth\nadd constructor Identity.Gitlab { login: Text }",
     );
     assert_eq!(
-        "support read identities set OAuth frozen [Apple.sub, Github.login, Github.org, Google.gid, id, user]",
-        held(&s)[0]
+        vec![
+            "support read identities set OAuth frozen [Apple.sub, Github.login, Github.org, Google.gid, id, user]",
+            "support update identities (Apple | Google) frozen [Apple.sub, Google.gid, id, user]",
+        ],
+        held(&s)
     );
 }
 
@@ -653,8 +656,13 @@ grant retag identities.Google -> identities.Apple to ops",
     reverts_to(&s, &removed);
     let dropped = applies(&s, "module auth\ndrop field Identity.EmailPass.hash");
     assert_eq!(
-        "web read identities (EmailPass) frozen [EmailPass.email, id, user]",
-        held(&dropped)[2]
+        vec![
+            "support read identities (Apple | Google) frozen [Apple.sub, Google.gid, id, user]",
+            "support delete identities (Apple)",
+            "web read identities (EmailPass) frozen [EmailPass.email, id, user]",
+            "ops retag identities (Google) -> identities (Apple)",
+        ],
+        held(&dropped)
     );
 }
 
@@ -684,8 +692,11 @@ fn a_moved_field_keeps_its_grants() {
         "module auth\nmove field Identity.Google.gid to Identity fill match\n  | EmailPass e -> e.email\n  | Apple a -> a.sub",
     );
     assert_eq!(
-        "web read identities (Google) frozen [gid, id, user]",
-        held(&up)[1]
+        vec![
+            "support read identities (Apple | EmailPass | Google) listed [user]",
+            "web read identities (Google) frozen [gid, id, user]",
+        ],
+        held(&up)
     );
     reverts_to(&s, &up);
     let down = applies(
@@ -693,8 +704,25 @@ fn a_moved_field_keeps_its_grants() {
         "module auth\nmove field Identity.gid to Identity.(Google | Apple)",
     );
     assert_eq!(
-        "web read identities (Google) frozen [Apple.gid, Google.gid, id, user]",
-        held(&down)[1]
+        vec![
+            "support read identities (Apple | EmailPass | Google) listed [user]",
+            "web read identities (Google) frozen [Google.gid, id, user]",
+        ],
+        held(&down)
+    );
+    let s = applies(
+        &grants(),
+        "module auth\nmove field Identity.Google.gid to Identity fill match\n  | EmailPass e -> e.email\n  | Apple a -> a.sub\ngrant read identities to audit",
+    );
+    let down = applies(
+        &s,
+        "module auth\nmove field Identity.gid to Identity.(Google | Apple)",
+    );
+    assert_eq!(
+        vec![
+            "audit read identities * frozen [Apple.gid, Apple.sub, EmailPass.email, EmailPass.hash, Google.gid, id, user]"
+        ],
+        held(&down)
     );
 }
 
@@ -713,4 +741,205 @@ fn replaying_the_log_gives_the_same_grants() {
     }
     assert_eq!(s.grants, replayed.grants);
     assert_eq!(held(&s), held(&replayed));
+}
+
+#[test]
+fn a_revert_of_a_split_and_a_dropped_field_restores_the_grants_exactly() {
+    let before = applies(
+        &oauth(),
+        "module auth\ngrant read identities to audit\ngrant read identities.OAuth to support",
+    );
+    let after = applies(&before, &format!("{SPLIT}\ndrop field Identity.Apple.sub"));
+    let s = applies(
+        &after,
+        "module auth\nrevert 0002\n  fill Identity.Apple.sub = \"\"",
+    );
+    assert_eq!(
+        vec![
+            "audit read identities * frozen [EmailPass.email, EmailPass.hash, OAuth.provider, OAuth.sub, id, user]",
+            "support read identities (OAuth) frozen [OAuth.provider, OAuth.sub, id, user]",
+        ],
+        held(&s)
+    );
+    assert_eq!(held(&before), held(&s));
+}
+
+#[test]
+fn a_revert_of_a_nest_and_an_unnest_restores_the_grants_exactly() {
+    let before = applies(
+        &grants(),
+        "module auth\ngrant read identities to audit\ngrant read identities.OAuth to support",
+    );
+    let after = applies(
+        &before,
+        &format!("{NEST}\nunnest constructor Identity.Social"),
+    );
+    reverts_to(&before, &after);
+    assert_eq!(
+        vec![
+            "audit read identities * frozen [Apple.sub, EmailPass.email, EmailPass.hash, Google.gid, id, user]",
+            "support read identities set OAuth frozen [Apple.sub, Google.gid, id, user]",
+        ],
+        held(&before)
+    );
+}
+
+#[test]
+fn a_revert_of_a_split_and_a_merge_of_its_products_restores_the_grants_exactly() {
+    let before = applies(
+        &oauth(),
+        "module auth\ngrant read identities to audit\ngrant read identities.OAuth to support",
+    );
+    let after = applies(
+        &before,
+        &format!(
+            "{SPLIT}
+merge constructor Identity.(Google | Apple) into OAuth2
+  {{ provider: Provider, sub: Text }}
+  by match
+    | Google g -> OAuth2 {{ provider: Google, sub: g.gid }}
+    | Apple a  -> OAuth2 {{ provider: Apple, sub: a.sub }}"
+        ),
+    );
+    assert_eq!(
+        vec![
+            "audit read identities * frozen [EmailPass.email, EmailPass.hash, OAuth2.provider, OAuth2.sub, id, user]",
+            "support read identities (OAuth2) frozen [OAuth2.provider, OAuth2.sub, id, user]",
+        ],
+        held(&after)
+    );
+    reverts_to(&before, &after);
+}
+
+const FILL: &str = "module auth
+add field Identity.EmailPass.secret: Text fill \"\"
+grant read identities to audit";
+
+#[test]
+fn a_field_moved_up_is_covered_only_where_the_fill_carries_a_covered_field_whole() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant read identities.(EmailPass | Google) to support",
+    );
+    let s = applies(&s, FILL);
+    let secret = applies(
+        &s,
+        "module auth
+move field Identity.Google.gid to Identity fill match
+  | EmailPass e -> e.secret
+  | Apple a -> a.sub",
+    );
+    assert_eq!(
+        vec![
+            "support read identities (EmailPass | Google) frozen [EmailPass.email, EmailPass.hash, id, user]",
+            "audit read identities * frozen [Apple.sub, EmailPass.email, EmailPass.hash, EmailPass.secret, gid, id, user]",
+        ],
+        held(&secret)
+    );
+    reverts_to(&s, &secret);
+    let email = applies(
+        &s,
+        "module auth
+move field Identity.Google.gid to Identity fill match
+  | EmailPass e -> e.email
+  | Apple a -> \"apple\"",
+    );
+    assert_eq!(
+        vec![
+            "support read identities (EmailPass | Google) frozen [EmailPass.email, EmailPass.hash, gid, id, user]",
+            "audit read identities * frozen [Apple.sub, EmailPass.email, EmailPass.hash, EmailPass.secret, id, user]",
+        ],
+        held(&email)
+    );
+}
+
+const LABELS: &str = r"
+module auth
+type User = { id: Key users, name: Text }
+type Login = Google { gid: Text, label: Text } | Apple { sub: Text, label: Text }
+type GoogleLogin = Google { gid: Text, label: Text }
+type Identity { id: Key identities, user: Key users }
+  = EmailPass { email: Text, hash: Bytes }
+  | Google    { gid: Text, label: Text }
+  | Apple     { sub: Text, label: Text }
+relation users : User key id generate sequence
+relation identities : Identity key id generate uuidv7
+";
+
+#[test]
+fn a_nest_is_refused_while_every_source_is_granted_the_same_part() {
+    let s = applies(
+        &source(LABELS),
+        "module auth\ngrant read identities.(Google | Apple) (label) to web",
+    );
+    let nest =
+        "module auth\nnest constructor Identity.(Google | Apple) into Social { login: Login }";
+    refuses(
+        &s,
+        nest,
+        "the nest of `Google`, `Apple` into `Social` cannot carry the `read` grant of `web` on `identities`",
+    );
+    let s = applies(
+        &s,
+        &format!("{nest}\ngrant read identities.Social (login) to web"),
+    );
+    assert_eq!(
+        vec!["web read identities (Social) listed [Social.login]"],
+        held(&s)
+    );
+}
+
+#[test]
+fn a_nest_of_one_source_is_refused_while_it_is_granted_in_part() {
+    let s = applies(
+        &source(LABELS),
+        "module auth\ngrant read identities.Google (label) to web",
+    );
+    refuses(
+        &s,
+        "module auth\nnest constructor Identity.Google into Social { login: GoogleLogin }",
+        "the nest of `Google` into `Social` cannot carry the `read` grant of `web` on `identities`",
+    );
+}
+
+#[test]
+fn a_merge_gives_update_of_the_discriminator_only_with_retags_between_the_sources() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant update identities.(Google | Apple), read identities.(Google | Apple) to support",
+    );
+    let s = applies(&s, MERGE);
+    assert_eq!(
+        vec![
+            "support update identities (Social) frozen [Social.sub, id, user]",
+            "support read identities (Social) frozen [Social.provider, Social.sub, id, user]",
+        ],
+        held(&s)
+    );
+    let s = applies(
+        &grants(),
+        "module auth\ngrant update identities.(Google | Apple), retag identities.OAuth -> identities.OAuth to support",
+    );
+    let s = applies(&s, MERGE);
+    assert_eq!(
+        vec![
+            "support update identities (Social) frozen [Social.provider, Social.sub, id, user]",
+            "support retag identities set OAuth -> identities set OAuth",
+        ],
+        held(&s)
+    );
+}
+
+#[test]
+fn a_merge_refusal_names_the_privilege_role_relation_and_constructors() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant read identities.Google to support",
+    );
+    assert_eq!(
+        Err(vec![
+            "the merge of `Google`, `Apple` into `Social` cannot carry the `read` grant of `support` on `identities`, which does not cover each of them with the same fields; grant `read` on `identities.Social` to `support` in the same migration".to_string()
+        ]),
+        migrate(&s, MERGE).map(|_| ())
+    );
 }

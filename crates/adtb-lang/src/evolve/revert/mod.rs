@@ -78,9 +78,12 @@ pub(super) enum Inverse {
     },
 }
 
-/// Returns the step that sets back each privilege an operator changed for a role, as `before`
-/// held it, from `after`; `None` when it changed none.
-fn grants_back(before: &Source, after: &Source) -> Option<Inverse> {
+/// Returns the steps that set back each privilege an operator changed for a role, as `before`
+/// held it, from `after`: the first removes what `after` holds and `before` does not, named by
+/// the ids of `after`, and runs before the operator's inverse; the second restores what `before`
+/// held, named by the ids of `before`, and runs after it. Either is `None` when it changes
+/// nothing.
+fn grants_back(before: &Source, after: &Source) -> (Option<Inverse>, Option<Inverse>) {
     let held = |grants: &[LogGrant], g: &LogGrant| {
         grants
             .iter()
@@ -104,10 +107,18 @@ fn grants_back(before: &Source, after: &Source) -> Option<Inverse> {
             });
         }
     }
-    (!back.is_empty()).then(|| Inverse::Grants {
-        back,
-        ids: before.ids.clone(),
-    })
+    let (gone, kept): (Vec<HeldGrant>, Vec<HeldGrant>) =
+        back.into_iter().partition(|h| h.held.is_none());
+    (
+        (!gone.is_empty()).then(|| Inverse::Grants {
+            back: gone,
+            ids: after.ids.clone(),
+        }),
+        (!kept.is_empty()).then(|| Inverse::Grants {
+            back: kept,
+            ids: before.ids.clone(),
+        }),
+    )
 }
 
 /// The objects an operator creates, by kind and name, the module first.
@@ -382,7 +393,11 @@ impl Cx<'_> {
                     })
                     .collect());
             }
-            step.extend(grants_back(&before, &state));
+            let (gone, kept) = grants_back(&before, &state);
+            if let Some(gone) = gone {
+                step.insert(0, gone);
+            }
+            step.extend(kept);
             steps.push(step);
         }
         for step in steps.into_iter().rev() {

@@ -121,7 +121,7 @@ impl Cx<'_> {
             None => carry::by_name(&carries, &sources, &shape),
         };
         self.plan_carry(
-            "merge",
+            carry::Structural::Merge,
             &schema,
             (def, ty),
             (&sources, std::slice::from_ref(&m)),

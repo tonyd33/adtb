@@ -132,7 +132,7 @@ impl Cx<'_> {
         let shapes: Vec<_> = into.iter().map(carry::ctor_fields).collect();
         let routed = carry::routed(&images, std::slice::from_ref(&source), &shapes);
         self.plan_carry(
-            "split",
+            carry::Structural::Split,
             &schema,
             (def, &path.ty),
             (std::slice::from_ref(&source), &products),
@@ -371,7 +371,7 @@ impl Cx<'_> {
         }
         let reaches = sources.iter().map(|s| (s.clone(), n.clone())).collect();
         self.plan_carry(
-            "nest",
+            carry::Structural::Nest,
             &schema,
             (def, ty),
             (&sources, std::slice::from_ref(&n)),
@@ -526,7 +526,7 @@ impl Cx<'_> {
         }
         let reaches = products.iter().map(|p| (n.clone(), p.clone())).collect();
         self.plan_carry(
-            "unnest",
+            carry::Structural::Unnest,
             &schema,
             (def, &path.ty),
             (std::slice::from_ref(&n), &products),

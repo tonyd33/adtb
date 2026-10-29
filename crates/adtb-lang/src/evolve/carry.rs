@@ -5,8 +5,7 @@ use super::*;
 /// constructors it makes.
 #[derive(Clone, Debug)]
 pub(super) struct Carry {
-    /// The operator, as a refusal names it.
-    what: &'static str,
+    what: Structural,
     span: Span,
     /// The type's path, `m::T`.
     ty: String,
@@ -26,6 +25,61 @@ pub(super) struct Carry {
     discriminators: Vec<String>,
 }
 
+/// A structural operator that carries grants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Structural {
+    Split,
+    Merge,
+    Nest,
+    Unnest,
+}
+
+impl Structural {
+    fn name(self) -> &'static str {
+        match self {
+            Structural::Split => "split",
+            Structural::Merge => "merge",
+            Structural::Nest => "nest",
+            Structural::Unnest => "unnest",
+        }
+    }
+}
+
+/// The kind of a privilege.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Read,
+    Insert,
+    Update,
+    Delete,
+    Retag,
+    Call,
+}
+
+impl Kind {
+    fn of(p: &Granted) -> Kind {
+        match p {
+            Granted::Read(..) => Kind::Read,
+            Granted::Insert(_) => Kind::Insert,
+            Granted::Update(..) => Kind::Update,
+            Granted::Delete(_) => Kind::Delete,
+            Granted::Retag(..) => Kind::Retag,
+            Granted::CallFn(_) => Kind::Call,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Read => "read",
+            Kind::Insert => "insert",
+            Kind::Update => "update",
+            Kind::Delete => "delete",
+            Kind::Retag => "retag",
+            Kind::Call => "call",
+        }
+    }
+}
+
 /// For each source, product and field of the product, by name, how each routing of the
 /// source's rows gives the field: the source's field it carries whole, `None` when it computes
 /// it.
@@ -40,7 +94,7 @@ pub(super) type Reaches = BTreeSet<(String, String)>;
 pub(super) struct Unstated {
     role: String,
     relation: u64,
-    kind: &'static str,
+    kind: Kind,
     product: u64,
     pub(super) span: Span,
     pub(super) message: String,
@@ -53,17 +107,6 @@ pub(super) struct ArmImage {
     pub(super) from: Option<String>,
     pub(super) to: Option<String>,
     pub(super) given: Vec<(String, Option<String>)>,
-}
-
-fn kind(p: &Granted) -> &'static str {
-    match p {
-        Granted::Read(..) => "read",
-        Granted::Insert(_) => "insert",
-        Granted::Update(..) => "update",
-        Granted::Delete(_) => "delete",
-        Granted::Retag(..) => "retag",
-        Granted::CallFn(_) => "call",
-    }
 }
 
 fn targets(p: &Granted) -> Vec<&GrantTarget> {
@@ -81,7 +124,7 @@ impl Unstated {
     /// the grant this one lacks.
     pub(super) fn stated_by(&self, role: &str, p: &Granted, covered: &BTreeSet<u64>) -> bool {
         role == self.role
-            && kind(p) == self.kind
+            && Kind::of(p) == self.kind
             && covered.contains(&self.product)
             && targets(p).iter().any(|t| t.relation == self.relation)
     }
@@ -163,7 +206,7 @@ impl Cx<'_> {
     /// `products`, for [`Source::carry_grants`] to apply once the products have ids.
     pub(super) fn plan_carry(
         &mut self,
-        what: &'static str,
+        what: Structural,
         schema: &Schema,
         (def, ty): (TypeId, &QName),
         (sources, products): (&[String], &[String]),
@@ -241,33 +284,23 @@ struct Carried {
 }
 
 impl Carry {
-    /// Returns what target `t`, with fields `fields` for a `read` or `update`, is carried to.
+    /// Returns what target `t`, with fields `fields` for a `read` or `update` and whether it
+    /// covers a merge's discriminator, is carried to.
     ///
     /// A product receives the grant when the target covers every source whose rows go to it,
     /// and every such source the same fields of it: those the routing gives only by carrying
-    /// whole a covered field, and a merge's discriminator. When the target covers some of those
-    /// sources but not all, or them with different fields, the product is unstated.
+    /// whole a covered field. When the target covers some of those sources but not all, or
+    /// them with different fields, or for a nest some but not all of a source's fields, the
+    /// product is unstated.
     fn target(
         &self,
         t: &GrantTarget,
-        fields: Option<&GrantFields>,
+        fields: Option<(&GrantFields, bool)>,
         products: &[(String, u64)],
         field_id: &dyn Fn(&str, &str) -> Option<u64>,
     ) -> Carried {
         let mut out = Carried::default();
-        if !self.relations.iter().any(|(r, _)| *r == t.relation) {
-            return out;
-        }
-        let covered: BTreeSet<u64> = match &t.sel {
-            GrantSel::Whole => self.sources.iter().map(|(s, _)| *s).collect(),
-            GrantSel::Ctors(cs) => self
-                .sources
-                .iter()
-                .map(|(s, _)| *s)
-                .filter(|s| cs.contains(s))
-                .collect(),
-            GrantSel::Set(set) => self.sets.get(set).cloned().unwrap_or_default(),
-        };
+        let covered = self.covered(t);
         if covered.is_empty() {
             return out;
         }
@@ -286,7 +319,11 @@ impl Carry {
                 out.unstated.push((*pid, p.clone()));
                 continue;
             }
-            if let Some(fs) = fields {
+            if let Some((fs, discriminate)) = fields {
+                if self.what == Structural::Nest && self.partly(&cov, p, fs) {
+                    out.unstated.push((*pid, p.clone()));
+                    continue;
+                }
                 let image = |s: u64| -> BTreeSet<&str> {
                     self.given
                         .iter()
@@ -308,7 +345,12 @@ impl Carry {
                     first
                         .iter()
                         .copied()
-                        .chain(self.discriminators.iter().map(String::as_str))
+                        .chain(
+                            self.discriminators
+                                .iter()
+                                .filter(|_| discriminate)
+                                .map(String::as_str),
+                        )
                         .filter_map(|g| field_id(p, g)),
                 );
             }
@@ -317,13 +359,55 @@ impl Carry {
         out
     }
 
-    fn unstated(
-        &self,
-        role: &str,
-        relation: u64,
-        kind: &'static str,
-        product: (u64, String),
-    ) -> Unstated {
+    /// Returns the sources target `t` covers.
+    fn covered(&self, t: &GrantTarget) -> BTreeSet<u64> {
+        if !self.relations.iter().any(|(r, _)| *r == t.relation) {
+            return BTreeSet::new();
+        }
+        match &t.sel {
+            GrantSel::Whole => self.sources.iter().map(|(s, _)| *s).collect(),
+            GrantSel::Ctors(cs) => self
+                .sources
+                .iter()
+                .map(|(s, _)| *s)
+                .filter(|s| cs.contains(s))
+                .collect(),
+            GrantSel::Set(set) => self.sets.get(set).cloned().unwrap_or_default(),
+        }
+    }
+
+    /// Returns whether fields `fs` cover some but not all of the fields a field of product `p`
+    /// is given from, for a source of `sources`.
+    fn partly(&self, sources: &BTreeSet<u64>, p: &str, fs: &GrantFields) -> bool {
+        self.given.iter().any(|((s, q, _), from)| {
+            let n = from
+                .iter()
+                .filter(|f| f.is_some_and(|f| fs.ids.contains(&f)))
+                .count();
+            sources.contains(s) && q == p && n > 0 && n < from.len()
+        })
+    }
+
+    /// Returns whether `grants` give `role` a `retag` between every ordered pair of distinct
+    /// sources in relation `relation`.
+    fn retags(&self, grants: &[LogGrant], role: &str, relation: u64) -> bool {
+        let mut pairs = BTreeSet::new();
+        for g in grants.iter().filter(|g| g.role == role) {
+            if let Granted::Retag(a, b) = &g.privilege
+                && a.relation == relation
+                && b.relation == relation
+            {
+                let to = self.covered(b);
+                for &x in &self.covered(a) {
+                    pairs.extend(to.iter().filter(|&&y| y != x).map(|&y| (x, y)));
+                }
+            }
+        }
+        let n = self.sources.len();
+        pairs.len() == n * n.saturating_sub(1)
+    }
+
+    fn unstated(&self, role: &str, relation: u64, kind: Kind, product: (u64, String)) -> Unstated {
         let sources: Vec<String> = self.sources.iter().map(|(_, s)| format!("`{s}`")).collect();
         let rel = self
             .relations
@@ -337,11 +421,12 @@ impl Carry {
             product: product.0,
             span: self.span,
             message: format!(
-                "the {} of {} into `{}` cannot carry the `{kind}` grant of `{role}` on `{rel}`, which does not cover each of them with the same fields; grant `{}` to `{role}` in the same migration",
-                self.what,
+                "the {} of {} into `{}` cannot carry the `{k}` grant of `{role}` on `{rel}`, which does not cover each of them with the same fields; grant `{k}` on `{rel}.{}` to `{role}` in the same migration",
+                self.what.name(),
                 sources.join(", "),
                 product.1,
                 product.1,
+                k = kind.name(),
             ),
         }
     }
@@ -372,6 +457,12 @@ impl Source {
                 sel: Some(sel),
                 ..
             } if path.ctor.is_none() => self.spread(before, &q(&path.ty), path, sel),
+            OperatorKind::MoveField {
+                path,
+                sel: None,
+                fill: Some(fill),
+                ..
+            } => self.lift(&q(&path.ty), path, fill),
             _ => {}
         }
         self.prune_grants();
@@ -386,11 +477,18 @@ impl Source {
             .collect();
         let field_id = |p: &str, g: &str| ids.get(&format!("field {}.{p}.{g}", plan.ty)).copied();
         let mut unstated = Vec::new();
+        let held = self.grants.clone();
         let mut grants = std::mem::take(&mut self.grants);
         for g in &mut grants {
-            let kind = kind(&g.privilege);
+            let kind = Kind::of(&g.privilege);
             let mut carry = |t: &mut GrantTarget, fields: Option<&mut GrantFields>| {
-                let out = plan.target(t, fields.as_deref(), &products, &field_id);
+                let discriminate = kind == Kind::Read || plan.retags(&held, &g.role, t.relation);
+                let out = plan.target(
+                    t,
+                    fields.as_deref().map(|fs| (fs, discriminate)),
+                    &products,
+                    &field_id,
+                );
                 if let GrantSel::Ctors(cs) = &mut t.sel {
                     cs.extend(out.ctors);
                     cs.sort_unstable();
@@ -500,29 +598,102 @@ impl Source {
         }
     }
 
-    /// Give each grant on header field `path` of type `m::T` the field of each constructor of
-    /// `sel` that a move down made of it.
+    /// Give each grant on header field `path` of type `m::T` the field a move down made of it
+    /// in each constructor of `sel` the grant covers, in place of the header field.
     fn spread(&mut self, before: &Source, m: &str, path: &ast::FieldPath, sel: &CtorSel) {
         let t = &path.ty.name.text;
         let f = &path.field.text;
         let Some(&old) = before.ids.get(&format!("field {m}::{t}.{f}")) else {
             return;
         };
-        let moved: Vec<u64> = sel_idents(sel)
+        let Ok(schema) = self.schema() else {
+            return;
+        };
+        let moved: Vec<(u64, u64)> = sel_idents(sel)
             .iter()
             .filter_map(|c| {
-                self.ids
-                    .get(&format!("field {m}::{t}.{}.{f}", c.text))
-                    .copied()
+                Some((
+                    *self.ids.get(&format!("ctor {m}::{t}.{}", c.text))?,
+                    *self.ids.get(&format!("field {m}::{t}.{}.{f}", c.text))?,
+                ))
             })
             .collect();
         for g in &mut self.grants {
-            if let Granted::Read(_, fs) | Granted::Update(_, fs) = &mut g.privilege
+            if let Granted::Read(t, fs) | Granted::Update(t, fs) = &mut g.privilege
                 && fs.ids.contains(&old)
             {
-                fs.ids.extend(&moved);
+                let covered = covered_ctors(&schema, t);
+                fs.ids.retain(|&x| x != old);
+                fs.ids.extend(
+                    moved
+                        .iter()
+                        .filter(|(c, _)| covered.contains(c))
+                        .map(|&(_, x)| x),
+                );
                 fs.ids.sort_unstable();
                 fs.ids.dedup();
+            }
+        }
+    }
+
+    /// Take the header field a move up made of field `path` of type `m::T` from each grant
+    /// covering a constructor other than the field's whose value `fill` does not carry whole
+    /// from a field the grant covers.
+    fn lift(&mut self, m: &str, path: &ast::FieldPath, fill: &Fill) {
+        let t = &path.ty.name.text;
+        let Some(c) = &path.ctor else {
+            return;
+        };
+        let Some(&moved) = self.ids.get(&format!("field {m}::{t}.{}", path.field.text)) else {
+            return;
+        };
+        let Ok(schema) = self.schema() else {
+            return;
+        };
+        let arms: Vec<(Option<String>, Option<String>)> = match fill {
+            Fill::Match(arms) => arms.iter().map(ctor::fill_image).collect(),
+            Fill::Expr(_) => vec![(None, None)],
+        };
+        let ctor_name = |id: u64| {
+            self.ids
+                .iter()
+                .find(|(p, x)| **x == id && p.starts_with(IdKind::Ctor.prefix()))
+                .and_then(|(p, _)| p.rsplit('.').next())
+                .map(str::to_string)
+        };
+        let field_id = |d: &str, g: &str| self.ids.get(&format!("field {m}::{t}.{d}.{g}")).copied();
+        let mut lost = Vec::new();
+        for (k, g) in self.grants.iter().enumerate() {
+            let (Granted::Read(target, fs) | Granted::Update(target, fs)) = &g.privilege else {
+                continue;
+            };
+            if !fs.ids.contains(&moved) {
+                continue;
+            }
+            let carried = covered_ctors(&schema, target)
+                .into_iter()
+                .filter_map(ctor_name)
+                .filter(|d| d != &c.text)
+                .all(|d| {
+                    let reaching: Vec<&Option<String>> = arms
+                        .iter()
+                        .filter(|(from, _)| from.as_ref().is_none_or(|x| *x == d))
+                        .map(|(_, f)| f)
+                        .collect();
+                    !reaching.is_empty()
+                        && reaching.iter().all(|f| {
+                            f.as_ref()
+                                .and_then(|f| field_id(&d, f))
+                                .is_some_and(|x| fs.ids.contains(&x))
+                        })
+                });
+            if !carried {
+                lost.push(k);
+            }
+        }
+        for k in lost {
+            if let Granted::Read(_, fs) | Granted::Update(_, fs) = &mut self.grants[k].privilege {
+                fs.ids.retain(|&x| x != moved);
             }
         }
     }
@@ -568,5 +739,28 @@ impl Source {
             }
         }
         self.grants = kept;
+    }
+}
+
+/// Returns the ids of the constructors grant target `t` covers in `schema`.
+fn covered_ctors(schema: &Schema, t: &GrantTarget) -> BTreeSet<u64> {
+    let Some((&rel, _)) = schema.ids.relations.iter().find(|(_, x)| **x == t.relation) else {
+        return BTreeSet::new();
+    };
+    let def = schema.relation(rel).elem_def;
+    let ctor_id = |c: u32| schema.ids.ctors.get(&(def, c)).copied();
+    match &t.sel {
+        GrantSel::Whole => (0..schema.ty(def).ctors().len() as u32)
+            .filter_map(ctor_id)
+            .collect(),
+        GrantSel::Ctors(cs) => cs.iter().copied().collect(),
+        GrantSel::Set(s) => schema
+            .ids
+            .sets
+            .iter()
+            .find(|(_, x)| **x == *s)
+            .and_then(|((r, name), _)| schema.relation(*r).sets.iter().find(|x| x.name == *name))
+            .map(|set| set.ctors.iter().filter_map(|&c| ctor_id(c)).collect())
+            .unwrap_or_default(),
     }
 }
