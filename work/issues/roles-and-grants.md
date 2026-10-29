@@ -423,3 +423,20 @@ registration (audit recommends explicit owner reconciliation before nonowner
 ownership claims, never a guessed backfill). Neither is a prerequisite for pure
 requirements work, no new refusal/reconciliation behavior is adopted now, and no
 decision is being delegated back to the user without a concrete lead proposal.
+
+## 2026-10-28: registered admission prerequisite verified
+
+Shared engine fix744bddb0 is fresh reviewed and full branch/main checked:
+2,426root tests,47campaign,allstatic/docs passed. All registered parameter
+representations are checked and initially refused calls do not renew. Native
+readiness hooks preserve one guard and the current retry/transaction owners;
+they are not a future grant snapshot or per-retry authority check.
+
+Next bounded provider is typed-permission-requirements, now ready. This broad
+ticket remains open with that dependency. No role-backed execution, nonowner
+registration/binding or management syntax was added in the admission repair.
+Before a later public role ad hoc boundary, separately audit Prepared::new's
+named host-parameter value/type assumptions; registered validation does not
+certify that separate path. Engine defects confirmed there take priority under
+the standing engine-first direction. Earlier family/legacy decision witnesses
+remain follow-on work and do not block the internal pure provider.

@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: resolved
 kind: bug
 priority: 799
 summary: registered calls accept values outside their declared parameter representation
-branch: registered-admission
+closed: 2026-10-28
 tags:
   - engine
   - test
@@ -68,3 +68,40 @@ registered renewal currently precedes run's enter guard. No crash reproduction
 is claimed yet. Keep checks/renewal under a single owning engine guard; nested
 read guards can deadlock against a waiting close writer. No pager workaround or
 new promise about failures after execution is authorized by this clarification.
+
+## 2026-10-28: resolved
+
+Landed `744bddb0592a6a3fdbf01bca00e2f02149b0c6c1`, `fix: validate calls before
+lease renewal`. All declared registered argument positions use the existing
+api/value validator against Checked.schema, including unused/imported parameters.
+Invalid values refuse before cloning, execution or renewal. Representation checks
+preserve write-only newtype domains, short UUID values and key semantics.
+
+Fresh independent reviewer cleared all five code/test paths and all 2,568 frozen
+input hashes on `a5b883281e07474bc8373dc345d2b9c20deabb09`/base39dc440e.
+All 173 affected integration tests, four validator tests, strict lint/fmt/house/
+size and full branch check passed. Branch full collected0, 418seconds,
+2026-10-29T00:35:12Z–00:42:10Z: 2,426 root passed/eight skipped (52.502s),
+47 campaign passed/one skipped (20.879s), all static/docs checks passed.
+Original true baseline failures and fixture-only failures remain distinguished.
+
+Full main check collected0 on clean `4b5eec71ca4a1631e2d965172e3e471841b33c2c`,
+parent744bddb0, all tracked/local root/app Cargo inputs and revision unchanged.
+From /home/tony/code/adtb:
+
+    direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
+
+2026-10-29T00:44:58Z–00:49:08Z (250seconds, one-second precision).
+All 2,426 root tests passed/eight skipped (49.447s); 47 campaign passed/one
+skipped (20.290s); lint/fmt/parity/dependency/size/docs passed. Docs: ten tests
+in10.255s,420syntax inputs,61pages,6,734links,4,999fragments,zero failures.
+Session14135 collected0. Permission/queue/execution-only timings unknown.
+Log target/registered-admission-integration/check.log SHA256:
+`627e1dec5b204ef4c6a9b12f655ad42e1a0f0d585e4d12e4cfe7594862cb30bb`.
+
+Tracked receipts/review/handoffs: work/briefs/*registered-admission*.md. Landing
+adds only ten metadata/evidence paths relative to the reviewed candidate; all
+five source paths match. No spec, dependency or public API export changed.
+Broader registered-call limits/feed/aggregate features remain open separately.
+
+## 2026-10-28: resolved

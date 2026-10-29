@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: bug
 priority: 895
 summary: a registered call refused for its argument count or principal renews the bundle lease before validation
-branch: registered-admission
+closed: 2026-10-28
 tags:
   - quality
   - engine
@@ -74,3 +74,29 @@ no-op; this hook is not a per-retry authorization check. All173affected public
 tests,4shared-validator unit tests and strict lint/fmt/house/size passed on that
 source; full branch and fresh independent review remain in progress. Do not
 interpret this as a new promise about cancellation or failures after admission.
+
+## 2026-10-28: resolved
+
+Landed `744bddb0`, fresh reviewed/frozen a5b88328. Registered admission validates
+ordinal, lifecycle/current pin, principal, argument count/representation and
+read-only mode before renewal eligibility. Existing Engine::call and
+AdHocTransaction::run invoke a narrow FnOnce renewal hook only after their native
+stop/bookmark/state/merged-deadline checks, under the existing engine guard.
+Ordinary ad hoc calls supply a no-op. No duplicate policy, extra enter guard,
+lease-lock redesign or future per-retry authorization promise was introduced.
+
+Twelve added public tests cover invalid/valid typed values and exact renewal
+timestamps across standalone, Arrow and interactive calls. Refused interactive
+calls preserve prior pending work/usability; ended transactions retain their
+Serialization error. Closed-database control passed even before the fix and
+remains a guard, not evidence of a repaired pager panic. Late cancellation and
+execution failures remain distinct from initial admission refusal.
+
+Full branch and main checks passed: 2,426 root tests,47campaign,allstatic/docs.
+Main clean4b5eec71/parent744bddb0 collected0 in250s, all inputs unchanged.
+Exact command/revisions/baselines/receipt/hash are in registered-argument-values
+and tracked work/briefs/*registered-admission*.md. Related lease locking and
+nested-transaction coverage in bundle-bind-lock-across-commit remain open;
+this resolution covers the pre-execution admission ordering described here.
+
+## 2026-10-28: resolved
