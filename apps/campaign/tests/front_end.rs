@@ -5,8 +5,9 @@ use adtb_lang::check::{check_query, check_schema, check_txn};
 use adtb_lang::evolve::{Refusal, Source};
 use adtb_lang::lex::{Tok, lex};
 use adtb_lang::parse::{Options, parse_bundle, parse_migration, parse_schema};
-use adtb_lang::schema::build;
+use adtb_lang::schema::{RelationDef, Schema, Stage, ValueDef, build};
 use adtb_lang::span::{Diag, FileDiag, FileId};
+use adtb_lang::types::RelId;
 use campaign::{BUNDLE, BUNDLE_1_0, MIGRATIONS, MODULE, SCHEMA, WEB_BUNDLE};
 
 fn rendered(src: &str, ds: &[Diag]) -> String {
@@ -171,19 +172,171 @@ fn the_schema_file_replays_as_a_first_migration() {
     folds_to_the_schema(&migrated(&Source::default(), &text));
 }
 
+/// Returns the checked schema after the first `n` migrations.
+fn folded(n: usize) -> Schema {
+    let src = version(n);
+    assert_eq!(n, usize::try_from(src.version).expect("a small version"));
+    src.check()
+        .unwrap_or_else(|ds| panic!("{}", in_files(&src, &ds)))
+        .0
+}
+
+/// Returns relation variable `name` of the campaign module.
+fn relation<'a>(schema: &'a Schema, name: &str) -> (RelId, &'a RelationDef) {
+    let module = schema.module_named(MODULE).expect("the module");
+    match schema.module(module).values.get(name) {
+        Some(&ValueDef::Relation(r)) => (r, schema.relation(r)),
+        other => panic!("`{name}` is not a relation: {other:?}"),
+    }
+}
+
+/// Returns the constructors of relation variable `name` in order, each with its write stage.
+fn ctors<'a>(schema: &'a Schema, name: &str) -> Vec<(&'a str, Stage)> {
+    let (id, rel) = relation(schema, name);
+    schema
+        .ty(rel.elem_def)
+        .ctors()
+        .iter()
+        .zip(0..)
+        .map(|(c, i)| (c.name.as_str(), schema.stage(id, i)))
+        .collect()
+}
+
+/// Returns the named sets of relation variable `name`, each with its constructors in declared order.
+fn sets<'a>(schema: &'a Schema, name: &str) -> Vec<(&'a str, Vec<&'a str>)> {
+    let (_, rel) = relation(schema, name);
+    let def = schema.ty(rel.elem_def);
+    rel.sets
+        .iter()
+        .map(|s| {
+            let names = s
+                .ctors
+                .iter()
+                .map(|&c| def.ctors()[c as usize].name.as_str())
+                .collect();
+            (s.name.as_str(), names)
+        })
+        .collect()
+}
+
+/// Returns the shown type of field `field` of constructor `ctor` of relation variable `name`.
+fn field_type(schema: &Schema, name: &str, ctor: &str, field: &str) -> String {
+    let def = schema.ty(relation(schema, name).1.elem_def);
+    let c = def
+        .ctor_index(ctor)
+        .unwrap_or_else(|| panic!("no constructor {name}.{ctor}"));
+    let f = def
+        .field(c, field)
+        .unwrap_or_else(|| panic!("no field {name}.{ctor}.{field}"));
+    schema.show_ty(&f.ty)
+}
+
+const ENABLED: Stage = Stage::Enabled;
+
 #[test]
 fn release_1_1_adds_maps_and_items() {
-    assert_eq!(2, version(2).version);
+    let s = folded(2);
+    assert_eq!(vec![("Map", ENABLED)], ctors(&s, "maps"));
+    assert_eq!(
+        vec![("OfEntity", ENABLED), ("Marker", ENABLED)],
+        ctors(&s, "pins")
+    );
+    assert_eq!(
+        vec![
+            ("KnowsEntity", ENABLED),
+            ("KnowsQuest", ENABLED),
+            ("KnowsEvent", ENABLED),
+            ("KnowsMap", ENABLED)
+        ],
+        ctors(&s, "discoveries")
+    );
+    assert_eq!(
+        vec![
+            ("Npc", ENABLED),
+            ("Fallen", ENABLED),
+            ("PlayerCharacter", ENABLED),
+            ("Location", ENABLED),
+            ("Faction", ENABLED),
+            ("Item", ENABLED),
+            ("Party", ENABLED)
+        ],
+        ctors(&s, "entities")
+    );
+    assert_eq!(
+        vec![
+            ("Characters", vec!["Npc", "Fallen", "PlayerCharacter"]),
+            ("Groups", vec!["Faction", "Party"])
+        ],
+        sets(&s, "entities")
+    );
+    assert_eq!(
+        "Option (Key entities.(Npc | Fallen | PlayerCharacter))",
+        field_type(&s, "entities", "Item", "holder")
+    );
 }
 
 #[test]
 fn release_1_2_splits_locations() {
-    assert_eq!(3, version(3).version);
+    let s = folded(3);
+    assert_eq!(
+        vec![
+            ("Npc", ENABLED),
+            ("Fallen", ENABLED),
+            ("PlayerCharacter", ENABLED),
+            ("Region", ENABLED),
+            ("Settlement", ENABLED),
+            ("Site", ENABLED),
+            ("Faction", ENABLED),
+            ("Item", ENABLED),
+            ("Party", ENABLED)
+        ],
+        ctors(&s, "entities")
+    );
+    assert_eq!(
+        vec![
+            ("Characters", vec!["Npc", "Fallen", "PlayerCharacter"]),
+            ("Groups", vec!["Faction", "Party"]),
+            ("Places", vec!["Region", "Settlement", "Site"])
+        ],
+        sets(&s, "entities")
+    );
+    let places = "Option (Key entities.(Region | Settlement | Site))";
+    for (ctor, field) in [
+        ("Npc", "location"),
+        ("Fallen", "location"),
+        ("Region", "parent"),
+        ("Settlement", "parent"),
+        ("Site", "parent"),
+    ] {
+        assert_eq!(
+            places,
+            field_type(&s, "entities", ctor, field),
+            "entities.{ctor}.{field}"
+        );
+    }
 }
 
 #[test]
 fn release_1_3_adds_quest_states() {
-    assert_eq!(4, version(4).version);
+    let s = folded(4);
+    assert_eq!(
+        vec![
+            ("Rumoured", ENABLED),
+            ("Active", ENABLED),
+            ("Shelved", ENABLED),
+            ("Completed", ENABLED),
+            ("Failed", ENABLED),
+            ("Abandoned", ENABLED)
+        ],
+        ctors(&s, "quests")
+    );
+    assert_eq!(
+        vec![
+            ("Open", vec!["Rumoured", "Active", "Shelved"]),
+            ("Closed", vec!["Completed", "Failed", "Abandoned"])
+        ],
+        sets(&s, "quests")
+    );
 }
 
 /// The bundle of each release, with the version it pins.

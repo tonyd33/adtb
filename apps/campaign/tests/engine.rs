@@ -608,7 +608,9 @@ fn a_second_live_session_is_refused() {
         .value;
     let refused = app.try_call(v1_3::start_session, (s2,));
     assert!(
-        matches!(refused, Err(v1_3::Error::Rejected { .. })),
+        matches!(&refused, Err(v1_3::Error::Rejected {
+            reason: RejectReason::Violated { constraint, .. }
+        }) if constraint == "campaign::sessions.unique(campaign) in Live"),
         "{refused:?}"
     );
 }
@@ -718,6 +720,12 @@ fn quest_log(app: &Current, c: &Key<Campaigns>) -> Vec<v1_3::QuestLogRow> {
     all(app.call(v1_3::quest_log, (c.clone(),)))
 }
 
+/// Returns the keys of the rows of `scope`.
+fn keys_in(app: &Current, scope: &str) -> Vec<String> {
+    app.adhoc(&format!("from x in {scope} select key x"))
+        .unwrap_or_else(|e| panic!("{scope}: {e:?}"))
+}
+
 #[test]
 fn release_1_3_shelves_a_quest_over_release_1_1() {
     let path = scratch("shelve");
@@ -750,6 +758,7 @@ fn release_1_3_shelves_a_quest_over_release_1_1() {
         }],
         quest_log(&app, &w.campaign)
     );
+    assert_eq!(vec![key(&q)], keys_in(&app, "quests.Shelved"));
     app.call(v1_3::abandon_quest, (q.clone(), s, "heir died".into()));
     assert_eq!(
         vec![v1_3::QuestLogRow::Dropped {
@@ -760,6 +769,8 @@ fn release_1_3_shelves_a_quest_over_release_1_1() {
         }],
         quest_log(&app, &w.campaign)
     );
+    assert_eq!(vec![key(&q)], keys_in(&app, "quests.Abandoned"));
+    assert!(keys_in(&app, "quests.Shelved").is_empty());
     let reopened = app.adhoc(&format!(
         "update x in quests.Abandoned where key x == {} set Shelved {{ taken_in: x.closed_in, reason: \"\" }}",
         key(&q)
