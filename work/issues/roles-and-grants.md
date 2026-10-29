@@ -1,10 +1,15 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: feature
 priority: 830
 summary: "role authority exists; relation/field and call/family grants, definer checks and nonowner execution remain unfinished"
-depends-on: [asserted-principal-value-domain, custom-principal-global-lookup, uuid-domain-textual-roundtrip]
+branch: authority-next-audit
+depends-on:
+  - asserted-principal-value-domain
+  - custom-principal-global-lookup
+  - uuid-domain-textual-roundtrip
+  - registered-argument-values
 tags:
   - engine
 ---
@@ -358,3 +363,22 @@ Syntax integration with statement atomicity, full audit/ledger and authenticatio
 remain open. Engine-owned bounded resumable tasks/results follow authority and
 binding; the codec alone is not a running server. No owner fallback is approved.
 Preexisting native-open operating-error classification is not fixed here.
+
+## 2026-10-28: next provider audit and admission prerequisite
+
+Fresh authority-next-audit workspace starts2f080796 on39dc440e. Read-only source/
+contract audit, no builds or implementation edits: recommend the smallest complete
+next permission/binding provider, map canonical grant and family-owner identity,
+and identify required kernel traversal/rechecking/atomicity boundaries. Existing
+current rulings remain authoritative. Distinguish observable undecided behavior
+from internal API choices; give concrete witnesses for any design gap. Lead owns
+proposed decisions, never edits current without confirmation.
+
+registered-admission separately repairs the shared argument-validation and refused
+call-renewal boundary first. No authority/binding implementation or signature
+consumer runs beside that writer. Audit acceptance: path/line ownership map,
+bounded provider sequence, exact canonical state and checks, meaningful positive/
+negative/concurrency tests, dependencies and any hard calls with recommended
+resolution and reason. Preserve source; report in work/briefs/report-authority-next-audit.md
+with a short successor handoff. Lead records essential findings here before
+relying on ignored notes. No new dependencies or network authentication choices.

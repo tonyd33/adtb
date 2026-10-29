@@ -4,6 +4,8 @@ status: open
 kind: feature
 priority: 835
 summary: "registered call arguments are not checked against their parameter types, and limits, feeds and bundle aggregates refuse registration"
+depends-on:
+  - registered-argument-values
 tags:
   - engine
 ---

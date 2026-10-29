@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: bug
 priority: 895
 summary: a registered call refused for its argument count or principal renews the bundle lease before validation
+branch: registered-admission
 tags:
   - quality
   - engine
@@ -29,3 +30,14 @@ Expected: the same `Invalid` refusal and an unchanged lease. `docs/design/server
 Fix: perform the call's admission checks before triggering renewal, including principal, argument and transaction-mode validation. Add regressions for wrong arity, a refused principal and a write callable in a read-only transaction. Preserve successful-call renewal and the existing untranslatable-call regression.
 
 Related [bundle-bind-lock-across-commit.md](bundle-bind-lock-across-commit.md) records the earlier renewal-before-`Untranslatable` case as fixed and leaves nested-transaction renewal and failing-renewal coverage open. This is the remaining pre-execution refusal path, not the lock or nested-transaction issue. Standalone reproduction: `/tmp/opencode/quality27-refused-renewal.rs` in the review session; the history above is sufficient to recreate it.
+
+## 2026-10-28: shared registered admission track
+
+Fresh registered-admission workspace on39dc440e owns this alongside
+registered-argument-values. Validate all pre-execution admission conditions before
+lease renewal, using the existing shared value validator for argument values.
+Retain exact renewed timestamps and original failing witnesses; positive renewal,
+earlier-pin refusal and interactive transaction usability remain controls. No
+separate lease-lock redesign or transport workaround. Acceptance and evidence
+requirements are also in registered-argument-values. Broad roles work only audits
+in parallel and does not write shared signatures.
