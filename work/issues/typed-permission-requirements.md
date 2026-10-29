@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-28
-status: in-progress
+status: resolved
 kind: feature
 priority: 829
 summary: no typed provider extracts and checks complete relation/field/write privilege requirements
-branch: permission-successor
+closed: 2026-10-28
 depends-on:
   - registered-argument-values
   - fix-row-provenance
@@ -244,3 +244,9 @@ State: /home/tony/code/adtb-permission-successor, tested 68a9625decead714aa953e5
 - First run failed to link the adtb lib test (`ld.lld: error: undefined hidden symbol` in adtb::api::server, code this track does not change), from incremental objects left by the crash. Log target/check-lead-fixes.log.
 - Rerun with `CARGO_INCREMENTAL=0` passed, exit 0: root 2502 passed, 8 skipped; apps/campaign 47 passed, 1 skipped; clippy, fmt, deny, size-check and docs-check passed; 7m50s. Log target/check-lead-fixes2.log.
 Remaining: the fresh review of 34e5e03f..68a9625d (running), landing, main check.
+
+## 2026-10-28: resolved
+
+## 2026-10-28: landed
+
+A fresh reviewer read 34e5e03f..68a9625d and cleared it with no blocking findings: B1 and B2 are fixed in principle, and the remaining imprecision only over-charges. Landed as b1b7b497 (feat(lang): compute typed permission requirements and their coverage from checked queries and transactions). Post-land main check on b1b7b497 passed, exit 0: root 2502 passed, 8 skipped; apps/campaign 47 passed, 1 skipped; all static checks passed; 10m14s; log target/check-main-permission.log in the main checkout. Non-blocking review items are in permission-provider-follow-ups.
