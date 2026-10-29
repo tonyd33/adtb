@@ -28,3 +28,9 @@ The writer had started its full check (target/check-pending-unique.log stops aft
 Frozen 79554f8da1df2fe5b1b121a208c7e0f7e529773f on main cd020ae0 (workspace pending-unique). The crashed draft was complete for `drop unique`; the resumed writer added the relaxing rekey's old key, which stays as a physical unique index while held, and removed the old refusal. It also made write/schema.rs `rels` name an index the schema does not declare by its key clause.
 Targeted gates passed: suite over write_states, bundles and package(adtb) 449/449 with ignored tests run; strict workspace clippy, fmt, house-check, size-check. No test is left ignored. Receipt work/briefs/receipt-pending-unique.md (local).
 Running: the lead's full branch check and a fresh independent review.
+
+## 2026-10-28: lead full branch check
+
+State: /home/tony/code/adtb-pending-unique, tested 79554f8da1df2fe5b1b121a208c7e0f7e529773f, base cd020ae0; commit id unchanged after the run.
+Outcome: passed, exit 0. Root 2454 passed, 7 skipped (one fewer skipped than main: the un-ignored pending unique test); apps/campaign 47 passed, 1 skipped; clippy, fmt, deny, size-check and docs-check passed; 3m12s. Log target/check-lead.log in the workspace.
+Remaining: the independent review (running), landing, main check.
