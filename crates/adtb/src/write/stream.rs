@@ -66,21 +66,7 @@ impl<R: Runtime> Database<R> {
             return Ok(None);
         }
         let params: Vec<_> = text.params.iter().map(|(v, _)| *v).collect();
-        let plan = crate::plan::plan(
-            text.schema,
-            &self.normal,
-            &self.catalog,
-            &terms,
-            root,
-            &params,
-            crate::plan::Options::default(),
-        )
-        .map_err(|e| match e {
-            crate::plan::Error::Internal(what) => Error::Internal(what),
-            e => Error::Unsupported(e.to_string()),
-        })?;
-        let mut program = exec::compile(text.schema, &self.catalog, &plan, text.caller.cloned())?;
-        program.shared.hosts = self.hosts.clone();
+        let program = self.program(text.schema, &terms, root, &params, text.caller.cloned())?;
         let options = exec::Options {
             fix_rounds: bounds.fix_rounds.unwrap_or(self.options.fix_rounds),
             ..self.options

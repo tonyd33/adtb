@@ -272,6 +272,22 @@ pub fn execute<R: Runtime>(
     call: Call<R>,
     params: &[(Var, Val)],
 ) -> Result<Val, Error> {
+    let (cx, env) = start(rt, program, call, params);
+    cx.root(&env)
+}
+
+/// Returns the context that runs `program` for `call`, and the frame binding its parameters by
+/// `params`.
+fn start<R: Runtime>(
+    rt: R,
+    program: Arc<Program>,
+    call: Call<R>,
+    params: &[(Var, Val)],
+) -> (Arc<run::Ctx<R>>, frame::Frame) {
+    let mut env = frame::Frame::unit(program.vars);
+    for (v, x) in params {
+        env.bind_one(v.0, x.clone());
+    }
     let cx = Arc::new(run::Ctx {
         spill: spill::Spill::new(rt.clone(), call.grant.clone(), call.options.spill_bytes),
         rt,
@@ -283,8 +299,7 @@ pub fn execute<R: Runtime>(
         cancel: call.cancel,
         deadline: call.deadline,
     });
-    let params: Vec<(u32, Val)> = params.iter().map(|(v, x)| (v.0, x.clone())).collect();
-    cx.root(&params)
+    (cx, env)
 }
 
 /// How the elements of a result fill the columns of its batches.

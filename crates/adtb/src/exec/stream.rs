@@ -11,7 +11,6 @@ use crate::storage::Pid;
 use super::frame::Frame;
 use super::ir::{Eval, Pipeline, Program, Sink, Source};
 use super::run::{Ctx, Run};
-use super::spill::Spill;
 use super::value::Val;
 use super::{Call, Deadline, Error};
 
@@ -63,26 +62,11 @@ pub fn produce<R: Runtime>(
     call: Call<R>,
     params: &[(Var, Val)],
 ) -> Result<Produced<R>, Error> {
-    let cx = Arc::new(Ctx {
-        spill: Spill::new(rt.clone(), call.grant.clone(), call.options.spill_bytes),
-        rt,
-        program,
-        store: call.store,
-        grant: call.grant,
-        options: call.options,
-        pool: None,
-        cancel: call.cancel,
-        deadline: call.deadline,
-    });
-    let params: Vec<(u32, Val)> = params.iter().map(|(v, x)| (v.0, x.clone())).collect();
+    let (cx, env) = super::start(rt, program, Call { pool: None, ..call }, params);
     let q = match &cx.program.root {
         Eval::Query(q) if matches!(q.sink, Sink::Set) => q.clone(),
-        _ => return Ok(Produced::Whole(cx.root(&params)?)),
+        _ => return Ok(Produced::Whole(cx.root(&env)?)),
     };
-    let mut env = Frame::unit(cx.program.vars);
-    for (v, x) in &params {
-        env.bind_one(*v, x.clone());
-    }
     let mut chosen = Vec::new();
     cx.spine(&q.spine, env.clone(), false, &mut chosen)?;
     let mut units = VecDeque::new();

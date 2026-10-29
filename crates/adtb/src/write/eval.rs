@@ -359,10 +359,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         let program = match cached {
             Some(p) => p,
             None => {
-                let db = self.db;
-                let p = self.plan_in(a, t, &params)?;
-                let mut x = exec::compile(self.schema, &db.catalog, &p, self.caller.clone())?;
-                x.shared.hosts = db.hosts.clone();
+                let x =
+                    self.db
+                        .program(self.schema, self.arena(a), t, &params, self.caller.clone())?;
                 let x = Arc::new(x);
                 self.plans.borrow_mut().insert(key, x.clone());
                 x
@@ -375,25 +374,10 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         self.fill(a, &ty, v)
     }
 
-    fn plan_in(&self, a: Arena, t: Tm, params: &[Var]) -> Result<crate::plan::Plan, Error> {
-        crate::plan::plan(
-            self.schema,
-            &self.db.normal,
-            &self.db.catalog,
-            self.arena(a),
-            t,
-            params,
-            crate::plan::Options::default(),
-        )
-        .map_err(|e| match e {
-            crate::plan::Error::Internal(what) => Error::Internal(what),
-            e => Error::Unsupported(e.to_string()),
-        })
-    }
-
     /// Returns the plan of term `t` of the statement, its free variables among `params`.
     pub fn plan_of(&self, t: Tm, params: &[Var]) -> Result<crate::plan::Plan, Error> {
-        self.plan_in(Arena::Statement, t, params)
+        self.db
+            .plan(self.schema, self.arena(Arena::Statement), t, params)
     }
 
     pub fn schema(&self) -> &'a Schema {
@@ -1397,4 +1381,45 @@ fn normalise(plus: &mut Rows, minus: &mut Rows) {
     }
     plus.retain(|_, rows| !rows.is_empty());
     minus.retain(|_, rows| !rows.is_empty());
+}
+
+impl<R: Runtime> Database<R> {
+    /// Returns the plan of term `t` of `terms`, its free variables among `params`.
+    pub(super) fn plan(
+        &self,
+        schema: &Schema,
+        terms: &Terms,
+        t: Tm,
+        params: &[Var],
+    ) -> Result<crate::plan::Plan, Error> {
+        crate::plan::plan(
+            schema,
+            &self.normal,
+            &self.catalog,
+            terms,
+            t,
+            params,
+            crate::plan::Options::default(),
+        )
+        .map_err(|e| match e {
+            crate::plan::Error::Internal(what) => Error::Internal(what),
+            e => Error::Unsupported(e.to_string()),
+        })
+    }
+
+    /// Returns the program of term `t` of `terms` run for `caller`, its free variables among
+    /// `params` and its host functions bound.
+    pub(super) fn program(
+        &self,
+        schema: &Schema,
+        terms: &Terms,
+        t: Tm,
+        params: &[Var],
+        caller: Option<Val>,
+    ) -> Result<exec::Program, Error> {
+        let plan = self.plan(schema, terms, t, params)?;
+        let mut program = exec::compile(schema, &self.catalog, &plan, caller)?;
+        program.shared.hosts = self.hosts.clone();
+        Ok(program)
+    }
 }

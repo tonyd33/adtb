@@ -109,14 +109,10 @@ impl<R: Runtime> Ctx<R> {
         &self.program.shared
     }
 
-    /// Returns the value of the plan's root with `params` bound.
-    pub fn root(self: &Arc<Self>, params: &[(u32, Val)]) -> Result<Val, Error> {
-        let mut env = Frame::unit(self.program.vars);
-        for (v, x) in params {
-            env.bind_one(*v, x.clone());
-        }
+    /// Returns the value of the plan's root in `env`.
+    pub fn root(self: &Arc<Self>, env: &Frame) -> Result<Val, Error> {
         let program = self.program.clone();
-        self.eval_env(&program.root, &env, true)
+        self.eval_env(&program.root, env, true)
     }
 
     fn row(&self, heap: HeapId, fields: &[Value]) -> Val {
