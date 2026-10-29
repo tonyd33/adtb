@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: bug
 priority: 898
 summary: "the manual says add default and add computed are refused although both now apply, and gives the old refusal for store and script"
-branch: manual-derived
+closed: 2026-10-28
 tags:
   - quality
   - devex
@@ -58,3 +58,28 @@ examples distinguish existing fill2, later default3/explicit4, and computed tota
 after update. Native docs check already collected0 (ten Python tests,422syntax
 inputs,61pages,6736links,5001fragments,zero failures) on stable inputs; executable
 shell/oplog gates and fresh reading review remain required before acceptance.
+
+## 2026-10-28: resolved
+
+Landed6d6505d5c740 after independent review off05d6584. Only manual README,
+reference/language and evolving guide changed. Corrected availability and added
+native console history for fill2/default3/explicit4/computed totals and update.
+Stored-view physical maintenance/admission and scripts remain explicitly absent.
+No spec/harness/dependency change. Author shell manual3/3 and focused oplog8/8
+passed; native docs10tests/422syntax/61pages/6736links/5001fragments/0failures.
+Original44b743c9 executable fixture failed for missing '='; preserved with logs,
+then fixed only that token. Independent reader checked all2575hashes and prose.
+
+Lead post-land acceptance on empty55bced94/main6d6505d5: existing suite
+-p adtb-shell --test manual (3/3,6.574s) AND work/tools/docs-site check (10tests,
+10.115s; same422syntax/61pages/6736links/5001fragments/0), combined exit0.
+Explicit direnv exec main env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target;
+normal default profiles/features/toolchain. All tracked+present local cargo
+configuration hashes and full revision unchanged. Evidence target/manual-derived-
+integration/{check.log,check.status,start.txt,end.txt,inputs-before.sha256,
+inputs-after.sha256,revision-before.txt,revision-after.txt}. Log SHA256:
+735a186b61afeab3dd8ddf45e071913e86932193c8e3a7c807d19f6bd3488bf4
+Elapsed boundaries in start/end; permission/queue breakdown unknown. This was
+scoped prose/manual acceptance as assigned; app code receives fullmain afterward.
+
+## 2026-10-28: resolved

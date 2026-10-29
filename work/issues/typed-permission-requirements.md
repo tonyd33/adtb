@@ -167,3 +167,17 @@ After fix-row-provenance lands and full main passes, a FRESH successor duplicate
 the preserved draft into its own workspace and rebases, resolving overlapping
 check/expr.rs changes to keep both general origin propagation and transport marks.
 Never resume superseded role-authority or discard the original failing evidence.
+
+### Preserved provider draft
+
+Author ENDED with frozen UNLANDEDc4f0391df818e1638d9dd14236da87456c40e737
+on999926a86bf4e97b579d5c8de4ad303dab36350c.14files/2081insertions11deletions;
+all2583input hashes stable.36/37 focused tests, unchanged fix target failure;
+fmt/house/size0. Initial clippy3mechanical findings corrected but rerun NOTRUN.
+Fullbranch/review/main notrun; draft is NOT complete or landable. Preserve local
+receipt-permission-requirements.md,15linehandoff and sibling workspace target/
+permission-requirements-prerequisite-evidence with complete diff/log/input hashes.
+Fresh successor after verified shared checker fix must retain failing witness
+and inspect unverified write::parallel211-234 Fail Bottom handling, which may
+overcharge old-row origins on failing upsert branches. No production changes
+after pause, no Rust session remains. No precision/safety fix claimed there.
