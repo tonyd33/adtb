@@ -7,6 +7,7 @@ summary: no typed provider extracts and checks complete relation/field/write pri
 branch: permission-requirements
 depends-on:
   - registered-argument-values
+  - fix-row-provenance
 tags:
   - lang
   - engine
@@ -143,3 +144,26 @@ writer rebases onto verified predecessors before final acceptance. Rust builds
 are serialized: campaign app checks first, manual shell/oplog second, permissions
 next on explicit lead release. Source editing proceeds concurrently. Lead owns
 scoped manual/docs and full main checks; no other actor may write language files.
+
+## 2026-10-28: paused for shared checker fixpoint provenance
+
+Focused acceptance reproduced the fix-row-provenance witness against existing
+checker logic; writes3.1 admits that key-preserving fix target. Root isolated a
+fresh main-based prerequisite rather than deleting the test or adding a permission
+exception. This track retains its full partial source and ends after current
+source checks/receipt. No full branch pass or completed permission provider.
+
+Third focused run:36/37passed, sole failure the unchanged update-over-fix checker
+refusal. Earlier unsupported fixture forms (keyless schema, parenthesized direct
+lambda, order tuple syntax) are retained separately from the actual provider
+overread: synthetic group/tuple/record transport Fields initially consumed carried
+data too early. The latter was fixed with purpose metadata at checker transport
+sites; tests now pass that distinction. Initial clippy had three mechanical
+findings, edits applied but final rerun unverified at pause. Successor must read
+exact final receipt/source IDs and rerun affected checks, not assume frozen partial
+matches the earlier passing subset. No production edits after pause.
+
+After fix-row-provenance lands and full main passes, a FRESH successor duplicates
+the preserved draft into its own workspace and rebases, resolving overlapping
+check/expr.rs changes to keep both general origin propagation and transport marks.
+Never resume superseded role-authority or discard the original failing evidence.
