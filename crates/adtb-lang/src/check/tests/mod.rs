@@ -2988,3 +2988,15 @@ fn file_scans_occur_only_in_ad_hoc_text_and_load_sources() {
         "{q:?}"
     );
 }
+
+#[test]
+fn a_row_body_under_shared_branches_is_walked_once() {
+    let (_, p) = program("").expect("the running schema checks");
+    let mut terms = Terms::default();
+    let c = terms.var("c", Ty::Unit);
+    let test = terms.add(Kind::Var(c), Ty::Unit);
+    let row = terms.var("row", Ty::Unit);
+    let leaf = terms.add(Kind::Var(row), Ty::Unit);
+    let body = terms.doubled(test, leaf, 64);
+    assert!(reads_only_row(&terms, body, &p, &mut BTreeSet::new()));
+}

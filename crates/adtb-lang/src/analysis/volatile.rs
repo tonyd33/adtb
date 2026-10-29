@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::kernel::{Kind, Terms, Tm, Var};
+use crate::kernel::{Kind, Search, Terms, Tm, Var};
 use crate::schema::Schema;
 
 /// Returns whether `t` reads a volatile relation.
@@ -22,25 +22,11 @@ fn mentions(terms: &Terms, t: Tm, vars: &BTreeSet<Var>) -> bool {
 /// - `t` is a normal form.
 pub fn write_depends_on_volatile(schema: &Schema, terms: &Terms, t: Tm) -> bool {
     let mut tainted = BTreeSet::new();
-    let mut stack = vec![t];
-    while let Some(t) = stack.pop() {
-        match visit(schema, terms, t, &mut tainted) {
-            Visit::Depends => return true,
-            Visit::Into(cs) => stack.extend(cs.into_iter().rev()),
-        }
-    }
-    false
-}
-
-/// What [`visit`] found at one term.
-enum Visit {
-    Depends,
-    /// The terms to visit next, in order.
-    Into(Vec<Tm>),
+    terms.search(t, |t| visit(schema, terms, t, &mut tainted))
 }
 
 /// Visits `t` before the terms under it, tainting the variables a volatile read reaches.
-fn visit(schema: &Schema, terms: &Terms, t: Tm, tainted: &mut BTreeSet<Var>) -> Visit {
+fn visit(schema: &Schema, terms: &Terms, t: Tm, tainted: &mut BTreeSet<Var>) -> Search {
     let dirty = |x: Tm, tainted: &BTreeSet<Var>| {
         reads_volatile(schema, terms, x) || mentions(terms, x, tainted)
     };
@@ -54,36 +40,36 @@ fn visit(schema: &Schema, terms: &Terms, t: Tm, tainted: &mut BTreeSet<Var>) -> 
         };
         let volatile = target.is_some_and(|r| schema.relation(r).volatile);
         return if volatile || dirty(t, tainted) {
-            Visit::Depends
+            Search::Found
         } else {
-            Visit::Into(Vec::new())
+            Search::Into(Vec::new())
         };
     }
     match kind {
         Kind::Let(x, e, body) | Kind::For(x, e, body) => {
             if dirty(*e, tainted) {
                 if terms.writes(*body) && matches!(kind, Kind::For(..)) {
-                    return Visit::Depends;
+                    return Search::Found;
                 }
                 tainted.insert(*x);
             }
-            Visit::Into(vec![*e, *body])
+            Search::Into(vec![*e, *body])
         }
         Kind::If(c, a, b) => {
             if dirty(*c, tainted) && (terms.writes(*a) || terms.writes(*b)) {
-                return Visit::Depends;
+                return Search::Found;
             }
-            Visit::Into(vec![*a, *b])
+            Search::Into(vec![*a, *b])
         }
         Kind::Case { scrutinee, arms } => {
             if dirty(*scrutinee, tainted) {
                 if arms.iter().any(|(_, _, b)| terms.writes(*b)) {
-                    return Visit::Depends;
+                    return Search::Found;
                 }
                 tainted.extend(arms.iter().map(|(_, v, _)| *v));
             }
-            Visit::Into(arms.iter().map(|(_, _, b)| *b).collect())
+            Search::Into(arms.iter().map(|(_, _, b)| *b).collect())
         }
-        _ => Visit::Into(terms.children(t)),
+        _ => Search::Into(terms.children(t)),
     }
 }

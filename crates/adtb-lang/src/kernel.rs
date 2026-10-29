@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::schema::Generator;
 use crate::types::*;
@@ -292,6 +292,14 @@ pub struct VarInfo {
     pub ty: Ty,
 }
 
+/// What [`Terms::search`] does at one term.
+#[derive(Debug)]
+pub enum Search {
+    Found,
+    /// Visit these terms next, in order.
+    Into(Vec<Tm>),
+}
+
 /// An arena of typed kernel terms. A term may be shared by several parents.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Terms {
@@ -341,16 +349,35 @@ impl Terms {
         self.kind(t).children()
     }
 
-    /// Returns whether `p` holds of the kind of `t` or of any term under it, visiting terms in
-    /// evaluation order on a stack of its own.
+    /// Returns whether `p` holds of the kind of `t` or of any term under it, visiting each term
+    /// once, in evaluation order, on a stack of its own.
     pub fn any(&self, t: Tm, mut p: impl FnMut(&Kind) -> bool) -> bool {
-        let mut stack = vec![t];
-        while let Some(s) = stack.pop() {
+        self.search(t, |s| {
             let k = self.kind(s);
             if p(k) {
-                return true;
+                Search::Found
+            } else {
+                Search::Into(k.children())
             }
-            stack.extend(k.children().into_iter().rev());
+        })
+    }
+
+    /// Returns whether `step` finds a term among `t` and the terms it leads to, visiting each
+    /// term once, in the order `step` lists them, on a stack of its own.
+    ///
+    /// Preconditions:
+    /// - `step` returns the same for a term on every path to it.
+    pub fn search(&self, t: Tm, mut step: impl FnMut(Tm) -> Search) -> bool {
+        let mut seen = HashSet::new();
+        let mut stack = vec![t];
+        while let Some(s) = stack.pop() {
+            if !seen.insert(s) {
+                continue;
+            }
+            match step(s) {
+                Search::Found => return true,
+                Search::Into(next) => stack.extend(next.into_iter().rev()),
+            }
         }
         false
     }
@@ -358,6 +385,14 @@ impl Terms {
     /// Returns whether `t` or a subterm of it is a write term.
     pub fn writes(&self, t: Tm) -> bool {
         self.any(t, Kind::is_write)
+    }
+
+    /// Returns `depth` nested `if`s on `test` over `leaf`, each holding the one below as both
+    /// branches.
+    #[cfg(test)]
+    pub(crate) fn doubled(&mut self, test: Tm, leaf: Tm, depth: u32) -> Tm {
+        let ty = self.ty(leaf).clone();
+        (0..depth).fold(leaf, |t, _| self.add(Kind::If(test, t, t), ty.clone()))
     }
 }
 

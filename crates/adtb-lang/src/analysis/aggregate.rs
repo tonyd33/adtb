@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::kernel::{Agg, Kind, Terms, Tm, Var};
+use crate::kernel::{Agg, Kind, Search, Terms, Tm, Var};
 
 /// Returns an error when the `sum` or `avg` at `t` ranges over a comprehension whose `select` may merge equal values of distinct bindings.
 pub fn ranges_over_bindings(terms: &Terms, t: Tm) -> Result<(), String> {
@@ -16,6 +16,7 @@ pub fn ranges_over_bindings(terms: &Terms, t: Tm) -> Result<(), String> {
         terms,
         chain: Vec::new(),
         alias: HashMap::new(),
+        selected: HashMap::new(),
     };
     if k.merges(*source) {
         return Err(format!(
@@ -27,48 +28,57 @@ pub fn ranges_over_bindings(terms: &Terms, t: Tm) -> Result<(), String> {
 
 struct Keyed<'t> {
     terms: &'t Terms,
-    /// The generators enclosing the current position, each with whether its source has distinct elements.
-    chain: Vec<(Var, bool)>,
+    /// The generators enclosing the current position.
+    chain: Chain,
     /// Arm variables standing for the generator variable their `case` scrutinises.
     alias: HashMap<Var, Var>,
+    /// The result of [`Keyed::selects`] at each term, flag and chain it was asked at.
+    selected: HashMap<(Tm, bool, Chain), bool>,
 }
+
+/// Generators, each with whether its source has distinct elements.
+type Chain = Vec<(Var, bool)>;
 
 impl Keyed<'_> {
     /// Returns whether `t` is a comprehension whose `select` is neither key-preserving nor the record of its bindings.
     fn merges(&mut self, t: Tm) -> bool {
-        match self.terms.kind(t) {
-            Kind::For(..) => !self.selects(t, true),
-            Kind::Union(a, b) | Kind::If(_, a, b) => self.merges(*a) || self.merges(*b),
-            Kind::Case { arms, .. } => arms.iter().any(|(_, _, e)| self.merges(*e)),
-            Kind::Let(_, _, b) => self.merges(*b),
-            Kind::Restrict(x, _) | Kind::Top { source: x, .. } | Kind::At { body: x, .. } => {
-                self.merges(*x)
-            }
-            _ => false,
-        }
+        let terms = self.terms;
+        terms.search(t, |t| match terms.kind(t) {
+            Kind::For(..) if !self.selects(t, true) => Search::Found,
+            kind => Search::Into(sources(kind)),
+        })
     }
 
     /// Returns whether no two distinct elements behind `t` were merged into one by a `select`.
     fn distinct(&mut self, t: Tm) -> bool {
-        match self.terms.kind(t) {
-            Kind::Restrict(x, _) | Kind::Top { source: x, .. } | Kind::At { body: x, .. } => {
-                self.distinct(*x)
-            }
-            Kind::Union(a, b) | Kind::If(_, a, b) => self.distinct(*a) && self.distinct(*b),
-            Kind::Case { arms, .. } => arms.iter().all(|(_, _, e)| self.distinct(*e)),
-            Kind::Let(_, _, b) => self.distinct(*b),
+        let terms = self.terms;
+        !terms.search(t, |t| match terms.kind(t) {
             Kind::For(..) => {
                 let saved = std::mem::take(&mut self.chain);
                 let r = self.selects(t, false);
                 self.chain = saved;
-                r
+                if r {
+                    Search::Into(Vec::new())
+                } else {
+                    Search::Found
+                }
             }
-            _ => true,
-        }
+            kind => Search::Into(sources(kind)),
+        })
     }
 
     /// Returns whether every element `t` yields is the variable of a generator over distinct elements, or, when `bindings`, the record of every generator's variable.
     fn selects(&mut self, t: Tm, bindings: bool) -> bool {
+        let key = (t, bindings, self.chain.clone());
+        if let Some(&r) = self.selected.get(&key) {
+            return r;
+        }
+        let r = self.select(t, bindings);
+        self.selected.insert(key, r);
+        r
+    }
+
+    fn select(&mut self, t: Tm, bindings: bool) -> bool {
         match self.terms.kind(t) {
             Kind::For(y, s, b) => {
                 let keyed = self.distinct(*s);
@@ -120,5 +130,18 @@ impl Keyed<'_> {
             v = *s;
         }
         v
+    }
+}
+
+/// Returns the sets whose elements a set of kind `kind` holds, outside a comprehension.
+fn sources(kind: &Kind) -> Vec<Tm> {
+    match kind {
+        Kind::Union(a, b) | Kind::If(_, a, b) => vec![*a, *b],
+        Kind::Case { arms, .. } => arms.iter().map(|(_, _, e)| *e).collect(),
+        Kind::Let(_, _, b)
+        | Kind::Restrict(b, _)
+        | Kind::Top { source: b, .. }
+        | Kind::At { body: b, .. } => vec![*b],
+        _ => Vec::new(),
     }
 }

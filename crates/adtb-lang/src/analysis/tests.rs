@@ -3,12 +3,12 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::ast::{BundleItem, ExampleItem};
 use crate::check::{Checker, Context, check_adhoc, check_query, check_schema, check_txn};
-use crate::kernel::{Const, Prim};
+use crate::kernel::{Agg, Const, Prim, Var};
 use crate::norm::{NormalAdhoc, NormalProgram, NormalQuery};
 use crate::parse::{Options, parse_adhoc, parse_example, parse_schema, parse_type};
 use crate::resolve::Visible;
 use crate::schema::build;
-use crate::types::Ty;
+use crate::types::{RelId, Ty};
 
 const BASE: &str = r"
 module auth
@@ -1094,4 +1094,94 @@ fn one_call_site_of_a_volatile_host_function_bound_by_let_stays_one_call() {
         "from u in users, s in [stamp(u.name)] select s == s",
     );
     assert_eq!(1, host_calls(&s, &n.terms, n.items[0], "stamp"));
+}
+
+/// The depth of the `if`s over a shared term.
+const SHARED_DEPTH: u32 = 64;
+
+/// Returns an arena with a test term and a variable for a row.
+fn shared_arena() -> (Terms, Tm, Var) {
+    let mut terms = Terms::default();
+    let c = terms.var("c", Ty::Unit);
+    let test = terms.add(Kind::Var(c), Ty::Unit);
+    let row = terms.var("x", Ty::Unit);
+    (terms, test, row)
+}
+
+#[test]
+fn terms_any_visits_a_shared_term_once() {
+    let (mut terms, test, row) = shared_arena();
+    let leaf = terms.add(Kind::Var(row), Ty::Unit);
+    let t = terms.doubled(test, leaf, 20);
+    let mut visits = 0;
+    assert!(!terms.any(t, |_| {
+        visits += 1;
+        false
+    }));
+    assert_eq!(22, visits);
+    let t = terms.doubled(test, leaf, SHARED_DEPTH);
+    assert!(!terms.writes(t));
+}
+
+#[test]
+fn a_write_under_shared_branches_is_checked_for_volatile_reads_once() {
+    let s = schema("");
+    let (mut terms, test, row) = shared_arena();
+    let rows = terms.add(Kind::Var(row), Ty::Unit);
+    let insert = terms.add(Kind::Insert(RelId(0), rows), Ty::Change);
+    let t = terms.doubled(test, insert, SHARED_DEPTH);
+    assert!(!write_depends_on_volatile(&s, &terms, t));
+}
+
+#[test]
+fn a_sum_over_shared_branches_is_checked_for_merged_bindings_once() {
+    let (mut terms, test, row) = shared_arena();
+    let users = terms.add(Kind::Rel(RelId(0), None), Ty::Unit);
+    let element = terms.add(Kind::Var(row), Ty::Unit);
+    let yielded = terms.add(Kind::Singleton(element), Ty::Unit);
+    let each = terms.add(Kind::For(row, users, yielded), Ty::Unit);
+    let shared_comprehensions = terms.doubled(test, each, SHARED_DEPTH);
+    let shared_source = {
+        let source = terms.doubled(test, users, SHARED_DEPTH);
+        terms.add(Kind::For(row, source, yielded), Ty::Unit)
+    };
+    let shared_select = {
+        let body = terms.doubled(test, yielded, SHARED_DEPTH);
+        terms.add(Kind::For(row, users, body), Ty::Unit)
+    };
+    for (what, source) in [
+        ("comprehensions", shared_comprehensions),
+        ("source", shared_source),
+        ("select", shared_select),
+    ] {
+        let y = terms.var("y", Ty::Unit);
+        let body = terms.add(Kind::Var(y), Ty::Unit);
+        let sum = terms.add(
+            Kind::Agg {
+                op: Agg::Sum,
+                var: y,
+                source,
+                body,
+            },
+            Ty::Unit,
+        );
+        assert_eq!(Ok(()), ranges_over_bindings(&terms, sum), "shared {what}");
+    }
+}
+
+#[test]
+fn ad_hoc_text_over_a_doubling_chain_of_functions_checks() {
+    let doubling: String = (0..40)
+        .map(|i| format!("fn d{} (x: I64) -> I64 = d{i}(x) + d{i}(x)\n", i + 1))
+        .collect();
+    let extra = format!("fn d0 (x: I64) -> I64 = x + 1\n{doubling}");
+    for text in [
+        "from o in orders select d40(o.total)",
+        "transact insert orders { user: users.key(1), total: d40(2), qty: 1 }",
+        "transact if d40(1) > 0 then insert orders { user: users.key(1), total: d40(2), qty: 1 } else skip",
+    ] {
+        if let Err(e) = adhoc(&extra, &[], text) {
+            panic!("`{text}` is refused: {e:?}");
+        }
+    }
 }

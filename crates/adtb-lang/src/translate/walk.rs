@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::evolve::Resolved;
-use crate::kernel::{Agg, Conflict, Kind, Prim, Terms, Tm, Var};
+use crate::kernel::{Agg, Conflict, Kind, Prim, Search, Terms, Tm, Var};
 use crate::schema::DefaultValue;
 use crate::types::*;
 
@@ -394,19 +394,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         match self.src.kind(set) {
             Kind::Rel(..) | Kind::Transition(..) => true,
             Kind::Restrict(x, _) => self.rows_of(*x),
-            Kind::For(v, source, body) => self.rows_of(*source) && self.yields(*body, *v),
-            _ => false,
-        }
-    }
-
-    /// Returns whether every element of `set` is the value of `v`.
-    fn yields(&self, set: Tm, v: Var) -> bool {
-        match self.src.kind(set) {
-            Kind::EmptySet => true,
-            Kind::Singleton(x) => matches!(self.src.kind(*x), Kind::Var(y) if *y == v),
-            Kind::If(_, a, b) => self.yields(*a, v) && self.yields(*b, v),
-            Kind::Let(_, _, body) | Kind::For(_, _, body) => self.yields(*body, v),
-            Kind::Case { arms, .. } => arms.iter().all(|&(_, _, body)| self.yields(body, v)),
+            Kind::For(v, source, body) => self.rows_of(*source) && yields(self.src, *body, *v),
             _ => false,
         }
     }
@@ -930,4 +918,18 @@ fn restricted(schema: &crate::schema::Schema, ty: &Ty, k: u32) -> Ty {
         Ty::Tag(t) => Ty::Tag(Box::new(restricted(schema, t, k))),
         t => t.clone(),
     }
+}
+
+/// Returns whether every element of `set` is the value of `v`.
+pub(super) fn yields(terms: &Terms, set: Tm, v: Var) -> bool {
+    !terms.search(set, |t| match terms.kind(t) {
+        Kind::EmptySet => Search::Into(Vec::new()),
+        Kind::Singleton(x) if matches!(terms.kind(*x), Kind::Var(y) if *y == v) => {
+            Search::Into(Vec::new())
+        }
+        Kind::If(_, a, b) => Search::Into(vec![*a, *b]),
+        Kind::Let(_, _, body) | Kind::For(_, _, body) => Search::Into(vec![*body]),
+        Kind::Case { arms, .. } => Search::Into(arms.iter().map(|&(_, _, body)| body).collect()),
+        _ => Search::Found,
+    })
 }

@@ -823,28 +823,19 @@ fn row_body(
 const ROW: &str = "row·";
 
 fn reads_only_row(terms: &Terms, t: Tm, program: &Program, seen: &mut BTreeSet<FnId>) -> bool {
-    match terms.kind(t) {
+    !terms.any(t, |k| match k {
         Kind::Rel(..)
         | Kind::Transition(..)
         | Kind::Deref { .. }
         | Kind::Fresh(..)
-        | Kind::Caller => {
-            return false;
-        }
+        | Kind::Caller => true,
         Kind::Call { func, .. } => {
-            if seen.insert(*func)
-                && let Some(Some(body)) = program.functions.get(func.0 as usize)
-                && !reads_only_row(&program.terms, *body, program, seen)
-            {
-                return false;
-            }
+            seen.insert(*func)
+                && matches!(program.functions.get(func.0 as usize), Some(Some(body))
+                    if !reads_only_row(&program.terms, *body, program, seen))
         }
-        _ => {}
-    }
-    terms
-        .children(t)
-        .into_iter()
-        .all(|c| reads_only_row(terms, c, program, seen))
+        _ => false,
+    })
 }
 
 /// Checked ad hoc text: one kernel term per statement and one checked form per command.
