@@ -4,6 +4,7 @@ status: in-progress
 kind: feature
 priority: 120
 summary: "about 87 lint expects and 7 size-allowlist entries stand in the source, and each one is a precedent other agents copy"
+branch: lint-batch4
 tags:
   - quality
 ---
@@ -57,3 +58,7 @@ Batch 4:
 - schema/relation.rs about line 321: the doc omits `None` for an unknown constructor;
 - doc wording at evolve/ctor/merge.rs:116, split.rs:135 and split.rs:12;
 - evolve/ids.rs free `relations_of` (paths) beside `Cx::relations_of` (tuples): rename one.
+
+## 2026-10-29: batch 4 dispatched
+
+Workspace lint-batch4 on main df51cb14 takes the batch 4 list above. Local brief: work/briefs/brief-lint-batch4.md.

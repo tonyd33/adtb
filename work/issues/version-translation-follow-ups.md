@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 870
 summary: "translation blames an unrelated operator for at blocks and file reads, explain skips translated bundles, and the pinned law cannot add fields to nested sums"
+branch: vt-follow-ups
 ---
 
 # Bug: version translation follow-ups
@@ -35,3 +36,7 @@ Name the construct the query cannot cross (`at`, a file read) instead of an oper
 
 - When `Pinned::new` fails, the refusal's query name is empty (crates/adtb/src/api/registered.rs about line 559), so it names `web-1.0::`.
 - The `first` closure in `recheck` repeats `translate::operator_text`.
+
+## 2026-10-29: dispatched
+
+A fresh writer takes items 10, 1, 8, 2, 3 and the quality-review items in workspace vt-follow-ups. Items 4, 5, 6, 7, 9 and 11 stay open for later. Local brief: work/briefs/brief-vt-follow-ups.md.
