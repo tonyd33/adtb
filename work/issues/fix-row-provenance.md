@@ -121,3 +121,16 @@ Original failing baselines and corrected fixture/lint failures remain retained.
 No Rust process after final gate;41GBfree/own target2GB, no cache cleanup.
 Fresh provider successor still waits for verified shared repair, preserves old
 c4f0391d draft and original witness. Never resume ended author for followup.
+
+## 2026-10-28: lead full branch check
+
+State: /home/tony/code/adtb-fix-row-provenance, tested 1ed18a4b1be6a2a502c40e9d4787cc3291d4e444, base 87527a906c72383b72b365a4f88ccf3c700c5986; commit id unchanged after the run.
+Scope: `direnv exec /home/tony/code/adtb env DEVENV_ROOT=$W CARGO_TARGET_DIR=$W/target check` from the workspace root (the workspace .envrc is blocked by direnv and identical to main's).
+Outcome: passed, exit 0. Root 2438 passed, 8 skipped; apps/campaign 47 passed, 1 skipped; clippy, fmt, cargo deny, size-check and docs-check passed.
+Evidence: target/check-lead-2026-10-28.log in the workspace.
+Timing: 7m47s elapsed; queue and execution not separated.
+Remaining: fresh independent review (dispatched), landing, post-land main check.
+
+## 2026-10-28: independent review
+
+A fresh reviewer read 87527a90..1ed18a4b and cleared it to land with no blocking findings: the diff matches the author's frozen diff and source hashes, house-check passes, both original-failure baselines reproduce, and the Empty/Relation/Unknown pre-pass terminates and over-approximates soundly. Non-blocking findings are in row-provenance-follow-ups.
