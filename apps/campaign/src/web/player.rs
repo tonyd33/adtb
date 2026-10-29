@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use adtb::typed::Bundle;
 use adtb::{CallOptions, Key};
 use axum::Router;
 use axum::extract::{Path, State};
@@ -49,17 +50,21 @@ fn seat_token(headers: &HeaderMap) -> Result<String> {
         ))
 }
 
+fn resolve_seat(bundle: &Bundle<v1_6::Bundle>, token: String) -> Result<v1_6::SeatRow> {
+    bundle
+        .call(v1_6::seat, (token,), &CallOptions::default())?
+        .next()
+        .transpose()?
+        .ok_or(Error::Http(
+            StatusCode::UNAUTHORIZED,
+            "This seat has been revoked.",
+        ))
+}
+
 async fn home(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<Html<String>> {
     let token = seat_token(&headers)?;
     blocking(state, move |bundle| {
-        let seat = bundle
-            .call(v1_6::seat, (token,), &CallOptions::default())?
-            .next()
-            .transpose()?
-            .ok_or(Error::Http(
-                StatusCode::UNAUTHORIZED,
-                "This seat has been revoked.",
-            ))?;
+        let seat = resolve_seat(&bundle, token)?;
         let entities = bundle
             .call(v1_6::known_entities, (seat.party,), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -75,14 +80,7 @@ async fn entity(
 ) -> Result<Html<String>> {
     let token = seat_token(&headers)?;
     blocking(state, move |bundle| {
-        let seat = bundle
-            .call(v1_6::seat, (token,), &CallOptions::default())?
-            .next()
-            .transpose()?
-            .ok_or(Error::Http(
-                StatusCode::UNAUTHORIZED,
-                "This seat has been revoked.",
-            ))?;
+        let seat = resolve_seat(&bundle, token)?;
         let page = bundle
             .call(
                 v1_6::known_entity,
@@ -100,14 +98,7 @@ async fn entity(
 async fn now(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<Html<String>> {
     let token = seat_token(&headers)?;
     blocking(state, move |bundle| {
-        let seat = bundle
-            .call(v1_6::seat, (token,), &CallOptions::default())?
-            .next()
-            .transpose()?
-            .ok_or(Error::Http(
-                StatusCode::UNAUTHORIZED,
-                "This seat has been revoked.",
-            ))?;
+        let seat = resolve_seat(&bundle, token)?;
         let rows = bundle
             .call(
                 v1_6::party_encounter,
@@ -123,14 +114,7 @@ async fn now(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<H
 async fn recaps(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<Html<String>> {
     let token = seat_token(&headers)?;
     blocking(state, move |bundle| {
-        let seat = bundle
-            .call(v1_6::seat, (token,), &CallOptions::default())?
-            .next()
-            .transpose()?
-            .ok_or(Error::Http(
-                StatusCode::UNAUTHORIZED,
-                "This seat has been revoked.",
-            ))?;
+        let seat = resolve_seat(&bundle, token)?;
         let rows = bundle
             .call(v1_6::recaps, (seat.party,), &CallOptions::default())?
             .collect::<std::result::Result<Vec<_>, _>>()?;
