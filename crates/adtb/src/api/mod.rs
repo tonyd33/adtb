@@ -6,6 +6,7 @@ mod error;
 mod file;
 mod host;
 mod load;
+mod pinned;
 mod reads;
 mod registered;
 mod server;
@@ -486,7 +487,7 @@ impl<R: Runtime> Engine<R> {
         let live = stored.live(opened, &settings);
         let headers: Vec<&bundle::Header> = regs.iter().filter_map(Registration::header).collect();
         bundle::record(&catalog, &pager, &txns, &mut stored, &headers, opened)?;
-        registered::readers(&mut catalog, regs, &live)?;
+        let live = registered::readers(&mut catalog, regs, &live)?;
         catalog.settle(&pager, &txns).map_err(corrupt)?;
         let applied = catalog.source().log.len();
         options
@@ -494,7 +495,7 @@ impl<R: Runtime> Engine<R> {
             .check(catalog.schema(), &host::pending(log, applied))?;
         let hosts = Arc::new(options.host_fns.hosts());
         catalog.set_hosts(hosts.clone());
-        migrate(&mut catalog, &pager, &txns, log)?;
+        migrate(&mut catalog, &pager, &txns, log, &live)?;
         let (schema, program) = catalog.checking();
         let (schema, program) = (schema.clone(), program.clone());
         let normal = norm::program(&schema, &program).map_err(corrupt)?;
@@ -809,16 +810,18 @@ fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
 }
 
 /// Apply the migrations of `log` beyond the file's own, each as its own schema change, stopping
-/// at the first refused one.
+/// at the first refused one or the first across which a bundle of `live` has no translation.
 fn migrate<R: Runtime>(
     catalog: &mut Catalog,
     pager: &Pager<R>,
     txns: &crate::mvcc::Transactions<R>,
     log: &Log,
+    live: &[registered::Live],
 ) -> Result<(), OpenError> {
     let stored = catalog.source().log.len();
     for text in log.migrations.iter().skip(stored) {
         let version = catalog.source().version + 1;
+        registered::recheck(catalog, text, live).map_err(|reason| refused(version, reason))?;
         catalog.migrate(pager, txns, text).map_err(|e| match e {
             catalog::Error::Refused(why) => refused(
                 version,

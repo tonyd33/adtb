@@ -304,9 +304,13 @@ Postconditions:
   normalised at the version its header pins, and one that is no
   bundle's at the version open leaves the file at. A call never parses
   or type checks.
-- A bundle pinned at the version the database is at runs its calls. A
-  call of one pinned earlier is refused `Untranslatable`, naming
-  `bundle::query`, until version translation serves it.
+- A bundle pinned at the version the database is at runs its calls. One
+  pinned earlier is translated to that version at registration, and its
+  calls run through the translation, their arguments carried forward
+  and their results encoded at the pin. A registration with a query or
+  transaction that has no translation is refused `Untranslatable`,
+  naming `bundle::query`, or `BundleExpired` for a bundle whose lease
+  ran out.
 - Ordinals are declaration order from 1: each `import fn` in import
   order, then each query and transaction in item order. A bundle
   function takes no ordinal and is visible only to its registration.

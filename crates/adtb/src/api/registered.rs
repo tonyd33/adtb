@@ -9,9 +9,10 @@ use adtb_lang::check::{Bundles, Program, check_adhoc};
 use adtb_lang::evolve::Source;
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 use adtb_lang::norm::{self, NormalQuery};
-use adtb_lang::parse::{Options, parse_adhoc, parse_bundle, parse_bundle_body};
+use adtb_lang::parse::{Options, parse_adhoc, parse_bundle, parse_bundle_body, parse_migration};
 use adtb_lang::schema::Schema;
 use adtb_lang::signature::{self, Item};
+use adtb_lang::translate::{Map, Pinned, Untranslatable};
 use adtb_lang::types::{FnId, Ty};
 
 use crate::catalog::{self, Catalog};
@@ -21,6 +22,7 @@ use crate::runtime::Runtime;
 use super::arrow::{self, ArrowStream};
 use super::bundle::{self, CallRow, EDITION, Header, Stored};
 use super::error::{Error, RejectReason};
+use super::pinned;
 use super::reads::Reads;
 use super::settings::Settings;
 use super::text::{DynRows, Prepared, rows};
@@ -145,6 +147,20 @@ struct Entry {
     retry: Option<u64>,
     /// Its row of `catalog::registered`, its ordinal from 1.
     row: CallRow,
+    /// Its translation to the version the database is at, for a registration checked at an
+    /// earlier one.
+    served: Option<Served>,
+}
+
+/// A callable translated to the version the database is at, its variables as [`Entry`]'s.
+#[derive(Debug)]
+struct Served {
+    /// The schema it runs over.
+    schema: Arc<Schema>,
+    terms: Arc<Terms>,
+    body: Tm,
+    params: Vec<Option<Var>>,
+    unit: Option<Var>,
 }
 
 /// A registration whose every callable checked.
@@ -156,8 +172,6 @@ pub(super) struct Checked {
     entries: Vec<Entry>,
     /// The header of a bundle file's registration.
     header: Option<Header>,
-    /// Whether the registration is checked at the version the database is at, so its calls run.
-    current: bool,
 }
 
 impl Checked {
@@ -177,9 +191,32 @@ impl Checked {
         Some(reads.reader(&self.schema, &h.name, h.pins, h.hides_new))
     }
 
+    /// Returns `rows`, the result of a call of `entry`, encoded at the version the registration
+    /// is checked at.
+    fn encoded(&self, entry: &Entry, rows: DynRows) -> Result<DynRows, Error> {
+        let Some(served) = &entry.served else {
+            return Ok(rows);
+        };
+        let map = Map::new(&self.schema, &served.schema);
+        let ty = match entry.terms.ty(entry.body) {
+            Ty::Set(t) | Ty::NonEmpty(t) => t.as_ref().clone(),
+            t => t.clone(),
+        };
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+        for v in rows {
+            let v = pinned::back(&map, &ty, &v?);
+            if seen.insert(v.clone()) {
+                out.push(v);
+            }
+        }
+        Ok(super::text::rows(&self.schema, ty, out))
+    }
+
     /// Record the queries and transactions of a bundle whose calls run in `bundles`.
     pub(super) fn explained(&self, bundles: &mut Bundles) {
-        let Some(h) = self.header.as_ref().filter(|_| self.current) else {
+        let translated = self.entries.iter().any(|e| e.served.is_some());
+        let Some(h) = self.header.as_ref().filter(|_| !translated) else {
             return;
         };
         for e in self.entries.iter().filter(|e| e.kind != Callable::Fn) {
@@ -245,17 +282,25 @@ pub(super) fn register(
         }
         let version = catalog.source().version;
         let Some(h) = &r.header else {
-            let c = checked(&over, r, true).map_err(refused)?;
+            let c = checked(&over, r).map_err(refused)?;
             pinned_within(&c, version).map_err(refused)?;
             out.push(c);
             continue;
         };
         let at_pin = pinned(catalog, h).map_err(refused)?;
-        let c = match &at_pin {
-            Some(pin) => checked(&pin.over(), r, false),
-            None => checked(&over, r, true),
+        let mut c = match &at_pin {
+            Some(pin) => checked(&pin.over(), r),
+            None => checked(&over, r),
         }
         .map_err(refused)?;
+        if let Some(pin) = &at_pin {
+            let served = translations(&c, &pin.source, schema, catalog.source(), program).map_err(
+                |(query, u)| refused(untranslatable(stored, h, now, s, &c.name, &query, &u)),
+            )?;
+            for (e, s) in c.entries.iter_mut().zip(served) {
+                e.served = Some(s);
+            }
+        }
         pinned_within(&c, version).map_err(refused)?;
         let (_, calls) = c.bundle().expect("a bundle's registration has a header");
         bundle::admitted(stored, h, &calls).map_err(refused)?;
@@ -265,6 +310,31 @@ pub(super) fn register(
         out.push(c);
     }
     Ok(out)
+}
+
+/// Returns the refusal of registering `h`, whose callable `query` of bundle `name` has no
+/// translation for `u`, at `now` under the file settings `s`: `BundleExpired` for a bundle whose
+/// lease ran out or that is superseded, else `Untranslatable`.
+fn untranslatable(
+    stored: &Stored,
+    h: &Header,
+    now: i64,
+    s: &Settings,
+    name: &str,
+    query: &str,
+    u: &Untranslatable,
+) -> Error {
+    let query = format!("{name}::{query}");
+    if bundle::lapsed(stored, h, now, s) {
+        return Error::rejected(RejectReason::BundleExpired {
+            bundle: h.name.clone(),
+            query,
+        });
+    }
+    Error::rejected(RejectReason::Untranslatable {
+        query,
+        detail: u.to_string(),
+    })
 }
 
 /// Refuse a callable of `c` with an `at` block pinned at a version after `version`.
@@ -301,7 +371,7 @@ pub(super) fn downgrade(catalog: &Catalog, regs: &[Registration]) -> Result<(), 
         let Ok(Some(pin)) = pinned(catalog, h) else {
             continue;
         };
-        let Ok(c) = checked(&pin.over(), r, false) else {
+        let Ok(c) = checked(&pin.over(), r) else {
             continue;
         };
         if let Ok(Some(ctor)) = stale(catalog, &c) {
@@ -384,13 +454,20 @@ fn catalog_error(e: catalog::Error) -> Error {
     }
 }
 
+/// A live bundle, checked at the version it pins, with the source of that version.
+pub(super) struct Live {
+    checked: Checked,
+    source: Source,
+}
+
 /// Register as a reader of `catalog` each bundle of `regs` that `live` names, at the version it
-/// pins.
+/// pins. Returns those bundles.
 pub(super) fn readers(
     catalog: &mut Catalog,
     regs: &[Registration],
     live: &BTreeSet<String>,
-) -> Result<(), OpenError> {
+) -> Result<Vec<Live>, OpenError> {
+    let mut out = Vec::new();
     let schema = Arc::new(catalog.schema().clone());
     let program = catalog.program().clone();
     for r in regs {
@@ -401,32 +478,110 @@ pub(super) fn readers(
             bundle: r.name.clone(),
             reason,
         };
-        let reader = {
-            let c = match pinned(catalog, h).map_err(refused)? {
-                Some(pin) => checked(&pin.over(), r, false),
-                None => checked(
+        let (c, source) = match pinned(catalog, h).map_err(refused)? {
+            Some(pin) => (checked(&pin.over(), r), pin.source),
+            None => (
+                checked(
                     &Over {
                         source: catalog.source(),
                         schema: &schema,
                         program: &program,
                     },
                     r,
-                    true,
                 ),
-            }
-            .map_err(refused)?;
-            c.reader().expect("a bundle's registration has a header")
+                catalog.source().clone(),
+            ),
         };
+        let c = c.map_err(refused)?;
+        let reader = c.reader().expect("a bundle's registration has a header");
         catalog
             .register(reader)
             .map_err(|e| refused(catalog_error(e)))?;
+        out.push(Live { checked: c, source });
+    }
+    Ok(out)
+}
+
+/// Refuse migration `text`, applied to the version `catalog` is at, when a query or transaction
+/// of a bundle of `live` has no translation to the version it gives. A migration that does not
+/// apply or check is left for the catalog to refuse.
+pub(super) fn recheck(catalog: &Catalog, text: &str, live: &[Live]) -> Result<(), RejectReason> {
+    if live.is_empty() {
+        return Ok(());
+    }
+    let Ok(file) = parse_migration(text, Options::default()).ok() else {
+        return Ok(());
+    };
+    let Ok(next) = catalog.source().migrate(&file, text) else {
+        return Ok(());
+    };
+    let Ok((schema, program)) = next.check() else {
+        return Ok(());
+    };
+    let schema = Arc::new(schema);
+    for l in live {
+        if let Err((query, u)) = translations(&l.checked, &l.source, &schema, &next, &program) {
+            let pins = l.checked.header.as_ref().map_or(0, |h| h.pins);
+            let first = || {
+                file.operators
+                    .first()
+                    .map_or(text, |op| spanned(text, op.span))
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned()
+            };
+            return Err(RejectReason::SchemaRefused {
+                operator: u.operator.clone().unwrap_or_else(first),
+                detail: format!(
+                    "bundle {} pins {pins}: `{query}` has no translation: {}",
+                    l.checked.name, u.reason
+                ),
+            });
+        }
     }
     Ok(())
 }
 
-/// Check and normalise registration `r` over `over`, the version the database is at when
-/// `current`.
-fn checked(over: &Over<'_>, r: &Registration, current: bool) -> Result<Checked, Error> {
+/// Returns the translation of each callable of `c`, checked at the version of `pin`, to `now`,
+/// the schema of `now_source` checked as `program`. Fail with the name of the first callable
+/// that has none, and why.
+fn translations(
+    c: &Checked,
+    pin: &Source,
+    now: &Arc<Schema>,
+    now_source: &Source,
+    program: &Program,
+) -> Result<Vec<Served>, (String, Untranslatable)> {
+    let hides = c.header.as_ref().is_some_and(|h| h.hides_new);
+    let p = Pinned::new(&c.schema, pin, now, now_source, program, hides)
+        .map_err(|u| (String::new(), u))?;
+    let mut out = Vec::with_capacity(c.entries.len());
+    for e in &c.entries {
+        let q = NormalQuery {
+            terms: (*e.terms).clone(),
+            params: e.params.iter().flatten().copied().chain(e.unit).collect(),
+            body: e.body,
+        };
+        let t = p.query(&q).map_err(|u| (e.name.clone(), u))?;
+        let mut vars = t.params.into_iter();
+        let mut next = || vars.next().expect("a translation keeps every parameter");
+        let params = e.params.iter().map(|x| x.map(|_| next())).collect();
+        let unit = e.unit.map(|_| next());
+        out.push(Served {
+            schema: now.clone(),
+            terms: Arc::new(t.terms),
+            body: t.body,
+            params,
+            unit,
+        });
+    }
+    Ok(out)
+}
+
+/// Check and normalise registration `r` over `over`.
+fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Error> {
     let (imports, items) = r.body()?;
     let vis = signature::visible(over.schema, &imports).map_err(Error::invalid)?;
     let fns: Vec<&FnDecl> = items
@@ -487,7 +642,6 @@ fn checked(over: &Over<'_>, r: &Registration, current: bool) -> Result<Checked, 
         schema: extended.map_or_else(|| over.schema.clone(), |(s, _)| s),
         entries,
         header: r.header.clone(),
-        current,
     })
 }
 
@@ -528,6 +682,7 @@ fn entry(name: &str, kind: Callable, arity: usize, n: NormalQuery) -> Entry {
         unit,
         writes,
         retry,
+        served: None,
     }
 }
 
@@ -599,6 +754,7 @@ fn imported(schema: &Schema, program: &Program, f: &QName, id: FnId) -> Result<E
         terms: Arc::new(normal.terms),
         writes,
         retry,
+        served: None,
     })
 }
 
@@ -691,7 +847,7 @@ impl<R: Runtime> Registered<R> {
                 e.renew(&self.checked.name);
             }
         })?;
-        let value = one(&e, entry, done.value);
+        let value = self.checked.encoded(entry, one(&e, entry, done.value))?;
         Ok(match entry.kind {
             Callable::Txn => Called::Committed(Committed {
                 value,
@@ -741,14 +897,6 @@ impl<R: Runtime> Registered<R> {
             .and_then(|i| checked.entries.get(i.checked_sub(1)?))
             .ok_or_else(|| Error::rejected(RejectReason::UnknownQuery))?;
         let due = e.admit(&checked.name, &entry.name)?;
-        if !checked.current {
-            return Err(Error::rejected(RejectReason::Untranslatable {
-                query: format!("{}::{}", checked.name, entry.name),
-                detail: "the bundle pins an earlier version than the database is at, and this \
-                         engine serves a bundle only at the version the database is at"
-                    .into(),
-            }));
-        }
         let caller = caller()?;
         arguments(checked, entry, args)?;
         if read_only && entry.writes {
@@ -787,7 +935,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
                 e.renew(&reg.checked.name);
             }
         })?;
-        let value = one(e, entry, rows);
+        let value = reg.checked.encoded(entry, one(e, entry, rows))?;
         Ok(match entry.kind {
             Callable::Txn => InTxn::Pending(value),
             Callable::Query | Callable::Fn => InTxn::Rows(value),
@@ -816,19 +964,37 @@ fn arguments(checked: &Checked, entry: &Entry, args: &[Val]) -> Result<(), Error
     Ok(())
 }
 
-/// Returns the call of `entry` with `args` for `caller`.
+/// Returns the call of `entry` with `args` for `caller`, through its translation when it has
+/// one, its arguments carried to the version the database is at.
 fn prepared(checked: &Checked, entry: &Entry, args: &[Val], caller: Val) -> Prepared {
-    let mut params: Vec<(Var, Val)> = entry
-        .params
+    let (schema, terms, body, vars, unit) = match &entry.served {
+        Some(s) => (&s.schema, &s.terms, s.body, &s.params, s.unit),
+        None => (
+            &checked.schema,
+            &entry.terms,
+            entry.body,
+            &entry.params,
+            entry.unit,
+        ),
+    };
+    let map = entry
+        .served
+        .as_ref()
+        .map(|s| Map::new(&checked.schema, &s.schema));
+    let carried = |ty: &Ty, v: &Val| match &map {
+        Some(m) => pinned::forward(m, ty, v),
+        None => v.clone(),
+    };
+    let mut params: Vec<(Var, Val)> = vars
         .iter()
-        .zip(args)
-        .filter_map(|(x, v)| x.map(|x| (x, v.clone())))
+        .zip(entry.types.iter().zip(args))
+        .filter_map(|(x, (ty, v))| x.map(|x| (x, carried(ty, v))))
         .collect();
-    params.extend(entry.unit.map(|u| (u, Val::record(Vec::new()))));
+    params.extend(unit.map(|u| (u, Val::record(Vec::new()))));
     Prepared {
-        schema: checked.schema.clone(),
-        terms: entry.terms.clone(),
-        items: vec![entry.body],
+        schema: schema.clone(),
+        terms: terms.clone(),
+        items: vec![body],
         commands: Vec::new(),
         params,
         caller,

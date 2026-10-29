@@ -493,6 +493,50 @@ impl Schema {
         (set.len() != self.ty(def).ctors().len()).then_some(set)
     }
 
+    /// Returns whether a value of `ty` can hold a value of declared type `def`.
+    pub fn reaches(&self, ty: &Ty, def: TypeId) -> bool {
+        let mut defs = BTreeSet::new();
+        self.reached(ty, &mut defs, &mut BTreeSet::new());
+        defs.contains(&def)
+    }
+
+    /// Add to `defs` each declared type a value of `ty` can hold, through its type arguments, its
+    /// structure or the fields of the types it names, and to `rels` each relation a key it holds
+    /// names.
+    pub fn reached(&self, ty: &Ty, defs: &mut BTreeSet<TypeId>, rels: &mut BTreeSet<RelId>) {
+        match ty {
+            Ty::Data { def, args, .. } => {
+                for a in args {
+                    self.reached(a, defs, rels);
+                }
+                if !defs.insert(*def) {
+                    return;
+                }
+                match &self.ty(*def).kind {
+                    TypeDefKind::Sum { header, ctors, .. } => header
+                        .iter()
+                        .chain(ctors.iter().flat_map(|c| &c.fields))
+                        .for_each(|f| self.reached(&f.ty, defs, rels)),
+                    TypeDefKind::Newtype { base, .. } => self.reached(base, defs, rels),
+                }
+            }
+            Ty::Key { rel, .. } => {
+                rels.insert(*rel);
+            }
+            Ty::Record(fs) => fs.iter().for_each(|(_, t)| self.reached(t, defs, rels)),
+            Ty::Sum { ctors, .. } => ctors
+                .iter()
+                .flat_map(|(_, fs)| fs)
+                .for_each(|(_, t)| self.reached(t, defs, rels)),
+            Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => self.reached(t, defs, rels),
+            Ty::Group(a, b) | Ty::Fn(a, b) => {
+                self.reached(a, defs, rels);
+                self.reached(b, defs, rels);
+            }
+            Ty::Base(_) | Ty::Param(_) | Ty::Unit | Ty::Change => {}
+        }
+    }
+
     /// Returns whether `ty` is ordered, taking every type parameter as ordered.
     pub fn is_ordered(&self, ty: &Ty) -> bool {
         self.is_ordered_with(ty, &|_| true)

@@ -11,7 +11,8 @@ use std::sync::OnceLock;
 
 use adtb::plan::{Rewrites, with_rewrites};
 use adtb::{
-    CallOptions, CreateOptions, Database, Error, Log, OpenError, OpenOptions, RejectReason,
+    CallOptions, Called, CreateOptions, Database, Error, Log, OpenError, OpenOptions, Registration,
+    RejectReason,
 };
 use adtb_lang::textual;
 use adtb_reference::{Abort, Rejection, Value};
@@ -862,12 +863,434 @@ fn step_laws(seed: u64, w: &Walk, k: usize) -> Option<String> {
     )
 }
 
+/// A bundle of the pinned-query law, pinned at the version before a migration.
+struct Pinned {
+    name: String,
+    text: String,
+    registration: Registration,
+    /// The query it registers, by its position among the case's, else none for the bundle whose
+    /// one transaction writes every row of a constructor relation again unchanged.
+    query: Option<(usize, String)>,
+}
+
+/// Returns the bundles of the pinned-query law at the version `log` leaves that translate to the
+/// version `to` leaves: one for each query of `case` that checks there, and one for each
+/// constructor relation of module `app` whose transaction writes each of its rows again, by
+/// upsert, as a value stating its every field.
+fn law_bundles(log: &[String], to: &[String], case: &Case) -> Result<Vec<Pinned>, String> {
+    use adtb_lang::check::check_adhoc;
+    use adtb_lang::parse::{Options, parse_adhoc};
+    let replayed = |log: &[String]| {
+        let source = adtb_lang::signature::replay(log.iter().map(String::as_str))
+            .map_err(|e| format!("the log does not replay: {e:?}"))?;
+        let (schema, program) = source
+            .check()
+            .map_err(|e| format!("the version does not check: {e:?}"))?;
+        Ok::<_, String>((source, schema, program))
+    };
+    let (source, schema, program) = replayed(log)?;
+    let later = replayed(to)?;
+    let translates = |body: &str| {
+        let p = adtb_lang::translate::Pinned::new(
+            &schema, &source, &later.1, &later.0, &later.2, false,
+        );
+        p.is_ok_and(|p| normal(&schema, &program, body).is_some_and(|q| p.query(&q).is_ok()))
+    };
+    let hash: String = adtb::catalog::version_hash(&schema, &source)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let header = |name: &str| {
+        format!(
+            "bundle {name} pins {} ({hash}) edition \"2026-10\"\nimport app\n",
+            log.len()
+        )
+    };
+    let mut texts = Vec::new();
+    for (i, q) in case.queries.iter().enumerate() {
+        let body = q.text();
+        let Ok(items) = parse_adhoc(&body, Options::default()).ok() else {
+            continue;
+        };
+        let Ok(adhoc) = check_adhoc(&schema, &program, &items, &Default::default()) else {
+            continue;
+        };
+        let [item] = adhoc.items.as_slice() else {
+            continue;
+        };
+        let ty = schema.show_ty(adhoc.terms.ty(*item));
+        let indented = body.replace('\n', "\n  ");
+        let item = format!("query q () -> {ty} =\n  {indented}\n");
+        if !translates(&item) {
+            continue;
+        }
+        let name = format!("law{i}-1.0");
+        let text = format!("{}{item}", header(&name));
+        texts.push((name, text, Some((i, body))));
+    }
+    for (j, write) in rewrites(&schema).into_iter().enumerate() {
+        let item = format!("txn w () -> I64 =\n  transact\n    {write}\n    return 0\n");
+        if !translates(&item) {
+            continue;
+        }
+        let name = format!("put{j}-1.0");
+        let text = format!("{}{item}", header(&name));
+        texts.push((name, text, None));
+    }
+    texts
+        .into_iter()
+        .map(|(name, text, query)| {
+            let registration = Registration::bundle(&text)
+                .map_err(|e| format!("`{text}` is no bundle file: {e:?}"))?;
+            Ok(Pinned {
+                name,
+                text,
+                registration,
+                query,
+            })
+        })
+        .collect()
+}
+
+/// Returns the normal form of the one query or transaction of bundle body `item`, which imports
+/// module `app`, over `schema` checked as `program`.
+fn normal(
+    schema: &adtb_lang::schema::Schema,
+    program: &adtb_lang::check::Program,
+    item: &str,
+) -> Option<adtb_lang::norm::NormalQuery> {
+    use adtb_lang::parse::{Options, parse_bundle_body};
+    use adtb_lang::signature::{self, Item};
+    let text = format!("import app\n{item}");
+    let (imports, items) = parse_bundle_body(&text, Options::default()).ok().ok()?;
+    let vis = signature::visible(schema, &imports).ok()?;
+    let calls = signature::calls(schema, program, &vis, &imports, &items).ok()?;
+    match &calls.first()?.item {
+        Item::Query(_, q) => adtb_lang::norm::query(schema, program, q).ok(),
+        Item::Txn(_, t) => adtb_lang::norm::txn(schema, program, t).ok(),
+        Item::Fn(..) => None,
+    }
+}
+
+/// Returns, for each constructor relation of module `app` in `schema`, an upsert of each of its
+/// rows as a value stating its every field, which leaves the row as it is.
+fn rewrites(schema: &adtb_lang::schema::Schema) -> Vec<String> {
+    let mut out = Vec::new();
+    for r in &schema.relations {
+        if schema.module(r.module).name != "app" {
+            continue;
+        }
+        let t = schema.ty(r.elem_def);
+        let record = matches!(
+            t.kind,
+            adtb_lang::schema::TypeDefKind::Sum { record: true, .. }
+        );
+        for c in t.ctors() {
+            let fields: Vec<String> = t
+                .header()
+                .iter()
+                .chain(&c.fields)
+                .map(|f| format!("{0}: x.{0}", f.name))
+                .collect();
+            let rel = if record {
+                r.name.clone()
+            } else {
+                format!("{}.{}", r.name, c.name)
+            };
+            out.push(format!(
+                "insert {rel} from (from x in {rel} select {{ {} }}) unless conflict on key else update old set new",
+                fields.join(", ")
+            ));
+        }
+    }
+    out
+}
+
+/// Returns each row of `rows`, its value debug printed, sorted.
+fn rows_of(rows: adtb::DynRows) -> Result<Vec<String>, Error> {
+    let mut out = rows
+        .map(|r| r.map(|v| format!("{v:?}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    out.sort();
+    Ok(out)
+}
+
+/// Returns the rows `text` returns on `db`, sorted, or `None` when it fails or returns other
+/// than one result.
+fn ad_hoc(db: &Database<SimRuntime>, text: &str) -> Option<Vec<String>> {
+    let mut got = db.query_text(text, &[], &CallOptions::default()).ok()?;
+    (got.len() == 1).then(|| rows_of(got.remove(0)).ok())?
+}
+
+/// Returns the rows of every relation of module `app` on `db`, as one line each, sorted.
+fn contents(db: &Database<SimRuntime>, names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .flat_map(|r| {
+            ad_hoc(db, &format!("from x in {r} select x"))
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |row| format!("{r}: {row}"))
+        })
+        .collect()
+}
+
+/// Open `log` registering every bundle of `laws`, each one the library translates: one the
+/// engine refuses as stale, or as reading a constructor enabled since its pin, is dropped from
+/// `laws` and the open retried. Fail when the engine refuses one as untranslatable.
+fn open_translated(
+    rt: &SimRuntime,
+    log: &[String],
+    laws: &mut Vec<Pinned>,
+) -> Result<Database<SimRuntime>, String> {
+    loop {
+        let options = OpenOptions {
+            create: Some(CreateOptions::default()),
+            registrations: laws.iter().map(|l| l.registration.clone()).collect(),
+            ..OpenOptions::default()
+        };
+        let opened = Database::open_in(
+            rt.clone(),
+            "differential.adt",
+            &Log::new(log.to_vec()),
+            &options,
+        );
+        match opened {
+            Ok(db) => return Ok(db),
+            Err(OpenError::RegistrationRefused {
+                bundle,
+                reason:
+                    Error::Rejected {
+                        reason: RejectReason::BundleStale { .. },
+                    },
+            }) if laws.iter().any(|l| l.name == bundle) => laws.retain(|l| l.name != bundle),
+            Err(OpenError::DowngradeRefused { cause })
+                if laws
+                    .iter()
+                    .any(|l| cause.starts_with(&format!("bundle {},", l.name))) =>
+            {
+                laws.retain(|l| !cause.starts_with(&format!("bundle {},", l.name)));
+            }
+            Err(e) => return Err(format!("a bundle pinned before it does not open: {e:?}")),
+        }
+    }
+}
+
+/// Returns the rows of a call of the one query or transaction of bundle `name` on `db`.
+fn called(db: &Database<SimRuntime>, name: &str) -> Result<Vec<String>, String> {
+    let bound = db
+        .registered(name)
+        .map_err(|e| format!("{name} does not bind: {e:?}"))?;
+    match bound.call(1, &[], &CallOptions::default()) {
+        Ok(Called::Rows(rows)) => rows_of(rows).map_err(|e| format!("{name} fails: {e:?}")),
+        Ok(Called::Committed(c)) => rows_of(c.value).map_err(|e| format!("{name} fails: {e:?}")),
+        Err(e) => Err(format!("{name} fails: {e:?}")),
+    }
+}
+
+/// The queries the pinned-query law translated, by the operators of the migration translated
+/// across, over one sweep.
+static TRANSLATED: std::sync::Mutex<Vec<(Operator, usize)>> = std::sync::Mutex::new(Vec::new());
+
+/// Count `n` translated queries for each operator of `ops`.
+fn translated(ops: &[Operator], n: usize) {
+    let mut counts = TRANSLATED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for &op in ops {
+        match counts.iter_mut().find(|(o, _)| *o == op) {
+            Some((_, c)) => *c += n,
+            None => counts.push((op, n)),
+        }
+    }
+}
+
+/// The operators the translation of a pinned query crosses rather than refuses.
+const TRANSLATES: [Operator; 18] = [
+    Operator::AddRelation,
+    Operator::AddConstructor,
+    Operator::Enable,
+    Operator::Deprecate,
+    Operator::Disable,
+    Operator::RenameType,
+    Operator::RenameRelation,
+    Operator::RenameConstructor,
+    Operator::AddField,
+    Operator::DropField,
+    Operator::RenameField,
+    Operator::AddIndex,
+    Operator::DropIndex,
+    Operator::AddUnique,
+    Operator::AddDefault,
+    Operator::DropDefault,
+    Operator::AddCheck,
+    Operator::RedefineFn,
+];
+
+/// Returns where a bundle of walk `w` pinned at the version before migration `k` breaks the law
+/// of a pinned query once translated across it: over the data before it, carried by the
+/// migration, a query returns what it returns at its pin, and a transaction writing every row
+/// again unchanged leaves the data as it is; over the data the walk's writes leave after it, a
+/// query returns what it returns at its pin over that data reverted. A query that fails at its
+/// pin, and data whose revert is refused, hold no law.
+fn pinned_law(seed: u64, w: &Walk, k: usize) -> Option<String> {
+    let log = w.log();
+    let step = &w.steps[k];
+    let before = if k == 0 {
+        &w.start
+    } else {
+        &w.steps[k - 1].written
+    };
+    let mut laws = match law_bundles(&log[..=k], &log[..k + 2], before) {
+        Ok(laws) => laws,
+        Err(e) => return Some(e),
+    };
+    let mut sim = Sim::new(seed, Config::default());
+    process(&mut sim, |rt| {
+        let db = open(rt, &log[..1]);
+        write(&db, &w.start.load);
+        close(db);
+    });
+    for (j, step) in w.steps[..k].iter().enumerate() {
+        process(&mut sim, |rt| {
+            let db = open(rt, &log[..j + 2]);
+            write(&db, &step.writes);
+            close(db);
+        });
+    }
+    let expected: Vec<(String, Vec<String>)> = process(&mut sim, |rt| {
+        let db = open(rt, &log[..=k]);
+        let out = laws
+            .iter()
+            .filter_map(|l| Some((l.name.clone(), ad_hoc(&db, &l.query.as_ref()?.1)?)))
+            .collect();
+        close(db);
+        out
+    });
+    let names = match relations(&log[..k + 2]) {
+        Ok(names) => names,
+        Err(e) => return Some(e),
+    };
+    let after = process(&mut sim, |rt| {
+        let db = open_translated(&rt, &log[..k + 2], &mut laws)?;
+        if let Some(found) = carried(&db, &laws, &expected, &names) {
+            close(db);
+            return Err(found);
+        }
+        let queries = laws.iter().filter(|l| l.query.is_some()).count();
+        translated(&step.operators, queries);
+        write(&db, &step.writes);
+        let rewrites: Vec<&Pinned> = laws.iter().filter(|l| l.query.is_none()).collect();
+        if let Some(found) = rewritten(&db, &rewrites, &names) {
+            close(db);
+            return Err(format!("after the writes, {found}"));
+        }
+        let got: Vec<(String, Result<Vec<String>, String>)> = laws
+            .iter()
+            .filter(|l| l.query.is_some())
+            .map(|l| (l.name.clone(), called(&db, &l.name)))
+            .collect();
+        close(db);
+        Ok(got)
+    });
+    let got = match after {
+        Ok(got) => got,
+        Err(found) => return Some(found),
+    };
+    let Inverse::Restores { revert, .. } = &step.inverse else {
+        return None;
+    };
+    let mut at = log[..k + 2].to_vec();
+    at.push(revert.clone());
+    process(&mut sim, |rt| match try_open(rt, &at) {
+        Err(OpenError::MigrationRefused { .. }) => None,
+        Err(e) => Some(format!("its revert after the writes does not open: {e:?}")),
+        Ok(db) => {
+            let found = got.iter().find_map(|(name, got)| {
+                let (i, q) = laws.iter().find(|l| l.name == *name)?.query.as_ref()?;
+                let want = ad_hoc(&db, q)?;
+                match got {
+                    Ok(got) if *got == want => None,
+                    Ok(got) => Some(format!(
+                        "query {i} pinned before it returns {got:?} after the writes, not \
+                         {want:?} as the data reverted: {q}"
+                    )),
+                    Err(e) => Some(format!(
+                        "query {i} pinned before it fails after the writes: {e}: {q}"
+                    )),
+                }
+            });
+            close(db);
+            found
+        }
+    })
+}
+
+/// Returns the names of the relations of module `app` at the version `log` leaves.
+fn relations(log: &[String]) -> Result<Vec<String>, String> {
+    let source = adtb_lang::signature::replay(log.iter().map(String::as_str))
+        .map_err(|e| format!("the log does not replay: {e:?}"))?;
+    let schema = source
+        .schema()
+        .map_err(|e| format!("the version does not build: {e:?}"))?;
+    Ok(schema
+        .relations
+        .iter()
+        .filter(|r| schema.module(r.module).name == "app")
+        .map(|r| r.name.clone())
+        .collect())
+}
+
+/// Returns where a bundle of `laws` registered on `db` breaks the law over the data carried by
+/// the migration: a query returns other than its `expected` rows at its pin, or a transaction
+/// changes the rows of the relations `names`.
+fn carried(
+    db: &Database<SimRuntime>,
+    laws: &[Pinned],
+    expected: &[(String, Vec<String>)],
+    names: &[String],
+) -> Option<String> {
+    laws.iter().find_map(|l| match &l.query {
+        Some((i, q)) => {
+            let want = &expected.iter().find(|(n, _)| *n == l.name)?.1;
+            match called(db, &l.name) {
+                Ok(got) if got == *want => None,
+                Ok(got) => Some(format!(
+                    "query {i} pinned before it returns {got:?}, not {want:?}: {q}"
+                )),
+                Err(e) => Some(format!("query {i} pinned before it fails: {e}: {q}")),
+            }
+        }
+        None => rewritten(db, &[l], names),
+    })
+}
+
+/// Returns where a transaction of `rewrites`, each writing rows again unchanged, changes the rows
+/// of the relations `names` on `db`.
+fn rewritten(db: &Database<SimRuntime>, rewrites: &[&Pinned], names: &[String]) -> Option<String> {
+    rewrites.iter().find_map(|l| {
+        let before = contents(db, names);
+        if let Err(e) = called(db, &l.name) {
+            return Some(format!("a rewrite pinned before it fails: {e}"));
+        }
+        let after = contents(db, names);
+        (before != after).then(|| {
+            format!(
+                "a rewrite pinned before it changes the rows {before:?} to {after:?}: {}",
+                l.text
+            )
+        })
+    })
+}
+
 /// Returns the first law of a schema operator that walk `w` breaks, by migration.
 fn laws(seed: u64, w: &Walk) -> Option<String> {
     w.steps.iter().enumerate().find_map(|(k, step)| {
-        panic::catch_unwind(AssertUnwindSafe(|| step_laws(seed, w, k)))
-            .unwrap_or_else(|p| Some(format!("panics: {}", panic_message(&*p))))
-            .map(|m| format!("migration {} of {:?}: {m}", k + 2, step.operators))
+        panic::catch_unwind(AssertUnwindSafe(|| {
+            step_laws(seed, w, k).or_else(|| pinned_law(seed, w, k))
+        }))
+        .unwrap_or_else(|p| Some(format!("panics: {}", panic_message(&*p))))
+        .map(|m| format!("migration {} of {:?}: {m}", k + 2, step.operators))
     })
 }
 
@@ -927,6 +1350,19 @@ fn schema_walks_keep_engine_equal_to_reference() {
 #[test]
 fn schema_operators_keep_their_laws() {
     sweep_walks("operator laws", LAW_WALKS, STEPS, &STAGED, laws);
+    let counts = TRANSLATED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let vacuous: Vec<Operator> = counts
+        .iter()
+        .filter(|&&(op, n)| n == 0 && TRANSLATES.contains(&op))
+        .map(|&(op, _)| op)
+        .collect();
+    assert!(
+        vacuous.is_empty(),
+        "no query pinned before {vacuous:?} is translated across it in seeds {:?}",
+        seeds_of(LAW_WALKS)
+    );
 }
 
 #[test]

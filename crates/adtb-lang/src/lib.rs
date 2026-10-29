@@ -22,5 +22,6 @@ pub mod schema;
 pub mod signature;
 pub mod span;
 pub mod textual;
+pub mod translate;
 pub mod types;
 pub mod visit;

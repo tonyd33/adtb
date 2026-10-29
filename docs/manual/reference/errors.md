@@ -395,34 +395,38 @@ no such query
 
 ### Untranslatable
 
-A bundle pinned at an earlier version than the database's is
-registered, but its calls are refused: this engine does not yet
-translate a call from the version a bundle pins to the database's
-current one. The message names the query. Pin the bundle at the
-version the log ends at, and regenerate its code.
+A bundle pinned at an earlier version than the database's runs each
+call translated from its pinned version to the current one. When the
+database opens, a bundle with a query or transaction that has no
+translation is refused registration, and the message names the query
+and the operator it cannot cross. A query that reads a field a later
+migration drops has none. Change the query, or pin the bundle at the
+version the log ends at and regenerate its code.
 
 ```rust
-use adtb::{CallOptions, CreateOptions, Log, OpenOptions, Registration};
+use adtb::{CreateOptions, Log, OpenOptions, Registration};
 
-const OLD: &str = "bundle shelter-0.9 pins 1 (dc6e320624d427d9d797f8457b7e36f0cf06c6dc8e29decad0b185faff6cff8e) edition \"2026-10\"
+const OLD: &str = "bundle shelter-1.0 pins 2 (c2d244dc1b156f7f2e2cb7a03cd67d2c1aa27c156b88cde97567011c7fba4ad8) edition \"2026-10\"
 import shelter
-query names () -> Set Text = from p in pets select p.name
+query adopters () -> Set Text = from a in adoptions select a.by
+";
+
+const DROP_BY: &str = "module shelter
+drop field Adoption.by
 ";
 
 fn main() -> Result<(), adtb::Error> {
     let log = Log::new([
         include_str!("../migrations/0001.adt"),
         include_str!("../migrations/0002.adt"),
+        DROP_BY,
     ]);
     let options = OpenOptions {
         create: Some(CreateOptions::default()),
         registrations: vec![Registration::bundle(OLD)?],
         ..OpenOptions::default()
     };
-    let db = adtb::open("shelter.db", &log, &options).expect("shelter.db opens");
-    let old = db.registered("shelter-0.9")?;
-    let names = old.ordinal("names").expect("a query names");
-    if let Err(e) = old.call(names, &[], &CallOptions::default()) {
+    if let Err(e) = adtb::open("shelter.db", &log, &options) {
         println!("{e}");
     }
     Ok(())
@@ -430,7 +434,7 @@ fn main() -> Result<(), adtb::Error> {
 ```
 
 ```text
-query `shelter-0.9::names` cannot be translated: the bundle pins an earlier version than the database is at, and this engine serves a bundle only at the version the database is at
+bundle shelter-1.0 is refused: query `shelter-1.0::adopters` cannot be translated: across `drop field Adoption.by`: it reads field `by` of `Adoption`, which the current version lacks
 ```
 
 ### Retired, BundleSuperseded, BundleExpired, VersionMismatch

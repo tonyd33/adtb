@@ -68,8 +68,15 @@ specification describes:
   registers bundles when it opens the database
   ([the Rust API](reference/rust-api.md)); the shell refuses
   `register bundle`.
-- Serving a bundle pinned at an earlier version than the database's:
-  the engine registers it and refuses its calls as `Untranslatable`.
+- Serving a bundle pinned at an earlier version than the database's
+  across some operators. The engine translates its calls across
+  renames, added fields and constructors, drops of fields it does not
+  read, state changes and the operators that leave data alone. It
+  refuses the bundle as `Untranslatable`, or the migration while the
+  bundle is live, when a query reaches what a split, merge, nest,
+  unnest, move field, alter field or rekey changes; when a parameter's
+  type gains or loses a field; and when a query reads the past or
+  reads files.
 - Reading the past: `at commit` and `at instant` blocks. Even with
   the `RetentionWindow` setting raised, the engine refuses a read at
   the position of a commit it has just made with `HistoryUnavailable`,

@@ -24,8 +24,7 @@ use super::{
     INDEX_ROOT, IndexKeys, IndexSpec, MIGRATION, Migrating, ORDER_KEY, OrderKeys, Readers, change,
     ctor_count, ctor_id, ctor_index, ctor_relations, delete_rows, heap_root, index_ctors,
     index_keys, index_program, indexes, int, key_schema, layout, moved, oplog, owner, pending,
-    planned, readers, reasons, rel_id, relation, row_key, row_type, rows, steps, update_root,
-    visible,
+    planned, reasons, rel_id, relation, row_key, row_type, rows, steps, update_root, visible,
 };
 
 impl Catalog {
@@ -311,10 +310,7 @@ impl Catalog {
             let fields: Vec<Vec<(String, Ty)>> = (0..ctor_count(schema, r))
                 .map(|k| layout::row(schema, r, k))
                 .collect();
-            let reached = fields
-                .iter()
-                .flatten()
-                .any(|(_, t)| readers::reaches(schema, t, def, &mut BTreeSet::new()));
+            let reached = fields.iter().flatten().any(|(_, t)| schema.reaches(t, def));
             if !reached {
                 continue;
             }

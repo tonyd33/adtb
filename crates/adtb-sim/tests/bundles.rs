@@ -384,7 +384,7 @@ fn a_bundle_is_checked_at_its_pinned_version() {
 }
 
 #[test]
-fn a_call_of_a_bundle_pinned_before_the_current_version_has_no_translation_yet() {
+fn a_call_of_a_bundle_pinned_before_a_rename_reads_and_writes_the_renamed_field() {
     once(11, |rt| {
         let db = opened(
             &rt,
@@ -392,12 +392,13 @@ fn a_call_of_a_bundle_pinned_before_the_current_version_has_no_translation_yet()
             vec![bundle("web-1.0", &[V1], "", NAMES)],
         );
         let web = db.registered("web-1.0").expect("web-1.0 binds");
-        match web.call(1, &[], &CallOptions::default()) {
-            Err(Error::Rejected {
-                reason: RejectReason::Untranslatable { query, .. },
-            }) => assert_eq!("web-1.0::names", query),
-            other => panic!("the call is not refused untranslatable: {other:?}"),
-        }
+        let added = web.call(2, &[Value::text("ann")], &CallOptions::default());
+        assert!(matches!(added, Ok(Called::Committed(_))), "{added:?}");
+        assert_eq!(vec!["\"ann\""], rows(call(&db, "web-1.0", 1, &[])));
+        assert_eq!(
+            vec!["\"ann\""],
+            query(&db, "from u in users select u.display")
+        );
     });
 }
 
@@ -908,7 +909,7 @@ fn a_renewal_is_recorded_and_survives_reopen() {
 }
 
 #[test]
-fn a_call_refused_untranslatable_does_not_renew_the_lease() {
+fn a_call_refused_for_its_arguments_does_not_renew_the_lease() {
     once(37, |rt| {
         let db = opened(
             &rt,
@@ -919,11 +920,11 @@ fn a_call_refused_untranslatable_does_not_renew_the_lease() {
         let renewed = || query(&db, "from b in catalog::bundles select b.renewed");
         let before = renewed();
         sleep(&rt, 4 * HOUR);
-        let refused = web.call(1, &[], &CallOptions::default());
+        let refused = web.call(2, &[], &CallOptions::default());
         assert!(
             matches!(
                 refused.as_ref().map_err(reason),
-                Err(RejectReason::Untranslatable { .. })
+                Err(RejectReason::Invalid { .. })
             ),
             "{refused:?}"
         );
@@ -1805,4 +1806,926 @@ fn admission_closed_database_refuses_interactive_call_before_renewal() {
         );
         t.rollback().expect("rollback after close");
     });
+}
+
+const RENAME_PAID: &str = "module auth\nrename constructor Tier.Paid to Pro\n";
+const ADD_VERIFIED: &str = "module auth\nadd field Identity.EmailPass.verified: Bool fill false\n";
+const DEFAULT_VERIFIED: &str = "module auth\nadd default identities.EmailPass.verified = true\n";
+const ADD_HASH: &str = "module auth\nadd field Identity.EmailPass.hash: Text fill \"none\"\n";
+const DROP_HASH: &str = "module auth\ndrop field Identity.EmailPass.hash\n";
+const DEPRECATE_GOOGLE: &str = "module auth\ndeprecate identities.Google\n";
+
+/// The calls of a bundle over identities, in ordinal order: `join` 1, `link` 2, `reword` 3,
+/// `convert` 4, `emails` 5, `logins` 6.
+const IDS: &str = r"import auth
+txn join (n: Text, e: Text) -> Key identities =
+  transact
+    let u = insert users { name: n, tier: Free }
+    let i = insert identities.EmailPass { user: key u, email: e }
+    return key i
+txn link (n: Text, g: Text) -> Key identities =
+  transact
+    let u = insert users { name: n, tier: Free }
+    let i = insert identities.Google { user: key u, gid: g }
+    return key i
+txn reword (e: Text, to: Text) -> Text =
+  transact
+    update i in identities.EmailPass where i.email == e set EmailPass { i with email: to }
+    return to
+txn convert (g: Text, e: Text) -> Text =
+  transact
+    update i in identities.Google where i.gid == g set EmailPass { email: e }
+    return e
+query emails () -> Set Text = from i in identities.EmailPass select i.email
+query logins () -> Set Text =
+  from i in identities
+  select match i
+    | EmailPass e -> e.email
+    | Google g -> g.gid
+";
+
+const JOIN: u32 = 1;
+const LINK: u32 = 2;
+const REWORD: u32 = 3;
+const CONVERT: u32 = 4;
+const EMAILS: u32 = 5;
+const LOGINS: u32 = 6;
+
+fn texts(values: &[&str]) -> Vec<Value> {
+    values.iter().map(|v| Value::text(v)).collect()
+}
+
+/// Call the transaction `ordinal` of `name` with the text arguments `args`.
+fn wrote(db: &Database<SimRuntime>, name: &str, ordinal: u32, args: &[&str]) {
+    match call(db, name, ordinal, &texts(args)) {
+        Called::Committed(_) => {}
+        other => panic!("call {ordinal} of {name} commits nothing: {other:?}"),
+    }
+}
+
+/// Returns each email of `identities.EmailPass` with its `verified`, as `email:verified`.
+fn verified(db: &Database<SimRuntime>) -> Vec<String> {
+    query(
+        db,
+        r#"from i in identities.EmailPass select i.email ++ ":" ++ (if i.verified then "t" else "f")"#,
+    )
+    .into_iter()
+    .map(|s| s.trim_matches('"').to_owned())
+    .collect()
+}
+
+/// Returns the detail and operator of the refusal of the last migration of `migrations`.
+fn refused_migration(
+    got: Result<Database<SimRuntime>, OpenError>,
+    version: u64,
+) -> (String, String) {
+    match got {
+        Err(OpenError::MigrationRefused { version: v, reason }) => {
+            assert_eq!(version, v, "the refused migration");
+            match reason {
+                Error::Rejected {
+                    reason: RejectReason::SchemaRefused { operator, detail },
+                } => (operator, detail),
+                other => panic!("the migration is refused otherwise: {other:?}"),
+            }
+        }
+        Err(other) => panic!("open fails otherwise: {other:?}"),
+        Ok(_) => panic!("migration {version} applies"),
+    }
+}
+
+#[test]
+fn a_pinned_call_takes_its_arguments_and_encodes_its_results_at_its_pin() {
+    let body = "import auth
+query tiered (t: Tier) -> Set Text = from u in users where u.tier == t select u.name
+query tiers () -> Set Tier = from u in users select u.tier
+query people () -> Set User = from u in users select u
+";
+    once(60, |rt| {
+        let log = [V1, RENAME_PAID, RENAME_NAME];
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &[V1], "", body)]);
+        write(&db, "insert users { display: \"ann\", tier: Pro }").expect("the write applies");
+        write(&db, "insert users { display: \"bo\", tier: Free }").expect("the write applies");
+        let paid = Value::tag(1);
+        assert_eq!(vec!["\"ann\""], rows(call(&db, "web-1.0", 1, &[paid])));
+        assert_eq!(
+            vec!["Free", "Paid"],
+            sorted_rows(call(&db, "web-1.0", 2, &[]))
+        );
+        assert_eq!(
+            vec![
+                r#"User { id: users.key(1), name: "ann", tier: Paid }"#,
+                r#"User { id: users.key(2), name: "bo", tier: Free }"#,
+            ],
+            sorted_rows(call(&db, "web-1.0", 3, &[]))
+        );
+    });
+}
+
+fn sorted_rows(called: Called) -> Vec<String> {
+    let mut r = rows(called);
+    r.sort();
+    r
+}
+
+#[test]
+fn a_pinned_insert_takes_an_added_fields_default_else_its_fill() {
+    let mut sim = Sim::new(61, Config::default());
+    let pin = [V1];
+    run(&mut sim, |rt| {
+        let db = opened(
+            &rt,
+            &[V1, ADD_VERIFIED],
+            vec![bundle("web-1.0", &pin, "", IDS)],
+        );
+        wrote(&db, "web-1.0", JOIN, &["ann", "a@x"]);
+        assert_eq!(vec!["a@x:f"], verified(&db), "the fill, with no default");
+        assert_eq!(vec!["\"a@x\""], rows(call(&db, "web-1.0", EMAILS, &[])));
+    });
+    run(&mut sim, |rt| {
+        let log = [V1, ADD_VERIFIED, DEFAULT_VERIFIED];
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &pin, "", IDS)]);
+        wrote(&db, "web-1.0", JOIN, &["bo", "b@x"]);
+        assert_eq!(vec!["a@x:f", "b@x:t"], verified(&db), "the current default");
+    });
+}
+
+#[test]
+fn a_pinned_update_keeps_the_rows_added_field_and_a_retag_takes_the_default() {
+    once(62, |rt| {
+        let log = [V1, ADD_VERIFIED, DEFAULT_VERIFIED];
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &[V1], "", IDS)]);
+        wrote(&db, "web-1.0", JOIN, &["ann", "a@x"]);
+        write(
+            &db,
+            "update i in identities.EmailPass set EmailPass { i with verified: false }",
+        )
+        .expect("the write applies");
+        wrote(&db, "web-1.0", REWORD, &["a@x", "a@y"]);
+        assert_eq!(
+            vec!["a@y:f"],
+            verified(&db),
+            "an update keeps the row's value"
+        );
+        wrote(&db, "web-1.0", LINK, &["bo", "g1"]);
+        wrote(&db, "web-1.0", CONVERT, &["g1", "b@x"]);
+        assert_eq!(
+            vec!["a@y:f", "b@x:t"],
+            verified(&db),
+            "a retag from another constructor takes the default"
+        );
+    });
+}
+
+#[test]
+fn a_pinned_retag_with_no_default_takes_the_fill() {
+    once(63, |rt| {
+        let log = [V1, ADD_VERIFIED];
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &[V1], "", IDS)]);
+        wrote(&db, "web-1.0", LINK, &["bo", "g1"]);
+        wrote(&db, "web-1.0", CONVERT, &["g1", "b@x"]);
+        assert_eq!(vec!["b@x:f"], verified(&db));
+    });
+}
+
+#[test]
+fn a_pinned_query_reads_through_an_added_constructor() {
+    once(64, |rt| {
+        let log = [V1, ADD_APPLE];
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &[V1], "", IDS)]);
+        wrote(&db, "web-1.0", JOIN, &["ann", "a@x"]);
+        wrote(&db, "web-1.0", LINK, &["bo", "g1"]);
+        assert_eq!(
+            vec!["\"a@x\"", "\"g1\""],
+            sorted_rows(call(&db, "web-1.0", LOGINS, &[]))
+        );
+    });
+}
+
+/// A bundle pinned where `EmailPass` has `hash`: `emails` does not read it, `hashes` does.
+const HASHES: &str = "import auth
+query emails () -> Set Text = from i in identities.EmailPass select i.email
+query hashes () -> Set Text = from i in identities.EmailPass select i.hash
+";
+
+const EMAILS_ONLY: &str = "import auth
+query emails () -> Set Text = from i in identities.EmailPass select i.email
+txn join (n: Text, e: Text, h: Text) -> Key identities =
+  transact
+    let u = insert users { name: n, tier: Free }
+    let i = insert identities.EmailPass { user: key u, email: e, hash: h }
+    return key i
+";
+
+#[test]
+fn a_pinned_bundle_runs_across_a_drop_of_a_field_it_does_not_read() {
+    let mut sim = Sim::new(65, Config::default());
+    let pin = [V1, ADD_HASH];
+    run(&mut sim, |rt| {
+        opened(&rt, &pin, vec![bundle("web-1.0", &pin, "", EMAILS_ONLY)]);
+    });
+    run(&mut sim, |rt| {
+        let db = opened(
+            &rt,
+            &[V1, ADD_HASH, DROP_HASH],
+            vec![bundle("web-1.0", &pin, "", EMAILS_ONLY)],
+        );
+        wrote(&db, "web-1.0", 2, &["ann", "a@x", "h"]);
+        assert_eq!(vec!["\"a@x\""], rows(call(&db, "web-1.0", 1, &[])));
+    });
+}
+
+#[test]
+fn a_drop_of_a_field_a_live_bundle_reads_is_refused_naming_the_bundle_query_and_operator() {
+    let mut sim = Sim::new(66, Config::default());
+    let pin = [V1, ADD_HASH];
+    run(&mut sim, |rt| {
+        opened(&rt, &pin, vec![bundle("web-1.0", &pin, "", HASHES)]);
+    });
+    run(&mut sim, |rt| {
+        let (operator, detail) = refused_migration(
+            open(
+                &rt,
+                &[V1, ADD_HASH, DROP_HASH],
+                vec![bundle("web-1.0", &pin, "", HASHES)],
+            ),
+            3,
+        );
+        assert_eq!("drop field Identity.EmailPass.hash", operator);
+        assert!(
+            detail.contains("web-1.0") && detail.contains("hashes"),
+            "{detail}"
+        );
+    });
+}
+
+#[test]
+fn a_bundle_pinned_before_a_drop_of_a_field_it_reads_is_refused_registration() {
+    once(67, |rt| {
+        let got = open(
+            &rt,
+            &[V1, ADD_HASH, DROP_HASH],
+            vec![bundle("web-1.0", &[V1, ADD_HASH], "", HASHES)],
+        );
+        match refusal(got, "web-1.0") {
+            RejectReason::Untranslatable { query, detail } => {
+                assert_eq!("web-1.0::hashes", query);
+                assert!(detail.contains("drop field"), "{detail}");
+            }
+            other => panic!("refused otherwise: {other:?}"),
+        }
+    });
+}
+
+#[test]
+fn deprecating_a_constructor_a_live_bundle_inserts_into_is_refused() {
+    let mut sim = Sim::new(68, Config::default());
+    run(&mut sim, |rt| {
+        opened(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", IDS)]);
+    });
+    run(&mut sim, |rt| {
+        let (operator, detail) = refused_migration(
+            open(
+                &rt,
+                &[V1, DEPRECATE_GOOGLE],
+                vec![bundle("web-1.0", &[V1], "", IDS)],
+            ),
+            2,
+        );
+        assert_eq!("deprecate identities.Google", operator);
+        assert!(detail.contains("link"), "{detail}");
+    });
+}
+
+#[test]
+fn deprecating_a_constructor_a_live_bundle_only_reads_applies() {
+    let mut sim = Sim::new(69, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", HASHES_FREE)]);
+        logins(&db);
+    });
+    run(&mut sim, |rt| {
+        let db = opened(
+            &rt,
+            &[V1, DEPRECATE_GOOGLE],
+            vec![bundle("web-1.0", &[V1], "", HASHES_FREE)],
+        );
+        assert_eq!(
+            vec!["\"a@x\"", "\"g1\""],
+            sorted_rows(call(&db, "web-1.0", 1, &[]))
+        );
+    });
+}
+
+/// Write a user with an `EmailPass` login `a@x` and one with a `Google` login `g1`.
+fn logins(db: &Database<SimRuntime>) {
+    write(
+        db,
+        r#"transact
+  let u = insert users { name: "ann", tier: Free }
+  insert identities.EmailPass { user: key u, email: "a@x" }
+  insert identities.Google { user: key u, gid: "g1" }
+  return 0"#,
+    )
+    .expect("the logins are written");
+}
+
+/// A bundle that reads identities and writes none.
+const HASHES_FREE: &str = "import auth
+query logins () -> Set Text =
+  from i in identities
+  select match i
+    | EmailPass e -> e.email
+    | Google g -> g.gid
+";
+
+#[test]
+fn a_bundle_pinned_before_an_added_field_cannot_build_its_type_outside_a_write() {
+    let body = "import auth
+query probe (e: Text) -> Bool =
+  exists i in identities.EmailPass where i == EmailPass { id: i.id, user: i.user, email: e }
+";
+    once(70, |rt| {
+        let got = open(
+            &rt,
+            &[V1, ADD_VERIFIED],
+            vec![bundle("web-1.0", &[V1], "", body)],
+        );
+        match refusal(got, "web-1.0") {
+            RejectReason::Untranslatable { query, .. } => assert_eq!("web-1.0::probe", query),
+            other => panic!("refused otherwise: {other:?}"),
+        }
+    });
+}
+
+#[test]
+fn a_bundle_taking_a_parameter_of_a_type_that_gained_a_field_is_refused_registration() {
+    let body = "import auth
+query same (i: Identity) -> Set Text = from j in identities where key j == i.id select \"x\"
+";
+    once(71, |rt| {
+        let ok = open(
+            &rt,
+            &[V1, RENAME_NAME],
+            vec![bundle("web-1.0", &[V1], "", body)],
+        );
+        assert!(ok.is_ok(), "a rename carries the parameter: {ok:?}");
+    });
+    once(72, |rt| {
+        let got = open(
+            &rt,
+            &[V1, ADD_VERIFIED],
+            vec![bundle("web-1.0", &[V1], "", body)],
+        );
+        match refusal(got, "web-1.0") {
+            RejectReason::Untranslatable { query, detail } => {
+                assert_eq!("web-1.0::same", query);
+                assert!(detail.contains("verified"), "{detail}");
+            }
+            other => panic!("refused otherwise: {other:?}"),
+        }
+    });
+}
+
+const SPLIT_PAID: &str = "module auth
+split constructor Tier.Paid into Monthly | Yearly
+  by match
+    | Paid -> Monthly
+";
+
+#[test]
+fn a_split_of_a_type_a_live_bundle_reaches_is_refused_and_one_it_does_not_reach_applies() {
+    let mut sim = Sim::new(73, Config::default());
+    run(&mut sim, |rt| {
+        opened(
+            &rt,
+            &[V1],
+            vec![
+                bundle("web-1.0", &[V1], "", NAMES),
+                bundle("ids-1.0", &[V1], "", HASHES_FREE),
+            ],
+        );
+    });
+    run(&mut sim, |rt| {
+        let (operator, detail) = refused_migration(
+            open(
+                &rt,
+                &[V1, SPLIT_PAID],
+                vec![
+                    bundle("web-1.0", &[V1], "", NAMES),
+                    bundle("ids-1.0", &[V1], "", HASHES_FREE),
+                ],
+            ),
+            2,
+        );
+        assert!(
+            operator.starts_with("split constructor Tier.Paid"),
+            "{operator}"
+        );
+        assert!(detail.contains("web-1.0"), "{detail}");
+    });
+    run(&mut sim, |rt| {
+        let db = opened(
+            &rt,
+            &[V1, SPLIT_PAID],
+            vec![bundle("ids-1.0", &[V1], "", HASHES_FREE)],
+        );
+        logins(&db);
+        assert_eq!(
+            vec!["\"a@x\"", "\"g1\""],
+            sorted_rows(call(&db, "ids-1.0", 1, &[]))
+        );
+    });
+}
+
+const ADD_SEATS: &str = "module auth\nadd field Tier.Paid.seats: I32 fill 1\n";
+
+/// A bundle that counts the tiers its users hold.
+const TIER_COUNT: &str = "import auth
+query n () -> I64 = count(t for t in (from u in users select u.tier))
+";
+
+/// A bundle that counts its users.
+const USER_COUNT: &str = "import auth
+query n () -> I64 = count(u for u in users)
+";
+
+#[test]
+fn a_count_over_values_of_a_type_that_gained_a_field_is_refused_and_one_over_rows_runs() {
+    let mut sim = Sim::new(74, Config::default());
+    let regs = || {
+        vec![
+            bundle("tiers-1.0", &[V1], "", TIER_COUNT),
+            bundle("users-1.0", &[V1], "", USER_COUNT),
+        ]
+    };
+    run(&mut sim, |rt| {
+        opened(&rt, &[V1], regs());
+    });
+    run(&mut sim, |rt| {
+        let (operator, detail) = refused_migration(open(&rt, &[V1, ADD_SEATS], regs()), 2);
+        assert_eq!("add field Tier.Paid.seats: I32 fill 1", operator);
+        assert_eq!(
+            "bundle tiers-1.0 pins 1: `n` has no translation: it counts the values of `Tier` \
+             whole, and its field `seats` differs",
+            detail
+        );
+    });
+    run(&mut sim, |rt| {
+        let db = opened(
+            &rt,
+            &[V1, ADD_SEATS],
+            vec![bundle("users-1.0", &[V1], "", USER_COUNT)],
+        );
+        write(
+            &db,
+            r#"transact
+  insert users { name: "ann", tier: Paid { seats: 1 } }
+  insert users { name: "bo", tier: Free }
+  insert users { name: "cy", tier: Paid { seats: 5 } }
+  return 0"#,
+        )
+        .expect("the users are written");
+        assert_eq!(vec!["3"], rows(call(&db, "users-1.0", 1, &[])));
+    });
+}
+
+/// A bundle that returns its users whole.
+const PEOPLE: &str = "import auth
+query people () -> Set User = from u in users select u
+";
+
+#[test]
+fn a_split_of_a_type_a_live_bundle_holds_inside_a_whole_row_is_refused() {
+    let mut sim = Sim::new(75, Config::default());
+    run(&mut sim, |rt| {
+        opened(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", PEOPLE)]);
+    });
+    run(&mut sim, |rt| {
+        let (operator, detail) = refused_migration(
+            open(
+                &rt,
+                &[V1, SPLIT_PAID],
+                vec![bundle("web-1.0", &[V1], "", PEOPLE)],
+            ),
+            2,
+        );
+        assert_eq!(
+            "split constructor Tier.Paid into Monthly | Yearly",
+            operator
+        );
+        assert_eq!(
+            "bundle web-1.0 pins 1: `people` has no translation: it reaches what the operator \
+             changes, and this engine does not translate across it",
+            detail
+        );
+    });
+}
+
+const DEPRECATE_FREE: &str = "module auth\ndeprecate Tier.Free\n";
+const REMOVE_FREE: &str = "module auth\nremove constructor Tier.Free\n";
+
+/// A bundle that takes a tier and compares tiers.
+const TIERED: &str = "import auth
+query tiered (t: Tier) -> Set Text = from u in users where u.tier == t select u.name
+";
+
+#[test]
+fn removing_a_constructor_a_live_bundle_takes_or_compares_is_refused() {
+    let mut sim = Sim::new(76, Config::default());
+    let pin = [V1, ADD_GOLD, ENABLE_GOLD];
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &pin, vec![bundle("web-1.0", &pin, "", TIERED)]);
+        write(&db, r#"insert users { name: "ann", tier: Paid }"#).expect("the write applies");
+    });
+    run(&mut sim, |rt| {
+        let (operator, detail) = refused_migration(
+            open(
+                &rt,
+                &[V1, ADD_GOLD, ENABLE_GOLD, DEPRECATE_FREE, REMOVE_FREE],
+                vec![bundle("web-1.0", &pin, "", TIERED)],
+            ),
+            5,
+        );
+        assert_eq!("remove constructor Tier.Free", operator);
+        assert_eq!(
+            "bundle web-1.0 pins 3: `tiered` has no translation: it takes a parameter of \
+             `Tier.Free`, which the current version lacks",
+            detail
+        );
+    });
+}
+
+#[test]
+fn a_bundle_pinned_before_a_removed_constructor_it_takes_is_refused_registration() {
+    let pin = [V1, ADD_GOLD, ENABLE_GOLD];
+    once(77, |rt| {
+        let got = open(
+            &rt,
+            &[V1, ADD_GOLD, ENABLE_GOLD, DEPRECATE_FREE, REMOVE_FREE],
+            vec![bundle("web-1.0", &pin, "", TIERED)],
+        );
+        match refusal(got, "web-1.0") {
+            RejectReason::Untranslatable { query, detail } => {
+                assert_eq!("web-1.0::tiered", query);
+                assert!(detail.contains("remove constructor Tier.Free"), "{detail}");
+            }
+            other => panic!("refused otherwise: {other:?}"),
+        }
+    });
+}
+
+/// A bundle that writes the login `identities.key(1)` of `users.key(1)` whole, by upsert.
+const REPUT: &str = "import auth
+txn reput (e: Text) -> Text =
+  transact
+    insert identities.EmailPass { id: identities.key(1), user: users.key(1), email: e }
+      unless conflict on key
+      else update old set new
+    return e
+";
+
+#[test]
+fn a_pinned_upsert_that_updates_keeps_the_rows_added_field() {
+    once(78, |rt| {
+        let log = [V1, ADD_VERIFIED, DEFAULT_VERIFIED];
+        let db = opened(
+            &rt,
+            &log,
+            vec![
+                bundle("web-1.0", &[V1], "", IDS),
+                bundle("put-1.0", &[V1], "", REPUT),
+            ],
+        );
+        wrote(&db, "web-1.0", JOIN, &["ann", "a@x"]);
+        write(
+            &db,
+            "update i in identities.EmailPass set EmailPass { i with verified: false }",
+        )
+        .expect("the write applies");
+        wrote(&db, "put-1.0", 1, &["a@y"]);
+        assert_eq!(
+            vec!["a@y:f"],
+            verified(&db),
+            "an update keeps the row's value"
+        );
+    });
+}
+
+#[test]
+fn a_pinned_upsert_that_inserts_takes_the_default() {
+    once(79, |rt| {
+        let log = [V1, ADD_VERIFIED, DEFAULT_VERIFIED];
+        let db = opened(&rt, &log, vec![bundle("put-1.0", &[V1], "", REPUT)]);
+        write(&db, r#"insert users { name: "ann", tier: Free }"#).expect("the write applies");
+        wrote(&db, "put-1.0", 1, &["a@x"]);
+        assert_eq!(vec!["a@x:t"], verified(&db));
+    });
+}
+
+#[test]
+fn an_expired_bundle_with_no_translation_registered_again_is_refused_expired() {
+    let mut sim = Sim::new(80, Config::default());
+    let pin = [V1, ADD_HASH];
+    run(&mut sim, |rt| {
+        opened(
+            &rt,
+            &pin,
+            vec![bundle("web-1.0", &pin, " lease 1d", HASHES)],
+        );
+        sleep(&rt, 2 * DAY);
+    });
+    run(&mut sim, |rt| {
+        let got = open(
+            &rt,
+            &[V1, ADD_HASH, DROP_HASH],
+            vec![bundle("web-1.0", &pin, " lease 1d", HASHES)],
+        );
+        assert_eq!(
+            RejectReason::BundleExpired {
+                bundle: "web-1.0".into(),
+                query: "web-1.0::hashes".into(),
+            },
+            refusal(got, "web-1.0")
+        );
+    });
+}
+
+const DISABLE_GOOGLE: &str = "module auth\ndisable identities.Google\n";
+
+#[test]
+fn disabling_a_constructor_a_live_bundle_inserts_into_is_refused() {
+    let mut sim = Sim::new(81, Config::default());
+    run(&mut sim, |rt| {
+        opened(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", IDS)]);
+    });
+    run(&mut sim, |rt| {
+        let (operator, detail) = refused_migration(
+            open(
+                &rt,
+                &[V1, DISABLE_GOOGLE],
+                vec![bundle("web-1.0", &[V1], "", IDS)],
+            ),
+            2,
+        );
+        assert_eq!("disable identities.Google", operator);
+        assert!(detail.contains("link"), "{detail}");
+    });
+}
+
+#[test]
+fn disabling_a_constructor_a_live_bundle_only_reads_applies() {
+    let mut sim = Sim::new(82, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[V1], vec![bundle("web-1.0", &[V1], "", HASHES_FREE)]);
+        write(
+            &db,
+            r#"transact
+  let u = insert users { name: "ann", tier: Free }
+  insert identities.EmailPass { user: key u, email: "a@x" }
+  return 0"#,
+        )
+        .expect("the login is written");
+    });
+    run(&mut sim, |rt| {
+        let db = opened(
+            &rt,
+            &[V1, DISABLE_GOOGLE],
+            vec![bundle("web-1.0", &[V1], "", HASHES_FREE)],
+        );
+        assert_eq!(vec!["\"a@x\""], rows(call(&db, "web-1.0", 1, &[])));
+    });
+}
+
+const REMOVE_GOOGLE: &str = "module auth\nremove constructor Identity.Google\n";
+
+#[test]
+fn a_pinned_bundle_reads_a_removed_constructor_as_empty_and_cannot_write_it() {
+    let log = [V1, DEPRECATE_GOOGLE, REMOVE_GOOGLE];
+    once(83, |rt| {
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &[V1], "", HASHES_FREE)]);
+        write(
+            &db,
+            r#"transact
+  let u = insert users { name: "ann", tier: Free }
+  insert identities.EmailPass { user: key u, email: "a@x" }
+  return 0"#,
+        )
+        .expect("the login is written");
+        assert_eq!(vec!["\"a@x\""], rows(call(&db, "web-1.0", 1, &[])));
+    });
+    once(84, |rt| {
+        match refusal(
+            open(&rt, &log, vec![bundle("web-1.0", &[V1], "", IDS)]),
+            "web-1.0",
+        ) {
+            RejectReason::Untranslatable { query, detail } => {
+                assert_eq!("web-1.0::link", query);
+                assert!(detail.contains("Identity.Google"), "{detail}");
+            }
+            other => panic!("refused otherwise: {other:?}"),
+        }
+    });
+}
+
+#[test]
+fn a_pinned_bundle_runs_across_operators_that_change_no_result() {
+    let unchanged = [
+        "module auth\nadd unique (email) in identities.EmailPass\n",
+        "module auth\nadd index (gid) in identities.Google\n",
+        "module auth\nadd constraint no_blank = from u in users where u.name == \"\" select u\n",
+    ];
+    let mut log = vec![V1];
+    log.extend(unchanged);
+    once(85, |rt| {
+        let db = opened(&rt, &log, vec![bundle("web-1.0", &[V1], "", IDS)]);
+        wrote(&db, "web-1.0", JOIN, &["ann", "a@x"]);
+        wrote(&db, "web-1.0", LINK, &["bo", "g1"]);
+        assert_eq!(vec!["\"a@x\""], rows(call(&db, "web-1.0", EMAILS, &[])));
+        assert_eq!(
+            vec!["\"a@x\"", "\"g1\""],
+            sorted_rows(call(&db, "web-1.0", LOGINS, &[]))
+        );
+    });
+}
+
+#[test]
+fn a_migration_refused_for_a_live_bundle_leaves_the_prior_version_after_reopen() {
+    let mut sim = Sim::new(86, Config::default());
+    let pin = [V1, ADD_HASH];
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &pin, vec![bundle("web-1.0", &pin, "", HASHES)]);
+        write(
+            &db,
+            r#"transact
+  let u = insert users { name: "ann", tier: Free }
+  insert identities.EmailPass { user: key u, email: "a@x", hash: "h" }
+  return 0"#,
+        )
+        .expect("the login is written");
+    });
+    run(&mut sim, |rt| {
+        refused_migration(
+            open(
+                &rt,
+                &[V1, ADD_HASH, DROP_HASH],
+                vec![bundle("web-1.0", &pin, "", HASHES)],
+            ),
+            3,
+        );
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &pin, vec![bundle("web-1.0", &pin, "", HASHES)]);
+        assert_eq!(vec!["\"h\""], rows(call(&db, "web-1.0", 2, &[])));
+        assert_eq!(
+            vec!["migrations.key(1)", "migrations.key(2)"],
+            query(&db, "from m in catalog::migrations select m.version")
+        );
+    });
+}
+
+/// A bundle that pairs each Google login with each EmailPass login, returning both whole.
+const PAIRS: &str = "import auth
+query pairs () -> Set { a: Identity.Google, b: Identity.EmailPass } =
+  from g in identities.Google, e in identities.EmailPass select { a: g, b: e }
+";
+
+#[test]
+fn a_drop_of_a_field_of_a_constructor_a_live_bundle_returns_after_another_is_refused() {
+    let mut sim = Sim::new(87, Config::default());
+    let pin = [V1, ADD_HASH];
+    run(&mut sim, |rt| {
+        opened(&rt, &pin, vec![bundle("web-1.0", &pin, "", PAIRS)]);
+    });
+    run(&mut sim, |rt| {
+        let (operator, detail) = refused_migration(
+            open(
+                &rt,
+                &[V1, ADD_HASH, DROP_HASH],
+                vec![bundle("web-1.0", &pin, "", PAIRS)],
+            ),
+            3,
+        );
+        assert_eq!("drop field Identity.EmailPass.hash", operator);
+        assert_eq!(
+            "bundle web-1.0 pins 2: `pairs` has no translation: it returns `Identity` whole, and \
+             its field `hash` differs",
+            detail
+        );
+    });
+}
+
+fn hashes_expired() -> RejectReason {
+    RejectReason::BundleExpired {
+        bundle: "web-1.0".into(),
+        query: "web-1.0::hashes".into(),
+    }
+}
+
+#[test]
+fn a_superseded_bundle_with_no_translation_registered_again_is_refused_expired() {
+    let pin = [V1, ADD_HASH];
+    let mut sim = Sim::new(88, Config::default());
+    run(&mut sim, |rt| {
+        opened(&rt, &pin, vec![bundle("web-1.0", &pin, "", HASHES)]);
+    });
+    run(&mut sim, |rt| {
+        opened(&rt, &pin, vec![bundle("web-2.0", &pin, "", NAMES)]);
+    });
+    run(&mut sim, |rt| {
+        let got = open(
+            &rt,
+            &[V1, ADD_HASH, DROP_HASH],
+            vec![bundle("web-1.0", &pin, "", HASHES)],
+        );
+        assert_eq!(hashes_expired(), refusal(got, "web-1.0"));
+    });
+}
+
+#[test]
+fn a_bundle_superseded_by_command_with_no_translation_registered_again_is_refused_expired() {
+    let pin = [V1, ADD_HASH];
+    let mut sim = Sim::new(89, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(
+            &rt,
+            &pin,
+            vec![
+                bundle("web-1.0", &pin, "", HASHES),
+                bundle("web-1.1", &pin, "", NAMES),
+            ],
+        );
+        query(&db, "supersede bundle web-1.0 by web-1.1");
+    });
+    run(&mut sim, |rt| {
+        let got = open(
+            &rt,
+            &[V1, ADD_HASH, DROP_HASH],
+            vec![
+                bundle("web-1.0", &pin, "", HASHES),
+                bundle("web-1.1", &pin, "", NAMES),
+            ],
+        );
+        assert_eq!(hashes_expired(), refusal(got, "web-1.0"));
+    });
+}
+
+const SHOP: &str = r"module shop
+add module shop
+add type Price { sku: Text } = Priced { cents: I64 } | Gratis
+add relation prices : Price key sku
+add relation archive : Price key sku
+";
+const ADD_CURRENCY: &str = "module shop\nadd field Price.Priced.currency: Text fill \"USD\"\n";
+const ARCHIVE_DEFAULT: &str = "module shop\nadd default archive.Priced.currency = \"ARC\"\n";
+
+/// A bundle that copies prices into the archive whole: `archive_all` 1 every one, `keep` 2 the
+/// one keyed `s` when it is priced.
+const ARCHIVING: &str = "import shop
+txn archive_all () -> I64 =
+  transact
+    insert archive from (from p in prices where p.sku != \"\" select p)
+    return 0
+txn keep (s: Text) -> Text =
+  transact
+    match prices.key(s)
+      | Priced p -> insert archive.Priced p
+      | Gratis g -> skip
+    return s
+";
+
+#[test]
+fn a_pinned_insert_of_a_copied_row_takes_the_target_relations_default() {
+    once(90, |rt| {
+        let log = [SHOP, ADD_CURRENCY, ARCHIVE_DEFAULT];
+        let db = opened(&rt, &log, vec![bundle("shop-1.0", &[SHOP], "", ARCHIVING)]);
+        write(
+            &db,
+            r#"insert prices.Priced { sku: "a", cents: 1, currency: "EUR" }"#,
+        )
+        .expect("the price is written");
+        wrote(&db, "shop-1.0", 1, &[]);
+        assert_eq!(vec!["\"a:ARC\""], archived(&db), "a row a `for` binds");
+        write(
+            &db,
+            r#"insert prices.Priced { sku: "b", cents: 2, currency: "EUR" }"#,
+        )
+        .expect("the price is written");
+        wrote(&db, "shop-1.0", 2, &["b"]);
+        assert_eq!(
+            vec!["\"a:ARC\"", "\"b:ARC\""],
+            archived(&db),
+            "a row a `match` binds"
+        );
+    });
+}
+
+/// Returns each row of `archive` as `sku:currency`, or its `sku` when it is no `Priced`.
+fn archived(db: &Database<SimRuntime>) -> Vec<String> {
+    query(
+        db,
+        r#"from a in archive select match a
+  | Priced p -> p.sku ++ ":" ++ p.currency
+  | Gratis g -> g.sku"#,
+    )
 }

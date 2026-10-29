@@ -5,7 +5,7 @@ use std::sync::Arc;
 use adtb_lang::ast::{Ident, MigrationFile, Operator, OperatorKind, QName};
 use adtb_lang::evolve::{Kept, Source};
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_lang::schema::{Schema, Stage, TypeDefKind, ValueDef};
+use adtb_lang::schema::{Schema, Stage, ValueDef};
 use adtb_lang::span::{Diag, Span};
 use adtb_lang::types::{RelId, Ty, TypeId};
 
@@ -436,7 +436,7 @@ impl Catalog {
             if p.ctors.contains(&CatCtorId(cid)) || now.value_stage(def, c) == Stage::Declared {
                 continue;
             }
-            if read_fields(now, &p).any(|t| reaches(now, t, def, &mut BTreeSet::new())) {
+            if read_fields(now, &p).any(|t| now.reaches(t, def)) {
                 let t = now.ty(def);
                 return Ok(Some(format!("{}.{}", t.name, t.ctors()[c as usize].name)));
             }
@@ -589,7 +589,7 @@ impl Catalog {
             .iter()
             .filter(|(_, p)| !p.ctors.contains(&cid))
         {
-            if read_fields(next, p).any(|t| reaches(next, t, def, &mut BTreeSet::new())) {
+            if read_fields(next, p).any(|t| next.reaches(t, def)) {
                 let reads = format!("reads a field whose type reaches {ty}");
                 why.push(blocked(&format!("enable {shown}"), bundle, p, &reads));
             }
@@ -898,38 +898,6 @@ fn field_type<'s>(schema: &'s Schema, def: TypeId, c: Option<u32>, name: &str) -
         Some(c) => &t.ctors().get(c as usize)?.fields,
     };
     fields.iter().find(|f| f.name == name).map(|f| &f.ty)
-}
-
-/// Returns whether a value of type `ty` can hold a value of sum `def`: through its type
-/// arguments, its structure, or the fields of the types it names.
-pub(super) fn reaches(schema: &Schema, ty: &Ty, def: TypeId, seen: &mut BTreeSet<TypeId>) -> bool {
-    match ty {
-        Ty::Data { def: d, args, .. } => {
-            if *d == def {
-                return true;
-            }
-            if args.iter().any(|a| reaches(schema, a, def, seen)) {
-                return true;
-            }
-            if !seen.insert(*d) {
-                return false;
-            }
-            let t = schema.ty(*d);
-            match &t.kind {
-                TypeDefKind::Sum { header, ctors, .. } => header
-                    .iter()
-                    .chain(ctors.iter().flat_map(|c| &c.fields))
-                    .any(|f| reaches(schema, &f.ty, def, seen)),
-                TypeDefKind::Newtype { base, .. } => reaches(schema, base, def, seen),
-            }
-        }
-        Ty::Record(fs) => fs.iter().any(|(_, t)| reaches(schema, t, def, seen)),
-        Ty::Sum { ctors, .. } => ctors
-            .iter()
-            .any(|(_, fs)| fs.iter().any(|(_, t)| reaches(schema, t, def, seen))),
-        Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => reaches(schema, t, def, seen),
-        _ => false,
-    }
 }
 
 /// Returns the catalog id of each declared unique of `schema`, with its relation and its clause.

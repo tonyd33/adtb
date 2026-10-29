@@ -643,6 +643,19 @@ pub(super) fn stale(
     Error::rejected(reason)
 }
 
+/// Returns whether the bundle of `header` is registered again after it was superseded, or after
+/// its lease ran out at `now` under the file settings `s`.
+pub(super) fn lapsed(stored: &Stored, header: &Header, now: i64, s: &Settings) -> bool {
+    stored
+        .bundles
+        .get(&header.name)
+        .is_some_and(|r| match r.state {
+            State::Superseded(_) => true,
+            State::Active => r.expired(now, s),
+            State::Retired(_) => false,
+        })
+}
+
 /// Make each bundle of `regs`, a header and its calls that passed every check, live: start a new
 /// lease for one that was not live, renew a lease that is due, and store the calls of one never
 /// registered, as one durable transaction, at `now` under the file settings `s`. Returns the
