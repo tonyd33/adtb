@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 780
 summary: "semantics.md 10.2 still gives the old match desugaring chain, and three internal errors still say only exhaustiveness excludes an Unreachable"
+branch: or-patterns
 ---
 
 # Bug: match retest follow-ups

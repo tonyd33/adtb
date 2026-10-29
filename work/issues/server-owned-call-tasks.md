@@ -1,12 +1,16 @@
 ---
 created-at: 2026-10-27
 status: in-progress
-branch: server-resumable
-depends-on: [server-engine-interface]
-tags: [engine, server, test]
 kind: feature
 priority: 1003
 summary: "server calls lack engine-owned bounded admission, resumable waits and result handles"
+branch: server-results
+depends-on:
+  - server-engine-interface
+tags:
+  - engine
+  - server
+  - test
 ---
 
 # Feature: engine-owned server call tasks and results
@@ -60,3 +64,7 @@ Landed as 7d7aa7d5 after review fixes; the main check passed on b241565d. Slice 
 - No path enforces the statement limit during a wait; `Rerun.since` is private, so the slice cannot set `Entry::deadline` to when the limit runs out.
 - `Scheduler` has no `Drop`; one dropped without `shutdown` never stops its calls.
 - Tests: `a_waiting_write_stops_at_its_deadline_real` (crates/adtb-sim/tests/calls.rs about 1185) asserts exact events against a 100 ms deadline and can see only `[Stopped]` under load; the blocking deadlock variant (about 1304-1316) relies on the simulator's interleaving and ran 8 seeds, not the deep profile's 64; no test races a cancel against shutdown. The `ShutDown` doc comments in exec/sched.rs (about 65 and 76) restate the name.
+
+## 2026-10-29: result/task slice dispatched
+
+A fresh writer owns slice 3 of design server.md section 5.2, result/task ownership, plus the items carried from resumable-calls-follow-ups, in workspace server-results on main d8d9c197. It writes a plan first (work/briefs/plan-server-results.md, local): task and result handle signatures over `Scheduler::admit`, where the executor materializes today and the smallest change that stops production at a bounded handoff, capacity accounting, the cancel/commit ordering, tests, and open questions with recommendations. The lead rules on the plan before implementation; rulings are recorded here. Out of scope: interactive registry, transport. Gates: targeted adtb and adtb-sim tests with simulator and real-thread cases, clippy, fmt, house-check, size-check; the lead runs the full check.
