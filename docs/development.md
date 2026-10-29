@@ -64,7 +64,7 @@ another location.
 
 ## Build with Nix
 
-`flake.nix` builds the binaries outside the dev shell, for x86_64 Linux. It
+`flake.nix` builds the binaries outside the dev shell, for x86_64 and aarch64 Linux. It
 takes nixpkgs from `devenv.lock` and checks that its Rust matches
 `rust-toolchain.toml`, so updating devenv updates both.
 

@@ -26,3 +26,7 @@ Resolve a bare name when it is unique among the schema's constraints and checks.
 ## Open questions
 
 None.
+
+## 2026-10-29: from the quality review
+
+`adtb-probe --checks NAME TEXT` drops TEXT's run report and its agree/differ exit code when the checks step fails (crates/adtb-probe/src/main.rs about lines 400-412). Print the run first and combine the exit codes.

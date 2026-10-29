@@ -22,3 +22,8 @@ From the independent review of the resumable engine slice of server-owned-call-t
 - docs/design/mvcc.md (about 470-473) says a suspended wait undoes the statement and reruns it; the write layer undoes all the call's statements and the caller reruns them. About line 623 still says a deferrable transaction waits parked.
 - Whether a rerun restarts the statement time limit.
 - Tests: no call of two statements that resumes; the liveness tests never exceed the admission bound; the write-path tests run only in the simulator; the waiting-deadline path may be unexercised and no test covers a deadlock between suspended calls; `crates/adtb-sim/tests/calls.rs` (about 746) classifies errors by parsing `Debug` output.
+
+## 2026-10-29: from the quality review
+
+- `admit` (crates/adtb/src/exec/sched.rs about line 292) refuses a call larger than `Admission::bytes` as `Overloaded` even with an empty queue; clients retry `Overloaded` forever. Unreachable today. Refuse it with a non-retryable error.
+- The test `Resumable` impls `Bump::stop` (crates/adtb-sim/tests/calls.rs about line 787) and `Defer::stop` (about line 942) do not withdraw their waker, which the `Resumable::stop` doc requires.

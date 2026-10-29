@@ -30,3 +30,8 @@ Found by the second review of version-translation (work/briefs/review-version-tr
 ## Fix
 
 Name the construct the query cannot cross (`at`, a file read) instead of an operator for 1, with a test. Show translated bundles in `explained`. Rebuild per write site for 3. Refuse or translate 4 by the key's own fields. Extend the walk generator for 5 and split the law per seed for 6. Translate 7 through `missing`. Name the refused operator in 8.
+
+## 2026-10-29: from the quality review
+
+- When `Pinned::new` fails, the refusal's query name is empty (crates/adtb/src/api/registered.rs about line 559), so it names `web-1.0::`.
+- The `first` closure in `recheck` repeats `translate::operator_text`.
