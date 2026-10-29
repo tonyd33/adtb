@@ -24,6 +24,8 @@ Found by the second review of version-translation (work/briefs/review-version-tr
 7. A nested constructor built inside a write after it gained a field is refused "outside a write".
 8. When the catalog itself refuses a migration (for example "holds rows; it cannot be disabled"), `SchemaRefused.operator` is empty.
 9. docs/spec/catalog.md's errors table row for `BundleExpired` says an expired or superseded bundle "registered again fails the checks of a re-registration", which reads as every failing check. Section 4 of the same file (about line 599) and evolution.md 7.3 say a stale one is refused `BundleStale` and one with no translation `BundleExpired`; the code follows that. Lead ruling: the table row is imprecise, not the code. Reword it through the spec-revision workflow.
+10. A retired bundle registered again with no translation is refused `Untranslatable`, because `translations` runs before `bundle::admitted` (crates/adtb/src/api/registered.rs about lines 296-303); the stale path runs `admitted` first. Run `admitted` first, and refuse a retired bundle `Retired` as the errors table says (main refused it `Invalid`). Witness: open `[V1, ADD_HASH]` with web-1.0, `retire bundle web-1.0`, open `[V1, ADD_HASH, DROP_HASH]` with web-1.0.
+11. `rows_of` over-refuses row sets that are distinct by key (`let`-bound, `top`-wrapped); the pinned law never uses `hide new constructors` and does not count the bundles it drops as `BundleStale`.
 
 ## Fix
 
