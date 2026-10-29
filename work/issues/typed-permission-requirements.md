@@ -4,7 +4,7 @@ status: in-progress
 kind: feature
 priority: 829
 summary: no typed provider extracts and checks complete relation/field/write privilege requirements
-branch: permission-requirements
+branch: permission-successor
 depends-on:
   - registered-argument-values
   - fix-row-provenance
@@ -181,3 +181,16 @@ Fresh successor after verified shared checker fix must retain failing witness
 and inspect unverified write::parallel211-234 Fail Bottom handling, which may
 overcharge old-row origins on failing upsert branches. No production changes
 after pause, no Rust session remains. No precision/safety fix claimed there.
+
+## 2026-10-28: successor dispatched on the repaired checker
+
+The checker repair landed as 1faf0e12 and main passed its full check. A fresh writer owns workspace permission-successor (/home/tony/code/adtb-permission-successor). Its working-copy commit duplicates the preserved draft c4f0391d onto main 27b77539, and it applied without conflicts. The original draft workspace permission-requirements stays untouched as evidence.
+
+Remaining, in order:
+1. The draft's update-over-fix test must pass unchanged.
+2. Keep the transport marks beside the repair's origin propagation.
+3. Settle the suspected old-row overcharge in write::parallel's Fail/Bottom handling with a paired test.
+4. Finish the direct Query/Txn, aggregate external-read and upsert precision acceptance.
+5. Rerun strict adtb-lang clippy, fmt, house and size.
+6. Run one frozen full branch check.
+Then a fresh independent review, the lead's landing, and a main check. Local brief: work/briefs/brief-permission-successor.md.
