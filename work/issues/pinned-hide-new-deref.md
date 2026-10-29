@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: resolved
 kind: bug
 priority: 250
 summary: "a hide new constructors bundle follows a reference into a constructor its pin lacks, so a deref returns a value or panics instead of faulting NoSuchRow"
-branch: hide-new-deref
+closed: 2026-10-29
 tags:
   - quality
   - engine
@@ -33,3 +33,9 @@ Fix: under `hide_new`, translate `Ty::Key` and `Ty::Data` constructor sets to th
 ## 2026-10-29: dispatched
 
 A fresh writer fixes this in workspace hide-new-deref, call tests first. Local brief: work/briefs/brief-hide-new-deref.md.
+
+## 2026-10-29: landed
+
+Landed as 3d670ee5; the main check passed on it. `Map::ty` takes `hide_new` and narrows `Ty::Data` and `Ty::Key` constructor sets to the pinned constructors, so a deref, a whole-row return and a match through a reference to a hidden row fault `NoSuchRow` (bundles.rs seeds 91-94, each failing on base but the known-row case). Lead ruling: narrowing value-level sums too is harmless, since semantics.md 9.6 refuses `enable T.C` while such a reader is live, so no field it reads holds a newer constructor.
+
+## 2026-10-29: resolved
