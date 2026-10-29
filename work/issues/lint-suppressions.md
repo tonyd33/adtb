@@ -30,3 +30,12 @@ Batches: 1 (free now) sim support crate and plan-fixture, sim prints and the que
 ## 2026-10-28: batch 1 dispatched
 
 A fresh writer owns batch 1 in workspace lint-audit, rebased on main, outside the files the running tracks own. Gates: full suite, clippy, fmt, house-check, size-check and the expect count before and after; the lead runs the full check. Local brief: work/briefs/brief-lint-fix.md.
+
+## 2026-10-29: batch 1 landed
+
+Landed as 6686d1cb after a clear review (work/briefs/review-lint-fix.md, local); the main check passed on it. Expects went from 87 to 37: sim test support moved into crates/adtb-simkit, the planner fixture is behind adtb's `plan-fixture` feature, the engine functions the audit named were split, adtb-sys spawns through `host_thread`, and house-check flags a new expect. Batches 2 and 3 of the audit remain. Added to batch 2:
+- crates/adtb-reference/tests/wide.rs:13, landed after the audit; its reason states only the cause.
+- work/tools/house-check-test has no cases for the two new rules.
+- docs/design/README.md: the `adtb` row does not name the optional `plan-fixture` dependencies.
+- .agents/skills/lead/code-agent.md: restore "never add `#[allow]`" in the reworded expect line.
+- Seven adtb-sim test binaries each define a near-identical `query(db, text)`; fold it into adtb-simkit.
