@@ -1,8 +1,4 @@
 #![forbid(unsafe_code)]
-#![expect(
-    clippy::large_enum_variant,
-    reason = "the syntax tree and schema enums keep their large variants unboxed"
-)]
 
 pub mod analysis;
 pub mod ast;

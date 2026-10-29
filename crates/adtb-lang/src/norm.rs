@@ -661,13 +661,7 @@ impl<'a> Normaliser<'a> {
                 var,
                 source,
             } => self.top_step(*count, keys, *var, *source, ty, cx),
-            Kind::Present {
-                var,
-                source,
-                keys,
-                take,
-                after,
-            } => self.present_step(*var, *source, keys, *take, *after, ty, cx),
+            Kind::Present { .. } => self.present_step(&node.kind, ty, cx),
             Kind::Fix(binds, body) => self.fix_step(binds, *body, ty, cx),
             Kind::Replace(r, rows, f) => self.replace_step(*r, *rows, *f, ty, cx),
             Kind::Upsert { .. } => self.upsert_step(&node.kind, ty, cx),
@@ -993,19 +987,19 @@ impl<'a> Normaliser<'a> {
         ))
     }
 
-    #[expect(clippy::too_many_arguments, reason = "the fields of `Kind::Present`")]
-    fn present_step(
-        &mut self,
-        var: Var,
-        source: Tm,
-        keys: &[(Tm, bool)],
-        take: Option<Tm>,
-        after: Option<Tm>,
-        ty: Ty,
-        cx: &Cx,
-    ) -> Result<Val, String> {
-        let source = self.tm(source, cx)?;
-        let (var, keys) = self.keys(var, keys, cx)?;
+    fn present_step(&mut self, kind: &Kind, ty: Ty, cx: &Cx) -> Result<Val, String> {
+        let Kind::Present {
+            var,
+            source,
+            keys,
+            take,
+            after,
+        } = kind
+        else {
+            unreachable!("present_step is given a present")
+        };
+        let source = self.tm(*source, cx)?;
+        let (var, keys) = self.keys(*var, keys, cx)?;
         let take = take.map(|t| self.tm(t, cx)).transpose()?;
         let after = after.map(|t| self.tm(t, cx)).transpose()?;
         Ok(self.val(

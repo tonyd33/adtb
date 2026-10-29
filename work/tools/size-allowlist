@@ -1,6 +1,2 @@
 crates/adtb-lang/src/check/expr.rs
 crates/adtb-lang/src/check/write.rs
-crates/adtb-lang/src/evolve/ctor.rs
-crates/adtb-lang/src/evolve/mod.rs
-crates/adtb-lang/src/evolve/revert.rs
-crates/adtb-lang/src/schema.rs

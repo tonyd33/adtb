@@ -1,16 +1,6 @@
 //! Typing soundness: every value the reference returns for a well-typed term inhabits the type
 //! the checker gave the term, and every row a statement inserts or deletes inhabits its row type.
 
-#[expect(
-    dead_code,
-    reason = "the spec corpus test reads the history of the running schema this test does not"
-)]
-#[path = "../../adtb-lang/tests/running/mod.rs"]
-mod running;
-
-#[path = "../../adtb-lang/tests/corpus/mod.rs"]
-mod corpus;
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::ops::Range;
@@ -35,10 +25,10 @@ use adtb_testkit::draw::draw;
 use adtb_testkit::fixture::Fixture;
 use adtb_testkit::fuzz::{self, Kind};
 use adtb_testkit::inhabit::Judge;
-use adtb_testkit::{Rng, profile};
-use corpus::{
+use adtb_testkit::spec::{
     FRAGMENT, blocks, bundles, given_types, prelude_entries, prepare, registered_queries,
 };
+use adtb_testkit::{Rng, profile, running};
 
 /// The rounds a `fix` may take before the statement is rejected.
 const FIX_ROUNDS: usize = 200;

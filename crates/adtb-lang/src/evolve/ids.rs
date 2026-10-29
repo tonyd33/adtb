@@ -106,98 +106,18 @@ impl Source {
     }
 
     /// Renames the paths of the ids a rename operator's object and its parts have.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per rename operator; each arm would have to be a function"
-    )]
     pub(super) fn rename_ids(&mut self, before: &Source, module: &str, op: &OperatorKind) {
         let q = |n: &QName| {
             n.module
                 .as_ref()
                 .map_or(module.to_string(), |m| m.text.clone())
         };
-        let relations_of = |m: &str, t: &str| -> Vec<String> {
-            let Ok(schema) = before.built() else {
-                return Vec::new();
-            };
-            schema
-                .relations
-                .iter()
-                .filter(|r| {
-                    r.elem_def.0 != u32::MAX
-                        && schema.ty(r.elem_def).name == t
-                        && schema.module(schema.ty(r.elem_def).module).name == m
-                })
-                .map(|r| format!("{}::{}", schema.module(r.module).name, r.name))
-                .collect()
-        };
-        let rewrite = |ids: &mut BTreeMap<String, u64>, f: &dyn Fn(&str) -> Option<String>| {
-            let old: Vec<(String, u64)> = ids.iter().map(|(k, v)| (k.clone(), *v)).collect();
-            ids.clear();
-            for (k, v) in old {
-                ids.insert(f(&k).unwrap_or(k), v);
-            }
-        };
         match op {
             OperatorKind::RenameType(t, to) => {
-                let m = q(t);
-                let (from, to) = (t.name.text.clone(), to.text.clone());
-                let record = before
-                    .find("type", &m, &from)
-                    .and_then(|i| before.parsed(i))
-                    .is_some_and(|d| {
-                        matches!(
-                            d,
-                            Decl::Type(ast::TypeDecl {
-                                body: ast::TypeBody::Record(_),
-                                ..
-                            })
-                        )
-                    });
-                rewrite(&mut self.ids, &|k| {
-                    if k == format!("type {m}::{from}") {
-                        return Some(format!("type {m}::{to}"));
-                    }
-                    for kind in ["ctor", "field"] {
-                        let p = format!("{kind} {m}::{from}.");
-                        if let Some(rest) = k.strip_prefix(&p) {
-                            let rest = match rest.split_once('.') {
-                                Some((c, f)) if record && c == from => format!("{to}.{f}"),
-                                None if record && kind == "ctor" && rest == from => to.clone(),
-                                _ => rest.to_string(),
-                            };
-                            return Some(format!("{kind} {m}::{to}.{rest}"));
-                        }
-                    }
-                    None
-                });
+                self.rename_type_ids(before, &q(t), &t.name.text, &to.text);
             }
             OperatorKind::RenameConstructor(p, to) => {
-                let m = q(&p.ty);
-                let (t, from, to) = (p.ty.name.text.clone(), p.ctor.text.clone(), to.text.clone());
-                let rels = relations_of(&m, &t);
-                rewrite(&mut self.ids, &|k| {
-                    if k == format!("ctor {m}::{t}.{from}") {
-                        return Some(format!("ctor {m}::{t}.{to}"));
-                    }
-                    if let Some(f) = k.strip_prefix(&format!("field {m}::{t}.{from}.")) {
-                        return Some(format!("field {m}::{t}.{to}.{f}"));
-                    }
-                    for r in &rels {
-                        if let Some(rest) = k.strip_prefix(&format!("index {r} "))
-                            && let Some((head, scope)) = rest.rsplit_once(" in ")
-                        {
-                            return Some(format!(
-                                "index {r} {head} in {}",
-                                replace_word(scope, &from, &to)
-                            ));
-                        }
-                        if let Some(rest) = k.strip_prefix(&format!("default {r} {from}.")) {
-                            return Some(format!("default {r} {to}.{rest}"));
-                        }
-                    }
-                    None
-                });
+                self.rename_ctor_ids(before, &q(&p.ty), &p.ty.name.text, &p.ctor.text, &to.text);
             }
             OperatorKind::RenameRelation(r, to) => {
                 let m = q(r);
@@ -235,107 +155,192 @@ impl Source {
                 });
             }
             OperatorKind::RenameField(p, to) => {
-                let m = q(&p.ty);
-                let t = p.ty.name.text.clone();
-                let (from, to) = (p.field.text.clone(), to.text.clone());
-                let at = match &p.ctor {
-                    Some(c) => format!("{t}.{}.", c.text),
-                    None => {
-                        let record = before
-                            .find("type", &m, &t)
-                            .and_then(|i| before.parsed(i))
-                            .is_some_and(|d| {
-                                matches!(
-                                    d,
-                                    Decl::Type(ast::TypeDecl {
-                                        body: ast::TypeBody::Record(_),
-                                        ..
-                                    })
-                                )
-                            });
-                        if record {
-                            format!("{t}.{t}.")
-                        } else {
-                            format!("{t}.")
-                        }
-                    }
-                };
-                let rels = relations_of(&m, &t);
-                rewrite(&mut self.ids, &|k| {
-                    if k == format!("field {m}::{at}{from}") {
-                        return Some(format!("field {m}::{at}{to}"));
-                    }
-                    for r in &rels {
-                        if let Some(rest) = k.strip_prefix(&format!("index {r} "))
-                            && let Some((head, scope)) = rest.rsplit_once(" in ")
-                        {
-                            return Some(format!(
-                                "index {r} {} in {scope}",
-                                replace_word(head, &from, &to)
-                            ));
-                        }
-                        if let Some(rest) = k.strip_prefix(&format!("default {r} ")) {
-                            return Some(format!("default {r} {}", replace_word(rest, &from, &to)));
-                        }
-                    }
-                    None
-                });
+                self.rename_field_ids(before, &q(&p.ty), p, &to.text);
             }
             OperatorKind::MoveField { path, sel, .. } => {
-                let m = q(&path.ty);
-                let t = path.ty.name.text.clone();
-                let f = path.field.text.clone();
-                let (from, to) = match (&path.ctor, sel) {
-                    (Some(c), None) => (format!("{t}.{}.{f}", c.text), format!("{t}.{f}")),
-                    (None, Some(sel)) => {
-                        let Some(first) = before.built().ok().and_then(|schema| {
-                            let def = *schema.module(schema.module_named(&m)?).types.get(&t)?;
-                            sel_idents(sel)
-                                .iter()
-                                .filter_map(|x| schema.ty(def).ctor_index(&x.text))
-                                .min()
-                                .map(|k| schema.ty(def).ctors()[k as usize].name.clone())
-                        }) else {
-                            return;
-                        };
-                        (format!("{t}.{f}"), format!("{t}.{first}.{f}"))
-                    }
-                    _ => return,
-                };
-                let (from, to) = (format!("field {m}::{from}"), format!("field {m}::{to}"));
-                rewrite(&mut self.ids, &|k| (k == from).then(|| to.clone()));
+                self.move_field_ids(before, &q(&path.ty), path, sel.as_ref());
             }
             OperatorKind::AddConstructor { path, .. } => {
-                let m = q(&path.ty);
-                let t = path.ty.name.text.clone();
-                let Ok(schema) = before.built() else {
-                    return;
-                };
-                let Some(def) = schema
-                    .module_named(&m)
-                    .and_then(|mid| schema.module(mid).types.get(&t).copied())
-                else {
-                    return;
-                };
-                if !matches!(schema.ty(def).kind, TypeDefKind::Sum { record: true, .. }) {
-                    return;
-                }
-                let keys: BTreeSet<&String> = schema
-                    .relations
-                    .iter()
-                    .filter(|r| r.elem_def == def)
-                    .flat_map(|r| &r.key)
-                    .collect();
-                let field = format!("field {m}::{t}.{t}.");
-                rewrite(&mut self.ids, &|k| {
-                    let f = k.strip_prefix(&field)?;
-                    keys.iter()
-                        .any(|x| *x == f)
-                        .then(|| format!("field {m}::{t}.{f}"))
-                });
+                self.add_ctor_ids(before, &q(&path.ty), &path.ty.name.text);
             }
             _ => {}
         }
+    }
+
+    fn rename_type_ids(&mut self, before: &Source, m: &str, from: &str, to: &str) {
+        let record = is_record(before, m, from);
+        rewrite(&mut self.ids, &|k| {
+            if k == format!("type {m}::{from}") {
+                return Some(format!("type {m}::{to}"));
+            }
+            for kind in ["ctor", "field"] {
+                let p = format!("{kind} {m}::{from}.");
+                if let Some(rest) = k.strip_prefix(&p) {
+                    let rest = match rest.split_once('.') {
+                        Some((c, f)) if record && c == from => format!("{to}.{f}"),
+                        None if record && kind == "ctor" && rest == from => to.to_string(),
+                        _ => rest.to_string(),
+                    };
+                    return Some(format!("{kind} {m}::{to}.{rest}"));
+                }
+            }
+            None
+        });
+    }
+
+    fn rename_ctor_ids(&mut self, before: &Source, m: &str, t: &str, from: &str, to: &str) {
+        let rels = relations_of(before, m, t);
+        rewrite(&mut self.ids, &|k| {
+            if k == format!("ctor {m}::{t}.{from}") {
+                return Some(format!("ctor {m}::{t}.{to}"));
+            }
+            if let Some(f) = k.strip_prefix(&format!("field {m}::{t}.{from}.")) {
+                return Some(format!("field {m}::{t}.{to}.{f}"));
+            }
+            for r in &rels {
+                if let Some(rest) = k.strip_prefix(&format!("index {r} "))
+                    && let Some((head, scope)) = rest.rsplit_once(" in ")
+                {
+                    return Some(format!(
+                        "index {r} {head} in {}",
+                        replace_word(scope, from, to)
+                    ));
+                }
+                if let Some(rest) = k.strip_prefix(&format!("default {r} {from}.")) {
+                    return Some(format!("default {r} {to}.{rest}"));
+                }
+            }
+            None
+        });
+    }
+
+    fn rename_field_ids(&mut self, before: &Source, m: &str, p: &ast::FieldPath, to: &str) {
+        let t = &p.ty.name.text;
+        let from = &p.field.text;
+        let at = match &p.ctor {
+            Some(c) => format!("{t}.{}.", c.text),
+            None if is_record(before, m, t) => format!("{t}.{t}."),
+            None => format!("{t}."),
+        };
+        let rels = relations_of(before, m, t);
+        rewrite(&mut self.ids, &|k| {
+            if k == format!("field {m}::{at}{from}") {
+                return Some(format!("field {m}::{at}{to}"));
+            }
+            for r in &rels {
+                if let Some(rest) = k.strip_prefix(&format!("index {r} "))
+                    && let Some((head, scope)) = rest.rsplit_once(" in ")
+                {
+                    return Some(format!(
+                        "index {r} {} in {scope}",
+                        replace_word(head, from, to)
+                    ));
+                }
+                if let Some(rest) = k.strip_prefix(&format!("default {r} ")) {
+                    return Some(format!("default {r} {}", replace_word(rest, from, to)));
+                }
+            }
+            None
+        });
+    }
+
+    fn move_field_ids(
+        &mut self,
+        before: &Source,
+        m: &str,
+        path: &ast::FieldPath,
+        sel: Option<&CtorSel>,
+    ) {
+        let t = &path.ty.name.text;
+        let f = &path.field.text;
+        let (from, to) = match (&path.ctor, sel) {
+            (Some(c), None) => (format!("{t}.{}.{f}", c.text), format!("{t}.{f}")),
+            (None, Some(sel)) => {
+                let Some(first) = before.built().ok().and_then(|schema| {
+                    let def = *schema.module(schema.module_named(m)?).types.get(t)?;
+                    sel_idents(sel)
+                        .iter()
+                        .filter_map(|x| schema.ty(def).ctor_index(&x.text))
+                        .min()
+                        .map(|k| schema.ty(def).ctors()[k as usize].name.clone())
+                }) else {
+                    return;
+                };
+                (format!("{t}.{f}"), format!("{t}.{first}.{f}"))
+            }
+            _ => return,
+        };
+        let (from, to) = (format!("field {m}::{from}"), format!("field {m}::{to}"));
+        rewrite(&mut self.ids, &|k| (k == from).then(|| to.clone()));
+    }
+
+    fn add_ctor_ids(&mut self, before: &Source, m: &str, t: &str) {
+        let Ok(schema) = before.built() else {
+            return;
+        };
+        let Some(def) = schema
+            .module_named(m)
+            .and_then(|mid| schema.module(mid).types.get(t).copied())
+        else {
+            return;
+        };
+        if !matches!(schema.ty(def).kind, TypeDefKind::Sum { record: true, .. }) {
+            return;
+        }
+        let keys: BTreeSet<&String> = schema
+            .relations
+            .iter()
+            .filter(|r| r.elem_def == def)
+            .flat_map(|r| &r.key)
+            .collect();
+        let field = format!("field {m}::{t}.{t}.");
+        rewrite(&mut self.ids, &|k| {
+            let f = k.strip_prefix(&field)?;
+            keys.iter()
+                .any(|x| *x == f)
+                .then(|| format!("field {m}::{t}.{f}"))
+        });
+    }
+}
+
+/// Returns the paths of the relations `before` declares over type `t` of module `m`.
+fn relations_of(before: &Source, m: &str, t: &str) -> Vec<String> {
+    let Ok(schema) = before.built() else {
+        return Vec::new();
+    };
+    schema
+        .relations
+        .iter()
+        .filter(|r| {
+            r.elem_def.0 != u32::MAX
+                && schema.ty(r.elem_def).name == t
+                && schema.module(schema.ty(r.elem_def).module).name == m
+        })
+        .map(|r| format!("{}::{}", schema.module(r.module).name, r.name))
+        .collect()
+}
+
+fn is_record(before: &Source, m: &str, t: &str) -> bool {
+    before
+        .find("type", m, t)
+        .and_then(|i| before.parsed(i))
+        .is_some_and(|d| {
+            matches!(
+                d,
+                Decl::Type(ast::TypeDecl {
+                    body: ast::TypeBody::Record(_),
+                    ..
+                })
+            )
+        })
+}
+
+/// Rewrite every key of `ids` that `f` maps.
+fn rewrite(ids: &mut BTreeMap<String, u64>, f: &dyn Fn(&str) -> Option<String>) {
+    let old: Vec<(String, u64)> = ids.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    ids.clear();
+    for (k, v) in old {
+        ids.insert(f(&k).unwrap_or(k), v);
     }
 }
 

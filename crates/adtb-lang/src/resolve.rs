@@ -619,35 +619,12 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per expression kind; the larger arms would have to be functions"
-    )]
     fn expr(&mut self, e: &Expr) {
         match &e.kind {
             ExprKind::Lit(_) | ExprKind::Unit | ExprKind::Elided => {}
             ExprKind::Name(q) => self.lower_name(q, false),
             ExprKind::Call { callee, args, .. } => {
-                if callee
-                    .name
-                    .text
-                    .starts_with(|c: char| c.is_ascii_uppercase())
-                {
-                    match lookup_type(self.schema, &self.vis, callee) {
-                        Ok(TypeName::Decl(t))
-                            if matches!(self.schema.ty(t).kind, TypeDefKind::Newtype { .. }) => {}
-                        Ok(_) => self.err(
-                            callee.span(),
-                            format!(
-                                "`{}` is not a newtype; build a constructor with `{{ ... }}`",
-                                callee.name.text
-                            ),
-                        ),
-                        Err(err) => self.err(callee.span(), err),
-                    }
-                } else {
-                    self.lower_name(callee, true);
-                }
+                self.callee(callee);
                 self.call_args(args);
             }
             ExprKind::TypeCall { ty, args, .. } => {
@@ -678,35 +655,10 @@ impl<'a> Resolver<'a> {
             }
             ExprKind::Backlink(x, rel, field) => {
                 self.expr(x);
-                if let Some(r) = self.relation(rel) {
-                    let ctors = rel
-                        .sel
-                        .as_ref()
-                        .and_then(|s| self.schema.relation_sel(r, s).ok());
-                    if !row_fields(self.schema, r, ctors.as_deref()).contains(&field.text) {
-                        self.err(
-                            field.span,
-                            format!(
-                                "`{}` is not a field of every row of `{}`",
-                                field.text, rel.relation.name.text
-                            ),
-                        );
-                    }
-                }
+                self.backlink(rel, field);
             }
             ExprKind::KeyCall(x, args) => {
-                match &x.kind {
-                    ExprKind::Name(q)
-                        if self.scope.lookup(&q.name.text).is_none() || q.module.is_some() =>
-                    {
-                        match lookup_value(self.schema, &self.vis, q) {
-                            Ok(ValueDef::Relation(_)) => {}
-                            Ok(_) => self.err(x.span, "`.key(...)` follows a relation name"),
-                            Err(err) => self.err(x.span, err),
-                        }
-                    }
-                    _ => self.err(x.span, "`.key(...)` follows a relation name"),
-                }
+                self.key_relation(x);
                 match args {
                     KeyArgs::Value(v) => self.expr(v),
                     KeyArgs::Named(ns) => {
@@ -774,6 +726,61 @@ impl<'a> Resolver<'a> {
                 self.expr(body);
             }
             ExprKind::Write(w) => self.write(w),
+        }
+    }
+
+    fn callee(&mut self, callee: &QName) {
+        if !callee
+            .name
+            .text
+            .starts_with(|c: char| c.is_ascii_uppercase())
+        {
+            self.lower_name(callee, true);
+            return;
+        }
+        match lookup_type(self.schema, &self.vis, callee) {
+            Ok(TypeName::Decl(t))
+                if matches!(self.schema.ty(t).kind, TypeDefKind::Newtype { .. }) => {}
+            Ok(_) => self.err(
+                callee.span(),
+                format!(
+                    "`{}` is not a newtype; build a constructor with `{{ ... }}`",
+                    callee.name.text
+                ),
+            ),
+            Err(err) => self.err(callee.span(), err),
+        }
+    }
+
+    fn backlink(&mut self, rel: &RelationRef, field: &Ident) {
+        let Some(r) = self.relation(rel) else { return };
+        let ctors = rel
+            .sel
+            .as_ref()
+            .and_then(|s| self.schema.relation_sel(r, s).ok());
+        if !row_fields(self.schema, r, ctors.as_deref()).contains(&field.text) {
+            self.err(
+                field.span,
+                format!(
+                    "`{}` is not a field of every row of `{}`",
+                    field.text, rel.relation.name.text
+                ),
+            );
+        }
+    }
+
+    fn key_relation(&mut self, x: &Expr) {
+        match &x.kind {
+            ExprKind::Name(q)
+                if self.scope.lookup(&q.name.text).is_none() || q.module.is_some() =>
+            {
+                match lookup_value(self.schema, &self.vis, q) {
+                    Ok(ValueDef::Relation(_)) => {}
+                    Ok(_) => self.err(x.span, "`.key(...)` follows a relation name"),
+                    Err(err) => self.err(x.span, err),
+                }
+            }
+            _ => self.err(x.span, "`.key(...)` follows a relation name"),
         }
     }
 

@@ -8,11 +8,11 @@ impl Parser<'_> {
         match self.tok().tok {
             Tok::Kw(Kw::Transact) => return Ok(AdhocItem::Transact(self.transact_block()?)),
             Tok::Kw(Kw::Insert | Kw::Update | Kw::Delete | Kw::Fail | Kw::Skip) => {
-                return Ok(AdhocItem::Write(self.write_expr()?));
+                return Ok(AdhocItem::Write(Box::new(self.write_expr()?)));
             }
             Tok::Kw(Kw::If | Kw::Match) | Tok::LParen => {
                 if let Some(w) = self.attempt(Attempt::Write, Self::write_expr) {
-                    return Ok(AdhocItem::Write(w));
+                    return Ok(AdhocItem::Write(Box::new(w)));
                 }
                 return Ok(AdhocItem::Expr(self.expr()?));
             }
@@ -91,7 +91,7 @@ impl Parser<'_> {
                 self.bump();
                 let role = self.lower("a role name")?;
                 self.expect_word("password")?;
-                RoleStmt::AlterPassword(role, self.prefix_e()?)
+                RoleStmt::AlterPassword(role, Box::new(self.prefix_e()?))
             }
             _ => return Ok(None),
         };
@@ -126,11 +126,6 @@ impl Parser<'_> {
     }
 
     /// A command, recognised by its leading words; `None` when the text is not one.
-    #[expect(
-        clippy::too_many_lines,
-        clippy::cognitive_complexity,
-        reason = "one arm per command's leading words; each command would need its own parser"
-    )]
     fn command(&mut self) -> PResult<Option<Command>> {
         if self.tok().tok != Tok::Lower {
             return Ok(None);
@@ -171,38 +166,8 @@ impl Parser<'_> {
                 self.bump();
                 Command::Vacuum(self.qlower("a relation name")?)
             }
-            "verify" => {
-                self.bump();
-                let target = if self.at(Tok::Lower) && !self.at_item_start() {
-                    Some(self.qlower("a relation name")?)
-                } else {
-                    None
-                };
-                Command::Verify(target)
-            }
-            "reindex" if next_lower => {
-                self.bump();
-                let relation = self.qlower("a relation name")?;
-                let index = if self.eat_word("index") {
-                    let fields = self.index_fields()?;
-                    self.expect_kw(Kw::In)?;
-                    Some((fields, self.ctor_scope()?))
-                } else {
-                    None
-                };
-                let online = if self.eat_word("online") {
-                    Some(true)
-                } else if self.eat_word("offline") {
-                    Some(false)
-                } else {
-                    None
-                };
-                Command::Reindex {
-                    relation,
-                    index,
-                    online,
-                }
-            }
+            "verify" => self.verify()?,
+            "reindex" if next_lower => self.reindex()?,
             "compact" => {
                 self.bump();
                 Command::Compact
@@ -224,23 +189,7 @@ impl Parser<'_> {
                 self.expect_kw(Kw::By)?;
                 Command::SupersedeBundle(old, self.bundle_name()?)
             }
-            "export" => {
-                self.bump();
-                let source = self.or_e()?;
-                self.expect_word("to")?;
-                let path = self.text_lit()?;
-                let sums_text = if self.eat_word("sums") {
-                    self.expect_word("text")?;
-                    true
-                } else {
-                    false
-                };
-                Command::Export {
-                    source,
-                    path,
-                    sums_text,
-                }
-            }
+            "export" => self.export()?,
             "register" if self.peek(1).tok == Tok::Kw(Kw::Bundle) => {
                 self.bump();
                 self.bump();
@@ -271,56 +220,15 @@ impl Parser<'_> {
                     path: self.text_lit()?,
                 }
             }
-            "rotate" if self.peek(1).tok == Tok::Kw(Kw::Key) => {
-                self.bump();
-                self.bump();
-                if self.eat_word("kek") {
-                    Command::RotateKek(self.text_lit()?)
-                } else {
-                    self.expect_word("dek")?;
-                    Command::RotateDek
-                }
-            }
+            "rotate" if self.peek(1).tok == Tok::Kw(Kw::Key) => self.rotate()?,
             "destroy" if self.peek(1).tok == Tok::Kw(Kw::Key) => {
                 self.bump();
                 self.bump();
                 self.expect_word("dek")?;
                 Command::DestroyDek(self.int_lit()?)
             }
-            "dump" if next_is(self, "to") => {
-                self.bump();
-                self.bump();
-                let path = self.text_lit()?;
-                let encrypt = if self.eat_word("encrypt") {
-                    Some(self.prefix_e()?)
-                } else {
-                    None
-                };
-                Command::Dump { path, encrypt }
-            }
-            "restore" if self.peek(1).tok == Tok::Kw(Kw::From) => {
-                self.bump();
-                self.bump();
-                let from = self.text_lit()?;
-                self.expect_word("to")?;
-                let to = self.text_lit()?;
-                let point = if self.at_word("before") {
-                    self.bump();
-                    self.expect_word("version")?;
-                    Some(RestorePoint::BeforeVersion(self.int_lit()?))
-                } else if self.at_word("at") && self.peek_word(1, "instant") {
-                    self.bump();
-                    self.bump();
-                    Some(RestorePoint::AtInstant(self.add_e()?))
-                } else if self.at_word("at") && self.peek_word(1, "position") {
-                    self.bump();
-                    self.bump();
-                    Some(RestorePoint::AtPosition(self.add_e()?))
-                } else {
-                    None
-                };
-                Command::Restore { from, to, point }
-            }
+            "dump" if next_is(self, "to") => self.dump()?,
+            "restore" if self.peek(1).tok == Tok::Kw(Kw::From) => self.restore()?,
             "backup" if next_is(self, "to") => {
                 self.bump();
                 self.bump();
@@ -331,6 +239,104 @@ impl Parser<'_> {
             _ => return Ok(None),
         };
         Ok(Some(cmd))
+    }
+
+    fn verify(&mut self) -> PResult<Command> {
+        self.bump();
+        let target = if self.at(Tok::Lower) && !self.at_item_start() {
+            Some(self.qlower("a relation name")?)
+        } else {
+            None
+        };
+        Ok(Command::Verify(target))
+    }
+
+    fn reindex(&mut self) -> PResult<Command> {
+        self.bump();
+        let relation = self.qlower("a relation name")?;
+        let index = if self.eat_word("index") {
+            let fields = self.index_fields()?;
+            self.expect_kw(Kw::In)?;
+            Some((fields, self.ctor_scope()?))
+        } else {
+            None
+        };
+        let online = if self.eat_word("online") {
+            Some(true)
+        } else if self.eat_word("offline") {
+            Some(false)
+        } else {
+            None
+        };
+        Ok(Command::Reindex {
+            relation,
+            index,
+            online,
+        })
+    }
+
+    fn export(&mut self) -> PResult<Command> {
+        self.bump();
+        let source = self.or_e()?;
+        self.expect_word("to")?;
+        let path = self.text_lit()?;
+        let sums_text = if self.eat_word("sums") {
+            self.expect_word("text")?;
+            true
+        } else {
+            false
+        };
+        Ok(Command::Export {
+            source,
+            path,
+            sums_text,
+        })
+    }
+
+    fn rotate(&mut self) -> PResult<Command> {
+        self.bump();
+        self.bump();
+        if self.eat_word("kek") {
+            return Ok(Command::RotateKek(self.text_lit()?));
+        }
+        self.expect_word("dek")?;
+        Ok(Command::RotateDek)
+    }
+
+    fn dump(&mut self) -> PResult<Command> {
+        self.bump();
+        self.bump();
+        let path = self.text_lit()?;
+        let encrypt = if self.eat_word("encrypt") {
+            Some(self.prefix_e()?)
+        } else {
+            None
+        };
+        Ok(Command::Dump { path, encrypt })
+    }
+
+    fn restore(&mut self) -> PResult<Command> {
+        self.bump();
+        self.bump();
+        let from = self.text_lit()?;
+        self.expect_word("to")?;
+        let to = self.text_lit()?;
+        let point = if self.at_word("before") {
+            self.bump();
+            self.expect_word("version")?;
+            Some(RestorePoint::BeforeVersion(self.int_lit()?))
+        } else if self.at_word("at") && self.peek_word(1, "instant") {
+            self.bump();
+            self.bump();
+            Some(RestorePoint::AtInstant(self.add_e()?))
+        } else if self.at_word("at") && self.peek_word(1, "position") {
+            self.bump();
+            self.bump();
+            Some(RestorePoint::AtPosition(self.add_e()?))
+        } else {
+            None
+        };
+        Ok(Command::Restore { from, to, point })
     }
 
     fn explain_target(&mut self) -> PResult<ExplainTarget> {
@@ -352,7 +358,7 @@ impl Parser<'_> {
             self.tok().tok,
             Tok::Kw(Kw::Insert | Kw::Update | Kw::Delete | Kw::Fail | Kw::Skip)
         ) {
-            return Ok(ExplainTarget::Write(self.write_expr()?));
+            return Ok(ExplainTarget::Write(Box::new(self.write_expr()?)));
         }
         Ok(ExplainTarget::Expr(self.expr()?))
     }

@@ -1,6 +1,3 @@
-mod corpus;
-mod running;
-
 use std::fs;
 use std::path::Path;
 
@@ -9,11 +6,11 @@ use adtb_lang::check::{Program, check_adhoc_recording, check_query, check_schema
 use adtb_lang::parse::{Options, parse_example, parse_schema};
 use adtb_lang::schema::{Schema, build};
 use adtb_lang::span::{FileDiag, FileId};
-use corpus::{
+use adtb_testkit::running::{self, Entry, decl_key, decl_span};
+use adtb_testkit::spec::{
     Block, FRAGMENT, Prepared, Registered, at, blocks, bundles, given_types, prelude_entries,
     prepare, registered_queries, unqualified,
 };
-use running::{Entry, decl_key, decl_span};
 
 #[test]
 fn spec_examples_parse() {

@@ -18,6 +18,7 @@ use adtb_lang::types::{ModuleId, Ty};
 
 use crate::running::{self, Entry, decl_key, decl_span, spec_line};
 
+#[derive(Debug)]
 pub struct Block {
     pub file: String,
     pub line: usize,
@@ -70,7 +71,7 @@ impl Block {
 pub const FRAGMENT: &str = "adt fragment";
 
 /// The ad hoc parameters a block's `-- given` header declares, as name and type text.
-pub fn given(b: &Block) -> Vec<(String, String)> {
+fn given(b: &Block) -> Vec<(String, String)> {
     let Some(header) = b
         .text
         .lines()
@@ -107,7 +108,7 @@ pub fn given(b: &Block) -> Vec<(String, String)> {
 pub fn prelude_entries() -> Vec<Entry> {
     let mut out = Vec::new();
     for (src, file) in [
-        (include_str!("../../src/prelude.adt"), "prelude.adt"),
+        (adtb_lang::schema::PRELUDE_SRC, "prelude.adt"),
         (adtb_lang::schema::ENGINE_SRC, "catalog.adt"),
     ] {
         let mut module = String::new();
@@ -150,7 +151,7 @@ pub fn at(b: &Block, span: Span, msg: &str) -> String {
 
 /// Returns whether a comment line of the block names a migration by its number, as `-- 0013` does, so its
 /// grants and revokes are operators of that migration.
-pub fn names_a_migration(b: &Block) -> bool {
+fn names_a_migration(b: &Block) -> bool {
     b.text.lines().any(|l| {
         l.trim_start()
             .strip_prefix("-- ")
@@ -160,7 +161,7 @@ pub fn names_a_migration(b: &Block) -> bool {
 
 /// Returns whether an operator only adds a declaration `entries` already holds as written, as when a block
 /// shows a migration of the history its part folds in.
-pub fn already_applied(entries: &[Entry], module: &str, b: &Block, op: &OperatorKind) -> bool {
+fn already_applied(entries: &[Entry], module: &str, b: &Block, op: &OperatorKind) -> bool {
     let d = match op {
         OperatorKind::AddType(t) => Decl::Type(t.clone()),
         OperatorKind::AddRelation(r) => Decl::Relation(r.clone()),
@@ -181,7 +182,7 @@ pub fn already_applied(entries: &[Entry], module: &str, b: &Block, op: &Operator
 
 /// The declarations a block's comment states as its context, indented under a comment line ending in
 /// `with` or `with:`.
-pub fn context(b: &Block) -> Vec<Entry> {
+fn context(b: &Block) -> Vec<Entry> {
     let header: Vec<&str> = b.text.lines().collect();
     let Some(start) = header.iter().position(|l| {
         let l = l.trim_end();
@@ -214,7 +215,7 @@ pub fn context(b: &Block) -> Vec<Entry> {
 }
 
 /// The source of the declarations `entries`, declaration `i` holding entry `i`.
-pub fn source_of(entries: &[Entry]) -> Result<Source, Vec<String>> {
+fn source_of(entries: &[Entry]) -> Result<Source, Vec<String>> {
     let decls = entries
         .iter()
         .map(|e| SourceDecl {
@@ -241,7 +242,7 @@ pub fn source_of(entries: &[Entry]) -> Result<Source, Vec<String>> {
 
 /// Renders a diagnostic in a file of `src`: at the spec line of its entry when the declaration is the entry's
 /// text unchanged, else at block `b` naming the declaration.
-pub fn render_in(src: &Source, entries: &[Entry], b: Option<&Block>, d: &FileDiag) -> String {
+fn render_in(src: &Source, entries: &[Entry], b: Option<&Block>, d: &FileDiag) -> String {
     if d.file.0 as usize >= src.decls.len() {
         return d.diag.message.clone();
     }
@@ -296,6 +297,7 @@ pub fn registered_queries(blocks: &[Block]) -> Vec<Registered> {
 
 /// A block made ready to check: the schema its context and declarations build, the module its
 /// bundle reads, and the queries, transactions and ad hoc items it holds.
+#[derive(Debug)]
 pub struct Prepared {
     pub schema: Schema,
     pub program: Program,

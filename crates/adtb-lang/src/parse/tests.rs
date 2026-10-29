@@ -478,11 +478,8 @@ fn transact_blocks_and_let_bound_writes() {
     assert_eq!(b.items.len(), 2);
     assert!(matches!(b.items[0], BlockItem::Let(_, LetValue::Write(_))));
     assert!(matches!(
-        b.items[1],
-        BlockItem::Write(Write {
-            kind: WriteKind::Seq(_),
-            ..
-        })
+        &b.items[1],
+        BlockItem::Write(w) if matches!(w.kind, WriteKind::Seq(_))
     ));
     assert!(b.ret.is_some());
 }
@@ -494,17 +491,14 @@ fn upsert() {
 unless conflict on (gid) in Google
 else update old set Google { old with user: new.user }",
     );
-    let [
-        AdhocItem::Write(Write {
-            kind:
-                WriteKind::Insert {
-                    from: true,
-                    upsert: Some(u),
-                    ..
-                },
-            ..
-        }),
-    ] = items.as_slice()
+    let [AdhocItem::Write(w)] = items.as_slice() else {
+        panic!("{items:?}")
+    };
+    let WriteKind::Insert {
+        from: true,
+        upsert: Some(u),
+        ..
+    } = &w.kind
     else {
         panic!("{items:?}")
     };
@@ -759,8 +753,8 @@ rejects into google_rejects"#,
     );
     assert!(matches!(
         &items[0],
-        AdhocItem::Write(Write { kind: WriteKind::Insert { from: true, rejects: Some(r), .. }, .. })
-            if r.name.text == "google_rejects"
+        AdhocItem::Write(w) if matches!(&w.kind, WriteKind::Insert { from: true, rejects: Some(r), .. }
+            if r.name.text == "google_rejects")
     ));
     let items = adhoc(
         r"insert identities.Google from (from r in staged select Google { user: r.user, gid: r.gid })
@@ -769,8 +763,8 @@ rejects into auth::google_rejects",
     );
     assert!(matches!(
         &items[0],
-        AdhocItem::Write(Write { kind: WriteKind::Insert { upsert: Some(_), rejects: Some(r), .. }, .. })
-            if r.module.is_some()
+        AdhocItem::Write(w) if matches!(&w.kind, WriteKind::Insert { upsert: Some(_), rejects: Some(r), .. }
+            if r.module.is_some())
     ));
 }
 

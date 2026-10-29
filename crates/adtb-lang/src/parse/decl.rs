@@ -12,7 +12,7 @@ impl Parser<'_> {
             Tok::Kw(Kw::Constraint) => Ok(Decl::Constraint(self.constraint_decl()?)),
             Tok::Kw(Kw::Check) => Ok(Decl::Check(self.check_decl()?)),
             _ if self.at_word("store") => Ok(Decl::Store(self.store_decl()?)),
-            _ if self.at_word("aggregate") => Ok(Decl::Aggregate(self.aggregate_decl()?)),
+            _ if self.at_word("aggregate") => Ok(Decl::Aggregate(Box::new(self.aggregate_decl()?))),
             _ => Err(self.error_here("expected a declaration")),
         }
     }
@@ -47,7 +47,7 @@ impl Parser<'_> {
             } else {
                 None
             };
-            TypeBody::New(ty, domain)
+            TypeBody::New(ty, domain.map(Box::new))
         } else if self.at(Tok::LBrace) {
             TypeBody::Record(self.record_type()?)
         } else {
@@ -465,7 +465,9 @@ impl Parser<'_> {
             Tok::Kw(Kw::Fn) => Ok(BundleItem::Fn(self.fn_decl()?)),
             Tok::Kw(Kw::Query) => Ok(BundleItem::Query(self.query_decl()?)),
             Tok::Kw(Kw::Txn) => Ok(BundleItem::Txn(self.txn_decl()?)),
-            _ if self.at_word("aggregate") => Ok(BundleItem::Aggregate(self.aggregate_decl()?)),
+            _ if self.at_word("aggregate") => {
+                Ok(BundleItem::Aggregate(Box::new(self.aggregate_decl()?)))
+            }
             _ if self.at_word("feed") => {
                 let start = self.tok().span;
                 self.bump();

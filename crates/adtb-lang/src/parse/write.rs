@@ -203,7 +203,7 @@ impl Parser<'_> {
                 let value = self.let_value()?;
                 items.push(BlockItem::Let(name, value));
             } else if self.at_write() {
-                items.push(BlockItem::Write(self.write_expr()?));
+                items.push(BlockItem::Write(Box::new(self.write_expr()?)));
             } else {
                 break;
             }
@@ -224,15 +224,15 @@ impl Parser<'_> {
     fn let_value(&mut self) -> PResult<LetValue> {
         match self.tok().tok {
             Tok::Kw(Kw::Insert | Kw::Update | Kw::Delete | Kw::Fail | Kw::Skip) => {
-                Ok(LetValue::Write(self.write_expr()?))
+                Ok(LetValue::Write(Box::new(self.write_expr()?)))
             }
             Tok::Kw(Kw::If | Kw::Match) | Tok::LParen => {
                 if let Some(w) = self.attempt(Attempt::Write, Self::write_expr) {
-                    return Ok(LetValue::Write(w));
+                    return Ok(LetValue::Write(Box::new(w)));
                 }
-                Ok(LetValue::Expr(self.expr()?))
+                Ok(LetValue::Expr(Box::new(self.expr()?)))
             }
-            _ => Ok(LetValue::Expr(self.expr()?)),
+            _ => Ok(LetValue::Expr(Box::new(self.expr()?))),
         }
     }
 }

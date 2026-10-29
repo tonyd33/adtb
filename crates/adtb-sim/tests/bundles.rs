@@ -16,7 +16,7 @@ use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
-use api::{once, options, printed, result, run, sorted};
+use api::{once, options, printed, query, run};
 
 const V1: &str = r"module auth
 add module auth
@@ -126,10 +126,6 @@ fn invalid(got: Result<Database<SimRuntime>, OpenError>, name: &str) -> String {
         RejectReason::Invalid { detail } => detail,
         other => panic!("the refusal is no Invalid: {other:?}"),
     }
-}
-
-fn query(db: &Database<SimRuntime>, text: &str) -> Vec<String> {
-    sorted(result(db, text))
 }
 
 fn call(db: &Database<SimRuntime>, name: &str, ordinal: u32, args: &[Value]) -> Called {

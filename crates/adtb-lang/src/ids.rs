@@ -222,10 +222,6 @@ fn engine(schema: &Schema) -> CatalogIds {
 
 /// Every object the user modules of `files` declare, in creation order, `text` giving the source
 /// text of a span of a file for the paths of uniques and indexes.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per declaration kind; each arm would have to be a function"
-)]
 pub fn objects(
     schema: &Schema,
     files: &[(FileId, ast::SchemaFile)],
@@ -244,77 +240,10 @@ pub fn objects(
         let values = &schema.module(mid).values;
         for d in &sf.decls {
             match d {
-                Decl::Type(t) => {
-                    let def = if t.name.text == "Principal" {
-                        Some(schema.principal)
-                    } else {
-                        schema.module(mid).types.get(&t.name.text).copied()
-                    };
-                    let Some(def) = def else { continue };
-                    let td = schema.ty(def);
-                    let tn = &td.name;
-                    push(Space::Shared, Slot::Type(def), format!("type {m}::{tn}"));
-                    if matches!(td.kind, TypeDefKind::Newtype { .. }) {
-                        push(
-                            Space::Shared,
-                            Slot::Ctor(def, 0),
-                            format!("ctor {m}::{tn}.{tn}"),
-                        );
-                    }
-                    for (k, c) in td.ctors().iter().enumerate() {
-                        push(
-                            Space::Shared,
-                            Slot::Ctor(def, k as u32),
-                            format!("ctor {m}::{tn}.{}", c.name),
-                        );
-                    }
-                    for f in td.header() {
-                        push(
-                            Space::Field,
-                            Slot::Field(def, None, f.name.clone()),
-                            format!("field {m}::{tn}.{}", f.name),
-                        );
-                    }
-                    for (k, c) in td.ctors().iter().enumerate() {
-                        for f in &c.fields {
-                            push(
-                                Space::Field,
-                                Slot::Field(def, Some(k as u32), f.name.clone()),
-                                format!("field {m}::{tn}.{}.{}", c.name, f.name),
-                            );
-                        }
-                    }
-                }
+                Decl::Type(t) => type_objects(&mut push, schema, mid, m, t),
                 Decl::Relation(r) => {
-                    let Some(&ValueDef::Relation(rel)) = values.get(&r.name.name.text) else {
-                        continue;
-                    };
-                    let rn = &r.name.name.text;
-                    push(
-                        Space::Shared,
-                        Slot::Relation(rel),
-                        format!("relation {m}::{rn}"),
-                    );
-                    let name = format!("{m}::{rn}");
-                    clause_objects(
-                        &mut push,
-                        schema,
-                        *file,
-                        text,
-                        &r.clauses,
-                        &name,
-                        Owner::Relation(rel),
-                    );
-                    let def = schema.ty(schema.relation(rel).elem_def);
-                    for i in schema.implied_indexes(rel) {
-                        let at = i.ctor.map_or(String::new(), |c| {
-                            format!("{}.", def.ctors()[c as usize].name)
-                        });
-                        push(
-                            Space::Index,
-                            Slot::Implied(rel, i.ctor, i.field.clone()),
-                            format!("index {name} implied by {at}{}", i.field),
-                        );
+                    if let Some(&ValueDef::Relation(rel)) = values.get(&r.name.name.text) {
+                        relation_objects(&mut push, schema, *file, text, m, rel, r);
                     }
                 }
                 Decl::Set(s) => {
@@ -398,6 +327,92 @@ pub fn objects(
         }
     }
     out
+}
+
+fn type_objects(
+    push: &mut dyn FnMut(Space, Slot, String),
+    schema: &Schema,
+    mid: ModuleId,
+    m: &str,
+    t: &ast::TypeDecl,
+) {
+    let def = if t.name.text == "Principal" {
+        Some(schema.principal)
+    } else {
+        schema.module(mid).types.get(&t.name.text).copied()
+    };
+    let Some(def) = def else { return };
+    let td = schema.ty(def);
+    let tn = &td.name;
+    push(Space::Shared, Slot::Type(def), format!("type {m}::{tn}"));
+    if matches!(td.kind, TypeDefKind::Newtype { .. }) {
+        push(
+            Space::Shared,
+            Slot::Ctor(def, 0),
+            format!("ctor {m}::{tn}.{tn}"),
+        );
+    }
+    for (k, c) in td.ctors().iter().enumerate() {
+        push(
+            Space::Shared,
+            Slot::Ctor(def, k as u32),
+            format!("ctor {m}::{tn}.{}", c.name),
+        );
+    }
+    for f in td.header() {
+        push(
+            Space::Field,
+            Slot::Field(def, None, f.name.clone()),
+            format!("field {m}::{tn}.{}", f.name),
+        );
+    }
+    for (k, c) in td.ctors().iter().enumerate() {
+        for f in &c.fields {
+            push(
+                Space::Field,
+                Slot::Field(def, Some(k as u32), f.name.clone()),
+                format!("field {m}::{tn}.{}.{}", c.name, f.name),
+            );
+        }
+    }
+}
+
+fn relation_objects(
+    push: &mut dyn FnMut(Space, Slot, String),
+    schema: &Schema,
+    file: FileId,
+    text: &dyn Fn(FileId, Span) -> String,
+    m: &str,
+    rel: RelId,
+    r: &ast::RelationDecl,
+) {
+    let rn = &r.name.name.text;
+    push(
+        Space::Shared,
+        Slot::Relation(rel),
+        format!("relation {m}::{rn}"),
+    );
+    let name = format!("{m}::{rn}");
+    clause_objects(
+        push,
+        schema,
+        file,
+        text,
+        &r.clauses,
+        &name,
+        Owner::Relation(rel),
+    );
+    let def = schema.ty(schema.relation(rel).elem_def);
+    for i in schema.implied_indexes(rel) {
+        let at = i.ctor.map_or(String::new(), |c| {
+            format!("{}.", def.ctors()[c as usize].name)
+        });
+        push(
+            Space::Index,
+            Slot::Implied(rel, i.ctor, i.field.clone()),
+            format!("index {name} implied by {at}{}", i.field),
+        );
+    }
 }
 
 /// The fields of the rows of view `view` of module `module`, as its result type writes them, when

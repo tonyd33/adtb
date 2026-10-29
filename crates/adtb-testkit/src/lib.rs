@@ -5,6 +5,8 @@ pub mod fixture;
 pub mod fuzz;
 pub mod inhabit;
 pub mod profile;
+pub mod running;
+pub mod spec;
 pub mod writes;
 
 mod rng;

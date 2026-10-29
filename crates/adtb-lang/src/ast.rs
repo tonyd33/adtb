@@ -344,6 +344,10 @@ pub struct Write {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "every variant is common; goes if `Expr` itself is a pointer"
+)]
 pub enum WriteKind {
     Insert {
         target: RelationRef,
@@ -407,13 +411,13 @@ pub struct TransactBlock {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlockItem {
     Let(Ident, LetValue),
-    Write(Write),
+    Write(Box<Write>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LetValue {
-    Expr(Expr),
-    Write(Write),
+    Expr(Box<Expr>),
+    Write(Box<Write>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -434,7 +438,7 @@ pub struct TypeDecl {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeBody {
-    New(Type, Option<Expr>),
+    New(Type, Option<Box<Expr>>),
     Record(Vec<FieldType>),
     Ctors(Vec<CtorDef>),
 }
@@ -579,7 +583,7 @@ pub enum Decl {
     Constraint(ConstraintDecl),
     Check(CheckDecl),
     Store(StoreDecl),
-    Aggregate(AggregateDecl),
+    Aggregate(Box<AggregateDecl>),
 }
 
 impl Decl {
@@ -626,7 +630,7 @@ pub enum SplitClause {
         fields: Vec<Expr>,
         scope: CtorScope,
     },
-    Arm(ArmClause),
+    Arm(Box<ArmClause>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -761,7 +765,7 @@ pub enum OperatorKind {
         expr: Expr,
     },
     DropComputed(QName, Ident),
-    DefineAggregate(AggregateDecl),
+    DefineAggregate(Box<AggregateDecl>),
     DropAggregate(QName),
     Enable(CtorTarget),
     Disable(CtorTarget),
@@ -770,7 +774,7 @@ pub enum OperatorKind {
         migration: String,
         fills: Vec<(FieldPath, Fill)>,
     },
-    Script(Write),
+    Script(Box<Write>),
     Install {
         name: Ident,
         version: String,
@@ -855,7 +859,7 @@ pub enum BundleItem {
     Query(QueryDecl),
     Txn(TxnDecl),
     Feed(FeedDecl),
-    Aggregate(AggregateDecl),
+    Aggregate(Box<AggregateDecl>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -880,7 +884,7 @@ pub struct BundleFile {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RoleStmt {
     Create(Ident),
-    AlterPassword(Ident, Expr),
+    AlterPassword(Ident, Box<Expr>),
     Drop(Ident),
 }
 
@@ -913,7 +917,7 @@ pub enum ExplainTarget {
         args: CallArgs,
     },
     Expr(Expr),
-    Write(Write),
+    Write(Box<Write>),
     Transact(TransactBlock),
 }
 
@@ -979,7 +983,7 @@ pub enum Command {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AdhocItem {
     Expr(Expr),
-    Write(Write),
+    Write(Box<Write>),
     Transact(TransactBlock),
     Command(Command, Span),
     Grant(Grant),

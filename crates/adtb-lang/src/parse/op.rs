@@ -100,10 +100,6 @@ impl Parser<'_> {
         })
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one arm per operator verb; each operator would need its own parser"
-    )]
     fn operator_kind(&mut self) -> PResult<OperatorKind> {
         if self.at_word("store") {
             return Ok(OperatorKind::Store(self.store_decl()?));
@@ -123,68 +119,8 @@ impl Parser<'_> {
                 self.expect_word("constructor")?;
                 Ok(OperatorKind::RemoveConstructor(self.ctor_path()?))
             }
-            "split" => {
-                self.expect_word("constructor")?;
-                let path = self.ctor_path()?;
-                self.expect_kw(Kw::Into)?;
-                let mut into = vec![self.ctor_def()?];
-                while self.eat(Tok::Bar) {
-                    into.push(self.ctor_def()?);
-                }
-                self.expect_kw(Kw::By)?;
-                self.expect_kw(Kw::Match)?;
-                let arms = self.arms()?;
-                let mut clauses = Vec::new();
-                loop {
-                    if self.at_word("unique") && self.peek(1).tok == Tok::LParen {
-                        self.bump();
-                        let fields = self.index_fields()?;
-                        self.expect_kw(Kw::In)?;
-                        clauses.push(SplitClause::Unique(fields, self.ctor_scope()?));
-                    } else if self.at_word("index") || self.at_word("interval") {
-                        let interval = self.eat_word("interval");
-                        self.expect_word("index")?;
-                        let fields = self.index_fields()?;
-                        self.expect_kw(Kw::In)?;
-                        let scope = self.ctor_scope()?;
-                        clauses.push(SplitClause::Index {
-                            interval,
-                            fields,
-                            scope,
-                        });
-                    } else if let Some(arm) = self.arm_clause()? {
-                        clauses.push(SplitClause::Arm(arm));
-                    } else {
-                        break;
-                    }
-                }
-                Ok(OperatorKind::SplitConstructor {
-                    path,
-                    into,
-                    arms,
-                    clauses,
-                })
-            }
-            "merge" => {
-                self.expect_word("constructor")?;
-                let (ty, sel) = self.ctor_set_path()?;
-                self.expect_kw(Kw::Into)?;
-                let into = self.ctor_def()?;
-                let arms = if self.eat_kw(Kw::By) {
-                    self.expect_kw(Kw::Match)?;
-                    Some(self.arms()?)
-                } else {
-                    None
-                };
-                let clauses = self.arm_clauses()?;
-                Ok(OperatorKind::MergeConstructor {
-                    ty,
-                    sel,
-                    into,
-                    arms,
-                    clauses,
-                })
-            }
+            "split" => self.split_op(),
+            "merge" => self.merge_op(),
             "nest" => {
                 self.expect_word("constructor")?;
                 let (ty, sel) = self.ctor_set_path()?;
@@ -204,66 +140,14 @@ impl Parser<'_> {
                 let clauses = self.arm_clauses()?;
                 Ok(OperatorKind::UnnestConstructor(path, clauses))
             }
-            "alter" => {
-                self.expect_word("field")?;
-                let path = self.field_path()?;
-                if !(self.at_word("on") && self.peek(1).tok == Tok::Kw(Kw::Delete)) {
-                    return Err(self.error_here("expected `on delete`"));
-                }
-                self.bump();
-                self.bump();
-                let start = self.tok().span;
-                let action = self.ref_action()?;
-                Ok(OperatorKind::AlterField {
-                    path,
-                    action,
-                    span: self.span_from(start),
-                })
-            }
-            "move" => {
-                self.expect_word("field")?;
-                let path = self.field_path()?;
-                self.expect_word("to")?;
-                let to = self.qupper("a type name")?;
-                let sel = if self.at_ctor_sel_after_dot() {
-                    self.bump();
-                    Some(self.ctor_sel()?)
-                } else {
-                    None
-                };
-                let fill = if self.eat_word("fill") {
-                    Some(self.fill()?)
-                } else {
-                    None
-                };
-                Ok(OperatorKind::MoveField {
-                    path,
-                    to,
-                    sel,
-                    fill,
-                })
-            }
-            "rekey" => {
-                self.expect_kw(Kw::Relation)?;
-                let relation = self.qlower("a relation name")?;
-                self.expect_kw(Kw::Key)?;
-                let key = self.key_fields()?;
-                let mut carry = Vec::new();
-                if self.eat_word("carry") {
-                    carry.push(self.field_path()?);
-                    while self.eat(Tok::Comma) {
-                        carry.push(self.field_path()?);
-                    }
-                }
-                Ok(OperatorKind::Rekey {
-                    relation,
-                    key,
-                    carry,
-                })
-            }
+            "alter" => self.alter_op(),
+            "move" => self.move_op(),
+            "rekey" => self.rekey_op(),
             "define" => {
                 if self.at_word("aggregate") {
-                    Ok(OperatorKind::DefineAggregate(self.aggregate_decl()?))
+                    Ok(OperatorKind::DefineAggregate(Box::new(
+                        self.aggregate_decl()?,
+                    )))
                 } else {
                     Ok(OperatorKind::DefineFn(self.fn_decl()?))
                 }
@@ -285,23 +169,8 @@ impl Parser<'_> {
             "enable" => Ok(OperatorKind::Enable(self.ctor_target()?)),
             "disable" => Ok(OperatorKind::Disable(self.ctor_target()?)),
             "deprecate" => Ok(OperatorKind::Deprecate(self.ctor_target()?)),
-            "revert" => {
-                let t = self.expect(Tok::Int, "a migration number")?;
-                let migration = self.text_of(t).to_string();
-                if migration.len() < 4 {
-                    return Err(
-                        self.error_at(t.span, "a migration number has at least four digits")
-                    );
-                }
-                let mut fills = Vec::new();
-                while self.eat_word("fill") {
-                    let path = self.field_path()?;
-                    self.expect(Tok::Eq, "`=`")?;
-                    fills.push((path, self.fill()?));
-                }
-                Ok(OperatorKind::Revert { migration, fills })
-            }
-            "script" => Ok(OperatorKind::Script(self.write_expr()?)),
+            "revert" => self.revert_op(),
+            "script" => Ok(OperatorKind::Script(Box::new(self.write_expr()?))),
             "install" => {
                 let name = self.lower("an extension name")?;
                 let version = self.text_lit()?;
@@ -323,6 +192,145 @@ impl Parser<'_> {
             }
             _ => Err(self.error_at(verb.span, "expected a schema operator")),
         }
+    }
+
+    fn split_op(&mut self) -> PResult<OperatorKind> {
+        self.expect_word("constructor")?;
+        let path = self.ctor_path()?;
+        self.expect_kw(Kw::Into)?;
+        let mut into = vec![self.ctor_def()?];
+        while self.eat(Tok::Bar) {
+            into.push(self.ctor_def()?);
+        }
+        self.expect_kw(Kw::By)?;
+        self.expect_kw(Kw::Match)?;
+        let arms = self.arms()?;
+        let mut clauses = Vec::new();
+        loop {
+            if self.at_word("unique") && self.peek(1).tok == Tok::LParen {
+                self.bump();
+                let fields = self.index_fields()?;
+                self.expect_kw(Kw::In)?;
+                clauses.push(SplitClause::Unique(fields, self.ctor_scope()?));
+            } else if self.at_word("index") || self.at_word("interval") {
+                let interval = self.eat_word("interval");
+                self.expect_word("index")?;
+                let fields = self.index_fields()?;
+                self.expect_kw(Kw::In)?;
+                let scope = self.ctor_scope()?;
+                clauses.push(SplitClause::Index {
+                    interval,
+                    fields,
+                    scope,
+                });
+            } else if let Some(arm) = self.arm_clause()? {
+                clauses.push(SplitClause::Arm(Box::new(arm)));
+            } else {
+                break;
+            }
+        }
+        Ok(OperatorKind::SplitConstructor {
+            path,
+            into,
+            arms,
+            clauses,
+        })
+    }
+
+    fn merge_op(&mut self) -> PResult<OperatorKind> {
+        self.expect_word("constructor")?;
+        let (ty, sel) = self.ctor_set_path()?;
+        self.expect_kw(Kw::Into)?;
+        let into = self.ctor_def()?;
+        let arms = if self.eat_kw(Kw::By) {
+            self.expect_kw(Kw::Match)?;
+            Some(self.arms()?)
+        } else {
+            None
+        };
+        let clauses = self.arm_clauses()?;
+        Ok(OperatorKind::MergeConstructor {
+            ty,
+            sel,
+            into,
+            arms,
+            clauses,
+        })
+    }
+
+    fn alter_op(&mut self) -> PResult<OperatorKind> {
+        self.expect_word("field")?;
+        let path = self.field_path()?;
+        if !(self.at_word("on") && self.peek(1).tok == Tok::Kw(Kw::Delete)) {
+            return Err(self.error_here("expected `on delete`"));
+        }
+        self.bump();
+        self.bump();
+        let start = self.tok().span;
+        let action = self.ref_action()?;
+        Ok(OperatorKind::AlterField {
+            path,
+            action,
+            span: self.span_from(start),
+        })
+    }
+
+    fn move_op(&mut self) -> PResult<OperatorKind> {
+        self.expect_word("field")?;
+        let path = self.field_path()?;
+        self.expect_word("to")?;
+        let to = self.qupper("a type name")?;
+        let sel = if self.at_ctor_sel_after_dot() {
+            self.bump();
+            Some(self.ctor_sel()?)
+        } else {
+            None
+        };
+        let fill = if self.eat_word("fill") {
+            Some(self.fill()?)
+        } else {
+            None
+        };
+        Ok(OperatorKind::MoveField {
+            path,
+            to,
+            sel,
+            fill,
+        })
+    }
+
+    fn rekey_op(&mut self) -> PResult<OperatorKind> {
+        self.expect_kw(Kw::Relation)?;
+        let relation = self.qlower("a relation name")?;
+        self.expect_kw(Kw::Key)?;
+        let key = self.key_fields()?;
+        let mut carry = Vec::new();
+        if self.eat_word("carry") {
+            carry.push(self.field_path()?);
+            while self.eat(Tok::Comma) {
+                carry.push(self.field_path()?);
+            }
+        }
+        Ok(OperatorKind::Rekey {
+            relation,
+            key,
+            carry,
+        })
+    }
+
+    fn revert_op(&mut self) -> PResult<OperatorKind> {
+        let t = self.expect(Tok::Int, "a migration number")?;
+        let migration = self.text_of(t).to_string();
+        if migration.len() < 4 {
+            return Err(self.error_at(t.span, "a migration number has at least four digits"));
+        }
+        let mut fills = Vec::new();
+        while self.eat_word("fill") {
+            let path = self.field_path()?;
+            self.expect(Tok::Eq, "`=`")?;
+            fills.push((path, self.fill()?));
+        }
+        Ok(OperatorKind::Revert { migration, fills })
     }
 
     fn add_op(&mut self) -> PResult<OperatorKind> {

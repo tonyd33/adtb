@@ -1,3 +1,5 @@
+//! The running schema of the spec at each version, and as each part extends it.
+
 use std::collections::BTreeMap;
 
 use adtb_lang::ast::{CtorSel, Decl, ExampleItem, Expr, ExprKind, FnBody, Operator, OperatorKind};
@@ -6,7 +8,7 @@ use adtb_lang::parse::{Options, parse_example};
 use adtb_lang::span::Span;
 use adtb_lang::visit::each_expr;
 
-use crate::corpus::Block;
+use crate::spec::Block;
 
 /// The block that declares the schema at version 10, where the history starts.
 const VERSION_10: (&str, &str) = ("README.md", "set OAuth of identities = Google\n");
@@ -102,7 +104,7 @@ impl Entry {
     }
 }
 
-pub fn tokens(src: &str) -> Vec<&str> {
+pub(crate) fn tokens(src: &str) -> Vec<&str> {
     lex(src)
         .0
         .into_iter()
@@ -138,11 +140,11 @@ pub fn decl_span(d: &Decl) -> Span {
 }
 
 /// The line of the spec file that byte `at` of the block's text is on.
-pub fn spec_line(b: &Block, at: usize) -> usize {
+pub(crate) fn spec_line(b: &Block, at: usize) -> usize {
     b.line + 1 + b.text[..at].matches('\n').count()
 }
 
-pub fn find<'a>(blocks: &'a [Block], (file, needle): (&str, &str)) -> &'a Block {
+fn find<'a>(blocks: &'a [Block], (file, needle): (&str, &str)) -> &'a Block {
     let found: Vec<&Block> = blocks
         .iter()
         .filter(|b| b.file == file && b.text.contains(needle))
@@ -177,7 +179,7 @@ fn declare(schema: &mut Vec<Entry>, b: &Block) {
     }
 }
 
-pub fn push(schema: &mut Vec<Entry>, module: &str, b: &Block, d: &Decl) {
+pub(crate) fn push(schema: &mut Vec<Entry>, module: &str, b: &Block, d: &Decl) {
     let key = decl_key(d);
     let span = decl_span(d);
     let text = b.text[span.range()].to_string();
