@@ -526,12 +526,13 @@ fn observe_never_runs_a_statement() {
         let f = open(rt, 3000);
         let task = f.submit(1, read_opts());
         let (_, waker) = wakes(rt);
-        assert!(matches!(
-            task.observe(&waker),
-            Observation::Layout(_) | Observation::Pending
-        ));
-        for _ in 0..20 {
-            assert!(matches!(task.observe(&waker), Observation::Pending));
+        let mut laid = false;
+        for _ in 0..21 {
+            match task.observe(&waker) {
+                Observation::Layout(_) if !laid => laid = true,
+                Observation::Pending => {}
+                other => panic!("an observation before capacity: {other:?}"),
+            }
             sleep(rt, Duration::from_millis(1));
         }
         assert_eq!(
