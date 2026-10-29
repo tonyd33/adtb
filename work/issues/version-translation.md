@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
-branch: version-translation
+status: resolved
 kind: feature
 priority: 822
 summary: "a bundle pinned to an earlier version cannot run: reads are not mapped back through the operators' inverses and writes are not mapped forward"
+closed: 2026-10-29
 depends-on:
   - bundles
 tags:
@@ -44,3 +44,9 @@ A fresh fix writer continues in the same workspace from 1058efd3. Local brief: w
 ## 2026-10-29: second review blocking, fixes dispatched
 
 The fixes for B1-B5 were rebased onto main bf2c4ff2 without conflicts. A second fresh review (work/briefs/review-version-translation2.md, local) found B2 and B3 fixed and four blocking findings: N1, the carries-whole check keys its seen set by type alone, so a later occurrence with other constructors is skipped; N2, `distinct` exempts sets by element type, but a field-read set of a relation's element type is not distinct by key; N3, `for`/`case`/`let!`-bound whole values skip the rebuild, so section 7.4 rule 2 defaults never run; N4, a superseded bundle registered again with no translation is refused `Untranslatable`, not `BundleExpired` (catalog.md errors table). Lead rulings: N2 exempts by where the set comes from (rows read from a relation), N3 decides by write site (an update's replaced row takes rule 1, every other whole value rule 2). A fresh writer fixes N1-N4 plus `open_translated` hiding engine refusals, the duplicated served state, `blame_ctor` preference and exact test details. The rest is in version-translation-follow-ups. Local brief: work/briefs/brief-version-translation-fixes2.md.
+
+## 2026-10-29: landed
+
+Landed as df87fbce after three fresh reviews; the third was clear and the main check passed on it. A bundle pinned at an older schema version is served by translating each of its queries and transactions to the current version (adtb-lang `translate`); a migration a live bundle cannot cross is refused naming the operator, and registering a bundle with a query that has no translation is refused `Untranslatable`, or `BundleExpired` when the bundle is expired or superseded. Section 7.4 missing-field rules apply by write site. The pinned law in crates/adtb-testkit/tests/differential.rs checks every translated query against the plain query. Open items, including the retired-bundle error order and the errors-table wording, are in version-translation-follow-ups.
+
+## 2026-10-29: resolved
