@@ -625,7 +625,7 @@ impl<'a> Normaliser<'a> {
             | Kind::Fresh(..)
             | Kind::Unreachable
             | Kind::Skip => Ok(self.val(node.kind.clone(), ty)),
-            Kind::Field(x, l) => self.field_step(*x, l, ty, cx),
+            Kind::Field(x, l) => self.field_step(t, *x, l, ty, cx),
             Kind::Case { scrutinee, arms } => self.case_step(*scrutinee, arms, ty, cx),
             Kind::If(..) => self.if_step(t, cx),
             Kind::Let(..) | Kind::LetBang(..) | Kind::Block(..) => self.spine(t, cx),
@@ -784,7 +784,8 @@ impl<'a> Normaliser<'a> {
         Ok(self.val(kind.with_children(&cs), ty))
     }
 
-    fn field_step(&mut self, x: Tm, l: &str, ty: Ty, cx: &Cx) -> Result<Val, String> {
+    fn field_step(&mut self, source: Tm, x: Tm, l: &str, ty: Ty, cx: &Cx) -> Result<Val, String> {
+        let carry = self.src[cx.arena].transport_fields.contains(&source);
         let x = self.tm(x, cx)?;
         let fs = match self.out.kind(x) {
             Kind::Record(fs) | Kind::Ctor { fields: fs, .. } => Some(fs.clone()),
@@ -796,10 +797,18 @@ impl<'a> Normaliser<'a> {
             let e = *e;
             let others: Vec<Tm> = fs.iter().filter(|(n, _)| n != l).map(|(_, t)| *t).collect();
             if others.into_iter().all(|o| self.copyable(o)) {
+                if !carry && self.out.transport_fields.contains(&e) {
+                    let node = self.out.node(e).clone();
+                    return Ok(self.val(node.kind, node.ty));
+                }
                 return Ok(Val::Tm(e));
             }
         }
-        Ok(self.val(Kind::Field(x, l.to_string()), ty))
+        let tm = self.add(Kind::Field(x, l.to_string()), ty);
+        if carry {
+            self.out.transport_fields.insert(tm);
+        }
+        Ok(Val::Tm(tm))
     }
 
     fn case_step(

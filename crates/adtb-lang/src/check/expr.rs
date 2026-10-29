@@ -486,7 +486,7 @@ impl Checker<'_> {
         let mut out = tm;
         for (label, v) in binders.iter().rev() {
             let vty = self.terms.var_info(*v).ty.clone();
-            let f = self.add(Kind::Field(row, label.clone()), vty);
+            let f = self.terms.transport_field(row, label.clone(), vty);
             out = self.add(Kind::Let(*v, f, out), ty.clone());
         }
         out
@@ -500,7 +500,9 @@ impl Checker<'_> {
     /// A group binder used as a set: the values of its grouped expression.
     fn group_as_set(&mut self, zeta: Var, g: &GroupInfo) -> Out {
         let z = self.var_tm(zeta);
-        let rows_tm = self.add(Kind::Field(z, "rows".into()), g.rows_ty.clone());
+        let rows_tm = self
+            .terms
+            .transport_field(z, "rows".into(), g.rows_ty.clone());
         let row_elem = self.elem_ty(&g.rows_ty).expect("rows is a set");
         let xi = self.fresh(row_elem);
         let xt = self.var_tm(xi);
@@ -1351,7 +1353,7 @@ impl Checker<'_> {
                             out.push((name.clone(), o.tm));
                         }
                         None => {
-                            let ft = self.add(Kind::Field(b.tm, name.clone()), fty.clone());
+                            let ft = self.terms.transport_field(b.tm, name.clone(), fty.clone());
                             out.push((name.clone(), ft));
                         }
                     }
@@ -1739,13 +1741,13 @@ impl Checker<'_> {
             let fty = fty.subst(&args_out);
             match &base {
                 Some(b) if same_ctor || *header => {
-                    let ft = self.add(Kind::Field(b.tm, f.clone()), fty);
+                    let ft = self.terms.transport_field(b.tm, f.clone(), fty);
                     given.push((f.clone(), ft));
                 }
                 None if *header && self.carry.is_some_and(|(_, d)| d == def) => {
                     let (row, _) = self.carry.expect("a carried row");
                     let rt = self.var_tm(row);
-                    let ft = self.add(Kind::Field(rt, f.clone()), fty);
+                    let ft = self.terms.transport_field(rt, f.clone(), fty);
                     given.push((f.clone(), ft));
                 }
                 _ => match site {
@@ -3003,7 +3005,9 @@ impl Checker<'_> {
                     let info = local.group.clone().expect("a group");
                     let row_ty = self.elem_ty(&info.rows_ty).expect("rows is a set");
                     let z = self.var_tm(local.var);
-                    let rows_tm = self.add(Kind::Field(z, "rows".into()), info.rows_ty.clone());
+                    let rows_tm =
+                        self.terms
+                            .transport_field(z, "rows".into(), info.rows_ty.clone());
                     let xi = self.fresh(row_ty);
                     frames.push(Frame::For(xi, rows_tm));
                     binders.push(xi);

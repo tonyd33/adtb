@@ -651,7 +651,7 @@ impl Checker<'_> {
         if let Some(old) = site.old
             && (header || is_key)
         {
-            return Ok(Some(self.add(Kind::Field(old, f.to_string()), fty)));
+            return Ok(Some(self.terms.transport_field(old, f.to_string(), fty)));
         }
         let default = r
             .defaults

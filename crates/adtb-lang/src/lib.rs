@@ -16,6 +16,7 @@ pub mod kernel;
 pub mod lex;
 pub mod norm;
 pub mod parse;
+pub mod permission;
 pub mod resolve;
 pub mod schema;
 pub mod signature;

@@ -141,6 +141,67 @@ refuses one whose normal form breaks a rule of §7, so the normal form
 of every term it returns exists and keeps those rules. §7 states the
 normal forms a consumer receives.
 
+### 1.1 Permission requirements
+
+`permission::query`, `permission::txn` and `permission::adhoc` return
+relation permission requirements for checked queries, transactions and
+ad hoc statements. The ad hoc result has one entry per statement;
+commands require their own admission policy.
+
+Preconditions: the checked input and `Program` refer to the supplied
+schema and its catalog identities. The effective grants supplied to
+`Requirements::missing` belong to the same identity domain and contain
+already-applied constructor and field sets, including any history-dependent
+freezing or carry. Raw omitted-field grants are not effective snapshots.
+
+Postconditions:
+
+- Requirements use distinct typed catalog identities for relation variables,
+  constructors and fields. Missing catalog identities, including those of
+  temporary relations, return an error. A row parameter alone introduces no
+  relation origin.
+- Read requirements retain each value's relation and constructor origins
+  through functions, higher-order applications, aggregates, fixpoints,
+  nested values and reference following. Ranging reads each selected
+  constructor and its declared key fields; storage identity adds no fields.
+  A consumed whole row reads every field and constructor of that row's
+  origins.
+- An aggregate other than `min` and `max`, and a `top`, read whatever
+  distinguishes the elements of its set. Rows of one relation in one
+  state need only their keys. Each transition and each evaluation of an
+  `at` body is its own state.
+- Unchanged-field transport in an update adds neither a read requirement
+  nor an update requirement for the carried field. A field is unchanged
+  only when it is carried from the row the update binds; the same field
+  of another row is a change. Explicit use of that field retains its read
+  requirement. An identity arm adds no write
+  requirement. Same-constructor updates name changed fields; retags name
+  the actual source and destination constructor pairs. Insert and delete
+  requirements remain separate from retag requirements.
+- Upserts include proposed inserts and the user expressions of their
+  conflict branches with distinct old and new provenance. Their implicit
+  conflict lookup adds no user read requirement. Any observation of a
+  stored row's constructor, including an upsert's old row, reads each
+  constructor it distinguishes and its declared key fields, as ranging
+  does: a `match` its arms' constructors, `tag` the constructors of its
+  operand's type, a constructor selection the selected constructors. A
+  row built in the query or a parameter adds none. A use of an upsert's
+  binding reads only through the branch paths that do not fail. Reject
+  destinations add insert requirements. Engine referential actions are
+  excluded.
+- Coverage returns every missing requirement in deterministic, duplicate-free
+  order. Registration mode requires grant option on relation rights;
+  file-read capability remains a separate requirement. Coverage uses only
+  the supplied effective snapshot and retains no authority between calls.
+
+The provider starts from checked inputs and performs normalization internally.
+Checking records access versus synthetic carry purpose; normalization must
+preserve that distinction, including when projection eliminates a constructed
+row. Ordinary normalized arenas do not independently establish this provenance
+contract. Consumers use the requirement provider rather than derive permissions
+from executor terms or reader invalidation metadata. Directly imported schema
+functions require the separate call and definer policy of their adapter.
+
 ## 2. Variables and sharing
 
 A `Var` is an index into its arena's `vars`, each with a name and a

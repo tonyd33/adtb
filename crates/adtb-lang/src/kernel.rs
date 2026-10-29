@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::schema::Generator;
 use crate::types::*;
@@ -297,9 +297,16 @@ pub struct VarInfo {
 pub struct Terms {
     pub nodes: Vec<Node>,
     pub vars: Vec<VarInfo>,
+    pub(crate) transport_fields: BTreeSet<Tm>,
 }
 
 impl Terms {
+    pub(crate) fn transport_field(&mut self, row: Tm, field: String, ty: Ty) -> Tm {
+        let tm = self.add(Kind::Field(row, field), ty);
+        self.transport_fields.insert(tm);
+        tm
+    }
+
     pub fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
         self.nodes.push(Node { kind, ty });
         Tm(self.nodes.len() as u32 - 1)
