@@ -423,8 +423,14 @@ After each operator, `grants` holds:
   source the routing reads: its targets as written, excepting every
   ordered pair of two products. The routing reads each field a pattern
   constrains, every field of the source and of the header when an arm
-  has a guard, and the nesting field for an unnest. A constructor added
-  later is covered as the targets cover it.
+  has a guard, and the nesting field for an unnest. A guarded split so
+  keeps a retag whole only for a role holding `update` on every field
+  of the source and of the header. A constructor added later is
+  covered as the targets cover it.
+- Across any structural operator, each excepted pair of a `retag`
+  grant with each replaced constructor replaced by every product it
+  reaches, without a pair of a constructor with itself; a pair naming
+  a removed constructor is gone.
 - A `read` grant covering a split's or unnest's source covers each
   product, whether or not it covers the fields the routing reads.
 - For `move field T.f to T.(C | D)`, each grant on `f` on the field of
@@ -441,7 +447,9 @@ After each operator, `grants` holds:
 A migration is refused while a structural operator leaves a grant
 covering some but not all of a product's sources, or covering them
 with different fields, or, for a nest, covering some but not all of
-a source's fields, unless a later `grant` of the same migration
+a source's fields, or while a merge or nest replaces sources that a
+`retag` grant's excepted pairs tell apart (a constructor outside them
+excepted with some of them but not all, in one direction), unless a later `grant` of the same migration
 gives the same role the same privilege on a target covering the
 product. The refusal names the sources and the product.
 

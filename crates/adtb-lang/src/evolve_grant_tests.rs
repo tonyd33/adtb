@@ -953,7 +953,7 @@ fn a_merge_refusal_names_the_privilege_role_relation_and_constructors() {
     );
     assert_eq!(
         Err(vec![
-            "the merge of `Google`, `Apple` into `Social` cannot carry the `read` grant of `support` on `identities`, which does not cover each of them with the same fields; grant `read` on `identities.Social` to `support` in the same migration".to_string()
+            "the merge of `Google`, `Apple` into `Social` cannot carry the `read` grant of `support` on `identities`, which does not cover each of them alike; grant `read` on `identities.Social` to `support` in the same migration".to_string()
         ]),
         migrate(&s, MERGE).map(|_| ())
     );
@@ -1091,8 +1091,8 @@ fn a_refusal_is_stated_once_for_each_role_relation_privilege_and_product() {
     };
     assert_eq!(
         vec![
-            "the merge of `Google`, `Apple` into `Social` cannot carry the `retag` grant of `support` on `identities`, which does not cover each of them with the same fields; grant `retag` on `identities.Social` to `support` in the same migration",
-            "the merge of `Google`, `Apple` into `Social` cannot carry the `read` grant of `support` on `identities`, which does not cover each of them with the same fields; grant `read` on `identities.Social` to `support` in the same migration",
+            "the merge of `Google`, `Apple` into `Social` cannot carry the `retag` grant of `support` on `identities`, which does not cover each of them alike; grant `retag` on `identities.Social` to `support` in the same migration",
+            "the merge of `Google`, `Apple` into `Social` cannot carry the `read` grant of `support` on `identities`, which does not cover each of them alike; grant `read` on `identities.Social` to `support` in the same migration",
         ],
         lines
     );
@@ -1221,6 +1221,168 @@ fn a_split_gives_read_of_a_product_without_the_routed_field() {
     let s = applies(&s, SPLIT);
     assert_eq!(
         vec!["web read identities (Apple | Google) listed [Apple.sub, Google.gid, user]"],
+        held(&s)
+    );
+}
+
+const WORK: &str = r"
+module auth
+type User = { id: Key users, name: Text }
+type Provider = Google | Apple
+type Identity { id: Key identities, user: Key users }
+  = EmailPass { email: Text, hash: Bytes }
+  | OAuth     { provider: Provider, sub: Text, work: Bool }
+relation users : User key id generate sequence
+relation identities : Identity key id generate uuidv7
+";
+
+const SPLIT_WORK: &str = "module auth
+split constructor Identity.OAuth into Google { gid: Text, work: Bool } | Apple { sub: Text, work: Bool }
+  by match
+    | OAuth { provider: Google, sub, work } -> Google { gid: sub, work: work }
+    | OAuth { provider: Apple, sub, work }  -> Apple { sub: sub, work: work }";
+
+const SPLIT_GOOGLE: &str = "module auth
+split constructor Identity.Google into Gw { gid: Text } | Gp { gid: Text }
+  by match
+    | Google { gid, work: true }  -> Gw { gid: gid }
+    | Google { gid, work: false } -> Gp { gid: gid }";
+
+const RESPLIT: &str = "ops retag identities * -> identities * except [Apple -> Gp, Apple -> Gw, Gp -> Apple, Gp -> Gw, Gw -> Apple, Gw -> Gp]";
+
+#[test]
+fn a_later_split_carries_the_excepted_pairs_to_its_products() {
+    let s = applies(
+        &source(WORK),
+        "module auth\ngrant retag identities -> identities to ops",
+    );
+    let first = applies(&s, SPLIT_WORK);
+    assert_eq!(
+        vec!["ops retag identities * -> identities * except [Apple -> Google, Google -> Apple]"],
+        held(&first)
+    );
+    let second = applies(&first, SPLIT_GOOGLE);
+    assert_eq!(vec![RESPLIT], held(&second));
+    reverts_to(&first, &second);
+}
+
+#[test]
+fn two_splits_in_one_migration_carry_the_excepted_pairs() {
+    let s = applies(
+        &source(WORK),
+        "module auth\ngrant retag identities -> identities to ops",
+    );
+    let after = applies(
+        &s,
+        &format!(
+            "{SPLIT_WORK}\n{}",
+            SPLIT_GOOGLE.trim_start_matches("module auth\n")
+        ),
+    );
+    assert_eq!(vec![RESPLIT], held(&after));
+    reverts_to(&s, &after);
+}
+
+const LOCAL: &str = r"
+module auth
+type User = { id: Key users, name: Text }
+type Provider = Google | Apple
+type Src = Google | Local
+type L = Google { gid: Text } | Local { gid: Text }
+type Identity { id: Key identities, user: Key users }
+  = Local { gid: Text }
+  | OAuth { provider: Provider, sub: Text }
+relation users : User key id generate sequence
+relation identities : Identity key id generate uuidv7
+";
+
+const MERGE_LOCAL: &str = "module auth
+merge constructor Identity.(Google | Local) into M { src: Src, gid: Text }
+  by match
+    | Google g -> M { src: Google, gid: g.gid }
+    | Local l  -> M { src: Local, gid: l.gid }";
+
+const NEST_LOCAL: &str =
+    "module auth\nnest constructor Identity.(Google | Local) into X { login: L }";
+
+fn split_local() -> Source {
+    let s = applies(
+        &source(LOCAL),
+        "module auth\ngrant retag identities -> identities to ops",
+    );
+    let s = applies(&s, SPLIT);
+    assert_eq!(
+        vec!["ops retag identities * -> identities * except [Apple -> Google, Google -> Apple]"],
+        held(&s)
+    );
+    s
+}
+
+#[test]
+fn a_merge_of_sources_the_excepted_pairs_tell_apart_is_refused_unless_restated() {
+    let s = split_local();
+    refuses(
+        &s,
+        MERGE_LOCAL,
+        "the merge of `Local`, `Google` into `M` cannot carry the `retag` grant of `ops` on `identities`",
+    );
+    let after = applies(
+        &s,
+        &format!("{MERGE_LOCAL}\ngrant retag identities.M -> identities to ops"),
+    );
+    assert_eq!(
+        vec![
+            "ops retag identities * -> identities * except [Apple -> M, M -> Apple]",
+            "ops retag identities (M) -> identities *",
+        ],
+        held(&after)
+    );
+    reverts_to(&s, &after);
+}
+
+#[test]
+fn a_nest_of_sources_the_excepted_pairs_tell_apart_is_refused_unless_restated() {
+    let s = split_local();
+    refuses(
+        &s,
+        NEST_LOCAL,
+        "the nest of `Local`, `Google` into `X` cannot carry the `retag` grant of `ops` on `identities`",
+    );
+    let after = applies(
+        &s,
+        &format!("{NEST_LOCAL}\ngrant retag identities.X -> identities to ops"),
+    );
+    assert_eq!(
+        vec![
+            "ops retag identities * -> identities * except [Apple -> X, X -> Apple]",
+            "ops retag identities (X) -> identities *",
+        ],
+        held(&after)
+    );
+    reverts_to(&s, &after);
+}
+
+#[test]
+fn a_merge_of_products_excepted_from_each_other_withholds_update_of_the_discriminator() {
+    let s = applies(
+        &oauth(),
+        "module auth\ngrant retag identities -> identities, update identities.OAuth (sub) to ops",
+    );
+    let s = applies(&s, SPLIT);
+    let s = applies(
+        &s,
+        "module auth
+merge constructor Identity.(Google | Apple) into Social
+  { provider: Provider, sub: Text }
+  by match
+    | Google g -> Social { provider: Google, sub: g.gid }
+    | Apple a  -> Social { provider: Apple, sub: a.sub }",
+    );
+    assert_eq!(
+        vec![
+            "ops retag identities * -> identities *",
+            "ops update identities (Social) listed [Social.sub]",
+        ],
         held(&s)
     );
 }

@@ -427,6 +427,63 @@ impl Carry {
         pairs.len() == n * n.saturating_sub(1)
     }
 
+    /// Returns the ids of the products the rows of constructor `x` go to, or `x` when it is no
+    /// source.
+    fn images(&self, x: u64, products: &[(String, u64)]) -> Vec<u64> {
+        if !self.sources.iter().any(|(s, _)| *s == x) {
+            return vec![x];
+        }
+        products
+            .iter()
+            .filter(|(p, _)| self.reaches.contains(&(x, p.clone())))
+            .map(|&(_, id)| id)
+            .collect()
+    }
+
+    /// Returns excepted pairs `except` with each source replaced by every product it reaches,
+    /// without a pair of a constructor with itself.
+    fn excepted(&self, except: &[(u64, u64)], products: &[(String, u64)]) -> Vec<(u64, u64)> {
+        let mut out: Vec<(u64, u64)> = except
+            .iter()
+            .flat_map(|&(x, y)| {
+                let to = self.images(y, products);
+                self.images(x, products)
+                    .into_iter()
+                    .flat_map(move |x| to.clone().into_iter().map(move |y| (x, y)))
+            })
+            .filter(|(x, y)| x != y)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Returns whether a merge or nest replaces sources that excepted pairs `except` tell
+    /// apart: some constructor outside the sources is excepted with some of them but not all,
+    /// in one direction.
+    fn excepts_apart(&self, except: &[(u64, u64)]) -> bool {
+        if !matches!(self.what, Structural::Merge | Structural::Nest) {
+            return false;
+        }
+        let sources: BTreeSet<u64> = self.sources.iter().map(|(s, _)| *s).collect();
+        let outside: BTreeSet<u64> = except
+            .iter()
+            .flat_map(|&(x, y)| [x, y])
+            .filter(|z| !sources.contains(z))
+            .collect();
+        outside.iter().any(|&z| {
+            let from = sources
+                .iter()
+                .filter(|&&s| except.contains(&(s, z)))
+                .count();
+            let to = sources
+                .iter()
+                .filter(|&&s| except.contains(&(z, s)))
+                .count();
+            (from != 0 && from != sources.len()) || (to != 0 && to != sources.len())
+        })
+    }
+
     /// Returns whether a split or unnest would carry retag `a -> b` to pairs between two of its
     /// products, the source being on both sides.
     fn divides(&self, a: &GrantTarget, b: &GrantTarget) -> bool {
@@ -479,7 +536,7 @@ impl Carry {
             product: product.0,
             span: self.span,
             message: format!(
-                "the {} of {} into `{}` cannot carry the `{k}` grant of `{role}` on `{rel}`, which does not cover each of them with the same fields; grant `{k}` on `{rel}.{}` to `{role}` in the same migration",
+                "the {} of {} into `{}` cannot carry the `{k}` grant of `{role}` on `{rel}`, which does not cover each of them alike; grant `{k}` on `{rel}.{}` to `{role}` in the same migration",
                 self.what.name(),
                 sources.join(", "),
                 product.1,
@@ -571,8 +628,18 @@ impl Source {
                 Granted::Insert(t) | Granted::Delete(t) => carry(t, None),
                 Granted::Retag(a, b, except) => {
                     let divided = plan.divides(a, b) && !plan.updates_routing(&held, &role, a, b);
+                    let differs = plan.excepts_apart(except);
                     carry(a, None);
                     carry(b, None);
+                    *except = plan.excepted(except, &products);
+                    if differs {
+                        for (p, id) in &products {
+                            let u = plan.unstated(&role, a.relation, kind, (*id, p.clone()));
+                            if !unstated.iter().any(|x| x.same(&u)) {
+                                unstated.push(u);
+                            }
+                        }
+                    }
                     if divided {
                         for (_, x) in &products {
                             except.extend(
