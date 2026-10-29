@@ -334,6 +334,16 @@ impl<R: Runtime> Database<R> {
         e.call(&p, opts, || {}).map(|done| done.value)
     }
 
+    /// Returns each incremental check the constraint or check `name`, by qualified name, is
+    /// admitted with, or an invalid error when the schema has no constraint or check `name`.
+    pub fn explain_checks(&self, name: &str) -> Result<Vec<write::CheckPlan>, Error> {
+        let e = &*self.engine;
+        let _open = e.enter()?;
+        e.db.checks(name).ok_or_else(|| {
+            Error::invalid(format!("the schema has no constraint or check `{name}`"))
+        })
+    }
+
     /// Close the database once every running call has returned: write every changed page, take
     /// a checkpoint, close the files and release the lock on the database file. Interactive
     /// transactions still open end uncommitted, and every later call through any handle on the

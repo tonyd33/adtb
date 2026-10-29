@@ -68,7 +68,7 @@ pub fn run_engine_in<R: Runtime>(rt: R, script: &Script, dir: &Path) -> Vec<Diff
 
 /// Returns the migration of each module file of the schema `body`: the module added, then each
 /// declaration in order, each relation of a type the module declares moved up to follow its type.
-fn migrations(body: &str) -> Vec<String> {
+pub fn migrations(body: &str) -> Vec<String> {
     modules(body).iter().map(|m| migration(m)).collect()
 }
 

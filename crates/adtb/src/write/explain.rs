@@ -7,8 +7,23 @@ use adtb_lang::types::{RelId, Ty};
 use crate::plan::explain::{Arm, Describe, Node, ctor_name};
 use crate::runtime::Runtime;
 
-use super::Error;
+use super::delta::CheckPlan;
 use super::eval::Stmt;
+use super::{Database, Error};
+
+impl<R: Runtime> Database<R> {
+    /// Returns each incremental check the constraint or check `name`, by qualified name, is
+    /// admitted with, or `None` when the schema has no constraint or check `name`.
+    pub fn checks(&self, name: &str) -> Option<Vec<CheckPlan>> {
+        let d = self.denials.iter().find(|d| d.name == name)?;
+        Some(
+            d.deltas
+                .iter()
+                .map(|(delta, _)| delta.explain(&self.schema, &self.catalog))
+                .collect(),
+        )
+    }
+}
 
 impl<R: Runtime> Stmt<'_, R> {
     /// Returns the operators of the statement, its parameters `params`.

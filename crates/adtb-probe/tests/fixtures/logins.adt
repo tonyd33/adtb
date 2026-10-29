@@ -1,0 +1,7 @@
+module app
+type User = { id: Key users }
+relation users : User key id generate sequence
+type Login { id: Key logins, user: Key users } = Email { email: Text } | Phone { phone: Text }
+relation logins : Login key id generate sequence index (user)
+constraint reachable =
+  from p in logins.Phone where not exists e in logins.Email where e.user == p.user select p

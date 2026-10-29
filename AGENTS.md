@@ -83,8 +83,10 @@ root (devenv also puts each on PATH as `NAME`):
   machine; output in `target/suite.txt`, prints failures and the summary.
 - `conf PATH...`: run conformance files or directories on the
   reference and the engine; prints each difference as `FILE:LINE`.
-- `adtb-probe --schema FILE [--data FILE] [--explain] TEXT`: check a
-  text and run it on the reference and the engine side by side.
+- `adtb-probe --schema FILE [--data FILE] [--explain] [--checks NAME] TEXT`:
+  check a text and run it on the reference and the engine side by side;
+  `--checks app::c` prints the plan of each incremental check of
+  constraint `c`, the text then optional.
 - `codemap [CRATE [MODULE]]`, `codemap --tests [CRATE]`: modules, pub
   items with line numbers, test binaries with their test counts.
 - `house-check`: the added lines of `jj diff` that break a comment rule.

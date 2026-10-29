@@ -9,9 +9,12 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use adtb::Value;
+use adtb::runtime::Runtime;
+use adtb::write::Part;
+use adtb::{CreateOptions, Database, Log, OpenOptions, Value};
 use adtb_conformance::{
-    Difference, Directive, Got, Kind, Script, panic_message, run_engine_in, run_reference_in,
+    Difference, Directive, Got, Kind, Script, migrations, panic_message, run_engine_in,
+    run_reference_in,
 };
 use adtb_lang::ast::AdhocItem;
 use adtb_lang::check::{check_adhoc, check_schema};
@@ -22,11 +25,11 @@ use adtb_lang::textual::{self, Form};
 use adtb_lang::types::Base;
 use adtb_sim::{Config, Outcome, Sim};
 
-const USAGE: &str =
-    "usage: adtb-probe --schema FILE [--data FILE] [--explain] [--reference | --engine] TEXT";
+const USAGE: &str = "usage: adtb-probe --schema FILE [--data FILE] [--explain] [--checks NAME] \
+[--reference | --engine] TEXT";
 
-const HELP: &str =
-    "usage: adtb-probe --schema FILE [--data FILE] [--explain] [--reference | --engine] TEXT
+const HELP: &str = "usage: adtb-probe --schema FILE [--data FILE] [--explain] [--checks NAME] \
+[--reference | --engine] TEXT
 
 Check the schema FILE and the ad hoc TEXT, printing each refusal with its
 line and column. Then run TEXT on a fresh database of the reference
@@ -36,12 +39,15 @@ whether they agree. TEXT `-` reads the text from stdin.
   --schema FILE   the schema: module files, each from its `module` line
   --data FILE     ad hoc text run before TEXT, to load the database
   --explain       also print the engine's plan of TEXT
+  --checks NAME   also print the engine's plan of each incremental check
+                  of the constraint or check NAME, by qualified name
+                  (`app::adults`); TEXT is then optional
   --reference     run on the reference interpreter only
   --engine        run on the engine only
   -h, --help      print this help
 
 Exits 0 when the sides agree, 1 when they differ or a side fails to
-load, 2 when the schema or the text is refused.";
+load, 2 when the schema or the text is refused or NAME names nothing.";
 
 const SCHEMA: usize = 1;
 const DATA: usize = 2;
@@ -55,9 +61,10 @@ struct Args {
     schema: PathBuf,
     data: Option<PathBuf>,
     explain: bool,
+    checks: Option<String>,
     reference: bool,
     engine: bool,
-    text: String,
+    text: Option<String>,
 }
 
 impl Args {
@@ -70,6 +77,10 @@ impl Args {
                 Some("--schema") => schema = Some(args.next().ok_or("--schema needs a file")?),
                 Some("--data") => out.data = Some(args.next().ok_or("--data needs a file")?.into()),
                 Some("--explain") => out.explain = true,
+                Some("--checks") => {
+                    let name = args.next().ok_or("--checks needs a name")?;
+                    out.checks = Some(name.to_string_lossy().into_owned());
+                }
                 Some("--reference") => out.reference = true,
                 Some("--engine") => out.engine = true,
                 Some("-") => text = Some(stdin()?),
@@ -81,7 +92,10 @@ impl Args {
             return Ok(out);
         }
         out.schema = schema.ok_or("--schema is required")?.into();
-        out.text = text.ok_or("a text is required")?;
+        if text.is_none() && out.checks.is_none() {
+            return Err("a text is required".into());
+        }
+        out.text = text;
         if !out.reference && !out.engine {
             (out.reference, out.engine) = (true, true);
         }
@@ -137,8 +151,9 @@ fn render_files(label: &str, files: &[(usize, String)], ds: &[FileDiag]) -> Stri
         .collect()
 }
 
-/// Check the schema and the text as the reference does, and return the text's items.
-fn check(label: &str, schema: &str, text: &str) -> Result<Vec<AdhocItem>, String> {
+/// Check the schema and the text, when there is one, as the reference does, and return the
+/// text's items.
+fn check(label: &str, schema: &str, text: Option<&str>) -> Result<Vec<AdhocItem>, String> {
     let files = modules(schema);
     let mut parsed = Vec::new();
     for (i, (first, src)) in files.iter().enumerate() {
@@ -151,6 +166,9 @@ fn check(label: &str, schema: &str, text: &str) -> Result<Vec<AdhocItem>, String
     }
     let built = build(&parsed).map_err(|ds| render_files(label, &files, &ds))?;
     let program = check_schema(&built).map_err(|ds| render_files(label, &files, &ds))?;
+    let Some(text) = text else {
+        return Ok(Vec::new());
+    };
     let rendered = |ds: Vec<Diag>| {
         ds.iter()
             .map(|d| render("TEXT", text, 0, d))
@@ -335,23 +353,83 @@ fn report(out: &mut String, side: &str, r: &Ran) {
     }
 }
 
+/// Returns the plan of each incremental check of the constraint or check `name` of a fresh
+/// database of the engine over `schema`, each under the change that runs it.
+fn checks<R: Runtime>(rt: R, schema: &str, dir: &Path, name: &str) -> Result<String, String> {
+    let options = OpenOptions {
+        create: Some(CreateOptions::default()),
+        file_root: Some(dir.to_path_buf()),
+        ..OpenOptions::default()
+    };
+    let log = Log::new(migrations(schema));
+    let db = Database::open_in(rt, "probe.adt", &log, &options)
+        .map_err(|e| format!("the database does not open: {e:?}"))?;
+    let plans = db.explain_checks(name).map_err(|e| e.to_string());
+    db.close()
+        .map_err(|e| format!("the database does not close: {e}"))?;
+    let mut out = String::new();
+    for p in plans? {
+        let on = match &p.trigger {
+            None => "any change".to_owned(),
+            Some((rel, Part::Inserted)) => format!("insert into {rel}"),
+            Some((rel, Part::Deleted)) => format!("delete from {rel}"),
+            Some((rel, Part::Changed)) => format!("change to {rel}"),
+        };
+        let plan = p.plan.text();
+        let plan = plan.trim_end_matches('\n').replace('\n', "\n  ");
+        writeln!(out, "check {name} on {on}:\n  {plan}").expect("a string is written");
+    }
+    Ok(out)
+}
+
+fn on_engine_checks(schema: &str, dir: &Path, name: &str) -> Result<String, String> {
+    let mut found = Err("the simulation does not run".to_owned());
+    let ran = panic::catch_unwind(AssertUnwindSafe(|| {
+        Sim::new(0, Config::default()).run(|rt| found = checks(rt, schema, dir, name))
+    }));
+    match ran {
+        Ok(Outcome::Finished) => found,
+        Ok(Outcome::Crashed) => Err("the simulated process crashes".into()),
+        Err(p) => Err(format!("the engine panics: {}", panic_message(&*p))),
+    }
+}
+
 fn probe(args: &Args) -> Result<(String, ExitCode), String> {
     let schema = read(&args.schema)?;
     let data = args.data.as_deref().map(read).transpose()?;
     let label = args.schema.display().to_string();
-    let items = match check(&label, &schema, &args.text) {
+    let items = match check(&label, &schema, args.text.as_deref()) {
         Ok(items) => items,
         Err(refused) => return Ok((refused, ExitCode::from(2))),
     };
-    let script = script(&schema, data.as_deref(), &args.text, &items);
+    let dir = args.schema.parent().unwrap_or(Path::new(""));
+    let (mut out, code) = match &args.text {
+        Some(text) => run(args, &schema, data.as_deref(), text, &items, dir),
+        None => (String::new(), ExitCode::SUCCESS),
+    };
+    if let Some(name) = &args.checks {
+        out.push_str(&on_engine_checks(&schema, dir, name)?);
+    }
+    Ok((out, code))
+}
+
+/// Run `text` on each side `args` names. Returns the report with its exit code.
+fn run(
+    args: &Args,
+    schema: &str,
+    data: Option<&str>,
+    text: &str,
+    items: &[AdhocItem],
+    dir: &Path,
+) -> (String, ExitCode) {
+    let script = script(schema, data, text, items);
     let mut explained = script.clone();
     if args.explain {
-        let text = format!("explain {}", args.text);
+        let text = format!("explain {text}");
         explained
             .directives
             .push(directive(EXPLAIN, query(), &text));
     }
-    let dir = args.schema.parent().unwrap_or(Path::new(""));
     let mut sides = Vec::new();
     if args.reference {
         sides.push(("reference", ran(&script, &on_reference(&script, dir))));
@@ -368,14 +446,12 @@ fn probe(args: &Args) -> Result<(String, ExitCode), String> {
     if sides.len() == 2 {
         out.push_str(if agree { "agree\n" } else { "differ\n" });
     }
-    Ok((
-        out,
-        if agree {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        },
-    ))
+    let code = if agree {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    };
+    (out, code)
 }
 
 #[expect(

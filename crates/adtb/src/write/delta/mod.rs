@@ -7,6 +7,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::catalog::indexed_fields;
+use crate::plan::explain::{Describe, Node};
 use crate::plan::{self, Catalog, Facts, Plan, with_children};
 
 #[cfg(test)]
@@ -50,6 +51,33 @@ pub struct Checks {
     /// The relation variables the query reads.
     pub reads: BTreeSet<RelId>,
     pub deltas: Vec<Delta>,
+}
+
+/// One incremental check as `explain` shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckPlan {
+    /// The constructor relation, by qualified name, and the part of the change set whose rows
+    /// run the check; `None` when every change runs it.
+    pub trigger: Option<(String, Part)>,
+    pub plan: Node,
+}
+
+impl Delta {
+    /// Returns the check as `explain` shows it over `schema` and `catalog`.
+    pub fn explain(&self, schema: &Schema, catalog: &Catalog) -> CheckPlan {
+        let trigger = self.trigger.map(|t| {
+            let i = self
+                .inputs
+                .iter()
+                .find(|i| i.var == t)
+                .expect("a check's trigger is one of its inputs");
+            (scope_name(schema, i.rel, &i.ctors), i.part)
+        });
+        CheckPlan {
+            trigger,
+            plan: Describe::new(schema, catalog).plan(&self.plan),
+        }
+    }
 }
 
 /// Why the constraints of a schema compile to no incremental checks.

@@ -10,8 +10,8 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// Run the probe with `args` and `stdin`, returning its exit code and stdout.
-fn probe_with(args: &[&str], stdin: &str) -> (i32, String) {
+/// Run the probe with `args` and `stdin`, returning its exit code, stdout and stderr.
+fn probe_all(args: &[&str], stdin: &str) -> (i32, String, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_adtb-probe"))
         .args(args)
         .stdin(Stdio::piped())
@@ -27,13 +27,20 @@ fn probe_with(args: &[&str], stdin: &str) -> (i32, String) {
         .expect("stdin is written");
     let out = child.wait_with_output().expect("the probe ends");
     let stdout = String::from_utf8(out.stdout).expect("stdout is UTF-8");
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stderr = String::from_utf8(out.stderr).expect("stderr is UTF-8");
     (
         out.status
             .code()
             .unwrap_or_else(|| panic!("killed: {stderr}")),
         stdout,
+        stderr,
     )
+}
+
+/// Run the probe with `args` and `stdin`, returning its exit code and stdout.
+fn probe_with(args: &[&str], stdin: &str) -> (i32, String) {
+    let (code, stdout, _) = probe_all(args, stdin);
+    (code, stdout)
 }
 
 fn probe(args: &[&str]) -> (i32, String) {
@@ -157,4 +164,76 @@ fn data_the_reference_refuses_is_reported_as_loading() {
     assert!(out.contains("engine: the data: "), "{out}");
     assert!(out.ends_with("differ\n"), "{out}");
     assert_eq!(code, 1);
+}
+
+#[test]
+fn checks_print_the_plan_of_each_incremental_check_without_a_text() {
+    let schema = fixture("app.adt").display().to_string();
+    let (code, out, err) = probe_all(&["--schema", &schema, "--checks", "app::adults"], "");
+    assert_eq!(
+        out,
+        "check app::adults on insert into app::users:
+  Set
+    Pipeline
+      One row
+      Unnest
+      Filter
+      Emit
+",
+        "{err}"
+    );
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn checks_name_the_constructor_relation_and_change_of_each_check() {
+    let schema = fixture("logins.adt").display().to_string();
+    let (code, out, err) = probe_all(&["--schema", &schema, "--checks", "app::reachable"], "");
+    let heads: Vec<&str> = out.lines().filter(|l| l.starts_with("check ")).collect();
+    assert_eq!(
+        heads,
+        [
+            "check app::reachable on insert into app::logins.Phone:",
+            "check app::reachable on change to app::logins.Email:",
+        ],
+        "{out}{err}"
+    );
+    assert!(!out.contains("Scan"), "{out}");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn checks_follow_the_text_s_outcome() {
+    let args = loaded(&[
+        "--engine",
+        "--checks",
+        "app::adults",
+        "from u in users select u.age",
+    ]);
+    let (code, out) = probe(&strs(&args));
+    assert!(
+        out.starts_with("engine: [30, 41]\ncheck app::adults on insert into app::users:\n"),
+        "{out}"
+    );
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn checks_of_an_unknown_name_fail_naming_it() {
+    let schema = fixture("app.adt").display().to_string();
+    let (code, out, err) = probe_all(&["--schema", &schema, "--checks", "adults"], "");
+    assert_eq!(out, "");
+    assert_eq!(
+        err,
+        "adtb-probe: the schema has no constraint or check `adults`\n"
+    );
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn a_text_is_required_without_checks() {
+    let schema = fixture("app.adt").display().to_string();
+    let (code, _, err) = probe_all(&["--schema", &schema], "");
+    assert!(err.starts_with("adtb-probe: a text is required\n"), "{err}");
+    assert_eq!(code, 2);
 }

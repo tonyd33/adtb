@@ -37,6 +37,7 @@ use crate::vacuum;
 
 pub use adtb_lang::schema::Stage;
 
+pub use delta::{CheckPlan, Part};
 pub use input::Local;
 pub use past::Retained;
 

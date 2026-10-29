@@ -9,7 +9,8 @@ use adtb_lang::schema::{Schema, ValueDef, build};
 use adtb_lang::span::FileId;
 use adtb_lang::types::{Base, RelId, Ty};
 
-use super::{At, Binder, Compiler, Occurrence, Origin, Row, Within};
+use super::{At, Binder, Compiler, Occurrence, Origin, Part, Row, Within, compile};
+use crate::plan::fixture::Fixture;
 use crate::plan::{self, Catalog, Facts};
 
 fn schema() -> Schema {
@@ -176,5 +177,72 @@ fn a_top_level_binder_outside_a_for_or_let_is_an_internal_error() {
     assert!(
         what.contains("a top level binder is a `For` or a `Let`"),
         "{what}"
+    );
+}
+
+#[test]
+fn each_check_is_labelled_by_the_constructor_relation_and_part_that_runs_it() {
+    let f = Fixture::new(
+        "type User = { id: Key users }
+relation users : User key id generate sequence
+type Login { id: Key logins, user: Key users } = Email { email: Text } | Phone { phone: Text }
+relation logins : Login key id generate sequence index (user)
+constraint reachable =
+  from p in logins.Phone where not exists e in logins.Email where e.user == p.user select p
+",
+    );
+    let mut terms = f.normal.terms.clone();
+    let checks = compile(&f.schema, &f.normal, &mut terms, &f.catalog)
+        .unwrap_or_else(|e| panic!("the constraint is admitted: {e:?}"));
+    let [c] = checks.as_slice() else {
+        panic!("one constraint compiles: {checks:?}");
+    };
+    assert_eq!(c.name, "app::reachable");
+    let triggers: Vec<_> = c
+        .deltas
+        .iter()
+        .map(|d| d.explain(&f.schema, &f.catalog).trigger)
+        .collect();
+    assert_eq!(
+        triggers,
+        [
+            Some(("app::logins.Phone".to_owned(), Part::Inserted)),
+            Some(("app::logins.Email".to_owned(), Part::Changed)),
+        ]
+    );
+    for d in &c.deltas {
+        let shown = d.explain(&f.schema, &f.catalog).plan.text();
+        assert!(
+            !shown.contains("Scan"),
+            "a check reads through probes:\n{shown}"
+        );
+    }
+}
+
+#[test]
+fn a_constraint_over_both_constructors_has_a_check_per_constructor() {
+    let f = Fixture::new(
+        "type User = { id: Key users }
+relation users : User key id generate sequence
+type Login { id: Key logins, user: Key users } = Email { email: Text } | Phone { phone: Text }
+relation logins : Login key id generate sequence index (user)
+constraint single =
+  from e in logins.Email, p in logins.Phone where e.user == p.user select e
+",
+    );
+    let mut terms = f.normal.terms.clone();
+    let checks = compile(&f.schema, &f.normal, &mut terms, &f.catalog)
+        .unwrap_or_else(|e| panic!("the constraint is admitted: {e:?}"));
+    let triggers: Vec<_> = checks[0]
+        .deltas
+        .iter()
+        .map(|d| d.explain(&f.schema, &f.catalog).trigger)
+        .collect();
+    assert_eq!(
+        triggers,
+        [
+            Some(("app::logins.Email".to_owned(), Part::Inserted)),
+            Some(("app::logins.Phone".to_owned(), Part::Inserted)),
+        ]
     );
 }

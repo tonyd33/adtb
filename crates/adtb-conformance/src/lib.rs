@@ -25,7 +25,7 @@ use adtb_lang::span::FileId;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, Database, Disk, Interpreter, Rejection, Supply, Value, textual};
 
-pub use engine::{run_engine, run_engine_in};
+pub use engine::{migrations, run_engine, run_engine_in};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
