@@ -2,6 +2,11 @@
 [profile.default]
 slow-timeout = { period = "20s", terminate-after = 3 }
 
+# Runs a shell over every manual page, about 40 s under load.
+[[profile.default.overrides]]
+filter = "test(=every_page_prints_what_it_shows)"
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 # For iteration: one seed per `profile::sweep` sweep, and no crash sweeps.
 [profile.quick]
 default-filter = "not test(/crash/)"
