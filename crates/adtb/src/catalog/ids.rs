@@ -70,12 +70,7 @@ pub fn field_id(schema: &Schema, def: TypeId, c: u32, name: &str) -> Option<CatF
 
 /// Returns the relation of `schema` whose catalog id is `id`.
 pub fn relation(schema: &Schema, id: CatRelId) -> Option<RelId> {
-    schema
-        .ids
-        .relations
-        .iter()
-        .find(|&(_, &x)| x == id.0)
-        .map(|(&r, _)| r)
+    schema.ids.relation(id.0)
 }
 
 /// Returns the type of `schema` whose catalog id is `id`.

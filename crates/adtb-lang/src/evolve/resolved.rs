@@ -660,7 +660,7 @@ impl Resolver<'_> {
             Some(&n) => n,
             None => {
                 let id = self.schema.ids.relations[&rel];
-                let (&r, _) = self.before.ids.relations.iter().find(|&(_, &x)| x == id)?;
+                let r = self.before.ids.relation(id)?;
                 self.before.relation(r).indexes.len()
             }
         };
