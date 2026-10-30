@@ -23,7 +23,9 @@ transaction can see, so there is no past to read. The file setting
 `RetentionWindow` says how far back reads may reach: the engine keeps
 every version a state within that length of now can see. Set it before
 the commits you will want to read; a commit made while the window was
-shorter is not kept. The setting is stored in the file.
+shorter is not kept. The setting is stored in the file. `set setting`
+is ad hoc text like any other: it runs from `-c`, from a script on
+standard input or at the prompt, and may come before the first write.
 
 ```console
 $ adtb --create --schema shelter.adt shelter.db
@@ -37,11 +39,21 @@ adtb> count(c for c in sys::commit_times)
 adtb> \q
 ```
 
-`sys::commit_times` lists every commit inside the window: its
-`position`, a `Position { epoch, lsn }` naming its place in the log,
-and `at`, the instant it committed. Each of the three writes above is
-one commit. A command such as `set setting` is not a transaction and
-has no commit of its own.
+`sys::commit_times` lists every commit of a write inside the window:
+its `position` and `at`, the instant it committed. Each of the three
+writes above is one commit. A command such as `set setting` is not a
+transaction and has no commit of its own, and the commit of a
+migration is not listed either.
+
+A position is a value of the prelude type `Position = { epoch: I64,
+lsn: I64 }`, the commit's place in the database's log. `lsn`, the log
+sequence number, grows with every commit. `epoch` counts the times a
+replica was promoted to take over the log, so on an embedded database
+it stays at 1. A position is later than another when its epoch is
+greater, or the epochs are equal and its `lsn` is greater. `Position`
+has no order in queries, so `min` and `max` refuse it; compare
+`p.lsn` instead. Positions depend on everything written before, so
+read them from `sys::commit_times` rather than writing them by hand.
 
 ## Read a past state
 
@@ -115,9 +127,22 @@ kept before { epoch: E, lsn: N }". This happens when:
 - the position is later than the reading transaction's snapshot;
 - the block reads a relation that did not exist at that position;
 - in this engine, the block reads a relation that a later migration
-  rebuilt, such as by adding a field to its type. A migration that
-  leaves the relation alone, such as one adding another relation,
-  keeps its history readable.
+  changed.
+
+In this engine a migration ends the history of a relation when it
+changes the relation's fields, constructors or indexes: `add field`,
+`drop field`, `rename field`, `add constructor`, `add index` and
+`add unique` all do. After it, every `at` block that reads that
+relation at a commit before the migration is refused, while reads of
+other relations still work. A migration that leaves the relation's
+storage alone keeps its history readable: adding another relation, a
+check, a constraint, a default or a function, and `rename
+constructor`.
+
+In that case the position the message names can itself be refused,
+such as the newest commit `sys::commit_times` lists before the
+migration. Read the message as "nothing before the migration is kept
+for this relation".
 
 Lowering the window drops what it no longer covers. At `0s`,
 `sys::commit_times` is empty:

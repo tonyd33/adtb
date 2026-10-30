@@ -135,7 +135,8 @@ Bo still has a book out, so he stays. Ann's hold goes with her.
 ## Where references may be
 
 A reference is a direct field of a relation's row, of type `Key r` or
-`Option (Key r)`. It cannot hide inside a value-level sum or a record
+`Option (Key r)`: a header field, or a field of one constructor, as
+`Lent { to: Key members }` is. It cannot hide inside a value-level sum or a record
 field, and no field holds a collection. A fact with many values, such
 as the tags of a book or the holds of a member, is a relation whose
 rows reference their owner, as `holds` does. The engine refuses the
@@ -155,6 +156,10 @@ bad.db: migration 1 is refused:
   a field never holds a set; a many-valued fact is a relation
   no type `Member`
 ```
+
+The second line follows from the first: the refused type is not
+declared, so the relation that names it fails too. Fix the first
+error and the second goes.
 
 The rules are in [keys](../../spec/model.md#7-keys) and
 [references](../../spec/model.md#8-references).

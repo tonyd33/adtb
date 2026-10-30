@@ -9,7 +9,8 @@ transactions through Rust code generated from the bundle file.
 
 This page builds such a program over the shelter of the
 [tutorial](../tutorial/1-schema.md). Every `rust` block below is a
-whole `src/main.rs`; the test suite compiles and runs each one in an
+whole `src/main.rs`, except the build script `build.rs` and the short
+excerpt that includes the generated code; the test suite compiles and runs each one in an
 empty directory, and the output shown after a block is what it
 prints. The rules behind each call are in
 [the specification](../../spec/embedding.md).
@@ -106,6 +107,11 @@ $ adtb --create --schema migrations/0001.adt --schema migrations/0002.adt shelte
 ```
 
 A wrong hash refuses the open, and the error names the right one.
+
+This creates `shelter.db` with the program's two migrations. The
+program can open that file as it is, since its log is the same, or
+you can delete `shelter.db` and `shelter.db-log` first so the program
+creates an empty one.
 
 ## Generate the code
 

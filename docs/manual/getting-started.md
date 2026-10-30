@@ -80,6 +80,11 @@ $ adtb shelter.db -c 'from c in pets.Cat where c.lives > 5 select c.name'
 "tom"
 ```
 
+The exception is a type with no literal, such as `Date`. A date prints
+as `2026-10-25`, the text `Date.parse` reads, but typed back as
+`2026-10-25` it is integer subtraction. Write it as
+`Date.parse("2026-10-25")`.
+
 `pets.Cat` ranges over the cats only, so `c.lives` is always there.
 Over `pets` itself only the fields every pet has, here `name`, can be
 read directly.
@@ -102,6 +107,13 @@ match does not cover `Dog _`
 ```
 
 A record prints its fields in name order.
+
+The first query spans three lines inside the quotes of `-c`, which
+the shell reads as one text. At the `adtb>` prompt, type a `match` on
+one line: the prompt runs a text as soon as it parses, and a `match`
+already parses after its first arm, so the later arms never reach it
+and the match is refused as not covering `Dog`
+([the prompt](reference/shell.md#the-prompt)).
 
 ## Add a relation with a reference
 

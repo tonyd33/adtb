@@ -104,7 +104,10 @@ adtb> \q
 
 A query reads `from` a relation, keeps the rows `where` its condition holds and
 returns what `select` says. The shell prints each result on its own
-line in the syntax you write values in. [Page 3](3-queries.md) covers
+line in the syntax you write values in, except a value of a type with
+no literal (see [Base types](#base-types)). That prints as the text
+its `T.parse` reads: a date prints as `2026-10-25`, which typed back
+is integer subtraction, so write `Date.parse("2026-10-25")`. [Page 3](3-queries.md) covers
 queries in depth.
 
 The result of a query is a set, so it has no order of its own: `order
@@ -132,6 +135,11 @@ adtb> \q
 
 An insert never replaces a row: a second adopter with Ann's email is
 refused, and Ann's row is unchanged. A refused text changes nothing.
+An insert must give every field: the "no default" in the second
+message refers to defaults, values a relation can declare for a field
+an insert leaves out. This schema declares none;
+[Evolving a schema](../guides/evolving-a-schema.md#defaults-and-computed-fields)
+shows how to add one.
 
 ## Composite and generated keys
 

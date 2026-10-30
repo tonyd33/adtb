@@ -87,7 +87,11 @@ adtb> \q
 ```
 
 Every reference is a foreign key, and the engine names it after the
-field that holds it: `shelter::adoptions.Adoption.pet`.
+field that holds it: `shelter::adoptions.Adoption.pet`. The name is
+the module, the relation, and then the field: `module::relation.f` for
+a header field, every constructor's, and `module::relation.C.f` for a
+field of constructor `C`. A record type has one constructor, named
+after the type, so `Adoption`'s fields are named through `Adoption`.
 
 A dot follows a reference to the row it names, so `a.pet.age` is the
 age of the adopted pet. `d.<adoptions.adopter` goes the other way, a

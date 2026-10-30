@@ -53,10 +53,14 @@ schema and run the same command again.
 Without `-c`, `--create` reads texts from standard input like any other
 run: at a terminal it shows the prompt and waits. Type `\q` to leave.
 
-The shell opens a database with no bundles, and an open supersedes
-every bundle it is not given. Opening a program's database in the
-shell therefore supersedes the program's bundles until the program
-opens the file again ([the Rust API](rust-api.md#supersede-and-retire)).
+This matters only for a database that a Rust program also opens. A
+program registers bundles, its compiled queries, when it opens a file,
+and each open marks every bundle it is not given as superseded: no
+longer in use. The shell opens a file with no bundles, so after you
+open a program's database in the shell, its bundles stay superseded
+until the program opens the file again, which it does at its next
+start. The data is unchanged. [The Rust API](rust-api.md#supersede-and-retire)
+explains bundles and supersession.
 
 ## The migration list
 
@@ -204,7 +208,11 @@ the open transaction is rolled back
 ## What the shell prints
 
 A query prints each element of its result on a line of its own, in the
-textual value syntax: the syntax you write values in. A write prints
+textual value syntax: the syntax you write values in. A value of a
+type with no literal, such as `Date` or `Instant`, prints in the form
+`T.parse` reads ([the prelude](prelude.md#values-with-no-literal)). Type it back as
+`Date.parse("2026-10-25")`, not as `2026-10-25`, which is integer
+subtraction. A write prints
 nothing, and a `transact` block prints its `return` value, if any. A
 query that is not a set, such as a count, prints its one value.
 

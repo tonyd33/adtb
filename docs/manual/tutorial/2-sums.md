@@ -90,7 +90,9 @@ The last insert is refused because `"555-0102"` is a `Text`, not an
 `Option Text`: you write `Some { value: "555-0102" }`.
 
 To insert rows of several constructors at once, give a set of
-constructor values with `from`:
+constructor values with `from`. The `(...)` in the message above
+stands for any set: a list literal in brackets, as here, or a query in
+parentheses, as [page 5](5-references-and-constraints.md) uses:
 
 ```console
 $ adtb shelter.db

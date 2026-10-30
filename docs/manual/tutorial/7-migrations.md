@@ -104,7 +104,9 @@ adtb> \q
 `fill false` set the field of the two cats that existed. It is not a
 default: a new cat states it like any other field. A fill can also
 compute each row's value with a match over the row: `fill match | Cat c
--> c.age > 2`.
+-> c.age > 2`. The match ranges over the rows that gain the field,
+here only cats, so `Cat` is every constructor it has to name. A field
+added to the header would need an arm for each constructor of `Pet`.
 
 Once a migration is applied it is in the database's log, and a later
 run needs no `--schema` at all. When you do give the list, it must
@@ -272,10 +274,11 @@ covers the other operators: moving fields between constructors,
 splitting and merging constructors, and what each refuses. The full
 list is in [the specification](../../spec/evolution.md#4-operators).
 
-Not yet available: the specification's `script` operator, which runs
-a write as part of a migration, and `add default`, which gives a field
-a default for later inserts. The engine refuses both with "this
-operator has no resolved form yet".
+`add default` gives a field a default for later inserts; [Evolving a
+schema](../guides/evolving-a-schema.md#defaults-and-computed-fields)
+shows it. Not yet available: the specification's `script` operator,
+which runs a write as part of a migration. The engine refuses it with
+"the engine does not run a `script` yet".
 
 This is the end of the tutorial. [The language
 reference](../reference/language.md) lists every form you have met,

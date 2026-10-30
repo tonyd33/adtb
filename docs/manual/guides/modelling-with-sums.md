@@ -155,9 +155,11 @@ $ adtb clinic.db -c 'insert vaccinations { pet: pets.key(1), vaccine: "x", year:
 expected Uuid, found I64
 ```
 
-`index (owner)` on `pets` makes the lookups "the pets of this owner"
-and the backlink `o.<pets.owner` cheap. Index a reference field you
-navigate backwards, and any field you filter on often. The full rules
+The engine indexes every reference field itself, so the lookups "the
+pets of this owner" and the backlink `o.<pets.owner` are cheap with or
+without the `index (owner)` clause, which only states that index.
+Declare an `index` for a field that is not a reference and that you
+filter on often. The full rules
 for keys are in the specification's
 [keys](../../spec/model.md#7-keys) and
 [references](../../spec/model.md#8-references) sections.

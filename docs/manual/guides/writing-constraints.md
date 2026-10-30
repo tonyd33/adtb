@@ -186,7 +186,8 @@ and the refusal names what is missing.
 
 This constraint limits each person to three held bookings. Counting a
 person's bookings needs an index on `by`, which `bookings` does not
-have:
+have. `by` is `Text`; a `Key` field would need no clause, because the
+engine indexes every reference field itself:
 
 ```adt busy.adt
 module rooms
@@ -217,6 +218,11 @@ add constraint three_each =
 $ adtb --schema rooms.adt --schema busy-indexed.adt rooms.db -c 'from r in rooms select r.name'
 "loft"
 ```
+
+The index a reference field gets is listed in `catalog::indexes` with
+kind `Implied`, with a clause such as `index (by) in Borrowed` for a
+`by` field of constructor `Borrowed`. A count over a `Key` field, like "at most two
+borrowed tools per member", is admitted with no `index` clause.
 
 Within that bound a constraint may join and filter, use `exists` and
 `not exists`, and use `count`, `sum`, `min` and `max` over rows that

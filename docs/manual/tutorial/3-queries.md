@@ -188,7 +188,9 @@ an `Option`.
 `order by` sorts the final result. A list of keys in parentheses sorts
 by the first, then the next on a tie; `desc` reverses one. An ordering
 key reads the selected value, so to sort by age you select something
-that holds the age:
+that holds the age. You still write the key through the row variable,
+`p.age`; it is accepted because the selected record holds `p.age`
+unchanged in its field `age`:
 
 <!-- exit 1 -->
 ```console
@@ -212,8 +214,9 @@ adtb> \q
 ```
 
 `take n` keeps the first `n` results. `after` starts after a given
-ordering value, so the next page starts after the last name you saw;
-it takes an `Option`, and `None` means the first page. There is no
+ordering value: the value of the `order by` key, here `p.name`, not
+a row. The first page ended at `fido`, so the next page passes
+`fido`'s name. It takes an `Option`, and `None` means the first page. There is no
 offset. Both need an order with no ties, so the query selects whole
 rows and orders by a key.
 

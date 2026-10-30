@@ -97,6 +97,10 @@ adtb> from a in accounts select a.balance order by a.balance
 adtb> \q
 ```
 
+The message reads like an insert colliding with a row, but it means
+the block's two updates gave `accounts.key("ann")` two new values.
+Write one update that computes the final value instead.
+
 `fail` ends a block with an error of your own, and nothing it did is
 applied. A block can also be `read_only`, which the engine checks:
 

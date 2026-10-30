@@ -81,7 +81,12 @@ adtb> \q
 ```
 
 A rename keeps the data. Text that used the old name stops checking,
-as the first query shows, and has to be updated to the new one.
+as the first query shows, and has to be updated to the new one. A
+field is named as in the other field operators: `T.C.f` for a field
+of constructor `C`, as `Contact.Lead.source` here, and `T.f` for a
+header field or a field of a record type. In this engine a rename
+ends the history of the relation for `at` reads
+([Reading the past](reading-the-past.md#when-the-past-is-not-available)).
 
 ## Add a constructor, then open it
 
