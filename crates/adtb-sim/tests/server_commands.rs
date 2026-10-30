@@ -25,21 +25,12 @@ fn denied(got: Result<(), Error>) {
 
 const CATALOG_SPEC: &str = include_str!("../../../docs/spec/catalog.md");
 
-/// How a command of the table behaves for a role that may issue it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Ran {
-    /// It runs to completion.
-    Done,
-    /// The check passes, then the engine reports it does not run the command yet.
-    Later,
-}
-
 /// A row of the command table, by its first column: a statement for each form it runs in today
 /// and the capabilities that decide it, or the statements of a form the engine does not run.
 struct Row {
     spec: &'static str,
     capability: &'static str,
-    forms: &'static [(&'static str, &'static [Capability], Ran)],
+    forms: &'static [(&'static str, &'static [Capability])],
     unsupported: &'static [&'static str],
 }
 
@@ -80,22 +71,22 @@ const COMMANDS: &[Row] = &[
     Row {
         spec: "`vacuum r`",
         capability: "`maintain`",
-        forms: &[("vacuum items", &[Capability::Maintain], Ran::Done)],
+        forms: &[("vacuum items", &[Capability::Maintain])],
         unsupported: &[],
     },
     Row {
         spec: "`verify`, `verify r`",
         capability: "`maintain`",
         forms: &[
-            ("verify", &[Capability::Maintain], Ran::Done),
-            ("verify items", &[Capability::Maintain], Ran::Done),
+            ("verify", &[Capability::Maintain]),
+            ("verify items", &[Capability::Maintain]),
         ],
         unsupported: &[],
     },
     Row {
         spec: "`reindex r`, `reindex r index (f) [in S]`",
         capability: "`maintain`",
-        forms: &[("reindex items", &[Capability::Maintain], Ran::Later)],
+        forms: &[("reindex items", &[Capability::Maintain])],
         unsupported: &[],
     },
     Row {
@@ -116,7 +107,6 @@ const COMMANDS: &[Row] = &[
         forms: &[(
             "set setting RetryLimit = { retries: 3 }",
             &[Capability::Configure],
-            Ran::Done,
         )],
         unsupported: &[],
     },
@@ -266,7 +256,7 @@ fn every_command_that_runs_checks_the_capability_the_catalog_part_names() {
             .grant_capability("capable", Capability::Adhoc, false)
             .expect("grant");
         for row in COMMANDS {
-            for &(text, capabilities, ran) in row.forms {
+            for &(text, capabilities) in row.forms {
                 let before = audit_denied(&db, "none");
                 refused_and_audited(&db, "none", text, "`adhoc`", task(&rt, &none, text), before);
                 let before = audit_denied(&db, "adhoc");
@@ -278,16 +268,7 @@ fn every_command_that_runs_checks_the_capability_the_catalog_part_names() {
                         .expect("grant");
                 }
                 let before = audit_denied(&db, "capable");
-                let got = task(&rt, &capable, text);
-                match ran {
-                    Ran::Done => got.unwrap_or_else(|e| panic!("{text}: {e:?}")),
-                    Ran::Later => {
-                        assert!(
-                            format!("{got:?}").contains("does not run"),
-                            "{text}: {got:?}"
-                        );
-                    }
-                }
+                task(&rt, &capable, text).unwrap_or_else(|e| panic!("{text}: {e:?}"));
                 assert_eq!(before, audit_denied(&db, "capable"), "{text}");
                 for capability in capabilities {
                     authority
@@ -296,9 +277,7 @@ fn every_command_that_runs_checks_the_capability_the_catalog_part_names() {
                 }
                 let got = task(&rt, &capable, text);
                 refused_and_audited(&db, "capable", text, needed, got, before);
-                if ran == Ran::Done {
-                    task(&rt, &owner, text).unwrap_or_else(|e| panic!("owner {text}: {e:?}"));
-                }
+                task(&rt, &owner, text).unwrap_or_else(|e| panic!("owner {text}: {e:?}"));
             }
         }
     });
@@ -621,11 +600,9 @@ fn the_in_process_api_runs_each_command_with_no_role() {
     run(&mut sim, |rt| {
         let db = opened_schema(&rt);
         for row in COMMANDS {
-            for &(text, _, ran) in row.forms {
-                if ran == Ran::Done {
-                    db.query_text(text, &[], &CallOptions::default())
-                        .unwrap_or_else(|e| panic!("{text}: {e:?}"));
-                }
+            for &(text, _) in row.forms {
+                db.query_text(text, &[], &CallOptions::default())
+                    .unwrap_or_else(|e| panic!("{text}: {e:?}"));
             }
         }
     });

@@ -256,8 +256,12 @@ impl Parser<'_> {
         let relation = self.qlower("a relation name")?;
         let index = if self.eat_word("index") {
             let fields = self.index_fields()?;
-            self.expect_kw(Kw::In)?;
-            Some((fields, self.ctor_scope()?))
+            let scope = if self.eat_kw(Kw::In) {
+                Some(self.ctor_scope()?)
+            } else {
+                None
+            };
+            Some((fields, scope))
         } else {
             None
         };

@@ -947,6 +947,17 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     }
 
     /// Returns the entries of index `id` as [`exec::Store::probe`] does, bounded by the statement.
+    /// Fail with what stops the statement, if it is stopped.
+    pub(super) fn stopped(&self) -> Result<(), exec::Error> {
+        if self.stop.cancel.load(Ordering::Acquire) {
+            return Err(exec::Error::Cancelled);
+        }
+        match &self.stop.deadline {
+            Some(d) if self.db.rt.now() >= d.at => Err(d.error.clone()),
+            _ => Ok(()),
+        }
+    }
+
     fn probe(
         &self,
         id: IndexId,
@@ -954,18 +965,9 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         routes: &BTreeSet<u32>,
     ) -> Result<Vec<(u32, Tid)>, exec::Error> {
         let grant = self.grant();
-        let check = || {
-            if self.stop.cancel.load(Ordering::Acquire) {
-                return Err(exec::Error::Cancelled);
-            }
-            match &self.stop.deadline {
-                Some(d) if self.db.rt.now() >= d.at => Err(d.error.clone()),
-                _ => Ok(()),
-            }
-        };
         let bounds = exec::ProbeBounds {
             grant: &grant,
-            check: &check,
+            check: &|| self.stopped(),
         };
         self.store.probe(id, prefix, routes, bounds)
     }

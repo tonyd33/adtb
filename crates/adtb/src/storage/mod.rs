@@ -37,6 +37,11 @@ pub use verify::{Finding, Verification};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pid(pub u64);
 
+impl Lsn {
+    /// The `prev` of a full-page image over a damaged page, whose last LSN cannot be known.
+    pub const UNCHAINED: Lsn = Lsn(u64::MAX);
+}
+
 impl Pid {
     /// The first page id that is not a file header copy.
     pub const FIRST_DATA: Pid = Pid(2);

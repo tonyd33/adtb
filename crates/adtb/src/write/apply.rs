@@ -155,6 +155,23 @@ impl<R: Runtime> Stmt<'_, R> {
         Ok(self.db.waits.wait(Some(xid), on)?)
     }
 
+    /// Wait while an offline rebuild holds writes to any of `rels`, or fail with `Blocked` when
+    /// the statement suspends instead. Fail with `Cancelled` once the engine closes.
+    fn wait_for_rebuilds(&self, rels: impl Iterator<Item = RelId> + Clone) -> Result<(), Error> {
+        while self.db.holds_writes(rels.clone()) {
+            self.db.rebuild_stopped()?;
+            if let Some(rerun) = self.stop.suspend {
+                return Err(Error::Blocked {
+                    on: super::reindex::OFFLINE_GATE,
+                    rerun,
+                });
+            }
+            self.stopped()?;
+            self.db.pause_at_gate();
+        }
+        Ok(())
+    }
+
     fn restorable(&self, heap: HeapId, tid: Tid, xid: Xid) -> Result<WriteTarget, Error> {
         let header = self
             .heap(heap)
@@ -195,6 +212,7 @@ impl<R: Runtime> Stmt<'_, R> {
         if ops.is_empty() {
             return Ok(());
         }
+        self.wait_for_rebuilds(ops.keys().map(|(r, _)| *r))?;
         let xid = self.tx.writer()?;
         let pager = &self.db.pager;
         let mut written = Vec::new();
@@ -367,6 +385,10 @@ impl<R: Runtime> Stmt<'_, R> {
                 let mut conflicts = Vec::new();
                 let mut wait = None;
                 for e in stored.index.probe(pager, &key)? {
+                    // A rebuild's scan may have entered this version already.
+                    if e.ctor == ctor_id && e.tid == w.tid {
+                        continue;
+                    }
                     let c = stored.ctors[&e.ctor];
                     let heap = r.ctors[c as usize].heap;
                     for link in hot_run(pager, e.tid, &self.db.heaps[&heap])? {

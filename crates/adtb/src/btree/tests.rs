@@ -1,5 +1,6 @@
 use std::ops::Bound;
 
+use super::build::{RunEntry, merge_runs};
 use super::leaf;
 use super::node::{self, Item, Malformed, Node};
 use super::tree::{prefix_end, separator};
@@ -7,6 +8,51 @@ use super::{BTree, FORMAT};
 use crate::storage::{FIRST_EDITABLE, HEADER_LEN, PageKind, Pid, header_edit};
 
 const PAGE: usize = 4096;
+
+fn run_entry(entry: &[u8], key_len: usize, counted: bool) -> RunEntry {
+    RunEntry {
+        entry: entry.to_vec(),
+        key_len,
+        counted,
+    }
+}
+
+#[test]
+fn merging_runs_orders_and_dedups_their_entries() {
+    let got = merge_runs(
+        vec![
+            vec![run_entry(b"a1", 1, false), run_entry(b"c1", 1, false)],
+            vec![run_entry(b"a1", 1, true), run_entry(b"b1", 1, false)],
+        ],
+        false,
+    );
+    assert_eq!(
+        Ok(vec![b"a1".to_vec(), b"b1".to_vec(), b"c1".to_vec()]),
+        got
+    );
+}
+
+#[test]
+fn merging_runs_of_a_unique_index_refuses_two_entries_of_a_key_that_count() {
+    let run = |counted| {
+        vec![
+            vec![run_entry(b"k1", 1, true)],
+            vec![run_entry(b"k2", 1, counted), run_entry(b"z1", 1, true)],
+        ]
+    };
+    assert_eq!(Err(b"k".to_vec()), merge_runs(run(true), true));
+    assert!(merge_runs(run(false), true).is_ok());
+    assert!(merge_runs(run(true), false).is_ok());
+}
+
+#[test]
+fn a_uniqueness_check_restarts_at_each_key() {
+    let got = merge_runs(
+        vec![vec![run_entry(b"a1", 1, true), run_entry(b"b1", 1, true)]],
+        true,
+    );
+    assert!(got.is_ok());
+}
 
 fn blank(kind: PageKind) -> Vec<u8> {
     let mut p = vec![0; PAGE];

@@ -19,6 +19,9 @@ use super::{Engine, OpenError, corrupt};
 /// The constructor of `Verify` in `JobKind`.
 const VERIFY_JOB: u32 = 3;
 
+/// The constructor of `Reindex` in `JobKind`.
+const REINDEX_JOB: u32 = 0;
+
 /// The group of the kept row holding the next run number and finding id.
 const COUNTERS: &str = "counters";
 
@@ -127,27 +130,46 @@ impl Findings {
 }
 
 /// The row of `sys::jobs` of one run. Removes it when dropped, a panic included.
-struct Job<'e, R: Runtime> {
+pub(super) struct Job<'e, R: Runtime> {
     engine: &'e Engine<R>,
     table: RelId,
     run: i64,
+    kind: u32,
     target: String,
     started: i64,
 }
 
+/// A rebuild job's row of `sys::jobs`, shown, on its way to the job's thread.
+pub(super) struct Started {
+    pub(super) run: i64,
+    target: String,
+    at: i64,
+}
+
 impl<R: Runtime> Job<'_, R> {
+    /// Returns the row, left shown, for the job's thread to take over.
+    pub(super) fn hand_over(self) -> Started {
+        let started = Started {
+            run: self.run,
+            target: self.target.clone(),
+            at: self.started,
+        };
+        std::mem::forget(self);
+        started
+    }
+
     fn show(&self, held: &Findings) {
         self.engine
             .db
             .set_volatile(self.table, held.jobs.values().cloned().collect());
     }
 
-    fn phase(&self, phase: &str, done: f64) {
+    pub(super) fn phase(&self, phase: &str, done: f64) {
         let row = Val::ctor(
             0,
             vec![
                 Val::Int(self.run),
-                Val::ctor(VERIFY_JOB, Vec::new()),
+                Val::ctor(self.kind, Vec::new()),
                 Val::text(&self.target),
                 Val::text(phase),
                 Val::F64(F64::new(done)),
@@ -169,6 +191,51 @@ impl<R: Runtime> Drop for Job<'_, R> {
 }
 
 impl<R: Runtime> Engine<R> {
+    /// Returns the row of `sys::jobs` of a new rebuild job, which its [`Job`] will remove.
+    pub(super) fn reindex_row(&self, table: RelId, target: String) -> Job<'_, R> {
+        let run = {
+            let mut held = self.findings.lock(&self.rt);
+            held.next_run += 1;
+            held.next_run - 1
+        };
+        let job = Job {
+            engine: self,
+            table,
+            run,
+            kind: REINDEX_JOB,
+            target,
+            started: self.clock(),
+        };
+        job.phase("waiting", 0.0);
+        job
+    }
+
+    /// Returns what a job's thread holds of its row.
+    pub(super) fn reindex_row_of(&self, table: RelId, started: Started) -> Job<'_, R> {
+        Job {
+            engine: self,
+            table,
+            run: started.run,
+            kind: REINDEX_JOB,
+            target: started.target,
+            started: started.at,
+        }
+    }
+
+    /// Make `found` the findings of the last rebuild of the index with catalog id `index`.
+    pub(super) fn keep_reindex_findings(
+        &self,
+        schema: &Schema,
+        index: u64,
+        run: i64,
+        found: BTreeSet<Found>,
+    ) -> Result<(), write::Error> {
+        let table = engine_relation(schema, "sys", "verify_findings")?;
+        let group = format!("reindex {index}");
+        self.replace_findings(schema, table, &group, (run, self.clock()), found, true);
+        Ok(())
+    }
+
     /// Run `verify` over `rel`, or the whole database. Returns the rows it wrote.
     ///
     /// Precondition: the calling thread holds no transaction with an id.
@@ -205,6 +272,7 @@ impl<R: Runtime> Engine<R> {
             engine: self,
             table: engine_relation(schema, "sys", "jobs")?,
             run,
+            kind: VERIFY_JOB,
             target: match scope {
                 VerifyScope::Relation(r) => schema.relation(r).name.clone(),
                 VerifyScope::Database | VerifyScope::Scrub => String::new(),
@@ -221,7 +289,8 @@ impl<R: Runtime> Engine<R> {
             });
         }
         let keep = !marked;
-        let vals = self.replace_findings(schema, table, scope, (run, started), found, keep);
+        let group = group(scope, schema);
+        let vals = self.replace_findings(schema, table, &group, (run, started), found, keep);
         let elem = Ty::Data {
             def: schema.relation(table).elem_def,
             args: Vec::new(),
@@ -237,13 +306,12 @@ impl<R: Runtime> Engine<R> {
         &self,
         schema: &Schema,
         table: RelId,
-        scope: VerifyScope,
+        group: &str,
         (run, at): (i64, i64),
         found: BTreeSet<Found>,
         keep: bool,
     ) -> Vec<Val> {
         let id = schema.ids.relations[&table];
-        let group = group(scope, schema);
         let mut held = self.findings.lock(&self.rt);
         let row = |held: &mut Findings, f: Found| {
             let (ctor, rest) = fields(f);
@@ -257,7 +325,7 @@ impl<R: Runtime> Engine<R> {
             fields.extend(rest);
             KeptRow {
                 relation: id,
-                group: group.clone(),
+                group: group.to_owned(),
                 ctor,
                 fields,
             }
@@ -276,7 +344,7 @@ impl<R: Runtime> Engine<R> {
             fields: vec![KeptField::Int(held.next_run), KeptField::Int(held.next_id)],
         };
         let kept = if keep {
-            self.keep_findings(id, &group, &written, &gone, &counters)
+            self.keep_findings(id, group, &written, &gone, &counters)
         } else {
             Ok(())
         };

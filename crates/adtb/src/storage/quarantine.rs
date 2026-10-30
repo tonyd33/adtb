@@ -3,8 +3,8 @@ use std::sync::atomic::Ordering;
 
 use crate::runtime::Runtime;
 
-use super::page::{HEADER_LEN, PageKind};
-use super::pager::{PageError, Pager};
+use super::page::{FIRST_EDITABLE, HEADER_LEN, PageKind};
+use super::pager::{PageError, PageExclusive, Pager};
 use super::{Damage, Pid};
 
 /// What a detected corruption stops.
@@ -228,6 +228,107 @@ impl<R: Runtime> Pager<R> {
         self.change_marks(|set| {
             set.remove(&object);
         })
+    }
+
+    /// Returns the exclusive latch on `pid`, over a blank page when it is damaged. The next change
+    /// to a blank page logs its whole image, which no earlier record need lead to.
+    ///
+    /// Fail on an I/O failure.
+    fn latch_overwriting(&self, pid: Pid) -> Result<(PageExclusive<'_, R>, bool), PageError> {
+        match self.exclusive(pid) {
+            Ok(g) => Ok((g, false)),
+            Err(e) if e.pid == pid && e.damage != Damage::Unreadable => {
+                let mut g = self.mem.lock_exclusive(pid.0, &self.rt);
+                if !g.resident() {
+                    self.make_room(pid);
+                    g.write(0, &vec![0; self.page_size]);
+                }
+                let mut m = self.meta();
+                m.damaged.remove(&pid);
+                m.overwritten.insert(pid);
+                drop(m);
+                Ok((PageExclusive::of(self, g), true))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Give `pid` the contents of `from` and free `from`, removing the mark on `release` if one is
+    /// named and held, in one batch. A damaged `pid` is overwritten unread. Returns once that is
+    /// durable.
+    ///
+    /// Preconditions: nothing refers to `from` after the call.
+    ///
+    /// Fail, changing nothing, if `from`, the marks' page or an allocation bitmap page cannot be
+    /// read.
+    pub fn replace_contents(
+        &self,
+        pid: Pid,
+        from: Pid,
+        release: Option<Quarantine>,
+    ) -> Result<(), PageError> {
+        let contents = self.read(from)?.to_vec();
+        let (page, unreadable) = {
+            let m = self.marks.lock(&self.rt);
+            (m.page, m.unreadable)
+        };
+        if unreadable {
+            return Err(PageError {
+                pid: page,
+                damage: Damage::Checksum,
+            });
+        }
+        let mut marks_page = self.exclusive(page)?;
+        let (mut g, blank) = self.latch_overwriting(pid)?;
+        let mut new = self.reserve();
+        new.free(from);
+        let set = {
+            let mut set = self.marks.lock(&self.rt).set.clone();
+            if let Some(release) = &release {
+                set.remove(release);
+            }
+            set
+        };
+        let done = self.update_all_with(new, &mut [&mut g, &mut marks_page], |p| {
+            p[0][FIRST_EDITABLE..].copy_from_slice(&contents[FIRST_EDITABLE..]);
+            encode(p[1], &set);
+        });
+        let lsn = match done {
+            Ok(lsn) => lsn,
+            Err(e) => {
+                drop(g);
+                if blank {
+                    self.damage(pid, Damage::Checksum);
+                }
+                return Err(e);
+            }
+        };
+        {
+            let mut marks = self.marks.lock(&self.rt);
+            if let Some(release) = &release {
+                marks.set.remove(release);
+            }
+            self.any_mark
+                .store(!marks.set.is_empty(), Ordering::Release);
+        }
+        drop(marks_page);
+        self.wait_durable(lsn);
+        if blank {
+            self.write_out(pid, &g);
+        }
+        Ok(())
+    }
+
+    /// Free damaged page `pid`, overwriting it, so no later read of the file finds the damage.
+    ///
+    /// Preconditions: nothing refers to `pid`, and it is allocated.
+    pub fn scrap(&self, pid: Pid) -> Result<(), PageError> {
+        let (mut g, _) = self.latch_overwriting(pid)?;
+        let mut new = self.reserve();
+        new.free(pid);
+        self.update_all_with(new, &mut [&mut g], |p| p[0][HEADER_LEN] = 1)?;
+        self.write_out(pid, &g);
+        Ok(())
     }
 
     /// Returns the page holding the marks.

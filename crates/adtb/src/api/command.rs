@@ -275,13 +275,12 @@ impl<R: Runtime> Engine<R> {
                 Ok(found)
             }
             Command::Reindex {
-                relation, index, ..
+                relation,
+                index,
+                online,
             } => {
-                let at = reindexed(schema, &self.program, *relation, *index);
-                Err(write::Error::Unsupported(format!(
-                    "rebuilding indexes {at:?} of `{}`",
-                    schema.relation(*relation).name
-                )))
+                let at = index.map(|_| reindexed(schema, &self.program, *relation, *index));
+                self.reindex_job(schema, *relation, at.as_deref(), *online)
             }
             Command::SetSetting { setting, value } => {
                 self.set_setting(tx, p, *setting, *value, local, bounds)

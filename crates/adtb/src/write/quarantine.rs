@@ -74,7 +74,7 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Returns the name a client sees of `object`.
-    fn quarantined_name(&self, object: Quarantine) -> String {
+    pub(super) fn quarantined_name(&self, object: Quarantine) -> String {
         for r in self.rels.values() {
             for c in &r.ctors {
                 if object == Quarantine::Heap(self.heaps[&c.heap].heap.id().0) {

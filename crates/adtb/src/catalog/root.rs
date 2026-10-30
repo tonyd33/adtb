@@ -8,6 +8,10 @@ pub const FORMAT: u16 = 1;
 /// no transaction has this id.
 const NAMING_SEQUENCES: u64 = u64::MAX;
 
+/// The stored `changing` of a root page whose catalog has rebuilds of indexes under way; no
+/// transaction has this id.
+const REINDEXING: u64 = u64::MAX - 1;
+
 /// What a catalog is in the middle of changing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Changing {
@@ -16,6 +20,8 @@ pub enum Changing {
     Schema(Xid),
     /// The write path's page of generated counters is allocated but not named.
     NamingSequences,
+    /// Pages of index rebuilds may be allocated and named by nothing.
+    Reindexing,
 }
 
 impl Changing {
@@ -24,6 +30,7 @@ impl Changing {
             Changing::None => 0,
             Changing::Schema(x) => x.0,
             Changing::NamingSequences => NAMING_SEQUENCES,
+            Changing::Reindexing => REINDEXING,
         }
     }
 
@@ -31,6 +38,7 @@ impl Changing {
         match at {
             0 => Changing::None,
             NAMING_SEQUENCES => Changing::NamingSequences,
+            REINDEXING => Changing::Reindexing,
             x => Changing::Schema(Xid(x)),
         }
     }

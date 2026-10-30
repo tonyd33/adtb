@@ -334,7 +334,6 @@ fn vacuum_removes_versions_no_snapshot_sees() {
 }
 
 #[test]
-#[ignore = "the engine does not rebuild indexes yet"]
 fn reindex_rebuilds_every_index_of_a_relation_as_a_job() {
     with_db(|db| {
         let got = printed(results(db, "reindex identities").remove(0));
@@ -344,7 +343,6 @@ fn reindex_rebuilds_every_index_of_a_relation_as_a_job() {
 }
 
 #[test]
-#[ignore = "the engine does not rebuild indexes yet"]
 fn reindex_of_one_index_clause_rebuilds_it_as_a_job() {
     with_db(|db| {
         let got =

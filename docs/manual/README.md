@@ -82,7 +82,7 @@ specification describes:
   sources, the metrics callback, `finalize_upgrade`, log shipping and
   embedded replicas.
 - Operations: `print schema`, `compact`, `export`, dump and
-  restore, backups and `reindex`, which the engine refuses today with
+  restore and backups, which the engine refuses today with
   "does not run in this engine yet".
 - Migration scripts: the engine refuses `script` with "the engine does
   not run a `script` yet".

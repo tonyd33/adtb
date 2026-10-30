@@ -935,7 +935,12 @@ impl Catalog {
             return Err(unfinished(&report));
         }
         for p in report.leaked() {
-            pager.free(p)?;
+            match pager.read(p) {
+                Err(e) if e.damage != storage::Damage::Unreadable => pager.scrap(p)?,
+                _ => {
+                    pager.free(p)?;
+                }
+            }
         }
         Ok(())
     }
@@ -990,6 +995,46 @@ impl Catalog {
     /// Returns the write path's page of generated counters, once one is named.
     pub fn sequences(&self) -> Option<Pid> {
         (self.sequences != Pid(0)).then_some(self.sequences)
+    }
+
+    /// Mark the catalog as rebuilding indexes, so an open after a crash frees the pages no
+    /// structure names. Returns whether it was already marked.
+    ///
+    /// Fail, changing nothing, if another change is under way.
+    pub fn begin_reindexing<R: Runtime>(&self, pager: &Pager<R>) -> Result<bool, Error> {
+        let mut was = Changing::None;
+        update_root(pager, self.root, |r| {
+            was = r.changing;
+            if matches!(was, Changing::None | Changing::Reindexing) {
+                r.changing = Changing::Reindexing;
+            }
+        })?;
+        match was {
+            Changing::None => Ok(false),
+            Changing::Reindexing => Ok(true),
+            other => Err(Error::Internal(format!(
+                "a rebuild of indexes began during the catalog's change {other:?}"
+            ))),
+        }
+    }
+
+    /// End the change [`Catalog::begin_reindexing`] began.
+    ///
+    /// Fail, changing nothing, if another change is under way.
+    pub fn end_reindexing<R: Runtime>(&self, pager: &Pager<R>) -> Result<(), Error> {
+        let mut was = Changing::None;
+        update_root(pager, self.root, |r| {
+            was = r.changing;
+            if was == Changing::Reindexing {
+                r.changing = Changing::None;
+            }
+        })?;
+        match was {
+            Changing::None | Changing::Reindexing => Ok(()),
+            other => Err(Error::Internal(format!(
+                "a rebuild of indexes ended during the catalog's change {other:?}"
+            ))),
+        }
     }
 
     /// Mark the catalog whose root page is `root` as changing, before the write path allocates

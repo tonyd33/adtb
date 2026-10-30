@@ -113,7 +113,10 @@ impl<R: Runtime> Pager<R> {
             return;
         };
         let before = st.last.insert(pid, lsn);
-        if let Some(expected) = before.filter(|&l| l != prev) {
+        if prev == Lsn::UNCHAINED {
+            self.meta().damaged.remove(&pid);
+        }
+        if let Some(expected) = before.filter(|&l| l != prev && prev != Lsn::UNCHAINED) {
             st.unverified.remove(&pid);
             self.damage(
                 pid,

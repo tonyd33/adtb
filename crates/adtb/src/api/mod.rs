@@ -13,6 +13,7 @@ mod open_tests;
 mod pinned;
 mod reads;
 mod registered;
+mod reindex;
 mod server;
 mod settings;
 mod stop;
@@ -285,6 +286,8 @@ struct Engine<R: Runtime> {
     /// The workers that run submitted tasks, started on the first submit.
     sched: Lock<Option<Arc<Scheduler<R>>>>,
     workers: usize,
+    /// What the running rebuild jobs need of the engine.
+    reindexing: reindex::Jobs<R>,
     #[cfg(target_os = "linux")]
     held: Lock<Option<file::Held>>,
 }
@@ -358,11 +361,13 @@ impl<R: Runtime> Engine<R> {
             by: me,
             kept: Vec::new(),
         });
+        self.db.stop_rebuilds();
         let was_open = std::mem::replace(&mut *self.open.write(&self.rt), false);
         let sched = self.sched.lock(&self.rt).clone();
         if let Some(s) = sched {
             s.shutdown();
         }
+        self.stop_reindexing();
         if was_open {
             self.pager.close();
             #[cfg(target_os = "linux")]
@@ -385,6 +390,12 @@ impl<R: Runtime> Engine<R> {
 }
 
 impl<R: Runtime> Database<R> {
+    fn of(engine: Engine<R>) -> Database<R> {
+        let engine = Arc::new(engine);
+        *engine.reindexing.me.lock(&engine.rt) = Arc::downgrade(&engine);
+        Database { engine }
+    }
+
     /// Open the database file `name` of runtime `rt`, recover it, and apply the migrations of
     /// `log` beyond the file's own.
     pub fn open_in(
@@ -393,9 +404,7 @@ impl<R: Runtime> Database<R> {
         log: &Log,
         options: &OpenOptions,
     ) -> Result<Database<R>, OpenError> {
-        Ok(Database {
-            engine: Arc::new(Engine::open(rt, name, log, options)?),
-        })
+        Ok(Database::of(Engine::open(rt, name, log, options)?))
     }
 
     /// Returns the schema ad hoc text is checked against.
@@ -448,6 +457,17 @@ impl<R: Runtime> Database<R> {
         let _open = e.enter()?;
         e.verified_holding(&e.schema)
             .map_err(|w| e.write_error(TxnId(0), w))
+    }
+
+    #[doc(hidden)]
+    pub fn on_reindex_phase(&self, hook: reindex::PhaseHook) {
+        *self.engine.reindexing.hook.lock(&self.engine.rt) = Some(hook);
+    }
+
+    /// Returns how many job threads are not yet joined.
+    #[doc(hidden)]
+    pub fn reindex_threads(&self) -> usize {
+        self.engine.reindexing.threads.lock(&self.engine.rt).len()
     }
 
     /// Refuse page `pid` as if it failed as `damage` says. Plants a fault for a test of quarantine.
@@ -510,9 +530,7 @@ impl Database<adtb_sys::os::OsRuntime> {
         match Engine::open(rt, &name, log, options) {
             Ok(engine) => {
                 *engine.held.lock(&engine.rt) = Some(held);
-                Ok(Database {
-                    engine: Arc::new(engine),
-                })
+                Ok(Database::of(engine))
             }
             Err(e) => {
                 drop(held);
@@ -848,6 +866,7 @@ impl<R: Runtime> Engine<R> {
             close: Arc::default(),
             sched: Lock::new(None),
             workers: options.workers(),
+            reindexing: reindex::Jobs::default(),
             #[cfg(target_os = "linux")]
             held: Lock::new(None),
         }

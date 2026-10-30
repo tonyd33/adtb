@@ -952,6 +952,16 @@ fn reindex_still_type_checks_its_fields_and_scope() {
 }
 
 #[test]
+fn reindex_with_no_in_names_the_one_index_of_those_fields() {
+    reindexes("reindex logins index (lower(email))", 0);
+    reindexes("reindex logins index (issuer, subject)", 2);
+    reindexes("reindex bills index (state.Paid.receipt)", 0);
+    reindex_refused("reindex logins index (user)", "`in`");
+    reindex_refused("reindex logins index (nosuch)", "declares no index");
+    reindex_refused("reindex logins index (id)", "declares no index");
+}
+
+#[test]
 fn reindex_without_a_clause_rebuilds_every_index() {
     let a = adhoc_over(LOGINS, "reindex logins").expect("checks");
     let [AdhocCommand { command, .. }] = a.commands.as_slice() else {

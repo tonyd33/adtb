@@ -253,11 +253,37 @@ inserts ([maintenance.md §6](maintenance.md#6-checking-a-large-change-set)).
 
 An index is rebuilt either online, by building a new index from sorted
 runs of each heap while writes continue, catching up with writes made
-meanwhile, then swapping, staged as a schema job
-([schema-change.md §2](schema-change.md#2-staged-states)); or offline,
-with writes to every constructor of the index's set blocked. One
-constructor's entries are spread through the tree, so an index is
-always rebuilt whole.
+meanwhile, then swapping; or offline, with writes to the index's relation
+held until the rebuild ends. One constructor's entries are spread through
+the tree, so an index is always rebuilt whole. A rebuild reads only
+heaps, so a damaged index can be rebuilt.
+
+Postconditions of a rebuild, for subsystems reading or writing the index:
+
+- The root page keeps its id: the swap gives it the contents of the new
+  tree's top page. A SIREAD lock on the index, a key range on that id,
+  holds across the swap.
+- A writer writes a version before its entry and holds the index's latch
+  across the entry. The last catch-up holds that latch from before it
+  reads the heaps until the swap, so no window loses an entry.
+- The new tree may hold an entry a writer is about to insert, and an
+  insert of a held entry changes nothing. A uniqueness probe passes over
+  the writer's own entry.
+- Each old page is marked deleted after the pages leading to it, then
+  freed: a descent still in the old tree starts again from the root.
+- Vacuum does not run during a rebuild. One rebuild runs at a time.
+- A failed or stopped rebuild frees what it allocated and keeps the old
+  index. The catalog root's `changing` marks the rebuild from its first
+  allocation, so an open after a crash frees what no structure names.
+- A rebuild of a key index judges its history key index at the swap, under
+  the latch, and rebuilds that tree from the history heaps if it is damaged,
+  in a swap of its own that leaves the mark. The mark goes only with the swap
+  of the key index, once both trees are sound. A failed history build keeps
+  the mark.
+- A writer gated by an offline rebuild holds no latch and no worker: a call
+  that suspends suspends on the reserved transaction `u64::MAX`, ended when
+  the gate opens, and any other looks at the gate, its stops and the close
+  every few milliseconds. A close refuses it with `Cancelled`.
 
 Removing a constructor leaves its entries in every index until vacuum
 clears them ([mvcc.md §10.4](mvcc.md#104-removing-a-constructor)).

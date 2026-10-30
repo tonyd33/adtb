@@ -303,6 +303,35 @@ fn an_overlapping_drop_forces_a_canonical_grant_writer_to_recheck_the_role() {
 }
 
 #[test]
+fn a_rebuild_refuses_to_overwrite_another_change_of_the_catalog() {
+    let scratch = directory();
+    let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
+    let options = OpenOptions {
+        create: Some(CreateOptions::default()),
+        workers: Some(1),
+        pool_bytes: Some(4 * 1024 * 1024),
+        ..OpenOptions::default()
+    };
+    let pager = Pager::create(rt.clone(), &options.storage("changing.adt")).unwrap();
+    let (catalog, txns) = Catalog::open(rt, &pager).unwrap();
+    assert!(!catalog.begin_reindexing(&pager).unwrap());
+    assert!(catalog.begin_reindexing(&pager).unwrap());
+    catalog.end_reindexing(&pager).unwrap();
+    assert!(!catalog.begin_reindexing(&pager).unwrap());
+    catalog.end_reindexing(&pager).unwrap();
+    Catalog::naming_sequences(&pager, catalog.root()).unwrap();
+    assert!(catalog.begin_reindexing(&pager).is_err());
+    assert!(catalog.end_reindexing(&pager).is_err());
+    assert!(
+        catalog.begin_reindexing(&pager).is_err(),
+        "the change is still under way"
+    );
+    drop(catalog);
+    drop(txns);
+    pager.close();
+}
+
+#[test]
 fn opening_an_empty_legacy_roles_table_preserves_a_full_counter_page() {
     let scratch = directory();
     let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });

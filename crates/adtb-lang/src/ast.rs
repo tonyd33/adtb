@@ -977,7 +977,7 @@ pub enum Command {
     Verify(Option<QName>),
     Reindex {
         relation: QName,
-        index: Option<(Vec<Expr>, CtorScope)>,
+        index: Option<(Vec<Expr>, Option<CtorScope>)>,
         online: Option<bool>,
     },
     Compact,

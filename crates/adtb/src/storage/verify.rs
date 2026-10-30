@@ -103,7 +103,12 @@ impl<R: Runtime> Pager<R> {
                     let Some((pid, prev)) = record.page() else {
                         continue;
                     };
-                    if let Some(expected) = last.insert(pid, lsn).filter(|&l| l != prev) {
+                    if prev == Lsn::UNCHAINED {
+                        broken.remove(&pid);
+                    }
+                    let chained = prev != Lsn::UNCHAINED;
+                    if let Some(expected) = last.insert(pid, lsn).filter(|&l| chained && l != prev)
+                    {
                         broken.entry(pid).or_insert(Damage::Stale {
                             expected,
                             found: prev,

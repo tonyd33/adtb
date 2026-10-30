@@ -154,9 +154,9 @@ and the version-chain checks cannot be made exact under writers, and the specifi
 them. They run only in `adtb verify FILE`, which holds the file, by
 `verify_with(pager, inventory, Depth::FILE)`. `Unsettled` and
 `Overcounted` are never findings: a crash may leave them on a sound file
-and section 3 mends them. `Leaked` is a finding: only a migration or a
+and section 3 mends them. `Leaked` is a finding: only a migration, a rebuild of an index or a
 file's creation allocates a page apart from what names it, and open
-frees what a crash of a migration leaves. Every other problem becomes a `Structure` finding, except `Damaged`, which becomes
+frees what a crash of one leaves. Every other problem becomes a `Structure` finding, except `Damaged`, which becomes
 `Checksum` or `StalePage`. `Unlogged` and log findings become
 `Structure`.
 

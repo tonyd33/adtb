@@ -36,6 +36,7 @@ fn the_root_page_round_trips() {
         (Changing::None, 0),
         (Changing::Schema(Xid(1025)), 1025),
         (Changing::NamingSequences, u64::MAX),
+        (Changing::Reindexing, u64::MAX - 1),
     ] {
         let root = Root {
             commit_log: Pid(7),

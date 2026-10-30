@@ -547,6 +547,39 @@ impl Checker<'_> {
         })
     }
 
+    /// Returns the position among `rel`'s indexes of the one index whose fields are `fields`.
+    fn reindexed_by_fields(&mut self, rel: RelId, fields: &[ast::Expr], span: Span) -> R<usize> {
+        let schema = self.schema;
+        let r = schema.relation(rel);
+        let ctx = std::mem::replace(&mut self.ctx, Context::Schema);
+        let mut found = Vec::new();
+        for (i, ix) in r.indexes.iter().enumerate() {
+            if ix.fields.len() != fields.len() {
+                continue;
+            }
+            if let Ok(ours) = self.index_terms(rel, ix.scope.clone(), fields)
+                && self.declared_index(rel, i, &ours)
+            {
+                found.push(i);
+            }
+        }
+        self.ctx = ctx;
+        match found.as_slice() {
+            [i] => Ok(*i),
+            [] => Err(diag(
+                span,
+                format!("`{}` declares no index or unique with these fields", r.name),
+            )),
+            _ => Err(diag(
+                span,
+                format!(
+                    "`{}` declares several indexes with these fields; `in` names the constructor set of one",
+                    r.name
+                ),
+            )),
+        }
+    }
+
     /// Checks `fields` at `scope`; returns the position of the first index of `rel` that `candidate`
     /// admits and whose fields check to the same terms as `fields`.
     fn declared_position(
@@ -621,7 +654,8 @@ impl Checker<'_> {
             } => {
                 let rel = self.stored_relation_named(relation, "reindex")?;
                 let index = match index {
-                    Some((fields, scope)) => Some(self.reindexed(rel, fields, scope, span)?),
+                    Some((fields, Some(scope))) => Some(self.reindexed(rel, fields, scope, span)?),
+                    Some((fields, None)) => Some(self.reindexed_by_fields(rel, fields, span)?),
                     None => None,
                 };
                 Command::Reindex {

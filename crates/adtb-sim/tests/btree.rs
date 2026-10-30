@@ -1089,3 +1089,34 @@ fn an_index_keeps_the_entries_of_one_key_as_postings() {
         );
     });
 }
+
+#[test]
+fn a_bulk_build_gives_a_sound_tree_a_retail_insert_can_extend() {
+    for (n, seed) in [(0u32, 90), (1, 91), (5000, 92)] {
+        let mut sim = Sim::new(seed, Config::default());
+        finished(&mut sim, |rt| {
+            let pager = Pager::create(rt, &options(64)).unwrap();
+            let entries: Vec<Vec<u8>> = (0..n).map(|i| (2 * i).to_be_bytes().to_vec()).collect();
+            let mut made = Vec::new();
+            let tree = BTree::bulk(&pager, 7, entries.clone(), &mut made).unwrap();
+            assert_eq!(entries, tree.verify(&pager).unwrap(), "{n} entries");
+            let mut pages = tree.pages(&pager).unwrap();
+            pages.sort();
+            made.sort();
+            assert_eq!(made, pages, "{n} entries: every page written is reached");
+            if n >= 5000 {
+                assert!(tree.height(&pager).unwrap() >= 1, "{n} entries");
+                let leaves = pages.len() as u32;
+                assert!(
+                    leaves < n / 100,
+                    "{leaves} pages for {n} entries are filled"
+                );
+            }
+            for i in (1..n.min(2000)).step_by(2) {
+                assert!(tree.insert(&pager, &i.to_be_bytes()).unwrap());
+                assert!(!tree.insert(&pager, &(2 * i).to_be_bytes()).unwrap());
+            }
+            tree.verify(&pager).unwrap();
+        });
+    }
+}

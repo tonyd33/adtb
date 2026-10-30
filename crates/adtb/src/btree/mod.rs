@@ -1,3 +1,4 @@
+pub mod build;
 mod index;
 mod leaf;
 mod node;

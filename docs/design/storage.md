@@ -607,7 +607,9 @@ previous LSN is not the LSN of the record before it for the same page
 marks a page that was changed from a stale copy: a lost write, which
 quarantines the page's heap or index. `verify` checks the same chain
 over the whole retained log, and that each page's LSN is that of its
-last record there.
+last record there. A full-page image of a page overwritten while damaged
+(§8) has an unknown previous LSN: it continues no chain and clears the
+page's damage.
 
 The end of the log is found by batch. A batch is accepted when all of
 its blocks are present, each verifies, and they agree: the same
@@ -707,6 +709,10 @@ the whole database, and keeps until the object is repaired:
 pager.quarantine(Quarantine::Heap(id) | Index(id) | Database) -> Result<(), PageError>
                                                   // caller holds no page latch
 pager.release(object) -> Result<(), PageError>    // once repaired
+pager.replace_contents(page, from, Option<object>) -> Result<(), PageError>
+                                                  // page takes from's contents, from is freed
+                                                  // and any object's mark goes, in one batch
+pager.scrap(page) -> Result<(), PageError>        // free a damaged page, overwriting it
 pager.is_quarantined(object) -> bool              // its own mark or the database's
 pager.quarantined() -> BTreeSet<Quarantine>
 ```
@@ -794,7 +800,12 @@ from i in identities select i.id                         -- fails
 ```
 
 A quarantined object is restored by reindexing (an index) or by
-restoring its pages from a replica or a backup plus log (a heap).
+restoring its pages from a replica or a backup plus log (a heap). The swap
+of a rebuilt index removes the index's mark in the batch that changes its
+root page, so a crash leaves the old index with its mark or the new one
+without. Neither call reads a damaged page it overwrites; it logs a
+full-page image with an unknown previous LSN, which starts the page's
+chain of records anew (§7).
 
 Rulings: ops/halt-scope/heap, spec/reads/static/static-types, spec/quarantine/index/cost-only, spec/quarantine/verify/yes, spec/quarantine/unowned/database
 

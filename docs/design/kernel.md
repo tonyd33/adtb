@@ -84,7 +84,10 @@ Postconditions on an `Adhoc`:
   position among the relation's indexes, uniques included, of the one
   index `reindex r index (f) in S` names: the one whose fields check to
   the same terms as `f`, up to the names of variables, over the same
-  constructor set as `S`. Text naming no declared index is refused.
+  constructor set as `S`. With no `in S` it is the one index with those
+  fields, and text matching several is refused naming `in`. Text naming
+  no declared index is refused. `None` means every index, the key index
+  included.
   `Reindex.online` is `true` unless the text writes `offline`.
 - `explain B::q(args)` names a query `bundles` registers for bundle
   `B`; text naming a bundle or a query `bundles` does not hold is

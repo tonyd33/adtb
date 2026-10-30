@@ -113,6 +113,8 @@ pub(crate) struct Meta {
     /// The LSN of pages the pool dropped, checked when they are read back.
     pub(crate) evicted: EvictedLsns,
     pub(crate) damaged: BTreeMap<Pid, Damage>,
+    /// Damaged pages latched blank, whose next change logs an unchained full-page image.
+    pub(crate) overwritten: BTreeSet<Pid>,
     /// Resident pages and pages being read in, in clock order.
     resident: Vec<Pid>,
     hand: usize,
@@ -260,6 +262,10 @@ impl<R: Runtime> Deref for PageExclusive<'_, R> {
 }
 
 impl<'a, R: Runtime> PageExclusive<'a, R> {
+    pub(crate) fn of(pager: &'a Pager<R>, g: pages::Exclusive<'a>) -> Self {
+        PageExclusive { pager, g }
+    }
+
     pub(crate) fn inner(&mut self) -> &mut pages::Exclusive<'a> {
         &mut self.g
     }
@@ -347,6 +353,7 @@ impl<R: Runtime> Pager<R> {
                 written: BTreeSet::new(),
                 evicted: EvictedLsns::new(EVICTED_PER_FRAME * o.pool_frames),
                 damaged: BTreeMap::new(),
+                overwritten: BTreeSet::new(),
                 resident: Vec::new(),
                 hand: 0,
             }),
@@ -721,7 +728,13 @@ impl<R: Runtime> Pager<R> {
             for e in &edits {
                 g.write(e.offset as usize, &e.bytes);
             }
-            let record = if m.dirty.contains_key(&pid) || self.atomic_page_writes {
+            let record = if m.overwritten.remove(&pid) {
+                Record::Image {
+                    pid,
+                    prev: Lsn::UNCHAINED,
+                    page: page::with_lsn(g, lsn),
+                }
+            } else if m.dirty.contains_key(&pid) || self.atomic_page_writes {
                 Record::Change { pid, prev, edits }
             } else {
                 Record::Image {

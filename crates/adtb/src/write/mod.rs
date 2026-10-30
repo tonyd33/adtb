@@ -8,6 +8,7 @@ mod input;
 mod past;
 mod polarity;
 mod quarantine;
+mod reindex;
 mod schema;
 mod sequence;
 mod stream;
@@ -46,6 +47,7 @@ pub use adtb_lang::schema::Stage;
 pub use delta::{CheckPlan, Part};
 pub use input::Local;
 pub use past::Retained;
+pub use reindex::{Failure, Rebuild, panic_text};
 pub use stream::{Produced, Production};
 pub use verify::{Found, VerifyScope, VerifySnapshot};
 
@@ -470,6 +472,10 @@ pub struct Database<R: Runtime> {
     files: Disk,
     /// Held while a vacuum runs or the retention window changes, so that one runs at a time.
     vacuuming: Lock<()>,
+    /// The relations an offline rebuild holds writes to.
+    offline: Lock<BTreeSet<RelId>>,
+    /// Set once the engine closes: rebuilds stop and their gates refuse.
+    rebuilds_stopped: AtomicBool,
     /// The structures history is kept in, once [`Database::with_history`] gives them.
     retained: Option<Arc<Retained>>,
     /// The heap of the catalog's kept rows, once [`Database::with_kept_store`] gives it. Its
@@ -564,6 +570,8 @@ impl<R: Runtime> Database<R> {
             grant: setup.grant,
             files: Disk::default(),
             vacuuming: Lock::new(()),
+            offline: Lock::default(),
+            rebuilds_stopped: AtomicBool::new(false),
             retained: None,
             kept_store: None,
             hosts: Arc::default(),

@@ -380,7 +380,7 @@ there for now:
 - A host language other than Rust. The manual documents the shell and
   [the Rust API](../reference/rust-api.md).
 - A dump, a backup or an export from the engine. `export`, `dump`,
-  restore, backups, `compact`, `reindex` and `print schema` do not run
+  restore, backups, `compact` and `print schema` do not run
   yet, so there is no equivalent of `.dump`, `VACUUM` or `.schema`.
 - Encryption, log shipping and embedded replicas, which the manual does
   not yet cover.
