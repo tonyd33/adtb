@@ -101,3 +101,17 @@ home: https://www.sqlite.org/
 
 - Positioned as local storage for applications and devices, not a shared enterprise repository; client/server recommended for many concurrent writers (one writer at a time per file) and very large datasets. [V 2026-10-25] https://www.sqlite.org/whentouse.html
 - Maximum database size 4294967294 pages, about 281 TB at 65536-byte pages. [V 2026-10-25] https://www.sqlite.org/limits.html
+
+## Constraints and identity (foreignkeys.html, lang_createtable.html, autoinc.html)
+
+- Foreign key constraints are disabled by default and enabled per connection with `PRAGMA foreign_keys = ON`; the pragma has no effect inside a multi-statement transaction. [V 2026-10-30] https://www.sqlite.org/foreignkeys.html
+- NULLs are distinct from each other for UNIQUE and for primary key uniqueness; a PRIMARY KEY column of an ordinary rowid table accepts NULL unless it is INTEGER PRIMARY KEY or declared NOT NULL, or the table is WITHOUT ROWID or STRICT. [V 2026-10-30] https://www.sqlite.org/lang_createtable.html
+- AUTOINCREMENT rowids are never reused from committed rows and increase monotonically, with possible gaps; rolled-back values can be reused. [V 2026-10-30] https://www.sqlite.org/autoinc.html
+
+## Isolation (isolation.html)
+
+- All transactions are serializable except with shared cache and `PRAGMA read_uncommitted`; serializability comes from one writer at a time. In WAL mode a reader sees a snapshot from the start of its read transaction. [V 2026-10-30] https://www.sqlite.org/isolation.html
+
+## CSV export (cli.html, run on sqlite3 3.54.0)
+
+- `sqlite3 -csv -header DB QUERY` prints RFC 4180 CSV; a NULL is an empty unquoted cell and an empty string is `""` by default; lines end in CRLF. [V 2026-10-30] https://www.sqlite.org/cli.html, line ending and quoting observed by running it

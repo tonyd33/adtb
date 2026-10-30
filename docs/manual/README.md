@@ -39,6 +39,7 @@ in two commands, so you can also start at any of them.
 - [Writing constraints](guides/writing-constraints.md)
 - [Files and CSV scans](guides/files-and-csv.md)
 - [Reading the past](guides/reading-the-past.md)
+- [Coming from SQL](guides/coming-from-sql.md)
 
 ## Concepts
 
