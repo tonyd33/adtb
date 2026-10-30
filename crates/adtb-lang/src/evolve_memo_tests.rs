@@ -91,6 +91,24 @@ fn a_memoised_build_equals_an_uncached_one_across_a_migration_walk() {
 }
 
 #[test]
+fn a_change_to_a_callers_copy_does_not_reach_the_memo() {
+    let src = base();
+    let built = builds_uncached(&src);
+    let annotated = printed(&src.schema().unwrap());
+
+    let mut copy = src.schema().unwrap();
+    copy.types.clear();
+    copy.modules[0].name.push_str("changed");
+    copy.ids.types.clear();
+    copy.stages.insert((RelId(0), 0), Stage::Deprecated);
+    assert_ne!(annotated, printed(&copy));
+
+    assert_eq!(built, printed(&src.built().unwrap()));
+    assert_eq!(built, printed(&src.built_uncached().unwrap()));
+    assert_eq!(annotated, printed(&src.schema().unwrap()));
+}
+
+#[test]
 fn a_change_of_declaration_text_alone_is_rebuilt() {
     let src = base();
     let mut changed = src.clone();
@@ -203,4 +221,15 @@ fn a_second_build_of_a_source_is_served_from_the_memo() {
     src.built().unwrap();
     assert!(Arc::ptr_eq(&held, &src.memo.get(&src).unwrap()));
     assert_eq!(entries, src.memo.len());
+}
+
+#[test]
+fn two_schemas_of_a_source_share_their_declarations() {
+    let src = base();
+    let first = src.schema().unwrap();
+    let second = src.schema().unwrap();
+    assert!(std::ptr::eq(
+        std::ops::Deref::deref(&first),
+        std::ops::Deref::deref(&second)
+    ));
 }

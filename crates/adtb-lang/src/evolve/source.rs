@@ -77,19 +77,19 @@ impl Source {
 
     /// Builds the schema, with the catalog ids and write states the source holds.
     pub fn schema(&self) -> Result<Schema, Vec<FileDiag>> {
-        let mut schema = self.built()?;
+        let mut schema = Schema::clone(&*self.built()?);
         self.annotate(&mut schema);
         Ok(schema)
     }
 
     /// Builds the schema the declarations state, its ids those of declaration order.
-    pub(super) fn built(&self) -> Result<Schema, Vec<FileDiag>> {
+    pub(super) fn built(&self) -> Result<Arc<Schema>, Vec<FileDiag>> {
         if let Some(schema) = self.memo.get(self) {
-            return Ok((*schema).clone());
+            return Ok(schema);
         }
         let schema = Arc::new(self.built_uncached()?);
         self.memo.put(self, schema.clone());
-        Ok(Arc::unwrap_or_clone(schema))
+        Ok(schema)
     }
 
     pub(super) fn built_uncached(&self) -> Result<Schema, Vec<FileDiag>> {

@@ -12,9 +12,10 @@ impl Builder<'_> {
         if let Some(m) = self.schema.module_named(name) {
             return m;
         }
+        let engine = self.schema.modules.is_empty() || ENGINE_MODULES.contains(&name);
         self.schema.modules.push(ModuleDef {
             name: name.to_string(),
-            engine: self.schema.modules.is_empty() || ENGINE_MODULES.contains(&name),
+            engine,
             types: BTreeMap::new(),
             values: BTreeMap::new(),
         });

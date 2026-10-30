@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use crate::ast;
 use crate::parse::{self, Options};
@@ -238,8 +238,33 @@ pub enum TypeName {
     Tag,
 }
 
+/// A schema's declarations, shared between its copies until one of them changes.
 #[derive(Clone, Debug)]
 pub struct Schema {
+    defs: Arc<SchemaDefs>,
+    pub ids: crate::ids::CatalogIds,
+    /// The write state of each constructor relation that is not enabled.
+    pub stages: BTreeMap<(RelId, u32), Stage>,
+    /// The write state of each value-level constructor that is not enabled.
+    pub value_stages: BTreeMap<(TypeId, u32), Stage>,
+}
+
+impl std::ops::Deref for Schema {
+    type Target = SchemaDefs;
+
+    fn deref(&self) -> &SchemaDefs {
+        &self.defs
+    }
+}
+
+impl std::ops::DerefMut for Schema {
+    fn deref_mut(&mut self) -> &mut SchemaDefs {
+        Arc::make_mut(&mut self.defs)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SchemaDefs {
     pub modules: Vec<ModuleDef>,
     pub types: Vec<TypeDef>,
     pub relations: Vec<RelationDef>,
@@ -249,11 +274,6 @@ pub struct Schema {
     pub aggregates: Vec<AggregateDef>,
     /// The `Principal` every module resolves: the schema's own, else the prelude's.
     pub principal: TypeId,
-    pub ids: crate::ids::CatalogIds,
-    /// The write state of each constructor relation that is not enabled.
-    pub stages: BTreeMap<(RelId, u32), Stage>,
-    /// The write state of each value-level constructor that is not enabled.
-    pub value_stages: BTreeMap<(TypeId, u32), Stage>,
     /// The relation variables a later operator of the migration being applied adds, by module and
     /// name. Entry `i` is `RelId(u32::MAX - i)`, which only a `Key r` type holds and no
     /// `relations` entry has.
@@ -977,19 +997,21 @@ pub fn build_ahead(
         .collect();
     let mut b = Builder {
         schema: Schema {
-            modules: Vec::new(),
-            types: Vec::new(),
-            relations: Vec::new(),
-            functions: Vec::new(),
-            constraints: Vec::new(),
-            checks: Vec::new(),
-            aggregates: Vec::new(),
-            principal: TypeId(0),
+            defs: Arc::new(SchemaDefs {
+                modules: Vec::new(),
+                types: Vec::new(),
+                relations: Vec::new(),
+                functions: Vec::new(),
+                constraints: Vec::new(),
+                checks: Vec::new(),
+                aggregates: Vec::new(),
+                principal: TypeId(0),
+                ahead: Vec::new(),
+                late_sels: Vec::new(),
+            }),
             ids: crate::ids::CatalogIds::default(),
             stages: BTreeMap::new(),
             value_stages: BTreeMap::new(),
-            ahead: Vec::new(),
-            late_sels: Vec::new(),
         },
         diags: Vec::new(),
         files: &all,

@@ -15,7 +15,7 @@ impl Source {
     }
 
     /// The built schema and every object of its user modules, each path made distinct.
-    fn objects(&self) -> Option<(Schema, Vec<Object>)> {
+    fn objects(&self) -> Option<(Arc<Schema>, Vec<Object>)> {
         let schema = self.built().ok()?;
         let files = self.files().ok()?;
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
