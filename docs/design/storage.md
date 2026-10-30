@@ -803,7 +803,7 @@ into a new file:
   duration.
 
 ```sh
-$ adt compact app.adt --into app.compact.adt
+$ adtb compact app.adt --into app.compact.adt
 ```
 
 Compaction gives versions new TIDs and pages new ids.

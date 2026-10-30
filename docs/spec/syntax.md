@@ -1653,7 +1653,7 @@ backup to "s3://backups/app" incremental
   `restore` writes a new database file; it never replaces an open one.
   In `restore ... at position p`, `p` is a `Position`, and in `at
   instant t`, `t` is an `Instant`.
-- The CLI (`$ adt ...`) and the in-process API wrap these commands.
+- The CLI (`$ adtb ...`) and the in-process API wrap these commands.
 - `export` needs `write_files`, and its path must lie within the
   export roots configured at open.
 

@@ -243,13 +243,13 @@ A bundle is registered at deploy, before the client release that uses
 it runs:
 
 ```sh
-$ adt register bundles/web.adb
+$ adtb register bundles/web.adb
 login_key    ok
 sessions_of  ok
 registered web-2.4 at 12 (c41e...)
 ```
 
-`adt register` wraps the command `register bundle`
+`adtb register` wraps the command `register bundle`
 ([catalog.md](catalog.md#91-commands)).
 
 Registration is refused, as a whole, when:
@@ -304,7 +304,7 @@ enable identities.Apple
 A bundle is live from its registration until it is released: retired,
 superseded or expired. Registration starts its lease. `register bundle
 FILE` is the command of [catalog.md §9.1](catalog.md#91-commands);
-`adt register` wraps it.
+`adtb register` wraps it.
 
 ### 4.2 Leases
 
@@ -337,7 +337,7 @@ and, when they pass, makes it live with a new lease.
 ### 4.3 Retirement
 
 ```sh
-$ adt retire bundle ios-4.2
+$ adtb retire bundle ios-4.2
 ```
 
 `retire bundle B` is a command, also available as a statement to a
@@ -430,7 +430,7 @@ check, the migration is refused, and the report names each bundle,
 query and operator:
 
 ```sh
-$ adt migrate 0014
+$ adtb migrate 0014
 refused: bundle ios-4.2 pins 12 (c41e...): txn link_apple inserts identities.Apple
   (0014 deprecates identities.Apple)
   retire bundle ios-4.2, or supersede it by a release without link_apple
@@ -438,7 +438,7 @@ refused: bundle ios-4.2 pins 12 (c41e...): txn link_apple inserts identities.App
   ios-4.2 expires only once every client stops calling it (see sys::sessions)
 ```
 
-`adt migrate` wraps the command `apply migrations`
+`adtb migrate` wraps the command `apply migrations`
 ([catalog.md](catalog.md#91-commands)).
 
 A refused migration does not wait: it applies only when presented
@@ -463,7 +463,7 @@ the `adhoc` privilege ([security.md](security.md#45-ad-hoc-rights)).
 Application principals without it run only registered queries.
 
 ```sh
-$ adt repl --role analyst
+$ adtb repl --role analyst
 adt> from i in identities select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
 ```
 
@@ -545,11 +545,11 @@ Rulings: surface/open-applies
 The engine prints the folded schema at a version:
 
 ```sh
-$ adt schema print > schema.adt
-$ adt schema print --check schema.adt
+$ adtb schema print > schema.adt
+$ adtb schema print --check schema.adt
 ```
 
-`adt schema print` wraps the command `print schema`
+`adtb schema print` wraps the command `print schema`
 ([catalog.md §9.1](catalog.md#91-commands)).
 
 The printout states every module, type, relation variable with its

@@ -764,6 +764,7 @@ accept:
   spec/textual-forms/sortkey/hex: {title: '0x hex, as Bytes', reason: 'a SortKey is bytes, ordered as bytes'}
   spec/textual-forms/span/call: {title: 'span(a, b), the call that builds it', reason: span is the only form that builds a span}
   spec/tiers/three-tiers: {title: 'Three tiers: docs/spec what users observe, docs/design contracts between subsystems, the rest with the code', reason: annex text in the spec is read as a promise and couples the spec to one implementation}
+  spec/tool-name/adtb: {title: 'adtb, as built and as the manual says', reason: 'Rulings for the first milestone 9 slice: an index-free structural failure needs its own finding, a narrow run must not erase a wide one, and the manual is signed off.'}
   spec/top/operand/comprehension: {title: The operand is a comprehension; the keys are written over its select scope, reason: 'the select scope binds the keys, so no new binder form is needed'}
   spec/totality/add-period/partial: {title: 'Partial: it can fault with ArithmeticOverflow', reason: it faults with ArithmeticOverflow under either rule}
   spec/totality/at-block/partial: {title: 'Partial, because HistoryUnavailable is an abort', reason: 'HistoryUnavailable is an abort, and a hoisted block could reject a program that never reads it'}
@@ -791,6 +792,8 @@ accept:
   spec/uuid-domain-format/lossless: {title: Use generic newtype text outside the sixteen-byte UUID domain, reason: 'Preserve write-only newtype domains, existing sixteen-byte UUID presentation and total lossless formatting by reusing the generic newtype spelling for other lengths'}
   spec/uuid/uuid-newtype: {title: A prelude Uuid newtype over 16 bytes with uuid() and text(), reason: keys need a readable textual form}
   spec/value-states/gated: {title: '`add constructor` on a value-level sum starts declared; `enable T.C` gates storing it in any field; refused while a live bundle pinned before reads a field whose type reaches T, hide new constructors included; storing a declared one is Rejected NotOpen', reason: maintainer rulings on the third spec review; reasons in each option body}
+  spec/verify-scope/per-scope: {title: A run replaces the findings of the last run over the same scope; scrub is a scope of its own, reason: 'Rulings for the first milestone 9 slice: an index-free structural failure needs its own finding, a narrow run must not erase a wide one, and the manual is signed off.'}
+  spec/verify-structure/structure: {title: A Structure constructor with a location text, reason: 'Rulings for the first milestone 9 slice: an index-free structural failure needs its own finding, a narrow run must not erase a wide one, and the manual is signed off.'}
   spec/violation-report/one: {title: 'The violated constraint with the smallest name, its report as descriptor and rows, unreadable rows redacted with a count', reason: an error value is not a collection; one deterministic constraint suffices to act on}
   spec/write-forms/skip-seq-if: {title: 'skip, parenthesised write sequences and if writes', reason: conditional and multi-part writes otherwise need dummy generators}
   spec/writer-wait-cycle/fail-one: {title: One transaction of the cycle fails with a serialization failure; which one is the engine's choice, reason: 'a cycle of waits fails one of its transactions with a serialization failure, which one being a freedom'}

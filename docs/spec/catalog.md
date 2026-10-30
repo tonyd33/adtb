@@ -1876,22 +1876,22 @@ also needs `adhoc` ([applications.md](applications.md#7-the-ad-hoc-role)).
 
 ### 9.4 The command line tool
 
-One tool, `adt`, works on a closed database file and on a running
+One tool, `adtb`, works on a closed database file and on a running
 server. Given a file, it opens it as the one process that owns it, and
 fails if another process does. Given a server address, it connects as
 a client and issues commands and statements.
 
 ```sh
-$ adt repl app.adt
-$ adt repl adt://db.internal:7000 --role dba
-$ adt verify app.adt
-$ adt compact app.adt --into app.compact.adt
-$ adt explain app.adt 'web-2.4::login_key(users.key(3))'
-$ adt upgrade app.adt --finalize
-$ adt serve app.adt --pool 8GiB
-$ adt register app.adt bundles/web.adb
-$ adt migrate app.adt migrations/0013
-$ adt dump app.adt app.dump
+$ adtb repl app.adt
+$ adtb repl adt://db.internal:7000 --role dba
+$ adtb verify app.adt
+$ adtb compact app.adt --into app.compact.adt
+$ adtb explain app.adt 'web-2.4::login_key(users.key(3))'
+$ adtb upgrade app.adt --finalize
+$ adtb serve app.adt --pool 8GiB
+$ adtb register app.adt bundles/web.adb
+$ adtb migrate app.adt migrations/0013
+$ adtb dump app.adt app.dump
 ```
 
 Every command of §9.1 is available through the tool. Operations that
@@ -2085,8 +2085,9 @@ relation sys::verify_findings : Finding volatile key id
 
 `where` locates the finding in storage, in implementation-defined
 text. `StalePage` is a lost write. `witness` is the first violating row
-in the textual syntax. Findings are kept in the file until a later
-`verify` over the same scope replaces them.
+in the textual syntax. Findings are kept in the file. A run replaces only the
+findings of the last run over its scope: the whole database, one
+relation variable, or the scrub.
 
 ### 11.2 Quarantine
 
@@ -2133,7 +2134,7 @@ Freed pages are reused, and the file shrinks only by compaction, which
 writes every live version into a new file:
 
 - Offline, with the file closed, through the tool:
-  `$ adt compact app.adt --into app.compact.adt`. This is also the way to
+  `$ adtb compact app.adt --into app.compact.adt`. This is also the way to
   change a format setting: `--page-size 16KiB`.
 - Online, by the `compact` command, while the database serves calls:
   the engine copies the database at a snapshot into the new file,
@@ -2210,7 +2211,7 @@ formats the previous release reads, until an operator finalizes the
 upgrade:
 
 ```sh
-$ adt upgrade app.adt --finalize
+$ adtb upgrade app.adt --finalize
 finalize upgrade
 ```
 

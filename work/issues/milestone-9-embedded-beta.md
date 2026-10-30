@@ -12,6 +12,15 @@ depends-on:
   - fs-fault-real-backends
   - comparative-benchmarks
   - command-follow-ups
+  - verify-online
+  - quarantine-wired
+  - scrub-worker
+  - background-vacuum
+  - compaction
+  - reindex-jobs
+  - activity-and-metrics
+  - real-backend-faults-engine
+  - format-settings
 tags:
   - milestone
 ---
@@ -24,3 +33,7 @@ Milestone 9 of docs/plan.md. Exit: the suite and every test method pass; benchma
 ## Proposal
 
 ## Open questions
+
+## 2026-10-29: audit
+
+work/briefs/review-m9-audit.md: 6 of 53 requirements done, 14 partial, 33 absent. Order: verify-online, quarantine-wired, scrub-worker, dump-restore-backup (S4 to S6), then settings and the rest. Rulings adopted so far: spec/verify-structure/structure, spec/verify-scope/per-scope, spec/tool-name/adtb; OpenTelemetry and traces move to milestone 10. The other rulings in the report are made when their slice is dispatched.

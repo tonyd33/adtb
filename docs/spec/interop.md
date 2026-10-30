@@ -698,11 +698,11 @@ format and engine release, so it moves data between releases and can
 be reviewed. A physical copy is a backup (§7).
 
 ```sh
-$ adt dump app.adt app.dump
-$ adt restore app.dump new.adt
+$ adtb dump app.adt app.dump
+$ adtb restore app.dump new.adt
 ```
 
-`adt dump` and `adt restore` wrap the commands `dump` and `restore`
+`adtb dump` and `adtb restore` wrap the commands `dump` and `restore`
 ([catalog.md](catalog.md#91-commands)). A dump needs `maintain` and
 `read` on every relation it dumps; its `security` entry is written
 only for a holder of `schema`.
@@ -821,13 +821,13 @@ backup's start position, and is restored together with the chain of
 backups it builds on.
 
 ```sh
-$ adt backup app.adt s3://backups/app
-$ adt backup app.adt s3://backups/app --incremental
-$ adt restore s3://backups/app restored.adt
+$ adtb backup app.adt s3://backups/app
+$ adtb backup app.adt s3://backups/app --incremental
+$ adtb restore s3://backups/app restored.adt
 ```
 
-`adt backup` and `adt restore` wrap the commands `backup` and
-`restore` ([catalog.md](catalog.md#91-commands)). `adt restore` reads
+`adtb backup` and `adtb restore` wrap the commands `backup` and
+`restore` ([catalog.md](catalog.md#91-commands)). `adtb restore` reads
 either a dump (§6) or a backup; its manifest says which.
 
 Every backup carries a manifest stating the engine release, format,
@@ -850,9 +850,9 @@ the archived log up to a chosen point:
 - a schema version: the state just before a given migration applied.
 
 ```sh
-$ adt restore s3://backups/app restored.adt --before-version 12
-$ adt restore s3://backups/app restored.adt --to-time 2026-10-24T13:02:00Z
-$ adt restore s3://backups/app restored.adt --to-position 3/81234
+$ adtb restore s3://backups/app restored.adt --before-version 12
+$ adtb restore s3://backups/app restored.adt --to-time 2026-10-24T13:02:00Z
+$ adtb restore s3://backups/app restored.adt --to-position 3/81234
 ```
 
 The archive destination is an open setting
@@ -870,8 +870,8 @@ schema and a load in the notation of this spec. The user edits and
 confirms the proposal; the tool then runs the load.
 
 ```sh
-$ adt import-sql postgres://old/app --propose > migrations/0001
-$ adt import-sql postgres://old/app --load migrations/0001 app.adt
+$ adtb import-sql postgres://old/app --propose > migrations/0001
+$ adtb import-sql postgres://old/app --load migrations/0001 app.adt
 ```
 
 The proposal is a first migration of ordinary operators and a load
@@ -887,7 +887,7 @@ confirmation:
   constructor's columns.
 
   ```sh
-  $ adt import-sql postgres://old/app --propose --sum vehicles.type=Car:wheels,Boat:sail_area
+  $ adtb import-sql postgres://old/app --propose --sum vehicles.type=Car:wheels,Boat:sail_area
   ```
 
 - A CHECK constraint relating a tag column to the nullness of other

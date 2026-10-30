@@ -240,7 +240,8 @@ backup), [design/storage.md](design/storage.md) §8 and §10.5,
 
 - Statistics, plan pinning with last-good fallback, `explain`.
 - `verify` cross and logical checks, scrub, vacuum scheduling,
-  resource control and budgets, configuration, metrics.
+  resource control and budgets, configuration, metrics. OpenTelemetry
+  export and request traces (catalog.md §13) move to milestone 10.
 - Zone rules and collations in the catalog.
 - Dump, restore, online backup, point-in-time restore.
 - Fault-injecting file system tests on the real backends

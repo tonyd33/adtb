@@ -499,7 +499,7 @@ refused: admin_dump reads identities.EmailPass (hash); web_owner lacks read with
 ```
 
 `register bundle` is a command ([catalog.md](catalog.md#91-commands)),
-issued here by `web_owner`; `adt register` wraps it.
+issued here by `web_owner`; `adtb register` wraps it.
 
 ### 4.3 Parameters do not choose the principal
 
@@ -737,7 +737,7 @@ and `write_files` may archive and then truncate a prefix of it with
 the command `archive audit`, up to a sequence number covered by a
 ledger digest that has been exported (§8.3); the archive and the
 truncation are recorded as an audit event themselves. The command is
-available over the server and in process, and `adt audit archive`
+available over the server and in process, and `adtb audit archive`
 wraps it.
 
 ```adt
@@ -767,9 +767,9 @@ recomputes the chain from the file and its log archive and compares it
 with a digest kept elsewhere:
 
 ```sh
-$ adt ledger digest app.adt
+$ adtb ledger digest app.adt
 block 9912  position 3/1204411  3f9a...
-$ adt ledger verify app.adt --digest digests/2026-10.txt
+$ adtb ledger verify app.adt --digest digests/2026-10.txt
 ```
 
 Tamper evidence detects a change to history before the last exported
@@ -850,7 +850,7 @@ each page names. A DEK version may be destroyed only when no page, no
 retained log segment and no retained backup uses it; the command is
 refused otherwise, naming what still uses it. Key commands are
 commands of [catalog.md](catalog.md#91-commands), available over the
-server and in process, and need the `configure` grant; `adt key`
+server and in process, and need the `configure` grant; `adtb key`
 wraps them.
 
 ```adt
@@ -901,11 +901,11 @@ In the example the tenants start at version 10. The fleet tool applies one migra
 bundle in each:
 
 ```sh
-$ adt migrate --fleet tenants/ 0011
+$ adtb migrate --fleet tenants/ 0011
 acme   ok     at 11 (c7d2...)
 beta   ok     at 11 (c7d2...)
 gamma  refused: log differs from 10 (a91c...) at 7
-$ adt register --fleet tenants/ bundles/web.adb
+$ adtb register --fleet tenants/ bundles/web.adb
 ```
 
 Each file is changed in its own transaction; a refusal in one leaves

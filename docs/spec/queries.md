@@ -1297,7 +1297,7 @@ grant ([security.md](security.md#3-grants)), outside any bundle.
   ([wire.md](wire.md#52-replies)).
 
 ```sh
-$ adt repl --role analyst
+$ adtb repl --role analyst
 adt> from i in identities select match i | Google g -> g.gid | _ -> "other"
 adt> delete s in logins.Revoked where s.at < cutoff
 ```
