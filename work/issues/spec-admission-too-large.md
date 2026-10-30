@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 880
 summary: the spec does not say how a call whose owned request is larger than the whole admission queue bound is refused; the engine answers StatementLimit Memory with the bound
+branch: spec-rev30
 ---
 
 # Bug: the spec leaves a call larger than the admission bound unstated

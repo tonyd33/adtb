@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
-priority: 897
+priority: 1091
 summary: "three new functions read catalog::roles and two map a role id to its name, each with its own decoding and error"
+branch: quality-fixes30
 tags:
   - quality
   - engine

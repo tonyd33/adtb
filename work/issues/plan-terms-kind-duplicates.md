@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 380
-summary: "plan/terms.rs with_children and with_vars duplicate Kind::with_children and Kind::with_vars"
+summary: plan/terms.rs with_children and with_vars duplicate Kind::with_children and Kind::with_vars
+branch: quality-fixes30
 tags:
   - quality
 ---

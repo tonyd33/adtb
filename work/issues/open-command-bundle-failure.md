@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: open
 kind: feature
-priority: 610
+priority: 1015
 summary: "an unpresented role-registered bundle that fails its check at open fails the whole open, and nothing can retire it without an open"
 ---
 

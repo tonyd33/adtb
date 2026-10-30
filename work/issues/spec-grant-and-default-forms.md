@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: feature
 priority: 867
 summary: "the logged Grant form holds one privilege, and AddDefault names one constructor although a default over a shared field makes several"
+branch: spec-rev30
 tags:
   - spec
 ---

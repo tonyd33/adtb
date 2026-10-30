@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: bug
 priority: 896
 summary: "reorder's doc comment was left above grants_back's, so grants_back carries two docs and reorder none"
+branch: quality-fixes30
 tags:
   - quality
   - lang

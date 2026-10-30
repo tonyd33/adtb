@@ -559,6 +559,7 @@ accept:
   security/catalog/open: {title: Every role reads the whole catalog, reason: applications read the catalog only through registered queries; the ad hoc role is granted catalog constructor sets like any others}
   security/encrypt/io-cost/staging: {title: Encrypt into a per-I/O staging buffer on write; decrypt in place in the frame on read, reason: 'encrypt into a staging buffer on write, so optimistic readers never see ciphertext'}
   security/encrypt/page: {title: The pager encrypts each page as it is written and decrypts it as it is read, reason: 'the pager owns every page write, so it encrypts there; the host cannot see engine-managed direct I/O'}
+  security/family-signature/unanimous: {title: Freeze the one signature every live bundle declaring the query shares; refuse otherwise, reason: a family grant never covers some live bundles silently and not others; the refusal says to grant per bundle until the older one is released}
   security/fields/field-list: {title: A grant lists the fields of each constructor it covers, reason: a grant lists the fields of each constructor it covers}
   security/grain/ctor-set: {title: 'Any constructor set of a relation, the same sets indexes and FKs range over', reason: grants range over the same constructor sets as indexes and references}
   security/grain/partial/refuse: {title: A query reading an ungranted constructor is refused; the role matches over its granted set, reason: 'a role matches over the constructor set it holds, which is exhaustive there'}
@@ -620,6 +621,7 @@ accept:
   spec/dump-wrong-key/as-damaged: {title: The same failure as a damaged dump, reason: authenticated encryption cannot tell the two apart}
   spec/duration-form/largest-unit: {title: A DURATION literal in the largest unit that divides it exactly; zero is 0s, reason: 'short, exact, and read back by the literal grammar'}
   spec/embedded-open/register-first: {title: 'Register, supersede earlier bundles, bind host functions, migrate, plan', reason: old bundles otherwise block shipped enables for a lease and downgrades break re-upgrades}
+  spec/empty-revoke/refuse: {title: 'Refuse the migration, naming the revoke', reason: a revoke that matches nothing means the author misreads the grants; refusing catches the typo that would leave access in place}
   spec/evaluation/by-value: {title: 'Call by value, left to right within a binding; inlining only of total arguments', reason: faults stay predictable and match the surface text}
   spec/evolution/arm-target/scrutinee-set: {title: Every match in the named object whose scrutinee's constructor set contains the new constructor at the new version; exactly one, reason: matching by the scrutinee's type would count a list that never gains the constructor and miss a set that does}
   spec/evolution/bwd-validity/any-state: {title: 'bwd yields states, not necessarily valid ones', reason: 'after a constraint is dropped, rows violating it map back unchanged'}
@@ -700,6 +702,7 @@ accept:
   spec/newtype-syntax/call: {title: Email("a@b") and type Email = new Text where p, reason: juxtaposition had no production and is ambiguous with nullary constructors}
   spec/only/none: {title: No surface only; a row of the snapshot is reached by a path through its key or by match on the key, reason: 'no example needs it yet, and adding it later changes no program'}
   spec/option-ref-delete/clear: {title: on delete clear sets an Option (Key) field to None, reason: the common case needed a hand-written update in every deleting statement}
+  spec/option-revoke/replace: {title: 'Revoke, then grant without the option, in one migration; 3.5 says so', reason: the recheck already sees the net effect of a migration; a new form adds an operator and inverse for one statement saved}
   spec/order-keys/list: {title: 'A list of keys with directions: by (a desc, b)', reason: 'anonymous records stay unordered, and field order does not affect type equality'}
   spec/partiality/fault-or-diverge: {title: 'May fault or may not terminate; limits are rejections, never faults', reason: an unbounded fix must not move past a guard although no fault is raised}
   spec/password-param/text: {title: Text, reason: SCRAM normalizes passwords as text}

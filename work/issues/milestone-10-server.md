@@ -3,11 +3,13 @@ created-at: 2026-10-26
 status: open
 kind: feature
 priority: 1000
-summary: "milestone 10 (the server) has not started: adtb-server is an empty crate, so no client can connect over a Unix socket or TCP"
+summary: "milestone 10 (the server) has not exited: roles, grants and checked registration exist, but no client can connect over a socket, bind a bundle, authenticate or call as a role other than the schema owner"
 depends-on:
   - milestone-8-embedded-alpha
   - server-engine-interface
   - client-sdks
+  - roles-and-grants
+  - server-owned-call-tasks
 tags:
   - milestone
 ---
@@ -29,3 +31,16 @@ Scope, from `docs/plan.md`:
 Exit: the parity tests between the in-process API and the wire pass (wire.md §14, embedding.md §11).
 
 Open before it can start: the two TODOs in `docs/design/server.md`, how the server submits a call to `adtb` and receives its batches, and how it binds a connection to a bundle. Tracked as `server-engine-interface`.
+
+## 2026-10-29: progress
+
+Landed: the server-engine interface and wire framing; the role authority
+foundation (roles, capability grants, role sessions); canonical Log grant rows with
+carry and dormancy; checked registration with durable family ownership and
+migration rechecks (checked-registration). adtb-server holds about 1,400 lines.
+Grant tickets were re-banded from 8xx to 10xx on this date: they implement
+security.md 2 and 3, which docs/plan.md assigns to this milestone.
+
+Remaining: call and family grants, binding, nonowner execution, authentication,
+audit with the ledger (roles-and-grants); the registry and transport slices of
+server-owned-call-tasks; client SDKs; the wire parity exit test.

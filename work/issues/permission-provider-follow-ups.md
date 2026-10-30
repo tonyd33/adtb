@@ -2,7 +2,7 @@
 created-at: 2026-10-28
 status: open
 kind: bug
-priority: 430
+priority: 1032
 summary: the permission provider over-charges rows an at reads inside a fix or For body
 depends-on:
   - typed-permission-requirements

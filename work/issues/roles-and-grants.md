@@ -2,7 +2,7 @@
 created-at: 2026-10-27
 status: open
 kind: feature
-priority: 830
+priority: 1010
 summary: "role authority exists; relation/field and call/family grants, definer checks and nonowner execution remain unfinished"
 depends-on:
   - asserted-principal-value-domain
@@ -440,3 +440,14 @@ named host-parameter value/type assumptions; registered validation does not
 certify that separate path. Engine defects confirmed there take priority under
 the standing engine-first direction. Earlier family/legacy decision witnesses
 remain follow-on work and do not block the internal pure provider.
+
+## 2026-10-29: checked registration landed; family signature ruled
+
+checked-registration (d6c535b5) is slice 3 with the live rechecks of slice 2
+folded in; its ruling 2 settles the legacy header-only witness (such families
+belong to the schema owner). The user adopted security/family-signature/unanimous:
+a family call grant resolves the query in every live bundle of the family and
+freezes the one signature they share; it is refused, naming the bundles, when none
+declares the query or two declare different signatures. Next slice: canonical
+call/bundle/family grants (audit item 3), then binding with BlockingMigration
+notices.

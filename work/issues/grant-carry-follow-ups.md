@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: open
 kind: bug
-priority: 560
+priority: 1031
 summary: "grant carry leaves fieldless and redundant grant entries, accepts no-op retags, matches listed revokes only exactly, and security.md 3.3 and 3.6 do not state four of its rulings"
 tags:
   - lang

@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 897
 summary: "schema_at's doc comment was left above the moved stale, and Catalog::stale and Catalog::source_at are left with no caller"
+branch: quality-fixes30
 tags:
   - quality
   - engine

@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: open
 kind: bug
-priority: 640
+priority: 1025
 summary: "a finished task releases its memory grant only after Done is observable, and an unreleased batch keeps the whole grant admitted"
 tags:
   - engine

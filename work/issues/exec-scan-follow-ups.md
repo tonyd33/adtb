@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: feature
 priority: 863
 summary: "a stopped scan still holds the heap-wide SIREAD lock, the batch being filled sits outside the grant, and a full spill device is reported as Fatal Storage"
+branch: exec-scan
 tags:
   - engine
   - quality

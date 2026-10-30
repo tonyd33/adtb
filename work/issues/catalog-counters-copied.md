@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 896
 summary: "Catalog::counters copies write::Database::new's counter-page setup, which only sim tests still reach, and the two select sequence relations by different tests"
+branch: quality-fixes30
 tags:
   - quality
   - engine

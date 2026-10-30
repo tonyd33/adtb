@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
 kind: bug
 priority: 895
 summary: "a historical scan clones every visible deleted current row into a deduplication map outside the query memory grant, even for count"
+branch: exec-scan
 tags:
   - quality
   - engine
