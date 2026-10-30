@@ -140,7 +140,7 @@ exist is refused. Replaying the log, as a restore does, keeps such a grant as a 
 allows nothing, and reports it; a restore lists every dormant grant in
 its report. `drop role R` is refused while any grant operator in the
 log names `R`, or `R` owns a bundle that is not retired or owns a
-family (§3.2).
+family (§3.2). `drop role owner` and `create role owner` are refused.
 
 Dropping a role atomically deletes the peer mappings naming it.
 Other roles' peer mappings and their ordinals are unchanged. A refused
@@ -260,13 +260,20 @@ dots after the last hyphen: `web-2.4` is version `2.4` of the family
 only that role or the schema owner may register a bundle into the
 family. A call grant that names a family resolves the query in every
 live bundle of the family when it is granted and records the one
-signature (parameter and result types, compared by type and
-constructor ids) that the live bundles declaring it share. The grant is refused, naming
-the live bundles of the family, when none of them declares the query
-or two of them declare it with different signatures. It then covers
-every bundle of the family, registered then or later, whose
-signature for the query equals the recorded one; a bundle whose
-signature differs needs a new grant.
+signature, its parameter and result types, that the live bundles
+declaring it share. The grant is refused, naming the live bundles of
+the family, when none of them declares the query or two of them
+declare it with different signatures. It then covers every bundle of
+the family, registered then or later, whose signature for the query
+equals the recorded one. Two signatures are equal when each named type
+in them has the same type id and the same constructor ids and field
+ids, and each anonymous type has, position by position, the same
+constructors and fields under the same rule; a bundle whose signature
+differs in anything is not covered. A grantee holds one family grant
+per family and query, with the latest recorded signature: granting it
+again records the signature anew and replaces the row, `revoke call
+web::login_key from app` deletes it, and a bundle that is live again
+with an earlier signature is not covered.
 
 Any grant may end in `with grant option`, which lets the grantee grant
 it on. A grantee holding a relation grant with grant option extends it
@@ -274,14 +281,40 @@ only through the bundles it registers, whose callers then act within
 it under definer rights (§4.1). It never appends grant operators on
 that account: only a role holding `schema` appends them. `revoke`
 takes the same forms and is of the same kind as the grant it revokes.
-A revoke that matches no grant its grantee holds is refused, naming
-the revoke, and so is a revoke with a field list that matches no field
-set the grantee holds; in a migration, the refusal refuses the
-migration. A grant given again without `with grant option` leaves an option
-already held in place. A migration removes only the option of a
-relation grant by revoking the grant and granting it again without
-the option, both in that migration; the grants after it are what
-§3.5 checks.
+
+Each grant is a row of `catalog::grants`, identified by its grantee,
+privilege, target and grantor
+([catalog.md](catalog.md#26-other-catalog-relations)). The grantor of
+an operator grant is the role that applied its migration. The row's
+target text names what the grant covers as it stands, in current
+names, after the carrying of §3.6. A grant or revoke may write its
+target in that text, `frozen` field lists, `C.f` field names and a
+retag's `except` pairs included
+([syntax.md §10](syntax.md#10-grants-and-roles)). A grant of a row the
+grantee already holds from the same grantor adds no row: given with
+`with grant option` it adds the option, and given without it leaves
+an option held by an active grant in place.
+
+A revoke matches each row of its grantee, dormant rows included,
+whose privilege and target text are the revoke's, with two
+widenings: a revoke without a field list matches every row of that
+privilege on its constructor set whatever fields the row froze, and a
+revoke of a retag without `except` matches every row with those two
+sides whatever pairs it excepts. A revoke deletes the matching rows
+the revoking role granted; a revoke by the schema owner deletes the
+matching rows of every grantor. Only a row's grantor or the schema
+owner revokes it. A revoke is refused, naming the revoke, when it
+matches no row it may delete, and refused, naming the rows, when a
+row it deletes held a grant option that rows of another grantor rely
+on: rows whose grantor is the deleted row's grantee, of the same
+privilege, on a target the deleted row covers. In a migration, a
+refused revoke refuses the migration.
+
+Removing only a grant option is a revoke, then a grant of the same
+target text without the option. For an operator grant (a relation
+grant or `grant call fn`) both are in one migration, and §3.5 checks
+the grants after it. For a deployment grant they are two statements.
+
 A relation grant names a relation variable and a
 constructor set, written explicitly or by a named set; the relation
 variable alone means every constructor of it, including constructors
@@ -299,11 +332,14 @@ A grant naming the relation variable alone, without a field list, also
 covers every field of each constructor it gains. A grant on a named set
 covers a constructor that joins the set: without a field list, every
 field the constructor has when it joins; with one, the listed fields
-the constructor has. A listed field is either a
-header field of the sum, named once for the whole set, or a field
-every constructor of the set declares. To list fields that only some
-constructors have, grant each constructor separately. `insert`,
-`delete` and `retag` take no field list.
+the constructor has. A listed field is a header field of the sum, or a
+field every constructor of the set declares, named alone, or `C.f`,
+field `f` of a constructor `C` of the set. A list written `frozen (…)`
+states the fields of a grant without a list: the grant is one without
+a list whose fields, when applied, were those listed. Grants of one
+privilege on one constructor set without a field list, applied when
+the set had different fields, are separate rows, one per frozen field
+set. `insert`, `delete` and `retag` take no field list.
 
 A query reads a field when it projects it, compares it, aggregates it,
 groups or orders by it, follows a reference held in it, or returns a
@@ -396,7 +432,8 @@ written and excepts each ordered pair of two products. Excepted pairs
 follow their constructors through every later operator, a replaced
 constructor becoming every product it reaches; a constructor added
 later is covered as the constructor sets cover it. A `revoke` of the
-`retag` as written removes it, whatever pairs it excepts.
+`retag` naming its two sides as its current target reads them removes
+it, whatever pairs it excepts.
 
 Applying a migration rechecks every live bundle's owner against the
 grants as they stand after it, and the migration is refused if a
