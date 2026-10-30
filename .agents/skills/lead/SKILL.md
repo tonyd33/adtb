@@ -76,7 +76,7 @@ Keep your context for rulings, briefs and review. Agents write the code.
 - After a review with blockers, review the delta yourself or with a fresh
   agent; a blocker-free round needs no new full review. Run the full check
   only on the final round.
-- Give every track that changes code a review by a fresh agent, in a child workspace, before it lands: the author's own checks do not count. Tell it to form its view before reading the receipt.
+- Give every track that changes code a review by a fresh agent, in a child workspace, before it lands: the author's own checks do not count. Tell it to form its view before reading the receipt. Give a review that builds a slot, moved to the commit with `jj new REV`, so it reuses a build directory.
 - A review that runs no build is a read-only track, and its verdict rests on reading. Check yourself anything it says it could not confirm, such as the provenance of expected values, and rely on the author's mutants and the full check for the rest. Prefer a review with targeted builds and mutants when build capacity allows, and for `unsafe` or concurrency code.
 - A small edit of your own after a blocker-free review, such as a test or a stated precondition, needs no second review. Run a new test against the mutant it is meant to kill, and pass it through the full check.
 - Land a performance track on its measured saving, against a stop line in its brief. A change that adds code and does not move its measure stays unlanded: record why on the ticket, keep the commit, and free the workspace. Compare CPU time across sessions only with the load noted: load alone has moved it by about 20%.
