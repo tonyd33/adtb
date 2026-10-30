@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
+branch: quarantine-wired
 kind: feature
 priority: 410
 summary: "nothing raises Quarantined: a bad page answers Fatal Storage, no mark is set outside tests, other reads of its constructor still run"
