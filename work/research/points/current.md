@@ -589,6 +589,7 @@ accept:
   spec/adhoc-failure/ends-text: {title: The first failing item ends the text; nothing commits; later items do not run; the error names its ordinal; inside an interactive transaction none of the text applies and the transaction stays open, reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/adhoc-path/adhoc-write: {title: Ad hoc text may write for principals holding adhoc plus the write privileges, reason: loads and staging repairs need a path; constraints hold and every change set is audited}
   spec/adhoc/names/every-module: {title: 'Ad hoc text belongs to no module; an unqualified name resolves in every user module, then the prelude', reason: 'only an ambiguous name needs qualifying, and no session state is added'}
+  spec/admission-bytes/held: {title: 'Arguments, ad hoc text and parameters, and a fixed per-call overhead, as admitted; Append batches after admission are not counted', reason: 'lead ruling G17: accepted as written'}
   spec/after/cursor-fields/name-order: {title: The fields correspond to the ordering keys in the code-point order of their names, reason: 'a record type has no written order, and most ordering keys have no name to borrow'}
   spec/agg-params/one: {title: Exactly one; several values pass as a record; a declaration with more is refused, reason: an aggregate takes exactly one parameter; several values pass as a record; a declaration with more is refused}
   spec/agg-range/any-set: {title: Any set expression; sum and avg refuse a generator over a select-built set, reason: count distinct must be expressible; only sum and avg lose meaning when duplicates vanish}
@@ -612,6 +613,7 @@ accept:
   spec/ctor-ids/log-order: {title: Deterministically in log order; shared by instantiations; heaps keyed by relation and constructor; prelude ids fixed below 1024, reason: 'codegen must compute the same ids the database uses, and drivers must decode prelude sums'}
   spec/ctor/type-args/expected-then-fields: {title: Those fixed by the expected type and the fields' synthesized types; an unfixed one is an error, reason: 'Some { value: 1 } then needs neither an annotation nor written type arguments'}
   spec/default-field-rows/per-field: {title: 'One row per field the default fills, each with the clause''s text', reason: 'each field''s default is found by its own id, and changing one constructor''s field touches only its row'}
+  spec/default-scope/named: {title: A default applies only to the constructors its log entry names; a new add default covers a later constructor, reason: 'lead ruling G14: a default applies only to the constructors its log entry names'}
   spec/defaults-home/relation: {title: As relation clauses applied by inserts and retags into that relation, reason: construction stays pure and one type may serve several relation variables}
   spec/disable/disable: {title: 'A `disable r.C` operator, enable''s inverse, refused while rows of r.C exist or a live bundle can write into it', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/dual-header/two-copies: {title: Two alternating copies on pages 0 and 1 with sequence and checksum, reason: 'a torn header would lose the checkpoint and, for encrypted files, every key'}
@@ -621,6 +623,7 @@ accept:
   spec/dump-wrong-key/as-damaged: {title: The same failure as a damaged dump, reason: authenticated encryption cannot tell the two apart}
   spec/duration-form/largest-unit: {title: A DURATION literal in the largest unit that divides it exactly; zero is 0s, reason: 'short, exact, and read back by the literal grammar'}
   spec/embedded-open/register-first: {title: 'Register, supersede earlier bundles, bind host functions, migrate, plan', reason: old bundles otherwise block shipped enables for a lease and downgrades break re-upgrades}
+  spec/empty-carry/drop: {title: The migration drops it, reason: lead ruling N3; the code keeps the row and is filed}
   spec/empty-revoke/refuse: {title: 'Refuse the migration, naming the revoke', reason: a revoke that matches nothing means the author misreads the grants; refusing catches the typo that would leave access in place}
   spec/evaluation/by-value: {title: 'Call by value, left to right within a binding; inlining only of total arguments', reason: faults stay predictable and match the surface text}
   spec/evolution/arm-target/scrutinee-set: {title: Every match in the named object whose scrutinee's constructor set contains the new constructor at the new version; exactly one, reason: matching by the scrutinee's type would count a list that never gains the constructor and miss a set that does}
@@ -653,7 +656,11 @@ accept:
   spec/exact-sum/exact: {title: 'The exact total, checked once at the end', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/examples/mixed-blocks/split: {title: Split it into an adt block and a text block, reason: 'a text block leaves its adt lines unchecked, and skip marks would be one more syntax'}
   spec/examples/self-contained/in-block: {title: Each block declares or restates every temp relation and type it uses beyond the running schema, reason: each block declares or restates what it needs; the corpus harness keeps no table of continuations}
+  spec/family-grant-row/latest: {title: 'One row per grantee, family and query with the latest signature; a regrant replaces it', reason: 'lead ruling G9: one row per grantee, family and query, replaced by a regrant'}
   spec/family-owner/first-registrant: {title: The first registrant owns the family; only it or the schema owner registers into it; family call grants compare signatures by type ids, reason: maintainer rulings on the third spec review; reasons in each option body}
+  spec/family-revoke/widen: {title: 'It matches the family row whatever its signature; one row per grantee, family, query and grantor', reason: lead ruling N1}
+  spec/family-signature-version/at-version: {title: The text names the log version at which its type names resolve; equality is by the ids those names had then, reason: lead ruling N2; notation chosen by the spec writer}
+  spec/family-target-match/ids-at-v: {title: By the ids its names have at its own version; the row keeps the version recorded when granted, reason: lead ruling N9}
   spec/fault-type/fault-sum: {title: 'A prelude Fault sum; try catches faults, not fail', reason: try needs a result type}
   spec/field-faults/any: {title: Any fault some field raises; the fields of one record or constructor value are not ordered, reason: which fault a value reports is no more fixed than which binding faults}
   spec/fix/bounded/element-flow: {title: Only where its result can become an element of a relation of the stratum, reason: a value only compared never enters the fixpoint}
@@ -663,6 +670,7 @@ accept:
   spec/fn-results/allowed: {title: 'Yes; function types never appear in a relation, field, set element, type argument, query result or registered-query parameter; all normalised away before planning', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/fpi/clean-to-dirty: {title: 'On each clean-to-dirty transition, skipped when page writes are atomic', reason: 'fuzzy checkpoints start redo before the checkpoint, so per-checkpoint images can miss a torn page'}
   spec/grant-carry/carry: {title: Rename and nest carry; split grants each new constructor the kept fields; merge requires equal source grants; remove drops, reason: schema changes must not silently revoke or widen access}
+  spec/grant-identity/target-text: {title: 'A grant''s target text is its identity; grant and revoke accept that text, and a revoke matches it exactly', reason: 'lead ruling G1 and G4: the target text is the identity, so a carried grant can always be revoked'}
   spec/grant-kinds/split: {title: 'Relation, constructor-set and call fn grants are migration operators; roles, capabilities and bundle call grants are ad hoc statements; each refused in the other place', reason: access to data shapes travels with the schema and its hash; who may deploy and operate is deployment state}
   spec/group/binder-type/binder-only: {title: 'Group K T is only the type of a group binder; passed on, a group is its nonempty Set T', reason: 'a function then receives an ordinary set, and no aggregate ranges over a caller''s group'}
   spec/header-24/slot: {title: In the slot; the version header stays 24 bytes, reason: keeps the ruled 24-byte header with 64-bit tids}
@@ -678,6 +686,7 @@ accept:
   spec/ids/view-type/anonymous-only: {title: 'store f creates a one-constructor type, after the view''s relation variable, only when the view''s element type is anonymous; a view of a declared type is a relation of that type', reason: store f creates a wrapper type only when the view's element type is anonymous; a view of a nominal type is a relation of that type}
   spec/index/kinds/declared-capabilities: {title: The index forms a schema declares and what each lets a query do; not the structure behind them, reason: promising ordered trees would rule out hash indexes and tie the spec to one structure}
   spec/inline-types/named-only: {title: Every sum or record used as a field type is a declared type, reason: nominal typing holds without exception and evolution has a name to act on}
+  spec/inprocess-admission/same: {title: Every in-process call and ad hoc text passes the admission a server call does, reason: 'lead ruling G18: the spec stands; the synchronous path is a code gap'}
   spec/join/no-expected/least: {title: The least type T such that every arm checks against T; none is an error, reason: 'if c then None else Some { value: 1 } types without an annotation'}
   spec/key-field/declared: {title: The type declares the key fields; a self-key field is typed Key r and binds the type to r, reason: an added field cannot belong to a type that serves several relation variables}
   spec/key-preserving/params-and-groups: {title: Also the binder of a generator over a Set T parameter or over a group's rows, reason: 'such a binder ranges over distinct elements, so its select merges nothing'}
@@ -701,6 +710,8 @@ accept:
   spec/nesting-limit/balanced: {title: '64 levels; and, or and union chains count by balanced tree height', reason: 'and, or and union are associative, so a balanced tree is the same query; generated filters stay well under the limit'}
   spec/newtype-syntax/call: {title: Email("a@b") and type Email = new Text where p, reason: juxtaposition had no production and is ambiguous with nullary constructors}
   spec/only/none: {title: No surface only; a row of the snapshot is reached by a path through its key or by match on the key, reason: 'no example needs it yet, and adding it later changes no program'}
+  spec/operator-grantor/schema-owner: {title: The schema owner, reason: 'lead ruling G7: an operator grant is given by the schema owner'}
+  spec/operator-revoke/schema-owner: {title: 'As the schema owner, the grantor of every operator grant', reason: lead ruling R1}
   spec/option-ref-delete/clear: {title: on delete clear sets an Option (Key) field to None, reason: the common case needed a hand-written update in every deleting statement}
   spec/option-revoke/replace: {title: 'Revoke, then grant without the option, in one migration; 3.5 says so', reason: the recheck already sees the net effect of a migration; a new form adds an operator and inverse for one statement saved}
   spec/order-keys/list: {title: 'A list of keys with directions: by (a desc, b)', reason: 'anonymous records stay unordered, and field order does not affect type equality'}
@@ -722,6 +733,10 @@ accept:
   spec/regex-classes/unicode: {title: 'Unicode: \d, \w, \s and \b follow the recorded Unicode version', reason: 'the classes are Unicode, following the database''s recorded Unicode version, since matches works over Unicode scalar values'}
   spec/regex-flags/re2: {title: 'RE2''s i, m, s and U, anywhere in the pattern; x and R refused; . excludes a line feed unless s', reason: RE2 patterns keep working; x and R are not RE2}
   spec/rejected-source/unqualified: {title: The relation's unqualified name, reason: a rejects relation sits beside the load it serves}
+  spec/restore-owner/file: {title: 'The file''s owner role; the dump''s owner row maps to it, and a dump naming the owner differently is refused', reason: 'lead ruling G19: a restore keeps the file schema-owner role'}
+  spec/revoke-grantor/per-grantor: {title: 'Rows are keyed by grantee, privilege, target and grantor; a revoke deletes the issuer''s rows, the schema owner''s every grantor''s, and refuses to orphan rows a deleted option supported', reason: 'lead ruling G7: a revoke never silently removes another grantor or orphans supported rows'}
+  spec/revoke-normal/row-form: {title: 'Resolve the revoke against the schema and print it in row form, then compare exactly', reason: lead ruling R2}
+  spec/revoke-widening/keep: {title: A revoke without a field list matches every frozen field set; a retag revoke without except matches whatever pairs are excepted, reason: 'lead ruling: both widenings confirmed'}
   spec/row-too-large/refuse-at-write: {title: 'Refused at the statement with RowTooLarge naming the relation, constructor, size and limit; a migration declaring a constructor whose fixed part can never fit is refused', reason: 'a row too large fails the one statement that writes it with a reason the caller can act on, and the migration refuses a constructor no row of could ever be stored'}
   spec/schema-fn-calls/import: {title: import fn NAME gives it a bundle ordinal, reason: calls stay ordinal-addressed and checked at registration}
   spec/schema-principal/root-first: {title: 'In the root namespace, resolvable from every module and bundle, declared only in the first migration, with log ids; prelude ids 37-40 belong to the default', reason: maintainer rulings on the third spec review; reasons in each option body}
@@ -729,6 +744,7 @@ accept:
   spec/script-format/indented: {title: 'Directives in the first column, bodies indented two spaces, rows after ---- up to a blank line, comment or directive; sets in printed order unless rowsort', reason: 'the layout the conformance.md example already uses, with the ends of bodies and rows and the meaning of query without rowsort stated'}
   spec/scripts-pinning/never: {title: 'Never; a script changes data, so translation across it is the identity', reason: blocking would stop every data-fix migration for a lease}
   spec/settings-change/command: {title: 'set setting X = v, needing configure', reason: 'settings are effects, not data a registered query writes'}
+  spec/signature-equality/ids: {title: Each named type by type id with its constructor and field ids; anonymous types structurally over the same, reason: 'lead ruling G8: any difference in type, constructor or field ids leaves a bundle uncovered'}
   spec/snapshot-edges/serialization: {title: 'A conflict, wait or key violation against such a row is a serialization failure; no re-evaluation on successors', reason: re-evaluation mixes post-snapshot rows into a snapshot statement}
   spec/span-names/covers: {title: covers for spans; contains for text only, reason: avoids overloading outside conversions}
   spec/staged-failure/discard: {title: The pending migration is discarded and the log is unchanged, reason: a version commits only when its staged jobs complete}
@@ -737,6 +753,7 @@ accept:
   spec/supersede/command: {title: '`supersede bundle B by B2`, run by B''s owner or the schema owner, B2 live in the same family', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/supersession-commit/before-migrations: {title: 'Durably and on its own, before the shipped migrations; undone only by re-registering; registrations stay atomic', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/take-negative/fault: {title: 'Faults with NegativeCount, as top does', reason: one rule for the counts of take and top}
+  spec/target-order/ids: {title: 'Id order, as fields', reason: lead ruling N4}
   spec/temp-relations/generated-key/none: {title: 'No: no type names a temp relation, so its key is plain fields or its whole row', reason: no type names a temp relation}
   spec/temp-relations/names/declared: {title: 'No name a module the text reads declares: relation, function, type or constructor', reason: 'a temp relation may not take any name a module the text reads declares: relation, function, type or constructor'}
   spec/temp-relations/redeclare/refused: {title: 'Refused, as any repeated declaration is', reason: as any repeated declaration is}
