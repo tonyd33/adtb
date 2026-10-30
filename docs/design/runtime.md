@@ -442,14 +442,19 @@ Histories come from two places:
 
 The simulated scheduler interleaves threads at yield points but runs on
 the host's memory ordering, so weak-memory reorderings are tested
-separately. Loom explores every interleaving of small latch tests (the
-page state word, optimistic lock coupling) under the C11 model; Miri
-runs the simulated engine and reports data races and undefined
-behaviour ([sys.md §4](sys.md#4-notes-for-the-implementation)).
+separately. Loom explores the interleavings of small models of the page
+state word under the C11 model: `adtb-sys`'s unit tests built with
+`--cfg adtb_loom`, which `loom` in the dev shell lints and runs. Each
+model is two threads on one page: latches against latches, optimistic
+reads and upgrades against writers, and the replacement clock against
+both. Plain reads of page bytes under a latch are checked through a
+cell beside each word that records them. Miri runs the unit tests of
+`adtb-sys` and reports data races and undefined behaviour
+([sys.md §4](sys.md#4-notes-for-the-implementation)).
 
 ```text
-#[cfg(loom)] #[test]
-fn olc_reader_sees_consistent_or_restarts() {
+#[cfg(all(test, adtb_loom))] #[test]
+fn an_optimistic_read_sees_a_version_change_or_its_versions_page() {
   loom::model(|| { /* a writer thread and a reader thread on one page */ });
 }
 ```

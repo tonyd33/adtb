@@ -1,18 +1,18 @@
-#[cfg(all(test, loom))]
+#[cfg(all(test, adtb_loom))]
 mod loom_tests;
-#[cfg(not(loom))]
+#[cfg(not(all(test, adtb_loom)))]
 mod region;
-#[cfg(loom)]
+#[cfg(all(test, adtb_loom))]
 mod region_loom;
 
 use std::cell::RefCell;
 use std::fmt;
-#[cfg(not(loom))]
+#[cfg(not(all(test, adtb_loom)))]
 use std::ops::Deref;
 
-#[cfg(not(loom))]
+#[cfg(not(all(test, adtb_loom)))]
 use region::Region;
-#[cfg(loom)]
+#[cfg(all(test, adtb_loom))]
 use region_loom::Region;
 
 use crate::runtime::Threads;
@@ -243,7 +243,7 @@ impl PageMemory {
     /// Returns the bytes of page `pid`.
     ///
     /// Preconditions: the caller holds a latch on the page, so no other thread writes it.
-    #[cfg(not(loom))]
+    #[cfg(not(all(test, adtb_loom)))]
     fn bytes(&self, pid: u64) -> &[u8] {
         let words = self.words(pid);
         // SAFETY: the words are page memory valid while `self` is; under the caller's latch
@@ -429,6 +429,10 @@ impl Exclusive<'_> {
                 }
             };
             words[w].store(u64::from_le_bytes(value), Ordering::Relaxed);
+            #[cfg(all(test, adtb_loom))]
+            self.mem
+                .data
+                .written(self.pid as usize * (self.mem.page_size / 8) + w);
             at += n;
         }
         self.resident = true;
@@ -462,7 +466,7 @@ impl<'a> Exclusive<'a> {
     }
 }
 
-#[cfg(not(loom))]
+#[cfg(not(all(test, adtb_loom)))]
 impl Deref for Exclusive<'_> {
     type Target = [u8];
 
@@ -500,7 +504,7 @@ impl Shared<'_> {
     }
 }
 
-#[cfg(not(loom))]
+#[cfg(not(all(test, adtb_loom)))]
 impl Deref for Shared<'_> {
     type Target = [u8];
 
@@ -597,7 +601,7 @@ impl<'a> Optimistic<'a> {
     }
 }
 
-#[cfg(all(test, not(loom)))]
+#[cfg(all(test, not(adtb_loom)))]
 mod tests {
     use super::{PageMemory, PageState};
     use crate::runtime::{ThreadId, Threads};
@@ -618,6 +622,30 @@ mod tests {
             panic!("a lone thread waited on a latch");
         }
         fn join(&self, _: ThreadId) {}
+    }
+
+    /// A thread interface whose waits yield the host thread.
+    struct Spin;
+
+    impl Threads for Spin {
+        fn spawn<F: FnOnce() + Send + 'static>(&self, _: &str, _: F) -> ThreadId {
+            unreachable!()
+        }
+        fn current(&self) -> ThreadId {
+            unreachable!()
+        }
+        fn park(&self) {
+            unreachable!()
+        }
+        fn unpark(&self, _: ThreadId) {
+            unreachable!()
+        }
+        fn yield_now(&self) {
+            std::thread::yield_now();
+        }
+        fn join(&self, _: ThreadId) {
+            unreachable!()
+        }
     }
 
     fn memory() -> PageMemory {
@@ -654,6 +682,41 @@ mod tests {
         let m = memory();
         drop(m.lock_exclusive(2, &Alone));
         assert_eq!((PageState::Evicted, 1), m.state(2));
+    }
+
+    #[test]
+    fn writers_shared_latches_and_optimistic_reads_share_a_page_across_threads() {
+        let m = memory();
+        m.lock_exclusive(1, &Alone).write(0, &[0; 64]);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                for fill in 1..=3 {
+                    m.lock_exclusive(1, &Spin).write(0, &[fill; 64]);
+                }
+            });
+            s.spawn(|| {
+                for _ in 0..3 {
+                    let g = m.lock_shared(1, &Spin).unwrap();
+                    assert!(
+                        g[..64].iter().all(|&b| b == g[0]),
+                        "a shared latch saw a torn page"
+                    );
+                }
+            });
+            s.spawn(|| {
+                for _ in 0..3 {
+                    if let Some(r) = m.optimistic(1) {
+                        let mut out = [9; 64];
+                        r.read(0, &mut out);
+                        assert!(
+                            !r.validate() || out.iter().all(|&b| b == out[0]),
+                            "a validated read saw a torn page"
+                        );
+                    }
+                }
+            });
+        });
+        assert_eq!([3; 64], m.lock_shared(1, &Alone).unwrap()[..64]);
     }
 
     #[test]

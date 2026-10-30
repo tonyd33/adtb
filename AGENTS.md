@@ -91,9 +91,9 @@ root (devenv also puts each on PATH as `NAME`):
 - `codemap [CRATE [MODULE]]`, `codemap --tests [CRATE]`: modules, pub
   items with line numbers, test binaries with their test counts.
 - `house-check`: the added lines of `jj diff` that break a comment rule.
-- `loom [ARGS]`: the Loom models of the page state word, adtb-sys's
-  unit tests built with `--cfg loom` into `target/loom`; ARGS go to
-  nextest.
+- `loom [ARGS]`: clippy over adtb-sys under `--cfg adtb_loom`, then the
+  Loom models of the page state word, its unit tests built with that
+  cfg into `target/loom`; ARGS go to nextest.
 - `miri [ARGS]`: adtb-sys's unit tests under Miri, ARGS to the test
   binary. The dev shell's `miri` puts a nightly toolchain first on
   PATH; the stable one stays the default. `check` runs both, about

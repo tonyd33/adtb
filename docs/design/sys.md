@@ -138,15 +138,18 @@ Rulings: buffer/cache/vmcache
 
 Non-binding.
 
-Miri runs the whole engine over the simulated storage of
-[runtime.md §5](runtime.md#5-simulated-storage), which is plain Rust,
-through the tests of `adtb-sim`, so the pager, latches and page layouts
-are checked for undefined behaviour and data races. The real I/O
-backends, which Miri cannot execute, are tested natively under
-AddressSanitizer and ThreadSanitizer.
+Miri runs the unit tests of `adtb-sys`: page memory and its latches,
+aligned buffers, and the host runtime's thread bookkeeping. Under Miri
+page memory is heap memory in place of the anonymous mapping. The two
+tests that install a seccomp filter to deny `io_uring_setup` are
+ignored, since Miri runs neither. Nothing yet runs the engine over the
+simulated storage of [runtime.md §5](runtime.md#5-simulated-storage)
+under Miri, and nothing runs the real I/O backends under
+AddressSanitizer or ThreadSanitizer.
 
 ```sh
-$ cargo miri test -p adtb-sim
+$ miri            # in the dev shell, on its nightly toolchain
+$ miri pages::    # only the tests matching a filter
 ```
 
 Rulings: project/arch/unsafe/miri-io/sim-storage, project/arch/unsafe/miri-io/sys-tests
