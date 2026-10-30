@@ -119,6 +119,12 @@ or `[U]` with its source. Format and rules in `work/kb/README.md`.
 Before any web search or fetch, search `work/kb/`; after fetching,
 append what was learned. Research agents get the same instruction.
 
+## Public repository
+
+This repository is public. Keep the maintainer's machine details out of tracked files and commit
+messages: disks, partitions, other installs, hardware and home paths. Put them in `work/briefs/`
+or `work/HANDOFF.md`, which are local.
+
 ## Comments and reviews
 
 - Default to no comments. Keep comments for non-obvious invariants.
