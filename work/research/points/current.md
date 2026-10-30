@@ -749,6 +749,7 @@ accept:
   spec/span-names/covers: {title: covers for spans; contains for text only, reason: avoids overloading outside conversions}
   spec/staged-failure/discard: {title: The pending migration is discarded and the log is unchanged, reason: a version commits only when its staged jobs complete}
   spec/stale-bundles/refuse: {title: Refuse binding an expired bundle with untranslatable queries and registering one pinned before an enabled constructor it reads, reason: otherwise one stale bundle wedges every later migration or reads rows it cannot type}
+  spec/store-non-set/refuse: {title: store is refused, reason: 'A stored view is a relation, and a relation holds a set of rows; no log can hold such a store.'}
   spec/stragglers/hide: {title: 'A bundle may declare hide new constructors: rows of unknown constructors are invisible to it, and following a reference to one faults NoSuchRow', reason: 'one old phone calling forever would hold back a release, and retiring breaks every old client'}
   spec/supersede/command: {title: '`supersede bundle B by B2`, run by B''s owner or the schema owner, B2 live in the same family', reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/supersession-commit/before-migrations: {title: 'Durably and on its own, before the shipped migrations; undone only by re-registering; registrations stay atomic', reason: maintainer rulings on the third spec review; reasons in each option body}
