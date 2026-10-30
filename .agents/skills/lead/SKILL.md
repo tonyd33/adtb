@@ -99,7 +99,7 @@ Passing tests do not justify unnecessary machinery.
    back. Run `jj diff -r 'main@origin..main'` and take out credentials,
    personal data and machine details. Move them to `work/briefs/`, or
    leave them out.
-7. 6. Push `main` to GitHub: `jj git push --remote origin --bookmark main`.
+7. Push `main` to GitHub: `jj git push --remote origin --bookmark main`.
    `origin` is git@github.com:tonyd33/adtb.git; `tangled` is the old
    remote and is no longer pushed.
 
