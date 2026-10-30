@@ -295,7 +295,10 @@ A `read` or `update` grant may list fields after the constructor set.
 Without a list it covers every field the constructors have when the
 grant is applied; a field added later is covered only by a new grant.
 A grant naming the relation variable alone, without a field list, also
-covers every field of each constructor it gains. A listed field is either a
+covers every field of each constructor it gains. A grant on a named set
+covers a constructor that joins the set: without a field list, every
+field the constructor has when it joins; with one, the listed fields
+the constructor has. A listed field is either a
 header field of the sum, named once for the whole set, or a field
 every constructor of the set declares. To list fields that only some
 constructors have, grant each constructor separately. `insert`,
@@ -363,8 +366,36 @@ Structural operators carry grants to the constructors they produce
 | Rename | Every grant follows the renamed constructor, field or set |
 | Split | Each new constructor receives the old constructor's grants on the fields its routing carries whole, under their new names; a field the routing computes is not covered |
 | Merge | The merged constructor receives a grant only where every source constructor was granted the same fields under it; otherwise the migration is refused unless grant operators in the same migration state the merged constructor's grants |
-| Nest, unnest | Grants are carried to the fields as moved |
+| Nest, unnest | Grants are carried to the fields as moved; a nest is refused as a merge is, and also when a grant covers some but not all of a source's fields |
+| Move a field to the header with a fill | A grant on the moved field covers the header field only when, on every other constructor the grant covers, the fill carries whole a field the grant covers; otherwise no grant covers the header field |
 | Remove | Grants on the removed constructor or field are dropped |
+
+A merge or nest compares its sources' grants across every grant of the
+role: sources covered by separate grants, or told apart by the pairs a
+`retag` grant excepts (below), are granted unalike, and the migration
+is refused unless grant operators in the same migration restate that
+privilege on the product.
+
+A merge's discriminator, and the nesting field of a nest of several
+sources, is covered by a `read` grant that covers every source, and by
+an `update` grant only when the role also holds `retag` between every
+ordered pair of the sources.
+
+A role reading a product of a split or unnest learns from the
+product's constructor which arm of the routing each row took, whether
+or not it was granted the fields the routing reads.
+
+A `retag` grant whose two sides both cover a split's or unnest's
+source keeps the pairs between two products of that source only when
+the role also holds `update` on every field of the source that the
+routing reads: each field a pattern constrains, every field of the
+source and of the header when an arm has a guard, and the nesting
+field of an unnest. Otherwise the grant keeps its constructor sets as
+written and excepts each ordered pair of two products. Excepted pairs
+follow their constructors through every later operator, a replaced
+constructor becoming every product it reaches; a constructor added
+later is covered as the constructor sets cover it. A `revoke` of the
+`retag` as written removes it, whatever pairs it excepts.
 
 Applying a migration rechecks every live bundle's owner against the
 grants as they stand after it, and the migration is refused if a
