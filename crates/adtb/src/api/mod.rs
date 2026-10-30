@@ -5,6 +5,8 @@ mod error;
 #[cfg(target_os = "linux")]
 mod file;
 mod host;
+#[cfg(all(target_os = "linux", debug_assertions, not(test)))]
+mod instances;
 mod load;
 mod pinned;
 mod reads;
