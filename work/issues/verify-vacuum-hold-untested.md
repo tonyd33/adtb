@@ -9,3 +9,5 @@ summary: "removing the vacuum hold in check_indexes passes every test, including
 # Verify vacuum hold untested
 
 ## Report
+
+`check_indexes` in `write/verify.rs` holds off vacuum during its run. Removing the hold passes every test. Acceptance: a test that fails with the hold removed, or the hold is gone with the reason it is unneeded in the report.

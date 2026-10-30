@@ -9,3 +9,5 @@ summary: "a read of the past through a damaged history index fails Quarantined t
 # Quarantine history index read
 
 ## Report
+
+Catalog 11.2 says a quarantined index never fails a read. A read of the past through a damaged history key index reaches `fetch_past` in `exec/store.rs` and fails. Acceptance: such a read runs, without that index, and returns the same rows.

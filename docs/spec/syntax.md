@@ -1592,7 +1592,7 @@ command = "explain" [ "analyze" ] ( query_ref "(" [ call_args ] ")" | expr | wri
         | "terminate" "session" prefix_e
         | "vacuum" QLOWER
         | "verify" [ QLOWER ]
-        | "reindex" QLOWER [ "index" index_fields "in" ctor_scope ] [ "online" | "offline" ]
+        | "reindex" QLOWER [ "index" index_fields [ "in" ctor_scope ] ] [ "online" | "offline" ]
         | "compact"
         | "finalize" "upgrade"
         | "retire" "bundle" BUNDLE_NAME

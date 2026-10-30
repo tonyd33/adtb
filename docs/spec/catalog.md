@@ -1813,7 +1813,7 @@ transaction, a function or a constraint.
 | `terminate session s` | §8.4 | `cancel` |
 | `vacuum r` | §11.5 | `maintain` |
 | `verify`, `verify r` | §11.1 | `maintain` |
-| `reindex r`, `reindex r index (f) in S` | §11.4 | `maintain` |
+| `reindex r`, `reindex r index (f) [in S]` | §11.4 | `maintain` |
 | `compact` | §11.3 | `maintain` |
 | `finalize upgrade` | §12.2 | `maintain` |
 | `set setting S = v` | §10.2 | `configure` |
@@ -2173,10 +2173,12 @@ compaction ([replication.md](replication.md#11-physical-replicas)).
 
 ### 11.4 Reindex
 
-`reindex r` rebuilds every index of relation variable `r`; `reindex r
-index (user) in (Google | Apple)` rebuilds the one index with that
-declaration clause. A union index is rebuilt whole, over every
-constructor of its set.
+`reindex r` rebuilds every index of relation variable `r`, its key index
+and uniques included; `reindex r index (user) in (Google | Apple)`
+rebuilds the one index with that declaration clause. `in S` may be left
+out when one index of `r` has those fields; with several it is
+`Invalid`. A union index is rebuilt whole, over every constructor of its
+set.
 
 - `online`, the default: the new index is built while writes
   continue, catches up with the writes made meanwhile, and replaces

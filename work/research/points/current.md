@@ -437,6 +437,7 @@ accept:
   ops/query-stats/by-name: {title: Registered queries by bundle and name; ad hoc queries by a fingerprint of their checked form, reason: registered queries already have identity; ad hoc ones are fingerprinted by checked form}
   ops/quota/budget: {title: A bundle has a share of query memory and CPU time, reason: bundles declare a priority class and a share of memory and CPU}
   ops/quota/priority: {title: A bundle declares its priority class for admission, reason: bundles declare a priority class and a share of memory and CPU}
+  ops/reindex/clause/in-disambiguates: {title: '`in S` is optional and only disambiguates; `reindex r` rebuilds every index including the key index', reason: an unscoped index must be nameable and a quarantined key index needs a way back; no new syntax}
   ops/reindex/offline: {title: Rebuild with writes to the sum blocked, reason: online from sorted runs per heap; offline when writes may stop}
   ops/reindex/online: {title: 'Build a new index from sorted runs of each heap while writes continue, then swap', reason: online from sorted runs per heap; offline when writes may stop}
   ops/stats-history/windowed: {title: Counters aggregated in time windows and kept in the file for a retention period, reason: windows kept in the file for a retention period}
