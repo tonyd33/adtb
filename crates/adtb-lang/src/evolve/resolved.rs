@@ -199,13 +199,17 @@ pub enum Resolved {
     DropComputed {
         computed: u64,
     },
+    /// The first privilege of the statement; a `Privilege` clause holds each later one.
     Grant {
-        privileges: String,
+        privilege: String,
+        target: String,
         grantee: String,
         grant_option: bool,
     },
+    /// The first privilege of the statement; a `Privilege` clause holds each later one.
     Revoke {
-        privileges: String,
+        privilege: String,
+        target: String,
         grantee: String,
     },
     /// `package` is the package's contents.
@@ -262,6 +266,8 @@ pub enum Clause {
     Carry { field: u64 },
     /// A field a revert fills, with its fill.
     Fill { field: u64, fill: String },
+    /// A privilege of a grant or revoke after its first.
+    Privilege { privilege: String, target: String },
 }
 
 /// The schema object an `arm` clause's arm belongs to.
@@ -981,7 +987,7 @@ impl Resolver<'_> {
                     ctor: self.type_ctor(before, &path.ty, &path.ctor.text)?,
                 }
             }
-            kind => return self.derived(kind),
+            kind => return self.derived(kind, clauses),
         })
     }
 

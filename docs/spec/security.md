@@ -286,7 +286,9 @@ not by its text, and a grant is refused unless its signature has the
 ids of the one the live bundles share.
 
 Any grant may end in `with grant option`, which lets the grantee grant
-it on. A grantee holding a relation grant with grant option extends it
+it on. A grant with grant option that would close a cycle, its grantee
+being its grantor or a role its grantor's option descends from, is
+refused. A grantee holding a relation grant with grant option extends it
 only through the bundles it registers, whose callers then act within
 it under definer rights (§4.1). It never appends grant operators on
 that account: only a role holding `schema` appends them. `revoke`
@@ -324,8 +326,10 @@ the schema owner revokes it. A revoke is refused, naming the revoke, when it
 matches no row it may delete, and refused, naming the rows, when a
 row it deletes held a grant option that rows of another grantor rely
 on: rows whose grantor is the deleted row's grantee, of the same
-privilege, on a target the deleted row covers. In a migration, a
-refused revoke refuses the migration.
+privilege, on a target the deleted row covers, unless a remaining row
+of that grantee from another grantor holds the option and covers them.
+In a migration, a refused revoke refuses the migration, and whether a
+revoke leaves such a row is judged at the migration's end.
 
 Removing only a grant option is a revoke, then a grant of the same
 target text without the option. For an operator grant (a relation

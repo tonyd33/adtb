@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::evolve::LogGrant;
+use adtb_lang::evolve::{LogGrant, OptionEdge, closes_option_cycle, target_covers};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
@@ -69,6 +69,23 @@ impl Shape {
             .iter()
             .position(|n| n == name)
             .unwrap_or_else(|| panic!("catalog RoleGrant declares {name}"))
+    }
+
+    fn text<'r>(&self, row: &'r [Value], name: &str) -> Result<&'r str, Error> {
+        match row.get(self.at(name)) {
+            Some(Value::Text(t)) => Ok(t),
+            other => Err(Error::Corrupt(format!("a grant row's {name} is {other:?}"))),
+        }
+    }
+
+    fn target<'r>(&self, row: &'r [Value]) -> Option<&'r str> {
+        match row.get(self.at("target")) {
+            Some(Value::Sum { fields, .. }) => match fields.first() {
+                Some(Value::Text(t)) => Some(t),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Returns the `Log` row of grant `g` with row id `id`.
@@ -141,6 +158,93 @@ impl Catalog {
                 })
             })
             .collect()
+    }
+
+    /// Refuse a migration whose revoke from a role of `revoked` leaves that role without a grant
+    /// option covering rows it granted, naming those rows, or that gives a grant option closing
+    /// a cycle. Judge each against `grants`, the grants at the migration's end.
+    pub(super) fn refuse_orphans<R: Runtime>(
+        &self,
+        m: &Migrating<'_, R>,
+        into: &Catalog,
+        grants: &[LogGrant],
+        revoked: &BTreeSet<String>,
+    ) -> Result<(), Error> {
+        let shape = Shape::of(&self.schema);
+        let stored = self.stored_grants(m.pager, m.txns, m.snapshot)?;
+        let optioned = boolean(&self.schema, true);
+        let has_option = |s: &Stored| s.row.get(shape.at("grant_option")) == Some(&optioned);
+        let mut why = Vec::new();
+        for s in stored.iter().filter(|s| s.log && has_option(s)) {
+            let grantee = shape.text(&s.row, "grantee")?;
+            let kept = grants.iter().any(|g| g.grant_option && g.row == Some(s.id));
+            if kept || !revoked.contains(grantee) || grantee == OWNER_ROLE {
+                continue;
+            }
+            let privilege = shape.text(&s.row, "privilege")?;
+            let held = shape.target(&s.row);
+            for o in &stored {
+                let given = shape.target(&o.row);
+                if shape.text(&o.row, "grantor")? != grantee
+                    || shape.text(&o.row, "privilege")? != privilege
+                    || !target_covers(&self.schema, privilege, held, given)
+                {
+                    continue;
+                }
+                let logged = grants.iter().any(|g| {
+                    g.grant_option
+                        && !g.dormant
+                        && g.role == grantee
+                        && g.privilege.privilege_name() == privilege
+                        && target(&into.schema, g)
+                            .is_ok_and(|t| target_covers(&into.schema, privilege, Some(&t), given))
+                });
+                let mut deployed = false;
+                for d in stored.iter().filter(|d| !d.log && has_option(d)) {
+                    deployed |= shape.text(&d.row, "grantee")? == grantee
+                        && shape.text(&d.row, "grantor")? != grantee
+                        && shape.text(&d.row, "privilege")? == privilege
+                        && target_covers(&self.schema, privilege, shape.target(&d.row), given);
+                }
+                if !logged && !deployed {
+                    why.push(format!(
+                        "revoking `{privilege}` from `{grantee}` takes the grant option of the grant of `{privilege}` on `{}` that `{grantee}` gave to `{}`",
+                        given.unwrap_or(""),
+                        shape.text(&o.row, "grantee")?,
+                    ));
+                }
+            }
+        }
+        let mut edges = Vec::new();
+        for s in stored.iter().filter(|s| has_option(s)) {
+            edges.push(OptionEdge {
+                grantor: shape.text(&s.row, "grantor")?,
+                grantee: shape.text(&s.row, "grantee")?,
+                privilege: shape.text(&s.row, "privilege")?,
+                target: shape.target(&s.row),
+            });
+        }
+        for g in grants.iter().filter(|g| g.grant_option && !g.dormant) {
+            let had = stored.iter().any(|s| Some(s.id) == g.row && has_option(s));
+            let text = target(&into.schema, g)?;
+            let new = OptionEdge {
+                grantor: OWNER_ROLE,
+                grantee: &g.role,
+                privilege: g.privilege.privilege_name(),
+                target: Some(&text),
+            };
+            if !had && closes_option_cycle(&into.schema, &edges, new) {
+                why.push(format!(
+                    "`{}` on `{text}` with grant option to `{}` would close a cycle of grant options",
+                    new.privilege, g.role
+                ));
+            }
+        }
+        if why.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Refused(why))
+        }
     }
 
     /// Returns the name of each role `snapshot` sees, by id.

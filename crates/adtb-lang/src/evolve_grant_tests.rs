@@ -313,13 +313,16 @@ fn a_revoke_without_fields_takes_a_grant_without_fields_whatever_it_froze() {
         &grants(),
         "module auth\ngrant read identities.Google (gid) to support",
     );
-    let s = applies(
-        &s,
-        "module auth\nrevoke read identities.Google from support",
-    );
     assert_eq!(
-        vec!["support read identities (Google) listed [Google.gid]"],
-        held(&s)
+        vec![
+            "`revoke read identities.Google from support` matches no grant `support` holds"
+                .to_owned()
+        ],
+        migrate(
+            &s,
+            "module auth\nrevoke read identities.Google from support"
+        )
+        .unwrap_err(),
     );
 }
 
@@ -609,7 +612,7 @@ fn a_nest_is_refused_while_its_sources_are_granted_in_part() {
     );
     let s = applies(
         &grants(),
-        "module auth\ngrant read identities.(Google | Apple) (gid) to support",
+        "module auth\ngrant read identities.(Google | Apple) (Google.gid) to support",
     );
     refuses(
         &s,
@@ -1548,4 +1551,407 @@ fn a_grant_target_covers_only_its_relations_constructors_in_the_schema_it_is_rea
         let want: BTreeSet<u64> = want.into_iter().collect();
         assert_eq!(want, t.ctors(&schema), "after the merge: {t:?}");
     }
+}
+
+/// Returns the target text of each log grant of `src`.
+fn rows(src: &Source) -> Vec<String> {
+    let schema = src.schema().expect("the schema builds");
+    src.grants
+        .iter()
+        .map(|g| {
+            g.privilege
+                .target_text(&schema)
+                .expect("a grant names live objects")
+        })
+        .collect()
+}
+
+#[test]
+fn each_target_form_is_granted_reprinted_in_id_order_and_revoked_by_its_text() {
+    for (privilege, written, row) in [
+        ("read", "identities", None),
+        (
+            "read",
+            "identities.(Google | EmailPass) (Google.gid, user, EmailPass.email)",
+            Some("auth::identities.(EmailPass | Google) (user, EmailPass.email, Google.gid)"),
+        ),
+        ("read", "identities.OAuth", None),
+        (
+            "read",
+            "identities.Apple frozen (sub, id)",
+            Some("auth::identities.Apple frozen (id, Apple.sub)"),
+        ),
+        (
+            "update",
+            "identities.(Apple | Google) (user)",
+            Some("auth::identities.(Google | Apple) (user)"),
+        ),
+        (
+            "insert",
+            "identities.(Apple | EmailPass)",
+            Some("auth::identities.(EmailPass | Apple)"),
+        ),
+        ("delete", "identities.Apple", Some("auth::identities.Apple")),
+        (
+            "retag",
+            "identities -> identities except (Google -> Apple, Apple -> Google, Apple -> EmailPass)",
+            Some(
+                "auth::identities -> auth::identities except (Google -> Apple, Apple -> EmailPass, Apple -> Google)",
+            ),
+        ),
+    ] {
+        let s = applies(
+            &grants(),
+            &format!("module auth\ngrant {privilege} {written} to support"),
+        );
+        let got = rows(&s);
+        assert_eq!(1, got.len(), "{written}");
+        if let Some(row) = row {
+            assert_eq!(row, got[0], "{written}");
+        }
+        let schema = s.schema().unwrap();
+        assert_eq!(
+            Some(&s.grants[0].privilege),
+            Granted::read_target(&schema, privilege, &got[0]).as_ref(),
+            "{written}"
+        );
+        let regrant = applies(
+            &s,
+            &format!("module auth\ngrant {privilege} {} to support", got[0]),
+        );
+        assert_eq!(got, rows(&regrant), "{written}");
+        let gone = applies(
+            &s,
+            &format!("module auth\nrevoke {privilege} {} from support", got[0]),
+        );
+        assert_eq!(Vec::<String>::new(), rows(&gone), "{written}");
+    }
+}
+
+#[test]
+fn a_function_grant_is_revoked_by_its_text() {
+    let s = applies(
+        &grants(),
+        "module auth\ndefine fn shown (n: Text) -> Text = n\n",
+    );
+    let s = applies(&s, "module auth\ngrant call fn shown to support");
+    assert_eq!(vec!["auth::shown"], rows(&s));
+    let s = applies(&s, "module auth\nrevoke call fn auth::shown from support");
+    assert_eq!(Vec::<String>::new(), rows(&s));
+}
+
+#[test]
+fn a_revoke_resolves_to_row_form_before_it_compares() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant read identities.EmailPass (user, email) to support",
+    );
+    assert_eq!(
+        vec!["auth::identities.EmailPass (user, EmailPass.email)"],
+        rows(&s)
+    );
+    let s = applies(
+        &s,
+        "module auth\nrevoke read auth::identities.EmailPass (EmailPass.email, user) from support",
+    );
+    assert_eq!(Vec::<String>::new(), rows(&s));
+}
+
+#[test]
+fn a_field_named_alone_is_a_header_field_or_one_every_constructor_declares() {
+    assert_eq!(
+        vec![
+            "`gid` is not a field every constructor of the set declares; write it as `C.gid`"
+                .to_owned()
+        ],
+        migrate(
+            &grants(),
+            "module auth\ngrant read identities.(Google | Apple) (gid) to support"
+        )
+        .unwrap_err(),
+    );
+    assert_eq!(
+        vec!["`Apple` is not a constructor this grant covers".to_owned()],
+        migrate(
+            &grants(),
+            "module auth\ngrant read identities.Google (Apple.sub) to support"
+        )
+        .unwrap_err(),
+    );
+}
+
+#[test]
+fn a_revoke_without_a_field_list_takes_every_frozen_set_but_no_listed_one() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant read identities.Google to support\ngrant read identities.Google (user) to support",
+    );
+    let s = applies(
+        &s,
+        "module auth\nadd field Identity.Google.verified: Bool fill false",
+    );
+    let s = applies(&s, "module auth\ngrant read identities.Google to support");
+    assert_eq!(3, rows(&s).len());
+    let s = applies(
+        &s,
+        "module auth\nrevoke read identities.Google from support",
+    );
+    assert_eq!(vec!["auth::identities.Google (user)"], rows(&s));
+}
+
+#[test]
+fn a_frozen_revoke_takes_only_its_own_field_set() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant read identities.Google frozen (id) to support\ngrant read identities.Google frozen (id, user) to support",
+    );
+    let s = applies(
+        &s,
+        "module auth\nrevoke read identities.Google frozen (id) from support",
+    );
+    assert_eq!(vec!["auth::identities.Google frozen (id, user)"], rows(&s));
+}
+
+#[test]
+fn a_retag_revoke_with_except_takes_only_those_pairs() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant retag identities -> identities except (Google -> Apple) to ops",
+    );
+    assert_eq!(
+        vec![
+            "`revoke retag identities -> identities except (Apple -> Google) from ops` matches no grant `ops` holds"
+                .to_owned()
+        ],
+        migrate(
+            &s,
+            "module auth\nrevoke retag identities -> identities except (Apple -> Google) from ops"
+        )
+        .unwrap_err(),
+    );
+    let gone = applies(
+        &s,
+        "module auth\nrevoke retag identities -> identities except (Google -> Apple) from ops",
+    );
+    assert_eq!(Vec::<String>::new(), rows(&gone));
+    let widened = applies(
+        &s,
+        "module auth\nrevoke retag identities -> identities from ops",
+    );
+    assert_eq!(Vec::<String>::new(), rows(&widened));
+}
+
+#[test]
+fn an_empty_revoke_refuses_the_migration_naming_it_in_every_form() {
+    let g = "module auth\ngrant read identities.Google (user), insert identities.Google, retag identities.Google -> identities.Apple to support";
+    let s = applies(&grants(), g);
+    for revoke in [
+        "revoke read identities.Google (id) from support",
+        "revoke read identities.Google frozen (id) from support",
+        "revoke read identities.Google from support",
+        "revoke read identities.Google (user) from web",
+        "revoke insert identities.Apple from support",
+        "revoke delete identities.Google from support",
+        "revoke retag identities.Apple -> identities.Google from support",
+        "revoke retag identities.Google -> identities.Apple except (Google -> Apple) from support",
+        "revoke insert identities.Google, delete identities.Google from support",
+    ] {
+        let refused = migrate(&s, &format!("module auth\n{revoke}")).unwrap_err();
+        assert_eq!(
+            vec![format!(
+                "`{revoke}` matches no grant `{}` holds",
+                revoke.rsplit(' ').next().unwrap()
+            )],
+            refused,
+        );
+    }
+}
+
+#[test]
+fn a_dormant_grant_is_revoked_by_its_text() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant read identities.Google (user) to support",
+    );
+    let mut s = s;
+    s.grants[0].dormant = true;
+    let s = applies(
+        &s,
+        "module auth\nrevoke read identities.Google (user) from support",
+    );
+    assert_eq!(Vec::<String>::new(), rows(&s));
+}
+
+#[test]
+fn a_carried_grant_is_revoked_by_the_text_it_prints() {
+    let s = applies(
+        &oauth(),
+        "module auth\ngrant read identities.OAuth to support",
+    );
+    let s = applies(&s, SPLIT);
+    let printed = rows(&s);
+    assert_eq!(1, printed.len());
+    let s = applies(
+        &s,
+        &format!("module auth\nrevoke read {} from support", printed[0]),
+    );
+    assert_eq!(Vec::<String>::new(), rows(&s));
+}
+
+#[test]
+fn a_target_covers_its_queries_and_the_same_or_fewer_constructors_and_fields() {
+    let s = grants();
+    let schema = s.schema().unwrap();
+    let covers = |p, a, b| target_covers(&schema, p, Some(a), Some(b));
+    assert!(covers("call", "web-2.4", "web-2.4::q"));
+    assert!(!covers("call", "web-2.4", "web-2.5::q"));
+    assert!(covers(
+        "call",
+        "web::q at 1 (x: I64) -> Text",
+        "web::q at 2 (x: Text) -> Text"
+    ));
+    assert!(!covers(
+        "call",
+        "web::q at 1 () -> Text",
+        "web::r at 1 () -> Text"
+    ));
+    assert!(covers(
+        "read",
+        "auth::identities frozen (id, user, Google.gid)",
+        "auth::identities.Google (user, Google.gid)"
+    ));
+    assert!(!covers(
+        "read",
+        "auth::identities.Google (user)",
+        "auth::identities.Google (user, Google.gid)"
+    ));
+    assert!(!covers(
+        "insert",
+        "auth::identities.Google",
+        "auth::identities.(Google | Apple)"
+    ));
+    assert!(target_covers(&schema, "monitor", None, None));
+    assert!(!target_covers(&schema, "call", None, Some("web-2.4")));
+}
+
+#[test]
+fn a_family_revoke_without_a_signature_matches_whatever_signature_the_row_records() {
+    let schema = grants().schema().unwrap();
+    let matches = |text: &str, row: &str| {
+        let items = crate::parse::parse_adhoc(text, Options::default())
+            .ok()
+            .expect("the revoke parses");
+        let ast::AdhocItem::Revoke(r) = &items[0] else {
+            panic!("a revoke");
+        };
+        deployment_revoke(&schema, text, &r.privileges[0])
+            .expect("a deployment privilege")
+            .matches(&schema, "call", Some(row))
+    };
+    let row = "web::login_key at 41 (u: Key auth::users) -> Text";
+    assert!(matches("revoke call web::login_key from app", row));
+    assert!(!matches("revoke call web::other from app", row));
+    assert!(!matches("revoke call web::login from app", row));
+    assert!(matches(
+        "revoke call web::login_key at 41 (u:  Key auth::users) -> Text from app",
+        row
+    ));
+    assert!(!matches(
+        "revoke call web::login_key at 42 (u: Key auth::users) -> Text from app",
+        row
+    ));
+    assert!(matches("revoke call web-2.4 from app", "web-2.4"));
+    assert!(!matches("revoke call web-2.4 from app", "web-2.4::q"));
+    assert!(matches("revoke call web-2.4::q from app", "web-2.4::q"));
+}
+
+#[test]
+fn constructors_print_in_id_order_when_a_split_places_later_ids_first() {
+    let s = applies(
+        &oauth(),
+        "module auth\nadd constructor Identity.Later { at: Text }",
+    );
+    let s = applies(&s, SPLIT);
+    let s = applies(
+        &s,
+        "module auth\ngrant insert identities.(Google | Later) to support",
+    );
+    assert_eq!(vec!["auth::identities.(Later | Google)"], rows(&s));
+    let s = applies(
+        &s,
+        "module auth\nrevoke insert auth::identities.(Later | Google) from support",
+    );
+    assert_eq!(Vec::<String>::new(), rows(&s));
+}
+
+#[test]
+fn a_target_reads_back_with_its_excepted_pairs_sorted_and_each_side_on_its_relation() {
+    let schema = grants().schema().unwrap();
+    let read = |text| Granted::read_target(&schema, "retag", text).expect("the target reads");
+    assert_eq!(
+        read("auth::identities -> auth::identities except (Apple -> Google, Google -> Apple)"),
+        read("auth::identities -> auth::identities except (Google -> Apple, Apple -> Google)"),
+    );
+    assert!(
+        Granted::read_target(
+            &schema,
+            "retag",
+            "auth::identities -> auth::users except (Google -> User)"
+        )
+        .is_some()
+    );
+}
+
+#[test]
+fn an_update_revoke_without_a_field_list_takes_every_frozen_set() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant update identities.Google frozen (id) to support\ngrant update identities.Google frozen (id, user) to support",
+    );
+    let s = applies(
+        &s,
+        "module auth\nrevoke update identities.Google from support",
+    );
+    assert_eq!(Vec::<String>::new(), rows(&s));
+}
+
+#[test]
+fn a_retag_target_covers_a_retag_between_fewer_constructors() {
+    let schema = grants().schema().unwrap();
+    let covers = |a, b| target_covers(&schema, "retag", Some(a), Some(b));
+    let whole = "auth::identities -> auth::identities";
+    let part = "auth::identities.Google -> auth::identities.Apple";
+    assert!(covers(whole, part));
+    assert!(!covers(part, whole));
+}
+
+#[test]
+fn an_option_closes_a_cycle_when_its_grantee_reaches_its_grantor() {
+    let schema = grants().schema().unwrap();
+    let edge = |grantor, grantee, target| OptionEdge {
+        grantor,
+        grantee,
+        privilege: "call",
+        target,
+    };
+    let closes = |edges: &[OptionEdge<'_>], new| closes_option_cycle(&schema, edges, new);
+    let held = edge("a", "b", Some("web-2.4"));
+    assert!(closes(&[], edge("a", "a", None)));
+    assert!(closes(&[held], edge("b", "a", Some("web-2.4"))));
+    assert!(closes(&[held], edge("b", "a", Some("web-2.4::q"))));
+    assert!(!closes(&[held], edge("b", "a", Some("web-2.5"))));
+    assert!(!closes(&[held], edge("a", "c", Some("web-2.4"))));
+}
+
+#[test]
+fn a_retag_revoke_takes_its_except_pairs_in_any_order() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant retag identities -> identities except (Google -> Apple, Apple -> Google) to ops",
+    );
+    let s = applies(
+        &s,
+        "module auth\nrevoke retag identities -> identities except (Apple -> Google, Google -> Apple) from ops",
+    );
+    assert_eq!(Vec::<String>::new(), rows(&s));
 }

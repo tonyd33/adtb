@@ -4,7 +4,11 @@ impl Resolver<'_> {
     /// Returns the resolved form of an operator on defaults, computed fields, stored views,
     /// grants, extensions, zone rules or data; `None` when an object it names is in neither
     /// schema or it is no such operator.
-    pub(super) fn derived(&self, kind: &OperatorKind) -> Option<Resolved> {
+    pub(super) fn derived(
+        &self,
+        kind: &OperatorKind,
+        clauses: &mut Vec<Clause>,
+    ) -> Option<Resolved> {
         let text = &self.logged.text;
         let term = |span: Span| canonical_term(text, span, self.names);
         let (before, after) = (self.before, self.schema);
@@ -18,6 +22,12 @@ impl Resolver<'_> {
             } => {
                 let (rel, default, field_id) =
                     self.default_in(after, relation, ctor.as_ref(), &field.text)?;
+                clauses.extend(self.default_members(
+                    after,
+                    relation,
+                    ctor.as_ref(),
+                    &field.text,
+                )?);
                 let end = match value {
                     ast::DefaultValue::Generate(g) => g.span.end,
                     ast::DefaultValue::Expr(e) => e.span.end,
@@ -33,11 +43,19 @@ impl Resolver<'_> {
                 relation,
                 ctor,
                 field,
-            } => Resolved::DropDefault {
-                default: self
-                    .default_in(before, relation, ctor.as_ref(), &field.text)?
-                    .1,
-            },
+            } => {
+                clauses.extend(self.default_members(
+                    before,
+                    relation,
+                    ctor.as_ref(),
+                    &field.text,
+                )?);
+                Resolved::DropDefault {
+                    default: self
+                        .default_in(before, relation, ctor.as_ref(), &field.text)?
+                        .1,
+                }
+            }
             OperatorKind::Store(s) => {
                 let f = self.view_fn(after, &s.view)?;
                 Resolved::Store {
@@ -75,15 +93,23 @@ impl Resolver<'_> {
             OperatorKind::DropComputed(relation, field) => Resolved::DropComputed {
                 computed: self.computed_in(before, relation, &field.text)?.1,
             },
-            OperatorKind::Grant(g) => Resolved::Grant {
-                privileges: term(privileges(text, g.span, g.to.span)?),
-                grantee: g.to.text.clone(),
-                grant_option: g.grant_option,
-            },
-            OperatorKind::Revoke(r) => Resolved::Revoke {
-                privileges: term(privileges(text, r.span, r.from.span)?),
-                grantee: r.from.text.clone(),
-            },
+            OperatorKind::Grant(g) => {
+                let (privilege, target) = self.privileges(&g.privileges, clauses)?;
+                Resolved::Grant {
+                    privilege,
+                    target,
+                    grantee: g.to.text.clone(),
+                    grant_option: g.grant_option,
+                }
+            }
+            OperatorKind::Revoke(r) => {
+                let (privilege, target) = self.privileges(&r.privileges, clauses)?;
+                Resolved::Revoke {
+                    privilege,
+                    target,
+                    grantee: r.from.text.clone(),
+                }
+            }
             OperatorKind::Install {
                 name,
                 version,
@@ -105,6 +131,58 @@ impl Resolver<'_> {
             },
             _ => return None,
         })
+    }
+
+    /// Returns the name and target of the first of `privileges`; each later one becomes a clause.
+    fn privileges(
+        &self,
+        privileges: &[ast::Privilege],
+        clauses: &mut Vec<Clause>,
+    ) -> Option<(String, String)> {
+        let mut terms = privileges.iter().map(|p| {
+            let (name, span) = privilege_term(p)?;
+            let target = canonical_term(&self.logged.text, span, self.names);
+            Some((name.to_owned(), target))
+        });
+        let first = terms.next()??;
+        for t in terms {
+            let (privilege, target) = t?;
+            clauses.push(Clause::Privilege { privilege, target });
+        }
+        Some(first)
+    }
+
+    /// Returns a `Member` clause for each constructor whose field the default on `field` fills,
+    /// in declared order, none for a header field.
+    fn default_members(
+        &self,
+        schema: &Schema,
+        relation: &QName,
+        ctor: Option<&ast::Ident>,
+        field: &str,
+    ) -> Option<Vec<Clause>> {
+        let rel = self.relation_in(schema, relation)?;
+        let def = schema.relation(rel).elem_def;
+        let c = match ctor {
+            Some(c) => Some(schema.ty(def).ctor_index(&c.text)?),
+            None => None,
+        };
+        let at = schema
+            .relation(rel)
+            .defaults
+            .iter()
+            .position(|d| d.ctor == c && d.field == field)?;
+        schema
+            .ids
+            .defaults
+            .range((rel, at, None)..=(rel, at, Some(u32::MAX)))
+            .filter_map(|(&(_, _, filled), _)| filled)
+            .map(|c| {
+                Some(Clause::Member {
+                    ctor: *schema.ids.ctors.get(&(def, c))?,
+                })
+            })
+            .collect()
     }
 
     /// Returns the relation of the default `relation` declares for field `field` of `ctor`, the
@@ -155,16 +233,26 @@ impl Resolver<'_> {
     }
 }
 
-/// Returns the span of the privilege list of the grant or revoke at `span`, whose role is at
-/// `role`: from the token after its verb to the token before the `to` or `from` before the role.
-fn privileges(text: &str, span: Span, role: Span) -> Option<Span> {
-    let base = span.start as usize;
-    let toks = tokens(&text[span.range()]);
-    let through = toks
-        .iter()
-        .take_while(|(_, r)| base + r.end <= role.start as usize)
-        .count();
-    let first = &toks.get(1)?.1;
-    let last = &toks.get(through.checked_sub(2)?)?.1;
-    Some(Span::new(base + first.start, base + last.end))
+/// Returns the name of a privilege of a log grant or revoke and the span of its target; `None`
+/// for a privilege a log operator cannot hold.
+fn privilege_term(p: &ast::Privilege) -> Option<(&'static str, Span)> {
+    let listed = |r: &ast::RelationRef, fs: &Option<ast::GrantFieldList>| {
+        fs.as_ref().map_or(r.span, |fs| r.span.to(fs.span))
+    };
+    Some(match p {
+        ast::Privilege::Read(r, fs) => ("read", listed(r, fs)),
+        ast::Privilege::Update(r, fs) => ("update", listed(r, fs)),
+        ast::Privilege::Insert(r) => ("insert", r.span),
+        ast::Privilege::Delete(r) => ("delete", r.span),
+        ast::Privilege::Retag(a, b, except) => (
+            "retag",
+            except
+                .as_ref()
+                .map_or(a.span.to(b.span), |e| a.span.to(e.span)),
+        ),
+        ast::Privilege::CallFn(f) => ("call", f.span()),
+        ast::Privilege::Call(..) | ast::Privilege::CallAt(_) | ast::Privilege::Capability(_) => {
+            return None;
+        }
+    })
 }

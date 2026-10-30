@@ -86,6 +86,7 @@ impl Parser<'_> {
             Tok::Lower => {
                 !called
                     && !CLAUSE_WORDS.contains(&self.text_of(self.tok()))
+                    && !(self.in_signature_result && self.text_of(self.tok()) == "to")
                     && !self.at_item_start()
             }
             _ => false,

@@ -10,9 +10,14 @@ mod task;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Weak};
 
-use adtb_lang::ast::OperatorKind;
-use adtb_lang::evolve::Source;
+use adtb_lang::ast::{AdhocItem, OperatorKind, Revoke};
+use adtb_lang::evolve::{
+    OptionEdge, Source, closes_option_cycle, deployment_revoke, target_covers,
+};
 use adtb_lang::lex::{Tok, lex};
+use adtb_lang::parse::{Options, parse_adhoc};
+use adtb_lang::schema::Schema;
+use adtb_lang::span::Diag;
 
 use crate::runtime::Runtime;
 
@@ -135,21 +140,65 @@ impl<R: Runtime> RoleAuthority<R> {
         })
     }
 
-    /// Grant one capability, retaining an existing grant option.
+    /// Grant one capability as the schema owner, retaining an existing grant option.
     pub fn grant_capability(
         &self,
         name: &str,
         capability: Capability,
         grant_option: bool,
     ) -> Result<(), Error> {
+        self.give(OWNER_ROLE, name, capability, grant_option, |_, _, _, _| {
+            Ok(())
+        })
+    }
+
+    /// Grant one capability as `session`'s role, retaining a grant option it gave before.
+    ///
+    /// Fail with `Denied` unless the role holds `schema`, or the capability with grant option, and
+    /// with `Invalid` when the grant with grant option would close a cycle of grant options.
+    pub fn grant_capability_as(
+        &self,
+        session: &RoleSession<R>,
+        name: &str,
+        capability: Capability,
+        grant_option: bool,
+    ) -> Result<(), Error> {
+        self.give(
+            &session.name,
+            name,
+            capability,
+            grant_option,
+            |e, tx, t, grants| {
+                self.checked(session, t, e, tx)?;
+                require(grants, session, Capability::Schema, false)
+                    .or_else(|_| require(grants, session, capability, true))
+            },
+        )
+    }
+
+    fn give(
+        &self,
+        grantor: &str,
+        name: &str,
+        capability: Capability,
+        grant_option: bool,
+        allowed: impl Fn(&Engine<R>, &crate::write::Txn, &Tables<'_>, &[Grant]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let name = role_name(name)?;
         self.access(true, |e, tx, id, changes| {
             let t = Tables::new(&e.schema, id);
-            t.role(e, tx, &name)?;
             let grants = t.grants(e, tx)?;
+            allowed(e, tx, &t, &grants)?;
+            t.role(e, tx, &name)?;
+            if grant_option && closes_cycle(e, &grants, grantor, &name, capability) {
+                return Err(Error::invalid(format!(
+                    "`{}` with grant option from `{grantor}` to `{name}` would close a cycle of grant options",
+                    capability.name()
+                )));
+            }
             let existing = grants
                 .iter()
-                .find(|g| g.capability(capability, &name) && g.grantor == OWNER_ROLE);
+                .find(|g| g.capability(capability, &name) && g.grantor == grantor);
             let (id, effective_option) = match existing {
                 Some(g) => {
                     changes.delete(t.grants, g.value.clone());
@@ -159,7 +208,7 @@ impl<R: Runtime> RoleAuthority<R> {
             };
             changes.insert(
                 t.grants,
-                t.grant_value(id, &name, capability, effective_option),
+                t.grant_value(id, &name, capability, grantor, effective_option),
             );
             let option = if grant_option {
                 " with grant option"
@@ -175,23 +224,72 @@ impl<R: Runtime> RoleAuthority<R> {
         })
     }
 
-    /// Revoke every deployment grant of one capability from the role.
+    /// Revoke one capability as the schema owner, deleting every grantor's row.
     pub fn revoke_capability(&self, name: &str, capability: Capability) -> Result<(), Error> {
         let name = role_name(name)?;
+        self.revoke_as(
+            OWNER_ROLE,
+            &format!("revoke {} from {name}", capability.name()),
+            |_, _, _| Ok(()),
+        )
+    }
+
+    /// Run the deployment revoke statement `text` as `session`'s role.
+    ///
+    /// Delete the matching rows the role granted, or every grantor's for the schema owner. Fail
+    /// with `Invalid`, changing nothing, naming the revoke when a privilege matches no row the
+    /// role may delete, or naming the rows when a deleted row held a grant option that rows of
+    /// its grantee rely on and no option left to the grantee covers.
+    pub fn revoke(&self, session: &RoleSession<R>, text: &str) -> Result<(), Error> {
+        self.revoke_as(&session.name, text, |e, tx, t| {
+            self.checked(session, t, e, tx)
+        })
+    }
+
+    fn revoke_as(
+        &self,
+        issuer: &str,
+        text: &str,
+        allowed: impl Fn(&Engine<R>, &crate::write::Txn, &Tables<'_>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let statement = revoke_statement(text)?;
         self.access(true, |e, tx, id, changes| {
             let t = Tables::new(&e.schema, id);
-            t.role(e, tx, &name)?;
-            for grant in t.grants(e, tx)? {
-                if grant.capability(capability, &name) {
-                    changes.delete(t.grants, grant.value);
+            allowed(e, tx, &t)?;
+            let grants = t.grants(e, tx)?;
+            let mut deleted: BTreeSet<i64> = BTreeSet::new();
+            for p in &statement.privileges {
+                let revoke = deployment_revoke(&e.schema, text, p)
+                    .map_err(|ds| Error::invalid(diagnosed(&ds)))?;
+                let matching: Vec<i64> = grants
+                    .iter()
+                    .filter(|g| {
+                        g.kind == "Deployment"
+                            && g.grantee == statement.from.text
+                            && (issuer == OWNER_ROLE || g.grantor == issuer)
+                            && revoke.matches(&e.schema, &g.privilege, g.target.as_deref())
+                    })
+                    .map(|g| g.id)
+                    .collect();
+                if matching.is_empty() {
+                    return Err(Error::invalid(format!(
+                        "`{text}` matches no grant `{issuer}` may revoke"
+                    )));
                 }
+                deleted.extend(matching);
             }
-            t.audit(
-                e,
-                tx,
-                changes,
-                format!("revoke {} from {name}", capability.name()),
-            )
+            let gone = || grants.iter().filter(|g| deleted.contains(&g.id));
+            let orphans = orphans(&e.schema, &grants, &deleted);
+            if !orphans.is_empty() {
+                return Err(Error::invalid(format!(
+                    "`{text}` takes a grant option these grants rely on: {}",
+                    orphans.join(", ")
+                )));
+            }
+            for g in gone() {
+                changes.delete(t.grants, g.value.clone());
+            }
+            t.audit(e, tx, changes, text.to_owned())
         })
     }
 
@@ -256,6 +354,85 @@ fn require<R: Runtime>(
             session.name,
             capability.name()
         )))
+    }
+}
+
+/// Returns each row that a deleted row's grant option supported and that no remaining option of
+/// its grantor from another role covers, printed.
+fn orphans(schema: &Schema, grants: &[Grant], deleted: &BTreeSet<i64>) -> Vec<String> {
+    let covers = |by: &Grant, o: &Grant| {
+        by.grantee == o.grantor
+            && by.privilege == o.privilege
+            && by.grant_option
+            && target_covers(
+                schema,
+                &o.privilege,
+                by.target.as_deref(),
+                o.target.as_deref(),
+            )
+    };
+    grants
+        .iter()
+        .filter(|o| !deleted.contains(&o.id))
+        .filter(|o| {
+            let held = |g: &&Grant| covers(g, o);
+            grants
+                .iter()
+                .filter(held)
+                .any(|g| deleted.contains(&g.id) && g.grantee != OWNER_ROLE)
+                && !grants
+                    .iter()
+                    .filter(held)
+                    .any(|g| !deleted.contains(&g.id) && !g.dormant && g.grantor != g.grantee)
+        })
+        .map(|o| {
+            format!(
+                "`{}` on {:?} given by `{}` to `{}`",
+                o.privilege, o.target, o.grantor, o.grantee
+            )
+        })
+        .collect()
+}
+
+fn closes_cycle<R: Runtime>(
+    e: &Engine<R>,
+    grants: &[Grant],
+    grantor: &str,
+    grantee: &str,
+    capability: Capability,
+) -> bool {
+    let edges: Vec<OptionEdge<'_>> = grants
+        .iter()
+        .filter(|g| g.grant_option)
+        .map(|g| OptionEdge {
+            grantor: &g.grantor,
+            grantee: &g.grantee,
+            privilege: &g.privilege,
+            target: g.target.as_deref(),
+        })
+        .collect();
+    let new = OptionEdge {
+        grantor,
+        grantee,
+        privilege: capability.name(),
+        target: None,
+    };
+    closes_option_cycle(&e.schema, &edges, new)
+}
+
+fn diagnosed(diags: &[Diag]) -> String {
+    let lines: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+    lines.join("; ")
+}
+
+fn revoke_statement(text: &str) -> Result<Revoke, Error> {
+    let items = parse_adhoc(text, Options::default())
+        .ok()
+        .map_err(|ds| Error::invalid(diagnosed(&ds)))?;
+    let mut items = items.into_iter();
+    match (items.next(), items.next()) {
+        (Some(AdhocItem::Revoke(r)), None) => Ok(r),
+        _ => Err(Error::invalid(format!("`{text}` is not one revoke"))),
     }
 }
 

@@ -1720,7 +1720,7 @@ fn a_grant_and_its_revert_apply_and_log_the_grant() {
             )
         );
         assert_eq!(
-            vec![r#""read shop::customers support True""#],
+            vec![r#""read support True""#],
             query(
                 &db,
                 "from o in catalog::migration_ops where o.migration == catalog::migrations.key(2)

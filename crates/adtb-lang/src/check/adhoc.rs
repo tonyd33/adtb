@@ -248,7 +248,7 @@ impl Checker<'_> {
             Privilege::Insert(r) => schema_relation(self, r, "insert"),
             Privilege::Update(r, _) => schema_relation(self, r, "update"),
             Privilege::Delete(r) => schema_relation(self, r, "delete"),
-            Privilege::Retag(from, to) => {
+            Privilege::Retag(from, to, _) => {
                 schema_relation(self, from, "retag")?;
                 schema_relation(self, to, "retag")
             }
@@ -263,7 +263,7 @@ impl Checker<'_> {
                 )),
                 Err(e) => Err(diag(f.span(), e)),
             },
-            Privilege::Call(..) | Privilege::Capability(_) => Ok(()),
+            Privilege::Call(..) | Privilege::CallAt(_) | Privilege::Capability(_) => Ok(()),
         }
     }
 

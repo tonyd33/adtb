@@ -813,3 +813,46 @@ fn text_patterns_parse_to_nfc() {
         );
     }
 }
+
+#[test]
+fn a_grant_writes_a_target_as_a_row_prints_it() {
+    let text = "grant read auth::r.(C | D) frozen (id, C.f) to a\n\
+                revoke retag auth::r -> auth::r except (C -> D, D -> C) from a\n\
+                grant call web::q at 41 (u: Key auth::users) -> Text to a";
+    let items = parse_adhoc(text, Options::default()).ok().expect("parses");
+    let AdhocItem::Grant(g) = &items[0] else {
+        panic!("a grant");
+    };
+    let Privilege::Read(_, Some(fields)) = &g.privileges[0] else {
+        panic!("a read with fields");
+    };
+    assert!(fields.frozen);
+    assert_eq!(None, fields.fields[0].ctor);
+    assert_eq!("C", fields.fields[1].ctor.as_ref().unwrap().text);
+    let AdhocItem::Revoke(r) = &items[1] else {
+        panic!("a revoke");
+    };
+    let Privilege::Retag(_, _, Some(except)) = &r.privileges[0] else {
+        panic!("a retag with except");
+    };
+    assert_eq!(2, except.pairs.len());
+    let AdhocItem::Grant(g) = &items[2] else {
+        panic!("a grant");
+    };
+    let Privilege::CallAt(s) = &g.privileges[0] else {
+        panic!("a family with a signature");
+    };
+    assert_eq!(
+        ("web", "q", 41),
+        (s.family.as_str(), s.query.text.as_str(), s.at)
+    );
+    assert_eq!(1, s.params.len());
+}
+
+#[test]
+fn only_a_call_signature_ends_a_type_at_to() {
+    let text = "module m\nadd type T = { a: Option to, b: Option to::Color }\n";
+    parse_migration(text, Options::default())
+        .ok()
+        .expect("`to` is an ordinary word in a type");
+}

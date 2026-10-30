@@ -27,10 +27,10 @@ pub(super) struct Grant {
     pub(super) grantee: String,
     pub(super) grantor: String,
     pub(super) grant_option: bool,
-    kind: String,
-    privilege: String,
-    target: Option<String>,
-    dormant: bool,
+    pub(super) kind: String,
+    pub(super) privilege: String,
+    pub(super) target: Option<String>,
+    pub(super) dormant: bool,
     pub(super) value: Val,
 }
 
@@ -254,6 +254,7 @@ impl<'s> Tables<'s> {
         id: i64,
         role: &str,
         capability: Capability,
+        grantor: &str,
         grant_option: bool,
     ) -> Val {
         let module = self
@@ -274,7 +275,7 @@ impl<'s> Tables<'s> {
                 ("privilege", Val::text(capability.name())),
                 ("target", Val::none()),
                 ("grantee", Val::text(role)),
-                ("grantor", Val::text(OWNER_ROLE)),
+                ("grantor", Val::text(grantor)),
                 ("grant_option", Val::bool(grant_option)),
                 ("dormant", Val::bool(false)),
             ],

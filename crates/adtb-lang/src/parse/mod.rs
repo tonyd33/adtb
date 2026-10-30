@@ -48,6 +48,8 @@ pub(crate) struct Parser<'s> {
     depth: u32,
     peak: u32,
     failed: HashSet<(usize, u32, Attempt)>,
+    /// Whether a type being parsed is the result of a call signature, which `to` ends.
+    in_signature_result: bool,
 }
 
 #[derive(Debug)]
@@ -80,6 +82,7 @@ fn run<'s, T>(
         depth: 0,
         peak: 0,
         failed: HashSet::new(),
+        in_signature_result: false,
     };
     let value = f(&mut p).ok();
     let value = match value {

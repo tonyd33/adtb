@@ -847,7 +847,7 @@ fn engine_fields_and_keys_take_their_fixed_ids() {
     let limit = s.prelude_type("Limit");
     let rounds = s.ty(limit).ctor_index("Rounds").unwrap();
     assert_eq!(Some(563), field(limit, Some(rounds), "rounds"));
-    assert_eq!(Some(568), s.ids.fields.values().max().copied());
+    assert_eq!(Some(570), s.ids.fields.values().max().copied());
     assert_eq!(
         Some(60),
         s.ids
@@ -970,4 +970,17 @@ relation ms : M key u",
         (keyed[0].field.as_str(), keyed[0].index)
     );
     assert!(s.reference_fields(us).is_empty());
+}
+
+#[test]
+fn a_privilege_clause_takes_its_fixed_ids() {
+    let s = build_src(&[]).unwrap();
+    let catalog = s.module_named("catalog").unwrap();
+    let clause = s.module(catalog).types["ClauseBody"];
+    let privilege = s.ty(clause).ctor_index("Privilege").unwrap();
+    assert_eq!(Some(&472), s.ids.ctors.get(&(clause, privilege)));
+    for (name, id) in [("privilege", 569), ("target", 570)] {
+        let key = (clause, Some(privilege), name.to_string());
+        assert_eq!(Some(&id), s.ids.fields.get(&key));
+    }
 }

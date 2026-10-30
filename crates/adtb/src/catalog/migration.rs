@@ -301,7 +301,17 @@ impl Catalog {
                 _ => None,
             })
             .collect();
-        let dormant = self.write_grants(m, &built, &mut grants, &named, grantees);
+        let revoked: BTreeSet<String> = file
+            .operators
+            .iter()
+            .filter_map(|op| match &op.kind {
+                OperatorKind::Revoke(r) => Some(r.from.text.clone()),
+                _ => None,
+            })
+            .collect();
+        let orphans = self.refuse_orphans(m, &built, &grants, &revoked);
+        let dormant =
+            orphans.and_then(|()| self.write_grants(m, &built, &mut grants, &named, grantees));
         built.source.grants = grants;
         let dormant = dormant?;
         pending::rewrite(m, &self.roots, &self.readers.pending, &readers.pending)?;

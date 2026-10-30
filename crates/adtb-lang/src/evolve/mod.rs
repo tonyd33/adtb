@@ -39,7 +39,10 @@ mod tests;
 
 pub use crate::schema::Stage;
 use grant::HeldGrant;
-pub use grant::{GrantFields, GrantSel, GrantTarget, Granted, LogGrant};
+pub use grant::{
+    DeploymentRevoke, GrantFields, GrantSel, GrantTarget, Granted, LogGrant, OptionEdge, Stated,
+    closes_option_cycle, deployment_revoke, target_covers,
+};
 pub use keep::Kept;
 pub use resolved::{
     ArmTarget, Clause, Code, Function, IndexKind, Place, Resolved, ResolvedOp, Target,

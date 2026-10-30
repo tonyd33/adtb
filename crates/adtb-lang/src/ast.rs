@@ -797,14 +797,49 @@ pub enum CallTarget {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Privilege {
-    Read(RelationRef, Option<Vec<Ident>>),
+    Read(RelationRef, Option<GrantFieldList>),
     Insert(RelationRef),
-    Update(RelationRef, Option<Vec<Ident>>),
+    Update(RelationRef, Option<GrantFieldList>),
     Delete(RelationRef),
-    Retag(RelationRef, RelationRef),
+    Retag(RelationRef, RelationRef, Option<Excepted>),
     Call(CallTarget, Option<Ident>),
+    /// A family call target written with its signature: `call web::q at 41 (x: I64) -> Text`.
+    CallAt(CallSignature),
     CallFn(QName),
     Capability(Ident),
+}
+
+/// The field list of a `read` or `update` privilege.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrantFieldList {
+    pub frozen: bool,
+    pub fields: Vec<GrantField>,
+    pub span: Span,
+}
+
+/// A listed field: `f`, or `C.f` with `ctor` naming `C`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrantField {
+    pub ctor: Option<Ident>,
+    pub name: Ident,
+}
+
+/// The `except` pairs of a `retag` privilege, in written order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Excepted {
+    pub pairs: Vec<(Ident, Ident)>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallSignature {
+    pub family: String,
+    pub query: Ident,
+    pub at: u64,
+    pub params: Vec<Param>,
+    pub result: Type,
+    /// From the family name through the result type.
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

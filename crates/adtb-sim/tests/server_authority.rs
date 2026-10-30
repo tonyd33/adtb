@@ -544,3 +544,305 @@ fn asserted_principals_use_the_shared_value_domain_validation() {
         }
     });
 }
+
+fn refused<T: std::fmt::Debug>(got: Result<T, Error>) -> String {
+    match got {
+        Err(Error::Rejected {
+            reason: RejectReason::Invalid { detail },
+        }) => detail,
+        other => panic!("not Invalid: {other:?}"),
+    }
+}
+
+/// Returns `(grantee, grantor, grant_option)` of each grant row of `monitor`.
+fn monitors(db: &Database<SimRuntime>) -> Vec<String> {
+    sorted(result(
+        db,
+        "from g in catalog::grants where g.privilege == \"monitor\"
+         select g.grantee ++ \" \" ++ g.grantor",
+    ))
+}
+
+#[test]
+fn a_revoke_deletes_the_issuers_rows_and_the_schema_owners_deletes_every_grantors() {
+    once(201, |rt| {
+        let db = opened(&rt);
+        let authority = db.role_authority();
+        for role in ["ann", "bob", "cal"] {
+            authority.create_role(role).expect("create");
+        }
+        authority
+            .grant_capability("ann", Capability::Schema, false)
+            .expect("ann");
+        let ann = authority.session("ann").expect("ann session");
+        let cal = authority.session("cal").expect("cal session");
+        let owner = authority.session("owner").expect("owner session");
+        authority
+            .grant_capability("bob", Capability::Monitor, false)
+            .expect("owner gives");
+        authority
+            .grant_capability_as(&ann, "bob", Capability::Monitor, false)
+            .expect("ann gives");
+        assert_eq!(
+            vec![r#""bob ann""#, r#""bob owner""#],
+            monitors(&db),
+            "one row per grantor"
+        );
+        let detail = refused(authority.revoke(&cal, "revoke monitor from bob"));
+        assert!(detail.contains("revoke monitor from bob"), "{detail}");
+        authority
+            .revoke(&ann, "revoke monitor from bob")
+            .expect("ann revokes its own");
+        assert_eq!(vec![r#""bob owner""#], monitors(&db));
+        let detail = refused(authority.revoke(&ann, "revoke monitor from bob"));
+        assert!(detail.contains("revoke monitor from bob"), "{detail}");
+        authority
+            .grant_capability_as(&ann, "bob", Capability::Monitor, false)
+            .expect("ann gives again");
+        authority
+            .revoke(&owner, "revoke monitor from bob")
+            .expect("the owner revokes all");
+        assert_eq!(Vec::<String>::new(), monitors(&db));
+    });
+}
+
+#[test]
+fn only_a_schema_holder_or_an_option_holder_gives_a_capability() {
+    once(202, |rt| {
+        let db = opened(&rt);
+        let authority = db.role_authority();
+        authority.create_role("ann").expect("create");
+        authority.create_role("bob").expect("create");
+        let ann = authority.session("ann").expect("session");
+        denied(authority.grant_capability_as(&ann, "bob", Capability::Monitor, false));
+        authority
+            .grant_capability("ann", Capability::Monitor, false)
+            .expect("no option");
+        denied(authority.grant_capability_as(&ann, "bob", Capability::Monitor, false));
+        authority
+            .grant_capability("ann", Capability::Monitor, true)
+            .expect("option");
+        authority
+            .grant_capability_as(&ann, "bob", Capability::Monitor, false)
+            .expect("ann grants on");
+    });
+}
+
+#[test]
+fn a_revoke_that_orphans_rows_granted_under_the_option_is_refused_naming_them() {
+    once(203, |rt| {
+        let db = opened(&rt);
+        let authority = db.role_authority();
+        authority.create_role("ann").expect("create");
+        authority.create_role("bob").expect("create");
+        authority
+            .grant_capability("ann", Capability::Monitor, true)
+            .expect("option");
+        let ann = authority.session("ann").expect("session");
+        let owner = authority.session("owner").expect("session");
+        authority
+            .grant_capability_as(&ann, "bob", Capability::Monitor, false)
+            .expect("ann grants on");
+        let before = monitors(&db);
+        let detail = refused(authority.revoke(&owner, "revoke monitor from ann"));
+        assert!(detail.contains("`monitor`"), "{detail}");
+        assert!(detail.contains("`ann` to `bob`"), "{detail}");
+        assert_eq!(before, monitors(&db), "a refused revoke changes nothing");
+        refused(authority.revoke_capability("ann", Capability::Monitor));
+        authority
+            .revoke(&ann, "revoke monitor from bob")
+            .expect("ann revokes bob");
+        authority
+            .revoke(&owner, "revoke monitor from ann")
+            .expect("nothing relies on the option now");
+        assert_eq!(Vec::<String>::new(), monitors(&db));
+    });
+}
+
+#[test]
+fn a_revoke_of_several_privileges_changes_nothing_when_one_matches_no_row() {
+    once(204, |rt| {
+        let db = opened(&rt);
+        let authority = db.role_authority();
+        authority.create_role("bob").expect("create");
+        authority
+            .grant_capability("bob", Capability::Monitor, false)
+            .expect("grant");
+        let owner = authority.session("owner").expect("session");
+        let detail = refused(authority.revoke(&owner, "revoke monitor, cancel from bob"));
+        assert!(
+            detail.contains("revoke monitor, cancel from bob"),
+            "{detail}"
+        );
+        assert_eq!(vec![r#""bob owner""#], monitors(&db));
+    });
+}
+
+#[test]
+fn an_operator_grant_named_as_a_deployment_revoke_is_refused() {
+    once(205, |rt| {
+        let db = opened(&rt);
+        let authority = db.role_authority();
+        let owner = authority.session("owner").expect("session");
+        let detail = refused(authority.revoke(&owner, "revoke call fn f from bob"));
+        assert!(detail.contains("schema operator"), "{detail}");
+        let detail = refused(authority.revoke(&owner, "select 1"));
+        assert!(
+            detail.contains("expected") || detail.contains("not one revoke"),
+            "{detail}"
+        );
+    });
+}
+
+#[test]
+fn a_revoke_leaving_another_option_keeps_the_rows_it_covers() {
+    once(206, |rt| {
+        let db = opened(&rt);
+        let authority = db.role_authority();
+        for role in ["a", "b", "x"] {
+            authority.create_role(role).expect("create");
+        }
+        authority
+            .grant_capability("x", Capability::Schema, false)
+            .expect("x");
+        let x = authority.session("x").expect("x session");
+        let a = authority.session("a").expect("a session");
+        authority
+            .grant_capability("a", Capability::Monitor, true)
+            .expect("owner gives");
+        authority
+            .grant_capability_as(&x, "a", Capability::Monitor, true)
+            .expect("x gives");
+        authority
+            .grant_capability_as(&a, "b", Capability::Monitor, false)
+            .expect("a gives");
+        authority
+            .revoke(&x, "revoke monitor from a")
+            .expect("the owner's option remains");
+        assert_eq!(vec![r#""a owner""#, r#""b a""#], monitors(&db));
+    });
+}
+
+#[test]
+fn a_row_held_without_an_option_supports_nothing_a_revoke_could_orphan() {
+    once(207, |rt| {
+        let db = opened(&rt);
+        let authority = db.role_authority();
+        authority.create_role("a").expect("create");
+        authority.create_role("b").expect("create");
+        authority
+            .grant_capability("a", Capability::Schema, false)
+            .expect("schema");
+        authority
+            .grant_capability("a", Capability::Monitor, false)
+            .expect("monitor");
+        let a = authority.session("a").expect("session");
+        let owner = authority.session("owner").expect("session");
+        authority
+            .grant_capability_as(&a, "b", Capability::Monitor, false)
+            .expect("a gives under schema");
+        authority
+            .revoke(&owner, "revoke monitor from a")
+            .expect("a held no option");
+        assert_eq!(vec![r#""b a""#], monitors(&db));
+    });
+}
+
+#[test]
+fn a_grant_closing_a_cycle_of_options_is_refused_and_leaves_revoke_cleanly() {
+    once(208, |rt| {
+        let db = opened(&rt);
+        let authority = db.role_authority();
+        for role in ["ann", "bob", "x"] {
+            authority.create_role(role).expect("create");
+        }
+        let (ann, bob) = (
+            authority.session("ann").expect("ann"),
+            authority.session("bob").expect("bob"),
+        );
+        let owner = authority.session("owner").expect("owner");
+        authority
+            .grant_capability("ann", Capability::Monitor, true)
+            .expect("owner gives ann");
+        authority
+            .grant_capability_as(&ann, "bob", Capability::Monitor, true)
+            .expect("ann gives bob");
+        let detail = refused(authority.grant_capability_as(&bob, "ann", Capability::Monitor, true));
+        assert!(detail.contains("cycle"), "{detail}");
+        refused(authority.grant_capability_as(&ann, "ann", Capability::Monitor, true));
+        authority
+            .grant_capability_as(&bob, "ann", Capability::Monitor, false)
+            .expect("no option closes no cycle");
+        authority
+            .revoke(&bob, "revoke monitor from ann")
+            .expect("bob revokes its row");
+        authority
+            .revoke(&ann, "revoke monitor from bob")
+            .expect("the leaf goes");
+        authority
+            .revoke(&owner, "revoke monitor from ann")
+            .expect("then its grantor");
+        assert_eq!(Vec::<String>::new(), monitors(&db));
+
+        authority
+            .grant_capability("x", Capability::Schema, false)
+            .expect("x");
+        let x = authority.session("x").expect("x session");
+        authority
+            .grant_capability_as(&x, "ann", Capability::Monitor, true)
+            .expect("x gives a");
+        authority
+            .grant_capability_as(&ann, "bob", Capability::Monitor, true)
+            .expect("a gives b");
+        refused(authority.grant_capability_as(&bob, "ann", Capability::Monitor, true));
+        refused(authority.revoke(&x, "revoke monitor from ann"));
+        authority
+            .revoke(&ann, "revoke monitor from bob")
+            .expect("the leaf goes");
+        authority
+            .revoke(&x, "revoke monitor from ann")
+            .expect("then its grantor");
+        assert_eq!(Vec::<String>::new(), monitors(&db));
+    });
+}
+
+#[test]
+fn a_stale_session_neither_grants_nor_revokes() {
+    once(209, |rt| {
+        let db = opened(&rt);
+        let authority = db.role_authority();
+        authority.create_role("web").expect("create");
+        authority.create_role("bob").expect("create");
+        let stale = authority.session("web").expect("session");
+        authority.drop_role("web").expect("drop");
+        authority.create_role("web").expect("recreate");
+        authority
+            .grant_capability("web", Capability::Schema, false)
+            .expect("schema");
+        let web = authority.session("web").expect("session");
+        denied(authority.grant_capability_as(&stale, "bob", Capability::Monitor, false));
+        authority
+            .grant_capability_as(&web, "bob", Capability::Monitor, false)
+            .expect("the new role gives");
+        denied(authority.revoke(&stale, "revoke monitor from bob"));
+        assert_eq!(vec![r#""bob web""#], monitors(&db));
+    });
+}
+
+#[test]
+fn a_session_of_another_database_neither_grants_nor_revokes() {
+    once(210, |rt| {
+        let db = opened(&rt);
+        let other = Database::open_in(rt, "other.adt", &Log::default(), &options(2))
+            .expect("the other database opens");
+        let authority = db.role_authority();
+        let foreign = other.role_authority().session("owner").expect("session");
+        authority.create_role("bob").expect("create");
+        denied(authority.grant_capability_as(&foreign, "bob", Capability::Monitor, false));
+        authority
+            .grant_capability("bob", Capability::Monitor, false)
+            .expect("grant");
+        denied(authority.revoke(&foreign, "revoke monitor from bob"));
+        assert_eq!(vec![r#""bob owner""#], monitors(&db));
+    });
+}

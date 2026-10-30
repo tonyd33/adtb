@@ -282,7 +282,10 @@ fn an_overlapping_drop_forces_a_canonical_grant_writer_to_recheck_the_role() {
                     resume_rx.recv_timeout(timeout).unwrap();
                 }
                 let id = t.next_id(e, tx, t.grants)?;
-                changes.insert(t.grants, t.grant_value(id, "web", Capability::Assert, true));
+                changes.insert(
+                    t.grants,
+                    t.grant_value(id, "web", Capability::Assert, "owner", true),
+                );
                 t.audit(
                     e,
                     tx,
@@ -477,4 +480,144 @@ fn a_damaged_page_met_writing_a_registrations_facts_is_a_storage_failure() {
         ),
         "{got:?}"
     );
+}
+
+fn invalid(result: Result<(), Error>) -> String {
+    match result {
+        Err(Error::Rejected {
+            reason: RejectReason::Invalid { detail },
+        }) => detail,
+        other => panic!("not Invalid: {other:?}"),
+    }
+}
+
+#[test]
+fn a_call_grant_is_revoked_by_its_target_text_and_a_family_by_any_signature() {
+    let db = opened(&Log::default());
+    let authority = db.role_authority();
+    authority.create_role("web").unwrap();
+    let owner = authority.session("owner").unwrap();
+    for (row, wrong, revoke) in [
+        (
+            "web-2.4",
+            "revoke call web-2.5 from web",
+            "revoke call web-2.4 from web",
+        ),
+        (
+            "web-2.4::q",
+            "revoke call web-2.4 from web",
+            "revoke call web-2.4::q from web",
+        ),
+        (
+            "web::q at 41 (u: Key auth::users) -> Text",
+            "revoke call web::q at 42 (u: Key auth::users) -> Text from web",
+            "revoke call web::q from web",
+        ),
+        (
+            "web::q at 41 (u: Key auth::users) -> Text",
+            "revoke call web::r from web",
+            "revoke call web::q at 41 (u: Key auth::users) -> Text from web",
+        ),
+    ] {
+        authority
+            .grant_capability("web", Capability::Assert, false)
+            .unwrap();
+        replace_grant(&authority, "privilege", Val::text("call"));
+        replace_grant(&authority, "target", Val::some(Val::text(row)));
+        assert!(
+            invalid(authority.revoke(&owner, wrong)).contains(wrong),
+            "{wrong}"
+        );
+        authority.revoke(&owner, revoke).unwrap();
+        assert_eq!(
+            Vec::<String>::new(),
+            rows(&db, "from g in catalog::grants select g"),
+            "{revoke}"
+        );
+    }
+}
+
+#[test]
+fn a_grant_on_a_system_relation_is_revoked_by_its_text_and_widens_as_a_log_grant_does() {
+    let db = opened(&Log::default());
+    let authority = db.role_authority();
+    authority.create_role("web").unwrap();
+    let owner = authority.session("owner").unwrap();
+    for (row, wrong, revoke) in [
+        (
+            "catalog::roles frozen (id, name)",
+            "revoke read catalog::roles (id, name) from web",
+            "revoke read catalog::roles from web",
+        ),
+        (
+            "catalog::roles frozen (id, name)",
+            "revoke read catalog::roles frozen (id) from web",
+            "revoke read catalog::roles frozen (name, id) from web",
+        ),
+        (
+            "catalog::roles (id, name)",
+            "revoke read catalog::roles from web",
+            "revoke read catalog::roles (name, id) from web",
+        ),
+    ] {
+        authority
+            .grant_capability("web", Capability::Assert, false)
+            .unwrap();
+        replace_grant(&authority, "privilege", Val::text("read"));
+        replace_grant(&authority, "target", Val::some(Val::text(row)));
+        invalid(authority.revoke(&owner, wrong));
+        authority.revoke(&owner, revoke).unwrap();
+    }
+}
+
+#[test]
+fn a_self_given_option_is_no_remaining_option_and_is_deleted_with_its_revoke() {
+    let db = opened(&Log::default());
+    let authority = db.role_authority();
+    authority.create_role("web").unwrap();
+    authority.create_role("bob").unwrap();
+    authority.create_role("ann").unwrap();
+    let owner = authority.session("owner").unwrap();
+    authority
+        .grant_capability("web", Capability::Monitor, true)
+        .unwrap();
+    replace_grant(&authority, "grantor", Val::text("web"));
+    authority.revoke(&owner, "revoke monitor from web").unwrap();
+    authority
+        .grant_capability("web", Capability::Monitor, true)
+        .unwrap();
+    replace_grant(&authority, "grantor", Val::text("web"));
+    authority
+        .grant_capability("ann", Capability::Schema, false)
+        .unwrap();
+    let ann = authority.session("ann").unwrap();
+    let web = authority.session("web").unwrap();
+    authority
+        .grant_capability_as(&ann, "web", Capability::Monitor, true)
+        .unwrap();
+    authority
+        .grant_capability_as(&web, "bob", Capability::Monitor, false)
+        .unwrap();
+    let detail = invalid(authority.revoke(&ann, "revoke monitor from web"));
+    assert!(detail.contains("to `bob`"), "{detail}");
+}
+
+#[test]
+fn a_revoke_from_the_schema_owner_orphans_nothing() {
+    let db = opened(&Log::default());
+    let authority = db.role_authority();
+    authority.create_role("web").unwrap();
+    authority.create_role("bob").unwrap();
+    let owner = authority.session("owner").unwrap();
+    authority
+        .grant_capability("web", Capability::Monitor, true)
+        .unwrap();
+    replace_grant(&authority, "grantor", Val::text("web"));
+    replace_grant(&authority, "grantee", Val::text("owner"));
+    authority
+        .grant_capability("bob", Capability::Monitor, false)
+        .unwrap();
+    authority
+        .revoke(&owner, "revoke monitor from owner")
+        .unwrap();
 }

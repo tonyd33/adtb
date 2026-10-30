@@ -376,24 +376,27 @@ fn hashed(data: &str) -> Value {
     Value::Bytes(blake3::hash(data.as_bytes()).as_bytes().to_vec())
 }
 
-/// Returns the `Grant` or `Revoke` value of the operator sum `ty`: the privilege list, with no
-/// separate target.
+/// Returns the `Grant` or `Revoke` value of the operator sum `ty`: the first privilege of the
+/// statement and its target.
 fn granted(schema: &Schema, ty: &Ty, op: &Resolved) -> Value {
-    let (ctor, privileges, grantee, grant_option) = match op {
+    let (ctor, privilege, target, grantee, grant_option) = match op {
         Resolved::Grant {
-            privileges,
+            privilege,
+            target,
             grantee,
             grant_option,
-        } => ("Grant", privileges, grantee, Some(*grant_option)),
+        } => ("Grant", privilege, target, grantee, Some(*grant_option)),
         Resolved::Revoke {
-            privileges,
+            privilege,
+            target,
             grantee,
-        } => ("Revoke", privileges, grantee, None),
+        } => ("Revoke", privilege, target, grantee, None),
         _ => panic!("{op:?} is a grant or a revoke"),
     };
+    let target = Some(target.clone());
     let mut fields = vec![
-        ("privilege", text(privileges)),
-        ("target", optional(schema, ty, ctor, "target", &None)),
+        ("privilege", text(privilege)),
+        ("target", optional(schema, ty, ctor, "target", &target)),
         ("grantee", text(grantee)),
     ];
     if let Some(g) = grant_option {
@@ -538,6 +541,21 @@ fn clause(schema: &Schema, ty: &Ty, c: &Clause) -> Value {
             "Fill",
             &[("field", id(*field)), ("fill", text(fill))],
         ),
+        Clause::Privilege { privilege, target } => {
+            let target = Some(target.clone());
+            sum(
+                schema,
+                ty,
+                "Privilege",
+                &[
+                    ("privilege", text(privilege)),
+                    (
+                        "target",
+                        optional(schema, ty, "Privilege", "target", &target),
+                    ),
+                ],
+            )
+        }
     }
 }
 

@@ -285,6 +285,38 @@ fn a_default_over_several_constructors_names_its_first_default() {
         },
         ops(&src, 2)[2].op
     );
+    assert_eq!(
+        vec![
+            Clause::Member {
+                ctor: id(&src, "ctor auth::Identity.Google"),
+            },
+            Clause::Member {
+                ctor: id(&src, "ctor auth::Identity.Apple"),
+            },
+        ],
+        ops(&src, 2)[2].clauses
+    );
+    let src = migrated(&src, "module auth\ndrop default identities.verified\n");
+    assert_eq!(
+        vec![
+            Clause::Member {
+                ctor: id(&src, "ctor auth::Identity.Google"),
+            },
+            Clause::Member {
+                ctor: id(&src, "ctor auth::Identity.Apple"),
+            },
+        ],
+        ops(&src, 3)[0].clauses
+    );
+}
+
+#[test]
+fn a_header_default_names_no_constructor() {
+    let text = "module auth\nadd default identities.user = users.key(1)\n";
+    assert_eq!(
+        Vec::<Clause>::new(),
+        ops(&migrated(&first(), text), 2)[0].clauses
+    );
 }
 
 #[test]
@@ -357,15 +389,24 @@ fn grants_and_revokes_hold_their_privileges_in_canonical_form() {
     let got = ops(&src, 2);
     assert_eq!(
         Resolved::Grant {
-            privileges: "read auth::identities . ( auth::EmailPass | auth::Google ) ( user ) , call fn auth::display_name".into(),
+            privilege: "read".into(),
+            target: "auth::identities . ( auth::EmailPass | auth::Google ) ( user )".into(),
             grantee: "support".into(),
             grant_option: true,
         },
         got[0].op
     );
     assert_eq!(
+        vec![Clause::Privilege {
+            privilege: "call".into(),
+            target: "auth::display_name".into(),
+        }],
+        got[0].clauses
+    );
+    assert_eq!(
         Resolved::Revoke {
-            privileges: "call fn auth::display_name".into(),
+            privilege: "call".into(),
+            target: "auth::display_name".into(),
             grantee: "support".into(),
         },
         got[1].op

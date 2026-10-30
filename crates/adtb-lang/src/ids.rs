@@ -992,6 +992,7 @@ pub const TYPES: &[FixedType] = &[
             ("Replacement", 444),
             ("Carry", 445),
             ("Fill", 446),
+            ("Privilege", 472),
         ],
     ),
     ("catalog", "OpClause", 447, &[("OpClause", 448)]),

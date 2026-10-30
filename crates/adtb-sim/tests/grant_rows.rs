@@ -16,7 +16,7 @@ use adtb::{Capability, Database, Error, Log, OpenError, RejectReason};
 use adtb_lang::evolve::Granted;
 use adtb_sim::{Config, Sim, SimRuntime};
 
-use api::{options, query, run};
+use api::{once, options, query, run};
 use harness::{finished, options as pager_options};
 
 const SHOP: &str = r"module shop
@@ -966,4 +966,356 @@ fn an_activating_regrant_gives_the_row_its_own_grant_option() {
             );
         });
     }
+}
+
+/// Returns a catalog at `SHOP` with roles `web` and `bob`.
+fn shop(rt: &SimRuntime) -> (Catalog, Pager<SimRuntime>, Transactions<SimRuntime>) {
+    let pager = Pager::create(rt.clone(), &pager_options(FRAMES)).expect("create");
+    let (mut catalog, txns) = Catalog::create(rt.clone(), &pager).expect("the catalog");
+    catalog.migrate(&pager, &txns, SHOP).expect("the schema");
+    grants::create_role(&catalog, &pager, &txns, 1, "web");
+    grants::create_role(&catalog, &pager, &txns, 2, "bob");
+    (catalog, pager, txns)
+}
+
+#[test]
+fn an_operator_revoke_that_orphans_rows_granted_under_the_option_is_refused() {
+    finished(&mut Sim::new(301, Config::default()), |rt| {
+        let (mut catalog, pager, txns) = shop(&rt);
+        let give = "module shop\ngrant read payments.Card (customer) to web with grant option\n";
+        catalog.migrate(&pager, &txns, give).expect("the grant");
+        grants::deployment_row(
+            &catalog,
+            &pager,
+            &txns,
+            100,
+            grants::DeploymentRow {
+                grantee: "bob",
+                grantor: "web",
+                privilege: "read",
+                target: Some("shop::payments.Card (customer)"),
+                grant_option: false,
+            },
+        );
+        let revoke = "module shop\nrevoke read payments.Card (customer) from web\n";
+        match catalog.migrate(&pager, &txns, revoke) {
+            Err(CatalogError::Refused(why)) => {
+                assert_eq!(1, why.len(), "{why:?}");
+                assert!(why[0].contains("shop::payments.Card (customer)"), "{why:?}");
+                assert!(why[0].contains("to `bob`"), "{why:?}");
+            }
+            other => panic!("the revoke applies: {other:?}"),
+        }
+        let keep = "module shop\nrevoke read payments.Card (customer) from web\ngrant read payments.Card (customer) to web with grant option\n";
+        catalog
+            .migrate(&pager, &txns, keep)
+            .expect("the option stays");
+        let drop = "module shop\nrevoke read payments.Card (customer) from web\ngrant read payments.Card (customer) to web\n";
+        assert!(matches!(
+            catalog.migrate(&pager, &txns, drop),
+            Err(CatalogError::Refused(_))
+        ));
+    });
+}
+
+#[test]
+fn an_operator_revoke_keeps_rows_a_narrower_option_does_not_cover() {
+    finished(&mut Sim::new(302, Config::default()), |rt| {
+        let (mut catalog, pager, txns) = shop(&rt);
+        let give = "module shop\ngrant read payments.Card (customer) to web with grant option\n";
+        catalog.migrate(&pager, &txns, give).expect("the grant");
+        grants::deployment_row(
+            &catalog,
+            &pager,
+            &txns,
+            100,
+            grants::DeploymentRow {
+                grantee: "bob",
+                grantor: "web",
+                privilege: "read",
+                target: Some("shop::payments.Invoice (customer)"),
+                grant_option: false,
+            },
+        );
+        let revoke = "module shop\nrevoke read payments.Card (customer) from web\n";
+        catalog
+            .migrate(&pager, &txns, revoke)
+            .expect("nothing relies on it");
+    });
+}
+
+/// What the log leaves in the catalog: `migration_ops`, `migration_clauses`, each migration's
+/// version and hash, and `grants`, printed and sorted.
+type LogRows = [Vec<String>; 4];
+
+fn log_rows(
+    catalog: &Catalog,
+    pager: &Pager<SimRuntime>,
+    txns: &Transactions<SimRuntime>,
+) -> LogRows {
+    let schema = catalog.schema();
+    let read = |name: &str, keep: usize| {
+        let mut rows: Vec<String> = catalog
+            .committed_rows(pager, txns, values::relation(schema, name))
+            .expect("the rows read")
+            .into_iter()
+            .map(|(_, row)| format!("{:?}", &row[..keep.min(row.len())]))
+            .collect();
+        rows.sort_unstable();
+        rows
+    };
+    [
+        read("migration_ops", usize::MAX),
+        read("migration_clauses", usize::MAX),
+        read("migrations", 2),
+        read("grants", usize::MAX),
+    ]
+}
+
+/// A way to apply a migration's text to a catalog.
+type Apply = fn(
+    &mut Catalog,
+    &Pager<SimRuntime>,
+    &Transactions<SimRuntime>,
+    &str,
+) -> Result<(), CatalogError>;
+
+/// Returns what `log` leaves after each migration, applied with `apply` over a fresh file holding
+/// roles `web`, whose log is applied after them.
+fn each_version(seed: u64, log: &[&str], apply: Apply) -> Vec<LogRows> {
+    let mut out = Vec::new();
+    finished(&mut Sim::new(seed, Config::default()), |rt| {
+        let pager = Pager::create(rt.clone(), &pager_options(FRAMES)).expect("create");
+        let (mut catalog, txns) = Catalog::create(rt, &pager).expect("the catalog");
+        grants::create_role(&catalog, &pager, &txns, 1, "web");
+        for text in log {
+            apply(&mut catalog, &pager, &txns, text).expect("the migration applies");
+            out.push(log_rows(&catalog, &pager, &txns));
+        }
+    });
+    out
+}
+
+/// Assert that replaying `log` to rows gives what first applying it gives, at every version.
+fn replays_alike(seed: u64, log: &[&str]) -> Vec<LogRows> {
+    let first = each_version(seed, log, Catalog::migrate);
+    let replayed = each_version(seed + 1, log, |c, p, t, text| {
+        c.replay(p, t, text).map(|_| ())
+    });
+    assert_eq!(first, replayed);
+    first
+}
+
+#[test]
+fn an_operator_revoke_acts_as_the_owner_and_replay_needs_no_revoking_role() {
+    let log = [
+        SHOP,
+        "module shop\ngrant read payments.(Invoice | Card) (customer) to web\n",
+        "module shop\nrevoke read shop::payments.(Card | Invoice) (customer) from web\n",
+    ];
+    let versions = replays_alike(306, &log);
+    let granted = &versions[1][3];
+    assert_eq!(1, granted.len(), "{granted:?}");
+    assert!(granted[0].contains(r#"Text("owner")"#), "{granted:?}");
+    assert!(
+        granted[0].contains("(Card | Invoice) (customer)"),
+        "{granted:?}"
+    );
+    assert_eq!(Vec::<String>::new(), versions[2][3]);
+}
+
+#[test]
+fn a_deployment_revoke_leaves_a_log_row_of_the_same_text() {
+    once(307, |rt| {
+        let define =
+            "module shop\ndefine fn shown (n: Text) -> Text = n\ngrant call fn shown to web\n";
+        let db = opened(&rt, &[SHOP]);
+        let authority = db.role_authority();
+        authority.create_role("web").expect("role");
+        drop(authority);
+        drop(db);
+        let db = opened(&rt, &[SHOP, define]);
+        let authority = db.role_authority();
+        let owner = authority.session("owner").expect("session");
+        let before = by_id(&db);
+        id_of(&before, &["kind: Log", "shop::shown"]);
+        assert!(
+            authority
+                .revoke(&owner, "revoke call shop::shown from web")
+                .is_err()
+        );
+        assert_eq!(before, by_id(&db));
+    });
+}
+
+fn relied_on_by_bob(
+    catalog: &Catalog,
+    pager: &Pager<SimRuntime>,
+    txns: &Transactions<SimRuntime>,
+    target: &str,
+) {
+    grants::deployment_row(
+        catalog,
+        pager,
+        txns,
+        100,
+        grants::DeploymentRow {
+            grantee: "bob",
+            grantor: "web",
+            privilege: "read",
+            target: Some(target),
+            grant_option: false,
+        },
+    );
+}
+
+#[test]
+fn an_operator_revoke_leaving_a_wider_option_keeps_the_rows_it_covers() {
+    finished(&mut Sim::new(308, Config::default()), |rt| {
+        let (mut catalog, pager, txns) = shop(&rt);
+        let give = "module shop\ngrant read payments (customer) to web with grant option\ngrant read payments.Card (customer) to web with grant option\n";
+        catalog.migrate(&pager, &txns, give).expect("the grants");
+        relied_on_by_bob(&catalog, &pager, &txns, "shop::payments.Card (customer)");
+        let revoke = "module shop\nrevoke read payments.Card (customer) from web\n";
+        catalog
+            .migrate(&pager, &txns, revoke)
+            .expect("the wider option remains");
+    });
+}
+
+#[test]
+fn an_operator_revoke_is_judged_at_the_end_of_its_migration() {
+    finished(&mut Sim::new(309, Config::default()), |rt| {
+        let (mut catalog, pager, txns) = shop(&rt);
+        let give = "module shop\ngrant read payments.Card (customer) to web with grant option\n";
+        catalog.migrate(&pager, &txns, give).expect("the grant");
+        relied_on_by_bob(&catalog, &pager, &txns, "shop::payments.Card (customer)");
+        let widen = "module shop\nrevoke read payments.Card (customer) from web\ngrant read payments (customer) to web with grant option\n";
+        catalog
+            .migrate(&pager, &txns, widen)
+            .expect("the migration ends with a wider option");
+    });
+}
+
+#[test]
+fn an_operator_revoke_of_a_row_without_an_option_orphans_nothing() {
+    finished(&mut Sim::new(310, Config::default()), |rt| {
+        let (mut catalog, pager, txns) = shop(&rt);
+        let give = "module shop\ngrant read payments.Card (customer) to web\n";
+        catalog.migrate(&pager, &txns, give).expect("the grant");
+        relied_on_by_bob(&catalog, &pager, &txns, "shop::payments.Card (customer)");
+        let revoke = "module shop\nrevoke read payments.Card (customer) from web\n";
+        catalog
+            .migrate(&pager, &txns, revoke)
+            .expect("web held no option");
+    });
+}
+
+#[test]
+fn an_operator_grant_closing_a_cycle_of_options_is_refused() {
+    finished(&mut Sim::new(311, Config::default()), |rt| {
+        let (mut catalog, pager, txns) = shop(&rt);
+        grants::deployment_row(
+            &catalog,
+            &pager,
+            &txns,
+            100,
+            grants::DeploymentRow {
+                grantee: "owner",
+                grantor: "web",
+                privilege: "read",
+                target: Some("shop::payments.Card (customer)"),
+                grant_option: true,
+            },
+        );
+        let give = "module shop\ngrant read payments.Card (customer) to web with grant option\n";
+        match catalog.migrate(&pager, &txns, give) {
+            Err(CatalogError::Refused(why)) => {
+                assert!(why[0].contains("cycle"), "{why:?}");
+            }
+            other => panic!("the grant applies: {other:?}"),
+        }
+        let plain = "module shop\ngrant read payments.Card (customer) to web\n";
+        catalog.migrate(&pager, &txns, plain).expect("no option");
+        let own = "module shop\ngrant read customers to owner with grant option\n";
+        assert!(matches!(
+            catalog.migrate(&pager, &txns, own),
+            Err(CatalogError::Refused(_))
+        ));
+    });
+}
+
+#[test]
+fn a_refused_empty_revoke_refuses_the_open_and_names_it() {
+    once(304, |rt| {
+        let log = [SHOP, "module shop\nrevoke read customers from web\n"];
+        let (version, detail) = refusal(open(&rt, &log));
+        assert_eq!(2, version);
+        assert!(
+            detail.contains("revoke read customers from web"),
+            "{detail}"
+        );
+    });
+}
+
+#[test]
+fn a_logged_privilege_list_round_trips_through_replay() {
+    let log = [
+        SHOP,
+        "module shop\ngrant read customers (name), insert payments.(Invoice | Card), retag payments.Card -> payments.Invoice to web with grant option\nrevoke read customers (name), insert payments.(Invoice | Card) from web\n",
+    ];
+    let listed = |db: &Database<SimRuntime>| {
+        let ops = query(
+            db,
+            "from o in catalog::migration_ops where o.migration == catalog::migrations.key(2)
+             select match o.op
+               | Grant g -> \"grant \" ++ g.privilege ++ \" \" ++ print(g.target)
+               | Revoke g -> \"revoke \" ++ g.privilege ++ \" \" ++ print(g.target)
+               | _ -> \"\"",
+        );
+        let clauses = query(
+            db,
+            "from c in catalog::migration_clauses where c.migration == catalog::migrations.key(2)
+             select match c.body
+               | Privilege p -> print(c.ordinal) ++ \" \" ++ print(c.clause) ++ \" \" ++ p.privilege ++ \" \" ++ print(p.target)
+               | _ -> \"\"",
+        );
+        let hash = query(
+            db,
+            "from m in catalog::migrations where m.version == catalog::migrations.key(2) select m.hash",
+        );
+        (ops, clauses, hash)
+    };
+    once(305, |rt| {
+        let db = opened(&rt, &log[..1]);
+        db.role_authority().create_role("web").expect("role");
+        drop(db);
+        let db = opened(&rt, &log);
+        let (ops, clauses, hash) = listed(&db);
+        let term = |t: &str| format!("Some {{ value: Term(\\\"{t}\\\") }}");
+        assert_eq!(
+            vec![
+                format!("\"grant read {}\"", term("shop::customers ( name )")),
+                format!("\"revoke read {}\"", term("shop::customers ( name )")),
+            ],
+            ops
+        );
+        let inserted = term("shop::payments . ( shop::Invoice | shop::Card )");
+        assert_eq!(
+            vec![
+                format!("\"1 1 insert {inserted}\""),
+                format!(
+                    "\"1 2 retag {}\"",
+                    term("shop::payments . shop::Card -> shop::payments . shop::Invoice")
+                ),
+                format!("\"2 1 insert {inserted}\""),
+            ],
+            clauses
+        );
+        drop(db);
+        let again = opened(&rt, &log);
+        assert_eq!((ops, clauses, hash), listed(&again));
+    });
+    let versions = replays_alike(312, &log);
+    assert_eq!(3, versions[1][1].len(), "{:?}", versions[1][1]);
 }

@@ -83,20 +83,21 @@ impl Granted {
             "retag" => {
                 let (rel, a) = r.target(schema)?;
                 r.expect("->")?;
-                let b = r.target(schema)?.1;
+                let (to, b) = r.target(schema)?;
                 let mut except = Vec::new();
                 if r.eat("except") {
                     r.expect("(")?;
                     loop {
                         let x = ctor_id(schema, rel, &r.word()?)?;
                         r.expect("->")?;
-                        let y = ctor_id(schema, rel, &r.word()?)?;
+                        let y = ctor_id(schema, to, &r.word()?)?;
                         except.push((x, y));
                         if !r.eat(",") {
                             break;
                         }
                     }
                     r.expect(")")?;
+                    except.sort_unstable();
                 }
                 Granted::Retag(a, b, except)
             }

@@ -1,6 +1,7 @@
 use super::{PResult, Parser};
 use crate::ast::*;
 use crate::lex::{Kw, Tok};
+use crate::span::Span;
 
 impl Parser<'_> {
     /// The current token starts a schema operator, judged by its verb and the word after it.
@@ -694,17 +695,90 @@ impl Parser<'_> {
         Ok(out)
     }
 
-    fn field_list(&mut self) -> PResult<Option<Vec<Ident>>> {
-        if !self.at(Tok::LParen) {
+    fn field_list(&mut self) -> PResult<Option<GrantFieldList>> {
+        let start = self.tok().span;
+        let frozen = self.at_word("frozen");
+        if frozen {
+            self.bump();
+        } else if !self.at(Tok::LParen) {
+            return Ok(None);
+        }
+        self.expect(Tok::LParen, "`(`")?;
+        let mut fields = vec![self.grant_field()?];
+        while self.eat(Tok::Comma) {
+            fields.push(self.grant_field()?);
+        }
+        self.expect(Tok::RParen, "`)`")?;
+        Ok(Some(GrantFieldList {
+            frozen,
+            fields,
+            span: self.span_from(start),
+        }))
+    }
+
+    fn grant_field(&mut self) -> PResult<GrantField> {
+        if self.at(Tok::Upper) {
+            let ctor = self.upper("a constructor name")?;
+            self.expect(Tok::Dot, "`.`")?;
+            let name = self.field_word()?;
+            return Ok(GrantField {
+                ctor: Some(ctor),
+                name,
+            });
+        }
+        let name = self.field_word()?;
+        Ok(GrantField { ctor: None, name })
+    }
+
+    fn excepted(&mut self) -> PResult<Option<Excepted>> {
+        if !self.at_word("except") {
+            return Ok(None);
+        }
+        let start = self.tok().span;
+        self.bump();
+        self.expect(Tok::LParen, "`(`")?;
+        let mut pairs = Vec::new();
+        loop {
+            let from = self.upper("a constructor name")?;
+            self.expect(Tok::Arrow, "`->`")?;
+            pairs.push((from, self.upper("a constructor name")?));
+            if !self.eat(Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(Tok::RParen, "`)`")?;
+        Ok(Some(Excepted {
+            pairs,
+            span: self.span_from(start),
+        }))
+    }
+
+    /// Parse what follows a family call target's query name, when it writes a signature.
+    fn call_signature(
+        &mut self,
+        family: &str,
+        start: Span,
+        query: &Ident,
+    ) -> PResult<Option<CallSignature>> {
+        if !self.at_word("at") {
             return Ok(None);
         }
         self.bump();
-        let mut fields = vec![self.field_word()?];
-        while self.eat(Tok::Comma) {
-            fields.push(self.field_word()?);
-        }
-        self.expect(Tok::RParen, "`)`")?;
-        Ok(Some(fields))
+        let at = self.int_lit()?;
+        let params = self.params()?;
+        self.expect(Tok::Arrow, "`->`")?;
+        self.in_signature_result = true;
+        let result = self.ty();
+        self.in_signature_result = false;
+        let result = result?;
+        Ok(Some(CallSignature {
+            family: family.to_string(),
+            query: query.clone(),
+            at,
+            params,
+            result,
+            span: self.span_from(start),
+        }))
     }
 
     fn privilege(&mut self) -> PResult<Privilege> {
@@ -738,19 +812,26 @@ impl Parser<'_> {
                         self.bump();
                         let from = self.relation_ref()?;
                         self.expect(Tok::Arrow, "`->`")?;
-                        Ok(Privilege::Retag(from, self.relation_ref()?))
+                        let to = self.relation_ref()?;
+                        Ok(Privilege::Retag(from, to, self.excepted()?))
                     }
                     "call" => {
                         self.bump();
                         if self.eat_kw(Kw::Fn) {
                             return Ok(Privilege::CallFn(self.qlower("a function name")?));
                         }
+                        let start = self.tok().span;
                         let target = self.call_target()?;
                         let query = if self.eat(Tok::ColonColon) {
                             Some(self.lower("a query name")?)
                         } else {
                             None
                         };
+                        if let (CallTarget::Family(family, _), Some(q)) = (&target, &query)
+                            && let Some(s) = self.call_signature(family, start, q)?
+                        {
+                            return Ok(Privilege::CallAt(s));
+                        }
                         Ok(Privilege::Call(target, query))
                     }
                     "adhoc" | "assert" | "monitor" | "cancel" | "maintain" | "configure"

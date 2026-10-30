@@ -198,6 +198,15 @@ authorize capabilities. Dropping and recreating a role does not
 revive its sessions. A grant revocation affects later checks through
 an existing session.
 
+`RoleAuthority::grant_capability_as(session, role, capability, option)`
+gives a capability as the session's role, the row's grantor. It requires
+`schema`, or the capability with grant option.
+`RoleAuthority::revoke(session, text)` runs one deployment revoke
+statement as the session's role. `revoke_capability` is the same revoke
+as the schema owner. Family and signature targets are compared with the
+row by tokens; comparing a signature by the ids its names have at its
+version belongs to the family grant provider.
+
 `RoleAuthority::register(session, registration)` registers a bundle
 file and returns its row of `catalog::bundles`. A bundle with no
 successful registration comes to run as the session's role; one

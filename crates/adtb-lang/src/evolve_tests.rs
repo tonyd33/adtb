@@ -2128,7 +2128,7 @@ fn log_grants_name_schema_objects() {
     applies(&running(), "module auth\ngrant call fn display_name to web");
     applies(
         &running(),
-        "module auth\nrevoke read identities from support",
+        "module auth\ngrant read identities to support\nrevoke read identities from support",
     );
     refuses(
         &running(),
@@ -2221,11 +2221,11 @@ fn log_grants_are_stored_in_the_source_by_catalog_id() {
 fn a_revoke_takes_the_grant_fields_in_any_order() {
     let s = applies(
         &running(),
-        "module auth\ngrant read identities (user, email) to support",
+        "module auth\ngrant read identities.EmailPass (user, email) to support",
     );
     let s = applies(
         &s,
-        "module auth\nrevoke read identities (email, user) from support",
+        "module auth\nrevoke read identities.EmailPass (email, user) from support",
     );
     assert_eq!(Vec::<LogGrant>::new(), s.grants);
 }
@@ -2263,12 +2263,6 @@ fn revert_of_a_revoke_restores_the_grants_it_removed_exactly() {
     let s = applies(&held, "module auth\nrevoke read identities\n  from support");
     let s = applies(&s, "module auth\nrevert 0002");
     assert_eq!(held.grants, s.grants);
-    let s = applies(
-        &running(),
-        "module auth\nrevoke read identities from support",
-    );
-    let s = applies(&s, "module auth\nrevert 0001");
-    assert_eq!(Vec::<LogGrant>::new(), s.grants);
 }
 
 #[test]
