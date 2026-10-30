@@ -269,7 +269,10 @@ only through the bundles it registers, whose callers then act within
 it under definer rights (§4.1). It never appends grant operators on
 that account: only a role holding `schema` appends them. `revoke`
 takes the same forms and is of the same kind as the grant it revokes.
-A grant given again without `with grant option` leaves an option
+A revoke that matches no grant its grantee holds is refused, naming
+the revoke, and so is a revoke with a field list that matches no field
+set the grantee holds; in a migration, the refusal refuses the
+migration. A grant given again without `with grant option` leaves an option
 already held in place. A migration removes only the option of a
 relation grant by revoking the grant and granting it again without
 the option, both in that migration; the grants after it are what
