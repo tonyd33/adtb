@@ -305,9 +305,9 @@ pub fn objects(
                     };
                     let vn = &s.view.name.text;
                     push(Space::Shared, Slot::View(f), format!("relation {m}::{vn}"));
-                    if !matches!(
+                    if matches!(
                         &schema.functions[f.0 as usize].result,
-                        Ty::Set(elem) if matches!(**elem, Ty::Data { .. })
+                        Ty::Set(elem) if !matches!(**elem, Ty::Data { .. })
                     ) {
                         let fields = anonymous_row(files, m, vn);
                         push(Space::Shared, Slot::ViewType(f), format!("type {m}::{vn}"));

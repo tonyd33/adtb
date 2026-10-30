@@ -1530,8 +1530,6 @@ store references
 define fn nested () -> Set (Set Text) =
   from c in customers where c.name == "ann" select (from d in customers select d.name)
 store nested
-define fn total () -> I64 = count(c for c in customers)
-store total
 "#;
 
 const PETS: &str = "module pets
@@ -1566,7 +1564,6 @@ fn assert_scalar_views_answer(db: &Database<SimRuntime>, names: &[&str], sizes: 
     assert_eq!(names.len(), query(db, "references()").len());
     let all = format!("[{}]", names.join(", "));
     assert_eq!(vec![all], query(db, "nested()"));
-    assert_eq!(sizes, query(db, "total()"));
 }
 
 #[test]
@@ -1592,6 +1589,47 @@ fn a_stored_view_of_a_scalar_or_nested_element_type_answers_across_reopens() {
                 "from r in catalog::relations where r.name == \"names\" select r.kind"
             )
         );
+    });
+}
+
+#[test]
+fn storing_a_view_whose_result_is_not_a_set_is_refused_and_keeps_the_file_open() {
+    let stored = "module shop
+define fn total () -> I64 = count(c for c in customers)
+store total
+";
+    let mut sim = Sim::new(95, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP]);
+        write(&db, CUSTOMERS);
+    });
+    run(&mut sim, |rt| {
+        let (version, detail) = refusal(open(&rt, &[SHOP, stored]));
+        assert_eq!(2, version);
+        assert_eq!("a stored view returns a `Set`; `total` does not", detail);
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP]);
+        assert_eq!(
+            vec![r#""ann""#, r#""bob""#],
+            query(&db, "from c in customers select c.name")
+        );
+    });
+}
+
+#[test]
+fn redefining_a_stored_view_to_a_result_that_is_not_a_set_is_refused() {
+    let stored = "module shop
+define fn names () -> Set Text = from c in customers select c.name
+store names
+";
+    let redefined = "module shop
+redefine fn names () -> I64 = count(c for c in customers)
+";
+    after(96, &[stored, redefined], |got| {
+        let (version, detail) = refusal(got);
+        assert_eq!(3, version);
+        assert_eq!("a stored view returns a `Set`; `names` does not", detail);
     });
 }
 

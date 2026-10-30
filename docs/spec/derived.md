@@ -62,7 +62,8 @@ store open_by_user
 
 `store f` is an operator in the log. It applies only to a schema
 function with no parameters; `store` of a function with parameters is
-refused. `unstore f` is its inverse.
+refused. `store` of a function whose result is not a `Set` is refused.
+`unstore f` is its inverse.
 
 Storing a view does not change what it denotes. Every read of `f()`
 returns the value of `f`'s body at the reader's snapshot and schema

@@ -246,6 +246,16 @@ impl Builder<'_> {
                         "a stored view is a function with no parameters",
                     );
                 }
+                if !matches!(def.result, Ty::Set(_)) {
+                    return self.err(
+                        file,
+                        s.view.span(),
+                        format!(
+                            "a stored view returns a `Set`; `{}` does not",
+                            s.view.name.text
+                        ),
+                    );
+                }
                 if def.stored.is_some() {
                     return self.err(file, s.view.span(), "this view is stored twice");
                 }
