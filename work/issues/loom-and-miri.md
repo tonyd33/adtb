@@ -1,10 +1,13 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
 kind: feature
 priority: 320
 summary: "no Loom tests of the page state word, and Miri does not run over the simulator tests"
-tags: [sim, test]
+branch: loom-miri
+tags:
+  - sim
+  - test
 ---
 
 # Feature: Loom and Miri
