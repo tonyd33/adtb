@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 800
 summary: "milestone 8 (evolution and bundles, the embedded alpha) has not exited: no operator log, write states, bundles, embedded open or code generation"
+closed: 2026-10-29
 depends-on:
   - evolve-record-add-ctor
   - evolve-follow-ups
@@ -37,3 +38,9 @@ Open on 2026-10-25: `operator-log.md`, `write-states.md`,
 `registered-calls.md`, `bundles.md`, `embedded-open.md`, `codegen.md`,
 `schema-operator-laws.md`, and `io-backends.md` and `real-runtime.md`
 for a database on a real disk.
+
+## 2026-10-29: resolved
+
+## 2026-10-29: closed
+
+Every dependency is resolved. Tony signed off the user manual on 2026-10-29, the last open item.

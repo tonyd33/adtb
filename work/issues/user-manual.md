@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: in-progress
+status: resolved
 kind: feature
 priority: 880
 summary: "adtb has no user manual or reference, so a new user has only the normative spec to learn from"
+closed: 2026-10-29
 tags:
   - docs
 ---
@@ -55,3 +56,7 @@ supersede and retire, what the engine still refuses. A fresh agent given only do
 every console example and built its own program; its 2 blockers, 12 passages and 5 guesses are
 fixed. Branch check: 2830 passed, 7 skipped, campaign 47. Left: Tony's sign-off, which closes
 milestone 8.
+
+## 2026-10-29: resolved
+
+Tony signed off on 2026-10-29.
