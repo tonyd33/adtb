@@ -24,3 +24,7 @@ Four perf gaps found while timing the suite:
 ## 2026-10-30: measured
 
 Caching parsed declarations targets 1.8% of suite cycles, so the fix is a memo on `Source::built`. CRC is 3.4% of the suite; 24% holds only for crash sweeps. `reserve_page` is 2.1%. The seed loop item is stale and dropped.
+
+## 2026-10-30: hardware CRC
+
+`adtb_sys::crc32c::update` uses the CPU instruction on x86-64 and aarch64, the table as fallback and under Miri. Same bytes on disk: 40800 differential cases against the old code, no difference. Cycles on two crash sweeps -18.5% and -12.1%. Not done: no test fails when `update` always takes the table; the aarch64 instruction was compiled but never executed; no file written by the old binary was opened.
