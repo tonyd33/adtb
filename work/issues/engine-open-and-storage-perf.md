@@ -4,7 +4,6 @@ status: in-progress
 kind: feature
 priority: 110
 summary: "engine open re-parses and rebuilds every declaration, page checksums have no hardware CRC, reserve_page reads a page just for its LSN, and some sim seed loops skip profile::sweep"
-branch: schema-memo
 tags:
   - engine
   - sim

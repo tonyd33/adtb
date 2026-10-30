@@ -35,3 +35,7 @@ Engine 75% of suite CPU, simulator 11% of user cycles, test framework and testki
 Indexing catalog indexes by relation and comparing diffs in blocks gave -1.3% instructions and -5.3% of `fill` on the `catalog` binary, against a target of half. The relation scan was under 1% of `fill`, whose cost is spread: heap insert 31%, B-tree insert 24%, `make_room` and eviction 11%, `rows::objects` 9.5%, `build_ahead` 7.6%. That does not pay for a new type, so the commit stays unlanded. Batching catalog rows is ruled out for now: it changes log bytes and crash points for an unmeasured gain. Profile `fill` again after schema-memo.
 
 Candidate, unmeasured as a fix: `PageOptimistic::read` copies the whole page into a fresh `Vec` at each B-tree level. `observe` is about 27% of `Catalog::insert`.
+
+## 2026-10-30: schema-memo
+
+Memo owned by `Source`, 32 entries, compared by full equality. Suite user CPU 798 s to 607 s, wall 86 s to 65 s, one run each under load. A process-global memo would leave 7.1% of builds rather than 13.0%, an estimated 2% of cycles; not worth process state. Review: no blockers. Check: 2977 passed.
