@@ -203,9 +203,9 @@ the query name: `web-2.4::login_key`.
 A family's owner is the role that registered its first bundle. Only
 that owner or the schema owner registers a bundle into the family. A
 call grant names a bundle or a family (`grant call web::login_key to
-app` covers every bundle of `web` whose `login_key` has the granted
-signature, parameter and result types compared by type id); call
-grants are deployment state, given by the bundle's or family's owner
+app` covers the bundles of `web` whose `login_key` has the signature
+the grant records, [security.md §3.2](security.md#32-grant-forms));
+call grants are deployment state, given by the bundle's or family's owner
 or the schema owner ([security.md](security.md#3-grants)).
 
 ### 3.2 Bundles are immutable

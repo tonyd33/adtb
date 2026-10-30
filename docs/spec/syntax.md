@@ -1518,8 +1518,9 @@ The examples use `billing::invoices` as [derived.md](derived.md) declares it.
   includes the key field without listing it.
 - `call` names one registered query or transaction of a bundle, or with
   no `::` every one of them. A family name (`web::login_key`) covers
-  that query in every bundle of the family whose query of that name
-  has the same signature, compared by type ids. A bundle call grant
+  that query in the bundles of the family whose query of that name has
+  the signature the grant records
+  ([security.md §3.2](security.md#32-grant-forms)). A bundle call grant
   covers only the bundle's registered queries and transactions;
   `call fn` names a schema function a role may call directly, and a
   direct call needs it.
