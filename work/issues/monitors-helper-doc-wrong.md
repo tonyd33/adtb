@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes32
 kind: bug
 priority: 850
 summary: "server_authority.rs's monitors helper documents a grant_option it does not return"

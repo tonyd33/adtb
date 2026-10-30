@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes32
 kind: bug
 priority: 610
 summary: "Disk::allocate draws no fail_p while the faulty real backend fails allocate under it, so a simulator run never takes that path"

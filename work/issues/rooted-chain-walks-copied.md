@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes32
 kind: bug
 priority: 720
 summary: "rooted.rs walks a heap-only chain twice and repeats scan_pages, without the HEAP_ONLY test prune applies to a link"

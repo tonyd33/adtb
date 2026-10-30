@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes32
 kind: bug
 priority: 790
 summary: "crash_images.rs repeats the FNV of common.rs, and allocate has no helper in common beside every other op"

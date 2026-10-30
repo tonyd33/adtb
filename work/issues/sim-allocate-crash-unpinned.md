@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes32
 kind: bug
 priority: 620
 summary: "no test states what a crash leaves of an allocate: crash_images pins digests only, and its header omits that the trace is folded in"

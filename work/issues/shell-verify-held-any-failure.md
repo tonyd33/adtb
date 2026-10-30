@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes32
 kind: bug
 priority: 800
 summary: "the test that adtb verify refuses a held file asserts only exit 2, which any failed open gives"
