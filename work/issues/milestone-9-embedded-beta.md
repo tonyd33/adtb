@@ -1,6 +1,6 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: feature
 priority: 900
 summary: "milestone 9 (operations, the embedded beta) has not exited: statistics and plan pinning, explain, config and metrics, dump, restore and backup, and the published benchmarks are open"
