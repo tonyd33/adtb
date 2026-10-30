@@ -1,8 +1,8 @@
 # adtb-sys
 
 `adtb-sys` holds every `unsafe` block of the implementation: page
-memory, direct I/O buffers, `io_uring` and atomic page reads. It
-exposes safe types to `adtb`. Every other crate has
+memory, direct I/O buffers, `io_uring`, atomic page reads and the
+CRC-32C instruction. It exposes safe types to `adtb`. Every other crate has
 `#![forbid(unsafe_code)]`.
 
 ## 1. Safe types
@@ -92,6 +92,12 @@ Preconditions:
   waiting for a thread that needs the lock.
 - A thread never asks for a lock it holds.
 
+`crc32c::update(register, bytes) -> u32` advances a CRC-32C (Castagnoli,
+reflected polynomial `0x82F63B78`) register over `bytes`, starting from
+`!0`, the caller inverting the last value. Its result depends only on
+its arguments: whichever of the instruction and the table the CPU allows
+gives the same value, so a file is valid on any CPU.
+
 Rulings: project/arch/unsafe/confined
 
 ## 2. Unsafe invariants
@@ -139,8 +145,10 @@ Rulings: buffer/cache/vmcache
 Non-binding.
 
 Miri runs the unit tests of `adtb-sys`: page memory and its latches,
-aligned buffers, and the host runtime's thread bookkeeping. Under Miri
-page memory is heap memory in place of the anonymous mapping. The two
+aligned buffers, CRC-32C, and the host runtime's thread bookkeeping.
+Under Miri page memory is heap memory in place of the anonymous mapping,
+and `crc32c::update` takes the table, by `cfg(miri)`, in place of the
+instruction. The two
 tests that install a seccomp filter to deny `io_uring_setup` are
 ignored, since Miri runs neither. Nothing yet runs the engine over the
 simulated storage of [runtime.md §5](runtime.md#5-simulated-storage)

@@ -4,7 +4,7 @@ use super::alloc::diff;
 use super::block::{
     Batch, BlockState, InMemory, LogImage, LogProblem, Mode, Scan, frame, read_block, scan,
 };
-use super::crc::{Crc32c, crc32c};
+use super::crc::{Crc32c, crc32c, crc32c_skipping};
 use super::header::{FileHeader, choose};
 use super::page::{self, Verdict};
 use super::record::{Edit, Record};
@@ -17,6 +17,12 @@ const SEGMENT: u64 = 16 * BLOCK as u64;
 fn crc32c_check_value() {
     assert_eq!(0xE306_9283, crc32c(b"123456789"));
     assert_eq!(0, crc32c(b""));
+}
+
+#[test]
+fn a_page_checksum_keeps_its_value_on_disk() {
+    let page: Vec<u8> = (0..4096u32).map(|i| (i * 7 + i / 5) as u8).collect();
+    assert_eq!(0xD23B_3D67, crc32c_skipping(Some(7), &page, 8));
 }
 
 #[test]
