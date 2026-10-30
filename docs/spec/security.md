@@ -269,6 +269,11 @@ only through the bundles it registers, whose callers then act within
 it under definer rights (§4.1). It never appends grant operators on
 that account: only a role holding `schema` appends them. `revoke`
 takes the same forms and is of the same kind as the grant it revokes.
+A grant given again without `with grant option` leaves an option
+already held in place. A migration removes only the option of a
+relation grant by revoking the grant and granting it again without
+the option, both in that migration; the grants after it are what
+§3.5 checks.
 A relation grant names a relation variable and a
 constructor set, written explicitly or by a named set; the relation
 variable alone means every constructor of it, including constructors
@@ -337,9 +342,9 @@ expired, the release condition of a refused migration
 ([evolution.md](evolution.md#32-checks-at-apply)). After the refusal
 the engine sends the `BlockingMigration` notice to the sessions bound
 to each named bundle for the `BlockingNoticePeriod` setting
-([catalog.md](catalog.md#45-notices)). The same holds for a revoke
-that removes a grant option some live bundle's registration relied
-on.
+([catalog.md](catalog.md#45-notices)). The same holds for a
+migration that removes a grant option some live bundle's registration
+relied on.
 
 ### 3.6 Grants across schema changes
 
