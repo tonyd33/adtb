@@ -9,3 +9,5 @@ summary: catalog transactions commit with no gate and outside the serialization 
 # Quarantine gate follow ups
 
 ## Report
+
+Found in review of quarantine-gate. `mvcc.md` and `storage.md` section 8 say a commit checks marks; catalog transactions do neither. By reading only; no failing history built.

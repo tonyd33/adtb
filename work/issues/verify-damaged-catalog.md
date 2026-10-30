@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: open-damage
 kind: feature
 priority: 420
 summary: a file whose catalog page is damaged fails open with Corrupt instead of opening for verify and dump
