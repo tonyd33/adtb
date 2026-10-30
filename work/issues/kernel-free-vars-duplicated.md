@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 899
 summary: "kernel Terms::frees and plan Facts::free each memoise free variables per term, and the kernel one drops a binder from its own bound value"
+branch: kernel-free-vars
 tags:
   - quality
   - lang

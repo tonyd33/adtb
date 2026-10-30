@@ -58,3 +58,23 @@ applications.md 3.1 (family owner), 4.1 (checks 5 and 7), 6.
    owner's grants.
 
 ## Open questions
+
+## Plan rulings (2026-10-29)
+
+Plan in work/briefs/plan-checked-registration.md (local): live entry point
+`RoleAuthority::register(session, registration)`, internal roots rows FAMILY,
+REGISTERED (origin Open or Command, full text) and DEPLOYED, open supersedes only
+Open-origin and unmarked bundles (embedding.md open step 6), Command bundles rebuilt
+from stored text and rechecked at each migration.
+
+5. A role registering identical content over a failed, unmarked header recorded by
+   an open claims it and becomes the row's owner.
+6. An open presenting a Command bundle keeps its owner and origin and checks that
+   role's grants.
+7. File reads are not a registration requirement: security.md 4.2 lists relation
+   grants only, and a registered query's file reads are checked against its owner
+   when they run (security.md 3.2 table, read_files). revoke_capability is not
+   rechecked against bundles in this slice.
+8. A grant blocker leaves `SchemaRefused.operator` empty; the detail names it.
+9. The trusted API needs no capability beyond the grants (catalog.md 9.1: "as
+   registration requires").
