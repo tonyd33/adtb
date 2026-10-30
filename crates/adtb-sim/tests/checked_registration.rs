@@ -738,3 +738,46 @@ fn an_older_pin_is_checked_on_what_its_translation_reads() {
         assert_eq!(Vec::<String>::new(), calls(&db, "shop-1.0"));
     });
 }
+
+#[test]
+fn only_its_owner_or_the_schema_owner_registers_a_registered_bundle_again() {
+    let mut sim = Sim::new(354, Config::default());
+    run(&mut sim, |rt| {
+        shop(&rt).close().expect("close");
+        let pins = &[SHOP, GRANTS, FNS];
+        let db = opened(&rt, pins);
+        register(
+            &db,
+            "idle",
+            &bundle("shop-1.0", pins, "import shop\nimport fn all_names\n"),
+        )
+        .expect("idle claims family shop");
+        db.close().expect("close");
+        let two = bundle("shop-2.0", pins, NAMES);
+        open(&rt, pins, vec![two.clone()])
+            .expect("an open registers shop-2.0 as the schema owner")
+            .close()
+            .expect("close");
+        let db = opened(&rt, pins);
+        let before = renewed(&db, "shop-2.0");
+        assert_eq!(
+            "bundle shop-2.0 is owned by role owner",
+            denied(register(&db, "idle", &two))
+        );
+        assert_eq!(before, renewed(&db, "shop-2.0"));
+        assert!(matches!(
+            db.registered("shop-2.0"),
+            Err(Error::Rejected {
+                reason: RejectReason::BundleSuperseded { .. }
+            })
+        ));
+        register(&db, "owner", &two).expect("the schema owner registers it again");
+        assert_eq!(Vec::<String>::new(), calls(&db, "shop-2.0"));
+        let one = bundle("shop-1.0", pins, "import shop\nimport fn all_names\n");
+        assert_eq!(
+            "bundle shop-1.0 is owned by role idle",
+            denied(register(&db, "web", &one))
+        );
+        register(&db, "idle", &one).expect("its owner registers it again");
+    });
+}
