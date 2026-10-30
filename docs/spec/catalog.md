@@ -570,8 +570,9 @@ Term is the field list without its parentheses: `email, name` for
 The clauses an operator takes any number of are rows of
 `migration_clauses`, `clause` their position from 1: `Joins` for a
 `joins` set, `Member` for each constructor a merge or nest replaces, a
-named set lists, a moved field goes to or the written `in r.C` scope
-of an index or unique names, `Arm` for an `arm` clause, `Replacement`
+named set lists, a moved field goes to, an `add default` or `drop
+default` fills or the written `in r.C` scope of an index or unique
+names, `Arm` for an `arm` clause, `Replacement`
 for the `unique` and
 `index` clauses of a split, `Carry` for a field after `carry`, and
 `Fill` for a revert's `fill`. An index or unique added without a
@@ -580,9 +581,12 @@ relation, constructors added after it included.
 
 An `AddDefault` names every constructor its default
 applies to: `field` is the header field it fills, or the field of the
-first constructor in declared order, and a `Member` clause names each
-constructor whose field it fills, in declared order, none for a header
-field. The version hash
+first constructor it fills in declared order, and a `Member` clause
+names each constructor whose field it fills, in declared order, none
+for a header field. A `DropDefault` drops every default the matching
+`drop default` removes: `default` is the first of them, and a
+`Member` clause names each constructor whose default it drops, in
+declared order. The version hash
 ([evolution.md §2.1](evolution.md#21-position-and-hash)) encodes these
 rows.
 The log holds only migrations; bundles, their registration, leases,
@@ -672,11 +676,17 @@ its current name and follows the grant through renames and the
 carrying of [security.md §3.6](security.md#36-grants-across-schema-changes):
 the relation as `module::name`, followed, unless the grant is on the
 whole relation, by `.C`, `.(C | D)` or `.S`; a `read` or `update` with a field list then has the
-listed fields, `(email, user)`, and one without a list the fields it
-covers, `frozen (email, user)`; a `retag` is `a -> b`, followed by
+listed fields, and one without a list the fields it covers after
+`frozen`, in field id order: `identities.EmailPass (user,
+EmailPass.email)`, `identities.EmailPass frozen (id, user,
+EmailPass.email, EmailPass.hash)`; a `retag` is `a -> b`, followed by
 `except (C -> D, …)` when it excepts pairs; a `call` is the function
 as `module::name`. A header field, or a field of a type with one
-constructor, is named alone, and any other field as `C.f`. `grantee` and `grantor` are role
+constructor, is named alone, and any other field as `C.f`. A call
+grant on a family has the target `FAMILY::q` followed by the
+signature it records, written as the `signature` of a row of
+`registered` (§2.4). No two rows have the same grantee, privilege,
+target and grantor. `grantee` and `grantor` are role
 names. `dormant` marks a log grant whose grantee did not exist when
 the log was replayed; a dormant grant allows nothing. Creating the
 role does not clear the mark. A later migration that grants the same
