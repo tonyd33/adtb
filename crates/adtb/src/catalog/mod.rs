@@ -47,7 +47,7 @@ pub use keying::{IndexKeys, element_types};
 use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
 pub use oplog::{Hash, try_version_hash, version_hash};
-pub use readers::{PendingDrop, Read, Reader};
+pub use readers::{PendingDrop, Read, Reader, source_at, stale};
 pub use rows::{IndexSpec, Rows, applied, declared, field_path, indexed_fields, indexes};
 
 use change::Data;

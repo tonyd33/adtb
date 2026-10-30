@@ -337,7 +337,7 @@ impl Source {
                 module: m.module.text.clone(),
                 text: text.to_string(),
                 operators: m.operators.clone(),
-                before: Rc::new(self.clone()),
+                before: Arc::new(self.clone()),
             });
             Ok(next)
         } else {

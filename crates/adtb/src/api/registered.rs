@@ -6,10 +6,11 @@ use std::sync::{Arc, Weak};
 
 use adtb_lang::ast::{BundleItem, FnDecl, Import, QName};
 use adtb_lang::check::{Bundles, Program, check_adhoc};
-use adtb_lang::evolve::Source;
+use adtb_lang::evolve::{LogGrant, Source};
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 use adtb_lang::norm::{self, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc, parse_bundle, parse_bundle_body, parse_migration};
+use adtb_lang::permission::{self, EffectiveGrants, Mode, Requirements};
 use adtb_lang::schema::Schema;
 use adtb_lang::signature::{self, Item};
 use adtb_lang::translate::{Map, Pinned, Untranslatable};
@@ -155,8 +156,9 @@ struct Entry {
 /// A callable translated to the version the database is at, its variables as [`Entry`]'s.
 #[derive(Debug)]
 struct Served {
-    /// The schema it runs over.
+    /// The schema it runs over and the program of its functions.
     schema: Arc<Schema>,
+    program: Arc<Program>,
     terms: Arc<Terms>,
     body: Tm,
     params: Vec<Option<Var>>,
@@ -169,6 +171,7 @@ pub(super) struct Checked {
     name: String,
     /// The schema its callables run over: the version's, with the registration's functions.
     schema: Arc<Schema>,
+    program: Arc<Program>,
     entries: Vec<Entry>,
     /// The header of a bundle file's registration.
     header: Option<Header>,
@@ -225,18 +228,57 @@ impl Checked {
     }
 }
 
+/// Returns what `role` lacks with grant option, among `grants`, of every relation grant the
+/// callables of `c` use as they run: each translation where there is one. Each is a line naming
+/// the callable, what it does and the privilege, in ordinal order.
+pub(super) fn lacking(c: &Checked, grants: &[LogGrant], role: &str) -> Result<Vec<String>, Error> {
+    let mut out = Vec::new();
+    for e in &c.entries {
+        let needs = match &e.served {
+            Some(s) => requirements(&s.schema, &s.program, &s.terms, s.body, &s.params, s.unit),
+            None => requirements(&c.schema, &c.program, &e.terms, e.body, &e.params, e.unit),
+        }?;
+        let schema = e.served.as_ref().map_or(&c.schema, |s| &s.schema);
+        let held = EffectiveGrants::of(schema, grants, role);
+        for r in needs.missing(&held, Mode::Registration) {
+            let (does, privilege) = r.text(schema);
+            out.push(format!(
+                "{} {does}; {role} lacks {privilege} with grant option",
+                e.name
+            ));
+        }
+    }
+    Ok(out)
+}
+
+fn requirements(
+    schema: &Schema,
+    program: &Program,
+    terms: &Terms,
+    body: Tm,
+    params: &[Option<Var>],
+    unit: Option<Var>,
+) -> Result<Requirements, Error> {
+    let params: Vec<Var> = params.iter().flatten().copied().chain(unit).collect();
+    permission::normal(schema, program, terms, body, &params).map_err(|e| {
+        Error::rejected(RejectReason::Internal {
+            what: format!("a checked registered call has no requirements: {e:?}"),
+        })
+    })
+}
+
 /// The schema a registration checks against and the program of its functions.
-struct Over<'a> {
-    source: &'a Source,
-    schema: &'a Arc<Schema>,
-    program: &'a Program,
+pub(super) struct Over<'a> {
+    pub(super) source: &'a Source,
+    pub(super) schema: &'a Arc<Schema>,
+    pub(super) program: &'a Arc<Program>,
 }
 
 /// A version a bundle pins: its source, schema and program.
 struct Pin {
     source: Source,
     schema: Arc<Schema>,
-    program: Program,
+    program: Arc<Program>,
 }
 
 impl Pin {
@@ -249,24 +291,17 @@ impl Pin {
     }
 }
 
-/// Check and normalise every registration of `regs`, all or none: one with no header against
-/// `program` of `schema`, the schema of `catalog`'s version, and a bundle's at the version it
-/// pins, refusing one `stored` holds otherwise or that would read a constructor enabled since
-/// its pin, at `now` under the file settings `s`.
+/// Check and normalise every registration of `regs`, all or none: one with no header over
+/// `over`, the version the database is at, and a bundle's at the version it pins, refusing one
+/// `stored` holds otherwise or that would read a constructor enabled since its pin, at `now`
+/// under the file settings `s`.
 pub(super) fn register(
-    catalog: &Catalog,
-    schema: &Arc<Schema>,
-    program: &Program,
+    over: &Over<'_>,
     regs: &[Registration],
     stored: &Stored,
     now: i64,
     s: &Settings,
 ) -> Result<Vec<Checked>, OpenError> {
-    let over = Over {
-        source: catalog.source(),
-        schema,
-        program,
-    };
     let mut names = BTreeSet::new();
     let mut out = Vec::with_capacity(regs.len());
     for r in regs {
@@ -280,36 +315,44 @@ pub(super) fn register(
                 r.name
             ))));
         }
-        let version = catalog.source().version;
-        let Some(h) = &r.header else {
-            let c = checked(&over, r).map_err(refused)?;
-            pinned_within(&c, version).map_err(refused)?;
-            out.push(c);
-            continue;
-        };
-        let at_pin = pinned(catalog, h).map_err(refused)?;
-        let mut c = match &at_pin {
-            Some(pin) => checked(&pin.over(), r),
-            None => checked(&over, r),
-        }
-        .map_err(refused)?;
-        let (_, calls) = c.bundle().expect("a bundle's registration has a header");
-        bundle::admitted(stored, h, &calls).map_err(refused)?;
-        if let Some(pin) = &at_pin {
-            let served = translations(&c, &pin.source, schema, catalog.source(), program).map_err(
-                |(query, u)| refused(untranslatable(stored, h, now, s, &c.name, &query, &u)),
-            )?;
-            for (e, s) in c.entries.iter_mut().zip(served) {
-                e.served = Some(s);
-            }
-        }
-        pinned_within(&c, version).map_err(refused)?;
-        if let Some(ctor) = stale(catalog, &c).map_err(refused)? {
-            return Err(refused(bundle::stale(stored, h, now, s, ctor)));
-        }
-        out.push(c);
+        out.push(registration(over, r, stored, now, s).map_err(refused)?);
     }
     Ok(out)
+}
+
+/// Check and normalise registration `r` as [`register`] does.
+pub(super) fn registration(
+    over: &Over<'_>,
+    r: &Registration,
+    stored: &Stored,
+    now: i64,
+    s: &Settings,
+) -> Result<Checked, Error> {
+    let version = over.source.version;
+    let Some(h) = &r.header else {
+        let c = checked(over, r)?;
+        pinned_within(&c, version)?;
+        return Ok(c);
+    };
+    let at_pin = pinned(over, h)?;
+    let mut c = match &at_pin {
+        Some(pin) => checked(&pin.over(), r),
+        None => checked(over, r),
+    }?;
+    let (_, calls) = c.bundle().expect("a bundle's registration has a header");
+    bundle::admitted(stored, h, &calls)?;
+    if let Some(pin) = &at_pin {
+        let served = translations(&c, &pin.source, over.schema, over.source, over.program)
+            .map_err(|(query, u)| untranslatable(stored, h, now, s, &c.name, &query, &u))?;
+        for (e, s) in c.entries.iter_mut().zip(served) {
+            e.served = Some(s);
+        }
+    }
+    pinned_within(&c, version)?;
+    if let Some(ctor) = stale(over, &c)? {
+        return Err(bundle::stale(stored, h, now, s, ctor));
+    }
+    Ok(c)
 }
 
 /// Returns the refusal of registering `h`, whose callable `query` of bundle `name` has no
@@ -363,18 +406,24 @@ fn pinned_within(c: &Checked, version: u64) -> Result<(), Error> {
 /// Refuse an open whose bundles pin a version before the file's and would read a constructor
 /// enabled since. A bundle that does not check at its pin is left for registration to refuse.
 pub(super) fn downgrade(catalog: &Catalog, regs: &[Registration]) -> Result<(), OpenError> {
+    let schema = Arc::new(catalog.schema().clone());
+    let now = Over {
+        source: catalog.source(),
+        schema: &schema,
+        program: catalog.program(),
+    };
     let version = catalog.source().version;
     for r in regs {
         let Some(h) = r.header.as_ref().filter(|h| h.pins < version) else {
             continue;
         };
-        let Ok(Some(pin)) = pinned(catalog, h) else {
+        let Ok(Some(pin)) = pinned(&now, h) else {
             continue;
         };
         let Ok(c) = checked(&pin.over(), r) else {
             continue;
         };
-        if let Ok(Some(ctor)) = stale(catalog, &c) {
+        if let Ok(Some(ctor)) = stale(&now, &c) {
             return Err(OpenError::DowngradeRefused {
                 cause: format!(
                     "bundle {}, pinned at version {}, reads {ctor}, enabled since",
@@ -386,10 +435,10 @@ pub(super) fn downgrade(catalog: &Catalog, regs: &[Registration]) -> Result<(), 
     Ok(())
 }
 
-/// Returns the version `h` pins, `None` for the version `catalog` is at. Refuses an edition the
+/// Returns the version `h` pins, `None` for the version `now` is at. Refuses an edition the
 /// engine does not implement, a catalog pin, and a pinned version the log does not hold or holds
 /// with another hash.
-fn pinned(catalog: &Catalog, h: &Header) -> Result<Option<Pin>, Error> {
+fn pinned(now: &Over<'_>, h: &Header) -> Result<Option<Pin>, Error> {
     if h.edition != EDITION {
         return Err(Error::rejected(RejectReason::UnknownEdition {
             edition: h.edition.clone(),
@@ -401,7 +450,7 @@ fn pinned(catalog: &Catalog, h: &Header) -> Result<Option<Pin>, Error> {
             h.name
         )));
     }
-    let now = catalog.source().version;
+    let at = now.source.version;
     let hashed = |schema: &Schema, source: &Source| {
         let hash: String = catalog::version_hash(schema, source)
             .iter()
@@ -415,12 +464,12 @@ fn pinned(catalog: &Catalog, h: &Header) -> Result<Option<Pin>, Error> {
             h.name, h.pins, h.hash, h.pins
         )))
     };
-    if h.pins == now {
-        return hashed(catalog.schema(), catalog.source()).map(|()| None);
+    if h.pins == at {
+        return hashed(now.schema, now.source).map(|()| None);
     }
-    let source = catalog.source_at(h.pins).ok_or_else(|| {
+    let source = catalog::source_at(now.source, h.pins).ok_or_else(|| {
         Error::invalid(format!(
-            "bundle {} pins version {}, which the log does not hold: it is at version {now}",
+            "bundle {} pins version {}, which the log does not hold: it is at version {at}",
             h.name, h.pins
         ))
     })?;
@@ -431,16 +480,16 @@ fn pinned(catalog: &Catalog, h: &Header) -> Result<Option<Pin>, Error> {
     Ok(Some(Pin {
         source,
         schema: Arc::new(schema),
-        program,
+        program: Arc::new(program),
     }))
 }
 
 /// Returns the constructor the bundle `c` would read that is enabled now and absent at its pin.
-fn stale(catalog: &Catalog, c: &Checked) -> Result<Option<String>, Error> {
+fn stale(now: &Over<'_>, c: &Checked) -> Result<Option<String>, Error> {
     let Some(reader) = c.reader() else {
         return Ok(None);
     };
-    catalog.stale(&reader).map_err(catalog_error)
+    catalog::stale(now.source, now.schema, &reader).map_err(catalog_error)
 }
 
 fn catalog_error(e: catalog::Error) -> Error {
@@ -478,19 +527,14 @@ pub(super) fn readers(
             bundle: r.name.clone(),
             reason,
         };
-        let (c, source) = match pinned(catalog, h).map_err(refused)? {
+        let now = Over {
+            source: catalog.source(),
+            schema: &schema,
+            program: &program,
+        };
+        let (c, source) = match pinned(&now, h).map_err(refused)? {
             Some(pin) => (checked(&pin.over(), r), pin.source),
-            None => (
-                checked(
-                    &Over {
-                        source: catalog.source(),
-                        schema: &schema,
-                        program: &program,
-                    },
-                    r,
-                ),
-                catalog.source().clone(),
-            ),
+            None => (checked(&now, r), catalog.source().clone()),
         };
         let c = c.map_err(refused)?;
         let reader = c.reader().expect("a bundle's registration has a header");
@@ -519,6 +563,7 @@ pub(super) fn recheck(catalog: &Catalog, text: &str, live: &[Live]) -> Result<()
         return Ok(());
     };
     let schema = Arc::new(schema);
+    let program = Arc::new(program);
     for l in live {
         if let Err((query, u)) = translations(&l.checked, &l.source, &schema, &next, &program) {
             let pins = l.checked.header.as_ref().map_or(0, |h| h.pins);
@@ -542,7 +587,7 @@ fn translations(
     pin: &Source,
     now: &Arc<Schema>,
     now_source: &Source,
-    program: &Program,
+    program: &Arc<Program>,
 ) -> Result<Vec<Served>, (String, Untranslatable)> {
     let Some(first) = c.entries.first() else {
         return Ok(Vec::new());
@@ -564,6 +609,7 @@ fn translations(
         let unit = e.unit.map(|_| next());
         out.push(Served {
             schema: now.clone(),
+            program: program.clone(),
             terms: Arc::new(t.terms),
             body: t.body,
             params,
@@ -586,7 +632,7 @@ fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Error> {
         .collect();
     let extended = signature::with_functions(over.source, over.schema, &vis, &fns, &r.text)
         .map_err(Error::invalid)?
-        .map(|(s, p)| (Arc::new(s), p));
+        .map(|(s, p)| (Arc::new(s), Arc::new(p)));
     let (schema, program) = match &extended {
         Some((s, p)) => (s, p),
         None => (over.schema, over.program),
@@ -632,7 +678,10 @@ fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Error> {
     }
     Ok(Checked {
         name: r.name.clone(),
-        schema: extended.map_or_else(|| over.schema.clone(), |(s, _)| s),
+        schema: extended
+            .as_ref()
+            .map_or_else(|| over.schema.clone(), |(s, _)| s.clone()),
+        program: extended.map_or_else(|| over.program.clone(), |(_, p)| p),
         entries,
         header: r.header.clone(),
     })
@@ -789,6 +838,7 @@ impl<R: Runtime> Database<R> {
         self.engine.bind(name)?;
         self.engine
             .registered
+            .lock(&self.engine.rt)
             .iter()
             .find(|c| c.name == name)
             .map(|c| Registered {

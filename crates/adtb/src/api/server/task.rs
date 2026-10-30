@@ -347,7 +347,7 @@ impl<R: Runtime> RoleSession<R> {
         let caller = owner(self, opts.call.assert.as_ref())?;
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
         let _open = e.enter()?;
-        let p = Prepared::new(&e.schema, &e.program, &e.bundles, text, params, caller)?;
+        let p = Prepared::new(&e.schema, &e.program, &e.explained(), text, params, caller)?;
         let bytes = TASK_BYTES + text.len() + p.bytes();
         submit(&e, Work::Text(Box::new(p)), opts, Priority::AdHoc, bytes)
     }
@@ -518,7 +518,7 @@ mod tests {
         let e = &*db.engine;
         let prepared = |t: &str| {
             let caller = e.principal(None).unwrap();
-            Prepared::new(&e.schema, &e.program, &e.bundles, t, &[], caller)
+            Prepared::new(&e.schema, &e.program, &e.explained(), t, &[], caller)
                 .unwrap()
                 .bytes()
         };

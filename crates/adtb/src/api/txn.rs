@@ -165,7 +165,7 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         let p = Prepared::new(
             schema,
             &e.program,
-            &e.bundles,
+            &e.explained(),
             text,
             params,
             self.caller.clone(),

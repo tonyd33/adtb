@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::ast::{
     self, CtorPlace, CtorSel, CtorTarget, Decl, Expr, Fill, MigrationFile, Operator, OperatorKind,
@@ -67,7 +67,7 @@ pub struct Logged {
     pub module: String,
     pub text: String,
     pub operators: Vec<Operator>,
-    pub before: Rc<Source>,
+    pub before: Arc<Source>,
 }
 
 /// A schema as the fold of its log: the declarations of every user module, the write states of

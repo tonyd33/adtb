@@ -397,51 +397,9 @@ impl Catalog {
     }
 
     /// Returns the constructor `reader` would read that is enabled now and absent at its
-    /// version, as `relation.Ctor` or `Type.Ctor`, under the rules by which a live reader blocks
-    /// its enable.
-    ///
-    /// Fail with [`Error::Refused`] when the reader's version is not one of the log's or a name
-    /// it reads or writes does not resolve at its version.
+    /// version, as [`stale`] does over this catalog's source and schema.
     pub fn stale(&self, reader: &Reader) -> Result<Option<String>, Error> {
-        let refused = |why: String| Error::Refused(vec![why]);
-        let schema = schema_at(&self.source, reader.version).ok_or_else(|| {
-            refused(format!(
-                "bundle {} is pinned at version {}, which the log does not hold",
-                reader.bundle, reader.version
-            ))
-        })?;
-        let p = pinned(&schema, reader).map_err(refused)?;
-        let now = &self.schema;
-        if !p.hides_new {
-            for &r in now.ids.relations.keys() {
-                let rid = rel_id(now, r);
-                let rel = now.relation(r);
-                for (c, ctor) in now.ty(rel.elem_def).ctors().iter().enumerate() {
-                    let c = u32::try_from(c).expect("a sum has fewer than 2^32 constructors");
-                    let cid = ctor_id(now, r, c);
-                    if p.ctors.contains(&cid) || now.stage(r, c) == Stage::Declared {
-                        continue;
-                    }
-                    let follows = p
-                        .references
-                        .iter()
-                        .any(|&(to, set)| to == rid && set.is_none_or(|s| in_set(now, r, s, c)));
-                    if p.whole.contains(&rid) || follows {
-                        return Ok(Some(format!("{}.{}", rel.name, ctor.name)));
-                    }
-                }
-            }
-        }
-        for (&(def, c), &cid) in &now.ids.ctors {
-            if p.ctors.contains(&CatCtorId(cid)) || now.value_stage(def, c) == Stage::Declared {
-                continue;
-            }
-            if read_fields(now, &p).any(|t| now.reaches(t, def)) {
-                let t = now.ty(def);
-                return Ok(Some(format!("{}.{}", t.name, t.ctors()[c as usize].name)));
-            }
-        }
-        Ok(None)
+        stale(&self.source, &self.schema, reader)
     }
 
     /// Returns the pending drops with the bundles holding each, in the order they applied,
@@ -753,12 +711,59 @@ fn blocked(op: &str, bundle: &str, p: &Pinned, reads: &str) -> String {
 }
 
 /// Returns the schema of the version `v` of `source`'s log.
+/// Returns the constructor `reader` would read that is enabled now and absent at its
+/// version, as `relation.Ctor` or `Type.Ctor`, under the rules by which a live reader blocks
+/// its enable, `source` holding the log and `now` its current schema.
+///
+/// Fail with [`Error::Refused`] when the reader's version is not one of the log's or a name
+/// it reads or writes does not resolve at its version.
+pub fn stale(source: &Source, now: &Schema, reader: &Reader) -> Result<Option<String>, Error> {
+    let refused = |why: String| Error::Refused(vec![why]);
+    let schema = schema_at(source, reader.version).ok_or_else(|| {
+        refused(format!(
+            "bundle {} is pinned at version {}, which the log does not hold",
+            reader.bundle, reader.version
+        ))
+    })?;
+    let p = pinned(&schema, reader).map_err(refused)?;
+    if !p.hides_new {
+        for &r in now.ids.relations.keys() {
+            let rid = rel_id(now, r);
+            let rel = now.relation(r);
+            for (c, ctor) in now.ty(rel.elem_def).ctors().iter().enumerate() {
+                let c = u32::try_from(c).expect("a sum has fewer than 2^32 constructors");
+                let cid = ctor_id(now, r, c);
+                if p.ctors.contains(&cid) || now.stage(r, c) == Stage::Declared {
+                    continue;
+                }
+                let follows = p
+                    .references
+                    .iter()
+                    .any(|&(to, set)| to == rid && set.is_none_or(|s| in_set(now, r, s, c)));
+                if p.whole.contains(&rid) || follows {
+                    return Ok(Some(format!("{}.{}", rel.name, ctor.name)));
+                }
+            }
+        }
+    }
+    for (&(def, c), &cid) in &now.ids.ctors {
+        if p.ctors.contains(&CatCtorId(cid)) || now.value_stage(def, c) == Stage::Declared {
+            continue;
+        }
+        if read_fields(now, &p).any(|t| now.reaches(t, def)) {
+            let t = now.ty(def);
+            return Ok(Some(format!("{}.{}", t.name, t.ctors()[c as usize].name)));
+        }
+    }
+    Ok(None)
+}
+
 fn schema_at(source: &Source, v: u64) -> Option<Schema> {
     source_at(source, v)?.schema().ok()
 }
 
 /// Returns the source of the version `v` of `source`'s log.
-fn source_at(source: &Source, v: u64) -> Option<Source> {
+pub fn source_at(source: &Source, v: u64) -> Option<Source> {
     if v == 0 || v > source.version {
         return None;
     }

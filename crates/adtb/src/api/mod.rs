@@ -25,7 +25,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adtb_file::Disk;
 use adtb_lang::check::{Bundles, Program};
-use adtb_lang::evolve::Logged;
+use adtb_lang::evolve::{Logged, Source};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::schema::Schema;
@@ -246,9 +246,11 @@ struct Engine<R: Runtime> {
     rt: R,
     schema: Arc<Schema>,
     program: Arc<Program>,
+    /// The source of the version the database is at.
+    source: Source,
     /// The registered queries of the live bundles, which `explain B::q(args)` names.
-    bundles: Bundles,
-    registered: Vec<Arc<registered::Checked>>,
+    bundles: Lock<Arc<Bundles>>,
+    registered: Lock<Vec<Arc<registered::Checked>>>,
     /// The rows of `catalog::bundles`, by bundle name, as the latest commit holds them.
     deployed: Lock<BTreeMap<String, bundle::Row>>,
     /// Held across every write of a row of `catalog::bundles`, so that the row a writer reads
@@ -404,7 +406,7 @@ impl<R: Runtime> Database<R> {
         let e = &*self.engine;
         let _open = e.enter()?;
         let caller = e.principal(opts.assert.as_ref())?;
-        let p = Prepared::new(&e.schema, &e.program, &e.bundles, text, params, caller)?;
+        let p = Prepared::new(&e.schema, &e.program, &e.explained(), text, params, caller)?;
         e.call(&p, opts, || {}).map(|done| done.value)
     }
 
@@ -582,8 +584,12 @@ impl<R: Runtime> Engine<R> {
         let (heaps, indexes) = catalog.bindings();
         let schema = Arc::new(schema);
         let now = micros(pager.wall());
-        let registered =
-            registered::register(&catalog, &schema, &program, regs, &stored, now, &settings)?;
+        let over = registered::Over {
+            source: catalog.source(),
+            schema: &schema,
+            program: &program,
+        };
+        let registered = registered::register(&over, regs, &stored, now, &settings)?;
         let bundled: Vec<_> = registered
             .iter()
             .filter_map(registered::Checked::bundle)
@@ -627,8 +633,9 @@ impl<R: Runtime> Engine<R> {
             rt,
             schema,
             program,
-            bundles,
-            registered: registered.into_iter().map(Arc::new).collect(),
+            source: catalog.source().clone(),
+            bundles: Lock::new(Arc::new(bundles)),
+            registered: Lock::new(registered.into_iter().map(Arc::new).collect()),
             deployed: Lock::new(deployed),
             bundle_writer: Lock::new(()),
             settings: Lock::new(settings),
@@ -644,6 +651,11 @@ impl<R: Runtime> Engine<R> {
             held: Lock::new(None),
         };
         Ok(engine)
+    }
+
+    /// Returns the registered queries `explain B::q(args)` names.
+    fn explained(&self) -> Arc<Bundles> {
+        self.bundles.lock(&self.rt).clone()
     }
 
     /// Returns a new transaction id.
