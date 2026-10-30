@@ -2145,3 +2145,364 @@ fn a_page_whose_holder_is_unknown_fails_storage_and_marks_nothing_until_the_walk
         assert_eq!("the database", failed_on(&db, ROWS));
     });
 }
+
+const GOOGLE_901: &str =
+    r#"insert identities.Google { id: identities.key(901), user: users.key(1), gid: "g901" }"#;
+const GOOGLE_901_IDS: &str = "from i in identities.Google where i.gid == \"g901\" select i.id";
+
+fn mark_named(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Quarantine {
+    Quarantine::Heap(db.write_path().heap_named(relation, ctor).unwrap().id().0)
+}
+
+/// Commit a transaction that runs `write`, with `mark` set after the write. Returns what the
+/// commit fails with.
+fn refused_commit(db: &Database<SimRuntime>, write: &str, mark: Quarantine) -> String {
+    let mut t = db.begin(&TxnOptions::default()).unwrap();
+    api::in_txn_results(&mut t, write);
+    db.write_path().pager().quarantine(mark).unwrap();
+    quarantined(&t.commit(None).unwrap_err()).to_owned()
+}
+
+#[test]
+fn a_commit_after_a_mark_on_an_index_covering_its_write_fails_and_leaves_nothing() {
+    let mut sim = Sim::new(90, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let what = refused_commit(&db, GOOGLE_901, user_index_mark(&db));
+        assert!(what.contains(USER_INDEX), "{what}");
+        assert!(api::query(&db, GOOGLE_901_IDS).is_empty());
+    });
+}
+
+#[test]
+fn a_commit_after_a_mark_on_its_heap_or_a_sibling_heap_fails_and_leaves_nothing() {
+    for ctor in ["Google", "Apple", "EmailPass"] {
+        let mut sim = Sim::new(91, Config::default());
+        api::run(&mut sim, |rt| {
+            let db = open_app(rt);
+            seed(&db);
+            let mark = mark_named(&db, "app::identities", ctor);
+            let what = refused_commit(&db, GOOGLE_901, mark);
+            assert_eq!(format!("app::identities.{ctor}"), what);
+            db.write_path().pager().release(mark).unwrap();
+            assert!(api::query(&db, GOOGLE_901_IDS).is_empty(), "{ctor}");
+        });
+    }
+}
+
+#[test]
+fn a_commit_after_a_mark_its_write_checks_read_fails() {
+    let mut sim = Sim::new(92, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let note = "insert notes { id: notes.key(901), about: users.key(1) }";
+        let mark = mark_named(&db, "app::users", "User");
+        assert_eq!("app::users.User", refused_commit(&db, note, mark));
+        db.write_path().pager().release(mark).unwrap();
+        let tag = r#"insert users { id: users.key(99), name: "n" }
+                     insert tags { id: tags.key(901), owner: users.key(99) }"#;
+        let mark = apple_mark(&db);
+        assert_eq!(
+            "app::identities.Apple",
+            refused_commit(&db, tag, mark),
+            "a constraint reads Apple"
+        );
+    });
+}
+
+#[test]
+fn a_commit_writing_nothing_a_mark_stops_runs() {
+    let mut sim = Sim::new(93, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let mut t = db.begin(&TxnOptions::default()).unwrap();
+        api::in_txn_results(
+            &mut t,
+            "insert notes { id: notes.key(901), about: users.key(1) }",
+        );
+        db.write_path().pager().quarantine(apple_mark(&db)).unwrap();
+        t.commit(None).unwrap();
+        assert_eq!(1, api::query(&db, "from n in notes select n.id").len());
+    });
+}
+
+#[test]
+fn a_transaction_that_only_read_commits_under_a_mark_on_what_it_read() {
+    let mut sim = Sim::new(94, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let read_only = TxnOptions {
+            read_only: true,
+            ..TxnOptions::default()
+        };
+        for opts in [read_only, TxnOptions::default()] {
+            let mut t = db.begin(&opts).unwrap();
+            assert_eq!(18, api::in_txn(&mut t, ALL).len());
+            let mark = apple_mark(&db);
+            db.write_path().pager().quarantine(mark).unwrap();
+            t.commit(None).unwrap();
+            db.write_path().pager().release(mark).unwrap();
+        }
+    });
+}
+
+#[test]
+fn a_statement_that_failed_leaves_no_write_for_the_commit_to_refuse() {
+    let mut sim = Sim::new(95, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let mut t = db.begin(&TxnOptions::default()).unwrap();
+        let repeat =
+            r#"insert identities.Google { id: identities.key(11), user: users.key(1), gid: "r" }"#;
+        t.query_text(repeat, &[], &TxnCallOptions::default())
+            .unwrap_err();
+        db.write_path()
+            .pager()
+            .quarantine(user_index_mark(&db))
+            .unwrap();
+        t.commit(None).unwrap();
+    });
+}
+
+#[test]
+fn transact_fails_once_when_a_mark_lands_before_its_commit() {
+    let mut sim = Sim::new(96, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let mut attempts = 0;
+        let got = db.transact(&TxnOptions::default(), 3, |t| {
+            attempts += 1;
+            api::in_txn_results(t, GOOGLE_901);
+            db.write_path()
+                .pager()
+                .quarantine(user_index_mark(&db))
+                .unwrap();
+            Ok(())
+        });
+        assert!(quarantined(&got.err().unwrap()).contains(USER_INDEX));
+        assert_eq!(1, attempts);
+        assert!(api::query(&db, GOOGLE_901_IDS).is_empty());
+    });
+}
+
+#[test]
+fn every_commit_with_its_record_after_a_mark_is_refused() {
+    for seed_no in adtb_simkit::seeds::sweep(0..1) {
+        let config = Config {
+            switch_rate: 0.5,
+            ..Config::default()
+        };
+        let mut sim = Sim::new(seed_no, config);
+        api::run(&mut sim, |rt| {
+            let db = open_app(rt.clone());
+            seed(&db);
+            let kept = Arc::new(Mutex::new(Vec::new()));
+            let writers: Vec<_> = (0..4)
+                .map(|w| {
+                    let (db, kept) = (db.clone(), kept.clone());
+                    rt.spawn(&format!("writer {w}"), move || {
+                        while marks(&db).is_empty() {
+                            let mut t = db.begin(&TxnOptions::default()).unwrap();
+                            let write = "insert notes { about: users.key(1) }";
+                            if t.query_text(write, &[], &TxnCallOptions::default()).is_ok()
+                                && let Ok(at) = t.commit(None)
+                            {
+                                kept.lock().unwrap().push(at.lsn);
+                            }
+                        }
+                    })
+                })
+                .collect();
+            let marker = {
+                let (db, rt) = (db.clone(), rt.clone());
+                rt.clone().spawn("marker", move || {
+                    for _ in 0..40 {
+                        rt.yield_now();
+                    }
+                    let page = index_page(&db, "app::notes", "index (about)");
+                    db.damage_page(page, Damage::Checksum);
+                    while marks(&db).is_empty() {
+                        drop(db.verify(Some("notes")));
+                    }
+                })
+            };
+            for w in writers {
+                rt.join(w);
+            }
+            rt.join(marker);
+            let w = db.write_path();
+            let pager = w.pager();
+            let marked = adtb::storage::lsn(&pager.read(pager.quarantine_page()).unwrap());
+            for &at in kept.lock().unwrap().iter() {
+                assert!(
+                    at < marked.0,
+                    "seed {seed_no}: commit at {at}, mark at {marked:?}"
+                );
+            }
+        });
+    }
+}
+
+#[test]
+fn a_commit_waits_for_a_mark_being_set_and_is_refused() {
+    let mut sim = Sim::new(100, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt.clone());
+        seed(&db);
+        let (wrote, go, done) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let committer = {
+            let (db, rt, wrote, go, done) = (
+                db.clone(),
+                rt.clone(),
+                wrote.clone(),
+                go.clone(),
+                done.clone(),
+            );
+            rt.clone().spawn("committer", move || {
+                let mut t = db.begin(&TxnOptions::default()).unwrap();
+                api::in_txn_results(&mut t, GOOGLE_901);
+                wrote.store(true, Ordering::Release);
+                while !go.load(Ordering::Acquire) {
+                    rt.yield_now();
+                }
+                let got = t.commit(None);
+                done.store(true, Ordering::Release);
+                assert!(quarantined(&got.unwrap_err()).contains(USER_INDEX));
+            })
+        };
+        while !wrote.load(Ordering::Acquire) {
+            rt.yield_now();
+        }
+        db.damage_page(user_index(&db), Damage::Checksum);
+        let pause = |rt: &SimRuntime| {
+            let until = rt.now() + Duration::from_millis(50);
+            while rt.now() < until {
+                rt.yield_now();
+            }
+        };
+        let w = db.write_path();
+        let pager = w.pager();
+        let held = pager.exclusive(pager.quarantine_page()).unwrap();
+        let finder = {
+            let db = db.clone();
+            rt.spawn("finder", move || {
+                failed_on(&db, BY_USER);
+            })
+        };
+        pause(&rt);
+        go.store(true, Ordering::Release);
+        pause(&rt);
+        assert!(
+            !done.load(Ordering::Acquire),
+            "the commit passed a mark being set"
+        );
+        drop(held);
+        rt.join(finder);
+        rt.join(committer);
+    });
+}
+
+const PAST_APPLE: &str = "from n in [identities.key(12)] select n.user";
+
+fn past_of(at: adtb::Position, text: &str) -> String {
+    format!(
+        "at commit Position {{ epoch: {}, lsn: {} }} {{ {text} }}",
+        at.epoch, at.lsn
+    )
+}
+
+/// Keep history, commit an update of the Apple row of key 12, and move the old version to
+/// history. Returns the position before the update and the one after it.
+fn apple_history(db: &Database<SimRuntime>) -> (adtb::Position, adtb::Position) {
+    runs(db, "set setting RetentionWindow = { length: 2h }");
+    let commit = |text: &str| {
+        let mut t = db.begin(&TxnOptions::default()).unwrap();
+        api::in_txn_results(&mut t, text);
+        let at = t.commit(None).unwrap();
+        api::query(db, ALL);
+        at
+    };
+    let update = |user: i64| {
+        format!(
+            "update i in identities.Apple where key i == identities.key(12) \
+             set Apple {{ i with user: users.key({user}) }}"
+        )
+    };
+    let first = commit(&update(2));
+    let second = commit(&update(3));
+    commit(&update(4));
+    runs(db, "vacuum identities");
+    (first, second)
+}
+
+fn damage_history_index(db: &Database<SimRuntime>) {
+    let w = db.write_path();
+    let past = w.history_index_named("app::identities").unwrap();
+    db.damage_page(past.tree().root(), Damage::Checksum);
+}
+
+#[test]
+fn a_read_of_the_past_runs_without_its_damaged_history_key_index() {
+    let mut sim = Sim::new(97, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let (first, second) = apple_history(&db);
+        let (at_first, at_second) = (past_of(first, PAST_APPLE), past_of(second, PAST_APPLE));
+        let (then_first, then_second) = (api::query(&db, &at_first), api::query(&db, &at_second));
+        assert_ne!(then_first, then_second);
+        damage_history_index(&db);
+        let what = failed_on(&db, &at_first);
+        assert!(what.contains("key id"), "{what}");
+        assert_eq!(1, marks(&db).len());
+        assert_eq!(then_first, api::query(&db, &at_first));
+        assert_eq!(then_second, api::query(&db, &at_second));
+    });
+}
+
+#[test]
+fn a_read_of_the_past_with_no_row_then_fails_alike_without_the_history_key_index() {
+    let mut sim = Sim::new(98, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let (first, _) = apple_history(&db);
+        let gone = past_of(first, "from n in [identities.key(999)] select n.user");
+        let before = format!("{:?}", api::failure(&db, &gone));
+        damage_history_index(&db);
+        failed_on(&db, &past_of(first, PAST_APPLE));
+        assert_eq!(before, format!("{:?}", api::failure(&db, &gone)));
+    });
+}
+
+#[test]
+fn a_read_of_the_past_fails_on_a_damaged_history_heap_without_the_history_key_index() {
+    let mut sim = Sim::new(99, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = open_app(rt);
+        seed(&db);
+        let (first, _) = apple_history(&db);
+        let at_first = past_of(first, PAST_APPLE);
+        damage_history_index(&db);
+        failed_on(&db, &at_first);
+        let w = db.write_path();
+        let heap = w.history_heap_named("app::identities", "Apple").unwrap();
+        for page in heap.pages(w.pager()).unwrap() {
+            db.damage_page(page, Damage::Checksum);
+        }
+        let what = failed_on(&db, &at_first);
+        assert!(what.contains("app::identities.Apple"), "{what}");
+        assert!(marks(&db).contains(&apple_mark(&db)));
+        assert_eq!("app::identities.Apple", failed_on(&db, &at_first));
+    });
+}

@@ -14,11 +14,11 @@ use crate::storage::{Damage, PageError, Pid, Quarantine, Stopped};
 
 use super::schema::Rel;
 use super::verify::Found;
-use super::{Database, Error, Text};
+use super::{Database, Error, Text, Txn};
 
 /// What a call reads and writes, by constructor.
 #[derive(Debug, Default)]
-struct Touched {
+pub(super) struct Touched {
     reads: BTreeSet<(RelId, u32)>,
     writes: BTreeSet<(RelId, u32)>,
     /// The constructors a write stores a row into, whose references it checks.
@@ -90,6 +90,15 @@ impl<R: Runtime> Database<R> {
         "the database".to_owned()
     }
 
+    /// Mark `object`, ordered with every commit: a commit record written after the mark was
+    /// checked against it, and a commit whose check missed it has its record in the log already.
+    ///
+    /// Precondition: the calling thread holds no page latch and not the serialization lock.
+    fn set_mark(&self, object: Quarantine) -> Result<(), PageError> {
+        let _ordered = self.ser.lock(&self.rt);
+        self.pager.quarantine(object)
+    }
+
     /// Mark `objects`. Returns the failure of the call that found them.
     ///
     /// Precondition: the calling thread holds no page latch.
@@ -97,7 +106,7 @@ impl<R: Runtime> Database<R> {
         let mut names = Vec::new();
         for object in objects {
             let mut name = self.quarantined_name(object);
-            if let Err(e) = self.pager.quarantine(object) {
+            if let Err(e) = self.set_mark(object) {
                 name.push_str(&format!(" (the mark holds only in memory: {e:?})"));
             }
             names.push(name);
@@ -149,7 +158,7 @@ impl<R: Runtime> Database<R> {
         }
         let mut failed = Vec::new();
         for object in objects {
-            if let Err(e) = self.pager.quarantine(object) {
+            if let Err(e) = self.set_mark(object) {
                 failed.push(Found::Structure {
                     at: format!(
                         "the mark of {} holds only in memory: {e:?}",
@@ -201,11 +210,35 @@ impl<R: Runtime> Database<R> {
         if marks.is_empty() || text.items.is_empty() {
             return Ok(());
         }
-        self.admit_database()?;
         let mut touched = Touched::default();
         for &t in text.items {
             self.walk(text.terms, t, &mut touched);
         }
+        self.admit_touched(&marks, touched)
+    }
+
+    /// Fail if the write set of `tx` is one [`Database::admit_touched`] refuses. What `tx` only
+    /// read plays no part.
+    ///
+    /// Precondition: the calling thread holds the serialization lock, and the commit record of
+    /// `tx` is written before it lets go.
+    pub(super) fn admit_commit(&self, tx: &Txn) -> Result<(), Error> {
+        let written = tx.written.take();
+        if written.writes.is_empty() || !self.pager.any_quarantined() {
+            return Ok(());
+        }
+        self.admit_touched(&self.pager.quarantined(), written)
+    }
+
+    /// Fail if `touched` reads a quarantined constructor relation, writes one a quarantined index
+    /// covers, its checks read a quarantined constructor relation, or the database is
+    /// quarantined.
+    fn admit_touched(
+        &self,
+        marks: &BTreeSet<Quarantine>,
+        mut touched: Touched,
+    ) -> Result<(), Error> {
+        self.admit_database()?;
         self.follow_writes(&mut touched);
         let marked = |object: Quarantine| {
             if marks.contains(&object) {
@@ -233,6 +266,18 @@ impl<R: Runtime> Database<R> {
             }
         }
         Ok(())
+    }
+
+    /// Add to `written` what the outcome `o` of a statement wrote into the file.
+    pub(super) fn record_written(&self, written: &mut Touched, o: &super::Outcome) {
+        for &(r, c) in o.inserted.keys().filter(|(r, _)| self.rels.contains_key(r)) {
+            written.fills.insert((r, c));
+            written.writes.insert((r, c));
+        }
+        for &(r, c) in o.deleted.keys().filter(|(r, _)| self.rels.contains_key(r)) {
+            written.removes.insert(r);
+            written.writes.insert((r, c));
+        }
     }
 
     /// Add what term `root` of `terms`, a normal form with every function inlined, reads and writes.

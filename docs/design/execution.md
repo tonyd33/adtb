@@ -454,7 +454,10 @@ Plans are made per statement, so choosing no quarantined index needs no
 invalidation. A key lookup and a constraint's stored check plan may go
 on naming a quarantined index: while the mark holds, the store answers
 their probes from the heaps of the index's constructors, in index order,
-with a scan's read set. A read under `at` is planned as any other.
+with a scan's read set. A read under `at` is planned as any other. While the
+key index is quarantined, a key lookup that reaches the past finds its version
+by scanning the history heaps of its constructors instead of the history key
+index, one scan per lookup. Damage to one of those heaps fails the call.
 
 Rulings: ops/halt-scope/heap, spec/reads/static/static-types, spec/quarantine/index/cost-only
 

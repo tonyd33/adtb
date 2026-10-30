@@ -1560,6 +1560,62 @@ fn a_task_carrying_a_cancelled_token_never_runs() {
     }
 }
 
+/// Set a mark on the key index of `items`, durable before it returns.
+fn mark_items_key_index<R: Runtime>(db: &Database<R>) -> adtb::storage::Quarantine {
+    let w = db.write_path();
+    let index = w.index_named("shop::items", "key id").unwrap();
+    let mark = adtb::storage::Quarantine::Index(index.tree().owner());
+    w.pager().quarantine(mark).unwrap();
+    mark
+}
+
+/// Check that a server call and an interactive transaction, each with a mark set after its write
+/// and before its commit, fail and leave nothing.
+fn a_mark_before_commit_refuses_both_commits<R: Runtime>(rt: &R) {
+    let f = open(rt, 0);
+    let write = "insert items { n: 1 }
+from n in [1] select gate(n)";
+    let task = f.owner.submit_text(write, &[], read_opts()).unwrap();
+    wait_for(rt, || f.gate.entered.load(Ordering::Acquire));
+    mark_items_key_index(&f.db);
+    f.gate.release(rt);
+    match drive(rt, &task).1 {
+        Completion::Failed(Error::Fatal {
+            reason: adtb::FatalReason::Quarantined { what },
+        }) => assert!(what.contains("key id"), "{what}"),
+        other => panic!("the server's commit is refused: {other:?}"),
+    }
+    assert_eq!(0, f.items());
+    f.db.write_path()
+        .pager()
+        .release(mark_items_key_index(&f.db))
+        .unwrap();
+    let mut t = f.db.begin(&TxnOptions::default()).unwrap();
+    t.query_text("insert items { n: 2 }", &[], &TxnCallOptions::default())
+        .unwrap();
+    mark_items_key_index(&f.db);
+    assert!(
+        matches!(
+            t.commit(None),
+            Err(Error::Fatal {
+                reason: adtb::FatalReason::Quarantined { .. }
+            })
+        ),
+        "the interactive commit is refused"
+    );
+    assert_eq!(0, f.items());
+}
+
+#[test]
+fn a_mark_before_commit_refuses_both_commits_sim() {
+    sim_once(a_mark_before_commit_refuses_both_commits);
+}
+
+#[test]
+fn a_mark_before_commit_refuses_both_commits_on_a_real_file() {
+    a_mark_before_commit_refuses_both_commits(&real("mark-before-commit"));
+}
+
 #[test]
 fn a_task_reading_a_quarantined_constructor_fails_before_running() {
     sim_once(|rt| {

@@ -359,7 +359,7 @@ impl<R: Runtime> Ctx<R> {
             }
         }
         let heaps: Vec<(u32, HeapId)> = l.routes.iter().map(|r| (r.ctor, r.heap)).collect();
-        if let Some((heap, row)) = self.store.fetch_past(l.index, &k, &heaps)? {
+        if let Some((heap, row)) = self.store.fetch_past(l.index, &k, &heaps, bounds)? {
             return Ok(self.row(heap, &row));
         }
         Err(Error::Fault(Fault::NoSuchRow))

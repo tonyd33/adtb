@@ -445,6 +445,14 @@ impl<R: Runtime> Database<R> {
         self.schema.ids.ctors[&(self.schema.relation(r.id).elem_def, c)]
     }
 
+    /// Returns the id of relation `relation`, by qualified name.
+    pub fn relation_named(&self, relation: &str) -> Option<RelId> {
+        self.rels
+            .values()
+            .find(|r| r.qualified == relation)
+            .map(|r| r.id)
+    }
+
     /// Returns the heap of constructor `ctor` of relation `relation`, by qualified name.
     pub fn heap_named(&self, relation: &str, ctor: &str) -> Option<Arc<Heap>> {
         let r = self.rels.values().find(|r| r.qualified == relation)?;

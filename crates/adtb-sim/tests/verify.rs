@@ -9,7 +9,7 @@ use adtb::mvcc::Transactions;
 use adtb::runtime::Threads;
 use adtb::storage::{PageKind, Pager, Pid};
 use adtb::verify::{self, Inventory, Problem, Report, Sum};
-use adtb::write::Txn;
+use adtb::write::{Txn, VerifyScope};
 use adtb::{CallOptions, Capability, Database, Log};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
@@ -1778,5 +1778,73 @@ fn a_file_after_a_crash_of_writers_and_vacuums_holds_clean() {
             assert_eq!(Vec::<String>::new(), file, "seed {seed}");
             db.close().unwrap();
         });
+    }
+}
+
+const ROWS_LOG: &str = "module app
+add module app
+add type Row = { id: Key rows, n: I64 }
+add relation rows : Row key id generate sequence
+";
+
+const LIVE_ROWS: i64 = 3_000;
+
+/// Returns each `Orphan` finding of a check of the indexes with vacuum running beside it, over
+/// many live rows and a dead one with the last key, whose slot vacuum frees while the check is
+/// on the rows before it.
+fn orphans_beside_vacuum(seed: u64) -> Vec<String> {
+    let config = Config {
+        switch_rate: 0.3,
+        ..Config::default()
+    };
+    let mut sim = Sim::new(seed, config);
+    api::run(&mut sim, |rt| {
+        let db = Database::open_in(
+            rt.clone(),
+            "hold.adt",
+            &Log::new([ROWS_LOG]),
+            &api::options(2),
+        )
+        .unwrap();
+        let digit = "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]";
+        api::results(
+            &db,
+            &format!(
+                "insert rows from (from a in {digit}, b in {digit}, c in {digit}, d in {digit} \
+                 where a * 1000 + b * 100 + c * 10 + d <= {LIVE_ROWS} \
+                 select {{ n: a * 1000 + b * 100 + c * 10 + d }})"
+            ),
+        );
+        api::results(&db, &format!("delete r in rows where r.n == {LIVE_ROWS}"));
+        let started = Arc::new(AtomicBool::new(false));
+        let cleaner = {
+            let (db, rt, started) = (db.clone(), rt.clone(), started.clone());
+            rt.clone().spawn("vacuum", move || {
+                while !started.load(Ordering::Acquire) {
+                    rt.yield_now();
+                }
+                let report = api::query(&db, "vacuum rows");
+                assert!(report[0].contains("removed: 1"), "{report:?}");
+            })
+        };
+        let w = db.write_path();
+        let snapshot = w.begin_verify().unwrap();
+        started.store(true, Ordering::Release);
+        let scope = VerifyScope::Relation(w.relation_named("app::rows").unwrap());
+        let found = w.check_indexes(snapshot.txn(), scope).unwrap();
+        rt.join(cleaner);
+        found
+            .iter()
+            .map(|f| format!("{f:?}"))
+            .filter(|f| f.starts_with("Orphan"))
+            .collect()
+    })
+}
+
+#[test]
+fn a_check_of_the_indexes_beside_vacuum_finds_no_orphan() {
+    for seed in adtb_simkit::seeds::sweep(0..1) {
+        let orphans = orphans_beside_vacuum(seed);
+        assert!(orphans.is_empty(), "seed {seed}: {orphans:?}");
     }
 }

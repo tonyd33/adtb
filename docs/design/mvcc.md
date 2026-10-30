@@ -241,6 +241,9 @@ the log is durable past its own commit record and past the commit
 record of every commit its snapshot reads; `Transactions::read_upto`
 gives the last of those for a snapshot.
 
+A commit checks what its transaction wrote against the quarantine marks
+before its commit record ([storage.md §8](storage.md#8-quarantine)).
+
 A commit log page that fails verification quarantines the whole
 database, since every relation's visibility reads the commit log. The
 write path turns this into the durable database mark

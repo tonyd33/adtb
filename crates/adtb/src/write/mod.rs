@@ -13,6 +13,7 @@ mod sequence;
 mod stream;
 mod verify;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -317,6 +318,8 @@ pub struct Txn {
     sid: SerialId,
     snapshot: Snapshot,
     hold: SnapshotId,
+    /// What its statements that succeeded wrote into the file.
+    written: RefCell<quarantine::Touched>,
 }
 
 impl Txn {
@@ -642,6 +645,7 @@ impl<R: Runtime> Database<R> {
             sid,
             snapshot,
             hold,
+            written: RefCell::default(),
         })
     }
 
@@ -705,6 +709,7 @@ impl<R: Runtime> Database<R> {
             sid,
             snapshot,
             hold,
+            written: RefCell::default(),
         })
     }
 
@@ -812,6 +817,9 @@ impl<R: Runtime> Database<R> {
                 }
                 return Err(Failed { item, error });
             }
+        }
+        for o in &out {
+            self.record_written(&mut tx.written.borrow_mut(), o);
         }
         Ok(out)
     }
@@ -967,11 +975,15 @@ impl<R: Runtime> Database<R> {
     /// Commit `tx`. Returns its commit position once the log is durable past its commit and
     /// every commit it read; for a read-only transaction, the position of the latest commit it
     /// read, else of the log's durable end.
+    ///
+    /// Abort `tx` and fail with `Quarantined` if a mark set before its commit record stops what
+    /// `tx` wrote, by the rule that stops a statement.
     pub fn commit(&self, tx: Txn) -> Result<Position, Error> {
         let done = {
             let mut ser = self.ser.lock(&self.rt);
-            match ser.precommit(tx.sid) {
-                Err(f) => Err(Error::Serialization(f)),
+            let admitted = self.admit_commit(&tx);
+            match admitted.and_then(|()| ser.precommit(tx.sid).map_err(Error::Serialization)) {
+                Err(e) => Err(e),
                 Ok(()) => match tx.xid.map(|x| self.txns.commit(&self.pager, x)).transpose() {
                     Err(e) => Err(e.into()),
                     Ok(own) => {

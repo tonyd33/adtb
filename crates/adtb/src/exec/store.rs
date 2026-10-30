@@ -466,16 +466,27 @@ impl<R: Runtime> Store<R> {
     /// Returns the version the history key index of key index `index` names for `key` and
     /// the store's snapshot sees, from the history heap of the heap its route in `routes`, by
     /// constructor, names; `None` when there is none or the store does not read the past.
+    /// While the key index is quarantined, scan those history heaps within `bounds`.
     pub fn fetch_past(
         &self,
         index: IndexId,
         key: &[Value],
         routes: &[(u32, HeapId)],
+        bounds: ProbeBounds<'_>,
     ) -> Result<Option<(HeapId, Vec<Value>)>, Error> {
         let Some(past) = self.history.indexes.get(&index) else {
             return Ok(None);
         };
-        let ctors = &self.index(index).ctors;
+        let ix = self.index(index);
+        if let Some(rows) = &ix.rows
+            && self.pager.any_quarantined()
+            && self
+                .pager
+                .is_quarantined(Quarantine::Index(ix.index.tree().owner()))
+        {
+            return self.past_from_heaps(index, rows, key, routes, bounds);
+        }
+        let ctors = &ix.ctors;
         for e in past.probe(&self.pager, key).map_err(index_error)? {
             let Some(c) = ctors.get(&e.ctor) else {
                 continue;
@@ -490,6 +501,45 @@ impl<R: Runtime> Store<R> {
                 && self.reads.sees(&v.header)?
             {
                 return Ok(Some((heap, v.row)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Returns what [`Store::fetch_past`] returns, found in the history heaps of `routes`.
+    fn past_from_heaps(
+        &self,
+        index: IndexId,
+        rows: &IndexedRows,
+        key: &[Value],
+        routes: &[(u32, HeapId)],
+        bounds: ProbeBounds<'_>,
+    ) -> Result<Option<(HeapId, Vec<Value>)>, Error> {
+        let schema = self.index(index).index.schema();
+        let wanted = schema.encode(key);
+        let types = self.key_types(index);
+        for &(c, heap) in routes {
+            let Some(stored) = self.history.heaps.get(&heap) else {
+                continue;
+            };
+            for pid in stored.heap.pages(&self.pager)? {
+                (bounds.check)()?;
+                let mut versions = Vec::new();
+                stored
+                    .heap
+                    .scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
+                let size: usize = versions.iter().map(|v| row_size(&v.row)).sum();
+                let _page = bounds.grant.take(size)?;
+                for v in versions {
+                    if rows
+                        .keys
+                        .key(c, &v.row, &types)?
+                        .is_some_and(|k| schema.encode(&k) == wanted)
+                        && self.reads.sees(&v.header)?
+                    {
+                        return Ok(Some((heap, v.row)));
+                    }
+                }
             }
         }
         Ok(None)

@@ -735,7 +735,20 @@ transactions layer read the marks and rely on them as follows
 - no plan uses a quarantined index;
 - a write is refused where a constraint or reference check must read
   the quarantined heap, or where it changes a constructor relation a
-  quarantined index covers.
+  quarantined index covers;
+- a commit is refused by that rule, applied to the constructors its
+  transaction's statements that succeeded wrote. It aborts the transaction
+  and leaves nothing visible. What the transaction only read plays no part,
+  and a transaction that wrote nothing commits.
+
+Commits and marks set by the write path are ordered. A commit checks the
+marks and writes its commit record under one hold of the serialization lock,
+and the write path sets a mark under that lock. Postconditions:
+
+- a mark set before that hold refuses the commit;
+- a commit whose hold came first stands, ordered before the mark, with its
+  commit record below the LSN of the mark's change to the marks' page. A
+  repair that starts after the mark reads what it committed.
 
 The error a call receives is in
 [../spec/catalog.md §4](../spec/catalog.md#4-error-sums).
