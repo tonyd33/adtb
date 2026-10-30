@@ -10,41 +10,6 @@ use crate::exec::types::{ctors, repr};
 /// The generator and relation of each `Fresh` occurrence, by its placeholder's number.
 pub type Occurrences = BTreeMap<i64, (Generator, RelId)>;
 
-/// Returns the variables `kind` binds around each of its children, in the order of
-/// `Terms::children`.
-fn bound(kind: &Kind, n: usize) -> Vec<Vec<Var>> {
-    let mut out = vec![Vec::new(); n];
-    match kind {
-        Kind::Let(x, ..) | Kind::LetBang(x, ..) | Kind::For(x, ..) => out[1].push(*x),
-        Kind::Lam(x, _) => out[0].push(*x),
-        Kind::Upsert { old, new, .. } => out[1].extend([*old, *new]),
-        Kind::Case { arms, .. } => {
-            for (i, (_, v, _)) in arms.iter().enumerate() {
-                out[i + 1].push(*v);
-            }
-        }
-        Kind::Agg { var, .. } | Kind::Group { var, .. } => out[1].push(*var),
-        Kind::Top { var, .. } => {
-            for o in out.iter_mut().skip(2) {
-                o.push(*var);
-            }
-        }
-        Kind::Present { var, keys, .. } => {
-            for o in out.iter_mut().skip(1).take(keys.len()) {
-                o.push(*var);
-            }
-        }
-        Kind::Fix(binds, _) => {
-            let xs: Vec<Var> = binds.iter().map(|(x, _)| *x).collect();
-            for o in &mut out {
-                o.extend(&xs);
-            }
-        }
-        _ => {}
-    }
-    out
-}
-
 /// Returns `t` with each path to a `Fresh` given its own placeholder: a record of its number
 /// and the variables bound around it, so that its value is one per evaluation. Adds the
 /// placeholders' numbers to `out`. `outer` holds the variables bound around `t`.
@@ -99,7 +64,7 @@ fn walk(
     let ty = terms.ty(t).clone();
     let cs = terms.children(t);
     let mut new = Vec::with_capacity(cs.len());
-    for (c, b) in cs.iter().zip(bound(&kind, cs.len())) {
+    for (c, b) in cs.iter().zip(kind.bound()) {
         let n = scope.len();
         scope.extend(b);
         new.push(walk(terms, *c, scope, memo, out));

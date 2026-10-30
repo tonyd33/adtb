@@ -4,6 +4,10 @@ use std::rc::Rc;
 use crate::schema::Generator;
 use crate::types::*;
 
+#[cfg(test)]
+#[path = "kernel_tests.rs"]
+mod tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Tm(pub u32);
 
@@ -309,7 +313,30 @@ struct Renaming {
 
 /// The free variables of terms of one arena, kept across calls.
 #[derive(Debug, Default)]
-pub(crate) struct Frees(HashMap<Tm, Rc<BTreeSet<Var>>>);
+pub struct Frees(HashMap<Tm, Rc<BTreeSet<Var>>>);
+
+impl Frees {
+    /// Returns the variables free in `t`.
+    ///
+    /// Preconditions:
+    /// - Every term passed to this is of `terms`, and no node of `terms` is rewritten in place.
+    pub fn of(&mut self, terms: &Terms, t: Tm) -> Rc<BTreeSet<Var>> {
+        if let Some(f) = self.0.get(&t) {
+            return Rc::clone(f);
+        }
+        let kind = terms.kind(t);
+        let mut out = BTreeSet::new();
+        if let Kind::Var(v) = kind {
+            out.insert(*v);
+        }
+        for (c, b) in kind.children().into_iter().zip(kind.bound()) {
+            out.extend(self.of(terms, c).iter().filter(|v| !b.contains(v)));
+        }
+        let out = Rc::new(out);
+        self.0.insert(t, Rc::clone(&out));
+        out
+    }
+}
 
 /// An arena of typed kernel terms. A term may be shared by several parents.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -419,29 +446,6 @@ impl Terms {
         self.copy_renamed(t, &mut r, frees)
     }
 
-    /// Returns the variables free in `t`.
-    fn frees(&self, t: Tm, memo: &mut Frees) -> Rc<BTreeSet<Var>> {
-        if let Some(f) = memo.0.get(&t) {
-            return Rc::clone(f);
-        }
-        let f = match self.kind(t) {
-            Kind::Var(v) => BTreeSet::from([*v]),
-            k => {
-                let mut f = BTreeSet::new();
-                for c in k.children() {
-                    f.extend(self.frees(c, memo).iter().copied());
-                }
-                for v in self.binders(t) {
-                    f.remove(&v);
-                }
-                f
-            }
-        };
-        let f = Rc::new(f);
-        memo.0.insert(t, Rc::clone(&f));
-        f
-    }
-
     /// Returns the variables `t` itself binds.
     fn binders(&self, t: Tm) -> Vec<Var> {
         let mut out = Vec::new();
@@ -459,7 +463,7 @@ impl Terms {
         if let Some(&c) = r.copies.get(&t) {
             return c;
         }
-        let renames = self.frees(t, frees).iter().any(|v| r.vars.contains_key(v))
+        let renames = frees.of(self, t).iter().any(|v| r.vars.contains_key(v))
             || self.binders(t).iter().any(|v| r.vars.contains_key(v));
         if !renames {
             return t;
@@ -632,6 +636,77 @@ impl Kind {
                 .chain(after.iter().copied())
                 .collect(),
         }
+    }
+
+    /// Returns the variables this kind binds around each of its children, in the order of
+    /// [`Kind::children`].
+    pub fn bound(&self) -> Vec<Vec<Var>> {
+        let mut out = vec![Vec::new(); self.children().len()];
+        match self {
+            Kind::Let(x, ..) | Kind::LetBang(x, ..) | Kind::For(x, ..) => out[1].push(*x),
+            Kind::Lam(x, _) => out[0].push(*x),
+            Kind::Upsert { old, new, .. } => out[1].extend([*old, *new]),
+            Kind::Case { arms, .. } => {
+                for (i, (_, v, _)) in arms.iter().enumerate() {
+                    out[i + 1].push(*v);
+                }
+            }
+            Kind::Agg { var, .. } | Kind::Group { var, .. } => out[1].push(*var),
+            Kind::Top { var, .. } => {
+                for o in out.iter_mut().skip(2) {
+                    o.push(*var);
+                }
+            }
+            Kind::Present { var, keys, .. } => {
+                for o in out.iter_mut().skip(1).take(keys.len()) {
+                    o.push(*var);
+                }
+            }
+            Kind::Fix(binds, _) => {
+                let xs: Vec<Var> = binds.iter().map(|(x, _)| *x).collect();
+                for o in &mut out {
+                    o.extend(&xs);
+                }
+            }
+            Kind::Var(_)
+            | Kind::Const(_)
+            | Kind::Prim(..)
+            | Kind::Record(_)
+            | Kind::Field(..)
+            | Kind::Ctor { .. }
+            | Kind::If(..)
+            | Kind::App(..)
+            | Kind::Call { .. }
+            | Kind::Caller
+            | Kind::Key(_)
+            | Kind::KeyOf(..)
+            | Kind::Deref { .. }
+            | Kind::Tag(_)
+            | Kind::Try(_)
+            | Kind::Rel(..)
+            | Kind::Transition(..)
+            | Kind::Restrict(..)
+            | Kind::EmptySet
+            | Kind::Singleton(_)
+            | Kind::Union(..)
+            | Kind::IsEmpty(_)
+            | Kind::Exists(_)
+            | Kind::Fresh(..)
+            | Kind::Only(_)
+            | Kind::At { .. }
+            | Kind::Reject(_)
+            | Kind::Unreachable
+            | Kind::Skip
+            | Kind::Insert(..)
+            | Kind::Delete(..)
+            | Kind::Replace(..)
+            | Kind::Rejects { .. }
+            | Kind::Par(_)
+            | Kind::Fail(_)
+            | Kind::Block(..)
+            | Kind::Transact(..) => {}
+        }
+        out
     }
 
     /// Returns this kind with its children replaced by `cs`, given in the order of [`Kind::children`].

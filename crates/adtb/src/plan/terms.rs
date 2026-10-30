@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
-use adtb_lang::kernel::{Kind, Terms, Tm, Var};
+use adtb_lang::kernel::{Frees, Kind, Terms, Tm, Var};
 
 /// Returns `kind` with its children replaced by `cs`, given in the order of `Terms::children`.
 pub fn with_children(kind: &Kind, cs: &[Tm]) -> Kind {
@@ -159,44 +159,10 @@ pub fn with_vars(kind: &Kind, f: &mut impl FnMut(Var) -> Var) -> Kind {
     kind
 }
 
-/// Returns the variables `t` binds around each of its children, in the order of `Terms::children`.
-fn bound(kind: &Kind, n: usize) -> Vec<Vec<Var>> {
-    let mut out = vec![Vec::new(); n];
-    match kind {
-        Kind::Let(x, ..) | Kind::LetBang(x, ..) | Kind::For(x, ..) => out[1].push(*x),
-        Kind::Lam(x, _) => out[0].push(*x),
-        Kind::Upsert { old, new, .. } => out[1].extend([*old, *new]),
-        Kind::Case { arms, .. } => {
-            for (i, (_, v, _)) in arms.iter().enumerate() {
-                out[i + 1].push(*v);
-            }
-        }
-        Kind::Agg { var, .. } | Kind::Group { var, .. } => out[1].push(*var),
-        Kind::Top { var, .. } => {
-            for o in out.iter_mut().skip(2) {
-                o.push(*var);
-            }
-        }
-        Kind::Present { var, keys, .. } => {
-            for o in out.iter_mut().skip(1).take(keys.len()) {
-                o.push(*var);
-            }
-        }
-        Kind::Fix(binds, _) => {
-            let xs: Vec<Var> = binds.iter().map(|(x, _)| *x).collect();
-            for o in &mut out {
-                o.extend(&xs);
-            }
-        }
-        _ => {}
-    }
-    out
-}
-
 /// Facts about terms of one arena, remembered per term.
 #[derive(Debug, Default)]
 pub struct Facts {
-    free: HashMap<Tm, Rc<BTreeSet<Var>>>,
+    free: Frees,
     scalar: HashMap<Tm, bool>,
     binders: HashMap<Tm, Rc<BTreeSet<Var>>>,
     sunk: HashMap<(Var, Tm, Tm), Tm>,
@@ -204,22 +170,7 @@ pub struct Facts {
 
 impl Facts {
     pub fn free(&mut self, terms: &Terms, t: Tm) -> Rc<BTreeSet<Var>> {
-        if let Some(s) = self.free.get(&t) {
-            return s.clone();
-        }
-        let kind = terms.kind(t);
-        let mut out = BTreeSet::new();
-        if let Kind::Var(v) = kind {
-            out.insert(*v);
-        }
-        let cs = terms.children(t);
-        for (c, b) in cs.iter().zip(bound(kind, cs.len())) {
-            let f = self.free(terms, *c);
-            out.extend(f.iter().filter(|v| !b.contains(v)));
-        }
-        let out = Rc::new(out);
-        self.free.insert(t, out.clone());
-        out
+        self.free.of(terms, t)
     }
 
     /// Returns every variable a binder inside `t` binds.
@@ -229,7 +180,7 @@ impl Facts {
         }
         let kind = terms.kind(t);
         let cs = terms.children(t);
-        let mut out: BTreeSet<Var> = bound(kind, cs.len()).into_iter().flatten().collect();
+        let mut out: BTreeSet<Var> = kind.bound().into_iter().flatten().collect();
         for c in cs {
             out.extend(self.binders(terms, c).iter());
         }
