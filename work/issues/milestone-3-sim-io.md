@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-25
-status: open
+status: resolved
 kind: feature
 priority: 300
 summary: "milestone 3 (simulation and I/O) has not exited: no Loom tests of the page state word, and Miri does not run the adtb-sys tests"
+closed: 2026-10-29
 depends-on:
   - io-backends
   - real-runtime
@@ -33,3 +34,9 @@ unsafe code; the unsafe blocks are in adtb-sys (pages.rs, buf.rs, os/uring.rs, a
 io_uring cannot run under Miri), so Miri over the whole simulator suite would check
 safe code for hours. The simulated network and worker loop moved to milestone 10,
 whose transports are the only thing that needs them.
+
+## 2026-10-29: closed
+
+Exit met: Loom models pass and Miri runs adtb-sys clean (loom-and-miri, landed 0e560be9). Replay byte for byte holds under the suite.
+
+## 2026-10-29: resolved

@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-25
-status: in-progress
+status: resolved
 kind: feature
 priority: 320
 summary: "no Loom tests of the page state word, and Miri does not run over the simulator tests"
-branch: loom-miri
+closed: 2026-10-29
 tags:
   - sim
   - test
@@ -25,3 +25,9 @@ state word in crates/adtb-sys/src/pages.rs (latch and unlatch, an optimistic rea
 against a writer, the clock against a latch), and Miri over the adtb-sys tests of
 pages.rs and buf.rs, with a nightly toolchain in devenv. os/uring.rs stays out of
 Miri.
+
+## 2026-10-29: closed
+
+Landed at 0e560be9: 11 Loom models of the page state word, Miri over the adtb-sys unit tests with a threaded test, both run by `check`. Review: work/briefs/review-loom-miri.md. Neither tool found a bug in the unsafe code. Miri over the simulated engine, which the rulings ask for, is miri-sim-engine.
+
+## 2026-10-29: resolved
