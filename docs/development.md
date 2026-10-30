@@ -56,11 +56,21 @@ check
 ```
 
 `check` runs the full workspace and campaign application checks, dependency
-policy and source-size limits. `work/tools/suite` serializes test runs
-across this machine and saves output to `target/suite.txt`.
+policy and source-size limits, one at a time across this machine.
+`work/tools/suite` shares that lock for its test run and saves output to
+`target/suite.txt`.
 
 Builds stay in each workspace's `target/`; `CARGO_TARGET_DIR` can select
 another location.
+
+The dev and test profiles carry no debug info, to keep `target/` small. A panic
+message still names its file and line; a backtrace names only functions, and loses inlined frames. For
+file and line in a backtrace, rebuild with line tables, which recompiles
+everything the test needs:
+
+```sh
+CARGO_PROFILE_TEST_DEBUG=line-tables-only RUST_BACKTRACE=1 cargo nextest run -p CRATE FILTER
+```
 
 ## Build with Nix
 

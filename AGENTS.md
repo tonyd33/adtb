@@ -80,8 +80,8 @@ nix run github:tonyd33/tix -- -C work/issues check
 Scripts in `work/tools/`, run as `work/tools/NAME` from any workspace
 root (devenv also puts each on PATH as `NAME`):
 
-- `suite [ARGS]`: the full nextest run, one at a time across the
-  machine; output in `target/suite.txt`, prints failures and the summary.
+- `suite [ARGS]`: the full nextest run, under the machine lock that
+  `check` also holds; output in `target/suite.txt`, prints failures and the summary.
 - `conf PATH...`: run conformance files or directories on the
   reference and the engine; prints each difference as `FILE:LINE`.
 - `adtb-probe --schema FILE [--data FILE] [--explain] [--checks NAME] TEXT`:
@@ -108,8 +108,14 @@ root (devenv also puts each on PATH as `NAME`):
   stale.
 - `land WS [SUBJECT]`: land workspace WS on `main` and move the main
   working copy onto it; refuses while the main working copy has changes.
-- `workspace-gc [--clean | --guard]`: every workspace's `target/` size;
-  clean the idle ones; `--guard` fails under 30 GB free.
+  A slot becomes free; any other workspace is forgotten.
+- `workspace-gc [--clean | --guard | --clear-build WS]`: every workspace's
+  `target/` size; clean the idle ones; `--guard` fails under 30 GB free;
+  `--clear-build` empties an idle `target/debug` and `target/tmp` of WS, `main`
+  for the main checkout, and refuses while anything uses them.
+- `slot NAME [N]`: give a track a workspace in a reused directory, so its
+  `target/` stays valid; `land` frees it. `slot-test` proves `slot`, `land`
+  and `--clear-build` on a scratch repository; `--shell` skips the cargo builds.
 
 ## Knowledge base
 

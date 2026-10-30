@@ -1,8 +1,8 @@
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
 use adtb_sys::os::{Backend, OsRuntime};
+use adtb_testkit::scratch::Scratch;
 
 use crate::api::{CallOptions, CreateOptions, Database, Log, OpenError, OpenOptions, RejectReason};
 use crate::catalog::Catalog;
@@ -11,23 +11,14 @@ use crate::storage::{HEADER_LEN, Pager};
 use super::super::RoleAuthority;
 use super::{Capability, Error, Tables, Val, print};
 
-fn directory() -> PathBuf {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let parent = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/authority-fixtures");
-    std::fs::create_dir_all(&parent).expect("create fixture parent");
-    loop {
-        let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = parent.join(format!("{}-{nonce}", std::process::id()));
-        match std::fs::create_dir(&path) {
-            Ok(()) => return path,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => panic!("create fixture directory: {error}"),
-        }
-    }
+fn directory() -> Scratch {
+    Scratch::new("authority-fixtures", "roles")
 }
 
-fn opened(log: &Log) -> Database {
-    opened_in(&directory(), log)
+fn opened(log: &Log) -> (Scratch, Database) {
+    let scratch = directory();
+    let db = opened_in(scratch.path(), log);
+    (scratch, db)
 }
 
 fn opened_in(path: &std::path::Path, log: &Log) -> Database {
@@ -147,7 +138,7 @@ fn seed_credentials(authority: &RoleAuthority) {
 
 #[test]
 fn dormant_and_other_target_grants_never_authorize_a_capability() {
-    let db = opened(&Log::default());
+    let (_scratch, db) = opened(&Log::default());
     let authority = db.role_authority();
     authority.create_role("web").unwrap();
     let session = authority.session("web").unwrap();
@@ -184,7 +175,7 @@ fn dormant_and_other_target_grants_never_authorize_a_capability() {
 
 #[test]
 fn dropping_a_role_removes_its_credentials() {
-    let db = opened(&Log::default());
+    let (_scratch, db) = opened(&Log::default());
     let authority = db.role_authority();
     authority.create_role("web").unwrap();
     authority.create_role("other").unwrap();
@@ -203,7 +194,7 @@ fn dropping_a_role_removes_its_credentials() {
 
 #[test]
 fn dropping_a_role_removes_peer_mappings_before_name_reuse() {
-    let db = opened(&Log::default());
+    let (_scratch, db) = opened(&Log::default());
     let authority = db.role_authority();
     authority.create_role("web").unwrap();
     authority.create_role("other").unwrap();
@@ -229,13 +220,13 @@ fn dropping_a_role_removes_peer_mappings_before_name_reuse() {
 fn a_refused_drop_leaves_peer_mappings_and_authority_unchanged() {
     let schema = "module example\nadd module example\nadd type Item = { id: Key items }\nadd relation items : Item key id\n";
     let grant = "module example\ngrant read items to web\n";
-    let path = directory();
-    let db = opened_in(&path, &Log::new([schema]));
+    let scratch = directory();
+    let db = opened_in(scratch.path(), &Log::new([schema]));
     let authority = db.role_authority();
     authority.create_role("web").unwrap();
     authority.create_role("other").unwrap();
     db.close().unwrap();
-    let db = opened_in(&path, &Log::new([schema, grant]));
+    let db = opened_in(scratch.path(), &Log::new([schema, grant]));
     let authority = db.role_authority();
     authority
         .grant_capability("web", Capability::Assert, true)
@@ -260,7 +251,7 @@ fn a_refused_drop_leaves_peer_mappings_and_authority_unchanged() {
 
 #[test]
 fn an_overlapping_drop_forces_a_canonical_grant_writer_to_recheck_the_role() {
-    let db = opened(&Log::default());
+    let (_scratch, db) = opened(&Log::default());
     let authority = db.role_authority();
     authority.create_role("web").unwrap();
     let attempts = AtomicUsize::new(0);
@@ -313,8 +304,8 @@ fn an_overlapping_drop_forces_a_canonical_grant_writer_to_recheck_the_role() {
 
 #[test]
 fn opening_an_empty_legacy_roles_table_preserves_a_full_counter_page() {
-    let path = directory();
-    let rt = OsRuntime::new(&path, Backend::Pool { threads: 1 });
+    let scratch = directory();
+    let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
     let options = OpenOptions {
         create: Some(CreateOptions::default()),
         workers: Some(1),
@@ -339,7 +330,7 @@ fn opening_an_empty_legacy_roles_table_preserves_a_full_counter_page() {
     pager.close();
     drop(pager);
     drop(rt);
-    let rt = OsRuntime::new(&path, Backend::Pool { threads: 1 });
+    let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
     let db = Database::open_in(rt, "roles.adt", &Log::default(), &options)
         .expect("native owner initialization must not reserve a generated counter");
     assert_eq!(
@@ -351,9 +342,9 @@ fn opening_an_empty_legacy_roles_table_preserves_a_full_counter_page() {
     assert_eq!(1, owner.id.0);
 }
 
-fn legacy_roles(roles: &[(i64, &str)]) -> (PathBuf, OpenOptions) {
-    let path = directory();
-    let rt = OsRuntime::new(&path, Backend::Pool { threads: 1 });
+fn legacy_roles(roles: &[(i64, &str)]) -> (Scratch, OpenOptions) {
+    let scratch = directory();
+    let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
     let options = OpenOptions {
         create: Some(CreateOptions::default()),
         workers: Some(1),
@@ -397,13 +388,13 @@ fn legacy_roles(roles: &[(i64, &str)]) -> (PathBuf, OpenOptions) {
         )
         .unwrap();
     pager.close();
-    (path, options)
+    (scratch, options)
 }
 
 #[test]
 fn reopening_preserves_a_preexisting_owner_identity_and_generates_past_all_roles() {
-    let (path, options) = legacy_roles(&[(91, "owner"), (92, "existing")]);
-    let rt = OsRuntime::new(&path, Backend::Pool { threads: 1 });
+    let (scratch, options) = legacy_roles(&[(91, "owner"), (92, "existing")]);
+    let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
     let db = Database::open_in(rt.clone(), "roles.adt", &Log::default(), &options).unwrap();
     let before = rows(
         &db,
@@ -427,8 +418,8 @@ fn reopening_preserves_a_preexisting_owner_identity_and_generates_past_all_roles
 
 #[test]
 fn a_nonempty_ownerless_roles_table_is_refused_and_releases_open_resources() {
-    let (path, options) = legacy_roles(&[(7, "existing")]);
-    let rt = OsRuntime::new(&path, Backend::Pool { threads: 1 });
+    let (scratch, options) = legacy_roles(&[(7, "existing")]);
+    let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
     for _ in 0..2 {
         let result = Database::open_in(rt.clone(), "roles.adt", &Log::default(), &options);
         assert!(
@@ -463,7 +454,7 @@ fn a_damaged_page_met_writing_a_registrations_facts_is_a_storage_failure() {
         "bundle tools-0.1 pins 1 ({hash}) edition \"2026-10\"\nimport shop\n"
     ))
     .expect("the bundle parses");
-    let db = opened(&Log::new([schema]));
+    let (_scratch, db) = opened(&Log::new([schema]));
     let e = &db.engine;
     for pid in e.deployment.roots().pages(&e.pager).unwrap() {
         e.pager.damage(pid, crate::storage::Damage::Unreadable);
@@ -493,7 +484,7 @@ fn invalid(result: Result<(), Error>) -> String {
 
 #[test]
 fn a_call_grant_is_revoked_by_its_target_text_and_a_family_by_any_signature() {
-    let db = opened(&Log::default());
+    let (_scratch, db) = opened(&Log::default());
     let authority = db.role_authority();
     authority.create_role("web").unwrap();
     let owner = authority.session("owner").unwrap();
@@ -539,7 +530,7 @@ fn a_call_grant_is_revoked_by_its_target_text_and_a_family_by_any_signature() {
 
 #[test]
 fn a_grant_on_a_system_relation_is_revoked_by_its_text_and_widens_as_a_log_grant_does() {
-    let db = opened(&Log::default());
+    let (_scratch, db) = opened(&Log::default());
     let authority = db.role_authority();
     authority.create_role("web").unwrap();
     let owner = authority.session("owner").unwrap();
@@ -572,7 +563,7 @@ fn a_grant_on_a_system_relation_is_revoked_by_its_text_and_widens_as_a_log_grant
 
 #[test]
 fn a_self_given_option_is_no_remaining_option_and_is_deleted_with_its_revoke() {
-    let db = opened(&Log::default());
+    let (_scratch, db) = opened(&Log::default());
     let authority = db.role_authority();
     authority.create_role("web").unwrap();
     authority.create_role("bob").unwrap();
@@ -604,7 +595,7 @@ fn a_self_given_option_is_no_remaining_option_and_is_deleted_with_its_revoke() {
 
 #[test]
 fn a_revoke_from_the_schema_owner_orphans_nothing() {
-    let db = opened(&Log::default());
+    let (_scratch, db) = opened(&Log::default());
     let authority = db.role_authority();
     authority.create_role("web").unwrap();
     authority.create_role("bob").unwrap();

@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# slot NAME [N]   give track NAME a workspace in a slot directory beside the main checkout: reuse
+#                 a free slot, or add `MAIN-slot-M` when none is usable; print the directory last
+#
+# `land` frees a slot; its directory stays, so target/ stays valid for the next track. Refuses a
+# slot whose working copy has changes or a description, with commits not on main, holding files jj
+# does not track outside build output, or in use by a process. With N, refuses when slot-N is
+# unusable; without, skips such a slot and says why. Empties target/debug and target/tmp of a
+# reused slot when together they are above ADTB_SLOT_CAP_GB (default 20). One call runs at a time.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+name=${1:?usage: slot NAME [N]}
+only=${2:-}
+
+# shellcheck source=work/tools/common.bash
+source "$root/work/tools/common.bash"
+
+die() {
+  printf 'slot: %s\n' "$1" >&2
+  exit 1
+}
+
+list() {
+  jj -R "$root" workspace list --ignore-working-copy -T 'name ++ "\t" ++ root ++ "\n"'
+}
+
+# Print the files under $1 that jj does not track, past regenerated build output.
+leftovers() {
+  (
+    cd "$1"
+    LC_ALL=C comm -23 \
+      <(find . \( -path ./.jj -o -path ./.git -o -path ./target -o -path ./apps/campaign/target -o -name '.devenv*' \
+        -o -name .direnv -o -name .pre-commit-config.yaml -o -name .nvim.lua -o -name 'result*' \) \
+        -prune -o \( -type f -o -type l \) -printf '%P\n' | LC_ALL=C sort) \
+      <(jj file list -T 'path ++ "\n"' | LC_ALL=C sort)
+  )
+}
+
+# Print why the free slot named $1 at $2 cannot be reused; print nothing when it can.
+unusable() {
+  local state unlanded files users
+  state=$(jj -R "$2" log -r @ --no-graph -T 'if(empty && description == "", "clean", "changed")' 2>&1) ||
+    state="unreadable: $state"
+  if [[ $state != clean ]]; then
+    echo "working copy $state"
+    return
+  fi
+  unlanded=$(jj -R "$2" log -r '::@ ~ ::main ~ @' --no-graph -T 'change_id.short() ++ " "')
+  [[ -z $unlanded ]] || echo "commits not on main: $unlanded"
+  files=$(leftovers "$2")
+  [[ -z $files ]] || echo "untracked files: $(echo "$files" | head -5 | paste -sd' ')"
+  users=$(pids_using "$2")
+  [[ -z $users ]] || echo "in use by: $(echo "$users" | paste -sd,)"
+}
+
+main=$(list | awk -F'\t' '$1 == "default" { print $2 }')
+[[ $name =~ ^[A-Za-z0-9._-]+$ ]] || die "$name is not a workspace name"
+[[ ! $name =~ ^slot-[0-9]+$ && $name != default && $name != main ]] || die "$name is reserved"
+
+exec 7>>"$main/.jj/slot.lock"
+flock 7
+
+if list | cut -f1 | grep -qxF "$name"; then
+  die "workspace $name exists"
+fi
+
+reuse() {
+  local slot=$1 path=$2
+  if over_slot_cap "$path/target"; then
+    echo "$path/target is above the cap"
+    ADTB_GC_IDLE_HOURS=0 "$root/work/tools/workspace-gc" --clear-build "$slot"
+  fi
+  jj -R "$path" new main
+  jj -R "$path" workspace rename "$name"
+  echo "$path"
+}
+
+while IFS=$'\t' read -r slot path; do
+  free_slot "$slot" "$path" "$main" || continue
+  [[ -z $only || $slot == "slot-$only" ]] || continue
+  why=$(unusable "$slot" "$path")
+  if [[ -z $why ]]; then
+    reuse "$slot" "$path"
+    exit 0
+  fi
+  printf 'slot: %s refused: %s\n' "$slot" "$why" >&2
+  [[ -z $only ]] || exit 1
+done < <(list | sort -t- -k2n)
+[[ -z $only ]] || die "no free slot-$only"
+
+n=1
+while [[ -e $main-slot-$n ]]; do
+  n=$((n + 1))
+done
+jj -R "$main" workspace add --name "$name" -r main "$main-slot-$n"
+echo "$main-slot-$n"

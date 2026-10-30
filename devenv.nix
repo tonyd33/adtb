@@ -44,6 +44,8 @@ in
 
   scripts.check.exec = ''
     set -e
+    source "$DEVENV_ROOT/work/tools/common.bash"
+    machine_lock "$DEVENV_ROOT"
     export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$DEVENV_ROOT/target}"
     cargo clippy --workspace --all-targets -- -D warnings
     cargo fmt --all --check
@@ -104,6 +106,14 @@ in
 
   scripts.workspace-gc.exec = ''
     "$DEVENV_ROOT/work/tools/workspace-gc" "$@"
+  '';
+
+  scripts.slot.exec = ''
+    "$DEVENV_ROOT/work/tools/slot" "$@"
+  '';
+
+  scripts.slot-test.exec = ''
+    "$DEVENV_ROOT/work/tools/slot-test" "$@"
   '';
 
   scripts.adtb-probe.exec = ''

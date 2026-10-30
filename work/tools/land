@@ -6,11 +6,17 @@
 # Refuses before changing anything when the main working copy has changes, WS is unknown or
 # a commit to land has no description. Refuses after the rebase when a landed commit has
 # conflicts; the rebased commits stay in WS for its agent to fix. Leaves WS's directory in place.
+# A workspace taken with `slot` is not forgotten: its directory becomes a free slot, its working
+# copy an empty commit on the landed tip, its name `slot-N`. Refuses a slot in use by a process, and
+# leaves main unmoved when a file written during land strands work in a divergent commit.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 ws=${1:?usage: land WS [SUBJECT]}
 subject=${2:-}
+
+# shellcheck source=work/tools/common.bash
+source "$root/work/tools/common.bash"
 
 die() {
   printf 'land: %s\n' "$1" >&2
@@ -27,6 +33,14 @@ main=$(workspace_root default)
 wsroot=$(workspace_root "$ws")
 [[ -n $wsroot ]] || die "no workspace named $ws"
 [[ $ws != default ]] || die "cannot land the default workspace"
+! free_slot "$ws" "$wsroot" "$main" || die "$ws is a free slot, with nothing to land"
+
+slot=slot-${wsroot##*-slot-}
+free_slot "$slot" "$wsroot" "$main" || slot=
+if [[ -n $slot ]]; then
+  users=$(pids_using "$wsroot")
+  [[ -z $users ]] || die "$wsroot is in use by: $(echo "$users" | paste -sd,)"
+fi
 
 jj -R "$wsroot" status
 
@@ -50,12 +64,28 @@ jj -R "$main" rebase -b "$ws@" -d @-
 conflicted=$(jj -R "$main" log -r "(@-..$tip) & conflicts()" --no-graph -T 'change_id.short() ++ "\n"')
 [[ -z $conflicted ]] || die "conflicts in $(echo $conflicted); send them back to the agent in $ws"
 
+if [[ -n $slot ]]; then
+  change=$(jj -R "$main" log -r "$ws@" --no-graph -T 'change_id')
+  jj -R "$wsroot" workspace update-stale
+  stranded=$(jj -R "$main" log -r "divergent() & change_id($change)" --no-graph -T 'commit_id.short() ++ " "')
+  [[ -z $stranded ]] || die "main did not move; work written during land is in divergent commits: $stranded"
+fi
+
 old=$(jj -R "$main" log -r @ --no-graph -T 'change_id')
 jj -R "$main" new "$tip"
 if [[ -n $(jj -R "$main" log -r "present($old)" --no-graph -T 'change_id') ]]; then
   jj -R "$main" abandon "$old"
 fi
 jj -R "$main" bookmark set main -r @-
-jj -R "$main" workspace forget "$ws"
+if [[ -n $slot ]]; then
+  jj -R "$wsroot" new "$tip"
+  jj -R "$wsroot" workspace rename "$slot"
+else
+  jj -R "$main" workspace forget "$ws"
+fi
 jj -R "$main" log -r '@-|@' --no-graph -T 'change_id.short() ++ " " ++ description.first_line() ++ "\n"'
-printf 'land: run check, then remove %s\n' "$wsroot"
+if [[ -n $slot ]]; then
+  printf 'land: run check; %s is free at %s\n' "$slot" "$wsroot"
+else
+  printf 'land: run check, then remove %s\n' "$wsroot"
+fi

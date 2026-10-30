@@ -4,15 +4,24 @@
 # workspace-gc --clean    run `cargo clean` on each build directory marked clean
 # workspace-gc --guard    print nothing when the disk has 30 GB free; else list the build
 #                         directories and fail
+# workspace-gc --clear-build WORKSPACE
+#                         empty target/debug, except its cargo lock, and target/tmp of WORKSPACE, or
+#                         of the main checkout for `main`; refuses when one is not exactly that
+#                         directory, changed within ADTB_GC_IDLE_HOURS, or cargo, a process or a
+#                         run holding the machine lock from that workspace is using it
 #
 # A build directory is marked clean when its workspace is forgotten, or when its working copy
-# is empty and it was not built for ADTB_GC_IDLE_HOURS (default 2).
+# is empty, no process uses the workspace and it was not built for ADTB_GC_IDLE_HOURS (default 2).
+# In a slot directory, debug and tmp also have to be above ADTB_SLOT_CAP_GB (default 20).
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 min_free_gb=30
 idle_hours=${ADTB_GC_IDLE_HOURS:-2}
 mode=${1:-list}
+
+# shellcheck source=work/tools/common.bash
+source "$root/work/tools/common.bash"
 
 free_gb() {
   df --output=avail -B1G "$root" | tail -1 | tr -d ' '
@@ -53,19 +62,74 @@ idle() {
 
 # Prints `size<TAB>name<TAB>state<TAB>idle<TAB>verdict<TAB>dir` for each build directory.
 targets() {
-  local name path state dir hours verdict
+  local name path state dir hours verdict main
+  main=$(jj -R "$root" workspace list --ignore-working-copy -T 'name ++ "\t" ++ root ++ "\n"' |
+    awk -F'\t' '$1 == "default" { print $2 }')
   while IFS=$'\t' read -r name path state; do
     for dir in "$path/target" "$path/apps/campaign/target"; do
       [[ -d $dir ]] || continue
       hours=$(idle "$dir")
       verdict=keep
-      if [[ $state == forgotten ]] || { [[ $state == empty ]] && ((hours >= idle_hours)); }; then
+      if [[ $state == forgotten ]]; then
         verdict=clean
+      elif [[ $state == empty ]] && ((hours >= idle_hours)); then
+        if { ! slot_dir "$path" "$main" || over_slot_cap "$dir"; } && [[ -z $(pids_using "$path") ]]; then
+          verdict=clean
+        fi
       fi
       printf '%s\t%s\t%s\t%sh\t%s\t%s\n' \
         "$(du -sh "$dir" | cut -f1)" "$name" "$state" "$hours" "$verdict" "$dir"
     done
   done < <(workspaces)
+}
+
+refuse() {
+  printf 'workspace-gc: %s\n' "$1" >&2
+  exit 1
+}
+
+# Refuse unless directory $1 is itself, not a link, and unused.
+clearable() {
+  local hours users
+  [[ ! -L $1 && $(realpath -e -- "$1") == "$1" ]] || refuse "$1 resolves elsewhere"
+  hours=$(idle "$1")
+  ((hours >= idle_hours)) || refuse "$1 was built ${hours}h ago, under ${idle_hours}h"
+  users=$(pids_using "$1")
+  [[ -z $users ]] || refuse "$1 is in use by: $(echo "$users" | paste -sd,)"
+}
+
+# Empty target/debug of the workspace named $1, keeping its cargo lock, held throughout, for any
+# cargo that starts meanwhile, and target/tmp.
+clear_build() {
+  local name=$1 wsroot debug tmp lock
+  [[ $name != main ]] || name=default
+  wsroot=$(jj -R "$root" workspace list --ignore-working-copy -T 'name ++ "\t" ++ root ++ "\n"' |
+    awk -F'\t' -v name="$name" '$1 == name { print $2 }')
+  [[ $wsroot == /* ]] || refuse "no workspace named $1"
+  [[ -d $wsroot/.jj ]] || refuse "$wsroot holds no .jj"
+  lock=$(machine_lock_path)
+  if [[ -e $lock ]] && ! flock -n "$lock" true && [[ $(cat "$lock") == "$wsroot pid "* ]]; then
+    refuse "a run in $wsroot holds the machine lock"
+  fi
+  debug=$wsroot/target/debug
+  tmp=$wsroot/target/tmp
+  if [[ -e $debug ]]; then
+    [[ -f $debug/.cargo-lock || -L $debug ]] || refuse "$debug is not a cargo build directory"
+    [[ -L $debug ]] || flock -n "$debug/.cargo-lock" true || refuse "cargo holds the lock on $debug"
+    clearable "$debug"
+  fi
+  [[ ! -e $tmp ]] || clearable "$tmp"
+  if [[ -e $debug ]]; then
+    echo "clearing $debug ($(du -sh "$debug" | cut -f1))"
+    flock -n "$debug/.cargo-lock" \
+      find "$debug" -mindepth 1 -maxdepth 1 ! -name .cargo-lock -exec rm -rf --one-file-system -- {} + ||
+      refuse "$debug is not cleared"
+  fi
+  if [[ -e $tmp ]]; then
+    echo "clearing $tmp ($(du -sh "$tmp" | cut -f1))"
+    find "$tmp" -mindepth 1 -maxdepth 1 -exec rm -rf --one-file-system -- {} +
+  fi
+  echo "free: $(free_gb) GB"
 }
 
 table() {
@@ -85,6 +149,10 @@ case $mode in
     done
     echo "free: $(free_gb) GB"
     ;;
+  --clear-build)
+    (($# >= 2)) || refuse "usage: --clear-build WORKSPACE, or main for the main checkout"
+    clear_build "$2"
+    ;;
   --guard)
     free=$(free_gb)
     ((free >= min_free_gb)) && exit 0
@@ -94,7 +162,7 @@ case $mode in
     exit 1
     ;;
   *)
-    sed -n '2,9s/^# \{0,1\}//p' "$0" >&2
+    sed -n '2,15s/^# \{0,1\}//p' "$0" >&2
     exit 2
     ;;
 esac

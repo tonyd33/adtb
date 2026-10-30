@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # suite [ARGS]   build the workspace's tests, then run `cargo nextest run --workspace
-#                --no-fail-fast ARGS` holding a lock that one run on the machine holds at a time
+#                --no-fail-fast ARGS` holding the machine lock, which one run or `check` holds at a
+#                time
 #
 # The full output goes to target/suite.txt, or ADTB_SUITE_OUT when set, and ends with `suite:
 # exit N`. Prints only the failing and timed out tests, the summary and that path, and exits with
@@ -10,9 +11,11 @@ set -uo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 target=${CARGO_TARGET_DIR:-$root/target}
 out=${ADTB_SUITE_OUT:-$target/suite.txt}
-lock=${XDG_CACHE_HOME:-$HOME/.cache}/adtb/suite.lock
 
-mkdir -p "$target" "$(dirname "$lock")"
+# shellcheck source=work/tools/common.bash
+source "$root/work/tools/common.bash"
+
+mkdir -p "$target"
 cd "$root" || exit 1
 : >"$out"
 trap 'echo "suite: exit $status" >>"$out"' EXIT
@@ -26,20 +29,12 @@ if ! cargo nextest run --workspace --no-run "$@" >>"$out" 2>&1; then
 fi
 echo "built in $((SECONDS - started))s"
 
-exec 9>>"$lock"
-if ! flock -n 9; then
-  echo "waiting for the suite lock, held by $(cat "$lock")"
-  waited=$SECONDS
-  flock 9
-  echo "waited $((SECONDS - waited))s"
-fi
-printf '%s pid %s since %s\n' "$root" "$$" "$(date +%T)" >"$lock"
+machine_lock "$root"
 
 started=$SECONDS
 cargo nextest run --workspace --no-fail-fast "$@" >>"$out" 2>&1
 status=$?
-: >"$lock"
-flock -u 9
+machine_unlock
 
 grep -E '^\s+(FAIL|SIGABRT|SIGSEGV|SIGKILL|TIMEOUT)|Summary' "$out" | sort -u
 echo "ran in $((SECONDS - started))s; output in $out"

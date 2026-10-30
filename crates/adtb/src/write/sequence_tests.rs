@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adtb_sys::os::{Backend, Faults, OsRuntime};
+use adtb_testkit::scratch::Scratch;
 
 use crate::storage::{Damage, HEADER_LEN, Options, PageKind, Pager};
 use crate::write::Error;
@@ -11,36 +10,28 @@ use crate::write::Error;
 use super::{BLOCK, Counter, Sequences};
 
 struct Fixture {
-    path: PathBuf,
     rt: OsRuntime,
     pager: Pager<OsRuntime>,
     seqs: Sequences,
+    scratch: Scratch,
 }
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let parent =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/sequence-regressions");
-        std::fs::create_dir_all(&parent).expect("create fixture parent");
-        let path = loop {
-            let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
-            let path = parent.join(format!("{name}-{}-{nonce}", std::process::id()));
-            match std::fs::create_dir(&path) {
-                Ok(()) => break path,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => panic!("create fixture directory: {error}"),
-            }
-        };
-        let rt = OsRuntime::with_faults(&path, Backend::Pool { threads: 1 }, Faults::default());
+        let scratch = Scratch::new("sequence-regressions", name);
+        let rt = OsRuntime::with_faults(
+            scratch.path(),
+            Backend::Pool { threads: 1 },
+            Faults::default(),
+        );
         let pager = Pager::create(rt.clone(), &Self::options()).expect("create pager");
         let pid = Sequences::create(&pager).expect("create sequences");
         let seqs = Sequences::open(&pager, pid).expect("open sequences");
         Self {
-            path,
             rt,
             pager,
             seqs,
+            scratch,
         }
     }
 
@@ -72,16 +63,20 @@ impl Fixture {
 
     fn crash(self) -> Self {
         let Self {
-            path,
             rt,
             pager,
             seqs,
+            scratch,
         } = self;
         let root = seqs.root();
         rt.crash();
         drop(pager);
         drop(rt);
-        let rt = OsRuntime::with_faults(&path, Backend::Pool { threads: 1 }, Faults::default());
+        let rt = OsRuntime::with_faults(
+            scratch.path(),
+            Backend::Pool { threads: 1 },
+            Faults::default(),
+        );
         let (pager, recovery) = Pager::open(rt.clone(), &Self::options()).expect("recover pager");
         assert!(
             recovery.applied > 0,
@@ -90,10 +85,10 @@ impl Fixture {
         assert!(recovery.damaged.is_empty(), "{recovery:?}");
         let seqs = Sequences::open(&pager, root).expect("open recovered sequences");
         Self {
-            path,
             rt,
             pager,
             seqs,
+            scratch,
         }
     }
 

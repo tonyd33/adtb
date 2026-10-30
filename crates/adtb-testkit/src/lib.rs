@@ -6,6 +6,7 @@ pub mod fuzz;
 pub mod inhabit;
 pub mod profile;
 pub mod running;
+pub mod scratch;
 pub mod spec;
 pub mod writes;
 

@@ -65,7 +65,9 @@ its assertion message. Never discard a `Result` with `let _ =`.
 Tests: write the full spec of the feature, including tests that fail;
 never delete a failing test; report which fail.
 
-Build only into your workspace's own `target/`. Never set
+Your workspace may be a reused slot: its `target/` holds earlier builds, and
+a file outside a commit and `target/` stops the next track reusing it. Build
+only into your workspace's own `target/`. Never set
 `CARGO_TARGET_DIR` under /tmp or the scratchpad: /tmp has a small
 quota, and filling it breaks every agent's shell. Check `df -h .`
 before the full check; below 30 GB free, run `cargo
@@ -141,7 +143,8 @@ inspecting that log, and return that status. For example, in a subshell:
 ```
 
 `work/tools/suite` builds the
-tests, then waits for a machine-wide lock so only one suite runs at a time.
+tests, then waits for the machine lock, which one test run or `check` holds
+at a time.
 It prints failures, timeouts, the summary and the output path
 (`target/suite.txt`, ending in `suite: exit N`). Use the harness's
 asynchronous execution when available, collect the final exit status and
@@ -176,15 +179,18 @@ Test time: a new test runs in under 2 seconds in the default nextest profile unl
 
 The repository is public, `work/issues`, `work/kb` and `work/research` included. Leave credentials,
 personal data and machine details out of commits and tickets. Use relative paths such as
-`../adtb-NAME`. `work/briefs/` is local.
+`../adtb-slot-N`. `work/briefs/` is local.
 
 ## Saving time
 
 Run one full suite per round, and none after a clean rebase; the lead's check covers it. Run
-`work/tools/suite` in the background. Run each mutant against the test expected to kill it, by name.
+`work/tools/suite` in the background: it can wait out a whole `check`, and a foreground call with a
+harness timeout dies waiting. Run each mutant against the test expected to kill it, by name.
 
 ## Scripts
 
 Keep your scripts, mutation drivers and their logs under your workspace's `target/`. A scratchpad
 directory may be shared with other agents in the session: a script there can be overwritten by
 another track, and running it can change that track's workspace.
+
+Never use `pkill -f` or a broad process pattern. Kill only a PID you started.

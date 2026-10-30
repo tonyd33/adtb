@@ -69,7 +69,7 @@ too_many_arguments = "deny"
 
 [profile.test]
 opt-level = 1
-debug = "line-tables-only"
+debug = 0
 
 [profile.dev]
-debug = "line-tables-only"
+debug = 0

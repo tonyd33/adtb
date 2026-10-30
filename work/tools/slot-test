@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+# slot-test [--shell]   prove slot, land and workspace-gc --clear-build on a scratch repository, with
+#                       a real cargo build, or with `--shell` only the cases needing no cargo; fail
+#                       on the first broken expectation
+set -euo pipefail
+
+tools=$(cd "$(dirname "$0")" && pwd)
+scratch=$(mktemp -d)
+export XDG_CACHE_HOME=$scratch/cache
+unset CARGO_TARGET_DIR
+main=$scratch/repo
+sleeper=
+cleanup() {
+  [[ -z $sleeper ]] || kill "$sleeper" 2>/dev/null || true
+  rm -rf "$scratch"
+}
+trap cleanup EXIT
+
+fail() {
+  printf 'slot-test: %s\n' "$1" >&2
+  exit 1
+}
+
+# Run $@ and require it to fail with output containing $1, which is shifted off.
+refused() {
+  local want=$1 out
+  shift
+  if out=$("$@" 2>&1); then
+    fail "expected a refusal ($want): $*"
+  fi
+  [[ $out == *"$want"* ]] || fail "expected '$want' from $*, got: $out"
+}
+
+# Wait until background process $1 has reached its final `exec sleep`.
+settle() {
+  until [[ $(cat "/proc/$1/comm" 2>/dev/null) == sleep ]]; do
+    sleep 0.05
+  done
+}
+
+has() {
+  [[ $1 == *"$2"* ]] || fail "expected '$2' in: $1"
+}
+
+names() {
+  jj -R "$main" workspace list --ignore-working-copy -T 'name ++ "\n"' | LC_ALL=C sort | paste -sd' '
+}
+
+mkdir "$main"
+jj git init "$main" >/dev/null 2>&1
+mkdir -p "$main/work/tools" "$main/dep/src" "$main/app/src"
+cp "$tools"/{land,slot,workspace-gc,common.bash} "$main/work/tools/"
+cat >"$main/Cargo.toml" <<'TOML'
+[workspace]
+resolver = "3"
+members = ["dep", "app"]
+TOML
+printf '[package]\nname = "dep"\nversion = "0.1.0"\nedition = "2024"\n' >"$main/dep/Cargo.toml"
+printf 'pub fn dep() -> u32 { 1 }\n' >"$main/dep/src/lib.rs"
+printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2024"\n[dependencies]\ndep = { path = "../dep" }\n' >"$main/app/Cargo.toml"
+printf 'pub fn app() -> u32 { dep::dep() }\n' >"$main/app/src/lib.rs"
+printf '/target\n/ignored-work\n' >"$main/.gitignore"
+jj -R "$main" describe -m 'chore: seed' >/dev/null 2>&1
+jj -R "$main" bookmark create main -r @ >/dev/null 2>&1
+jj -R "$main" new >/dev/null 2>&1
+land=$main/work/tools/land
+slot=$main/work/tools/slot
+gc=$main/work/tools/workspace-gc
+
+# Kill the process in $sleeper, started with a working directory somewhere under test.
+stop_sleeper() {
+  kill "$sleeper"
+  wait "$sleeper" 2>/dev/null || true
+  sleeper=
+}
+
+main_tip() {
+  jj -R "$main" log -r main --no-graph -T commit_id
+}
+
+# Give the checkout at $1 a build directory with output in debug and tmp, and evidence beside them.
+fake_target() {
+  mkdir -p "$1/target/debug/deps" "$1/target/tmp/kept"
+  touch "$1/target/debug/.cargo-lock" "$1/target/debug/deps/x" "$1/target/tmp/kept/y" "$1/target/evidence"
+}
+
+# Cases that need no cargo. Each leaves every slot free or names its own track.
+shell_cases() {
+  local a b out before fake p1 p2
+
+  # Concurrent calls take different directories.
+  [[ $("$slot" first 2>/dev/null | tail -1) == "$main-slot-1" ]] || fail "no first slot"
+  "$land" first >/dev/null 2>&1 || fail "landing an empty track"
+  "$slot" p1 >"$scratch/p1" 2>/dev/null &
+  a=$!
+  "$slot" p2 >"$scratch/p2" 2>/dev/null &
+  b=$!
+  wait "$a" || fail "slot p1 failed"
+  wait "$b" || fail "slot p2 failed"
+  p1=$(tail -1 "$scratch/p1")
+  p2=$(tail -1 "$scratch/p2")
+  [[ $p1 != "$p2" ]] || fail "two calls took one directory"
+  [[ $(jj -R "$main" workspace list --ignore-working-copy -T 'if(name == "p1" || name == "p2", root ++ "\n")' | sort -u | wc -l) == 2 ]] ||
+    fail "p1 and p2 do not have one root each"
+
+  # land refuses a slot in use and moves nothing.
+  (cd "$p1" && exec sleep 300) &
+  sleeper=$!
+  settle "$sleeper"
+  before=$(main_tip)
+  refused 'in use by' "$land" p1 'feat: p1'
+  [[ $(main_tip) == "$before" ]] || fail "a refused land moved main"
+  stop_sleeper
+
+  # A file written during land fails it, with main unmoved.
+  fake=$scratch/shim
+  mkdir "$fake"
+  cat >"$fake/jj" <<SHIM
+#!/usr/bin/env bash
+"$(command -v jj)" "\$@"
+status=\$?
+[[ \$3 != rebase ]] || echo stray >"$p1/stray"
+exit \$status
+SHIM
+  chmod +x "$fake/jj"
+  printf 'pub fn p1() {}\n' >"$p1/p1.rs"
+  refused 'main did not move' env PATH="$fake:$PATH" "$land" p1 'feat: p1'
+  [[ $(main_tip) == "$before" ]] || fail "land moved main over stranded work"
+  [[ -n $(jj -R "$main" log -r 'divergent()' --no-graph -T change_id) ]] || fail "no stranded commit"
+  jj -R "$main" workspace forget p1 >/dev/null 2>&1
+  jj -R "$main" abandon -r 'divergent()' >/dev/null 2>&1
+  "$land" p2 >/dev/null 2>&1 || fail "landing p2"
+
+  # A workspace in a directory that only resembles a slot lands like any other.
+  jj -R "$main" workspace add --name odd -r main "$main-slot-foo" >/dev/null 2>&1
+  "$land" odd 'feat: odd' >/dev/null 2>&1 || fail "landing from an odd directory"
+  [[ $(names) != *odd* && -d $main-slot-foo ]] || fail "odd did not land as a plain workspace: $(names)"
+
+  # Names.
+  refused 'not a workspace name' "$slot" 'a b'
+  refused 'reserved' "$slot" main
+  (
+    # shellcheck source=work/tools/common.bash
+    source "$tools/common.bash"
+    ! free_slot slot-1 "$scratch/elsewhere-slot-1" "$main" || fail "a slot elsewhere counts as free"
+    free_slot slot-1 "$main-slot-1" "$main" || fail "a slot in place does not count as free"
+    mkdir "$scratch/a[b]"
+    (cd "$scratch/a[b]" && exec sleep 300) &
+    local holder=$!
+    settle "$holder"
+    local users
+    users=$(pids_using "$scratch/a[b]")
+    kill "$holder"
+    [[ $users == *sleep* ]] || fail "a root with a glob character hides its users"
+  )
+
+  # clear-build needs an explicit workspace and empties debug and tmp, keeping the lock and the rest.
+  fake_target "$main"
+  refused 'usage' "$gc" --clear-build
+  refused 'no workspace named' "$gc" --clear-build ''
+  [[ -f $main/target/debug/deps/x ]] || fail "an empty argument cleared main"
+  refused 'under' "$gc" --clear-build main
+
+  mkdir -p "$XDG_CACHE_HOME/adtb"
+  printf '%s pid 1 since now\n' "$main" >"$XDG_CACHE_HOME/adtb/suite.lock"
+  (exec 7>>"$XDG_CACHE_HOME/adtb/suite.lock" && flock 7 && exec sleep 300) &
+  sleeper=$!
+  settle "$sleeper"
+  refused 'holds the machine lock' env ADTB_GC_IDLE_HOURS=0 "$gc" --clear-build main
+  stop_sleeper
+  sleep 0.2
+  ADTB_GC_IDLE_HOURS=0 "$gc" --clear-build main >/dev/null
+  [[ $(ls -A "$main/target/debug") == .cargo-lock && -z $(ls -A "$main/target/tmp") && -f $main/target/evidence ]] ||
+    fail "clear-build did not empty debug and tmp alone"
+
+  # --clean keeps a just started track in a slot, under the cap and while in use above it.
+  [[ $("$slot" fresh 2>/dev/null | tail -1) == "$p2" ]] || fail "the free slot was not reused"
+  fake_target "$p2"
+  out=$(ADTB_GC_IDLE_HOURS=0 "$gc" --clean)
+  [[ $out != *"cleaning $p2/target"* ]] || fail "--clean took a fresh track under the cap"
+  (cd "$p2" && exec sleep 300) &
+  sleeper=$!
+  settle "$sleeper"
+  out=$(ADTB_GC_IDLE_HOURS=0 ADTB_SLOT_CAP_GB=0 "$gc" --clean)
+  [[ $out != *"cleaning $p2/target"* ]] || fail "--clean took a slot in use"
+  stop_sleeper
+
+  # Reuse above the cap empties debug and tmp and keeps the rest; under it, keeps them all.
+  "$land" fresh >/dev/null 2>&1 || fail "landing fresh"
+  fake_target "$p2"
+  [[ $("$slot" under 2>/dev/null | tail -1) == "$p2" ]] || fail "reuse under the cap"
+  [[ -f $p2/target/debug/deps/x ]] || fail "reuse under the cap cleared"
+  "$land" under >/dev/null 2>&1 || fail "landing under"
+  [[ $(ADTB_SLOT_CAP_GB=0 "$slot" above "${p2##*-slot-}" 2>/dev/null | tail -1) == "$p2" ]] || fail "reuse above the cap"
+  [[ $(ls -A "$p2/target/debug") == .cargo-lock && -z $(ls -A "$p2/target/tmp") &&
+    -f $p2/target/evidence ]] || fail "the cap did not clear debug and tmp alone"
+}
+
+if [[ ${1:-} == --shell ]]; then
+  shell_cases
+  echo 'slot-test: shell cases ok'
+  exit 0
+fi
+
+# A first track gets a new slot, builds and lands; the directory and target/ survive land.
+s1=$("$slot" track-a 2>/dev/null | tail -1)
+[[ $s1 == "$main-slot-1" ]] || fail "first slot is $s1"
+cargo build --quiet --manifest-path "$s1/Cargo.toml"
+printf 'pub fn app() -> u32 { dep::dep() + 1 }\n' >"$s1/app/src/lib.rs"
+cargo build --quiet --manifest-path "$s1/Cargo.toml"
+dep_mtime=$(stat -c %Y.%y "$s1/dep/src/lib.rs")
+before=$(cd "$s1" && find . -path ./.jj -prune -o -type f -print | LC_ALL=C sort)
+"$land" track-a 'feat: track a' >/dev/null 2>&1
+[[ $(names) == 'default slot-1' ]] || fail "after land the workspaces are: $(names)"
+[[ $(cd "$s1" && find . -path ./.jj -prune -o -type f -print | LC_ALL=C sort) == "$before" ]] ||
+  fail "land changed the files of the slot"
+has "$(jj -R "$main" log -r main --no-graph -T description)" 'feat: track a'
+[[ -z $(jj -R "$s1" log -r @ --no-graph -T 'if(empty, "", "changed")') ]] || fail "freed slot is not empty"
+
+# Main moves; a dirty free slot is refused by number and skipped without a number.
+printf 'pub fn dep2() -> u32 { 2 }\n' >"$main/app/src/more.rs"
+jj -R "$main" describe -m 'feat: on main' >/dev/null 2>&1
+jj -R "$main" bookmark set main -r @ >/dev/null 2>&1
+jj -R "$main" new >/dev/null 2>&1
+printf 'pub fn lost() {}\n' >"$s1/app/src/work.rs"
+refused 'working copy changed' "$slot" track-x 1
+[[ -f $s1/app/src/work.rs ]] || fail "a refusal removed the uncommitted file"
+[[ $(names) == 'default slot-1' ]] || fail "a refusal renamed a workspace: $(names)"
+s2=$("$slot" track-y 2>/dev/null | tail -1)
+[[ $s2 == "$main-slot-2" ]] || fail "a dirty slot was not skipped: $s2"
+[[ -f $s1/app/src/work.rs ]] || fail "skipping removed the uncommitted file"
+"$land" track-y 'feat: track y' >/dev/null 2>&1 || fail "landing an empty track"
+rm "$s1/app/src/work.rs"
+
+# Commits that never landed are refused.
+jj -R "$s1" describe -m 'feat: unlanded' >/dev/null 2>&1
+refused 'working copy changed' "$slot" track-x 1
+printf 'pub fn more() {}\n' >"$s1/app/src/unlanded.rs"
+jj -R "$s1" new >/dev/null 2>&1
+refused 'commits not on main' "$slot" track-x 1
+jj -R "$s1" new main >/dev/null 2>&1
+[[ ! -e $s1/app/src/unlanded.rs ]] || fail "the slot still holds the unlanded file"
+
+# A file jj ignores is refused: it is in no commit.
+printf 'notes\n' >"$s1/ignored-work"
+refused 'untracked files: ignored-work' "$slot" track-x 1
+rm "$s1/ignored-work"
+
+# A process inside the slot is refused.
+(cd "$s1/dep" && exec sleep 300) &
+sleeper=$!
+settle "$sleeper"
+refused 'in use by' "$slot" track-x 1
+kill "$sleeper"
+wait "$sleeper" 2>/dev/null || true
+sleeper=
+
+# Reuse keeps target/ valid: the unchanged crate stays fresh and its source keeps its time.
+s=$("$slot" track-c 1 2>/dev/null | tail -1)
+[[ $s == "$s1" ]] || fail "reuse gave $s"
+has "$(names)" track-c
+[[ $(stat -c %Y.%y "$s1/dep/src/lib.rs") == "$dep_mtime" ]] || fail "reuse rewrote an unchanged source"
+[[ -f $s1/app/src/more.rs ]] || fail "reuse did not move the slot to main"
+out=$(cargo build --verbose --manifest-path "$s1/Cargo.toml" 2>&1)
+has "$out" 'Fresh dep'
+refused 'exists' "$slot" track-c
+refused 'reserved' "$slot" slot-9
+
+# Landing after main moved rebases the slot; it stays usable and unchanged sources keep their time.
+printf 'pub fn later() {}\n' >"$main/app/src/later.rs"
+jj -R "$main" describe -m 'feat: later on main' >/dev/null 2>&1
+jj -R "$main" bookmark set main -r @ >/dev/null 2>&1
+jj -R "$main" new >/dev/null 2>&1
+printf 'pub fn c() {}\n' >"$s1/app/src/c.rs"
+"$land" track-c 'feat: track c' >/dev/null 2>&1 || fail "landing track c"
+jj -R "$s1" status >/dev/null || fail "the slot is unusable after a rebase"
+[[ -f $s1/app/src/later.rs && -f $main/app/src/c.rs ]] || fail "the rebase lost a file"
+[[ $(stat -c %Y.%y "$s1/dep/src/lib.rs") == "$dep_mtime" ]] || fail "the rebase rewrote an unchanged source"
+
+# Refusal states of clear-build on a real build directory.
+cargo build --quiet --manifest-path "$main/Cargo.toml"
+debug=$main/target/debug
+refused 'under' "$gc" --clear-build main
+export ADTB_GC_IDLE_HOURS=0
+refused 'no workspace named' "$gc" --clear-build nosuch
+(cd "$debug/deps" && exec sleep 300) &
+sleeper=$!
+settle "$sleeper"
+refused 'in use by' "$gc" --clear-build main
+kill "$sleeper"
+wait "$sleeper" 2>/dev/null || true
+sleeper=
+(exec 7>>"$debug/.cargo-lock" && flock 7 && exec sleep 300) &
+sleeper=$!
+settle "$sleeper"
+refused 'cargo holds the lock' "$gc" --clear-build main
+kill "$sleeper"
+wait "$sleeper" 2>/dev/null || true
+sleeper=
+sleep 0.2
+
+# A real cargo holds that lock while it builds.
+printf 'fn main() { std::thread::sleep(std::time::Duration::from_secs(6)); }\n' >"$main/dep/build.rs"
+cargo build --quiet --manifest-path "$main/Cargo.toml" &
+builder=$!
+sleep 2
+refused 'cargo holds the lock' "$gc" --clear-build main
+wait "$builder"
+rm "$main/dep/build.rs"
+
+# A symlink at the exact path is refused and nothing behind it goes.
+mv "$debug" "$main/target/moved"
+ln -s moved "$debug"
+refused 'resolves elsewhere' "$gc" --clear-build main
+[[ -f $main/target/moved/.cargo-lock ]] || fail "a refusal cleared through the symlink"
+rm "$debug"
+mv "$main/target/moved" "$debug"
+mkdir "$scratch/outside"
+touch "$scratch/outside/keep" "$main/target/evidence"
+ln -s "$scratch/outside" "$debug/link"
+
+# Clearing keeps the lock, siblings and what a symlink points at; the next build works.
+"$gc" --clear-build main >/dev/null
+[[ $(ls -A "$debug") == .cargo-lock ]] || fail "clear left: $(ls -A "$debug")"
+[[ -f $scratch/outside/keep && -f $main/target/evidence ]] || fail "clear reached outside target/debug"
+cargo build --quiet --manifest-path "$main/Cargo.toml"
+[[ -d $debug/deps ]] || fail "no build after the clear"
+
+# A free slot under the cap survives --clean; above it, the cap applies.
+unset ADTB_GC_IDLE_HOURS
+out=$(ADTB_GC_IDLE_HOURS=0 "$gc" --clean)
+[[ $out != *"cleaning $s1/target"* ]] || fail "--clean took a slot under the cap: $out"
+[[ -d $s1/target/debug/deps ]] || fail "--clean emptied a slot under the cap"
+out=$(ADTB_GC_IDLE_HOURS=0 ADTB_SLOT_CAP_GB=0 "$gc" --clean)
+has "$out" "cleaning $s1/target"
+cargo build --quiet --manifest-path "$s1/Cargo.toml"
+
+# Reuse above the cap empties target/debug and keeps the rest of target/.
+touch "$s1/target/evidence"
+s=$(ADTB_SLOT_CAP_GB=0 "$slot" track-d 1 2>/dev/null | tail -1)
+[[ $s == "$s1" ]] || fail "reuse above the cap gave $s"
+[[ $(ls -A "$s1/target/debug") == .cargo-lock && -f $s1/target/evidence ]] || fail "the cap did not clear"
+
+# A workspace outside the slot naming keeps today's land: forgotten, directory left.
+jj -R "$main" workspace add --name plain "$scratch/repo-plain" -r main >/dev/null 2>&1
+touch "$scratch/repo-plain/plain.txt"
+out=$("$land" plain 'feat: plain' 2>&1)
+has "$out" 'then remove'
+[[ $(names) != *plain* && -d $scratch/repo-plain ]] || fail "plain land changed: $(names)"
+
+echo 'slot-test: ok'
