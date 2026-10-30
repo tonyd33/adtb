@@ -74,7 +74,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 .expect("a write transaction of the write path has an id");
             e.deployment
                 .insert(&e.pager, x, &claim.facts)
-                .map_err(Error::of_catalog_write)
+                .map_err(|err| e.catalog_error(err))
         })?;
         serve(&e, checked, &claim);
         Ok(e.bundle_rows(&claim.row))

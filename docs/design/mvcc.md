@@ -242,8 +242,14 @@ record of every commit its snapshot reads; `Transactions::read_upto`
 gives the last of those for a snapshot.
 
 A commit log page that fails verification quarantines the whole
-database, since every relation's visibility reads the commit log. From
-then on every transaction is refused with the corruption fault: no
+database, since every relation's visibility reads the commit log. The
+write path turns this into the durable database mark
+([storage.md §8](storage.md#8-quarantine)) when the failure reaches it;
+the in-memory state keeps the first damage for the transaction layer,
+which holds no reference to the marks. `Transactions::open` reads every
+status page, so a status page damaged at rest quarantines the database at
+open and the open sets the mark; the catalog's rows are then read with a
+transaction on a damaged status page counted as committed. From then on every transaction is refused with the corruption fault: no
 transaction starts, takes a snapshot, commits or aborts, and status
 lookups fail naming the damaged page. The database opens for `verify`
 and `dump` only: the commit log's root and directories stay readable

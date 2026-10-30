@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering;
 
 use crate::runtime::Runtime;
 
 use super::page::{HEADER_LEN, PageKind};
 use super::pager::{PageError, Pager};
-use super::{Lsn, Pid};
+use super::{Damage, Pid};
 
 /// What a detected corruption stops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -72,6 +73,82 @@ fn encode(page: &mut [u8], marks: &BTreeSet<Quarantine>) {
     }
 }
 
+/// Why a walk of an object's pages stopped.
+#[derive(Clone, Copy, Debug)]
+pub enum Stopped {
+    /// On a page that failed its checksum or log position.
+    Damage,
+    /// On a shape the walk could not follow, which proves nothing: the walk takes no latch, so
+    /// the object may have changed under it.
+    Shape,
+    /// On an I/O failure, which says nothing of the object.
+    Io,
+}
+
+impl From<PageError> for Stopped {
+    fn from(e: PageError) -> Stopped {
+        if e.damage == Damage::Unreadable {
+            Stopped::Io
+        } else {
+            Stopped::Damage
+        }
+    }
+}
+
+/// How many times the mapping of a damaged page runs a walk that keeps stopping.
+const WALK_TRIES: usize = 16;
+
+/// Returns the outcome of `walk`, repeated while it stops. Damage counts once two walks in a row
+/// stop on it, since one walk may have followed a link off a changing object. `Stopped::Shape`
+/// when the tries run out.
+fn settled(mut walk: impl FnMut() -> Result<Vec<Pid>, Stopped>) -> Result<Vec<Pid>, Stopped> {
+    let mut damaged = false;
+    for _ in 0..WALK_TRIES {
+        match walk() {
+            Ok(pages) => return Ok(pages),
+            Err(Stopped::Io) => return Err(Stopped::Io),
+            Err(Stopped::Damage) if damaged => return Err(Stopped::Damage),
+            Err(stop) => damaged = matches!(stop, Stopped::Damage),
+        }
+    }
+    Err(Stopped::Shape)
+}
+
+/// What the walks of every object find of one damaged page.
+#[derive(Debug)]
+pub struct Holders {
+    pid: Pid,
+    held: BTreeSet<Quarantine>,
+    incomplete: bool,
+}
+
+impl Holders {
+    /// Take what `walk` finds of `object`, whose damage marks nothing when `None`. Leave the
+    /// mapping incomplete when the walk ends on anything but damage.
+    pub fn walk(
+        &mut self,
+        object: Option<Quarantine>,
+        walk: impl FnMut() -> Result<Vec<Pid>, Stopped>,
+    ) {
+        let holds = match settled(walk) {
+            Ok(pages) => pages.contains(&self.pid),
+            Err(Stopped::Damage) => true,
+            Err(Stopped::Shape | Stopped::Io) => {
+                self.incomplete = true;
+                false
+            }
+        };
+        if holds {
+            match object {
+                Some(o) => {
+                    self.held.insert(o);
+                }
+                None => self.incomplete = true,
+            }
+        }
+    }
+}
+
 /// The marks in memory, and whether their page could be read at open.
 #[derive(Debug, Default)]
 pub(crate) struct Marks {
@@ -89,8 +166,15 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Read the marks from their page into memory. A damaged page quarantines the database.
-    pub(crate) fn load_marks(&self, page: Pid) {
-        let read = self.read(page).ok().and_then(|p| decode(&p));
+    ///
+    /// Fail, marking nothing, if the page cannot be read.
+    #[doc(hidden)]
+    pub fn load_marks(&self, page: Pid) -> Result<(), PageError> {
+        let read = match self.read(page) {
+            Ok(p) => decode(&p),
+            Err(e) if e.damage == Damage::Unreadable => return Err(e),
+            Err(_) => None,
+        };
         let mut marks = self.marks.lock(&self.rt);
         marks.page = page;
         match read {
@@ -100,11 +184,19 @@ impl<R: Runtime> Pager<R> {
                 marks.unreadable = true;
             }
         }
+        self.any_mark
+            .store(!marks.set.is_empty(), Ordering::Release);
+        Ok(())
     }
 
     /// Returns every object quarantined.
     pub fn quarantined(&self) -> BTreeSet<Quarantine> {
         self.marks.lock(&self.rt).set.clone()
+    }
+
+    /// Returns whether any object is quarantined, without taking a lock.
+    pub fn any_quarantined(&self) -> bool {
+        self.any_mark.load(Ordering::Acquire)
     }
 
     /// Returns whether `object` is quarantined, by its own mark or the database's.
@@ -113,13 +205,21 @@ impl<R: Runtime> Pager<R> {
         marks.set.contains(&object) || marks.set.contains(&Quarantine::Database)
     }
 
-    /// Mark `object` quarantined. The mark is durable on return and lasts until
-    /// [`Pager::release`] removes it.
+    /// Mark `object` quarantined. The mark is durable on return, for every caller marking it,
+    /// and lasts until [`Pager::release`] removes it. Marking an object already marked and
+    /// durable writes nothing.
     ///
-    /// Fails if the page holding the marks is damaged.
+    /// Precondition: the calling thread holds no page latch.
+    ///
+    /// Fail if the page holding the marks is damaged. The mark then holds in memory until the
+    /// pager closes.
     pub fn quarantine(&self, object: Quarantine) -> Result<(), PageError> {
         self.change_marks(|set| {
             set.insert(object);
+        })
+        .inspect_err(|_| {
+            self.marks.lock(&self.rt).set.insert(object);
+            self.any_mark.store(true, Ordering::Release);
         })
     }
 
@@ -143,19 +243,65 @@ impl<R: Runtime> Pager<R> {
         if unreadable {
             return Err(self.read(page).err().unwrap_or(PageError {
                 pid: page,
-                damage: super::Damage::Checksum,
+                damage: Damage::Checksum,
             }));
         }
         let mut guard = self.exclusive(page)?;
-        let mut set = self.marks.lock(&self.rt).set.clone();
-        f(&mut set);
-        let lsn: Lsn = guard.update(|p| encode(p, &set));
+        let set = {
+            let mut marks = self.marks.lock(&self.rt);
+            f(&mut marks.set);
+            self.any_mark
+                .store(!marks.set.is_empty(), Ordering::Release);
+            marks.set.clone()
+        };
+        guard.update(|p| encode(p, &set));
+        let lsn = super::page::lsn(&guard);
         drop(guard);
-        if lsn < self.log().next_lsn() {
-            self.wait_durable(lsn);
-        }
-        self.marks.lock(&self.rt).set = set;
+        self.wait_durable(lsn);
         Ok(())
+    }
+
+    /// Returns what the damage at `pid` quarantines. `walk` reports the pages of every object to
+    /// the [`Holders`]. A page in no object quarantines `unheld`, once every walk is complete.
+    ///
+    /// Postconditions:
+    ///
+    /// - A page the allocation bitmap calls free, before or after the walk, quarantines nothing
+    ///   unless a walk found it.
+    /// - A walk stopped by damage quarantines its object. One stopped by an I/O failure, or on a
+    ///   shape it could not follow in all its tries, leaves the page unmapped: `unheld` then plays
+    ///   no part.
+    /// - The database's mark stands alone, as it covers every object.
+    pub fn holders_of(
+        &self,
+        pid: Pid,
+        unheld: Option<Quarantine>,
+        walk: impl FnOnce(&mut Holders),
+    ) -> BTreeSet<Quarantine> {
+        if self.called_free(pid) {
+            return BTreeSet::new();
+        }
+        let mut h = Holders {
+            pid,
+            held: BTreeSet::new(),
+            incomplete: false,
+        };
+        walk(&mut h);
+        if h.held.contains(&Quarantine::Database) {
+            return BTreeSet::from([Quarantine::Database]);
+        }
+        if !h.held.is_empty() || h.incomplete || self.called_free(pid) {
+            return h.held;
+        }
+        unheld.into_iter().collect()
+    }
+
+    /// Returns whether the allocation bitmap calls `pid` free, or cannot be read to say.
+    fn called_free(&self, pid: Pid) -> bool {
+        match self.is_free(pid) {
+            Ok(free) => free,
+            Err(e) => e.damage == Damage::Unreadable,
+        }
     }
 
     /// Format the marks page `pid`, reserved by `new`, empty.

@@ -372,7 +372,18 @@ impl<R: Runtime> Db<R> {
                     }
                 };
                 out.indexes.insert(i.id, index.tree().root());
-                indexes.insert(i.id, (StoredIndex { index, ctors: ids }, keying, *r));
+                indexes.insert(
+                    i.id,
+                    (
+                        StoredIndex {
+                            index,
+                            ctors: ids,
+                            rows: None,
+                        },
+                        keying,
+                        *r,
+                    ),
+                );
             }
         }
         pager.flush_log();

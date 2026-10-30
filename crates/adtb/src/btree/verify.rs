@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::Runtime;
-use crate::storage::{self, Lsn, Pager, Pid};
+use crate::storage::{self, Lsn, Pager, Pid, Stopped};
 
 use super::leaf;
 use super::node::{self, Item, Malformed, Node};
@@ -406,6 +406,14 @@ impl BTree {
         Ok(())
     }
 
+    /// Flip the owner of node `pid`, which a second flip undoes. Plants a fault for a test of the
+    /// mapping of a damaged page.
+    #[doc(hidden)]
+    pub fn flip_owner<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), Error> {
+        pager.update(&[pid], |p| storage::flip_owner(p[0]))?;
+        Ok(())
+    }
+
     /// Finish every split whose page lacks its downlink. Returns the number
     /// this pass finished, which leaves out any another thread finished
     /// first.
@@ -456,6 +464,15 @@ impl BTree {
 }
 
 impl BTree {
+    /// Returns every page of the tree as [`BTree::pages`] does, for the mapping of a damaged page
+    /// to what holds it.
+    pub fn walk<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, Stopped> {
+        self.pages(pager).map_err(|e| match e {
+            Error::Page(p) => Stopped::from(p),
+            _ => Stopped::Shape,
+        })
+    }
+
     /// Returns every page of the tree: each level from the root down, left to right by its
     /// right links.
     pub fn pages<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<Pid>, Error> {

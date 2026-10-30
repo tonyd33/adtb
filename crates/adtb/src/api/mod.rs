@@ -20,7 +20,7 @@ pub mod typed;
 mod value;
 mod verify;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::task::Waker;
@@ -37,6 +37,7 @@ use adtb_sys::lock::{Lock, RwLock};
 
 use crate::catalog::{self, Catalog};
 use crate::exec::{self, Budget, Scheduler, Val};
+use crate::mvcc::Transactions;
 use crate::mvcc::{Limits, Xid};
 use crate::runtime::{Runtime, ThreadId};
 use crate::storage::{self, LATCHES_PER_THREAD, Pager};
@@ -446,6 +447,12 @@ impl<R: Runtime> Database<R> {
             .map_err(|w| e.write_error(TxnId(0), w))
     }
 
+    /// Refuse page `pid` as if it failed as `damage` says. Plants a fault for a test of quarantine.
+    #[doc(hidden)]
+    pub fn damage_page(&self, pid: storage::Pid, damage: storage::Damage) {
+        self.engine.pager.damage(pid, damage);
+    }
+
     /// Refuse the pages of the store of kept rows. Plants a fault for a test of `verify`.
     #[doc(hidden)]
     pub fn damage_kept_store(&self) {
@@ -591,6 +598,80 @@ fn corrupt(detail: impl std::fmt::Debug) -> OpenError {
     }
 }
 
+/// Mark what holds each page that failed verification while the database opened. A page of the
+/// catalog or commit log marks the database. A page nothing maps marks nothing. A failure to
+/// write a mark is left to the next open, which finds the same damage.
+fn mark_open_damage<R: Runtime>(rt: R, pager: &Pager<R>) {
+    let damaged: Vec<storage::Pid> = pager
+        .damaged()
+        .into_iter()
+        .filter(|(_, d)| !matches!(d, storage::Damage::Unreadable))
+        .map(|(pid, _)| pid)
+        .collect();
+    if damaged.is_empty() {
+        return;
+    }
+    let objects: BTreeSet<storage::Quarantine> = match Catalog::open(rt, pager) {
+        Ok((catalog, txns)) => damaged
+            .iter()
+            .flat_map(|&pid| catalog.holders(pager, &txns, pid))
+            .collect(),
+        Err(_) => damaged
+            .iter()
+            .filter(|&&pid| Catalog::opens_from(pager, pid))
+            .map(|_| storage::Quarantine::Database)
+            .collect(),
+    };
+    for object in objects {
+        pager.quarantine(object).ok();
+    }
+}
+
+/// Returns the bundles and settings the file holds, none when the commit log's damage leaves
+/// their rows unreadable.
+fn deployed_state<R: Runtime>(
+    catalog: &Catalog,
+    pager: &Pager<R>,
+    txns: &Transactions<R>,
+    clog_damaged: bool,
+) -> Result<(bundle::Stored, Settings), OpenError> {
+    if clog_damaged {
+        return Ok((bundle::Stored::default(), Settings::default()));
+    }
+    Ok((
+        bundle::stored(catalog, pager, txns)?,
+        Settings::stored(catalog, pager, txns)?,
+    ))
+}
+
+/// Returns what `verify` holds of the file and the rows of the volatile relations, with no kept
+/// rows when the commit log's damage leaves them unreadable.
+fn held_rows<R: Runtime>(
+    catalog: &Catalog,
+    pager: &Pager<R>,
+    txns: &Transactions<R>,
+    schema: &Schema,
+    options: &OpenOptions,
+    clog_damaged: bool,
+) -> Result<
+    (
+        verify::Findings,
+        BTreeMap<adtb_lang::types::RelId, BTreeSet<Val>>,
+    ),
+    OpenError,
+> {
+    let kept = if clog_damaged {
+        Vec::new()
+    } else {
+        catalog.kept(pager, txns).map_err(corrupt)?
+    };
+    let table = command::engine_relation(schema, "sys", "verify_findings").map_err(corrupt)?;
+    let findings = verify::Findings::of(kept, schema.ids.relations[&table])?;
+    let mut volatile = settings::process_options(schema, &options.shown());
+    volatile.insert(table, findings.vals());
+    Ok((findings, volatile))
+}
+
 fn refused(version: u64, reason: RejectReason) -> OpenError {
     OpenError::MigrationRefused {
         version,
@@ -616,7 +697,10 @@ impl<R: Runtime> Engine<R> {
             Err(storage::OpenError::NotFound) => return Err(OpenError::NotFound),
             Err(e) => return Err(corrupt(e)),
         };
-        Engine::on(rt, pager.clone(), log, options).inspect_err(|_| pager.close())
+        Engine::on(rt.clone(), pager.clone(), log, options).inspect_err(|_| {
+            mark_open_damage(rt, &pager);
+            pager.close();
+        })
     }
 
     /// Open the catalog of the recovered `pager`, apply the migrations of `log` beyond the
@@ -633,28 +717,43 @@ impl<R: Runtime> Engine<R> {
                 usize::try_from(b).unwrap_or(usize::MAX)
             });
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
+        let clog_damaged = txns.quarantined().is_some();
+        if clog_damaged {
+            pager.quarantine(storage::Quarantine::Database).ok();
+        }
+        let writable = !pager.is_quarantined(storage::Quarantine::Database);
         catalog.set_query_memory(query_memory);
         diverged(&catalog, log)?;
-        let mut stored = bundle::stored(&catalog, &pager, &txns)?;
-        let settings = Settings::stored(&catalog, &pager, &txns)?;
+        let (mut stored, settings) = deployed_state(&catalog, &pager, &txns, clog_damaged)?;
         let opened = micros(pager.wall());
         let regs = &commanded(&options.registrations, &stored, opened, &settings)?;
-        registered::downgrade(&catalog, regs)?;
+        if writable {
+            registered::downgrade(&catalog, regs)?;
+        }
         let live = stored.live(opened, &settings);
         let headers: Vec<&bundle::Header> = regs.iter().filter_map(Registration::header).collect();
-        bundle::record(&catalog, &pager, &txns, &mut stored, &headers, opened)?;
-        let roles = catalog.committed_roles(&pager, &txns).map_err(corrupt)?;
-        let live = registered::readers(&mut catalog, regs, &live, &stored, &roles)?;
-        catalog.settle(&pager, &txns).map_err(corrupt)?;
-        let applied = catalog.source().log.len();
-        options
-            .host_fns
-            .check(catalog.schema(), &host::pending(log, applied))?;
+        if writable {
+            bundle::record(&catalog, &pager, &txns, &mut stored, &headers, opened)?;
+        }
+        let live = if writable {
+            let roles = catalog.committed_roles(&pager, &txns).map_err(corrupt)?;
+            let live = registered::readers(&mut catalog, regs, &live, &stored, &roles)?;
+            catalog.settle(&pager, &txns).map_err(corrupt)?;
+            let applied = catalog.source().log.len();
+            options
+                .host_fns
+                .check(catalog.schema(), &host::pending(log, applied))?;
+            live
+        } else {
+            Vec::new()
+        };
         let hosts = Arc::new(options.host_fns.hosts());
         catalog.set_hosts(hosts.clone());
         let sequences = catalog.counters(&pager).map_err(corrupt)?;
-        catalog.record_grants(&pager, &txns).map_err(corrupt)?;
-        migrate(&mut catalog, &pager, &txns, log, &live)?;
+        if writable {
+            catalog.record_grants(&pager, &txns).map_err(corrupt)?;
+            migrate(&mut catalog, &pager, &txns, log, &live)?;
+        }
         let (schema, program) = catalog.checking();
         let (schema, program) = (schema.clone(), program.clone());
         let normal = norm::program(&schema, &program).map_err(corrupt)?;
@@ -668,32 +767,39 @@ impl<R: Runtime> Engine<R> {
             schema: &schema,
             program: &program,
         };
-        let registered = registered::register(&over, regs, &stored, now, &settings)?;
+        let registered = if writable {
+            registered::register(&over, regs, &stored, now, &settings)?
+        } else {
+            registered::register_marked(&over, regs, &stored, now, &settings)
+        };
         let given = &options.registrations;
         let bundled: Vec<_> = registered
             .iter()
             .filter(|c| given.iter().any(|g| g.name() == c.name()))
             .filter_map(registered::Checked::passed)
             .collect();
-        registered::definers(&registered, &stored, catalog.source(), &roles)?;
-        let deployed = bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)?;
-        server::initialize(&catalog, &pager, &txns)?;
+        let deployed = if writable {
+            let roles = catalog.committed_roles(&pager, &txns).map_err(corrupt)?;
+            registered::definers(&registered, &stored, catalog.source(), &roles)?;
+            let deployed =
+                bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)?;
+            server::initialize(&catalog, &pager, &txns)?;
+            deployed
+        } else {
+            stored
+        };
         let mut bundles = Bundles::default();
         for c in &registered {
             c.explained(&mut bundles);
         }
-        let findings = verify::Findings::of(
-            catalog.kept(&pager, &txns).map_err(corrupt)?,
-            schema.ids.relations
-                [&command::engine_relation(&schema, "sys", "verify_findings").map_err(corrupt)?],
-        )?;
-        let mut volatile = settings::process_options(&schema, &options.shown());
-        volatile.insert(
-            command::engine_relation(&schema, "sys", "verify_findings").map_err(corrupt)?,
-            findings.vals(),
-        );
+        let (findings, volatile) =
+            held_rows(&catalog, &pager, &txns, &schema, options, clog_damaged)?;
         let defaults = exec::Options::default();
-        let retained = catalog.retained(&pager, &txns).map_err(corrupt)?;
+        let retained = if clog_damaged {
+            None
+        } else {
+            Some(catalog.retained(&pager, &txns).map_err(corrupt)?)
+        };
         let db = write::Database::new(
             rt.clone(),
             Setup {
@@ -718,8 +824,13 @@ impl<R: Runtime> Engine<R> {
         .with_files(options.file_root.clone().map(Disk::new).unwrap_or_default())
         .with_hosts(hosts)
         .with_volatile(volatile)
-        .with_history(retained, settings.window)
-        .map_err(corrupt)?;
+        .with_kept_store(catalog.kept_store());
+        let db = match retained {
+            Some(retained) => db
+                .with_history(retained, settings.window)
+                .map_err(corrupt)?,
+            None => db,
+        };
         let role_mentions = server::mentioned(catalog.source());
         let engine = Engine {
             rt,
@@ -759,7 +870,17 @@ impl<R: Runtime> Engine<R> {
     }
 
     fn write_error(&self, txn: TxnId, e: write::Error) -> Error {
-        Error::of_write(&self.schema, txn, e)
+        Error::of_write(&self.schema, txn, self.db.quarantining(e))
+    }
+
+    /// Returns the client error of `e`, met writing catalog rows.
+    fn catalog_error(&self, e: catalog::Error) -> Error {
+        match e {
+            catalog::Error::Page(p) | catalog::Error::Heap(crate::heap::Error::Page(p)) => {
+                self.write_error(TxnId(0), write::Error::Page(p))
+            }
+            other => Error::of_catalog_write(other),
+        }
     }
 
     /// Run the items of `p` as statements of `tx`, the transaction `id`, over `local`. Returns
@@ -814,7 +935,12 @@ impl<R: Runtime> Engine<R> {
                             "a deployment command was refused".into(),
                         ));
                     }
-                    None => ran.push((at, self.command(tx, p, &c.command, local, bounds.clone())?)),
+                    None => {
+                        if !matches!(c.command, adtb_lang::check::Command::Verify(_)) {
+                            self.db.admit_database()?;
+                        }
+                        ran.push((at, self.command(tx, p, &c.command, local, bounds.clone())?));
+                    }
                 }
             }
             Ok(())
@@ -836,7 +962,8 @@ impl<R: Runtime> Engine<R> {
             ) => Err(Halted::Blocked { on, rerun }),
             (Err(f), None) => {
                 let ends = f.error.ends_transaction();
-                Err(Halted::Failed(Error::of_write(schema, id, f.error), ends))
+                let error = self.db.quarantining(f.error);
+                Err(Halted::Failed(Error::of_write(schema, id, error), ends))
             }
         }
     }
@@ -892,6 +1019,13 @@ impl<R: Runtime> Engine<R> {
         self.reads_after(opts.after)?;
         on_ready();
         let bounds = stops.bounds(&self.rt, opts.fix_rounds);
+        if let Some(rows) = self.verify_without_transaction(p) {
+            return rows.map(|rows| Committed {
+                value: vec![rows],
+                position: Position::from(self.pager.position(self.pager.durable())),
+                attempts: 1,
+            });
+        }
         if !p.writes {
             let id = self.txn_id();
             let tx = self.begin_read(id, p.deferrable)?;
@@ -922,6 +1056,22 @@ impl<R: Runtime> Engine<R> {
                 }
             }
         }
+    }
+
+    /// Returns the run of `verify` that `p` is, when `p` is nothing else and the commit log's
+    /// damage refuses every transaction.
+    fn verify_without_transaction(&self, p: &Prepared) -> Option<Result<DynRows, Error>> {
+        self.db.txns().quarantined()?;
+        let ([], [c]) = (p.items(), p.commands()) else {
+            return None;
+        };
+        let adtb_lang::check::Command::Verify(rel) = c.command else {
+            return None;
+        };
+        Some(
+            self.verified(p.schema(), rel)
+                .map_err(|e| self.write_error(TxnId(0), e)),
+        )
     }
 
     /// Returns how often a call of `p` reruns on a serialization failure: `retry`, else `p`'s
@@ -1049,7 +1199,7 @@ fn diverged(catalog: &Catalog, log: &Log) -> Result<(), OpenError> {
 fn migrate<R: Runtime>(
     catalog: &mut Catalog,
     pager: &Pager<R>,
-    txns: &crate::mvcc::Transactions<R>,
+    txns: &Transactions<R>,
     log: &Log,
     live: &[registered::Live],
 ) -> Result<(), OpenError> {

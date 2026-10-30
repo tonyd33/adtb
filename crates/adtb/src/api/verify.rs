@@ -59,8 +59,8 @@ fn fields(f: Found) -> (u32, Vec<KeptField>) {
     use KeptField::{Int, Text};
     let id = |n: u64| Int(i64::try_from(n).unwrap_or(i64::MAX));
     match f {
-        Found::Checksum { at } => (0, vec![Text(at)]),
-        Found::StalePage { at } => (1, vec![Text(at)]),
+        Found::Checksum { at, .. } => (0, vec![Text(at)]),
+        Found::StalePage { at, .. } => (1, vec![Text(at)]),
         Found::Order { index, at } => (2, vec![id(index), Text(at)]),
         Found::Orphan { index, ctor, at } => (3, vec![id(index), id(ctor), Text(at)]),
         Found::Missing {
@@ -211,7 +211,8 @@ impl<R: Runtime> Engine<R> {
             },
             started,
         };
-        let found = self.verify_checks(scope, holding, &job)?;
+        let mut found = self.verify_checks(scope, holding, &job)?;
+        found.extend(self.db.quarantine_findings(&found));
         let vals = self.replace_findings(schema, table, scope, (run, started), found);
         let elem = Ty::Data {
             def: schema.relation(table).elem_def,
@@ -325,6 +326,10 @@ impl<R: Runtime> Engine<R> {
         holding: bool,
         job: &Job<'_, R>,
     ) -> Result<BTreeSet<Found>, write::Error> {
+        if self.db.txns().quarantined().is_some() {
+            job.phase("pages", 0.1);
+            return Ok(self.db.check_pages(scope)?.into_iter().collect());
+        }
         job.phase("waiting for a safe snapshot", 0.0);
         let snapshot = self.db.begin_verify()?;
         let tx = snapshot.txn();

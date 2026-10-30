@@ -1559,3 +1559,48 @@ fn a_task_carrying_a_cancelled_token_never_runs() {
         assert_eq!(Outcome::Finished, outcome, "seed {seed}");
     }
 }
+
+#[test]
+fn a_task_reading_a_quarantined_constructor_fails_before_running() {
+    sim_once(|rt| {
+        let log = "module app
+add module app
+add type Item { id: Key items } = A { n: I64 } | B { m: I64 }
+add relation items : Item key id generate sequence
+";
+        let db = Database::open_in(
+            rt.clone(),
+            "marks.adt",
+            &Log::new([log]),
+            &adtb_simkit::api::options(2),
+        )
+        .unwrap();
+        adtb_simkit::api::results(
+            &db,
+            "insert items.A { id: items.key(1), n: 1 }
+             insert items.B { id: items.key(2), m: 2 }",
+        );
+        let w = db.write_path();
+        let heap = w.heap_named("app::items", "B").unwrap();
+        w.pager()
+            .quarantine(adtb::storage::Quarantine::Heap(heap.id().0))
+            .unwrap();
+        let session = db.role_authority().session("owner").unwrap();
+        let failed = |text: &str| {
+            let task = session.submit_text(text, &[], read_opts()).unwrap();
+            match drive(rt, &task).1 {
+                Completion::Failed(Error::Fatal {
+                    reason: adtb::FatalReason::Quarantined { what },
+                }) => assert_eq!("app::items.B", what),
+                other => panic!("{text}: {other:?}"),
+            }
+        };
+        failed("from i in items select i");
+        failed("from i in items select key i");
+        let task = session
+            .submit_text("from a in items.A select a", &[], read_opts())
+            .unwrap();
+        let (rows, done) = drive(rt, &task);
+        assert_eq!(1, rows.len(), "{done:?}");
+    });
+}

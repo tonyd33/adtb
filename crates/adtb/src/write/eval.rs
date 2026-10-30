@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::ControlFlow;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use adtb_file::Record;
 use adtb_lang::kernel::{Conflict, Kind, Terms, Tm, Var};
@@ -11,6 +12,7 @@ use adtb_lang::types::{RelId, Ty};
 use crate::exec::types::ctors;
 use crate::exec::{self, Val, from_stored, to_key};
 use crate::key::Tid;
+use crate::plan::IndexId;
 use crate::runtime::Runtime;
 
 use super::apply::Undo;
@@ -422,10 +424,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             Generator::Sequence => Val::Int(self.db.next_sequence(r)?),
             Generator::Uuidv7 => {
                 let ms = self.clock.div_euclid(1000) as u64;
-                let n = self
-                    .db
-                    .uuids
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let n = self.db.uuids.fetch_add(1, Ordering::Relaxed);
                 let mut b = [0u8; 16];
                 b[..6].copy_from_slice(&ms.to_be_bytes()[2..]);
                 let rand = self.db.rt.next_u64();
@@ -860,7 +859,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 let want = schema.encode(&key);
                 let scope: BTreeSet<u32> = u.scope.iter().copied().collect();
                 let mut out = BTreeMap::new();
-                for (d, tid) in self.store.probe(u.index, &key, &scope)? {
+                for (d, tid) in self.probe(u.index, &key, &scope)? {
                     let Some((_, stored)) = self.store.fetch(r.ctors[d as usize].heap, tid)? else {
                         continue;
                     };
@@ -912,7 +911,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
             .map(|(t, v)| to_key(t, v))
             .collect::<Result<_, _>>()?;
         let all: BTreeSet<u32> = r.all_ctors().into_iter().collect();
-        for (c, tid) in self.store.probe(r.key_index, &prefix, &all)? {
+        for (c, tid) in self.probe(r.key_index, &prefix, &all)? {
             let Some((at, stored)) = self.store.fetch(r.ctors[c as usize].heap, tid)? else {
                 continue;
             };
@@ -937,16 +936,45 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         )
     }
 
-    /// Returns every row of `rel` the statement's reads see, of the constructors `of`, or all,
-    /// holding the batches it reads in the statement's grant when it has one.
-    pub fn rows(&self, rel: RelId, of: Option<&[u32]>) -> Result<Vec<(u32, Val)>, Error> {
-        let r = self.rel(rel);
-        let grant = match &self.stop.grant {
+    /// Returns the statement's grant, else an unlimited one.
+    fn grant(&self) -> Arc<exec::Grant> {
+        match &self.stop.grant {
             Some(g) => g.clone(),
             None => exec::Budget::new(usize::MAX)
                 .admit(usize::MAX)
                 .expect("a budget admits a grant of its whole limit"),
+        }
+    }
+
+    /// Returns the entries of index `id` as [`exec::Store::probe`] does, bounded by the statement.
+    fn probe(
+        &self,
+        id: IndexId,
+        prefix: &[crate::key::Value],
+        routes: &BTreeSet<u32>,
+    ) -> Result<Vec<(u32, Tid)>, exec::Error> {
+        let grant = self.grant();
+        let check = || {
+            if self.stop.cancel.load(Ordering::Acquire) {
+                return Err(exec::Error::Cancelled);
+            }
+            match &self.stop.deadline {
+                Some(d) if self.db.rt.now() >= d.at => Err(d.error.clone()),
+                _ => Ok(()),
+            }
         };
+        let bounds = exec::ProbeBounds {
+            grant: &grant,
+            check: &check,
+        };
+        self.store.probe(id, prefix, routes, bounds)
+    }
+
+    /// Returns every row of `rel` the statement's reads see, of the constructors `of`, or all,
+    /// holding the batches it reads in the statement's grant when it has one.
+    pub fn rows(&self, rel: RelId, of: Option<&[u32]>) -> Result<Vec<(u32, Val)>, Error> {
+        let r = self.rel(rel);
+        let grant = self.grant();
         let mut out = Vec::new();
         for (c, ctor) in r.ctors.iter().enumerate() {
             let c = c as u32;
@@ -1054,7 +1082,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                         k.clone()
                     };
                     let prefix = [to_key(&types[0], &value)?];
-                    for (d, tid) in self.store.probe(index, &prefix, &routes)? {
+                    for (d, tid) in self.probe(index, &prefix, &routes)? {
                         let Some((_, stored)) = self.store.fetch(r.ctors[d as usize].heap, tid)?
                         else {
                             continue;
@@ -1399,10 +1427,11 @@ impl<R: Runtime> Database<R> {
         t: Tm,
         params: &[Var],
     ) -> Result<crate::plan::Plan, Error> {
+        let usable = self.usable_catalog();
         crate::plan::plan(
             schema,
             &self.normal,
-            &self.catalog,
+            usable.as_deref().unwrap_or(&self.catalog),
             terms,
             t,
             params,

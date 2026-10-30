@@ -610,6 +610,24 @@ full. The message carries the operating system's detail. Free space or
 fix the device, then open the database again; it recovers everything
 committed.
 
+It also reports a damaged page when the engine cannot tell what holds the
+page, because an index it would have to walk cannot be followed. The
+message names the page, nothing is quarantined, and the next read of the
+page tries again.
+
+### Quarantined
+
+A page failed its checksum or log position check, or `verify` found an
+index wrong, and `what` names what is stopped: a constructor relation
+such as `app::identities.Apple`, an index, or `the database`. The call
+that finds the damage fails this way, and the mark survives a restart.
+
+Every call reading that constructor relation fails from then on, whatever
+its arguments and its plan; other calls run. A quarantined index fails no
+read once marked, its queries only cost more, but a write to a constructor
+it covers fails. With `the database` only `verify` runs. No command lifts a
+mark yet.
+
 ## Open errors
 
 `adtb::open` and the shell report these before any text runs. The
@@ -717,5 +735,5 @@ yet. You will not meet them here: `SafePointTimeout`, `Overloaded`,
 `UnknownTransaction`, `CatalogMismatch`, `TooOld`, `ReadOnlyReplica`,
 `RequestExpired`, `RequestReused`, `AuthFailed`,
 `UnsupportedProtocol`, `UnknownDatabase`, `EditionLocked`,
-`MigrationInProgress`, `DumpDamaged` and `Quarantined`, and the open
+`MigrationInProgress` and `DumpDamaged`, and the open
 errors `KeyRequired`, `WrongKey` and `FormatTooNew`.

@@ -167,6 +167,8 @@ pub struct Shared<R: Runtime> {
     /// Held across a search for a free page and across marking pages allocated.
     pub(crate) alloc: Lock<super::alloc::AllocState>,
     pub(crate) marks: Lock<super::quarantine::Marks>,
+    /// Whether `marks` holds any mark. Set before a mark shows in `marks`.
+    pub(crate) any_mark: std::sync::atomic::AtomicBool,
 }
 
 impl<R: Runtime> std::fmt::Debug for Pager<R> {
@@ -350,6 +352,7 @@ impl<R: Runtime> Pager<R> {
             }),
             alloc: Lock::new(Default::default()),
             marks: Lock::new(Default::default()),
+            any_mark: std::sync::atomic::AtomicBool::new(false),
             rt,
         }))
     }
@@ -446,7 +449,7 @@ impl<R: Runtime> Pager<R> {
             self.header.lock(&self.rt).0.quarantine = marks;
             self.checkpoint();
         } else {
-            self.load_marks(marks);
+            self.load_marks(marks)?;
         }
         Ok(recovery)
     }
@@ -583,7 +586,8 @@ impl<R: Runtime> Pager<R> {
     /// Refuse `pid` from now on, dropping its memory unwritten.
     ///
     /// Preconditions: the caller holds no latch on `pid`.
-    pub(crate) fn damage(&self, pid: Pid, damage: Damage) -> PageError {
+    #[doc(hidden)]
+    pub fn damage(&self, pid: Pid, damage: Damage) -> PageError {
         let g = self.mem.lock_exclusive(pid.0, &self.rt);
         if g.resident() {
             g.evict();

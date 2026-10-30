@@ -6,7 +6,7 @@ use adtb_sys::lock::{Lock, RwLock};
 
 use crate::btree;
 use crate::runtime::Runtime;
-use crate::storage::{Lsn, PageError, Pager, Pid, Position};
+use crate::storage::{Damage, Lsn, PageError, Pager, Pid, Position};
 
 use super::past::{Commit, Marker, Past};
 use super::{CommitLog, Error, Holds, Scope, Snapshot, SnapshotId, Status, Xid};
@@ -131,17 +131,34 @@ impl<R: Runtime> Transactions<R> {
     /// - Every id assigned before the crash reads as committed exactly when its commit record was
     ///   recovered, and as aborted otherwise.
     /// - No id assigned before the crash is assigned again.
-    /// - If a status page the open reads is damaged, the database is quarantined.
+    /// - If a status page is damaged, the database is quarantined.
     ///
-    /// Fails if the commit log's root or a directory page is damaged.
+    /// Fail if the commit log's root or a directory page is damaged, or a status page cannot
+    /// be read.
     pub fn open(rt: R, pager: &Pager<R>, root: Pid) -> Result<Transactions<R>, PageError> {
         let mut clog = CommitLog::load(pager, root)?;
-        let unresolved = clog.abort_unresolved(pager);
+        let damage = clog.abort_unresolved(pager).err().or_else(|| {
+            clog.status_pages()
+                .values()
+                .find_map(|&pid| pager.read(pid).err())
+        });
+        if let Some(e) = damage.filter(|e| e.damage == Damage::Unreadable) {
+            return Err(e);
+        }
         let txns = Transactions::over(rt, pager, clog);
-        if let Err(e) = unresolved {
+        if let Some(e) = damage {
             txns.damaged(e);
         }
         Ok(txns)
+    }
+
+    /// Returns whether `x` counts as committed in the latest state of a quarantined database:
+    /// it committed, or its status page is damaged.
+    pub fn assumed_committed(&self, pager: &Pager<R>, x: Xid) -> bool {
+        self.clog
+            .read(&self.rt)
+            .status(pager, x)
+            .map_or(true, |s| s == Status::Committed)
     }
 
     fn over(rt: R, pager: &Pager<R>, clog: CommitLog) -> Transactions<R> {

@@ -34,13 +34,13 @@ use adtb_lang::span::Diag;
 use adtb_lang::types::RelId;
 
 use crate::btree::{self, BTree, Index};
-use crate::exec::{self, StoredHeap, StoredIndex};
+use crate::exec::{self, IndexedRows, StoredHeap, StoredIndex};
 use crate::heap::{self, FieldType, Heap, HeapNo, LargeStore};
 use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Value};
 use crate::mvcc::{self, CommitLog, Scope, Snapshot, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
-use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
+use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine, Stopped};
 use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 
 pub use deploy::Rewrite;
@@ -423,14 +423,36 @@ fn named<R: Runtime>(
     txns: &Transactions<R>,
     roots: &Heap,
 ) -> Result<Named, Error> {
-    let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
-    let rows = visible(pager, txns, &snapshot, roots);
-    txns.release(id);
+    let rows = if txns.quarantined().is_some() {
+        latest(pager, txns, roots)?
+    } else {
+        let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
+        let rows = visible(pager, txns, &snapshot, roots);
+        txns.release(id);
+        rows?
+    };
     let mut out = Named::default();
-    for row in rows? {
+    for row in rows {
         out.add(&row)?;
     }
     Ok(out)
+}
+
+/// Returns the rows of `heap` in the latest state of a quarantined database, whose damaged status
+/// pages count as committed.
+fn latest<R: Runtime>(
+    pager: &Pager<R>,
+    txns: &Transactions<R>,
+    heap: &Heap,
+) -> Result<Vec<Vec<Value>>, PageError> {
+    let mut versions = Vec::new();
+    heap.scan(pager, |v| versions.push(v))?;
+    let gone = |x: u64| Xid(x) != Xid::NONE && txns.assumed_committed(pager, Xid(x));
+    Ok(versions
+        .into_iter()
+        .filter(|v| txns.assumed_committed(pager, Xid(v.header.xmin)) && !gone(v.header.xmax))
+        .map(|v| v.row)
+        .collect())
 }
 
 /// Returns the rows of the versions of `heap` visible at `snapshot`, in heap order.
@@ -745,12 +767,99 @@ impl Catalog {
             hosts: Arc::default(),
             kept,
         };
-        if root.changing != Changing::None {
-            catalog.free_leaked(pager, &txns)?;
-            update_root(pager, pid, |r| r.changing = Changing::None)?;
+        if txns.quarantined().is_none() {
+            if root.changing != Changing::None {
+                match catalog.free_leaked(pager, &txns) {
+                    Ok(()) => {
+                        update_root(pager, pid, |r| r.changing = Changing::None)?;
+                    }
+                    Err(Error::Page(e)) if e.damage != storage::Damage::Unreadable => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            catalog.tag_grants(pager, &txns)?;
         }
-        catalog.tag_grants(pager, &txns)?;
         Ok((catalog, txns))
+    }
+
+    /// Returns what the damage at `pid` quarantines, found before the write path exists: the
+    /// holder of a page the catalog's structures reach, and nothing for any other page.
+    pub fn holders<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+        pid: Pid,
+    ) -> BTreeSet<Quarantine> {
+        let object = |r: RelId, q: Quarantine| {
+            let module = &self.schema.module(self.schema.relation(r).module).name;
+            Some(if schema::ENGINE_MODULES.contains(&module.as_str()) {
+                Quarantine::Database
+            } else {
+                q
+            })
+        };
+        pager.holders_of(pid, None, |h| {
+            let database = Some(Quarantine::Database);
+            h.walk(database, || {
+                self.roots.owned_pages(pager).map_err(Stopped::from)
+            });
+            {
+                let clog = txns.commit_log();
+                let mut pages = vec![self.root, clog.root()];
+                pages.extend(clog.status_pages().values());
+                pages.extend(clog.directory_pages());
+                pages.extend(self.sequences());
+                h.walk(database, || Ok(pages.clone()));
+            }
+            for (&(r, c), heap) in &self.heaps {
+                let of = object(r, Quarantine::Heap(heap.id().0));
+                h.walk(of, || heap.owned_pages(pager).map_err(Stopped::from));
+                if let Some(past) = self.kept.heap(r, c) {
+                    h.walk(of, || past.owned_pages(pager).map_err(Stopped::from));
+                }
+            }
+            for (spec, index, _) in self.indexes.values() {
+                let of = object(spec.relation, Quarantine::Index(index.tree().owner()));
+                h.walk(of, || index.tree().walk(pager));
+            }
+            for (r, key) in key_indexes(&self.schema, &self.indexes) {
+                if let Some(past) = self.kept.index(r) {
+                    let of = object(r, Quarantine::Index(key.tree().owner()));
+                    h.walk(of, || past.tree().walk(pager));
+                }
+            }
+        })
+    }
+
+    /// Returns whether `pid` is a page the catalog cannot open without: its root, its roots heap
+    /// or the commit log's. For a catalog that does not open, so nothing of it is in hand.
+    pub fn opens_from<R: Runtime>(pager: &Pager<R>, pid: Pid) -> bool {
+        let at = pager.catalog_root();
+        if pid == at {
+            return true;
+        }
+        let Ok(root) = pager.read(at).map(|page| Root::read(&page)) else {
+            return false;
+        };
+        let holds = |pages: Result<Vec<Pid>, PageError>| match pages {
+            Ok(pages) => pages.contains(&pid),
+            Err(e) => e.pid == pid,
+        };
+        let large = LargeStore::open(root.large.0, root.large.1);
+        let in_roots = Heap::open(pager, root.roots.0, root.roots.1, roots_row(), large)
+            .is_ok_and(|heap| holds(heap.owned_pages(pager)));
+        in_roots
+            || holds(CommitLog::load(pager, root.commit_log).map(|clog| {
+                let mut pages = vec![clog.root()];
+                pages.extend(clog.status_pages().values());
+                pages.extend(clog.directory_pages());
+                pages
+            }))
+    }
+
+    /// Returns the heap kept rows lie in.
+    pub fn kept_store(&self) -> Arc<Heap> {
+        self.roots.clone()
     }
 
     /// Free every page the catalog's structures do not reach.
@@ -893,17 +1002,29 @@ impl Catalog {
         let indexes = self
             .indexes
             .values()
-            .map(|(spec, index, _)| {
+            .map(|(spec, index, keys)| {
                 let ctors = spec
                     .ctors
                     .iter()
                     .map(|&c| (ctor_id(schema, spec.relation, c).stored(), c))
+                    .collect();
+                let heaps = spec
+                    .ctors
+                    .iter()
+                    .map(|&c| {
+                        let heap = &self.heaps[&(spec.relation, c)];
+                        (c, HeapId(u64::from(heap.id().0)))
+                    })
                     .collect();
                 (
                     IndexId(spec.id),
                     StoredIndex {
                         index: index.clone(),
                         ctors,
+                        rows: Some(IndexedRows {
+                            keys: keys.clone(),
+                            heaps,
+                        }),
                     },
                 )
             })

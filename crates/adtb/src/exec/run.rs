@@ -21,7 +21,7 @@ use super::join::{Deferred, Probed, Table};
 use super::memory::Grant;
 use super::sched::Scheduler;
 use super::spill::{Distinct, Spill};
-use super::store::{Store, from_stored, to_key};
+use super::store::{ProbeBounds, Store, from_stored, to_key};
 use super::value::Val;
 use super::{Error, Exceeded, Fault, Options};
 
@@ -347,7 +347,12 @@ impl<R: Runtime> Ctx<R> {
             .map(|(t, v)| to_key(t, v))
             .collect::<Result<_, _>>()?;
         let routes: BTreeSet<u32> = l.routes.iter().map(|r| r.ctor).collect();
-        for (c, tid) in self.store.probe(l.index, &k, &routes)? {
+        let check = || self.check_cancel();
+        let bounds = ProbeBounds {
+            grant: &self.grant,
+            check: &check,
+        };
+        for (c, tid) in self.store.probe(l.index, &k, &routes, bounds)? {
             let route = l.routes.iter().find(|r| r.ctor == c).expect("a route");
             if let Some((_, v)) = self.fetch(route, tid, key)? {
                 return Ok(v);
@@ -786,7 +791,13 @@ impl<R: Runtime> Ctx<R> {
             } => {
                 let keys = self.eval_keys(key, &mut f, &mut sel, off)?;
                 let ctors: BTreeSet<u32> = routes.iter().map(|(r, _)| r.ctor).collect();
-                let found = |_: u32, prefix: &[Value]| self.store.probe(*index, prefix, &ctors);
+                let check = || self.check_cancel();
+                let bounds = ProbeBounds {
+                    grant: &self.grant,
+                    check: &check,
+                };
+                let found =
+                    |_: u32, prefix: &[Value]| self.store.probe(*index, prefix, &ctors, bounds);
                 let at = IndexEnd {
                     index: *index,
                     keys: &keys,
@@ -819,9 +830,14 @@ impl<R: Runtime> Ctx<R> {
                     };
                 let (los, his) = (bound(lo)?, bound(hi)?);
                 let ctors: BTreeSet<u32> = routes.iter().map(|(r, _)| r.ctor).collect();
+                let check = || self.check_cancel();
+                let bounds = ProbeBounds {
+                    grant: &self.grant,
+                    check: &check,
+                };
                 let found = |r: u32, prefix: &[Value]| {
                     let (l, h) = (los.get(&r).cloned(), his.get(&r).cloned());
-                    self.store.range(*index, prefix, l, h, &ctors)
+                    self.store.range(*index, prefix, l, h, &ctors, bounds)
                 };
                 let at = IndexEnd {
                     index: *index,

@@ -671,6 +671,7 @@ the whole database, and keeps until the object is repaired:
 
 ```text
 pager.quarantine(Quarantine::Heap(id) | Index(id) | Database) -> Result<(), PageError>
+                                                  // caller holds no page latch
 pager.release(object) -> Result<(), PageError>    // once repaired
 pager.is_quarantined(object) -> bool              // its own mark or the database's
 pager.quarantined() -> BTreeSet<Quarantine>
@@ -685,8 +686,45 @@ across restarts until `release`. A marks page that fails verification
 at open quarantines the database, and `quarantine` and `release` then
 fail with its damage.
 
+`quarantine` of an object already marked writes nothing, and every caller
+returns with the mark durable. When it fails, the mark still holds in
+memory until the pager closes. An I/O failure reading the marks' page at
+open fails the open and marks nothing.
+
 The pager reports a damaged page to its caller (§2.3); the caller maps
-the page to its heap or index and marks that. The planner and the
+the page to its heap or index and marks that:
+
+- a page of a constructor's heap, current or history, marks that heap; a
+  page of an index marks that index, and a page of a history key index
+  marks its key index;
+- a mark comes only from a page that fails its checksum or log position.
+  A walk takes no latch, so a shape it cannot follow proves nothing, the
+  object may be changing: the walk runs again, a bounded number of times;
+- a walk that stops on damage on two runs in a row marks that object;
+- a walk that stops on an I/O failure, or still stops on a shape when its
+  runs are spent, leaves the mapping incomplete. An incomplete mapping that
+  found no holder marks nothing, not even the database, and the call fails
+  as a storage failure naming the page; the next read that meets the page
+  maps it again;
+- a page of a relation of an engine module, a page of the large-value
+  store every heap shares, and an allocated page a complete walk of every
+  heap and index does not reach mark the database;
+- a page the allocation bitmap calls free, read before and after the walk,
+  marks nothing, and a page of the store of kept rows marks nothing;
+- `Damage::Unreadable`, an I/O failure, marks nothing and stays a storage
+  failure.
+
+An open that fails maps what it found the same way, with the catalog's
+structures, and marks nothing for a page they do not reach. When the
+catalog itself does not open, only a page of its root, its kept-rows heap
+or the commit log is mapped, to the database.
+
+An `Order`, `Orphan` or `Missing` finding comes from a check that holds off
+vacuum across its index, and vacuum is the one writer that frees a page of a
+tree, so concurrent writers cannot make the check's walks follow a freed page.
+
+The write path maps and marks once the failed call has unwound, holding
+no page latch. The planner and the
 transactions layer read the marks and rely on them as follows
 ([execution.md §6](execution.md#6-quarantine)):
 

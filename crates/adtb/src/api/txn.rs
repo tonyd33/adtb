@@ -86,6 +86,9 @@ impl<R: Runtime> Database<R> {
         }
         let e = &*self.engine;
         let _open = e.enter()?;
+        let id = e.txn_id();
+        e.db.admit_database()
+            .map_err(|err| e.write_error(id, err))?;
         let txn = Stops {
             cancel: None,
             deadline: opts.deadline,
@@ -94,7 +97,6 @@ impl<R: Runtime> Database<R> {
         txn.check(&e.rt)?;
         let caller = e.principal(opts.assert.as_ref())?;
         e.reads_after(opts.after)?;
-        let id = e.txn_id();
         let tx = if opts.read_only {
             e.begin_read(id, opts.deferrable)?
         } else {

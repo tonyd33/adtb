@@ -147,6 +147,7 @@ impl<R: Runtime> Pasts<R> {
             PastError::Unavailable { oldest } => exec::Error::HistoryUnavailable {
                 oldest: oldest.unwrap_or(self.upto),
             },
+            PastError::Damaged(crate::btree::Error::Page(p)) => exec::Error::Page(p),
             PastError::Damaged(d) => exec::Error::Corrupt(format!(
                 "the record of the retention window is damaged: {d:?}"
             )),

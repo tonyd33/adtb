@@ -51,6 +51,7 @@ impl<R: Runtime> Database<R> {
         text: Text<'_>,
         bounds: &Bounds,
     ) -> Result<Option<Produced<R>>, Error> {
+        self.admit(&text)?;
         let started = self.rt.now();
         let [root] = text.items else {
             return Ok(None);

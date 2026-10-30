@@ -268,6 +268,24 @@ impl<R: Runtime> Pager<R> {
         self.update_with(new, &[], |_| {})
     }
 
+    /// Returns whether the allocation bitmap calls `pid` free.
+    ///
+    /// Fail if its bitmap page is damaged.
+    pub fn is_free(&self, pid: Pid) -> Result<bool, PageError> {
+        let span = self.bitmap_span();
+        let map = self.bitmap_page(pid.0 / span);
+        if pid == map || pid < Pid::FIRST_DATA {
+            return Ok(false);
+        }
+        let page = self.read(map)?;
+        if page::kind(&page) != PageKind::AllocationBitmap as u16 {
+            return Ok(true);
+        }
+        let i = pid.0 % span;
+        let bits = &page[HEADER_LEN..];
+        Ok(bits[(i / 8) as usize] >> (i % 8) & 1 == 0)
+    }
+
     /// Returns every page the allocation bitmap marks allocated, in order, leaving out the pages
     /// the pager owns itself: the file header copies, the bitmap's pages and the quarantine
     /// marks' page.

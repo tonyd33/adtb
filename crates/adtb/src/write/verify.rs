@@ -40,9 +40,12 @@ impl VerifyScope {
 pub enum Found {
     Checksum {
         at: String,
+        /// The page, unless an I/O failure rather than its bytes refused it.
+        page: Option<Pid>,
     },
     StalePage {
         at: String,
+        page: Pid,
     },
     Order {
         index: u64,
@@ -72,8 +75,12 @@ impl Found {
     fn of_damage(pid: Pid, damage: Damage) -> Found {
         let at = format!("page {}: {damage:?}", pid.0);
         match damage {
-            Damage::Checksum | Damage::Unreadable => Found::Checksum { at },
-            Damage::Stale { .. } => Found::StalePage { at },
+            Damage::Checksum => Found::Checksum {
+                at,
+                page: Some(pid),
+            },
+            Damage::Unreadable => Found::Checksum { at, page: None },
+            Damage::Stale { .. } => Found::StalePage { at, page: pid },
         }
     }
 
@@ -443,6 +450,25 @@ impl<R: Runtime> Database<R> {
         let r = self.rels.values().find(|r| r.qualified == relation)?;
         let c = r.ctors.iter().find(|c| c.name == ctor)?;
         Some(self.heaps[&c.heap].heap.clone())
+    }
+
+    /// Returns the key index of relation `relation`, by qualified name, and its constructors.
+    pub fn key_probe(&self, relation: &str) -> Option<(IndexId, BTreeSet<u32>)> {
+        let r = self.rels.values().find(|r| r.qualified == relation)?;
+        Some((r.key_index, r.all_ctors().into_iter().collect()))
+    }
+
+    /// Returns the history heap of constructor `ctor` of relation `relation`, by qualified name.
+    pub fn history_heap_named(&self, relation: &str, ctor: &str) -> Option<Arc<Heap>> {
+        let r = self.rels.values().find(|r| r.qualified == relation)?;
+        let c = r.ctors.iter().find(|c| c.name == ctor)?;
+        Some(self.retained.as_ref()?.heaps.get(&c.heap)?.heap.clone())
+    }
+
+    /// Returns the history key index of relation `relation`, by qualified name.
+    pub fn history_index_named(&self, relation: &str) -> Option<Index> {
+        let r = self.rels.values().find(|r| r.qualified == relation)?;
+        self.retained.as_ref()?.indexes.get(&r.key_index).cloned()
     }
 
     /// Returns the index of relation `relation`, by qualified name, of clause `clause`.

@@ -20,14 +20,14 @@ pub use block::{LogFinding, LogProblem};
 pub use crc::{Crc32c, crc32c};
 pub(crate) use driver::Driver;
 pub use page::{
-    FIRST_EDITABLE, HEADER_LEN, MAX_PAGE_SIZE, MIN_PAGE_SIZE, PageKind, flags, format, header_edit,
-    kind, lsn, owner,
+    FIRST_EDITABLE, HEADER_LEN, MAX_PAGE_SIZE, MIN_PAGE_SIZE, PageKind, flags, flip_owner, format,
+    header_edit, kind, lsn, owner,
 };
 pub use pager::{
     Damage, LATCHES_PER_THREAD, OpenError, Options, PageError, PageExclusive, PageOptimistic,
     PageShared, Pager,
 };
-pub use quarantine::Quarantine;
+pub use quarantine::{Holders, Quarantine, Stopped};
 pub use record::Edit;
 pub(crate) use record::{Malformed, Reader};
 pub use recovery::Recovery;

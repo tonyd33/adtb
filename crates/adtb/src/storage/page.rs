@@ -94,6 +94,11 @@ pub fn owner(page: &[u8]) -> u32 {
     u32::from_le_bytes(page[OWNER..OWNER + 4].try_into().unwrap())
 }
 
+/// Flip a bit of the page's owner, which a second flip undoes.
+pub fn flip_owner(page: &mut [u8]) {
+    page[OWNER] ^= 1;
+}
+
 pub fn flags(page: &[u8]) -> u16 {
     u16_at(page, FLAGS)
 }

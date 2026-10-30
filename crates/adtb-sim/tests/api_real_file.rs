@@ -357,3 +357,94 @@ fn a_statement_past_its_limit_stops_with_statement_limit() {
         "{got:?}"
     );
 }
+
+const SUM: &str = r"module app
+add module app
+add type User = { id: Key users, name: Text }
+add relation users : User key id generate sequence
+add type Identity { id: Key identities, user: Key users }
+  = EmailPass { email: Text }
+  | Google    { gid: Text }
+  | Apple     { sub: Text }
+add relation identities : Identity key id generate sequence
+  index (user) in (Google | Apple)
+";
+
+const SIDES: &str = "from i in identities.(EmailPass | Google) select i.id";
+const ALL: &str = "from i in identities select i.id";
+const ROWS: &str = "from i in identities select i";
+const BY_USER: &str = "from i in identities.Google where i.user == users.key(1) select i.gid";
+const INSERT: &str =
+    r#"insert identities.Google { id: identities.key(9), user: users.key(1), gid: "g-2" }"#;
+
+fn quarantined(db: &Database, text: &str) -> String {
+    match db.query_text(text, &[], &CallOptions::default()) {
+        Err(adtb::Error::Fatal {
+            reason: adtb::FatalReason::Quarantined { what },
+        }) => what,
+        other => panic!("{text}: {other:?}"),
+    }
+}
+
+fn runs(db: &Database, text: &str) {
+    db.query_text(text, &[], &CallOptions::default())
+        .unwrap_or_else(|e| panic!("{text}: {e:?}"));
+}
+
+/// Returns a seeded file under a new directory with the page `pick` picks flipped.
+fn damaged(name: &str, pick: impl FnOnce(&Database) -> adtb::storage::Pid) -> PathBuf {
+    let path = scratch(name).join("app.adt");
+    let db = Database::open(&path, &Log::new([SUM]), &options()).unwrap();
+    runs(
+        &db,
+        r#"insert users { id: users.key(1), name: "n" }
+           insert identities.EmailPass { id: identities.key(1), user: users.key(1), email: "e" }
+           insert identities.Google { id: identities.key(2), user: users.key(1), gid: "g" }
+           insert identities.Apple { id: identities.key(3), user: users.key(1), sub: "a" }"#,
+    );
+    let page = pick(&db);
+    db.close().unwrap();
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[page.0 as usize * 8192 + 300] ^= 0x10;
+    std::fs::write(&path, bytes).unwrap();
+    path
+}
+
+#[test]
+fn a_damaged_constructor_page_of_a_real_file_quarantines_its_constructor() {
+    let path = damaged("quarantine_heap", |db| {
+        let w = db.write_path();
+        let heap = w.heap_named("app::identities", "Apple").unwrap();
+        heap.pages(w.pager()).unwrap()[0]
+    });
+    let db = Database::open(&path, &Log::new([SUM]), &options()).unwrap();
+    runs(&db, SIDES);
+    assert_eq!("app::identities.Apple", quarantined(&db, ROWS));
+    runs(&db, SIDES);
+    assert_eq!("app::identities.Apple", quarantined(&db, ALL));
+    db.close().unwrap();
+    let db = Database::open(&path, &Log::new([SUM]), &options()).unwrap();
+    runs(&db, SIDES);
+    assert_eq!("app::identities.Apple", quarantined(&db, ALL));
+    db.close().unwrap();
+}
+
+#[test]
+fn a_damaged_index_page_of_a_real_file_quarantines_its_index() {
+    let path = damaged("quarantine_index", |db| {
+        let w = db.write_path();
+        let index = w
+            .index_named("app::identities", "index (user) in (Google | Apple)")
+            .unwrap();
+        *index.tree().pages(w.pager()).unwrap().last().unwrap()
+    });
+    let db = Database::open(&path, &Log::new([SUM]), &options()).unwrap();
+    assert!(quarantined(&db, BY_USER).contains("(user)"));
+    runs(&db, BY_USER);
+    assert!(quarantined(&db, INSERT).contains("(user)"));
+    db.close().unwrap();
+    let db = Database::open(&path, &Log::new([SUM]), &options()).unwrap();
+    runs(&db, BY_USER);
+    assert!(quarantined(&db, INSERT).contains("(user)"));
+    db.close().unwrap();
+}

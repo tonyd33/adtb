@@ -7,6 +7,7 @@ mod fresh;
 mod input;
 mod past;
 mod polarity;
+mod quarantine;
 mod schema;
 mod sequence;
 mod stream;
@@ -27,6 +28,7 @@ use adtb_sys::lock::Lock;
 
 use crate::btree::Index;
 use crate::exec::{self, Budget, Scheduler, StoredHeap, StoredIndex, Val};
+use crate::heap::Heap;
 use crate::key::CtorId;
 use crate::mvcc::{
     Access, Limits, Safety, Scope, SerialId, SerializationFailure, Serializer, Snapshot,
@@ -111,6 +113,8 @@ pub enum Error {
     Page(PageError),
     /// The statement's spill file could not be made, written or read.
     Spill(IoError),
+    /// The call reads, or writes under, what this text names, which is quarantined.
+    Quarantined(String),
     /// The commit log is corrupt or its ids are spent.
     Transactions(String),
     Corrupt(String),
@@ -465,6 +469,9 @@ pub struct Database<R: Runtime> {
     vacuuming: Lock<()>,
     /// The structures history is kept in, once [`Database::with_history`] gives them.
     retained: Option<Arc<Retained>>,
+    /// The heap of the catalog's kept rows, once [`Database::with_kept_store`] gives it. Its
+    /// damage is a finding and marks nothing.
+    kept_store: Option<Arc<Heap>>,
     hosts: Arc<exec::Hosts>,
     /// The rows the engine holds for each volatile relation.
     volatile: Lock<BTreeMap<RelId, BTreeSet<Val>>>,
@@ -551,6 +558,7 @@ impl<R: Runtime> Database<R> {
             files: Disk::default(),
             vacuuming: Lock::new(()),
             retained: None,
+            kept_store: None,
             hosts: Arc::default(),
             volatile: Lock::default(),
             rt,
@@ -586,6 +594,12 @@ impl<R: Runtime> Database<R> {
         self.retained = Some(Arc::new(retained));
         self.set_retention(window)?;
         Ok(self)
+    }
+
+    /// Returns the database reading its kept rows from `heap`.
+    pub fn with_kept_store(mut self, heap: Arc<Heap>) -> Self {
+        self.kept_store = Some(heap);
+        self
     }
 
     /// Returns the database reading `rows` for each volatile relation of `rows`.
@@ -775,6 +789,8 @@ impl<R: Runtime> Database<R> {
         bounds: Bounds,
         between: &mut Between<'_>,
     ) -> Result<Vec<Outcome>, Failed> {
+        self.admit(&text)
+            .map_err(|error| Failed { item: 0, error })?;
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
         let before = local.clone();
@@ -810,6 +826,8 @@ impl<R: Runtime> Database<R> {
         local: &mut Local,
         bounds: Bounds,
     ) -> Result<Vec<Outcome>, Failed> {
+        self.admit(&text)
+            .map_err(|error| Failed { item: 0, error })?;
         let before = local.clone();
         let mut ran = Vec::with_capacity(text.items.len());
         let mut out = Vec::with_capacity(text.items.len());
@@ -850,6 +868,7 @@ impl<R: Runtime> Database<R> {
             .rels
             .get(&rel)
             .ok_or_else(|| Error::Internal(format!("vacuum of {rel:?}, which has no heaps")))?;
+        self.admit_vacuum(r)?;
         let ids: BTreeMap<u32, CtorId> = self.indexes[&r.key_index]
             .ctors
             .iter()

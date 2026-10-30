@@ -527,6 +527,32 @@ fn damage(mut files: BTreeMap<String, Vec<u8>>, pid: Pid) -> BTreeMap<String, Ve
 }
 
 #[test]
+fn a_damaged_status_page_no_unresolved_id_lies_on_quarantines_the_database() {
+    let mut sim = Sim::new(2, Config::default());
+    let mut out = None;
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt.clone(), &options(FRAMES)).expect("create");
+        let txns = Transactions::create(rt, &pager).expect("commit log");
+        while txns.next().0 < 2 * txns.commit_log().ids_per_page() {
+            let x = txns.begin(&pager).expect("begin");
+            txns.abort(&pager, x).expect("abort");
+        }
+        pager.flush_log();
+        pager.flush_pages(usize::MAX);
+        pager.checkpoint();
+        let clog = txns.commit_log();
+        out = Some((clog.root(), clog.status_pages()[&0]));
+    });
+    let (root, status) = out.unwrap();
+    let mut sim = Sim::with_files(2, Config::default(), damage(sim.files(), status));
+    finished(&mut sim, |rt| {
+        let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("open");
+        let txns = Transactions::open(rt, &pager, root).expect("the commit log opens");
+        assert_eq!(Some(status), txns.quarantined().map(|e| e.pid));
+    });
+}
+
+#[test]
 fn a_damaged_status_page_quarantines_the_database() {
     let (files, root, status) = written(1);
     let mut sim = Sim::with_files(1, Config::default(), damage(files, status));

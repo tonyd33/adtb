@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::ops::{Bound, ControlFlow};
+use std::ops::{Bound, ControlFlow, RangeBounds};
 use std::sync::Arc;
 
 use adtb_lang::schema::Schema;
@@ -7,6 +7,7 @@ use adtb_lang::types::Ty;
 
 use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
 use crate::btree::{self, Index, prefix_end};
+use crate::catalog::IndexKeys;
 use crate::heap::{FieldType, Header, Heap, HeapNo, Version, walk};
 use crate::key::{CtorId, Dir, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{
@@ -14,7 +15,7 @@ use crate::mvcc::{
 };
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::{PageError, Pager, Pid};
+use crate::storage::{PageError, Pager, Pid, Quarantine};
 use adtb_sys::lock::Lock;
 
 use super::Error;
@@ -162,6 +163,34 @@ pub struct StoredHeap {
 pub struct StoredIndex {
     pub index: Index,
     pub ctors: BTreeMap<CtorId, u32>,
+    /// What answers a probe from the heaps while the index is quarantined; a probe of a
+    /// quarantined index without it reads the index.
+    pub rows: Option<IndexedRows>,
+}
+
+/// How the rows of a heap give the entries of an index over them.
+#[derive(Clone, Debug)]
+pub struct IndexedRows {
+    pub keys: Arc<IndexKeys>,
+    /// The heap of each constructor position the index holds.
+    pub heaps: BTreeMap<u32, HeapId>,
+}
+
+/// What bounds a probe answered from the heaps while its index is quarantined.
+#[derive(Clone, Copy)]
+pub struct ProbeBounds<'a> {
+    /// The grant holding the versions it scans.
+    pub grant: &'a Arc<Grant>,
+    /// Fail when the call is cancelled or its deadline has passed.
+    pub check: &'a dyn Fn() -> Result<(), Error>,
+}
+
+impl std::fmt::Debug for ProbeBounds<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProbeBounds")
+            .field("grant", self.grant)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The history heap of each heap and the history key index of each key index, which a read of
@@ -572,10 +601,11 @@ impl<R: Runtime> Store<R> {
         id: IndexId,
         prefix: &[Value],
         routes: &BTreeSet<u32>,
+        bounds: ProbeBounds<'_>,
     ) -> Result<Vec<(u32, Tid)>, Error> {
         let bytes = self.encode_prefix(id, prefix);
         let end = prefix_end(&bytes);
-        self.entries(id, Bound::Included(bytes), end, routes)
+        self.entries(id, Bound::Included(bytes), end, routes, bounds)
     }
 
     /// Returns the entries of index `id` whose leading key fields are `prefix` and whose next
@@ -590,6 +620,7 @@ impl<R: Runtime> Store<R> {
         lo: Option<(Value, bool)>,
         hi: Option<(Value, bool)>,
         routes: &BTreeSet<u32>,
+        bounds: ProbeBounds<'_>,
     ) -> Result<Vec<(u32, Tid)>, Error> {
         let base = self.encode_prefix(id, prefix);
         let next = self.index(id).index.schema().components()[prefix.len()].clone();
@@ -617,7 +648,7 @@ impl<R: Runtime> Store<R> {
             Some((v, true)) => prefix_end(&at(&v)),
             Some((v, false)) => Bound::Excluded(at(&v)),
         };
-        self.entries(id, start, end, routes)
+        self.entries(id, start, end, routes, bounds)
     }
 
     fn encode_prefix(&self, id: IndexId, prefix: &[Value]) -> Vec<u8> {
@@ -633,8 +664,17 @@ impl<R: Runtime> Store<R> {
         lo: Bound<Vec<u8>>,
         hi: Bound<Vec<u8>>,
         routes: &BTreeSet<u32>,
+        bounds: ProbeBounds<'_>,
     ) -> Result<Vec<(u32, Tid)>, Error> {
         let ix = self.index(id);
+        if let Some(rows) = &ix.rows
+            && self.pager.any_quarantined()
+            && self
+                .pager
+                .is_quarantined(Quarantine::Index(ix.index.tree().owner()))
+        {
+            return self.entries_from_heaps(id, rows, (&lo, &hi), routes, bounds);
+        }
         let ctors: BTreeSet<CtorId> = ix
             .ctors
             .iter()
@@ -662,6 +702,56 @@ impl<R: Runtime> Store<R> {
                 routes.contains(&c).then_some((c, e.tid))
             })
             .collect())
+    }
+
+    /// Returns the entries [`Store::entries`] returns, computed from the visible rows of the
+    /// heaps of `routes`, in index order. Each entry names the version the store sees. Hold each
+    /// page's versions and the entries found in the grant of `bounds`, and check `bounds` at
+    /// each page.
+    fn entries_from_heaps(
+        &self,
+        id: IndexId,
+        rows: &IndexedRows,
+        range: (&Bound<Vec<u8>>, &Bound<Vec<u8>>),
+        routes: &BTreeSet<u32>,
+        bounds: ProbeBounds<'_>,
+    ) -> Result<Vec<(u32, Tid)>, Error> {
+        let schema = self.index(id).index.schema();
+        let types = self.key_types(id);
+        let (lo, hi) = range;
+        let mut found = Vec::new();
+        let mut held = bounds.grant.arena();
+        for (&c, &heap) in rows.heaps.iter().filter(|(c, _)| routes.contains(c)) {
+            let listing = self.pages(heap)?;
+            let mut writers = BTreeSet::new();
+            for &pid in &listing.pages {
+                (bounds.check)()?;
+                let mut versions = Vec::new();
+                self.heap(heap)
+                    .heap
+                    .scan_pages(&self.pager, &[pid], |v| versions.push(v))?;
+                let size: usize = versions.iter().map(|v| row_size(&v.row)).sum();
+                let _page = bounds.grant.take(size)?;
+                for v in versions {
+                    let seen = self.reads.sees(&v.header)?;
+                    writers.extend(writer_of(&v.header, seen));
+                    if seen && let Some(key) = rows.keys.key(c, &v.row, &types)? {
+                        let bytes = schema.encode(&key);
+                        let span = (
+                            lo.as_ref().map(Vec::as_slice),
+                            hi.as_ref().map(Vec::as_slice),
+                        );
+                        if span.contains(bytes.as_slice()) {
+                            held.grow(bytes.len() + size_of::<(u32, Tid)>())?;
+                            found.push((bytes, c, v.tid));
+                        }
+                    }
+                }
+            }
+            self.depend_all(writers)?;
+        }
+        found.sort();
+        Ok(found.into_iter().map(|(_, c, t)| (c, t)).collect())
     }
 
     /// Returns the key types of index `id`'s fields.

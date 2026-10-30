@@ -451,6 +451,20 @@ pub(super) fn register(
     Ok(out)
 }
 
+/// Returns those of `regs` that check, for a database quarantined whole, which no call runs on
+/// and whose log may be newer than its file.
+pub(super) fn register_marked(
+    over: &Over<'_>,
+    regs: &[Registration],
+    stored: &Stored,
+    now: i64,
+    s: &Settings,
+) -> Vec<Checked> {
+    regs.iter()
+        .filter_map(|r| registration(over, r, stored, now, s).ok())
+        .collect()
+}
+
 /// Check and normalise registration `r` as [`register`] does.
 pub(super) fn registration(
     over: &Over<'_>,
@@ -1007,7 +1021,8 @@ impl<R: Runtime> Database<R> {
     pub fn registered(&self, name: &str) -> Result<Registered<R>, Error> {
         let _open = self.engine.enter()?;
         self.engine.bind(name)?;
-        self.engine
+        let found = self
+            .engine
             .registered
             .lock(&self.engine.rt)
             .iter()
@@ -1015,12 +1030,18 @@ impl<R: Runtime> Database<R> {
             .map(|c| Registered {
                 engine: Arc::downgrade(&self.engine),
                 checked: c.clone(),
+            });
+        if found.is_none() {
+            self.engine
+                .db
+                .admit_database()
+                .map_err(|e| self.engine.write_error(super::TxnId(0), e))?;
+        }
+        found.ok_or_else(|| {
+            Error::rejected(RejectReason::UnknownBundle {
+                bundle: name.to_owned(),
             })
-            .ok_or_else(|| {
-                Error::rejected(RejectReason::UnknownBundle {
-                    bundle: name.to_owned(),
-                })
-            })
+        })
     }
 }
 

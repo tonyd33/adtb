@@ -93,6 +93,16 @@ pub(super) struct Rebuilding<'a, R: Runtime> {
 }
 
 impl Kept {
+    /// Returns the history heap of constructor `c` of `r`.
+    pub(super) fn heap(&self, r: RelId, c: u32) -> Option<&Arc<Heap>> {
+        self.heaps.get(&(r, c))
+    }
+
+    /// Returns the history key index of `r`.
+    pub(super) fn index(&self, r: RelId) -> Option<&Index> {
+        self.indexes.get(&r)
+    }
+
     /// Allocate an empty large-value store with heap id `large` and an empty record whose pages
     /// carry `owner`, keeping history for no relation yet.
     pub(super) fn create<R: Runtime>(

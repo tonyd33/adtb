@@ -790,11 +790,8 @@ fn an_unfinished_migration_over_a_damaged_page_is_freed_once_the_page_reads() {
         let mut sim = Sim::with_files(seed, Config::default(), damage(files.clone(), pid));
         let outcome = sim.run(|rt| {
             let (pager, _) = Pager::open(rt.clone(), &options(FRAMES)).expect("reopen");
-            let e = Catalog::open(rt, &pager).expect_err("the migration's pages are not found");
-            let Error::Page(e) = e else {
-                panic!("at {at}: the open failed by {e:?}")
-            };
-            assert_eq!(pid, e.pid, "at {at}");
+            Catalog::open(rt, &pager).expect("the open leaves the sweep for a later open");
+            pager.close();
         });
         assert_eq!(Outcome::Finished, outcome, "at {at}");
         let mended = restore(sim.files(), &files, pid);

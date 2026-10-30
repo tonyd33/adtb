@@ -450,6 +450,12 @@ uses one is replanned without it while the index is quarantined
 ([storage.md §8](storage.md#8-quarantine)). Queries whose read set
 excludes the quarantined heap continue.
 
+Plans are made per statement, so choosing no quarantined index needs no
+invalidation. A key lookup and a constraint's stored check plan may go
+on naming a quarantined index: while the mark holds, the store answers
+their probes from the heaps of the index's constructors, in index order,
+with a scan's read set. A read under `at` is planned as any other.
+
 Rulings: ops/halt-scope/heap, spec/reads/static/static-types, spec/quarantine/index/cost-only
 
 ## 7. Notes for the implementation

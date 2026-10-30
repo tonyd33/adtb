@@ -341,6 +341,9 @@ impl Error {
                     on: String::new(),
                 },
             },
+            write::Error::Quarantined(what) => Error::Fatal {
+                reason: FatalReason::Quarantined { what },
+            },
             write::Error::Page(p) => Error::storage(format!("{p:?}")),
             write::Error::Spill(io) => Error::storage(format!("the spill file failed: {io:?}")),
             write::Error::Transactions(detail) | write::Error::Corrupt(detail) => {

@@ -935,7 +935,19 @@ fn open_stressed(rt: SimRuntime) -> Database<SimRuntime> {
     Database::open_in(rt, NAME, &Log::new([APP]), &options).expect("the database opens")
 }
 
-/// Run writers on `db` until `body` ends. Each updates, inserts, retags and deletes its own rows.
+/// Returns whether `text` ran, or `false` when a finding of a run quarantined what it writes.
+fn writes(db: &Database<SimRuntime>, text: &str) -> bool {
+    match db.query_text(text, &[], &CallOptions::default()) {
+        Ok(_) => true,
+        Err(adtb::Error::Fatal {
+            reason: adtb::FatalReason::Quarantined { .. },
+        }) => false,
+        Err(e) => panic!("a writer runs `{text}`: {e:?}"),
+    }
+}
+
+/// Run writers on `db` until `body` ends or a finding stops them. Each updates, inserts, retags
+/// and deletes its own rows.
 fn with_writers(rt: &SimRuntime, db: &Database<SimRuntime>, body: impl FnOnce()) {
     let stop = Arc::new(AtomicBool::new(false));
     let workers: Vec<_> = (0..3i64)
@@ -949,15 +961,20 @@ fn with_writers(rt: &SimRuntime, db: &Database<SimRuntime>, body: impl FnOnce())
                         r#"insert users {{ id: users.key({row}), name: "w{row}" }}
                            insert identities.Google {{ id: identities.key({row}), user: users.key({row}), gid: "g" }}"#
                     );
-                    db.query_text(&text, &[], &CallOptions::default()).expect("a writer inserts");
+                    if !writes(&db, &text) {
+                        return;
+                    }
                     let renamed = format!(
                         r#"update u in users where key u == users.key({row}) set User {{ u with name: "r{row}" }}"#
                     );
-                    db.query_text(&renamed, &[], &CallOptions::default()).expect("a writer updates");
+                    if !writes(&db, &renamed) {
+                        return;
+                    }
                     if n % 3 == 0 {
                         let gone = format!("delete i in identities where key i == identities.key({row})");
-                        db.query_text(&gone, &[], &CallOptions::default()).expect("a writer deletes");
-                        db.query_text("vacuum identities", &[], &CallOptions::default()).expect("a writer vacuums");
+                        if !writes(&db, &gone) || !writes(&db, "vacuum identities") {
+                            return;
+                        }
                     }
                     n += 1;
                     rt2.yield_now();
@@ -982,6 +999,8 @@ fn a_run_under_concurrent_writers_finds_nothing_when_nothing_is_wrong() {
                 let got = verified(&db, None);
                 assert_eq!(Vec::<String>::new(), got, "seed {seed}");
             });
+            let marks = db.write_path().pager().quarantined();
+            assert!(marks.is_empty(), "seed {seed}: {marks:?}");
         });
     }
 }
@@ -1542,12 +1561,12 @@ add relation identities : Identity key id generate sequence
             r#"insert identities { id: identities.key(1), gid: "g" }"#,
         );
         plant_orphan(&db, "app::identities", "Identity");
-        let got = verified(&db, Some("identities"));
-        assert_eq!(1, got.len(), "{got:?}");
         run_text(
             &db,
             "delete i in identities where key i == identities.key(1)",
         );
+        let got = verified(&db, Some("identities"));
+        assert_eq!(1, got.len(), "{got:?}");
         db.close().unwrap();
         got
     });
