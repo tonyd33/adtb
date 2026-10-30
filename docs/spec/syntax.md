@@ -1470,6 +1470,7 @@ privilege = "read" relation_ref [ grant_fields ]
           | "delete" relation_ref
           | "retag" relation_ref "->" relation_ref [ excepted ]
           | "call" ( BUNDLE_NAME | FAMILY ) [ "::" LOWER ]
+          | "call" FAMILY "::" LOWER "at" INT params "->" type
           | "call" "fn" QLOWER
           | "adhoc" | "assert" | "schema" | "monitor" | "cancel"
           | "maintain" | "configure" | "read_files" | "write_files"
@@ -1518,8 +1519,8 @@ The examples use `billing::invoices` as [derived.md](derived.md) declares it.
   header fields and fields every constructor of the set declares
   alone, and a field of one constructor `C` of the set as `C.f`. A
   read grant includes the key field without listing it. `frozen`,
-  `C.f` names and `except` pairs write a grant's target as
-  `catalog::grants` prints it
+  `C.f` names, `except` pairs and a family's `at v` signature write a
+  grant's target as `catalog::grants` prints it
   ([security.md §3.2](security.md#32-grant-forms)).
 - `call` names one registered query or transaction of a bundle, or with
   no `::` every one of them. A family name (`web::login_key`) covers

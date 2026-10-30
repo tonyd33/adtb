@@ -675,17 +675,20 @@ set with its fields, a bundle, a query, a family or a function),
 its current name and follows the grant through renames and the
 carrying of [security.md §3.6](security.md#36-grants-across-schema-changes):
 the relation as `module::name`, followed, unless the grant is on the
-whole relation, by `.C`, `.(C | D)` or `.S`; a `read` or `update` with a field list then has the
+whole relation, by `.C`, `.(C | D)` or `.S`, constructors in id
+order; a `read` or `update` with a field list then has the
 listed fields, and one without a list the fields it covers after
-`frozen`, in field id order: `identities.EmailPass (user,
-EmailPass.email)`, `identities.EmailPass frozen (id, user,
+`frozen`, in field id order: `auth::identities.EmailPass (user,
+EmailPass.email)`, `auth::identities.EmailPass frozen (id, user,
 EmailPass.email, EmailPass.hash)`; a `retag` is `a -> b`, followed by
-`except (C -> D, …)` when it excepts pairs; a `call` is the function
+`except (C -> D, …)` when it excepts pairs, in id order of the first
+constructor, then of the second; a `call` is the function
 as `module::name`. A header field, or a field of a type with one
 constructor, is named alone, and any other field as `C.f`. A call
-grant on a family has the target `FAMILY::q` followed by the
-signature it records, written as the `signature` of a row of
-`registered` (§2.4). No two rows have the same grantee, privilege,
+grant on a family has the target `FAMILY::q at v`, then the signature
+it records, its parameters and result type as a query declaration
+writes them, with type names as they stand at log version `v`:
+`web::login_key at 41 (u: Key users) -> Text`. No two rows have the same grantee, privilege,
 target and grantor. `grantee` and `grantor` are role
 names. `dormant` marks a log grant whose grantee did not exist when
 the log was replayed; a dormant grant allows nothing. Creating the
