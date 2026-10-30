@@ -514,7 +514,6 @@ impl<'s> Tables<'s> {
     }
 }
 
-/// Returns the relation `catalog::name` of `schema`.
 fn int(n: u64) -> i64 {
     i64::try_from(n).expect("a version fits 63 bits")
 }
