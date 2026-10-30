@@ -171,3 +171,9 @@ there (their `## Report` states the gap). Do not edit tickets; the
 lead updates them. Report anything that should become a new ticket.
 
 Test time: a new test runs in under 2 seconds in the default nextest profile unless it is a sweep; a sweep reads its seed count from the one place the suite states it, keeps a small default count, and runs the full count only under a deep profile. Report the time your new tests add to the default run.
+
+## Scripts
+
+Keep your scripts, mutation drivers and their logs under your workspace's `target/`. A scratchpad
+directory may be shared with other agents in the session: a script there can be overwritten by
+another track, and running it can change that track's workspace.
