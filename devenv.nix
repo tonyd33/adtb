@@ -9,6 +9,15 @@
 let
   quandary = inputs.quandary.packages.${pkgs.stdenv.system}.default;
   tix = inputs.tix.packages.${pkgs.stdenv.system}.default;
+  nightly = (inputs.rust-overlay.lib.mkRustBin { } pkgs).selectLatestNightlyWith (
+    toolchain:
+    toolchain.minimal.override {
+      extensions = [
+        "miri"
+        "rust-src"
+      ];
+    }
+  );
 in
 {
   # https://devenv.sh/packages/
@@ -39,6 +48,8 @@ in
     cargo clippy --workspace --all-targets -- -D warnings
     cargo fmt --all --check
     suite --no-tests=pass
+    loom
+    miri
     app="$DEVENV_ROOT/apps/campaign/Cargo.toml"
     diff <(sed -n '/^\[workspace.lints.rust\]/,$p' "$DEVENV_ROOT/Cargo.toml") \
       <(sed -n '/^\[workspace.lints.rust\]/,$p' "$app")
@@ -61,6 +72,14 @@ in
 
   scripts.tix.exec = ''
     ${lib.getExe tix} -C "$DEVENV_ROOT/work/issues" "$@"
+  '';
+
+  scripts.miri.exec = ''
+    PATH="${nightly}/bin:$PATH" "$DEVENV_ROOT/work/tools/miri" "$@"
+  '';
+
+  scripts.loom.exec = ''
+    "$DEVENV_ROOT/work/tools/loom" "$@"
   '';
 
   scripts.size-check.exec = ''

@@ -4,3 +4,4 @@ pub mod lock;
 pub mod os;
 pub mod pages;
 pub mod runtime;
+mod sync;

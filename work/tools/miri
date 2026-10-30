@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# miri [ARGS]   run adtb-sys's unit tests under Miri, ARGS passed to the test binary; needs a
+#               nightly cargo with Miri first on PATH, which the dev shell's `miri` provides
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+cd "$root"
+if ! cargo miri --version >/dev/null 2>&1; then
+  echo "miri: $(command -v cargo) has no Miri; run the dev shell's \`miri\`" >&2
+  exit 1
+fi
+exec cargo miri test -p adtb-sys --lib -- "$@"

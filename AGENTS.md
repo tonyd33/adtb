@@ -51,7 +51,8 @@ For a fresh clone, host prerequisites and optional editor setup, read
 - `cargo fmt --all --check`: check Rust formatting.
 - `work/tools/suite [ARGS]`: run tests through the shared nextest lock.
 - `check` (in the dev shell): run the full checks, including the campaign
-  application, dependency policy and source-size limits.
+  application, the Loom models, Miri, dependency policy and source-size
+  limits.
 - `apps/campaign/` is its own cargo workspace, excluded from the root
   one. Build and test it from that directory.
 
@@ -90,6 +91,13 @@ root (devenv also puts each on PATH as `NAME`):
 - `codemap [CRATE [MODULE]]`, `codemap --tests [CRATE]`: modules, pub
   items with line numbers, test binaries with their test counts.
 - `house-check`: the added lines of `jj diff` that break a comment rule.
+- `loom [ARGS]`: the Loom models of the page state word, adtb-sys's
+  unit tests built with `--cfg loom` into `target/loom`; ARGS go to
+  nextest.
+- `miri [ARGS]`: adtb-sys's unit tests under Miri, ARGS to the test
+  binary. The dev shell's `miri` puts a nightly toolchain first on
+  PATH; the stable one stays the default. `check` runs both, about
+  35 s together from cold and 11 s warm.
 - `quality-metrics.sh [REVSET]` (`quality-metrics` in the dev shell):
   review metrics for the changes in REVSET, by default `reviewed..@`.
 - `code-commits [REVSET]`: the commits of REVSET, by default

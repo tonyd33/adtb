@@ -27,3 +27,12 @@ home: https://doc.rust-lang.org/reference/
 
 - RFC 560: overflow of fixed-size integer arithmetic is a program error, not undefined behaviour; checked (panics) in debug builds, may wrap in release; wrapping_*, checked_*, saturating_* methods and Wrapping<T> for intended wrap. [V 2026-10-25] https://rust-lang.github.io/rfcs/0560-integer-overflow.html
 - f64::total_cmp is IEEE 754-2008 totalOrder: negative NaNs, -inf, negatives, -0.0, +0.0, positives, +inf, positive NaNs; differs from PartialEq where NaN != NaN. [V 2026-10-25] https://doc.rust-lang.org/std/primitive.f64.html
+
+## Loom and Miri in use
+
+- loom 0.7.2 runs each model thread as a coroutine of the generator crate on the test's OS thread, so a std `thread_local!` is shared by every model thread; `loom::thread_local!` gives each its own. [V 2026-10-29] loom-0.7.2/src/rt/scheduler.rs
+- loom 0.7.2's `thread_local!` matches its initializer as an edition-2018 `$init:expr`, which refuses `const { ... }`; strip the `const` before handing it the declaration. [V 2026-10-29] loom-0.7.2/src/lib.rs
+- loom 0.7.2 models `fence` with Acquire, Release, AcqRel and SeqCst; a Relaxed fence panics. Its atomics are tracked objects, not plain memory, so a buffer reinterpreted as atomics needs a separate model of the buffer. [V 2026-10-29] loom-0.7.2/src/rt/atomic.rs
+- loom 0.7.2 pulls in generator, scoped-tls, tracing and tracing-subscriber (env-filter, so matchers and regex-automata): 19 crates new to a lockfile with only libc and io-uring before. [V 2026-10-29] cargo tree
+- rust-overlay's `selectLatestNightlyWith (t: t.minimal.override { extensions = [ "miri" "rust-src" ]; })` picks the newest nightly that ships Miri; `cargo miri test` then prepares its sysroot on the first run with no further setup. [V 2026-10-29] github:oxalica/rust-overlay afcefd09
+- Miri cannot run `prctl` (seccomp) or `io_uring_setup`: "unsupported operation: Miri does not support `prctl` syscall with op=38". Thread spawn, park and unpark run. `-Zmiri-many-seeds=0..N` reruns each test under N schedules. [V 2026-10-29] cargo miri on nightly-2026-10-29

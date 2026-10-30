@@ -111,6 +111,7 @@ fn bpf(code: u32, jt: u8, jf: u8, k: u32) -> libc::sock_filter {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri runs neither seccomp nor io_uring_setup")]
 fn a_denied_io_uring_is_refused_at_construction() {
     let refused = on_host_thread(|| {
         deny_io_uring_setup();
@@ -123,6 +124,7 @@ fn a_denied_io_uring_is_refused_at_construction() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri runs neither seccomp nor io_uring_setup")]
 fn the_pool_is_the_fallback_where_io_uring_is_denied() {
     on_host_thread(|| {
         deny_io_uring_setup();

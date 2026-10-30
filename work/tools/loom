@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# loom [ARGS]   run the Loom models of the page state word, adtb-sys's unit tests built with
+#               `--cfg loom` into target/loom; ARGS go to `cargo nextest run` in place of the
+#               filter `pages::loom_tests::`
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+cd "$root"
+export RUSTFLAGS="--cfg loom ${RUSTFLAGS:-}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}/loom"
+(($#)) || set -- pages::loom_tests::
+exec cargo nextest run -p adtb-sys --lib "$@"

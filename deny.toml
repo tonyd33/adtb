@@ -109,6 +109,23 @@ allow = [
     "cc",
     "find-msvc-tools",
     "shlex",
+    # Model checking of adtb-sys's atomics under the C11 memory model, built only with cfg(loom).
+    "loom",
+    # What loom runs its threads and traces its executions with.
+    "generator",
+    "lazy_static",
+    "matchers",
+    "nu-ansi-term",
+    "once_cell",
+    "rustversion",
+    "scoped-tls",
+    "sharded-slab",
+    "thread_local",
+    "tracing",
+    "tracing-core",
+    "tracing-log",
+    "tracing-subscriber",
+    "windows-result",
     # Local engine and test dependencies of the separately built campaign workspace.
     "adtb",
     "adtb-codegen",
