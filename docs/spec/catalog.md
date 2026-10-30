@@ -2196,6 +2196,12 @@ set.
 reindex identities index (user) in (Google | Apple) online
 ```
 
+A rebuild that fails, as on two versions of one unique key that one
+snapshot sees, keeps the old index and any quarantine, and writes a
+`Structure` finding naming the index. The finding stays until the next
+rebuild of that index, and no `verify` run replaces it. Closing the
+database stops a running rebuild and keeps the old index.
+
 ### 11.5 Vacuum
 
 Background vacuum runs per relation variable when its dead versions
