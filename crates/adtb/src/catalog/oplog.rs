@@ -9,6 +9,7 @@ use crate::heap::{FieldType, put_uvarint};
 use crate::key::Value;
 
 use super::layout;
+use super::values::boolean;
 
 /// A BLAKE3-256 hash.
 pub type Hash = [u8; 32];
@@ -136,15 +137,6 @@ fn sum(schema: &Schema, ty: &Ty, ctor: &str, fields: &[(&str, Value)]) -> Value 
         })
         .collect();
     Value::Sum { ctor: k, fields }
-}
-
-fn boolean(schema: &Schema, b: bool) -> Value {
-    let ty = Ty::Data {
-        def: schema.prelude_type("Bool"),
-        args: Vec::new(),
-        ctors: None,
-    };
-    sum(schema, &ty, if b { "True" } else { "False" }, &[])
 }
 
 fn operator(schema: &Schema, ty: &Ty, op: &ResolvedOp) -> Value {

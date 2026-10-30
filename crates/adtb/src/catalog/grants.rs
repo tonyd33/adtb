@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::evolve::LogGrant;
-use adtb_lang::schema::{Schema, ValueDef};
+use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
 use crate::key::Value;
@@ -13,6 +13,7 @@ use crate::runtime::Runtime;
 use crate::storage::Pager;
 use crate::write::{self, Sequences};
 
+use super::values::{self, boolean, relation, tag};
 use super::{Catalog, DORMANT, Error, Migrating, OWNER_ROLE, delete_rows, int, layout};
 
 /// A log grant whose role did not exist when its row was written. It allows nothing.
@@ -47,7 +48,7 @@ struct Shape {
 
 impl Shape {
     fn of(schema: &Schema) -> Shape {
-        let grants = catalog_relation(schema, "grants");
+        let grants = relation(schema, "grants");
         let ctor = schema
             .ty(schema.relation(grants).elem_def)
             .ctor_index("RoleGrant")
@@ -72,28 +73,27 @@ impl Shape {
 
     /// Returns the `Log` row of grant `g` with row id `id`.
     fn log_row(&self, schema: &Schema, g: &LogGrant, id: i64) -> Result<Vec<Value>, Error> {
-        let target = target(schema, g)?;
         let Value::Sum { ctor: some, .. } = tag(schema, "prelude", "Option", "Some") else {
             unreachable!("a tag is a sum");
         };
-        Ok(self
-            .names
-            .iter()
-            .map(|n| match n.as_str() {
-                "id" => Value::I64(id),
-                "kind" => tag(schema, "catalog", "GrantKind", "Log"),
-                "privilege" => Value::Text(g.privilege.privilege_name().to_owned()),
-                "target" => Value::Sum {
-                    ctor: some,
-                    fields: vec![Value::Text(target.clone())],
-                },
-                "grantee" => Value::Text(g.role.clone()),
-                "grantor" => Value::Text(OWNER_ROLE.to_owned()),
-                "grant_option" => boolean(schema, g.grant_option),
-                "dormant" => boolean(schema, g.dormant),
-                other => panic!("catalog RoleGrant has no field {other}"),
-            })
-            .collect())
+        let target = Value::Sum {
+            ctor: some,
+            fields: vec![Value::Text(target(schema, g)?)],
+        };
+        let fields = vec![
+            ("id", Value::I64(id)),
+            ("kind", tag(schema, "catalog", "GrantKind", "Log")),
+            (
+                "privilege",
+                Value::Text(g.privilege.privilege_name().to_owned()),
+            ),
+            ("target", target),
+            ("grantee", Value::Text(g.role.clone())),
+            ("grantor", Value::Text(OWNER_ROLE.to_owned())),
+            ("grant_option", boolean(schema, g.grant_option)),
+            ("dormant", boolean(schema, g.dormant)),
+        ];
+        Ok(values::row(schema, self.grants, self.ctor, fields))
     }
 }
 
@@ -104,32 +104,6 @@ fn target(schema: &Schema, g: &LogGrant) -> Result<String, Error> {
     g.privilege
         .target_text(schema)
         .ok_or_else(|| Error::Internal(format!("a log grant names live objects: {g:?}")))
-}
-
-fn catalog_relation(schema: &Schema, name: &str) -> RelId {
-    let module = schema.module_named("catalog").expect("the catalog module");
-    match schema.module(module).values.get(name) {
-        Some(ValueDef::Relation(r)) => *r,
-        _ => panic!("the catalog declares relation {name}"),
-    }
-}
-
-/// Returns the value of the nullary constructor `ctor` of type `module::ty`.
-fn tag(schema: &Schema, module: &str, ty: &str, ctor: &str) -> Value {
-    let m = schema.module_named(module).expect("an engine module");
-    let def = schema.module(m).types[ty];
-    let c = schema
-        .ty(def)
-        .ctor_index(ctor)
-        .unwrap_or_else(|| panic!("`{ty}` has constructor `{ctor}`"));
-    Value::Sum {
-        ctor: c,
-        fields: Vec::new(),
-    }
-}
-
-fn boolean(schema: &Schema, b: bool) -> Value {
-    tag(schema, "prelude", "Bool", if b { "True" } else { "False" })
 }
 
 /// Returns the catalog error of a failed draw from the page of id counters.
@@ -176,7 +150,7 @@ impl Catalog {
         txns: &Transactions<R>,
         snapshot: &Snapshot,
     ) -> Result<BTreeMap<i64, String>, Error> {
-        let roles = catalog_relation(&self.schema, "roles");
+        let roles = relation(&self.schema, "roles");
         let mut out = BTreeMap::new();
         for (c, row) in self.rows(pager, txns, snapshot, roles)? {
             let fields = layout::row(&self.schema, roles, c);

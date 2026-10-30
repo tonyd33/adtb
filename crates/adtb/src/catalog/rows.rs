@@ -4,7 +4,7 @@ use adtb_lang::ast::{self, Decl, ExprKind, QName, RelationClause, RelationDecl};
 use adtb_lang::evolve::{Code, Source};
 use adtb_lang::kernel::PathStep;
 use adtb_lang::lex::lex;
-use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind, ValueDef};
+use adtb_lang::schema::{IndexDef, Schema, Stage, TypeDefKind};
 use adtb_lang::span::Span;
 use adtb_lang::types::{RelId, Ty, TypeId};
 
@@ -12,7 +12,7 @@ use crate::exec;
 use crate::key::Value;
 use crate::plan::{Element, declared_elements};
 
-use super::{layout, oplog};
+use super::{layout, oplog, values};
 
 /// Rows of relations, each with its constructor index and as a heap of that constructor holds it.
 pub type Rows = BTreeMap<RelId, Vec<(u32, Vec<Value>)>>;
@@ -420,65 +420,19 @@ struct Builder<'s> {
 }
 
 impl Builder<'_> {
-    fn relation(&self, name: &str) -> RelId {
-        let m = self
-            .schema
-            .module_named("catalog")
-            .expect("the catalog module");
-        match self.schema.module(m).values.get(name) {
-            Some(&ValueDef::Relation(r)) => r,
-            _ => panic!("the catalog declares relation `{name}`"),
-        }
-    }
-
     /// Add a row of constructor `ctor` of `catalog::{rel}`, its fields given by name.
     fn push(&mut self, rel: &str, ctor: &str, fields: Vec<(&str, Value)>) {
-        let r = self.relation(rel);
+        let r = values::relation(self.schema, rel);
         let td = self.schema.ty(self.schema.relation(r).elem_def);
         let c = td
             .ctor_index(ctor)
             .unwrap_or_else(|| panic!("`{rel}` has constructor `{ctor}`"));
-        let names = layout::row(self.schema, r, c);
-        assert_eq!(
-            names.len(),
-            fields.len(),
-            "a row of `{rel}.{ctor}` gives every field"
-        );
-        let row = names
-            .iter()
-            .map(|(n, _)| {
-                fields
-                    .iter()
-                    .find(|(f, _)| f == n)
-                    .unwrap_or_else(|| panic!("a row of `{rel}.{ctor}` gives `{n}`"))
-                    .1
-                    .clone()
-            })
-            .collect();
+        let row = values::row(self.schema, r, c, fields);
         self.rows.entry(r).or_default().push((c, row));
     }
 
-    /// Returns the value of the nullary constructor `ctor` of type `module::ty`.
-    fn tag(&self, module: &str, ty: &str, ctor: &str) -> Value {
-        let m = self.schema.module_named(module).expect("an engine module");
-        let def = self.schema.module(m).types[ty];
-        let c = self
-            .schema
-            .ty(def)
-            .ctor_index(ctor)
-            .unwrap_or_else(|| panic!("`{ty}` has constructor `{ctor}`"));
-        Value::Sum {
-            ctor: c,
-            fields: Vec::new(),
-        }
-    }
-
-    fn boolean(&self, b: bool) -> Value {
-        self.tag("prelude", "Bool", if b { "True" } else { "False" })
-    }
-
     fn none(&self) -> Value {
-        self.tag("prelude", "Option", "None")
+        values::tag(self.schema, "prelude", "Option", "None")
     }
 
     fn stage(&self, s: Stage) -> Value {
@@ -487,7 +441,7 @@ impl Builder<'_> {
             Stage::Enabled => "Enabled",
             Stage::Deprecated => "Deprecated",
         };
-        self.tag("catalog", "CtorStage", name)
+        values::tag(self.schema, "catalog", "CtorStage", name)
     }
 
     fn module_of(&self, def: TypeId) -> Value {
@@ -507,7 +461,7 @@ impl Builder<'_> {
             ];
             let ctor = match &td.kind {
                 TypeDefKind::Sum { .. } => {
-                    fields.push(("ordered", self.boolean(td.ordered)));
+                    fields.push(("ordered", values::boolean(self.schema, td.ordered)));
                     "SumType"
                 }
                 TypeDefKind::Newtype { base, .. } => {
@@ -603,7 +557,7 @@ impl Builder<'_> {
                 ("module", Value::Text(module)),
                 ("name", Value::Text(name)),
                 ("sum", key(sum)),
-                ("kind", self.tag("catalog", "RelKind", kind)),
+                ("kind", values::tag(self.schema, "catalog", "RelKind", kind)),
                 ("dropped", self.none()),
             ];
             self.push("relations", "Relation", fields);
@@ -774,7 +728,10 @@ impl Builder<'_> {
             let fields = vec![
                 ("id", key(id)),
                 ("relation", key(self.schema.ids.relations[&spec.relation])),
-                ("kind", self.tag("catalog", "IndexKind", spec.kind)),
+                (
+                    "kind",
+                    values::tag(self.schema, "catalog", "IndexKind", spec.kind),
+                ),
                 ("clause", Value::Text(spec.clause.clone())),
                 ("dropped", self.none()),
             ];
@@ -842,7 +799,10 @@ impl Builder<'_> {
                 ("module", Value::Text(f.module)),
                 ("name", Value::Text(f.name)),
                 ("signature", Value::Text(f.signature)),
-                ("deterministic", self.boolean(f.deterministic)),
+                (
+                    "deterministic",
+                    values::boolean(self.schema, f.deterministic),
+                ),
                 (
                     "hash",
                     Value::Bytes(blake3::hash(hashed.as_bytes()).as_bytes().to_vec()),

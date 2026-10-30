@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use adtb_lang::ast::{self, BundleHeader, BundleName, ExprKind, HeaderClause, Lit};
 use adtb_lang::check::Command;
-use adtb_lang::schema::{Schema, ValueDef};
+use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 
-use crate::catalog::{Catalog, Deployed, Fact, Mark, Origin, Rewrite, layout};
+use crate::catalog::{Catalog, Deployed, Fact, Mark, Origin, Rewrite, layout, values};
 use crate::exec::{self, Val};
 use crate::key::Value;
 use crate::mvcc::Transactions;
@@ -278,8 +278,8 @@ impl<'s> Tables<'s> {
     fn of(schema: &'s Schema) -> Tables<'s> {
         Tables {
             schema,
-            bundles: catalog_relation(schema, "bundles"),
-            registered: catalog_relation(schema, "registered"),
+            bundles: values::relation(schema, "bundles"),
+            registered: values::relation(schema, "registered"),
         }
     }
 
@@ -515,16 +515,6 @@ impl<'s> Tables<'s> {
 }
 
 /// Returns the relation `catalog::name` of `schema`.
-fn catalog_relation(schema: &Schema, name: &str) -> RelId {
-    let m = schema
-        .module_named("catalog")
-        .expect("the engine declares module `catalog`");
-    match schema.module(m).values.get(name) {
-        Some(ValueDef::Relation(r)) => *r,
-        _ => panic!("the engine declares `catalog::{name}`"),
-    }
-}
-
 fn int(n: u64) -> i64 {
     i64::try_from(n).expect("a version fits 63 bits")
 }

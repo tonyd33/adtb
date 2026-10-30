@@ -16,6 +16,7 @@ mod root;
 mod rows;
 mod steps;
 mod validate;
+pub mod values;
 
 #[cfg(test)]
 mod tests;
