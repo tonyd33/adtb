@@ -44,7 +44,7 @@ pub struct CatalogIds {
     pub view_keys: BTreeMap<FnId, u64>,
     /// A stored view's uniques and indexes, by position among its clauses of those kinds.
     pub view_indexes: BTreeMap<(FnId, usize), u64>,
-    /// The type of each stored view's rows, for a view whose element type is anonymous.
+    /// The type of each stored view's rows, for a view whose element type is not a declared type.
     pub view_types: BTreeMap<FnId, u64>,
     /// The one constructor of each stored view's row type.
     pub view_ctors: BTreeMap<FnId, u64>,
@@ -305,7 +305,11 @@ pub fn objects(
                     };
                     let vn = &s.view.name.text;
                     push(Space::Shared, Slot::View(f), format!("relation {m}::{vn}"));
-                    if let Some(fields) = anonymous_row(files, m, vn) {
+                    if !matches!(
+                        &schema.functions[f.0 as usize].result,
+                        Ty::Set(elem) if matches!(**elem, Ty::Data { .. })
+                    ) {
+                        let fields = anonymous_row(files, m, vn);
                         push(Space::Shared, Slot::ViewType(f), format!("type {m}::{vn}"));
                         push(
                             Space::Shared,
@@ -423,13 +427,9 @@ fn relation_objects(
     }
 }
 
-/// The fields of the rows of view `view` of module `module`, as its result type writes them, when
-/// its element type is anonymous: none for an anonymous sum or `()`; `None` for a declared type.
-fn anonymous_row(
-    files: &[(FileId, ast::SchemaFile)],
-    module: &str,
-    view: &str,
-) -> Option<Vec<String>> {
+/// Returns the fields of the rows of view `view` of module `module`, as its result type writes
+/// them: none unless its element type is an anonymous record.
+fn anonymous_row(files: &[(FileId, ast::SchemaFile)], module: &str, view: &str) -> Vec<String> {
     let result = files
         .iter()
         .filter(|(_, sf)| sf.module.text == module)
@@ -443,15 +443,14 @@ fn anonymous_row(
         ..
     }) = result
     else {
-        return None;
+        return Vec::new();
     };
     let [ast::TypeArg::Type(elem)] = args.as_slice() else {
-        return None;
+        return Vec::new();
     };
     match &elem.kind {
-        ast::TypeKind::Record(fs) => Some(fs.iter().map(|f| f.name.text.clone()).collect()),
-        ast::TypeKind::Sum(_) | ast::TypeKind::Unit => Some(Vec::new()),
-        _ => None,
+        ast::TypeKind::Record(fs) => fs.iter().map(|f| f.name.text.clone()).collect(),
+        _ => Vec::new(),
     }
 }
 

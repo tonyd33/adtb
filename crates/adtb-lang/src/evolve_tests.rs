@@ -3111,6 +3111,41 @@ store named
     assert_eq!(None, schema.ids.view_ctors.get(&f));
 }
 
+#[test]
+fn a_stored_view_of_a_scalar_or_nested_element_type_has_a_row_type_without_fields() {
+    for result in ["Text", "I64", "(Key users)", "(Set Text)"] {
+        let body = match result {
+            "Text" => "u.name",
+            "I64" => "count(v for v in users)",
+            "(Key users)" => "key u",
+            _ => "(from v in users select v.name)",
+        };
+        let s = applies(
+            &running(),
+            &format!(
+                "module auth
+define fn v () -> Set {result} = from u in users select {body}
+store v"
+            ),
+        );
+        let schema = ids_of(&s);
+        let Some(&ValueDef::Function(f)) = schema
+            .module(schema.module_named("auth").unwrap())
+            .values
+            .get("v")
+        else {
+            panic!("no view of {result}");
+        };
+        let view = schema.ids.views[&f];
+        assert_eq!(Some(&(view + 1)), schema.ids.view_types.get(&f), "{result}");
+        assert_eq!(Some(&(view + 2)), schema.ids.view_ctors.get(&f), "{result}");
+        assert!(
+            !schema.ids.view_fields.keys().any(|(g, _)| *g == f),
+            "{result}"
+        );
+    }
+}
+
 /// The canonical token form of `operand` in the last migration of `src`, names as it resolves them.
 fn logged_term(src: &Source, operand: &str) -> String {
     let logged = src.log.last().expect("a migration");

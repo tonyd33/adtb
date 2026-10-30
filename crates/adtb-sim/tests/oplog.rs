@@ -1520,6 +1520,99 @@ fn a_stored_view_reads_as_its_query_after_later_writes() {
     });
 }
 
+const SCALAR_VIEWS: &str = r#"module shop
+define fn names () -> Set Text = from c in customers select c.name
+store names
+define fn sizes () -> Set I64 = from c in customers select count(d for d in customers)
+store sizes
+define fn references () -> Set (Key customers) = from c in customers select key c
+store references
+define fn nested () -> Set (Set Text) =
+  from c in customers where c.name == "ann" select (from d in customers select d.name)
+store nested
+define fn total () -> I64 = count(c for c in customers)
+store total
+"#;
+
+const PETS: &str = "module pets
+add module pets
+add type Pet { id: Key pets } = Cat { name: Text } | Dog { age: I64 }
+add relation pets : Pet key id generate sequence
+";
+
+const CATS: &str = "module pets
+define fn cats () -> Set Text = from c in pets.Cat select c.name
+store cats
+";
+
+#[test]
+fn the_migration_storing_a_view_of_text_applies_and_reopens() {
+    let mut sim = Sim::new(94, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[PETS]);
+        write(&db, r#"insert pets.Cat { name: "tom" }"#);
+    });
+    for _ in 0..2 {
+        run(&mut sim, |rt| {
+            let db = opened(&rt, &[PETS, CATS]);
+            assert_eq!(vec![r#""tom""#], query(&db, "cats()"));
+        });
+    }
+}
+
+fn assert_scalar_views_answer(db: &Database<SimRuntime>, names: &[&str], sizes: &[&str]) {
+    assert_eq!(names, query(db, "names()"));
+    assert_eq!(sizes, query(db, "sizes()"));
+    assert_eq!(names.len(), query(db, "references()").len());
+    let all = format!("[{}]", names.join(", "));
+    assert_eq!(vec![all], query(db, "nested()"));
+    assert_eq!(sizes, query(db, "total()"));
+}
+
+#[test]
+fn a_stored_view_of_a_scalar_or_nested_element_type_answers_across_reopens() {
+    let mut sim = Sim::new(92, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &[SHOP]);
+        write(&db, CUSTOMERS);
+    });
+    let log = [SHOP, SCALAR_VIEWS];
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &log);
+        assert_scalar_views_answer(&db, &[r#""ann""#, r#""bob""#], &["2"]);
+        write(&db, r#"insert customers { name: "cyril" }"#);
+    });
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &log);
+        assert_scalar_views_answer(&db, &[r#""ann""#, r#""bob""#, r#""cyril""#], &["3"]);
+        assert_eq!(
+            vec!["Stored"],
+            query(
+                &db,
+                "from r in catalog::relations where r.name == \"names\" select r.kind"
+            )
+        );
+    });
+}
+
+#[test]
+fn a_stored_view_of_a_scalar_element_type_can_be_unstored_and_stored_again() {
+    let unstore = "module shop\nunstore names\n";
+    let store = "module shop\nstore names\n";
+    let log = [SHOP, SCALAR_VIEWS, unstore, store];
+    let mut sim = Sim::new(93, Config::default());
+    run(&mut sim, |rt| {
+        let db = opened(&rt, &log[..1]);
+        write(&db, CUSTOMERS);
+    });
+    for applied in [2, 3, 4, 4] {
+        run(&mut sim, |rt| {
+            let db = opened(&rt, &log[..applied]);
+            assert_eq!(vec![r#""ann""#, r#""bob""#], query(&db, "names()"));
+        });
+    }
+}
+
 #[test]
 fn a_stored_view_is_a_relation_of_kind_stored_and_a_base_relation_of_kind_base() {
     after(85, &[NAMED], |db| {

@@ -540,13 +540,18 @@ impl Builder<'_> {
         }
         for (&f, &id) in &self.schema.ids.views {
             let view = &self.schema.functions[f.0 as usize];
-            let sum = match &view.result {
+            let declared = match &view.result {
                 Ty::Set(elem) => match &**elem {
-                    Ty::Data { def, .. } => self.schema.ids.types.get(def).copied(),
-                    _ => self.schema.ids.view_types.get(&f).copied(),
+                    Ty::Data { def, .. } => Some(def),
+                    _ => None,
                 },
                 _ => None,
+            };
+            let sum = match declared {
+                Some(def) => self.schema.ids.types.get(def),
+                None => self.schema.ids.view_types.get(&f),
             }
+            .copied()
             .unwrap_or_else(|| panic!("the rows of stored view `{}` have a type id", view.name));
             let module = self.schema.module(view.module).name.clone();
             rows.push((id, module, view.name.clone(), sum, "Stored"));

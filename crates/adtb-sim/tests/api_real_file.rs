@@ -86,6 +86,74 @@ fn a_database_written_through_the_api_reopens_with_its_rows() {
     assert_eq!(vec![r#""ann""#, r#""bob""#], names(&db));
 }
 
+fn answers(db: &Database, text: &str) -> Vec<String> {
+    let rows = db
+        .query_text(text, &[], &CallOptions::default())
+        .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"))
+        .remove(0);
+    let form = rows.form().clone();
+    rows.map(|r| print(&r.expect("a row"), &form).expect("a row prints"))
+        .collect()
+}
+
+#[test]
+fn a_stored_view_of_a_scalar_or_nested_element_type_reopens_on_a_real_file() {
+    let path = scratch("scalar-view").join("shop.adt");
+    const VIEWS: &str = r#"module shop
+define fn names () -> Set Text = from c in customers select c.name
+store names
+define fn sizes () -> Set I64 = from c in customers select count(d for d in customers)
+store sizes
+define fn nested () -> Set (Set Text) =
+  from c in customers where c.name == "ann" select (from d in customers select d.name)
+store nested
+"#;
+    {
+        let db = adtb::open(&path, &Log::new([SHOP]), &options()).expect("create");
+        db.query_text(
+            r#"insert customers { name: "ann" }"#,
+            &[],
+            &CallOptions::default(),
+        )
+        .expect("the insert");
+    }
+    let log = Log::new([SHOP, VIEWS]);
+    for _ in 0..2 {
+        let db = adtb::open(&path, &log, &options()).expect("the views apply and reopen");
+        assert_eq!(vec![r#""ann""#], answers(&db, "names()"));
+        assert_eq!(vec!["1"], answers(&db, "sizes()"));
+        assert_eq!(vec![r#"["ann"]"#], answers(&db, "nested()"));
+    }
+}
+
+#[test]
+fn the_migration_storing_a_view_of_text_reopens_on_a_real_file() {
+    const PETS: &str = "module pets
+add module pets
+add type Pet { id: Key pets } = Cat { name: Text } | Dog { age: I64 }
+add relation pets : Pet key id generate sequence
+";
+    const CATS: &str = "module pets
+define fn cats () -> Set Text = from c in pets.Cat select c.name
+store cats
+";
+    let path = scratch("cats").join("pets.adt");
+    {
+        let db = adtb::open(&path, &Log::new([PETS]), &options()).expect("create");
+        db.query_text(
+            r#"insert pets.Cat { name: "tom" }"#,
+            &[],
+            &CallOptions::default(),
+        )
+        .expect("the insert");
+    }
+    let log = Log::new([PETS, CATS]);
+    for _ in 0..2 {
+        let db = adtb::open(&path, &log, &options()).expect("the view applies and reopens");
+        assert_eq!(vec![r#""tom""#], answers(&db, "cats()"));
+    }
+}
+
 #[test]
 fn a_file_open_in_this_process_is_not_opened_again() {
     let path = scratch("twice").join("shop.adt");
