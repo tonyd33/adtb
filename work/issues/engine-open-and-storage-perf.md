@@ -2,7 +2,7 @@
 created-at: 2026-10-26
 status: open
 kind: feature
-priority: 750
+priority: 110
 summary: "engine open re-parses and rebuilds every declaration, page checksums have no hardware CRC, reserve_page reads a page just for its LSN, and some sim seed loops skip profile::sweep"
 tags:
   - engine
