@@ -85,7 +85,7 @@ query my_invoices () -> Set Invoice =
 | --- | --- |
 | A call on a connection, with no assertion | `Service { name: r }` where `r` is the role the connection authenticated as |
 | A call or transaction carrying an assertion | The asserted value, an `EndUser` or `Anonymous` |
-| An in-process call with no assertion | `Service { name: r }` where `r` is the schema-owner role, which the handle acts as ([embedding.md](embedding.md#22-identity-of-the-handle)) |
+| An in-process call with no assertion | `Service { name: "owner" }`, the schema-owner role (§2.1), which the handle acts as ([embedding.md](embedding.md#22-identity-of-the-handle)) |
 
 An assertion is a value of `Principal` sent with a single call or with
 Begin for a whole interactive transaction
@@ -105,7 +105,8 @@ Rulings: security/principal/sum, security/assert/connection, security/assert/ass
 
 A role is a named catalog object of one database file. Every
 connection authenticates as one role; every privilege is granted to a
-role. The schema-owner role (§4.6) is created with the file. Roles are
+role. The schema-owner role (§4.6), named `owner`, is created with
+the file. Roles are
 created, altered and dropped by ad hoc statements
 ([applications.md](applications.md#7-the-ad-hoc-role)) of a role
 holding `schema`; over a server the role also needs `adhoc`. Grants

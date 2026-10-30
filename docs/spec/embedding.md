@@ -203,8 +203,8 @@ impl Database {
 A handle opened in process acts as the file's schema-owner role and
 holds every privilege, operational capabilities included
 ([security.md](security.md#3-grants)). It authenticates no one. A call
-with no assertion runs with `caller` equal to `Service { name: r }`
-for the schema-owner role `r`; a call or transaction may assert an
+with no assertion runs with `caller` equal to `Service { name: "owner" }`,
+the schema-owner role; a call or transaction may assert an
 end-user principal in its options
 ([security.md](security.md#13-where-the-principal-comes-from)).
 
