@@ -38,8 +38,6 @@ Landed: the server-engine interface and wire framing; the role authority
 foundation (roles, capability grants, role sessions); canonical Log grant rows with
 carry and dormancy; checked registration with durable family ownership and
 migration rechecks (checked-registration). adtb-server holds about 1,400 lines.
-Grant tickets were re-banded from 8xx to 10xx on this date: they implement
-security.md 2 and 3, which docs/plan.md assigns to this milestone.
 
 Remaining: call and family grants, binding, nonowner execution, authentication,
 audit with the ledger (roles-and-grants); the registry and transport slices of

@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: in-progress
 kind: bug
-priority: 1092
+priority: 897
 summary: "catalog/grants.rs copies rows.rs's tag and boolean and api/bundle.rs's catalog_relation, and adtb-simkit holds a fourth copy"
 branch: quality-fixes30
 tags:

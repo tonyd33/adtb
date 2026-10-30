@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: in-progress
 kind: bug
-priority: 1093
+priority: 896
 summary: "permission/grants.rs targets and evolve/carry.rs covered_ctors each resolve a grant target to the constructors it covers, so carry and the registration check can disagree"
 branch: quality-fixes30
 tags:

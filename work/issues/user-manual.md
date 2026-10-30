@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: in-progress
 kind: feature
 priority: 880
 summary: "adtb has no user manual or reference, so a new user has only the normative spec to learn from"
+branch: manual-gaps
 tags:
   - docs
 ---

@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: in-progress
 kind: bug
-priority: 1094
+priority: 836
 summary: the registration check and the migration recheck normalise the whole schema program once per callable of every bundle
 branch: quality-fixes30
 tags:

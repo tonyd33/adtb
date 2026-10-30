@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: open
 kind: bug
-priority: 999
+priority: 400
 summary: "the checker accepts a revoke that matches no held grant, which spec/empty-revoke/refuse refuses"
 ---
 

@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: open
 kind: feature
-priority: 1020
+priority: 500
 summary: "only Grant audit events are written: registration, retirement and the other deployment commands security.md 8.1 lists are not audited"
 ---
 

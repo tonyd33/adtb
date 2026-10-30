@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: open
 kind: feature
-priority: 1060
+priority: 900
 summary: "REGISTERED roots rows keep every registration's full file text forever, including for retired bundles"
 ---
 

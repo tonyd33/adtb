@@ -2,7 +2,7 @@
 created-at: 2026-10-27
 status: open
 kind: feature
-priority: 1010
+priority: 410
 summary: "role authority exists; relation/field and call/family grants, definer checks and nonowner execution remain unfinished"
 depends-on:
   - asserted-principal-value-domain

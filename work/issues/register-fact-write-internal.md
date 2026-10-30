@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: in-progress
 kind: bug
-priority: 1090
+priority: 880
 summary: "a storage failure writing a role registration's deployment facts is reported as an Internal rejection with Debug text"
 branch: quality-fixes30
 tags:

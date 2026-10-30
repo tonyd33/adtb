@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: open
 kind: bug
-priority: 1030
+priority: 600
 summary: "dormant grant rows found at open are reported nowhere, an older binary cannot open a file with a dormancy root row, and replay has no restore caller"
 tags:
   - engine
