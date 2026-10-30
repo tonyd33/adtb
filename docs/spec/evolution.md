@@ -692,7 +692,8 @@ field the routing carries whole into a new constructor is indexed
 there under its new name. A unique or index naming a field that no new
 constructor keeps (here `provider`) is refused unless the split states
 its replacements, as `unique` and `index` clauses after the routing.
-A reference type `Key r.OAuth` is retyped to `Key r.(Google | Apple)`,
+Every named set containing `OAuth` contains every product in its
+place. A reference type `Key r.OAuth` is retyped to `Key r.(Google | Apple)`,
 and so is a selection of `OAuth` in a query or row type of a schema
 object: `from i in identities.OAuth` reads `identities.(Google |
 Apple)`. A field of a product typed by a reference to the split
@@ -825,7 +826,8 @@ constructors is refused.
 `unnest constructor Identity.Social` is the inverse: the value-level
 constructors of the field become relation-level constructors with new
 ids, which take the source's position in the declaration order, in
-the order of the field's sum. An unnest takes `arm` clauses as a split does (§4.6), one per new
+the order of the field's sum. Every named set containing the unnested
+constructor contains every product in its place. An unnest takes `arm` clauses as a split does (§4.6), one per new
 constructor for every dependent whose match names the unnested
 constructor, and is refused at the recheck without them.
 
@@ -1138,12 +1140,11 @@ covers needs a new grant. A grant on a whole relation variable with no
 field list also covers every field of each constructor the relation
 variable gains.
 
-Structural operators carry log grants; a field carried whole by a
-split's routing keeps its grants under its new name. A merge that
-cannot carry them is refused until it states the merged constructor's
-grants, which `grant` operators in the same migration do
-([security.md §3.6](security.md#36-grants-across-schema-changes)).
-`move field` and `rekey` carry grants with the field. After the
+Structural operators, `move field` and `rekey` carry log grants as
+[security.md §3.6](security.md#36-grants-across-schema-changes)
+states, and a merge or nest that cannot carry them is refused until
+`grant` operators in the same migration state the product's grants.
+After the
 operators of a migration, the engine rechecks every live bundle
 against its owner's grants; a bundle whose owner no longer holds a
 grant it uses refuses the migration.
