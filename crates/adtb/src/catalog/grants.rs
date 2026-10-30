@@ -169,26 +169,43 @@ impl Catalog {
             .collect()
     }
 
-    /// Returns the name of every role `snapshot` sees.
-    fn role_names<R: Runtime>(
+    /// Returns the name of each role `snapshot` sees, by id.
+    pub fn roles<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
         snapshot: &Snapshot,
-    ) -> Result<BTreeSet<String>, Error> {
+    ) -> Result<BTreeMap<i64, String>, Error> {
         let roles = catalog_relation(&self.schema, "roles");
-        let mut out = BTreeSet::new();
+        let mut out = BTreeMap::new();
         for (c, row) in self.rows(pager, txns, snapshot, roles)? {
-            let at = layout::row(&self.schema, roles, c)
-                .iter()
-                .position(|(n, _)| n == "name")
-                .expect("catalog Role declares name");
-            match row.get(at) {
-                Some(Value::Text(name)) => out.insert(name.clone()),
-                _ => return Err(Error::Corrupt("a role row has no Text name".to_owned())),
+            let fields = layout::row(&self.schema, roles, c);
+            let at = |name: &str| {
+                fields
+                    .iter()
+                    .position(|(n, _)| n == name)
+                    .unwrap_or_else(|| panic!("catalog Role declares {name}"))
             };
+            match (row.get(at("id")), row.get(at("name"))) {
+                (Some(Value::I64(id)), Some(Value::Text(name))) => {
+                    out.insert(*id, name.clone());
+                }
+                _ => return Err(Error::Corrupt(format!("a role row is {row:?}"))),
+            }
         }
         Ok(out)
+    }
+
+    /// Returns the name of each role of the latest commit, by id.
+    pub fn committed_roles<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+    ) -> Result<BTreeMap<i64, String>, Error> {
+        let (id, snapshot) = txns.take(Scope::Every)?;
+        let roles = self.roles(pager, txns, &snapshot);
+        txns.release(id);
+        roles
     }
 
     /// Give each grant of the source the id of the `Log` row the latest commit holds for it.
@@ -290,7 +307,10 @@ impl Catalog {
                     .is_some_and(|id| old.contains_key(&id) && kept.insert(id))
             })
             .collect();
-        let roles = self.role_names(m.pager, m.txns, m.snapshot)?;
+        let roles: BTreeSet<String> = self
+            .roles(m.pager, m.txns, m.snapshot)?
+            .into_values()
+            .collect();
         let mut dormant = Vec::new();
         match mode {
             Grantees::Refuse => {

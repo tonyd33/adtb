@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::catalog::Origin;
@@ -7,7 +6,7 @@ use crate::runtime::Runtime;
 use super::super::bundle::{self, Claim, Registrant, Stored};
 use super::super::registered::{self, Checked, Over, Registration};
 use super::super::text::DynRows;
-use super::super::{Engine, Error, OWNER_ID, RejectReason};
+use super::super::{Engine, Error, OWNER_ID};
 use super::tables::Tables;
 use super::{RoleAuthority, RoleSession, denied};
 
@@ -43,7 +42,7 @@ impl<R: Runtime> RoleAuthority<R> {
             self.checked(session, &t, e, tx)?;
             let by = session.id.0;
             let roles = t.role_names(e, tx)?;
-            let name = |id| role_name(&roles, id);
+            let name = |id| registered::role_name(&roles, id);
             if claim.owned && claim.owner != by && by != OWNER_ID {
                 let bundle = &claim.row.header.name;
                 let owner = name(claim.owner)?;
@@ -80,15 +79,6 @@ impl<R: Runtime> RoleAuthority<R> {
         serve(&e, checked, &claim);
         Ok(e.bundle_rows(&claim.row))
     }
-}
-
-/// Returns the name `roles` gives the role of id `id`.
-fn role_name(roles: &BTreeMap<i64, String>, id: i64) -> Result<String, Error> {
-    roles.get(&id).cloned().ok_or_else(|| {
-        Error::rejected(RejectReason::Internal {
-            what: format!("no role has id {id}, which owns deployment state"),
-        })
-    })
 }
 
 /// Returns the checked registration of `bundle` over `stored` as the role of `session`, and

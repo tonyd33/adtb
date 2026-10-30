@@ -570,7 +570,7 @@ impl<R: Runtime> Engine<R> {
         let live = stored.live(opened, &settings);
         let headers: Vec<&bundle::Header> = regs.iter().filter_map(Registration::header).collect();
         bundle::record(&catalog, &pager, &txns, &mut stored, &headers, opened)?;
-        let roles = bundle::roles(&catalog, &pager, &txns)?;
+        let roles = catalog.committed_roles(&pager, &txns).map_err(corrupt)?;
         let live = registered::readers(&mut catalog, regs, &live, &stored, &roles)?;
         catalog.settle(&pager, &txns).map_err(corrupt)?;
         let applied = catalog.source().log.len();

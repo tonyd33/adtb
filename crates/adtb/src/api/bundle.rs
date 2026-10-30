@@ -569,38 +569,6 @@ pub(super) fn stored<R: Runtime>(
     Ok(out)
 }
 
-/// Returns the name of each role of `catalog::roles` the latest commit holds, by id.
-pub(super) fn roles<R: Runtime>(
-    catalog: &Catalog,
-    pager: &Pager<R>,
-    txns: &Transactions<R>,
-) -> Result<BTreeMap<i64, String>, OpenError> {
-    let schema = catalog.schema();
-    let r = catalog_relation(schema, "roles");
-    let ctor = schema
-        .ty(schema.relation(r).elem_def)
-        .ctor_index("Role")
-        .expect("catalog roles declares Role");
-    let fields = layout::row(schema, r, ctor);
-    let at = |name: &str| {
-        fields
-            .iter()
-            .position(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("catalog Role declares {name}"))
-    };
-    let (id, name) = (at("id"), at("name"));
-    let mut out = BTreeMap::new();
-    for (_, row) in catalog.committed_rows(pager, txns, r).map_err(corrupt)? {
-        match (row.get(id), row.get(name)) {
-            (Some(Value::I64(id)), Some(Value::Text(name))) => {
-                out.insert(*id, name.clone());
-            }
-            _ => return Err(corrupt(format!("a role row is {row:?}"))),
-        }
-    }
-    Ok(out)
-}
-
 /// The rows one deployment write puts in place: each bundle row with the row it replaces, and
 /// the calls it adds, each with its row id and its bundle's id.
 #[derive(Default)]
