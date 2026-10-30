@@ -139,6 +139,55 @@ fn an_optimistic_read_sees_a_version_change_or_its_versions_page() {
 }
 
 #[test]
+fn an_optimistic_copy_sees_a_version_change_or_its_versions_page() {
+    loom::model(|| {
+        let m = filled(7);
+        let w = Arc::clone(&m);
+        let writer = thread::spawn(move || {
+            w.lock_exclusive(PID, &Model).write(0, &[1; 16]);
+        });
+        if let Some(r) = m.optimistic(PID) {
+            let out: [u8; 16] = r.copied(0, 16, |copy| copy.try_into().unwrap());
+            if r.validate() {
+                assert_eq!(
+                    [fill_at(r.version, [7, 1]); 16],
+                    out,
+                    "a validated copy at version {} saw another version's bytes",
+                    r.version
+                );
+            }
+        }
+        writer.join().unwrap();
+    });
+}
+
+#[test]
+fn a_second_optimistic_copy_sees_nothing_of_the_first() {
+    loom::model(|| {
+        let m = filled(0);
+        let w = Arc::clone(&m);
+        let writer = thread::spawn(move || {
+            w.lock_exclusive(PID, &Model).write(0, &[1; 16]);
+        });
+        for _ in 0..2 {
+            let Some(r) = m.optimistic(PID) else {
+                continue;
+            };
+            let out: [u8; 16] = r.copied(0, 16, |copy| copy.try_into().unwrap());
+            if r.validate() {
+                assert_eq!(
+                    [fill_at(r.version, [0, 1]); 16],
+                    out,
+                    "a validated copy at version {} saw another version's bytes",
+                    r.version
+                );
+            }
+        }
+        writer.join().unwrap();
+    });
+}
+
+#[test]
 fn an_upgrade_finds_the_bytes_its_read_saw() {
     loom::model(|| {
         let m = filled(0);

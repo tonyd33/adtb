@@ -5,7 +5,7 @@ mod region;
 #[cfg(all(test, adtb_loom))]
 mod region_loom;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 #[cfg(not(all(test, adtb_loom)))]
 use std::ops::Deref;
@@ -91,6 +91,12 @@ mod held {
 
 thread_local! {
     static SWITCH: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+thread_local! {
+    /// The calling thread's buffer for [`Optimistic::copied`], out of the cell while in use so
+    /// that a nested copy takes a fresh one.
+    static COPY: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
 }
 
 /// Call `hook` at every switch point the calling thread passes in page memory, until the
@@ -566,9 +572,36 @@ impl<'a> Optimistic<'a> {
         self.copy(offset + first.len(), second);
     }
 
+    /// Returns what `f` computes from a copy of `len` bytes of the page from `offset`, taken as
+    /// [`Optimistic::read`] takes it.
+    ///
+    /// The copy may be torn: `f` bounds-checks what it reads, and the caller uses its result only
+    /// once [`Optimistic::validate`] holds.
+    ///
+    /// Panic if the range runs past the end of the page.
+    pub fn copied<T>(&self, offset: usize, len: usize, f: impl FnOnce(&[u8]) -> T) -> T {
+        let mut copy = COPY.try_with(Cell::take).unwrap_or_default();
+        copy.resize(len, 0);
+        self.read(offset, &mut copy);
+        let out = f(&copy);
+        COPY.try_with(|c| c.set(copy)).unwrap_or(());
+        out
+    }
+
     fn copy(&self, offset: usize, out: &mut [u8]) {
         let end = offset + out.len();
         let words = self.mem.words(self.pid);
+        if offset.is_multiple_of(8) && out.len().is_multiple_of(8) {
+            for (chunk, w) in out
+                .as_chunks_mut::<8>()
+                .0
+                .iter_mut()
+                .zip(&words[offset / 8..])
+            {
+                *chunk = w.load(Ordering::Relaxed).to_le_bytes();
+            }
+            return;
+        }
         let mut at = offset;
         while at < end {
             let w = at / 8;
@@ -857,6 +890,120 @@ mod tests {
         drop(guard);
         drop(m.lock_exclusive(1, &Alone));
         assert_eq!(5, calls.get());
+    }
+
+    /// Returns a page whose byte at each offset is that offset, truncated.
+    fn counting() -> PageMemory {
+        let m = memory();
+        let bytes: Vec<u8> = (0..4096).map(|i| i as u8).collect();
+        m.lock_exclusive(1, &Alone).write(0, &bytes);
+        m
+    }
+
+    #[test]
+    fn a_read_returns_the_bytes_of_any_range() {
+        let m = counting();
+        let r = m.optimistic(1).unwrap();
+        for offset in [0, 1, 7, 8, 9, 16, 2040, 4080, 4095] {
+            for len in [0, 1, 7, 8, 9, 16, 17, 32, 4096 - offset] {
+                if offset + len > 4096 {
+                    continue;
+                }
+                let mut out = vec![0xAA; len];
+                r.read(offset, &mut out);
+                let want: Vec<u8> = (offset..offset + len).map(|i| i as u8).collect();
+                assert_eq!(want, out, "offset {offset}, length {len}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_read_leaves_the_bytes_around_its_range() {
+        let m = counting();
+        let r = m.optimistic(1).unwrap();
+        let mut out = [0xAA; 32];
+        r.read(8, &mut out[8..24]);
+        assert_eq!([0xAA; 8], out[..8]);
+        assert_eq!([0xAA; 8], out[24..]);
+    }
+
+    #[test]
+    fn a_copy_holds_the_range_it_asked_for() {
+        let m = counting();
+        let r = m.optimistic(1).unwrap();
+        for (offset, len) in [(0, 4096), (8, 16), (3, 5), (0, 0), (4088, 8)] {
+            let want: Vec<u8> = (offset..offset + len).map(|i| i as u8).collect();
+            r.copied(offset, len, |copy| {
+                assert_eq!(want, copy, "offset {offset}, length {len}");
+            });
+        }
+    }
+
+    #[test]
+    fn a_copy_holds_nothing_of_the_copy_before_it() {
+        let m = memory();
+        m.lock_exclusive(1, &Alone).write(0, &[1; 4096]);
+        m.lock_exclusive(2, &Alone).write(0, &[2; 4096]);
+        m.optimistic(1)
+            .unwrap()
+            .copied(0, 4096, |copy| assert_eq!([1; 4096], copy));
+        m.optimistic(2)
+            .unwrap()
+            .copied(0, 4096, |copy| assert_eq!([2; 4096], copy));
+        m.optimistic(1).unwrap().copied(0, 16, |copy| {
+            assert_eq!([1; 16], copy, "a shorter copy has its own length");
+        });
+        m.optimistic(2)
+            .unwrap()
+            .copied(0, 4096, |copy| assert_eq!([2; 4096], copy));
+    }
+
+    #[test]
+    fn a_copy_nested_in_a_copy_keeps_each_its_bytes() {
+        let m = memory();
+        m.lock_exclusive(1, &Alone).write(0, &[1; 64]);
+        m.lock_exclusive(2, &Alone).write(0, &[2; 64]);
+        let (outer, inner) = (m.optimistic(1).unwrap(), m.optimistic(2).unwrap());
+        outer.copied(0, 64, |a| {
+            inner.copied(0, 64, |b| assert_eq!([2; 64], b));
+            assert_eq!([1; 64], a);
+        });
+    }
+
+    #[test]
+    fn a_panic_in_a_copy_leaves_later_copies_whole() {
+        let m = memory();
+        m.lock_exclusive(1, &Alone).write(0, &[1; 64]);
+        let r = m.optimistic(1).unwrap();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            r.copied(0, 64, |_| panic!("the closure gave up"));
+        }));
+        assert!(panicked.is_err());
+        r.copied(0, 64, |copy| assert_eq!([1; 64], copy));
+    }
+
+    #[test]
+    fn a_copy_passes_the_switch_point_of_a_read() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let m = memory();
+        m.lock_exclusive(1, &Alone).write(0, &[1]);
+        let r = m.optimistic(1).unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let c = calls.clone();
+        let guard = super::switch_points(move || c.set(c.get() + 1));
+        r.copied(0, 64, |_| {});
+        drop(guard);
+        assert_eq!(1, calls.get());
+    }
+
+    #[test]
+    #[should_panic(expected = "read past the end of the page")]
+    fn a_copy_past_the_end_of_the_page_is_refused() {
+        let m = memory();
+        m.lock_exclusive(1, &Alone).write(0, &[1]);
+        m.optimistic(1).unwrap().copied(8, 4096, |_| {});
     }
 
     #[test]

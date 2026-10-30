@@ -45,7 +45,7 @@ mem.lock_shared(pid, threads) -> Option<Shared>        // None if evicted
 mem.optimistic(pid) -> Option<Optimistic>              // None if exclusive or evicted
 mem.mark(pid) -> bool                                  // the clock's mark; true if marked already
 exclusive.resident() / exclusive.write(offset, bytes) / exclusive.evict() / exclusive.share()
-optimistic.read(offset, out) / optimistic.validate() / optimistic.upgrade()
+optimistic.read(offset, out) / optimistic.copied(offset, len, f) / optimistic.validate() / optimistic.upgrade()
 ```
 
 `Exclusive` and `Shared` read as `&[u8]`. Waiting calls

@@ -307,9 +307,7 @@ impl<'a, R: Runtime> PageOptimistic<'a, R> {
     /// The copy may be torn by a concurrent writer: `f` bounds-checks what it reads, and its
     /// result is used only once [`PageOptimistic::validate`] returns true.
     pub fn read<T>(&self, f: impl FnOnce(&[u8]) -> T) -> T {
-        let mut copy = vec![0; self.pager.page_size];
-        self.o.read(0, &mut copy);
-        f(&copy)
+        self.o.copied(0, self.pager.page_size, f)
     }
 
     pub fn validate(&self) -> bool {

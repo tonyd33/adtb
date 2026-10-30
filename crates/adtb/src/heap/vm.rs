@@ -238,15 +238,17 @@ impl Vm {
         let mut out = Vec::new();
         let mut todo = vec![(self.root, 0)];
         while let Some((at, base)) = todo.pop() {
-            let node = &pager.read(at)?.to_vec();
-            let l = level(node);
+            let node = pager.read(at)?;
+            let l = level(&node);
             if l == 0 {
-                out.extend(set_bits(node).map(|i| Pid(base + i)));
+                let set: u32 = node[BODY..].iter().map(|b| b.count_ones()).sum();
+                out.reserve(set as usize);
+                out.extend(set_bits(&node).map(|i| Pid(base + i)));
                 continue;
             }
             let below = reach(size, l - 1);
             let children: Vec<(Pid, u64)> = (0..fanout(size) as usize)
-                .filter_map(|i| child(node, i).map(|c| (c, base + i as u64 * below)))
+                .filter_map(|i| child(&node, i).map(|c| (c, base + i as u64 * below)))
                 .collect();
             todo.extend(children.into_iter().rev());
         }
