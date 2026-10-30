@@ -47,3 +47,9 @@ Memo owned by `Source`, 32 entries, compared by full equality. Suite user CPU 79
 ## 2026-10-30: one-apply not landed
 
 Applying each operator of a migration once took top-level applications from 12 to 3 on a 3-operator migration, but suite user CPU stayed 547.65 s to 548.01 s, and 10 migration heavy tests fell only 2.4% in cycles. The memo already absorbs most replay cost; that is inferred, not profiled. The commit adds `Source::migrated` and a retry branch no test reaches, in code that decides what a migration logs, so it does not pay. Commit bd679189 stays unlanded. Revisit if a profile of real migrations shows a replay cost.
+
+## 2026-10-30: sim-disk and os-instances
+
+sim-disk holds allocated zeros by length. Suite user 591.2 s to 527.3 s and sys 138.6 s to 129.3 s, 2 runs each under load; minor faults did not fall, so most sys time stays unexplained. `disk.rs` still clones `durable` at a crash. `Sim::record` now states that no crash may happen while recording: `images` would panic, where the old code gave a wrong image. No digest covers a crash during an in-flight allocate. The digests in crash_images.rs pass on the unchanged simulator.
+
+os-instances compiles the public API at `OsRuntime` once, in `adtb`. Clean build 2612.5 to 2064.0 rustc CPU-s, one run each, which is within the 20% that load alone moved this number across sessions. Stronger evidence: `OsRuntime` symbols in `update_concurrency` 1818 to 0, and rebuild after a one-line pager edit 130.5 to 109.1 CPU-s. Rebuild wall did not move, 28.9 s to 26.2 s within noise. Not tried: the same roots at `SimRuntime`, where test crates compile about 1800 instances each.
