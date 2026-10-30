@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use adtb::runtime::Threads;
+use std::time::Duration;
+
+use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
 use adtb::{CallOptions, Database, Error, Log, OpenError, OpenOptions, Registration, RejectReason};
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
@@ -88,17 +90,57 @@ fn hash(migrations: &[&str]) -> String {
         .collect()
 }
 
-/// Returns the text of bundle `name` pinned at the last version of `pins`, holding `body`.
-fn file(name: &str, pins: &[&str], body: &str) -> String {
+/// Returns the text of bundle `name` pinned at the last version of `pins`, with `clauses` after
+/// its edition, holding `body`.
+fn file(name: &str, pins: &[&str], clauses: &str, body: &str) -> String {
     format!(
-        "bundle {name} pins {} ({}) edition \"2026-10\"\n{body}",
+        "bundle {name} pins {} ({}) edition \"2026-10\"{clauses}\n{body}",
         pins.len(),
         hash(pins)
     )
 }
 
 fn bundle(name: &str, pins: &[&str], body: &str) -> Registration {
-    Registration::bundle(file(name, pins, body)).expect("the bundle file parses")
+    leased(name, pins, "", body)
+}
+
+fn leased(name: &str, pins: &[&str], clauses: &str, body: &str) -> Registration {
+    Registration::bundle(file(name, pins, clauses, body)).expect("the bundle file parses")
+}
+
+const HOUR: Duration = Duration::from_secs(3600);
+const DAY: Duration = Duration::from_secs(86_400);
+
+/// Advance the simulated clock by `d`.
+fn sleep(rt: &SimRuntime, d: Duration) {
+    let mut io = rt.io();
+    let ticket = io.submit(Op::Timer { at: rt.now() + d });
+    loop {
+        if let Some(c) = io.poll() {
+            assert_eq!(ticket, c.ticket);
+            assert_eq!(Ok(Done::Fired), c.result);
+            return;
+        }
+        rt.park();
+    }
+}
+
+/// Returns the detail of a migration open refuses at `version`.
+fn blocked(got: Result<Database<SimRuntime>, OpenError>, version: u64) -> String {
+    match got {
+        Err(OpenError::MigrationRefused {
+            version: v,
+            reason:
+                Error::Rejected {
+                    reason: RejectReason::SchemaRefused { operator, detail },
+                },
+        }) if v == version => {
+            assert_eq!("", operator);
+            detail
+        }
+        Err(e) => panic!("{e:?}"),
+        Ok(_) => panic!("the migration applies"),
+    }
 }
 
 /// Register `reg` as `role`.
@@ -434,4 +476,109 @@ fn a_crash_at_every_flush_of_a_registration_keeps_all_of_it_or_none() {
         });
     }
     assert!(kept, "seed {seed}: the last flush keeps the registration");
+}
+
+const REVOKE: &str = "module shop
+revoke read customers from web
+revoke read customers from ops
+";
+
+const OPTION_ONLY: &str = "module shop
+revoke read customers from web
+grant read customers to web
+";
+
+/// Returns the database at the shop schema with `shop-1.0` registered by `web` and
+/// `admin-1.0` by `ops`, each reading names, closed.
+fn deployed(rt: &SimRuntime, clauses: &str) {
+    let db = shop(rt);
+    let pins = &[SHOP, GRANTS];
+    register(&db, "web", &leased("shop-1.0", pins, clauses, NAMES)).expect("web registers");
+    register(&db, "ops", &leased("admin-1.0", pins, clauses, NAMES)).expect("ops registers");
+    db.close().expect("close");
+}
+
+#[test]
+fn a_revoke_is_refused_naming_every_live_bundle_whose_owner_used_it_and_changes_nothing() {
+    let mut sim = Sim::new(330, Config::default());
+    run(&mut sim, |rt| {
+        deployed(&rt, "");
+        let detail = blocked(open(&rt, &[SHOP, GRANTS, REVOKE], Vec::new()), 3);
+        let want: Vec<String> = [("admin-1.0", "ops"), ("shop-1.0", "web")]
+            .iter()
+            .flat_map(|(b, role)| {
+                ["", " (id)", " (name)"].map(|f| {
+                    format!(
+                        "bundle {b} pins 2: names reads customers.Customer{f}; {role} lacks read with grant option"
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(want.join("\n"), detail);
+        let db = opened(&rt, &[SHOP, GRANTS]);
+        assert_eq!(
+            vec!["2"],
+            query(&db, "count(m for m in catalog::migrations)")
+        );
+        assert_eq!(Vec::<String>::new(), calls(&db, "shop-1.0"));
+    });
+}
+
+#[test]
+fn removing_only_the_grant_option_blocks_the_bundle_that_relied_on_it() {
+    let mut sim = Sim::new(331, Config::default());
+    run(&mut sim, |rt| {
+        deployed(&rt, "");
+        let detail = blocked(open(&rt, &[SHOP, GRANTS, OPTION_ONLY], Vec::new()), 3);
+        assert!(detail.starts_with("bundle shop-1.0 pins 2: names reads customers.Customer; web lacks read with grant option"), "{detail}");
+        assert!(!detail.contains("admin-1.0"), "{detail}");
+    });
+}
+
+#[test]
+fn retiring_superseding_or_expiring_the_blocking_bundles_lets_the_revoke_apply() {
+    let mut sim = Sim::new(332, Config::default());
+    run(&mut sim, |rt| {
+        deployed(&rt, "");
+        let db = opened(&rt, &[SHOP, GRANTS]);
+        db.query_text("retire bundle shop-1.0", &[], &CallOptions::default())
+            .expect("retire");
+        db.close().expect("close");
+        let detail = blocked(open(&rt, &[SHOP, GRANTS, REVOKE], Vec::new()), 3);
+        assert!(!detail.contains("shop-1.0"), "{detail}");
+        assert!(detail.contains("admin-1.0"), "{detail}");
+        let db = opened(&rt, &[SHOP, GRANTS]);
+        register(
+            &db,
+            "ops",
+            &bundle("admin-1.1", &[SHOP, GRANTS], "import shop\n"),
+        )
+        .expect("a successor with no reads");
+        db.query_text(
+            "supersede bundle admin-1.0 by admin-1.1",
+            &[],
+            &CallOptions::default(),
+        )
+        .expect("supersede");
+        db.close().expect("close");
+        opened(&rt, &[SHOP, GRANTS, REVOKE]);
+    });
+    let mut sim = Sim::new(333, Config::default());
+    run(&mut sim, |rt| {
+        deployed(&rt, " lease 1d");
+        sleep(&rt, DAY + 2 * HOUR);
+        opened(&rt, &[SHOP, GRANTS, REVOKE]);
+    });
+}
+
+#[test]
+fn a_bundle_of_the_schema_owner_is_not_blocked_by_a_revoke() {
+    let mut sim = Sim::new(334, Config::default());
+    run(&mut sim, |rt| {
+        let db = shop(&rt);
+        register(&db, "owner", &bundle("shop-1.0", &[SHOP, GRANTS], NAMES)).expect("the owner");
+        db.close().expect("close");
+        let db = opened(&rt, &[SHOP, GRANTS, REVOKE]);
+        assert_eq!(Vec::<String>::new(), calls(&db, "shop-1.0"));
+    });
 }

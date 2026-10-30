@@ -248,16 +248,59 @@ impl Checked {
 /// callables of `c` use as they run: each translation where there is one. Each is a line naming
 /// the callable, what it does and the privilege, in ordinal order.
 pub(super) fn lacking(c: &Checked, grants: &[LogGrant], role: &str) -> Result<Vec<String>, Error> {
+    let runs = c.entries.iter().map(|e| match &e.served {
+        Some(s) => (e, s.run()),
+        None => (
+            e,
+            Run {
+                schema: &c.schema,
+                program: &c.program,
+                terms: &e.terms,
+                body: e.body,
+                params: &e.params,
+                unit: e.unit,
+            },
+        ),
+    });
+    lacking_of(runs, grants, role)
+}
+
+/// What a callable runs: its normal term over its parameters, the schema and program it runs
+/// over.
+struct Run<'a> {
+    schema: &'a Arc<Schema>,
+    program: &'a Program,
+    terms: &'a Terms,
+    body: Tm,
+    params: &'a [Option<Var>],
+    unit: Option<Var>,
+}
+
+impl Served {
+    fn run(&self) -> Run<'_> {
+        Run {
+            schema: &self.schema,
+            program: &self.program,
+            terms: &self.terms,
+            body: self.body,
+            params: &self.params,
+            unit: self.unit,
+        }
+    }
+}
+
+/// Returns what [`lacking`] does, for the callables `runs` runs.
+fn lacking_of<'a>(
+    runs: impl Iterator<Item = (&'a Entry, Run<'a>)>,
+    grants: &[LogGrant],
+    role: &str,
+) -> Result<Vec<String>, Error> {
     let mut out = Vec::new();
-    for e in &c.entries {
-        let needs = match &e.served {
-            Some(s) => requirements(&s.schema, &s.program, &s.terms, s.body, &s.params, s.unit),
-            None => requirements(&c.schema, &c.program, &e.terms, e.body, &e.params, e.unit),
-        }?;
-        let schema = e.served.as_ref().map_or(&c.schema, |s| &s.schema);
-        let held = EffectiveGrants::of(schema, grants, role);
+    for (e, run) in runs {
+        let needs = requirements(&run)?;
+        let held = EffectiveGrants::of(run.schema, grants, role);
         for r in needs.missing(&held, Mode::Registration) {
-            let (does, privilege) = r.text(schema);
+            let (does, privilege) = r.text(run.schema);
             out.push(format!(
                 "{} {does}; {role} lacks {privilege} with grant option",
                 e.name
@@ -267,16 +310,15 @@ pub(super) fn lacking(c: &Checked, grants: &[LogGrant], role: &str) -> Result<Ve
     Ok(out)
 }
 
-fn requirements(
-    schema: &Schema,
-    program: &Program,
-    terms: &Terms,
-    body: Tm,
-    params: &[Option<Var>],
-    unit: Option<Var>,
-) -> Result<Requirements, Error> {
-    let params: Vec<Var> = params.iter().flatten().copied().chain(unit).collect();
-    permission::normal(schema, program, terms, body, &params).map_err(|e| {
+fn requirements(run: &Run<'_>) -> Result<Requirements, Error> {
+    let params: Vec<Var> = run
+        .params
+        .iter()
+        .flatten()
+        .copied()
+        .chain(run.unit)
+        .collect();
+    permission::normal(run.schema, run.program, run.terms, run.body, &params).map_err(|e| {
         Error::rejected(RejectReason::Internal {
             what: format!("a checked registered call has no requirements: {e:?}"),
         })
@@ -547,18 +589,21 @@ fn catalog_error(e: catalog::Error) -> Error {
     }
 }
 
-/// A live bundle, checked at the version it pins, with the source of that version.
+/// A live bundle, checked at the version it pins, with the source of that version and its
+/// owner when that is not the schema owner.
 pub(super) struct Live {
     checked: Checked,
     source: Source,
+    definer: Option<String>,
 }
 
 /// Register as a reader of `catalog` each bundle of `regs` that `live` names, at the version it
-/// pins. Returns those bundles.
+/// pins, its owner as `stored` records it. Returns those bundles.
 pub(super) fn readers(
     catalog: &mut Catalog,
     regs: &[Registration],
     live: &BTreeSet<String>,
+    stored: &Stored,
 ) -> Result<Vec<Live>, OpenError> {
     let mut out = Vec::new();
     let schema = Arc::new(catalog.schema().clone());
@@ -585,13 +630,24 @@ pub(super) fn readers(
         catalog
             .register(reader)
             .map_err(|e| refused(catalog_error(e)))?;
-        out.push(Live { checked: c, source });
+        let definer = stored
+            .bundles
+            .get(&h.name)
+            .map(|row| row.owner.clone())
+            .filter(|owner| owner != OWNER_ROLE);
+        out.push(Live {
+            checked: c,
+            source,
+            definer,
+        });
     }
     Ok(out)
 }
 
 /// Refuse migration `text`, applied to the version `catalog` is at, when a query or transaction
-/// of a bundle of `live` has no translation to the version it gives. A migration that does not
+/// of a bundle of `live` has no translation to the version it gives, or when the owner of a
+/// bundle, other than the schema owner, lacks with grant option after it a grant the translation
+/// uses. The refusal names every blocking bundle, in name order. A migration that does not
 /// apply or check is left for the catalog to refuse.
 pub(super) fn recheck(catalog: &Catalog, text: &str, live: &[Live]) -> Result<(), RejectReason> {
     if live.is_empty() {
@@ -608,19 +664,47 @@ pub(super) fn recheck(catalog: &Catalog, text: &str, live: &[Live]) -> Result<()
     };
     let schema = Arc::new(schema);
     let program = Arc::new(program);
+    let mut operator = None;
+    let mut blocked: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for l in live {
-        if let Err((query, u)) = translations(&l.checked, &l.source, &schema, &next, &program) {
-            let pins = l.checked.header.as_ref().map_or(0, |h| h.pins);
-            return Err(RejectReason::SchemaRefused {
-                operator: u.operator.clone().unwrap_or_default(),
-                detail: format!(
+        let c = &l.checked;
+        let pins = c.header.as_ref().map_or(0, |h| h.pins);
+        let lines = blocked.entry(&c.name).or_default();
+        let served = match translations(c, &l.source, &schema, &next, &program) {
+            Ok(served) => served,
+            Err((query, u)) => {
+                operator.get_or_insert_with(|| u.operator.clone().unwrap_or_default());
+                lines.push(format!(
                     "bundle {} pins {pins}: `{query}` has no translation: {}",
-                    l.checked.name, u.reason
-                ),
-            });
-        }
+                    c.name, u.reason
+                ));
+                continue;
+            }
+        };
+        let Some(owner) = &l.definer else {
+            continue;
+        };
+        let runs = c.entries.iter().zip(served.iter().map(Served::run));
+        let lacks = lacking_of(runs, &next.grants, owner).map_err(|e| match e {
+            Error::Rejected { reason } => reason,
+            other => RejectReason::Internal {
+                what: format!("{other:?}"),
+            },
+        })?;
+        lines.extend(
+            lacks
+                .into_iter()
+                .map(|lack| format!("bundle {} pins {pins}: {lack}", c.name)),
+        );
     }
-    Ok(())
+    let lines: Vec<String> = blocked.into_values().flatten().collect();
+    if lines.is_empty() {
+        return Ok(());
+    }
+    Err(RejectReason::SchemaRefused {
+        operator: operator.unwrap_or_default(),
+        detail: lines.join("\n"),
+    })
 }
 
 /// Returns the translation of each callable of `c`, checked at the version of `pin`, to `now`,
