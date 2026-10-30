@@ -19,7 +19,7 @@ pub struct Faults {
     pub lost_write_p: f64,
     /// Chance that a read makes one sector in its range unreadable until it is rewritten.
     pub latent_p: f64,
-    /// Chance that a write or force fails.
+    /// Chance that a write, an allocate or a force fails. A failed allocate changes nothing.
     pub fail_p: f64,
     /// Lose any subset of unforced writes, creations and removals at a crash.
     pub lose_unsynced: bool,
@@ -503,6 +503,10 @@ impl Disk {
     }
 
     pub(crate) fn allocate(&mut self, ino: Ino, len: u64, cx: Ctx<'_>) -> Result<(), IoError> {
+        if cx.rng.chance(cx.faults.fail_p) {
+            trace!(cx.trace, "fault fail allocate ino {ino} to {len}");
+            return Err(IoError::Failed);
+        }
         let have = self.inodes[ino].visible.len() as u64;
         if len > have {
             if cx.faults.no_space {

@@ -554,12 +554,12 @@ fn refused<T: std::fmt::Debug>(got: Result<T, Error>) -> String {
     }
 }
 
-/// Returns `(grantee, grantor, grant_option)` of each grant row of `monitor`.
+/// Returns `grantee grantor grant_option` of each grant row of `monitor`.
 fn monitors(db: &Database<SimRuntime>) -> Vec<String> {
     sorted(result(
         db,
         "from g in catalog::grants where g.privilege == \"monitor\"
-         select g.grantee ++ \" \" ++ g.grantor",
+         select g.grantee ++ \" \" ++ g.grantor ++ \" \" ++ print(g.grant_option)",
     ))
 }
 
@@ -584,7 +584,7 @@ fn a_revoke_deletes_the_issuers_rows_and_the_schema_owners_deletes_every_grantor
             .grant_capability_as(&ann, "bob", Capability::Monitor, false)
             .expect("ann gives");
         assert_eq!(
-            vec![r#""bob ann""#, r#""bob owner""#],
+            vec![r#""bob ann False""#, r#""bob owner False""#],
             monitors(&db),
             "one row per grantor"
         );
@@ -593,7 +593,7 @@ fn a_revoke_deletes_the_issuers_rows_and_the_schema_owners_deletes_every_grantor
         authority
             .revoke(&ann, "revoke monitor from bob")
             .expect("ann revokes its own");
-        assert_eq!(vec![r#""bob owner""#], monitors(&db));
+        assert_eq!(vec![r#""bob owner False""#], monitors(&db));
         let detail = refused(authority.revoke(&ann, "revoke monitor from bob"));
         assert!(detail.contains("revoke monitor from bob"), "{detail}");
         authority
@@ -674,7 +674,7 @@ fn a_revoke_of_several_privileges_changes_nothing_when_one_matches_no_row() {
             detail.contains("revoke monitor, cancel from bob"),
             "{detail}"
         );
-        assert_eq!(vec![r#""bob owner""#], monitors(&db));
+        assert_eq!(vec![r#""bob owner False""#], monitors(&db));
     });
 }
 
@@ -719,7 +719,7 @@ fn a_revoke_leaving_another_option_keeps_the_rows_it_covers() {
         authority
             .revoke(&x, "revoke monitor from a")
             .expect("the owner's option remains");
-        assert_eq!(vec![r#""a owner""#, r#""b a""#], monitors(&db));
+        assert_eq!(vec![r#""a owner True""#, r#""b a False""#], monitors(&db));
     });
 }
 
@@ -744,7 +744,7 @@ fn a_row_held_without_an_option_supports_nothing_a_revoke_could_orphan() {
         authority
             .revoke(&owner, "revoke monitor from a")
             .expect("a held no option");
-        assert_eq!(vec![r#""b a""#], monitors(&db));
+        assert_eq!(vec![r#""b a False""#], monitors(&db));
     });
 }
 
@@ -825,7 +825,7 @@ fn a_stale_session_neither_grants_nor_revokes() {
             .grant_capability_as(&web, "bob", Capability::Monitor, false)
             .expect("the new role gives");
         denied(authority.revoke(&stale, "revoke monitor from bob"));
-        assert_eq!(vec![r#""bob web""#], monitors(&db));
+        assert_eq!(vec![r#""bob web False""#], monitors(&db));
     });
 }
 
@@ -843,6 +843,6 @@ fn a_session_of_another_database_neither_grants_nor_revokes() {
             .grant_capability("bob", Capability::Monitor, false)
             .expect("grant");
         denied(authority.revoke(&foreign, "revoke monitor from bob"));
-        assert_eq!(vec![r#""bob owner""#], monitors(&db));
+        assert_eq!(vec![r#""bob owner False""#], monitors(&db));
     });
 }

@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use adtb::runtime::{AlignedBuf, Done, Io, IoError, Op, Runtime, Threads};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimIo, SimRuntime};
-use common::{SECTOR, complete, open, read, run, run_then_crash, sector, sync, sync_dir, write};
+use common::{
+    SECTOR, allocate, complete, open, read, run, run_then_crash, sector, sync, sync_dir, write,
+};
 
 fn quiet() -> Faults {
     Faults {
@@ -206,11 +208,10 @@ fn a_device_with_no_space_refuses_growth_and_keeps_overwrites() {
             Err(IoError::Full),
             write(rt, io, file, SECTOR as u64, &sector(2))
         );
-        let grow = Op::Allocate {
-            file,
-            len: 2 * SECTOR as u64,
-        };
-        assert_eq!(Err(IoError::Full), complete(rt, io, grow).result);
+        assert_eq!(
+            Err(IoError::Full),
+            allocate(rt, io, file, 2 * SECTOR as u64)
+        );
         write(rt, io, file, 0, &sector(7)).unwrap();
         assert_eq!(Ok(sector(7)), read(rt, io, file, 0, 2 * SECTOR));
     });
@@ -230,6 +231,29 @@ fn write_and_force_fail() {
         assert_eq!(Err(IoError::Failed), sync(rt, io, file));
         assert_eq!(Err(IoError::Failed), sync_dir(rt, io, ""));
     });
+}
+
+#[test]
+fn a_failed_allocate_changes_nothing() {
+    let mut sim = sim(5, quiet());
+    setup(&mut sim, 1);
+    sim.set_faults(Faults {
+        fail_p: 1.0,
+        ..quiet()
+    });
+    run(&mut sim, |rt, io| {
+        let (file, _) = open(rt, io, "f", false).unwrap();
+        assert_eq!(
+            Err(IoError::Failed),
+            allocate(rt, io, file, 4 * SECTOR as u64)
+        );
+        assert_eq!(
+            Err(IoError::Failed),
+            allocate(rt, io, file, SECTOR as u64),
+            "an allocate that grows nothing draws as well"
+        );
+    });
+    assert_eq!(sector(1), read_all(&mut sim));
 }
 
 #[test]
@@ -499,18 +523,7 @@ fn allocate_extends_with_zeros() {
     setup(&mut sim, 1);
     run(&mut sim, |rt, io| {
         let (file, _) = open(rt, io, "f", false).unwrap();
-        assert_eq!(
-            Ok(Done::Allocated),
-            complete(
-                rt,
-                io,
-                Op::Allocate {
-                    file,
-                    len: 4 * SECTOR as u64
-                }
-            )
-            .result
-        );
+        allocate(rt, io, file, 4 * SECTOR as u64).unwrap();
         let bytes = read(rt, io, file, 0, 4 * SECTOR).unwrap();
         assert_eq!(sector(1), bytes[..SECTOR]);
         assert!(bytes[SECTOR..].iter().all(|&b| b == 0));

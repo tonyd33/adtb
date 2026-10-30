@@ -621,6 +621,7 @@ fn verify_exits_2_while_another_process_holds_the_file() {
     drop(input);
     holder.wait().unwrap();
     assert_eq!(Some(2), out.status.code(), "{out:?}");
+    assert!(stderr(&out).contains("the file is locked by"), "{out:?}");
 }
 
 #[test]

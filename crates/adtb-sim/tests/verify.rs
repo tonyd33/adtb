@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use adtb::btree::{BTree, Index};
-use adtb::heap::{FieldType, Heap, LargeStore};
+use adtb::heap::{FieldType, Flags, Heap, LargeStore};
 use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use adtb::mvcc::Transactions;
 use adtb::runtime::Threads;
@@ -576,6 +576,246 @@ fn an_entry_of_a_constructor_outside_its_set_is_an_orphan_finding() {
         assert_eq!(1, got.len(), "{got:?}");
         assert!(got[0].starts_with("Orphan"), "{got:?}");
     });
+}
+
+/// Returns the TIDs of the versions of keys `a` and `b` of `users`, on one page, the first in the
+/// later slot.
+fn stray_ends(db: &Database<SimRuntime>, a: i64, b: i64) -> (Entry, Tid) {
+    let ix = index(db, "app::users", "key id");
+    let from = entry(db, &ix, Value::I64(a));
+    let to = entry(db, &ix, Value::I64(b));
+    assert_eq!(from.tid.page(), to.tid.page());
+    assert!(from.tid.slot() > to.tid.slot());
+    (from, to.tid)
+}
+
+#[test]
+fn a_stray_next_to_a_version_that_is_not_heap_only_is_reported_with_no_false_missing() {
+    api::once(146, |rt| {
+        let db = open_app(rt);
+        seed_app(&db);
+        let (from, to) = stray_ends(&db, 9, 2);
+        let w = db.write_path();
+        let heap = w.heap_named("app::users", "User").unwrap();
+        heap.plant_next(w.pager(), from.tid, to).unwrap();
+        let got = verified(&db, None);
+        assert_eq!(1, got.len(), "{got:?}");
+        assert!(got[0].starts_with("Structure"), "{got:?}");
+        assert!(got[0].contains("hot-updated"), "{got:?}");
+    });
+}
+
+#[test]
+fn a_stray_next_lets_no_orphan_pass_on_the_row_it_names() {
+    api::once(147, |rt| {
+        let db = open_app(rt);
+        seed_app(&db);
+        let (from, to) = stray_ends(&db, 9, 2);
+        let w = db.write_path();
+        let heap = w.heap_named("app::users", "User").unwrap();
+        heap.plant_next(w.pager(), from.tid, to).unwrap();
+        let orphan = Entry {
+            key: vec![Value::I64(2)],
+            ..from
+        };
+        assert!(
+            index(&db, "app::users", "key id")
+                .insert(w.pager(), &orphan)
+                .unwrap()
+        );
+        let got = verified(&db, None);
+        assert_eq!(2, got.len(), "{got:?}");
+        assert!(got.iter().any(|r| r.starts_with("Structure")), "{got:?}");
+        assert!(got.iter().any(|r| r.starts_with("Orphan")), "{got:?}");
+    });
+}
+
+/// Plant in the version of identity `from` a stray `next` to the heap-only successor of identity
+/// 5, and expect verify to report it and nothing else.
+fn stray_into_a_chain(seed: u64, from: i64) {
+    api::once(seed, |rt| {
+        let db = open_app(rt);
+        seed_app(&db);
+        api::results(
+            &db,
+            r#"update i in identities where key i == identities.key(5)
+               set Google { i with gid: "hot" }"#,
+        );
+        let w = db.write_path();
+        let heap = w.heap_named("app::identities", "Google").unwrap();
+        let mut heap_only = None;
+        heap.scan_pages(w.pager(), &heap.pages(w.pager()).unwrap(), |v| {
+            if v.flags.contains(Flags::HEAP_ONLY) {
+                heap_only = Some(v.tid);
+            }
+        })
+        .unwrap();
+        let heap_only = heap_only.expect("the update is heap-only");
+        let from = entry(
+            &db,
+            &index(&db, "app::identities", "key id"),
+            Value::I64(from),
+        );
+        assert_eq!(from.tid.page(), heap_only.page());
+        heap.plant_next(w.pager(), from.tid, heap_only).unwrap();
+        let got = verified(&db, None);
+        assert_eq!(1, got.len(), "{got:?}");
+        assert!(got[0].starts_with("Structure"), "{got:?}");
+    });
+}
+
+#[test]
+fn a_stray_next_into_a_later_chain_is_reported_with_no_false_missing() {
+    stray_into_a_chain(148, 1);
+}
+
+#[test]
+fn a_stray_next_into_an_earlier_chain_is_reported_with_no_false_missing() {
+    stray_into_a_chain(149, 9);
+}
+
+/// Run the hot update of identity 5 and `other`, on identity 6, in one transaction. Then plant in
+/// the version of identity 6 a stray `next` to the heap-only successor of identity 5.
+fn stray_under_one_writer(db: &Database<SimRuntime>, other: &str) {
+    let mut t = db.begin(&adtb::TxnOptions::default()).unwrap();
+    api::in_txn_results(
+        &mut t,
+        r#"update i in identities where key i == identities.key(5)
+           set Google { i with gid: "hot" }"#,
+    );
+    api::in_txn_results(&mut t, other);
+    t.commit(None).unwrap();
+    let w = db.write_path();
+    let heap = w.heap_named("app::identities", "Google").unwrap();
+    let ix = index(db, "app::identities", "key id");
+    let root = entry(db, &ix, Value::I64(5)).tid;
+    let mut successor = None;
+    heap.scan_pages(w.pager(), &heap.pages(w.pager()).unwrap(), |v| {
+        if v.tid == root {
+            successor = v.header.next;
+        }
+    })
+    .unwrap();
+    let successor = successor.expect("the update is heap-only");
+    let from = entry(db, &ix, Value::I64(6)).tid;
+    assert_eq!(from.page(), successor.page());
+    heap.plant_next(w.pager(), from, successor).unwrap();
+}
+
+#[test]
+fn a_stray_next_from_a_version_its_writer_deleted_is_reported_once() {
+    api::once(150, |rt| {
+        let db = open_app(rt);
+        seed_app(&db);
+        stray_under_one_writer(
+            &db,
+            "delete i in identities where key i == identities.key(6)",
+        );
+        for got in [
+            verified(&db, None),
+            api::printed(db.verify_holding().unwrap()),
+        ] {
+            assert_eq!(1, got.len(), "{got:?}");
+            assert!(got[0].starts_with("Structure"), "{got:?}");
+            assert!(got[0].contains("more than one slot"), "{got:?}");
+        }
+    });
+}
+
+#[test]
+fn a_stray_next_from_a_version_its_writer_updated_is_reported_with_the_row_it_cuts_off() {
+    api::once(151, |rt| {
+        let db = open_app(rt);
+        seed_app(&db);
+        stray_under_one_writer(
+            &db,
+            r#"update i in identities where key i == identities.key(6)
+               set Google { i with gid: "hot" }"#,
+        );
+        for got in [
+            verified(&db, None),
+            api::printed(db.verify_holding().unwrap()),
+        ] {
+            let (structure, missing): (Vec<_>, Vec<_>) =
+                got.iter().partition(|r| r.starts_with("Structure"));
+            assert_eq!(1, structure.len(), "{got:?}");
+            assert!(structure[0].contains("more than one slot"), "{got:?}");
+            assert!(!missing.is_empty(), "{got:?}");
+            assert!(missing.iter().all(|r| r.starts_with("Missing")), "{got:?}");
+        }
+    });
+}
+
+#[test]
+fn a_holding_run_reports_a_stray_across_writers_once() {
+    api::once(152, |rt| {
+        let db = open_app(rt);
+        seed_app(&db);
+        let (from, to) = stray_ends(&db, 9, 2);
+        let w = db.write_path();
+        let heap = w.heap_named("app::users", "User").unwrap();
+        heap.plant_next(w.pager(), from.tid, to).unwrap();
+        let got = api::printed(db.verify_holding().unwrap());
+        assert_eq!(1, got.len(), "{got:?}");
+        assert!(got[0].starts_with("Structure"), "{got:?}");
+        assert!(got[0].contains("hot-updated"), "{got:?}");
+    });
+}
+
+#[test]
+fn a_run_finds_nothing_under_writers_of_hot_chains_some_rolled_back() {
+    for seed in adtb_simkit::seeds::sweep(0..1) {
+        stressed(seed, |rt| {
+            let db = open_stressed(rt.clone());
+            seed_app(&db);
+            let stop = Arc::new(AtomicBool::new(false));
+            let workers: Vec<_> = (1..=3i64)
+                .map(|row| {
+                    let (rt2, db, stop) = (rt.clone(), db.clone(), stop.clone());
+                    rt.spawn(&format!("writer {row}"), move || {
+                        let text = format!(
+                            r#"update i in identities where key i == identities.key({row})
+                               set Google {{ i with gid: "hot" }}"#
+                        );
+                        let mut n = 0;
+                        while !stop.load(Ordering::Relaxed) {
+                            let mut t = db.begin(&adtb::TxnOptions::default()).unwrap();
+                            let run = |t: &mut adtb::AdHocTransaction<'_, SimRuntime>| {
+                                t.query_text(&text, &[], &adtb::TxnCallOptions::default())
+                                    .is_ok()
+                            };
+                            if run(&mut t) && run(&mut t) && n % 2 == 0 {
+                                t.commit(None).ok();
+                            } else {
+                                t.rollback().ok();
+                            }
+                            db.query_text("vacuum identities", &[], &CallOptions::default())
+                                .expect("a writer vacuums");
+                            n += 1;
+                            rt2.yield_now();
+                        }
+                    })
+                })
+                .collect();
+            let got = verified(&db, None);
+            assert_eq!(Vec::<String>::new(), got, "seed {seed} under writers");
+            stop.store(true, Ordering::Relaxed);
+            for t in workers {
+                rt.join(t);
+            }
+            let mut t = db.begin(&adtb::TxnOptions::default()).unwrap();
+            api::in_txn_results(
+                &mut t,
+                r#"update i in identities where key i == identities.key(1)
+                   set Google { i with gid: "rolled back" }"#,
+            );
+            t.rollback().unwrap();
+            run_text(&db, "vacuum identities");
+            assert_eq!(Vec::<String>::new(), verified(&db, None), "seed {seed}");
+            let got = api::printed(db.verify_holding().unwrap());
+            assert_eq!(Vec::<String>::new(), got, "seed {seed}");
+        });
+    }
 }
 
 #[test]

@@ -333,6 +333,9 @@ impl<R: Runtime> Engine<R> {
         found.extend(self.db.check_pages(scope)?);
         job.phase("indexes", 0.4);
         found.extend(self.db.check_indexes(tx, scope)?);
+        if !holding {
+            found.extend(self.db.check_links(scope));
+        }
         job.phase("constraints", 0.7);
         let reads = |r: &BTreeSet<RelId>| match scope {
             VerifyScope::Database => true,

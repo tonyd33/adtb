@@ -25,6 +25,16 @@ pub enum VerifyScope {
     Scrub,
 }
 
+impl VerifyScope {
+    fn covers(self, rel: RelId) -> bool {
+        match self {
+            VerifyScope::Database => true,
+            VerifyScope::Relation(r) => r == rel,
+            VerifyScope::Scrub => false,
+        }
+    }
+}
+
 /// One thing a run of `verify` found, each id a catalog id.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Found {
@@ -227,12 +237,7 @@ impl<R: Runtime> Database<R> {
     pub fn check_indexes(&self, tx: &Txn, scope: VerifyScope) -> Result<Vec<Found>, Error> {
         let mut out = Vec::new();
         for r in self.rels.values() {
-            let covered = match scope {
-                VerifyScope::Database => true,
-                VerifyScope::Relation(rel) => rel == r.id,
-                VerifyScope::Scrub => false,
-            };
-            if covered {
+            if scope.covers(r.id) {
                 for (id, ix) in &r.indexes {
                     let _no_vacuum = self.vacuuming.lock(&self.rt);
                     self.check_index(tx, r, *id, ix, &mut out)?;
@@ -240,6 +245,34 @@ impl<R: Runtime> Database<R> {
             }
         }
         Ok(out)
+    }
+
+    /// Check the links between the versions on each heap page of `scope`.
+    pub fn check_links(&self, scope: VerifyScope) -> Vec<Found> {
+        let mut out = Vec::new();
+        for r in self.rels.values() {
+            if scope.covers(r.id) {
+                for c in &r.ctors {
+                    self.links_of(&self.heaps[&c.heap].heap, &mut out);
+                }
+            }
+        }
+        out
+    }
+
+    fn links_of(&self, heap: &Heap, out: &mut Vec<Found>) {
+        let pages = match heap.pages(&self.pager) {
+            Ok(p) => p,
+            Err(e) => return out.push(Found::of_page(e)),
+        };
+        for pid in pages {
+            match heap.broken_links(&self.pager, pid) {
+                Ok(faults) => out.extend(faults.into_iter().map(|what| Found::Structure {
+                    at: format!("page {}: {what}", pid.0),
+                })),
+                Err(e) => out.push(Found::of_page(e)),
+            }
+        }
     }
 
     fn check_index(
@@ -365,11 +398,12 @@ impl<R: Runtime> Database<R> {
         };
         for pid in pages {
             let mut versions = Vec::new();
-            if let Err(e) = heap.scan_rooted(&self.pager, pid, |v, root| versions.push((v, root))) {
+            if let Err(e) = heap.scan_rooted(&self.pager, pid, |v, roots| versions.push((v, roots)))
+            {
                 out.push(Found::of_page(e));
                 continue;
             }
-            for (v, root) in versions {
+            for (v, roots) in versions {
                 let seen = self.txns.sees(
                     &self.pager,
                     &tx.snapshot,
@@ -383,7 +417,11 @@ impl<R: Runtime> Database<R> {
                 let Some(key) = ix.keys.key(c, &v.row, &types)? else {
                     continue;
                 };
-                if !held.contains(&(schema.encode(&key), ctor, root)) {
+                let encoded = schema.encode(&key);
+                if !roots
+                    .into_iter()
+                    .any(|root| held.contains(&(encoded.clone(), ctor, root)))
+                {
                     out.push(Found::Missing {
                         relation: self.schema.ids.relations[&r.id],
                         ctor: self.ctor_id(r, c),

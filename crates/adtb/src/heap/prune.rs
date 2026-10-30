@@ -1,5 +1,5 @@
 use super::page::{self, Arrangement, Slot};
-use super::version::{Flags, Header};
+use super::version::{self, Flags, Header};
 
 /// What a pruner decides of one version from its header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,7 +82,9 @@ pub(super) fn plan(
     let slots: Vec<Slot> = (0..n).map(|s| page::get(page, s)).collect();
     let fate: Vec<Option<Fate>> = fates.iter().map(|f| f.map(|(f, _)| f)).collect();
     let cleared: Vec<bool> = fates.iter().map(|f| f.is_some_and(|(_, c)| c)).collect();
-    let links = links(page, pid, &slots, &cleared);
+    let links: Vec<Option<usize>> = (0..n)
+        .map(|s| version::link(page, pid, s).filter(|_| !cleared[s]))
+        .collect();
     let fixed = matches!(page::arrangement(page), Arrangement::Fixed { .. });
     let mut out: Vec<Option<Slot>> = vec![None; n];
     let mut chained = vec![false; n];
@@ -104,7 +106,7 @@ pub(super) fn plan(
             }
             _ => continue,
         };
-        let members = chain(&links, start);
+        let members = version::chain(start, |s| links[s]);
         for &m in &members {
             chained[m] = true;
         }
@@ -162,42 +164,6 @@ pub(super) fn plan(
         }
     }
     plan
-}
-
-/// Returns, for each slot, the slot on the same page holding its heap-only successor, if any. A
-/// version whose deleter is cleared has none.
-fn links(page: &[u8], pid: u64, slots: &[Slot], cleared: &[bool]) -> Vec<Option<usize>> {
-    let mut links = vec![None; slots.len()];
-    for (s, slot) in slots.iter().enumerate() {
-        let Slot::Normal { flags, at } = slot else {
-            continue;
-        };
-        let header = Header::read(&page[at.clone()]);
-        if !cleared[s]
-            && flags.contains(Flags::HOT_UPDATED)
-            && let Some(next) = header.next
-            && next.page() == pid
-        {
-            let t = usize::from(next.slot());
-            if matches!(&slots.get(t), Some(Slot::Normal { flags, .. }) if flags.contains(Flags::HEAP_ONLY))
-            {
-                links[s] = Some(t);
-            }
-        }
-    }
-    links
-}
-
-/// Returns the slots of the chain that starts at `start`, following `links` until a slot repeats.
-fn chain(links: &[Option<usize>], start: usize) -> Vec<usize> {
-    let mut members = vec![start];
-    while let Some(t) = links[*members.last().unwrap()] {
-        if members.contains(&t) {
-            break;
-        }
-        members.push(t);
-    }
-    members
 }
 
 pub(super) fn apply(page: &mut [u8], plan: &Plan) {

@@ -681,6 +681,37 @@ fn failed_writes_and_forces_crash_and_recover() {
 }
 
 #[test]
+fn a_failed_log_allocate_is_fatal_and_leaves_a_file_a_later_create_can_use() {
+    silence_fatal_panics();
+    let mut failed = false;
+    for seed in 0..64 {
+        let mut sim = Sim::new(
+            seed,
+            Config {
+                faults: Faults {
+                    fail_p: 0.2,
+                    ..Faults::default()
+                },
+                ..Config::default()
+            },
+        );
+        let outcome = run_process(&mut sim, |rt| {
+            Pager::create(rt, &options(PLAIN)).expect("create");
+        });
+        if sim.trace().contains("fault fail allocate") {
+            failed = true;
+            assert_eq!(Outcome::Crashed, outcome, "seed {seed}");
+            sim.set_faults(Faults::default());
+            let outcome = sim.run(|rt| {
+                Pager::create(rt, &options(PLAIN)).expect("create over what the failure left");
+            });
+            assert_eq!(Outcome::Finished, outcome, "seed {seed}");
+        }
+    }
+    assert!(failed, "no allocate failed on seeds 0..64");
+}
+
+#[test]
 fn every_fault_at_once() {
     seeds(
         500..512,

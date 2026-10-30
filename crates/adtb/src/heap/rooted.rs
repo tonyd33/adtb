@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::key::{Tid, Value};
 use crate::runtime::Runtime;
@@ -6,17 +6,17 @@ use crate::storage::{self, PageError, Pager, Pid};
 
 use super::handle::{Heap, Version, tid};
 use super::page::{self, Slot};
-use super::version::{Flags, Header};
+use super::version::{self, Flags};
 
 impl Heap {
-    /// Call `f` on every version on `pid` with the slot index entries name for it: the root of
-    /// the chain of heap-only successors it lies on, as one latched read of the page shows. A page
-    /// no longer of the heap has none.
+    /// Call `f` on every version on `pid` with each slot index entries may name for it: the roots
+    /// of the chains of heap-only successors it lies on, as one latched read of the page shows. A
+    /// sound page gives a version one root. A page no longer of the heap has none.
     pub fn scan_rooted<R: Runtime>(
         &self,
         pager: &Pager<R>,
         pid: Pid,
-        mut f: impl FnMut(Version, Tid),
+        mut f: impl FnMut(Version, Vec<Tid>),
     ) -> Result<(), PageError> {
         let mut found = Vec::new();
         {
@@ -24,48 +24,25 @@ impl Heap {
             if !page::is_heap(&page) || storage::owner(&page) != self.id {
                 return Ok(());
             }
-            let format = storage::format(&page);
-            let mut roots = BTreeMap::new();
+            let mut roots: BTreeMap<usize, Vec<Tid>> = BTreeMap::new();
             for slot in 0..page::slot_count(&page) {
                 let start = match page::get(&page, slot) {
                     Slot::Redirect(to) => usize::from(to),
                     Slot::Normal { flags, .. } if !flags.contains(Flags::HEAP_ONLY) => slot,
                     _ => continue,
                 };
-                let mut at = start;
-                while let Slot::Normal { flags, at: bytes } = page::get(&page, at) {
-                    if roots.insert(at, slot).is_some() || !flags.contains(Flags::HOT_UPDATED) {
-                        break;
-                    }
-                    let Some(next) = Header::read(&page[bytes])
-                        .next
-                        .filter(|n| n.page() == pid.0)
-                    else {
-                        break;
-                    };
-                    at = usize::from(next.slot());
+                for member in version::chain(start, |s| version::link(&page, pid.0, s)) {
+                    roots.entry(member).or_default().push(tid(pid, slot));
                 }
             }
-            for slot in 0..page::slot_count(&page) {
-                let Slot::Normal { flags, at } = page::get(&page, slot) else {
-                    continue;
-                };
-                let bytes = &page[at];
-                let (row, _) = self.decode(pager, format, bytes)?;
-                let root = roots.get(&slot).copied().unwrap_or(slot);
-                found.push((
-                    Version {
-                        tid: tid(pid, slot),
-                        header: Header::read(bytes),
-                        flags,
-                        row: self.upgrade(format, row),
-                    },
-                    tid(pid, root),
-                ));
+            for v in self.versions_on(pager, pid, &page)? {
+                let rooted = roots.remove(&usize::from(v.tid.slot()));
+                let root = rooted.unwrap_or_else(|| vec![v.tid]);
+                found.push((v, root));
             }
         }
-        for (v, root) in found {
-            f(v, root);
+        for (v, roots) in found {
+            f(v, roots);
         }
         Ok(())
     }
@@ -83,27 +60,56 @@ impl Heap {
             return Ok(None);
         }
         let format = storage::format(&page);
-        let mut slot = match page::get(&page, usize::from(at.slot())) {
+        let start = match page::get(&page, usize::from(at.slot())) {
             Slot::Redirect(to) => usize::from(to),
             Slot::Normal { .. } => usize::from(at.slot()),
             _ => return Ok(None),
         };
         let mut rows = Vec::new();
-        let mut seen = BTreeSet::new();
-        while seen.insert(slot) {
-            let Slot::Normal { flags, at: bytes } = page::get(&page, slot) else {
+        for slot in version::chain(start, |s| version::link(&page, pid.0, s)) {
+            let Slot::Normal { at: bytes, .. } = page::get(&page, slot) else {
                 break;
             };
-            let (row, _) = self.decode(pager, format, &page[bytes.clone()])?;
+            let (row, _) = self.decode(pager, format, &page[bytes])?;
             rows.push(self.upgrade(format, row));
-            let next = Header::read(&page[bytes])
-                .next
-                .filter(|n| n.page() == pid.0);
-            match next.filter(|_| flags.contains(Flags::HOT_UPDATED)) {
-                Some(n) => slot = usize::from(n.slot()),
-                None => break,
-            }
         }
         Ok(Some(rows))
+    }
+
+    /// Returns what is wrong with the links of `pid`, as one latched read of the page shows. A
+    /// page no longer of the heap has nothing wrong.
+    pub fn broken_links<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+    ) -> Result<Vec<String>, PageError> {
+        let page = pager.read(pid)?;
+        if !page::is_heap(&page) || storage::owner(&page) != self.id {
+            return Ok(Vec::new());
+        }
+        Ok(version::link_faults(&page, pid.0))
+    }
+
+    /// Mark the version at `at` hot-updated with successor `next`. Plants a fault for a test of
+    /// the checks.
+    #[doc(hidden)]
+    pub fn plant_next<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        at: Tid,
+        next: Tid,
+    ) -> Result<(), PageError> {
+        pager.update(&[Pid(at.page())], |pages| {
+            let page = &mut *pages[0];
+            let slot = usize::from(at.slot());
+            let Slot::Normal { flags, at: bytes } = page::get(page, slot) else {
+                panic!("a planted link starts at a version");
+            };
+            let mut header = version::Header::read(&page[bytes.clone()]);
+            header.next = Some(next);
+            header.write(&mut page[bytes]);
+            page::set_flags(page, slot, flags.with(Flags::HOT_UPDATED));
+        })?;
+        Ok(())
     }
 }

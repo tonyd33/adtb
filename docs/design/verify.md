@@ -136,7 +136,8 @@ writers do meanwhile. Each check meets it as follows.
 | --- | --- | --- |
 | Page checksum and log position | `Pager::verify_live` | A page whose LSN is at or past the log's end at the start was written since and is passed over. A page that looks wrong is read again from the file under its exclusive latch, which no write-out or eviction holds with it. A log finding at or past that end is dropped |
 | Each index's order, fences and levels | `BTree::check_live` | One latched read shows a page's own invariants. A fact about two pages counts only when the page linking to the other kept its LSN across the read of the other, so both held at one moment. A page without a downlink is rechecked against the page above it the same way. A pair a writer keeps changing is passed over after 16 reads and the walk goes on from the page reached, if it is a live page of that level |
-| Row version to entry (`Missing`) | at the snapshot | A version the snapshot sees committed after its entries were written, and the entry names the root of its heap-only chain, read in one latch |
+| Row version to entry (`Missing`) | at the snapshot | A version the snapshot sees committed after its entries were written, and the entry names a root of its heap-only chain, read in one latch |
+| Each link between versions on a heap page (`Structure`) | latest | One latched read shows both ends of a link. A writer changes a link and its successor under one exclusive latch. A hot-updated version names a successor its deleter wrote, and no two versions name one successor |
 | Entry to row version (`Orphan`) | latest | The run holds off vacuum across each index. Only vacuum removes an entry or frees a slot an entry named, and a writer writes the version before the entry, so an entry read still names its version. A dead slot passes |
 | Each admitted constraint (`Violation`) | at the snapshot | The snapshot is safe. A constraint reading a transition is not run. A constraint reading a damaged page reports that page, whatever the scope. One over the query memory is a `Structure` finding and the run goes on |
 
@@ -144,8 +145,8 @@ An index with a fault of its own structure gets no cross-reference in
 that run, since what its walk returns is not what it holds.
 
 `Leaked`, `Unallocated`, `Shared`, `Overcounted`, `Unsettled`, every
-`Structure` problem of a heap or large-value store, and the version-chain checks
-cannot be made exact under writers, and the specification does not list
+`Structure` problem of a heap or large-value store but the link check above,
+and the version-chain checks cannot be made exact under writers, and the specification does not list
 them. They run only in `adtb verify FILE`, which holds the file, by
 `verify_with(pager, inventory, Depth::FILE)`. `Unsettled` and
 `Overcounted` are never findings: a crash may leave them on a sound file

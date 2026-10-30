@@ -90,17 +90,23 @@ pub fn sync_dir(rt: &SimRuntime, io: &mut SimIo, dir: &str) -> Result<(), IoErro
         .map(|d| assert_eq!(Done::Synced, d))
 }
 
+pub fn allocate(rt: &SimRuntime, io: &mut SimIo, file: FileId, len: u64) -> Result<(), IoError> {
+    complete(rt, io, Op::Allocate { file, len })
+        .result
+        .map(|d| assert_eq!(Done::Allocated, d))
+}
+
 pub fn sector(fill: u8) -> Vec<u8> {
     vec![fill; SECTOR]
 }
 
-fn fnv(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
+pub const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Returns the FNV digest of `bytes` continued from `digest`. Start from [`FNV_OFFSET`].
+pub fn fnv(digest: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(digest, |d, &b| {
+        (d ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 const MAGIC: &[u8; 8] = b"ADTBREC1";
@@ -118,7 +124,7 @@ pub fn record(id: u64) -> Vec<u8> {
 fn checksum(r: &[u8]) -> u64 {
     let mut copy = r.to_vec();
     copy[16..24].fill(0);
-    fnv(&copy)
+    fnv(FNV_OFFSET, &copy)
 }
 
 /// How a toy commit log acknowledges a commit.

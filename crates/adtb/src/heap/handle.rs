@@ -11,7 +11,7 @@ use super::page::{self, Arrangement, Slot, align8};
 use super::prune::{self, Fate};
 use super::row::{FieldType, Layout, POINTER_LEN, Pointer, Stored};
 use super::stage::Stage;
-use super::version::{Flags, HEADER_LEN, Header};
+use super::version::{self, Flags, HEADER_LEN, Header};
 use super::vm::Vm;
 use super::{Error, WriteTarget, fixed, slotted};
 
@@ -435,30 +435,42 @@ impl Heap {
         mut f: impl FnMut(Version),
     ) -> Result<(), PageError> {
         for &pid in pages {
-            let mut found = Vec::new();
+            let found;
             {
                 let page = pager.read(pid)?;
                 if !page::is_heap(&page) || storage::owner(&page) != self.id {
                     continue;
                 }
-                let format = storage::format(&page);
-                for slot in 0..page::slot_count(&page) {
-                    let Slot::Normal { flags, at } = page::get(&page, slot) else {
-                        continue;
-                    };
-                    let bytes = &page[at];
-                    let (row, _) = self.decode(pager, format, bytes)?;
-                    found.push(Version {
-                        tid: tid(pid, slot),
-                        header: Header::read(bytes),
-                        flags,
-                        row: self.upgrade(format, row),
-                    });
-                }
+                found = self.versions_on(pager, pid, &page)?;
             }
             found.into_iter().for_each(&mut f);
         }
         Ok(())
+    }
+
+    /// Returns the versions on `page`, page `pid` of the heap, in slot order.
+    pub(super) fn versions_on<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        pid: Pid,
+        page: &[u8],
+    ) -> Result<Vec<Version>, PageError> {
+        let format = storage::format(page);
+        let mut found = Vec::new();
+        for slot in 0..page::slot_count(page) {
+            let Slot::Normal { flags, at } = page::get(page, slot) else {
+                continue;
+            };
+            let bytes = &page[at];
+            let (row, _) = self.decode(pager, format, bytes)?;
+            found.push(Version {
+                tid: tid(pid, slot),
+                header: Header::read(bytes),
+                flags,
+                row: self.upgrade(format, row),
+            });
+        }
+        Ok(found)
     }
 
     /// Returns the body of `row` in the newest format, its large values out of line and written
@@ -1340,31 +1352,11 @@ impl Heap {
                     Slot::Dead if page::all_visible(&page) => {
                         problems.push((pid, format!("is all-visible and has dead slot {slot}")));
                     }
-                    Slot::Normal { flags, at } if flags.contains(Flags::HOT_UPDATED) => {
-                        let header = Header::read(&page[at]);
-                        let successor = header
-                            .next
-                            .filter(|n| n.page() == pid.0)
-                            .map(|n| page::get(&page, usize::from(n.slot())));
-                        let linked = match successor {
-                            Some(Slot::Normal { flags, at }) => {
-                                flags.contains(Flags::HEAP_ONLY)
-                                    && Header::read(&page[at]).xmin == header.xmax
-                            }
-                            _ => false,
-                        };
-                        if !linked {
-                            problems.push((
-                                pid,
-                                format!(
-                                    "slot {slot} is hot-updated but names no heap-only successor"
-                                ),
-                            ));
-                        }
-                    }
                     _ => {}
                 }
             }
+            let links = version::link_faults(&page, pid.0);
+            problems.extend(links.into_iter().map(|what| (pid, what)));
         }
         for pid in marked {
             problems.push((
