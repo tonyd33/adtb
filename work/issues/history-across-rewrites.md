@@ -21,3 +21,7 @@ tags:
 Found by the manual-gaps track. After a migration that rebuilt the relation, `HistoryUnavailable`
 names an oldest readable position that is itself refused when read, and a read past the last
 commit names an older position. The error's position must be readable.
+
+A `rename field Tool.Borrowed.days to loan_days` also makes every `at commit` read of the relation
+before it answer `HistoryUnavailable` (manual reader check, 2026-10-29). A rename changes no
+stored value, so it should not end history.
