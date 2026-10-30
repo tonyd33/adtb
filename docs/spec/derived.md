@@ -222,10 +222,14 @@ relation counters : Counter
 
 | Form | Applies to |
 | --- | --- |
-| `default f = e` | field `f` of every constructor of the relation that has it |
+| `default f = e` | field `f` of every constructor of the relation that has it when the default is added |
 | `default C.f = e` | field `f` of constructor relation `C` |
 | `key f generate g` | the key field `f`, from generator `g` (`sequence`, `uuidv7`) |
 | `default f = generate clock` | an `Instant` field, from the clock generator ([model.md](model.md#73-generated-keys)) |
+
+A default applies only to the constructors it named when it was
+added. A constructor added later with a field `f` is not filled by an
+existing `default f = e`; an `add default` covers it.
 
 The default expression `e` is a literal, a constructor of literals, or
 `generate g`; it reads no relation and no other field. The values the
