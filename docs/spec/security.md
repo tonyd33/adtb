@@ -683,6 +683,9 @@ The engine records:
 | Every call refused for lack of a privilege | Connection role, `caller`, bundle, query |
 | Every committed change set | Commit position, `caller`, bundle, query, the change set |
 
+A database quarantined whole writes nothing, so nothing is audited while
+the quarantine holds ([catalog.md](catalog.md#112-quarantine)).
+
 ### 8.2 The audit relation
 
 Audit records are rows of the catalog relation `catalog::audit`,
