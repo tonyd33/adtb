@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: manual-from-sql
 kind: feature
 priority: 600
 summary: the manual has no guide for moving from SQLite or another SQL database; it has only a table and two passing notes
