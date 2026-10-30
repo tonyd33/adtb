@@ -84,6 +84,15 @@ impl Source {
 
     /// Builds the schema the declarations state, its ids those of declaration order.
     pub(super) fn built(&self) -> Result<Schema, Vec<FileDiag>> {
+        if let Some(schema) = self.memo.get(self) {
+            return Ok((*schema).clone());
+        }
+        let schema = Arc::new(self.built_uncached()?);
+        self.memo.put(self, schema.clone());
+        Ok(Arc::unwrap_or_clone(schema))
+    }
+
+    pub(super) fn built_uncached(&self) -> Result<Schema, Vec<FileDiag>> {
         let mut files = self.files()?;
         for m in &self.modules {
             if !files.iter().any(|(_, f)| f.module.text == *m) {

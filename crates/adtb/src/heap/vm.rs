@@ -49,8 +49,18 @@ fn set_child(node: &mut [u8], i: usize, pid: Pid) {
     node[BODY + 8 * i..BODY + 8 * i + 8].copy_from_slice(&pid.0.to_le_bytes());
 }
 
-fn bit(leaf: &[u8], i: u64) -> bool {
+pub(super) fn bit(leaf: &[u8], i: u64) -> bool {
     leaf[BODY + (i / 8) as usize] >> (i % 8) & 1 == 1
+}
+
+/// Returns the index of every set bit of a leaf, in order.
+pub(super) fn set_bits(leaf: &[u8]) -> impl Iterator<Item = u64> {
+    leaf[BODY..].iter().enumerate().flat_map(|(at, &byte)| {
+        std::iter::successors((byte != 0).then_some(byte), |rest| {
+            Some(rest & (rest - 1)).filter(|&next| next != 0)
+        })
+        .map(move |rest| at as u64 * 8 + u64::from(rest.trailing_zeros()))
+    })
 }
 
 fn set_bit(leaf: &mut [u8], i: u64, on: bool) {
@@ -231,11 +241,7 @@ impl Vm {
             let node = &pager.read(at)?.to_vec();
             let l = level(node);
             if l == 0 {
-                out.extend(
-                    (0..span(size))
-                        .filter(|&i| bit(node, i))
-                        .map(|i| Pid(base + i)),
-                );
+                out.extend(set_bits(node).map(|i| Pid(base + i)));
                 continue;
             }
             let below = reach(size, l - 1);

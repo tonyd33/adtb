@@ -23,6 +23,7 @@ mod grant;
 mod grant_text;
 mod ids;
 mod keep;
+mod memo;
 mod names;
 mod resolved;
 mod revert;
@@ -36,6 +37,10 @@ use text::*;
 #[cfg(test)]
 #[path = "../evolve_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../evolve_memo_tests.rs"]
+mod memo_tests;
 
 pub use crate::schema::Stage;
 use grant::HeldGrant;
@@ -110,6 +115,7 @@ pub struct Source {
     /// The grants the structural operators of the migration being applied could not carry and
     /// no later grant operator of it has stated.
     unstated: Vec<carry::Unstated>,
+    memo: memo::BuiltMemo,
 }
 
 /// Text of the migration being replayed that an operator copied into a declaration.

@@ -717,6 +717,45 @@ fn every_page_id_has_its_own_path_and_bit_in_the_visibility_map() {
 }
 
 #[test]
+fn the_set_bits_of_a_leaf_equal_the_bitwise_walk() {
+    let mut leaves = vec![vec![0; PAGE], vec![0xff; PAGE]];
+    let span = vm::reach(PAGE, 0);
+    for i in [
+        0,
+        1,
+        7,
+        8,
+        9,
+        63,
+        64,
+        span / 2,
+        span - 9,
+        span - 8,
+        span - 1,
+    ] {
+        let mut leaf = vec![0; PAGE];
+        leaf[PAGE - (span / 8) as usize + (i / 8) as usize] = 1 << (i % 8);
+        leaves.push(leaf);
+    }
+    let mut at = 1u64;
+    for density in [1, 7, 64, 200] {
+        let mut leaf = vec![0; PAGE];
+        for byte in &mut leaf {
+            at = at.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            if at >> 56 < density {
+                *byte = (at >> 48) as u8;
+            }
+        }
+        leaves.push(leaf);
+    }
+    for (n, leaf) in leaves.iter_mut().enumerate() {
+        leaf[..PAGE - (span / 8) as usize].fill(0xff);
+        let bitwise: Vec<u64> = (0..span).filter(|&i| vm::bit(leaf, i)).collect();
+        assert_eq!(bitwise, vm::set_bits(leaf).collect::<Vec<_>>(), "leaf {n}");
+    }
+}
+
+#[test]
 fn a_page_check_finds_overlapping_tuples_and_bad_states() {
     let mut p = heap_page(Arrangement::Slotted, 0);
     page::insert(&mut p, &version(1, &[7; 16]), Flags::NONE).unwrap();
