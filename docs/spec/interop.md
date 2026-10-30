@@ -731,7 +731,10 @@ carries them and a restore reinstates them by replay. A restore writes
 the roles of `security` before it replays the log; a log grant naming
 a role the dump does not hold, as in a dump written without `security`,
 is kept dormant and allows nothing, and the restore reports every
-dormant grant ([security.md](security.md#21-roles)). The text form of
+dormant grant ([security.md](security.md#21-roles)). A restore keeps
+the file's schema-owner role, `owner`: the dump's `owner` row maps to
+it, and a dump whose `security` gives the schema owner another name is
+refused before anything is written. The text form of
 `data/` is for review; a restore reads the Arrow form.
 
 A dump is written in plaintext unless it is written with `--encrypt
