@@ -617,3 +617,124 @@ fn a_role_owning_a_family_or_a_live_bundle_cannot_be_dropped() {
         );
     });
 }
+
+#[test]
+fn the_schema_owner_reregistering_another_roles_bundle_is_checked_against_that_role() {
+    let mut sim = Sim::new(350, Config::default());
+    run(&mut sim, |rt| {
+        deployed(&rt, " lease 1d");
+        sleep(&rt, DAY + 2 * HOUR);
+        let db = opened(&rt, &[SHOP, GRANTS, REVOKE]);
+        let again = leased("shop-1.0", &[SHOP, GRANTS], " lease 1d", NAMES);
+        let detail = denied(register(&db, "owner", &again));
+        assert!(
+            detail.starts_with("names reads customers.Customer; web lacks read with grant option"),
+            "{detail}"
+        );
+        assert_eq!(Some(&"web".to_owned()), owners(&db).get("shop-1.0"));
+        assert!(matches!(
+            db.registered("shop-1.0"),
+            Err(Error::Rejected {
+                reason: RejectReason::BundleExpired { .. }
+            })
+        ));
+        db.close().expect("close");
+        opened(&rt, &[SHOP, GRANTS, REVOKE]);
+    });
+}
+
+/// Returns the last renewal `catalog::bundles` records for `name`.
+fn renewed(db: &Database<SimRuntime>, name: &str) -> Vec<String> {
+    query(
+        db,
+        &format!("from b in catalog::bundles where b.name == \"{name}\" select b.renewed"),
+    )
+}
+
+#[test]
+fn an_open_never_renews_a_registered_bundle_it_was_not_given() {
+    let mut sim = Sim::new(351, Config::default());
+    run(&mut sim, |rt| {
+        let db = shop(&rt);
+        register(
+            &db,
+            "web",
+            &leased("shop-1.0", &[SHOP, GRANTS], " lease 1d", NAMES),
+        )
+        .expect("web registers");
+        let first = renewed(&db, "shop-1.0");
+        db.close().expect("close");
+        for _ in 0..3 {
+            sleep(&rt, 20 * HOUR);
+            let db = opened(&rt, &[SHOP, GRANTS]);
+            assert_eq!(first, renewed(&db, "shop-1.0"));
+            db.close().expect("close");
+        }
+        let db = opened(&rt, &[SHOP, GRANTS, REVOKE]);
+        assert!(matches!(
+            db.registered("shop-1.0"),
+            Err(Error::Rejected {
+                reason: RejectReason::BundleExpired { .. }
+            })
+        ));
+        assert_eq!(first, renewed(&db, "shop-1.0"));
+    });
+}
+
+const FNS: &str = "module shop
+define fn all_names () -> Set Text = from c in customers select c.name
+";
+
+#[test]
+fn an_imported_schema_function_needs_no_grant_of_the_owner_but_one_a_query_reaches_does() {
+    let mut sim = Sim::new(352, Config::default());
+    run(&mut sim, |rt| {
+        shop(&rt).close().expect("close");
+        let pins = &[SHOP, GRANTS, FNS];
+        let db = opened(&rt, pins);
+        register(
+            &db,
+            "idle",
+            &bundle("fns-1.0", pins, "import shop\nimport fn all_names\n"),
+        )
+        .expect("an imported function alone");
+        let reached = "import shop\nquery everyone () -> Set Text = all_names()\n";
+        let detail = denied(register(&db, "idle", &bundle("fns-1.1", pins, reached)));
+        assert!(
+            detail.starts_with("everyone reads customers.Customer"),
+            "{detail}"
+        );
+        register(
+            &db,
+            "web",
+            &bundle("web-1.0", pins, "import shop\nimport fn all_names\n"),
+        )
+        .expect("web imports it");
+        db.close().expect("close");
+        opened(&rt, &[SHOP, GRANTS, FNS, REVOKE]);
+    });
+}
+
+const RENAME: &str = "module shop\nrename field Customer.name to display\n";
+
+#[test]
+fn an_older_pin_is_checked_on_what_its_translation_reads() {
+    let mut sim = Sim::new(353, Config::default());
+    run(&mut sim, |rt| {
+        shop(&rt).close().expect("close");
+        let db = opened(&rt, &[SHOP, GRANTS, RENAME]);
+        let old = bundle("shop-1.0", &[SHOP, GRANTS], NAMES);
+        let detail = denied(register(&db, "app", &old));
+        assert_eq!(
+            [
+                "names reads customers.Customer; app lacks read with grant option",
+                "names reads customers.Customer (id); app lacks read with grant option",
+                "names reads customers.Customer (display); app lacks read with grant option",
+            ]
+            .join("\n"),
+            detail
+        );
+        register(&db, "web", &old).expect("the rename carries web's grant");
+        assert_eq!(Vec::<String>::new(), calls(&db, "shop-1.0"));
+    });
+}
