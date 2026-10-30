@@ -4,7 +4,6 @@ use adtb_lang::kernel::{Agg, Kind, Tm, Var};
 use adtb_lang::types::Ty;
 
 use super::{Planner, QueryCx, SET_ROWS, Scope, prepend};
-use crate::plan::terms::with_children;
 use crate::plan::{Chain, Error, GroupAgg, Sink, Step};
 
 impl Planner<'_> {
@@ -265,7 +264,7 @@ impl Planner<'_> {
         let out = if new == cs {
             t
         } else {
-            let kind = with_children(self.t.kind(t), &new);
+            let kind = self.t.kind(t).with_children(&new);
             self.add(kind, self.ty(t))
         };
         memo.insert(t, out);

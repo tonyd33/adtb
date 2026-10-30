@@ -8,7 +8,7 @@ use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use crate::catalog::indexed_fields;
 use crate::plan::explain::{Describe, Node};
-use crate::plan::{self, Catalog, Facts, Plan, with_children};
+use crate::plan::{self, Catalog, Facts, Plan};
 
 #[cfg(test)]
 mod tests;
@@ -860,7 +860,7 @@ impl Compiler<'_> {
         if new == cs {
             t
         } else {
-            let kind = with_children(self.terms.kind(t), &new);
+            let kind = self.terms.kind(t).with_children(&new);
             self.add(kind, self.ty(t))
         }
     }
@@ -1070,7 +1070,7 @@ impl Compiler<'_> {
         let out = if new == cs {
             t
         } else {
-            let kind = with_children(self.terms.kind(t), &new);
+            let kind = self.terms.kind(t).with_children(&new);
             self.add(kind, self.ty(t))
         };
         memo.insert(t, out);
@@ -1090,7 +1090,7 @@ impl Compiler<'_> {
                 if new == cs {
                     t
                 } else {
-                    self.add(with_children(&kind, &new), self.ty(t))
+                    self.add(kind.with_children(&new), self.ty(t))
                 }
             }
         };

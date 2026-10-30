@@ -15,7 +15,7 @@ mod tests;
 
 pub use catalog::{Catalog, Element, HeapId, IndexDesc, IndexId, RelationDesc, declared_elements};
 pub use lower::{plan, plan_bounded};
-pub(crate) use terms::{Facts, with_children};
+pub(crate) use terms::Facts;
 
 use std::cell::Cell;
 use std::collections::BTreeSet;

@@ -9,7 +9,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
 use super::catalog::{Catalog, IndexDesc};
-use super::terms::{Facts, with_children, with_vars};
+use super::terms::Facts;
 use super::*;
 use reads::collect_eval;
 
@@ -574,7 +574,7 @@ impl Planner<'_> {
                 if new == cs {
                     t
                 } else {
-                    self.add(with_children(&kind, &new), self.ty(t))
+                    self.add(kind.with_children(&new), self.ty(t))
                 }
             }
         };
@@ -748,7 +748,7 @@ impl Planner<'_> {
                     lets.push((v, self.eval(*c)?));
                     new[i] = self.var_tm(v);
                 }
-                let e = self.add(with_children(&kind, &new), ty);
+                let e = self.add(kind.with_children(&new), ty);
                 Ok(wrap_eval(lets, Eval::Expr(e)))
             }
         }
@@ -871,10 +871,8 @@ impl Planner<'_> {
             .into_iter()
             .map(|c| self.import(c, vars, memo))
             .collect();
-        let kind = with_children(from.kind(t), &cs);
-        let kind = with_vars(&kind, &mut |v| {
-            *vars.entry(v).or_insert_with(|| self.import_var(v))
-        });
+        let kind = from.kind(t).with_children(&cs);
+        let kind = kind.with_vars(&mut |v| *vars.entry(v).or_insert_with(|| self.import_var(v)));
         let out = self.add(kind, from.ty(t).clone());
         memo.insert(t, out);
         out

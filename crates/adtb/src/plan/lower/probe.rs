@@ -7,7 +7,6 @@ use super::{
     Access, BuildKey, Fixed, Fixes, HEAP_ROWS, IndexProbe, Limit, PROBE_COST, PROBE_ROWS, Planner,
     QueryCx, Scope, Span, chain, erase, is_nothing, nothing, prepend, union,
 };
-use crate::plan::terms::{with_children, with_vars};
 use crate::plan::{
     Build, BuildId, Chain, Element, End, Error, IndexDesc, Lookup, Pipeline, RangeBound, Route,
     Source, Spine, Step,
@@ -247,14 +246,14 @@ impl Planner<'_> {
             return false;
         }
         let zeros = vec![Tm(0); ca.len()];
-        let ka = with_children(self.t.kind(a), &zeros);
-        let kb = with_children(from.kind(b), &zeros);
+        let ka = self.t.kind(a).with_children(&zeros);
+        let kb = from.kind(b).with_children(&zeros);
         let (mut va, mut vb) = (Vec::new(), Vec::new());
-        with_vars(&ka, &mut |v| {
+        ka.with_vars(&mut |v| {
             va.push(v);
             v
         });
-        with_vars(&kb, &mut |v| {
+        kb.with_vars(&mut |v| {
             vb.push(v);
             v
         });
@@ -266,7 +265,7 @@ impl Planner<'_> {
                 return false;
             }
         }
-        if with_vars(&kb, &mut |v| vars[&v]) != ka {
+        if kb.with_vars(&mut |v| vars[&v]) != ka {
             return false;
         }
         ca.into_iter()

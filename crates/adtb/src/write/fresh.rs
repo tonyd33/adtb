@@ -70,7 +70,7 @@ fn walk(
         new.push(walk(terms, *c, scope, memo, out));
         scope.truncate(n);
     }
-    terms.add(crate::plan::with_children(&kind, &new), ty)
+    terms.add(kind.with_children(&new), ty)
 }
 
 /// Returns `v`, of type `ty`, with every placeholder replaced by the value `draw` gives it.

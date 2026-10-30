@@ -223,7 +223,7 @@ impl Planner<'_> {
                 if new == cs {
                     t
                 } else {
-                    self.add(super::with_children(&kind, &new), self.ty(t))
+                    self.add(kind.with_children(&new), self.ty(t))
                 }
             }
         };
