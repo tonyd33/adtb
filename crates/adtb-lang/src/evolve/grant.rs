@@ -36,6 +36,32 @@ pub struct GrantTarget {
     pub sel: GrantSel,
 }
 
+impl GrantTarget {
+    /// Returns the ids of the constructors of the target relation that this target covers in
+    /// `schema`. A constructor id `schema` lacks, or one of another type, covers nothing.
+    pub fn ctors(&self, schema: &Schema) -> BTreeSet<u64> {
+        let Some(rel) = schema.ids.relation(self.relation) else {
+            return BTreeSet::new();
+        };
+        let r = schema.relation(rel);
+        schema
+            .ids
+            .ctors
+            .iter()
+            .filter(|((def, _), _)| *def == r.elem_def)
+            .filter(|((_, c), id)| match &self.sel {
+                GrantSel::Whole => true,
+                GrantSel::Ctors(ids) => ids.contains(id),
+                GrantSel::Set(s) => r.sets.iter().any(|set| {
+                    schema.ids.sets.get(&(rel, set.name.clone())) == Some(s)
+                        && set.ctors.contains(c)
+                }),
+            })
+            .map(|(_, &id)| id)
+            .collect()
+    }
+}
+
 /// The constructors a grant selects. `Ctors` holds its ids in ascending order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GrantSel {

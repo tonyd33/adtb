@@ -769,7 +769,7 @@ impl Source {
             if let Granted::Read(t, fs) | Granted::Update(t, fs) = &mut g.privilege
                 && fs.ids.contains(&old)
             {
-                let covered = covered_ctors(&schema, t);
+                let covered = t.ctors(&schema);
                 fs.ids.retain(|&x| x != old);
                 fs.ids.extend(
                     moved
@@ -817,7 +817,8 @@ impl Source {
             if !fs.ids.contains(&moved) {
                 continue;
             }
-            let carried = covered_ctors(&schema, target)
+            let carried = target
+                .ctors(&schema)
                 .into_iter()
                 .filter_map(ctor_name)
                 .filter(|d| d != &c.text)
@@ -898,28 +899,5 @@ impl Source {
             }
         }
         self.grants = kept;
-    }
-}
-
-/// Returns the ids of the constructors grant target `t` covers in `schema`.
-fn covered_ctors(schema: &Schema, t: &GrantTarget) -> BTreeSet<u64> {
-    let Some((&rel, _)) = schema.ids.relations.iter().find(|(_, x)| **x == t.relation) else {
-        return BTreeSet::new();
-    };
-    let def = schema.relation(rel).elem_def;
-    let ctor_id = |c: u32| schema.ids.ctors.get(&(def, c)).copied();
-    match &t.sel {
-        GrantSel::Whole => (0..schema.ty(def).ctors().len() as u32)
-            .filter_map(ctor_id)
-            .collect(),
-        GrantSel::Ctors(cs) => cs.iter().copied().collect(),
-        GrantSel::Set(s) => schema
-            .ids
-            .sets
-            .iter()
-            .find(|(_, x)| **x == *s)
-            .and_then(|((r, name), _)| schema.relation(*r).sets.iter().find(|x| x.name == *name))
-            .map(|set| set.ctors.iter().filter_map(|&c| ctor_id(c)).collect())
-            .unwrap_or_default(),
     }
 }

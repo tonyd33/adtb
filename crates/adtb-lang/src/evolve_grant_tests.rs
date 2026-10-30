@@ -1490,3 +1490,62 @@ fn writes_and_retags_name_their_constructors_and_privileges() {
         "{got:?}"
     );
 }
+
+#[test]
+fn a_grant_target_covers_only_its_relations_constructors_in_the_schema_it_is_read_against() {
+    let before = grants();
+    let id = |p: &str| before.ids[p];
+    let (identities, users) = (id("relation auth::identities"), id("relation auth::users"));
+    let (email, google, apple) = (
+        id("ctor auth::Identity.EmailPass"),
+        id("ctor auth::Identity.Google"),
+        id("ctor auth::Identity.Apple"),
+    );
+    let oauth = id("set auth::identities.OAuth");
+    let user = id("ctor auth::User.User");
+    let target = |relation, sel| GrantTarget { relation, sel };
+    let schema = before.schema().expect("the schema");
+    let cases = [
+        (
+            target(identities, GrantSel::Whole),
+            vec![email, google, apple],
+        ),
+        (target(users, GrantSel::Whole), vec![user]),
+        (
+            target(identities, GrantSel::Ctors(vec![google])),
+            vec![google],
+        ),
+        (
+            target(identities, GrantSel::Ctors(vec![google, apple])),
+            vec![google, apple],
+        ),
+        (target(identities, GrantSel::Ctors(vec![99_999])), vec![]),
+        (target(identities, GrantSel::Ctors(vec![user])), vec![]),
+        (
+            target(identities, GrantSel::Set(oauth)),
+            vec![google, apple],
+        ),
+        (target(users, GrantSel::Set(oauth)), vec![]),
+        (target(identities, GrantSel::Set(99_998)), vec![]),
+        (target(99_997, GrantSel::Whole), vec![]),
+    ];
+    for (t, want) in cases {
+        let want: BTreeSet<u64> = want.into_iter().collect();
+        assert_eq!(want, t.ctors(&schema), "{t:?}");
+    }
+    let after = applies(&before, MERGE);
+    let schema = after.schema().expect("the schema");
+    let social = after.ids["ctor auth::Identity.Social"];
+    let merged = [
+        (target(identities, GrantSel::Whole), vec![email, social]),
+        (
+            target(identities, GrantSel::Ctors(vec![google, apple])),
+            vec![],
+        ),
+        (target(identities, GrantSel::Set(oauth)), vec![social]),
+    ];
+    for (t, want) in merged {
+        let want: BTreeSet<u64> = want.into_iter().collect();
+        assert_eq!(want, t.ctors(&schema), "after the merge: {t:?}");
+    }
+}

@@ -1,4 +1,4 @@
-use crate::evolve::{GrantSel, GrantTarget, Granted, LogGrant};
+use crate::evolve::{GrantTarget, Granted, LogGrant};
 
 use super::*;
 
@@ -60,36 +60,13 @@ impl EffectiveGrants {
 
 /// Returns each constructor of `schema` that `t` covers.
 fn targets(schema: &Schema, t: &GrantTarget) -> Vec<Target> {
-    let Some(rel) = relation(schema, t.relation) else {
-        return Vec::new();
-    };
-    let r = schema.relation(rel);
-    schema
-        .ids
-        .ctors
-        .iter()
-        .filter(|((def, _), _)| *def == r.elem_def)
-        .filter(|((_, c), id)| match &t.sel {
-            GrantSel::Whole => true,
-            GrantSel::Ctors(ids) => ids.contains(id),
-            GrantSel::Set(s) => r.sets.iter().any(|set| {
-                schema.ids.sets.get(&(rel, set.name.clone())) == Some(s) && set.ctors.contains(c)
-            }),
-        })
-        .map(|(_, &id)| Target {
+    t.ctors(schema)
+        .into_iter()
+        .map(|id| Target {
             relation: RelationId(t.relation),
             constructor: ConstructorId(id),
         })
         .collect()
-}
-
-fn relation(schema: &Schema, id: u64) -> Option<RelId> {
-    schema
-        .ids
-        .relations
-        .iter()
-        .find(|(_, x)| **x == id)
-        .map(|(&r, _)| r)
 }
 
 impl Requirement {
@@ -97,7 +74,7 @@ impl Requirement {
     /// privilege it needs, as `read`.
     pub fn text(&self, schema: &Schema) -> (String, &'static str) {
         let at = |t: &Target| {
-            let rel = relation(schema, t.relation.0);
+            let rel = schema.ids.relation(t.relation.0);
             let r = rel.map_or("?", |r| schema.relation(r).name.as_str());
             let c = schema
                 .ids

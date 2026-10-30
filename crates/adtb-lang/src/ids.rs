@@ -102,6 +102,14 @@ pub struct Object {
 }
 
 impl CatalogIds {
+    /// Returns the relation variable of catalog id `id`, `None` when no relation has it.
+    pub fn relation(&self, id: u64) -> Option<RelId> {
+        self.relations
+            .iter()
+            .find(|(_, x)| **x == id)
+            .map(|(&r, _)| r)
+    }
+
     pub fn set(&mut self, slot: &Slot, id: u64) {
         match slot.clone() {
             Slot::Type(t) => self.types.insert(t, id),

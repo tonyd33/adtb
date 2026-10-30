@@ -116,11 +116,7 @@ impl Granted {
 }
 
 fn target(schema: &Schema, t: &GrantTarget) -> Option<String> {
-    let (&rel, _) = schema
-        .ids
-        .relations
-        .iter()
-        .find(|(_, x)| **x == t.relation)?;
+    let rel = schema.ids.relation(t.relation)?;
     let rd = schema.relation(rel);
     let name = format!("{}::{}", schema.module(rd.module).name, rd.name);
     Some(match &t.sel {
