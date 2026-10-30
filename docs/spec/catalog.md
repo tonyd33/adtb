@@ -2117,13 +2117,18 @@ the constructors it reads
 ([queries.md §12.4](queries.md#124-the-constructors-a-statement-reads))
 include a quarantined constructor relation. Every other call
 continues. A write is refused in the same way where its constraint or
-reference checks must read a quarantined constructor relation:
+reference checks must read a quarantined constructor relation. A key
+spans its sum, so a write to any constructor of a sum with a quarantined
+constructor is refused, whatever the key value:
 
 ```adt
 -- identities.Apple quarantined
 from i in identities.(EmailPass | Google) select i.id    -- runs
 from i in identities select i.id                         -- fails
 ```
+
+The call that finds the damage fails with `Quarantined`, whichever it
+reads. The rules below hold from the next call.
 
 A quarantined index never fails a read: queries do not use it, so
 only their cost changes. A statement that writes a constructor
