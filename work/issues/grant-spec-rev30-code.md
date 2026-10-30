@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: feature
 priority: 420
 summary: Implement the grant rules spec revision 30 states
+branch: grant-rev30
 ---
 
 # Feature: Implement the grant rules spec revision 30 states

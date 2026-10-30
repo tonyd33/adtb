@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 400
 summary: "the checker accepts a revoke that matches no held grant, which spec/empty-revoke/refuse refuses"
+branch: grant-rev30
 ---
 
 # Empty revoke refused

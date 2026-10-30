@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
 kind: bug
 priority: 300
 summary: Every open panics after store of a view whose rows are Set Text
+branch: view-panic
 ---
 
 # Every open panics after store of a view whose rows are Set Text
