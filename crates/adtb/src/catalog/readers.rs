@@ -91,6 +91,40 @@ pub(super) enum Kind {
     },
 }
 
+impl Pinned {
+    /// Returns how this reader reads constructor `c` of relation `r` of `schema` such that
+    /// enabling it is refused, `None` when enabling it is not.
+    fn blocks(&self, schema: &Schema, r: RelId, c: u32) -> Option<String> {
+        let rid = rel_id(schema, r);
+        if self.hides_new || self.ctors.contains(&ctor_id(schema, r, c)) {
+            return None;
+        }
+        let rel = schema.relation(r);
+        if self.whole.contains(&rid) {
+            return Some(format!("reads {} whole", rel.name));
+        }
+        let follows = self
+            .references
+            .iter()
+            .any(|&(to, set)| to == rid && set.is_none_or(|s| in_set(schema, r, s, c)));
+        follows.then(|| {
+            let ctor = &schema.ty(rel.elem_def).ctors()[c as usize].name;
+            format!("follows a reference that admits {}.{ctor}", rel.name)
+        })
+    }
+
+    /// Returns how this reader reads constructor `c` of type `def` of `schema` such that
+    /// enabling it is refused, `None` when enabling it is not.
+    fn blocks_value(&self, schema: &Schema, def: TypeId, c: u32) -> Option<String> {
+        if self.ctors.contains(&CatCtorId(schema.ids.ctors[&(def, c)])) {
+            return None;
+        }
+        read_fields(schema, self)
+            .any(|t| schema.reaches(t, def))
+            .then(|| format!("reads a field whose type reaches {}", schema.ty(def).name))
+    }
+}
+
 /// A pending drop. The `name` of a unique or an old key is its relation followed by its clause.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Pending {
@@ -497,60 +531,38 @@ impl Catalog {
     /// Returns why the live readers refuse enabling constructor `c` of relation `r` in a
     /// migration whose result is `next`.
     fn enabling(&self, next: &Schema, r: RelId, c: u32) -> Vec<String> {
-        let rid = rel_id(next, r);
         let rel = next.relation(r);
-        let cid = ctor_id(next, r, c);
         let shown = format!(
             "{}.{}",
             rel.name,
             next.ty(rel.elem_def).ctors()[c as usize].name
         );
-        let mut why = Vec::new();
-        for (bundle, p) in self.blocking(cid) {
-            let reads = if p.whole.contains(&rid) {
-                format!("reads {} whole", rel.name)
-            } else if p
-                .references
-                .iter()
-                .any(|&(to, set)| to == rid && set.is_none_or(|s| in_set(next, r, s, c)))
-            {
-                format!("follows a reference that admits {shown}")
-            } else {
-                continue;
-            };
-            why.push(blocked(&format!("enable {shown}"), bundle, p, &reads));
-        }
-        why
+        self.readers
+            .live
+            .iter()
+            .filter_map(|(bundle, p)| {
+                let reads = p.blocks(next, r, c)?;
+                Some(blocked(&format!("enable {shown}"), bundle, p, &reads))
+            })
+            .collect()
     }
 
     /// Returns why the live readers refuse enabling constructor `c` of type `def` in a migration
     /// whose result is `next`.
     fn enabling_value(&self, next: &Schema, def: TypeId, c: u32) -> Vec<String> {
-        let cid = CatCtorId(next.ids.ctors[&(def, c)]);
-        let ty = &next.ty(def).name;
-        let shown = format!("{ty}.{}", next.ty(def).ctors()[c as usize].name);
-        let mut why = Vec::new();
-        for (bundle, p) in self
-            .readers
-            .live
-            .iter()
-            .filter(|(_, p)| !p.ctors.contains(&cid))
-        {
-            if read_fields(next, p).any(|t| next.reaches(t, def)) {
-                let reads = format!("reads a field whose type reaches {ty}");
-                why.push(blocked(&format!("enable {shown}"), bundle, p, &reads));
-            }
-        }
-        why
-    }
-
-    /// Returns the live readers that can be blocked by constructor `cid`: those pinned at a
-    /// version without it that do not hide new constructors.
-    fn blocking(&self, cid: CatCtorId) -> impl Iterator<Item = (&String, &Pinned)> {
+        let shown = format!(
+            "{}.{}",
+            next.ty(def).name,
+            next.ty(def).ctors()[c as usize].name
+        );
         self.readers
             .live
             .iter()
-            .filter(move |(_, p)| !p.hides_new && !p.ctors.contains(&cid))
+            .filter_map(|(bundle, p)| {
+                let reads = p.blocks_value(next, def, c)?;
+                Some(blocked(&format!("enable {shown}"), bundle, p, &reads))
+            })
+            .collect()
     }
 
     /// Returns why the live readers refuse `verb`, a deprecate or disable of constructor `c` of
@@ -714,31 +726,17 @@ pub fn stale(source: &Source, now: &Schema, reader: &Reader) -> Result<Option<St
         ))
     })?;
     let p = pinned(&schema, reader).map_err(refused)?;
-    if !p.hides_new {
-        for &r in now.ids.relations.keys() {
-            let rid = rel_id(now, r);
-            let rel = now.relation(r);
-            for (c, ctor) in now.ty(rel.elem_def).ctors().iter().enumerate() {
-                let c = u32::try_from(c).expect("a sum has fewer than 2^32 constructors");
-                let cid = ctor_id(now, r, c);
-                if p.ctors.contains(&cid) || now.stage(r, c) == Stage::Declared {
-                    continue;
-                }
-                let follows = p
-                    .references
-                    .iter()
-                    .any(|&(to, set)| to == rid && set.is_none_or(|s| in_set(now, r, s, c)));
-                if p.whole.contains(&rid) || follows {
-                    return Ok(Some(format!("{}.{}", rel.name, ctor.name)));
-                }
+    for &r in now.ids.relations.keys() {
+        let rel = now.relation(r);
+        for (c, ctor) in now.ty(rel.elem_def).ctors().iter().enumerate() {
+            let c = u32::try_from(c).expect("a sum has fewer than 2^32 constructors");
+            if now.stage(r, c) != Stage::Declared && p.blocks(now, r, c).is_some() {
+                return Ok(Some(format!("{}.{}", rel.name, ctor.name)));
             }
         }
     }
-    for (&(def, c), &cid) in &now.ids.ctors {
-        if p.ctors.contains(&CatCtorId(cid)) || now.value_stage(def, c) == Stage::Declared {
-            continue;
-        }
-        if read_fields(now, &p).any(|t| now.reaches(t, def)) {
+    for &(def, c) in now.ids.ctors.keys() {
+        if now.value_stage(def, c) != Stage::Declared && p.blocks_value(now, def, c).is_some() {
             let t = now.ty(def);
             return Ok(Some(format!("{}.{}", t.name, t.ctors()[c as usize].name)));
         }
