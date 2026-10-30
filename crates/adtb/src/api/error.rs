@@ -8,6 +8,7 @@ use adtb_lang::types::{Base, RelId, Ty};
 
 use crate::exec::{Exceeded, Val};
 use crate::write::{self, Rejection};
+use crate::{catalog, heap};
 
 pub use crate::exec::Fault;
 
@@ -294,6 +295,19 @@ impl Error {
                 key: key.clone(),
             },
         ))
+    }
+
+    /// Returns the client error of `e`, met writing catalog rows in a transaction of the write
+    /// path.
+    pub(super) fn of_catalog_write(e: catalog::Error) -> Error {
+        match e {
+            catalog::Error::Page(p) | catalog::Error::Heap(heap::Error::Page(p)) => {
+                Error::storage(format!("{p:?}"))
+            }
+            other => Error::rejected(RejectReason::Internal {
+                what: format!("{other:?}"),
+            }),
+        }
     }
 
     /// Returns the client error of write-path error `e`, met by transaction `txn` of a database
@@ -922,7 +936,7 @@ mod tests {
 
     #[test]
     fn a_broken_checker_guarantee_is_rejected_as_internal() {
-        let schema = crate::catalog::engine_schema();
+        let schema = catalog::engine_schema();
         let got = Error::of_write(&schema, TxnId(7), write::Error::Internal("a set".into()));
         assert_eq!(
             Error::Rejected {
@@ -935,8 +949,44 @@ mod tests {
     }
 
     #[test]
+    fn a_damaged_page_met_writing_catalog_rows_is_a_storage_failure() {
+        let damaged = crate::storage::PageError {
+            pid: crate::storage::Pid(3),
+            damage: crate::storage::Damage::Unreadable,
+        };
+        for e in [
+            catalog::Error::Page(damaged),
+            catalog::Error::Heap(heap::Error::Page(damaged)),
+        ] {
+            let got = Error::of_catalog_write(e);
+            assert!(
+                matches!(
+                    got,
+                    Error::Fatal {
+                        reason: FatalReason::Storage { .. }
+                    }
+                ),
+                "{got:?}"
+            );
+        }
+        let got = Error::of_catalog_write(catalog::Error::Heap(heap::Error::TooLarge {
+            len: 9000,
+            limit: 8000,
+        }));
+        assert!(
+            matches!(
+                got,
+                Error::Rejected {
+                    reason: RejectReason::Internal { .. }
+                }
+            ),
+            "{got:?}"
+        );
+    }
+
+    #[test]
     fn a_serialization_failure_names_the_callers_transaction() {
-        let schema = crate::catalog::engine_schema();
+        let schema = catalog::engine_schema();
         let f = crate::mvcc::SerializationFailure::new(crate::mvcc::Cause::LaterCommit, Vec::new());
         let got = Error::of_write(&schema, TxnId(7), write::Error::Serialization(f));
         assert!(

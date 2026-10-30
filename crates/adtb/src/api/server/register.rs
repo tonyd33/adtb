@@ -73,11 +73,9 @@ impl<R: Runtime> RoleAuthority<R> {
             let x = tx
                 .xid()
                 .expect("a write transaction of the write path has an id");
-            e.deployment.insert(&e.pager, x, &claim.facts).map_err(|c| {
-                Error::rejected(RejectReason::Internal {
-                    what: format!("{c:?}"),
-                })
-            })
+            e.deployment
+                .insert(&e.pager, x, &claim.facts)
+                .map_err(Error::of_catalog_write)
         })?;
         serve(&e, checked, &claim);
         Ok(e.bundle_rows(&claim.row))
