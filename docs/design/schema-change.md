@@ -369,10 +369,42 @@ Before it migrates, an embedded open supersedes the bundles of earlier
 opens that it does not ship
 ([../spec/evolution.md §8.4](../spec/evolution.md#84-embedded-databases)),
 registers as a reader, at its pin, each bundle it ships that was live
-before it, and settles. Only those hold a migration or a drop back; a
+before it and each live bundle a role registered through a role
+session, and settles. Only those hold a migration or a drop back; a
 bundle the open records for the first time does not. The write path
 an open binds is built from `Catalog::checking`: the version's schema
 and program with every pending-dropped object kept.
+
+`catalog::stale(source, now, reader)` and `catalog::source_at(source,
+v)` answer what `Catalog::stale` and `Catalog::source_at` answer, over
+`source`, a log, and `now`, its schema, so that a registration after
+open checks a reader against the source the open left.
+
+### 2.2 Deployment facts
+
+The roots heap holds, beside the catalog's own rows, the facts of
+deployment the engine's registration keeps:
+
+```text
+catalog.deployed(&pager, &txns) -> Result<Deployed, Error>
+catalog.deploy_with(&pager, &txns, &[Rewrite], &[Fact]) -> Result<(), Error>
+catalog.deployment().insert(&pager, xid, &[Fact]) -> Result<(), Error>
+Fact = Deployed | Family(family, role id) | Registered(bundle id, Mark)
+Mark { role, origin: Open | Command, text }
+```
+
+Postconditions:
+
+- `deployed` returns every fact the latest commit holds: whether the
+  file records family owners, the owner of each family by role id, and
+  the successful registration of each bundle by bundle id.
+- `deploy_with` writes its rows and facts as one durable transaction,
+  under the preconditions of `deploy`.
+- `insert` writes its facts in transaction `xid` of the write path; they
+  commit or abort with it. A crash before its commit leaves none.
+- The catalog reads nothing into a fact and derives no fact from
+  `catalog::bundles`. A file with these rows does not open under an
+  engine that predates them.
 
 Rulings: engine/online-states, engine/ddl-online-txn/staged-job, engine/pinned-version
 

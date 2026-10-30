@@ -146,6 +146,10 @@ pub(super) struct Row {
 }
 
 impl Row {
+    pub(super) fn retired(&self) -> bool {
+        matches!(self.state, State::Retired(_))
+    }
+
     /// Returns whether the lease has run out at `now` under the file settings `s`, with the
     /// primary's grace.
     fn expired(&self, now: i64, s: &Settings) -> bool {
@@ -608,8 +612,8 @@ impl Writes {
 }
 
 /// Record each bundle of `headers` that is not recorded yet, and supersede every active bundle
-/// an open registered that they do not name, as one durable transaction. On a file that
-/// records no family owners yet, give the schema owner every family it holds a bundle of.
+/// an open registered that they do not name, as one durable transaction. On a file without
+/// family owners yet, give the schema owner every family it holds a bundle of.
 pub(super) fn record<R: Runtime>(
     catalog: &Catalog,
     pager: &Pager<R>,
@@ -798,8 +802,8 @@ pub(super) fn register<R: Runtime>(
     Ok(stored)
 }
 
-/// The writes of registering a bundle through a role session: its row, the row it had, the
-/// calls it adds with their row ids, and the deployment facts.
+/// The writes of registering a bundle through a role session: its row, the row it had, its
+/// new calls with their row ids, and the deployment facts.
 pub(super) struct Claim {
     pub(super) old: Option<Row>,
     pub(super) row: Row,

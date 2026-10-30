@@ -104,19 +104,20 @@ impl<R: Runtime> RoleAuthority<R> {
         })
     }
 
-    /// Drop a role and its deployment grants, credentials and peer mappings.
+    /// Drop a role and its deployment grants, credentials and peer mappings. Refuse a role the
+    /// schema log names, or that owns a family or a bundle that is not retired.
     pub fn drop_role(&self, name: &str) -> Result<(), Error> {
         let name = role_name(name)?;
+        let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
+        let _writer = engine.bundle_writer.lock(&engine.rt);
         self.access(true, |e, tx, id, changes| {
             let t = Tables::new(&e.schema, id);
             let role = t.role(e, tx, &name)?;
-            if name == OWNER_ROLE
-                || e.role_mentions.contains(&name)
-                || t.owns_bundle(e, tx, &name)?
-            {
-                return Err(denied(
-                    "the role is required by the schema log or bundle ownership",
-                ));
+            if name == OWNER_ROLE || e.role_mentions.contains(&name) {
+                return Err(denied("the role is required by the schema log"));
+            }
+            if let Some(why) = e.ownership(&name, role.id.0) {
+                return Err(denied(why));
             }
             changes.delete(t.roles, t.role_value(&role));
             for grant in t.grants(e, tx)? {

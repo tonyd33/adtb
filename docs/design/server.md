@@ -198,6 +198,20 @@ authorize capabilities. Dropping and recreating a role does not
 revive its sessions. A grant revocation affects later checks through
 an existing session.
 
+`RoleAuthority::register(session, registration)` registers a bundle
+file as the session's role, which owns it, and returns its row of
+`catalog::bundles`. It runs the checks of open's registration, refuses
+with `Denied` listing each grant the role lacks with grant option for
+what the bundle runs, and with `Denied` when another role owns the
+family, unless the role is the schema owner. The bundle's row, its
+calls, its successful registration and, for the first one of its
+family, the family's owner commit together; a refusal changes nothing.
+Registrations, retirement, supersession and role drops are
+serialized. `drop_role` refuses a role that owns a family or a bundle
+that is not retired. Each migration refuses, naming every blocking
+bundle, when a live bundle's owner other than the schema owner would
+lack with grant option a grant its translation uses.
+
 `RoleAuthority::principal` derives Service from the authenticated role
 when no assertion is supplied. An assertion requires the current
 `assert` capability, must have the schema's Principal type, and cannot
@@ -300,8 +314,10 @@ Preconditions:
 Postconditions:
 
 - Open records every given bundle in `catalog::bundles` and marks every
-  other active bundle superseded, as one durable commit before its
-  first migration. It then registers every given registration or none.
+  other active bundle an open registered superseded, as one durable
+  commit before its first migration. A live bundle a role registered
+  through `RoleAuthority::register` stays live and open registers it
+  again from its stored file. It then registers every given registration or none.
   A refused one fails open with `RegistrationRefused` naming it.
 - A bundle's queries, transactions and functions are checked and
   normalised at the version its header pins, and one that is no
@@ -484,12 +500,11 @@ transaction retries, and propagates stop options. It currently
 materializes DynRows and ArrowStream and uses owner authority. The
 role administration, capability checks and principal derivation of
 §3.1 are implemented. Role-backed query execution, relation and field
-grants, definer registration checks, call and family grants, checked
-binding descriptors, authentication and complete audit recording
-remain unimplemented. Existing bundle rows are owned by the permanent
-embedded owner. Nonowner bundle and family ownership, including the
-retirement-sensitive role-drop check, awaits that provider; current
-role drops conservatively refuse any role named as a bundle owner.
+grants, call and family grants, checked binding descriptors,
+authentication and complete audit recording remain unimplemented.
+Checked registration through a role session, durable family ownership
+and the definer recheck at migration are implemented; the `register
+bundle` command and `BlockingMigration` notices are not.
 The implemented authority provider is not an execution authorization
 boundary for the existing owner facade.
 

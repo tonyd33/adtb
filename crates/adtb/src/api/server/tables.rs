@@ -51,7 +51,6 @@ pub(super) struct Tables<'s> {
     pub(super) grants: RelId,
     pub(super) credentials: RelId,
     peers: RelId,
-    bundles: RelId,
     audit: RelId,
 }
 
@@ -71,7 +70,6 @@ impl<'s> Tables<'s> {
             grants: relation("grants"),
             credentials: relation("credentials"),
             peers: relation("peer_mappings"),
-            bundles: relation("bundles"),
             audit: relation("audit"),
         }
     }
@@ -305,20 +303,6 @@ impl<'s> Tables<'s> {
             }
         }
         Ok(())
-    }
-
-    pub(super) fn owns_bundle<R: Runtime>(
-        &self,
-        e: &Engine<R>,
-        tx: &Txn,
-        name: &str,
-    ) -> Result<bool, Error> {
-        for row in self.read(e, tx, self.bundles)? {
-            if self.text(self.bundles, &row, "owner")? == name {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     pub(super) fn audit<R: Runtime>(

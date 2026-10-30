@@ -582,3 +582,38 @@ fn a_bundle_of_the_schema_owner_is_not_blocked_by_a_revoke() {
         assert_eq!(Vec::<String>::new(), calls(&db, "shop-1.0"));
     });
 }
+
+#[test]
+fn a_role_owning_a_family_or_a_live_bundle_cannot_be_dropped() {
+    let mut sim = Sim::new(340, Config::default());
+    run(&mut sim, |rt| {
+        let db = shop(&rt);
+        let authority = db.role_authority();
+        authority.create_role("spare").expect("spare");
+        register(
+            &db,
+            "idle",
+            &bundle("tools-0.1", &[SHOP, GRANTS], "import shop\n"),
+        )
+        .expect("idle registers");
+        assert_eq!(
+            "the role owns family tools",
+            denied(authority.drop_role("idle"))
+        );
+        db.query_text("retire bundle tools-0.1", &[], &CallOptions::default())
+            .expect("retire");
+        assert_eq!(
+            "the role owns family tools",
+            denied(authority.drop_role("idle"))
+        );
+        authority
+            .drop_role("spare")
+            .expect("a role that owns nothing");
+        db.close().expect("close");
+        let db = opened(&rt, &[SHOP, GRANTS]);
+        assert_eq!(
+            "the role owns family tools",
+            denied(db.role_authority().drop_role("idle"))
+        );
+    });
+}

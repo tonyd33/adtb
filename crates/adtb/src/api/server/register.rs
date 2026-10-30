@@ -117,6 +117,27 @@ fn owner_name(stored: &bundle::Stored, id: i64) -> String {
         .map_or_else(|| format!("#{id}"), |r| r.owner.clone())
 }
 
+impl<R: Runtime> Engine<R> {
+    /// Returns why role `name` of id `id` owns deployment state: a family, or a bundle that is
+    /// not retired.
+    pub(super) fn ownership(&self, name: &str, id: i64) -> Option<String> {
+        let ledger = self.ledger.lock(&self.rt);
+        if let Some((family, _)) = ledger.deployed.families.iter().find(|(_, o)| **o == id) {
+            return Some(format!("the role owns family {family}"));
+        }
+        let deployed = self.deployed.lock(&self.rt);
+        deployed
+            .values()
+            .find(|r| r.owner == name && !r.retired())
+            .map(|r| {
+                format!(
+                    "the role owns bundle {}, which is not retired",
+                    r.header.name
+                )
+            })
+    }
+}
+
 /// Serve `checked`, whose claim has committed.
 fn serve<R: Runtime>(e: &Engine<R>, checked: Checked, claim: &Claim) {
     claim.record(&mut e.ledger.lock(&e.rt));
