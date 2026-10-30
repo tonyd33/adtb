@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::ops::Range;
 
 use adtb::runtime::IoError;
 
@@ -53,11 +54,41 @@ pub(crate) struct Geometry {
 
 pub(crate) type Ino = usize;
 
+/// The bytes of one write. A run of zeros is held by its length.
+#[derive(Clone, Debug)]
+enum Payload {
+    Bytes(Vec<u8>),
+    Zeros(usize),
+}
+
+impl Payload {
+    fn len(&self) -> usize {
+        match self {
+            Payload::Bytes(data) => data.len(),
+            Payload::Zeros(len) => *len,
+        }
+    }
+
+    /// Store the whole payload at `offset`.
+    fn land(&self, bytes: &mut Vec<u8>, offset: u64) {
+        self.land_part(bytes, offset, 0..self.len());
+    }
+
+    /// Store `part` of the payload where it falls when the whole payload starts at `offset`.
+    fn land_part(&self, bytes: &mut Vec<u8>, offset: u64, part: Range<usize>) {
+        let at = offset + part.start as u64;
+        match self {
+            Payload::Bytes(data) => put(bytes, at, &data[part]),
+            Payload::Zeros(_) => put_zeros(bytes, at, part.len()),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Unsynced {
     seq: u64,
     offset: u64,
-    data: Vec<u8>,
+    data: Payload,
 }
 
 #[derive(Debug, Default)]
@@ -107,7 +138,7 @@ enum Event {
     Write {
         ino: Ino,
         offset: u64,
-        data: Vec<u8>,
+        data: Payload,
         seq: u64,
     },
     Create {
@@ -176,6 +207,22 @@ fn put(bytes: &mut Vec<u8>, offset: u64, data: &[u8]) {
         bytes.resize(end, 0);
     }
     bytes[start..end].copy_from_slice(data);
+}
+
+fn put_zeros(bytes: &mut Vec<u8>, offset: u64, len: usize) {
+    let start = offset as usize;
+    let end = start + len;
+    assert!(
+        bytes.len() <= start,
+        "zeros extend a file: they land at or past its end, not at {start} of {}",
+        bytes.len()
+    );
+    if bytes.is_empty() {
+        // `vec!` takes untouched zero pages from the allocator; `resize` would touch every one.
+        *bytes = vec![0; end];
+    } else {
+        bytes.resize(end, 0);
+    }
 }
 
 impl Disk {
@@ -392,7 +439,7 @@ impl Disk {
             for (i, chunk) in data.chunks(sector as usize).enumerate() {
                 if cx.rng.coin() {
                     let at = offset + i as u64 * sector;
-                    self.apply(ino, at, chunk, sector);
+                    self.apply(ino, at, Payload::Bytes(chunk.to_vec()), sector);
                     landed.push(i);
                 }
             }
@@ -414,7 +461,7 @@ impl Disk {
                 "fault misdirect ino {ino} {path:?} @{offset} to @{target}"
             );
         }
-        self.apply(ino, target, data, sector);
+        self.apply(ino, target, Payload::Bytes(data.to_vec()), sector);
         Ok(())
     }
 
@@ -430,25 +477,27 @@ impl Disk {
         k * sector
     }
 
-    fn apply(&mut self, ino: Ino, offset: u64, data: &[u8], sector: u64) {
+    fn apply(&mut self, ino: Ino, offset: u64, data: Payload, sector: u64) {
         let inode = &mut self.inodes[ino];
-        put(&mut inode.visible, offset, data);
+        data.land(&mut inode.visible, offset);
         let first = offset / sector;
         let last = (offset + data.len() as u64).div_ceil(sector);
         let healed: Vec<u64> = inode.bad.range(first..last).copied().collect();
         for s in healed {
             inode.bad.remove(&s);
         }
+        if let Some(recording) = &mut self.recording {
+            recording.events.push(Event::Write {
+                ino,
+                offset,
+                data: data.clone(),
+                seq: self.seq,
+            });
+        }
         inode.unsynced.push(Unsynced {
             seq: self.seq,
             offset,
-            data: data.to_vec(),
-        });
-        self.note(Event::Write {
-            ino,
-            offset,
-            data: data.to_vec(),
-            seq: self.seq,
+            data,
         });
         self.seq += 1;
     }
@@ -460,8 +509,8 @@ impl Disk {
                 trace!(cx.trace, "no space to allocate ino {ino} to {len}");
                 return Err(IoError::Full);
             }
-            let zeros = vec![0; (len - have) as usize];
-            self.apply(ino, have, &zeros, cx.geometry.sector);
+            let zeros = Payload::Zeros((len - have) as usize);
+            self.apply(ino, have, zeros, cx.geometry.sector);
         }
         Ok(())
     }
@@ -476,7 +525,7 @@ impl Disk {
         let (forced, kept): (Vec<_>, Vec<_>) = inode.unsynced.drain(..).partition(|w| w.seq < upto);
         inode.unsynced = kept;
         for w in forced {
-            put(&mut inode.durable, w.offset, &w.data);
+            w.data.land(&mut inode.durable, w.offset);
         }
         self.note(Event::Sync { ino, upto });
         Ok(())
@@ -510,7 +559,7 @@ impl Disk {
             geometry,
             trace,
         } = cx;
-        let mut landings: Vec<(Ino, u64, Vec<u8>, bool)> = Vec::new();
+        let mut landings: Vec<(Ino, u64, Payload, bool)> = Vec::new();
         for (ino, inode) in self.inodes.iter_mut().enumerate() {
             for w in inode.unsynced.drain(..) {
                 landings.push((ino, w.offset, w.data, true));
@@ -519,27 +568,28 @@ impl Disk {
         landings.extend(
             in_flight
                 .into_iter()
-                .map(|w| (w.ino, w.offset, w.data, false)),
+                .map(|w| (w.ino, w.offset, Payload::Bytes(w.data), false)),
         );
         for (ino, offset, data, acked) in landings {
             let durable = &mut self.inodes[ino].durable;
             if acked && !faults.lose_unsynced {
-                put(durable, offset, &data);
+                data.land(durable, offset);
                 continue;
             }
             let unit = geometry.atomic_unit as usize;
             if data.len() > unit && rng.chance(faults.torn_p) {
                 let mut mask = Vec::new();
-                for (i, chunk) in data.chunks(unit).enumerate() {
+                for start in (0..data.len()).step_by(unit) {
                     let lands = rng.coin();
                     if lands {
-                        put(durable, offset + (i * unit) as u64, chunk);
+                        let end = (start + unit).min(data.len());
+                        data.land_part(durable, offset, start..end);
                     }
                     mask.push(lands);
                 }
                 trace!(trace, "crash torn ino {ino} @{offset} units {mask:?}");
             } else if rng.coin() {
-                put(durable, offset, &data);
+                data.land(durable, offset);
                 trace!(trace, "crash landed ino {ino} @{offset}");
             } else {
                 trace!(trace, "crash lost ino {ino} @{offset}");
@@ -666,7 +716,7 @@ impl Recording {
                     if inodes.len() <= *ino {
                         inodes.resize(*ino + 1, Vec::new());
                     }
-                    put(&mut inodes[*ino], *offset, data);
+                    data.land(&mut inodes[*ino], *offset);
                 }
                 Event::Create { path, ino, .. } => {
                     names.insert(path.clone(), *ino);

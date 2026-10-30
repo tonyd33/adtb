@@ -146,6 +146,9 @@ impl Sim {
     }
 
     /// Record every write, name change and force from now on, taking everything before as forced.
+    ///
+    /// Preconditions:
+    /// - No crash happens while recording: `images` panics if it replays a lost write.
     pub fn record(&mut self) {
         lock(&self.shared.state).disk.record();
     }
