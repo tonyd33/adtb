@@ -382,14 +382,18 @@ pub(super) fn definer(
     if id == OWNER_ID {
         return Ok(None);
     }
-    role_name(roles, id).map(Some)
+    role_name(roles, id, &format!("bundle {name}")).map(Some)
 }
 
-/// Returns the name `roles` gives the role of id `id`, which owns deployment state.
-pub(super) fn role_name(roles: &BTreeMap<i64, String>, id: i64) -> Result<String, Error> {
+/// Returns the name `roles` gives the role of id `id`, which owns `owned`.
+pub(super) fn role_name(
+    roles: &BTreeMap<i64, String>,
+    id: i64,
+    owned: &str,
+) -> Result<String, Error> {
     roles.get(&id).cloned().ok_or_else(|| {
         Error::rejected(RejectReason::Internal {
-            what: format!("no role has id {id}, which owns deployment state"),
+            what: format!("no role has id {id}, which owns {owned}"),
         })
     })
 }

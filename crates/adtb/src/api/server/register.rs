@@ -42,21 +42,21 @@ impl<R: Runtime> RoleAuthority<R> {
             self.checked(session, &t, e, tx)?;
             let by = session.id.0;
             let roles = t.role_names(e, tx)?;
-            let name = |id| registered::role_name(&roles, id);
+            let bundle = &claim.row.header.name;
+            let name = |id, owned: &str| registered::role_name(&roles, id, owned);
             if claim.owned && claim.owner != by && by != OWNER_ID {
-                let bundle = &claim.row.header.name;
-                let owner = name(claim.owner)?;
+                let owner = name(claim.owner, &format!("bundle {bundle}"))?;
                 return Err(denied(format!("bundle {bundle} is owned by role {owner}")));
             }
             if let Some(owner) = family_owner
                 && owner != by
                 && by != OWNER_ID
             {
-                let owner = name(owner)?;
+                let owner = name(owner, &format!("family {family}"))?;
                 return Err(denied(format!("family {family} is owned by role {owner}")));
             }
             if claim.owner != OWNER_ID {
-                let runs_as = name(claim.owner)?;
+                let runs_as = name(claim.owner, &format!("bundle {bundle}"))?;
                 let lacks = registered::lacking(&checked, &e.source.grants, &runs_as)?;
                 if !lacks.is_empty() {
                     return Err(denied(lacks.join("\n")));
