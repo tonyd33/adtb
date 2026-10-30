@@ -19,9 +19,10 @@ The target text of a row of `catalog::grants` is the grant's identity. Grant and
 revoke accept it as written, `frozen (...)` lists and `C.f` field names included,
 and a revoke matches a row exactly by its current target text. A carried grant can
 always be revoked, and removing an option is revoke then grant with the same text;
-spec/option-revoke/replace stands. The widenings of grant-carry rulings 6 and 12
-(an unlisted revoke matches every frozen set; a retag revoke without `except`
-matches whatever pairs are excepted) keep applying.
+spec/option-revoke/replace stands. security.md 3.2 keeps grant-carry rulings 6
+and 12 as two widenings of exact matching (a revoke without a field list matches
+every frozen set; a retag revoke without `except` matches whatever pairs are
+excepted); that combination is the spec writer's reading, not part of the ruling.
 
 ## spec/grant-identity/resolved
 
