@@ -257,11 +257,15 @@ A bundle name is `FAMILY-VERSION`, where `VERSION` is the digits and
 dots after the last hyphen: `web-2.4` is version `2.4` of the family
 `web`. A family's owner is the role that registered its first bundle;
 only that role or the schema owner may register a bundle into the
-family. A call grant that names a family covers every bundle of it,
-registered then or later, for each granted query whose signature
-(parameter and result types) in the later bundle equals the one
-granted, compared by type and constructor ids; a query whose signature
-changed needs a new grant.
+family. A call grant that names a family resolves the query in every
+live bundle of the family when it is granted and records the one
+signature (parameter and result types, compared by type and
+constructor ids) that the live bundles declaring it share. The grant is refused, naming
+the live bundles of the family, when none of them declares the query
+or two of them declare it with different signatures. It then covers
+every bundle of the family, registered then or later, whose
+signature for the query equals the recorded one; a bundle whose
+signature differs needs a new grant.
 
 Any grant may end in `with grant option`, which lets the grantee grant
 it on. A grantee holding a relation grant with grant option extends it
