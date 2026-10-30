@@ -25,3 +25,8 @@ commit names an older position. The error's position must be readable.
 A `rename field Tool.Borrowed.days to loan_days` also makes every `at commit` read of the relation
 before it answer `HistoryUnavailable` (manual reader check, 2026-10-29). A rename changes no
 stored value, so it should not end history.
+
+Manual round 2 probe (2026-10-29), each operator after two writes: `add field`, `drop field`,
+`rename field`, `add constructor`, `add index` and `add unique` end a relation's history; `add
+check`, `add constraint`, `add default`, `define fn`, `rename constructor` and adding another
+relation keep it. Of these only a rebuild of stored values should end history.
