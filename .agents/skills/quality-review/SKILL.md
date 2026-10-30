@@ -21,9 +21,15 @@ or ask the caller for an explicit range.
 Start with:
 
 ```
+code-commits 'reviewed..@'
 quality-metrics 'reviewed..@'
 jj diff -r 'reviewed..@' --stat
 ```
+
+`code-commits` (`work/tools/code-commits RANGE` outside the dev shell)
+lists the commits that change a path outside docs/, work/ and Markdown
+files. Review those. Skip the others, which only file tickets or edit
+prose; the design-contract spot-check below still reads docs/design/.
 
 `quality-metrics` (or `work/tools/quality-metrics.sh RANGE` outside the
 dev shell) prints the changed files, new or changed functions over 100

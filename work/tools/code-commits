@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# code-commits [REVSET]   list the commits of REVSET (default `reviewed..main`) that change a
+#                         path outside docs/, work/ and Markdown files, one per line
+set -euo pipefail
+
+rev=${1:-reviewed..main}
+cd "$(dirname "$0")/../.."
+jj log --no-graph -r "($rev) & files(~(glob:\"docs/**\" | glob:\"work/**\" | glob:\"**/*.md\"))" \
+  -T 'commit_id.short() ++ " " ++ description.first_line() ++ "\n"'

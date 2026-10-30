@@ -92,6 +92,9 @@ root (devenv also puts each on PATH as `NAME`):
 - `house-check`: the added lines of `jj diff` that break a comment rule.
 - `quality-metrics.sh [REVSET]` (`quality-metrics` in the dev shell):
   review metrics for the changes in REVSET, by default `reviewed..@`.
+- `code-commits [REVSET]`: the commits of REVSET, by default
+  `reviewed..main`, that change a path outside docs/, work/ and Markdown
+  files; the quality cadence counts these.
 - `size-check.sh` (`size-check` in the dev shell): fail when a non-test
   source passes the line limit or the allowlist in `size-allowlist` is
   stale.

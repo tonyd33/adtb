@@ -104,8 +104,9 @@ verification evidence.
 
 ## Quality cadence
 
-- After every 15 to 20 landed code commits past the `reviewed` bookmark
-  (`jj log -r 'reviewed..main'`), dispatch a fresh agent on the
+- After every 10 to 15 landed code commits past the `reviewed` bookmark,
+  counted by `work/tools/code-commits | wc -l` (commits that change only
+  docs/, work/ or Markdown files do not count), dispatch a fresh agent on the
   [quality-review workflow](../quality-review/SKILL.md). After reading its
   report, run `jj bookmark set reviewed -r main`.
 - Spend about 15% of each milestone on one track over tickets tagged

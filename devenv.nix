@@ -95,6 +95,10 @@ in
     "$DEVENV_ROOT/work/tools/quality-metrics.sh" "$@"
   '';
 
+  scripts.code-commits.exec = ''
+    "$DEVENV_ROOT/work/tools/code-commits" "$@"
+  '';
+
   scripts.land.exec = ''
     "$DEVENV_ROOT/work/tools/land" "$@"
   '';
