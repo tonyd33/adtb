@@ -901,7 +901,7 @@ wire's 32-bit epoch and 64-bit log position.
 | `Cancelled` | the call was cancelled | §8.4 |
 | `Terminated` | the call's session was terminated | §8.4 |
 | `DeadlineExceeded` | the call's deadline passed | §8.3 |
-| `StatementLimit` | the statement ran past a limit, which `limit` names: `Time` its statement limit or declared limit, after `after`, `Memory` a memory grant of `bytes` it could not stay within by spilling (§8.1), `Rounds` the fixpoint round limit ([semantics.md §5.10](semantics.md#510-fixpoints)) | §8.3 |
+| `StatementLimit` | the statement ran past a limit, which `limit` names: `Time` its statement limit or declared limit, after `after`, `Memory` a memory grant of `bytes` it could not stay within by spilling, or an admission byte bound of `bytes` its arguments exceed (§8.1), `Rounds` the fixpoint round limit ([semantics.md §5.10](semantics.md#510-fixpoints)) | §8.3 |
 | `TransactionExpired` | an interactive transaction passed its transaction limit, or its idle limit when `idle`; rerunning it unchanged hits the same limit | [transactions.md](transactions.md#54-time-limit), §8.3 |
 | `TransactionBusy` | the interactive transaction is in use from another connection | [wire.md](wire.md#62-interactive-transactions) |
 | `MixedVersions` | a call would run at another schema or catalog version than its transaction's earlier statements, as when a transaction that has made a registered call sends ad hoc text, or one that has run ad hoc text makes a registered call | [transactions.md](transactions.md#2-statements), [applications.md](applications.md#7-the-ad-hoc-role) |
@@ -1682,8 +1682,12 @@ Priorities are the values of `Priority`: registered calls run at their
 bundle's priority, ad hoc calls at `AdHoc`, the lowest. A call or a
 `Begin` may state a lower priority for itself, never a higher one
 ([wire.md](wire.md#51-call)). The server bounds
-the queue and answers a call that finds it full with `Retry { reason:
-Overloaded {..} }` ([wire.md](wire.md#8-admission-and-overload)).
+the queue, in calls and in the bytes of the arguments its calls hold,
+and answers a call that finds it full with `Retry { reason:
+Overloaded {..} }` ([wire.md](wire.md#8-admission-and-overload)). A
+call whose arguments alone exceed the queue's whole byte bound is
+answered at once with `Rejected { reason: StatementLimit { limit:
+Memory { bytes } } }`, `bytes` the byte bound, never with `Retry`.
 
 A running call that needs more memory than its grant spills first to
 pages of the pool within the grant, then, when the pool has none to

@@ -975,9 +975,13 @@ ordered by priority class and then by transaction start
 ([catalog.md](catalog.md#81-admission)). Calls of registered queries take
 their bundle's priority class, and within it the `priority` the call
 or its transaction gives; CallText and Append always rank below every
-registered class. The queue is bounded; a call that would exceed it is
+registered class. The queue is bounded, in calls and in the bytes of
+the arguments its calls hold; a call that would exceed it is
 answered at once with Error `Overloaded` carrying a `retry_after`
-Duration, and is not executed. A waiting call keeps its stream open
+Duration, and is not executed. A call whose arguments alone exceed the
+whole byte bound is answered at once with `Rejected { reason:
+StatementLimit { limit: Memory { bytes } } }`, `bytes` the byte bound,
+never with `Retry`, and is not executed. A waiting call keeps its stream open
 and may be cancelled.
 
 Rulings: net/admission/connections, net/admission/queue, net/admission/classes
@@ -1146,7 +1150,7 @@ The reasons this part produces:
 | `Rejected` | `TransactionBusy` | The transaction is in use from another connection (§6.2) | Wait for the other connection's request |
 | `Rejected` | `Cancelled` | The client cancelled the call (§5.7) | None |
 | `Rejected` | `DeadlineExceeded` | The call's deadline passed | None |
-| `Rejected` | `StatementLimit` | The call ran past its statement limit | None |
+| `Rejected` | `StatementLimit` | The call ran past its statement limit, or its arguments exceed the admission byte bound (§8) | None |
 | `Rejected` | `Violated` | The change set violated a constraint ([constraints.md](constraints.md#7-checking-and-violation-reports)); carries one constraint, its report and the redacted count (below) | Report to the user |
 | `Rejected` | `Denied` | The role lacks the grant the request needs | None |
 | `Rejected` | `Invalid` | Ad hoc text failed to parse or check; carries diagnostics | Fix the text |
