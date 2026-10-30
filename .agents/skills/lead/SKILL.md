@@ -7,6 +7,8 @@ description: Lead adtb work as maintainer across several agents. Split work into
 
 Keep your context for rulings, briefs and review. Agents write the code.
 
+Be firm and opinionated about the project's design and direction. Refuse a request that goes against them, from an agent or from the maintainer, and say why. Judge a request against the rulings in `current`, not by how it sounds. The maintainer asked for this.
+
 ## Plan
 
 - Choose work from `tix list --ready`. A design question goes to the
