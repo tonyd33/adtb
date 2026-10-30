@@ -1530,10 +1530,11 @@ let ξ = ⟦⟦e⟧⟧ in case ξ of { C x_C → M_C }_{C ∈ S}
 ```
 
 where `M_C` is the chain of the arms that can match constructor `C`,
-in their written order. An arm can match `C` when its pattern is
-`C …`, an or-pattern with an alternative `C …`, a named set containing
-`C`, or, in an ad hoc query only, `_` on the sum. For each such arm
-`p_i if g_i -> b_i` (with `g_i = true` when unguarded):
+in their written order. An arm can match `C` when its pattern, or an
+alternative of its or-pattern, is `C …`, a named-set pattern `N …`
+with `C ∈ N`, or, in an ad hoc query only, `_` or a binder on the
+sum. For each such arm `p_i if g_i -> b_i` (with `g_i = true` when
+unguarded):
 
 ```text
 M_C = P(x_C, p_i, if ⟦⟦g_i⟧⟧ then ⟦⟦b_i⟧⟧ else M'_C, M'_C)
@@ -1545,22 +1546,37 @@ in which `p`'s bindings are in scope, and with `F` on failure:
 
 | Pattern `p` | `P(y, p, K, F)` |
 | --- | --- |
-| binder `z`, or the arm's constructor binder `C z` | `let z = y in K` |
-| `_` (scalar) | `K` |
+| `_` | `K` |
+| binder `z` | `let z = y in K` |
 | literal `c` | `if y == c then K else F` |
-| field name alone `f` in a record pattern | `let f = y.f in K` |
-| record pattern `D { f₁: p₁, …, fₙ: pₙ }` | `P(y.f₁, p₁, P(y.f₂, p₂, … P(y.fₙ, pₙ, K, F) …, F), F)` |
-| constructor pattern `D q` on a value-level sum `T'.S'` | `case y of { D ξ → P(ξ, q, K, F) ; E ξ → F for each other E ∈ S' }` |
+| constructor pattern `D q`, `y` of a row type or sum with constructors `S'` | `case y of { D ξ → Q(ξ, q, K, F) ; E ξ → F for each other E ∈ S' }` |
+| named-set pattern `N q`, `y` as above | `case y of { D ξ → Q(ξ, q, K, F) for each D ∈ N ; E ξ → F for each E ∈ S' ∖ N }` |
 | or-pattern `p' \| p''` | `P(y, p', K, P(y, p'', K, F))` |
+
+where `Q(ξ, q, K, F)` matches the payload `q` of a constructor or
+named-set pattern:
+
+| Payload `q` | `Q(ξ, q, K, F)` |
+| --- | --- |
+| none (`D` nullary, `N` with nullary members) or `_` | `K` |
+| binder `z` | `let z = ξ in K` |
+| record `{ f₁: p₁, …, fₙ: pₙ }`, a field name `f` alone standing for `f: f` | `P(ξ.f₁, p₁, P(ξ.f₂, p₂, … P(ξ.fₙ, pₙ, K, F) …, F), F)` |
+
+A record type's value is matched as its one constructor. Inside the
+chain for `C`, `x_C` has the one constructor `C`, so a constructor
+pattern `C q` reduces to `Q(x_C, q, K, F)` and a pattern naming
+another constructor reduces to `F`.
 
 Every binding of a pattern, nested ones included, is in scope in its
 guard and its body. The binder of an or-pattern is bound to the row of
-whichever alternative matched, which has the or-binder's set type. The
-chain for `C` ends in an arm whose pattern cannot fail and that has no
-guard, which exhaustiveness guarantees
-([typing.md §9.2](typing.md#92-exhaustiveness)); its `F` is never
-reached. A `match` on a scalar compiles to the same chain without the
-outer `case`, ending at its binder or `_` arm. A `match` on a
+whichever alternative matched, which has the or-binder's set type. A
+false guard continues with `M'_C`, the next arm that can match `C`,
+never with a later alternative of the guarded arm. Exhaustiveness
+([typing.md §9.2](typing.md#92-exhaustiveness)) guarantees that some
+unguarded arm of the chain for `C` matches every value of `C`, so the
+`F` of the chain's last arm is never reached. A `match` on a scalar
+compiles to the same chain without the outer `case`, ending at its
+binder or `_` arm. A `match` on a
 scrutinee of type `Key r.S` matches the row the key references:
 `let ξ = deref r.S ⟦⟦e⟧⟧ in case ξ of { … }`; its top-level patterns are
 constructor patterns, never a binder or `_`. When the scrutinee is not a
