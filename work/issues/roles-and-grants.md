@@ -455,3 +455,12 @@ notices.
 ## 2026-10-30: from grant-rev30
 
 A signed family target compares by tokens, because comparing by ids at its own version (security.md 3.2, spec/signature-equality/ids) needs the family provider. `revoke call web::q at 41 (u: Key a::users) -> Text from x` with the type renamed since version 41 misses the row. Do this with family grants. Operator orphaning is only reachable through hand-written rows until operator grants have a non-owner grantor on a relation target; test it through the public path then.
+
+## 2026-10-30: left by the grant rules of revision 30
+
+With the family grant provider: `target_covers` has no family-covers-bundle case, so a revoke from a
+role holding `call web::q at 41 ...` with option leaves a row it gave on `web-2.4::q` unrefused.
+Latent, since no production path writes call rows yet.
+
+`drop_role` leaves rows of the dropped role's grantees with no option above them. Ruling: refuse it
+naming those rows, as a revoke that orphans them is refused.

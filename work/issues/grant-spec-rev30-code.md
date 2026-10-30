@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: resolved
 kind: feature
 priority: 420
 summary: Implement the grant rules spec revision 30 states
-branch: grant-rev30
+closed: 2026-10-30
 ---
 
 # Feature: Implement the grant rules spec revision 30 states
@@ -32,3 +32,11 @@ in roles-and-grants.
 ## Proposal
 
 ## Open questions
+
+## 2026-10-30: landed
+
+Landed as 0c1fc305. Full check passed: 2923 tests, 7 skipped; campaign 52. An existing log with an
+empty revoke now fails to open, and an old `version_hash` is not recomputed; both accepted before
+release. A capability is given by a `schema` holder or a holder of it with grant option.
+
+## 2026-10-30: resolved
