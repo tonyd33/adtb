@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: resolved
 kind: feature
 priority: 450
 summary: Parse the command-line arguments of every binary with clap
-branch: cli-clap
+closed: 2026-10-29
 ---
 
 # Feature: Parse command-line arguments with clap
@@ -30,3 +30,9 @@ Lead ruling 2026-10-29: use clap with the derive API in all five.
   behaviour.
 
 ## Open questions
+
+## 2026-10-29: done
+
+adtb, adtb-probe, adtb-codegen, adtb-conformance and campaign parse with clap; flags and exit codes kept. Accepted changes: `--` is accepted, `adtb -` is a FILE, an empty path exits 2, adtb-conformance refuses an unknown flag. Branch check 2869 passed, 7 skipped, campaign 52.
+
+## 2026-10-29: resolved
