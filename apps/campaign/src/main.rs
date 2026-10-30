@@ -3,27 +3,34 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 
 use campaign::web::Server;
+use clap::Parser;
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "campaign",
+    about = "Serve the campaign database DATABASE on LISTEN_ADDRESS:PORT."
+)]
+struct Args {
+    #[arg(
+        value_name = "DATABASE",
+        default_value = "campaign.adt",
+        help = "the database file"
+    )]
+    path: PathBuf,
+    #[arg(
+        value_name = "LISTEN_ADDRESS:PORT",
+        default_value = "0.0.0.0:3000",
+        help = "the address to listen on"
+    )]
+    address: SocketAddr,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    let mut args = std::env::args_os().skip(1);
-    let path = args
-        .next()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("campaign.adt"));
-    let address: SocketAddr = args
-        .next()
-        .map(|s| {
-            s.into_string()
-                .map_err(|_| "Address must be UTF-8".to_owned())
-        })
-        .transpose()?
-        .unwrap_or_else(|| "0.0.0.0:3000".to_owned())
-        .parse()
-        .map_err(|e| format!("address: {e}"))?;
-    if args.next().is_some() {
-        return Err("Usage: campaign [DATABASE] [LISTEN_ADDRESS:PORT]".to_owned());
-    }
+    let Args { path, address } = match Args::try_parse() {
+        Ok(args) => args,
+        Err(e) => usage(&e),
+    };
     let server = tokio::task::spawn_blocking(move || Server::open(path))
         .await
         .unwrap_or_else(worker_failed)?;
@@ -65,6 +72,14 @@ async fn main() -> Result<(), String> {
     result
 }
 
+/// Print `e` and exit 1 for a usage error, 0 for help.
+fn usage(e: &clap::Error) -> ! {
+    if let Err(why) = e.print() {
+        writeln!(std::io::stderr(), "print usage: {why}").unwrap_or_default();
+    }
+    std::process::exit(i32::from(e.use_stderr()));
+}
+
 fn report_signal(error: std::io::Error) {
     writeln!(std::io::stderr(), "shutdown signal: {error}").unwrap_or_default();
 }
@@ -96,4 +111,39 @@ fn worker_failed<T>(error: tokio::task::JoinError) -> Result<T, String> {
         std::process::abort();
     }
     Err(format!("database worker cancelled: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::*;
+
+    #[test]
+    fn the_command_is_well_formed() {
+        Args::command().debug_assert();
+    }
+
+    #[test]
+    fn the_readme_invocation_parses() {
+        let a = Args::try_parse_from(["campaign", "campaign.adt", "0.0.0.0:3000"])
+            .expect("the invocation parses");
+        assert_eq!(PathBuf::from("campaign.adt"), a.path);
+        assert_eq!(SocketAddr::from(([0, 0, 0, 0], 3000)), a.address);
+    }
+
+    #[test]
+    fn both_arguments_have_defaults() {
+        let a = Args::try_parse_from(["campaign"]).expect("no argument parses");
+        assert_eq!(PathBuf::from("campaign.adt"), a.path);
+        assert_eq!(SocketAddr::from(([0, 0, 0, 0], 3000)), a.address);
+        let a = Args::try_parse_from(["campaign", "other.adt"]).expect("a path alone parses");
+        assert_eq!(PathBuf::from("other.adt"), a.path);
+    }
+
+    #[test]
+    fn a_bad_address_or_a_third_argument_is_refused() {
+        assert!(Args::try_parse_from(["campaign", "c.adt", "nowhere"]).is_err());
+        assert!(Args::try_parse_from(["campaign", "c.adt", "0.0.0.0:1", "x"]).is_err());
+    }
 }
