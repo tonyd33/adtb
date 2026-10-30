@@ -659,12 +659,26 @@ A row of `credentials` is a SCRAM-SHA-256 verifier
 privilege of one grant statement: `kind` is `Log` for a grant operator
 of the log and `Deployment` for a grant given by ad hoc statement
 ([security.md](security.md#32-grant-forms)); `privilege` is the
-privilege's name; `target` is what it is granted on as written (a
-constructor set with its field list, a bundle, a query, a family or a
-function), `None` for a capability. `grantee` and `grantor` are role
+privilege's name; `target` is what it is granted on (a constructor
+set with its fields, a bundle, a query, a family or a function),
+`None` for a capability. A `Log` row's `target` names every object by
+its current name and follows the grant through renames and the
+carrying of [security.md §3.6](security.md#36-grants-across-schema-changes):
+the relation as `module::name`, followed, unless the grant is on the
+whole relation, by `.C`, `.(C | D)` or `.S`; a `read` or `update` with a field list then has the
+listed fields, `(email, user)`, and one without a list the fields it
+covers, `frozen (email, user)`; a `retag` is `a -> b`, followed by
+`except (C -> D, …)` when it excepts pairs; a `call` is the function
+as `module::name`. A header field, or a field of a type with one
+constructor, is named alone, and any other field as `C.f`. `grantee` and `grantor` are role
 names. `dormant` marks a log grant whose grantee did not exist when
-the log was replayed; a dormant grant allows nothing. `revoke`
-deletes the row. A row of `peer_mappings` is one rule of a listener's
+the log was replayed; a dormant grant allows nothing. Creating the
+role does not clear the mark. A later migration that grants the same
+privilege on the same target to the role clears it, keeping the row's
+`id`, and the row then has that grant's `grant_option`; a grant
+without a field list whose fields differ from the dormant row's is
+another privilege and has a row of its own. `revoke` deletes the
+row. A row of `peer_mappings` is one rule of a listener's
 peer mapping ([security.md](security.md#22-sources)), tried in
 `ordinal` order.
 
