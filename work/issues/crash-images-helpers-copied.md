@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: quality-fixes32
+status: resolved
 kind: bug
 priority: 790
 summary: "crash_images.rs repeats the FNV of common.rs, and allocate has no helper in common beside every other op"
+closed: 2026-10-30
 tags:
   - quality
   - sim
@@ -20,3 +20,9 @@ tags:
 `crash_images.rs:34` defines `allocate` over `complete`, while `crates/adtb-sim/tests/faults.rs:209` and `:507` build `Op::Allocate` by hand. `common` has a helper for every other op: `open`, `write`, `read`, `sync`, `sync_dir`.
 
 Fix direction: make `common::fnv` a public fold taking the digest so far, keep `record`'s value, and add `common::allocate`.
+
+## 2026-10-30
+
+Fixed in the quality-fixes32 commit; check passed with 3023 tests.
+
+## 2026-10-30: resolved

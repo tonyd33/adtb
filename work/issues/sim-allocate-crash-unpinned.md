@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: quality-fixes32
+status: resolved
 kind: bug
 priority: 620
 summary: "no test states what a crash leaves of an allocate: crash_images pins digests only, and its header omits that the trace is folded in"
+closed: 2026-10-30
 tags:
   - quality
   - sim
@@ -32,3 +32,9 @@ Fix direction: add a seed sweep asserting those three directly on `sim.files()`,
 ## 2026-10-30: from the sim-disk review
 
 No digest in crash_images.rs covers a crash during an in-flight op: `after` is always 10 s, so every op has completed. `Payload::Bytes(w.data)` in the crash path of disk.rs is unpinned. All digest lengths are multiples of `atomic_unit`, so the partial last unit is unpinned too. Add short `after` values and a length off the unit.
+
+## 2026-10-30
+
+Fixed in the quality-fixes32 commit; check passed with 3023 tests.
+
+## 2026-10-30: resolved

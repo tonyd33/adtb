@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: quality-fixes32
+status: resolved
 kind: bug
 priority: 800
 summary: "the test that adtb verify refuses a held file asserts only exit 2, which any failed open gives"
+closed: 2026-10-30
 tags:
   - quality
   - test
@@ -19,3 +19,9 @@ tags:
 The sibling `verify_of_a_missing_file_exits_2_and_says_why` checks stderr.
 
 Fix direction: assert stderr names the file being in use, the text of `OpenError::Locked`.
+
+## 2026-10-30
+
+Fixed in the quality-fixes32 commit; check passed with 3023 tests.
+
+## 2026-10-30: resolved
