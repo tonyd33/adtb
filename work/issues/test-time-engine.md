@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
+status: resolved
 kind: feature
 priority: 100
 summary: most test time is spent in the engine; measure it and speed the engine up
-branch: test-speed
+closed: 2026-10-30
 ---
 
 # Feature: Test time engine
@@ -53,3 +53,11 @@ Applying each operator of a migration once took top-level applications from 12 t
 sim-disk holds allocated zeros by length. Suite user 591.2 s to 527.3 s and sys 138.6 s to 129.3 s, 2 runs each under load; minor faults did not fall, so most sys time stays unexplained. `disk.rs` still clones `durable` at a crash. `Sim::record` now states that no crash may happen while recording: `images` would panic, where the old code gave a wrong image. No digest covers a crash during an in-flight allocate. The digests in crash_images.rs pass on the unchanged simulator.
 
 os-instances compiles the public API at `OsRuntime` once, in `adtb`. Clean build 2612.5 to 2064.0 rustc CPU-s, one run each, which is within the 20% that load alone moved this number across sessions. Stronger evidence: `OsRuntime` symbols in `update_concurrency` 1818 to 0, and rebuild after a one-line pager edit 130.5 to 109.1 CPU-s. Rebuild wall did not move, 28.9 s to 26.2 s within noise. Not tried: the same roots at `SimRuntime`, where test crates compile about 1800 instances each.
+
+## 2026-10-30: page-copy, and closed
+
+page-copy copies optimistic page reads by word into a per-thread buffer. `catalog` binary cycles -15.3%, 3 runs each. Suite user 586.5 s to 555.9 s, not resolved given runs of 527 to 585 s; suite sys 143.2 s to 156.1 s, not attributed, with no rise in 4 paired binaries.
+
+Suite time in `check`, single runs under varying load: 70.6 s before these tracks, 47.2 s after. The rest of the engine cost is too spread out for another track: schema code has no item past 10% of user cycles. Held: `sim-fixture`, worth about 100 CPU-s at 3 to 8 GB and 46 s after every engine edit. Not pursued: coroutines in the simulator, which need `unsafe` and a design ruling. Build time continues on sim-instances.
+
+## 2026-10-30: resolved
