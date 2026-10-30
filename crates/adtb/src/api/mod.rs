@@ -256,8 +256,9 @@ struct Engine<R: Runtime> {
     registered: Lock<Vec<Arc<registered::Checked>>>,
     /// The rows of `catalog::bundles`, by bundle name, as the latest commit holds them.
     deployed: Lock<BTreeMap<String, bundle::Row>>,
-    /// The family owners and successful registrations, as the latest commit holds them.
-    facts: Lock<catalog::Deployed>,
+    /// The rows of `catalog::registered`, the family owners and the successful registrations,
+    /// as the latest commit holds them; its bundles are those of `deployed`.
+    ledger: Lock<bundle::Stored>,
     deployment: catalog::Deployment,
     /// Held across every write of a row of `catalog::bundles`, so that the row a writer reads
     /// from `deployed` is the one its write replaces.
@@ -600,8 +601,10 @@ impl<R: Runtime> Engine<R> {
             .iter()
             .filter_map(registered::Checked::passed)
             .collect();
-        let (deployed, facts) =
+        registered::definers(&registered, &stored, catalog.source())?;
+        let mut ledger =
             bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)?;
+        let deployed = std::mem::take(&mut ledger.bundles);
         server::initialize(&catalog, &pager, &txns)?;
         let mut bundles = Bundles::default();
         for c in &registered {
@@ -644,7 +647,7 @@ impl<R: Runtime> Engine<R> {
             bundles: Lock::new(Arc::new(bundles)),
             registered: Lock::new(registered.into_iter().map(Arc::new).collect()),
             deployed: Lock::new(deployed),
-            facts: Lock::new(facts),
+            ledger: Lock::new(ledger),
             deployment: catalog.deployment(),
             bundle_writer: Lock::new(()),
             settings: Lock::new(settings),

@@ -20,6 +20,10 @@ use super::settings::Settings;
 use super::text::{DynRows, rows};
 use super::{Engine, OWNER_ID, OpenError, corrupt};
 
+#[cfg(test)]
+#[path = "bundle_tests.rs"]
+mod tests;
+
 /// The edition of the specification this engine implements.
 pub(super) const EDITION: &str = "2026-10";
 
@@ -196,7 +200,7 @@ pub(super) struct CallRow {
 }
 
 /// The rows of `catalog::bundles` and `catalog::registered`, by bundle name.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct Stored {
     pub(super) bundles: BTreeMap<String, Row>,
     /// The registered calls of each bundle, by bundle id, with their row ids.
@@ -212,12 +216,6 @@ impl Stored {
             .filter(|r| r.live(now, s))
             .map(|r| r.header.name.clone())
             .collect()
-    }
-
-    /// Returns the successful registration of bundle `name`, if it has one.
-    pub(super) fn mark(&self, name: &str) -> Option<&Mark> {
-        let row = self.bundles.get(name)?;
-        self.deployed.registered.get(&row.id)
     }
 
     /// Returns the text of each live bundle at `now`, under the file settings `s`, that a role
@@ -635,14 +633,7 @@ pub(super) fn record<R: Runtime>(
             writes.bundles.push((None, row));
         }
     }
-    if !stored.deployed.marked {
-        writes.facts.push(Fact::Deployed);
-        let families: BTreeSet<&String> =
-            stored.bundles.values().map(|r| &r.header.family).collect();
-        for f in families {
-            writes.facts.push(Fact::Family(f.clone(), OWNER_ID));
-        }
-    }
+    writes.facts = legacy(stored);
     for row in stored.bundles.values() {
         let opened = stored
             .deployed
@@ -666,6 +657,22 @@ pub(super) fn record<R: Runtime>(
     }
     stored.deployed.record(&facts);
     Ok(())
+}
+
+/// Returns the facts that give the schema owner every family `stored` holds a bundle of, and
+/// mark the file as recording family owners, when it does not yet.
+fn legacy(stored: &Stored) -> Vec<Fact> {
+    if stored.deployed.marked {
+        return Vec::new();
+    }
+    let families: BTreeSet<&String> = stored.bundles.values().map(|r| &r.header.family).collect();
+    std::iter::once(Fact::Deployed)
+        .chain(
+            families
+                .into_iter()
+                .map(|f| Fact::Family(f.clone(), OWNER_ID)),
+        )
+        .collect()
 }
 
 /// Refuse the registration of `header` with `calls`: a retired bundle's name with `Retired`,
@@ -742,7 +749,7 @@ pub(super) fn register<R: Runtime>(
     regs: &[Passed<'_>],
     now: i64,
     s: &Settings,
-) -> Result<(BTreeMap<String, Row>, Deployed), OpenError> {
+) -> Result<Stored, OpenError> {
     let mut writes = Writes::default();
     let mut next_call = stored.next_call();
     let mut families = stored.deployed.families.clone();
@@ -779,12 +786,109 @@ pub(super) fn register<R: Runtime>(
     }
     let changed: Vec<Row> = writes.bundles.iter().map(|(_, r)| r.clone()).collect();
     let facts = writes.facts.clone();
+    let added = writes.calls.clone();
     writes.commit(catalog, pager, txns)?;
     for row in changed {
         stored.bundles.insert(row.header.name.clone(), row);
     }
+    for (id, bundle, c) in added {
+        stored.calls.entry(bundle).or_default().push((id, c));
+    }
     stored.deployed.record(&facts);
-    Ok((stored.bundles, stored.deployed))
+    Ok(stored)
+}
+
+/// The writes of registering a bundle through a role session: its row, the row it had, the
+/// calls it adds with their row ids, and the deployment facts.
+pub(super) struct Claim {
+    pub(super) old: Option<Row>,
+    pub(super) row: Row,
+    pub(super) calls: Vec<(i64, CallRow)>,
+    pub(super) facts: Vec<Fact>,
+}
+
+/// Returns the writes registering `p` over `stored` as role `owner` of id `role`, at `now` under
+/// the file settings `s`. A bundle recorded with no successful registration becomes the role's;
+/// one registered before keeps its owner. The first successful registration of a family gives
+/// the role the family.
+pub(super) fn claim(
+    stored: &Stored,
+    p: &Passed<'_>,
+    owner: &str,
+    role: i64,
+    now: i64,
+    s: &Settings,
+) -> Claim {
+    let old = stored.bundles.get(&p.header.name).cloned();
+    let marked = old
+        .as_ref()
+        .and_then(|r| stored.deployed.registered.get(&r.id));
+    let mut row = old.clone().unwrap_or_else(|| Row {
+        id: stored.next_bundle(),
+        header: p.header.clone(),
+        owner: owner.to_owned(),
+        renewed: now,
+        state: State::Active,
+    });
+    if marked.is_none() {
+        row.owner = owner.to_owned();
+    }
+    if !row.live(now, s) || row.renewal_due(now, s) {
+        row.state = State::Active;
+        row.renewed = now;
+    }
+    let calls = if stored.calls_of(row.id).is_empty() {
+        let next = stored.next_call();
+        (next..).zip(p.calls.iter().cloned()).collect()
+    } else {
+        Vec::new()
+    };
+    let mut facts = Vec::new();
+    if marked.is_none() {
+        let mark = Mark {
+            role,
+            origin: Origin::Command,
+            text: p.text.to_owned(),
+        };
+        facts.push(Fact::Registered(row.id, mark));
+    }
+    if !stored.deployed.families.contains_key(&p.header.family) {
+        facts.push(Fact::Family(p.header.family.clone(), role));
+    }
+    Claim {
+        old,
+        row,
+        calls,
+        facts,
+    }
+}
+
+impl Claim {
+    /// Pass each row the claim deletes, with `false`, and inserts, with `true`, to `write` with
+    /// its relation, over the engine's `schema`.
+    pub(super) fn rows(&self, schema: &Schema, write: &mut impl FnMut(RelId, bool, Val)) {
+        let t = Tables::of(schema);
+        if self.old.as_ref() != Some(&self.row) || !self.facts.is_empty() {
+            if let Some(old) = &self.old {
+                write(t.bundles, false, t.bundle_value(old));
+            }
+            write(t.bundles, true, t.bundle_value(&self.row));
+        }
+        for (id, c) in &self.calls {
+            write(t.registered, true, t.call_value(*id, self.row.id, c));
+        }
+    }
+
+    /// Hold the claim's rows in `stored`, once they commit.
+    pub(super) fn record(&self, stored: &mut Stored) {
+        stored
+            .bundles
+            .insert(self.row.header.name.clone(), self.row.clone());
+        if !self.calls.is_empty() {
+            stored.calls.insert(self.row.id, self.calls.clone());
+        }
+        stored.deployed.record(&self.facts);
+    }
 }
 
 impl<R: Runtime> Engine<R> {
@@ -904,7 +1008,7 @@ impl<R: Runtime> Engine<R> {
         .map_err(|e| self.write_error(super::TxnId(0), e))
     }
 
-    fn bundle_rows(&self, row: &Row) -> DynRows {
+    pub(super) fn bundle_rows(&self, row: &Row) -> DynRows {
         let t = Tables::of(&self.schema);
         let elem = Ty::Data {
             def: self.schema.relation(t.bundles).elem_def,

@@ -28,7 +28,7 @@ use super::reads::Reads;
 use super::settings::Settings;
 use super::text::{DynRows, Prepared, rows};
 use super::txn::{AdHocTransaction, Committed, TxnCallOptions};
-use super::{CallOptions, Database, Engine, OpenError};
+use super::{CallOptions, Database, Engine, OWNER_ROLE, OpenError};
 
 /// The queries, transactions and imported schema functions one unit registers: a bundle file
 /// with its header, or the imports and items of one without.
@@ -281,6 +281,34 @@ fn requirements(
             what: format!("a checked registered call has no requirements: {e:?}"),
         })
     })
+}
+
+/// Refuse a bundle of `checked`, recorded in `stored` with an owner other than the schema
+/// owner, whose owner lacks with grant option a grant among those of `source` it uses.
+pub(super) fn definers(
+    checked: &[Checked],
+    stored: &Stored,
+    source: &Source,
+) -> Result<(), OpenError> {
+    for c in checked {
+        let Some(row) = stored.bundles.get(&c.name) else {
+            continue;
+        };
+        if row.owner == OWNER_ROLE {
+            continue;
+        }
+        let refused = |reason| OpenError::RegistrationRefused {
+            bundle: c.name.clone(),
+            reason,
+        };
+        let lacks = lacking(c, &source.grants, &row.owner).map_err(refused)?;
+        if !lacks.is_empty() {
+            return Err(refused(Error::rejected(RejectReason::Denied {
+                detail: lacks.join("\n"),
+            })));
+        }
+    }
+    Ok(())
 }
 
 /// The schema a registration checks against and the program of its functions.

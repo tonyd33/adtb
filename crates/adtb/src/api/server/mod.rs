@@ -1,5 +1,6 @@
 mod call;
 mod initialize;
+mod register;
 mod result;
 mod session;
 mod store;
