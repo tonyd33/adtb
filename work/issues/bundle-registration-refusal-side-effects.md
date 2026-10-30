@@ -32,7 +32,7 @@ warranted and no design ruling has changed. The guard test must expect the early
 header/supersession and check that no step-5 callable rows or lease renewal occur.
 The ordinary program-write protection defect remains real and separate.
 
-Audit workspace /home/tony/code/adtb-bundle-atomic is empty on main261ffdec.
+Audit workspace ../adtb-bundle-atomic is empty on main261ffdec.
 Report and short handoff are in work/briefs; no test/build was run, house check
 passed. Preserve the original failed oracle and this correction as evidence.
 

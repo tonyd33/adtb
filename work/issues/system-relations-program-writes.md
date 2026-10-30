@@ -126,7 +126,7 @@ configuration hashes and revision match before/after. Same counts and all checks
 passed, including the corrected native docs integration. Exact command from main:
 
 ```sh
-direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
+direnv exec ../adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
 ```
 
 Rust1.98.1/Cargo1.98.0, configured default profiles/features. Permission, queue

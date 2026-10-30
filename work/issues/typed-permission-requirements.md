@@ -184,7 +184,7 @@ after pause, no Rust session remains. No precision/safety fix claimed there.
 
 ## 2026-10-28: successor dispatched on the repaired checker
 
-The checker repair landed as 1faf0e12 and main passed its full check. A fresh writer owns workspace permission-successor (/home/tony/code/adtb-permission-successor). Its working-copy commit duplicates the preserved draft c4f0391d onto main 27b77539, and it applied without conflicts. The original draft workspace permission-requirements stays untouched as evidence.
+The checker repair landed as 1faf0e12 and main passed its full check. A fresh writer owns workspace permission-successor (../adtb-permission-successor). Its working-copy commit duplicates the preserved draft c4f0391d onto main 27b77539, and it applied without conflicts. The original draft workspace permission-requirements stays untouched as evidence.
 
 Remaining, in order:
 1. The draft's update-over-fix test must pass unchanged.
@@ -240,7 +240,7 @@ The review-fix writer froze 68a9625decead714aa953e55e66acac77d6b4f35 (from 34e5e
 
 ## 2026-10-28: lead full branch check of the review fixes
 
-State: /home/tony/code/adtb-permission-successor, tested 68a9625decead714aa953e55e66acac77d6b4f35, base main 27b77539; commit id unchanged after the run.
+State: ../adtb-permission-successor, tested 68a9625decead714aa953e55e66acac77d6b4f35, base main 27b77539; commit id unchanged after the run.
 - First run failed to link the adtb lib test (`ld.lld: error: undefined hidden symbol` in adtb::api::server, code this track does not change), from incremental objects left by the crash. Log target/check-lead-fixes.log.
 - Rerun with `CARGO_INCREMENTAL=0` passed, exit 0: root 2502 passed, 8 skipped; apps/campaign 47 passed, 1 skipped; clippy, fmt, deny, size-check and docs-check passed; 7m50s. Log target/check-lead-fixes2.log.
 Remaining: the fresh review of 34e5e03f..68a9625d (running), landing, main check.

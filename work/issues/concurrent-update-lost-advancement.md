@@ -28,7 +28,7 @@ and select the least slot. Two committed serializable calls on initial
 (1,1) with slots1,2 must finish at (2,1). A retry/refusal must be visible,
 never successful loss of an advancement. Check state before/after reopen.
 
-Evidence retained in /home/tony/code/adtb-campaign-live/target/
+Evidence retained in ../adtb-campaign-live/target/
 live-all-campaign.log (44 passed,1 failed,1 skipped; assertion left1,2 right2,1).
 Current worker is reducing to typed engine calls, including positions/attempts
 and persisted state. Application feature expansion and server-wire work paused
@@ -46,7 +46,7 @@ tests/live_retry.rs. Two native threads Barrier-synchronize typed v1_5/schema5
 next_turn calls, no HTTP or new bundle. Loop32 failed at iteration9: both
 calls committed, epoch1 lsn8489756 and8489404, attempts2 and1; final(10,2),
 expected(11,1), with both initiative slots present. Evidence:
-/home/tony/code/adtb-campaign-live/target/live-direct-repro.log.
+../adtb-campaign-live/target/live-direct-repro.log.
 
 Engine-update-loss workspace starts at5320aaa7; fresh agent owns minimal
 engine-layer reproduction, invariant diagnosis and principled fix. Brief
@@ -101,7 +101,7 @@ also passed, collected exit0, on clean WC e5e6788dc586e61f7f57cc3a4574780a0eeeea
 (parent ef7361f9), 2026-10-28T02:52:36Z to02:57:53Z,317s elapsed.
 Root2334passed/8skipped, campaign40passed/1skipped, all lint/dependency/size/docs
 checks passed. Before/after revision and tracked-source/local-config hashes
-matched. Command from main root: direnv exec /home/tony/code/adtb env
+matched. Command from main root: direnv exec ../adtb env
 DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check. Toolchain1.98.1,
 configured default profiles/features. Permission/queue/execution-only timing
 unknown. Evidence: target/engine-update-loss-integration/{check.log,check.status,

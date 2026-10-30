@@ -23,7 +23,7 @@ The ruling `net/parity/mirror` says each wire message is an in-process call seri
 ## 2026-10-28: interface audit dispatched
 
 User requested parallel server groundwork alongside campaign-live. Read-only
-workspace server-interface-audit at /home/tony/code/adtb-server-interface-audit,
+workspace server-interface-audit at ../adtb-server-interface-audit,
 base dba817c5, owns assessment only; campaign-live owns apps/campaign.
 Brief: work/briefs/brief-server-interface-audit.md. Report due at
 work/briefs/report-server-interface-audit.md.

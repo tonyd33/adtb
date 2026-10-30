@@ -87,9 +87,9 @@ Original true baseline failures and fixture-only failures remain distinguished.
 
 Full main check collected0 on clean `4b5eec71ca4a1631e2d965172e3e471841b33c2c`,
 parent744bddb0, all tracked/local root/app Cargo inputs and revision unchanged.
-From /home/tony/code/adtb:
+From ../adtb:
 
-    direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
+    direnv exec ../adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
 
 2026-10-29T00:44:58Z–00:49:08Z (250seconds, one-second precision).
 All 2,426 root tests passed/eight skipped (49.447s); 47 campaign passed/one

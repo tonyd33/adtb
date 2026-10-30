@@ -150,7 +150,7 @@ to reviewed source; earlier full100/lifecycle violation evidence remains.
 
 Lead main fullcheck0 on clean78ddfb802476dea7c76865ab7ea119970202dca0, parent
 be84b407,17:04:08Z–17:10:46Z,398s. Exact command from root: direnv exec
-/home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check.
+../adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check.
 Root2,387tests/8skipped50.652s; campaign47/1skipped20.809s. All lint/fmt/parity,
 dependency,size and native docs passed. Docs10tests10.237s/420syntax/61pages/
 6730links/4995fragments/0failures. All tracked/local root+app Cargo config hashes

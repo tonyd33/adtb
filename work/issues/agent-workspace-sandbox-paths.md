@@ -14,7 +14,7 @@ tags:
 
 ## Report
 
-`.agents/skills/lead/SKILL.md:16-17` prescribes `jj workspace add --name NAME ../adtb-NAME`. The audited Codex session permits writes under `/home/tony/code/adtb` and `/tmp`, so sibling working copies are outside its writable roots. Creating or editing them requires additional authorization or provisioning; spawning an agent does not itself establish those permissions.
+`.agents/skills/lead/SKILL.md:16-17` prescribes `jj workspace add --name NAME ../adtb-NAME`. The audited Codex session permits writes under `../adtb` and `/tmp`, so sibling working copies are outside its writable roots. Creating or editing them requires additional authorization or provisioning; spawning an agent does not itself establish those permissions.
 
 Document how the lead provisions a workspace path and grants the worker access before dispatch. Respect the active harness permissions rather than assuming all sibling paths are writable. Keep isolated working copies and per-workspace build artifacts. Validate the workflow under a restricted Codex session, including jj metadata access, without assuming unrestricted host access.
 

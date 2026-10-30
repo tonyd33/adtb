@@ -7,7 +7,7 @@ evidence-only fixture statea1a1e3d261e9f303d9c68245a97a384ff44448bf in isolated
 adtb-uuid-audit. Command from that root:
 
 ```
-direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target cargo nextest run -p adtb-sim --test uuid_contract_evidence --success-output immediate --failure-output immediate
+direnv exec ../adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target cargo nextest run -p adtb-sim --test uuid_contract_evidence --success-output immediate --failure-output immediate
 ```
 
 Collected exit100,4tests:2evidence tests passed,2contract regressions failed.

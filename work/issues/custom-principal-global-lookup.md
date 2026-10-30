@@ -51,7 +51,7 @@ and campaign expansion remains paused behind engine correctness.
 
 Repair shared root name resolution from main5debace3; no import workaround or spec change. Minimal current-main failing regression, default/custom/import and public registration controls; affected lang/sim tests, strict clippy, fmt, house and size checks. Lead owns fresh independent review and full post-land check. Other UUID track is evidence-only; lookup lands first.
 
-Workspace /home/tony/code/adtb-principal-lookup; local brief work/briefs/brief-principal-lookup.md. Preserve baseline and failed evidence; receipt must name exact tested inputs, statuses and unresolved checks. No dependencies added.
+Workspace ../adtb-principal-lookup; local brief work/briefs/brief-principal-lookup.md. Preserve baseline and failed evidence; receipt must name exact tested inputs, statuses and unresolved checks. No dependencies added.
 
 ## 2026-10-28: shared repair reviewed, integration pending
 
@@ -75,7 +75,7 @@ Root owns full check as explicitly assigned branch exception; it has not run yet
 Fresh independent source/contract review read all5paths and verified30hashes plus
 4absent configs in both checkouts, full-range house0, no blocker. No reviewer
 compilation. Receipts/review/handoff in work/briefs/*principal-lookup*. Logs under
-/home/tony/code/adtb-principal-lookup/target/principal-lookup/. Final revision and
+../adtb-principal-lookup/target/principal-lookup/. Final revision and
 scope above are durable if ignored notes are missing. Next: lead land via
 work/tools/land principal-lookup 'fix: resolve the root principal in every scope',
 then full root/campaign/policy/docs check; resolve only after that result.

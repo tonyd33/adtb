@@ -23,7 +23,7 @@ confirmation. No app/role workaround.
 
 Campaign-load and role-authority expansion paused. Role agent prepares minimal
 baseline counter-capacity witness and preserves provider source. Fresh worker
-sequence-repair at /home/tony/code/adtb-sequence-repair on5f29e1cc isolates
+sequence-repair at ../adtb-sequence-repair on5f29e1cc isolates
 sequence semantics from role authority. Detailed brief brief-sequence-repair.md.
 Preserve failed regression/log. Cover draw and advance, existing/new counter,
 room/overflow/persist failure, unaffected counters, successful reservation/
@@ -41,7 +41,7 @@ Role-authority private real-pager witnesses, baseline sequence.rs plus test-modu
 include, failed all3 with nextest exit100 in0.055s (compile52.24s). Capacity retry
 draw returned Ok(2) for an ID absent from the durable page; advance retry returned
 Ok(()); draw floor i64::MAX panicked at sequence.rs89 arithmetic overflow. Exact
-command from role workspace: direnv exec /home/tony/code/adtb env
+command from role workspace: direnv exec ../adtb env
 DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" cargo nextest run -p adtb
 --lib write::sequence::tests. Retained logs target/sequence-baseline-regressions.
 {log,status}, source write/sequence_tests.rs. Fresh repair worker independently
@@ -85,7 +85,7 @@ Lead verified landed tree identical to38867188, then authoritative main check0,
 2026-10-28T04:10:28Z–04:15:34Z,306s, same counts/allchecks. Clean tested WC
 86f0fd9e3b134f96dddeca6ceab58c30b0704873 parent96744632; tracked/localconfig
 hashes and revision unchanged before/after. Command main root: direnv exec
-/home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check.
+../adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check.
 Rust1.98.1/cargo1.98.0/defaultfeatures/profiles; permission/queue/execution-only
 unknown. Main logSHA25630d431991bc034e0306b6390e84ab869d969466bbdf2c295b25619e148e590e9.
 Evidence target/sequence-repair-integration/, target/sequence-repair-evidence/;

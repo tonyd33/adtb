@@ -67,7 +67,7 @@ not yet built at this checkpoint. Simulator slot released after lang/clippy;
 ## 2026-10-28: frozen for user-requested session restart
 
 Author candidate1ed18a4b1be6a2a502c40e9d4787cc3291d4e444/base87527a90
-in /home/tony/code/adtb-fix-row-provenance is UNLANDED.654/654 lang unit
+in ../adtb-fix-row-provenance is UNLANDED.654/654 lang unit
 tests, strict langclippy, fmt/house/size all exit0. Last authorized public API
 check `suite -p adtb-sim --test api fixpoint_write_targets_preserve_the_snapshot_relation`
 collected0:1pass/47filtered,0.173s; build1m28s. Asserts exact identity update,

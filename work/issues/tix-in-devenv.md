@@ -17,7 +17,7 @@ tags:
 provide it, so every ticket command runs as:
 
 ```
-nix run path:/home/tony/code/tql/work/tools/tix -- -C work/issues check
+nix run path:../tql/work/tools/tix -- -C work/issues check
 ```
 
 Expected: `tix` on PATH in the devenv shell, with `-C work/issues`

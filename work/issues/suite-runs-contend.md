@@ -3,7 +3,7 @@ created-at: 2026-10-26
 status: resolved
 kind: feature
 priority: 80
-summary: "parallel agents' full test runs contend for 16 cores, so a 40 second suite takes 4 to 10 minutes and times tests out"
+summary: "parallel agents' full test runs contend for the cores, so a 40 second suite takes 4 to 10 minutes and times tests out"
 closed: 2026-10-26
 tags:
   - tooling

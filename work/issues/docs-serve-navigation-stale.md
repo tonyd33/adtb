@@ -30,7 +30,7 @@ while the server remains running.
 
 ## 2026-10-28: local serving repair dispatched
 
-Fresh docs-nav workspace /home/tony/code/adtb-docs-nav on f305ffaf owns only
+Fresh docs-nav workspace ../adtb-docs-nav on f305ffaf owns only
 site tooling/regression and optional development instructions. Keep mdBook,
 authored Markdown and separate hosting milestone. Regenerate navigation/copied
 assets during actual serving; test page add/remove/reorder, grammar/body edits,
@@ -57,8 +57,8 @@ logs retained. Final worker docs/house0,8tests420syntax61pages6730links4995fragm
 stable6cb5ae4c inputs,11.506s. Lead scoped main docs0 with same counts,11.084s,
 at cleanb4ff5c06af7ee3f0103c503f715248f3791fda1f parent2bc9c2be; revision and all
 tracked/localconfig SHA256 inputs unchanged before/after. Command main root:
-direnv exec . env DEVENV_ROOT=/home/tony/code/adtb
-CARGO_TARGET_DIR=/home/tony/code/adtb/target python3 -B target/check-docs-nav-main.py
+direnv exec . env DEVENV_ROOT=../adtb
+CARGO_TARGET_DIR=../adtb/target python3 -B target/check-docs-nav-main.py
 Runner calls work/tools/docs-site check. Evidence target/docs-nav-main-check/.
 Python3.14.7/mdBook0.5.4/defaultconfiguration; permission/queue/execution-only
 unknown. Branch rootRust check intentionally not run; combined full check belongs

@@ -33,7 +33,7 @@ to_text(&value, &form)  // actual Ok("7"), expected Ok("Cents(7)")
 Observed in an external target-only Rust probe on frozen UUID state
 0cea33e5ae69645c266a5e5c049263ff9473dcdb, base36499281. The generic Newtype arm
 is unchanged from main; do not attribute this to the new UUID branch. Probe
-source /home/tony/code/adtb-uuid-format/target/uuid-format/generic-to-text.rs;
+source ../adtb-uuid-format/target/uuid-format/generic-to-text.rs;
 compile+run logs and exact commands generic-to-text-{compile,probe}.{json,log}.
 Compile0,0.642s; run0,0.024s. No tracked source edit was made for the probe.
 
@@ -55,7 +55,7 @@ remain behind general engine correctness; native bootstrap remains its own repai
 ## 2026-10-28: bounded shared contract repair dispatched
 
 Fresh successor textual-to-text after reviewed UUID source lands; base includes
-that code and current rulings. Own /home/tony/code/adtb-textual-to-text, one writer,
+that code and current rulings. Own ../adtb-textual-to-text, one writer,
 local brief work/briefs/brief-textual-to-text.md. Read/edit while lead runs frozen
 UUID integration; no cargo compilation until lead releases slot. Landing order
 UUID first, then this shared textual library fix after UUID full check passes.
@@ -87,7 +87,7 @@ The full check passed on clean main working copy
 Command from main, retained in target/textual-to-text-integration.sh:
 
 ```
-direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
+direnv exec ../adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
 ```
 
 Rust 1.98.1 / Cargo 1.98.0; default configured features and profiles. Collected

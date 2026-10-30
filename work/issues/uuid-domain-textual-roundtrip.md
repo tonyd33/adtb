@@ -55,7 +55,7 @@ review-principal-validation-draft.md; no own executable check by reviewer.
 
 Evidence-only exact-main5debace3 reproduction and contract audit. Preserve one-byte and valid16-byte unwrap/text/print/parse outcomes, current canonical grammar and write-time domain distinction. No production/spec change or ruling. Compilation waits for lookup build slot. Lead decides any proposed point after executable evidence.
 
-Workspace /home/tony/code/adtb-uuid-audit; local brief work/briefs/brief-uuid-audit.md. Preserve baseline and failed evidence; receipt must name exact tested inputs, statuses and unresolved checks. No dependencies added.
+Workspace ../adtb-uuid-audit; local brief work/briefs/brief-uuid-audit.md. Preserve baseline and failed evidence; receipt must name exact tested inputs, statuses and unresolved checks. No dependencies added.
 
 ## 2026-10-28: executable evidence and proposed resolution
 
@@ -65,10 +65,10 @@ reference. Uuid(bytes("x")) and unwrap succeed with Bytes([120]); text and print
 return Internal("a `Uuid` is 16 bytes, found 1"). Printing the successful raw
 query result separately gives PrintError. Sixteen-byte controls succeed.
 
-From /home/tony/code/adtb-uuid-audit run:
+From ../adtb-uuid-audit run:
 
 ```
-direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target cargo nextest run -p adtb-sim --test uuid_contract_evidence --success-output immediate --failure-output immediate
+direnv exec ../adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target cargo nextest run -p adtb-sim --test uuid_contract_evidence --success-output immediate --failure-output immediate
 ```
 
 Collected100,2evidence tests passed and2contract regressions failed; command
@@ -97,7 +97,7 @@ expansion while these general engine issues remain.
 User explicitly approved uuid-domain-format. After completing frozen Principal
 integration, adopted with quandary adopt uuid-domain-format --confirmed;
 quandary check0. Current accepts spec/uuid-domain-format/lossless. No other
-ruling changed. Fresh workspace /home/tony/code/adtb-uuid-format (uuid-format),
+ruling changed. Fresh workspace ../adtb-uuid-format (uuid-format),
 base follows1be643fa plus this metadata, sole code/spec writer. Brief
 work/briefs/brief-uuid-format.md. No new dependencies or shared signature changes.
 
@@ -135,7 +135,7 @@ The full main check passed with exit 0 on clean working copy
 e27bb67674b600c29aec67bb07c7bec5269e4bfd, parent 1f403049. Command from main:
 
 ```
-direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
+direnv exec ../adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
 ```
 
 It ran from 18:04:26Z to 18:07:33Z on 2026-10-28 (187 seconds; timestamps have

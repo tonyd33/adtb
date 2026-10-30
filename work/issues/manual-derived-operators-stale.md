@@ -21,7 +21,7 @@ Commit `6be9c898` added resolved forms and enabled engine application of default
 Verification command from the review workspace:
 
 ```
-direnv exec /home/tony/code/adtb work/tools/suite -p adtb-sim --test oplog -E 'test(an_added_default) | test(an_added_computed) | test(a_stored_view)'
+direnv exec ../adtb work/tools/suite -p adtb-sim --test oplog -E 'test(an_added_default) | test(an_added_computed) | test(a_stored_view)'
 ```
 
 Actual: five tests passed, including added-default application/revert, computed-field reads/catalog rows, and accepted stored-view reads. Expected: the manual distinguishes those working operations from physical stored-view maintenance and from refused scripts, and names current refusals accurately.

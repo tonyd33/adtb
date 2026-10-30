@@ -28,7 +28,7 @@ Also: registration privileges (applications.md check 5), retire and supersede pr
 
 ## 2026-10-28: provider audit and bounded implementation
 
-Fresh role-authority workspace /home/tony/code/adtb-role-authority on f305ffaf.
+Fresh role-authority workspace ../adtb-role-authority on f305ffaf.
 First audit existing parsed role/grant forms, evolved operator grants and
 catalog/deployment/embedded-owner boundaries. Lead will settle bounded provider
 scope before code. One writer owns shared API exports; no transport consumers
@@ -244,7 +244,7 @@ passed all 2,396 workspace tests and 47 campaign tests, plus lint, policy and do
 full checked state and evidence are in textual-newtype-to-text-contract.
 
 Provider source efdd791f on e4d7aa6c remains unlanded and overall unverified in
-/home/tony/code/adtb-role-authority. No provider change was made in these tracks.
+../adtb-role-authority. No provider change was made in these tracks.
 Next fresh successor must rebase that preserved draft, remove printer validation
 and consume shared Engine::principal, finish native empty-only owner initialization
 before live statement assembly, and diagnose the legacy full-counter/closed-FileId
@@ -312,9 +312,9 @@ remain preserved; those three history tests were not edited.
 
 Full branch check passed frozen `e7e1a2fa9407a8bfcc9279c609c709c7f1c34166` on
 `782701b9c652184c02a2767dfc6ac9042f35c7a2`, with all 2,567 tracked/configuration
-inputs unchanged. Command from `/home/tony/code/adtb-role-native`:
+inputs unchanged. Command from `../adtb-role-native`:
 
-    direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target python3 target/verify-native.py full
+    direnv exec ../adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target python3 target/verify-native.py full
 
 Collected exit 0 in 443.319588 seconds, from 2026-10-28T18:49:40.760557Z to
 18:57:04.080145Z: 2,414 root tests passed, eight skipped (52.811 seconds);
@@ -335,9 +335,9 @@ Rebasing to landed `3cb67a82` adds only ticket/index metadata; all 13 source pat
 are identical to the final reviewed source.
 
 Full main check passed clean `34ee57cc85226eb61cdec103dedd42a72c3e8deb`, parent
-`3cb67a82`. Command from `/home/tony/code/adtb`:
+`3cb67a82`. Command from `../adtb`:
 
-    direnv exec /home/tony/code/adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
+    direnv exec ../adtb env DEVENV_ROOT=$PWD CARGO_TARGET_DIR=$PWD/target check
 
 Collected exit 0 from 2026-10-28T19:00:02Z to 19:06:30Z (388 seconds, one-second
 precision). All tracked inputs, local root/app Cargo configuration and revision
@@ -354,7 +354,7 @@ The completed branch debug cache was removed after a process audit and SHA-verif
 backup of 796 nondebug files; original source, logs and fixtures remain. Earlier
 completed fixtures were losslessly archived with individual SHA checks and restore
 commands under `target/role-native-fixture-archives`. Unknown openperf and active
-main cache were untouched. About 49 GB free after the check. Pushing remains
+main cache were untouched. Pushing remains
 deferred because the user reports Tangled down.
 
 Next: relation/field and call/family permissions, registration/definer checks and

@@ -79,7 +79,7 @@ after this repair and main integration.
 Landed928b7d38, fix(lang): bound ordered schema graph traversal, after exact
 independent review and all659language checks. Lead broader main check passed0
 on clean797531477236bb9b894e9e5999781b556e115640, parent928b7d38. Exact root
-command: direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD"
+command: direnv exec ../adtb env DEVENV_ROOT="$PWD"
 CARGO_TARGET_DIR="$PWD/target" check.16:27:02Z–16:33:50Z,408s; all tracked/local
 root+app Cargo config hashes and revision stable. Rust1.98.1/Cargo1.98.0,
 configured defaults; permission/queue/execution-only unknown.

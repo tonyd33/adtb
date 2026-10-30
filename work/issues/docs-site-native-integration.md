@@ -22,7 +22,7 @@ publication itself is conventional, but was part of an unnecessary pipeline.
 
 ## 2026-10-28: corrective track and review bar
 
-Fresh docs-native workspace /home/tony/code/adtb-docs-native on d157a20d, brief
+Fresh docs-native workspace ../adtb-docs-native on d157a20d, brief
 brief-docs-native.md. Prototype proved native mdBook preprocessor Chapter insertion.
 Approved routine baseline: checked-in book.toml, docs source directly, minimal
 checked-in SUMMARY roots/landing, stateless supported README navigation preprocessor,
@@ -79,8 +79,8 @@ Leadreviewed rebaseddelta: only workflow/ticketmetadata since testedbranch; all
 book/doc/tool inputs identical. Leadscopedmaincheck0 at cleand5ec04838a5d76f82b87111580175d8ee5bf9601
 parent9c52a660,2026-10-28T04:57:25.536452Z–04:57:37.521932Z,11.986s. Same10tests/
 420syntax61pages6730links4995fragments0failure; alltracked/localconfig hashes and
-revision unchanged. Command mainroot: direnv exec . env DEVENV_ROOT=/home/tony/code/adtb
-CARGO_TARGET_DIR=/home/tony/code/adtb/target python3 -B target/check-docs-native-main.py
+revision unchanged. Command mainroot: direnv exec . env DEVENV_ROOT=../adtb
+CARGO_TARGET_DIR=../adtb/target python3 -B target/check-docs-native-main.py
 Runner calls work/tools/docs-site check. LogSHA256b82b221dbe1260e996ca07db802a62919be327c87ae474d9e41faaaa1ce06d38.
 Python3.14.7/mdBook0.5.4/existingQuickJS/defaultbookconfig; permission/queue/execution-only
 unknown. Logs target/docs-native-main-check/; workerreceipt/handoff-docs-native.md.

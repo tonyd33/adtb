@@ -21,7 +21,7 @@ sessions and resumable execution are available.
 
 ## Scope and verification
 
-Workspace server-wire at /home/tony/code/adtb-server-wire, base62d77710.
+Workspace server-wire at ../adtb-server-wire, base62d77710.
 Owner files crates/adtb-server/{Cargo.toml,src/lib.rs,src/wire/**,tests/wire_*.rs}
 and necessary lock delta. Campaign-live separately owns apps/campaign; landing
 order independent. Brief work/briefs/brief-server-wire.md; handoff and receipts
@@ -41,7 +41,7 @@ interleaved chunks, illegal kind changes and resource bounds. Focused server
 tests/clippy/fmt, then from workspace root:
 
 ```sh
-direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
+direnv exec ../adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
 work/tools/house-check
 ```
 
@@ -65,7 +65,7 @@ Landed b27a1eb1 after lead exact eb53dbb1 review and branch check exit0:
 passed collected exit0 at clean WC e4d97725bfa1cc0aa986d91350b9c4c68c137648
 (parent b27a1eb1),2026-10-28T03:21:23Z to03:22:41Z,78s elapsed. Revision and
 tracked/local-config hashes match before/after. Exact main command: direnv exec
-/home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check.
+../adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check.
 Root2349passed/8skip, campaign40passed/1skip, all static/docs stages passed.
 Rust1.98.1/default profiles/features; permission/queue/execution-only unknown.
 Logs/status/hashes in target/server-wire-integration/. Branch evidence copied

@@ -64,7 +64,7 @@ review rehashed all inputs and found no blocker; scopedhouse0.
 
 Lead main fullcheck passed0 on e961f8ee0154e01434bc513c44a0fe1d7fcbc61c, parent
 fda78edb,16:58:02Z–16:59:37Z,95s. Exact command from root: direnv exec
-/home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check.
+../adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check.
 All tracked/local root+app config hashes and revision unchanged; Rust1.98.1/
 Cargo1.98.0, configured defaults; permission/queue/execution-onlyunknown.
 Root2,373tests/8skipped48.486s; campaign47/1skipped21.315s, live8.269s; all lint,

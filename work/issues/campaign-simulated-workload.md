@@ -20,7 +20,7 @@ No app locks, swallowed errors or alternate queries to mask a defect.
 
 ## 2026-10-28: authorized bounded track
 
-Workspace campaign-load at /home/tony/code/adtb-campaign-load, base f305ffaf.
+Workspace campaign-load at ../adtb-campaign-load, base f305ffaf.
 Own apps/campaign tests/load and documentation plus necessary local path dev
 edges to existing adtb-sim and adtb-testkit (no new external crate family).
 One owner; engine role-authority uses unchanged embedded API and lands its
@@ -37,7 +37,7 @@ population, crash injection or p99 latency claim from the bounded first slice.
 
 Acceptance: affected campaign tests, strict clippy/fmt/house and authoritative
 branch check, lead independent review and post-land integration check. Command
-from worker root: direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD"
+from worker root: direnv exec ../adtb env DEVENV_ROOT="$PWD"
 CARGO_TARGET_DIR="$PWD/target" check. Retain exact tested/base ids, stable-input
 checks, final exits, logs, timing and unfinished scopes in a verification receipt.
 Any suspected engine issue takes priority over this and feature expansion.
@@ -45,7 +45,7 @@ Any suspected engine issue takes priority over this and feature expansion.
 ## 2026-10-28: preserved pending general engine sequence repair
 
 Paused snapshot79f120a6f21fc342fe7b08df84113228d21641ed on f305ffaf,
-/home/tony/code/adtb-campaign-load. Engine reservation issue discovered by
+../adtb-campaign-load. Engine reservation issue discovered by
 role-authority audit preempts campaign. No workload-reproduced engine defect.
 Single seed4 focused pass7.078s; already-running deep8seeds collected0,63.736s,
 with each seed replayed twice and identical typed ledger/trace/database bytes.
@@ -134,7 +134,7 @@ New test took14.264s in the full campaign suite; this bounded sweep exception to
 not counted as a pass; final policy correction and rerun are explicit.
 
 Lead main full check also passed0 on clean494a53b3b076e2b84920ff2432c5d10f4a4986ac,
-parent e4d7aa6c: exact command from root direnv exec /home/tony/code/adtb env
+parent e4d7aa6c: exact command from root direnv exec ../adtb env
 DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check. UTC14:59:59Z–15:02:08Z,
 129s; permission/queue/execution-only unknown. Engine2366/8skipped50.079s,
 campaign47/1skipped20.652s, all static checks passed. Docs10tests10.247s,

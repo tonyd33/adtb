@@ -483,7 +483,7 @@ real entropy needs `getrandom` or `libc`.
 ### 7.7 Test time
 
 The default `cargo nextest run --workspace` stays under 90 seconds on
-16 cores, and each test under 20: nextest marks a test slow at 20
+the development machine, and each test under 20: nextest marks a test slow at 20
 seconds and kills it at 60. Tests build at `opt-level = 1`. A sweep
 states its default count of seeds or cases once, as a constant, and
 sizes it through `adtb_testkit::profile`, so the `quick` profile runs

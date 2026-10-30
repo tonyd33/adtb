@@ -85,7 +85,7 @@ The broader ticket remains in progress with the engine-first policy above.
 ## 2026-10-27: prep slice awaiting review
 
 Work is preserved in jj workspace campaign-prep at
-/home/tony/code/adtb-campaign-prep. Brief and live checkpoint are
+../adtb-campaign-prep. Brief and live checkpoint are
 work/briefs/brief-campaign-prep.md and handoff-campaign-prep.md in the main
 checkout. User requests a shutdown handoff; finish existing validation only,
 then resume review and landing in a later session. No new feature tracks.
@@ -117,7 +117,7 @@ verified work and run main's post-land check. Main local docs server stopped.
 
 ## 2026-10-28: prep resumption scope and gates
 
-Continue only campaign-prep in `/home/tony/code/adtb-campaign-prep`.
+Continue only campaign-prep in `../adtb-campaign-prep`.
 Original source snapshot `1c0b7a1f` was preserved and rebased without conflicts
 onto main `652b3d28388bfb2d0e52dbe4e336f1dd97fb91f4`; no implementation
 changes were made during reconciliation. No active workers/checks were found;
@@ -144,7 +144,7 @@ branch. Worker must establish actual sibling and shared-jj access before work;
 permission failure blocks the worker. From the campaign workspace root run:
 
 ```sh
-direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
+direnv exec ../adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
 work/tools/house-check
 ```
 
@@ -183,7 +183,7 @@ The lead then ran the same authoritative command from main on the landed
 commit (empty working copy `1140b00202f9df4b0bd253416f66b5ea0220a616`):
 
 ```sh
-direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
+direnv exec ../adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
 ```
 
 Main integration exited 0 in 124 s, from 2026-10-28T01:58:19Z to
@@ -218,7 +218,7 @@ No further application, engine, docs-watch or SkillOpt track was started.
 ## 2026-10-28: live-session slice authorized
 
 User asked Codex lead to resume and proceed. Workspace campaign-live at
-/home/tony/code/adtb-campaign-live starts from d191d0f1. One implementation
+../adtb-campaign-live starts from d191d0f1. One implementation
 agent owns apps/campaign; no overlapping writer. Local detailed brief:
 work/briefs/brief-campaign-live.md. Existing standing commit/land permission
 applies; no push or hosting work.
@@ -243,7 +243,7 @@ for a principled engine repro/fix, never an application workaround.
 From workspace root, run focused campaign tests while iterating, then:
 
 ```sh
-direnv exec /home/tony/code/adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
+direnv exec ../adtb env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check
 work/tools/house-check
 ```
 
@@ -294,7 +294,7 @@ check exit0,376s,2334root/46campaign/allstaticdocs. Combined main check
 exit0,2026-10-28T03:31:05Z to03:33:07Z,122s elapsed at clean WC
 edd1cc03742a2c3f0d36d2522cf9c7dc47f6ae6d (parent ae5b0575).
 Main2349root/8skip,46campaign/1skip, all static/docs; inputs/revision match
-before/after. Exact command from main root: direnv exec /home/tony/code/adtb
+before/after. Exact command from main root: direnv exec ../adtb
 env DEVENV_ROOT="$PWD" CARGO_TARGET_DIR="$PWD/target" check. Rust1.98.1,
 default profiles/features; permission/queue/execution-only timing unknown.
 Evidence target/campaign-live-integration/{check.log,check.status,inputs-*,

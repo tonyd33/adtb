@@ -104,7 +104,7 @@ prerequisite is in the same checker repair track; no spec policy change.
 ## 2026-10-28: frozen for user-requested session restart
 
 Author candidate1ed18a4b1be6a2a502c40e9d4787cc3291d4e444/base87527a90
-in /home/tony/code/adtb-fix-row-provenance is UNLANDED.654/654 lang unit
+in ../adtb-fix-row-provenance is UNLANDED.654/654 lang unit
 tests, strict langclippy, fmt/house/size all exit0. Last authorized public API
 check `suite -p adtb-sim --test api fixpoint_write_targets_preserve_the_snapshot_relation`
 collected0:1pass/47filtered,0.173s; build1m28s. Asserts exact identity update,
@@ -124,8 +124,8 @@ c4f0391d draft and original witness. Never resume ended author for followup.
 
 ## 2026-10-28: lead full branch check
 
-State: /home/tony/code/adtb-fix-row-provenance, tested 1ed18a4b1be6a2a502c40e9d4787cc3291d4e444, base 87527a906c72383b72b365a4f88ccf3c700c5986; commit id unchanged after the run.
-Scope: `direnv exec /home/tony/code/adtb env DEVENV_ROOT=$W CARGO_TARGET_DIR=$W/target check` from the workspace root (the workspace .envrc is blocked by direnv and identical to main's).
+State: ../adtb-fix-row-provenance, tested 1ed18a4b1be6a2a502c40e9d4787cc3291d4e444, base 87527a906c72383b72b365a4f88ccf3c700c5986; commit id unchanged after the run.
+Scope: `direnv exec ../adtb env DEVENV_ROOT=$W CARGO_TARGET_DIR=$W/target check` from the workspace root (the workspace .envrc is blocked by direnv and identical to main's).
 Outcome: passed, exit 0. Root 2438 passed, 8 skipped; apps/campaign 47 passed, 1 skipped; clippy, fmt, cargo deny, size-check and docs-check passed.
 Evidence: target/check-lead-2026-10-28.log in the workspace.
 Timing: 7m47s elapsed; queue and execution not separated.

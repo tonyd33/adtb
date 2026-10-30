@@ -31,7 +31,7 @@ Running: the lead's full branch check and a fresh independent review.
 
 ## 2026-10-28: lead full branch check
 
-State: /home/tony/code/adtb-pending-unique, tested 79554f8da1df2fe5b1b121a208c7e0f7e529773f, base cd020ae0; commit id unchanged after the run.
+State: ../adtb-pending-unique, tested 79554f8da1df2fe5b1b121a208c7e0f7e529773f, base cd020ae0; commit id unchanged after the run.
 Outcome: passed, exit 0. Root 2454 passed, 7 skipped (one fewer skipped than main: the un-ignored pending unique test); apps/campaign 47 passed, 1 skipped; clippy, fmt, deny, size-check and docs-check passed; 3m12s. Log target/check-lead.log in the workspace.
 Remaining: the independent review (running), landing, main check.
 
