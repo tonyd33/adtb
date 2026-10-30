@@ -9,3 +9,5 @@ summary: "BTree::bulk checks no stop, so a close can wait out one bulk write of 
 # Reindex bulk no stop
 
 ## Report
+
+`merge_runs` has no stop check either.
