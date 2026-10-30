@@ -285,7 +285,7 @@ takes the same forms and is of the same kind as the grant it revokes.
 Each grant is a row of `catalog::grants`, identified by its grantee,
 privilege, target and grantor
 ([catalog.md](catalog.md#26-other-catalog-relations)). The grantor of
-an operator grant is the role that applied its migration. The row's
+an operator grant is the schema owner. The row's
 target text names what the grant covers as it stands, in current
 names, after the carrying of §3.6. A grant or revoke may write its
 target in that text, `frozen` field lists, `C.f` field names and a
