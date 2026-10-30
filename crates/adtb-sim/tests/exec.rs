@@ -7,12 +7,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use adtb::batch;
 use adtb::exec::{
-    self, Budget, Call, Error, Exceeded, Histories, Options as XOptions, Program, Reads, Rows,
-    Scheduler, Store, StoredHeap, Val,
+    self, AtSnapshot, Budget, Call, Error, Exceeded, Histories, Options as XOptions, Program,
+    Reads, Rows, Scheduler, Store, StoredHeap, Val,
 };
 use adtb::heap::{FieldType, Header, Heap, HeapNo, LargeStore};
 use adtb::key::{CtorId, Tid, Value as KValue};
-use adtb::mvcc::{ScanId, SerializationFailure, Xid};
+use adtb::mvcc::{Access, Limits, ScanId, Scope, SerialId, SerializationFailure, Serializer, Xid};
 use adtb::plan::{Error as PlanError, HeapId, Options as PlanOptions, plan};
 use adtb::runtime::IoError;
 use adtb::storage::{PageError, Pid};
@@ -21,6 +21,7 @@ use adtb_lang::schema::Schema;
 use adtb_lang::types::Ty;
 use adtb_reference::{Abort, R, Value};
 use adtb_sim::{Config, Faults, Sim, SimRuntime};
+use adtb_sys::lock::Lock;
 use adtb_testkit::uuid;
 
 use fixture::{Fixture, running, variants};
@@ -838,7 +839,8 @@ fn the_batch_a_scan_fills_is_held_within_the_grant() {
             })
             .collect::<Vec<_>>()
     });
-    let filled = 299 * 3 * size_of::<i64>();
+    let names: usize = (1..=300).map(|i| format!("item{i}").len()).sum::<usize>() - 7;
+    let filled = 299 * 3 * size_of::<i64>() + 300 * size_of::<i32>() + names;
     for (c, (v, most)) in cases.iter().zip(got) {
         assert_eq!(Ok(Val::Int(300)), v, "{}", c.name);
         assert!(
@@ -847,6 +849,125 @@ fn the_batch_a_scan_fills_is_held_within_the_grant() {
             c.name
         );
     }
+}
+
+/// Returns whether a stopped `exists` over `stock` still conflicts with a writer of its deciding
+/// row, the writer also reading what the transaction of the `exists` writes: both commit only
+/// when the stopped scan lost the lock on the deciding row's page.
+fn stopped_scan_beside_a_writer_of_its_row(workers: usize, opts: XOptions) -> Vec<bool> {
+    let f = stock();
+    let heap = f.catalog.heap(f.rel("stock"), 0);
+    let cases = cases_of(&f, r#"exists s in stock where s.name == "item250""#, &[]);
+    let mut out = None;
+    let mut sim = Sim::new(0, Config::default());
+    finished(&mut sim, |rt| {
+        let db = Db::load(&rt, &world(&f));
+        let txns = db.txns.clone();
+        let plain = db.store(&rt);
+        let pool = (workers > 0).then(|| Scheduler::start(rt.clone(), workers));
+        let got: Vec<bool> = cases
+            .iter()
+            .enumerate()
+            .map(|(n, c)| {
+                let (_, snapshot) = txns.take(Scope::Every).expect("a snapshot");
+                let serial = Arc::new(Lock::new(Serializer::new(Limits::default())));
+                let base = 900_000 + 2 * n as u64;
+                let reader = serial.lock(&rt).begin(Access::ReadWrite(Xid(base)));
+                let writer = serial.lock(&rt).begin(Access::ReadWrite(Xid(base + 1)));
+                let reads = AtSnapshot {
+                    rt: rt.clone(),
+                    pager: plain.pager.clone(),
+                    txns: txns.clone(),
+                    snapshot,
+                    reader: None,
+                    serial: Some((serial.clone(), reader)),
+                };
+                let store = Arc::new(Store {
+                    pager: plain.pager.clone(),
+                    reads: Arc::new(reads),
+                    heaps: plain.heaps.clone(),
+                    indexes: plain.indexes.clone(),
+                    history: plain.history.clone(),
+                    past: None,
+                });
+                let tid_of = |name: &str| visible_tid(&store, heap, name);
+                let (decider, other) = (tid_of("item250"), tid_of("item1"));
+                let v = exec::execute(
+                    rt.clone(),
+                    c.program.clone(),
+                    call(&store, roomy(), pool.as_ref(), opts),
+                    &[],
+                );
+                assert_eq!(Ok(Val::bool(true)), v, "{}", c.name);
+                let mut s = serial.lock(&rt);
+                let no = store.heaps[&heap].heap.id().0;
+                skew(&mut s, (reader, writer), no, decider, other)
+            })
+            .collect();
+        if let Some(p) = pool {
+            p.shutdown();
+        }
+        out = Some(got);
+    });
+    out.expect("the run finished")
+}
+
+/// Returns the TID of the version of the row named `name` in `heap` the store's reads see.
+fn visible_tid(store: &Store<SimRuntime>, heap: HeapId, name: &str) -> Tid {
+    let mut found = Vec::new();
+    store.heaps[&heap]
+        .heap
+        .scan(&store.pager, |v| {
+            if v.row.contains(&KValue::Text(name.to_owned())) {
+                found.push(v);
+            }
+        })
+        .expect("a scan of the heap");
+    found
+        .into_iter()
+        .find(|v| store.reads.sees(&v.header).expect("a visibility check"))
+        .unwrap_or_else(|| panic!("a version of {name} is visible"))
+        .tid
+}
+
+/// Have `writer` read `other` and write `decider`, and `reader` write `other`. Returns whether
+/// the serializer failed either transaction.
+fn skew(
+    s: &mut Serializer,
+    (reader, writer): (SerialId, SerialId),
+    heap: u32,
+    decider: Tid,
+    other: Tid,
+) -> bool {
+    let wrote = s
+        .read_tuple(writer, heap, other)
+        .and_then(|()| s.write_tuple(reader, heap, other))
+        .and_then(|()| s.write_tuple(writer, heap, decider));
+    let reader_ended = wrote.and_then(|()| s.precommit(reader)).map(|()| {
+        s.committed(reader);
+    });
+    reader_ended.and_then(|()| s.precommit(writer)).is_err()
+}
+
+#[test]
+fn a_stopped_scan_conflicts_with_a_writer_of_its_deciding_row() {
+    let opts = XOptions {
+        morsel_rows: 16,
+        ..XOptions::default()
+    };
+    let got = stopped_scan_beside_a_writer_of_its_row(0, opts);
+    assert!(got.iter().all(|failed| *failed), "{got:?}");
+}
+
+#[test]
+fn a_stopped_scan_over_ranges_conflicts_with_a_writer_of_its_deciding_row() {
+    let opts = XOptions {
+        morsel_rows: 16,
+        range_pages: 1,
+        ..XOptions::default()
+    };
+    let got = stopped_scan_beside_a_writer_of_its_row(3, opts);
+    assert!(got.iter().all(|failed| *failed), "{got:?}");
 }
 
 #[test]

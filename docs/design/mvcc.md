@@ -578,11 +578,11 @@ A lock may be widened to a coarser one (a page, a heap, a whole
 index); a widened lock keeps the union of the constructor sets.
 
 A sequential scan that stops once one row decides its query, an
-`exists` that found its row, keeps in place of its heap lock page
-locks on the pages it read, widened to a heap lock past the page limit.
-A page lock conflicts with an update, delete or retag of a version on
-that page and with no insert. A scan that read every page keeps its
-heap lock.
+`exists` or `is_empty` that found its row, keeps in place of its heap
+lock page locks on the pages it read, widened to a heap lock past the
+page limit, whether or not it reached the heap's last page. A page lock
+conflicts with an update, delete or retag of a version on that page and
+with no insert. A scan that ends without stopping keeps its heap lock.
 
 A retag's new entries (§6) are checked against range locks as
 inserts of rows of the new constructor, so a serializable scan of
