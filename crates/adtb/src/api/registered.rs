@@ -21,7 +21,7 @@ use crate::exec::{Priority, Val};
 use crate::runtime::Runtime;
 
 use super::arrow::{self, ArrowStream};
-use super::bundle::{self, CallRow, EDITION, Header, Stored};
+use super::bundle::{self, CallRow, EDITION, Header, Passed, Stored};
 use super::error::{Error, RejectReason};
 use super::pinned;
 use super::reads::Reads;
@@ -172,6 +172,8 @@ pub(super) struct Checked {
     /// The schema its callables run over: the version's, with the registration's functions.
     schema: Arc<Schema>,
     program: Arc<Program>,
+    /// The text of the registration's file.
+    text: String,
     entries: Vec<Entry>,
     /// The header of a bundle file's registration.
     header: Option<Header>,
@@ -182,6 +184,20 @@ impl Checked {
     pub(super) fn bundle(&self) -> Option<(&Header, Vec<CallRow>)> {
         let calls = self.entries.iter().map(|e| e.row.clone()).collect();
         self.header.as_ref().map(|h| (h, calls))
+    }
+
+    /// Returns a bundle's registration as one that passed every check.
+    pub(super) fn passed(&self) -> Option<Passed<'_>> {
+        let (header, calls) = self.bundle()?;
+        Some(Passed {
+            header,
+            calls,
+            text: &self.text,
+        })
+    }
+
+    pub(super) fn name(&self) -> &str {
+        &self.name
     }
 
     /// Returns the catalog reader of a bundle's registration, at the version it pins.
@@ -682,6 +698,7 @@ fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Error> {
             .as_ref()
             .map_or_else(|| over.schema.clone(), |(s, _)| s.clone()),
         program: extended.map_or_else(|| over.program.clone(), |(_, p)| p),
+        text: r.text.clone(),
         entries,
         header: r.header.clone(),
     })

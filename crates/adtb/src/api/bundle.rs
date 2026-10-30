@@ -8,7 +8,7 @@ use adtb_lang::check::Command;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::{RelId, Ty};
 
-use crate::catalog::{Catalog, Rewrite, layout};
+use crate::catalog::{Catalog, Deployed, Fact, Mark, Origin, Rewrite, layout};
 use crate::exec::{self, Val};
 use crate::key::Value;
 use crate::mvcc::Transactions;
@@ -18,7 +18,7 @@ use crate::storage::Pager;
 use super::error::{Error, RejectReason};
 use super::settings::Settings;
 use super::text::{DynRows, rows};
-use super::{Engine, OpenError, corrupt};
+use super::{Engine, OWNER_ID, OpenError, corrupt};
 
 /// The edition of the specification this engine implements.
 pub(super) const EDITION: &str = "2026-10";
@@ -177,6 +177,13 @@ impl Row {
     }
 }
 
+/// A bundle whose registration passed every check: its header, calls and file text.
+pub(super) struct Passed<'a> {
+    pub(super) header: &'a Header,
+    pub(super) calls: Vec<CallRow>,
+    pub(super) text: &'a str,
+}
+
 /// One registered call of a bundle, as a row of `catalog::registered` holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct CallRow {
@@ -194,6 +201,7 @@ pub(super) struct Stored {
     pub(super) bundles: BTreeMap<String, Row>,
     /// The registered calls of each bundle, by bundle id, with their row ids.
     calls: BTreeMap<i64, Vec<(i64, CallRow)>>,
+    pub(super) deployed: Deployed,
 }
 
 impl Stored {
@@ -206,11 +214,30 @@ impl Stored {
             .collect()
     }
 
-    fn next_bundle(&self) -> i64 {
+    /// Returns the successful registration of bundle `name`, if it has one.
+    pub(super) fn mark(&self, name: &str) -> Option<&Mark> {
+        let row = self.bundles.get(name)?;
+        self.deployed.registered.get(&row.id)
+    }
+
+    /// Returns the text of each live bundle at `now`, under the file settings `s`, that a role
+    /// registered by the command, by name.
+    pub(super) fn commanded(&self, now: i64, s: &Settings) -> BTreeMap<String, String> {
+        self.bundles
+            .values()
+            .filter(|r| r.live(now, s))
+            .filter_map(|r| {
+                let m = self.deployed.registered.get(&r.id)?;
+                (m.origin == Origin::Command).then(|| (r.header.name.clone(), m.text.clone()))
+            })
+            .collect()
+    }
+
+    pub(super) fn next_bundle(&self) -> i64 {
         self.bundles.values().map(|r| r.id).max().unwrap_or(0) + 1
     }
 
-    fn next_call(&self) -> i64 {
+    pub(super) fn next_call(&self) -> i64 {
         self.calls
             .values()
             .flatten()
@@ -527,6 +554,7 @@ pub(super) fn stored<R: Runtime>(
     for calls in out.calls.values_mut() {
         calls.sort_by_key(|(_, c)| c.ordinal);
     }
+    out.deployed = catalog.deployed(pager, txns).map_err(corrupt)?;
     Ok(out)
 }
 
@@ -536,6 +564,7 @@ pub(super) fn stored<R: Runtime>(
 struct Writes {
     bundles: Vec<(Option<Row>, Row)>,
     calls: Vec<(i64, i64, CallRow)>,
+    facts: Vec<Fact>,
 }
 
 impl Writes {
@@ -546,7 +575,7 @@ impl Writes {
         pager: &Pager<R>,
         txns: &Transactions<R>,
     ) -> Result<(), OpenError> {
-        if self.bundles.is_empty() && self.calls.is_empty() {
+        if self.bundles.is_empty() && self.calls.is_empty() && self.facts.is_empty() {
             return Ok(());
         }
         let t = Tables::of(catalog.schema());
@@ -575,13 +604,14 @@ impl Writes {
                 .collect::<Result<_, _>>()?,
         };
         catalog
-            .deploy(pager, txns, &[bundles, calls])
+            .deploy_with(pager, txns, &[bundles, calls], &self.facts)
             .map_err(corrupt)
     }
 }
 
 /// Record each bundle of `headers` that is not recorded yet, and supersede every active bundle
-/// they do not name, as one durable transaction.
+/// an open registered that they do not name, as one durable transaction. On a file that
+/// records no family owners yet, give the schema owner every family it holds a bundle of.
 pub(super) fn record<R: Runtime>(
     catalog: &Catalog,
     pager: &Pager<R>,
@@ -605,18 +635,36 @@ pub(super) fn record<R: Runtime>(
             writes.bundles.push((None, row));
         }
     }
+    if !stored.deployed.marked {
+        writes.facts.push(Fact::Deployed);
+        let families: BTreeSet<&String> =
+            stored.bundles.values().map(|r| &r.header.family).collect();
+        for f in families {
+            writes.facts.push(Fact::Family(f.clone(), OWNER_ID));
+        }
+    }
     for row in stored.bundles.values() {
-        if row.state == State::Active && !headers.iter().any(|h| h.name == row.header.name) {
+        let opened = stored
+            .deployed
+            .registered
+            .get(&row.id)
+            .is_none_or(|m| m.origin == Origin::Open);
+        if opened
+            && row.state == State::Active
+            && !headers.iter().any(|h| h.name == row.header.name)
+        {
             let mut next = row.clone();
             next.state = State::Superseded(now);
             writes.bundles.push((Some(row.clone()), next));
         }
     }
     let changed: Vec<Row> = writes.bundles.iter().map(|(_, r)| r.clone()).collect();
+    let facts = writes.facts.clone();
     writes.commit(catalog, pager, txns)?;
     for row in changed {
         stored.bundles.insert(row.header.name.clone(), row);
     }
+    stored.deployed.record(&facts);
     Ok(())
 }
 
@@ -681,22 +729,25 @@ pub(super) fn lapsed(stored: &Stored, header: &Header, now: i64, s: &Settings) -
         })
 }
 
-/// Make each bundle of `regs`, a header and its calls that passed every check, live: start a new
-/// lease for one that was not live, renew a lease that is due, and store the calls of one never
-/// registered, as one durable transaction, at `now` under the file settings `s`. Returns the
-/// row of every bundle.
+/// Make each bundle of `regs`, registered by an open, live: start a new lease for one that was
+/// not live, renew a lease that is due, store the calls of one never registered, record the
+/// successful registration of one without, and give the schema owner each family with no owner,
+/// as one durable transaction, at `now` under the file settings `s`. Returns the row of every
+/// bundle and the deployment facts.
 pub(super) fn register<R: Runtime>(
     catalog: &Catalog,
     pager: &Pager<R>,
     txns: &Transactions<R>,
     mut stored: Stored,
-    regs: &[(&Header, Vec<CallRow>)],
+    regs: &[Passed<'_>],
     now: i64,
     s: &Settings,
-) -> Result<BTreeMap<String, Row>, OpenError> {
+) -> Result<(BTreeMap<String, Row>, Deployed), OpenError> {
     let mut writes = Writes::default();
     let mut next_call = stored.next_call();
-    for (h, calls) in regs {
+    let mut families = stored.deployed.families.clone();
+    for p in regs {
+        let (h, calls) = (p.header, &p.calls);
         let row = stored
             .bundles
             .get(&h.name)
@@ -713,13 +764,27 @@ pub(super) fn register<R: Runtime>(
                 next_call += 1;
             }
         }
+        if !stored.deployed.registered.contains_key(&row.id) {
+            let mark = Mark {
+                role: OWNER_ID,
+                origin: Origin::Open,
+                text: p.text.to_owned(),
+            };
+            writes.facts.push(Fact::Registered(row.id, mark));
+        }
+        if !families.contains_key(&h.family) {
+            families.insert(h.family.clone(), OWNER_ID);
+            writes.facts.push(Fact::Family(h.family.clone(), OWNER_ID));
+        }
     }
     let changed: Vec<Row> = writes.bundles.iter().map(|(_, r)| r.clone()).collect();
+    let facts = writes.facts.clone();
     writes.commit(catalog, pager, txns)?;
     for row in changed {
         stored.bundles.insert(row.header.name.clone(), row);
     }
-    Ok(stored.bundles)
+    stored.deployed.record(&facts);
+    Ok((stored.bundles, stored.deployed))
 }
 
 impl<R: Runtime> Engine<R> {

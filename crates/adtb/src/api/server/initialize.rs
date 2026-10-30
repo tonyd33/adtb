@@ -6,7 +6,7 @@ use crate::mvcc::Transactions;
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
-use super::super::{OWNER_ROLE, OpenError, corrupt, micros};
+use super::super::{OWNER_ID, OWNER_ROLE, OpenError, corrupt, micros};
 
 pub(in crate::api) fn initialize<R: Runtime>(
     catalog: &Catalog,
@@ -41,7 +41,7 @@ pub(in crate::api) fn initialize<R: Runtime>(
     let row = fields
         .iter()
         .map(|(name, _)| match name.as_str() {
-            "id" => Value::I64(1),
+            "id" => Value::I64(OWNER_ID),
             "name" => Value::Text(OWNER_ROLE.to_owned()),
             "created" => Value::Instant(micros(pager.wall())),
             _ => panic!("catalog Role has only id, name and created"),

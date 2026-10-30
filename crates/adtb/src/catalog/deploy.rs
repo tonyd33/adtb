@@ -9,7 +9,7 @@ use crate::mvcc::{Scope, Transactions};
 use crate::runtime::Runtime;
 use crate::storage::Pager;
 
-use super::{Catalog, Error, Migrating, delete_rows};
+use super::{Catalog, Error, Fact, Migrating, delete_rows};
 
 /// The rows of one relation [`Catalog::deploy`] deletes and inserts, each a constructor and its
 /// stored fields.
@@ -46,6 +46,18 @@ impl Catalog {
         txns: &Transactions<R>,
         writes: &[Rewrite],
     ) -> Result<(), Error> {
+        self.deploy_with(pager, txns, writes, &[])
+    }
+
+    /// Delete and insert the rows of `writes` and write the deployment facts `facts` as one
+    /// transaction, returning once it is durable, under the preconditions of [`Catalog::deploy`].
+    pub fn deploy_with<R: Runtime>(
+        &self,
+        pager: &Pager<R>,
+        txns: &Transactions<R>,
+        writes: &[Rewrite],
+        facts: &[Fact],
+    ) -> Result<(), Error> {
         let x = txns.begin(pager)?;
         let (id, snapshot) = txns.take(Scope::Every)?;
         let m = Migrating {
@@ -54,18 +66,21 @@ impl Catalog {
             x,
             snapshot: &snapshot,
         };
-        let done = writes.iter().try_for_each(|w| {
-            let mut gone: BTreeMap<u32, Vec<Vec<Value>>> = BTreeMap::new();
-            for (c, row) in &w.deleted {
-                gone.entry(*c).or_default().push(row.clone());
-            }
-            for (c, rows) in gone {
-                delete_rows(&m, self.heap(w.relation, c), &rows)?;
-            }
-            w.inserted
-                .iter()
-                .try_for_each(|(c, row)| self.insert(pager, x, w.relation, *c, row))
-        });
+        let done = writes
+            .iter()
+            .try_for_each(|w| {
+                let mut gone: BTreeMap<u32, Vec<Vec<Value>>> = BTreeMap::new();
+                for (c, row) in &w.deleted {
+                    gone.entry(*c).or_default().push(row.clone());
+                }
+                for (c, rows) in gone {
+                    delete_rows(&m, self.heap(w.relation, c), &rows)?;
+                }
+                w.inserted
+                    .iter()
+                    .try_for_each(|(c, row)| self.insert(pager, x, w.relation, *c, row))
+            })
+            .and_then(|()| self.write_facts(pager, x, facts));
         txns.release(id);
         match done {
             Ok(()) => {

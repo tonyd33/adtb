@@ -59,6 +59,9 @@ use text::Prepared;
 
 use crate::catalog::OWNER_ROLE;
 
+/// The id of the schema owner's row of `catalog::roles`.
+const OWNER_ID: i64 = 1;
+
 const PAGE_SIZE: u32 = 8192;
 const DEFAULT_POOL_FRAMES: usize = 1024;
 const DEFAULT_WORKERS: usize = 8;
@@ -253,6 +256,9 @@ struct Engine<R: Runtime> {
     registered: Lock<Vec<Arc<registered::Checked>>>,
     /// The rows of `catalog::bundles`, by bundle name, as the latest commit holds them.
     deployed: Lock<BTreeMap<String, bundle::Row>>,
+    /// The family owners and successful registrations, as the latest commit holds them.
+    facts: Lock<catalog::Deployed>,
+    deployment: catalog::Deployment,
     /// Held across every write of a row of `catalog::bundles`, so that the row a writer reads
     /// from `deployed` is the one its write replaces.
     bundle_writer: Lock<()>,
@@ -557,11 +563,11 @@ impl<R: Runtime> Engine<R> {
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
         catalog.set_query_memory(query_memory);
         diverged(&catalog, log)?;
-        let regs = &options.registrations;
-        registered::downgrade(&catalog, regs)?;
         let mut stored = bundle::stored(&catalog, &pager, &txns)?;
         let settings = Settings::stored(&catalog, &pager, &txns)?;
         let opened = micros(pager.wall());
+        let regs = &commanded(&options.registrations, &stored, opened, &settings)?;
+        registered::downgrade(&catalog, regs)?;
         let live = stored.live(opened, &settings);
         let headers: Vec<&bundle::Header> = regs.iter().filter_map(Registration::header).collect();
         bundle::record(&catalog, &pager, &txns, &mut stored, &headers, opened)?;
@@ -592,9 +598,10 @@ impl<R: Runtime> Engine<R> {
         let registered = registered::register(&over, regs, &stored, now, &settings)?;
         let bundled: Vec<_> = registered
             .iter()
-            .filter_map(registered::Checked::bundle)
+            .filter_map(registered::Checked::passed)
             .collect();
-        let deployed = bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)?;
+        let (deployed, facts) =
+            bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)?;
         server::initialize(&catalog, &pager, &txns)?;
         let mut bundles = Bundles::default();
         for c in &registered {
@@ -637,6 +644,8 @@ impl<R: Runtime> Engine<R> {
             bundles: Lock::new(Arc::new(bundles)),
             registered: Lock::new(registered.into_iter().map(Arc::new).collect()),
             deployed: Lock::new(deployed),
+            facts: Lock::new(facts),
+            deployment: catalog.deployment(),
             bundle_writer: Lock::new(()),
             settings: Lock::new(settings),
             role_mentions,
@@ -916,6 +925,23 @@ fn micros(t: SystemTime) -> i64 {
         Ok(d) => micros(d),
         Err(e) => -micros(e.duration()),
     }
+}
+
+/// Returns `given` with the registration of each live bundle at `now`, under the file settings
+/// `s`, that a role registered by the command and `given` does not name.
+fn commanded(
+    given: &[Registration],
+    stored: &bundle::Stored,
+    now: i64,
+    s: &Settings,
+) -> Result<Vec<Registration>, OpenError> {
+    let mut out = given.to_vec();
+    for (name, text) in stored.commanded(now, s) {
+        if given.iter().all(|r| r.name() != name) {
+            out.push(Registration::bundle(text).map_err(corrupt)?);
+        }
+    }
+    Ok(out)
 }
 
 /// Refuse a log whose migrations at or below the file's version differ from the file's by

@@ -1,5 +1,6 @@
 mod change;
 mod deploy;
+mod deployment;
 mod grants;
 mod history;
 mod hosts;
@@ -42,6 +43,7 @@ use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 use crate::write::Sequences;
 
 pub use deploy::Rewrite;
+pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
 pub use keying::{IndexKeys, element_types};
 use keying::{broken, index_keys, row_key};
@@ -211,6 +213,7 @@ fn roots_row() -> Vec<FieldType> {
                 FieldType::Scalar(Scalar::Text),
             ],
         )])
+        .chain(deployment::ctors())
         .collect(),
     )]
 }
@@ -399,6 +402,7 @@ impl Named {
             (ctor, fields) if pending::holds(ctor) => {
                 pending::add(&mut self.pending, ctor, fields)?;
             }
+            (ctor, _) if deployment::holds(ctor) => {}
             (ctor, fields) => {
                 return Err(Error::Corrupt(format!(
                     "a roots row of constructor {ctor} holds {fields:?}"
