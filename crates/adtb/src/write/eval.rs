@@ -940,6 +940,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
     /// Returns every row of `rel` the statement's reads see, of the constructors `of`, or all.
     pub fn rows(&self, rel: RelId, of: Option<&[u32]>) -> Result<Vec<(u32, Val)>, Error> {
         let r = self.rel(rel);
+        let grant = self.db.grant_of(&self.stop)?;
         let mut out = Vec::new();
         for (c, ctor) in r.ctors.iter().enumerate() {
             let c = c as u32;
@@ -947,7 +948,7 @@ impl<'a, R: Runtime> Stmt<'a, R> {
                 continue;
             }
             self.store
-                .scan(ctor.heap, self.db.options.morsel_rows, |b| {
+                .scan(ctor.heap, self.db.options.morsel_rows, &grant, |b| {
                     for i in 0..b.len() {
                         out.push((c, self.row(rel, c, &b.row(i))));
                     }

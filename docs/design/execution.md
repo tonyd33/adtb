@@ -703,10 +703,12 @@ arena.grow(m)?;
 grants a call its bytes, or admits nothing when the grants of running
 calls and this one together would exceed the budget; the grant returns
 to the budget when the call's last holder drops it. A call takes arenas
-from its grant for what it holds: the rows of each morsel while the
-morsel runs, the values its sinks collect, build tables, group records
-and the sets of each fixpoint round. Each arena returns to the grant
-when dropped. Plans carry no grant estimate yet.
+from its grant for what it holds: the batch a scan is filling and the
+rows of each morsel while the morsel runs, the values its sinks
+collect, build tables, group records, the sets of each fixpoint round,
+and the deleted versions a scan of the past has passed from a current
+heap, held unspilled until that scan ends. Each arena returns to the
+grant when dropped. Plans carry no grant estimate yet.
 
 Operators spill to one spill file per call, in the directory `spill`
 beside the database, made on the first spill and removed when the call

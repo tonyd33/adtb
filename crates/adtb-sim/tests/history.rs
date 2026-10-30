@@ -1183,10 +1183,13 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
             },
             past: None,
         };
+        let grant = adtb::exec::Budget::new(1 << 30)
+            .admit(64 << 20)
+            .expect("a grant fits");
         let mut moved = false;
         let mut rows = Vec::new();
         store
-            .scan(id, 1, |batch| {
+            .scan(id, 1, &grant, |batch| {
                 rows.extend((0..batch.len()).map(|r| pair(&batch.row(r))));
                 if !moved {
                     for tid in [first, last] {
@@ -1221,7 +1224,7 @@ fn store_scan_sees_history_pages_created_during_its_current_walk() {
         assert_eq!(rows, (0..1000).map(|k| (k, k)).collect::<Vec<_>>());
         let mut calls = 0;
         store
-            .scan(id, 1, |_| {
+            .scan(id, 1, &grant, |_| {
                 calls += 1;
                 Ok(std::ops::ControlFlow::Break(()))
             })

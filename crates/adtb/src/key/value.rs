@@ -224,6 +224,18 @@ impl PartialEq for F64 {
 
 impl Eq for F64 {}
 
+impl std::hash::Hash for F32 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.to_bits().hash(state);
+    }
+}
+
+impl std::hash::Hash for F64 {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.to_bits().hash(state);
+    }
+}
+
 /// A value of a `KeyType`.
 ///
 /// Preconditions:
@@ -237,7 +249,7 @@ impl Eq for F64 {}
 ///   an anonymous sum's in name order.
 /// - The `Record` of an anonymous record, and the fields of an anonymous
 ///   sum's constructor, are in name order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Value {
     I8(i8),
     I16(i16),

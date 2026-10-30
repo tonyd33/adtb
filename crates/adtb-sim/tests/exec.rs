@@ -7,10 +7,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use adtb::batch;
 use adtb::exec::{
-    self, Budget, Call, Error, Exceeded, Options as XOptions, Program, Reads, Rows, Scheduler,
-    Store, Val,
+    self, Budget, Call, Error, Exceeded, Histories, Options as XOptions, Program, Reads, Rows,
+    Scheduler, Store, StoredHeap, Val,
 };
-use adtb::heap::{FieldType, Header, HeapNo};
+use adtb::heap::{FieldType, Header, Heap, HeapNo, LargeStore};
 use adtb::key::{CtorId, Tid, Value as KValue};
 use adtb::mvcc::{SerializationFailure, Xid};
 use adtb::plan::{Error as PlanError, HeapId, Options as PlanOptions, plan};
@@ -386,6 +386,11 @@ fn morsels_of_heaps_of_many_pages_agree_for_every_seed() {
     assert!(ran > 0, "no worker ran a task");
 }
 
+/// Returns a grant of 64 MiB from a budget of its own.
+fn roomy() -> Arc<exec::Grant> {
+    Budget::new(1 << 30).admit(64 << 20).expect("a grant fits")
+}
+
 /// Returns the rows of every batch `scan` passes.
 fn scanned_rows(
     scan: impl FnOnce(
@@ -407,10 +412,10 @@ fn scans_of_ranges_of_a_heap_s_pages_read_what_a_scan_of_the_heap_reads() {
     let heap = f.catalog.heap(f.rel("stock"), 0);
     let (whole, ranges, pages) = with_store(0, &f, 0, |_, store, _| {
         let pages = store.pages(heap).expect("the heap's pages");
-        let whole = scanned_rows(|each| store.scan(heap, 1000, each));
+        let whole = scanned_rows(|each| store.scan(heap, 1000, &roomy(), each));
         let ranges: Vec<Vec<KValue>> = pages
             .chunks(1)
-            .flat_map(|r| scanned_rows(|each| store.scan_pages(heap, r, 7, each)))
+            .flat_map(|r| scanned_rows(|each| store.scan_pages(heap, r, 7, &roomy(), each)))
             .collect();
         (whole, ranges, pages.len())
     });
@@ -481,7 +486,7 @@ fn counted(store: &Store<SimRuntime>) -> (Arc<Store<SimRuntime>>, Arc<Counted>) 
 fn versions(store: &Store<SimRuntime>, count: &Counted, heap: HeapId) -> usize {
     count.take();
     store
-        .scan(heap, 1000, |_| Ok(ControlFlow::Continue(())))
+        .scan(heap, 1000, &roomy(), |_| Ok(ControlFlow::Continue(())))
         .expect("a scan");
     count.take()
 }
@@ -495,14 +500,14 @@ fn a_scan_passes_its_first_batch_before_it_reads_the_heap_s_last_page() {
         let total = versions(&store, &count, heap);
         let mut first = None;
         store
-            .scan(heap, 7, |_| {
+            .scan(heap, 7, &roomy(), |_| {
                 first.get_or_insert(count.take());
                 Ok(ControlFlow::Continue(()))
             })
             .expect("a scan");
         count.take();
         store
-            .scan(heap, 7, |_| Ok(ControlFlow::Break(())))
+            .scan(heap, 7, &roomy(), |_| Ok(ControlFlow::Break(())))
             .expect("a stopped scan");
         (total, first.expect("a batch"), count.take())
     });
@@ -569,7 +574,7 @@ fn a_scan_of_a_heap_larger_than_its_grant_runs_within_the_grant() {
     };
     let got = with_store(0, &f, 0, |rt, store, _| {
         let heap = f.catalog.heap(f.rel("stock"), 0);
-        let rows: usize = scanned_rows(|each| store.scan(heap, 1000, each))
+        let rows: usize = scanned_rows(|each| store.scan(heap, 1000, &roomy(), each))
             .iter()
             .map(|r| r.iter().map(|v| format!("{v:?}").len()).sum::<usize>())
             .sum();
@@ -627,6 +632,209 @@ fn a_query_past_its_grant_is_rejected_for_its_statement_limit() {
         got.0
     );
     assert_eq!(Ok(300), got.1);
+}
+
+/// Reads that see every deleted version, as a read of the past at a state before every
+/// deletion does.
+struct Deleted;
+
+impl Reads for Deleted {
+    fn sees(&self, h: &Header) -> Result<bool, PageError> {
+        Ok(h.xmax != 0)
+    }
+
+    fn scanned(&self, _: HeapNo) -> Result<(), SerializationFailure> {
+        Ok(())
+    }
+
+    fn probed(
+        &self,
+        _: Pid,
+        _: Bound<Vec<u8>>,
+        _: Bound<Vec<u8>>,
+        _: BTreeSet<CtorId>,
+    ) -> Result<(), SerializationFailure> {
+        Ok(())
+    }
+
+    fn fetched(&self, _: HeapNo, _: Tid) -> Result<(), SerializationFailure> {
+        Ok(())
+    }
+
+    fn depends(&self, _: Xid) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// Returns `store` reading the past through [`Deleted`], with every other deleted version of
+/// `heap` copied to its history heap, and the number of distinct rows those versions hold.
+fn with_past(store: &Store<SimRuntime>, heap: HeapId) -> (Arc<Store<SimRuntime>>, usize) {
+    let current = &store.heaps[&heap];
+    let mut deleted = Vec::new();
+    current
+        .heap
+        .scan(&store.pager, |v| {
+            if v.header.xmax != 0 {
+                deleted.push(v);
+            }
+        })
+        .expect("a scan of the heap");
+    let large = LargeStore::create(&store.pager, 95_000).expect("a large-value store");
+    let past = Heap::create(&store.pager, 95_001, current.row.clone(), large).expect("a heap");
+    for v in deleted.iter().step_by(2) {
+        let copied = past
+            .copy_version(&store.pager, &current.heap, v)
+            .expect("a copy");
+        assert!(copied.is_some(), "the version at {:?} is copied", v.tid);
+    }
+    let distinct: BTreeSet<String> = deleted.iter().map(|v| format!("{:?}", v.row)).collect();
+    let history = StoredHeap {
+        heap: Arc::new(past),
+        ..current.clone()
+    };
+    let store = Store {
+        pager: store.pager.clone(),
+        reads: Arc::new(Deleted),
+        heaps: store.heaps.clone(),
+        indexes: store.indexes.clone(),
+        history: Histories {
+            heaps: [(heap, history)].into(),
+            indexes: Default::default(),
+        },
+        past: None,
+    };
+    (Arc::new(store), distinct.len())
+}
+
+#[test]
+fn a_read_of_the_past_holds_the_deleted_rows_it_passed_within_its_grant() {
+    let f = stock_of(2000);
+    let heap = f.catalog.heap(f.rel("stock"), 0);
+    let cases = cases_of(&f, "count(s for s in stock)", &[]);
+    let opts = XOptions {
+        morsel_rows: 16,
+        ..XOptions::default()
+    };
+    let (want, got) = with_store(0, &f, 0, |rt, store, _| {
+        let (past, want) = with_past(store, heap);
+        let budget = Budget::new(1 << 30);
+        let got: Vec<_> = cases
+            .iter()
+            .map(|c| {
+                let run = |grant| {
+                    exec::execute(
+                        rt.clone(),
+                        c.program.clone(),
+                        call(&past, grant, None, opts),
+                        &[],
+                    )
+                };
+                let refused = run(budget.admit(SPILL_GRANT).expect("a grant fits"));
+                let roomy = budget.admit(64 << 20).expect("a grant fits");
+                let done = run(roomy.clone());
+                (refused, done, roomy.peak())
+            })
+            .collect();
+        assert_eq!(0, budget.granted(), "every grant returned to the budget");
+        (want, got)
+    });
+    assert!(want >= 2000, "{want} distinct deleted rows");
+    for (c, (refused, done, peak)) in cases.iter().zip(got) {
+        assert_eq!(
+            Err(Error::StatementLimit(Exceeded::Memory {
+                limit: SPILL_GRANT
+            })),
+            refused,
+            "{}",
+            c.name
+        );
+        assert_eq!(Ok(Val::Int(want as i64)), done, "{}", c.name);
+        assert!(peak > SPILL_GRANT, "{}: peak {peak}", c.name);
+    }
+}
+
+/// Reads that note the most of `grant` in use whenever they decide a version.
+struct Watched {
+    inner: Arc<dyn Reads>,
+    grant: Arc<exec::Grant>,
+    most: AtomicUsize,
+}
+
+impl Reads for Watched {
+    fn sees(&self, h: &Header) -> Result<bool, PageError> {
+        self.most.fetch_max(self.grant.used(), Ordering::Relaxed);
+        self.inner.sees(h)
+    }
+
+    fn scanned(&self, heap: HeapNo) -> Result<(), SerializationFailure> {
+        self.inner.scanned(heap)
+    }
+
+    fn probed(
+        &self,
+        index: Pid,
+        lo: Bound<Vec<u8>>,
+        hi: Bound<Vec<u8>>,
+        ctors: BTreeSet<CtorId>,
+    ) -> Result<(), SerializationFailure> {
+        self.inner.probed(index, lo, hi, ctors)
+    }
+
+    fn fetched(&self, heap: HeapNo, tid: Tid) -> Result<(), SerializationFailure> {
+        self.inner.fetched(heap, tid)
+    }
+
+    fn depends(&self, writer: Xid) -> Result<(), Error> {
+        self.inner.depends(writer)
+    }
+}
+
+#[test]
+fn the_batch_a_scan_fills_is_held_within_the_grant() {
+    let f = stock();
+    let cases = cases_of(&f, "count(s for s in stock)", &[]);
+    let opts = XOptions {
+        morsel_rows: 1000,
+        ..XOptions::default()
+    };
+    let got = with_store(0, &f, 0, |rt, store, _| {
+        let budget = Budget::new(1 << 30);
+        cases
+            .iter()
+            .map(|c| {
+                let grant = budget.admit(64 << 20).expect("a grant fits");
+                let reads = Arc::new(Watched {
+                    inner: store.reads.clone(),
+                    grant: grant.clone(),
+                    most: AtomicUsize::new(0),
+                });
+                let watched = Arc::new(Store {
+                    pager: store.pager.clone(),
+                    reads: reads.clone(),
+                    heaps: store.heaps.clone(),
+                    indexes: store.indexes.clone(),
+                    history: store.history.clone(),
+                    past: None,
+                });
+                let v = exec::execute(
+                    rt.clone(),
+                    c.program.clone(),
+                    call(&watched, grant, None, opts),
+                    &[],
+                );
+                (v, reads.most.load(Ordering::Relaxed))
+            })
+            .collect::<Vec<_>>()
+    });
+    let filled = 299 * 4 * size_of::<KValue>();
+    for (c, (v, most)) in cases.iter().zip(got) {
+        assert_eq!(Ok(Val::Int(300)), v, "{}", c.name);
+        assert!(
+            most >= filled,
+            "{}: {most} bytes held while filling, under {filled}",
+            c.name
+        );
+    }
 }
 
 #[test]

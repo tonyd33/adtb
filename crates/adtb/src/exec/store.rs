@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::{Bound, ControlFlow};
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use adtb_lang::types::Ty;
 
 use crate::batch::{Batch, BatchBuilder, Schema as BatchSchema};
 use crate::btree::{self, Index, prefix_end};
-use crate::heap::{FieldType, Header, Heap, HeapNo, walk};
+use crate::heap::{FieldType, Header, Heap, HeapNo, Version, walk};
 use crate::key::{CtorId, Dir, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{
     SerialId, SerializationFailure, Serializer, Snapshot, Status, Transactions, Xid,
@@ -18,6 +18,7 @@ use crate::storage::{PageError, Pager, Pid};
 use adtb_sys::lock::Lock;
 
 use super::Error;
+use super::memory::{Arena, Grant};
 use super::types::{ctors, repr};
 use super::value::{F32, F64, Val};
 
@@ -197,6 +198,94 @@ impl<R: Runtime> std::fmt::Debug for Store<R> {
     }
 }
 
+/// The batch a scan is filling, its rows held in an arena of the call's grant.
+struct Filling {
+    schema: BatchSchema,
+    rows: usize,
+    batch: BatchBuilder,
+    held: Arena,
+}
+
+impl Filling {
+    fn new(row: &[FieldType], rows: usize, grant: &Arc<Grant>) -> Filling {
+        let schema = BatchSchema::of_heap(row);
+        Filling {
+            batch: BatchBuilder::new(schema.clone()),
+            schema,
+            rows,
+            held: grant.arena(),
+        }
+    }
+
+    /// Append `row`. Returns the batch once it holds its `rows` rows, with the arena holding it.
+    fn push(&mut self, row: &[Value]) -> Result<Option<(Batch, Arena)>, Error> {
+        self.held.grow(row_size(row))?;
+        self.batch.push_row(row);
+        Ok((self.batch.len() == self.rows).then(|| self.take()))
+    }
+
+    fn take(&mut self) -> (Batch, Arena) {
+        let fresh = BatchBuilder::new(self.schema.clone());
+        let arena = self.held.grant().arena();
+        (
+            std::mem::replace(&mut self.batch, fresh).finish(),
+            std::mem::replace(&mut self.held, arena),
+        )
+    }
+
+    /// Returns the rows appended since the last full batch, with the arena holding them.
+    fn rest(mut self) -> Option<(Batch, Arena)> {
+        (!self.batch.is_empty()).then(|| self.take())
+    }
+}
+
+/// The deleted versions a read of the past passed from a current heap, by inserter and deleter,
+/// held in an arena of the call's grant.
+struct Passed {
+    versions: HashMap<(u64, u64), HashSet<Vec<Value>>>,
+    held: Arena,
+}
+
+impl Passed {
+    fn new(grant: &Arc<Grant>) -> Passed {
+        Passed {
+            versions: HashMap::new(),
+            held: grant.arena(),
+        }
+    }
+
+    fn hold(&mut self, v: &Version) -> Result<(), Error> {
+        self.held.grow(2 * size_of::<u64>() + row_size(&v.row))?;
+        self.versions
+            .entry((v.header.xmin, v.header.xmax))
+            .or_default()
+            .insert(v.row.clone());
+        Ok(())
+    }
+
+    /// Returns whether a version with `v`'s inserter, deleter and row was passed.
+    fn holds(&self, v: &Version) -> bool {
+        self.versions
+            .get(&(v.header.xmin, v.header.xmax))
+            .is_some_and(|rows| rows.contains(v.row.as_slice()))
+    }
+}
+
+/// Returns an estimate of the bytes `row` occupies.
+fn row_size(row: &[Value]) -> usize {
+    row.iter().map(value_size).sum()
+}
+
+fn value_size(v: &Value) -> usize {
+    size_of::<Value>()
+        + match v {
+            Value::Text(t) | Value::ZonedDateTime { zone: t, .. } => t.len(),
+            Value::Bytes(b) | Value::SortKey(b) => b.len(),
+            Value::Record(fs) | Value::Sum { fields: fs, .. } => row_size(fs),
+            _ => 0,
+        }
+}
+
 fn index_error(e: btree::Error) -> Error {
     match e {
         btree::Error::Page(p) => Error::Page(p),
@@ -224,30 +313,32 @@ impl<R: Runtime> Store<R> {
         &self,
         id: HeapId,
         rows: usize,
+        grant: &Arc<Grant>,
         each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
     ) -> Result<(), Error> {
         let pages = self.pages(id)?;
         match self.history.heaps.get(&id) {
-            Some(past) => self.scan_past(id, &pages, past, rows, each),
-            None => self.scan_pages(id, &pages, rows, each),
+            Some(past) => self.scan_past(id, &pages, past, rows, grant, each),
+            None => self.scan_pages(id, &pages, rows, grant, each),
         }
     }
 
     /// Pass the visible rows on `pages` of heap `id` and then on every page of `past`, its
     /// history heap, to `each` as [`Store::scan_pages`] does, each version once though vacuum has
-    /// copied it to `past` and not yet freed it.
+    /// copied it to `past` and not yet freed it. Hold every deleted version passed from `pages`
+    /// in `grant` until the scan ends.
     fn scan_past(
         &self,
         id: HeapId,
         pages: &[Pid],
         past: &StoredHeap,
         rows: usize,
+        grant: &Arc<Grant>,
         mut each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
     ) -> Result<(), Error> {
         let h = self.heap(id);
-        let schema = BatchSchema::of_heap(&h.row);
-        let mut b = BatchBuilder::new(schema.clone());
-        let mut deleted: BTreeMap<(u64, u64), Vec<Vec<Value>>> = BTreeMap::new();
+        let mut b = Filling::new(&h.row, rows, grant);
+        let mut deleted = Passed::new(grant);
         for now in [true, false] {
             let history;
             let (heap, pages) = if now {
@@ -264,27 +355,24 @@ impl<R: Runtime> Store<R> {
                         continue;
                     }
                     if Xid(v.header.xmax) != Xid::NONE {
-                        let same = deleted.entry((v.header.xmin, v.header.xmax)).or_default();
                         if now {
-                            same.push(v.row.clone());
-                        } else if same.contains(&v.row) {
+                            deleted.hold(&v)?;
+                        } else if deleted.holds(&v) {
                             continue;
                         }
                     }
-                    b.push_row(&v.row);
-                    if b.len() == rows {
-                        let full = std::mem::replace(&mut b, BatchBuilder::new(schema.clone()));
-                        if each(full.finish())?.is_break() {
-                            return Ok(());
-                        }
+                    if let Some((full, _held)) = b.push(&v.row)?
+                        && each(full)?.is_break()
+                    {
+                        return Ok(());
                     }
                 }
             }
         }
-        if b.is_empty() {
-            return Ok(());
+        match b.rest() {
+            Some((last, _held)) => each(last).map(|_last| ()),
+            None => Ok(()),
         }
-        each(b.finish()).map(|_last| ())
     }
 
     /// Returns the version the history key index of key index `index` names for `key` and
@@ -331,7 +419,8 @@ impl<R: Runtime> Store<R> {
 
     /// Pass the visible rows on `pages`, a range of what [`Store::pages`] returned for heap `id`,
     /// to `each` as batches of at most `rows` rows each, reading a page only once the batches
-    /// before it are passed. Stop when `each` breaks.
+    /// before it are passed, each batch held in `grant` from its first row until `each` returns.
+    /// Stop when `each` breaks.
     ///
     /// Postconditions: the writers recorded with [`Reads::depends`] are those of the versions read
     /// before the last batch passed, and of every version on `pages` when `each` never breaks.
@@ -340,11 +429,11 @@ impl<R: Runtime> Store<R> {
         id: HeapId,
         pages: &[Pid],
         rows: usize,
+        grant: &Arc<Grant>,
         mut each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
     ) -> Result<(), Error> {
         let h = self.heap(id);
-        let schema = BatchSchema::of_heap(&h.row);
-        let mut b = BatchBuilder::new(schema.clone());
+        let mut b = Filling::new(&h.row, rows, grant);
         let mut writers = BTreeSet::new();
         for pid in pages {
             let mut versions = Vec::new();
@@ -356,21 +445,19 @@ impl<R: Runtime> Store<R> {
                 if !seen {
                     continue;
                 }
-                b.push_row(&v.row);
-                if b.len() == rows {
-                    let full = std::mem::replace(&mut b, BatchBuilder::new(schema.clone()));
+                if let Some((full, _held)) = b.push(&v.row)? {
                     self.depend_all(std::mem::take(&mut writers))?;
-                    if each(full.finish())?.is_break() {
+                    if each(full)?.is_break() {
                         return Ok(());
                     }
                 }
             }
         }
         self.depend_all(writers)?;
-        if b.is_empty() {
-            return Ok(());
+        match b.rest() {
+            Some((last, _held)) => each(last).map(|_last| ()),
+            None => Ok(()),
         }
-        each(b.finish()).map(|_last| ())
     }
 
     fn depend_all(&self, writers: BTreeSet<Xid>) -> Result<(), Error> {

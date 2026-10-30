@@ -106,7 +106,7 @@ impl<R: Runtime> Production<R> {
                     unreachable!("a unit of pages scans")
                 };
                 cx.store
-                    .scan_pages(*heap, &pages, cx.options.morsel_rows, |b| {
+                    .scan_pages(*heap, &pages, cx.options.morsel_rows, &cx.grant, |b| {
                         cx.morsel(run, &p, &env, &b, &mut set)
                     })?;
             }

@@ -600,7 +600,7 @@ impl<R: Runtime> Ctx<R> {
         };
         let mut out = run.out(&self.grant);
         self.store
-            .scan_pages(*heap, pages, self.options.morsel_rows, |b| {
+            .scan_pages(*heap, pages, self.options.morsel_rows, &self.grant, |b| {
                 self.morsel(run, p, env, &b, &mut out)
             })?;
         run.emit(&self.rt, &self.spill, out)
@@ -621,9 +621,12 @@ impl<R: Runtime> Ctx<R> {
                 self.check_cancel()?;
                 self.chain(run, &p.chain, 0, env.clone(), vec![0], out)
             }
-            Source::Scan { heap, .. } => self.store.scan(*heap, self.options.morsel_rows, |b| {
-                self.morsel(run, p, env, &b, out)
-            }),
+            Source::Scan { heap, .. } => {
+                self.store
+                    .scan(*heap, self.options.morsel_rows, &self.grant, |b| {
+                        self.morsel(run, p, env, &b, out)
+                    })
+            }
         }
     }
 
