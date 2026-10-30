@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: resolved
 kind: feature
 priority: 825
 summary: "no role but the schema owner can register a bundle, so no grant is checked at registration and no live bundle is rechecked when a migration revokes what its owner used"
-branch: checked-registration
+closed: 2026-10-29
 tags:
   - engine
 ---
@@ -104,3 +104,22 @@ family could revive a superseded schema-owner bundle in it with no grant at all.
 11. Only a bundle's owner or the schema owner may register an existing bundle row
     again. Any other role is refused with `Denied`, naming the owner. Check 5 then
     runs against the owner (ruling of B1).
+
+## 2026-10-29: landed
+
+Landed bd4ec9b7..d6c535b5 (10 commits). `RoleAuthority::register` registers a
+bundle as a session's role: check 5 against the role the bundle runs as, check 7,
+ruling 11, one transaction. Internal roots rows DEPLOYED, FAMILY and REGISTERED
+(docs/design/schema-change.md 2.2); open supersedes only Open-origin and unmarked
+bundles and rebuilds live Command bundles without touching their leases; each
+migration rechecks every nonowner live bundle and names every blocker; drop role
+refuses a family or live bundle owner. Three reviews (B1 to B3 fixed). Branch check
+on a24b84bf: 2824 root (7 skipped), 47 campaign. Main check on d6c535b5: 2828 root
+(7 skipped), 47 campaign.
+
+Not done here: the `register bundle` command, BlockingMigration notices (binding
+slice), call/family grants. A file this binary opens cannot be opened by an older
+one. Follow-ups: open-command-bundle-failure, audit-deployment-events,
+registered-text-retention, spec-grant-and-default-forms (option-only revoke).
+
+## 2026-10-29: resolved
