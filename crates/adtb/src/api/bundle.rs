@@ -894,6 +894,10 @@ impl Claim {
     }
 }
 
+pub(super) fn bundle_name(b: &BundleName) -> String {
+    format!("{}-{}", b.family, b.version)
+}
+
 impl<R: Runtime> Engine<R> {
     /// Refuse a bind of bundle `name` when it is retired, superseded or expired, and renew its
     /// lease when a renewal is due. A name that is no bundle's is not refused.
@@ -945,10 +949,11 @@ impl<R: Runtime> Engine<R> {
     /// Run `c` when it is a command on deployment state, `retire bundle` or `supersede
     /// bundle`, which no transaction holds. Returns its rows, `None` for any other command.
     pub(super) fn deployment_command(&self, c: &Command) -> Option<Result<DynRows, Error>> {
-        let name = |b: &BundleName| format!("{}-{}", b.family, b.version);
         match c {
-            Command::RetireBundle(b) => Some(self.retire(&name(b))),
-            Command::SupersedeBundle(b, by) => Some(self.supersede(&name(b), &name(by))),
+            Command::RetireBundle(b) => Some(self.retire(&bundle_name(b))),
+            Command::SupersedeBundle(b, by) => {
+                Some(self.supersede(&bundle_name(b), &bundle_name(by)))
+            }
             _ => None,
         }
     }

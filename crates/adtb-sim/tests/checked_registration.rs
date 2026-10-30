@@ -11,7 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adtb::runtime::{Clock, Done, Io, Op, Runtime, Threads};
-use adtb::{CallOptions, Database, Error, Log, OpenError, OpenOptions, Registration, RejectReason};
+use adtb::{
+    CallOptions, Capability, Database, Error, Log, OpenError, OpenOptions, Registration,
+    RejectReason,
+};
 use adtb_lang::evolve::Source;
 use adtb_lang::parse::{Options, parse_migration};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
@@ -212,6 +215,78 @@ fn a_role_holding_every_grant_with_grant_option_registers_and_owns_the_bundle() 
         register(&db, "web", &bundle("shop-1.0", &[SHOP, GRANTS], NAMES)).expect("web registers");
         assert_eq!(Some(&"web".to_owned()), owners(&db).get("shop-1.0"));
         assert_eq!(vec!["\"ann\""], calls(&db, "shop-1.0"));
+    });
+}
+
+#[test]
+fn only_the_owner_of_a_bundle_or_the_schema_owner_retires_or_supersedes_it_as_a_role() {
+    let mut sim = Sim::new(320, Config::default());
+    run(&mut sim, |rt| {
+        let db = shop(&rt);
+        register(&db, "web", &bundle("shop-1.0", &[SHOP, GRANTS], NAMES)).expect("web registers");
+        register(&db, "web", &bundle("shop-1.1", &[SHOP, GRANTS], NAMES)).expect("web registers");
+        register(&db, "web", &bundle("shop-1.2", &[SHOP, GRANTS], NAMES)).expect("web registers");
+        let authority = db.role_authority();
+        for role in ["web", "ops"] {
+            authority
+                .grant_capability(role, Capability::Adhoc, false)
+                .expect("adhoc");
+        }
+        let (web, ops) = (
+            authority.session("web").expect("web"),
+            authority.session("ops").expect("ops"),
+        );
+        let audited = || query(&db, "from a in catalog::audit.Denied select a.seq").len();
+        denied(api::task(&rt, &ops, "retire bundle shop-1.0"));
+        assert_eq!(1, audited());
+        denied(api::task(
+            &rt,
+            &ops,
+            "supersede bundle shop-1.0 by shop-1.1",
+        ));
+        assert_eq!(2, audited());
+        api::task(&rt, &web, "supersede bundle shop-1.0 by shop-1.1").expect("the owner");
+        api::task(&rt, &web, "retire bundle shop-1.1").expect("the owner");
+        let owner = authority.session("owner").expect("owner");
+        api::task(&rt, &owner, "retire bundle shop-1.2").expect("the schema owner");
+        assert_eq!(2, audited());
+    });
+}
+
+#[test]
+fn an_absent_bundle_is_refused_as_another_role_s_bundle_is_save_for_the_schema_owner() {
+    let mut sim = Sim::new(321, Config::default());
+    run(&mut sim, |rt| {
+        let db = shop(&rt);
+        register(&db, "web", &bundle("shop-1.0", &[SHOP, GRANTS], NAMES)).expect("web registers");
+        let authority = db.role_authority();
+        for role in ["web", "ops"] {
+            authority
+                .grant_capability(role, Capability::Adhoc, false)
+                .expect("adhoc");
+        }
+        let (web, ops, owner) = (
+            authority.session("web").expect("web"),
+            authority.session("ops").expect("ops"),
+            authority.session("owner").expect("owner"),
+        );
+        let audited = || query(&db, "from a in catalog::audit.Denied select a.seq").len();
+        let held = denied(api::task(&rt, &ops, "retire bundle shop-1.0"));
+        assert_eq!(1, audited());
+        let absent = denied(api::task(&rt, &ops, "retire bundle nope-1.0"));
+        assert_eq!(2, audited());
+        assert_eq!(held.replace("shop-1.0", "nope-1.0"), absent);
+        denied(api::task(&rt, &web, "retire bundle nope-1.0"));
+        assert_eq!(3, audited());
+        denied(api::task(
+            &rt,
+            &ops,
+            "supersede bundle nope-1.0 by shop-1.0",
+        ));
+        assert_eq!(4, audited());
+        let got = format!("{:?}", api::task(&rt, &owner, "retire bundle nope-1.0"));
+        assert!(got.contains("UnknownBundle"), "{got}");
+        assert_eq!(4, audited());
     });
 }
 

@@ -82,6 +82,7 @@ pub fn deployment_grant<R: Runtime>(
             privilege,
             target: None,
             grant_option: false,
+            dormant: false,
         },
     );
 }
@@ -94,6 +95,7 @@ pub struct DeploymentRow<'a> {
     pub privilege: &'a str,
     pub target: Option<&'a str>,
     pub grant_option: bool,
+    pub dormant: bool,
 }
 
 /// Insert `row` with id `id` into `catalog::grants`, durably.
@@ -110,10 +112,10 @@ pub fn deployment_row<R: Runtime>(
         privilege,
         target,
         grant_option,
+        dormant,
     } = row;
     let schema = catalog.schema();
     let (r, c) = catalog_relation(schema, "grants", "RoleGrant");
-    let no = values::boolean(schema, false);
     let target = match target {
         Some(t) => {
             let Value::Sum { ctor, .. } = values::tag(schema, "prelude", "Option", "Some") else {
@@ -141,7 +143,7 @@ pub fn deployment_row<R: Runtime>(
             ("grantee", Value::Text(grantee.to_owned())),
             ("grantor", Value::Text(grantor.to_owned())),
             ("grant_option", values::boolean(schema, grant_option)),
-            ("dormant", no),
+            ("dormant", values::boolean(schema, dormant)),
         ],
     );
     deploy(catalog, pager, txns, "grants", "RoleGrant", grant);

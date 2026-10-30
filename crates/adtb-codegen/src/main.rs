@@ -11,7 +11,6 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(
     name = "adtb-codegen",
-    override_usage = "adtb-codegen --log DIR --bundle MODULE=FILE... [--out FILE]",
     about = "Write the Rust source of a schema's log and its bundles, to FILE or standard output.",
     args_override_self = true
 )]

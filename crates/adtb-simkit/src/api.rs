@@ -1,6 +1,10 @@
+use std::sync::Arc;
+use std::task::{Wake, Waker};
+
+use adtb::runtime::{ThreadId, Threads};
 use adtb::{
-    AdHocTransaction, CallOptions, CreateOptions, Database, DynRows, Error, OpenOptions,
-    RejectReason, TxnCallOptions,
+    AdHocTransaction, CallOptions, Completion, CreateOptions, Database, DynRows, Error,
+    Observation, OpenOptions, RejectReason, RoleSession, TaskOptions, TxnCallOptions,
 };
 use adtb_lang::textual::print;
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
@@ -102,4 +106,35 @@ pub fn in_txn(t: &mut AdHocTransaction<'_, SimRuntime>, text: &str) -> Vec<Strin
         .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
     assert_eq!(1, out.len(), "`{text}` has one result");
     printed(out.remove(0))
+}
+
+struct Unpark {
+    rt: SimRuntime,
+    thread: ThreadId,
+}
+
+impl Wake for Unpark {
+    fn wake(self: Arc<Self>) {
+        self.rt.unpark(self.thread);
+    }
+}
+
+/// Submit `text` for `session` as a task and drain it, returning the failure of the submission or
+/// the call.
+pub fn task(rt: &SimRuntime, session: &RoleSession<SimRuntime>, text: &str) -> Result<(), Error> {
+    let task = session.submit_text(text, &[], TaskOptions::default())?;
+    let waker = Waker::from(Arc::new(Unpark {
+        rt: rt.clone(),
+        thread: rt.current(),
+    }));
+    task.supply(usize::MAX);
+    loop {
+        match task.observe(&waker) {
+            Observation::Pending => rt.park(),
+            Observation::Layout(_) | Observation::Batch(_) => {}
+            Observation::End => task.drained(),
+            Observation::Done(Completion::Failed(e)) => return Err(e),
+            Observation::Done(_) => return Ok(()),
+        }
+    }
 }

@@ -25,6 +25,11 @@ pub struct DynRows {
 }
 
 impl DynRows {
+    /// Returns whether a row left to read satisfies `p`.
+    pub(super) fn any_left(&self, p: impl Fn(&Val) -> bool) -> bool {
+        self.rows.as_slice().iter().any(p)
+    }
+
     /// Returns the type of each row.
     pub fn ty(&self) -> &Ty {
         &self.ty
@@ -60,6 +65,15 @@ pub(super) struct Prepared {
     pub retry: Option<u64>,
     /// Whether a `transact` block of the text is `read_only deferrable`.
     pub deferrable: bool,
+    /// The role session the text runs for, unless it runs with every privilege.
+    pub issuer: Option<Issuer>,
+}
+
+/// The role a text was admitted for and the audit identity of the text.
+#[derive(Clone, Debug)]
+pub(super) struct Issuer {
+    pub role: String,
+    pub text: [u8; 32],
 }
 
 impl Prepared {
@@ -73,9 +87,26 @@ impl Prepared {
         params: &[(&str, Ty, Val)],
         caller: Val,
     ) -> Result<Prepared, Error> {
-        let items = parse_adhoc(text, Options::default())
+        let items = Self::parsed(text)?;
+        Self::of_items(schema, program, bundles, &items, params, caller)
+    }
+
+    /// Returns the items of `text`, reading no schema.
+    pub fn parsed(text: &str) -> Result<Vec<AdhocItem>, Error> {
+        parse_adhoc(text, Options::default())
             .ok()
-            .map_err(|ds| Error::invalid(messages(ds.iter().map(|d| &d.message))))?;
+            .map_err(|ds| Error::invalid(messages(ds.iter().map(|d| &d.message))))
+    }
+
+    /// Returns `items` checked as [`Prepared::new`] checks the text they were parsed from.
+    pub fn of_items(
+        schema: &Arc<Schema>,
+        program: &Program,
+        bundles: &Bundles,
+        items: &[AdhocItem],
+        params: &[(&str, Ty, Val)],
+        caller: Val,
+    ) -> Result<Prepared, Error> {
         if items.iter().any(|i| {
             !matches!(
                 i,
@@ -95,7 +126,7 @@ impl Prepared {
             .iter()
             .map(|(n, ty, _)| ((*n).to_owned(), ty.clone()))
             .collect();
-        let adhoc = check_adhoc_recording(schema, program, &items, &types, bundles, None)
+        let adhoc = check_adhoc_recording(schema, program, items, &types, bundles, None)
             .map_err(Error::diagnostics)?;
         let normal = norm::adhoc(adhoc.schema(schema), program, &adhoc).map_err(|e| {
             Error::rejected(super::error::RejectReason::Internal {
@@ -143,6 +174,7 @@ impl Prepared {
             writes,
             retry,
             deferrable,
+            issuer: None,
         })
     }
 

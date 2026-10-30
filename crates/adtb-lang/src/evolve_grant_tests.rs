@@ -1928,19 +1928,102 @@ fn a_retag_target_covers_a_retag_between_fewer_constructors() {
 #[test]
 fn an_option_closes_a_cycle_when_its_grantee_reaches_its_grantor() {
     let schema = grants().schema().unwrap();
-    let edge = |grantor, grantee, target| OptionEdge {
+    let edge = |grantor, grantee, target| GrantRow {
         grantor,
         grantee,
         privilege: "call",
         target,
+        grant_option: true,
+        dormant: false,
     };
-    let closes = |edges: &[OptionEdge<'_>], new| closes_option_cycle(&schema, edges, new);
+    let closes = |rows: &[GrantRow<'_>], new| closes_option_cycle(&schema, rows, new);
     let held = edge("a", "b", Some("web-2.4"));
     assert!(closes(&[], edge("a", "a", None)));
     assert!(closes(&[held], edge("b", "a", Some("web-2.4"))));
     assert!(closes(&[held], edge("b", "a", Some("web-2.4::q"))));
     assert!(!closes(&[held], edge("b", "a", Some("web-2.5"))));
     assert!(!closes(&[held], edge("a", "c", Some("web-2.4"))));
+    let no_option = GrantRow {
+        grant_option: false,
+        ..held
+    };
+    assert!(!closes(&[no_option], edge("b", "a", Some("web-2.4"))));
+    let dormant = GrantRow {
+        dormant: true,
+        ..held
+    };
+    assert!(closes(&[dormant], edge("b", "a", Some("web-2.4"))));
+}
+
+fn monitor_row<'a>(grantor: &'a str, grantee: &'a str) -> GrantRow<'a> {
+    GrantRow {
+        grantor,
+        grantee,
+        privilege: "monitor",
+        target: None,
+        grant_option: true,
+        dormant: false,
+    }
+}
+
+#[test]
+fn an_option_supports_a_row_its_grantee_gave_of_the_same_privilege_on_a_covered_target() {
+    let schema = grants().schema().unwrap();
+    let option = monitor_row("owner", "ann");
+    let given = GrantRow {
+        grant_option: false,
+        ..monitor_row("ann", "bob")
+    };
+    assert!(option.supports(&schema, &given));
+    assert!(option.keeps(&schema, &given));
+    let unheld = GrantRow {
+        grant_option: false,
+        ..option
+    };
+    assert!(!unheld.supports(&schema, &given));
+    assert!(!unheld.keeps(&schema, &given));
+    let other_grantor = monitor_row("cal", "bob");
+    assert!(!option.supports(&schema, &other_grantor));
+    let other_privilege = GrantRow {
+        privilege: "cancel",
+        ..given
+    };
+    assert!(!option.supports(&schema, &other_privilege));
+    let other_target = GrantRow {
+        target: Some("web-2.4"),
+        ..given
+    };
+    assert!(!option.supports(&schema, &other_target));
+}
+
+#[test]
+fn a_dormant_option_supports_a_row_but_does_not_keep_it() {
+    let schema = grants().schema().unwrap();
+    let given = monitor_row("ann", "bob");
+    let dormant = GrantRow {
+        dormant: true,
+        ..monitor_row("owner", "ann")
+    };
+    assert!(dormant.supports(&schema, &given));
+    assert!(!dormant.keeps(&schema, &given));
+}
+
+#[test]
+fn a_role_s_own_option_does_not_keep_a_row_it_gave() {
+    let schema = grants().schema().unwrap();
+    let given = monitor_row("ann", "bob");
+    let own = monitor_row("ann", "ann");
+    assert!(own.supports(&schema, &given));
+    assert!(!own.keeps(&schema, &given));
+}
+
+#[test]
+fn the_schema_owner_s_option_supports_nothing_that_can_be_orphaned() {
+    let schema = grants().schema().unwrap();
+    let option = monitor_row("web", "owner");
+    let given = monitor_row("owner", "bob");
+    assert!(!option.supports(&schema, &given));
+    assert!(option.keeps(&schema, &given));
 }
 
 #[test]

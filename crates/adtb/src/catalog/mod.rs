@@ -62,7 +62,7 @@ use readers::{Pending, Readers};
 use root::{Changing, Root};
 
 /// The name of the schema owner's role, the grantor of every log grant.
-pub const OWNER_ROLE: &str = "owner";
+pub use adtb_lang::evolve::OWNER_ROLE;
 
 /// The heap id of the large-value store every heap shares.
 const LARGE: u32 = 1;

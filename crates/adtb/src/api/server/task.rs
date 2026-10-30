@@ -336,18 +336,33 @@ impl<R: Runtime> Registered<R> {
 impl<R: Runtime> RoleSession<R> {
     /// Submit ad hoc `text` as a task, each free name typed and bound by `params`.
     ///
-    /// Refuse a session of any role but the embedded owner with `Denied`, and a call the
-    /// admission queue has no room for, without running it.
+    /// A role but the embedded owner holds `adhoc` and issues only commands, each needing what
+    /// the command requires. Refuse any other text of such a role with `Denied`, recorded in the
+    /// audit, before checking it against the schema, and a call the admission queue has no room
+    /// for, without running it.
     pub fn submit_text(
         &self,
         text: &str,
         params: &[(&str, Ty, Val)],
         opts: TaskOptions,
     ) -> Result<Task<R>, Error> {
-        let caller = owner(self, opts.call.assert.as_ref())?;
+        let authority = RoleAuthority {
+            engine: self.engine.clone(),
+        };
+        let caller = authority.admit_caller(self, text, opts.call.assert.as_ref())?;
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
         let _open = e.enter()?;
-        let p = Prepared::new(&e.schema, &e.program, &e.explained(), text, params, caller)?;
+        let items = Prepared::parsed(text)?;
+        let issuer = authority.admit_items(self, &e, &items, &caller, text)?;
+        let mut p = Prepared::of_items(
+            &e.schema,
+            &e.program,
+            &e.explained(),
+            &items,
+            params,
+            caller,
+        )?;
+        p.issuer = issuer;
         let bytes = TASK_BYTES + text.len() + p.bytes();
         submit(&e, Work::Text(Box::new(p)), opts, Priority::AdHoc, bytes)
     }

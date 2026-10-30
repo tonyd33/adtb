@@ -116,6 +116,8 @@ pub enum Error {
     Corrupt(String),
     /// The statement needs a form the engine does not run yet.
     Unsupported(String),
+    /// The role the statement runs for lacks a privilege, as this text states.
+    Denied(String),
     SequenceExhausted,
     /// The plan or a value breaks the invariant this text names, one the checker guarantees.
     Internal(String),

@@ -10,7 +10,7 @@ use adtb::runtime::Threads;
 use adtb::storage::{PageKind, Pager, Pid};
 use adtb::verify::{self, Inventory, Problem, Report, Sum};
 use adtb::write::Txn;
-use adtb::{CallOptions, Database, Log};
+use adtb::{CallOptions, Capability, Database, Log};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 
 use adtb_sim::Faults;
@@ -827,6 +827,44 @@ fn an_entry_naming_an_empty_slot_is_an_orphan_finding() {
         let got = verified(&db, None);
         assert_eq!(1, got.len(), "{got:?}");
         assert!(got[0].starts_with("Orphan"), "{got:?}");
+    });
+}
+
+#[test]
+fn verify_is_refused_and_audited_for_a_role_when_a_violation_holds_a_witness() {
+    api::once(49, |rt| {
+        let db = open_app(rt.clone());
+        seed_app(&db);
+        let authority = db.role_authority();
+        authority.create_role("dba").unwrap();
+        for capability in [Capability::Adhoc, Capability::Maintain] {
+            authority
+                .grant_capability("dba", capability, false)
+                .unwrap();
+        }
+        let dba = authority.session("dba").unwrap();
+        api::task(&rt, &dba, "verify").expect("a sound database verifies");
+        let w = db.write_path();
+        let heap = w.heap_named("app::users", "User").unwrap();
+        let ix = index(&db, "app::users", "key id");
+        let id = entry(&db, &ix, Value::I64(1)).ctor;
+        beneath(&db, |tx| {
+            let row = vec![Value::I64(99), Value::Text(String::new())];
+            let tid = heap.insert(w.pager(), tx.xid().unwrap().0, &row).unwrap();
+            let by_id = Entry {
+                key: vec![Value::I64(99)],
+                ctor: id,
+                tid,
+            };
+            assert!(ix.insert(w.pager(), &by_id).unwrap());
+        });
+        let got = api::task(&rt, &dba, "verify");
+        assert!(format!("{got:?}").contains("Denied"), "{got:?}");
+        assert!(!format!("{got:?}").contains("key(99)"), "{got:?}");
+        assert_eq!(
+            1,
+            api::query(&db, "from a in catalog::audit.Denied select a.seq").len()
+        );
     });
 }
 

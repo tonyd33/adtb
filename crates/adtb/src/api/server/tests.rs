@@ -593,6 +593,71 @@ fn a_self_given_option_is_no_remaining_option_and_is_deleted_with_its_revoke() {
     assert!(detail.contains("to `bob`"), "{detail}");
 }
 
+/// Set `dormant` on the one grant of `web` that `owner` gave.
+fn dormant_owner_grant(authority: &RoleAuthority) {
+    authority
+        .access(true, |e, tx, id, changes| {
+            let t = Tables::new(&e.schema, id);
+            for row in t.read(e, tx, t.grants)? {
+                let Val::Ctor(ctor, values) = &row else {
+                    panic!("the grant fixture is a constructor");
+                };
+                let declared = super::layout::row(&e.schema, t.grants, *ctor);
+                let mut fields: Vec<_> = declared
+                    .iter()
+                    .zip(values.iter())
+                    .map(|((name, _), value)| (name.as_str(), value.clone()))
+                    .collect();
+                let owned = fields
+                    .iter()
+                    .any(|(name, value)| *name == "grantor" && *value == Val::text("owner"));
+                let web = fields
+                    .iter()
+                    .any(|(name, value)| *name == "grantee" && *value == Val::text("web"));
+                if owned && web {
+                    let entry = fields.iter_mut().find(|(name, _)| *name == "dormant");
+                    entry.expect("a grant row is dormant or not").1 = Val::bool(true);
+                    changes.delete(t.grants, row.clone());
+                    changes.insert(t.grants, t.row(t.grants, "RoleGrant", fields));
+                }
+            }
+            Ok(())
+        })
+        .expect("mark the trusted grant fixture");
+}
+
+#[test]
+fn a_dormant_option_keeps_no_row_a_deployment_revoke_orphans() {
+    for dormant in [false, true] {
+        let (_scratch, db) = opened(&Log::default());
+        let authority = db.role_authority();
+        for role in ["web", "bob", "ann"] {
+            authority.create_role(role).unwrap();
+        }
+        authority
+            .grant_capability("web", Capability::Monitor, true)
+            .unwrap();
+        authority
+            .grant_capability("ann", Capability::Schema, false)
+            .unwrap();
+        let ann = authority.session("ann").unwrap();
+        let web = authority.session("web").unwrap();
+        authority
+            .grant_capability_as(&ann, "web", Capability::Monitor, true)
+            .unwrap();
+        authority
+            .grant_capability_as(&web, "bob", Capability::Monitor, false)
+            .unwrap();
+        if dormant {
+            dormant_owner_grant(&authority);
+            let detail = invalid(authority.revoke(&ann, "revoke monitor from web"));
+            assert!(detail.contains("to `bob`"), "{detail}");
+        } else {
+            authority.revoke(&ann, "revoke monitor from web").unwrap();
+        }
+    }
+}
+
 #[test]
 fn a_revoke_from_the_schema_owner_orphans_nothing() {
     let (_scratch, db) = opened(&Log::default());
@@ -611,4 +676,14 @@ fn a_revoke_from_the_schema_owner_orphans_nothing() {
     authority
         .revoke(&owner, "revoke monitor from owner")
         .unwrap();
+}
+
+#[test]
+fn an_audit_write_after_close_is_refused_as_closed() {
+    let (_scratch, db) = opened(&Log::new(["module example\nadd module example\n"]));
+    let engine = db.engine.clone();
+    let caller = engine.principal(None).expect("principal");
+    db.close().expect("close");
+    let got = engine.audit_denied("w", &caller, &[0; 32]);
+    assert!(format!("{got:?}").contains("Closed"), "{got:?}");
 }

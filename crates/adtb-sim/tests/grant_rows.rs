@@ -995,6 +995,7 @@ fn an_operator_revoke_that_orphans_rows_granted_under_the_option_is_refused() {
                 privilege: "read",
                 target: Some("shop::payments.Card (customer)"),
                 grant_option: false,
+                dormant: false,
             },
         );
         let revoke = "module shop\nrevoke read payments.Card (customer) from web\n";
@@ -1035,6 +1036,7 @@ fn an_operator_revoke_keeps_rows_a_narrower_option_does_not_cover() {
                 privilege: "read",
                 target: Some("shop::payments.Invoice (customer)"),
                 grant_option: false,
+                dormant: false,
             },
         );
         let revoke = "module shop\nrevoke read payments.Card (customer) from web\n";
@@ -1165,6 +1167,7 @@ fn relied_on_by_bob(
             privilege: "read",
             target: Some(target),
             grant_option: false,
+            dormant: false,
         },
     );
 }
@@ -1226,6 +1229,7 @@ fn an_operator_grant_closing_a_cycle_of_options_is_refused() {
                 privilege: "read",
                 target: Some("shop::payments.Card (customer)"),
                 grant_option: true,
+                dormant: false,
             },
         );
         let give = "module shop\ngrant read payments.Card (customer) to web with grant option\n";
@@ -1318,4 +1322,69 @@ fn a_logged_privilege_list_round_trips_through_replay() {
     });
     let versions = replays_alike(312, &log);
     assert_eq!(3, versions[1][1].len(), "{:?}", versions[1][1]);
+}
+
+#[test]
+fn a_dormant_deployment_option_keeps_no_row_a_revoked_option_supported() {
+    finished(&mut Sim::new(320, Config::default()), |rt| {
+        let (mut catalog, pager, txns) = shop(&rt);
+        let give = "module shop\ngrant read payments.Card (customer) to web with grant option\n";
+        catalog.migrate(&pager, &txns, give).expect("the grant");
+        relied_on_by_bob(&catalog, &pager, &txns, "shop::payments.Card (customer)");
+        grants::deployment_row(
+            &catalog,
+            &pager,
+            &txns,
+            101,
+            grants::DeploymentRow {
+                grantee: "web",
+                grantor: "ann",
+                privilege: "read",
+                target: Some("shop::payments.Card (customer)"),
+                grant_option: true,
+                dormant: true,
+            },
+        );
+        let revoke = "module shop\nrevoke read payments.Card (customer) from web\n";
+        assert!(
+            matches!(
+                catalog.migrate(&pager, &txns, revoke),
+                Err(CatalogError::Refused(_))
+            ),
+            "a dormant option allows nothing"
+        );
+    });
+}
+
+#[test]
+fn a_dormant_log_option_keeps_no_row_a_revoked_option_supported() {
+    finished(&mut Sim::new(321, Config::default()), |rt| {
+        let (mut catalog, pager, txns) = shop(&rt);
+        let give = "module shop\ngrant read payments (customer) to ghost with grant option\ngrant read payments.Card (customer) to ghost with grant option\n";
+        catalog
+            .replay(&pager, &txns, give)
+            .expect("the dormant grants");
+        grants::deployment_row(
+            &catalog,
+            &pager,
+            &txns,
+            100,
+            grants::DeploymentRow {
+                grantee: "bob",
+                grantor: "ghost",
+                privilege: "read",
+                target: Some("shop::payments.Card (customer)"),
+                grant_option: false,
+                dormant: false,
+            },
+        );
+        let revoke = "module shop\nrevoke read payments.Card (customer) from ghost\n";
+        assert!(
+            matches!(
+                catalog.replay(&pager, &txns, revoke),
+                Err(CatalogError::Refused(_))
+            ),
+            "a dormant option allows nothing"
+        );
+    });
 }

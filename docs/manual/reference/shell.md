@@ -6,7 +6,8 @@ queries, writes, `transact` blocks and the commands listed at the end
 of this page.
 
 ```text
-Usage: adtb [--create] [--schema FILE]... FILE [-c TEXT]
+Usage: adtb [OPTIONS] <FILE>
+       adtb <COMMAND>
 ```
 
 The examples on this page use this schema, saved as `shelter.adt`:

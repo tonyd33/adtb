@@ -524,9 +524,16 @@ bundle` command and `BlockingMigration` notices are not.
 The implemented authority provider is not an execution authorization
 boundary for the existing owner facade.
 
-`Registered::submit` and `RoleSession::submit_text` return an owned
-`Task` for the embedded owner's role and refuse every other role with
-`Denied`; the engine starts its task scheduler on the first submit. A
+`Registered::submit` returns an owned `Task` for the embedded owner's
+role and refuses every other role with `Denied`.
+`RoleSession::submit_text` does the same for a query, a write or a
+command that names a statement; any other role holding `adhoc` submits
+commands that capabilities or bundle ownership alone decide, and the
+engine decides each from the parsed text at submit, before checking it
+against the schema. A refusal for a lack of privilege, also
+of `verify` rows holding a `Violation` witness, writes a `Denied` row of
+`catalog::audit` in a system transaction. The engine starts its task
+scheduler on the first submit. A
 read holds its snapshot until the drain is acknowledged, dropped or
 cancelled. A task that is one read-only query of set type is produced a
 unit at a time under supplied capacity when the query reads no temp,

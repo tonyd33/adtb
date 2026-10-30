@@ -533,7 +533,7 @@ fn help_prints_the_flags() {
     let out = adtb(&["--help"], "");
     assert!(out.status.success(), "{out:?}");
     let help = String::from_utf8(out.stdout).unwrap();
-    assert!(help.contains("Usage: adtb [--create]"), "{help}");
+    assert!(help.contains("Usage: adtb [OPTIONS] <FILE>"), "{help}");
     assert!(help.contains("--schema <FILE>"), "{help}");
 }
 

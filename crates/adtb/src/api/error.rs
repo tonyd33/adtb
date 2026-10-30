@@ -329,6 +329,7 @@ impl Error {
                     Exceeded::Time { after } => Limit::Time { after },
                 },
             }),
+            write::Error::Denied(detail) => Error::rejected(RejectReason::Denied { detail }),
             write::Error::Cancelled => Error::rejected(RejectReason::Cancelled),
             write::Error::DeadlineExceeded => Error::rejected(RejectReason::DeadlineExceeded),
             write::Error::MissingFunction(function) => Error::Fatal {

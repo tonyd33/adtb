@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use adtb_lang::ast::{self, BundleName, ExprKind, KeyArgs, RecordExpr, UnOp};
 use adtb_lang::check::{Command, Explained, Program};
 use adtb_lang::kernel::{Kind, Terms, Tm, alpha_equal};
 use adtb_lang::schema::{Schema, ValueDef};
@@ -12,8 +13,8 @@ use crate::plan::explain::{Actual, Node, json_text, object};
 use crate::runtime::Runtime;
 use crate::write::{self, Bounds, Local, Outcome, Text, Txn};
 
-use super::text::{DynRows, Prepared, rows};
-use super::{Engine, Error, unsupported};
+use super::text::{DynRows, Issuer, Prepared, rows};
+use super::{Capability, Engine, Error, unsupported};
 
 /// The rows [`Engine::swap_row`] replaces.
 pub(super) enum Old {
@@ -47,6 +48,91 @@ pub(super) fn runs(c: &Command) -> Result<(), Error> {
     }
 }
 
+/// What a role but the schema owner must hold to issue a parsed command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Need<'c> {
+    Capabilities(&'static [Capability]),
+    BundleOwner(&'c BundleName),
+    /// More than capabilities decide: reads the role must hold, the calls it owns, or a value the
+    /// checker would have to read a statement to refuse. No role issues it.
+    SchemaOwner,
+}
+
+/// Returns what a role must hold to issue `c`.
+pub(super) fn need(c: &ast::Command) -> Need<'_> {
+    use Capability::{Cancel, Configure, Maintain, Schema, WriteFiles};
+    use ast::Command as C;
+    match c {
+        C::PinPlan(k) | C::UnpinPlan(k) if key_literal(k) => Need::Capabilities(&[Maintain]),
+        C::Reindex { index, .. }
+            if index
+                .as_ref()
+                .is_none_or(|(fields, _)| fields.iter().all(field_path)) =>
+        {
+            Need::Capabilities(&[Maintain])
+        }
+        C::Vacuum(_) | C::Verify(_) | C::Compact | C::FinalizeUpgrade | C::Backup { .. } => {
+            Need::Capabilities(&[Maintain])
+        }
+        C::TerminateSession(k) if key_literal(k) => Need::Capabilities(&[Cancel]),
+        C::SetSetting(_, value) if literal(value) => Need::Capabilities(&[Configure]),
+        C::RotateKek(_) | C::RotateDek | C::DestroyDek(_) => Need::Capabilities(&[Configure]),
+        C::ApplyMigrations(_) => Need::Capabilities(&[Schema]),
+        C::ArchiveAudit { through, .. } if literal(through) => {
+            Need::Capabilities(&[Maintain, WriteFiles])
+        }
+        C::RetireBundle(b) | C::SupersedeBundle(b, _) => Need::BundleOwner(b),
+        C::PinPlan(_)
+        | C::UnpinPlan(_)
+        | C::Reindex { .. }
+        | C::TerminateSession(_)
+        | C::SetSetting(..)
+        | C::ArchiveAudit { .. }
+        | C::Explain { .. }
+        | C::CancelCall(_)
+        | C::Export { .. }
+        | C::RegisterBundle(_)
+        | C::PrintSchema
+        | C::Dump { .. }
+        | C::Restore { .. } => Need::SchemaOwner,
+    }
+}
+
+/// Returns whether `e` is written with literals, records and constructors alone.
+fn literal(e: &ast::Expr) -> bool {
+    let record = |r: &RecordExpr| matches!(r, RecordExpr::Fields(fields, _) if fields.iter().all(|(_, v)| literal(v)));
+    match &e.kind {
+        ExprKind::Lit(_) | ExprKind::Unit => true,
+        ExprKind::Unary(UnOp::Neg, inner) => literal(inner),
+        ExprKind::Record(r) => record(r),
+        ExprKind::Ctor { record: r, .. } => r.as_ref().is_none_or(record),
+        _ => false,
+    }
+}
+
+/// Returns whether `e` is a literal or a relation's `key` of literals.
+fn key_literal(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ExprKind::KeyCall(relation, args) => {
+            matches!(relation.kind, ExprKind::Name(_))
+                && match args {
+                    KeyArgs::Value(v) => literal(v),
+                    KeyArgs::Named(fields) => fields.iter().all(|(_, v)| literal(v)),
+                }
+        }
+        _ => literal(e),
+    }
+}
+
+/// Returns whether `e` is a name followed by field selections.
+fn field_path(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ExprKind::Name(_) => true,
+        ExprKind::Field(inner, _) => field_path(inner),
+        _ => false,
+    }
+}
+
 /// Refuse a command that belongs to no transaction, for running inside one.
 pub(super) fn outside_transaction(c: &Command) -> Result<(), Error> {
     match c {
@@ -58,7 +144,7 @@ pub(super) fn outside_transaction(c: &Command) -> Result<(), Error> {
 }
 
 /// Returns the words a command starts with.
-fn word(c: &Command) -> &'static str {
+pub(super) fn word(c: &Command) -> &'static str {
     match c {
         Command::Explain { .. } => "explain",
         Command::PinPlan(_) => "pin plan",
@@ -181,7 +267,13 @@ impl<R: Runtime> Engine<R> {
                 Ok(rows(schema, ty, vec![row]))
             }
             Command::Vacuum(rel) => self.vacuumed(schema, *rel),
-            Command::Verify(rel) => self.verified(schema, *rel),
+            Command::Verify(rel) => {
+                let found = self.verified(schema, *rel)?;
+                if let Some(issuer) = &p.issuer {
+                    self.refuse_witnesses(schema, issuer, p.caller(), &found)?;
+                }
+                Ok(found)
+            }
             Command::Reindex {
                 relation, index, ..
             } => {
@@ -283,6 +375,31 @@ impl<R: Runtime> Engine<R> {
                 },
             ],
         ))
+    }
+
+    /// Refuse the rows `found` of `verify` for `issuer` when a `Violation` among them holds a
+    /// witness, which reveals field values, recording the refusal.
+    fn refuse_witnesses(
+        &self,
+        schema: &Schema,
+        issuer: &Issuer,
+        caller: &Val,
+        found: &DynRows,
+    ) -> Result<(), write::Error> {
+        let findings = engine_relation(schema, "sys", "verify_findings")?;
+        let violation = schema
+            .ty(schema.relation(findings).elem_def)
+            .ctor_index("Violation")
+            .ok_or_else(|| write::Error::Internal("`Finding` declares `Violation`".into()))?;
+        if !found.any_left(|row| matches!(row, Val::Ctor(c, _) if *c == violation)) {
+            return Ok(());
+        }
+        self.audit_denied(&issuer.role, caller, &issuer.text)
+            .map_err(|e| write::Error::Internal(format!("recording a denied call: {e:?}")))?;
+        Err(write::Error::Denied(format!(
+            "role `{}` lacks `read` on the rows of the `Violation` witnesses of `verify`",
+            issuer.role
+        )))
     }
 
     /// Vacuums `rel`. Returns one row per constructor relation.

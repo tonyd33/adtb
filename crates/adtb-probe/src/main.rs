@@ -34,8 +34,6 @@ const EXPLAIN: usize = 5;
 #[derive(Debug, Parser)]
 #[command(
     name = "adtb-probe",
-    override_usage = "adtb-probe --schema FILE [--data FILE] [--explain] [--checks NAME] \
-                      [--reference | --engine] TEXT",
     about = "Check the schema FILE and the ad hoc TEXT, printing each refusal with its line and \
              column. Then run TEXT on a fresh database of the reference interpreter and of the \
              engine over the simulator, print each outcome and whether they agree. TEXT `-` reads \

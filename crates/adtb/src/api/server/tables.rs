@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use adtb_lang::evolve::GrantRow;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{RelId, Ty};
@@ -35,6 +37,17 @@ pub(super) struct Grant {
 }
 
 impl Grant {
+    pub(super) fn row(&self) -> GrantRow<'_> {
+        GrantRow {
+            grantor: &self.grantor,
+            grantee: &self.grantee,
+            privilege: &self.privilege,
+            target: self.target.as_deref(),
+            grant_option: self.grant_option,
+            dormant: self.dormant,
+        }
+    }
+
     pub(super) fn capability(&self, capability: Capability, name: &str) -> bool {
         self.kind == "Deployment"
             && self.privilege == capability.name()
@@ -327,25 +340,65 @@ impl<'s> Tables<'s> {
         statement: String,
     ) -> Result<(), Error> {
         let principal = e.principal(None)?;
+        let event = ("statement", Val::text(&statement));
+        self.audit_row(e, tx, changes, "Grant", (OWNER_ROLE, &principal), event)
+    }
+
+    /// Record that `role`, running for `caller`, was refused ad hoc text of hash `text`.
+    pub(super) fn audit_denied<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        tx: &Txn,
+        changes: &mut Changes,
+        role: &str,
+        caller: &Val,
+        text: &[u8; 32],
+    ) -> Result<(), Error> {
+        let prelude = self
+            .schema
+            .module_named("prelude")
+            .ok_or_else(|| malformed("the schema has module prelude"))?;
+        let origin = self.schema.module(prelude).types["Origin"];
+        let adhoc = self
+            .schema
+            .ty(origin)
+            .ctor_index("AdHoc")
+            .ok_or_else(|| malformed("`Origin` declares `AdHoc`"))?;
+        let event = (
+            "origin",
+            Val::ctor(adhoc, vec![Val::Bytes(Arc::from(text.as_slice()))]),
+        );
+        self.audit_row(e, tx, changes, "Denied", (role, caller), event)
+    }
+
+    fn audit_row<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        tx: &Txn,
+        changes: &mut Changes,
+        ctor: &str,
+        (role, principal): (&str, &Val),
+        event: (&str, Val),
+    ) -> Result<(), Error> {
         let ty = Ty::Data {
             def: self.schema.principal,
             args: Vec::new(),
             ctors: None,
         };
-        let principal = print(&principal, &Form::of(self.schema, &ty))
-            .map_err(|_| malformed("the embedded owner's principal prints"))?;
+        let principal = print(principal, &Form::of(self.schema, &ty))
+            .map_err(|_| malformed("a principal prints"))?;
         let id = self.next_id(e, tx, self.audit)?;
         changes.insert(
             self.audit,
             self.row(
                 self.audit,
-                "Grant",
+                ctor,
                 vec![
                     ("seq", Val::Int(id)),
                     ("at", Val::Instant(e.clock())),
-                    ("role", Val::text(OWNER_ROLE)),
+                    ("role", Val::text(role)),
                     ("principal", Val::text(&principal)),
-                    ("statement", Val::text(&statement)),
+                    event,
                 ],
             ),
         );

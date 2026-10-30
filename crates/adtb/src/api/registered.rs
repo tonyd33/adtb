@@ -1215,6 +1215,7 @@ fn prepared(checked: &Checked, entry: &Entry, args: &[Val], caller: Val) -> Prep
         writes: entry.writes,
         retry: entry.retry,
         deferrable: false,
+        issuer: None,
     }
 }
 

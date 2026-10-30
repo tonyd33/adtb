@@ -19,8 +19,6 @@ const CONTINUE: &str = "  ... ";
 #[derive(Debug, Parser)]
 #[command(
     name = "adtb",
-    override_usage = "adtb [--create] [--schema FILE]... FILE [-c TEXT]\n       \
-                      adtb verify [--schema FILE]... FILE",
     args_conflicts_with_subcommands = true,
     subcommand_negates_reqs = true,
     about = "Open the database FILE and run ad hoc text against it: TEXT when -c gives one, \

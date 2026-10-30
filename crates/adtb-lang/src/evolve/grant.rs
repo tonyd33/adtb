@@ -747,20 +747,48 @@ pub fn target_covers(
     }
 }
 
-/// A row of `catalog::grants` that holds a grant option.
+/// The role of the schema owner, the grantor of every operator grant.
+pub const OWNER_ROLE: &str = "owner";
+
+/// The fields of a row of `catalog::grants` that decide which rows its grant option supports.
 #[derive(Clone, Copy, Debug)]
-pub struct OptionEdge<'a> {
+pub struct GrantRow<'a> {
     pub grantor: &'a str,
     pub grantee: &'a str,
     pub privilege: &'a str,
     pub target: Option<&'a str>,
+    pub grant_option: bool,
+    pub dormant: bool,
 }
 
-/// Returns whether a grant with grant option of `new` would close a cycle among `edges`: its
-/// grantee is its grantor, or a role its grantor's option descends from.
-pub fn closes_option_cycle(schema: &Schema, edges: &[OptionEdge<'_>], new: OptionEdge<'_>) -> bool {
-    let overlaps = |e: &OptionEdge<'_>| {
-        e.privilege == new.privilege
+impl GrantRow<'_> {
+    fn covers(&self, schema: &Schema, row: &GrantRow<'_>) -> bool {
+        self.grant_option
+            && self.grantee == row.grantor
+            && self.privilege == row.privilege
+            && target_covers(schema, row.privilege, self.target, row.target)
+    }
+
+    /// Returns whether deleting this row's option takes the support of `row`: its grantee, not the
+    /// schema owner, gave `row` under the option.
+    pub fn supports(&self, schema: &Schema, row: &GrantRow<'_>) -> bool {
+        self.grantee != OWNER_ROLE && self.covers(schema, row)
+    }
+
+    /// Returns whether this row still supports `row` when another option of its grantee is lost:
+    /// it covers `row`, is not dormant, and its grantor is another role.
+    pub fn keeps(&self, schema: &Schema, row: &GrantRow<'_>) -> bool {
+        !self.dormant && self.grantor != self.grantee && self.covers(schema, row)
+    }
+}
+
+/// Returns whether a grant with grant option of `new` would close a cycle among the options of
+/// `rows`, dormant ones included: its grantee is its grantor, or a role its grantor's option
+/// descends from.
+pub fn closes_option_cycle(schema: &Schema, rows: &[GrantRow<'_>], new: GrantRow<'_>) -> bool {
+    let overlaps = |e: &GrantRow<'_>| {
+        e.grant_option
+            && e.privilege == new.privilege
             && (target_covers(schema, new.privilege, new.target, e.target)
                 || target_covers(schema, new.privilege, e.target, new.target))
     };
@@ -772,8 +800,7 @@ pub fn closes_option_cycle(schema: &Schema, edges: &[OptionEdge<'_>], new: Optio
         }
         if seen.insert(role) {
             frontier.extend(
-                edges
-                    .iter()
+                rows.iter()
                     .filter(|e| e.grantor == role && overlaps(e))
                     .map(|e| e.grantee),
             );

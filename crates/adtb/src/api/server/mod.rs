@@ -11,9 +11,7 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Weak};
 
 use adtb_lang::ast::{AdhocItem, OperatorKind, Revoke};
-use adtb_lang::evolve::{
-    OptionEdge, Source, closes_option_cycle, deployment_revoke, target_covers,
-};
+use adtb_lang::evolve::{GrantRow, Source, closes_option_cycle, deployment_revoke};
 use adtb_lang::lex::{Tok, lex};
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::schema::Schema;
@@ -360,30 +358,13 @@ fn require<R: Runtime>(
 /// Returns each row that a deleted row's grant option supported and that no remaining option of
 /// its grantor from another role covers, printed.
 fn orphans(schema: &Schema, grants: &[Grant], deleted: &BTreeSet<i64>) -> Vec<String> {
-    let covers = |by: &Grant, o: &Grant| {
-        by.grantee == o.grantor
-            && by.privilege == o.privilege
-            && by.grant_option
-            && target_covers(
-                schema,
-                &o.privilege,
-                by.target.as_deref(),
-                o.target.as_deref(),
-            )
-    };
-    grants
-        .iter()
-        .filter(|o| !deleted.contains(&o.id))
+    let (gone, left): (Vec<&Grant>, Vec<&Grant>) =
+        grants.iter().partition(|g| deleted.contains(&g.id));
+    left.iter()
         .filter(|o| {
-            let held = |g: &&Grant| covers(g, o);
-            grants
-                .iter()
-                .filter(held)
-                .any(|g| deleted.contains(&g.id) && g.grantee != OWNER_ROLE)
-                && !grants
-                    .iter()
-                    .filter(held)
-                    .any(|g| !deleted.contains(&g.id) && !g.dormant && g.grantor != g.grantee)
+            let row = o.row();
+            gone.iter().any(|g| g.row().supports(schema, &row))
+                && !left.iter().any(|g| g.row().keeps(schema, &row))
         })
         .map(|o| {
             format!(
@@ -401,23 +382,16 @@ fn closes_cycle<R: Runtime>(
     grantee: &str,
     capability: Capability,
 ) -> bool {
-    let edges: Vec<OptionEdge<'_>> = grants
-        .iter()
-        .filter(|g| g.grant_option)
-        .map(|g| OptionEdge {
-            grantor: &g.grantor,
-            grantee: &g.grantee,
-            privilege: &g.privilege,
-            target: g.target.as_deref(),
-        })
-        .collect();
-    let new = OptionEdge {
+    let rows: Vec<GrantRow<'_>> = grants.iter().map(Grant::row).collect();
+    let new = GrantRow {
         grantor,
         grantee,
         privilege: capability.name(),
         target: None,
+        grant_option: true,
+        dormant: false,
     };
-    closes_option_cycle(&e.schema, &edges, new)
+    closes_option_cycle(&e.schema, &rows, new)
 }
 
 fn diagnosed(diags: &[Diag]) -> String {
