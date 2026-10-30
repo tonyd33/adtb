@@ -2,6 +2,7 @@
 //! that hold their deployment state, leases, retirement and supersession.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use adtb_lang::ast::{self, BundleHeader, BundleName, ExprKind, HeaderClause, Lit};
 use adtb_lang::check::Command;
@@ -18,7 +19,7 @@ use crate::storage::Pager;
 use super::error::{Error, RejectReason};
 use super::settings::Settings;
 use super::text::{DynRows, rows};
-use super::{Engine, OWNER_ID, OpenError, corrupt};
+use super::{Engine, OWNER_ID, OWNER_ROLE, OpenError, corrupt};
 
 #[cfg(test)]
 #[path = "bundle_tests.rs"]
@@ -233,6 +234,14 @@ impl Stored {
                 (m.origin == Origin::Command).then(|| (r.header.name.clone(), m.text.clone()))
             })
             .collect()
+    }
+
+    /// Returns the id of the role bundle row `row` runs as.
+    pub(super) fn owner_of(&self, row: &Row) -> i64 {
+        self.deployed
+            .registered
+            .get(&row.id)
+            .map_or(OWNER_ID, |m| m.role)
     }
 
     pub(super) fn next_bundle(&self) -> i64 {
@@ -560,6 +569,38 @@ pub(super) fn stored<R: Runtime>(
     Ok(out)
 }
 
+/// Returns the name of each role of `catalog::roles` the latest commit holds, by id.
+pub(super) fn roles<R: Runtime>(
+    catalog: &Catalog,
+    pager: &Pager<R>,
+    txns: &Transactions<R>,
+) -> Result<BTreeMap<i64, String>, OpenError> {
+    let schema = catalog.schema();
+    let r = catalog_relation(schema, "roles");
+    let ctor = schema
+        .ty(schema.relation(r).elem_def)
+        .ctor_index("Role")
+        .expect("catalog roles declares Role");
+    let fields = layout::row(schema, r, ctor);
+    let at = |name: &str| {
+        fields
+            .iter()
+            .position(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("catalog Role declares {name}"))
+    };
+    let (id, name) = (at("id"), at("name"));
+    let mut out = BTreeMap::new();
+    for (_, row) in catalog.committed_rows(pager, txns, r).map_err(corrupt)? {
+        match (row.get(id), row.get(name)) {
+            (Some(Value::I64(id)), Some(Value::Text(name))) => {
+                out.insert(*id, name.clone());
+            }
+            _ => return Err(corrupt(format!("a role row is {row:?}"))),
+        }
+    }
+    Ok(out)
+}
+
 /// The rows one deployment write puts in place: each bundle row with the row it replaces, and
 /// the calls it adds, each with its row id and its bundle's id.
 #[derive(Default)]
@@ -629,7 +670,7 @@ pub(super) fn record<R: Runtime>(
             let row = Row {
                 id: next,
                 header: (*h).clone(),
-                owner: super::OWNER_ROLE.to_owned(),
+                owner: OWNER_ROLE.to_owned(),
                 renewed: now,
                 state: State::Active,
             };
@@ -740,11 +781,9 @@ pub(super) fn lapsed(stored: &Stored, header: &Header, now: i64, s: &Settings) -
         })
 }
 
-/// Make each bundle of `regs`, registered by an open, live: start a new lease for one that was
-/// not live, renew a lease that is due, store the calls of one never registered, record the
-/// successful registration of one without, and give the schema owner each family with no owner,
-/// as one durable transaction, at `now` under the file settings `s`. Returns the row of every
-/// bundle and the deployment facts.
+/// Make each bundle of `regs`, given to an open, live as [`claim`] does for the schema owner, as
+/// one durable transaction, at `now` under the file settings `s`. Returns the rows as they
+/// then stand.
 pub(super) fn register<R: Runtime>(
     catalog: &Catalog,
     pager: &Pager<R>,
@@ -754,72 +793,62 @@ pub(super) fn register<R: Runtime>(
     now: i64,
     s: &Settings,
 ) -> Result<Stored, OpenError> {
-    let mut writes = Writes::default();
-    let mut next_call = stored.next_call();
-    let mut families = stored.deployed.families.clone();
+    let owner = Registrant {
+        id: OWNER_ID,
+        name: OWNER_ROLE,
+    };
+    let mut claims = Vec::with_capacity(regs.len());
     for p in regs {
-        let (h, calls) = (p.header, &p.calls);
-        let row = stored
-            .bundles
-            .get(&h.name)
-            .unwrap_or_else(|| panic!("bundle {} is recorded before it registers", h.name));
-        if !row.live(now, s) || row.renewal_due(now, s) {
-            let mut next = row.clone();
-            next.state = State::Active;
-            next.renewed = now;
-            writes.bundles.push((Some(row.clone()), next));
-        }
-        if stored.calls_of(row.id).is_empty() {
-            for c in calls {
-                writes.calls.push((next_call, row.id, c.clone()));
-                next_call += 1;
-            }
-        }
-        if !stored.deployed.registered.contains_key(&row.id) {
-            let mark = Mark {
-                role: OWNER_ID,
-                origin: Origin::Open,
-                text: p.text.to_owned(),
-            };
-            writes.facts.push(Fact::Registered(row.id, mark));
-        }
-        if !families.contains_key(&h.family) {
-            families.insert(h.family.clone(), OWNER_ID);
-            writes.facts.push(Fact::Family(h.family.clone(), OWNER_ID));
-        }
+        let c = claim(&stored, p, owner, Origin::Open, now, s);
+        c.record(&mut stored);
+        claims.push(c);
     }
-    let changed: Vec<Row> = writes.bundles.iter().map(|(_, r)| r.clone()).collect();
-    let facts = writes.facts.clone();
-    let added = writes.calls.clone();
+    let mut writes = Writes::default();
+    for c in claims {
+        if c.changed() {
+            writes.bundles.push((c.old, c.row.clone()));
+        }
+        let bundle = c.row.id;
+        writes
+            .calls
+            .extend(c.calls.into_iter().map(|(id, call)| (id, bundle, call)));
+        writes.facts.extend(c.facts);
+    }
     writes.commit(catalog, pager, txns)?;
-    for row in changed {
-        stored.bundles.insert(row.header.name.clone(), row);
-    }
-    for (id, bundle, c) in added {
-        stored.calls.entry(bundle).or_default().push((id, c));
-    }
-    stored.deployed.record(&facts);
     Ok(stored)
 }
 
-/// The writes of registering a bundle through a role session: its row, the row it had, its
-/// new calls with their row ids, and the deployment facts.
+/// The role a bundle registers as: its id and name.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Registrant<'a> {
+    pub(super) id: i64,
+    pub(super) name: &'a str,
+}
+
+/// The writes of making a bundle live: its row, the row it had, the id of the role it runs as,
+/// its new calls with their row ids, and the deployment facts.
 pub(super) struct Claim {
     pub(super) old: Option<Row>,
     pub(super) row: Row,
+    pub(super) owner: i64,
     pub(super) calls: Vec<(i64, CallRow)>,
     pub(super) facts: Vec<Fact>,
 }
 
-/// Returns the writes registering `p` over `stored` as role `owner` of id `role`, at `now` under
-/// the file settings `s`. A bundle recorded with no successful registration becomes the role's;
-/// one registered before keeps its owner. The first successful registration of a family gives
-/// the role the family.
+/// Returns the writes registering `p` over `stored` as `by`, through `origin`, at `now` under
+/// the file settings `s`.
+///
+/// Postconditions:
+/// - A bundle with no successful registration becomes `by`'s; one registered before keeps its
+///   owner.
+/// - A bundle that is not live gets a new lease, and one whose renewal is due is renewed.
+/// - A bundle with no stored calls stores those of `p`.
+/// - The first successful registration of a family gives `by` the family.
 pub(super) fn claim(
     stored: &Stored,
     p: &Passed<'_>,
-    owner: &str,
-    role: i64,
+    by: Registrant<'_>,
+    origin: Origin,
     now: i64,
     s: &Settings,
 ) -> Claim {
@@ -830,12 +859,12 @@ pub(super) fn claim(
     let mut row = old.clone().unwrap_or_else(|| Row {
         id: stored.next_bundle(),
         header: p.header.clone(),
-        owner: owner.to_owned(),
+        owner: by.name.to_owned(),
         renewed: now,
         state: State::Active,
     });
     if marked.is_none() {
-        row.owner = owner.to_owned();
+        row.owner = by.name.to_owned();
     }
     if !row.live(now, s) || row.renewal_due(now, s) {
         row.state = State::Active;
@@ -850,29 +879,34 @@ pub(super) fn claim(
     let mut facts = Vec::new();
     if marked.is_none() {
         let mark = Mark {
-            role,
-            origin: Origin::Command,
+            role: by.id,
+            origin,
             text: p.text.to_owned(),
         };
         facts.push(Fact::Registered(row.id, mark));
     }
     if !stored.deployed.families.contains_key(&p.header.family) {
-        facts.push(Fact::Family(p.header.family.clone(), role));
+        facts.push(Fact::Family(p.header.family.clone(), by.id));
     }
     Claim {
         old,
         row,
+        owner: marked.map_or(by.id, |m| m.role),
         calls,
         facts,
     }
 }
 
 impl Claim {
+    fn changed(&self) -> bool {
+        self.old.as_ref() != Some(&self.row)
+    }
+
     /// Pass each row the claim deletes, with `false`, and inserts, with `true`, to `write` with
     /// its relation, over the engine's `schema`.
     pub(super) fn rows(&self, schema: &Schema, write: &mut impl FnMut(RelId, bool, Val)) {
         let t = Tables::of(schema);
-        if self.old.as_ref() != Some(&self.row) || !self.facts.is_empty() {
+        if self.changed() {
             if let Some(old) = &self.old {
                 write(t.bundles, false, t.bundle_value(old));
             }
@@ -912,7 +946,7 @@ impl<R: Runtime> Engine<R> {
         let now = self.clock();
         let s = *self.settings.lock(&self.rt);
         let deployed = self.deployed.lock(&self.rt);
-        let Some(row) = deployed.get(name) else {
+        let Some(row) = deployed.bundles.get(name) else {
             return Ok(false);
         };
         match row.refusal(now, &s, query) {
@@ -929,7 +963,7 @@ impl<R: Runtime> Engine<R> {
         };
         let now = self.clock();
         let s = *self.settings.lock(&self.rt);
-        let Some(row) = self.deployed.lock(&self.rt).get(name).cloned() else {
+        let Some(row) = self.deployed.lock(&self.rt).bundles.get(name).cloned() else {
             return;
         };
         if row.refusal(now, &s, "").is_some() || !row.renewal_due(now, &s) {
@@ -939,7 +973,7 @@ impl<R: Runtime> Engine<R> {
         next.renewed = now;
         // A renewal that fails leaves the lease as it was, for a later call to renew.
         if self.replace_bundle(&row, &next).is_ok() {
-            self.deployed.lock(&self.rt).insert(name.to_owned(), next);
+            self.put(next);
         }
     }
 
@@ -958,14 +992,14 @@ impl<R: Runtime> Engine<R> {
     pub(super) fn retire(&self, name: &str) -> Result<DynRows, Error> {
         let _writer = self.bundle_writer.lock(&self.rt);
         let now = self.clock();
-        let row = known(&self.deployed.lock(&self.rt), name)?.clone();
+        let row = known(&self.deployed.lock(&self.rt).bundles, name)?.clone();
         let mut next = row.clone();
         if !matches!(row.state, State::Retired(_)) {
             next.state = State::Retired(now);
             self.replace_bundle(&row, &next)?;
         }
         let out = self.bundle_rows(&next);
-        self.deployed.lock(&self.rt).insert(name.to_owned(), next);
+        self.put(next);
         Ok(out)
     }
 
@@ -977,8 +1011,8 @@ impl<R: Runtime> Engine<R> {
         let (row, successor) = {
             let deployed = self.deployed.lock(&self.rt);
             (
-                known(&deployed, name)?.clone(),
-                known(&deployed, by)?.clone(),
+                known(&deployed.bundles, name)?.clone(),
+                known(&deployed.bundles, by)?.clone(),
             )
         };
         if name == by || successor.header.family != row.header.family || !successor.live(now, &s) {
@@ -996,8 +1030,16 @@ impl<R: Runtime> Engine<R> {
             self.replace_bundle(&row, &next)?;
         }
         let out = self.bundle_rows(&next);
-        self.deployed.lock(&self.rt).insert(name.to_owned(), next);
+        self.put(next);
         Ok(out)
+    }
+
+    /// Hold `row`, once it commits, as its bundle's row.
+    fn put(&self, row: Row) {
+        let mut deployed = self.deployed.lock(&self.rt);
+        Arc::make_mut(&mut deployed)
+            .bundles
+            .insert(row.header.name.clone(), row);
     }
 
     /// Replace the row `old` of `catalog::bundles` by `new`, in a transaction of its own.

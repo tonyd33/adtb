@@ -28,7 +28,7 @@ use super::reads::Reads;
 use super::settings::Settings;
 use super::text::{DynRows, Prepared, rows};
 use super::txn::{AdHocTransaction, Committed, TxnCallOptions};
-use super::{CallOptions, Database, Engine, OWNER_ROLE, OpenError};
+use super::{CallOptions, Database, Engine, OWNER_ID, OpenError};
 
 /// The queries, transactions and imported schema functions one unit registers: a bundle file
 /// with its header, or the imports and items of one without.
@@ -245,8 +245,9 @@ impl Checked {
 }
 
 /// Returns what `role` lacks with grant option, among `grants`, of every relation grant the
-/// callables of `c` use as they run: each translation where there is one. Each is a line naming
-/// the callable, what it does and the privilege, in ordinal order.
+/// queries and transactions of `c` use as they run: each translation where there is one. An
+/// imported schema function needs nothing of `role`. Each is a line naming the callable, what
+/// it does and the privilege, in ordinal order.
 pub(super) fn lacking(c: &Checked, grants: &[LogGrant], role: &str) -> Result<Vec<String>, Error> {
     let runs = c.entries.iter().map(|e| match &e.served {
         Some(s) => (e, s.run()),
@@ -296,7 +297,7 @@ fn lacking_of<'a>(
     role: &str,
 ) -> Result<Vec<String>, Error> {
     let mut out = Vec::new();
-    for (e, run) in runs {
+    for (e, run) in runs.filter(|(e, _)| e.kind != Callable::Fn) {
         let needs = requirements(&run)?;
         let held = EffectiveGrants::of(run.schema, grants, role);
         for r in needs.missing(&held, Mode::Registration) {
@@ -331,19 +332,17 @@ pub(super) fn definers(
     checked: &[Checked],
     stored: &Stored,
     source: &Source,
+    roles: &BTreeMap<i64, String>,
 ) -> Result<(), OpenError> {
     for c in checked {
-        let Some(row) = stored.bundles.get(&c.name) else {
-            continue;
-        };
-        if row.owner == OWNER_ROLE {
-            continue;
-        }
         let refused = |reason| OpenError::RegistrationRefused {
             bundle: c.name.clone(),
             reason,
         };
-        let lacks = lacking(c, &source.grants, &row.owner).map_err(refused)?;
+        let Some(owner) = definer(stored, &c.name, roles).map_err(refused)? else {
+            continue;
+        };
+        let lacks = lacking(c, &source.grants, &owner).map_err(refused)?;
         if !lacks.is_empty() {
             return Err(refused(Error::rejected(RejectReason::Denied {
                 detail: lacks.join("\n"),
@@ -351,6 +350,27 @@ pub(super) fn definers(
         }
     }
     Ok(())
+}
+
+/// Returns the name of the role bundle `name` of `stored` runs as, by its id in `roles`; `None`
+/// for the schema owner or a bundle `stored` does not hold.
+pub(super) fn definer(
+    stored: &Stored,
+    name: &str,
+    roles: &BTreeMap<i64, String>,
+) -> Result<Option<String>, Error> {
+    let Some(row) = stored.bundles.get(name) else {
+        return Ok(None);
+    };
+    let id = stored.owner_of(row);
+    if id == OWNER_ID {
+        return Ok(None);
+    }
+    roles.get(&id).cloned().map(Some).ok_or_else(|| {
+        Error::rejected(RejectReason::Internal {
+            what: format!("bundle {name} runs as role id {id}, which no role has"),
+        })
+    })
 }
 
 /// The schema a registration checks against and the program of its functions.
@@ -604,6 +624,7 @@ pub(super) fn readers(
     regs: &[Registration],
     live: &BTreeSet<String>,
     stored: &Stored,
+    roles: &BTreeMap<i64, String>,
 ) -> Result<Vec<Live>, OpenError> {
     let mut out = Vec::new();
     let schema = Arc::new(catalog.schema().clone());
@@ -630,11 +651,7 @@ pub(super) fn readers(
         catalog
             .register(reader)
             .map_err(|e| refused(catalog_error(e)))?;
-        let definer = stored
-            .bundles
-            .get(&h.name)
-            .map(|row| row.owner.clone())
-            .filter(|owner| owner != OWNER_ROLE);
+        let definer = definer(stored, &h.name, roles).map_err(refused)?;
         out.push(Live {
             checked: c,
             source,

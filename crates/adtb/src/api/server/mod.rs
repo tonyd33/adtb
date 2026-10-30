@@ -116,7 +116,7 @@ impl<R: Runtime> RoleAuthority<R> {
             if name == OWNER_ROLE || e.role_mentions.contains(&name) {
                 return Err(denied("the role is required by the schema log"));
             }
-            if let Some(why) = e.ownership(&name, role.id.0) {
+            if let Some(why) = e.ownership(role.id.0) {
                 return Err(denied(why));
             }
             changes.delete(t.roles, t.role_value(&role));

@@ -17,7 +17,7 @@ mod txn;
 pub mod typed;
 mod value;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::task::Waker;
@@ -254,11 +254,9 @@ struct Engine<R: Runtime> {
     /// The registered queries of the live bundles, which `explain B::q(args)` names.
     bundles: Lock<Arc<Bundles>>,
     registered: Lock<Vec<Arc<registered::Checked>>>,
-    /// The rows of `catalog::bundles`, by bundle name, as the latest commit holds them.
-    deployed: Lock<BTreeMap<String, bundle::Row>>,
-    /// The rows of `catalog::registered`, the family owners and the successful registrations,
-    /// as the latest commit holds them; its bundles are those of `deployed`.
-    ledger: Lock<bundle::Stored>,
+    /// The rows of `catalog::bundles` and `catalog::registered`, the family owners and the
+    /// successful registrations, as the latest commit holds them.
+    deployed: Lock<Arc<bundle::Stored>>,
     deployment: catalog::Deployment,
     /// Held across every write of a row of `catalog::bundles`, so that the row a writer reads
     /// from `deployed` is the one its write replaces.
@@ -572,7 +570,8 @@ impl<R: Runtime> Engine<R> {
         let live = stored.live(opened, &settings);
         let headers: Vec<&bundle::Header> = regs.iter().filter_map(Registration::header).collect();
         bundle::record(&catalog, &pager, &txns, &mut stored, &headers, opened)?;
-        let live = registered::readers(&mut catalog, regs, &live, &stored)?;
+        let roles = bundle::roles(&catalog, &pager, &txns)?;
+        let live = registered::readers(&mut catalog, regs, &live, &stored, &roles)?;
         catalog.settle(&pager, &txns).map_err(corrupt)?;
         let applied = catalog.source().log.len();
         options
@@ -597,14 +596,14 @@ impl<R: Runtime> Engine<R> {
             program: &program,
         };
         let registered = registered::register(&over, regs, &stored, now, &settings)?;
+        let given = &options.registrations;
         let bundled: Vec<_> = registered
             .iter()
+            .filter(|c| given.iter().any(|g| g.name() == c.name()))
             .filter_map(registered::Checked::passed)
             .collect();
-        registered::definers(&registered, &stored, catalog.source())?;
-        let mut ledger =
-            bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)?;
-        let deployed = std::mem::take(&mut ledger.bundles);
+        registered::definers(&registered, &stored, catalog.source(), &roles)?;
+        let deployed = bundle::register(&catalog, &pager, &txns, stored, &bundled, now, &settings)?;
         server::initialize(&catalog, &pager, &txns)?;
         let mut bundles = Bundles::default();
         for c in &registered {
@@ -646,8 +645,7 @@ impl<R: Runtime> Engine<R> {
             source: catalog.source().clone(),
             bundles: Lock::new(Arc::new(bundles)),
             registered: Lock::new(registered.into_iter().map(Arc::new).collect()),
-            deployed: Lock::new(deployed),
-            ledger: Lock::new(ledger),
+            deployed: Lock::new(Arc::new(deployed)),
             deployment: catalog.deployment(),
             bundle_writer: Lock::new(()),
             settings: Lock::new(settings),

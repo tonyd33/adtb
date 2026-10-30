@@ -199,11 +199,15 @@ revive its sessions. A grant revocation affects later checks through
 an existing session.
 
 `RoleAuthority::register(session, registration)` registers a bundle
-file as the session's role, which owns it, and returns its row of
-`catalog::bundles`. It runs the checks of open's registration, refuses
-with `Denied` listing each grant the role lacks with grant option for
-what the bundle runs, and with `Denied` when another role owns the
-family, unless the role is the schema owner. The bundle's row, its
+file and returns its row of `catalog::bundles`. A bundle with no
+successful registration comes to run as the session's role; one
+registered before keeps its owner. It runs the checks of open's
+registration, refuses with `Denied` listing each grant the role the
+bundle runs as lacks with grant option for what its queries and
+transactions run, unless that role is the schema owner, and with
+`Denied` when another role owns the family, unless the session's role
+is the schema owner. Roles are identified by id; names are read from
+`catalog::roles`. The bundle's row, its
 calls, its successful registration and, for the first one of its
 family, the family's owner commit together; a refusal changes nothing.
 Registrations, retirement, supersession and role drops are
@@ -316,8 +320,9 @@ Postconditions:
 - Open records every given bundle in `catalog::bundles` and marks every
   other active bundle an open registered superseded, as one durable
   commit before its first migration. A live bundle a role registered
-  through `RoleAuthority::register` stays live and open registers it
-  again from its stored file. It then registers every given registration or none.
+  through `RoleAuthority::register` stays live: open rebuilds it from
+  its stored file as a reader, rechecks it and serves it, and writes
+  neither its lease nor its calls. It then registers every given registration or none.
   A refused one fails open with `RegistrationRefused` naming it.
 - A bundle's queries, transactions and functions are checked and
   normalised at the version its header pins, and one that is no
