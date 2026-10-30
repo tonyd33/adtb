@@ -246,7 +246,7 @@ database, since every relation's visibility reads the commit log. From
 then on every transaction is refused with the corruption fault: no
 transaction starts, takes a snapshot, commits or aborts, and status
 lookups fail naming the damaged page. The database opens for `verify`
-and repair only: the commit log's root and directories stay readable
+and `dump` only: the commit log's root and directories stay readable
 for them. If the root or a directory page itself is damaged, the
 commit log does not open.
 

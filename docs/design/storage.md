@@ -655,10 +655,15 @@ heap page fails verification, the heap is quarantined. An index page
 holds entries of several constructors, so a bad index page quarantines
 the whole index.
 
+An `Order`, `Orphan` or `Missing` finding of `verify` quarantines the
+index it names. A page no heap or index holds, such as one of the
+catalog or the allocator, quarantines the whole database as a commit log
+page does.
+
 A commit log page that fails verification quarantines the whole
 database, since the visibility of every relation reads the commit log:
 every transaction is refused with the corruption fault, and the
-database opens for `verify` and repair only
+database opens for `verify` and `dump` only
 ([mvcc.md §4.2](mvcc.md#42-the-commit-log)).
 
 Quarantine is a mark the storage layer sets on one heap, one index or
@@ -706,7 +711,7 @@ from i in identities select i.id                         -- fails
 A quarantined object is restored by reindexing (an index) or by
 restoring its pages from a replica or a backup plus log (a heap).
 
-Rulings: ops/halt-scope/heap, spec/reads/static/static-types, spec/quarantine/index/cost-only
+Rulings: ops/halt-scope/heap, spec/reads/static/static-types, spec/quarantine/index/cost-only, spec/quarantine/verify/yes, spec/quarantine/unowned/database
 
 ## 9. Bulk loads
 

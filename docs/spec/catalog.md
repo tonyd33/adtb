@@ -2105,7 +2105,12 @@ relation variable, or the scrub.
 
 A corrupted page, detected by checksum or by its log position on any
 read, quarantines what holds it: one constructor relation, or one
-index, which holds entries of every constructor of its set.
+index, which holds entries of every constructor of its set. A page no
+relation holds, such as one of the commit log or the catalog,
+quarantines the database: every call fails with `Fatal { reason:
+Quarantined {..} }`, and the file opens for `verify` and `dump` only. An
+`Order`, `Orphan` or `Missing` finding (§11.1) quarantines the index it
+names.
 
 A call fails with `Fatal { reason: Quarantined {..} }` exactly when
 the constructors it reads
@@ -2189,7 +2194,7 @@ one at once with `vacuum r`. All vacuum work, background or started,
 runs within the `VacuumBudget` setting. Progress is in `sys::vacuums`
 (§6.5).
 
-Rulings: ops/check/structural, ops/check/cross, ops/check/logical, ops/check/scrub, ops/halt-scope/heap, ops/compact/offline-copy, ops/compact/online-copy, ops/reindex/online, ops/reindex/offline, ops/vacuum/trigger, ops/vacuum/throttle, buffer/faults/corrupt-detect, buffer/faults/stale-page/lsn-check, spec/catalog/physical/per-ctor-relation, spec/reads/static/static-types, spec/quarantine/index/cost-only
+Rulings: ops/check/structural, ops/check/cross, ops/check/logical, ops/check/scrub, ops/halt-scope/heap, spec/quarantine/verify/yes, spec/quarantine/unowned/database, ops/compact/offline-copy, ops/compact/online-copy, ops/reindex/online, ops/reindex/offline, ops/vacuum/trigger, ops/vacuum/throttle, buffer/faults/corrupt-detect, buffer/faults/stale-page/lsn-check, spec/catalog/physical/per-ctor-relation, spec/reads/static/static-types, spec/quarantine/index/cost-only
 
 ## 12. Releases and compatibility
 

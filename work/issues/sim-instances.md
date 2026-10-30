@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: sim-instances
 kind: feature
 priority: 300
 summary: test crates compile about 1800 SimRuntime instances each; try rooting them once in adtb-sim as os-instances did for OsRuntime
