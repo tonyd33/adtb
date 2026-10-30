@@ -29,3 +29,9 @@ Online verify added sweeps to the default run: about 15 s for the vacuum phase, 
 ## 2026-10-30: profile
 
 Engine 75% of suite CPU, simulator 11% of user cycles, test framework and testkit about 2.5%. Schema build and check are 44% of user cycles, `build_ahead` 30%. A prototype of a memo on `Source::built` and a faster `Vm::marked` took user CPU from 808 s to about 590 s with every test passing. Tracks, in order: schema-memo and catalog-insert now, then `Schema` behind an `Arc`, one application per migration, hardware CRC, and a shared simulator fixture sized by a new measurement. Cut no sweeps: nothing measured what a seed finds.
+
+## 2026-10-30: catalog-insert not landed
+
+Indexing catalog indexes by relation and comparing diffs in blocks gave -1.3% instructions and -5.3% of `fill` on the `catalog` binary, against a target of half. The relation scan was under 1% of `fill`, whose cost is spread: heap insert 31%, B-tree insert 24%, `make_room` and eviction 11%, `rows::objects` 9.5%, `build_ahead` 7.6%. That does not pay for a new type, so the commit stays unlanded. Batching catalog rows is ruled out for now: it changes log bytes and crash points for an unmeasured gain. Profile `fill` again after schema-memo.
+
+Candidate, unmeasured as a fix: `PageOptimistic::read` copies the whole page into a fresh `Vec` at each B-tree level. `observe` is about 27% of `Catalog::insert`.
