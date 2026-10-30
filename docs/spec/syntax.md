@@ -110,8 +110,8 @@ add adhoc adopt after aggregate alter analyze apply archive arm asc
 assert at audit backup before budget call cancel carry cascade catalog
 clear commit compact computed configure conflict constructor
 constructors create default deferrable define dek deprecate desc
-destroy deterministic disable drop dump durability edition enable encrypt explain
-export feed field fill finalize finish generate grant hide host
+destroy deterministic disable drop dump durability edition enable encrypt except explain
+export feed field fill finalize finish frozen generate grant hide host
 incremental index init install instant interval joins kek lease limit
 local maintain map merge migrations monitor move nest new of offline on
 online option password peer pin pins plan position print priority quorum
@@ -1464,16 +1464,18 @@ Rulings: syntax/module/header, surface/registration/unit/bundle, surface/reader-
 ```ebnf
 grant     = "grant" privilege { "," privilege } "to" LOWER [ "with" "grant" "option" ]
 revoke    = "revoke" privilege { "," privilege } "from" LOWER
-privilege = "read" relation_ref [ field_list ]
+privilege = "read" relation_ref [ grant_fields ]
           | "insert" relation_ref
-          | "update" relation_ref [ field_list ]
+          | "update" relation_ref [ grant_fields ]
           | "delete" relation_ref
-          | "retag" relation_ref "->" relation_ref
+          | "retag" relation_ref "->" relation_ref [ excepted ]
           | "call" ( BUNDLE_NAME | FAMILY ) [ "::" LOWER ]
           | "call" "fn" QLOWER
           | "adhoc" | "assert" | "schema" | "monitor" | "cancel"
           | "maintain" | "configure" | "read_files" | "write_files"
-field_list = "(" LOWER { "," LOWER } ")"
+grant_fields = [ "frozen" ] "(" grant_field { "," grant_field } ")"
+grant_field  = LOWER | UPPER "." LOWER
+excepted     = "except" "(" UPPER "->" UPPER { "," UPPER "->" UPPER } ")"
 role_stmt = "create" "role" LOWER
           | "alter" "role" LOWER "password" prefix_e
           | "drop" "role" LOWER
@@ -1513,9 +1515,12 @@ unmap peer 2 on unix
 The examples use `billing::invoices` as [derived.md](derived.md) declares it.
 
 - The privileges are exactly the sixteen listed. A field list names
-  only header fields or fields every constructor of the set declares;
-  a field of one constructor is granted per constructor. A read grant
-  includes the key field without listing it.
+  header fields and fields every constructor of the set declares
+  alone, and a field of one constructor `C` of the set as `C.f`. A
+  read grant includes the key field without listing it. `frozen`,
+  `C.f` names and `except` pairs write a grant's target as
+  `catalog::grants` prints it
+  ([security.md §3.2](security.md#32-grant-forms)).
 - `call` names one registered query or transaction of a bundle, or with
   no `::` every one of them. A family name (`web::login_key`) covers
   that query in the bundles of the family whose query of that name has
