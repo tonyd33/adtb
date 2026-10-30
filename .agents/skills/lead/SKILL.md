@@ -72,10 +72,14 @@ Keep your context for rulings, briefs and review. Agents write the code.
   failures, dependencies and the next action. Follow-up work goes to a new
   agent whose brief points at that note.
   Fix trivial rebase fallout yourself.
-- Let at most 4 tracks build at once. More slow each other past the gain.
+- Run at most 2 tracks that build at once, until the maintainer says otherwise: tracks spend most of their time waiting on builds. A read-only track, one that runs no build, is exempt. Run at most 5 agents at once in all.
 - After a review with blockers, review the delta yourself or with a fresh
   agent; a blocker-free round needs no new full review. Run the full check
   only on the final round.
+- Give every track that changes code a review by a fresh agent, in a child workspace, before it lands: the author's own checks do not count. Tell it to form its view before reading the receipt.
+- A review that runs no build is a read-only track, and its verdict rests on reading. Check yourself anything it says it could not confirm, such as the provenance of expected values, and rely on the author's mutants and the full check for the rest. Prefer a review with targeted builds and mutants when build capacity allows, and for `unsafe` or concurrency code.
+- A small edit of your own after a blocker-free review, such as a test or a stated precondition, needs no second review. Run a new test against the mutant it is meant to kill, and pass it through the full check.
+- Land a performance track on its measured saving, against a stop line in its brief. A change that adds code and does not move its measure stays unlanded: record why on the ticket, keep the commit, and free the workspace. Compare CPU time across sessions only with the load noted: load alone has moved it by about 20%.
 
 ## Land
 
