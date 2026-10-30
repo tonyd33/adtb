@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: bug
 priority: 895
 summary: "a historical scan clones every visible deleted current row into a deduplication map outside the query memory grant, even for count"
-branch: exec-scan
+closed: 2026-10-29
 tags:
   - quality
   - engine
@@ -23,3 +23,9 @@ When many rows share an inserting/deleting transaction pair, the history half al
 Fix: bound and charge the cross-walk deduplication state to the query grant, with a spill or limit path, and avoid linear full-row searches per copied row. Add a regression that reads many retained deleted rows with a small grant and constant-sized output; include versions present in both heaps. `docs/design/execution.md:691-698` and the current budgeted-allocation rulings require a call to account for the values it holds.
 
 This is separate from [exec-scan-follow-ups.md](exec-scan-follow-ups.md)'s one batch being filled outside the grant: the new historical path retains whole-scan state after those batches have been consumed. Confirmed by the allocation and lifetime in the code; no allocator-instrumented reproduction was run.
+
+## 2026-10-29: done
+
+A read of the past holds the deleted rows it passed in a set charged to the call grant, and the batch a scan fills is charged by its column bytes. A small grant now gets `StatementLimit Memory` where it used to succeed; spilling that set is history-passed-spill. Landed at ea40a463; branch check 2848 passed, 7 skipped, campaign 47. Tests: `a_read_of_the_past_holds_the_deleted_rows_it_passed_within_its_grant`, `the_batch_a_scan_fills_is_held_within_the_grant`.
+
+## 2026-10-29: resolved
