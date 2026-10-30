@@ -43,3 +43,7 @@ Memo owned by `Source`, 32 entries, compared by full equality. Suite user CPU 79
 ## 2026-10-30: schema-arc
 
 `Schema` now holds its declarations in a shared `defs: Arc<SchemaDefs>`, written through `Arc::make_mut`; `ids`, `stages` and `value_stages` stay owned. `Arc<Schema>` from `built` alone gave -4.2% cycles because `schema()` still copied for `annotate`. Suite user CPU 649.7 s to 572.5 s, one run each; sys 135.7 s to 160.9 s, not attributed. `DerefMut` stays: no site writes on a read path, and a test fails if `schema()` copies the declarations.
+
+## 2026-10-30: one-apply not landed
+
+Applying each operator of a migration once took top-level applications from 12 to 3 on a 3-operator migration, but suite user CPU stayed 547.65 s to 548.01 s, and 10 migration heavy tests fell only 2.4% in cycles. The memo already absorbs most replay cost; that is inferred, not profiled. The commit adds `Source::migrated` and a retry branch no test reaches, in code that decides what a migration logs, so it does not pay. Commit bd679189 stays unlanded. Revisit if a profile of real migrations shows a replay cost.
