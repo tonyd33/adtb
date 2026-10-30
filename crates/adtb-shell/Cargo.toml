@@ -11,6 +11,7 @@ name = "adtb"
 path = "src/main.rs"
 
 [dependencies]
+clap.workspace = true
 adtb.workspace = true
 adtb-lang.workspace = true
 

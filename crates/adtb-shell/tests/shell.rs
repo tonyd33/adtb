@@ -381,7 +381,7 @@ fn opening_a_missing_file_without_create_fails() {
 fn a_bad_argument_prints_the_usage() {
     let out = adtb(&["--nope"], "");
     assert_eq!(Some(2), out.status.code(), "{out:?}");
-    assert!(stderr(&out).contains("usage: adtb "), "{out:?}");
+    assert!(stderr(&out).contains("Usage: adtb "), "{out:?}");
 }
 
 const PETS: &str = "module demo
@@ -533,8 +533,8 @@ fn help_prints_the_flags() {
     let out = adtb(&["--help"], "");
     assert!(out.status.success(), "{out:?}");
     let help = String::from_utf8(out.stdout).unwrap();
-    assert!(help.starts_with("usage: adtb"), "{help}");
-    assert!(help.contains("--schema FILE"), "{help}");
+    assert!(help.contains("Usage: adtb [--create]"), "{help}");
+    assert!(help.contains("--schema <FILE>"), "{help}");
 }
 
 #[test]

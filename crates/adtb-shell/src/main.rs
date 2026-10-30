@@ -2,95 +2,52 @@ mod schema;
 mod session;
 mod text;
 
-use std::ffi::OsString;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use adtb::{CreateOptions, Log, OpenOptions};
+use clap::Parser;
 
 use session::{Command, Session};
 use text::Shape;
 
-const USAGE: &str = "usage: adtb [--create] [--schema FILE]... FILE [-c TEXT]";
-
-const HELP: &str = "usage: adtb [--create] [--schema FILE]... FILE [-c TEXT]
-
-Open the database FILE and run ad hoc text against it: TEXT when -c
-gives one, else the texts read from stdin, with a prompt on a terminal.
-
-  --create         create FILE when it does not exist
-  --schema FILE    the next migration of the database's log; the first
-                   may instead be a schema file of declarations
-  -c TEXT          run TEXT and exit
-  -h, --help       print this help
-
-At the prompt, \\help lists the shell's commands.";
-
 const PROMPT: &str = "adtb> ";
 const CONTINUE: &str = "  ... ";
 
-#[derive(Debug)]
+#[derive(Debug, Parser)]
+#[command(
+    name = "adtb",
+    override_usage = "adtb [--create] [--schema FILE]... FILE [-c TEXT]",
+    about = "Open the database FILE and run ad hoc text against it: TEXT when -c gives one, \
+             else the texts read from stdin, with a prompt on a terminal.",
+    after_help = "At the prompt, \\help lists the shell's commands.",
+    args_override_self = true
+)]
 struct Args {
+    #[arg(value_name = "FILE", help = "the database file")]
     file: PathBuf,
+    #[arg(long, help = "create FILE when it does not exist")]
     create: bool,
-    help: bool,
+    #[arg(
+        long = "schema",
+        value_name = "FILE",
+        allow_hyphen_values = true,
+        help = "the next migration of the database's log; the first may instead be a schema \
+                file of declarations"
+    )]
     log: Vec<PathBuf>,
+    #[arg(
+        short = 'c',
+        value_name = "TEXT",
+        allow_hyphen_values = true,
+        help = "run TEXT and exit"
+    )]
     text: Option<String>,
 }
 
-impl Args {
-    fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
-        let (mut file, mut create, mut log, mut text) = (None, false, Vec::new(), None);
-        while let Some(arg) = args.next() {
-            match arg.to_str() {
-                Some("-h" | "--help") => {
-                    return Ok(Args {
-                        file: PathBuf::new(),
-                        create: false,
-                        help: true,
-                        log: Vec::new(),
-                        text: None,
-                    });
-                }
-                Some("--create") => create = true,
-                Some("--schema") => log.push(args.next().ok_or("--schema needs a file")?.into()),
-                Some("-c") => {
-                    let t = args.next().ok_or("-c needs a text")?;
-                    text = Some(
-                        t.into_string()
-                            .map_err(|t| format!("-c text {} is not UTF-8", t.display()))?,
-                    );
-                }
-                Some(flag) if flag.starts_with('-') => return Err(format!("unknown flag {flag}")),
-                _ if file.is_some() => return Err("more than one FILE".into()),
-                _ => file = Some(arg),
-            }
-        }
-        Ok(Args {
-            file: file.ok_or("no FILE")?.into(),
-            create,
-            help: false,
-            log,
-            text,
-        })
-    }
-}
-
 fn main() -> ExitCode {
-    let args = match Args::parse(std::env::args_os().skip(1)) {
-        Ok(args) => args,
-        Err(why) => {
-            report(&format!("{why}\n{USAGE}"));
-            return ExitCode::from(2);
-        }
-    };
-    if args.help {
-        return match writeln!(io::stdout(), "{HELP}") {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(_) => ExitCode::FAILURE,
-        };
-    }
+    let args = Args::parse();
     match shell(&args) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
@@ -215,4 +172,68 @@ fn flush<O: Write, E: Write>(
         return Ok(());
     }
     session.run(&text)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::*;
+
+    fn parse(line: &str) -> Args {
+        Args::try_parse_from(line.split(' ')).unwrap_or_else(|e| panic!("{line}: {e}"))
+    }
+
+    #[test]
+    fn the_command_is_well_formed() {
+        Args::command().debug_assert();
+    }
+
+    #[test]
+    fn the_manual_invocations_parse() {
+        let created = parse("adtb --create --schema shelter.adt shelter.db");
+        assert!(created.create);
+        assert_eq!(PathBuf::from("shelter.db"), created.file);
+        assert_eq!(vec![PathBuf::from("shelter.adt")], created.log);
+        assert_eq!(None, created.text);
+        let migrated = parse("adtb --schema crm.adt --schema plan.adt crm.db -c 1");
+        assert!(!migrated.create);
+        assert_eq!(
+            vec![PathBuf::from("crm.adt"), PathBuf::from("plan.adt")],
+            migrated.log
+        );
+        assert_eq!(Some("1".to_owned()), migrated.text);
+        assert_eq!(PathBuf::from("app.adt"), parse("adtb app.adt").file);
+    }
+
+    #[test]
+    fn flags_may_follow_the_file() {
+        let args = parse("adtb shelter.db --schema shelter.adt -c 1 --create");
+        assert!(args.create);
+        assert_eq!(vec![PathBuf::from("shelter.adt")], args.log);
+    }
+
+    #[test]
+    fn the_last_text_wins() {
+        assert_eq!(Some("2".to_owned()), parse("adtb f -c 1 -c 2").text);
+    }
+
+    #[test]
+    fn a_text_may_start_with_a_hyphen() {
+        assert_eq!(Some("-1".to_owned()), parse("adtb f -c -1").text);
+    }
+
+    #[test]
+    fn usage_errors_exit_with_two() {
+        for line in [
+            "adtb",
+            "adtb a b",
+            "adtb --nope f",
+            "adtb f -c",
+            "adtb f --schema",
+        ] {
+            let e = Args::try_parse_from(line.split(' ')).expect_err(line);
+            assert_eq!(2, e.exit_code(), "{line}");
+        }
+    }
 }

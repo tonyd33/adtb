@@ -126,6 +126,15 @@ allow = [
     "tracing-log",
     "tracing-subscriber",
     "windows-result",
+    # Command-line argument parsing for the binaries, and its derive macro.
+    "clap",
+    "clap_builder",
+    "clap_derive",
+    "clap_lex",
+    # Text styles clap's help and error messages carry.
+    "anstyle",
+    # Case conversion clap_derive names flags with.
+    "heck",
     # Local engine and test dependencies of the separately built campaign workspace.
     "adtb",
     "adtb-codegen",

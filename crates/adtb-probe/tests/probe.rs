@@ -234,6 +234,6 @@ fn checks_of_an_unknown_name_fail_naming_it() {
 fn a_text_is_required_without_checks() {
     let schema = fixture("app.adt").display().to_string();
     let (code, _, err) = probe_all(&["--schema", &schema], "");
-    assert!(err.starts_with("adtb-probe: a text is required\n"), "{err}");
+    assert!(err.contains("<TEXT>"), "{err}");
     assert_eq!(code, 2);
 }

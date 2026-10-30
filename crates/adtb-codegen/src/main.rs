@@ -6,44 +6,46 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use adtb_codegen::{BundleSource, generate, read_log};
+use clap::Parser;
 
-const USAGE: &str = "usage: adtb-codegen --log DIR --bundle MODULE=FILE... [--out FILE]\n";
-
+#[derive(Debug, Parser)]
+#[command(
+    name = "adtb-codegen",
+    override_usage = "adtb-codegen --log DIR --bundle MODULE=FILE... [--out FILE]",
+    about = "Write the Rust source of a schema's log and its bundles, to FILE or standard output.",
+    args_override_self = true
+)]
 struct Args {
+    #[arg(
+        long,
+        value_name = "DIR",
+        allow_hyphen_values = true,
+        help = "the migration log"
+    )]
     log: PathBuf,
+    #[arg(
+        long = "bundle",
+        value_name = "MODULE=FILE",
+        allow_hyphen_values = true,
+        value_parser = bundle,
+        help = "a bundle file and the module its code goes in"
+    )]
     bundles: Vec<(String, PathBuf)>,
+    #[arg(
+        long,
+        value_name = "FILE",
+        allow_hyphen_values = true,
+        help = "the file to write"
+    )]
     out: Option<PathBuf>,
 }
 
-fn args() -> Result<Args, String> {
-    let mut log = None;
-    let mut bundles = Vec::new();
-    let mut out = None;
-    let mut it = std::env::args().skip(1);
-    while let Some(a) = it.next() {
-        let mut value = || it.next().ok_or_else(|| format!("{a} takes a value"));
-        match a.as_str() {
-            "--log" => log = Some(PathBuf::from(value()?)),
-            "--out" => out = Some(PathBuf::from(value()?)),
-            "--bundle" => {
-                let v = value()?;
-                let (module, file) = v
-                    .split_once('=')
-                    .ok_or_else(|| format!("--bundle {v}: expected MODULE=FILE"))?;
-                bundles.push((module.to_owned(), PathBuf::from(file)));
-            }
-            other => return Err(format!("unknown argument {other}")),
-        }
-    }
-    Ok(Args {
-        log: log.ok_or("--log is required")?,
-        bundles,
-        out,
-    })
+fn bundle(v: &str) -> Result<(String, PathBuf), String> {
+    let (module, file) = v.split_once('=').ok_or("expected MODULE=FILE")?;
+    Ok((module.to_owned(), PathBuf::from(file)))
 }
 
-fn run() -> Result<(), String> {
-    let a = args()?;
+fn run(a: &Args) -> Result<(), String> {
     let log = read_log(&a.log).map_err(|e| format!("{}: {e}", a.log.display()))?;
     let mut texts = Vec::new();
     for (module, path) in &a.bundles {
@@ -65,15 +67,77 @@ fn run() -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    match run() {
+    let a = match Args::try_parse() {
+        Ok(a) => a,
+        Err(e) => return usage(&e),
+    };
+    match run(&a) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            let mut err = std::io::stderr();
-            let written = write!(err, "adtb-codegen: {e}\n{USAGE}");
-            if written.is_err() {
-                return ExitCode::from(2);
-            }
-            ExitCode::FAILURE
-        }
+        Err(e) => match writeln!(std::io::stderr(), "adtb-codegen: {e}") {
+            Ok(()) => ExitCode::FAILURE,
+            Err(_) => ExitCode::from(2),
+        },
+    }
+}
+
+/// Print `e`. Returns 1 for a usage error and 0 for help.
+fn usage(e: &clap::Error) -> ExitCode {
+    if e.print().is_err() {
+        return ExitCode::from(2);
+    }
+    if e.use_stderr() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::*;
+
+    #[test]
+    fn the_command_is_well_formed() {
+        Args::command().debug_assert();
+    }
+
+    #[test]
+    fn an_invocation_parses() {
+        let a = Args::try_parse_from([
+            "adtb-codegen",
+            "--log",
+            "log",
+            "--bundle",
+            "app=app.bundle",
+            "--bundle",
+            "web=web.bundle",
+            "--out",
+            "gen.rs",
+        ])
+        .expect("the invocation parses");
+        assert_eq!(PathBuf::from("log"), a.log);
+        assert_eq!(
+            vec![
+                ("app".to_owned(), PathBuf::from("app.bundle")),
+                ("web".to_owned(), PathBuf::from("web.bundle"))
+            ],
+            a.bundles
+        );
+        assert_eq!(Some(PathBuf::from("gen.rs")), a.out);
+    }
+
+    #[test]
+    fn the_log_is_required_and_bundles_and_out_are_not() {
+        assert!(Args::try_parse_from(["adtb-codegen", "--out", "f"]).is_err());
+        let a = Args::try_parse_from(["adtb-codegen", "--log", "log"]).expect("--log alone");
+        assert!(a.bundles.is_empty());
+        assert_eq!(None, a.out);
+    }
+
+    #[test]
+    fn a_bundle_needs_a_module() {
+        assert!(Args::try_parse_from(["adtb-codegen", "--log", "l", "--bundle", "f"]).is_err());
     }
 }

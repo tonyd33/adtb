@@ -2,7 +2,6 @@
 //! engine over the simulator, each on a fresh database, and print both outcomes.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::{self, Read};
 use std::panic::{self, AssertUnwindSafe};
@@ -24,30 +23,7 @@ use adtb_lang::span::{Diag, FileDiag, FileId};
 use adtb_lang::textual::{self, Form};
 use adtb_lang::types::Base;
 use adtb_sim::{Config, Outcome, Sim};
-
-const USAGE: &str = "usage: adtb-probe --schema FILE [--data FILE] [--explain] [--checks NAME] \
-[--reference | --engine] TEXT";
-
-const HELP: &str = "usage: adtb-probe --schema FILE [--data FILE] [--explain] [--checks NAME] \
-[--reference | --engine] TEXT
-
-Check the schema FILE and the ad hoc TEXT, printing each refusal with its
-line and column. Then run TEXT on a fresh database of the reference
-interpreter and of the engine over the simulator, print each outcome and
-whether they agree. TEXT `-` reads the text from stdin.
-
-  --schema FILE   the schema: module files, each from its `module` line
-  --data FILE     ad hoc text run before TEXT, to load the database
-  --explain       also print the engine's plan of TEXT
-  --checks NAME   also print the engine's plan of each incremental check
-                  of the constraint or check NAME, by qualified name
-                  (`app::adults`); TEXT is then optional
-  --reference     run on the reference interpreter only
-  --engine        run on the engine only
-  -h, --help      print this help
-
-Exits 0 when the sides agree, 1 when they differ or a side fails to
-load, 2 when the schema or the text is refused or NAME names nothing.";
+use clap::Parser;
 
 const SCHEMA: usize = 1;
 const DATA: usize = 2;
@@ -55,51 +31,75 @@ const BEFORE: usize = 3;
 const TEXT: usize = 4;
 const EXPLAIN: usize = 5;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Parser)]
+#[command(
+    name = "adtb-probe",
+    override_usage = "adtb-probe --schema FILE [--data FILE] [--explain] [--checks NAME] \
+                      [--reference | --engine] TEXT",
+    about = "Check the schema FILE and the ad hoc TEXT, printing each refusal with its line and \
+             column. Then run TEXT on a fresh database of the reference interpreter and of the \
+             engine over the simulator, print each outcome and whether they agree. TEXT `-` reads \
+             the text from stdin.",
+    after_help = "Exits 0 when the sides agree, 1 when they differ or a side fails to load, 2 \
+                  when the schema or the text is refused or NAME names nothing.",
+    args_override_self = true
+)]
 struct Args {
-    help: bool,
+    #[arg(
+        long,
+        value_name = "FILE",
+        allow_hyphen_values = true,
+        help = "the schema: module files, each from its `module` line"
+    )]
     schema: PathBuf,
+    #[arg(
+        long,
+        value_name = "FILE",
+        allow_hyphen_values = true,
+        help = "ad hoc text run before TEXT, to load the database"
+    )]
     data: Option<PathBuf>,
+    #[arg(long, help = "also print the engine's plan of TEXT")]
     explain: bool,
+    #[arg(
+        long,
+        value_name = "NAME",
+        allow_hyphen_values = true,
+        help = "also print the engine's plan of each incremental check of the constraint or \
+                check NAME, by qualified name (`app::adults`); TEXT is then optional"
+    )]
     checks: Option<String>,
+    #[arg(long, help = "run on the reference interpreter only")]
     reference: bool,
+    #[arg(long, help = "run on the engine only")]
     engine: bool,
+    #[arg(
+        value_name = "TEXT",
+        required_unless_present = "checks",
+        allow_hyphen_values = true,
+        value_parser = text,
+        help = "the ad hoc text, or `-` for stdin"
+    )]
     text: Option<String>,
 }
 
+fn text(v: &str) -> Result<String, String> {
+    if v.starts_with("--") {
+        return Err("a text cannot start with `--`".to_owned());
+    }
+    Ok(v.to_owned())
+}
+
 impl Args {
-    fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
-        let mut out = Args::default();
-        let (mut schema, mut text) = (None, None);
-        while let Some(arg) = args.next() {
-            match arg.to_str() {
-                Some("-h" | "--help") => out.help = true,
-                Some("--schema") => schema = Some(args.next().ok_or("--schema needs a file")?),
-                Some("--data") => out.data = Some(args.next().ok_or("--data needs a file")?.into()),
-                Some("--explain") => out.explain = true,
-                Some("--checks") => {
-                    let name = args.next().ok_or("--checks needs a name")?;
-                    out.checks = Some(name.to_string_lossy().into_owned());
-                }
-                Some("--reference") => out.reference = true,
-                Some("--engine") => out.engine = true,
-                Some("-") => text = Some(stdin()?),
-                Some(t) if text.is_none() && !t.starts_with("--") => text = Some(t.to_owned()),
-                _ => return Err(format!("`{}` is not an argument", arg.to_string_lossy())),
-            }
+    /// Read a text `-` from stdin, and run on both sides when neither is named.
+    fn resolve(mut self) -> Result<Args, String> {
+        if self.text.as_deref() == Some("-") {
+            self.text = Some(stdin()?);
         }
-        if out.help {
-            return Ok(out);
+        if !self.reference && !self.engine {
+            (self.reference, self.engine) = (true, true);
         }
-        out.schema = schema.ok_or("--schema is required")?.into();
-        if text.is_none() && out.checks.is_none() {
-            return Err("a text is required".into());
-        }
-        out.text = text;
-        if !out.reference && !out.engine {
-            (out.reference, out.engine) = (true, true);
-        }
-        Ok(out)
+        Ok(self)
     }
 }
 
@@ -460,17 +460,13 @@ fn run(
     reason = "goes if the probe stops being a binary that reports on its streams"
 )]
 fn main() -> ExitCode {
-    let args = match Args::parse(std::env::args_os().skip(1)) {
+    let args = match Args::parse().resolve() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("adtb-probe: {e}\n{USAGE}");
+            eprintln!("adtb-probe: {e}");
             return ExitCode::from(2);
         }
     };
-    if args.help {
-        println!("{HELP}");
-        return ExitCode::SUCCESS;
-    }
     match probe(&args) {
         Ok((out, code)) => {
             print!("{out}");
@@ -485,7 +481,90 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use clap::CommandFactory;
+
     use super::*;
+
+    fn parse(args: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(std::iter::once("adtb-probe").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn the_command_is_well_formed() {
+        Args::command().debug_assert();
+    }
+
+    #[test]
+    fn a_full_invocation_parses() {
+        let a = parse(&[
+            "--schema",
+            "s.adt",
+            "--data",
+            "d.adt",
+            "--explain",
+            "--checks",
+            "app::c",
+            "users",
+        ])
+        .expect("the invocation parses")
+        .resolve()
+        .expect("no stdin is read");
+        assert_eq!(PathBuf::from("s.adt"), a.schema);
+        assert_eq!(Some(PathBuf::from("d.adt")), a.data);
+        assert!(a.explain && a.reference && a.engine);
+        assert_eq!(Some("app::c"), a.checks.as_deref());
+        assert_eq!(Some("users"), a.text.as_deref());
+    }
+
+    #[test]
+    fn the_text_is_optional_only_with_checks() {
+        let a = parse(&["--schema", "s.adt", "--checks", "app::adults"]).expect("checks alone");
+        assert_eq!(None, a.text);
+        let e = parse(&["--schema", "s.adt"]).expect_err("no text");
+        assert_eq!(2, e.exit_code());
+    }
+
+    #[test]
+    fn one_side_runs_only_that_side() {
+        let a = parse(&["--schema", "s.adt", "--engine", "1"])
+            .expect("the invocation parses")
+            .resolve()
+            .expect("no stdin is read");
+        assert!(a.engine && !a.reference);
+    }
+
+    #[test]
+    fn a_text_may_start_with_a_hyphen() {
+        let a = parse(&["--schema", "s.adt", "-1"]).expect("a negative text parses");
+        assert_eq!(Some("-1"), a.text.as_deref());
+    }
+
+    #[test]
+    fn a_misspelt_flag_is_not_a_text() {
+        let e = parse(&["--schema", "s.adt", "--explian"]).expect_err("--explian");
+        assert_eq!(2, e.exit_code());
+    }
+
+    #[test]
+    fn help_is_not_a_text() {
+        for flag in ["-h", "--help"] {
+            let e = parse(&["--schema", "s.adt", flag]).expect_err(flag);
+            assert_eq!(clap::error::ErrorKind::DisplayHelp, e.kind(), "{flag}");
+        }
+    }
+
+    #[test]
+    fn usage_errors_exit_with_two() {
+        for args in [
+            &["1"][..],
+            &["--schema"],
+            &["--schema", "s", "1", "2"],
+            &["--schema", "s", "--nope"],
+        ] {
+            let e = parse(args).expect_err(&format!("{args:?}"));
+            assert_eq!(2, e.exit_code(), "{args:?}");
+        }
+    }
 
     fn side(got: Option<Got>) -> Ran {
         let found = vec![Difference {
