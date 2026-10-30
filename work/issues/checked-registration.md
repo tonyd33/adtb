@@ -94,3 +94,13 @@ N5, N7 and N8.
 Follow-ups filed: open-command-bundle-failure (N2), audit-deployment-events (N3),
 registered-text-retention (N6). The option-only revoke (N9) is recorded in
 spec-grant-and-default-forms.
+
+## Review round 2 (2026-10-29)
+
+Review work/briefs/review-checked-registration2.md (local): B1 and B2 closed, one
+new blocker. B3: once check 5 ran as the bundle's recorded owner, a role owning a
+family could revive a superseded schema-owner bundle in it with no grant at all.
+
+11. Only a bundle's owner or the schema owner may register an existing bundle row
+    again. Any other role is refused with `Denied`, naming the owner. Check 5 then
+    runs against the owner (ruling of B1).
