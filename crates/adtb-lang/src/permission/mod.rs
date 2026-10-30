@@ -9,6 +9,7 @@ use crate::types::*;
 mod aggregate;
 mod coverage;
 mod eval;
+mod grants;
 mod shape;
 mod value;
 mod write;
@@ -80,6 +81,19 @@ pub fn txn(schema: &Schema, program: &Program, txn: &Txn) -> Result<Requirements
     let normal = crate::norm::txn(schema, program, txn).map_err(Error::Normalization)?;
     let program = normal_program(schema, program)?;
     analyze(schema, &program, &normal.terms, normal.body, &normal.params)
+}
+
+/// Returns the requirements of `root`, a normal term of `terms` over `params`, with the
+/// functions of `program`.
+pub fn normal(
+    schema: &Schema,
+    program: &Program,
+    terms: &Terms,
+    root: Tm,
+    params: &[Var],
+) -> Result<Requirements, Error> {
+    let program = normal_program(schema, program)?;
+    analyze(schema, &program, terms, root, params)
 }
 
 /// Returns the requirements of each statement in checked ad hoc text.

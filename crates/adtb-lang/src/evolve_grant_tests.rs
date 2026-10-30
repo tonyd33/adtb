@@ -1386,3 +1386,107 @@ merge constructor Identity.(Google | Apple) into Social
         held(&s)
     );
 }
+
+/// Returns the requirements of ad hoc `text` over `src` that `role` lacks with grant option,
+/// each as its text and privilege.
+fn lacking(src: &Source, role: &str, text: &str) -> Vec<(String, &'static str)> {
+    use crate::permission::{EffectiveGrants, Mode};
+    let (schema, program) = src.check().expect("the source checks");
+    let items = crate::parse::parse_adhoc(text, Options::default())
+        .ok()
+        .expect("the text parses");
+    let checked = check::check_adhoc(&schema, &program, &items, &BTreeMap::new())
+        .unwrap_or_else(|e| panic!("{text}: {e:?}"));
+    let needs = crate::permission::adhoc(&schema, &program, &checked)
+        .expect("requirements analyze")
+        .remove(0);
+    let held = EffectiveGrants::of(&schema, &src.grants, role);
+    needs
+        .missing(&held, Mode::Registration)
+        .iter()
+        .map(|r| r.text(&schema))
+        .collect()
+}
+
+#[test]
+fn effective_grants_cover_constructors_a_whole_or_set_grant_gains_later() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant read identities to web with grant option\ngrant read identities.OAuth to ops with grant option",
+    );
+    let s = applies(
+        &s,
+        "module auth\nadd constructor Identity.Github { login: Text }\n  joins identities.OAuth",
+    );
+    let read = "from i in identities.Github select i.login";
+    assert_eq!(Vec::<(String, &str)>::new(), lacking(&s, "web", read));
+    assert_eq!(Vec::<(String, &str)>::new(), lacking(&s, "ops", read));
+    assert_eq!(
+        vec![
+            ("reads identities.EmailPass".to_owned(), "read"),
+            ("reads identities.EmailPass (id)".to_owned(), "read"),
+            ("reads identities.EmailPass (hash)".to_owned(), "read"),
+        ],
+        lacking(&s, "ops", "from i in identities.EmailPass select i.hash")
+    );
+}
+
+#[test]
+fn a_grant_without_grant_option_or_of_another_role_covers_nothing_at_registration() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant read identities.EmailPass (email) to web",
+    );
+    let text = "from i in identities.EmailPass select i.email";
+    let want = vec![
+        ("reads identities.EmailPass".to_owned(), "read"),
+        ("reads identities.EmailPass (id)".to_owned(), "read"),
+        ("reads identities.EmailPass (email)".to_owned(), "read"),
+    ];
+    assert_eq!(want, lacking(&s, "web", text));
+    assert_eq!(want, lacking(&s, "ops", text));
+    let s = applies(
+        &s,
+        "module auth\nrevoke read identities.EmailPass (email) from web\ngrant read identities.EmailPass (email) to web with grant option",
+    );
+    assert_eq!(Vec::<(String, &str)>::new(), lacking(&s, "web", text));
+}
+
+#[test]
+fn a_dormant_grant_covers_nothing() {
+    let mut s = applies(
+        &grants(),
+        "module auth\ngrant read identities to web with grant option",
+    );
+    for g in &mut s.grants {
+        g.dormant = true;
+    }
+    assert_eq!(
+        vec![
+            ("reads identities.EmailPass".to_owned(), "read"),
+            ("reads identities.EmailPass (id)".to_owned(), "read"),
+            ("reads identities.EmailPass (email)".to_owned(), "read"),
+        ],
+        lacking(&s, "web", "from i in identities.EmailPass select i.email")
+    );
+}
+
+#[test]
+fn writes_and_retags_name_their_constructors_and_privileges() {
+    let s = applies(
+        &grants(),
+        "module auth\ngrant read identities to web with grant option",
+    );
+    let got = lacking(
+        &s,
+        "web",
+        "update i in identities.Google set Apple { sub: i.gid }",
+    );
+    assert!(
+        got.contains(&(
+            "retags identities.Google to identities.Apple".to_owned(),
+            "retag"
+        )),
+        "{got:?}"
+    );
+}
