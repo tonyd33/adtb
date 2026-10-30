@@ -356,6 +356,7 @@ type Finding { id: Key verify_findings, run: RunId, at: Instant }
   | Missing   { relation: Key catalog::relations, ctor: Key catalog::constructors,
                 index: Key catalog::indexes, where: Text }
   | Violation { constraint: Key catalog::constraints, witness: Text }
+  | Structure { where: Text }
 relation sys::verify_findings : Finding volatile key id
 
 type Format = { id: Key format, file: Text, page_size: I64, format: I64, readable_by: Text,

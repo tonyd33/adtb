@@ -4,10 +4,10 @@
 pages and the log as the pager checks them, every heap, large-value
 store, B-link tree and commit log, the routing from index entries to
 heap slots, and the allocation bitmap against what refers to each page.
-It provides the structural checks of `verify`
-([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)) to
-the catalog, to the maintenance commands and to the test harnesses.
-The cross and logical checks of that section are not here.
+It runs only where no writer can exist. The `verify` command
+([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)) runs
+its three checks while writers run, as section 4 states, and adds this
+walk only on a file it holds.
 
 ## 1. The inventory
 
@@ -39,7 +39,7 @@ Preconditions:
   ([indexes.md §8.1](indexes.md#81-b-link-trees)); the commit log its
   root, directory and status pages
   ([mvcc.md §4.2](mvcc.md#42-the-commit-log)).
-- No write runs while `verify` or `repair` runs.
+- No write runs while `verify_with` or `repair` runs.
 
 When the catalog exists it builds the inventory from its own records;
 the catalog's pages are then one more structure.
@@ -118,5 +118,68 @@ leaves a head counting too many versions
 change to a directory may leave the entries above it unsettled. After every crash and
 recovery, `verify` finds nothing that `repair` does not mend, and after
 `repair` nothing at all.
+
+## 4. A run under writers
+
+`verify` and `verify r` take a read-only transaction that waits for a
+safe snapshot, since a constraint read at another snapshot may see a
+state no serial order holds. Neither runs in an open transaction or in
+text that writes: the refusal is `command::outside_transaction`, shared
+with `vacuum` and `reindex`, so a run never waits on its own caller.
+Two runs may overlap, each with its own `sys::jobs` row and run number;
+the lock on findings is held only for the number and the replacement.
+
+Postcondition: with nothing damaged, a run reports nothing whatever
+writers do meanwhile. Each check meets it as follows.
+
+| Check | Runs | Why a problem it reports is not a writer's |
+| --- | --- | --- |
+| Page checksum and log position | `Pager::verify_live` | A page whose LSN is at or past the log's end at the start was written since and is passed over. A page that looks wrong is read again from the file under its exclusive latch, which no write-out or eviction holds with it. A log finding at or past that end is dropped |
+| Each index's order, fences and levels | `BTree::check_live` | One latched read shows a page's own invariants. A fact about two pages counts only when the page linking to the other kept its LSN across the read of the other, so both held at one moment. A page without a downlink is rechecked against the page above it the same way. A pair a writer keeps changing is passed over after 16 reads and the walk goes on from the page reached, if it is a live page of that level |
+| Row version to entry (`Missing`) | at the snapshot | A version the snapshot sees committed after its entries were written, and the entry names the root of its heap-only chain, read in one latch |
+| Entry to row version (`Orphan`) | latest | The run holds off vacuum across each index. Only vacuum removes an entry or frees a slot an entry named, and a writer writes the version before the entry, so an entry read still names its version. A dead slot passes |
+| Each admitted constraint (`Violation`) | at the snapshot | The snapshot is safe. A constraint reading a transition is not run. A constraint reading a damaged page reports that page, whatever the scope. One over the query memory is a `Structure` finding and the run goes on |
+
+An index with a fault of its own structure gets no cross-reference in
+that run, since what its walk returns is not what it holds.
+
+`Leaked`, `Unallocated`, `Shared`, `Overcounted`, `Unsettled`, every
+`Structure` problem of a heap or large-value store, and the version-chain checks
+cannot be made exact under writers, and the specification does not list
+them. They run only in `adtb verify FILE`, which holds the file, by
+`verify_with(pager, inventory, Depth::FILE)`. `Unsettled` and
+`Overcounted` are never findings: a crash may leave them on a sound file
+and section 3 mends them. `Leaked` is a finding: only a migration or a
+file's creation allocates a page apart from what names it, and open
+frees what a crash of a migration leaves. Every other problem becomes a `Structure` finding, except `Damaged`, which becomes
+`Checksum` or `StalePage`. `Unlogged` and log findings become
+`Structure`.
+
+`verify r` filters page findings to the pages of `r`'s heaps, their
+large-value store and `r`'s indexes, and reports no log finding.
+
+A running `verify` has a row in `sys::jobs`, removed when it ends, by a
+panic included. A failure to keep the findings fails no run: the run
+returns them with a `Structure` row saying they were not kept, and holds
+them in memory until the next run over the scope or a reopen.
+
+## 5. Kept rows
+
+The rows of a volatile relation kept in the file are rows of constructor
+14 of the roots heap, each `{ relation, group, ctor, format, row }`:
+the relation's catalog id, the text naming what one writer replaces
+together, the row's constructor position, the encoding of `row`, and the
+fields as a sequence of tagged integers, instants and texts. Format 1 is
+the only encoding; a reader refuses any other at open. A file written
+before this constructor existed has no such rows and needs no migration.
+
+Writes go through `Catalog::replace_kept` in a transaction of the write
+path, one writer per group at a time. `sys::verify_findings` uses groups
+`database`, `relation N` and `scrub`, N the relation's catalog id, the
+scope of `spec/verify-scope/per-scope`, and one row of group `counters`
+holding the next run number and finding id, so both rise across a clean
+run and a reopen. Any run removes the rows of a group `relation N` when
+the schema no longer has N. The engine loads kept rows at
+open and holds them in memory for reads.
 
 TODO: verifying the log from a remembered position, so a caller that verifies often does not reread the whole retained log, needs the pager to offer it.

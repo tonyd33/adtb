@@ -98,7 +98,7 @@ pub(super) struct Split {
 /// latch.
 const OPTIMISTIC_TRIES: usize = 4;
 
-fn node_of(page: &[u8], owner: u32) -> Result<Node<'_>, Malformed> {
+pub(super) fn node_of(page: &[u8], owner: u32) -> Result<Node<'_>, Malformed> {
     Node::new(page)
         .ok()
         .filter(|n| n.owner() == owner)

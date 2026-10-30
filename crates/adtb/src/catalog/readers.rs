@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use adtb_lang::ast::{Ident, MigrationFile, Operator, OperatorKind, QName};
@@ -389,7 +388,7 @@ pub(super) struct Readers {
     pub(super) live: BTreeMap<String, Pinned>,
     pub(super) pending: Vec<Pending>,
     /// The source with every pending-dropped object kept, while one is pending.
-    pub(super) enforced: Option<Rc<Checked>>,
+    pub(super) enforced: Option<Arc<Checked>>,
 }
 
 impl Readers {
@@ -524,7 +523,7 @@ impl Catalog {
                 "the schema keeping pending drops has the relations of the version".to_string(),
             ));
         }
-        readers.enforced = Some(Rc::new(enforced));
+        readers.enforced = Some(Arc::new(enforced));
         Ok(readers)
     }
 

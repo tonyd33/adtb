@@ -456,9 +456,28 @@ fn set_setting_holds_whatever_the_transaction_does() {
 #[test]
 fn a_command_the_engine_does_not_run_is_refused_whole() {
     with_db(|db| {
-        for text in ["compact", "verify", "print schema", "finalize upgrade"] {
+        for text in ["compact", "print schema", "finalize upgrade"] {
             let e = failure(db, text);
             assert!(is_invalid(&e), "`{text}`: {e:?}");
         }
+    });
+}
+
+#[test]
+fn verify_answers_the_rows_it_wrote() {
+    with_db(|db| {
+        assert_eq!(0, results(db, "verify").remove(0).count());
+        assert_eq!(0, results(db, "verify users").remove(0).count());
+        assert_eq!(
+            Vec::<String>::new(),
+            printed(result(db, "from f in sys::verify_findings select f"))
+        );
+    });
+}
+
+#[test]
+fn verify_of_a_name_that_is_no_relation_is_refused() {
+    with_db(|db| {
+        assert!(is_invalid(&failure(db, "verify nothing")));
     });
 }

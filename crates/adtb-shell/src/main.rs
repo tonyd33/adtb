@@ -3,11 +3,12 @@ mod session;
 mod text;
 
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use adtb::{CreateOptions, Log, OpenOptions};
-use clap::Parser;
+use adtb_lang::textual::print;
+use clap::{Parser, Subcommand};
 
 use session::{Command, Session};
 use text::Shape;
@@ -18,15 +19,20 @@ const CONTINUE: &str = "  ... ";
 #[derive(Debug, Parser)]
 #[command(
     name = "adtb",
-    override_usage = "adtb [--create] [--schema FILE]... FILE [-c TEXT]",
+    override_usage = "adtb [--create] [--schema FILE]... FILE [-c TEXT]\n       \
+                      adtb verify [--schema FILE]... FILE",
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true,
     about = "Open the database FILE and run ad hoc text against it: TEXT when -c gives one, \
              else the texts read from stdin, with a prompt on a terminal.",
     after_help = "At the prompt, \\help lists the shell's commands.",
     args_override_self = true
 )]
 struct Args {
-    #[arg(value_name = "FILE", help = "the database file")]
-    file: PathBuf,
+    #[command(subcommand)]
+    tool: Option<Tool>,
+    #[arg(value_name = "FILE", required = true, help = "the database file")]
+    file: Option<PathBuf>,
     #[arg(long, help = "create FILE when it does not exist")]
     create: bool,
     #[arg(
@@ -46,8 +52,35 @@ struct Args {
     text: Option<String>,
 }
 
+#[derive(Debug, Subcommand)]
+enum Tool {
+    /// Hold FILE, check it whole and print a row per finding, failing when there is one.
+    Verify {
+        #[arg(value_name = "FILE", help = "the database file")]
+        file: PathBuf,
+        #[arg(
+            long = "schema",
+            value_name = "FILE",
+            allow_hyphen_values = true,
+            help = "the next migration of the database's log; the first may instead be a \
+                    schema file of declarations"
+        )]
+        log: Vec<PathBuf>,
+    },
+}
+
 fn main() -> ExitCode {
     let args = Args::parse();
+    if let Some(Tool::Verify { file, log: paths }) = &args.tool {
+        return match verified(file, paths) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(why) => {
+                report(&why);
+                ExitCode::from(2)
+            }
+        };
+    }
     match shell(&args) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
@@ -67,7 +100,7 @@ fn report(message: &str) {
 /// Open the database `args` names and run its text, its script or its session. Returns
 /// whether every text succeeded, or why the shell could not run.
 fn shell(args: &Args) -> Result<bool, String> {
-    let file = &args.file;
+    let file = args.file.as_ref().ok_or("no FILE")?;
     let log = log(&args.log)?;
     let options = OpenOptions {
         create: args.create.then(CreateOptions::default),
@@ -86,6 +119,24 @@ fn shell(args: &Args) -> Result<bool, String> {
     ran.map_err(|e| e.to_string())?;
     db.close().map_err(|e| e.to_string())?;
     Ok(ok)
+}
+
+/// Check the database `file` while holding it and print each finding. Returns whether it has
+/// none, or why the check could not run.
+fn verified(file: &Path, paths: &[PathBuf]) -> Result<bool, String> {
+    let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", file.display());
+    let log = log(paths)?;
+    let rows = adtb::verify_file(file, &log, &OpenOptions::default()).map_err(|e| failed(&e))?;
+    let form = rows.form().clone();
+    let mut clean = true;
+    let mut out = io::stdout();
+    for row in rows {
+        let v = row.map_err(|e| failed(&e))?;
+        let line = print(&v, &form).map_err(|e| failed(&e))?;
+        writeln!(out, "{line}").map_err(|e| failed(&e))?;
+        clean = false;
+    }
+    Ok(clean)
 }
 
 /// Returns the log of the migration files at `paths`, the first of which may be a schema file.
@@ -193,7 +244,7 @@ mod tests {
     fn the_manual_invocations_parse() {
         let created = parse("adtb --create --schema shelter.adt shelter.db");
         assert!(created.create);
-        assert_eq!(PathBuf::from("shelter.db"), created.file);
+        assert_eq!(Some(PathBuf::from("shelter.db")), created.file);
         assert_eq!(vec![PathBuf::from("shelter.adt")], created.log);
         assert_eq!(None, created.text);
         let migrated = parse("adtb --schema crm.adt --schema plan.adt crm.db -c 1");
@@ -203,7 +254,7 @@ mod tests {
             migrated.log
         );
         assert_eq!(Some("1".to_owned()), migrated.text);
-        assert_eq!(PathBuf::from("app.adt"), parse("adtb app.adt").file);
+        assert_eq!(Some(PathBuf::from("app.adt")), parse("adtb app.adt").file);
     }
 
     #[test]

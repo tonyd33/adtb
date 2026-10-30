@@ -2,7 +2,7 @@
 //! bundle holding it, read at open and rewritten as holds are added and released.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use adtb_lang::evolve::Source;
 use adtb_lang::schema::Schema;
@@ -279,7 +279,7 @@ impl Readers {
     ///
     /// Fail as [`enforcing`] does.
     pub(super) fn reopened(source: &Source, pending: Vec<Pending>) -> Result<Readers, Error> {
-        let enforced = enforcing(source, &pending)?.map(Rc::new);
+        let enforced = enforcing(source, &pending)?.map(Arc::new);
         Ok(Readers {
             live: Default::default(),
             pending,
@@ -348,7 +348,7 @@ impl Catalog {
         let done = pending.iter().any(|p| p.blocking.is_empty());
         pending.retain(|p| !p.blocking.is_empty());
         let enforced = if done {
-            enforcing(&self.source, &pending)?.map(Rc::new)
+            enforcing(&self.source, &pending)?.map(Arc::new)
         } else {
             self.readers.enforced.clone()
         };

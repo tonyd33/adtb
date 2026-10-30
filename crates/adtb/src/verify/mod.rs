@@ -74,11 +74,25 @@ pub struct Depth {
     /// Check every page and the whole retained log as the pager does. Without it, only the pages
     /// the structures read are verified, as every read verifies them.
     pub log: bool,
+    /// Check every index's own structure and its entries against the heaps. Without it, the
+    /// indexes are read only for the pages they own.
+    pub indexes: bool,
 }
 
 impl Depth {
-    pub const FULL: Depth = Depth { log: true };
-    pub const STRUCTURE: Depth = Depth { log: false };
+    pub const FULL: Depth = Depth {
+        log: true,
+        indexes: true,
+    };
+    pub const STRUCTURE: Depth = Depth {
+        log: false,
+        indexes: true,
+    };
+    /// What a live run of `verify` cannot check exactly: the heaps, large values and allocation.
+    pub const FILE: Depth = Depth {
+        log: false,
+        indexes: false,
+    };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -128,6 +142,7 @@ struct Walk<'p, R: Runtime> {
     findings: Vec<Finding>,
     owners: BTreeMap<Pid, String>,
     complete: bool,
+    indexes: bool,
 }
 
 impl<R: Runtime> Walk<'_, R> {
@@ -192,7 +207,9 @@ impl<R: Runtime> Walk<'_, R> {
     }
 
     fn tree(&mut self, name: &str, tree: BTree) {
-        if let Err(e) = tree.verify(self.pager) {
+        if self.indexes
+            && let Err(e) = tree.verify(self.pager)
+        {
             self.tree_error(name, tree.root(), e);
         }
         match tree.pages(self.pager) {
@@ -359,6 +376,9 @@ impl<R: Runtime> Walk<'_, R> {
             let tree = index.tree();
             let name = format!("index {}", tree.owner());
             self.tree(&name, tree);
+            if !self.indexes {
+                continue;
+            }
             match entries(self.pager, &heaps, index, &broken) {
                 Ok(problems) => {
                     for (pid, what) in problems {
@@ -464,6 +484,7 @@ pub fn verify_with<R: Runtime>(pager: &Pager<R>, inventory: &Inventory, depth: D
         findings: Vec::new(),
         owners: BTreeMap::new(),
         complete: true,
+        indexes: depth.indexes,
     };
     let mut log = Vec::new();
     let mut commits = Vec::new();

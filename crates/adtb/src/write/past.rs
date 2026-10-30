@@ -248,7 +248,12 @@ impl<R: Runtime> Database<R> {
     pub(super) fn volatile_rows(&self, rel: RelId) -> Result<BTreeSet<Val>, Error> {
         let id = self.schema.ids.relations[&rel];
         if id != COMMIT_TIMES && id != SAFE_SNAPSHOTS {
-            return Ok(self.volatile.get(&rel).cloned().unwrap_or_default());
+            return Ok(self
+                .volatile
+                .lock(&self.rt)
+                .get(&rel)
+                .cloned()
+                .unwrap_or_default());
         }
         let (Some(past), Some(cutoff)) = (self.txns.history(), self.txns.cutoff()) else {
             return Ok(BTreeSet::new());

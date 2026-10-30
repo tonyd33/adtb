@@ -10,6 +10,7 @@ use adtb_lang::types::{RelId, Ty};
 use crate::exec::{self, AtSnapshot, Budget, Call, Histories, Store, Val};
 use crate::plan;
 use crate::runtime::Runtime;
+use crate::storage::PageError;
 
 use super::hosts::unbound;
 use super::ids::CatRelId;
@@ -82,6 +83,69 @@ impl Catalog {
     }
 }
 
+impl Catalog {
+    /// Returns what the denial query of each constraint and check of this catalog found over
+    /// `store`, for those no transition reads and that `keep` accepts by the relations they read.
+    pub fn denied<R: Runtime>(
+        &self,
+        store: &Arc<Store<R>>,
+        keep: impl Fn(&BTreeSet<RelId>) -> bool,
+    ) -> Result<Vec<Denial>, Error> {
+        let (schema, program) = self.checking();
+        let normal = norm::program(schema, program)
+            .map_err(|e| Error::Internal(format!("a checked schema normalises: {e:?}")))?;
+        let catalog = self.plan();
+        let budget = Budget::new(self.query_memory);
+        let ids = schema.ids.constraints.values().copied().chain(
+            schema
+                .ids
+                .checks
+                .iter()
+                .filter(|&(&i, _)| schema.checks[i].relation.0 != u32::MAX)
+                .map(|(_, &id)| id),
+        );
+        let mut out = Vec::new();
+        for (id, &t) in ids.zip(normal.constraints.iter().chain(&normal.checks)) {
+            let mut reads = BTreeSet::new();
+            if transitions(&normal.terms, t, &mut reads) || !keep(&reads) {
+                continue;
+            }
+            let found = run_denial(schema, &catalog, &normal, t, store, &budget, &self.hosts);
+            let denial = match found {
+                Err(Error::Page(e)) => Some(Denial::Damaged(e)),
+                Err(e) => return Err(e),
+                Ok(Ok(rows)) => rows
+                    .into_iter()
+                    .next()
+                    .map(|witness| Denial::Violated { id, witness }),
+                Ok(Err(Denied::Fault(witness))) => Some(Denial::Violated { id, witness }),
+                Ok(Err(Denied::Memory(why))) => Some(Denial::Unrun { id, why }),
+            };
+            out.extend(denial);
+        }
+        Ok(out)
+    }
+}
+
+/// What a whole run of one denial query found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Denial {
+    /// The constraint of catalog id `id` is violated; `witness` is its first row, printed.
+    Violated { id: u64, witness: String },
+    /// The query read a damaged page.
+    Damaged(PageError),
+    /// The query needs more than the query memory.
+    Unrun { id: u64, why: String },
+}
+
+/// Why a denial query returned no rows to read.
+enum Denied {
+    /// The query itself faults or rejects, a violation of no row.
+    Fault(String),
+    /// The query needs more than the query memory.
+    Memory(String),
+}
+
 /// The qualified name of every constraint, then every check, of `schema`, in declaration order.
 fn qualified(schema: &Schema) -> Vec<String> {
     let name = |m, n: &str| format!("{}::{n}", schema.module(m).name);
@@ -125,7 +189,8 @@ fn transitions(terms: &Terms, t: Tm, reads: &mut BTreeSet<RelId>) -> bool {
     found
 }
 
-/// Returns each row constraint `t` returns over `store`, printed.
+/// Returns each row constraint `t` returns over `store`, printed, or why it could not run,
+/// that printed as its one row.
 fn violating<R: Runtime>(
     schema: &Schema,
     catalog: &plan::Catalog,
@@ -135,6 +200,24 @@ fn violating<R: Runtime>(
     budget: &Arc<Budget>,
     hosts: &Arc<exec::Hosts>,
 ) -> Result<Vec<String>, Error> {
+    Ok(
+        match run_denial(schema, catalog, normal, t, store, budget, hosts)? {
+            Ok(rows) => rows,
+            Err(Denied::Fault(why) | Denied::Memory(why)) => vec![why],
+        },
+    )
+}
+
+/// Returns each row constraint `t` returns over `store`, printed, or why it could not run.
+fn run_denial<R: Runtime>(
+    schema: &Schema,
+    catalog: &plan::Catalog,
+    normal: &NormalProgram,
+    t: Tm,
+    store: &Arc<Store<R>>,
+    budget: &Arc<Budget>,
+    hosts: &Arc<exec::Hosts>,
+) -> Result<Result<Vec<String>, Denied>, Error> {
     let terms = &normal.terms;
     let internal = Error::Internal;
     let p = plan::plan(
@@ -164,15 +247,20 @@ fn violating<R: Runtime>(
     let v = match exec::execute(store.pager.rt.clone(), program, call, &[]) {
         Ok(v) => v,
         Err(exec::Error::Fault(f)) => {
-            return Ok(vec![format!("its query faults with {}", f.name())]);
+            return Ok(Err(Denied::Fault(format!(
+                "its query faults with {}",
+                f.name()
+            ))));
         }
-        Err(exec::Error::Rejected(why)) => return Ok(vec![format!("its query rejects: {why}")]),
+        Err(exec::Error::Rejected(why)) => {
+            return Ok(Err(Denied::Fault(format!("its query rejects: {why}"))));
+        }
         Err(exec::Error::StatementLimit(
             exec::Exceeded::Memory { limit } | exec::Exceeded::Spill { grant: limit, .. },
         )) => {
-            return Ok(vec![format!(
+            return Ok(Err(Denied::Memory(format!(
                 "its validation needs more than the query memory of {limit} bytes"
-            )]);
+            ))));
         }
         Err(e) => return Err(failed(e)),
     };
@@ -189,7 +277,8 @@ fn violating<R: Runtime>(
     };
     rows.iter()
         .map(|r| exec::print(schema, &elem, r).map_err(failed))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()
+        .map(Ok)
 }
 
 fn failed(e: exec::Error) -> Error {

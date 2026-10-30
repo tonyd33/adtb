@@ -203,14 +203,18 @@ fn engine(schema: &Schema) -> CatalogIds {
         for (c, f) in parts {
             // Constructors from 471 extend the original engine field-id allocation.
             if c.is_some_and(|c| ids.ctors[&(def, c)] >= 471) {
-                added.push((def, c, f.name.clone()));
+                added.push((
+                    ids.ctors[&(def, c.expect("is_some above"))],
+                    (def, c, f.name.clone()),
+                ));
                 continue;
             }
             ids.fields.insert((def, c, f.name.clone()), field);
             field += 1;
         }
     }
-    for slot in added {
+    added.sort_by_key(|(ctor, _)| *ctor);
+    for (_, slot) in added {
         ids.fields.insert(slot, field);
         field += 1;
     }
@@ -1067,6 +1071,7 @@ pub const TYPES: &[FixedType] = &[
             ("Orphan", 316),
             ("Missing", 317),
             ("Violation", 318),
+            ("Structure", 473),
         ],
     ),
     ("sys", "Format", 319, &[("Format", 320)]),

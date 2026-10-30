@@ -5,6 +5,7 @@ mod grants;
 mod history;
 mod hosts;
 mod ids;
+mod kept;
 mod keying;
 pub mod layout;
 mod migration;
@@ -45,12 +46,14 @@ use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
 pub use grants::Dormant;
+pub use kept::{KeptField, KeptRow};
 pub use keying::{IndexKeys, element_types};
 use keying::{broken, index_keys, row_key};
 pub use layout::OrderKeys;
 pub use oplog::{Hash, try_version_hash, version_hash};
 pub use readers::{PendingDrop, Read, Reader, source_at, stale};
 pub use rows::{IndexSpec, Rows, applied, declared, field_path, indexed_fields, indexes};
+pub use validate::Denial;
 
 use change::Data;
 use history::{HISTORY_HEAP, HISTORY_INDEX, Kept, key_indexes};
@@ -214,6 +217,7 @@ fn roots_row() -> Vec<FieldType> {
             ],
         )])
         .chain(deployment::ctors())
+        .chain(kept::ctors())
         .collect(),
     )]
 }
@@ -402,7 +406,7 @@ impl Named {
             (ctor, fields) if pending::holds(ctor) => {
                 pending::add(&mut self.pending, ctor, fields)?;
             }
-            (ctor, _) if deployment::holds(ctor) => {}
+            (ctor, _) if deployment::holds(ctor) || kept::holds(ctor) => {}
             (ctor, fields) => {
                 return Err(Error::Corrupt(format!(
                     "a roots row of constructor {ctor} holds {fields:?}"

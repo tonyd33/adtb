@@ -128,6 +128,11 @@ impl Prepared {
                 deferrable |= o.deferrable;
             }
         }
+        if writes {
+            for c in &normal.commands {
+                command::outside_transaction(&c.command)?;
+            }
+        }
         Ok(Prepared {
             schema: adhoc.temps.map_or_else(|| schema.clone(), Arc::new),
             terms: Arc::new(normal.terms),

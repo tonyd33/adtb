@@ -80,7 +80,7 @@ specification describes:
 - The rest of the in-process API: feeds, notices, encryption and key
   sources, the metrics callback, `finalize_upgrade`, log shipping and
   embedded replicas.
-- Operations: `print schema`, `verify`, `compact`, `export`, dump and
+- Operations: `print schema`, `compact`, `export`, dump and
   restore, backups and `reindex`, which the engine refuses today with
   "does not run in this engine yet".
 - Migration scripts: the engine refuses `script` with "the engine does

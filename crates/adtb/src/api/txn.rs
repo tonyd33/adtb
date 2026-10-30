@@ -170,6 +170,9 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
             params,
             self.caller.clone(),
         )?;
+        for c in p.commands() {
+            super::command::outside_transaction(&c.command)?;
+        }
         if p.deferrable {
             return Err(Error::invalid(
                 "a read_only deferrable block does not run inside an interactive transaction",

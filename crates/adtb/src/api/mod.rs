@@ -16,6 +16,7 @@ mod text;
 mod txn;
 pub mod typed;
 mod value;
+mod verify;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -266,6 +267,9 @@ struct Engine<R: Runtime> {
     role_mentions: BTreeSet<String>,
     pager: Pager<R>,
     db: write::Database<R>,
+    catalog: Catalog,
+    /// The findings of `verify`. Held across a whole run, so that one runs at a time.
+    findings: Lock<verify::Findings>,
     /// Whether the engine is open. A call holds it shared while it runs; close holds it
     /// exclusively.
     open: RwLock<bool>,
@@ -415,6 +419,43 @@ impl<R: Runtime> Database<R> {
         e.call(&p, opts, || {}).map(|done| done.value)
     }
 
+    /// Run `verify` over relation variable `relation`, or the whole database, while the database
+    /// serves calls. Returns the rows of `sys::verify_findings` it wrote.
+    pub fn verify(&self, relation: Option<&str>) -> Result<DynRows, Error> {
+        let text = relation.map_or_else(|| "verify".to_owned(), |r| format!("verify {r}"));
+        self.query_text(&text, &[], &CallOptions::default())?
+            .pop()
+            .ok_or_else(|| {
+                Error::rejected(RejectReason::Internal {
+                    what: "a command returns its rows".into(),
+                })
+            })
+    }
+
+    /// Run `verify` over the whole database with the checks of the allocation bitmap, the heaps
+    /// and the large values that hold only with no writer. Returns the rows it wrote.
+    ///
+    /// Precondition: no other call runs on this database while it runs.
+    #[doc(hidden)]
+    pub fn verify_holding(&self) -> Result<DynRows, Error> {
+        let e = &*self.engine;
+        let _open = e.enter()?;
+        e.verified_holding(&e.schema)
+            .map_err(|w| e.write_error(TxnId(0), w))
+    }
+
+    /// Refuse the pages of the store of kept rows. Plants a fault for a test of `verify`.
+    #[doc(hidden)]
+    pub fn damage_kept_store(&self) {
+        self.engine.damage_kept_store();
+    }
+
+    /// Returns the write path, for tests that plant faults beneath it.
+    #[doc(hidden)]
+    pub fn write_path(&self) -> &write::Database<R> {
+        &self.engine.db
+    }
+
     /// Returns each incremental check the constraint or check `name`, by qualified name, is
     /// admitted with, or an invalid error when the schema has no constraint or check `name`.
     pub fn explain_checks(&self, name: &str) -> Result<Vec<write::CheckPlan>, Error> {
@@ -496,6 +537,36 @@ fn remove(file: &std::path::Path, log: &std::path::Path) -> Result<(), OpenError
     };
     gone(std::fs::remove_file(file))?;
     gone(std::fs::remove_dir_all(log))
+}
+
+/// Open the database file at `path` as the one process that holds it and run `verify` over it,
+/// with the checks that hold only with no writer. Returns the rows it wrote.
+#[cfg(target_os = "linux")]
+pub fn verify_file(
+    path: impl AsRef<std::path::Path>,
+    log: &Log,
+    options: &OpenOptions,
+) -> Result<DynRows, VerifyFileError> {
+    let db = Database::open(path, log, options).map_err(VerifyFileError::Open)?;
+    let rows = db.verify_holding().map_err(VerifyFileError::Run)?;
+    db.close().map_err(VerifyFileError::Run)?;
+    Ok(rows)
+}
+
+/// Why [`verify_file`] did not finish.
+#[derive(Debug)]
+pub enum VerifyFileError {
+    Open(OpenError),
+    Run(Error),
+}
+
+impl std::fmt::Display for VerifyFileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyFileError::Open(e) => e.fmt(f),
+            VerifyFileError::Run(e) => e.fmt(f),
+        }
+    }
 }
 
 /// Open or create the database file at `path`, as [`Database::open`] does.
@@ -609,6 +680,16 @@ impl<R: Runtime> Engine<R> {
         for c in &registered {
             c.explained(&mut bundles);
         }
+        let findings = verify::Findings::of(
+            catalog.kept(&pager, &txns).map_err(corrupt)?,
+            schema.ids.relations
+                [&command::engine_relation(&schema, "sys", "verify_findings").map_err(corrupt)?],
+        )?;
+        let mut volatile = settings::process_options(&schema, &options.shown());
+        volatile.insert(
+            command::engine_relation(&schema, "sys", "verify_findings").map_err(corrupt)?,
+            findings.vals(),
+        );
         let defaults = exec::Options::default();
         let retained = catalog.retained(&pager, &txns).map_err(corrupt)?;
         let db = write::Database::new(
@@ -634,7 +715,7 @@ impl<R: Runtime> Engine<R> {
         .map_err(corrupt)?
         .with_files(options.file_root.clone().map(Disk::new).unwrap_or_default())
         .with_hosts(hosts)
-        .with_volatile(settings::process_options(&schema, &options.shown()))
+        .with_volatile(volatile)
         .with_history(retained, settings.window)
         .map_err(corrupt)?;
         let role_mentions = server::mentioned(catalog.source());
@@ -652,6 +733,8 @@ impl<R: Runtime> Engine<R> {
             role_mentions,
             pager,
             db,
+            catalog,
+            findings: Lock::new(findings),
             open: RwLock::new(true),
             closing: Lock::new(()),
             close: Arc::default(),

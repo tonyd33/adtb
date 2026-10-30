@@ -17,8 +17,6 @@ pub mod write;
 
 pub use adtb_sys::runtime;
 
-#[cfg(target_os = "linux")]
-pub use api::open;
 pub use api::{
     AdHocTransaction, Appender, ArrowSchema, ArrowStream, CallOptions, Called, CancelToken,
     Capability, Committed, CreateOptions, Database, Determinism, Durability, DynRows, Error,
@@ -28,5 +26,7 @@ pub use api::{
 };
 pub use api::{BundleDef, Callable, CtorRelation, Key, Pending, Rows, typed};
 pub use api::{Completion, Format, Layout, Observation, ResultBatch, Task, TaskOptions};
+#[cfg(target_os = "linux")]
+pub use api::{VerifyFileError, open, verify_file};
 pub use exec::HostError;
 pub use exec::Val as Value;

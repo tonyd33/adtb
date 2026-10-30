@@ -179,7 +179,7 @@ relation identities : Identity
 - [replication.md](replication.md): the log stream, safe snapshot markers, vacuum feedback, epochs, logical records and backups.
 - [server.md](server.md): how `adtb-server` drives the engine.
 - [oracle.md](oracle.md): the reference interpreter's contract with the test harness and the conformance runner.
-- [verify.md](verify.md): the structural `verify` of a whole file, the inventory its caller supplies, and the repair of leaked pages.
+- [verify.md](verify.md): the structural `verify` of a whole file, the inventory its caller supplies, the repair of leaked pages, the `verify` command under writers, and the rows of volatile relations kept in the file.
 
 ## 8. Notes for the implementation
 

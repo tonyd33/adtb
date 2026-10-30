@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::runtime::Runtime;
+use crate::runtime::{AlignedBuf, Runtime};
 
 use super::block::{LogFinding, Mode, scan};
 use super::page::{self, Verdict};
@@ -36,6 +36,20 @@ impl<R: Runtime> Pager<R> {
     /// or when its LSN differs from that of the last record the log holds for it, or when a record
     /// of it does not continue from the one before.
     pub fn verify(&self) -> Verification {
+        self.verify_to(false)
+    }
+
+    /// Check as [`Pager::verify`] does while writers run. Reports no log finding at or past the
+    /// log's end when the check starts.
+    pub fn verify_live(&self) -> Verification {
+        self.verify_to(true)
+    }
+
+    /// Check every page and the retained log. A page whose LSN is at or past `end`, the log's end
+    /// when the check starts, was written since and has no finding. A page that looks wrong is
+    /// read again under its exclusive latch, which no write-out or eviction holds with.
+    fn verify_to(&self, live: bool) -> Verification {
+        let end = self.log().next_lsn();
         self.flush_log();
         let mut img = {
             let mut segments = self.segments.lock(&self.rt);
@@ -80,7 +94,12 @@ impl<R: Runtime> Pager<R> {
             .as_ref()
             .is_some_and(|s| s.resumed == 0 && first == Some(Lsn(0)));
         if let Some(s) = &s {
-            findings.extend(s.findings.iter().map(|f| Finding::Log(*f)));
+            findings.extend(
+                s.findings
+                    .iter()
+                    .filter(|f| !live || f.lsn < end)
+                    .map(|f| Finding::Log(*f)),
+            );
         }
         let file_pages = self.file_pages();
         let logged = last.keys().next_back().map_or(0, |p| p.0 + 1);
@@ -91,43 +110,50 @@ impl<R: Runtime> Pager<R> {
                 findings.push(Finding::Page { pid, damage });
                 continue;
             }
+            let judge = |disk: &Result<(AlignedBuf, Verdict), Damage>, resident: Option<Lsn>| {
+                let bad = match disk {
+                    Err(d) => Some(*d),
+                    Ok((_, Verdict::Corrupt)) => Some(Damage::Checksum),
+                    Ok(_) => None,
+                };
+                let found = match (disk, resident) {
+                    (Ok((_, Verdict::Corrupt)) | Err(_), r) => r,
+                    (Ok(_), Some(l)) => Some(l),
+                    (Ok((buf, _)), None) => Some(page::lsn(buf)),
+                };
+                let stale = found.and_then(|found| match (broken.get(&pid), last.get(&pid)) {
+                    (Some(&d), _) => Some(d),
+                    (None, Some(&expected)) if expected != found && found < end => {
+                        Some(Damage::Stale { expected, found })
+                    }
+                    _ => None,
+                });
+                let orphan = found.is_some_and(|found| {
+                    complete && !last.contains_key(&pid) && found != Lsn(0) && found < end
+                });
+                (bad, found, stale, orphan)
+            };
             let disk = self.read_disk(pid);
             let resident = self.mem.lock_shared(pid.0, &self.rt).map(|g| page::lsn(&g));
-            let found = match (&disk, resident) {
-                (Err(d), _) => {
-                    findings.push(Finding::Page { pid, damage: *d });
-                    resident
-                }
-                (Ok((_, Verdict::Corrupt)), _) => {
-                    findings.push(Finding::Page {
-                        pid,
-                        damage: Damage::Checksum,
-                    });
-                    resident
-                }
-                (Ok(_), Some(l)) => Some(l),
-                (Ok((buf, _)), None) => Some(page::lsn(buf)),
-            };
-            let Some(found) = found else {
-                let damage = if disk.is_err() {
-                    Damage::Unreadable
-                } else {
-                    Damage::Checksum
-                };
-                self.damage(pid, damage);
+            let mut seen = judge(&disk, resident);
+            if seen.0.is_some() || seen.1.is_none() || seen.2.is_some() || seen.3 {
+                let g = self.mem.lock_exclusive(pid.0, &self.rt);
+                let disk = self.read_disk(pid);
+                let resident = g.resident().then(|| page::lsn(&g));
+                seen = judge(&disk, resident);
+            }
+            let (bad, found, stale, orphan) = seen;
+            if let Some(damage) = bad {
+                findings.push(Finding::Page { pid, damage });
+            }
+            if found.is_none() {
+                self.damage(pid, bad.unwrap_or(Damage::Checksum));
                 continue;
-            };
-            let stale = match (broken.get(&pid), last.get(&pid)) {
-                (Some(&d), _) => Some(d),
-                (None, Some(&expected)) if expected != found => {
-                    Some(Damage::Stale { expected, found })
-                }
-                _ => None,
-            };
+            }
             if let Some(damage) = stale {
                 findings.push(Finding::Page { pid, damage });
                 self.damage(pid, damage);
-            } else if complete && !last.contains_key(&pid) && found != Lsn(0) {
+            } else if orphan {
                 findings.push(Finding::Orphan(pid));
             }
         }

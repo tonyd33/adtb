@@ -1198,7 +1198,7 @@ Module `sys`, types:
 | 302 | `RequestMark` | 303 (one constructor) |
 | 304 | `ProcessOption` | 305 (one constructor) |
 | 310 | `RunId` | 311 (one constructor) |
-| 312 | `Finding` | 313 `Checksum`, 314 `StalePage`, 315 `Order`, 316 `Orphan`, 317 `Missing`, 318 `Violation` |
+| 312 | `Finding` | 313 `Checksum`, 314 `StalePage`, 315 `Order`, 316 `Orphan`, 317 `Missing`, 318 `Violation`, 473 `Structure` |
 | 319 | `Format` | 320 (one constructor) |
 | 366 | `CommitTime` | 367 (one constructor) |
 | 368 | `SafeSnapshotMark` | 369 (one constructor) |
@@ -1231,11 +1231,11 @@ Module `sys`, relation variables:
 | 371 | `sys::safe_snapshots` |
 
 
-Ids from 341 to 472 are listed in the rows of the types they belong
+Ids from 341 to 473 are listed in the rows of the types they belong
 to. `Person` and the other types of examples are not engine types and
 have no fixed id, nor has a `Principal` the schema declares
 ([security.md](security.md#11-the-principal-sum)). Ids 287 to 290, 306
-to 309 and from 473 to 1023 are unassigned.
+to 309 and from 474 to 1023 are unassigned.
 
 Fields and indexes have fixed ids in their own spaces. In edition
 2026-10 and catalog version 1, the engine's original fields take ids from 0:
@@ -1249,8 +1249,8 @@ from 471. They take ids 0 to 563:
 `catalog` and `sys` modules from 92, and `Limit.Rounds.rounds` 563.
 `RejectReason.KeyTooLarge` appends fields `relation`, `ctor`, `index`,
 `size` and `limit` at ids 564 to 568 without changing any earlier id,
-and `ClauseBody.Privilege` its fields `privilege` and `target` at ids
-569 and 570.
+`ClauseBody.Privilege` its fields `privilege` and `target` at ids 569
+and 570, and `Finding.Structure` its field `where` at id 571.
 The engine's indexes take ids from 0: for
 each relation variable of the tables above in id order, the index of
 its key, then an index for each `unique` clause in written order;
@@ -2091,6 +2091,7 @@ type Finding { id: Key verify_findings, run: RunId, at: Instant }
   | Missing   { relation: Key catalog::relations, ctor: Key catalog::constructors,
                 index: Key catalog::indexes, where: Text }
   | Violation { constraint: Key catalog::constraints, witness: Text }
+  | Structure { where: Text }
 relation sys::verify_findings : Finding volatile key id
 ```
 

@@ -10,6 +10,7 @@ mod polarity;
 mod schema;
 mod sequence;
 mod stream;
+mod verify;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -43,6 +44,7 @@ pub use delta::{CheckPlan, Part};
 pub use input::Local;
 pub use past::Retained;
 pub use stream::{Produced, Production};
+pub use verify::{Found, VerifyScope, VerifySnapshot};
 
 use schema::Rels;
 pub(crate) use sequence::Sequences;
@@ -463,7 +465,7 @@ pub struct Database<R: Runtime> {
     retained: Option<Arc<Retained>>,
     hosts: Arc<exec::Hosts>,
     /// The rows the engine holds for each volatile relation.
-    volatile: BTreeMap<RelId, BTreeSet<Val>>,
+    volatile: Lock<BTreeMap<RelId, BTreeSet<Val>>>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Database<R> {
@@ -548,7 +550,7 @@ impl<R: Runtime> Database<R> {
             vacuuming: Lock::new(()),
             retained: None,
             hosts: Arc::default(),
-            volatile: BTreeMap::new(),
+            volatile: Lock::default(),
             rt,
         })
     }
@@ -586,8 +588,18 @@ impl<R: Runtime> Database<R> {
 
     /// Returns the database reading `rows` for each volatile relation of `rows`.
     pub fn with_volatile(mut self, rows: BTreeMap<RelId, BTreeSet<Val>>) -> Self {
-        self.volatile = rows;
+        self.volatile = Lock::new(rows);
         self
+    }
+
+    /// Hold `rows` as the rows of volatile relation `rel` from now on.
+    pub fn set_volatile(&self, rel: RelId, rows: BTreeSet<Val>) {
+        self.volatile.lock(&self.rt).insert(rel, rows);
+    }
+
+    /// Returns the transactions layer.
+    pub fn txns(&self) -> &Transactions<R> {
+        &self.txns
     }
 
     /// Returns the database reading the files of file scans through `files`.

@@ -38,11 +38,22 @@ pub(super) fn runs(c: &Command) -> Result<(), Error> {
             ..
         }
         | Command::Vacuum(_)
+        | Command::Verify(_)
         | Command::Reindex { .. }
         | Command::SetSetting { .. }
         | Command::RetireBundle(_)
         | Command::SupersedeBundle(..) => Ok(()),
         other => Err(unsupported(&format!("`{}`", word(other)))),
+    }
+}
+
+/// Refuse a command that belongs to no transaction, for running inside one.
+pub(super) fn outside_transaction(c: &Command) -> Result<(), Error> {
+    match c {
+        Command::Vacuum(_) | Command::Verify(_) | Command::Reindex { .. } => Err(Error::invalid(
+            format!("`{}` does not run inside a transaction", word(c)),
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -76,7 +87,11 @@ fn word(c: &Command) -> &'static str {
 }
 
 /// Returns the relation `name` of engine module `module`.
-fn engine_relation(schema: &Schema, module: &str, name: &str) -> Result<RelId, write::Error> {
+pub(super) fn engine_relation(
+    schema: &Schema,
+    module: &str,
+    name: &str,
+) -> Result<RelId, write::Error> {
     schema
         .module_named(module)
         .and_then(|m| match schema.module(m).values.get(name) {
@@ -166,6 +181,7 @@ impl<R: Runtime> Engine<R> {
                 Ok(rows(schema, ty, vec![row]))
             }
             Command::Vacuum(rel) => self.vacuumed(schema, *rel),
+            Command::Verify(rel) => self.verified(schema, *rel),
             Command::Reindex {
                 relation, index, ..
             } => {

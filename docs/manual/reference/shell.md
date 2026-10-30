@@ -244,7 +244,14 @@ these pages they appear where they happen.
 | --- | --- |
 | 0 | Every text and command succeeded, or the shell ran at a prompt. |
 | 1 | A text or command failed, or the database could not be opened or migrated. |
+| 1 | `adtb verify FILE` found something. |
+| 2 | `adtb verify FILE` could not run: the file refuses to open, or another process holds it. |
 | 2 | The arguments were wrong. |
+
+`adtb verify FILE` opens `FILE` as the one process holding it and checks
+it whole, the allocation bitmap and the heaps included, which `verify`
+at a prompt cannot do while writers may run. It prints a row per finding
+and nothing for a sound file. `--schema` works as above.
 
 At a prompt the shell exits with 0 even when a text failed, since you
 saw the error.
@@ -270,6 +277,7 @@ These commands run in the shell as ad hoc text:
 | --- | --- |
 | `explain Q` | Prints the plan of query or write `Q` without running it. |
 | `explain analyze Q` | Runs `Q` inside the statement, discards its effects, and prints the plan with the rows and time each part took. |
+| `verify`, `verify R` | Checks the whole database, or relation `R`, while it serves calls, and prints a row of `sys::verify_findings` per finding. The rows stay after a reopen; a run replaces only those of the last run over its scope. It does not run inside a transaction or in text that writes. |
 | `vacuum R` | Removes old row versions of relation `R` that no transaction can still see, and prints, per constructor, how many it removed. |
 | `set setting S = V` | Changes setting `S` and prints its new value. |
 
@@ -289,7 +297,7 @@ adtb> \q
 ([the Rust API](rust-api.md#supersede-and-retire)). `supersede bundle`
 needs a live bundle to supersede by, and the shell has none. The
 specification lists more commands, among them `print schema`,
-`verify`, `reindex`, `export`, `dump` and `register bundle`. The engine
+`reindex`, `export`, `dump` and `register bundle`. The engine
 does not run them yet and answers, for example,
 `` `print schema` does not run in this engine yet ``. The commands and
 their privileges are in

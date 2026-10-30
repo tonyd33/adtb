@@ -1,6 +1,6 @@
 //! The `adtb` binary run against a real database file.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -550,4 +550,83 @@ fn backslash_help_lists_the_commands() {
             "{command} in {help:?}"
         );
     }
+}
+
+#[test]
+fn verify_of_a_sound_file_prints_nothing_and_succeeds() {
+    let (schema, db) = scratch("verify");
+    create(&schema, &db);
+    seed(&db);
+    let out = adtb(&["verify", db.to_str().unwrap()], "");
+    assert!(out.status.success(), "{out:?}");
+    assert!(stdout(&out).is_empty(), "{out:?}");
+}
+
+#[test]
+fn verify_exits_1_on_a_finding_and_2_when_the_file_refuses_open() {
+    let (schema, db) = scratch("verify-damage");
+    create(&schema, &db);
+    seed(&db);
+    let sound = std::fs::read(&db).unwrap();
+    let (mut found, mut refused) = (false, false);
+    for page in (2..sound.len() / 8192).rev() {
+        let mut flipped = sound.clone();
+        flipped[page * 8192 + 300] ^= 0x10;
+        std::fs::write(&db, &flipped).unwrap();
+        let out = adtb(&["verify", db.to_str().unwrap()], "");
+        match out.status.code() {
+            Some(1) => {
+                assert!(
+                    stdout(&out)[0].starts_with("Checksum"),
+                    "page {page}: {out:?}"
+                );
+                found = true;
+            }
+            Some(2) => {
+                assert!(!stderr(&out).is_empty(), "page {page}: {out:?}");
+                refused = true;
+            }
+            other => panic!("page {page} exits {other:?}: {out:?}"),
+        }
+        std::fs::write(&db, &sound).unwrap();
+        if found && refused {
+            return;
+        }
+    }
+    panic!("found {found}, refused {refused}");
+}
+
+#[test]
+fn verify_exits_2_while_another_process_holds_the_file() {
+    let (schema, db) = scratch("verify-held");
+    create(&schema, &db);
+    let mut holder = Command::new(env!("CARGO_BIN_EXE_adtb"))
+        .arg(db.to_str().unwrap())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the shell starts");
+    let mut input = holder.stdin.take().expect("a piped stdin");
+    input.write_all(b"count(u for u in users)\n\n").unwrap();
+    input.flush().unwrap();
+    let mut first = [0u8; 1];
+    holder
+        .stdout
+        .take()
+        .expect("a piped stdout")
+        .read_exact(&mut first)
+        .expect("the holder has opened the file");
+    let out = adtb(&["verify", db.to_str().unwrap()], "");
+    drop(input);
+    holder.wait().unwrap();
+    assert_eq!(Some(2), out.status.code(), "{out:?}");
+}
+
+#[test]
+fn verify_of_a_missing_file_exits_2_and_says_why() {
+    let (_, db) = scratch("verify-missing");
+    let out = adtb(&["verify", db.to_str().unwrap()], "");
+    assert_eq!(Some(2), out.status.code(), "{out:?}");
+    assert!(stderr(&out).contains("db.adt"), "{out:?}");
 }

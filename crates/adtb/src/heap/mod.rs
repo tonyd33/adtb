@@ -4,6 +4,7 @@ mod handle;
 mod large;
 mod page;
 mod prune;
+mod rooted;
 mod row;
 mod slotted;
 mod stage;

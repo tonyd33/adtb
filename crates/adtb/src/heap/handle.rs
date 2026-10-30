@@ -137,7 +137,7 @@ enum Put {
 
 /// The row versions of one constructor relation.
 pub struct Heap {
-    id: u32,
+    pub(super) id: u32,
     page_size: usize,
     space: Space,
     large: LargeStore,
@@ -190,7 +190,7 @@ fn version_bytes(header: Header, body: &[u8]) -> Vec<u8> {
     out
 }
 
-fn tid(pid: Pid, slot: usize) -> Tid {
+pub(super) fn tid(pid: Pid, slot: usize) -> Tid {
     Tid::new(pid.0, slot as u16).expect("48-bit page id")
 }
 
@@ -327,7 +327,7 @@ impl Heap {
         })
     }
 
-    fn upgrade(&self, from: u16, mut row: Vec<Value>) -> Vec<Value> {
+    pub(super) fn upgrade(&self, from: u16, mut row: Vec<Value>) -> Vec<Value> {
         for f in &self.formats[usize::from(from)..] {
             row = (f.upgrade.as_ref().unwrap())(row);
         }
@@ -336,7 +336,7 @@ impl Heap {
 
     /// Returns the row of `version` in format `format`, and the pointers of its out-of-line
     /// values.
-    fn decode<R: Runtime>(
+    pub(super) fn decode<R: Runtime>(
         &self,
         pager: &Pager<R>,
         format: u16,
