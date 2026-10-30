@@ -451,3 +451,7 @@ freezes the one signature they share; it is refused, naming the bundles, when no
 declares the query or two declare different signatures. Next slice: canonical
 call/bundle/family grants (audit item 3), then binding with BlockingMigration
 notices.
+
+## 2026-10-30: from grant-rev30
+
+A signed family target compares by tokens, because comparing by ids at its own version (security.md 3.2, spec/signature-equality/ids) needs the family provider. `revoke call web::q at 41 (u: Key a::users) -> Text from x` with the type renamed since version 41 misses the row. Do this with family grants. Operator orphaning is only reachable through hand-written rows until operator grants have a non-owner grantor on a relation target; test it through the public path then.
