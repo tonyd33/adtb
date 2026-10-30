@@ -269,11 +269,17 @@ equals the recorded one. Two signatures are equal when each named type
 in them has the same type id and the same constructor ids and field
 ids, and each anonymous type has, position by position, the same
 constructors and fields under the same rule; a bundle whose signature
-differs in anything is not covered. A grantee holds one family grant
-per family and query, with the latest recorded signature: granting it
+differs in anything is not covered. The recorded signature names its
+types as they stand at a log version, the highest version a live
+bundle declaring the query pins, and stands for the ids those names
+had at that version. A grantee holds one family grant per family,
+query and grantor, with the latest recorded signature: granting it
 again records the signature anew and replaces the row, `revoke call
 web::login_key from app` deletes it, and a bundle that is live again
-with an earlier signature is not covered.
+with an earlier signature is not covered. A family grant may write
+its signature as its row's target does
+([catalog.md](catalog.md#26-other-catalog-relations)); it is refused
+unless that is the signature the live bundles share.
 
 Any grant may end in `with grant option`, which lets the grantee grant
 it on. A grantee holding a relation grant with grant option extends it
@@ -295,15 +301,22 @@ grantee already holds from the same grantor adds no row: given with
 `with grant option` it adds the option, and given without it leaves
 an option held by an active grant in place.
 
-A revoke matches each row of its grantee, dormant rows included,
-whose privilege and target text are the revoke's, with two
-widenings: a revoke without a field list matches every row of that
-privilege on its constructor set whatever fields the row froze, and a
-revoke of a retag without `except` matches every row with those two
-sides whatever pairs it excepts. A revoke deletes the matching rows
-the revoking role granted; a revoke by the schema owner deletes the
-matching rows of every grantor. Only a row's grantor or the schema
-owner revokes it. A revoke is refused, naming the revoke, when it
+A revoke's target is resolved against the schema and printed in row
+form before it is compared, so `grant read identities.EmailPass
+(email, user)` is revoked by the same text. A revoke matches each row
+of its grantee, dormant rows included, whose privilege and target
+text are the revoke's, with three widenings: a revoke without a field
+list matches every row of that privilege on its constructor set
+whatever fields the row froze, a revoke of a retag without `except`
+matches every row with those two sides whatever pairs it excepts, and
+a revoke of a family call grant without a signature matches the
+family row whatever its signature. An operator revoke acts as the
+schema owner, the grantor of every operator grant: a role holding
+`schema` revokes any operator grant through a migration, and
+replaying the log needs no revoking role. A deployment revoke deletes
+the matching rows the revoking role granted; one by the schema owner
+deletes the matching rows of every grantor. Only a row's grantor or
+the schema owner revokes it. A revoke is refused, naming the revoke, when it
 matches no row it may delete, and refused, naming the rows, when a
 row it deletes held a grant option that rows of another grantor rely
 on: rows whose grantor is the deleted row's grantee, of the same
@@ -406,6 +419,9 @@ Structural operators carry grants to the constructors they produce
 | Nest, unnest | Grants are carried to the fields as moved; a nest is refused as a merge is, and also when a grant covers some but not all of a source's fields |
 | Move a field to the header with a fill | A grant on the moved field covers the header field only when, on every other constructor the grant covers, the fill carries whole a field the grant covers; otherwise no grant covers the header field |
 | Remove | Grants on the removed constructor or field are dropped |
+
+A `read` or `update` grant that a carry leaves covering no field is
+dropped by that migration.
 
 A merge or nest compares its sources' grants across every grant of the
 role: sources covered by separate grants, or told apart by the pairs a
