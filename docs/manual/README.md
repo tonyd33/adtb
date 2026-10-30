@@ -38,6 +38,7 @@ in two commands, so you can also start at any of them.
 - [Evolving a schema](guides/evolving-a-schema.md)
 - [Writing constraints](guides/writing-constraints.md)
 - [Files and CSV scans](guides/files-and-csv.md)
+- [Reading the past](guides/reading-the-past.md)
 
 ## Concepts
 
@@ -63,30 +64,25 @@ in two commands, so you can also start at any of them.
 These pages are planned. Some wait for the engine to run what the
 specification describes:
 
-- Bundles in the shell: `register bundle` and `supersede bundle` as
-  commands, and calling a registered query from ad hoc text. A program
-  registers bundles when it opens the database
-  ([the Rust API](reference/rust-api.md)); the shell refuses
-  `register bundle`.
-- Serving a bundle pinned at an earlier version than the database's
-  across some operators. The engine translates its calls across
-  renames, added fields and constructors, drops of fields it does not
-  read, state changes and the operators that leave data alone. It
-  refuses the bundle as `Untranslatable`, or the migration while the
-  bundle is live, when a query reaches what a split, merge, nest,
-  unnest, move field, alter field or rekey changes; when a parameter's
-  type gains or loses a field; and when a query reads the past or
-  reads files.
-- Reading the past: `at commit` and `at instant` blocks. Even with
-  the `RetentionWindow` setting raised, the engine refuses a read at
-  the position of a commit it has just made with `HistoryUnavailable`,
-  and `sys::commit_times` lists no commits to name.
+- Bundles in the shell: the shell refuses `register bundle` with
+  "`register bundle` does not run in this engine yet" and opens a file
+  with no bundles. A program registers bundles when it opens the
+  database ([the Rust API](reference/rust-api.md)).
+- Explaining a registered call: the engine refuses `explain B::q(args)`
+  with "`explain` does not run in this engine yet", and for a bundle
+  pinned at an earlier version with "bundle `B` is not registered".
+- Translating a pinned bundle across a split, merge, nest, unnest,
+  move field, alter field or rekey that its queries reach, across a
+  change to a parameter's type, and for queries that read the past or
+  read files: the engine refuses such a bundle as `Untranslatable`.
+- Reading the past across a migration that rebuilt the relation read:
+  the engine refuses it with `HistoryUnavailable`.
 - The rest of the in-process API: feeds, notices, encryption and key
   sources, the metrics callback, `finalize_upgrade`, log shipping and
   embedded replicas.
-- Operations: `print schema`, `verify`, `export`, dump and restore,
-  backups and `reindex`, which the engine refuses today with "does not
-  run in this engine yet".
+- Operations: `print schema`, `verify`, `compact`, `export`, dump and
+  restore, backups and `reindex`, which the engine refuses today with
+  "does not run in this engine yet".
 - Migration scripts: the engine refuses `script` with "the engine does
   not run a `script` yet".
 - Physical storage and incremental maintenance of stored views: `store`

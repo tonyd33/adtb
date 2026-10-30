@@ -470,6 +470,7 @@ See [queries.md §5](../../spec/queries.md#5-match) and
 | `top n by k (q)` | the first `n` elements of comprehension `q` by `k`, at any depth |
 | `fix r = q in e` | the least set `r` with `r = q`, where `q` may read `r` |
 | `tag(e)` | the constructor of `e`, as a `Tag` value |
+| `at commit p { q }`, `at instant t { q }` | `q` at the state after commit position `p`, or after the last commit at or before instant `t`; see [Reading the past](../guides/reading-the-past.md) |
 
 `count` counts bindings, `sum` of an empty range is `0`, and `min`,
 `max` and `avg` return an `Option`, `None` over an empty range, unless

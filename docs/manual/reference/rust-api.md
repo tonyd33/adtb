@@ -719,6 +719,138 @@ once a database has bound `shout` at `1.0`, opening it with a body at
 another version fails, unless a migration redefines the function at
 that version.
 
+## Bundles across releases
+
+A bundle pins the schema version it was checked at, and keeps working
+as later migrations change the schema. The engine translates each call
+from the pinned version to the current one: its arguments forward, its
+results back. Here the log gains a third migration that renames
+`Pet.name` to `called`, and the bundle, still pinned at version 2,
+runs unchanged. Ad hoc text runs at the current version and sees the
+new name:
+
+```rust
+use adtb::{CallOptions, Called, CreateOptions, Log, OpenOptions, Registration, Value};
+use adtb_lang::textual::print;
+
+const RENAME: &str = "module shelter
+rename field Pet.name to called
+";
+
+fn main() -> Result<(), adtb::Error> {
+    let log = Log::new([
+        include_str!("../migrations/0001.adt"),
+        include_str!("../migrations/0002.adt"),
+        RENAME,
+    ]);
+    let options = OpenOptions {
+        create: Some(CreateOptions::default()),
+        registrations: vec![Registration::bundle(include_str!("../shelter-1.0.adb"))?],
+        ..OpenOptions::default()
+    };
+    let db = adtb::open("shelter.db", &log, &options).expect("shelter.db opens");
+    let app = db.registered("shelter-1.0")?;
+    println!("pinned at {:?}", app.pins());
+    let opts = CallOptions::default();
+    let admit = app.ordinal("admit_cat").expect("a transaction admit_cat");
+    app.call(admit, &[Value::text("tom"), Value::Int(9)], &opts)?;
+    let names = app.ordinal("names").expect("a query names");
+    if let Called::Rows(rows) = app.call(names, &[], &opts)? {
+        let form = rows.form().clone();
+        for row in rows {
+            println!("{}", print(&row?, &form).expect("a row prints"));
+        }
+    }
+    for rows in db.query_text("from p in pets select p", &[], &opts)? {
+        let form = rows.form().clone();
+        for row in rows {
+            println!("{}", print(&row?, &form).expect("a row prints"));
+        }
+    }
+    Ok(())
+}
+```
+
+```text
+pinned at Some(2)
+"tom"
+Cat { called: "tom", lives: 9 }
+```
+
+Renames, added fields and constructors, drops of fields the bundle
+does not read, and the operators that leave data alone all translate.
+When a query of the bundle reaches what a split, merge, nest, unnest,
+move field, alter field or rekey changes, reads a field a later
+migration drops, takes a parameter whose type gains or loses a field,
+reads the past or reads files, it has no translation: the open that registers the bundle fails with
+`Untranslatable`, naming the query and the operator
+([Errors](errors.md#untranslatable)).
+
+### Supersede and retire
+
+Each open registers the bundles it is given and supersedes every other
+bundle an earlier open registered. A superseded bundle is not live: it
+holds back no schema change, and its handles refuse calls with
+`BundleSuperseded`. Giving it to a later open makes it live again. The
+shell opens a file with no bundles, so opening a program's file in the
+shell supersedes the program's bundles until the program opens it
+again.
+
+Two commands of ad hoc text change a bundle's state while the database
+is open. `supersede bundle B by B2` supersedes `B` in favour of `B2`, a
+live bundle of the same family: the part of the name before the
+version. `retire bundle B` retires `B` for good; a retired bundle's
+name never registers again. Each returns the bundle's row of
+`catalog::bundles`.
+
+```rust
+use adtb::{CallOptions, CreateOptions, Log, OpenOptions, Registration};
+
+const NEXT: &str = "bundle shelter-1.1 pins 2 (c2d244dc1b156f7f2e2cb7a03cd67d2c1aa27c156b88cde97567011c7fba4ad8) edition \"2026-10\"
+import shelter
+query names () -> Set Text = from p in pets select p.name
+";
+
+fn main() -> Result<(), adtb::Error> {
+    let log = Log::new([
+        include_str!("../migrations/0001.adt"),
+        include_str!("../migrations/0002.adt"),
+    ]);
+    let both = OpenOptions {
+        create: Some(CreateOptions::default()),
+        registrations: vec![
+            Registration::bundle(include_str!("../shelter-1.0.adb"))?,
+            Registration::bundle(NEXT)?,
+        ],
+        ..OpenOptions::default()
+    };
+    let db = adtb::open("shelter.db", &log, &both).expect("shelter.db opens");
+    let opts = CallOptions::default();
+    db.query_text("supersede bundle shelter-1.0 by shelter-1.1", &[], &opts)?;
+    if let Err(e) = db.registered("shelter-1.0") {
+        println!("{e}");
+    }
+    db.close()?;
+    let old = OpenOptions {
+        registrations: vec![Registration::bundle(include_str!("../shelter-1.0.adb"))?],
+        ..OpenOptions::default()
+    };
+    let db = adtb::open("shelter.db", &log, &old).expect("shelter.db opens again");
+    db.registered("shelter-1.0")?;
+    println!("shelter-1.0 is live again");
+    if let Err(e) = db.registered("shelter-1.1") {
+        println!("{e}");
+    }
+    Ok(())
+}
+```
+
+```text
+bundle `shelter-1.0` is superseded
+shelter-1.0 is live again
+bundle `shelter-1.1` is superseded
+```
+
 ## Open options
 
 | Field | Meaning |

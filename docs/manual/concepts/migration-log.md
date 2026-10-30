@@ -164,10 +164,12 @@ $ adtb shop.db -c 'register bundle "web.adb"'
 `register bundle` does not run in this engine yet
 ```
 
-A bundle pinned at an earlier version than the database's registers,
-but this engine refuses its calls: it does not yet translate a call
-across versions, so ship each bundle pinned at the version your log
-ends at.
+A bundle pinned at an earlier version than the database's keeps
+working: the engine translates each call from the pinned version to
+the current one. Some operators have no translation for the queries
+that reach what they change, and a bundle with such a query is
+refused when it registers; [the Rust API](../reference/rust-api.md#bundles-across-releases)
+lists them.
 
 The rules are in [the operator log](../../spec/evolution.md#1-the-operator-log),
 [versions](../../spec/evolution.md#2-versions),

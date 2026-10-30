@@ -333,8 +333,10 @@ longer keeps: older than the `RetentionWindow` setting allows, or
 later than the reading transaction's snapshot. The message names the
 oldest position kept, as "no history is kept before { epoch: E, lsn:
 N }". Read a later position, or raise `RetentionWindow` before the
-commits you will want to read. This engine keeps too little history
-for most such reads yet; see the [README](../README.md#not-yet-in-this-manual).
+commits you will want to read. This engine also refuses a read of a
+relation that a later migration rebuilt, such as by adding a field to
+its type. [Reading the past](../guides/reading-the-past.md) shows the
+blocks and the window.
 
 ### Internal
 
@@ -442,7 +444,8 @@ bundle shelter-1.0 is refused: query `shelter-1.0::adopters` cannot be translate
 A bundle handle refuses a bundle that is no longer live. `Retired`: an
 operator retired it with `retire bundle NAME`, which is permanent.
 `BundleSuperseded`: a later open registered other bundles, and this
-one is no longer among them; register it again to make it live.
+one is no longer among them, or `supersede bundle NAME by NEXT`
+replaced it; register it again to make it live.
 `BundleExpired`: its lease ran out because nothing bound or called it
 for longer than the lease. `VersionMismatch`: the bundle registered
 under that name pins another version than the generated code

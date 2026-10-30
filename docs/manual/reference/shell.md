@@ -53,6 +53,11 @@ schema and run the same command again.
 Without `-c`, `--create` reads texts from standard input like any other
 run: at a terminal it shows the prompt and waits. Type `\q` to leave.
 
+The shell opens a database with no bundles, and an open supersedes
+every bundle it is not given. Opening a program's database in the
+shell therefore supersedes the program's bundles until the program
+opens the file again ([the Rust API](rust-api.md#supersede-and-retire)).
+
 ## The migration list
 
 The database keeps every migration ever applied to it, in order: its
@@ -272,7 +277,10 @@ VacuumBudget { id: settings.key(207), io: 0.2, cpu: 0.5 }
 adtb> \q
 ```
 
-The specification lists more commands, among them `print schema`,
+`retire bundle B` runs too, on a bundle a program registered
+([the Rust API](rust-api.md#supersede-and-retire)). `supersede bundle`
+needs a live bundle to supersede by, and the shell has none. The
+specification lists more commands, among them `print schema`,
 `verify`, `reindex`, `export`, `dump` and `register bundle`. The engine
 does not run them yet and answers, for example,
 `` `print schema` does not run in this engine yet ``. The commands and
