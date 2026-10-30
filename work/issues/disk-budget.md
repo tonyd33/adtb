@@ -17,3 +17,7 @@ forgotten workspaces keep fixture directories (`authority-fixtures` 1.6 GB, `seq
 ## Proposal
 
 ## Open questions
+
+## 2026-10-30: other partitions
+
+The machine's other partitions belong to another install. Do not mount, inspect or use them.
