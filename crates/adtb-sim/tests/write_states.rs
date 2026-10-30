@@ -1620,3 +1620,94 @@ fn a_disable_of_a_constructor_that_holds_rows_is_refused_naming_the_disable() {
         Ok(_) => panic!("the disable applies"),
     });
 }
+
+/// Returns the bundles of `readers` that refuse `enable` after `add`, and those that
+/// registration finds stale once their release lets `enable` apply.
+fn blockers(seed: u64, add: &str, enable: &str, readers: &[Reader]) -> [Vec<String>; 2] {
+    at_catalog(seed, &[AUTH, add], |catalog, pager, txns| {
+        for r in readers {
+            catalog.register(r.clone()).expect("the reader registers");
+        }
+        let why = match catalog.migrate(pager, txns, enable) {
+            Ok(()) => Vec::new(),
+            Err(e) => refused(Err(e)),
+        };
+        let migration = readers
+            .iter()
+            .filter(|r| {
+                why.iter()
+                    .any(|w| w.contains(&format!("bundle {},", r.bundle)))
+            })
+            .map(|r| r.bundle.clone())
+            .collect();
+        for r in readers {
+            catalog
+                .release(pager, txns, &r.bundle)
+                .expect("the reader is released");
+        }
+        catalog
+            .migrate(pager, txns, enable)
+            .expect("the enable applies once every reader is released");
+        let registration = readers
+            .iter()
+            .filter(|r| {
+                adtb::catalog::stale(catalog.source(), catalog.schema(), r)
+                    .expect("the reader resolves")
+                    .is_some()
+            })
+            .map(|r| r.bundle.clone())
+            .collect();
+        [migration, registration]
+    })
+}
+
+#[test]
+fn registration_finds_stale_exactly_the_readers_that_refuse_the_enable() {
+    let hiding = |r: Reader| Reader {
+        hides_new: true,
+        ..r
+    };
+    let ctor = [
+        reader("users", 1, vec![whole("auth::users")]),
+        reader("whole", 1, vec![whole("auth::identities")]),
+        reader("pinned-after", 2, vec![whole("auth::identities")]),
+        reader("any", 1, vec![follows("auth::identities", None)]),
+        reader("oauth", 1, vec![follows("auth::identities", Some("OAuth"))]),
+        reader("mail", 1, vec![follows("auth::identities", Some("Mail"))]),
+        reader("fields", 1, vec![field("auth::identities", "user")]),
+        hiding(reader("hiding", 1, vec![whole("auth::identities")])),
+    ];
+    let value = [
+        reader("provider", 1, vec![field("auth::accounts", "provider")]),
+        reader("option", 1, vec![field("auth::profiles", "backup")]),
+        hiding(reader(
+            "hiding",
+            1,
+            vec![field("auth::accounts", "provider")],
+        )),
+        reader("notes", 1, vec![field("auth::accounts", "note")]),
+        reader("ranges", 1, vec![whole("auth::accounts")]),
+        reader("pinned-after", 2, vec![whole("auth::accounts")]),
+    ];
+    let cases = [
+        (
+            90,
+            ADD_APPLE,
+            ENABLE_APPLE,
+            &ctor[..],
+            ["whole", "any", "oauth"],
+        ),
+        (
+            91,
+            ADD_OKTA_TYPE,
+            ENABLE_OKTA,
+            &value[..],
+            ["provider", "option", "hiding"],
+        ),
+    ];
+    for (seed, add, enable, readers, blocking) in cases {
+        let [migration, registration] = blockers(seed, add, enable, readers);
+        assert_eq!(blocking.to_vec(), migration, "seed {seed}: migration");
+        assert_eq!(migration, registration, "seed {seed}: registration");
+    }
+}
