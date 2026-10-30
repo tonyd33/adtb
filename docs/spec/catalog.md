@@ -2128,6 +2128,10 @@ from i in identities.(EmailPass | Google) select i.id    -- runs
 from i in identities select i.id                         -- fails
 ```
 
+A transaction that wrote a constructor relation such a statement could
+not now write fails its commit with `Quarantined` and leaves nothing
+visible. A read-only transaction commits.
+
 The call that finds the damage fails with `Quarantined`, whichever it
 reads. The rules below hold from the next call.
 

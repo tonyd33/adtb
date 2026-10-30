@@ -93,7 +93,7 @@ const COMMANDS: &[Row] = &[
         unsupported: &[],
     },
     Row {
-        spec: "`reindex r`, `reindex r index (f) in S`",
+        spec: "`reindex r`, `reindex r index (f) [in S]`",
         capability: "`maintain`",
         forms: &[("reindex items", &[Capability::Maintain], Ran::Later)],
         unsupported: &[],
