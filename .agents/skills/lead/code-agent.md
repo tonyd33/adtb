@@ -178,6 +178,11 @@ The repository is public, `work/issues`, `work/kb` and `work/research` included.
 personal data and machine details out of commits and tickets. Use relative paths such as
 `../adtb-NAME`. `work/briefs/` is local.
 
+## Saving time
+
+Run one full suite per round, and none after a clean rebase; the lead's check covers it. Run
+`work/tools/suite` in the background. Run each mutant against the test expected to kill it, by name.
+
 ## Scripts
 
 Keep your scripts, mutation drivers and their logs under your workspace's `target/`. A scratchpad

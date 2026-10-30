@@ -66,6 +66,10 @@ Keep your context for rulings, briefs and review. Agents write the code.
   failures, dependencies and the next action. Follow-up work goes to a new
   agent whose brief points at that note.
   Fix trivial rebase fallout yourself.
+- Let at most 4 tracks build at once. More slow each other past the gain.
+- After a review with blockers, review the delta yourself or with a fresh
+  agent; a blocker-free round needs no new full review. Run the full check
+  only on the final round.
 
 ## Land
 

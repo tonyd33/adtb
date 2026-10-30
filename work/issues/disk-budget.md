@@ -17,3 +17,7 @@ forgotten workspaces keep fixture directories (`authority-fixtures` 1.6 GB, `seq
 ## Proposal
 
 ## Open questions
+
+## 2026-10-30: rulings from the measurements
+
+Adopt `debug = 0` in dev and test (saves 7.5 GB per workspace; edits got faster), fixtures under target/tmp removed on success, and a `workspace-gc` flag for main's idle target/debug. Keep incremental. Rejected: incremental off, mold, sccache, a shared target dir. One adtb-sim binary is rejected by agent-wall-time's measurement. Tracked with agent-wall-time's next track.
