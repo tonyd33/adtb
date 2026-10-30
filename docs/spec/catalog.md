@@ -2066,8 +2066,9 @@ relations and indexes of relation variable `r` and every constraint
 that reads it. It runs at a snapshot while the database serves calls,
 and checks:
 
-1. Structure: every page checksum, and the structural invariants of
-   every index, among them the order of its entries.
+1. Structure: every page checksum, the structural invariants of every
+   index, among them the order of its entries, and the version chains
+   of every heap.
 2. Cross-reference: every live row version has its entry in every
    index covering its constructor, and every index entry names an
    existing row version of the constructor relation it names. A
