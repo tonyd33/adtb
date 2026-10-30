@@ -441,3 +441,40 @@ fn a_nonempty_ownerless_roles_table_is_refused_and_releases_open_resources() {
     );
     pager.close();
 }
+
+#[test]
+fn a_damaged_page_met_writing_a_registrations_facts_is_a_storage_failure() {
+    let schema =
+        "module shop\nadd module shop\nadd type C = { id: I64 }\nadd relation cs : C key id\n";
+    let file = adtb_lang::parse::parse_migration(schema, adtb_lang::parse::Options::default())
+        .ok()
+        .expect("the migration parses");
+    let source = adtb_lang::evolve::Source::default()
+        .migrate(&file, schema)
+        .expect("the migration applies");
+    let hash: String = crate::catalog::version_hash(&source.schema().unwrap(), &source)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let bundle = crate::api::Registration::bundle(format!(
+        "bundle tools-0.1 pins 1 ({hash}) edition \"2026-10\"\nimport shop\n"
+    ))
+    .expect("the bundle parses");
+    let db = opened(&Log::new([schema]));
+    let e = &db.engine;
+    for pid in e.deployment.roots().pages(&e.pager).unwrap() {
+        e.pager.damage(pid, crate::storage::Damage::Unreadable);
+    }
+    let authority = db.role_authority();
+    let owner = authority.session("owner").unwrap();
+    let got = authority.register(&owner, &bundle);
+    assert!(
+        matches!(
+            got,
+            Err(Error::Fatal {
+                reason: crate::api::FatalReason::Storage { .. }
+            })
+        ),
+        "{got:?}"
+    );
+}

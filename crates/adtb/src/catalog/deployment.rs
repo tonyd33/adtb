@@ -201,6 +201,11 @@ impl Catalog {
 }
 
 impl Deployment {
+    #[cfg(test)]
+    pub(crate) fn roots(&self) -> &Heap {
+        &self.roots
+    }
+
     /// Write `facts` in transaction `x`, so that they commit or abort with it.
     ///
     /// Precondition: `x` is a transaction of the write path over the pager this catalog opened.
