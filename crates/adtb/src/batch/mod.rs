@@ -128,6 +128,11 @@ impl BatchBuilder {
         self.batch.len == 0
     }
 
+    /// Returns the bytes the columns of the batch built so far hold.
+    pub fn bytes(&self) -> usize {
+        self.batch.columns.iter().map(Column::bytes).sum()
+    }
+
     /// Append `row`, a value per field of the schema, as a heap returns it.
     ///
     /// Panics if `row` is not of the schema's types or holds a list.

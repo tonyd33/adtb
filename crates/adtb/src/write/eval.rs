@@ -937,10 +937,16 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         )
     }
 
-    /// Returns every row of `rel` the statement's reads see, of the constructors `of`, or all.
+    /// Returns every row of `rel` the statement's reads see, of the constructors `of`, or all,
+    /// holding the batches it reads in the statement's grant when it has one.
     pub fn rows(&self, rel: RelId, of: Option<&[u32]>) -> Result<Vec<(u32, Val)>, Error> {
         let r = self.rel(rel);
-        let grant = self.db.grant_of(&self.stop)?;
+        let grant = match &self.stop.grant {
+            Some(g) => g.clone(),
+            None => exec::Budget::new(usize::MAX)
+                .admit(usize::MAX)
+                .expect("a budget admits a grant of its whole limit"),
+        };
         let mut out = Vec::new();
         for (c, ctor) in r.ctors.iter().enumerate() {
             let c = c as u32;

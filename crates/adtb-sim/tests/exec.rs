@@ -838,7 +838,7 @@ fn the_batch_a_scan_fills_is_held_within_the_grant() {
             })
             .collect::<Vec<_>>()
     });
-    let filled = 299 * 4 * size_of::<KValue>();
+    let filled = 299 * 3 * size_of::<i64>();
     for (c, (v, most)) in cases.iter().zip(got) {
         assert_eq!(Ok(Val::Int(300)), v, "{}", c.name);
         assert!(

@@ -161,6 +161,23 @@ impl Column {
         }
     }
 
+    /// Returns the bytes the column's buffers hold.
+    pub fn bytes(&self) -> usize {
+        match self {
+            Column::Fixed { data, .. } => data.len(),
+            Column::Binary { offsets, data, .. } => offsets.len() + data.len(),
+            Column::Struct { children, .. } => children.iter().map(Column::bytes).sum(),
+            Column::List { offsets, child, .. } => offsets.len() + child.bytes(),
+            Column::Union {
+                type_ids,
+                offsets,
+                children,
+                ..
+            } => type_ids.len() + offsets.len() + children.iter().map(Column::bytes).sum::<usize>(),
+            Column::Nullable { validity, inner } => validity.len() + inner.bytes(),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

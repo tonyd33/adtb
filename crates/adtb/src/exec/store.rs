@@ -274,8 +274,8 @@ impl Filling {
 
     /// Append `row`. Returns the batch once it holds its `rows` rows, with the arena holding it.
     fn push(&mut self, row: &[Value]) -> Result<Option<(Batch, Arena)>, Error> {
-        self.held.grow(row_size(row))?;
         self.batch.push_row(row);
+        self.held.grow(self.batch.bytes() - self.held.bytes())?;
         Ok((self.batch.len() == self.rows).then(|| self.take()))
     }
 

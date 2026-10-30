@@ -1003,14 +1003,6 @@ impl<R: Runtime> Database<R> {
             }))
     }
 
-    /// Returns the grant executions under `stop` take their memory from.
-    fn grant_of(&self, stop: &Stop) -> Result<Arc<exec::Grant>, Error> {
-        match &stop.grant {
-            Some(g) => Ok(g.clone()),
-            None => self.admit_grant(),
-        }
-    }
-
     /// Returns the page of the database's generated counters, for [`Setup::sequences`] when
     /// it is opened again.
     pub fn sequences_root(&self) -> Pid {
@@ -1065,9 +1057,13 @@ impl<R: Runtime> Database<R> {
         options: exec::Options,
         stop: &Stop,
     ) -> Result<exec::Call<R>, Error> {
+        let grant = match &stop.grant {
+            Some(g) => g.clone(),
+            None => self.admit_grant()?,
+        };
         Ok(exec::Call {
             store: store.clone(),
-            grant: self.grant_of(stop)?,
+            grant,
             pool: self.pool.clone(),
             options,
             cancel: stop.cancel.clone(),
