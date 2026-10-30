@@ -188,9 +188,10 @@ e ::= x                               variable
     | fix X₁ = e₁, …, Xₙ = eₙ in e      n ≥ 1, simultaneous
     | fresh g                         generated value, write positions only
     | only e                          the element of a one-element set
+    | unreachable                     never evaluated; ends a match chain (§10.2)
 ```
 
-A boolean condition is an expression of type `Bool`. `and`, `or` and
+`unreachable` has every type. A boolean condition is an expression of type `Bool`. `and`, `or` and
 `not` are not kernel forms (§10.1). `fail` is a write term only (§2.4).
 
 ### 2.4 Writes and statements
