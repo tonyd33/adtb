@@ -24,6 +24,10 @@ Keep your context for rulings, briefs and review. Agents write the code.
 - Run at most one full `check` on the machine at a time. `suite` locks
   only the tests, and two concurrent checks have exhausted the machine.
   While a check runs, tell agents to build with `CARGO_BUILD_JOBS=6`.
+- Read a check's own exit status before landing, and never land in the same command
+  as the wrapper that ran it: a wrapper's last command hides the failure. `check` runs
+  the main checkout's dev shell, so a branch older than a tool main added exits 127.
+  Rebase the track onto main first, then run its check.
 - Before starting a track, list the files the running tracks change. A
   track that changes a shared signature (pager, heap or B-link tree calls)
   does not run beside tracks that call it: land it first and branch the
