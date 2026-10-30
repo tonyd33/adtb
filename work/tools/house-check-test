@@ -114,6 +114,9 @@ printf '%s\n' '/// Writes the unchanged item.' 'fn unchanged() {}' '/// Returns 
 jj new -m 'test: seed a doc' >/dev/null 2>&1
 printf '%s\n' '/// Writes the unchanged item.' 'fn unchanged() {}' '/// Returns the moved item.' '/// Returns the item left behind.' 'fn left() {}' >fixture.rs
 expect 1 'fixture.rs:4: two doc summaries above one item: /// Returns the item left behind.'
+jj new -m 'test: seed a pre-existing pair' >/dev/null 2>&1
+printf '%s\n' '/// Writes the unchanged item.' 'fn unchanged() {}' '/// Returns the moved item.' '/// Returns the item left behind.' 'fn left() {}' '/// Write the new item.' 'fn added() {}' >fixture.rs
+expect 0 ''
 
 printf '%s\n' 'Writes an ordinary text file.' >notes.txt
 cat >fixture.rs <<'RS'
