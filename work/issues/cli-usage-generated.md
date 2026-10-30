@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: server-fixes
 kind: feature
 priority: 460
 summary: "three binaries hand-write their usage line with override_usage, which can drift from their flags"

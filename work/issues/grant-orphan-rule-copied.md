@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: server-fixes
 kind: bug
 priority: 640
 summary: "the rule for which rows a lost grant option orphans lives in server orphans and catalog refuse_orphans, over two row shapes, and they already read differently"
