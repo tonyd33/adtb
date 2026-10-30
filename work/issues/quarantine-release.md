@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: reindex-jobs
 kind: feature
 priority: 412
 summary: "a quarantined index or heap has no user path back: reindex and restore must call pager.release"

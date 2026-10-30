@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quarantine-gate
 kind: bug
 priority: 435
 summary: "a transaction with writes applied before a mark can still commit; the gate checks statements, not the commit"

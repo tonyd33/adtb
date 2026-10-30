@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-29
-status: open
+status: in-progress
+branch: reindex-jobs
 kind: feature
 priority: 411
 summary: "reindex does not run; no sorted-run build, and a quarantined index has no way back"
