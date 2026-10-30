@@ -31,6 +31,6 @@ home: https://doc.rust-lang.org/cargo/
 
 ## Measured on adtb
 
-- sccache 0.19.0 with Rust 1.98.1 and incremental on caches only dependencies in a 58 MiB cache: 62 of 204 compile requests were cacheable, and all 62 hit from a second path. [V 2026-10-30] local run, /home/tony/code/adtb-disk-budget
-- With incremental off and `SCCACHE_BASEDIRS` covering both paths, local crates still missed from a second path: 11 further misses, no further hits, before the run stopped. [V 2026-10-30] local run, /home/tony/code/adtb-disk-budget
+- sccache 0.19.0 with Rust 1.98.1 and incremental on caches only dependencies in a 58 MiB cache: 62 of 204 compile requests were cacheable, and all 62 hit from a second path. [V 2026-10-30] local run
+- With incremental off and `SCCACHE_BASEDIRS` covering both paths, local crates still missed from a second path: 11 further misses, no further hits, before the run stopped. [V 2026-10-30] local run
 - Two cargo builds on one target directory block: "Blocking waiting for file lock on build directory". [V 2026-10-30] local run with cargo 1.98.0
