@@ -46,6 +46,7 @@ pub use stream::{Produced, Production};
 
 use schema::Rels;
 pub(crate) use sequence::Sequences;
+pub use sequence::counter_page;
 
 #[cfg(test)]
 pub(crate) use sequence::full_counter_page;
@@ -489,9 +490,8 @@ pub struct Setup<R: Runtime> {
     pub pool: Option<Arc<Scheduler<R>>>,
     pub options: exec::Options,
     pub limits: Limits,
-    /// The page of the database's generated counters, or `None` to allocate one and start each
-    /// `sequence` past the keys its relation holds.
-    pub sequences: Option<Pid>,
+    /// The page of the database's generated counters.
+    pub sequences: Pid,
 }
 
 impl<R: Runtime> Database<R> {
@@ -513,30 +513,7 @@ impl<R: Runtime> Database<R> {
             .collect();
         let denials = check::denials(&setup.schema, &setup.normal, &setup.catalog, &mut program)?;
         let rels = schema::rels(&setup.schema, &setup.normal, &setup.catalog)?;
-        let sequences = match setup.sequences {
-            Some(pid) => Sequences::open(&setup.pager, pid)?,
-            None => {
-                let pid = Sequences::create(&setup.pager)?;
-                let mut seqs = Sequences::open(&setup.pager, pid)?;
-                for r in rels.values() {
-                    if r.generate != Some(adtb_lang::schema::Generator::Sequence) || !r.single_key {
-                        continue;
-                    }
-                    let index = &setup.bindings.indexes[&r.key_index].index;
-                    let held = index
-                        .scan_prefix(&setup.pager, &[])?
-                        .into_iter()
-                        .filter_map(|e| match e.key.first() {
-                            Some(crate::key::Value::I64(k)) => Some(*k),
-                            _ => None,
-                        })
-                        .max()
-                        .unwrap_or(0);
-                    seqs.advance(&setup.pager, r.id.0, held)?;
-                }
-                seqs
-            }
-        };
+        let sequences = Sequences::open(&setup.pager, setup.sequences)?;
         let latches = setup
             .bindings
             .indexes

@@ -28,7 +28,7 @@ use adtb_lang::check::Program;
 use adtb_lang::evolve::{Refusal, Source};
 use adtb_lang::norm::{self, NormalProgram};
 use adtb_lang::parse::{Options, parse_migration};
-use adtb_lang::schema::{self, Generator, Schema};
+use adtb_lang::schema::{self, Schema};
 use adtb_lang::span::Diag;
 use adtb_lang::types::RelId;
 
@@ -41,7 +41,6 @@ use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
 use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid};
 use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
-use crate::write::Sequences;
 
 pub use deploy::Rewrite;
 pub use deployment::{Deployed, Deployment, Fact, Mark, Origin};
@@ -857,30 +856,15 @@ impl Catalog {
         if let Some(pid) = self.sequences() {
             return Ok(pid);
         }
-        let counted = |e: crate::write::Error| match e {
+        Catalog::naming_sequences(pager, self.root)?;
+        let keys = &self.schema.ids.keys;
+        let pid = crate::write::counter_page(pager, &self.schema, |r| {
+            keys.get(&r).map(|k| &self.indexes[k].1)
+        })
+        .map_err(|e| match e {
             crate::write::Error::Page(e) => Error::Page(e),
             other => Error::Internal(format!("advancing a key counter: {other:?}")),
-        };
-        Catalog::naming_sequences(pager, self.root)?;
-        let pid = Sequences::create(pager)?;
-        let mut counters = Sequences::open(pager, pid)?;
-        for (&r, key) in &self.schema.ids.keys {
-            let rel = self.schema.relation(r);
-            if rel.generate != Some(Generator::Sequence) || rel.key.len() != 1 {
-                continue;
-            }
-            let held = self.indexes[key]
-                .1
-                .scan_prefix(pager, &[])?
-                .into_iter()
-                .filter_map(|e| match e.key.first() {
-                    Some(Value::I64(k)) => Some(*k),
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0);
-            counters.advance(pager, r.0, held).map_err(counted)?;
-        }
+        })?;
         Catalog::name_sequences(pager, self.root, pid)?;
         self.sequences = pid;
         Ok(pid)

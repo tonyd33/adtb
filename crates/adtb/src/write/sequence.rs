@@ -1,5 +1,10 @@
 use std::collections::BTreeMap;
 
+use adtb_lang::schema::{Generator, Schema};
+use adtb_lang::types::RelId;
+
+use crate::btree::Index;
+use crate::key::Value;
 use crate::runtime::Runtime;
 use crate::storage::{self, HEADER_LEN, PageError, PageKind, Pager, Pid};
 
@@ -155,6 +160,38 @@ impl Sequences {
         pager.flush_log();
         Ok(())
     }
+}
+
+/// Allocate a page of counters starting each relation of `schema` whose single key is generated
+/// by `sequence` past the largest key its key index `key(r)` holds, and skip a relation for
+/// which `key` returns `None`. Returns its page id.
+pub fn counter_page<'i, R: Runtime>(
+    pager: &Pager<R>,
+    schema: &Schema,
+    key: impl Fn(RelId) -> Option<&'i Index>,
+) -> Result<Pid, Error> {
+    let pid = Sequences::create(pager)?;
+    let mut counters = Sequences::open(pager, pid)?;
+    for (i, rel) in schema.relations.iter().enumerate() {
+        let r = RelId(u32::try_from(i).expect("a schema has fewer than 2^32 relations"));
+        if rel.generate != Some(Generator::Sequence) || rel.key.len() != 1 {
+            continue;
+        }
+        let Some(index) = key(r) else {
+            continue;
+        };
+        let held = index
+            .scan_prefix(pager, &[])?
+            .into_iter()
+            .filter_map(|e| match e.key.first() {
+                Some(Value::I64(k)) => Some(*k),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        counters.advance(pager, r.0, held)?;
+    }
+    Ok(pid)
 }
 
 #[cfg(test)]

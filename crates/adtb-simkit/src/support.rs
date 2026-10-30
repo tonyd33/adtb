@@ -30,6 +30,23 @@ pub type Bound<R = SimRuntime> = (
     BTreeMap<adtb::plan::IndexId, StoredIndex>,
 );
 
+/// Returns a new page of generated counters for the relations `catalog` describes, their key
+/// indexes in `indexes`.
+pub fn counters<R: Runtime>(
+    pager: &Pager<R>,
+    schema: &Schema,
+    catalog: &Catalog,
+    indexes: &BTreeMap<adtb::plan::IndexId, StoredIndex>,
+) -> adtb::storage::Pid {
+    adtb::write::counter_page(pager, schema, |r| {
+        catalog
+            .relations
+            .get(&r)
+            .map(|d| &indexes[&d.key_index].index)
+    })
+    .expect("the page of counters")
+}
+
 /// The root pages a database's structures are reopened from.
 #[derive(Clone, Debug, Default)]
 pub struct Roots {

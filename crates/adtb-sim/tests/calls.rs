@@ -848,6 +848,7 @@ fn items<R: Runtime>(rt: &R, rows: &str) -> Arc<Items<R>> {
         db: &f.db,
     };
     let (pager, txns, heaps, indexes) = Db::load_with(rt, &world, false).bindings();
+    let sequences = support::counters(&pager, &schema, &catalog, &indexes);
     let db = Database::new(
         rt.clone(),
         Setup {
@@ -862,7 +863,7 @@ fn items<R: Runtime>(rt: &R, rows: &str) -> Arc<Items<R>> {
             pool: None,
             options: exec::Options::default(),
             limits: Limits::default(),
-            sequences: None,
+            sequences,
         },
     )
     .expect("a database over the fixture");

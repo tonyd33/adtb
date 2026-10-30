@@ -628,7 +628,7 @@ impl<R: Runtime> Engine<R> {
                     ..defaults
                 },
                 limits: Limits::default(),
-                sequences: Some(sequences),
+                sequences,
             },
         )
         .map_err(corrupt)?

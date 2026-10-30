@@ -360,6 +360,8 @@ fn database(
     sequences: Option<adtb::storage::Pid>,
 ) -> Database<SimRuntime> {
     let (pager, txns, heaps, indexes) = d.bindings();
+    let sequences =
+        sequences.unwrap_or_else(|| support::counters(&pager, schema, catalog, &indexes));
     Database::new(
         rt.clone(),
         Setup {

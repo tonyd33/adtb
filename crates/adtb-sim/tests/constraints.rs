@@ -616,6 +616,7 @@ fn database(
         db: &f.db,
     };
     let (pager, txns, heaps, indexes) = Db::load_with(rt, &world, false).bindings();
+    let sequences = support::counters(&pager, &f.schema, catalog, &indexes);
     Database::new(
         rt.clone(),
         Setup {
@@ -630,7 +631,7 @@ fn database(
             pool: None,
             options: exec::Options::default(),
             limits: Limits::default(),
-            sequences: None,
+            sequences,
         },
     )
     .expect("a database over the fixture")
