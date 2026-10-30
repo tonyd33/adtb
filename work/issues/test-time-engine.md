@@ -39,3 +39,7 @@ Candidate, unmeasured as a fix: `PageOptimistic::read` copies the whole page int
 ## 2026-10-30: schema-memo
 
 Memo owned by `Source`, 32 entries, compared by full equality. Suite user CPU 798 s to 607 s, wall 86 s to 65 s, one run each under load. A process-global memo would leave 7.1% of builds rather than 13.0%, an estimated 2% of cycles; not worth process state. Review: no blockers. Check: 2977 passed.
+
+## 2026-10-30: schema-arc
+
+`Schema` now holds its declarations in a shared `defs: Arc<SchemaDefs>`, written through `Arc::make_mut`; `ids`, `stages` and `value_stages` stay owned. `Arc<Schema>` from `built` alone gave -4.2% cycles because `schema()` still copied for `annotate`. Suite user CPU 649.7 s to 572.5 s, one run each; sys 135.7 s to 160.9 s, not attributed. `DerefMut` stays: no site writes on a read path, and a test fails if `schema()` copies the declarations.
