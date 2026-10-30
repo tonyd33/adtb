@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
+status: resolved
 kind: feature
 priority: 822
 summary: "log grants are not rows of catalog::grants, a migration may grant to a missing role, and replay has no dormant grants"
-branch: log-grant-rows
+closed: 2026-10-29
 depends-on:
   - grant-carry
 tags:
@@ -48,3 +48,9 @@ Fresh review (work/briefs/review-log-grant-rows.md, local): ids, row ownership, 
 B1 to B3 hold in principle; the constructor-10 roots row is atomic with the grant rows and outside the hash (work/briefs/review-log-grant-rows2.md, local). Branch check on 28fc0337 passed (root 2789, campaign 47).
 
 - R1: a prune merge ORs a dormant entry's grant option into the active row it keeps. Ruling: a grant option held only while dormant never becomes active. A prune merge of active and dormant entries takes the option from the active entries only; an activating regrant gives the row the regrant's own option, not the dormant entry's.
+
+## 2026-10-29: landed
+
+R1 fixed as ruled (lead review of the delta). Landed as 5b219244..8f6035ae. Branch check on 28fc0337 passed (root 2789, campaign 47); main check on 8f6035ae passed (root 2799 passed, 7 skipped; campaign 47). Follow-ups in log-grant-rows-follow-ups. Next roles-and-grants slice 2b: live bundle rechecks on migration and revoke; relation-grant checks skip dormant rows.
+
+## 2026-10-29: resolved
