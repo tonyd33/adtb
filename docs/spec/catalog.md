@@ -687,8 +687,9 @@ as `module::name`. A header field, or a field of a type with one
 constructor, is named alone, and any other field as `C.f`. A call
 grant on a family has the target `FAMILY::q at v`, then the signature
 it records, its parameters and result type as a query declaration
-writes them, with type names as they stand at log version `v`:
-`web::login_key at 41 (u: Key users) -> Text`. No two rows have the same grantee, privilege,
+writes them, with each schema type and relation as `module::name` as
+it stands at log version `v`, the version recorded when it was
+granted: `web::login_key at 41 (u: Key auth::users) -> Text`. No two rows have the same grantee, privilege,
 target and grantor. `grantee` and `grantor` are role
 names. `dormant` marks a log grant whose grantee did not exist when
 the log was replayed; a dormant grant allows nothing. Creating the

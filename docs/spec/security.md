@@ -274,12 +274,16 @@ types as they stand at a log version, the highest version a live
 bundle declaring the query pins, and stands for the ids those names
 had at that version. A grantee holds one family grant per family,
 query and grantor, with the latest recorded signature: granting it
-again records the signature anew and replaces the row, `revoke call
-web::login_key from app` deletes it, and a bundle that is live again
-with an earlier signature is not covered. A family grant may write
-its signature as its row's target does
-([catalog.md](catalog.md#26-other-catalog-relations)); it is refused
-unless that is the signature the live bundles share.
+again with a signature of other ids records it anew and replaces the
+row, granting it again with a signature of equal ids keeps the row
+and its version, `revoke call web::login_key from app` deletes it,
+and a bundle that is live again with an earlier signature is not
+covered. A family grant or revoke may write its signature as its
+row's target does
+([catalog.md](catalog.md#26-other-catalog-relations)); such a target
+is compared with a row by the ids its names have at its own version,
+not by its text, and a grant is refused unless its signature has the
+ids of the one the live bundles share.
 
 Any grant may end in `with grant option`, which lets the grantee grant
 it on. A grantee holding a relation grant with grant option extends it
