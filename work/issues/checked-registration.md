@@ -78,3 +78,19 @@ from stored text and rechecked at each migration.
 8. A grant blocker leaves `SchemaRefused.operator` empty; the detail names it.
 9. The trusted API needs no capability beyond the grants (catalog.md 9.1: "as
    registration requires").
+
+## Review round 1 (2026-10-29)
+
+Review work/briefs/review-checked-registration.md (local): two blockers. B1: the
+schema owner re-registering an expired bundle of another role skipped check 5 and
+kept that role as owner; the next open then refused for good. B2: every open renewed
+the lease of every Command bundle it did not present. Both go to round 3 with N1, N4,
+N5, N7 and N8.
+
+10. An `import fn` entry adds no requirement to check 5 or the recheck: security.md
+    4.7 runs it with the schema owner's grants, and its `call fn` authority belongs to
+    the call-grant slice. Schema functions a query or transaction reaches still count.
+
+Follow-ups filed: open-command-bundle-failure (N2), audit-deployment-events (N3),
+registered-text-retention (N6). The option-only revoke (N9) is recorded in
+spec-grant-and-default-forms.
