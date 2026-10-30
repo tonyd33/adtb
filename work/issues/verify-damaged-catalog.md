@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: open-damage
+status: resolved
 kind: feature
 priority: 420
 summary: a file whose catalog page is damaged fails open with Corrupt instead of opening for verify and dump
+closed: 2026-10-30
 ---
 
 # Feature: Verify damaged catalog
@@ -16,3 +16,9 @@ A page the open must read gives `OpenError::Corrupt` with the mark set, because 
 ## Proposal
 
 ## Open questions
+
+## 2026-10-30
+
+Landed on main. Check passed, 3167 tests.
+
+## 2026-10-30: resolved
