@@ -799,6 +799,11 @@ pub(super) fn register<R: Runtime>(
     };
     let mut claims = Vec::with_capacity(regs.len());
     for p in regs {
+        assert!(
+            stored.bundles.contains_key(&p.header.name),
+            "bundle {} is recorded before it registers",
+            p.header.name
+        );
         let c = claim(&stored, p, owner, Origin::Open, now, s);
         c.record(&mut stored);
         claims.push(c);
@@ -825,12 +830,14 @@ pub(super) struct Registrant<'a> {
     pub(super) name: &'a str,
 }
 
-/// The writes of making a bundle live: its row, the row it had, the id of the role it runs as,
-/// its new calls with their row ids, and the deployment facts.
+/// The writes of making a bundle live: its row, the row it had, the id of the role it runs as
+/// and whether an earlier successful registration fixed it, its new calls with their row ids,
+/// and the deployment facts.
 pub(super) struct Claim {
     pub(super) old: Option<Row>,
     pub(super) row: Row,
     pub(super) owner: i64,
+    pub(super) owned: bool,
     pub(super) calls: Vec<(i64, CallRow)>,
     pub(super) facts: Vec<Fact>,
 }
@@ -892,6 +899,7 @@ pub(super) fn claim(
         old,
         row,
         owner: marked.map_or(by.id, |m| m.role),
+        owned: marked.is_some(),
         calls,
         facts,
     }

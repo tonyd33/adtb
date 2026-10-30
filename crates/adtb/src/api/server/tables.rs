@@ -163,6 +163,19 @@ impl<'s> Tables<'s> {
             .collect()
     }
 
+    /// Returns the name of each role, by id.
+    pub(super) fn role_names<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        tx: &Txn,
+    ) -> Result<BTreeMap<i64, String>, Error> {
+        Ok(self
+            .roles(e, tx)?
+            .into_iter()
+            .map(|r| (r.id.0, r.name))
+            .collect())
+    }
+
     pub(super) fn role<R: Runtime>(
         &self,
         e: &Engine<R>,

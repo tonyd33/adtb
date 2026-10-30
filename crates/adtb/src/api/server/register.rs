@@ -1,8 +1,8 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::catalog::Origin;
 use crate::runtime::Runtime;
-use crate::write::Txn;
 
 use super::super::bundle::{self, Claim, Registrant, Stored};
 use super::super::registered::{self, Checked, Over, Registration};
@@ -17,7 +17,8 @@ impl<R: Runtime> RoleAuthority<R> {
     ///
     /// Postconditions:
     /// - Every check of registration passes, or the registration is refused and changes
-    ///   nothing. The role the bundle runs as holds with grant option every relation grant
+    ///   nothing. A bundle registered before registers again only as its owner or the schema
+    ///   owner. The role the bundle runs as holds with grant option every relation grant
     ///   what the bundle runs uses, unless that role is the schema owner; and the bundle's
     ///   family has no owner, or the session's role owns it, or is the schema owner.
     /// - A bundle with no successful registration runs as the session's role; one registered
@@ -41,15 +42,22 @@ impl<R: Runtime> RoleAuthority<R> {
             let t = Tables::new(&e.schema, id);
             self.checked(session, &t, e, tx)?;
             let by = session.id.0;
+            let roles = t.role_names(e, tx)?;
+            let name = |id| role_name(&roles, id);
+            if claim.owned && claim.owner != by && by != OWNER_ID {
+                let bundle = &claim.row.header.name;
+                let owner = name(claim.owner)?;
+                return Err(denied(format!("bundle {bundle} is owned by role {owner}")));
+            }
             if let Some(owner) = family_owner
                 && owner != by
                 && by != OWNER_ID
             {
-                let owner = role_name(&t, e, tx, owner)?;
+                let owner = name(owner)?;
                 return Err(denied(format!("family {family} is owned by role {owner}")));
             }
             if claim.owner != OWNER_ID {
-                let runs_as = role_name(&t, e, tx, claim.owner)?;
+                let runs_as = name(claim.owner)?;
                 let lacks = registered::lacking(&checked, &e.source.grants, &runs_as)?;
                 if !lacks.is_empty() {
                     return Err(denied(lacks.join("\n")));
@@ -76,22 +84,13 @@ impl<R: Runtime> RoleAuthority<R> {
     }
 }
 
-/// Returns the name of the role of id `id` in `catalog::roles`.
-fn role_name<R: Runtime>(
-    t: &Tables<'_>,
-    e: &Engine<R>,
-    tx: &Txn,
-    id: i64,
-) -> Result<String, Error> {
-    t.roles(e, tx)?
-        .into_iter()
-        .find(|r| r.id.0 == id)
-        .map(|r| r.name)
-        .ok_or_else(|| {
-            Error::rejected(RejectReason::Internal {
-                what: format!("no role has id {id}, which owns deployment state"),
-            })
+/// Returns the name `roles` gives the role of id `id`.
+fn role_name(roles: &BTreeMap<i64, String>, id: i64) -> Result<String, Error> {
+    roles.get(&id).cloned().ok_or_else(|| {
+        Error::rejected(RejectReason::Internal {
+            what: format!("no role has id {id}, which owns deployment state"),
         })
+    })
 }
 
 /// Returns the checked registration of `bundle` over `stored` as the role of `session`, and

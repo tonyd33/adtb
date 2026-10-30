@@ -201,7 +201,9 @@ an existing session.
 `RoleAuthority::register(session, registration)` registers a bundle
 file and returns its row of `catalog::bundles`. A bundle with no
 successful registration comes to run as the session's role; one
-registered before keeps its owner. It runs the checks of open's
+registered before keeps its owner, and only that owner or the schema
+owner registers it again: any other role is refused with `Denied`
+naming the owner. It runs the checks of open's
 registration, refuses with `Denied` listing each grant the role the
 bundle runs as lacks with grant option for what its queries and
 transactions run, unless that role is the schema owner, and with
