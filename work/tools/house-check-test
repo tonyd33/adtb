@@ -94,6 +94,27 @@ fixture.rs:4: lint suppression: fix the code or justify it in the report: #[expe
 work/tools/size-allowlist:1: size allowlist entry: crates/a/src/big.rs'
 rm -r work notes.txt
 
+cat >fixture.rs <<'RS'
+/// Writes the unchanged item.
+fn unchanged() {}
+/// Returns the schema of the version.
+/// Returns the constructor the reader
+/// would read.
+fn stale() {}
+/// Returns the item.
+///
+/// Returns nothing else.
+fn spaced() {}
+/// Returns the item, as
+/// Returns gives it.
+fn wrapped() {}
+RS
+expect 1 'fixture.rs:4: two doc summaries above one item: /// Returns the constructor the reader'
+printf '%s\n' '/// Writes the unchanged item.' 'fn unchanged() {}' '/// Returns the moved item.' 'fn moved() {}' >fixture.rs
+jj new -m 'test: seed a doc' >/dev/null 2>&1
+printf '%s\n' '/// Writes the unchanged item.' 'fn unchanged() {}' '/// Returns the moved item.' '/// Returns the item left behind.' 'fn left() {}' >fixture.rs
+expect 1 'fixture.rs:4: two doc summaries above one item: /// Returns the item left behind.'
+
 printf '%s\n' 'Writes an ordinary text file.' >notes.txt
 cat >fixture.rs <<'RS'
 /// Writes the unchanged item.

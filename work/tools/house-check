@@ -5,7 +5,8 @@
 # DIR defaults to the workspace holding this script.
 # Rules: an em dash anywhere; an added size-allowlist entry; an added lint expectation in Rust;
 # in Rust comments, markdown bold, a section sign, a rule id
-# or a recognized third-person doc verb. List added ordinary comments for invariant review.
+# or a recognized third-person doc verb; a doc summary of two sentences that each start
+# `Returns`, one of its lines added. List added ordinary comments for invariant review.
 # Pass `-r REV` or
 # `--from A --to B` to check other changes than the working copy's. Exits 1 when it prints.
 set -euo pipefail
@@ -23,17 +24,24 @@ jj diff --git "$@" | awk '
           "vacuums validates visits waits walks wraps writes", words)
     for (i in words) verbs[words[i]] = 1
   }
-  /^\+\+\+ / { file = substr($0, 7); next }
+  /^\+\+\+ / { file = substr($0, 7); block = 0; next }
   /^@@ / {
+    block = 0
     split($3, hunk, ",")
     line = substr(hunk[1], 2) - 1
     next
   }
   /^-/ { next }
-  /^ / { line++; next }
+  /^ / {
+    line++
+    text = substr($0, 2)
+    summaries(0)
+    next
+  }
   /^\+/ {
     line++
     text = substr($0, 2)
+    summaries(1)
     if (index(text, "\342\200\224")) report("em dash")
     if (file == "work/tools/size-allowlist") report("size allowlist entry")
     if (file ~ /\.rs$/ && text ~ /#!?\[expect\(/) report("lint suppression: fix the code or justify it in the report")
@@ -60,6 +68,29 @@ jj diff --git "$@" | awk '
     if (doc ~ /^[a-z]+ (in|on|over|through) / && doc !~ / (into|to) /) return 1
     if (doc ~ /^(calls|counts|inserts|loads|maps|reads|runs|sets|walks|writes) (that|which|whose) /) return 1
     return doc ~ / (are|were) / && doc !~ / (that|which|whose) /
+  }
+  function summaries(added,    d) {
+    if (file !~ /\.rs$/ || text !~ /^[ \t]*\/\/\/([ \t]|$)/) {
+      block = 0
+      return
+    }
+    d = text
+    sub(/^[ \t]*\/\/\/[ \t]*/, "", d)
+    if (d == "") {
+      summary = 0
+      return
+    }
+    if (!block) {
+      block = 1
+      summary = 1
+      returns = d ~ /^Returns /
+      touched = added
+      prev = d
+      return
+    }
+    touched = touched || added
+    if (summary && returns && touched && d ~ /^Returns / && prev ~ /\.$/) report("two doc summaries above one item")
+    prev = d
   }
   function report(rule) {
     printf "%s:%d: %s: %s\n", file, line, rule, text

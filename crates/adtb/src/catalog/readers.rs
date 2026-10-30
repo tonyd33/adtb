@@ -391,17 +391,6 @@ impl Catalog {
         Ok(())
     }
 
-    /// Returns the source of version `v` of the log, `None` when the log holds no version `v`.
-    pub fn source_at(&self, v: u64) -> Option<Source> {
-        source_at(&self.source, v)
-    }
-
-    /// Returns the constructor `reader` would read that is enabled now and absent at its
-    /// version, as [`stale`] does over this catalog's source and schema.
-    pub fn stale(&self, reader: &Reader) -> Result<Option<String>, Error> {
-        stale(&self.source, &self.schema, reader)
-    }
-
     /// Returns the pending drops with the bundles holding each, in the order they applied,
     /// those of one migration by object.
     pub fn pending_drops(&self) -> Vec<PendingDrop> {
@@ -710,7 +699,6 @@ fn blocked(op: &str, bundle: &str, p: &Pinned, reads: &str) -> String {
     )
 }
 
-/// Returns the schema of the version `v` of `source`'s log.
 /// Returns the constructor `reader` would read that is enabled now and absent at its
 /// version, as `relation.Ctor` or `Type.Ctor`, under the rules by which a live reader blocks
 /// its enable, `source` holding the log and `now` its current schema.
@@ -758,6 +746,7 @@ pub fn stale(source: &Source, now: &Schema, reader: &Reader) -> Result<Option<St
     Ok(None)
 }
 
+/// Returns the schema of the version `v` of `source`'s log.
 fn schema_at(source: &Source, v: u64) -> Option<Schema> {
     source_at(source, v)?.schema().ok()
 }
