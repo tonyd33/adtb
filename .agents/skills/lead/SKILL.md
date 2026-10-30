@@ -94,7 +94,12 @@ Passing tests do not justify unnecessary machinery.
    `target/debug` and `target/tmp`, each by its literal absolute path in
    its own command. They hold build output and test scratch, about 22 GB
    per workspace. Keep the other files and directories under `target/`.
-6. Push `main` to GitHub: `jj git push --remote origin --bookmark main`.
+6. Read what is about to be published before every push, tickets and
+   `work/` included: the repository is public, and a push cannot be taken
+   back. Run `jj diff -r 'main@origin..main'` and take out credentials,
+   personal data and machine details. Move them to `work/briefs/`, or
+   leave them out.
+7. 6. Push `main` to GitHub: `jj git push --remote origin --bookmark main`.
    `origin` is git@github.com:tonyd33/adtb.git; `tangled` is the old
    remote and is no longer pushed.
 
