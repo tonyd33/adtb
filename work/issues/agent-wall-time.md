@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
+status: resolved
 kind: feature
 priority: 355
 summary: Measure where a track spends its time and cut it
-branch: track-tools
+closed: 2026-10-30
 ---
 
 # Feature: Agent wall time
@@ -31,3 +31,9 @@ Adopted now, in the lead skill and code-agent.md: at most 4 building tracks, del
 Next, as one track after test-time-engine's profile: `debug = 0` in dev and test; `land` keeps workspace directories as reusable slots so target/ stays valid, with a size cap; the `check` lock of check-machine-lock.
 
 Rejected, measured: one adtb-sim binary (editing a sim test goes from 1 s to 60-83 s), `opt-level = 0` for local crates (suite 358 s vs 112 s), dropping the suite lock (150 s vs 112 s), a smaller suite (`quick` is no faster).
+
+## 2026-10-30: landed
+
+Slots keep a build directory across tracks, `check` and `suite` share one machine lock, and tests build with no debug info. The rejected options and their measurements are in the lead skill and work/kb/cargo-disk.md.
+
+## 2026-10-30: resolved
