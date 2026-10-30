@@ -84,16 +84,15 @@ pub fn txn(schema: &Schema, program: &Program, txn: &Txn) -> Result<Requirements
 }
 
 /// Returns the requirements of `root`, a normal term of `terms` over `params`, with the
-/// functions of `program`.
+/// functions of `program`, the normal program of `schema`.
 pub fn normal(
     schema: &Schema,
-    program: &Program,
+    program: &NormalProgram,
     terms: &Terms,
     root: Tm,
     params: &[Var],
 ) -> Result<Requirements, Error> {
-    let program = normal_program(schema, program)?;
-    analyze(schema, &program, terms, root, params)
+    analyze(schema, program, terms, root, params)
 }
 
 /// Returns the requirements of each statement in checked ad hoc text.

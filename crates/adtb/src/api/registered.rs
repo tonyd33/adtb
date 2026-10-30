@@ -8,7 +8,7 @@ use adtb_lang::ast::{BundleItem, FnDecl, Import, QName};
 use adtb_lang::check::{Bundles, Program, check_adhoc};
 use adtb_lang::evolve::{LogGrant, Source};
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
-use adtb_lang::norm::{self, NormalQuery};
+use adtb_lang::norm::{self, NormalProgram, NormalQuery};
 use adtb_lang::parse::{Options, parse_adhoc, parse_bundle, parse_bundle_body, parse_migration};
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Requirements};
 use adtb_lang::schema::Schema;
@@ -270,7 +270,7 @@ pub(super) fn lacking(c: &Checked, grants: &[LogGrant], role: &str) -> Result<Ve
 /// over.
 struct Run<'a> {
     schema: &'a Arc<Schema>,
-    program: &'a Program,
+    program: &'a Arc<Program>,
     terms: &'a Terms,
     body: Tm,
     params: &'a [Option<Var>],
@@ -297,8 +297,24 @@ fn lacking_of<'a>(
     role: &str,
 ) -> Result<Vec<String>, Error> {
     let mut out = Vec::new();
+    let mut normal: Vec<(&Arc<Schema>, &Arc<Program>, NormalProgram)> = Vec::new();
     for (e, run) in runs.filter(|(e, _)| e.kind != Callable::Fn) {
-        let needs = requirements(&run)?;
+        let same = |(s, p, _): &(&Arc<Schema>, &Arc<Program>, NormalProgram)| {
+            Arc::ptr_eq(s, run.schema) && Arc::ptr_eq(p, run.program)
+        };
+        let at = match normal.iter().position(same) {
+            Some(at) => at,
+            None => {
+                let program = norm::program(run.schema, run.program).map_err(|e| {
+                    Error::rejected(RejectReason::Internal {
+                        what: format!("a checked registration's program does not normalise: {e:?}"),
+                    })
+                })?;
+                normal.push((run.schema, run.program, program));
+                normal.len() - 1
+            }
+        };
+        let needs = requirements(&run, &normal[at].2)?;
         let held = EffectiveGrants::of(run.schema, grants, role);
         for r in needs.missing(&held, Mode::Registration) {
             let (does, privilege) = r.text(run.schema);
@@ -311,7 +327,7 @@ fn lacking_of<'a>(
     Ok(out)
 }
 
-fn requirements(run: &Run<'_>) -> Result<Requirements, Error> {
+fn requirements(run: &Run<'_>, program: &NormalProgram) -> Result<Requirements, Error> {
     let params: Vec<Var> = run
         .params
         .iter()
@@ -319,7 +335,7 @@ fn requirements(run: &Run<'_>) -> Result<Requirements, Error> {
         .copied()
         .chain(run.unit)
         .collect();
-    permission::normal(run.schema, run.program, run.terms, run.body, &params).map_err(|e| {
+    permission::normal(run.schema, program, run.terms, run.body, &params).map_err(|e| {
         Error::rejected(RejectReason::Internal {
             what: format!("a checked registered call has no requirements: {e:?}"),
         })
