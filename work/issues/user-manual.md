@@ -4,7 +4,6 @@ status: in-progress
 kind: feature
 priority: 880
 summary: "adtb has no user manual or reference, so a new user has only the normative spec to learn from"
-branch: manual-gaps
 tags:
   - docs
 ---
@@ -48,3 +47,11 @@ The tutorial, guides, concepts and reference landed in `docs/manual/`, every exa
 Landed: `docs/manual/reference/rust-api.md` (crate setup, migrations, a bundle and its hash, code generation in `build.rs`, open and call, values, calls by ordinal through `Registered`, ad hoc text, transactions and `transact`, cancellation and deadlines, Arrow results, bulk append, host functions, open options, close) and `docs/manual/reference/errors.md` (every reason the engine raises, with cause and remedy, open errors, and the reasons it does not raise). The new crate `crates/adtb-manual` extracts each page's `rust` blocks into tests: each block is a whole `main.rs`, run in an empty directory, its printed lines compared with the `text` block after it; the page's `build.rs` block is the build script the crate runs, checked byte for byte. A reader pass fixed contradictions and gaps in the language reference, tutorial 1, 5, 6 and 7, the guides, the migration-log concept and the prelude, whose sessions now show each output under its input. The README lists what is still missing: bundles in the shell, translation of earlier pins, reading the past, the rest of the in-process API, operations, and the operators refused at apply.
 
 Open: the reader check by a fresh agent writing a program from the manual alone, and Tony's sign-off.
+
+## 2026-10-29: gaps closed, awaiting sign-off
+
+Track manual-gaps landed at f9e7d85c: a guide on reading the past, bundles across releases,
+supersede and retire, what the engine still refuses. A fresh agent given only docs/manual/ ran
+every console example and built its own program; its 2 blockers, 12 passages and 5 guesses are
+fixed. Branch check: 2830 passed, 7 skipped, campaign 47. Left: Tony's sign-off, which closes
+milestone 8.
