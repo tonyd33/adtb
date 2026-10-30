@@ -576,7 +576,13 @@ for the `unique` and
 `index` clauses of a split, `Carry` for a field after `carry`, and
 `Fill` for a revert's `fill`. An index or unique added without a
 scope has no `Member` clauses and ranges over every constructor of its
-relation, constructors added after it included. The version hash
+relation, constructors added after it included.
+
+An `AddDefault` names every constructor its default
+applies to: `field` is the header field it fills, or the field of the
+first constructor in declared order, and a `Member` clause names each
+constructor whose field it fills, in declared order, none for a header
+field. The version hash
 ([evolution.md §2.1](evolution.md#21-position-and-hash)) encodes these
 rows.
 The log holds only migrations; bundles, their registration, leases,
