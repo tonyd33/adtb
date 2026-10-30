@@ -123,14 +123,15 @@ holds over the spec corpus and over type-directed generated terms.
 
 Covers [design/runtime.md](design/runtime.md) §1, §2, §5 and §6.5, and [design/sys.md](design/sys.md).
 
-- `Io` trait, worker event loop, the three backends (`io_uring` and
-  the blocking pool in `adtb-sys`, the simulator in `adtb-sim`).
-- Simulated clock, randomness, network and deterministic scheduler.
+- `Io` trait and the three backends (`io_uring` and the blocking pool
+  in `adtb-sys`, the simulator in `adtb-sim`).
+- Simulated clock, randomness and deterministic scheduler.
 - `SimStorage` with every fault of [design/runtime.md §3](design/runtime.md#3-faults-a-backend-may-produce).
 - Loom tests for the page state word.
 
-Exit: a seeded run replays byte for byte; Miri runs the simulator
-tests clean.
+Exit: a seeded run replays byte for byte; Loom model tests of the
+page state word pass; Miri runs the `adtb-sys` tests of the page table
+and aligned buffers clean.
 
 ### 4. Pager and log
 
@@ -256,6 +257,8 @@ with the release.
 Covers wire.md, security.md §2, §3, §5 to §8, catalog.md (the server
 parts).
 
+- The worker event loop and a simulated network, so transports run
+  under the deterministic simulator first.
 - `adtb-server`: transports, framing, handshake and binding, calls,
   transactions, ad hoc text, appends, admission, feeds, pushes,
   idempotency, compression, protocol versions.

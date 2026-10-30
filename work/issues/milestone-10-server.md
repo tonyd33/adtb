@@ -10,6 +10,7 @@ depends-on:
   - client-sdks
   - roles-and-grants
   - server-owned-call-tasks
+  - sim-network-and-worker-loop
 tags:
   - milestone
 ---
