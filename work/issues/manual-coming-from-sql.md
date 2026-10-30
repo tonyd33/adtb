@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: manual-from-sql
+status: resolved
 kind: feature
 priority: 600
 summary: the manual has no guide for moving from SQLite or another SQL database; it has only a table and two passing notes
+closed: 2026-10-30
 ---
 
 # Feature: Manual coming from sql
@@ -15,3 +15,9 @@ Write one manual guide for a reader who knows SQLite or another SQL database: ho
 ## Proposal
 
 ## Open questions
+
+## 2026-10-30
+
+Landed docs/manual/guides/coming-from-sql.md. Its data steps ran on the current shell and sqlite3 by hand.
+
+## 2026-10-30: resolved
