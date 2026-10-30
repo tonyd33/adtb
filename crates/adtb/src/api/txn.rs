@@ -272,6 +272,16 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
     }
 }
 
+/// Returns whether `e` is how an abort fails on a quarantined database or a failing disk.
+fn expected_abort_failure(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Fatal {
+            reason: FatalReason::Storage { .. } | FatalReason::Quarantined { .. }
+        }
+    )
+}
+
 impl<R: Runtime> Drop for AdHocTransaction<'_, R> {
     fn drop(&mut self) {
         if let State::Open(tx) = std::mem::replace(&mut self.state, State::Closed)
@@ -280,15 +290,33 @@ impl<R: Runtime> Drop for AdHocTransaction<'_, R> {
             && !std::thread::panicking()
         {
             assert!(
-                matches!(
-                    e,
-                    Error::Fatal {
-                        reason: FatalReason::Storage { .. }
-                    }
-                ),
+                expected_abort_failure(&e),
                 "an abort fails only on a quarantined database, which refuses every later call: \
                  {e:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::RejectReason;
+
+    #[test]
+    fn an_abort_failure_is_expected_only_when_quarantined_or_on_storage() {
+        let fatal = |reason| Error::Fatal { reason };
+        assert!(expected_abort_failure(&fatal(FatalReason::Quarantined {
+            what: "the database".into()
+        })));
+        assert!(expected_abort_failure(&fatal(FatalReason::Storage {
+            detail: "a disk".into()
+        })));
+        assert!(!expected_abort_failure(&Error::rejected(
+            RejectReason::Internal {
+                what: "a bug".into()
+            }
+        )));
+        assert!(!expected_abort_failure(&Error::closed()));
     }
 }

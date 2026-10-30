@@ -8,6 +8,8 @@ mod host;
 #[cfg(all(target_os = "linux", debug_assertions, not(test)))]
 mod instances;
 mod load;
+#[cfg(test)]
+mod open_tests;
 mod pinned;
 mod reads;
 mod registered;
@@ -418,7 +420,8 @@ impl<R: Runtime> Database<R> {
         let e = &*self.engine;
         let _open = e.enter()?;
         let caller = e.principal(opts.assert.as_ref())?;
-        let p = Prepared::new(&e.schema, &e.program, &e.explained(), text, params, caller)?;
+        let p = Prepared::new(&e.schema, &e.program, &e.explained(), text, params, caller);
+        let p = e.admit_text(p)?;
         e.call(&p, opts, || {}).map(|done| done.value)
     }
 
@@ -611,7 +614,7 @@ fn mark_open_damage<R: Runtime>(rt: R, pager: &Pager<R>) {
     if damaged.is_empty() {
         return;
     }
-    let objects: BTreeSet<storage::Quarantine> = match Catalog::open(rt, pager) {
+    let objects: BTreeSet<storage::Quarantine> = match Catalog::load(rt, pager) {
         Ok((catalog, txns)) => damaged
             .iter()
             .flat_map(|&pid| catalog.holders(pager, &txns, pid))
@@ -624,6 +627,75 @@ fn mark_open_damage<R: Runtime>(rt: R, pager: &Pager<R>) {
     };
     for object in objects {
         pager.quarantine(object).ok();
+    }
+}
+
+/// Returns the damage an open that failed may still answer `verify` over: a page that failed
+/// verification on a database quarantined whole. Returns `None` while any page is unreadable.
+fn open_damage<R: Runtime>(pager: &Pager<R>) -> Option<storage::PageError> {
+    if !pager.is_quarantined(storage::Quarantine::Database) {
+        return None;
+    }
+    let damaged = pager.damaged();
+    if damaged
+        .values()
+        .any(|d| matches!(d, storage::Damage::Unreadable))
+    {
+        return None;
+    }
+    damaged
+        .into_iter()
+        .next()
+        .map(|(pid, damage)| storage::PageError { pid, damage })
+}
+
+/// What an engine holds besides its file and write path.
+struct Parts {
+    schema: Arc<Schema>,
+    program: Arc<Program>,
+    registered: Vec<registered::Checked>,
+    bundles: Bundles,
+    deployed: bundle::Stored,
+    settings: Settings,
+    findings: verify::Findings,
+}
+
+fn query_memory(options: &OpenOptions) -> usize {
+    options
+        .query_memory_bytes
+        .map_or(DEFAULT_QUERY_MEMORY, |b| {
+            usize::try_from(b).unwrap_or(usize::MAX)
+        })
+}
+
+/// Returns the setup of the write path over `catalog`.
+fn setup_of<R: Runtime>(
+    catalog: &Catalog,
+    schema: Arc<Schema>,
+    normal: norm::NormalProgram,
+    pager: &Pager<R>,
+    txns: Transactions<R>,
+    options: &OpenOptions,
+) -> Setup<R> {
+    let memory = query_memory(options);
+    let (heaps, indexes) = catalog.bindings();
+    let defaults = exec::Options::default();
+    Setup {
+        schema,
+        normal: Arc::new(normal),
+        catalog: Arc::new(catalog.plan()),
+        pager: pager.clone(),
+        txns: Arc::new(txns),
+        bindings: Bindings { heaps, indexes },
+        budget: Budget::new(memory),
+        grant: STATEMENT_GRANT.min(memory),
+        pool: None,
+        options: exec::Options {
+            fix_rounds: options.fix_rounds.unwrap_or(defaults.fix_rounds),
+            ..defaults
+        },
+        limits: Limits::default(),
+        sequences: catalog.sequences().unwrap_or(storage::Pid(0)),
     }
 }
 
@@ -697,10 +769,117 @@ impl<R: Runtime> Engine<R> {
             Err(storage::OpenError::NotFound) => return Err(OpenError::NotFound),
             Err(e) => return Err(corrupt(e)),
         };
-        Engine::on(rt.clone(), pager.clone(), log, options).inspect_err(|_| {
-            mark_open_damage(rt, &pager);
-            pager.close();
+        Engine::on(rt.clone(), pager.clone(), log, options).or_else(|e| {
+            mark_open_damage(rt.clone(), &pager);
+            let opened = open_damage(&pager).map_or(Err(e), |damage| {
+                Engine::unread(rt, pager.clone(), options, damage)
+            });
+            if opened.is_err() {
+                pager.close();
+            }
+            opened
         })
+    }
+
+    /// Returns the engine of a file quarantined whole whose catalog cannot be trusted: the
+    /// engine's own declarations, the mark, and `verify` of the pages and the log.
+    fn unread(
+        rt: R,
+        pager: Pager<R>,
+        options: &OpenOptions,
+        damage: storage::PageError,
+    ) -> Result<Engine<R>, OpenError> {
+        let catalog = Catalog::unread(&pager).map_err(corrupt)?;
+        let txns = Transactions::refusing(rt.clone(), &pager, damage);
+        let (schema, program) = catalog.checking();
+        let (schema, program) = (Arc::new(schema.clone()), program.clone());
+        let normal = norm::program(&schema, &program).map_err(corrupt)?;
+        let (findings, volatile) = held_rows(&catalog, &pager, &txns, &schema, options, true)?;
+        let setup = setup_of(&catalog, schema.clone(), normal, &pager, txns, options);
+        let db = write::Database::new(rt.clone(), setup)
+            .map_err(corrupt)?
+            .with_volatile(volatile);
+        Ok(Engine::of(
+            rt,
+            Parts {
+                schema,
+                program,
+                registered: Vec::new(),
+                bundles: Bundles::default(),
+                deployed: bundle::Stored::default(),
+                settings: Settings::default(),
+                findings,
+            },
+            pager,
+            db,
+            catalog,
+            options,
+        ))
+    }
+
+    /// Returns the engine over the opened `db`.
+    fn of(
+        rt: R,
+        parts: Parts,
+        pager: Pager<R>,
+        db: write::Database<R>,
+        catalog: Catalog,
+        options: &OpenOptions,
+    ) -> Engine<R> {
+        let role_mentions = server::mentioned(catalog.source());
+        Engine {
+            rt,
+            schema: parts.schema,
+            program: parts.program,
+            source: catalog.source().clone(),
+            bundles: Lock::new(Arc::new(parts.bundles)),
+            registered: Lock::new(parts.registered.into_iter().map(Arc::new).collect()),
+            deployed: Lock::new(Arc::new(parts.deployed)),
+            deployment: catalog.deployment(),
+            bundle_writer: Lock::new(()),
+            settings: Lock::new(parts.settings),
+            role_mentions,
+            pager,
+            db,
+            catalog,
+            findings: Lock::new(parts.findings),
+            open: RwLock::new(true),
+            closing: Lock::new(()),
+            close: Arc::default(),
+            sched: Lock::new(None),
+            workers: options.workers(),
+            #[cfg(target_os = "linux")]
+            held: Lock::new(None),
+        }
+    }
+
+    /// Returns `p`, the checked text of a call. On a database quarantined whole, fail with
+    /// `Quarantined` whether or not it checked, unless it is a run of `verify` alone.
+    fn admit_text(&self, p: Result<Prepared, Error>) -> Result<Prepared, Error> {
+        let Some(refused) = self.refusal() else {
+            return p;
+        };
+        match p {
+            Ok(p) if self.lone_verify(&p) => Ok(p),
+            _ => Err(refused),
+        }
+    }
+
+    /// Returns the failure of every call but `verify` on a database quarantined whole.
+    fn refusal(&self) -> Option<Error> {
+        let refused = self.db.admit_database().err()?;
+        Some(self.write_error(TxnId(0), refused))
+    }
+
+    /// Returns whether `p` is one run of `verify` this file can answer: over a relation only when
+    /// its catalog was read.
+    fn lone_verify(&self, p: &Prepared) -> bool {
+        use adtb_lang::check::Command::Verify;
+        matches!(
+            (p.items(), p.commands()),
+            ([], [c]) if matches!(c.command, Verify(None))
+                || (matches!(c.command, Verify(Some(_))) && !self.catalog.is_unread())
+        )
     }
 
     /// Open the catalog of the recovered `pager`, apply the migrations of `log` beyond the
@@ -711,19 +890,16 @@ impl<R: Runtime> Engine<R> {
         log: &Log,
         options: &OpenOptions,
     ) -> Result<Engine<R>, OpenError> {
-        let query_memory = options
-            .query_memory_bytes
-            .map_or(DEFAULT_QUERY_MEMORY, |b| {
-                usize::try_from(b).unwrap_or(usize::MAX)
-            });
         let (mut catalog, txns) = Catalog::open(rt.clone(), &pager).map_err(corrupt)?;
         let clog_damaged = txns.quarantined().is_some();
         if clog_damaged {
             pager.quarantine(storage::Quarantine::Database).ok();
         }
         let writable = !pager.is_quarantined(storage::Quarantine::Database);
-        catalog.set_query_memory(query_memory);
-        diverged(&catalog, log)?;
+        catalog.set_query_memory(query_memory(options));
+        if writable {
+            diverged(&catalog, log)?;
+        }
         let (mut stored, settings) = deployed_state(&catalog, &pager, &txns, clog_damaged)?;
         let opened = micros(pager.wall());
         let regs = &commanded(&options.registrations, &stored, opened, &settings)?;
@@ -749,17 +925,17 @@ impl<R: Runtime> Engine<R> {
         };
         let hosts = Arc::new(options.host_fns.hosts());
         catalog.set_hosts(hosts.clone());
-        let sequences = catalog.counters(&pager).map_err(corrupt)?;
         if writable {
+            catalog.counters(&pager).map_err(corrupt)?;
             catalog.record_grants(&pager, &txns).map_err(corrupt)?;
             migrate(&mut catalog, &pager, &txns, log, &live)?;
         }
         let (schema, program) = catalog.checking();
         let (schema, program) = (schema.clone(), program.clone());
         let normal = norm::program(&schema, &program).map_err(corrupt)?;
-        options.host_fns.bound(&schema, &normal)?;
-        let plan = catalog.plan();
-        let (heaps, indexes) = catalog.bindings();
+        if writable {
+            options.host_fns.bound(&schema, &normal)?;
+        }
         let schema = Arc::new(schema);
         let now = micros(pager.wall());
         let over = registered::Over {
@@ -794,69 +970,40 @@ impl<R: Runtime> Engine<R> {
         }
         let (findings, volatile) =
             held_rows(&catalog, &pager, &txns, &schema, options, clog_damaged)?;
-        let defaults = exec::Options::default();
-        let retained = if clog_damaged {
-            None
-        } else {
+        let retained = if writable {
             Some(catalog.retained(&pager, &txns).map_err(corrupt)?)
+        } else {
+            None
         };
-        let db = write::Database::new(
-            rt.clone(),
-            Setup {
-                schema: schema.clone(),
-                normal: Arc::new(normal),
-                catalog: Arc::new(plan),
-                pager: pager.clone(),
-                txns: Arc::new(txns),
-                bindings: Bindings { heaps, indexes },
-                budget: Budget::new(query_memory),
-                grant: STATEMENT_GRANT.min(query_memory),
-                pool: None,
-                options: exec::Options {
-                    fix_rounds: options.fix_rounds.unwrap_or(defaults.fix_rounds),
-                    ..defaults
-                },
-                limits: Limits::default(),
-                sequences,
-            },
-        )
-        .map_err(corrupt)?
-        .with_files(options.file_root.clone().map(Disk::new).unwrap_or_default())
-        .with_hosts(hosts)
-        .with_volatile(volatile)
-        .with_kept_store(catalog.kept_store());
+        let setup = setup_of(&catalog, schema.clone(), normal, &pager, txns, options);
+        let db = write::Database::new(rt.clone(), setup)
+            .map_err(corrupt)?
+            .with_files(options.file_root.clone().map(Disk::new).unwrap_or_default())
+            .with_hosts(hosts)
+            .with_volatile(volatile)
+            .with_kept_store(catalog.kept_store());
         let db = match retained {
             Some(retained) => db
                 .with_history(retained, settings.window)
                 .map_err(corrupt)?,
             None => db,
         };
-        let role_mentions = server::mentioned(catalog.source());
-        let engine = Engine {
+        Ok(Engine::of(
             rt,
-            schema,
-            program,
-            source: catalog.source().clone(),
-            bundles: Lock::new(Arc::new(bundles)),
-            registered: Lock::new(registered.into_iter().map(Arc::new).collect()),
-            deployed: Lock::new(Arc::new(deployed)),
-            deployment: catalog.deployment(),
-            bundle_writer: Lock::new(()),
-            settings: Lock::new(settings),
-            role_mentions,
+            Parts {
+                schema,
+                program,
+                registered,
+                bundles,
+                deployed,
+                settings,
+                findings,
+            },
             pager,
             db,
             catalog,
-            findings: Lock::new(findings),
-            open: RwLock::new(true),
-            closing: Lock::new(()),
-            close: Arc::default(),
-            sched: Lock::new(None),
-            workers: options.workers(),
-            #[cfg(target_os = "linux")]
-            held: Lock::new(None),
-        };
-        Ok(engine)
+            options,
+        ))
     }
 
     /// Returns the registered queries `explain B::q(args)` names.
@@ -1060,7 +1207,10 @@ impl<R: Runtime> Engine<R> {
 
     /// Returns the run of `verify` that `p` is, when `p` is nothing else and the commit log's
     /// damage refuses every transaction.
-    fn verify_without_transaction(&self, p: &Prepared) -> Option<Result<DynRows, Error>> {
+    pub(super) fn verify_without_transaction(
+        &self,
+        p: &Prepared,
+    ) -> Option<Result<DynRows, Error>> {
         self.db.txns().quarantined()?;
         let ([], [c]) = (p.items(), p.commands()) else {
             return None;

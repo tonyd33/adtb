@@ -179,6 +179,17 @@ impl<R: Runtime> Call<R> {
             e.renew(b.name());
         }
         let p = self.work.prepared();
+        if let Some(rows) = e.verify_without_transaction(p) {
+            self.phase = Phase::Output(Output {
+                results: self.whole(e, vec![rows?])?,
+                announced: false,
+                tx: None,
+            });
+            self.settle(Completion::Read {
+                snapshot: Position::from(e.pager.position(e.pager.durable())),
+            });
+            return Ok(Then::Next);
+        }
         self.phase = if p.writes {
             Phase::Writing(Writing {
                 attempts: 1,

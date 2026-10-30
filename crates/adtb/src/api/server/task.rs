@@ -352,16 +352,17 @@ impl<R: Runtime> RoleSession<R> {
         let caller = authority.admit_caller(self, text, opts.call.assert.as_ref())?;
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
         let _open = e.enter()?;
-        let items = Prepared::parsed(text)?;
+        let items = Prepared::parsed(text).map_err(|err| e.refusal().unwrap_or(err))?;
         let issuer = authority.admit_items(self, &e, &items, &caller, text)?;
-        let mut p = Prepared::of_items(
+        let p = Prepared::of_items(
             &e.schema,
             &e.program,
             &e.explained(),
             &items,
             params,
             caller,
-        )?;
+        );
+        let mut p = e.admit_text(p)?;
         p.issuer = issuer;
         let bytes = TASK_BYTES + text.len() + p.bytes();
         submit(&e, Work::Text(Box::new(p)), opts, Priority::AdHoc, bytes)

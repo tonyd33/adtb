@@ -6,7 +6,7 @@ use adtb_sys::lock::{Lock, RwLock};
 
 use crate::btree;
 use crate::runtime::Runtime;
-use crate::storage::{Damage, Lsn, PageError, Pager, Pid, Position};
+use crate::storage::{Damage, Lsn, PageError, Pager, Pid, Position, Quarantine};
 
 use super::past::{Commit, Marker, Past};
 use super::{CommitLog, Error, Holds, Scope, Snapshot, SnapshotId, Status, Xid};
@@ -132,16 +132,22 @@ impl<R: Runtime> Transactions<R> {
     ///   recovered, and as aborted otherwise.
     /// - No id assigned before the crash is assigned again.
     /// - If a status page is damaged, the database is quarantined.
+    /// - A file with a damaged status page or the database's mark has nothing written, and an id
+    ///   running at the crash still reads as in progress.
     ///
     /// Fail if the commit log's root or a directory page is damaged, or a status page cannot
     /// be read.
     pub fn open(rt: R, pager: &Pager<R>, root: Pid) -> Result<Transactions<R>, PageError> {
         let mut clog = CommitLog::load(pager, root)?;
-        let damage = clog.abort_unresolved(pager).err().or_else(|| {
-            clog.status_pages()
-                .values()
-                .find_map(|&pid| pager.read(pid).err())
-        });
+        let found = clog
+            .status_pages()
+            .values()
+            .find_map(|&pid| pager.read(pid).err());
+        let damage = if found.is_some() || pager.is_quarantined(Quarantine::Database) {
+            found
+        } else {
+            clog.abort_unresolved(pager).err()
+        };
         if let Some(e) = damage.filter(|e| e.damage == Damage::Unreadable) {
             return Err(e);
         }
@@ -152,13 +158,21 @@ impl<R: Runtime> Transactions<R> {
         Ok(txns)
     }
 
-    /// Returns whether `x` counts as committed in the latest state of a quarantined database:
-    /// it committed, or its status page is damaged.
-    pub fn assumed_committed(&self, pager: &Pager<R>, x: Xid) -> bool {
-        self.clog
-            .read(&self.rt)
-            .status(pager, x)
-            .map_or(true, |s| s == Status::Committed)
+    /// Returns the transactions layer of a file whose commit log cannot be read, refusing every
+    /// transaction with damage `e`.
+    pub fn refusing(rt: R, pager: &Pager<R>, e: PageError) -> Transactions<R> {
+        let txns = Transactions::over(rt, pager, CommitLog::unread(pager));
+        txns.damaged(e);
+        txns
+    }
+
+    /// Returns whether `x` committed, by its status or, when its status page is damaged, by
+    /// `logged`, the commit records of the retained log. Returns `None` when neither settles it.
+    pub fn settled(&self, pager: &Pager<R>, logged: &BTreeSet<u64>, x: Xid) -> Option<bool> {
+        match self.clog.read(&self.rt).status(pager, x) {
+            Ok(status) => Some(status == Status::Committed),
+            Err(_) => logged.contains(&x.0).then_some(true),
+        }
     }
 
     fn over(rt: R, pager: &Pager<R>, clog: CommitLog) -> Transactions<R> {

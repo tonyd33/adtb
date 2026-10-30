@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::{AlignedBuf, Runtime};
 
@@ -43,6 +43,28 @@ impl<R: Runtime> Pager<R> {
     /// log's end when the check starts.
     pub fn verify_live(&self) -> Verification {
         self.verify_to(true)
+    }
+
+    /// Returns the transaction of every commit record in the retained log.
+    pub fn logged_commits(&self) -> BTreeSet<u64> {
+        let mut img = {
+            let mut segments = self.segments.lock(&self.rt);
+            self.io(|d| segments.load(d))
+        };
+        let mut commits = BTreeSet::new();
+        let block = img.block;
+        if let Some(first) = img.first() {
+            scan(&mut img, first, Mode::Verify, |batch, _| {
+                if let Ok(records) = batch.records(block) {
+                    for (_, record) in records {
+                        if let Record::Commit { xid, .. } = record {
+                            commits.insert(xid);
+                        }
+                    }
+                }
+            });
+        }
+        commits
     }
 
     /// Check every page and the retained log. A page whose LSN is at or past `end`, the log's end

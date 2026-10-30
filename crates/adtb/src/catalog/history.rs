@@ -103,6 +103,16 @@ impl Kept {
         self.indexes.get(&r)
     }
 
+    /// Returns the history structures of a catalog that cannot be read: none, over no page.
+    pub(super) fn unread() -> Kept {
+        Kept {
+            large: LargeStore::open(0, Pid(0)),
+            record: BTree::open(Pid(0), 0),
+            heaps: BTreeMap::new(),
+            indexes: BTreeMap::new(),
+        }
+    }
+
     /// Allocate an empty large-value store with heap id `large` and an empty record whose pages
     /// carry `owner`, keeping history for no relation yet.
     pub(super) fn create<R: Runtime>(

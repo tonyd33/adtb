@@ -666,6 +666,40 @@ every transaction is refused with the corruption fault, and the
 database opens for `verify` and `dump` only
 ([mvcc.md §4.2](mvcc.md#42-the-commit-log)).
 
+Opening a file under that mark, postconditions:
+
+- Every call fails with `Quarantined` before its text is checked, except
+  one `verify` alone. As a call it always runs. As a task it needs a session,
+  and `session` reads the roles: on a file whose catalog or commit log cannot
+  be read, only a session issued before the damage has one.
+- Nothing past the mark is written. The open resolves no id, frees no page,
+  allocates no counters page, applies no migration and compares no
+  migration of the given log with the file's. No transaction with an id
+  begins, so `verify` keeps no findings and a refused call records no `Denied`
+  audit row. Once the mark is durable, this holds of every later open. An open
+  that finds the damage only after opening an intact commit log has already
+  resolved the ids left in progress.
+- Pages 0 and 1 and the log may change on open and close: recovery and the
+  close's checkpoint write them. Every other page but the page of marks stays
+  as it was.
+- `verify` answers at least one `Structure` row naming the mark, so a mark
+  over a page replay has healed never reads as sound. A mark on one heap or
+  index adds no row.
+- The open trusts a row of the catalog only when the status of its writer and
+  deleter is read from an undamaged status page, or a commit record of the
+  retained log proves it committed. A row of an id neither settles leaves the
+  whole catalog unread: an uncommitted migration never reads as applied.
+- When a page's damage stops the catalog being read, the file still opens,
+  with only the engine's own declarations and a commit log of no pages.
+  `verify` then checks every page and the retained log. It reports `Checksum`,
+  `StalePage` and `Structure` by page number and a `Structure` finding that
+  says only those were checked. It cannot report `Order`, `Orphan`, `Missing`
+  or `Violation`, and refuses `verify r`.
+- A failed open that found no damaged page, or an unreadable one, still fails.
+  So do a file header with neither copy valid, a file that is no adtb file, a
+  retained log recovery refuses, and a row that fails to decode on a page
+  that verifies.
+
 Quarantine is a mark the storage layer sets on one heap, one index or
 the whole database, and keeps until the object is repaired:
 

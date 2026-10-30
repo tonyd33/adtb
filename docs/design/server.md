@@ -532,7 +532,9 @@ commands that capabilities or bundle ownership alone decide, and the
 engine decides each from the parsed text at submit, before checking it
 against the schema. A refusal for a lack of privilege, also
 of `verify` rows holding a `Violation` witness, writes a `Denied` row of
-`catalog::audit` in a system transaction. The engine starts its task
+`catalog::audit` in a system transaction, except on a database quarantined
+whole, which records none
+([storage.md §8](storage.md#8-quarantine)). The engine starts its task
 scheduler on the first submit. A
 read holds its snapshot until the drain is acknowledged, dropped or
 cancelled. A task that is one read-only query of set type is produced a

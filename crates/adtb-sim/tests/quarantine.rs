@@ -564,7 +564,6 @@ fn a_bad_catalog_page_marks_the_database() {
 }
 
 #[test]
-#[ignore = "opening needs the catalog's rows for the schema, so a file whose catalog page is damaged answers OpenError::Corrupt"]
 fn a_file_with_a_damaged_catalog_page_opens_for_verify() {
     let mut sim = flipped(19, |db| heap_page(db, "catalog::roles", "Role"));
     api::run(&mut sim, |rt| {
@@ -579,14 +578,11 @@ fn a_file_with_a_damaged_catalog_page_opens_for_verify() {
 }
 
 #[test]
-fn a_file_with_a_damaged_catalog_page_refuses_open_and_keeps_the_mark() {
+fn a_file_with_a_damaged_catalog_root_opens_and_keeps_the_mark() {
     let mut sim = flipped(19, |db| db.write_path().pager().catalog_root());
     api::run(&mut sim, |rt| {
         let got = Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2));
-        assert!(
-            matches!(got, Err(adtb::OpenError::Corrupt { .. })),
-            "{got:?}"
-        );
+        got.unwrap().close().unwrap();
     });
     with_named_pager(&mut sim, |p| {
         assert_eq!(BTreeSet::from([Quarantine::Database]), p.quarantined());
@@ -744,10 +740,9 @@ fn verify_of_a_marked_database_still_runs() {
     api::run(&mut sim, |rt| {
         let db = open_app(rt);
         assert_eq!("the database", failed_on(&db, ALL));
-        assert_eq!(
-            Vec::<String>::new(),
-            api::printed(db.verify(Some("users")).unwrap())
-        );
+        let rows = api::printed(db.verify(Some("users")).unwrap());
+        assert_eq!(1, rows.len(), "{rows:?}");
+        assert!(rows[0].contains("quarantined whole"), "{rows:?}");
         assert_eq!("the database", failed_on(&db, "vacuum users"));
         assert_eq!(
             "the database",
@@ -902,7 +897,7 @@ fn opening_a_marked_database_applies_no_migration() {
             ..api::options(2)
         };
         let db = Database::open_in(rt, FILE, &Log::new([APP, later]), &options).unwrap();
-        assert!(api::is_invalid(&api::failure(&db, "from z in zs select z")));
+        assert_eq!("the database", failed_on(&db, "from z in zs select z"));
     });
 }
 
@@ -1244,15 +1239,11 @@ fn a_file_with_a_damaged_commit_log_status_page_opens_for_verify() {
 }
 
 #[test]
-fn a_file_with_a_damaged_commit_log_root_answers_corrupt_and_keeps_the_mark() {
+fn a_file_with_a_damaged_commit_log_root_opens_and_keeps_the_mark() {
     let mut sim = commit_log_page(59, adtb::mvcc::CommitLog::root);
     api::run(&mut sim, |rt| {
         let got = Database::open_in(rt, FILE, &Log::new([APP]), &api::options(2));
-        assert!(
-            matches!(got, Err(adtb::OpenError::Corrupt { .. })),
-            "{:?}",
-            got.err()
-        );
+        got.unwrap().close().unwrap();
     });
     with_named_pager(&mut sim, |p| {
         assert_eq!(BTreeSet::from([Quarantine::Database]), p.quarantined());

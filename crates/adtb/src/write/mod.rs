@@ -527,7 +527,11 @@ impl<R: Runtime> Database<R> {
             .collect();
         let denials = check::denials(&setup.schema, &setup.normal, &setup.catalog, &mut program)?;
         let rels = schema::rels(&setup.schema, &setup.normal, &setup.catalog)?;
-        let sequences = Sequences::open(&setup.pager, setup.sequences)?;
+        let sequences = if setup.sequences == Pid(0) {
+            Sequences::none()
+        } else {
+            Sequences::open(&setup.pager, setup.sequences)?
+        };
         let latches = setup
             .bindings
             .indexes
@@ -631,8 +635,9 @@ impl<R: Runtime> Database<R> {
         &self.pager
     }
 
-    /// Begin a read-write transaction.
+    /// Begin a read-write transaction. Fail if the database is quarantined.
     pub fn begin(&self) -> Result<Txn, Error> {
+        self.admit_database()?;
         let xid = self.txns.begin(&self.pager)?;
         let (hold, snapshot, sid) = {
             let mut ser = self.ser.lock(&self.rt);

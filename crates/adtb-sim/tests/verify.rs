@@ -7,7 +7,7 @@ use adtb::heap::{FieldType, Flags, Heap, LargeStore};
 use adtb::key::{CtorId, Dir, Entry, KeySchema, KeyType, Scalar, Tid, Value};
 use adtb::mvcc::Transactions;
 use adtb::runtime::Threads;
-use adtb::storage::{PageKind, Pager, Pid};
+use adtb::storage::{PageKind, Pager, Pid, Quarantine};
 use adtb::verify::{self, Inventory, Problem, Report, Sum};
 use adtb::write::{Txn, VerifyScope};
 use adtb::{CallOptions, Capability, Database, Log};
@@ -865,6 +865,40 @@ fn verify_is_refused_and_audited_for_a_role_when_a_violation_holds_a_witness() {
             1,
             api::query(&db, "from a in catalog::audit.Denied select a.seq").len()
         );
+    });
+}
+
+#[test]
+fn a_witness_refused_on_a_marked_database_is_denied_with_no_audit_row() {
+    api::once(64, |rt| {
+        let db = open_app(rt.clone());
+        seed_app(&db);
+        let authority = db.role_authority();
+        authority.create_role("dba").unwrap();
+        for capability in [Capability::Adhoc, Capability::Maintain] {
+            authority
+                .grant_capability("dba", capability, false)
+                .unwrap();
+        }
+        let dba = authority.session("dba").unwrap();
+        let w = db.write_path();
+        let heap = w.heap_named("app::users", "User").unwrap();
+        let ix = index(&db, "app::users", "key id");
+        let id = entry(&db, &ix, Value::I64(1)).ctor;
+        beneath(&db, |tx| {
+            let row = vec![Value::I64(99), Value::Text(String::new())];
+            let tid = heap.insert(w.pager(), tx.xid().unwrap().0, &row).unwrap();
+            let by_id = Entry {
+                key: vec![Value::I64(99)],
+                ctor: id,
+                tid,
+            };
+            assert!(ix.insert(w.pager(), &by_id).unwrap());
+        });
+        w.pager().quarantine(Quarantine::Database).unwrap();
+        let got = api::task(&rt, &dba, "verify");
+        assert!(format!("{got:?}").contains("Denied"), "{got:?}");
+        assert!(!format!("{got:?}").contains("recording"), "{got:?}");
     });
 }
 

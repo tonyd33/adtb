@@ -1616,6 +1616,56 @@ fn a_mark_before_commit_refuses_both_commits_on_a_real_file() {
     a_mark_before_commit_refuses_both_commits(&real("mark-before-commit"));
 }
 
+/// Check that `verify` as a task runs under commit log damage and any other text fails.
+fn a_verify_task_runs_on_a_damaged_commit_log<R: Runtime>(rt: &R) {
+    let f = open(rt, 1);
+    let status = *f
+        .db
+        .write_path()
+        .txns()
+        .commit_log()
+        .status_pages()
+        .values()
+        .next_back()
+        .unwrap();
+    f.db.damage_page(status, adtb::storage::Damage::Checksum);
+    let refused = |text: &str| {
+        let got = f.owner.submit_text(text, &[], read_opts());
+        let err = match got {
+            Ok(task) => match drive(rt, &task).1 {
+                Completion::Failed(e) => e,
+                other => panic!("{text}: {other:?}"),
+            },
+            Err(e) => e,
+        };
+        assert!(
+            matches!(
+                err,
+                Error::Fatal {
+                    reason: adtb::FatalReason::Quarantined { .. }
+                }
+            ),
+            "{text}: {err:?}"
+        );
+    };
+    refused("from i in items select i");
+    refused("from nothing in nowhere select 1");
+    let task = f.owner.submit_text("verify", &[], read_opts()).unwrap();
+    let (rows, done) = drive(rt, &task);
+    assert!(matches!(done, Completion::Read { .. }), "{done:?}");
+    assert!(!rows.is_empty());
+}
+
+#[test]
+fn a_verify_task_runs_on_a_damaged_commit_log_sim() {
+    sim_once(a_verify_task_runs_on_a_damaged_commit_log);
+}
+
+#[test]
+fn a_verify_task_runs_on_a_damaged_commit_log_of_a_real_file() {
+    a_verify_task_runs_on_a_damaged_commit_log(&real("verify-task-damaged"));
+}
+
 #[test]
 fn a_task_reading_a_quarantined_constructor_fails_before_running() {
     sim_once(|rt| {

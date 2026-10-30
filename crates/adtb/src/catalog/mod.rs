@@ -423,8 +423,8 @@ fn named<R: Runtime>(
     txns: &Transactions<R>,
     roots: &Heap,
 ) -> Result<Named, Error> {
-    let rows = if txns.quarantined().is_some() {
-        latest(pager, txns, roots)?
+    let rows = if let Some(damage) = txns.quarantined() {
+        latest(pager, txns, roots, damage)?
     } else {
         let (id, snapshot) = txns.take(Scope::Heaps(BTreeSet::from([ROOTS])))?;
         let rows = visible(pager, txns, &snapshot, roots);
@@ -438,21 +438,28 @@ fn named<R: Runtime>(
     Ok(out)
 }
 
-/// Returns the rows of `heap` in the latest state of a quarantined database, whose damaged status
-/// pages count as committed.
+/// Returns the rows of `heap` in the latest state of a database whose commit log has `damage`.
+///
+/// Fail with `damage` when a version's writer or deleter has a damaged status page and no commit
+/// record in the retained log, so no uncommitted row reads as committed.
 fn latest<R: Runtime>(
     pager: &Pager<R>,
     txns: &Transactions<R>,
     heap: &Heap,
+    damage: PageError,
 ) -> Result<Vec<Vec<Value>>, PageError> {
     let mut versions = Vec::new();
     heap.scan(pager, |v| versions.push(v))?;
-    let gone = |x: u64| Xid(x) != Xid::NONE && txns.assumed_committed(pager, Xid(x));
-    Ok(versions
-        .into_iter()
-        .filter(|v| txns.assumed_committed(pager, Xid(v.header.xmin)) && !gone(v.header.xmax))
-        .map(|v| v.row)
-        .collect())
+    let logged = pager.logged_commits();
+    let committed = |x: u64| txns.settled(pager, &logged, Xid(x)).ok_or(damage);
+    let mut rows = Vec::new();
+    for v in versions {
+        let gone = Xid(v.header.xmax) != Xid::NONE && committed(v.header.xmax)?;
+        if committed(v.header.xmin)? && !gone {
+            rows.push(v.row);
+        }
+    }
+    Ok(rows)
 }
 
 /// Returns the rows of the versions of `heap` visible at `snapshot`, in heap order.
@@ -671,8 +678,34 @@ impl Catalog {
     /// this engine. Fails with the damage found if a schema change that did not commit cannot
     /// have its pages found, leaving it for the next open to free.
     pub fn open<R: Runtime>(rt: R, pager: &Pager<R>) -> Result<(Catalog, Transactions<R>), Error> {
+        let (mut catalog, txns) = Catalog::load(rt, pager)?;
+        if txns.quarantined().is_some() || pager.is_quarantined(Quarantine::Database) {
+            return Ok((catalog, txns));
+        }
+        let changing = Root::read(&pager.read(catalog.root)?).changing;
+        if changing != Changing::None {
+            match catalog.free_leaked(pager, &txns) {
+                Ok(()) => {
+                    update_root(pager, catalog.root, |r| r.changing = Changing::None)?;
+                }
+                Err(Error::Page(e)) if e.damage != storage::Damage::Unreadable => {}
+                Err(e) => return Err(e),
+            }
+        }
+        catalog.tag_grants(pager, &txns)?;
+        Ok((catalog, txns))
+    }
+
+    /// Returns the catalog the file header names and its commit log, reading no row of a heap but
+    /// the roots heap's. Leaves what a crashed schema change allocated, and every grant untagged.
+    pub fn load<R: Runtime>(rt: R, pager: &Pager<R>) -> Result<(Catalog, Transactions<R>), Error> {
         let pid = pager.catalog_root();
+        let refused =
+            || Error::Corrupt("a marked database has no whole catalog and writes none".to_owned());
         if pid == Pid(0) {
+            if pager.is_quarantined(Quarantine::Database) {
+                return Err(refused());
+            }
             for p in pager.allocated()? {
                 pager.free(p)?;
             }
@@ -689,7 +722,11 @@ impl Catalog {
             Root::read(&page)
         };
         let txns = Transactions::open(rt, pager, root.commit_log)?;
+        let marked = txns.quarantined().is_some() || pager.is_quarantined(Quarantine::Database);
         if root.roots.1 == Pid(0) {
+            if marked {
+                return Err(refused());
+            }
             let mut kept = BTreeSet::from([pid]);
             {
                 let clog = txns.commit_log();
@@ -750,7 +787,7 @@ impl Catalog {
             &heaps,
             &key_indexes(&schema, &stored),
         )?;
-        let mut catalog = Catalog {
+        let catalog = Catalog {
             source,
             schema,
             program: Arc::new(program),
@@ -767,19 +804,38 @@ impl Catalog {
             hosts: Arc::default(),
             kept,
         };
-        if txns.quarantined().is_none() {
-            if root.changing != Changing::None {
-                match catalog.free_leaked(pager, &txns) {
-                    Ok(()) => {
-                        update_root(pager, pid, |r| r.changing = Changing::None)?;
-                    }
-                    Err(Error::Page(e)) if e.damage != storage::Damage::Unreadable => {}
-                    Err(e) => return Err(e),
-                }
-            }
-            catalog.tag_grants(pager, &txns)?;
-        }
         Ok((catalog, txns))
+    }
+
+    /// Returns the catalog of a file whose own cannot be read: the engine's declarations with no
+    /// heap, index or page behind them.
+    pub fn unread<R: Runtime>(pager: &Pager<R>) -> Result<Catalog, Error> {
+        let (schema, program) = Source::default()
+            .check()
+            .map_err(|ds| Error::Internal(format!("the engine's declarations check: {ds:?}")))?;
+        let large = LargeStore::open(0, Pid(0));
+        Ok(Catalog {
+            source: Source::default(),
+            schema,
+            program: Arc::new(program),
+            root: pager.catalog_root(),
+            large,
+            roots: Arc::new(Heap::open(pager, ROOTS, Pid(0), roots_row(), large)?),
+            heaps: BTreeMap::new(),
+            indexes: BTreeMap::new(),
+            keys: OrderKeys::default(),
+            next_heap: FIRST_HEAP,
+            sequences: Pid(0),
+            query_memory: DEFAULT_QUERY_MEMORY,
+            readers: Readers::default(),
+            hosts: Arc::default(),
+            kept: Kept::unread(),
+        })
+    }
+
+    /// Returns whether this is a catalog [`Catalog::unread`] made.
+    pub fn is_unread(&self) -> bool {
+        self.heaps.is_empty()
     }
 
     /// Returns what the damage at `pid` quarantines, found before the write path exists: the
@@ -1059,6 +1115,9 @@ impl Catalog {
 
     /// Returns the planner's description of every relation.
     pub fn plan(&self) -> plan::Catalog {
+        if self.is_unread() {
+            return plan::Catalog::default();
+        }
         let heaps: BTreeMap<(RelId, u32), HeapId> = self
             .heaps
             .iter()

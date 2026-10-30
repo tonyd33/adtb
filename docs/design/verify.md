@@ -44,6 +44,10 @@ Preconditions:
 When the catalog exists it builds the inventory from its own records;
 the catalog's pages are then one more structure.
 
+A database quarantined whole may have no catalog to build an inventory
+from. The `verify` command then runs no walk of this file
+([storage.md §8](storage.md#8-quarantine)).
+
 ## 2. Findings
 
 `verify(pager, inventory)` returns a report, and
@@ -163,6 +167,9 @@ A running `verify` has a row in `sys::jobs`, removed when it ends, by a
 panic included. A failure to keep the findings fails no run: the run
 returns them with a `Structure` row saying they were not kept, and holds
 them in memory until the next run over the scope or a reopen.
+On a database quarantined whole the run keeps nothing in the file, and its
+`Structure` row naming the mark says so
+([storage.md §8](storage.md#8-quarantine)).
 
 ## 5. Kept rows
 

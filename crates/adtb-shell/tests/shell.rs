@@ -568,32 +568,40 @@ fn verify_exits_1_on_a_finding_and_2_when_the_file_refuses_open() {
     create(&schema, &db);
     seed(&db);
     let sound = std::fs::read(&db).unwrap();
-    let (mut found, mut refused) = (false, false);
-    for page in (2..sound.len() / 8192).rev() {
+    let log = PathBuf::from(format!("{}-log", db.display()));
+    let segments: Vec<(PathBuf, Vec<u8>)> = std::fs::read_dir(&log)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    let restore_log = || {
+        for (path, bytes) in &segments {
+            std::fs::write(path, bytes).unwrap();
+        }
+    };
+    let last = sound.len() / 8192 - 1;
+    for page in [last, last / 2, last / 4, 12, 9, 4] {
         let mut flipped = sound.clone();
         flipped[page * 8192 + 300] ^= 0x10;
         std::fs::write(&db, &flipped).unwrap();
+        restore_log();
         let out = adtb(&["verify", db.to_str().unwrap()], "");
-        match out.status.code() {
-            Some(1) => {
-                assert!(
-                    stdout(&out)[0].starts_with("Checksum"),
-                    "page {page}: {out:?}"
-                );
-                found = true;
-            }
-            Some(2) => {
-                assert!(!stderr(&out).is_empty(), "page {page}: {out:?}");
-                refused = true;
-            }
-            other => panic!("page {page} exits {other:?}: {out:?}"),
-        }
-        std::fs::write(&db, &sound).unwrap();
-        if found && refused {
-            return;
-        }
+        assert_eq!(Some(1), out.status.code(), "page {page}: {out:?}");
+        assert!(
+            stdout(&out).iter().any(|r| r.starts_with("Checksum")),
+            "page {page}: {out:?}"
+        );
     }
-    panic!("found {found}, refused {refused}");
+    restore_log();
+    let mut flipped = sound;
+    flipped[..2 * 8192].fill(0x5a);
+    std::fs::write(&db, &flipped).unwrap();
+    let out = adtb(&["verify", db.to_str().unwrap()], "");
+    assert_eq!(Some(2), out.status.code(), "{out:?}");
+    assert!(!stderr(&out).is_empty(), "{out:?}");
 }
 
 #[test]

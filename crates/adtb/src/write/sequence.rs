@@ -47,6 +47,14 @@ impl Sequences {
         Ok(pid)
     }
 
+    /// Returns no counters, for a database that runs no write.
+    pub fn none() -> Sequences {
+        Sequences {
+            pid: Pid(0),
+            counters: BTreeMap::new(),
+        }
+    }
+
     /// Read the counters of page `pid`. Each counter next draws its reservation's end.
     ///
     /// Panics if `pid` is not a page of counters.

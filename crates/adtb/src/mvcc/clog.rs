@@ -219,6 +219,23 @@ impl CommitLog {
         Ok(clog)
     }
 
+    /// Returns a commit log of no pages and no ids, for a file whose own cannot be read.
+    pub fn unread<R: Runtime>(pager: &Pager<R>) -> CommitLog {
+        CommitLog {
+            root_pid: Pid(0),
+            root: Root {
+                reserved: Xid::FIRST,
+                resolved: Xid::FIRST,
+                bound: Xid::FIRST,
+                first_directory: Pid(0),
+            },
+            per_page: per_page(pager.page_size()),
+            directory_capacity: directory_capacity(pager.page_size()),
+            directories: Vec::new(),
+            pages: BTreeMap::new(),
+        }
+    }
+
     /// Read the commit log rooted at `root`: its root and directories, and no status page.
     pub(crate) fn load<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<CommitLog, PageError> {
         let page = pager.read(root)?;

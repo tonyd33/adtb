@@ -47,7 +47,8 @@ impl<R: Runtime> RoleAuthority<R> {
 
     /// Returns the principal ad hoc `text` of `session` runs for, refusing a dropped role and a
     /// role lacking `adhoc`, or `assert` when `assertion` is given, with `Denied` recorded in the
-    /// audit.
+    /// audit. A database quarantined whole has no grants to read, and the embedded owner holds
+    /// `adhoc` without them.
     pub(super) fn admit_caller(
         &self,
         session: &RoleSession<R>,
@@ -56,6 +57,9 @@ impl<R: Runtime> RoleAuthority<R> {
     ) -> Result<Val, Error> {
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
         let service = service(&e, session);
+        if session.name == OWNER_ROLE && assertion.is_none() && e.db.admit_database().is_err() {
+            return Ok(service);
+        }
         let hash = text_hash(text);
         self.demand(session, &service, &hash, Capability::Adhoc)?;
         if assertion.is_some() {

@@ -213,7 +213,15 @@ impl<R: Runtime> Engine<R> {
         };
         let mut found = self.verify_checks(scope, holding, &job)?;
         found.extend(self.db.quarantine_findings(&found));
-        let vals = self.replace_findings(schema, table, scope, (run, started), found);
+        let marked = self.db.admit_database().is_err() || self.db.txns().quarantined().is_some();
+        if marked {
+            found.insert(Found::Structure {
+                at: "the database: quarantined whole, so the findings of this run are not kept"
+                    .to_owned(),
+            });
+        }
+        let keep = !marked;
+        let vals = self.replace_findings(schema, table, scope, (run, started), found, keep);
         let elem = Ty::Data {
             def: schema.relation(table).elem_def,
             args: Vec::new(),
@@ -223,8 +231,8 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Make `found` the findings of `scope`, of run `run` at instant `at`, and drop those of
-    /// relations `schema` no longer has. Returns the rows, with one saying so when the file could
-    /// not keep them.
+    /// relations `schema` no longer has, in the file too when `keep`. Returns the rows, with one
+    /// saying so when the file could not keep them.
     fn replace_findings(
         &self,
         schema: &Schema,
@@ -232,6 +240,7 @@ impl<R: Runtime> Engine<R> {
         scope: VerifyScope,
         (run, at): (i64, i64),
         found: BTreeSet<Found>,
+        keep: bool,
     ) -> Vec<Val> {
         let id = schema.ids.relations[&table];
         let group = group(scope, schema);
@@ -266,7 +275,12 @@ impl<R: Runtime> Engine<R> {
             ctor: 0,
             fields: vec![KeptField::Int(held.next_run), KeptField::Int(held.next_id)],
         };
-        if let Err(why) = self.keep_findings(id, &group, &written, &gone, &counters) {
+        let kept = if keep {
+            self.keep_findings(id, &group, &written, &gone, &counters)
+        } else {
+            Ok(())
+        };
+        if let Err(why) = kept {
             let at = format!("the findings of run {run} were not kept: {why}");
             written.push(row(&mut held, Found::Structure { at }));
         }
@@ -328,7 +342,14 @@ impl<R: Runtime> Engine<R> {
     ) -> Result<BTreeSet<Found>, write::Error> {
         if self.db.txns().quarantined().is_some() {
             job.phase("pages", 0.1);
-            return Ok(self.db.check_pages(scope)?.into_iter().collect());
+            let mut found: BTreeSet<Found> = self.db.check_pages(scope)?.into_iter().collect();
+            let at = if matches!(scope, VerifyScope::Relation(_)) {
+                format!("relation {}: only its pages were checked", job.target)
+            } else {
+                "the database: only the pages and the log were checked".to_owned()
+            };
+            found.insert(Found::Structure { at });
+            return Ok(found);
         }
         job.phase("waiting for a safe snapshot", 0.0);
         let snapshot = self.db.begin_verify()?;

@@ -250,14 +250,15 @@ write path turns this into the durable database mark
 ([storage.md §8](storage.md#8-quarantine)) when the failure reaches it;
 the in-memory state keeps the first damage for the transaction layer,
 which holds no reference to the marks. `Transactions::open` reads every
-status page, so a status page damaged at rest quarantines the database at
-open and the open sets the mark; the catalog's rows are then read with a
-transaction on a damaged status page counted as committed. From then on every transaction is refused with the corruption fault: no
+status page before it writes any, so a status page damaged at rest
+quarantines the database at open, the open sets the mark and no id is
+resolved. A catalog row is then read only as
+[storage.md §8](storage.md#8-quarantine) states. From then on every transaction is refused with the corruption fault: no
 transaction starts, takes a snapshot, commits or aborts, and status
 lookups fail naming the damaged page. The database opens for `verify`
-and `dump` only: the commit log's root and directories stay readable
-for them. If the root or a directory page itself is damaged, the
-commit log does not open.
+and `dump` only. If the root or a directory page itself is damaged, the
+commit log does not open, and the file opens with no commit log at all
+([storage.md §8](storage.md#8-quarantine)).
 
 Any number of threads share the transactions layer's commit log.
 A status lookup waits for no commit or abort: only for a reservation

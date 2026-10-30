@@ -394,8 +394,10 @@ impl<R: Runtime> Engine<R> {
         if !found.any_left(|row| matches!(row, Val::Ctor(c, _) if *c == violation)) {
             return Ok(());
         }
-        self.audit_denied(&issuer.role, caller, &issuer.text)
-            .map_err(|e| write::Error::Internal(format!("recording a denied call: {e:?}")))?;
+        if self.db.admit_database().is_ok() {
+            self.audit_denied(&issuer.role, caller, &issuer.text)
+                .map_err(|e| write::Error::Internal(format!("recording a denied call: {e:?}")))?;
+        }
         Err(write::Error::Denied(format!(
             "role `{}` lacks `read` on the rows of the `Violation` witnesses of `verify`",
             issuer.role
