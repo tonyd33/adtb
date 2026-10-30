@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
+status: resolved
 kind: feature
 priority: 867
 summary: "the logged Grant form holds one privilege, and AddDefault names one constructor although a default over a shared field makes several"
-branch: spec-rev30
+closed: 2026-10-29
 tags:
   - spec
 ---
@@ -25,3 +25,9 @@ has no revoke of the option alone, and a regrant without `with grant option` kee
 the option held. Removing only the option takes `revoke` then `grant` without it in
 one migration (checked-registration track). Decide whether `revoke grant option for`
 exists, or reword 3.5.
+
+## 2026-10-29: closed
+
+Stated by spec revision 30, landed at a478f4ba. Review: work/briefs/review-spec-rev30.md, four rounds. Branch check 2828 passed, 7 skipped, campaign 47. Code gaps: grant-spec-rev30-code.
+
+## 2026-10-29: resolved
