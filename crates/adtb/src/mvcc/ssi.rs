@@ -10,6 +10,10 @@ use super::{Cause, SerializationFailure, Xid};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SerialId(u64);
 
+/// One scan of a heap known to the serializer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ScanId(u64);
+
 /// How a transaction may run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
@@ -63,6 +67,8 @@ enum Point {
     Tuple(u32, Tid),
     Page(u32, u64),
     Heap(u32),
+    /// An open scan of a heap, conflicting as a heap lock does.
+    Scan(u32, ScanId),
     Schema(u64),
 }
 
@@ -139,6 +145,7 @@ impl Sxact {
 pub struct Serializer {
     limits: Limits,
     issued: u64,
+    scans: u64,
     commits: u64,
     sxacts: BTreeMap<SerialId, Sxact>,
     by_xid: BTreeMap<Xid, SerialId>,
@@ -327,6 +334,52 @@ impl Serializer {
         Ok(())
     }
 
+    /// Record that `id` began a scan of `heap`, covering every version of the heap as a heap
+    /// lock does until [`Serializer::end_scan`] ends it. Returns the scan, `None` when it takes
+    /// no lock.
+    pub fn read_scan(
+        &mut self,
+        id: SerialId,
+        heap: u32,
+    ) -> Result<Option<ScanId>, SerializationFailure> {
+        if !self.records(id)? || self.get(id).points.contains(&Point::Heap(heap)) {
+            return Ok(None);
+        }
+        self.scans += 1;
+        let scan = ScanId(self.scans);
+        self.lock(id, Point::Scan(heap, scan));
+        self.keep_budget();
+        Ok(Some(scan))
+    }
+
+    /// End `scan`, a scan of `heap` by `id`, leaving a heap lock in its place, or page locks on
+    /// the pages of `read` alone when it is given.
+    ///
+    /// Preconditions: when `read` is given, what the scan was read for depends on no version on
+    /// another page of the heap.
+    pub fn end_scan(&mut self, id: SerialId, heap: u32, scan: ScanId, read: Option<&[u64]>) {
+        let point = Point::Scan(heap, scan);
+        if !self
+            .sxacts
+            .get(&id)
+            .is_some_and(|s| s.points.contains(&point))
+        {
+            return;
+        }
+        self.unlock(id, point);
+        match read {
+            None => self.lock_heap(id, heap),
+            Some(pages) => {
+                for &page in pages {
+                    if !self.get(id).points.contains(&Point::Heap(heap)) {
+                        self.lock_page(id, heap, page);
+                    }
+                }
+            }
+        }
+        self.keep_budget();
+    }
+
     /// Record that `id` ran a statement at schema version `version`.
     pub fn read_schema(&mut self, id: SerialId, version: u64) -> Result<(), SerializationFailure> {
         if self.records(id)? {
@@ -496,13 +549,13 @@ impl Serializer {
             Point::Page(heap, tid.page()),
             Point::Heap(heap),
         ];
-        self.conflict_in(id, &points)
+        self.conflict_in(id, heap, &points)
     }
 
     /// Record the insert by `id` of a version into `heap`, including the successor an update or
     /// retag writes.
     pub fn insert_heap(&mut self, id: SerialId, heap: u32) -> Result<(), SerializationFailure> {
-        self.conflict_in(id, &[Point::Heap(heap)])
+        self.conflict_in(id, heap, &[Point::Heap(heap)])
     }
 
     /// Record the insert by `id` of an entry with encoded key `key` for constructor `ctor` into
@@ -529,6 +582,9 @@ impl Serializer {
     ) -> Result<(), SerializationFailure> {
         self.check(id)?;
         let mut readers = self.point_readers(heaps.iter().map(|&h| Point::Heap(h)));
+        for &h in heaps {
+            readers.extend(self.scan_readers(h));
+        }
         for (index, filled) in indexes {
             readers.extend(self.range_readers(
                 *index,
@@ -556,7 +612,9 @@ impl Serializer {
         let mut holders = BTreeSet::new();
         for (id, s) in &self.sxacts {
             let on_heap = s.points.iter().any(|p| match p {
-                Point::Tuple(h, _) | Point::Page(h, _) | Point::Heap(h) => heaps.contains(h),
+                Point::Tuple(h, _) | Point::Page(h, _) | Point::Heap(h) | Point::Scan(h, _) => {
+                    heaps.contains(h)
+                }
                 Point::Schema(_) => false,
             });
             let on_index = indexes.iter().any(|i| {
@@ -572,7 +630,9 @@ impl Serializer {
                 .points
                 .iter()
                 .filter(|p| match p {
-                    Point::Tuple(h, _) | Point::Page(h, _) | Point::Heap(h) => heaps.contains(h),
+                    Point::Tuple(h, _) | Point::Page(h, _) | Point::Heap(h) | Point::Scan(h, _) => {
+                        heaps.contains(h)
+                    }
                     Point::Schema(_) => false,
                 })
                 .copied()
@@ -627,9 +687,23 @@ impl Serializer {
             .collect()
     }
 
-    fn conflict_in(&mut self, id: SerialId, points: &[Point]) -> Result<(), SerializationFailure> {
+    fn scan_readers(&self, heap: u32) -> impl Iterator<Item = SerialId> + '_ {
+        self.points
+            .range(Point::Scan(heap, ScanId(0))..=Point::Scan(heap, ScanId(u64::MAX)))
+            .flat_map(|(_, holders)| holders.iter().copied())
+    }
+
+    /// Record a write by `id` into `heap` that the locks on `points` and the open scans of the
+    /// heap cover.
+    fn conflict_in(
+        &mut self,
+        id: SerialId,
+        heap: u32,
+        points: &[Point],
+    ) -> Result<(), SerializationFailure> {
         self.check(id)?;
-        let readers = self.point_readers(points.iter().copied());
+        let mut readers = self.point_readers(points.iter().copied());
+        readers.extend(self.scan_readers(heap));
         self.conflicts_in(id, readers)
     }
 

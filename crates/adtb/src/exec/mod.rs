@@ -27,7 +27,7 @@ pub use sched::{
     Admission, Admitted, Entry, Priority, Refusal, Refused, Resumable, Scheduler, Step, Stopped,
     Task,
 };
-pub use store::{AtSnapshot, Histories, PastReads, Reads, Store, StoredHeap, StoredIndex};
+pub use store::{AtSnapshot, Histories, Listing, PastReads, Reads, Store, StoredHeap, StoredIndex};
 pub(crate) use store::{Conv, conv, from_stored, to_key, to_stored};
 pub use stream::{Produced, Production, produce};
 pub use value::{F32, F64, Val};

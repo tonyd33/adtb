@@ -529,22 +529,26 @@ impl<R: Runtime> Ctx<R> {
         chosen: Vec<(Arc<Pipeline>, Frame)>,
     ) -> Result<(), Error> {
         let mut small = Vec::new();
+        let mut scans = Vec::new();
         for (p, env) in chosen {
             let Source::Scan { heap, .. } = &p.source else {
                 small.push((p, env));
                 continue;
             };
-            let pages = self.store.pages(*heap)?;
-            if pages.len() <= self.options.pack_pages {
+            let listing = self.store.pages(*heap)?;
+            if listing.pages.len() <= self.options.pack_pages {
+                listing.stopped(&[]);
                 small.push((p, env));
                 continue;
             }
-            for range in pages.chunks(self.options.range_pages.max(1)) {
-                let (p, env, range) = (p.clone(), env.clone(), range.to_vec());
+            let read = Arc::new(Lock::new(Vec::new()));
+            for range in listing.pages.chunks(self.options.range_pages.max(1)) {
+                let (p, env, range, read) = (p.clone(), env.clone(), range.to_vec(), read.clone());
                 self.spawn(pool, run, move |cx, run| {
-                    cx.range_task(run, &p, &env, &range)
+                    cx.range_task(run, &p, &env, &range, &read)
                 });
             }
+            scans.push((listing, read));
         }
         if !small.is_empty() {
             self.spawn(pool, run, move |cx, run| {
@@ -559,6 +563,12 @@ impl<R: Runtime> Ctx<R> {
         while run.pending.load(Ordering::Acquire) > 0 {
             if !pool.help() {
                 self.rt.yield_now();
+            }
+        }
+        if run.stopped() {
+            for (listing, read) in scans {
+                let read = std::mem::take(&mut *read.lock(&self.rt));
+                listing.stopped(&read);
             }
         }
         match run.error.lock(&self.rt).take() {
@@ -587,22 +597,30 @@ impl<R: Runtime> Ctx<R> {
         }));
     }
 
-    /// Run `p` over the rows on `pages`, a range of its heap's pages.
+    /// Run `p` over the rows on `pages`, a range of its heap's pages, adding the pages it read to
+    /// `read`.
     fn range_task(
         self: &Arc<Self>,
         run: &Arc<Run>,
         p: &Arc<Pipeline>,
         env: &Frame,
         pages: &[Pid],
+        read: &Lock<Vec<Pid>>,
     ) -> Result<(), Error> {
         let Source::Scan { heap, .. } = &p.source else {
             unreachable!("a range task scans")
         };
         let mut out = run.out(&self.grant);
-        self.store
-            .scan_pages(*heap, pages, self.options.morsel_rows, &self.grant, |b| {
-                self.morsel(run, p, env, &b, &mut out)
-            })?;
+        let flow =
+            self.store
+                .scan_pages(*heap, pages, self.options.morsel_rows, &self.grant, |b| {
+                    self.morsel(run, p, env, &b, &mut out)
+                })?;
+        let n = match flow {
+            ControlFlow::Break(n) => n,
+            ControlFlow::Continue(()) => pages.len(),
+        };
+        read.lock(&self.rt).extend_from_slice(&pages[..n]);
         run.emit(&self.rt, &self.spill, out)
     }
 

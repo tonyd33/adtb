@@ -554,7 +554,7 @@ its writes cover and records a rw-antidependency for each.
 | --- | --- | --- |
 | Tuple `(heap, tid)` | reading a version | an update, delete or retag of that version |
 | Index range `(index, lo, hi, ctors)` | an index scan or probe, over the gaps between the entries it saw | an insert of an entry in `[lo, hi]` whose constructor is in `ctors` |
-| Heap `(heap)` | a sequential scan of a heap | any insert into that heap |
+| Heap `(heap)` | a sequential scan of a heap, from before it lists the heap's pages | any insert into that heap |
 | Schema version `(v)` | every statement, for the schema version it runs at | the commit of a migration producing a later version |
 
 A read whose outcome depends on a writer its snapshot does not count
@@ -576,6 +576,13 @@ from i in identities.OAuth where i.user == u select i.id
 
 A lock may be widened to a coarser one (a page, a heap, a whole
 index); a widened lock keeps the union of the constructor sets.
+
+A sequential scan that stops once one row decides its query, an
+`exists` that found its row, keeps in place of its heap lock page
+locks on the pages it read, widened to a heap lock past the page limit.
+A page lock conflicts with an update, delete or retag of a version on
+that page and with no insert. A scan that read every page keeps its
+heap lock.
 
 A retag's new entries (§6) are checked against range locks as
 inserts of rows of the new constructor, so a serializable scan of
@@ -663,6 +670,8 @@ Preconditions on the transactions layer's callers:
 - A read takes its SIREAD lock before it reads the page, or in one
   atomic step with the read; a write checks the SIREAD locks after its
   change is in the page, or in one atomic step with it.
+- A scan ends early with the pages it read only when what it was read
+  for depends on no version on another page of the heap.
 - Taking a snapshot is atomic with registering the transaction, and
   recording a commit in the commit log is atomic with recording it
   committed, so a transaction counts as committed before a snapshot

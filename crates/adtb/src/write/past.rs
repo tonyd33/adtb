@@ -13,7 +13,7 @@ use crate::exec::{self, Histories, PastReads, Reads, Store, StoredHeap, StoredIn
 use crate::heap::{Header, HeapNo};
 use crate::history::History;
 use crate::key::{CtorId, Tid, Value};
-use crate::mvcc::{Marker, Past, PastError, SerializationFailure, Transactions, Xid};
+use crate::mvcc::{Marker, Past, PastError, ScanId, SerializationFailure, Transactions, Xid};
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
 use crate::storage::{Lsn, PageError, Pager, Pid, Position};
@@ -58,9 +58,11 @@ impl<R: Runtime> Reads for AtMarker<R> {
             .sees(None, h.xmin, h.xmax, |x| self.txns.status(&self.pager, x))
     }
 
-    fn scanned(&self, _: HeapNo) -> Result<(), SerializationFailure> {
-        Ok(())
+    fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
+        Ok(None)
     }
+
+    fn scanned(&self, _: HeapNo, _: ScanId, _: Option<&[Pid]>) {}
 
     fn probed(
         &self,

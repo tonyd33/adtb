@@ -1286,3 +1286,67 @@ fn fixpoint_write_targets_preserve_the_snapshot_relation() {
         db.close().expect("the provenance database closes");
     });
 }
+
+/// Commit `notes` filling several pages, the first with body "first".
+fn seed_notes(db: &Database<SimRuntime>) {
+    let pad = "x".repeat(200);
+    let rows: Vec<String> = std::iter::once(r#"{ id: notes.key(1), body: "first" }"#.to_owned())
+        .chain((2..=200).map(|i| format!(r#"{{ id: notes.key({i}), body: "{i}{pad}" }}"#)))
+        .collect();
+    let text = format!("insert notes from [{}]", rows.join(", "));
+    db.query_text(&text, &[], &CallOptions::default())
+        .expect("the notes are inserted");
+}
+
+/// Run `exists` in one transaction and an insert into `notes` in another, each writing what
+/// the other read. Returns how each transaction ended.
+fn exists_beside_an_insert(
+    db: &Database<SimRuntime>,
+    exists: &str,
+) -> [Result<Position, Error>; 2] {
+    let opts = TxnCallOptions::default;
+    let mut a = db.begin(&TxnOptions::default()).expect("begin a");
+    let mut b = db.begin(&TxnOptions::default()).expect("begin b");
+    in_txn(&mut a, exists);
+    in_txn(
+        &mut b,
+        "from n in notes where key n == notes.key(2) select n.body",
+    );
+    let a_wrote = a.query_text(
+        r#"update n in notes where key n == notes.key(2) set Note { n with body: "a" }"#,
+        &[],
+        &opts(),
+    );
+    let b_wrote = b.query_text(r#"insert notes { body: "b" }"#, &[], &opts());
+    let a_ended = a_wrote.and_then(|_| a.commit(None));
+    let b_ended = b_wrote.and_then(|_| b.commit(None));
+    [a_ended, b_ended]
+}
+
+#[test]
+fn an_exists_that_stopped_at_a_row_does_not_conflict_with_an_insert_beside_it() {
+    for seed in SEEDS {
+        let ends = once(seed, |rt| {
+            let db = open(&rt);
+            seed_notes(&db);
+            exists_beside_an_insert(&db, r#"exists n in notes where n.body == "first""#)
+        });
+        assert!(ends.iter().all(Result::is_ok), "seed {seed}: {ends:?}");
+    }
+}
+
+#[test]
+fn an_exists_that_read_every_row_conflicts_with_an_insert_beside_it() {
+    for seed in SEEDS {
+        let ends = once(seed, |rt| {
+            let db = open(&rt);
+            seed_notes(&db);
+            exists_beside_an_insert(&db, r#"exists n in notes where n.body == "none""#)
+        });
+        assert!(
+            ends.iter().any(|e| e.as_ref().is_err_and(is_serialization)),
+            "seed {seed}: {ends:?}"
+        );
+        assert!(ends.iter().any(Result::is_ok), "seed {seed}: {ends:?}");
+    }
+}

@@ -10,7 +10,7 @@ use crate::btree::{self, Index, prefix_end};
 use crate::heap::{FieldType, Header, Heap, HeapNo, Version, walk};
 use crate::key::{CtorId, Dir, KeySchema, KeyType, Scalar, Tid, Value};
 use crate::mvcc::{
-    SerialId, SerializationFailure, Serializer, Snapshot, Status, Transactions, Xid,
+    ScanId, SerialId, SerializationFailure, Serializer, Snapshot, Status, Transactions, Xid,
 };
 use crate::plan::{HeapId, IndexId};
 use crate::runtime::Runtime;
@@ -28,8 +28,16 @@ pub trait Reads: Send + Sync {
     /// Returns whether the version with header `h` is visible at the reader's snapshot.
     fn sees(&self, h: &Header) -> Result<bool, PageError>;
 
-    /// Record that every version of heap `heap` was read.
-    fn scanned(&self, heap: HeapNo) -> Result<(), SerializationFailure>;
+    /// Record that a scan of heap `heap` began, covering every version of the heap until
+    /// [`Reads::scanned`] ends it. Returns the scan, `None` when it records none.
+    fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure>;
+
+    /// Record that `scan`, a scan of heap `heap`, ended having read every version of the heap,
+    /// or only those on the pages of `read` when it is given.
+    ///
+    /// Preconditions: when `read` is given, what the scan was read for depends on no version on
+    /// another page of the heap.
+    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<&[Pid]>);
 
     /// Record that the encoded keys of the index rooted at `index` between `lo` and `hi` were
     /// read, for rows of `ctors`.
@@ -83,10 +91,18 @@ impl<R: Runtime> Reads for AtSnapshot<R> {
             .sees(&self.pager, &self.snapshot, self.reader, h.xmin, h.xmax)
     }
 
-    fn scanned(&self, heap: HeapNo) -> Result<(), SerializationFailure> {
+    fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
         match &self.serial {
-            Some((s, id)) => s.lock(&self.rt).read_heap(*id, heap.0),
-            None => Ok(()),
+            Some((s, id)) => s.lock(&self.rt).read_scan(*id, heap.0),
+            None => Ok(None),
+        }
+    }
+
+    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<&[Pid]>) {
+        if let Some((s, id)) = &self.serial {
+            let pages: Option<Vec<u64>> = read.map(|r| r.iter().map(|p| p.0).collect());
+            s.lock(&self.rt)
+                .end_scan(*id, heap.0, scan, pages.as_deref());
         }
     }
 
@@ -194,6 +210,45 @@ impl<R: Runtime> std::fmt::Debug for Store<R> {
         f.debug_struct("Store")
             .field("heaps", &self.heaps.keys().collect::<Vec<_>>())
             .field("indexes", &self.indexes.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The pages of a heap a scan lists, in directory order, with the scan's record that it reads
+/// the heap. Dropping it records that the scan read every version of the heap.
+pub struct Listing {
+    reads: Arc<dyn Reads>,
+    heap: HeapNo,
+    scan: Option<ScanId>,
+    pub pages: Vec<Pid>,
+}
+
+impl Listing {
+    /// Record that the scan read only the versions on the pages of `read`.
+    ///
+    /// Preconditions: what the scan was read for depends on no version on another page of the
+    /// heap.
+    pub fn stopped(mut self, read: &[Pid]) {
+        if let Some(scan) = self.scan.take() {
+            self.reads.scanned(self.heap, scan, Some(read));
+        }
+    }
+}
+
+impl Drop for Listing {
+    fn drop(&mut self) {
+        if let Some(scan) = self.scan.take() {
+            self.reads.scanned(self.heap, scan, None);
+        }
+    }
+}
+
+impl std::fmt::Debug for Listing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listing")
+            .field("heap", &self.heap)
+            .field("scan", &self.scan)
+            .field("pages", &self.pages)
             .finish_non_exhaustive()
     }
 }
@@ -316,11 +371,15 @@ impl<R: Runtime> Store<R> {
         grant: &Arc<Grant>,
         each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
     ) -> Result<(), Error> {
-        let pages = self.pages(id)?;
-        match self.history.heaps.get(&id) {
-            Some(past) => self.scan_past(id, &pages, past, rows, grant, each),
-            None => self.scan_pages(id, &pages, rows, grant, each),
+        let listing = self.pages(id)?;
+        if let Some(past) = self.history.heaps.get(&id) {
+            return self.scan_past(id, &listing.pages, past, rows, grant, each);
         }
+        if let ControlFlow::Break(n) = self.scan_pages(id, &listing.pages, rows, grant, each)? {
+            let read = listing.pages[..n].to_vec();
+            listing.stopped(&read);
+        }
+        Ok(())
     }
 
     /// Pass the visible rows on `pages` of heap `id` and then on every page of `past`, its
@@ -407,20 +466,28 @@ impl<R: Runtime> Store<R> {
         Ok(None)
     }
 
-    /// Returns the pages of heap `id` in directory order, recording that every version of the
-    /// heap is read.
-    pub fn pages(&self, id: HeapId) -> Result<Vec<Pid>, Error> {
+    /// Returns the pages of heap `id` in directory order, recording that a scan of the heap
+    /// began.
+    pub fn pages(&self, id: HeapId) -> Result<Listing, Error> {
         let heap = &self.heap(id).heap;
-        self.reads
-            .scanned(heap.id())
+        let scan = self
+            .reads
+            .scanning(heap.id())
             .map_err(Error::Serialization)?;
-        Ok(heap.pages(&self.pager)?)
+        let mut listing = Listing {
+            reads: self.reads.clone(),
+            heap: heap.id(),
+            scan,
+            pages: Vec::new(),
+        };
+        listing.pages = heap.pages(&self.pager)?;
+        Ok(listing)
     }
 
     /// Pass the visible rows on `pages`, a range of what [`Store::pages`] returned for heap `id`,
     /// to `each` as batches of at most `rows` rows each, reading a page only once the batches
     /// before it are passed, each batch held in `grant` from its first row until `each` returns.
-    /// Stop when `each` breaks.
+    /// Stop when `each` breaks. Returns the number of pages read when `each` breaks.
     ///
     /// Postconditions: the writers recorded with [`Reads::depends`] are those of the versions read
     /// before the last batch passed, and of every version on `pages` when `each` never breaks.
@@ -431,11 +498,11 @@ impl<R: Runtime> Store<R> {
         rows: usize,
         grant: &Arc<Grant>,
         mut each: impl FnMut(Batch) -> Result<ControlFlow<()>, Error>,
-    ) -> Result<(), Error> {
+    ) -> Result<ControlFlow<usize>, Error> {
         let h = self.heap(id);
         let mut b = Filling::new(&h.row, rows, grant);
         let mut writers = BTreeSet::new();
-        for pid in pages {
+        for (read, pid) in (1..).zip(pages) {
             let mut versions = Vec::new();
             h.heap
                 .scan_pages(&self.pager, std::slice::from_ref(pid), |v| versions.push(v))?;
@@ -448,16 +515,17 @@ impl<R: Runtime> Store<R> {
                 if let Some((full, _held)) = b.push(&v.row)? {
                     self.depend_all(std::mem::take(&mut writers))?;
                     if each(full)?.is_break() {
-                        return Ok(());
+                        return Ok(ControlFlow::Break(read));
                     }
                 }
             }
         }
         self.depend_all(writers)?;
-        match b.rest() {
-            Some((last, _held)) => each(last).map(|_last| ()),
-            None => Ok(()),
-        }
+        let flow = match b.rest() {
+            Some((last, _held)) => each(last)?,
+            None => ControlFlow::Continue(()),
+        };
+        Ok(flow.map_break(|()| pages.len()))
     }
 
     fn depend_all(&self, writers: BTreeSet<Xid>) -> Result<(), Error> {

@@ -12,7 +12,7 @@ use adtb::exec::{
 };
 use adtb::heap::{FieldType, Header, Heap, HeapNo, LargeStore};
 use adtb::key::{CtorId, Tid, Value as KValue};
-use adtb::mvcc::{SerializationFailure, Xid};
+use adtb::mvcc::{ScanId, SerializationFailure, Xid};
 use adtb::plan::{Error as PlanError, HeapId, Options as PlanOptions, plan};
 use adtb::runtime::IoError;
 use adtb::storage::{PageError, Pid};
@@ -411,11 +411,13 @@ fn scans_of_ranges_of_a_heap_s_pages_read_what_a_scan_of_the_heap_reads() {
     let f = stock();
     let heap = f.catalog.heap(f.rel("stock"), 0);
     let (whole, ranges, pages) = with_store(0, &f, 0, |_, store, _| {
-        let pages = store.pages(heap).expect("the heap's pages");
+        let pages = store.pages(heap).expect("the heap's pages").pages.clone();
         let whole = scanned_rows(|each| store.scan(heap, 1000, &roomy(), each));
         let ranges: Vec<Vec<KValue>> = pages
             .chunks(1)
-            .flat_map(|r| scanned_rows(|each| store.scan_pages(heap, r, 7, &roomy(), each)))
+            .flat_map(|r| {
+                scanned_rows(|each| store.scan_pages(heap, r, 7, &roomy(), each).map(|_read| ()))
+            })
             .collect();
         (whole, ranges, pages.len())
     });
@@ -442,8 +444,12 @@ impl Reads for Counted {
         self.inner.sees(h)
     }
 
-    fn scanned(&self, heap: HeapNo) -> Result<(), SerializationFailure> {
-        self.inner.scanned(heap)
+    fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
+        self.inner.scanning(heap)
+    }
+
+    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<&[Pid]>) {
+        self.inner.scanned(heap, scan, read);
     }
 
     fn probed(
@@ -643,9 +649,11 @@ impl Reads for Deleted {
         Ok(h.xmax != 0)
     }
 
-    fn scanned(&self, _: HeapNo) -> Result<(), SerializationFailure> {
-        Ok(())
+    fn scanning(&self, _: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
+        Ok(None)
     }
+
+    fn scanned(&self, _: HeapNo, _: ScanId, _: Option<&[Pid]>) {}
 
     fn probed(
         &self,
@@ -766,8 +774,12 @@ impl Reads for Watched {
         self.inner.sees(h)
     }
 
-    fn scanned(&self, heap: HeapNo) -> Result<(), SerializationFailure> {
-        self.inner.scanned(heap)
+    fn scanning(&self, heap: HeapNo) -> Result<Option<ScanId>, SerializationFailure> {
+        self.inner.scanning(heap)
+    }
+
+    fn scanned(&self, heap: HeapNo, scan: ScanId, read: Option<&[Pid]>) {
+        self.inner.scanned(heap, scan, read);
     }
 
     fn probed(

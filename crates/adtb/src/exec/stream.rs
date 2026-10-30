@@ -73,8 +73,8 @@ pub fn produce<R: Runtime>(
     for (p, env) in chosen {
         match &p.source {
             Source::Scan { heap, .. } => {
-                let pages = cx.store.pages(*heap)?;
-                for range in pages.chunks(cx.options.range_pages.max(1)) {
+                let listing = cx.store.pages(*heap)?;
+                for range in listing.pages.chunks(cx.options.range_pages.max(1)) {
                     units.push_back(Unit::Pages(p.clone(), env.clone(), range.to_vec()));
                 }
             }
@@ -105,10 +105,11 @@ impl<R: Runtime> Production<R> {
                 let Source::Scan { heap, .. } = &p.source else {
                     unreachable!("a unit of pages scans")
                 };
-                cx.store
-                    .scan_pages(*heap, &pages, cx.options.morsel_rows, &cx.grant, |b| {
-                        cx.morsel(run, &p, &env, &b, &mut set)
-                    })?;
+                let _read =
+                    cx.store
+                        .scan_pages(*heap, &pages, cx.options.morsel_rows, &cx.grant, |b| {
+                            cx.morsel(run, &p, &env, &b, &mut set)
+                        })?;
             }
             Unit::Drain => {
                 cx.drain(run, &mut set)?;

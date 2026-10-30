@@ -593,6 +593,89 @@ fn a_heap_lock_conflicts_with_any_insert_into_the_heap() {
 }
 
 #[test]
+fn an_open_scan_conflicts_with_any_insert_into_its_heap() {
+    let mut s = Serializer::default();
+    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
+    s.read_scan(r, HEAP).unwrap().expect("a scan lock");
+    s.insert_heap(w, HEAP + 1).unwrap();
+    assert!(s.writers_after(r).is_empty());
+    s.insert_heap(w, HEAP).unwrap();
+    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
+}
+
+#[test]
+fn a_scan_ended_whole_leaves_a_heap_lock() {
+    let mut s = Serializer::default();
+    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
+    let scan = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
+    s.end_scan(r, HEAP, scan, None);
+    assert_eq!(1, s.locks(r));
+    s.insert_heap(w, HEAP).unwrap();
+    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
+}
+
+#[test]
+fn a_scan_ended_early_leaves_page_locks_on_the_pages_it_read() {
+    let mut s = Serializer::default();
+    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
+    let scan = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
+    s.end_scan(r, HEAP, scan, Some(&[5, 6]));
+    assert_eq!(2, s.locks(r));
+    s.insert_heap(w, HEAP).unwrap();
+    s.write_tuple(w, HEAP, tid(7, 1)).unwrap();
+    assert!(s.writers_after(r).is_empty());
+    s.write_tuple(w, HEAP, tid(6, 3)).unwrap();
+    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
+}
+
+#[test]
+fn a_scan_ended_early_past_the_page_limit_leaves_a_heap_lock() {
+    let limits = Limits {
+        pages_per_heap: 2,
+        ..Limits::default()
+    };
+    let mut s = Serializer::new(limits);
+    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
+    let scan = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
+    s.end_scan(r, HEAP, scan, Some(&[5, 6, 7]));
+    assert_eq!(1, s.locks(r));
+    s.insert_heap(w, HEAP).unwrap();
+    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
+}
+
+#[test]
+fn a_scan_ended_early_keeps_a_heap_lock_another_read_took() {
+    let mut s = Serializer::default();
+    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
+    let early = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
+    let whole = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
+    s.end_scan(r, HEAP, whole, None);
+    s.end_scan(r, HEAP, early, Some(&[5]));
+    assert_eq!(1, s.locks(r));
+    s.insert_heap(w, HEAP).unwrap();
+    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
+}
+
+#[test]
+fn an_open_scan_leaves_tuple_reads_their_own_locks() {
+    let mut s = Serializer::default();
+    let (r, w) = (rw(&mut s, 1), rw(&mut s, 2));
+    let scan = s.read_scan(r, HEAP).unwrap().expect("a scan lock");
+    s.read_tuple(r, HEAP, tid(9, 1)).unwrap();
+    s.end_scan(r, HEAP, scan, Some(&[5]));
+    s.write_tuple(w, HEAP, tid(9, 1)).unwrap();
+    assert_eq!(BTreeSet::from([w]), s.writers_after(r));
+}
+
+#[test]
+fn a_scan_after_a_heap_lock_takes_no_lock_of_its_own() {
+    let mut s = Serializer::default();
+    let r = rw(&mut s, 1);
+    s.read_heap(r, HEAP).unwrap();
+    assert_eq!(None, s.read_scan(r, HEAP).unwrap());
+}
+
+#[test]
 fn tuple_locks_promote_to_a_page_lock_then_a_heap_lock() {
     let limits = Limits {
         tuples_per_page: 2,
