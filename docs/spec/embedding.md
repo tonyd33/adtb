@@ -281,6 +281,13 @@ code generation emitted.
 | `trace` | The caller's trace context, joined by the engine's spans |
 | `retry` | For a registered transaction, the most reruns on serialization failure: `retry n` allows at most `n + 1` attempts; by default the transaction's declared limit, else the file setting `RetryLimit` |
 
+A call, and ad hoc text (§6), passes the engine's admission
+([catalog.md §8.1](catalog.md#81-admission)) as a server call does: it
+waits in the same queue, fails with `Retry { reason: Overloaded {..}
+}` when the queue is full, and with `Rejected { reason: StatementLimit
+{ limit: Memory { bytes } } }` when it alone holds more than the
+queue's byte bound.
+
 A query that only reads runs as a read-only transaction under
 serializable snapshot isolation, without waiting for a safe snapshot,
 and may fail with `Serialization`

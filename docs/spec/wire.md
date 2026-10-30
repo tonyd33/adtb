@@ -975,10 +975,11 @@ ordered by priority class and then by transaction start
 ([catalog.md](catalog.md#81-admission)). Calls of registered queries take
 their bundle's priority class, and within it the `priority` the call
 or its transaction gives; CallText and Append always rank below every
-registered class. The queue is bounded, in calls and in the bytes of
-the arguments its calls hold; a call that would exceed it is
+registered class. The queue is bounded, in calls and in the bytes its
+calls hold while they wait
+([catalog.md](catalog.md#81-admission)); a call that would exceed it is
 answered at once with Error `Overloaded` carrying a `retry_after`
-Duration, and is not executed. A call whose arguments alone exceed the
+Duration, and is not executed. A call that alone holds more than the
 whole byte bound is answered at once with `Rejected { reason:
 StatementLimit { limit: Memory { bytes } } }`, `bytes` the byte bound,
 never with `Retry`, and is not executed. A waiting call keeps its stream open

@@ -1691,13 +1691,17 @@ grants are released, the head of the queue runs if its grant fits.
 Priorities are the values of `Priority`: registered calls run at their
 bundle's priority, ad hoc calls at `AdHoc`, the lowest. A call or a
 `Begin` may state a lower priority for itself, never a higher one
-([wire.md](wire.md#51-call)). The server bounds
-the queue, in calls and in the bytes of the arguments its calls hold,
+([wire.md](wire.md#51-call)). The engine bounds
+the queue, in calls and in the bytes its calls hold while they wait,
 and answers a call that finds it full with `Retry { reason:
 Overloaded {..} }` ([wire.md](wire.md#8-admission-and-overload)). A
-call whose arguments alone exceed the queue's whole byte bound is
+call that alone holds more than the queue's whole byte bound is
 answered at once with `Rejected { reason: StatementLimit { limit:
 Memory { bytes } } }`, `bytes` the byte bound, never with `Retry`.
+The bytes a call holds are the memory of its arguments, of the text
+and parameters of ad hoc text, and of a fixed overhead per call, as
+the call is admitted; the batches of an Append that arrive after it
+is admitted are not counted.
 
 A running call that needs more memory than its grant spills first to
 pages of the pool within the grant, then, when the pool has none to
