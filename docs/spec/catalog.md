@@ -2102,6 +2102,11 @@ in the textual syntax. Findings are kept in the file. A run replaces only the
 findings of the last run over its scope: the whole database, one
 relation variable, or the scrub.
 
+On a quarantined database, `verify` writes no findings to the file. It
+answers at least one `Structure` row naming the quarantine. When the
+catalog cannot be read it checks pages and the log only, and the row says
+so, and `verify r` fails with `Quarantined`.
+
 ### 11.2 Quarantine
 
 A corrupted page, detected by checksum or by its log position on any
@@ -2111,7 +2116,8 @@ relation holds, such as one of the commit log or the catalog,
 quarantines the database: every call fails with `Fatal { reason:
 Quarantined {..} }`, and the file opens for `verify` and `dump` only. An
 `Order`, `Orphan` or `Missing` finding (§11.1) quarantines the index it
-names.
+names. A file with neither copy of its header intact, or a log that
+recovery refuses, does not open.
 
 A call fails with `Fatal { reason: Quarantined {..} }` exactly when
 the constructors it reads
