@@ -464,3 +464,7 @@ Latent, since no production path writes call rows yet.
 
 `drop_role` leaves rows of the dropped role's grantees with no option above them. Ruling: refuse it
 naming those rows, as a revoke that orphans them is refused.
+
+## 2026-10-30
+
+Ruling from server-fixes: a command result counts as the query that reads it. A role with `maintain` running `verify` while a finding holds a `witness` needs `read` on that relation. Until relation grants exist, it is refused with `Denied` and audited. Replace that with the real check here.
