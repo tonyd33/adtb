@@ -1540,7 +1540,8 @@ unguarded):
 M_C = P(x_C, p_i, if ⟦⟦g_i⟧⟧ then ⟦⟦b_i⟧⟧ else M'_C, M'_C)
 ```
 
-where `M'_C` is the chain of the remaining arms, and `P(y, p, K, F)`
+where `M'_C` is the chain of the remaining arms, the chain of no arms
+being `unreachable`, and `P(y, p, K, F)`
 matches value `y` against pattern `p`, continuing with `K` on success,
 in which `p`'s bindings are in scope, and with `F` on failure:
 
@@ -1572,14 +1573,14 @@ guard and its body. The binder of an or-pattern is bound to the row of
 whichever alternative matched, which has the or-binder's set type. A
 false guard continues with `M'_C`, the next arm that can match `C`,
 never with a later alternative of the guarded arm. Exhaustiveness
-([typing.md §9.2](typing.md#92-exhaustiveness)) guarantees that some
-unguarded arm of the chain for `C` matches every value of `C`, so the
-`F` of the chain's last arm is never reached. A `match` on a scalar
+([typing.md §9.2](typing.md#92-exhaustiveness)) guarantees that every
+value of `C` is matched by some unguarded arm of the chain for `C`, so
+`unreachable` is never evaluated. A `match` on a scalar
 compiles to the same chain without the outer `case`, ending at its
 binder or `_` arm. A `match` on a
 scrutinee of type `Key r.S` matches the row the key references:
 `let ξ = deref r.S ⟦⟦e⟧⟧ in case ξ of { … }`; its top-level patterns are
-constructor patterns, never a binder or `_`. When the scrutinee is not a
+constructor or named-set patterns, never a binder or `_`. When the scrutinee is not a
 reference field's value it may name no row, and the match faults
 `NoSuchRow`: it is partial (§3.4). Patterns and guards are
 evaluated in arm order; a guard is evaluated only when its pattern
