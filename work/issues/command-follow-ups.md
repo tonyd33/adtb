@@ -19,3 +19,7 @@ Left by the engine commands track:
 - `explain analyze` reports actual rows, loops and time only at the root node, and `storage` is empty.
 - `pruned` is shown only on index probes and lookups, never on scans or on start-time routing.
 - `verify`, `compact`, `print schema`, `pin plan` and the other commands are refused.
+
+## 2026-10-30: commands inside a transaction
+
+`command::outside_transaction` refuses `verify`, `vacuum` and `reindex` in an open transaction and in text that writes. `set setting`, `explain` and the bundle commands still run in one, which departs from catalog.md 9.1. Ruling: apply the refusal to every command of 9.1's table; a test pins `set setting` in a transaction and changes with it.
