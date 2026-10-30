@@ -75,3 +75,9 @@ changes and before embedded beta/server releases. Existing engine-open,
 planner/executor and heap performance tickets are candidate fixes to prioritize
 from profiles, not a mandatory prerequisite list or assumed causes of poor results.
 No benchmark, optimization or code change was performed for this roadmap entry.
+
+## 2026-10-30: one agent at a time
+
+Benchmark work runs as one agent at a time, so runs do not contend for
+resources. While it measures, no other track builds or tests on the machine;
+record `uptime` with each run and discard a run taken under other load.
