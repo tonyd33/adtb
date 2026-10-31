@@ -1,5 +1,2 @@
 [build]
 target-dir = "../../target"
-
-[target.'cfg(all())']
-runner = "../../work/tools/test-runner"
