@@ -25,9 +25,7 @@ Rulings: repl/distribution/never, repl/unit/physical
 A replica is a copy of one primary that follows the primary's log. It
 holds the same constructor ids, key values, catalog, settings and
 schema versions as the primary, and its stored pages are identical to
-the primary's, so an operator can restore a page quarantined on one
-copy from the other
-([catalog.md §11.2](catalog.md#112-quarantine)). After a compaction
+the primary's. After a compaction
 of the primary, a replica starts again from a new base copy
 ([catalog.md §11.3](catalog.md#113-compaction)).
 

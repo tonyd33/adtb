@@ -426,7 +426,7 @@ Rulings: repl/commit-ack/local, repl/commit-ack/quorum, repl/commit-ack/rpo/stat
 
 Every acknowledged commit of a read-write transaction returns its
 commit position, a value of the prelude type `Position = { epoch: I64,
-lsn: I64 }` ([prelude.md](prelude.md)): its place in the primary's log, where the epoch counts promotions (§7.2) and the log sequence
+lsn: I64 }` ([prelude.md](prelude.md)): its place in the primary's log, where the epoch counts promotions (§7.2) and restores and the log sequence
 number is the place within the history of that epoch. Positions of one
 history are totally ordered, and a transaction's position follows the
 position of every transaction whose commit was acknowledged before it

@@ -821,9 +821,9 @@ backup's start position, and is restored together with the chain of
 backups it builds on.
 
 ```sh
-$ adtb backup app.adt s3://backups/app
-$ adtb backup app.adt s3://backups/app --incremental
-$ adtb restore s3://backups/app restored.adt
+$ adtb backup app.adt backups/app
+$ adtb backup app.adt backups/app --incremental
+$ adtb restore backups/app restored.adt
 ```
 
 `adtb backup` and `adtb restore` wrap the commands `backup` and
@@ -832,10 +832,30 @@ either a dump (§6) or a backup; its manifest says which.
 
 Every backup carries a manifest stating the engine release, format,
 schema version, start and end positions, the backup it is
-incremental to, and a checksum of each part. A backup is proven only
-by a test restore that rebuilds the database and runs the full
-verification of [catalog.md](catalog.md#111-verification) on it; the
-tool records the result in the manifest. A backup copies encrypted
+incremental to, the pages it copied damaged and the objects
+quarantined at its end, and a checksum of each part. A backup is complete
+once its manifest is written, and the manifest does not change after.
+
+A target is a file system path; a target with a URL scheme is refused.
+A backup to a target that holds files is refused, and so is a restore to
+a path that exists, so nothing is overwritten. Through a server a backup
+needs the `write_files` privilege and writes only inside `export_roots`,
+as a dump does (§6). A database under `Quarantined` as a whole is refused;
+a quarantined relation or index is copied and listed in the manifest.
+
+A restore checks every part before it writes the new file, and answers
+`BackupDamaged` naming the first that fails. The restored file begins a new
+epoch, so a position past the backup's end is not on its history. Its
+commits past the end position are lost unless an archive reaches them
+(§7.2).
+
+A backup is unproven until a test restore rebuilds the database in
+a scratch directory and runs the full verification of
+[catalog.md](catalog.md#111-verification) on it. `backup` does not run one;
+`adtb backup --verify` and `adtb verify` on a backup directory do, and record
+the result in a proof file beside the manifest, naming the manifest's hash.
+A verification that needs a host function the tool lacks leaves the backup
+unproven and names the function. A backup copies encrypted
 pages as they are stored ([security.md](security.md#95-backups-and-dumps)).
 
 ### 7.2 Point-in-time restore
@@ -850,10 +870,14 @@ the archived log up to a chosen point:
 - a schema version: the state just before a given migration applied.
 
 ```sh
-$ adtb restore s3://backups/app restored.adt --before-version 12
-$ adtb restore s3://backups/app restored.adt --to-time 2026-10-24T13:02:00Z
-$ adtb restore s3://backups/app restored.adt --to-position 3/81234
+$ adtb restore backups/app restored.adt --before-version 12
+$ adtb restore backups/app restored.adt --to-time 2026-10-24T13:02:00Z
+$ adtb restore backups/app restored.adt --to-position 3/81234
 ```
+
+A point the source cannot reach, including any point on a dump or on a
+backup with no archive past its end, answers `RestorePointUnavailable` with
+the reachable range.
 
 The archive destination is an open setting
 ([catalog.md](catalog.md#103-open-settings)).

@@ -836,7 +836,7 @@ from an archive to any commit position or schema version it covers
 
 ```rust
 let db = adtb::open("app.adt", &schema::LOG, &[&queries::BUNDLE],
-                     OpenOptions { archive: Some(ArchiveTarget::url("s3://b/app")?), ..OpenOptions::default() })?;
+                     OpenOptions { archive: Some(ArchiveTarget::path("backups/app")?), ..OpenOptions::default() })?;
 
 pub fn restore(archive: &ArchiveTarget, path: impl AsRef<Path>, to: RestorePoint, options: OpenOptions)
     -> Result<(), adtb::Error>;

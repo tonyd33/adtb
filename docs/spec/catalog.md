@@ -2157,10 +2157,10 @@ insert identities.Google { user: u, gid: "g-2" }             -- fails
 ```
 
 A quarantined index is restored by `reindex` (§11.4). A quarantined
-constructor relation is restored when an operator restores its pages
-from a replica, whose pages are identical to the primary's
-([replication.md](replication.md#11-physical-replicas)), or from a
-backup and the log ([interop.md](interop.md#7-backup-and-point-in-time-restore));
+constructor relation is restored by restoring a backup to a new file
+and swapping that file in with the database closed
+([interop.md](interop.md#7-backup-and-point-in-time-restore)); commits
+past the point restored are lost;
 `sys::ctor_stats.quarantined` shows the state.
 
 ### 11.3 Compaction

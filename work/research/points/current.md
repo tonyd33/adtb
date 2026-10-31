@@ -521,6 +521,13 @@ accept:
   query/optional-sum/null-ctor: {title: 'No NULL, optionality is a constructor of the sum', reason: NULL is a hidden constructor; make it explicit}
   query/tooling/live: {title: Live with SQL tools seeing no sums, reason: 'no SQL, so there are no SQL-only tools to serve'}
   query/union-all: {title: UNION ALL of one select per arm, reason: the semantics of match is a disjoint union of arm queries}
+  repl/backup-damaged/named-part: {title: 'BackupDamaged names the part, checked before a byte of the new file is written', reason: 'a directory has parts, not offsets'}
+  repl/backup-files/write-files: {title: 'maintain and write_files, confined as dump is', reason: 'same confinement as dump, else maintain writes any server path'}
+  repl/backup-heal/new-file: {title: Restore a backup to a new file and swap it in with the database closed, reason: 'one restore path, in-place needs a copy path nothing else uses'}
+  repl/backup-occupied/refuse: {title: Refused; an operator removes it, reason: the engine deletes no files of an operator}
+  repl/backup-proof/separate-proof: {title: 'backup only copies; a separate proof step writes a proof file, and a backup without one is unproven', reason: manifest stays immutable; proof needs disk and host functions a server lacks}
+  repl/backup-quarantined/heap-yes-file-no: {title: 'A quarantined relation or index is copied and listed in the manifest, and its proof fails; a quarantined database is refused', reason: partial copy beats none; file quarantine stays verify and dump only}
+  repl/backup-target/paths: {title: File system paths only; a URL scheme is refused by name, reason: keeps the dependency allowlist; sync tools move directories}
   repl/backup/base-plus-log: {title: A fuzzy page copy of the file plus the log from the copy's start position, reason: 'base copy plus log, incremental by page LSN since the database is one file'}
   repl/backup/incremental: {title: 'Only pages changed since a previous backup, found by page LSN or log summaries', reason: 'base copy plus log, incremental by page LSN since the database is one file'}
   repl/cdc/change-stream: {title: 'The committed change sets of chosen constructor relations, in commit order', reason: consumers are registered like bundles and read the change-set stream}
@@ -540,6 +547,9 @@ accept:
   repl/failover/split-brain/fence: {title: Promotion first cuts the old primary off from its storage or network, reason: promotion bumps an epoch and fences the old primary}
   repl/pitr/log-archive: {title: 'Continuous log archive; restore replays a base to a position, time or named point', reason: restore to any log position or schema version from an archive}
   repl/pitr/op-log-point: {title: A schema operator is a named restore point, reason: restore to any log position or schema version from an archive}
+  repl/proof-host-fn/unproven: {title: 'Unproven, naming the function', reason: 'nothing found wrong, nothing shown right'}
+  repl/restore-epoch/bump: {title: A restore raises the epoch, reason: two histories must not share positions}
+  repl/restore-point/one-reason: {title: 'One RestorePointUnavailable with the reachable range, for out of range, a chain gap and a point on a dump', reason: range tells the operator what to ask for}
   repl/schema/forward-leases: {title: A replica forwards bundle lease renewals and connections to the primary, reason: schema operators travel in the log; leases renewed at a replica are forwarded to the primary}
   repl/schema/in-log: {title: Operators and stage transitions are log records applied in order with the data, reason: schema operators travel in the log; leases renewed at a replica are forwarded to the primary}
   repl/session/bookmark: {title: Commit returns a log position; a replica read given it waits until a safe snapshot covers it, reason: a commit returns a log position; a replica read given it waits until applied}

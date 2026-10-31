@@ -1632,8 +1632,8 @@ archive audit through 991204 to "audit-2026-10.arrow"
 rotate key kek "kms://vault/adt-app/v3"
 destroy key dek 7
 dump to "app.dump" encrypt k
-restore from "s3://backups/app" to "restored.adt" before version 12
-backup to "s3://backups/app" incremental
+restore from "backups/app" to "restored.adt" before version 12
+backup to "backups/app" incremental
 ```
 
 - A command is ad hoc text (§3.1). It never appears in a migration, a

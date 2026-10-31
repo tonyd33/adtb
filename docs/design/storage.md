@@ -801,7 +801,7 @@ from i in identities select i.id                         -- fails
 ```
 
 A quarantined object is restored by reindexing (an index) or by
-restoring its pages from a replica or a backup plus log (a heap). The swap
+restoring a backup to a new file and swapping it in (a heap). The swap
 of a rebuilt index removes the index's mark in the batch that changes its
 root page, so a crash leaves the old index with its mark or the new one
 without. Neither call reads a damaged page it overwrites; it logs a
