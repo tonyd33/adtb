@@ -388,7 +388,9 @@ hash than the handshake states; a catalog version that differs from
 the bundle's catalog pin is refused with
 `Rejected { reason: CatalogMismatch {..} }`. A role that may call
 nothing in the bundle is refused with `Denied`, audited, and renews no
-lease; `adhoc` alone does not bind.
+lease; `adhoc` alone does not bind. The binding describes only the
+callables the role may call when it binds, each by its ordinal in the
+bundle.
 
 A bound connection:
 

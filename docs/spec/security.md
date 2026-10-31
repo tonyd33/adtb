@@ -747,8 +747,8 @@ value ([interop.md](interop.md#1-textual-value-syntax)), holding no
 reference, so deleting a user or changing `Principal` leaves audit
 rows as written. A failed login records `Anonymous`. `origin` says what
 ran: `query` is the ordinal of the registered query or transaction in
-its bundle, `name` a schema function called directly, and `text` the
-BLAKE3-256 hash of ad hoc text. `args`
+its bundle, or 0 for a refused binding, `name` a schema function called
+directly, and `text` the BLAKE3-256 hash of ad hoc text. `args`
 is the BLAKE3-256 hash of the call's arguments in the wire encoding at
 the bundle's pinned version ([wire.md](wire.md#4-value-encoding)).
 `changes` is the change set in that encoding, or at the current
