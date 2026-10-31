@@ -61,3 +61,11 @@ Went poorly: I reported a hung track as running for 80 minutes. I gave a 20-minu
 Do differently: state an end condition when starting a track, not when asked. Give a range and what it assumes. Ask what an accident needed before ruling. Check that a track moved before saying it is running. Read before each push, in its own command.
 
 Bets to check next time: whether I catch a problem of this size before the maintainer does. So far, no.
+
+### 2026-10-31: reflection, closing the session
+
+The review cap held on its first real use. staged-operators got one delta review, which found a real regression, an upsert overwriting a row of another constructor; the agent reproduced it, the fix got no new review, and the track landed. Without a review that bug would have shipped, so the cap did not cost the review its value. One track is not a result: the three-round bet stays open.
+
+I wrote the test-audit-b review's blocker list too widely, adding a lint that passes a violation. The reviewer reported one by that list. It loses no data and gives no wrong answer, so by the written rule it is a ticket, and I ruled so. The prompt should quote the rule and add nothing to it.
+
+The test-audit-b suite was stopped for low memory, and I had not looked at machine memory before starting two tracks and a check on a machine other work was also using. The heap cap and the machine lock bound what this repository's tests use, not what is free. Going forward: read free memory and swap before a full check, and do not start one when they are short. If this recurs, it belongs in `workspace-gc --guard`, next to disk, not in this journal.
