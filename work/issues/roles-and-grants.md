@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
+branch: system-grants
 kind: feature
 priority: 410
 summary: "registration and definer checks exist; call grants, binding and nonowner execution, system relation grants, ad hoc reads and writes, and management by text remain"

@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-26
-status: open
+status: in-progress
+branch: tree-sitter
 kind: feature
 priority: 860
 summary: "no tree-sitter grammar exists for adtb, so .adt and .adb files and adt code blocks get no highlighting, folding or structural editing"
