@@ -112,6 +112,7 @@ impl<'a> Stops<'a> {
             cancel: self.cancel.map(|t| t.0.cancelled.clone()),
             deadline,
             suspend: false,
+            polls_from: None,
             rerun: None,
             grant: None,
         }

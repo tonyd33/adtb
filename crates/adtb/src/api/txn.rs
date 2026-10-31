@@ -218,14 +218,14 @@ impl<R: Runtime> AdHocTransaction<'_, R> {
         stops.check(&e.rt)?;
         on_ready();
         let bounds = stops.bounds(&e.rt, opts.fix_rounds);
-        let (err, ends) = match e.statements(self.id, tx, p, &mut self.local, bounds) {
+        let failed = match e.statements(self.id, tx, p, &mut self.local, bounds) {
             Ok(rows) => return Ok(rows),
             Err(failed) => failed,
         };
-        if ends {
-            self.end(err.clone())?;
+        if failed.ends {
+            self.end(failed.error.clone())?;
         }
-        Err(err)
+        Err(failed.error)
     }
 
     /// Commit the transaction. Returns its commit position.

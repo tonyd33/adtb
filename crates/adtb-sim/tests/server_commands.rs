@@ -1,21 +1,25 @@
 //! The capability each operational command needs when a role session issues it.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Wake, Waker};
 use std::time::Duration;
 
 use adtb::batch::{self, Batch, BatchBuilder, Type};
+use adtb::catalog::version_hash;
 use adtb::key::Scalar;
 use adtb::runtime::{Clock, Io, Op, Runtime, ThreadId, Threads};
 use adtb::storage::Quarantine;
 use adtb::{
     CallOptions, Capability, Completion, Database, Determinism, Error, HostFns, Log, Observation,
-    OpenOptions, RejectReason, RoleSession, Task, TaskOptions, Value,
+    OpenOptions, Registration, RejectReason, RetryReason, RoleSession, Task, TaskOptions,
+    TxnCallOptions, TxnOptions, Value,
 };
+use adtb_lang::evolve::Source;
+use adtb_lang::parse::{Options as ParseOptions, parse_migration};
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Sim, SimRuntime};
-use adtb_simkit::api::{options, query, run, task};
+use adtb_simkit::api::{once, options, query, results, run, task};
 
 const SCHEMA: &str = "module example\nadd module example\nadd type Item = { id: Key items, value: I64 }\nadd relation items : Item key id\n";
 
@@ -1448,4 +1452,721 @@ fn a_task_stopped_between_its_commit_and_its_output_end_has_one_succeeded_row() 
         assert_eq!(1, rows.len(), "{rows:?}");
         assert!(rows[0].contains("Succeeded"), "{rows:?}");
     });
+}
+
+const TOUCH: &str = "update i in items set { i with value: i.value + 1 }";
+const SETTING: &str = "set setting RetryLimit = { retries: 5 }";
+
+/// Returns a database of `workers` workers with one row in `items`, of value 0.
+const ITEMS_OF_VALUE: &str = "module example\nadd module example\nadd type Item = { id: Key items, value: I64 }\nadd relation items : Item key id generate sequence\n";
+
+fn counted(rt: &SimRuntime, workers: usize) -> Database<SimRuntime> {
+    let db = Database::open_in(
+        rt.clone(),
+        "counted.adt",
+        &Log::new([ITEMS_OF_VALUE]),
+        &options(workers),
+    )
+    .expect("schema database opens");
+    results(&db, "insert items { value: 0 }");
+    db
+}
+
+/// Returns the transaction ids taken so far, one of them by this call.
+fn xids_taken(db: &Database<SimRuntime>) -> u64 {
+    let write = db.write_path();
+    let tx = write.begin().unwrap();
+    let xid = tx.xid().unwrap().0;
+    write.abort(tx).unwrap();
+    xid
+}
+
+fn value(db: &Database<SimRuntime>) -> Vec<String> {
+    query(db, "from i in items select i.value")
+}
+
+/// Run `text` alone, then again beside a transaction that has changed the row it updates, which
+/// `end` ends once `text` waits on it. Returns the transaction ids the contended run took past
+/// the lone one, what it completed with, and the row's value.
+fn contended(
+    text: &str,
+    end: impl FnOnce(adtb::AdHocTransaction<'_, SimRuntime>),
+) -> (u64, Completion, Vec<String>) {
+    once(3, |rt| {
+        let db = counted(&rt, 2);
+        let session = db.role_authority().session("owner").expect("session");
+        let before = xids_taken(&db);
+        task(&rt, &session, text).expect("the text runs alone");
+        let alone = xids_taken(&db) - before;
+        let mut holder = db.begin(&TxnOptions::default()).unwrap();
+        holder
+            .query_text(TOUCH, &[], &TxnCallOptions::default())
+            .unwrap();
+        let before = xids_taken(&db);
+        let t = session
+            .submit_text(text, &[], TaskOptions::default())
+            .expect("the text is admitted");
+        for _ in 0..5000 {
+            rt.yield_now();
+        }
+        let waker = Waker::from(Arc::new(Unpark {
+            rt: rt.clone(),
+            thread: rt.current(),
+        }));
+        assert!(
+            matches!(t.observe(&waker), Observation::Pending),
+            "the text waits on the holder"
+        );
+        end(holder);
+        let done = completion(&rt, &t);
+        let extra = xids_taken(&db) - before - alone;
+        let values = value(&db);
+        db.close().unwrap();
+        (extra, done, values)
+    })
+}
+
+#[test]
+fn a_set_setting_before_a_waiting_write_changes_the_row_once() {
+    let (extra, done, values) = contended(&format!("{SETTING}\n{TOUCH}"), |h| {
+        h.rollback().unwrap();
+    });
+    assert!(matches!(done, Completion::Committed { .. }), "{done:?}");
+    assert_eq!(0, extra);
+    assert_eq!(vec!["2"], values);
+}
+
+#[test]
+fn a_vacuum_never_precedes_a_write_in_one_text() {
+    once(3, |rt| {
+        let db = counted(&rt, 2);
+        let session = db.role_authority().session("owner").expect("session");
+        let refused = task(&rt, &session, &format!("vacuum items\n{TOUCH}"));
+        assert!(
+            matches!(
+                refused,
+                Err(Error::Rejected {
+                    reason: RejectReason::Invalid { .. }
+                })
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(vec!["0"], value(&db));
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_write_waiting_before_a_command_frees_its_worker_and_the_command_runs_once() {
+    once(3, |rt| {
+        let db = counted(&rt, 1);
+        let session = db.role_authority().session("owner").expect("session");
+        const READ: &str = "from i in items select i.value";
+        let text = format!("{TOUCH}\n{SETTING}");
+        let before = xids_taken(&db);
+        task(&rt, &session, &text).expect("the text runs alone");
+        task(&rt, &session, READ).expect("the read runs");
+        let alone = xids_taken(&db) - before;
+        let mut holder = db.begin(&TxnOptions::default()).unwrap();
+        holder
+            .query_text(TOUCH, &[], &TxnCallOptions::default())
+            .unwrap();
+        let before = xids_taken(&db);
+        let t = session
+            .submit_text(&text, &[], TaskOptions::default())
+            .expect("the text is admitted");
+        for _ in 0..5000 {
+            rt.yield_now();
+        }
+        let read = session
+            .submit_text(READ, &[], TaskOptions::default())
+            .expect("the read is admitted");
+        read.supply(usize::MAX);
+        let waker = Waker::from(Arc::new(Unpark {
+            rt: rt.clone(),
+            thread: rt.current(),
+        }));
+        let mut read_done = false;
+        for _ in 0..5000 {
+            match read.observe(&waker) {
+                Observation::End => read.drained(),
+                Observation::Done(_) => {
+                    read_done = true;
+                    break;
+                }
+                Observation::Pending | Observation::Layout(_) | Observation::Batch(_) => {
+                    rt.yield_now();
+                }
+            }
+        }
+        assert!(read_done, "the only worker runs a read beside the wait");
+        holder.rollback().unwrap();
+        finish(&rt, &t).expect("the text runs once the holder ends");
+        assert_eq!(alone, xids_taken(&db) - before);
+        assert_eq!(vec!["2"], value(&db));
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_serialization_failure_before_any_command_reruns_the_text() {
+    let (extra, done, values) = contended(&format!("{TOUCH}\n{SETTING}"), |h| {
+        h.commit(None).unwrap();
+    });
+    let Completion::Committed { attempts, .. } = done else {
+        panic!("the rerun commits: {done:?}")
+    };
+    assert_eq!(2, attempts);
+    assert_eq!(
+        1, extra,
+        "the first attempt's transaction, the command in no attempt but the last"
+    );
+    assert_eq!(vec!["3"], values);
+}
+
+#[test]
+fn a_serialization_failure_after_a_command_reaches_the_caller_with_no_second_effect() {
+    let (extra, done, values) = contended(&format!("{SETTING}\n{TOUCH}"), |h| {
+        h.commit(None).unwrap();
+    });
+    assert!(
+        matches!(&done, Completion::Failed(e) if e.is_serialization()),
+        "{done:?}"
+    );
+    assert_eq!(
+        1, extra,
+        "the audit row of the failure, and no second attempt"
+    );
+    assert_eq!(vec!["2"], values);
+}
+
+/// A text started on another thread or worker.
+struct Started {
+    /// Returns whether the text has yet to complete.
+    pending: Box<dyn Fn() -> bool>,
+    /// Returns what the text completes with.
+    done: Box<dyn FnOnce() -> Result<(), Error>>,
+}
+
+fn as_task(rt: &SimRuntime, db: &Database<SimRuntime>, text: &str) -> Started {
+    let session = db.role_authority().session("owner").expect("session");
+    let t = session
+        .submit_text(text, &[], TaskOptions::default())
+        .expect("the text is admitted");
+    let t = Arc::new(t);
+    let (watched, rt, thread) = (t.clone(), rt.clone(), rt.current());
+    let waker = Waker::from(Arc::new(Unpark {
+        rt: rt.clone(),
+        thread,
+    }));
+    Started {
+        pending: Box::new(move || matches!(watched.observe(&waker), Observation::Pending)),
+        done: Box::new(move || finish(&rt, &t)),
+    }
+}
+
+fn embedded(rt: &SimRuntime, db: &Database<SimRuntime>, text: &str) -> Started {
+    let done = Arc::new(Mutex::new(None));
+    let caller = {
+        let (db, text, done) = (db.clone(), text.to_owned(), done.clone());
+        rt.spawn("caller", move || {
+            let got = db.query_text(&text, &[], &CallOptions::default());
+            *done.lock().unwrap() = Some(got.map(drop));
+        })
+    };
+    let rt = rt.clone();
+    let watched = done.clone();
+    Started {
+        pending: Box::new(move || watched.lock().unwrap().is_none()),
+        done: Box::new(move || {
+            rt.join(caller);
+            done.lock()
+                .unwrap()
+                .take()
+                .expect("the caller has finished")
+        }),
+    }
+}
+
+/// Run `text` beside a transaction that has changed the row it updates, which `end` ends after
+/// `text` has run a while. Returns what `text` completed with and the row's value.
+fn waited_on(
+    text: &str,
+    start: fn(&SimRuntime, &Database<SimRuntime>, &str) -> Started,
+    end: impl FnOnce(adtb::AdHocTransaction<'_, SimRuntime>),
+) -> (Result<(), Error>, Vec<String>) {
+    once(3, |rt| {
+        let db = counted(&rt, 2);
+        let mut holder = db.begin(&TxnOptions::default()).unwrap();
+        holder
+            .query_text(TOUCH, &[], &TxnCallOptions::default())
+            .unwrap();
+        let started = start(&rt, &db, text);
+        for _ in 0..5000 {
+            rt.yield_now();
+        }
+        assert!((started.pending)(), "the text waits on the holder");
+        end(holder);
+        let got = (started.done)();
+        let values = value(&db);
+        db.close().unwrap();
+        (got, values)
+    })
+}
+
+/// Run `text`, which writes and ends in a statement reading `items` through `gate`, until it
+/// holds at the gate, then doom it: a transaction reads the `logs` it wrote, another commits a
+/// row of the `items` it read. Returns what `text` completed with and the rows of `logs`.
+fn doomed_at_commit(
+    text: &str,
+    start: fn(&SimRuntime, &Database<SimRuntime>, &str) -> Started,
+) -> (Result<(), Error>, Vec<String>) {
+    once(3, |rt| {
+        let gate = Arc::new(Gate::default());
+        let options = OpenOptions {
+            workers: Some(2),
+            ..gated_options(&rt, &gate)
+        };
+        let db = Database::open_in(rt.clone(), "counted.adt", &Log::new([COUNTED]), &options)
+            .expect("schema database opens");
+        write(&db, "insert items { n: 1 }");
+        let started = start(&rt, &db, text);
+        while !gate.entered.load(Ordering::Acquire) {
+            rt.yield_now();
+        }
+        let mut reader = db.begin(&TxnOptions::default()).unwrap();
+        reader
+            .query_text("from l in logs select l.n", &[], &TxnCallOptions::default())
+            .unwrap();
+        write(&db, "insert items { n: 2 }");
+        gate.open.store(true, Ordering::Release);
+        let got = (started.done)();
+        reader.rollback().unwrap();
+        let logs = query(&db, "from l in logs select l.n");
+        db.close().unwrap();
+        (got, logs)
+    })
+}
+
+fn serialization(got: &Result<(), Error>) -> bool {
+    matches!(got, Err(e) if e.is_serialization())
+}
+
+const LOGGED: &str = "insert logs { n: 1 }\nfrom i in items select gate(i.n)";
+
+#[test]
+fn a_failed_commit_after_a_command_reaches_the_caller() {
+    let (got, logs) = doomed_at_commit(&format!("{SETTING}\n{LOGGED}"), as_task);
+    assert!(serialization(&got), "{got:?}");
+    assert!(logs.is_empty(), "{logs:?}");
+}
+
+#[test]
+fn a_failed_commit_with_no_command_reruns_the_text() {
+    let (got, logs) = doomed_at_commit(LOGGED, as_task);
+    got.expect("the rerun commits");
+    assert_eq!(vec!["1"], logs);
+}
+
+#[test]
+fn an_embedded_serialization_failure_after_a_command_reaches_the_caller() {
+    let (got, values) = waited_on(&format!("{SETTING}\n{TOUCH}"), embedded, |h| {
+        h.commit(None).unwrap();
+    });
+    assert!(serialization(&got), "{got:?}");
+    assert_eq!(vec!["1"], values);
+}
+
+#[test]
+fn an_embedded_serialization_failure_before_any_command_reruns_the_text() {
+    let (got, values) = waited_on(&format!("{TOUCH}\n{SETTING}"), embedded, |h| {
+        h.commit(None).unwrap();
+    });
+    got.expect("the rerun commits");
+    assert_eq!(vec!["2"], values);
+}
+
+#[test]
+fn an_embedded_failed_commit_after_a_command_reaches_the_caller() {
+    let (got, logs) = doomed_at_commit(&format!("{SETTING}\n{LOGGED}"), embedded);
+    assert!(serialization(&got), "{got:?}");
+    assert!(logs.is_empty(), "{logs:?}");
+}
+
+#[test]
+fn an_embedded_failed_commit_with_no_command_reruns_the_text() {
+    let (got, logs) = doomed_at_commit(LOGGED, embedded);
+    got.expect("the rerun commits");
+    assert_eq!(vec!["1"], logs);
+}
+
+/// Advance the simulated clock by `d`.
+fn sleep(rt: &SimRuntime, d: Duration) {
+    let mut io = rt.io();
+    io.submit(Op::Timer { at: rt.now() + d });
+    while io.poll().is_none() {
+        rt.park();
+    }
+}
+
+/// Returns what `task` completes with within a simulated second, its output taken.
+fn settled(rt: &SimRuntime, task: &Task<SimRuntime>) -> Option<Completion> {
+    let waker = Waker::from(Arc::new(Unpark {
+        rt: rt.clone(),
+        thread: rt.current(),
+    }));
+    task.supply(usize::MAX);
+    for _ in 0..1000 {
+        match task.observe(&waker) {
+            Observation::Pending => sleep(rt, Duration::from_millis(1)),
+            Observation::Layout(_) | Observation::Batch(_) => {}
+            Observation::End => task.drained(),
+            Observation::Done(done) => return Some(done),
+        }
+    }
+    None
+}
+
+const AFTER_COMMAND: &str =
+    "set setting RetryLimit = { retries: 5 }\nupdate i in items set { i with value: i.value + 1 }";
+
+struct StoppedAtWait {
+    /// Whether the text had yet to complete when `stop` ran.
+    waited: bool,
+    /// What the text completed with while the holder stayed open.
+    done: Option<Completion>,
+    setting: Vec<String>,
+    values: Vec<String>,
+}
+
+/// Run a command and a write of the row a holder has changed, under `opts`, apply `stop` to it
+/// once it has run a while, and end the holder only after it has settled or a simulated second
+/// has passed.
+fn stopped_at_wait(
+    opts: impl FnOnce(&SimRuntime) -> CallOptions,
+    stop: impl FnOnce(&SimRuntime, &Database<SimRuntime>, &Task<SimRuntime>),
+) -> StoppedAtWait {
+    once(3, |rt| {
+        let db = counted(&rt, 2);
+        let session = db.role_authority().session("owner").expect("session");
+        let mut holder = db.begin(&TxnOptions::default()).unwrap();
+        holder
+            .query_text(TOUCH, &[], &TxnCallOptions::default())
+            .unwrap();
+        let options = TaskOptions {
+            call: opts(&rt),
+            ..TaskOptions::default()
+        };
+        let t = session
+            .submit_text(AFTER_COMMAND, &[], options)
+            .expect("the text is admitted");
+        for _ in 0..5000 {
+            rt.yield_now();
+        }
+        let waker = Waker::from(Arc::new(Unpark {
+            rt: rt.clone(),
+            thread: rt.current(),
+        }));
+        let waited = matches!(t.observe(&waker), Observation::Pending);
+        stop(&rt, &db, &t);
+        let done = settled(&rt, &t);
+        let open = !matches!(
+            &done,
+            Some(Completion::Failed(Error::Rejected {
+                reason: RejectReason::Closed
+            }))
+        );
+        let (setting, values) = if open {
+            (retries(&db), value(&db))
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        holder.rollback().unwrap();
+        db.close().unwrap();
+        StoppedAtWait {
+            waited,
+            done,
+            setting,
+            values,
+        }
+    })
+}
+
+fn no_stop(_: &SimRuntime, _: &Database<SimRuntime>, _: &Task<SimRuntime>) {}
+
+fn rejected(done: Option<Completion>, reason: impl Fn(&RejectReason) -> bool) {
+    assert!(
+        matches!(&done, Some(Completion::Failed(Error::Rejected { reason: r })) if reason(r)),
+        "{done:?}"
+    );
+}
+
+#[test]
+fn a_cancel_stops_a_write_waiting_after_a_command() {
+    let got = stopped_at_wait(|_| CallOptions::default(), |_, _, t| t.cancel());
+    assert!(got.waited, "the text waits on the holder");
+    rejected(got.done, |r| matches!(r, RejectReason::Cancelled));
+    assert_eq!(vec!["0"], got.values);
+    assert_eq!(1, got.setting.len(), "{:?}", got.setting);
+}
+
+#[test]
+fn a_statement_limit_stops_a_write_waiting_after_a_command() {
+    let got = stopped_at_wait(
+        |_| CallOptions {
+            limit: Some(Duration::from_micros(50)),
+            ..CallOptions::default()
+        },
+        no_stop,
+    );
+    rejected(got.done, |r| {
+        matches!(r, RejectReason::StatementLimit { .. })
+    });
+    assert_eq!(vec!["0"], got.values);
+}
+
+#[test]
+fn a_deadline_stops_a_write_waiting_after_a_command() {
+    let got = stopped_at_wait(
+        |rt| CallOptions {
+            deadline: Some(rt.wall() + Duration::from_millis(100)),
+            ..CallOptions::default()
+        },
+        no_stop,
+    );
+    assert!(got.waited, "the text waits on the holder");
+    rejected(got.done, |r| matches!(r, RejectReason::DeadlineExceeded));
+    assert_eq!(vec!["0"], got.values);
+}
+
+#[test]
+fn an_idle_expiry_stops_a_write_waiting_after_a_command() {
+    let limit = Duration::from_secs(30);
+    let got = stopped_at_wait(|_| CallOptions::default(), |_, _, t| t.expire_idle(limit));
+    assert!(got.waited, "the text waits on the holder");
+    assert_eq!(
+        Some(Completion::Failed(Error::Retry {
+            reason: RetryReason::StreamIdle { limit }
+        })),
+        got.done
+    );
+}
+
+#[test]
+fn closing_the_engine_stops_a_write_waiting_after_a_command() {
+    let got = stopped_at_wait(
+        |_| CallOptions::default(),
+        |_, db, _| db.clone().close().unwrap(),
+    );
+    assert!(got.waited, "the text waits on the holder");
+    rejected(got.done, |r| matches!(r, RejectReason::Closed));
+}
+
+const BUMP_FIRST: &str = "update i in items where i.id == items.key(1) set { i with n: i.n + 1 }";
+const BUMP_SECOND: &str = "update i in items where i.id == items.key(2) set { i with n: i.n + 1 }";
+
+#[test]
+fn a_write_after_a_command_closing_a_wait_cycle_fails_and_frees_the_other_waiter() {
+    once(3, |rt| {
+        let gate = Arc::new(Gate::default());
+        let options = OpenOptions {
+            workers: Some(2),
+            ..gated_options(&rt, &gate)
+        };
+        let db = Database::open_in(rt.clone(), "counted.adt", &Log::new([COUNTED]), &options)
+            .expect("schema database opens");
+        write(&db, "insert items { n: 1 }");
+        write(&db, "insert items { n: 2 }");
+        let holds = Arc::new(AtomicBool::new(false));
+        let other = Arc::new(Mutex::new(None));
+        let holder = {
+            let (db, gate, holds, other, rt2) = (
+                db.clone(),
+                gate.clone(),
+                holds.clone(),
+                other.clone(),
+                rt.clone(),
+            );
+            rt.spawn("holder", move || {
+                let mut h = db.begin(&TxnOptions::default()).unwrap();
+                h.query_text(BUMP_FIRST, &[], &TxnCallOptions::default())
+                    .unwrap();
+                holds.store(true, Ordering::Release);
+                while !gate.entered.load(Ordering::Acquire) {
+                    rt2.yield_now();
+                }
+                let got = h
+                    .query_text(BUMP_SECOND, &[], &TxnCallOptions::default())
+                    .map(drop);
+                *other.lock().unwrap() = Some(got);
+                h.rollback().unwrap();
+            })
+        };
+        while !holds.load(Ordering::Acquire) {
+            rt.yield_now();
+        }
+        let session = db.role_authority().session("owner").expect("session");
+        let text =
+            format!("{SETTING}\n{BUMP_SECOND}\nfrom i in items select gate(i.n)\n{BUMP_FIRST}");
+        let t = session
+            .submit_text(
+                &text,
+                &[],
+                TaskOptions {
+                    call: CallOptions {
+                        limit: Some(Duration::from_secs(10)),
+                        ..CallOptions::default()
+                    },
+                    ..TaskOptions::default()
+                },
+            )
+            .expect("the text is admitted");
+        while !gate.entered.load(Ordering::Acquire) {
+            rt.yield_now();
+        }
+        for _ in 0..5000 {
+            rt.yield_now();
+        }
+        gate.open.store(true, Ordering::Release);
+        let got = finish(&rt, &t);
+        assert!(serialization(&got), "{got:?}");
+        rt.join(holder);
+        let other = other.lock().unwrap().take().expect("the holder ran");
+        other.expect("the other waiter proceeds once the text fails");
+        assert_eq!(1, retries(&db).len());
+        db.close().unwrap();
+    });
+}
+
+/// Returns the text of bundle `name` pinned at `ITEMS_OF_VALUE`.
+fn value_bundle(name: &str) -> Registration {
+    let file = parse_migration(ITEMS_OF_VALUE, ParseOptions::default())
+        .ok()
+        .expect("the schema parses");
+    let source = Source::default()
+        .migrate(&file, ITEMS_OF_VALUE)
+        .expect("the schema applies");
+    let schema = source.schema().expect("the source builds");
+    let pins: String = version_hash(&schema, &source)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let text = format!(
+        "bundle {name} pins 1 ({pins}) edition \"2026-10\"\nimport example\nquery values () -> Set I64 = from i in items select i.value\n"
+    );
+    Registration::bundle(text).expect("a bundle file")
+}
+
+fn bundle_states(db: &Database<SimRuntime>) -> Vec<String> {
+    query(
+        db,
+        r#"from b in catalog::bundles select b.name ++ " " ++ (match b.state
+  | Active -> "active"
+  | Superseded _ -> "superseded"
+  | Retired _ -> "retired")"#,
+    )
+}
+
+/// What a text did on a database of two bundles: the transaction ids it took, what it completed
+/// with, the row's value and the bundles' states.
+type BundleRun = (u64, Completion, Vec<String>, Vec<String>);
+
+/// Run `text`, beside a holder of the row it updates that `end` ends once it waits, if given.
+fn on_bundles(text: &str, end: Option<fn(adtb::AdHocTransaction<'_, SimRuntime>)>) -> BundleRun {
+    once(3, |rt| {
+        let options = OpenOptions {
+            registrations: vec![value_bundle("web-1.0"), value_bundle("web-1.1")],
+            ..options(2)
+        };
+        let db = Database::open_in(
+            rt.clone(),
+            "bundled.adt",
+            &Log::new([ITEMS_OF_VALUE]),
+            &options,
+        )
+        .expect("schema database opens");
+        results(&db, "insert items { value: 0 }");
+        let session = db.role_authority().session("owner").expect("session");
+        let before = xids_taken(&db);
+        let (done, xids) = match end {
+            None => {
+                let t = session
+                    .submit_text(text, &[], TaskOptions::default())
+                    .expect("the text is admitted");
+                let done = completion(&rt, &t);
+                (done, xids_taken(&db) - before)
+            }
+            Some(end) => {
+                let mut holder = db.begin(&TxnOptions::default()).unwrap();
+                holder
+                    .query_text(TOUCH, &[], &TxnCallOptions::default())
+                    .unwrap();
+                let before = xids_taken(&db);
+                let t = session
+                    .submit_text(text, &[], TaskOptions::default())
+                    .expect("the text is admitted");
+                for _ in 0..5000 {
+                    rt.yield_now();
+                }
+                let waker = Waker::from(Arc::new(Unpark {
+                    rt: rt.clone(),
+                    thread: rt.current(),
+                }));
+                assert!(
+                    matches!(t.observe(&waker), Observation::Pending),
+                    "the text waits on the holder"
+                );
+                end(holder);
+                let done = completion(&rt, &t);
+                (done, xids_taken(&db) - before)
+            }
+        };
+        let values = value(&db);
+        let states = bundle_states(&db);
+        db.close().unwrap();
+        (xids, done, values, states)
+    })
+}
+
+fn a_bundle_command_before_a_write_takes_effect_once(command: &str, states: &[&str]) {
+    let text = format!("{command}\n{TOUCH}");
+    let (alone, done, values, seen) = on_bundles(&text, None);
+    assert!(matches!(done, Completion::Committed { .. }), "{done:?}");
+    assert_eq!(vec!["1"], values);
+    assert_eq!(states, seen);
+
+    let (xids, done, values, seen) = on_bundles(&text, Some(|h| h.rollback().unwrap()));
+    assert!(matches!(done, Completion::Committed { .. }), "{done:?}");
+    assert_eq!(alone, xids, "no second attempt");
+    assert_eq!(vec!["1"], values);
+    assert_eq!(states, seen);
+
+    let (_, done, values, seen) = on_bundles(
+        &text,
+        Some(|h| {
+            h.commit(None).unwrap();
+        }),
+    );
+    assert!(
+        matches!(&done, Completion::Failed(e) if e.is_serialization()),
+        "{done:?}"
+    );
+    assert_eq!(vec!["1"], values);
+    assert_eq!(states, seen);
+}
+
+#[test]
+fn a_retire_bundle_before_a_waiting_write_takes_effect_once() {
+    a_bundle_command_before_a_write_takes_effect_once(
+        "retire bundle web-1.0",
+        &["\"web-1.0 retired\"", "\"web-1.1 active\""],
+    );
+}
+
+#[test]
+fn a_supersede_bundle_before_a_waiting_write_takes_effect_once() {
+    a_bundle_command_before_a_write_takes_effect_once(
+        "supersede bundle web-1.0 by web-1.1",
+        &["\"web-1.0 superseded\"", "\"web-1.1 active\""],
+    );
 }

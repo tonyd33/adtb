@@ -374,7 +374,7 @@ impl<R: Runtime> Call<R> {
             }
             Ok(None) => e
                 .statements(id, &tx, p, &mut Local::default(), self.bounds(e))
-                .map_err(|(err, _)| err)
+                .map_err(|f| f.error)
                 .and_then(|rows| self.whole(e, rows)),
             Err(err) => Err(e.write_error(id, err)),
         };
@@ -487,13 +487,13 @@ impl<R: Runtime> Call<R> {
                         }
                         Err(f) => {
                             e.abort(id, tx)?;
-                            self.retry(e, &mut w, e.write_error(id, f.into()))?;
+                            self.retry(e, &mut w, e.write_error(id, f.into()), false)?;
                         }
                     }
                 }
-                Err(Halted::Failed(err, _)) => {
+                Err(Halted::Failed(f)) => {
                     e.abort(id, tx)?;
-                    self.retry(e, &mut w, err)?;
+                    self.retry(e, &mut w, f.error, f.commanded)?;
                 }
             }
         }
@@ -536,9 +536,9 @@ impl<R: Runtime> Call<R> {
                         }
                     };
                 }
-                Err(Halted::Failed(err, _)) => {
+                Err(Halted::Failed(f)) => {
                     e.abort(id, tx)?;
-                    return Err(err);
+                    return Err(f.error);
                 }
                 Err(Halted::Blocked { on, rerun }) => {
                     e.abort(id, tx)?;
@@ -569,15 +569,21 @@ impl<R: Runtime> Call<R> {
     }
 
     /// Count another attempt after the failure `err` of an aborted one, or return `err` when
-    /// it is no serialization failure, the call has no reruns left, or its owner asked it to
-    /// stop.
-    fn retry(&self, e: &Engine<R>, w: &mut Writing, err: Error) -> Result<(), Error> {
+    /// it is no serialization failure, a command has run, the call has no reruns left, or its
+    /// owner asked it to stop.
+    fn retry(
+        &self,
+        e: &Engine<R>,
+        w: &mut Writing,
+        err: Error,
+        commanded: bool,
+    ) -> Result<(), Error> {
         let requested = self.shared.state.lock(&self.shared.rt).request;
         if let Some(r) = requested {
             return Err(r.error());
         }
-        let reruns = e.reruns(self.work.prepared(), self.opts.call.retry);
-        if err.is_serialization() && u64::from(w.attempts) <= reruns {
+        let p = self.work.prepared();
+        if e.reruns_after(p, self.opts.call.retry, w.attempts, &err, commanded) {
             w.attempts += 1;
             Ok(())
         } else {
@@ -607,6 +613,7 @@ impl<R: Runtime> Call<R> {
                 return Err(err);
             }
         };
+        let commanded = !self.work.prepared().commands().is_empty();
         let marked = self.text.as_ref().and_then(|_| e.audit_unwritable());
         let row = match (&self.text, marked) {
             (Some(_), Some(marked)) if tx.wrote() => {
@@ -618,7 +625,7 @@ impl<R: Runtime> Call<R> {
         };
         if let Err(err) = row {
             e.abort(id, tx)?;
-            self.retry(e, &mut w, err)?;
+            self.retry(e, &mut w, err, commanded)?;
             self.phase = Phase::Writing(w);
             return Ok(Then::Next);
         }
@@ -661,7 +668,7 @@ impl<R: Runtime> Call<R> {
                 Ok(Then::Next)
             }
             Err(err) => {
-                self.retry(e, &mut w, e.write_error(id, err))?;
+                self.retry(e, &mut w, e.write_error(id, err), commanded)?;
                 self.phase = Phase::Writing(w);
                 Ok(Then::Next)
             }

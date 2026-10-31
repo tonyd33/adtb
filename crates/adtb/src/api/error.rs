@@ -331,6 +331,7 @@ impl Error {
             }),
             write::Error::Denied(detail) => Error::rejected(RejectReason::Denied { detail }),
             write::Error::Cancelled => Error::rejected(RejectReason::Cancelled),
+            write::Error::Closed => Error::closed(),
             write::Error::DeadlineExceeded => Error::rejected(RejectReason::DeadlineExceeded),
             write::Error::MissingFunction(function) => Error::Fatal {
                 reason: FatalReason::MissingFunction { function },

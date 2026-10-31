@@ -134,6 +134,8 @@ pub enum Error {
     /// The files a path names differ from those an earlier scan of it in the transaction read.
     FileChanged(String),
     Cancelled,
+    /// The engine closed while the statement waited for a transaction.
+    Closed,
     DeadlineExceeded,
     /// A statement run with [`Bounds::suspend`] must wait for transaction `on` to end. A rerun
     /// of the statements passes `rerun` as [`Bounds::rerun`].
@@ -371,8 +373,10 @@ pub struct Bounds {
     pub cancel: Option<Arc<AtomicBool>>,
     /// The instant of the runtime's clock at which the statements fail with `DeadlineExceeded`.
     pub deadline: Option<Instant>,
-    /// Fail with `Blocked` at a wait for another transaction, instead of parking the thread.
+    /// Fail with `Blocked` at a wait for another transaction, instead of holding the thread.
     pub suspend: bool,
+    /// The first item that holds its worker at a wait although `suspend` is set.
+    pub polls_from: Option<usize>,
     /// The `rerun` of the `Blocked` failure of an earlier run of the same statements.
     pub rerun: Option<Rerun>,
     /// The grant every execution of the statements takes its memory from, else one admitted
@@ -406,7 +410,7 @@ pub struct Stop {
     pub cancel: Arc<AtomicBool>,
     pub deadline: Option<exec::Deadline>,
     /// Fail with `Blocked`, carrying this, at a wait for another transaction, instead of
-    /// parking the thread.
+    /// holding the thread.
     pub suspend: Option<Rerun>,
     /// The grant every execution takes its memory from, else one admitted for each.
     pub grant: Option<Arc<exec::Grant>>,
@@ -974,7 +978,7 @@ impl<R: Runtime> Database<R> {
         let stop = Stop::of(
             bounds,
             limited.then_some(rerun.since),
-            bounds.suspend.then_some(rerun),
+            (bounds.suspend && bounds.polls_from.is_none_or(|from| item < from)).then_some(rerun),
         );
         eval::Stmt::new(self, tx, text, t, options, stop)
     }

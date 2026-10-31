@@ -147,12 +147,20 @@ impl<R: Runtime> Stmt<'_, R> {
     }
 
     /// Wait, as `xid`, for transaction `on` to end, or fail with `Blocked` when the statement
-    /// suspends instead.
+    /// suspends instead. Fail with `Closed` once the engine closes, else with what stops the
+    /// statement.
     fn wait(&self, xid: Xid, on: Xid) -> Result<(), Error> {
         if let Some(rerun) = self.stop.suspend {
             return Err(Error::Blocked { on, rerun });
         }
-        Ok(self.db.waits.wait(Some(xid), on)?)
+        self.db
+            .waits
+            .wait_pausing(xid, on, || -> Result<(), Error> {
+                self.db.rebuild_stopped().map_err(|_| Error::Closed)?;
+                self.stopped()?;
+                self.db.pause_a_poll();
+                Ok(())
+            })
     }
 
     /// Wait while an offline rebuild holds writes to any of `rels`, or fail with `Blocked` when

@@ -142,4 +142,25 @@ impl<R: Runtime> Waits<R> {
         }
         Ok(())
     }
+
+    /// Wait as `me` until `on` has ended, running `pause` between looks. Fail as
+    /// [`watch`](Waits::watch) does, or with the failure of `pause`, which withdraws the wait.
+    pub fn wait_pausing<E: From<SerializationFailure>>(
+        &self,
+        me: Xid,
+        on: Xid,
+        mut pause: impl FnMut() -> Result<(), E>,
+    ) -> Result<(), E> {
+        let waker = Waker::noop();
+        if self.watch(Some(me), on, waker)? == Watch::Ended {
+            return Ok(());
+        }
+        while self.state.lock(&self.rt).running.contains(&on) {
+            if let Err(e) = pause() {
+                self.withdraw(Some(me), on, waker);
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
 }

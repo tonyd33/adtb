@@ -478,7 +478,8 @@ Preconditions:
   concurrent inserters of a key, one finds the other's entry.
 - Nothing latched is held across a wait; a wait parks through the
   runtime ([runtime.md §1](runtime.md#1-time-threads-and-randomness)),
-  or suspends its call. A suspended wait fails the statement, which
+  ending with the error of a stop of its statement or of the engine's
+  close, or suspends its call. A suspended wait fails the statement, which
   releases its worker and undoes every statement the call ran; once
   the awaited transaction ends, the caller reruns them on the same
   transaction and snapshot. The rerun does not restart the statement

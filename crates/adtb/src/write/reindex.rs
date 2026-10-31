@@ -71,7 +71,7 @@ pub(super) const OFFLINE_GATE: Xid = Xid(u64::MAX);
 /// The transaction a call waiting for the vacuum lock waits for: running while a holder has it.
 const VACUUM_HOLDER: Xid = Xid(u64::MAX - 1);
 
-/// How often a statement that cannot suspend looks at the gate and at what stops it.
+/// How often a statement that cannot suspend looks at what it waits for and at what stops it.
 pub(super) const GATE_POLL: Duration = Duration::from_millis(5);
 
 /// What stops a call that waits for the vacuum lock.
@@ -383,9 +383,14 @@ impl<R: Runtime> Database<R> {
         }
     }
 
-    /// Block the calling thread until `GATE_POLL` has passed.
+    /// Count a wait for a rebuild and block the calling thread until `GATE_POLL` has passed.
     pub(super) fn pause_for_rebuild(&self) {
         self.rebuild_waits.fetch_add(1, Ordering::Relaxed);
+        self.pause_a_poll();
+    }
+
+    /// Block the calling thread until `GATE_POLL` has passed.
+    pub(super) fn pause_a_poll(&self) {
         let mut io = self.rt.io();
         io.submit(Op::Timer {
             at: self.rt.now() + GATE_POLL,

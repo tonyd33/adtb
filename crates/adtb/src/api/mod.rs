@@ -17,6 +17,7 @@ mod registered;
 mod reindex;
 mod server;
 mod settings;
+mod statements;
 mod stop;
 mod text;
 mod txn;
@@ -42,11 +43,11 @@ use adtb_sys::lock::{Lock, RwLock};
 
 use crate::catalog::{self, Catalog};
 use crate::exec::{self, Budget, Scheduler, Val};
+use crate::mvcc::Limits;
 use crate::mvcc::Transactions;
-use crate::mvcc::{Limits, Xid};
 use crate::runtime::{Runtime, ThreadId};
 use crate::storage::{self, LATCHES_PER_THREAD, Pager};
-use crate::write::{self, Bindings, Bounds, Local, Setup, Text, Txn};
+use crate::write::{self, Bindings, Bounds, Local, Setup, Txn};
 
 pub use arrow::{ArrowSchema, ArrowStream, Field, RecordBatch};
 pub use error::{Error, FatalReason, Fault, Limit, OpenError, RejectReason, RetryReason};
@@ -63,6 +64,7 @@ pub use txn::{AdHocTransaction, Committed, TxnCallOptions, TxnOptions};
 pub use typed::{BundleDef, Callable, CtorRelation, Key, Pending, Rows};
 
 use settings::Settings;
+use statements::{Failure, Halted};
 use stop::Stops;
 use text::Prepared;
 
@@ -259,14 +261,6 @@ impl<R: Runtime> Clone for Database<R> {
             handles: self.handles.clone(),
         }
     }
-}
-
-/// Why [`Engine::resumable`] stopped short.
-enum Halted {
-    /// A statement must wait for transaction `on` to end; a rerun passes `rerun`.
-    Blocked { on: Xid, rerun: write::Rerun },
-    /// The client error, and whether it ends the transaction.
-    Failed(Error, bool),
 }
 
 struct Engine<R: Runtime> {
@@ -1114,8 +1108,7 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Run the items of `p` as statements of `tx`, the transaction `id`, over `local`. Returns
-    /// the rows of each item that yields a result, or the client error of the failure, and
-    /// whether that failure ends the transaction.
+    /// the rows of each item that yields a result, or the failure.
     fn statements(
         &self,
         id: TxnId,
@@ -1123,91 +1116,16 @@ impl<R: Runtime> Engine<R> {
         p: &Prepared,
         local: &mut Local,
         bounds: Bounds,
-    ) -> Result<Vec<DynRows>, (Error, bool)> {
+    ) -> Result<Vec<DynRows>, Failure> {
         self.resumable(id, tx, p, local, bounds)
             .map_err(|f| match f {
-                Halted::Blocked { on, rerun } => (
-                    Error::of_write(p.schema(), id, write::Error::Blocked { on, rerun }),
-                    false,
-                ),
-                Halted::Failed(e, ends) => (e, ends),
+                Halted::Blocked { on, rerun } => Failure {
+                    error: Error::of_write(p.schema(), id, write::Error::Blocked { on, rerun }),
+                    ends: false,
+                    commanded: false,
+                },
+                Halted::Failed(failure) => failure,
             })
-    }
-
-    /// Run the items of `p` as [`statements`](Engine::statements) does, except that a
-    /// statement suspending on a transaction wait halts with `Blocked`. A command after the first
-    /// polls with its stops instead.
-    fn resumable(
-        &self,
-        id: TxnId,
-        tx: &Txn,
-        p: &Prepared,
-        local: &mut Local,
-        bounds: Bounds,
-    ) -> Result<Vec<DynRows>, Halted> {
-        let schema = p.schema();
-        let text = Text {
-            schema,
-            terms: p.terms(),
-            items: p.items(),
-            params: p.params(),
-            clock: self.clock(),
-            caller: Some(p.caller()),
-        };
-        let mut ran: Vec<(usize, DynRows)> = Vec::new();
-        let mut refused: Option<Error> = None;
-        let mut between = |at: usize, local: &mut Local| -> Result<(), write::Error> {
-            let commands = p.commands().iter().enumerate();
-            for (nth, c) in commands.filter(|(_, c)| c.at == at) {
-                match self.deployment_command(&c.command, p) {
-                    Some(Ok(rows)) => ran.push((at, rows)),
-                    Some(Err(e)) => {
-                        refused = Some(e);
-                        return Err(write::Error::Internal(
-                            "a deployment command was refused".into(),
-                        ));
-                    }
-                    None => {
-                        if !matches!(c.command, adtb_lang::check::Command::Verify(_)) {
-                            self.db.admit_database()?;
-                        }
-                        let c = (&c.command, at);
-                        let bounds = if nth == 0 {
-                            bounds.clone()
-                        } else {
-                            Bounds {
-                                suspend: false,
-                                rerun: None,
-                                ..bounds.clone()
-                            }
-                        };
-                        ran.push((at, self.command(tx, p, c, local, bounds)?));
-                    }
-                }
-            }
-            Ok(())
-        };
-        let done = self
-            .db
-            .statements_with(tx, text, local, bounds.clone(), &mut between);
-        match (done, refused) {
-            (Err(_), Some(e)) => Err(Halted::Failed(e, false)),
-            (Ok(outcomes), _) => p
-                .results(schema, outcomes, ran)
-                .map_err(|e| Halted::Failed(e, true)),
-            (
-                Err(write::Failed {
-                    error: write::Error::Blocked { on, rerun },
-                    ..
-                }),
-                None,
-            ) => Err(Halted::Blocked { on, rerun }),
-            (Err(f), None) => {
-                let ends = f.error.ends_transaction();
-                let error = self.db.quarantining(f.error);
-                Err(Halted::Failed(Error::of_write(schema, id, error), ends))
-            }
-        }
     }
 
     fn begin(&self, id: TxnId) -> Result<Txn, Error> {
@@ -1243,9 +1161,9 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Run `p` as one transaction of its own under `opts`: read-only when `p` only reads, else
-    /// rerun on a serialization failure up to `opts.retry`, else `p`'s `retry n`, else the file
-    /// setting `RetryLimit`. Returns the rows of each item that yields a result, with the commit
-    /// position and the attempts made.
+    /// rerun on a serialization failure before any command ran, up to `opts.retry`, else `p`'s
+    /// `retry n`, else the file setting `RetryLimit`. Returns the rows of each item that yields a
+    /// result, with the commit position and the attempts made.
     ///
     /// A call whose token is cancelled, or whose deadline passes, before it commits fails with
     /// `Cancelled` or `DeadlineExceeded` and has no effect.
@@ -1277,24 +1195,26 @@ impl<R: Runtime> Engine<R> {
                     value,
                     position,
                     attempts: 1,
-                });
+                })
+                .map_err(|f| f.error);
         }
-        let reruns = self.reruns(p, opts.retry);
         let mut attempts = 1;
         loop {
             stops.check(&self.rt)?;
             let id = self.txn_id();
             let tx = self.begin(id)?;
             match self.run(id, tx, p, bounds.clone()) {
-                Err(err) if err.is_serialization() && u64::from(attempts) <= reruns => {
+                Err(f) if self.reruns_after(p, opts.retry, attempts, &f.error, f.commanded) => {
                     attempts += 1;
                 }
                 done => {
-                    return done.map(|(value, position)| Committed {
-                        value,
-                        position,
-                        attempts,
-                    });
+                    return done
+                        .map(|(value, position)| Committed {
+                            value,
+                            position,
+                            attempts,
+                        })
+                        .map_err(|f| f.error);
                 }
             }
         }
@@ -1328,6 +1248,19 @@ impl<R: Runtime> Engine<R> {
         )
     }
 
+    /// Returns whether a call of `p` makes another attempt after `attempts`, the last failing
+    /// with `err`: a serialization failure, no command having run, within its reruns.
+    fn reruns_after(
+        &self,
+        p: &Prepared,
+        retry: Option<u32>,
+        attempts: u32,
+        err: &Error,
+        commanded: bool,
+    ) -> bool {
+        err.is_serialization() && !commanded && u64::from(attempts) <= self.reruns(p, retry)
+    }
+
     /// Run `p` in `tx`, the transaction `id`, bounded by `bounds`, and commit it, or abort it on
     /// any failure. Returns the rows of each item that yields a result and the commit position.
     fn run(
@@ -1336,28 +1269,37 @@ impl<R: Runtime> Engine<R> {
         tx: Txn,
         p: &Prepared,
         bounds: Bounds,
-    ) -> Result<(Vec<DynRows>, Position), Error> {
+    ) -> Result<(Vec<DynRows>, Position), Failure> {
         let (cancel, deadline) = (bounds.cancel.clone(), bounds.deadline);
+        let past_commands = |error| Failure {
+            error,
+            ends: true,
+            commanded: !p.commands().is_empty(),
+        };
         let rows = self
             .statements(id, &tx, p, &mut Local::default(), bounds)
-            .map_err(|(e, _)| e)
             .and_then(|rows| {
                 if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Acquire)) {
-                    Err(Error::rejected(RejectReason::Cancelled))
+                    Err(past_commands(Error::rejected(RejectReason::Cancelled)))
                 } else if deadline.is_some_and(|d| self.rt.now() >= d) {
-                    Err(Error::rejected(RejectReason::DeadlineExceeded))
+                    Err(past_commands(Error::rejected(
+                        RejectReason::DeadlineExceeded,
+                    )))
                 } else {
                     Ok(rows)
                 }
             });
         match rows {
             Ok(rows) => {
-                let at = self.db.commit(tx).map_err(|e| self.write_error(id, e))?;
+                let at = self
+                    .db
+                    .commit(tx)
+                    .map_err(|e| past_commands(self.write_error(id, e)))?;
                 Ok((rows, Position::from(at)))
             }
-            Err(e) => {
-                self.abort(id, tx)?;
-                Err(e)
+            Err(f) => {
+                self.abort(id, tx).map_err(past_commands)?;
+                Err(f)
             }
         }
     }
