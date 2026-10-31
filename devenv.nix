@@ -45,6 +45,7 @@ in
   scripts.check.exec = ''
     set -e
     source "$DEVENV_ROOT/work/tools/common.bash"
+    no_core_dumps
     machine_lock "$DEVENV_ROOT"
     export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$DEVENV_ROOT/target}"
     cargo clippy --workspace --all-targets -- -D warnings

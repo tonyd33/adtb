@@ -16,6 +16,7 @@ out=${ADTB_SUITE_OUT:-$target/suite.txt}
 source "$root/work/tools/common.bash"
 
 mkdir -p "$target"
+no_core_dumps
 cd "$root" || exit 1
 : >"$out"
 trap 'echo "suite: exit $status" >>"$out"' EXIT

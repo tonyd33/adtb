@@ -1,5 +1,10 @@
 # Functions the tools in this directory share. Source it; it runs nothing.
 
+# Dump no core from this shell or its children. The soft limit only: a test raises it for one child.
+no_core_dumps() {
+  ulimit -Sc 0
+}
+
 machine_lock_path() {
   printf '%s\n' "${XDG_CACHE_HOME:-$HOME/.cache}/adtb/suite.lock"
 }

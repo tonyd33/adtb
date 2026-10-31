@@ -9,6 +9,9 @@
 //!
 //! Linking this crate installs the allocator, except under Miri. Test builds link it through the
 //! `test-heap-cap` feature of `adtb-lang` or `adtb-sys`.
+//!
+//! The allocator's first use sets the process's soft `RLIMIT_CORE` to zero, so a crash of any kind
+//! dumps no core.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::ffi::CStr;
@@ -91,6 +94,7 @@ impl HeapCap {
     fn cap(&self) -> usize {
         match self.cap.load(Relaxed) {
             UNREAD => {
+                zero_core_limit();
                 let cap = cap_from_environment();
                 self.cap.store(cap, Relaxed);
                 cap
@@ -253,6 +257,23 @@ fn abort_over_cap(live: usize, cap: usize) -> ! {
     unsafe { libc::write(libc::STDERR_FILENO, line.bytes.as_ptr().cast(), line.len) };
     forgo_core_dump();
     std::process::abort()
+}
+
+/// Set this process's soft `RLIMIT_CORE` to zero and keep its hard limit. Allocates nothing.
+fn zero_core_limit() {
+    #[cfg(not(miri))]
+    {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: the pointer names an `rlimit` the call fills.
+        if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &raw mut limit) } == 0 {
+            limit.rlim_cur = 0;
+            // SAFETY: the pointer names an initialised `rlimit`.
+            unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const limit) };
+        }
+    }
 }
 
 /// Keep the abort from writing the process's heap to a core file.

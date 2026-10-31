@@ -2,13 +2,24 @@
 
 use adtb_heap_cap::{DEFAULT_CAP, raise_cap, slots_for};
 use std::fs;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const MODE: &str = "ADTB_HEAP_CAP_TEST_MODE";
 const CAP: &str = "ADTB_TEST_HEAP_CAP";
 const SMALL_BOX_CAP: usize = 268_435_456;
+
+fn core_limit() -> libc::rlimit {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: the pointer names an `rlimit` the call fills.
+    let status = unsafe { libc::getrlimit(libc::RLIMIT_CORE, &raw mut limit) };
+    assert_eq!(status, 0);
+    limit
+}
 
 fn hold_small_boxes<T: Default>() -> ! {
     let mut held = Vec::new();
@@ -34,6 +45,7 @@ fn run_mode(mode: &str) {
             raise_cap(2 * DEFAULT_CAP);
             std::hint::black_box(vec![0u8; DEFAULT_CAP + (1 << 20)]);
         }
+        "core_limit" => assert_eq!(core_limit().rlim_cur, 0),
         other => panic!("no mode {other}"),
     }
 }
@@ -126,6 +138,30 @@ fn a_raised_cap_lets_the_test_pass_the_default() {
 fn the_environment_overrides_a_raised_cap() {
     let line = cap_line(&child("raised_past_default", Some(67_108_864)));
     assert!(line.ends_with("past the cap of 67108864"), "{line}");
+}
+
+fn set_core_limit(limit: libc::rlimit) -> std::io::Result<()> {
+    // SAFETY: the pointer names an initialised `rlimit`.
+    if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const limit) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Under a hard limit of zero the child starts at zero and this proves nothing.
+#[test]
+fn a_test_binary_started_with_core_dumps_on_zeroes_its_core_limit() {
+    let mut limit = core_limit();
+    limit.rlim_cur = limit.rlim_max.min(4096);
+    let mut command = Command::new(std::env::current_exe().expect("the test binary has a path"));
+    command
+        .args(["--exact", "child_entry", "--nocapture"])
+        .env(MODE, "core_limit");
+    // SAFETY: the hook makes one async-signal-safe call and allocates only on failure.
+    unsafe { command.pre_exec(move || set_core_limit(limit)) };
+    let child = command.output().expect("the child starts");
+    assert!(child.status.success(), "{child:?}");
 }
 
 #[test]
