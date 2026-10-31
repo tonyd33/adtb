@@ -2078,7 +2078,8 @@ and checks:
 3. Logic: every admitted constraint, run once as its denial query over
    the whole database; every nonempty result is a finding.
 
-A background scrub reads every page of the file over each
+A free page holds nothing, and neither check reads it as damage. A
+background scrub reads every page of the file over each
 `ScrubInterval`, so a latent checksum failure is found before a call
 needs the page. Scrub findings go to the same relation.
 
