@@ -19,6 +19,7 @@ use crate::runtime::Runtime;
 use crate::storage::{Lsn, PageError, Pager, Pid, Position};
 use crate::vacuum;
 
+use super::reindex::VacuumHold;
 use super::schema::Rel;
 use super::{Database, Error};
 
@@ -361,8 +362,7 @@ impl<R: Runtime> Database<R> {
     /// not kept and `window` is not zero.
     ///
     /// Fail if the record of the window is damaged.
-    pub fn set_retention(&self, window: Duration) -> Result<(), Error> {
-        let _one = self.vacuuming.lock(&self.rt);
+    pub fn set_retention(&self, window: Duration, _held: &VacuumHold<'_, R>) -> Result<(), Error> {
         if self.txns.history().is_some() {
             self.txns.set_window(window);
             return Ok(());

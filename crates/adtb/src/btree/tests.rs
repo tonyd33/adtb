@@ -1,6 +1,6 @@
 use std::ops::Bound;
 
-use super::build::{RunEntry, merge_runs};
+use super::build::{BuildError, RunEntry, merge_runs};
 use super::leaf;
 use super::node::{self, Item, Malformed, Node};
 use super::tree::{prefix_end, separator};
@@ -25,6 +25,7 @@ fn merging_runs_orders_and_dedups_their_entries() {
             vec![run_entry(b"a1", 1, true), run_entry(b"b1", 1, false)],
         ],
         false,
+        &|| false,
     );
     assert_eq!(
         Ok(vec![b"a1".to_vec(), b"b1".to_vec(), b"c1".to_vec()]),
@@ -40,9 +41,12 @@ fn merging_runs_of_a_unique_index_refuses_two_entries_of_a_key_that_count() {
             vec![run_entry(b"k2", 1, counted), run_entry(b"z1", 1, true)],
         ]
     };
-    assert_eq!(Err(b"k".to_vec()), merge_runs(run(true), true));
-    assert!(merge_runs(run(false), true).is_ok());
-    assert!(merge_runs(run(true), false).is_ok());
+    assert_eq!(
+        Err(BuildError::Duplicate(b"k".to_vec())),
+        merge_runs(run(true), true, &|| false)
+    );
+    assert!(merge_runs(run(false), true, &|| false).is_ok());
+    assert!(merge_runs(run(true), false, &|| false).is_ok());
 }
 
 #[test]
@@ -50,8 +54,29 @@ fn a_uniqueness_check_restarts_at_each_key() {
     let got = merge_runs(
         vec![vec![run_entry(b"a1", 1, true), run_entry(b"b1", 1, true)]],
         true,
+        &|| false,
     );
     assert!(got.is_ok());
+}
+
+#[test]
+fn a_merge_stops_between_entries() {
+    let asked = std::cell::Cell::new(0);
+    let stop = || {
+        asked.set(asked.get() + 1);
+        asked.get() == 2
+    };
+    let got = merge_runs(
+        vec![vec![
+            run_entry(b"a1", 1, false),
+            run_entry(b"b1", 1, false),
+            run_entry(b"c1", 1, false),
+        ]],
+        false,
+        &stop,
+    );
+    assert_eq!(Err(BuildError::Stopped), got);
+    assert_eq!(2, asked.get());
 }
 
 fn blank(kind: PageKind) -> Vec<u8> {

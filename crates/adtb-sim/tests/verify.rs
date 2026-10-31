@@ -1870,7 +1870,9 @@ fn orphans_beside_vacuum(seed: u64) -> Vec<String> {
         let snapshot = w.begin_verify().unwrap();
         started.store(true, Ordering::Release);
         let scope = VerifyScope::Relation(w.relation_named("app::rows").unwrap());
-        let found = w.check_indexes(snapshot.txn(), scope).unwrap();
+        let found = w
+            .check_indexes(snapshot.txn(), scope, adtb::write::HoldWait::unbounded())
+            .unwrap();
         rt.join(cleaner);
         found
             .iter()

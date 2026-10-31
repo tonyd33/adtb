@@ -14,7 +14,7 @@ use crate::mvcc::Xid;
 use crate::runtime::Runtime;
 use crate::storage::{Pager, Pid};
 use crate::verify::{self, Depth};
-use crate::write::{self, Found, VerifyScope};
+use crate::write::{self, Found, HoldWait, VerifyScope};
 
 use super::command::engine_relation;
 use super::text::{DynRows, rows};
@@ -520,16 +520,17 @@ impl<R: Runtime> Engine<R> {
         &self,
         schema: &Schema,
         rel: Option<RelId>,
+        waiting: HoldWait<'_>,
     ) -> Result<DynRows, write::Error> {
         let scope = rel.map_or(VerifyScope::Database, VerifyScope::Relation);
-        self.verify_run(schema, scope, false)
+        self.verify_run(schema, scope, false, waiting)
     }
 
     /// Run `verify` over the whole database with the checks that hold only with no writer as well.
     ///
     /// Precondition: no other call runs on this database while it runs.
     pub(super) fn verified_holding(&self, schema: &Schema) -> Result<DynRows, write::Error> {
-        self.verify_run(schema, VerifyScope::Database, true)
+        self.verify_run(schema, VerifyScope::Database, true, HoldWait::unbounded())
     }
 
     fn verify_run(
@@ -537,6 +538,7 @@ impl<R: Runtime> Engine<R> {
         schema: &Schema,
         scope: VerifyScope,
         holding: bool,
+        waiting: HoldWait<'_>,
     ) -> Result<DynRows, write::Error> {
         let table = engine_relation(schema, "sys", "verify_findings")?;
         let run = self.verifier.next_run();
@@ -552,7 +554,7 @@ impl<R: Runtime> Engine<R> {
             },
             started,
         };
-        let mut found = self.verify_checks(scope, holding, &job)?;
+        let mut found = self.verify_checks(scope, holding, waiting, &job)?;
         if self.verifier.keeps() {
             found.extend(self.db.quarantine_findings(&found));
         }
@@ -580,6 +582,7 @@ impl<R: Runtime> Engine<R> {
         &self,
         scope: VerifyScope,
         holding: bool,
+        waiting: HoldWait<'_>,
         job: &Job<'_, R>,
     ) -> Result<BTreeSet<Found>, write::Error> {
         if self.db.txns().quarantined().is_some() {
@@ -600,7 +603,7 @@ impl<R: Runtime> Engine<R> {
         job.phase("pages", 0.1);
         found.extend(self.db.check_pages(scope)?);
         job.phase("indexes", 0.4);
-        found.extend(self.db.check_indexes(tx, scope)?);
+        found.extend(self.db.check_indexes(tx, scope, waiting)?);
         if !holding {
             found.extend(self.db.check_links(scope));
         }

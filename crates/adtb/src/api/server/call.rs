@@ -14,7 +14,7 @@ use crate::runtime::Runtime;
 use crate::write::{self, Deferral, Local, Outcome, Produced, Production, Rerun, Text, Txn};
 
 use super::super::arrow::BATCH_ROWS;
-use super::super::command::changes_data;
+use super::super::command::{changes_data, holds_off_vacuum};
 use super::super::registered::Bound;
 use super::super::text::{DynRows, Prepared};
 use super::super::{Closes, Engine, Error, Halted, Position, RejectReason, TxnId};
@@ -51,6 +51,7 @@ enum Phase<R: Runtime> {
     Start,
     Deferring(Deferring),
     Writing(Writing),
+    Commanding(Commanding),
     Output(Output<R>),
     /// A read's output is formed; its transaction stays open until the drain is acknowledged.
     Drain(Option<(TxnId, Txn)>),
@@ -70,6 +71,14 @@ struct Deferring {
 struct Writing {
     tx: Option<(TxnId, Txn)>,
     attempts: u32,
+    rerun: Option<Rerun>,
+    /// The transaction the waker is registered on.
+    watched: Option<(Xid, Waker)>,
+}
+
+/// A read whose commands may wait for the vacuum lock.
+#[derive(Default)]
+struct Commanding {
     rerun: Option<Rerun>,
     /// The transaction the waker is registered on.
     watched: Option<(Xid, Waker)>,
@@ -211,6 +220,7 @@ impl<R: Runtime> Call<R> {
                 Phase::Start => self.start(e)?,
                 Phase::Deferring(d) => self.defer(e, d, waker)?,
                 Phase::Writing(w) => self.write(e, w, waker)?,
+                Phase::Commanding(c) => self.commanding(e, c, waker)?,
                 Phase::Output(o) => self.output(e, o, waker)?,
                 Phase::Drain(tx) => self.drain(e, tx, waker)?,
                 Phase::Over => Then::Step(Step::Done),
@@ -278,6 +288,8 @@ impl<R: Runtime> Call<R> {
                 tx,
                 watched: None,
             })
+        } else if p.commands().iter().any(|c| holds_off_vacuum(&c.command)) {
+            Phase::Commanding(Commanding::default())
         } else {
             let id = e.txn_id();
             let tx = e.begin_read(id, false)?;
@@ -483,6 +495,75 @@ impl<R: Runtime> Call<R> {
                     e.abort(id, tx)?;
                     self.retry(e, &mut w, err)?;
                 }
+            }
+        }
+    }
+
+    /// Run a read with commands, waiting without the worker while its first command waits for the
+    /// vacuum lock. Each run has a transaction of its own. A later command polls with its stops,
+    /// so a command that took effect runs once.
+    fn commanding(
+        &mut self,
+        e: &Engine<R>,
+        mut c: Commanding,
+        waker: &Waker,
+    ) -> Result<Then, Error> {
+        loop {
+            self.opts.call.stops().check(&e.rt)?;
+            c.watched = None;
+            let bounds = write::Bounds {
+                suspend: true,
+                rerun: c.rerun,
+                ..self.bounds(e)
+            };
+            let id = e.txn_id();
+            let tx = e.begin_read(id, false)?;
+            let p = self.work.prepared();
+            let (on, rerun) = match e.resumable(id, &tx, p, &mut Local::default(), bounds) {
+                Ok(rows) => {
+                    return match self.whole(e, rows) {
+                        Ok(results) => {
+                            self.phase = Phase::Output(Output {
+                                results,
+                                announced: false,
+                                tx: Some((id, tx)),
+                            });
+                            Ok(Then::Next)
+                        }
+                        Err(err) => {
+                            e.abort(id, tx)?;
+                            Err(err)
+                        }
+                    };
+                }
+                Err(Halted::Failed(err, _)) => {
+                    e.abort(id, tx)?;
+                    return Err(err);
+                }
+                Err(Halted::Blocked { on, rerun }) => {
+                    e.abort(id, tx)?;
+                    (on, rerun)
+                }
+            };
+            c.rerun = Some(rerun);
+            let until = self.opts.call.limit.map(|l| (l, rerun.limit_at(l)));
+            if let Some((after, at)) = until
+                && at <= e.rt.now()
+            {
+                let limit = write::Error::StatementLimit(Exceeded::Time { after });
+                return Err(e.write_error(id, limit));
+            }
+            match e.db.watch(None, on, waker) {
+                Ok(Watch::Ended) => {}
+                Ok(Watch::Pending) => {
+                    c.watched = Some((on, waker.clone()));
+                    self.phase = Phase::Commanding(c);
+                    return Ok(Then::Step(match until {
+                        Some((_, at)) => Step::WaitUntil(at),
+                        None => Step::Wait,
+                    }));
+                }
+                Err(f) => return Err(e.write_error(id, f.into())),
             }
         }
     }
@@ -771,6 +852,12 @@ impl<R: Runtime> Call<R> {
                     e.db.withdraw(tx.xid(), *on, waker);
                 }
                 w.tx
+            }
+            Phase::Commanding(c) => {
+                if let Some((on, waker)) = &c.watched {
+                    e.db.withdraw(None, *on, waker);
+                }
+                None
             }
             Phase::Output(o) => o.tx,
             Phase::Drain(tx) => tx,

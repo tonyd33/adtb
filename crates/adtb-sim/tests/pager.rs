@@ -1386,3 +1386,21 @@ fn latching_more_than_the_bound_from_one_thread_panics() {
         drop(held);
     });
 }
+
+#[test]
+fn a_failed_scrap_leaves_the_page_damaged() {
+    let mut sim = Sim::new(5, Config::default());
+    let client = Client::new();
+    setup(&mut sim, &client, PLAIN);
+    with_pager(&mut sim, |p| {
+        let pid = p.allocate(1, PageKind::HeapSlotted, 7).unwrap();
+        p.damage(pid, Damage::Checksum);
+        p.damage(Pid(2), Damage::Checksum);
+        assert_eq!(Pid(2), p.scrap(pid).expect_err("the bitmap is damaged").pid);
+        assert_eq!(
+            Some(pid),
+            p.read(pid).err().map(|e| e.pid),
+            "the page reads as sound after a failed scrap"
+        );
+    });
+}

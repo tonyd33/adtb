@@ -946,18 +946,12 @@ impl<'a, R: Runtime> Stmt<'a, R> {
         }
     }
 
-    /// Returns the entries of index `id` as [`exec::Store::probe`] does, bounded by the statement.
     /// Fail with what stops the statement, if it is stopped.
     pub(super) fn stopped(&self) -> Result<(), exec::Error> {
-        if self.stop.cancel.load(Ordering::Acquire) {
-            return Err(exec::Error::Cancelled);
-        }
-        match &self.stop.deadline {
-            Some(d) if self.db.rt.now() >= d.at => Err(d.error.clone()),
-            _ => Ok(()),
-        }
+        self.stop.check(self.db.rt.now())
     }
 
+    /// Returns the entries of index `id` as [`exec::Store::probe`] does, bounded by the statement.
     fn probe(
         &self,
         id: IndexId,

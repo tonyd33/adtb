@@ -21,10 +21,31 @@ pub struct RunEntry {
     pub counted: bool,
 }
 
+/// Why a build ended before its tree was whole.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BuildError {
+    /// The build's `stop` returned true.
+    Stopped,
+    Page(PageError),
+    /// The key of two different entries of a unique merge that both count.
+    Duplicate(Vec<u8>),
+}
+
+impl From<PageError> for BuildError {
+    fn from(e: PageError) -> BuildError {
+        BuildError::Page(e)
+    }
+}
+
 /// Returns the entries of `runs`, each sorted, in order and each once.
 ///
-/// Fail with the key of two different entries that both count when `unique`.
-pub fn merge_runs(runs: Vec<Vec<RunEntry>>, unique: bool) -> Result<Vec<Vec<u8>>, Vec<u8>> {
+/// Fail with `Duplicate` when `unique` and two different entries of one key both count, and with
+/// `Stopped` once `stop` returns true.
+pub fn merge_runs(
+    runs: Vec<Vec<RunEntry>>,
+    unique: bool,
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<Vec<u8>>, BuildError> {
     let mut runs: Vec<_> = runs.into_iter().map(Vec::into_iter).collect();
     let mut heads = BinaryHeap::new();
     for (i, run) in runs.iter_mut().enumerate() {
@@ -35,6 +56,9 @@ pub fn merge_runs(runs: Vec<Vec<RunEntry>>, unique: bool) -> Result<Vec<Vec<u8>>
     let mut out: Vec<Vec<u8>> = Vec::new();
     let mut counted: Option<Vec<u8>> = None;
     while let Some(Reverse((e, i))) = heads.pop() {
+        if stop() {
+            return Err(BuildError::Stopped);
+        }
         if let Some(next) = runs[i].next() {
             heads.push(Reverse((next, i)));
         }
@@ -44,7 +68,7 @@ pub fn merge_runs(runs: Vec<Vec<RunEntry>>, unique: bool) -> Result<Vec<Vec<u8>>
         }
         if unique && e.counted {
             if counted.as_ref().is_some_and(|c| *c != e.entry) {
-                return Err(key.to_vec());
+                return Err(BuildError::Duplicate(key.to_vec()));
             }
             counted = Some(e.entry.clone());
         }
@@ -86,13 +110,17 @@ fn write_level<R: Runtime>(
     level: u16,
     items: &[Item],
     made: &mut Vec<Pid>,
-) -> Result<Vec<(Vec<u8>, Pid)>, PageError> {
+    stop: &dyn Fn() -> bool,
+) -> Result<Vec<(Vec<u8>, Pid)>, BuildError> {
     let mut out = Vec::new();
     let mut new = pager.reserve();
     let mut pid = new.page(FORMAT, kind_of(level), owner)?;
     let mut start = 0;
     let mut low: Option<Vec<u8>> = None;
     loop {
+        if stop() {
+            return Err(BuildError::Stopped);
+        }
         let fence = low.as_ref().map_or(0, |l| node::item_cost(l.len(), level));
         let end = page_end(pager.page_size(), items, start, fence, level);
         let high = (end < items.len()).then(|| {
@@ -131,23 +159,25 @@ impl BTree {
     /// Returns a new tree of `entries`, sorted and distinct, whose pages carry `owner`. Leaves are
     /// filled left to right and each level is built from the first keys of the level below.
     ///
-    /// Every page written is added to `made`, a failed build's included.
+    /// Every page written is added to `made`, a failed build's included. Fail with `Stopped` once
+    /// `stop` returns true, which it is asked before each page.
     pub fn bulk<R: Runtime>(
         pager: &Pager<R>,
         owner: u32,
         entries: Vec<Vec<u8>>,
         made: &mut Vec<Pid>,
-    ) -> Result<BTree, PageError> {
+        stop: &dyn Fn() -> bool,
+    ) -> Result<BTree, BuildError> {
         let items: Vec<Item> = entries.into_iter().map(Item::entry).collect();
         let mut level = 0;
-        let mut pages = write_level(pager, owner, level, &items, made)?;
+        let mut pages = write_level(pager, owner, level, &items, made, stop)?;
         while pages.len() > 1 {
             level += 1;
             let links: Vec<Item> = pages
                 .into_iter()
                 .map(|(low, pid)| Item::link(low, pid))
                 .collect();
-            pages = write_level(pager, owner, level, &links, made)?;
+            pages = write_level(pager, owner, level, &links, made, stop)?;
         }
         Ok(BTree::open(pages[0].1, owner))
     }

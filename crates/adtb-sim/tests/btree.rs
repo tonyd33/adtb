@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use adtb::btree::build::BuildError;
 use adtb::btree::{BTree, Cursor, Error, Index, SumKey, tag_prefix};
 use adtb::key::{
     CtorId, CtorType, Dir, Entry, KeySchema, KeyType, OrderKey, Scalar, SumType, Tid, Value,
@@ -1098,7 +1099,7 @@ fn a_bulk_build_gives_a_sound_tree_a_retail_insert_can_extend() {
             let pager = Pager::create(rt, &options(64)).unwrap();
             let entries: Vec<Vec<u8>> = (0..n).map(|i| (2 * i).to_be_bytes().to_vec()).collect();
             let mut made = Vec::new();
-            let tree = BTree::bulk(&pager, 7, entries.clone(), &mut made).unwrap();
+            let tree = BTree::bulk(&pager, 7, entries.clone(), &mut made, &|| false).unwrap();
             assert_eq!(entries, tree.verify(&pager).unwrap(), "{n} entries");
             let mut pages = tree.pages(&pager).unwrap();
             pages.sort();
@@ -1119,4 +1120,22 @@ fn a_bulk_build_gives_a_sound_tree_a_retail_insert_can_extend() {
             tree.verify(&pager).unwrap();
         });
     }
+}
+
+#[test]
+fn a_bulk_build_stops_between_pages_and_names_what_it_wrote() {
+    let mut sim = Sim::new(93, Config::default());
+    finished(&mut sim, |rt| {
+        let pager = Pager::create(rt, &options(64)).unwrap();
+        let entries: Vec<Vec<u8>> = (0..5000u32).map(|i| i.to_be_bytes().to_vec()).collect();
+        let mut made = Vec::new();
+        let asked = std::cell::Cell::new(0);
+        let stop = || {
+            asked.set(asked.get() + 1);
+            asked.get() == 3
+        };
+        let got = BTree::bulk(&pager, 7, entries, &mut made, &stop);
+        assert_eq!(Some(BuildError::Stopped), got.err());
+        assert_eq!(2, made.len(), "every page written is named");
+    });
 }

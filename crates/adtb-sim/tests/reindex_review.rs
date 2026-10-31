@@ -9,11 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use adtb::runtime::{Clock, Threads};
+use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::storage::{Damage, Quarantine};
 use adtb::{CallOptions, CancelToken, Database, Log, TxnCallOptions, TxnOptions};
-use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_simkit::{api, crash};
+use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_simkit::{api, common, crash};
 
 const APP: &str = r"module app
 add module app
@@ -653,10 +653,21 @@ fn offline_with_one_row(name: &str) -> (Database, Arc<AtomicBool>, Arc<AtomicBoo
     (db, go, timed_out)
 }
 
+/// Wait until a call on `db` has paused for the rebuild, the first pause counted past `before`.
+fn wait_for_a_pause(db: &Database, before: u64, what: &str) {
+    let start = Instant::now();
+    while db.write_path().rebuild_waits() == before {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{what} never paused for the rebuild"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 #[test]
 fn a_gated_write_stops_at_its_deadline() {
-    let (db, go, _) = offline_with_one_row("gate_deadline");
-    let start = Instant::now();
+    let (db, go, timed_out) = offline_with_one_row("gate_deadline");
     let r = db.query_text(
         GATED_INSERT,
         &[],
@@ -665,20 +676,19 @@ fn a_gated_write_stops_at_its_deadline() {
             ..CallOptions::default()
         },
     );
-    let took = start.elapsed();
+    let waited_out = timed_out.load(Ordering::Acquire);
+    let paused = db.write_path().rebuild_waits();
     go.store(true, Ordering::Release);
-    assert!(r.is_err(), "the write ran through the gate");
-    assert!(
-        took >= Duration::from_millis(200) && took < Duration::from_secs(1),
-        "{took:?}"
-    );
+    assert_rejected("DeadlineExceeded", r.map(|_rows| ()), "the gated write");
+    assert!(paused > 0, "the write never reached the gate");
+    assert!(!waited_out, "the write waited out the rebuild");
     idle(&db);
     db.close().unwrap();
 }
 
 #[test]
 fn a_gated_write_stops_when_cancelled() {
-    let (db, go, _) = offline_with_one_row("gate_cancel");
+    let (db, go, timed_out) = offline_with_one_row("gate_cancel");
     let token = CancelToken::new();
     let (w, t) = (db.clone(), token.clone());
     let writer = std::thread::spawn(move || {
@@ -686,16 +696,15 @@ fn a_gated_write_stops_when_cancelled() {
             cancel: Some(t),
             ..CallOptions::default()
         };
-        w.query_text(GATED_INSERT, &[], &opts).is_err()
+        w.query_text(GATED_INSERT, &[], &opts).map(|_rows| ())
     });
-    std::thread::sleep(Duration::from_millis(30));
-    let start = Instant::now();
+    wait_for_a_pause(&db, 0, "the gated write");
     token.cancel();
-    let refused = writer.join().unwrap();
-    let took = start.elapsed();
+    let r = writer.join().unwrap();
+    let waited_out = timed_out.load(Ordering::Acquire);
     go.store(true, Ordering::Release);
-    assert!(refused, "the write ran through the gate");
-    assert!(took < Duration::from_secs(1), "{took:?}");
+    assert_rejected("Cancelled", r, "the gated write");
+    assert!(!waited_out, "the write waited out the rebuild");
     idle(&db);
     db.close().unwrap();
 }
@@ -706,16 +715,15 @@ fn close_with_a_gated_writer_does_not_wait_out_the_rebuild() {
     let w = db.clone();
     let release = go;
     let writer = std::thread::spawn(move || {
-        let r = w.query_text(GATED_INSERT, &[], &CallOptions::default());
+        let r = w
+            .query_text(GATED_INSERT, &[], &CallOptions::default())
+            .map(|_rows| ());
         release.store(true, Ordering::Release);
-        r.is_err()
+        r
     });
-    std::thread::sleep(Duration::from_millis(30));
+    wait_for_a_pause(&db, 0, "the gated write");
     db.close().unwrap();
-    assert!(
-        writer.join().unwrap(),
-        "a writer the gate holds is refused at close"
-    );
+    assert_rejected("Cancelled", writer.join().unwrap(), "the gated write");
     assert!(
         !timed_out.load(Ordering::Acquire),
         "close waited for the rebuild"
@@ -744,7 +752,6 @@ fn a_closed_job_leaves_a_clean_file() {
 }
 
 #[test]
-#[ignore = "the job keeps the engine open until its rebuild ends"]
 fn drop_without_close_then_reopen() {
     let p = path("drop");
     let db = open(&p);
@@ -756,9 +763,13 @@ fn drop_without_close_then_reopen() {
     let (go, _) = hold_build(&db);
     run(&db, "reindex things").unwrap();
     std::thread::sleep(Duration::from_millis(20));
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        go.store(true, Ordering::Release);
+    });
     drop(db);
     let again = Database::open(&p, &Log::new([APP]), &api::options(4));
-    go.store(true, Ordering::Release);
+    release.join().unwrap();
     assert!(
         again.is_ok(),
         "the file is still held after every handle dropped"
@@ -780,10 +791,9 @@ fn seq_open(rt: SimRuntime) -> Database<SimRuntime> {
 }
 
 fn wait_jobs(rt: &SimRuntime, db: &Database<SimRuntime>) {
+    let mut io = rt.io();
     while !api::printed(api::result(db, "from j in sys::jobs select j.id")).is_empty() {
-        for _ in 0..64 {
-            rt.yield_now();
-        }
+        common::sleep(rt, &mut io, Duration::from_millis(1));
     }
 }
 
@@ -1213,4 +1223,451 @@ fn a_read_runs_while_gated_writes_fill_the_workers() {
             "a read task did not run while writes waited on an offline rebuild"
         );
     });
+}
+
+#[test]
+fn a_failed_force_at_the_swap_crashes_and_loses_no_row() {
+    crash::silence_fatal_panics();
+    let mut sim = Sim::new(3, Config::default());
+    let outcome = crash::run_process(&mut sim, |rt| {
+        let db = hist_open(rt.clone());
+        for i in 1..=400 {
+            api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
+        }
+        let (w, clock) = (db.clone(), rt.clone());
+        db.on_reindex_phase(Arc::new(move |p| {
+            if p == "swap" {
+                w.write_path().pager().flush_log();
+                clock.set_faults(Faults {
+                    fail_p: 1.0,
+                    ..Faults::default()
+                });
+            }
+        }));
+        api::results(&db, "reindex ts index (v)");
+        wait_jobs(&rt, &db);
+        rt.set_faults(Faults::default());
+        db.close().unwrap();
+    });
+    assert_eq!(
+        Outcome::Crashed,
+        outcome,
+        "a failed force was caught as a failed rebuild"
+    );
+    sim.set_faults(Faults::default());
+    api::run(&mut sim, |rt| {
+        let db = hist_open(rt);
+        assert_eq!(
+            Vec::<String>::new(),
+            api::printed(db.verify_holding().unwrap())
+        );
+        for i in [1, 77, 400] {
+            let got = api::query(&db, &format!("from t in ts where t.v == {i} select t.v"));
+            assert_eq!(vec![i.to_string()], got);
+        }
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_reindex_repairs_damage_under_a_crashed_change_the_open_could_not_free() {
+    let mut sim = Sim::new(4, Config::default());
+    let damaged = api::run(&mut sim, |rt| {
+        let db = hist_open(rt);
+        for i in 1..=400 {
+            api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
+        }
+        let index = db.write_path().index_named("app::ts", "index (v)").unwrap();
+        let pager = db.write_path().pager();
+        let page = *index.tree().pages(pager).unwrap().last().unwrap();
+        let at = page.0 as usize * pager.page_size() + 300;
+        adtb::catalog::Catalog::naming_sequences(pager, pager.catalog_root()).unwrap();
+        db.close().unwrap();
+        at
+    });
+    let mut files = sim.files();
+    files.get_mut(HIST_FILE).unwrap()[damaged] ^= 0x10;
+    let mut sim = Sim::with_files(4, Config::default(), files);
+    api::run(&mut sim, |rt| {
+        let db = hist_open(rt.clone());
+        api::results(&db, "reindex ts index (v)");
+        wait_jobs(&rt, &db);
+        assert_eq!(
+            Vec::<String>::new(),
+            api::printed(api::result(&db, "from f in sys::verify_findings select f"))
+        );
+        for i in [1, 77, 400] {
+            let got = api::query(&db, &format!("from t in ts where t.v == {i} select t.v"));
+            assert_eq!(vec![i.to_string()], got);
+        }
+        db.close().unwrap();
+    });
+    api::run(&mut sim, |rt| {
+        let db = hist_open(rt);
+        assert_eq!(
+            Vec::<String>::new(),
+            api::printed(db.verify_holding().unwrap()),
+            "the next open frees what the crashed change left"
+        );
+        db.close().unwrap();
+    });
+}
+
+/// How many milliseconds of simulated time a read waits beside tasks waiting on a rebuild.
+const READ_WAIT_MS: u32 = 5_000;
+
+/// Run `caller` as two tasks on a database of two workers while an online rebuild holds its build
+/// phase, and a read task beside them. Returns whether the read ran during the rebuild.
+fn read_beside_tasks_waiting_on_a_rebuild(caller: &'static str) -> bool {
+    api::once(3, move |rt| {
+        let db = hist_open(rt.clone());
+        for i in 1..=20 {
+            api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
+        }
+        let session = Arc::new(db.role_authority().session("owner").unwrap());
+        let read_done = Arc::new(AtomicBool::new(false));
+        let seen = Arc::new(Mutex::new(None));
+        let (clock, s2, rd, out) = (rt.clone(), session, read_done, seen.clone());
+        let threads = Arc::new(Mutex::new(Vec::new()));
+        let th = threads.clone();
+        db.on_reindex_phase(Arc::new(move |phase| {
+            if phase == "build" {
+                for _ in 0..2 {
+                    let (c, s) = (clock.clone(), s2.clone());
+                    th.lock().unwrap().push(clock.spawn("c", move || {
+                        if let Err(e) = api::task(&c, &s, caller) {
+                            assert!(e.is_serialization(), "{caller}: {e:?}");
+                        }
+                    }));
+                }
+                for _ in 0..2000 {
+                    clock.yield_now();
+                }
+                let (c, s, r) = (clock.clone(), s2.clone(), rd.clone());
+                th.lock().unwrap().push(clock.spawn("r", move || {
+                    api::task(&c, &s, "from t in ts select t.v").unwrap();
+                    r.store(true, Ordering::Release);
+                }));
+                let mut io = clock.io();
+                for _ in 0..READ_WAIT_MS {
+                    if rd.load(Ordering::Acquire) {
+                        break;
+                    }
+                    common::sleep(&clock, &mut io, Duration::from_millis(1));
+                }
+                *out.lock().unwrap() = Some(rd.load(Ordering::Acquire));
+            }
+        }));
+        api::results(&db, "reindex ts index (v)");
+        wait_jobs(&rt, &db);
+        for t in std::mem::take(&mut *threads.lock().unwrap()) {
+            rt.join(t);
+        }
+        let ran = seen.lock().unwrap().unwrap();
+        db.close().unwrap();
+        ran
+    })
+}
+
+#[test]
+fn a_read_runs_while_vacuums_wait_out_a_rebuild() {
+    assert!(read_beside_tasks_waiting_on_a_rebuild("vacuum ts"));
+}
+
+#[test]
+fn a_read_runs_while_verifies_wait_out_a_rebuild() {
+    assert!(read_beside_tasks_waiting_on_a_rebuild("verify ts"));
+}
+
+#[test]
+fn a_read_runs_while_a_retention_change_waits_out_a_rebuild() {
+    assert!(read_beside_tasks_waiting_on_a_rebuild(
+        "set setting RetentionWindow = { length: 2h }"
+    ));
+}
+
+const VACUUM: &str = "vacuum things";
+const VERIFY: &str = "verify things";
+const RETENTION: &str = "set setting RetentionWindow = { length: 2h }";
+
+fn stops_at_its_deadline(caller: &'static str) {
+    let (db, go, timed_out) = offline_with_one_row(&format!("held_deadline {caller}"));
+    let r = db.query_text(
+        caller,
+        &[],
+        &CallOptions {
+            deadline: Some(SystemTime::now() + Duration::from_millis(50)),
+            ..CallOptions::default()
+        },
+    );
+    let waited_out = timed_out.load(Ordering::Acquire);
+    go.store(true, Ordering::Release);
+    assert_rejected("DeadlineExceeded", r.map(|_rows| ()), caller);
+    assert!(!waited_out, "{caller} waited out the rebuild");
+    idle(&db);
+    db.close().unwrap();
+}
+
+#[test]
+fn a_call_waiting_on_the_vacuum_lock_stops_at_its_deadline_vacuum() {
+    stops_at_its_deadline(VACUUM);
+}
+
+#[test]
+fn a_call_waiting_on_the_vacuum_lock_stops_at_its_deadline_verify() {
+    stops_at_its_deadline(VERIFY);
+}
+
+#[test]
+fn a_call_waiting_on_the_vacuum_lock_stops_at_its_deadline_retention() {
+    stops_at_its_deadline(RETENTION);
+}
+
+fn stops_when_cancelled(caller: &'static str) {
+    let (db, go, timed_out) = offline_with_one_row(&format!("held_cancel {caller}"));
+    let token = CancelToken::new();
+    let (w, t) = (db.clone(), token.clone());
+    let waiter = std::thread::spawn(move || {
+        let opts = CallOptions {
+            cancel: Some(t),
+            ..CallOptions::default()
+        };
+        w.query_text(caller, &[], &opts).map(|_rows| ())
+    });
+    wait_for_a_pause(&db, 0, caller);
+    token.cancel();
+    let r = waiter.join().unwrap();
+    let waited_out = timed_out.load(Ordering::Acquire);
+    go.store(true, Ordering::Release);
+    assert_rejected("Cancelled", r.map(|_rows| ()), caller);
+    assert!(!waited_out, "{caller} waited out the rebuild");
+    idle(&db);
+    db.close().unwrap();
+}
+
+#[test]
+fn a_call_waiting_on_the_vacuum_lock_stops_when_cancelled_vacuum() {
+    stops_when_cancelled(VACUUM);
+}
+
+#[test]
+fn a_call_waiting_on_the_vacuum_lock_stops_when_cancelled_verify() {
+    stops_when_cancelled(VERIFY);
+}
+
+#[test]
+fn a_call_waiting_on_the_vacuum_lock_stops_when_cancelled_retention() {
+    stops_when_cancelled(RETENTION);
+}
+
+fn close_refuses(caller: &'static str) {
+    let (db, go, timed_out) = offline_with_one_row(&format!("held_close {caller}"));
+    let w = db.clone();
+    let waiter = std::thread::spawn(move || {
+        w.query_text(caller, &[], &CallOptions::default())
+            .map(|_rows| ())
+    });
+    wait_for_a_pause(&db, 0, caller);
+    let release = go;
+    let closer = std::thread::spawn(move || db.close().unwrap());
+    let r = waiter.join().unwrap();
+    release.store(true, Ordering::Release);
+    closer.join().unwrap();
+    assert_rejected("Cancelled", r, caller);
+    assert!(
+        !timed_out.load(Ordering::Acquire),
+        "{caller} waited out the rebuild"
+    );
+}
+
+#[test]
+fn close_refuses_a_call_waiting_on_the_vacuum_lock_vacuum() {
+    close_refuses(VACUUM);
+}
+
+#[test]
+fn close_refuses_a_call_waiting_on_the_vacuum_lock_verify() {
+    close_refuses(VERIFY);
+}
+
+#[test]
+fn close_refuses_a_call_waiting_on_the_vacuum_lock_retention() {
+    close_refuses(RETENTION);
+}
+
+fn assert_rejected(reason: &str, r: Result<(), adtb::Error>, what: &str) {
+    let e = r.expect_err(what);
+    assert_eq!(
+        format!("Rejected {{ reason: {reason} }}"),
+        e.value().to_string(),
+        "{what}"
+    );
+}
+
+/// Returns the transaction ids taken so far, one of them by this call.
+fn xids_taken(db: &Database<SimRuntime>) -> u64 {
+    let write = db.write_path();
+    let tx = write.begin().unwrap();
+    let xid = tx.xid().unwrap().0;
+    write.abort(tx).unwrap();
+    xid
+}
+
+const CHANGE_THEN_VACUUM: &str = "set setting RetentionWindow = { length: 2h }\nvacuum ts";
+
+#[test]
+fn a_set_setting_then_vacuum_waiting_on_the_lock_changes_the_row_once() {
+    let extra = api::once(3, |rt| {
+        let db = hist_open(rt.clone());
+        let session = Arc::new(db.role_authority().session("owner").unwrap());
+        let before = xids_taken(&db);
+        api::task(&rt, &session, CHANGE_THEN_VACUUM).unwrap();
+        let alone = xids_taken(&db) - before;
+        let hold = db.write_path().holding_off_vacuum();
+        let before = xids_taken(&db);
+        let (c, s) = (rt.clone(), session);
+        let t = rt.spawn("c", move || {
+            api::task(&c, &s, CHANGE_THEN_VACUUM).unwrap();
+        });
+        for _ in 0..5000 {
+            rt.yield_now();
+        }
+        drop(hold);
+        rt.join(t);
+        let held = xids_taken(&db) - before;
+        db.close().unwrap();
+        held - alone
+    });
+    assert_eq!(0, extra);
+}
+
+#[test]
+fn a_command_after_one_that_took_effect_never_reruns_it() {
+    const TEXT: &str =
+        "set setting RetentionWindow = { length: 2h }\nreindex ts index (v)\nvacuum ts";
+    let mut polled = 0;
+    for seed in 0..10 {
+        let (taken, waits) = api::once(seed, |rt| {
+            let db = hist_open(rt.clone());
+            for i in 1..=20 {
+                api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
+            }
+            let session = db.role_authority().session("owner").unwrap();
+            let before = xids_taken(&db);
+            api::task(&rt, &session, TEXT).unwrap();
+            let taken = xids_taken(&db) - before;
+            wait_jobs(&rt, &db);
+            let waits = db.write_path().rebuild_waits();
+            db.close().unwrap();
+            (taken, waits)
+        });
+        assert!(
+            taken <= 4,
+            "seed {seed}: the row change, the vacuum, the job and this read take at most 4, took {taken}"
+        );
+        polled += waits;
+    }
+    assert!(polled > 0, "no seed had the vacuum wait out the job");
+}
+
+fn changing_words(db: &Database<SimRuntime>) -> u64 {
+    let pager = db.write_path().pager();
+    let page = pager.read(pager.catalog_root()).unwrap();
+    let mut found = 0;
+    for at in (0..page.len() - 8).step_by(8) {
+        let v = u64::from_le_bytes(page[at..at + 8].try_into().unwrap());
+        if v == u64::MAX - 1 {
+            found += 1;
+        }
+    }
+    found
+}
+
+#[test]
+fn a_panic_inside_the_swap_frees_neither_tree_until_the_next_open() {
+    let mut sim = Sim::new(5, Config::default());
+    api::run(&mut sim, |rt| {
+        let db = hist_open(rt.clone());
+        for i in 1..=3 {
+            api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
+        }
+        let w = db.clone();
+        let before = Arc::new(Mutex::new(Vec::new()));
+        db.on_reindex_phase(Arc::new(move |p| {
+            let pager = w.write_path().pager();
+            if p == "build" {
+                *before.lock().unwrap() = pager.allocated().unwrap();
+            }
+            if p == "swap" {
+                let was = before.lock().unwrap().clone();
+                let new: Vec<_> = pager
+                    .allocated()
+                    .unwrap()
+                    .into_iter()
+                    .filter(|p| !was.contains(p))
+                    .collect();
+                assert_eq!(1, new.len());
+                pager.free(new[0]).unwrap();
+            }
+        }));
+        api::results(&db, "reindex ts index (v)");
+        wait_jobs(&rt, &db);
+        let found = api::printed(api::result(&db, "from f in sys::verify_findings select f"));
+        assert!(
+            found
+                .iter()
+                .any(|f| f.contains("is not allocated") && f.contains("index (v)")),
+            "{found:?}"
+        );
+        assert_eq!(1, changing_words(&db), "changing stays set");
+        db.close().unwrap();
+    });
+    api::run(&mut sim, |rt| {
+        let db = hist_open(rt);
+        assert_eq!(
+            Vec::<String>::new(),
+            api::printed(db.verify_holding().unwrap())
+        );
+        assert_eq!(0, changing_words(&db));
+        for i in 1..=3 {
+            assert_eq!(
+                vec![i.to_string()],
+                api::query(&db, &format!("from t in ts where t.v == {i} select t.v"))
+            );
+        }
+        db.close().unwrap();
+    });
+}
+
+#[test]
+fn a_reindex_then_vacuum_waiting_on_the_lock_starts_one_job() {
+    let scans = api::once(3, |rt| {
+        let db = hist_open(rt.clone());
+        for i in 1..=50 {
+            api::results(&db, &format!("insert ts {{ id: ts.key({i}), v: {i} }}"));
+        }
+        let session = Arc::new(db.role_authority().session("owner").unwrap());
+        let scans = Arc::new(Mutex::new(0u32));
+        let s = scans.clone();
+        db.on_reindex_phase(Arc::new(move |phase| {
+            if phase == "scan" {
+                *s.lock().unwrap() += 1;
+            }
+        }));
+        let hold = db.write_path().holding_off_vacuum();
+        let (c, se) = (rt.clone(), session);
+        let t = rt.spawn("c", move || {
+            api::task(&c, &se, "reindex ts index (v)\nvacuum ts").unwrap();
+        });
+        for _ in 0..5000 {
+            rt.yield_now();
+        }
+        drop(hold);
+        rt.join(t);
+        wait_jobs(&rt, &db);
+        let n = *scans.lock().unwrap();
+        db.close().unwrap();
+        n
+    });
+    assert_eq!(1, scans, "each rerun of the task started another job");
 }

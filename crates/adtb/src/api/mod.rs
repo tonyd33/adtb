@@ -236,12 +236,27 @@ impl CallOptions {
 #[derive(Debug)]
 pub struct Database<R: Runtime = adtb_sys::os::OsRuntime> {
     engine: Arc<Engine<R>>,
+    handles: Arc<LastHandle<R>>,
+}
+
+/// Shut the engine when the last handle goes, whatever else holds the engine, such as a rebuild
+/// job whose thread must be stopped and joined to release the file.
+#[derive(Debug)]
+struct LastHandle<R: Runtime>(Arc<Engine<R>>);
+
+impl<R: Runtime> Drop for LastHandle<R> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.0.shut();
+        }
+    }
 }
 
 impl<R: Runtime> Clone for Database<R> {
     fn clone(&self) -> Self {
         Database {
             engine: self.engine.clone(),
+            handles: self.handles.clone(),
         }
     }
 }
@@ -400,7 +415,8 @@ impl<R: Runtime> Database<R> {
         let engine = Arc::new(engine);
         *engine.reindexing.me.lock(&engine.rt) = Arc::downgrade(&engine);
         engine.background.start();
-        Database { engine }
+        let handles = Arc::new(LastHandle(engine.clone()));
+        Database { engine, handles }
     }
 
     /// Open the database file `name` of runtime `rt`, recover it, and apply the migrations of
@@ -1119,7 +1135,8 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Run the items of `p` as [`statements`](Engine::statements) does, except that a
-    /// statement suspending on a transaction wait halts with `Blocked`.
+    /// statement suspending on a transaction wait halts with `Blocked`. A command after the first
+    /// polls with its stops instead.
     fn resumable(
         &self,
         id: TxnId,
@@ -1140,7 +1157,8 @@ impl<R: Runtime> Engine<R> {
         let mut ran: Vec<(usize, DynRows)> = Vec::new();
         let mut refused: Option<Error> = None;
         let mut between = |at: usize, local: &mut Local| -> Result<(), write::Error> {
-            for c in p.commands().iter().filter(|c| c.at == at) {
+            let commands = p.commands().iter().enumerate();
+            for (nth, c) in commands.filter(|(_, c)| c.at == at) {
                 match self.deployment_command(&c.command, p) {
                     Some(Ok(rows)) => ran.push((at, rows)),
                     Some(Err(e)) => {
@@ -1153,7 +1171,17 @@ impl<R: Runtime> Engine<R> {
                         if !matches!(c.command, adtb_lang::check::Command::Verify(_)) {
                             self.db.admit_database()?;
                         }
-                        ran.push((at, self.command(tx, p, &c.command, local, bounds.clone())?));
+                        let c = (&c.command, at);
+                        let bounds = if nth == 0 {
+                            bounds.clone()
+                        } else {
+                            Bounds {
+                                suspend: false,
+                                rerun: None,
+                                ..bounds.clone()
+                            }
+                        };
+                        ran.push((at, self.command(tx, p, c, local, bounds)?));
                     }
                 }
             }
@@ -1286,7 +1314,7 @@ impl<R: Runtime> Engine<R> {
             return None;
         };
         Some(
-            self.verified(p.schema(), rel)
+            self.verified(p.schema(), rel, write::HoldWait::unbounded())
                 .map_err(|e| self.write_error(TxnId(0), e)),
         )
     }

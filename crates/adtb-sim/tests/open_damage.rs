@@ -964,3 +964,43 @@ fn an_unreadable_page_fails_open_unmarked() {
     }
     assert!(refused > 0, "no seed faults a page the open needs");
 }
+
+#[test]
+fn the_roots_heap_marks_the_database_at_open_and_nothing_once_running() {
+    let (mut files, _) = seeded(42, catalog_root);
+    let mut sim = Sim::with_files(42, Config::default(), files.clone());
+    let mut page = None;
+    finished(&mut sim, |rt| {
+        let db = open(rt, &app()).unwrap();
+        db.damage_kept_store();
+        assert!(!api::printed(db.verify(None).unwrap()).is_empty());
+        assert_eq!(
+            BTreeSet::new(),
+            db.write_path().pager().quarantined(),
+            "once running"
+        );
+        db.close().unwrap();
+    });
+    let mut sim2 = Sim::with_files(42, Config::default(), files.clone());
+    finished(&mut sim2, |rt| {
+        let options = Options {
+            page_size: PAGE as u32,
+            threads: 2,
+            ..Options::new(FILE)
+        };
+        let (p, _) = Pager::open(rt.clone(), &options).unwrap();
+        let (catalog, _) = adtb::catalog::Catalog::load(rt, &p).unwrap();
+        page = Some(catalog.kept_pages(&p).unwrap()[0]);
+    });
+    flip(&mut files, page.unwrap());
+    let mut sim = Sim::with_files(42, Config::default(), files);
+    finished(&mut sim, |rt| {
+        let db = open(rt, &app()).unwrap();
+        assert_eq!(
+            BTreeSet::from([Quarantine::Database]),
+            db.write_path().pager().quarantined(),
+            "at open"
+        );
+        db.close().unwrap();
+    });
+}

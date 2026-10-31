@@ -284,6 +284,20 @@ Postconditions of a rebuild, for subsystems reading or writing the index:
   that suspends suspends on the reserved transaction `u64::MAX`, ended when
   the gate opens, and any other looks at the gate, its stops and the close
   every few milliseconds. A close refuses it with `Cancelled`.
+- A call that waits for the vacuum lock, `vacuum`, `verify` or a change of a
+  setting, while a rebuild or another holder has it, holds no worker either: a
+  call whose first command waits suspends on the reserved transaction
+  `u64::MAX - 1`, which runs exactly while the lock is held, and any other looks
+  at the lock, its stops and the close every few milliseconds. A close refuses a
+  suspended call with `Closed` and any other with `Cancelled`. A command takes
+  effect once: a suspended call runs again from its first command, which has
+  taken no effect.
+- A fatal I/O error during a rebuild crashes the process and is no failed
+  rebuild. A rebuild left unsure whether its swap took frees neither tree: the
+  catalog root's `changing` stays set and the next open frees what no structure
+  names.
+- A rebuild starts over a `changing` an open could not clear for damage, and
+  leaves it for the next open, whose free then succeeds.
 
 Removing a constructor leaves its entries in every index until vacuum
 clears them ([mvcc.md §10.4](mvcc.md#104-removing-a-constructor)).

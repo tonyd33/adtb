@@ -17,7 +17,7 @@ mod verify;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::task::Waker;
 use std::time::Duration;
 
@@ -47,7 +47,7 @@ pub use adtb_lang::schema::Stage;
 pub use delta::{CheckPlan, Part};
 pub use input::Local;
 pub use past::Retained;
-pub use reindex::{Failure, Rebuild, panic_text};
+pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold, panic_text};
 pub use stream::{Produced, Production};
 pub use verify::{Found, VerifyScope, VerifySnapshot};
 
@@ -413,6 +413,17 @@ pub struct Stop {
 }
 
 impl Stop {
+    /// Fail with what stops the statement at `now`, if it is stopped.
+    fn check(&self, now: Instant) -> Result<(), exec::Error> {
+        if self.cancel.load(Ordering::Acquire) {
+            return Err(exec::Error::Cancelled);
+        }
+        match &self.deadline {
+            Some(d) if now >= d.at => Err(d.error.clone()),
+            _ => Ok(()),
+        }
+    }
+
     /// Returns what stops a statement under `bounds`, its statement limit counted from `since`
     /// and unlimited without it, failing with `Blocked` carrying `suspend` at a wait.
     fn of(bounds: &Bounds, since: Option<Instant>, suspend: Option<Rerun>) -> Stop {
@@ -476,7 +487,9 @@ pub struct Database<R: Runtime> {
     grant: usize,
     files: Disk,
     /// Held while a vacuum runs or the retention window changes, so that one runs at a time.
-    vacuuming: Lock<()>,
+    vacuuming: Lock<bool>,
+    /// How many pauses calls have made at a rebuild's gate or for the vacuum lock.
+    rebuild_waits: AtomicU64,
     /// The relations an offline rebuild holds writes to.
     offline: Lock<BTreeSet<RelId>>,
     /// Set once the engine closes: rebuilds stop and their gates refuse.
@@ -574,7 +587,8 @@ impl<R: Runtime> Database<R> {
             options: setup.options,
             grant: setup.grant,
             files: Disk::default(),
-            vacuuming: Lock::new(()),
+            vacuuming: Lock::new(false),
+            rebuild_waits: AtomicU64::new(0),
             offline: Lock::default(),
             rebuilds_stopped: AtomicBool::new(false),
             retained: None,
@@ -612,7 +626,7 @@ impl<R: Runtime> Database<R> {
     /// Fail if the record of the window is damaged.
     pub fn with_history(mut self, retained: Retained, window: Duration) -> Result<Self, Error> {
         self.retained = Some(Arc::new(retained));
-        self.set_retention(window)?;
+        self.set_retention(window, &self.hold_vacuum(HoldWait::unbounded())?)?;
         Ok(self)
     }
 
@@ -888,8 +902,14 @@ impl<R: Runtime> Database<R> {
 
     /// Vacuums each constructor relation of `rel` in turn. Returns the id of each constructor
     /// with what its vacuum did.
-    pub fn vacuum(&self, rel: RelId) -> Result<Vec<(CtorId, vacuum::Report)>, Error> {
-        let _one = self.vacuuming.lock(&self.rt);
+    ///
+    /// Stop as [`Database::hold_vacuum`] says while another holds off vacuum.
+    pub fn vacuum(
+        &self,
+        rel: RelId,
+        waiting: HoldWait<'_>,
+    ) -> Result<Vec<(CtorId, vacuum::Report)>, Error> {
+        let _one = self.hold_vacuum(waiting)?;
         let r = self
             .rels
             .get(&rel)

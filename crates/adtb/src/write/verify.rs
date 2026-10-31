@@ -15,7 +15,7 @@ use crate::storage::{self, Damage, PageError, Pid};
 use crate::verify::{Finding, Problem};
 
 use super::schema::{Indexed, Rel};
-use super::{Database, Error, Txn};
+use super::{Database, Error, HoldWait, Txn};
 
 /// What one run of `verify` covers, and so what it replaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,13 +254,19 @@ impl<R: Runtime> Database<R> {
 
     /// Check each index of `scope`: its structure, every row version `tx` sees has its entry, and
     /// every entry names a row version of its key. Holds off vacuum across each index, since an
-    /// entry read must keep naming the slot it named.
-    pub fn check_indexes(&self, tx: &Txn, scope: VerifyScope) -> Result<Vec<Found>, Error> {
+    /// entry read must keep naming the slot it named, stopping as [`Database::hold_vacuum`] says
+    /// while another holds it off.
+    pub fn check_indexes(
+        &self,
+        tx: &Txn,
+        scope: VerifyScope,
+        waiting: HoldWait<'_>,
+    ) -> Result<Vec<Found>, Error> {
         let mut out = Vec::new();
         for r in self.rels.values() {
             if scope.covers(r.id) {
                 for (id, ix) in &r.indexes {
-                    let _no_vacuum = self.vacuuming.lock(&self.rt);
+                    let _no_vacuum = self.hold_vacuum(waiting)?;
                     self.check_index(tx, r, *id, ix, &mut out)?;
                 }
             }

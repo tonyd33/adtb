@@ -3,6 +3,7 @@ mod deploy;
 mod deployment;
 mod grants;
 mod history;
+mod holdings;
 mod hosts;
 mod ids;
 mod kept;
@@ -18,6 +19,8 @@ mod rows;
 mod steps;
 mod validate;
 pub mod values;
+
+pub use holdings::Holdings;
 
 #[cfg(test)]
 mod tests;
@@ -40,7 +43,7 @@ use crate::key::{CtorId, Dir, Entry, KeySchema, OrderKey, Scalar, Value};
 use crate::mvcc::{self, CommitLog, Scope, Snapshot, Transactions, Xid};
 use crate::plan::{self, HeapId, IndexDesc, IndexId, RelationDesc};
 use crate::runtime::Runtime;
-use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine, Stopped};
+use crate::storage::{self, Lsn, PageError, PageKind, Pager, Pid, Quarantine};
 use crate::verify::{self, Depth, Inventory, Problem, Report, Sum};
 
 pub use deploy::Rewrite;
@@ -675,8 +678,8 @@ impl Catalog {
     ///
     /// Fails with [`Error::Corrupt`] if a stored page or row does not read as the catalog writes
     /// it, and with [`Error::Unaccepted`] if a stored migration does not parse or apply under
-    /// this engine. Fails with the damage found if a schema change that did not commit cannot
-    /// have its pages found, leaving it for the next open to free.
+    /// this engine. A schema change that did not commit and whose pages damage hides stays on the
+    /// root for the next open to free.
     pub fn open<R: Runtime>(rt: R, pager: &Pager<R>) -> Result<(Catalog, Transactions<R>), Error> {
         let (mut catalog, txns) = Catalog::load(rt, pager)?;
         if txns.quarantined().is_some() || pager.is_quarantined(Quarantine::Database) {
@@ -839,51 +842,36 @@ impl Catalog {
     }
 
     /// Returns what the damage at `pid` quarantines, found before the write path exists: the
-    /// holder of a page the catalog's structures reach, and nothing for any other page.
+    /// holder of a page the catalog's structures reach, and nothing for any other page. The roots
+    /// heap's damage marks the database.
     pub fn holders<R: Runtime>(
         &self,
         pager: &Pager<R>,
         txns: &Transactions<R>,
         pid: Pid,
     ) -> BTreeSet<Quarantine> {
-        let object = |r: RelId, q: Quarantine| {
-            let module = &self.schema.module(self.schema.relation(r).module).name;
-            Some(if schema::ENGINE_MODULES.contains(&module.as_str()) {
-                Quarantine::Database
-            } else {
-                q
-            })
-        };
+        let mut holdings = Holdings::new(&self.schema);
+        holdings.roots(&self.roots, Some(Quarantine::Database));
+        for (&(r, c), heap) in &self.heaps {
+            holdings.heaps(r, heap, self.kept.heap(r, c).map(|p| &**p));
+        }
+        for (spec, index, _) in self.indexes.values() {
+            let tree = index.tree();
+            holdings.trees(spec.relation, tree.owner(), [tree]);
+        }
+        for (r, key) in key_indexes(&self.schema, &self.indexes) {
+            if let Some(past) = self.kept.index(r) {
+                holdings.trees(r, key.tree().owner(), [past.tree()]);
+            }
+        }
         pager.holders_of(pid, None, |h| {
-            let database = Some(Quarantine::Database);
-            h.walk(database, || {
-                self.roots.owned_pages(pager).map_err(Stopped::from)
-            });
-            {
-                let clog = txns.commit_log();
-                let mut pages = vec![self.root, clog.root()];
-                pages.extend(clog.status_pages().values());
-                pages.extend(clog.directory_pages());
-                pages.extend(self.sequences());
-                h.walk(database, || Ok(pages.clone()));
-            }
-            for (&(r, c), heap) in &self.heaps {
-                let of = object(r, Quarantine::Heap(heap.id().0));
-                h.walk(of, || heap.owned_pages(pager).map_err(Stopped::from));
-                if let Some(past) = self.kept.heap(r, c) {
-                    h.walk(of, || past.owned_pages(pager).map_err(Stopped::from));
-                }
-            }
-            for (spec, index, _) in self.indexes.values() {
-                let of = object(spec.relation, Quarantine::Index(index.tree().owner()));
-                h.walk(of, || index.tree().walk(pager));
-            }
-            for (r, key) in key_indexes(&self.schema, &self.indexes) {
-                if let Some(past) = self.kept.index(r) {
-                    let of = object(r, Quarantine::Index(key.tree().owner()));
-                    h.walk(of, || past.tree().walk(pager));
-                }
-            }
+            let clog = txns.commit_log();
+            let mut pages = vec![self.root, clog.root()];
+            pages.extend(clog.status_pages().values());
+            pages.extend(clog.directory_pages());
+            pages.extend(self.sequences());
+            h.walk(Some(Quarantine::Database), || Ok(pages.clone()));
+            holdings.walk(pager, h);
         })
     }
 
@@ -998,9 +986,10 @@ impl Catalog {
     }
 
     /// Mark the catalog as rebuilding indexes, so an open after a crash frees the pages no
-    /// structure names. Returns whether it was already marked.
+    /// structure names. Returns whether it was already marked as changing. A change that did not
+    /// commit, left by an open that could not free its pages, marks it as well.
     ///
-    /// Fail, changing nothing, if another change is under way.
+    /// Precondition: the database is open, so no schema change is running.
     pub fn begin_reindexing<R: Runtime>(&self, pager: &Pager<R>) -> Result<bool, Error> {
         let mut was = Changing::None;
         update_root(pager, self.root, |r| {
@@ -1009,13 +998,7 @@ impl Catalog {
                 r.changing = Changing::Reindexing;
             }
         })?;
-        match was {
-            Changing::None => Ok(false),
-            Changing::Reindexing => Ok(true),
-            other => Err(Error::Internal(format!(
-                "a rebuild of indexes began during the catalog's change {other:?}"
-            ))),
-        }
+        Ok(was != Changing::None)
     }
 
     /// End the change [`Catalog::begin_reindexing`] began.

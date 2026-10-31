@@ -253,6 +253,12 @@ impl<R: Runtime> Pager<R> {
         }
     }
 
+    /// Refuse `pid` again after a change to the blank page [`Pager::latch_overwriting`] gave failed.
+    fn undo_overwrite(&self, pid: Pid) {
+        self.damage(pid, Damage::Checksum);
+        self.meta().overwritten.remove(&pid);
+    }
+
     /// Give `pid` the contents of `from` and free `from`, removing the mark on `release` if one is
     /// named and held, in one batch. A damaged `pid` is overwritten unread. Returns once that is
     /// durable.
@@ -298,7 +304,7 @@ impl<R: Runtime> Pager<R> {
             Err(e) => {
                 drop(g);
                 if blank {
-                    self.damage(pid, Damage::Checksum);
+                    self.undo_overwrite(pid);
                 }
                 return Err(e);
             }
@@ -322,11 +328,19 @@ impl<R: Runtime> Pager<R> {
     /// Free damaged page `pid`, overwriting it, so no later read of the file finds the damage.
     ///
     /// Preconditions: nothing refers to `pid`, and it is allocated.
+    ///
+    /// Fail, leaving `pid` as it was, if an allocation bitmap page cannot be read.
     pub fn scrap(&self, pid: Pid) -> Result<(), PageError> {
-        let (mut g, _) = self.latch_overwriting(pid)?;
+        let (mut g, blank) = self.latch_overwriting(pid)?;
         let mut new = self.reserve();
         new.free(pid);
-        self.update_all_with(new, &mut [&mut g], |p| p[0][HEADER_LEN] = 1)?;
+        if let Err(e) = self.update_all_with(new, &mut [&mut g], |p| p[0][HEADER_LEN] = 1) {
+            drop(g);
+            if blank {
+                self.undo_overwrite(pid);
+            }
+            return Err(e);
+        }
         self.write_out(pid, &g);
         Ok(())
     }

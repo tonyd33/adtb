@@ -303,7 +303,7 @@ fn an_overlapping_drop_forces_a_canonical_grant_writer_to_recheck_the_role() {
 }
 
 #[test]
-fn a_rebuild_refuses_to_overwrite_another_change_of_the_catalog() {
+fn a_rebuild_does_not_overwrite_another_change_of_the_catalog() {
     let scratch = directory();
     let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
     let options = OpenOptions {
@@ -320,12 +320,12 @@ fn a_rebuild_refuses_to_overwrite_another_change_of_the_catalog() {
     assert!(!catalog.begin_reindexing(&pager).unwrap());
     catalog.end_reindexing(&pager).unwrap();
     Catalog::naming_sequences(&pager, catalog.root()).unwrap();
-    assert!(catalog.begin_reindexing(&pager).is_err());
-    assert!(catalog.end_reindexing(&pager).is_err());
+    assert!(catalog.begin_reindexing(&pager).unwrap());
     assert!(
-        catalog.begin_reindexing(&pager).is_err(),
-        "the change is still under way"
+        catalog.end_reindexing(&pager).is_err(),
+        "the change stays for the next open to free"
     );
+    assert!(catalog.begin_reindexing(&pager).unwrap());
     drop(catalog);
     drop(txns);
     pager.close();

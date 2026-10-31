@@ -5,12 +5,14 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use adtb_lang::kernel::{Kind, Terms, Tm};
-use adtb_lang::schema::{ENGINE_MODULES, OnDelete};
+use adtb_lang::schema::OnDelete;
 use adtb_lang::types::{CtorSet, RelId, Ty};
 
+use crate::btree::Index;
+use crate::catalog::Holdings;
 use crate::plan::{Catalog, HeapId, IndexId};
 use crate::runtime::Runtime;
-use crate::storage::{Damage, PageError, Pid, Quarantine, Stopped};
+use crate::storage::{Damage, PageError, Pid, Quarantine};
 
 use super::schema::Rel;
 use super::verify::Found;
@@ -44,38 +46,27 @@ fn element(ty: &Ty) -> Option<&Ty> {
 impl<R: Runtime> Database<R> {
     /// Returns what the damage at `pid` quarantines: the constructor heap or index holding the
     /// page, current or history, and otherwise the database. Every heap shares the one
-    /// large-value store, so its pages fall to the database.
+    /// large-value store, so its pages fall to the database. The roots heap's damage marks
+    /// nothing.
     fn holders(&self, pid: Pid) -> BTreeSet<Quarantine> {
+        let mut holdings = Holdings::new(&self.schema);
+        if let Some(kept) = &self.kept_store {
+            holdings.roots(kept, None);
+        }
+        let retained = self.retained.as_deref();
+        for r in self.rels.values() {
+            for c in &r.ctors {
+                let past = retained.and_then(|k| k.heaps.get(&c.heap));
+                holdings.heaps(r.id, &self.heaps[&c.heap].heap, past.map(|p| &*p.heap));
+            }
+            for (id, _) in &r.indexes {
+                let tree = self.indexes[id].index.tree();
+                let past = retained.and_then(|k| k.indexes.get(id)).map(Index::tree);
+                holdings.trees(r.id, tree.owner(), std::iter::once(tree).chain(past));
+            }
+        }
         self.pager.holders_of(pid, Some(Quarantine::Database), |h| {
-            if let Some(kept) = &self.kept_store {
-                h.walk(None, || {
-                    kept.owned_pages(&self.pager).map_err(Stopped::from)
-                });
-            }
-            let retained = self.retained.as_deref();
-            for r in self.rels.values() {
-                let module = &self.schema.module(self.schema.relation(r.id).module).name;
-                let engine = ENGINE_MODULES.contains(&module.as_str());
-                let object = |q| Some(if engine { Quarantine::Database } else { q });
-                for c in &r.ctors {
-                    let heap = &self.heaps[&c.heap].heap;
-                    let of = object(Quarantine::Heap(heap.id().0));
-                    h.walk(of, || heap.owned_pages(&self.pager).map_err(Stopped::from));
-                    if let Some(past) = retained.and_then(|k| k.heaps.get(&c.heap)) {
-                        h.walk(of, || {
-                            past.heap.owned_pages(&self.pager).map_err(Stopped::from)
-                        });
-                    }
-                }
-                for (id, _) in &r.indexes {
-                    let tree = self.indexes[id].index.tree();
-                    let of = object(Quarantine::Index(tree.owner()));
-                    h.walk(of, || tree.walk(&self.pager));
-                    if let Some(past) = retained.and_then(|k| k.indexes.get(id)) {
-                        h.walk(of, || past.tree().walk(&self.pager));
-                    }
-                }
-            }
+            holdings.walk(&self.pager, h);
         })
     }
 

@@ -12,7 +12,7 @@ use adtb_lang::types::{Base, CtorSet, RelId, Ty};
 use crate::exec::Val;
 use crate::plan::explain::{Actual, Node, json_text, object};
 use crate::runtime::Runtime;
-use crate::write::{self, Bounds, Local, Outcome, Text, Txn};
+use crate::write::{self, Bounds, HoldWait, Local, Outcome, Text, Txn, VacuumHold};
 
 use super::text::{DynRows, Issuer, Prepared, rows};
 use super::{Capability, Engine, Error, unsupported};
@@ -159,6 +159,14 @@ fn field_path(e: &ast::Expr) -> bool {
     }
 }
 
+/// Returns whether `c` waits for the vacuum lock when it runs.
+pub(super) fn holds_off_vacuum(c: &Command) -> bool {
+    matches!(
+        c,
+        Command::Verify(_) | Command::Vacuum(_) | Command::SetSetting { .. }
+    )
+}
+
 /// Refuse a command that belongs to no transaction, for running inside one.
 pub(super) fn outside_transaction(c: &Command) -> Result<(), Error> {
     match c {
@@ -262,7 +270,7 @@ impl<R: Runtime> Engine<R> {
         &self,
         tx: &Txn,
         p: &Prepared,
-        c: &Command,
+        (c, at): (&Command, usize),
         local: &mut Local,
         bounds: Bounds,
     ) -> Result<DynRows, write::Error> {
@@ -292,9 +300,9 @@ impl<R: Runtime> Engine<R> {
                 let row = Val::record(vec![Val::text(&node.document(&members)), Val::text(&shown)]);
                 Ok(rows(schema, ty, vec![row]))
             }
-            Command::Vacuum(rel) => self.vacuumed(schema, *rel),
+            Command::Vacuum(rel) => self.vacuumed(schema, *rel, HoldWait::of(&bounds, at)),
             Command::Verify(rel) => {
-                let found = self.verified(schema, *rel)?;
+                let found = self.verified(schema, *rel, HoldWait::of(&bounds, at))?;
                 if let Some(issuer) = &p.issuer {
                     self.refuse_witnesses(schema, issuer, p.caller(), &found)?;
                 }
@@ -309,7 +317,8 @@ impl<R: Runtime> Engine<R> {
                 self.reindex_job(schema, *relation, at.as_deref(), *online)
             }
             Command::SetSetting { setting, value } => {
-                self.set_setting(tx, p, *setting, *value, local, bounds)
+                let held = self.db.hold_vacuum(HoldWait::of(&bounds, at))?;
+                self.set_setting(tx, p, (*setting, *value), local, bounds, &held)
             }
             other => Err(write::Error::Unsupported(format!("`{}`", word(other)))),
         }
@@ -428,7 +437,12 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Vacuums `rel`. Returns one row per constructor relation.
-    fn vacuumed(&self, schema: &Schema, rel: RelId) -> Result<DynRows, write::Error> {
+    fn vacuumed(
+        &self,
+        schema: &Schema,
+        rel: RelId,
+        waiting: HoldWait<'_>,
+    ) -> Result<DynRows, write::Error> {
         let ctors = engine_relation(schema, "catalog", "constructors")?;
         let ty = Ty::Record(vec![
             (
@@ -443,7 +457,7 @@ impl<R: Runtime> Engine<R> {
         ]);
         let out = self
             .db
-            .vacuum(rel)?
+            .vacuum(rel, waiting)?
             .into_iter()
             .map(|(id, report)| {
                 Val::record(vec![
@@ -465,10 +479,10 @@ impl<R: Runtime> Engine<R> {
         &self,
         tx: &Txn,
         p: &Prepared,
-        setting: u32,
-        value: Tm,
+        (setting, value): (u32, Tm),
         local: &mut Local,
         bounds: Bounds,
+        held: &VacuumHold<'_, R>,
     ) -> Result<DynRows, write::Error> {
         let schema = p.schema();
         let settings = engine_relation(schema, "catalog", "settings")?;
@@ -508,7 +522,7 @@ impl<R: Runtime> Engine<R> {
             self.background.configure(&settings);
             settings.window
         };
-        self.db.set_retention(window)?;
+        self.db.set_retention(window, held)?;
         let elem = Ty::Data {
             def,
             args: Vec::new(),

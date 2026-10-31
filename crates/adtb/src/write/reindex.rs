@@ -12,24 +12,23 @@
 use std::any::Any;
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-use std::sync::MutexGuard;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use adtb_lang::types::RelId;
 
-use crate::btree::build::{RunEntry, merge_runs, retire};
+use crate::btree::build::{BuildError, RunEntry, merge_runs, retire};
 use crate::btree::{self, BTree};
 use crate::heap::Heap;
 use crate::key::{CtorId, Entry};
 use crate::mvcc::Xid;
 use crate::plan::IndexId;
-use crate::runtime::{Io, Op, Runtime};
+use crate::runtime::{Instant, Io, Op, Runtime};
 use crate::storage::{self, Damage, Lsn, Pid, Quarantine};
 
 use super::past::Retained;
 use super::schema::{Indexed, Rel};
-use super::{Database, Error, Txn};
+use super::{Bounds, Database, Error, Rerun, Stop, Txn};
 
 /// One index to rebuild, how, and who follows it.
 #[expect(
@@ -54,12 +53,13 @@ pub struct Failure {
 }
 
 /// Returns the text of a panic's payload, or `None` for an unwinding that is not a failure of the
-/// job, such as a runtime stopping its threads.
+/// job: a runtime stopping its threads, or a fatal I/O error.
 pub fn panic_text(payload: &(dyn Any + Send)) -> Option<String> {
     payload
         .downcast_ref::<String>()
         .cloned()
         .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .filter(|text| !text.starts_with(storage::FATAL_IO))
 }
 
 /// How many catch-ups run while writes continue before the one that holds them.
@@ -68,8 +68,77 @@ const CATCH_UPS: usize = 2;
 /// The transaction a statement gated by an offline rebuild waits for.
 pub(super) const OFFLINE_GATE: Xid = Xid(u64::MAX);
 
+/// The transaction a call waiting for the vacuum lock waits for: running while a holder has it.
+const VACUUM_HOLDER: Xid = Xid(u64::MAX - 1);
+
 /// How often a statement that cannot suspend looks at the gate and at what stops it.
 pub(super) const GATE_POLL: Duration = Duration::from_millis(5);
+
+/// What stops a call that waits for the vacuum lock.
+#[derive(Clone, Copy, Debug)]
+pub struct HoldWait<'b> {
+    bounds: Option<&'b Bounds>,
+    /// The position among the call's items of the command that waits.
+    at: usize,
+}
+
+impl<'b> HoldWait<'b> {
+    /// Returns the wait of the command at `at`, stopped by `bounds`.
+    pub fn of(bounds: &'b Bounds, at: usize) -> HoldWait<'b> {
+        HoldWait {
+            bounds: Some(bounds),
+            at,
+        }
+    }
+
+    /// Returns a wait only a close stops.
+    pub fn unbounded() -> HoldWait<'static> {
+        HoldWait {
+            bounds: None,
+            at: 0,
+        }
+    }
+
+    /// Returns what stops the wait, from `now`.
+    fn stop(&self, now: Instant) -> Stop {
+        let Some(bounds) = self.bounds else {
+            return Stop::default();
+        };
+        let rerun = match bounds.rerun {
+            Some(r) if self.at <= r.through => r,
+            _ => Rerun {
+                through: self.at,
+                since: now,
+            },
+        };
+        let limited = self.at >= rerun.through;
+        Stop::of(
+            bounds,
+            limited.then_some(rerun.since),
+            bounds.suspend.then_some(rerun),
+        )
+    }
+}
+
+/// The vacuum lock. Holds off vacuum, the one other writer that removes entries and frees slots,
+/// every other rebuild, and every other holder.
+pub struct VacuumHold<'d, R: Runtime> {
+    db: &'d Database<R>,
+}
+
+impl<R: Runtime> Drop for VacuumHold<'_, R> {
+    fn drop(&mut self) {
+        let mut held = self.db.vacuuming.lock(&self.db.rt);
+        *held = false;
+        self.db.waits.ended(VACUUM_HOLDER);
+    }
+}
+
+impl<R: Runtime> std::fmt::Debug for VacuumHold<'_, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VacuumHold")
+    }
+}
 
 /// What a rebuild has allocated and replaced so far.
 struct Pages {
@@ -244,10 +313,54 @@ impl<R: Runtime> Database<R> {
         Ok(())
     }
 
-    /// Returns the guard that holds off vacuum, the one other writer that removes entries and
-    /// frees slots, and one rebuild at a time.
-    pub fn holding_off_vacuum(&self) -> MutexGuard<'_, ()> {
-        self.vacuuming.lock(&self.rt)
+    /// Returns the vacuum lock for a rebuild job, waiting as long as another holds it.
+    pub fn holding_off_vacuum(&self) -> VacuumHold<'_, R> {
+        loop {
+            if let Some(hold) = self.try_hold_vacuum() {
+                return hold;
+            }
+            self.pause_for_rebuild();
+        }
+    }
+
+    /// Returns the vacuum lock unless another holds it. [`VACUUM_HOLDER`] runs exactly while one
+    /// does, so a call that watches it and finds it ended finds the lock free.
+    fn try_hold_vacuum(&self) -> Option<VacuumHold<'_, R>> {
+        let mut held = self.vacuuming.lock(&self.rt);
+        if *held {
+            return None;
+        }
+        *held = true;
+        self.waits.started(VACUUM_HOLDER);
+        Some(VacuumHold { db: self })
+    }
+
+    /// Returns the vacuum lock for a call.
+    ///
+    /// Fail while another holds it: with `Blocked` on a call that suspends, whose rerun waits with
+    /// no worker; else with what stops the call, looking every few milliseconds; and with
+    /// `Cancelled` once rebuilds are stopped.
+    pub fn hold_vacuum(&self, waiting: HoldWait<'_>) -> Result<VacuumHold<'_, R>, Error> {
+        let stop = waiting.stop(self.rt.now());
+        loop {
+            if let Some(hold) = self.try_hold_vacuum() {
+                return Ok(hold);
+            }
+            self.rebuild_stopped()?;
+            if let Some(rerun) = stop.suspend {
+                return Err(Error::Blocked {
+                    on: VACUUM_HOLDER,
+                    rerun,
+                });
+            }
+            stop.check(self.rt.now())?;
+            self.pause_for_rebuild();
+        }
+    }
+
+    /// Returns how many pauses calls have made at a rebuild's gate or for the vacuum lock.
+    pub fn rebuild_waits(&self) -> u64 {
+        self.rebuild_waits.load(Ordering::Relaxed)
     }
 
     /// Returns whether an offline rebuild holds writes to any of `rels`.
@@ -271,7 +384,8 @@ impl<R: Runtime> Database<R> {
     }
 
     /// Block the calling thread until `GATE_POLL` has passed.
-    pub(super) fn pause_at_gate(&self) {
+    pub(super) fn pause_for_rebuild(&self) {
+        self.rebuild_waits.fetch_add(1, Ordering::Relaxed);
         let mut io = self.rt.io();
         io.submit(Op::Timer {
             at: self.rt.now() + GATE_POLL,
@@ -379,11 +493,9 @@ impl<R: Runtime> Database<R> {
         let runs = runs?;
         self.rebuild_stopped()?;
         (job.phase)("build", 0.4);
-        let entries = merge_runs(runs, ix.desc.unique).map_err(|key| {
-            Error::Internal(format!("a duplicate of key {key:?} in a unique index"))
-        })?;
-        let built = BTree::bulk(&self.pager, tree.owner(), entries, &mut pages.built)?;
-        self.rebuild_stopped()?;
+        let stop = self.build_stop();
+        let entries = merge_runs(runs, ix.desc.unique, &stop)?;
+        let built = BTree::bulk(&self.pager, tree.owner(), entries, &mut pages.built, &stop)?;
         (job.phase)("catch up", 0.6);
         if job.online {
             for _ in 0..CATCH_UPS {
@@ -399,6 +511,11 @@ impl<R: Runtime> Database<R> {
         self.mend_history(job, &scan, pages)?;
         let release = Some(Quarantine::Index(tree.owner()));
         self.swap_in(tree, built, release, job, &mut pages.built, &mut pages.old)
+    }
+
+    /// Returns whether a build should stop.
+    fn build_stop(&self) -> impl Fn() -> bool + '_ {
+        || self.rebuild_stopped().is_err()
     }
 
     /// Returns the history key index tree of `id`, if it has one.
@@ -425,12 +542,15 @@ impl<R: Runtime> Database<R> {
             Err(btree::Error::Page(e)) if e.damage == Damage::Unreadable => return Err(e.into()),
             Err(_) => {}
         }
-        let entries = merge_runs(scan.past_runs(retained)?, false).map_err(|key| {
-            Error::Internal(format!(
-                "a duplicate of {key:?} in a merge that allows them"
-            ))
-        })?;
-        let built = BTree::bulk(&self.pager, tree.owner(), entries, &mut pages.built_past)?;
+        let stop = self.build_stop();
+        let entries = merge_runs(scan.past_runs(retained)?, false, &stop)?;
+        let built = BTree::bulk(
+            &self.pager,
+            tree.owner(),
+            entries,
+            &mut pages.built_past,
+            &stop,
+        )?;
         self.swap_in(
             tree,
             built,
@@ -443,6 +563,9 @@ impl<R: Runtime> Database<R> {
 
     /// Replace the contents of `tree` with those of `built`, recording the old pages in `old`.
     /// Empties `made`, the pages of `built`, which from the swap on belong to `tree`.
+    ///
+    /// An unwinding out of the swap leaves `made` empty and `old` not found: whether the swap took
+    /// is unknown, so neither tree's pages may be freed. The next open frees the unreached ones.
     fn swap_in(
         &self,
         tree: BTree,
@@ -453,8 +576,14 @@ impl<R: Runtime> Database<R> {
         old: &mut Replaced,
     ) -> Result<(), Error> {
         let (reached_pages, reached) = tree.reachable(&self.pager);
-        tree.take_over(&self.pager, built, release)?;
-        made.clear();
+        let kept = std::mem::take(made);
+        let found_before = std::mem::replace(&mut old.found, false);
+        if let Err(e) = tree.take_over(&self.pager, built, release) {
+            *made = kept;
+            old.found = found_before;
+            return Err(e.into());
+        }
+        old.found = found_before;
         old.pages.extend(reached_pages);
         if reached {
             return Ok(());
@@ -465,6 +594,18 @@ impl<R: Runtime> Database<R> {
         append_strays(&mut old.pages, strays);
         old.found = found && judged;
         Ok(())
+    }
+}
+
+impl From<BuildError> for Error {
+    fn from(e: BuildError) -> Error {
+        match e {
+            BuildError::Stopped => Error::Cancelled,
+            BuildError::Page(e) => e.into(),
+            BuildError::Duplicate(key) => {
+                Error::Internal(format!("a duplicate of key {key:?} in a unique index"))
+            }
+        }
     }
 }
 

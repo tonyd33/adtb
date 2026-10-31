@@ -12,7 +12,7 @@ use adtb_sys::lock::Lock;
 use crate::catalog::layout;
 use crate::exec::{self, F64, Val};
 use crate::runtime::{Instant, Io, Op, Runtime, ThreadId};
-use crate::storage::{FATAL_IO, Pid, RetainedLog};
+use crate::storage::{Pid, RetainedLog};
 use crate::write::{Found, panic_text};
 
 use super::command::engine_relation;
@@ -347,10 +347,8 @@ impl<R: Runtime> Background<R> {
 /// Returns what `body` returns, or the text of its panic. A fatal I/O error, and a payload with no
 /// text, which is the runtime's own unwinding, go on up.
 fn caught<T>(body: impl FnOnce() -> T) -> Result<T, String> {
-    catch_unwind(AssertUnwindSafe(body)).map_err(|payload| match panic_text(&*payload) {
-        Some(text) if !text.starts_with(FATAL_IO) => text,
-        _ => resume_unwind(payload),
-    })
+    catch_unwind(AssertUnwindSafe(body))
+        .map_err(|payload| panic_text(&*payload).unwrap_or_else(|| resume_unwind(payload)))
 }
 
 /// Returns how long to sleep after `spent` reading, so that reading takes `budget` of the time.

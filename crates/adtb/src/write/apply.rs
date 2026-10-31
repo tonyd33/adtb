@@ -167,7 +167,7 @@ impl<R: Runtime> Stmt<'_, R> {
                 });
             }
             self.stopped()?;
-            self.db.pause_at_gate();
+            self.db.pause_for_rebuild();
         }
         Ok(())
     }
