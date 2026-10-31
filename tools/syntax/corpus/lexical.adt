@@ -1,8 +1,9 @@
 module shelter
 -- from 42 "Text" is a comment
-query residents (minimum: Int) =
+query residents (minimum: Int) -> Set Text =
   from r in people where r.age >= minimum
   select { name: r.name, message: "from Text 42 -- \\" }
+transact
 let pause = 30min
 let n = 12.50
 let exponent = 1.5e-3

@@ -35,6 +35,7 @@ in
     pkgs.lychee
     pkgs.mdbook
     pkgs.ripgrep
+    pkgs.tree-sitter
     pkgs.util-linux
     pkgs.cargo-deny
     pkgs.cargo-nextest
@@ -61,6 +62,7 @@ in
     cargo deny --manifest-path "$app" check
     size-check
     docs-check
+    tree-sitter-check
   '';
 
   scripts.docs-build.exec = ''
@@ -97,6 +99,10 @@ in
 
   scripts.codemap.exec = ''
     "$DEVENV_ROOT/work/tools/codemap" "$@"
+  '';
+
+  scripts.tree-sitter-check.exec = ''
+    "$DEVENV_ROOT/work/tools/tree-sitter-check" "$@"
   '';
 
   scripts.house-check.exec = ''

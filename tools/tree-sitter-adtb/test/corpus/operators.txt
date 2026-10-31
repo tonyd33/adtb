@@ -1,0 +1,723 @@
+================================================================================
+add
+================================================================================
+
+add module world
+add type T = A
+add relation r : T key id
+add set S of r = A
+add constraint c = r
+add check c on r (x)
+add constructor T.A { a: I64 } before B joins r.C, s.D arm f: A a -> a.a arm g.h: A a -> 1
+add constructor T.B after A
+add field T.A.f : I64 on delete restrict fill 0
+add field T.g : I64 fill match | A -> 1 | B -> 2
+add unique (a) in r.A
+add index (a) in r
+add interval index (a) in r
+add default r.f = 1
+add default r.A.f = generate clock
+add computed r.f : I64 = 1
+
+---
+
+(source_file
+  (add_operator
+    (lower))
+  (add_operator
+    (type_declaration
+      (upper)
+      (constructors
+        (constructor_definition
+          (upper)))))
+  (add_operator
+    (relation_declaration
+      (lower)
+      (type_name
+        (upper))
+      (key_clause
+        (field_name
+          (lower)))))
+  (add_operator
+    (set_declaration
+      (upper)
+      (lower)
+      (upper)))
+  (add_operator
+    (constraint_declaration
+      (lower)
+      (name
+        (lower))))
+  (add_operator
+    (check_declaration
+      (lower)
+      (relation_ref
+        (lower))
+      (name
+        (lower))))
+  (add_operator
+    (add_constructor
+      (ctor_path
+        (upper)
+        (upper))
+      (record_type
+        (field_type
+          (field_name
+            (lower))
+          (type_name
+            (upper))))
+      (upper)
+      (joins_clause
+        (relation_ref
+          (lower)
+          (ctor_selection
+            (upper)))
+        (relation_ref
+          (lower)
+          (ctor_selection
+            (upper))))
+      (arm_clause
+        (lower)
+        (constructor_pattern
+          (upper)
+          (binding))
+        (field_expression
+          (name
+            (lower))
+          (field_name
+            (lower))))
+      (arm_clause
+        (lower)
+        (lower)
+        (constructor_pattern
+          (upper)
+          (binding))
+        (int))))
+  (add_operator
+    (add_constructor
+      (ctor_path
+        (upper)
+        (upper))
+      (upper)))
+  (add_operator
+    (add_field
+      (field_path
+        (upper)
+        (upper)
+        (field_name
+          (lower)))
+      (type_name
+        (upper))
+      (on_delete)
+      (fill
+        (int))))
+  (add_operator
+    (add_field
+      (field_path
+        (upper)
+        (field_name
+          (lower)))
+      (type_name
+        (upper))
+      (fill
+        (fill_match
+          (arm
+            (constructor_pattern
+              (upper))
+            (int))
+          (arm
+            (constructor_pattern
+              (upper))
+            (int))))))
+  (add_operator
+    (index_fields
+      (name
+        (lower)))
+    (relation_ref
+      (lower)
+      (ctor_selection
+        (upper))))
+  (add_operator
+    (index_fields
+      (name
+        (lower)))
+    (relation_ref
+      (lower)))
+  (add_operator
+    (index_fields
+      (name
+        (lower)))
+    (relation_ref
+      (lower)))
+  (add_operator
+    (default_path
+      (lower)
+      (field_name
+        (lower)))
+    (int))
+  (add_operator
+    (default_path
+      (lower)
+      (upper)
+      (field_name
+        (lower)))
+    (generated_default
+      (lower)))
+  (add_operator
+    (lower)
+    (lower)
+    (type_name
+      (upper))
+    (int)))
+
+================================================================================
+drop
+================================================================================
+
+drop module m
+drop type T
+drop relation r
+drop set S of r
+drop fn f
+drop constraint c
+drop check c
+drop field T.A.f
+drop unique (a) in r
+drop index (a) in r
+drop interval index (a) in r
+drop default r.f
+drop computed r.f
+drop aggregate a
+
+---
+
+(source_file
+  (drop_operator
+    (lower))
+  (drop_operator
+    (upper))
+  (drop_operator
+    (lower))
+  (drop_operator
+    (upper)
+    (lower))
+  (drop_operator
+    (lower))
+  (drop_operator
+    (lower))
+  (drop_operator
+    (lower))
+  (drop_operator
+    (field_path
+      (upper)
+      (upper)
+      (field_name
+        (lower))))
+  (drop_operator
+    (index_fields
+      (name
+        (lower)))
+    (relation_ref
+      (lower)))
+  (drop_operator
+    (index_fields
+      (name
+        (lower)))
+    (relation_ref
+      (lower)))
+  (drop_operator
+    (index_fields
+      (name
+        (lower)))
+    (relation_ref
+      (lower)))
+  (drop_operator
+    (default_path
+      (lower)
+      (field_name
+        (lower))))
+  (drop_operator
+    (lower)
+    (lower))
+  (drop_operator
+    (lower)))
+
+================================================================================
+rename
+================================================================================
+
+rename type T to U
+rename relation r to s
+rename set S of r to U
+rename constructor T.A to B
+rename field T.A.f to g
+
+---
+
+(source_file
+  (rename_operator
+    (upper)
+    (upper))
+  (rename_operator
+    (lower)
+    (lower))
+  (rename_operator
+    (upper)
+    (lower)
+    (upper))
+  (rename_operator
+    (ctor_path
+      (upper)
+      (upper))
+    (upper))
+  (rename_operator
+    (field_path
+      (upper)
+      (upper)
+      (field_name
+        (lower)))
+    (field_name
+      (lower))))
+
+================================================================================
+constructors
+================================================================================
+
+remove constructor T.A
+split constructor T.A into B | C { x: I64 } by match | A a -> B unique (x) in C index (x) in C interval index (y) in C arm f: B b -> 1
+merge constructor T.(A | B) into C by match | A a -> C arm f: C c -> 1
+merge constructor T.A into C
+nest constructor T.(A | B) into C { x: I64 } arm f: C c -> 1
+unnest constructor T.C arm f: A a -> 1
+
+---
+
+(source_file
+  (remove_operator
+    (ctor_path
+      (upper)
+      (upper)))
+  (split_operator
+    (ctor_path
+      (upper)
+      (upper))
+    (constructor_definition
+      (upper))
+    (constructor_definition
+      (upper)
+      (record_type
+        (field_type
+          (field_name
+            (lower))
+          (type_name
+            (upper)))))
+    (arm
+      (constructor_pattern
+        (upper)
+        (binding))
+      (constructor_expression
+        (upper)))
+    (index_fields
+      (name
+        (lower)))
+    (scope
+      (ctor_selection
+        (upper)))
+    (index_fields
+      (name
+        (lower)))
+    (scope
+      (ctor_selection
+        (upper)))
+    (index_fields
+      (name
+        (lower)))
+    (scope
+      (ctor_selection
+        (upper)))
+    (arm_clause
+      (lower)
+      (constructor_pattern
+        (upper)
+        (binding))
+      (int)))
+  (merge_operator
+    (upper)
+    (ctor_selection
+      (upper)
+      (upper))
+    (constructor_definition
+      (upper))
+    (arm
+      (constructor_pattern
+        (upper)
+        (binding))
+      (constructor_expression
+        (upper)))
+    (arm_clause
+      (lower)
+      (constructor_pattern
+        (upper)
+        (binding))
+      (int)))
+  (merge_operator
+    (upper)
+    (ctor_selection
+      (upper))
+    (constructor_definition
+      (upper)))
+  (nest_operator
+    (upper)
+    (ctor_selection
+      (upper)
+      (upper))
+    (constructor_definition
+      (upper)
+      (record_type
+        (field_type
+          (field_name
+            (lower))
+          (type_name
+            (upper)))))
+    (arm_clause
+      (lower)
+      (constructor_pattern
+        (upper)
+        (binding))
+      (int)))
+  (unnest_operator
+    (ctor_path
+      (upper)
+      (upper))
+    (arm_clause
+      (lower)
+      (constructor_pattern
+        (upper)
+        (binding))
+      (int))))
+
+================================================================================
+fields and keys
+================================================================================
+
+alter field T.A.f on delete clear
+move field T.A.f to U.(B | C) fill 1
+move field T.f to m::U
+rekey relation r key (a, b) carry T.x, T.A.y
+
+---
+
+(source_file
+  (alter_operator
+    (field_path
+      (upper)
+      (upper)
+      (field_name
+        (lower))))
+  (move_operator
+    (field_path
+      (upper)
+      (upper)
+      (field_name
+        (lower)))
+    (upper)
+    (ctor_selection
+      (upper)
+      (upper))
+    (fill
+      (int)))
+  (move_operator
+    (field_path
+      (upper)
+      (field_name
+        (lower)))
+    (qualified_upper
+      (lower)
+      (upper)))
+  (rekey_operator
+    (lower)
+    (field_name
+      (lower))
+    (field_name
+      (lower))
+    (field_path
+      (upper)
+      (field_name
+        (lower)))
+    (field_path
+      (upper)
+      (upper)
+      (field_name
+        (lower)))))
+
+================================================================================
+definitions and state
+================================================================================
+
+define fn f (x: I64) -> I64 = x
+define aggregate a () -> I64 = state { } init { } step (s, x) -> s merge (a, b) -> a finish s -> 1
+redefine fn f (x: I64) -> I64 = x
+redefine computed r.f : I64 = 2
+unstore v
+enable r.A
+disable T.A
+deprecate r.(A | B)
+
+---
+
+(source_file
+  (define_operator
+    (function_declaration
+      (lower)
+      (parameters
+        (parameter
+          (lower)
+          (type_name
+            (upper))))
+      (type_name
+        (upper))
+      (name
+        (lower))))
+  (define_operator
+    (aggregate_declaration
+      (lower)
+      (parameters)
+      (type_name
+        (upper))
+      (record_type)
+      (record_expression)
+      (lower)
+      (lower)
+      (name
+        (lower))
+      (lower)
+      (lower)
+      (name
+        (lower))
+      (lower)
+      (int)))
+  (redefine_operator
+    (function_declaration
+      (lower)
+      (parameters
+        (parameter
+          (lower)
+          (type_name
+            (upper))))
+      (type_name
+        (upper))
+      (name
+        (lower))))
+  (redefine_operator
+    (lower)
+    (lower)
+    (type_name
+      (upper))
+    (int))
+  (unstore_operator
+    (lower))
+  (state_operator
+    (relation_ref
+      (lower)
+      (ctor_selection
+        (upper))))
+  (state_operator
+    (ctor_path
+      (upper)
+      (upper)))
+  (state_operator
+    (relation_ref
+      (lower)
+      (ctor_selection
+        (upper)
+        (upper)))))
+
+================================================================================
+revert, script and extensions
+================================================================================
+
+revert 0011 fill T.f = 1 fill T.A.g = match | A -> 1
+script insert r { a: 1 }
+script (skip, skip)
+install geo "1.2" from "geo.adtx"
+uninstall geo
+adopt tzdb "2026a" from "tz.bin"
+
+---
+
+(source_file
+  (revert_operator
+    (migration)
+    (revert_fill
+      (field_path
+        (upper)
+        (field_name
+          (lower)))
+      (int))
+    (revert_fill
+      (field_path
+        (upper)
+        (upper)
+        (field_name
+          (lower)))
+      (fill_match
+        (arm
+          (constructor_pattern
+            (upper))
+          (int)))))
+  (script_operator
+    (insert
+      (relation_ref
+        (lower))
+      (record_expression
+        (field_initializer
+          (field_name
+            (lower))
+          (int)))))
+  (script_operator
+    (write_sequence
+      (skip)
+      (skip)))
+  (install_operator
+    (lower)
+    (text)
+    (text))
+  (uninstall_operator
+    (lower))
+  (adopt_operator
+    (text)
+    (text)))
+
+================================================================================
+grants
+================================================================================
+
+grant read r, read r.A (a, B.c), update r frozen (a), insert r, delete r to admin with grant option
+grant retag r.A -> r.B except (A -> B), schema, adhoc, assert, monitor, cancel, maintain, configure, read_files, write_files to ops
+grant call fn m::f, call web-2.4, call web-2.4::q, call web, call web::q, call web::q at 3 (a: I64) -> Set I64 to r
+revoke read r, call web::q from admin
+
+---
+
+(source_file
+  (grant
+    (table_privilege
+      (relation_ref
+        (lower)))
+    (table_privilege
+      (relation_ref
+        (lower)
+        (ctor_selection
+          (upper)))
+      (grant_fields
+        (grant_field
+          (field_name
+            (lower)))
+        (grant_field
+          (upper)
+          (field_name
+            (lower)))))
+    (table_privilege
+      (relation_ref
+        (lower))
+      (grant_fields
+        (grant_field
+          (field_name
+            (lower)))))
+    (table_privilege
+      (relation_ref
+        (lower)))
+    (table_privilege
+      (relation_ref
+        (lower)))
+    (lower))
+  (grant
+    (retag_privilege
+      (relation_ref
+        (lower)
+        (ctor_selection
+          (upper)))
+      (relation_ref
+        (lower)
+        (ctor_selection
+          (upper)))
+      (retag_pair
+        (upper)
+        (upper)))
+    (capability)
+    (capability)
+    (capability)
+    (capability)
+    (capability)
+    (capability)
+    (capability)
+    (capability)
+    (capability)
+    (lower))
+  (grant
+    (call_privilege
+      (qualified_lower
+        (lower)
+        (lower)))
+    (call_privilege
+      (bundle_name))
+    (call_privilege
+      (bundle_name)
+      (lower))
+    (call_privilege
+      (family_name))
+    (call_privilege
+      (family_name)
+      (lower))
+    (call_privilege
+      (family_name)
+      (lower)
+      (call_signature
+        (int)
+        (parameters
+          (parameter
+            (lower)
+            (type_name
+              (upper))))
+        (type_application
+          (type_name
+            (upper))
+          (type_name
+            (upper)))))
+    (lower))
+  (revoke
+    (table_privilege
+      (relation_ref
+        (lower)))
+    (call_privilege
+      (family_name)
+      (lower))
+    (lower)))
+
+================================================================================
+roles and peers
+================================================================================
+
+create role app
+drop role app
+alter role app password "secret"
+map peer "CN=*" on main to app
+unmap peer 1 on main
+
+---
+
+(source_file
+  (role_statement
+    (lower))
+  (role_statement
+    (lower))
+  (role_statement
+    (lower)
+    (text))
+  (peer_statement
+    (text)
+    (lower)
+    (lower))
+  (peer_statement
+    (int)
+    (lower)))

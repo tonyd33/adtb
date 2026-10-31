@@ -4,6 +4,6 @@
 for syntax highlighters. Each expectation is a Highlight.js token class and
 exact source text.
 
-A future tree-sitter grammar must consume the same `.adt` inputs and map its
-captures to these expectations. No tree-sitter backend exists yet. Highlighting
+`work/tools/tree-sitter-check` runs the tree-sitter grammar's highlight query over
+the same `.adt` inputs and maps its captures to these expectations. Highlighting
 accepts fragments and elisions; these files do not claim to be complete programs.

@@ -1,0 +1,203 @@
+================================================================================
+inserts
+================================================================================
+
+insert r { a: 1 }
+insert r.A from x unless conflict on key else skip rejects into m::bad
+insert r x unless conflict on (a, key) in A else update y set z
+
+---
+
+(source_file
+  (insert
+    (relation_ref
+      (lower))
+    (record_expression
+      (field_initializer
+        (field_name
+          (lower))
+        (int))))
+  (insert
+    (relation_ref
+      (lower)
+      (ctor_selection
+        (upper)))
+    (name
+      (lower))
+    (upsert
+      (skip))
+    (qualified_lower
+      (lower)
+      (lower)))
+  (insert
+    (relation_ref
+      (lower))
+    (name
+      (lower))
+    (upsert
+      (index_fields
+        (name
+          (lower))
+        (field_name))
+      (scope
+        (ctor_selection
+          (upper)))
+      (update
+        (lower)
+        (name
+          (lower))))))
+
+================================================================================
+updates and deletes
+================================================================================
+
+update x set 1
+update x in r where a set 1
+delete x
+delete x in r where a
+fail "no"
+skip
+
+---
+
+(source_file
+  (update
+    (lower)
+    (int))
+  (update
+    (lower)
+    (name
+      (lower))
+    (name
+      (lower))
+    (int))
+  (delete
+    (lower))
+  (delete
+    (lower)
+    (name
+      (lower))
+    (name
+      (lower)))
+  (fail
+    (text))
+  (skip))
+
+================================================================================
+composite writes
+================================================================================
+
+(skip, skip)
+if a then skip else (skip)
+match a | X -> skip | Y -> delete x
+
+---
+
+(source_file
+  (write_sequence
+    (skip)
+    (skip))
+  (write_if
+    (name
+      (lower))
+    (skip)
+    (write_sequence
+      (skip)))
+  (write_match
+    (name
+      (lower))
+    (write_arm
+      (constructor_pattern
+        (upper))
+      (skip))
+    (write_arm
+      (constructor_pattern
+        (upper))
+      (delete
+        (lower)))))
+
+================================================================================
+a parenthesised write is an expression
+================================================================================
+
+1 + ((skip))
+
+---
+
+(source_file
+  (binary_expression
+    (int)
+    (parenthesized_expression
+      (write_sequence
+        (skip)))))
+
+================================================================================
+transact blocks
+================================================================================
+
+transact retry 3 read_only deferrable durability quorum durability local let a = 1 let b = insert r x let c = (skip) skip (skip) if a then skip else skip return a
+transact
+
+---
+
+(source_file
+  (transact_block
+    (int)
+    (let_binding
+      (lower)
+      (int))
+    (let_binding
+      (lower)
+      (insert
+        (relation_ref
+          (lower))
+        (name
+          (lower))))
+    (let_binding
+      (lower)
+      (write_sequence
+        (skip)))
+    (skip)
+    (write_sequence
+      (skip))
+    (write_if
+      (name
+        (lower))
+      (skip)
+      (skip))
+    (name
+      (lower)))
+  (transact_block))
+
+================================================================================
+temp and settings
+================================================================================
+
+temp relation t : T key id generate sequence
+temp relation u : { a: I64 } key (a)
+set setting Limit = 1
+
+---
+
+(source_file
+  (temp_declaration
+    (lower)
+    (type_name
+      (upper))
+    (field_name
+      (lower))
+    (generated
+      (lower)))
+  (temp_declaration
+    (lower)
+    (record_type
+      (field_type
+        (field_name
+          (lower))
+        (type_name
+          (upper))))
+    (field_name
+      (lower)))
+  (set_setting
+    (upper)
+    (int)))

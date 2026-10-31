@@ -1,0 +1,659 @@
+================================================================================
+module and bundle headers
+================================================================================
+
+module auth
+bundle web-2.4 pins 41 (b3e0...) catalog 2 (abc...) edition "2026-10" lease 30d priority high budget { rows: 10 } hide new constructors
+import auth
+import fn geo::cell
+
+---
+
+(source_file
+  (module_header
+    (lower))
+  (bundle_header
+    (bundle_name)
+    (version
+      (int)
+      (hash))
+    (version
+      (int)
+      (hash))
+    (text)
+    (duration)
+    (lower)
+    (record_expression
+      (field_initializer
+        (field_name
+          (lower))
+        (int))))
+  (import
+    (lower))
+  (import
+    (qualified_lower
+      (lower)
+      (lower))))
+
+================================================================================
+full hash version
+================================================================================
+
+bundle web-2.4 pins 1 (55331b63f9c889135c04e7d2570d67e27d89050ac449f462cf659e85af6f79d3) edition "e"
+
+---
+
+(source_file
+  (bundle_header
+    (bundle_name)
+    (version
+      (int)
+      (hash))
+    (text)))
+
+================================================================================
+type declarations
+================================================================================
+
+type Status = Draft | Sent { at: I64 } | Paid { at: I64, by: Text }
+type Item = { id: Key items, parent: Key items.(A | B) on delete cascade, o: Option I64 on delete retag X { a: 1 } }
+type Tagged a ordered { id: Key tags } = Small { size: I64 } | Large
+type Email = new Text where scalar_len(value) > 0
+type Money = new Decimal 2
+
+---
+
+(source_file
+  (type_declaration
+    (upper)
+    (constructors
+      (constructor_definition
+        (upper))
+      (constructor_definition
+        (upper)
+        (record_type
+          (field_type
+            (field_name
+              (lower))
+            (type_name
+              (upper)))))
+      (constructor_definition
+        (upper)
+        (record_type
+          (field_type
+            (field_name
+              (lower))
+            (type_name
+              (upper)))
+          (field_type
+            (field_name)
+            (type_name
+              (upper)))))))
+  (type_declaration
+    (upper)
+    (record_type
+      (field_type
+        (field_name
+          (lower))
+        (key_type
+          (relation_ref
+            (lower))))
+      (field_type
+        (field_name
+          (lower))
+        (key_type
+          (relation_ref
+            (lower)
+            (ctor_selection
+              (upper)
+              (upper))))
+        (on_delete))
+      (field_type
+        (field_name
+          (lower))
+        (type_application
+          (type_name
+            (upper))
+          (type_name
+            (upper)))
+        (on_delete
+          (retag_action
+            (upper)
+            (record_expression
+              (field_initializer
+                (field_name
+                  (lower))
+                (int))))))))
+  (type_declaration
+    (upper)
+    (lower)
+    (record_type
+      (field_type
+        (field_name
+          (lower))
+        (key_type
+          (relation_ref
+            (lower)))))
+    (constructors
+      (constructor_definition
+        (upper)
+        (record_type
+          (field_type
+            (field_name
+              (lower))
+            (type_name
+              (upper)))))
+      (constructor_definition
+        (upper))))
+  (type_declaration
+    (upper)
+    (newtype_body
+      (type_name
+        (upper))
+      (binary_expression
+        (call
+          (lower)
+          (arguments
+            (name
+              (lower))))
+        (int))))
+  (type_declaration
+    (upper)
+    (newtype_body
+      (type_application
+        (type_name
+          (upper))
+        (int)))))
+
+================================================================================
+relation declarations and clauses
+================================================================================
+
+relation items : Item
+  key id generate sequence
+  unique (name) in Sent
+  unique (key, m::f(a)) in (Sent | Paid)
+  index (name, n)
+  interval index (span) in Paid
+  volatile
+  default n = 1
+  default Paid.by = "x"
+  default created = generate clock
+  computed total : I64 = n * 2
+relation m::pairs : Pair key (a, b)
+
+---
+
+(source_file
+  (relation_declaration
+    (lower)
+    (type_name
+      (upper))
+    (key_clause
+      (field_name
+        (lower))
+      (generated
+        (lower)))
+    (unique_clause
+      (index_fields
+        (name
+          (lower)))
+      (scope
+        (ctor_selection
+          (upper))))
+    (unique_clause
+      (index_fields
+        (field_name)
+        (call
+          (qualified_lower
+            (lower)
+            (lower))
+          (arguments
+            (name
+              (lower)))))
+      (scope
+        (ctor_selection
+          (upper)
+          (upper))))
+    (index_clause
+      (index_fields
+        (name
+          (lower))
+        (name
+          (lower))))
+    (index_clause
+      (index_fields
+        (name
+          (lower)))
+      (scope
+        (ctor_selection
+          (upper))))
+    (volatile_clause)
+    (default_clause
+      (field_name
+        (lower))
+      (int))
+    (default_clause
+      (upper)
+      (field_name)
+      (text))
+    (default_clause
+      (field_name
+        (lower))
+      (generated_default
+        (lower)))
+    (computed_clause
+      (lower)
+      (type_name
+        (upper))
+      (binary_expression
+        (name
+          (lower))
+        (int))))
+  (relation_declaration
+    (qualified_lower
+      (lower)
+      (lower))
+    (type_name
+      (upper))
+    (key_clause
+      (field_name
+        (lower))
+      (field_name
+        (lower)))))
+
+================================================================================
+sets, constraints, checks and stored views
+================================================================================
+
+set Live of items = Draft | Sent
+constraint no_empty = from i in items where i.n == 0 select i
+check positive on items.Sent (at > 0)
+store m::v key id unique (a) index (b) in Sent
+
+---
+
+(source_file
+  (set_declaration
+    (upper)
+    (lower)
+    (upper)
+    (upper))
+  (constraint_declaration
+    (lower)
+    (comprehension
+      (from_clause
+        (generator
+          (lower)
+          (name
+            (lower))))
+      (where_clause
+        (binary_expression
+          (field_expression
+            (name
+              (lower))
+            (field_name
+              (lower)))
+          (int)))
+      (name
+        (lower))))
+  (check_declaration
+    (lower)
+    (relation_ref
+      (lower)
+      (ctor_selection
+        (upper)))
+    (binary_expression
+      (name
+        (lower))
+      (int)))
+  (store_declaration
+    (qualified_lower
+      (lower)
+      (lower))
+    (store_key_clause
+      (field_name
+        (lower)))
+    (unique_clause
+      (index_fields
+        (name
+          (lower))))
+    (index_clause
+      (index_fields
+        (name
+          (lower)))
+      (scope
+        (ctor_selection
+          (upper))))))
+
+================================================================================
+functions
+================================================================================
+
+fn twice (x: I64) -> I64 = x * 2
+fn id[t: Eq + Ord, u] (x: t, y: u) -> t = x
+fn w (x: I64) -> I64 = wasm "m.wasm" export "f"
+fn h (x: I64) -> I64 = host "name" version "1" deterministic
+fn f (g: I64 -> I64) -> A { x: I64 } | B = g
+
+---
+
+(source_file
+  (function_declaration
+    (lower)
+    (parameters
+      (parameter
+        (lower)
+        (type_name
+          (upper))))
+    (type_name
+      (upper))
+    (binary_expression
+      (name
+        (lower))
+      (int)))
+  (function_declaration
+    (lower)
+    (type_parameters
+      (type_parameter
+        (lower)
+        (upper)
+        (upper))
+      (type_parameter
+        (lower)))
+    (parameters
+      (parameter
+        (lower)
+        (type_variable
+          (lower)))
+      (parameter
+        (lower)
+        (type_variable
+          (lower))))
+    (type_variable
+      (lower))
+    (name
+      (lower)))
+  (function_declaration
+    (lower)
+    (parameters
+      (parameter
+        (lower)
+        (type_name
+          (upper))))
+    (type_name
+      (upper))
+    (wasm_body
+      (text)
+      (text)))
+  (function_declaration
+    (lower)
+    (parameters
+      (parameter
+        (lower)
+        (type_name
+          (upper))))
+    (type_name
+      (upper))
+    (host_body
+      (text)
+      (text)))
+  (function_declaration
+    (lower)
+    (parameters
+      (parameter
+        (lower)
+        (function_type
+          (type_name
+            (upper))
+          (type_name
+            (upper)))))
+    (sum_type
+      (anonymous_constructor
+        (upper)
+        (record_type
+          (field_type
+            (field_name
+              (lower))
+            (type_name
+              (upper)))))
+      (anonymous_constructor
+        (upper)))
+    (name
+      (lower))))
+
+================================================================================
+queries, transactions, feeds and aggregates
+================================================================================
+
+query q (a: I64) limit 5s -> Set I64 = from i in items select i.n
+txn t (a: I64) limit 1s -> () = transact skip
+txn e () -> () = ...
+feed changes of items.Sent
+aggregate mean (scale: I64) -> F64 = state { n: I64 } init { n: 0 } step (s, x) -> { n: s.n + x } merge (a, b) -> { n: a.n + b.n } finish s -> s.n
+
+---
+
+(source_file
+  (query_declaration
+    (lower)
+    (parameters
+      (parameter
+        (lower)
+        (type_name
+          (upper))))
+    (limit_clause
+      (duration))
+    (type_application
+      (type_name
+        (upper))
+      (type_name
+        (upper)))
+    (comprehension
+      (from_clause
+        (generator
+          (lower)
+          (name
+            (lower))))
+      (field_expression
+        (name
+          (lower))
+        (field_name
+          (lower)))))
+  (transaction_declaration
+    (lower)
+    (parameters
+      (parameter
+        (lower)
+        (type_name
+          (upper))))
+    (limit_clause
+      (duration))
+    (unit_type)
+    (transact_block
+      (skip)))
+  (transaction_declaration
+    (lower)
+    (parameters)
+    (unit_type)
+    (elision))
+  (feed_declaration
+    (lower)
+    (relation_ref
+      (lower)
+      (ctor_selection
+        (upper))))
+  (aggregate_declaration
+    (lower)
+    (parameters
+      (parameter
+        (lower)
+        (type_name
+          (upper))))
+    (type_name
+      (upper))
+    (record_type
+      (field_type
+        (field_name
+          (lower))
+        (type_name
+          (upper))))
+    (record_expression
+      (field_initializer
+        (field_name
+          (lower))
+        (int)))
+    (lower)
+    (lower)
+    (record_expression
+      (field_initializer
+        (field_name
+          (lower))
+        (binary_expression
+          (field_expression
+            (name
+              (lower))
+            (field_name
+              (lower)))
+          (name
+            (lower)))))
+    (lower)
+    (lower)
+    (record_expression
+      (field_initializer
+        (field_name
+          (lower))
+        (binary_expression
+          (field_expression
+            (name
+              (lower))
+            (field_name
+              (lower)))
+          (field_expression
+            (name
+              (lower))
+            (field_name
+              (lower))))))
+    (lower)
+    (field_expression
+      (name
+        (lower))
+      (field_name
+        (lower)))))
+
+================================================================================
+types
+================================================================================
+
+fn a (x: Set { a: I64 } 2, y: (A -> B), z: (), v: m::T x 3, k: T.A, l: T.(A | B), r: { a: I64 }, p: (Set I64) U) -> a = 1
+
+---
+
+(source_file
+  (function_declaration
+    (lower)
+    (parameters
+      (parameter
+        (lower)
+        (type_application
+          (type_name)
+          (record_type
+            (field_type
+              (field_name
+                (lower))
+              (type_name
+                (upper))))
+          (int)))
+      (parameter
+        (lower)
+        (function_type
+          (type_name
+            (upper))
+          (type_name
+            (upper))))
+      (parameter
+        (lower)
+        (unit_type))
+      (parameter
+        (lower)
+        (type_application
+          (type_name
+            (qualified_upper
+              (lower)
+              (upper)))
+          (type_variable
+            (lower))
+          (int)))
+      (parameter
+        (lower)
+        (type_selection
+          (type_name
+            (upper))
+          (ctor_selection
+            (upper))))
+      (parameter
+        (lower)
+        (type_selection
+          (type_name
+            (upper))
+          (ctor_selection
+            (upper)
+            (upper))))
+      (parameter
+        (lower)
+        (record_type
+          (field_type
+            (field_name
+              (lower))
+            (type_name
+              (upper)))))
+      (parameter
+        (lower)
+        (type_application
+          (type_application
+            (type_name
+              (upper))
+            (type_name
+              (upper)))
+          (type_name
+            (upper)))))
+    (type_variable
+      (lower))
+    (int)))
+
+================================================================================
+a word first on its line ends a type
+================================================================================
+
+relation a : T
+add field T.f : U
+  fill 1
+relation b : T x
+verify
+
+---
+
+(source_file
+  (relation_declaration
+    (lower)
+    (type_name
+      (upper)))
+  (add_operator
+    (add_field
+      (field_path
+        (upper)
+        (field_name
+          (lower)))
+      (type_name
+        (upper))
+      (fill
+        (int))))
+  (relation_declaration
+    (lower)
+    (type_application
+      (type_name
+        (upper))
+      (type_variable
+        (lower))
+      (type_variable
+        (lower)))))

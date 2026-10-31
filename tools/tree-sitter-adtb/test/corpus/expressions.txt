@@ -1,0 +1,669 @@
+================================================================================
+literals and names
+================================================================================
+
+1
+1.5
+1e5
+2.5E-3
+30min
+5us
+"a\"b\n\u{e9}"
+true
+false
+x
+m::x
+
+---
+
+(source_file
+  (int)
+  (decimal)
+  (float)
+  (float)
+  (duration)
+  (duration)
+  (text)
+  (boolean)
+  (boolean)
+  (name
+    (lower))
+  (name
+    (qualified_lower
+      (lower)
+      (lower))))
+
+================================================================================
+a number word that names no unit
+================================================================================
+
+5
+mins
+
+---
+
+(source_file
+  (int)
+  (name
+    (lower)))
+
+================================================================================
+operators keep their levels
+================================================================================
+
+a or b and not c == d + e * -f union g
+not a
+key x
+try y
+a - b ++ c / d % e
+a != b
+a < b
+a <= b
+a > b
+a >= b
+
+---
+
+(source_file
+  (binary_expression
+    (binary_expression
+      (name
+        (lower))
+      (binary_expression
+        (name
+          (lower))
+        (not_expression
+          (binary_expression
+            (name
+              (lower))
+            (binary_expression
+              (name
+                (lower))
+              (binary_expression
+                (name
+                  (lower))
+                (prefix_expression
+                  (name
+                    (lower)))))))))
+    (name
+      (lower)))
+  (not_expression
+    (name
+      (lower)))
+  (prefix_expression
+    (name
+      (lower)))
+  (prefix_expression
+    (name
+      (lower)))
+  (binary_expression
+    (binary_expression
+      (name
+        (lower))
+      (name
+        (lower)))
+    (binary_expression
+      (binary_expression
+        (name
+          (lower))
+        (name
+          (lower)))
+      (name
+        (lower))))
+  (binary_expression
+    (name
+      (lower))
+    (name
+      (lower)))
+  (binary_expression
+    (name
+      (lower))
+    (name
+      (lower)))
+  (binary_expression
+    (name
+      (lower))
+    (name
+      (lower)))
+  (binary_expression
+    (name
+      (lower))
+    (name
+      (lower)))
+  (binary_expression
+    (name
+      (lower))
+    (name
+      (lower))))
+
+================================================================================
+postfix forms
+================================================================================
+
+x.f
+x.from.key
+x.A
+x.(A | B)
+x.key(1)
+x.key(a: 1, from: 2)
+x.<r.f
+x.<m::r.A.f
+x.<r.(A | B).f
+
+---
+
+(source_file
+  (field_expression
+    (name
+      (lower))
+    (field_name
+      (lower)))
+  (field_expression
+    (field_expression
+      (name
+        (lower))
+      (field_name))
+    (field_name))
+  (selection_expression
+    (name
+      (lower))
+    (ctor_selection
+      (upper)))
+  (selection_expression
+    (name
+      (lower))
+    (ctor_selection
+      (upper)
+      (upper)))
+  (key_call
+    (name
+      (lower))
+    (int))
+  (key_call
+    (name
+      (lower))
+    (named_arguments
+      (named_argument
+        (field_name
+          (lower))
+        (int))
+      (named_argument
+        (field_name)
+        (int))))
+  (backlink_expression
+    (name
+      (lower))
+    (lower)
+    (field_name
+      (lower)))
+  (backlink_expression
+    (name
+      (lower))
+    (qualified_lower
+      (lower)
+      (lower))
+    (ctor_selection
+      (upper))
+    (field_name
+      (lower)))
+  (backlink_expression
+    (name
+      (lower))
+    (lower)
+    (ctor_selection
+      (upper)
+      (upper))
+    (field_name
+      (lower))))
+
+================================================================================
+calls and pins
+================================================================================
+
+f()
+f(1, 2)
+m::f(x) pins 41 (b3e0...)
+count(x for x in r, y in s where x == y)
+
+---
+
+(source_file
+  (call
+    (lower))
+  (call
+    (lower)
+    (arguments
+      (int)
+      (int)))
+  (call
+    (qualified_lower
+      (lower)
+      (lower))
+    (arguments
+      (name
+        (lower)))
+    (pins
+      (version
+        (int)
+        (hash))))
+  (call
+    (lower)
+    (aggregate_arguments
+      (name
+        (lower))
+      (generator
+        (lower)
+        (name
+          (lower)))
+      (generator
+        (lower)
+        (name
+          (lower)))
+      (binary_expression
+        (name
+          (lower))
+        (name
+          (lower))))))
+
+================================================================================
+a space before a parenthesis is no call
+================================================================================
+
+top 3 by n (from x in r select x)
+
+---
+
+(source_file
+  (top_expression
+    (int)
+    (order_key
+      (name
+        (lower)))
+    (comprehension
+      (from_clause
+        (generator
+          (lower)
+          (name
+            (lower))))
+      (name
+        (lower)))))
+
+================================================================================
+constructors and type calls
+================================================================================
+
+A
+A.B
+m::A.B { a: 1 }
+A { a: 1, from: 2 }
+A { x with a: 1 }
+A(1)
+Date.parse("2026-10-25")
+(Tag Identity).parse("a")
+
+---
+
+(source_file
+  (constructor_expression
+    (upper))
+  (constructor_expression
+    (upper)
+    (upper))
+  (constructor_expression
+    (qualified_upper
+      (lower)
+      (upper))
+    (upper)
+    (record_expression
+      (field_initializer
+        (field_name
+          (lower))
+        (int))))
+  (constructor_expression
+    (upper)
+    (record_expression
+      (field_initializer
+        (field_name
+          (lower))
+        (int))
+      (field_initializer
+        (field_name)
+        (int))))
+  (constructor_expression
+    (upper)
+    (record_expression
+      (name
+        (lower))
+      (field_initializer
+        (field_name
+          (lower))
+        (int))))
+  (call
+    (upper)
+    (arguments
+      (int)))
+  (type_call
+    (upper)
+    (lower)
+    (arguments
+      (text)))
+  (type_call
+    (type_application
+      (type_name
+        (upper))
+      (type_name
+        (upper)))
+    (lower)
+    (arguments
+      (text))))
+
+================================================================================
+records and sets
+================================================================================
+
+{ }
+{ a: 1 }
+{ key: 1 }
+{ x with a: 1 }
+{ .. }
+{ ... }
+[]
+[1, 2]
+()
+(1)
+
+---
+
+(source_file
+  (record_expression)
+  (record_expression
+    (field_initializer
+      (field_name
+        (lower))
+      (int)))
+  (record_expression
+    (field_initializer
+      (field_name)
+      (int)))
+  (record_expression
+    (name
+      (lower))
+    (field_initializer
+      (field_name
+        (lower))
+      (int)))
+  (record_expression)
+  (record_expression)
+  (set_literal)
+  (set_literal
+    (int)
+    (int))
+  (unit)
+  (parenthesized_expression
+    (int)))
+
+================================================================================
+comprehensions
+================================================================================
+
+from x in r, y in s where x == y from z in t group x by y into g where g select x order by (x desc, y asc) take 3 after 1
+from x in r select x order by x
+
+---
+
+(source_file
+  (comprehension
+    (from_clause
+      (generator
+        (lower)
+        (name
+          (lower)))
+      (generator
+        (lower)
+        (name
+          (lower))))
+    (where_clause
+      (binary_expression
+        (name
+          (lower))
+        (name
+          (lower))))
+    (from_clause
+      (generator
+        (lower)
+        (name
+          (lower))))
+    (group_clause
+      (name
+        (lower))
+      (name
+        (lower))
+      (lower))
+    (where_clause
+      (name
+        (lower)))
+    (name
+      (lower))
+    (order_clause
+      (order_key
+        (name
+          (lower)))
+      (order_key
+        (name
+          (lower)))
+      (int)
+      (int)))
+  (comprehension
+    (from_clause
+      (generator
+        (lower)
+        (name
+          (lower))))
+    (name
+      (lower))
+    (order_clause
+      (order_key
+        (name
+          (lower))))))
+
+================================================================================
+open forms
+================================================================================
+
+match a | X -> 1 | Y y -> 2 | Z { a, b: c } if c -> 3 | m::T.Z _ -> 4 | _ -> 5 | true -> 6 | -1 -> 7 | 1.5 -> 8 | "s" | t -> 9
+fix a = 1, b = 2 in a
+fn x -> x
+fn (x: I64, y: I64) -> x
+exists x in r where x
+if a then b else c
+at commit 1 pins 2 (c...) { a }
+at instant x { a }
+reject a
+
+---
+
+(source_file
+  (match_expression
+    (name
+      (lower))
+    (arm
+      (constructor_pattern
+        (upper))
+      (int))
+    (arm
+      (constructor_pattern
+        (upper)
+        (binding))
+      (int))
+    (arm
+      (constructor_pattern
+        (upper)
+        (record_pattern
+          (field_pattern
+            (field_name
+              (lower)))
+          (field_pattern
+            (field_name
+              (lower))
+            (binding))))
+      (name
+        (lower))
+      (int))
+    (arm
+      (constructor_pattern
+        (qualified_upper
+          (lower)
+          (upper))
+        (upper)
+        (wildcard))
+      (int))
+    (arm
+      (wildcard)
+      (int))
+    (arm
+      (boolean)
+      (int))
+    (arm
+      (literal_pattern
+        (int))
+      (int))
+    (arm
+      (literal_pattern
+        (decimal))
+      (int))
+    (arm
+      (literal_pattern
+        (text))
+      (binding)
+      (int)))
+  (fix_expression
+    (fix_binding
+      (lower)
+      (int))
+    (fix_binding
+      (lower)
+      (int))
+    (name
+      (lower)))
+  (lambda
+    (binding)
+    (name
+      (lower)))
+  (lambda
+    (parameters
+      (parameter
+        (lower)
+        (type_name
+          (upper)))
+      (parameter
+        (lower)
+        (type_name
+          (upper))))
+    (name
+      (lower)))
+  (exists_expression
+    (generator
+      (lower)
+      (name
+        (lower)))
+    (name
+      (lower)))
+  (if_expression
+    (name
+      (lower))
+    (name
+      (lower))
+    (name
+      (lower)))
+  (at_expression
+    (int)
+    (pins
+      (version
+        (int)
+        (hash)))
+    (name
+      (lower)))
+  (at_expression
+    (name
+      (lower))
+    (name
+      (lower)))
+  (reject_expression
+    (name
+      (lower))))
+
+================================================================================
+contextual words are names where no form applies
+================================================================================
+
+add + drop
+take
+reject
+reject(x)
+at
+
+---
+
+(source_file
+  (binary_expression
+    (name
+      (lower))
+    (name
+      (lower)))
+  (name
+    (lower))
+  (reject_expression
+    (call
+      (lower)
+      (arguments
+        (name
+          (lower)))))
+  (name
+    (lower)))
+
+================================================================================
+elision
+================================================================================
+
+...
+f(...)
+
+---
+
+(source_file
+  (elision)
+  (call
+    (lower)
+    (arguments
+      (elision))))
+
+================================================================================
+comments
+================================================================================
+
+-- leading
+a -- trailing
+-- last
+
+---
+
+(source_file
+  (comment)
+  (name
+    (lower))
+  (comment)
+  (comment))
+
+================================================================================
+a word before a minus stays a name
+================================================================================
+
+reject - 1
+
+---
+
+(source_file
+  (binary_expression
+    (name
+      (lower))
+    (int)))

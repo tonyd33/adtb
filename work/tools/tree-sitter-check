@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Check the tree-sitter grammar: generated sources current, corpus, every spec, conformance and
+# application text, the differential against adtb-lang, and the shared highlighting corpus.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+grammar="$root/tools/tree-sitter-adtb"
+work="${CARGO_TARGET_DIR:-$root/target}/tree-sitter"
+programs="$work/programs"
+export TREE_SITTER_LIBDIR="$work/lib"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+jobs=4
+# Fail a text whose parse passes this bound.
+timeout_us=10000000
+
+mkdir -p "$TREE_SITTER_LIBDIR"
+rm -rf "$work/regen" "$programs" "$work/chunks"
+mkdir -p "$work/regen" "$work/chunks"
+
+cp "$grammar/grammar.js" "$grammar/tree-sitter.json" "$work/regen/"
+(cd "$work/regen" && tree-sitter generate --js-runtime native)
+for generated in parser.c grammar.json node-types.json tree_sitter; do
+  diff -r "$work/regen/src/$generated" "$grammar/src/$generated" >/dev/null || {
+    echo "tree-sitter-check: src/$generated differs from what grammar.js generates" >&2
+    exit 1
+  }
+done
+
+diff <(jq -r '.externals[].name' "$grammar/src/grammar.json" | sed 's/^_//' | tr '[:lower:]' '[:upper:]') \
+  <(sed -n '/^enum Symbol {$/,/^};$/p' "$grammar/src/scanner.c" | sed '1d;$d' | tr -d ' \n' | tr ',' '\n') || {
+  echo "tree-sitter-check: enum Symbol of scanner.c differs from the externals of the grammar" >&2
+  exit 1
+}
+
+(cd "$grammar" && tree-sitter test)
+
+(cd "$root" && cargo run -q -p adtb-lang --example syntax_programs -- "$programs")
+
+cut -f2 "$programs/manifest" | sed "s#^#$programs/#" >"$work/paths"
+split -n "l/$jobs" "$work/paths" "$work/chunks/c."
+# shellcheck disable=SC2016
+ls "$work"/chunks/c.* | (cd "$grammar" && xargs -P "$jobs" -I{} sh -c \
+  'tree-sitter parse --paths "$1" --quiet --json-summary --timeout "$2" >"$1.json"; echo $? >"$1.status"' \
+  _ {} "$timeout_us")
+for chunk in "$work"/chunks/c.??; do
+  code=$(cat "$chunk.status")
+  if [[ $code != 0 && $code != 1 ]]; then
+    echo "tree-sitter-check: tree-sitter parse exited $code on $chunk" >&2
+    exit 1
+  fi
+done
+sed -sn '/^{$/,$p' "$work"/chunks/c.??.json | jq -r '
+  .parse_summaries[]
+  | if (.file | type) == "string" and (.successful | type) == "boolean" and has("duration")
+    then [.file, (if .duration == null then "timeout" elif .successful then "parsed" else "rejected" end)] | @tsv
+    else error("a parse summary without file, successful or duration") end
+' | sed "s#^$programs/##" >"$work/results"
+
+awk -F'\t' -v allow="$grammar/differential-allowlist" '
+  BEGIN {
+    while ((getline line <allow) > 0) { split(line, a, "\t"); classes[a[1]] }
+    floor["spec"] = 300; floor["campaign"] = 11; floor["corpus"] = 40
+    floor["conformance"] = 2500; floor["fuzz"] = 4000
+    accepted_floor["fuzz"] = 1000
+  }
+  FILENAME == ARGV[1] {
+    if ($1 in result) { print "more than one parse result: " $1; bad++ }
+    result[$1] = $2
+    next
+  }
+  {
+    split($2, part, "/")
+    total[part[1]]++
+    if ($1 == "accept") accepted[part[1]]++
+    seen[$2]
+    if (!($2 in result)) { print "no parse result: " $2; bad++; next }
+    if (result[$2] == "timeout") { print "parse timed out: " $2; bad++; next }
+    if ($1 == "accept") {
+      if (result[$2] != "parsed") { print "rejects what adtb-lang accepts: " $2; bad++ }
+    } else if (result[$2] == "parsed") {
+      listed = $3 != ""
+      n = split($3, diags, "; ")
+      for (i = 1; i <= n; i++) {
+        known = 0
+        for (c in classes) if (index(diags[i], c) == 1) known = 1
+        if (!known) listed = 0
+      }
+      if (listed) allowed++
+      else { print "accepts what adtb-lang refuses: " $2 ": " $3; bad++ }
+    }
+  }
+  END {
+    for (f in result) if (!(f in seen)) { print "parse result for no manifest path: " f; bad++ }
+    for (p in floor) {
+      if (total[p] < floor[p]) { printf "%s: %d texts, under the floor of %d\n", p, total[p], floor[p]; bad++ }
+    }
+    for (p in accepted_floor) {
+      if (accepted[p] < accepted_floor[p]) { printf "%s: %d accepted, under the floor of %d\n", p, accepted[p], accepted_floor[p]; bad++ }
+    }
+    for (p in total) printf "%s: %d texts, %d accepted by adtb-lang\n", p, total[p], accepted[p]
+    printf "allowlisted refusals: %d\n", allowed
+    exit bad > 0
+  }
+' "$work/results" "$programs/manifest"
+
+status=0
+
+corpus_files=0
+for expected in "$root"/tools/syntax/corpus/*.json; do
+  corpus_files=$((corpus_files + 1))
+  source="${expected%.json}.adt"
+  jq -e 'type == "array" and length > 0 and all(.[]; type == "array" and length == 2 and all(.[]; type == "string"))' \
+    "$expected" >/dev/null || {
+    echo "tree-sitter-check: $expected is not a nonempty list of [class, text]" >&2
+    exit 1
+  }
+  (cd "$grammar" && tree-sitter parse --quiet "$source") || status=1
+  captures=$(cd "$grammar" && tree-sitter query queries/highlights.scm "$source")
+  while IFS=$'\t' read -r class text; do
+    if ! grep -aF -- "text: \`$text\`" <<<"$captures" | grep -aqE -- " - $class, "; then
+      echo "$source: no $class capture of $text" >&2
+      status=1
+    fi
+  done < <(jq -r '.[] | @tsv' "$expected" | sed 's/\\\\/\\/g')
+done
+if ((corpus_files == 0)); then
+  echo "tree-sitter-check: no syntax corpus" >&2
+  status=1
+fi
+exit "$status"

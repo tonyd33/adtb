@@ -90,6 +90,9 @@ root (devenv also puts each on PATH as `NAME`):
   constraint `c`, the text then optional.
 - `codemap [CRATE [MODULE]]`, `codemap --tests [CRATE]`: modules, pub
   items with line numbers, test binaries with their test counts.
+- `tree-sitter-check`: regenerate the grammar in `tools/tree-sitter-adtb/` and fail on a
+  difference from the checked in `src/`, run its corpus, and compare it with `adtb-lang` over the
+  spec, conformance and application texts and the front end fuzzer's programs.
 - `house-check`: the added lines of `jj diff` that break a comment rule.
 - `loom [ARGS]`: clippy over adtb-sys under `--cfg adtb_loom`, then the
   Loom models of the page state word, its unit tests built with that

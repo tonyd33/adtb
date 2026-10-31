@@ -1,0 +1,157 @@
+================================================================================
+explain
+================================================================================
+
+explain x
+explain analyze web-2.4::q(1)
+explain transact skip
+explain delete x
+
+---
+
+(source_file
+  (explain_command
+    (name
+      (lower)))
+  (explain_command
+    (registered_target
+      (bundle_name)
+      (lower)
+      (arguments
+        (int))))
+  (explain_command
+    (transact_block
+      (skip)))
+  (explain_command
+    (delete
+      (lower))))
+
+================================================================================
+plans, calls and sessions
+================================================================================
+
+pin plan 1
+unpin plan 1
+cancel call 1
+terminate session 1
+
+---
+
+(source_file
+  (plan_command
+    (int))
+  (plan_command
+    (int))
+  (call_command
+    (int))
+  (session_command
+    (int)))
+
+================================================================================
+maintenance
+================================================================================
+
+vacuum r
+verify m::r
+reindex r index (a) in A online
+reindex r offline
+compact
+finalize upgrade
+verify
+
+---
+
+(source_file
+  (vacuum_command
+    (lower))
+  (verify_command
+    (qualified_lower
+      (lower)
+      (lower)))
+  (reindex_command
+    (lower)
+    (index_fields
+      (name
+        (lower)))
+    (scope
+      (ctor_selection
+        (upper))))
+  (reindex_command
+    (lower))
+  (compact_command)
+  (finalize_command)
+  (verify_command))
+
+================================================================================
+bundles and migrations
+================================================================================
+
+retire bundle web-2.4
+supersede bundle web-2.4 by web-2.5
+register bundle "web.adb"
+apply migrations "a" "b"
+print schema
+
+---
+
+(source_file
+  (bundle_command
+    (bundle_name))
+  (bundle_command
+    (bundle_name)
+    (bundle_name))
+  (bundle_command
+    (text))
+  (migrations_command
+    (text)
+    (text))
+  (print_command))
+
+================================================================================
+files and keys
+================================================================================
+
+export r to "f" sums text
+archive audit through 1 to "f"
+rotate key kek "k"
+rotate key dek
+destroy key dek 1
+dump to "f" encrypt "k"
+restore from "a" to "b" before version 1
+restore from "a" to "b" at instant x
+restore from "a" to "b" at position 1
+backup to "f" incremental
+
+---
+
+(source_file
+  (export_command
+    (name
+      (lower))
+    (text))
+  (archive_command
+    (int)
+    (text))
+  (key_command
+    (text))
+  (key_command)
+  (key_command
+    (int))
+  (dump_command
+    (text)
+    (text))
+  (restore_command
+    (text)
+    (text)
+    (int))
+  (restore_command
+    (text)
+    (text)
+    (name
+      (lower)))
+  (restore_command
+    (text)
+    (text)
+    (int))
+  (backup_command
+    (text)))
