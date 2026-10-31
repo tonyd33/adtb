@@ -9,3 +9,5 @@ summary: "scrub: an allocated page nothing reaches marks the database; a due ope
 # Scrub follow ups
 
 ## Report
+
+Also: the mark is durable before its finding row, so a crash between them leaves a relation quarantined with no row saying why; a panic in the log read at the start of a pass is not caught; a free-page bitmap that is unreadable or of the wrong kind.

@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-29
-status: in-progress
-branch: scrub-worker
+status: resolved
 kind: feature
 priority: 415
 summary: "no background scrub: ScrubInterval is unread and the engine has no background worker"
+closed: 2026-10-30
 ---
 
 # Feature: Scrub worker
@@ -16,3 +16,9 @@ A background thread reads every page of the file over each `ScrubInterval`, sets
 ## Proposal
 
 ## Open questions
+
+## 2026-10-30
+
+Landed on main. Check passed, 3287 tests. Follow-ups: scrub-follow-ups.
+
+## 2026-10-30: resolved
