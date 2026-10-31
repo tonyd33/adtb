@@ -1,7 +1,6 @@
 ---
 created-at: 2026-10-27
-status: in-progress
-branch: nonowner-calls
+status: open
 kind: feature
 priority: 410
 summary: "registration and definer checks exist; call grants, binding and nonowner execution, system relation grants, ad hoc reads and writes, and management by text remain"
@@ -493,3 +492,5 @@ Left: `bundle_declares` compares declaration only, so `grant call web-2.0 to ann
 ## 2026-10-30: from slice 2
 
 A `CallDescriptor`'s `Ty` names types by schema id, and a role's binder has no schema, so it cannot resolve them. The wire track builds the type descriptors of wire.md 7.2 from `RoleBinding`'s crate-private schema. Also there: wrong-length `args` gives `Invalid`, wire.md requires `Malformed`.
+
+Slice 2 landed: `RoleAuthority::bind` and `RoleBinding::submit`, with no owner fallback. Branch check exit 0, 3394 tests. Next: slice 3, deployment relation grants and `read_files`.
