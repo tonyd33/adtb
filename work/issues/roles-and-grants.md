@@ -495,3 +495,14 @@ Left: `bundle_declares` compares declaration only, so `grant call web-2.0 to ann
 A `CallDescriptor`'s `Ty` names types by schema id, and a role's binder has no schema, so it cannot resolve them. The wire track builds the type descriptors of wire.md 7.2 from `RoleBinding`'s crate-private schema. Also there: wrong-length `args` gives `Invalid`, wire.md requires `Malformed`.
 
 Slice 2 landed: `RoleAuthority::bind` and `RoleBinding::submit`, with no owner fallback. Branch check exit 0, 3394 tests. Next: slice 3, deployment relation grants and `read_files`.
+
+## 2026-10-30: from slice 3, before a role can append migrations (slice 5)
+
+Blocker for slice 5: a schema function reading `catalog::credentials` runs under owner rights, so `define fn creds () -> Set Bytes = from c in catalog::credentials select c.stored_key` with `grant call fn creds to web` lets `web` read verifiers through a direct call. Ruling: a schema function that reads `catalog::credentials` is refused at migration.
+
+Also:
+- A former schema holder can tell `revoke read customers` from `revoke read nosuch` (`gave`, api/server/mod.rs). Match its own rows before resolving.
+- A confined read checks the path, then reads the resolved path: a symlink swapped between, by someone able to write inside a root, escapes. Open with no following, or read through the checked handle. A dangling symlink answers `Unreadable`, not `Denied`.
+- `Bounds.confined` defaults to false, so a new server path fails open. Make it required.
+- A bundle released by computed expiry, with no setting change, has no mark, so a wall clock stepped back brings it live. The revoke that relies on the expiry should write the latch; `latch` keeps only the highest renewal.
+- `adtb-server` has no option to set `file_roots`, so it reads no files. `Disk::default()` with a relative glob finds nothing.
