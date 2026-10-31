@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: lost-bitmap
 kind: bug
 priority: 411
 summary: "a lost or zeroed bitmap reads as free, so an allocation reuses named pages: rows vanish with no mark, and a bitmap zeroed in place overwrites live data"
