@@ -64,3 +64,7 @@ Ruled 2026-10-31, after test-audit-a lands. It grew from 351 to 532 lines in one
 ## 2026-10-31: sections 1 and 2 landed
 
 Dropped on reading: evolve_grant_tests.rs:1611, evolve_memo_tests.rs:731 (stale), scenarios.rs:60. Open: the slot-test simplification, sections 3 to 5, narrowing the whole-file expects.
+
+## 2026-10-31: slot-test reduced
+
+From 536 to 396 lines. Accepted: a future case could still type a real path.

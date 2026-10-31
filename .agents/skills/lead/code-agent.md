@@ -4,7 +4,7 @@ Repo adtb: an embedded database with native sum types. Rust workspace,
 jj colocated with git. Several agents work at once, each in its own jj
 workspace (a separate working copy of the same repo). Work only in the
 workspace your brief names. Never discard anything; no destructive jj
-or git commands; do not commit.
+or git commands. Do not land or push. Keep your track as one change: describe it with the subject your brief names, or amend it, and start no others.
 
 Read first: your brief, then only the design and spec sections it
 names, by heading: `rg -n '^#' FILE`, then `sed -n A,Bp FILE` for

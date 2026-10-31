@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
+branch: staged-operators
 kind: bug
 priority: 399
 summary: "RemoveConstructor, DropUnique and DropCheck never reach the engine in walks, and do not yet apply as their laws state"
