@@ -24,3 +24,20 @@ pub fn count(n: u64) -> u64 {
 pub fn sweep(seeds: Range<u64>) -> Range<u64> {
     seeds.start..seeds.start + count(seeds.end - seeds.start)
 }
+
+/// Returns `count` scaled from all of `seeds` to the seeds [`sweep`] keeps of them, rounded
+/// down, and `count` itself when [`sweep`] keeps more than `seeds`.
+pub fn share(seeds: Range<u64>, count: usize) -> usize {
+    let all = seeds.end - seeds.start;
+    let kept = sweep(seeds.clone()).end - seeds.start;
+    count * kept.min(all) as usize / all as usize
+}
+
+/// Fail unless a sweep reached the case `what` at least `floor` times.
+#[track_caller]
+pub fn assert_reached(what: &str, count: usize, floor: usize) {
+    assert!(
+        count >= floor,
+        "{what}: reached {count} times, under the floor of {floor}"
+    );
+}

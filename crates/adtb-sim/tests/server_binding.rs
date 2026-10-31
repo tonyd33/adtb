@@ -18,7 +18,7 @@ use adtb::{
 };
 use adtb_lang::types::{Base, Ty};
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
-use adtb_testkit::profile::sweep;
+use adtb_testkit::profile::{assert_reached, share, sweep};
 
 use api::{once, options, query, sorted};
 
@@ -1655,7 +1655,9 @@ fn a_reopen_reports_a_bundle_whose_owner_lost_a_deployed_grant() {
 
 #[test]
 fn registering_and_revoking_at_once_never_leave_a_live_bundle_lacking() {
-    for seed in sweep(360..366) {
+    const SEEDS: std::ops::Range<u64> = 360..366;
+    let (mut registered, mut refused) = (0, 0);
+    for seed in sweep(SEEDS) {
         let mut sim = Sim::new(
             seed,
             Config {
@@ -1690,9 +1692,16 @@ fn registering_and_revoking_at_once_never_leave_a_live_bundle_lacking() {
                 .iter()
                 .any(|r| r.contains("constructors"));
             assert!(live.is_empty() || held, "seed={seed}: {live:?}");
+            if live.is_empty() {
+                refused += 1;
+            } else {
+                registered += 1;
+            }
         });
         assert_eq!(Outcome::Finished, got, "seed={seed}");
     }
+    assert_reached("a registration that won", registered, share(SEEDS, 1));
+    assert_reached("a registration that lost", refused, share(SEEDS, 2));
 }
 
 fn reopened(rt: &SimRuntime, log: &[&str]) -> Fixture {

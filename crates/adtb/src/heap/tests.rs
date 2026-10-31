@@ -194,14 +194,17 @@ fn a_dead_slot_frees_its_tuple_space() {
 #[test]
 fn categories_never_promise_more_than_the_page_has() {
     for page_size in [4096, 8192, 65536] {
+        let mut promised = 0;
         for free in (0..page_size).step_by(7) {
             let c = category(free, page_size);
             for need in (1..page_size).step_by(13) {
                 if u16::from(c) >= need_category(need, page_size) {
                     assert!(free >= need, "{page_size} {free} {need}");
+                    promised += 1;
                 }
             }
         }
+        adtb_testkit::profile::assert_reached("a promise of a page", promised, 1000);
     }
 }
 

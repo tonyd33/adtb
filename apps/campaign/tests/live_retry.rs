@@ -88,6 +88,7 @@ fn two_committed_next_turn_calls_must_advance_twice() {
             &opts,
         )
         .unwrap();
+    let mut retried = 0;
     for iteration in 0..32 {
         let barrier = Barrier::new(2);
         let (a, b) = std::thread::scope(|scope| {
@@ -117,6 +118,10 @@ fn two_committed_next_turn_calls_must_advance_twice() {
             b.attempts,
             t.order
         );
+        if a.attempts + b.attempts > 2 {
+            retried += 1;
+        }
     }
+    assert!(retried > 0, "no iteration of 32 retried");
     db.close().unwrap();
 }

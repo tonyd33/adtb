@@ -401,6 +401,7 @@ fn inspect(rt: SimRuntime, root: Pid, pages: &[Pid], assigned: &[Xid]) -> Report
     }
 }
 
+#[must_use]
 fn crash_loop(seed: u64, faults: Faults, rounds: u64) -> (usize, usize) {
     silence_fatal_panics();
     let mut sim = Sim::new(seed, Config::default());

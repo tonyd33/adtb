@@ -1206,6 +1206,7 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
     problems
 }
 
+#[must_use]
 fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> usize {
     silence_fatal_panics();
     let mut sim = Sim::new(seed, Config::default());

@@ -17,7 +17,7 @@ use adtb_simkit::crash;
 use adtb_simkit::seeds;
 
 use crash::{crash_after, run_process, silence_fatal_panics};
-use seeds::{share, sweep};
+use seeds::{assert_reached, share, sweep};
 
 const PAGE: usize = 4096;
 const SLOT: usize = 16;
@@ -400,7 +400,11 @@ fn judge(
 ) -> Vec<String> {
     let mut problems = Vec::new();
     if let Some(e) = report.open {
-        if !damage_allowed {
+        let damage = matches!(
+            e,
+            OpenError::NoHeader | OpenError::Log(_) | OpenError::Page(_)
+        );
+        if !(damage && damage_allowed) {
             problems.push(format!("open failed: {e:?}"));
         }
         return problems;
@@ -479,12 +483,54 @@ fn resolve(report: &Report, ledger: &Ledger, world: &World) {
     }
 }
 
+/// The fewest crashes under every fault that may leave one file refusing to open.
+const CRASHES_PER_REFUSAL: usize = 12;
+
+/// The least a sweep under every fault reaches over all of its seeds.
+struct Floors {
+    crashes: usize,
+    acked: usize,
+    reopened: usize,
+    findings: usize,
+}
+
+#[must_use]
 #[derive(Debug, Default)]
 struct Tally {
     crashes: usize,
     acked: usize,
     findings: usize,
+    reopened: usize,
     unopenable: usize,
+}
+
+impl Tally {
+    /// Fail unless a sweep under every fault crashed, acknowledged, reopened and saw damage.
+    #[track_caller]
+    fn assert_every_fault_reached(&self, seeds: Range<u64>, floors: &Floors) {
+        assert_reached(
+            "reopens",
+            self.reopened,
+            share(seeds.clone(), floors.reopened),
+        );
+        assert!(
+            self.unopenable <= self.crashes.div_ceil(CRASHES_PER_REFUSAL),
+            "{} refused opens over {} crashes",
+            self.unopenable,
+            self.crashes
+        );
+        assert_reached(
+            "crashes",
+            self.crashes,
+            share(seeds.clone(), floors.crashes),
+        );
+        assert_reached(
+            "acknowledged writes",
+            self.acked,
+            share(seeds.clone(), floors.acked),
+        );
+        assert_reached("findings", self.findings, share(seeds, floors.findings));
+    }
 }
 
 /// Crash a random workload `rounds` times under `faults`, reopening and checking after each.
@@ -546,6 +592,7 @@ fn crash_loop(
             tally.unopenable += 1;
             break;
         }
+        tally.reopened += 1;
     }
     tally.acked = client
         .world
@@ -565,6 +612,7 @@ fn seeds(range: Range<u64>, faults: Faults, layout: Layout, damage_allowed: bool
         total.crashes += t.crashes;
         total.acked += t.acked;
         total.findings += t.findings;
+        total.reopened += t.reopened;
         total.unopenable += t.unopenable;
     }
     total
@@ -713,8 +761,9 @@ fn a_failed_log_allocate_is_fatal_and_leaves_a_file_a_later_create_can_use() {
 
 #[test]
 fn every_fault_at_once() {
+    const SEEDS: Range<u64> = 500..512;
     seeds(
-        500..512,
+        SEEDS,
         Faults {
             torn_p: 0.3,
             corrupt_p: 0.002,
@@ -726,6 +775,15 @@ fn every_fault_at_once() {
         },
         PLAIN,
         true,
+    )
+    .assert_every_fault_reached(
+        SEEDS,
+        &Floors {
+            crashes: 25,
+            acked: 300,
+            reopened: 33,
+            findings: 8,
+        },
     );
 }
 
@@ -940,8 +998,9 @@ fn threads_sharing_a_pager_lose_nothing_across_crashes() {
 
 #[test]
 fn threads_sharing_a_pager_under_every_fault() {
+    const SEEDS: Range<u64> = 800..808;
     seeds(
-        800..808,
+        SEEDS,
         Faults {
             torn_p: 0.3,
             corrupt_p: 0.002,
@@ -953,6 +1012,15 @@ fn threads_sharing_a_pager_under_every_fault() {
         },
         THREADED,
         true,
+    )
+    .assert_every_fault_reached(
+        SEEDS,
+        &Floors {
+            crashes: 15,
+            acked: 1000,
+            reopened: 22,
+            findings: 1,
+        },
     );
 }
 

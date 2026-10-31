@@ -6,6 +6,7 @@ use adtb_lang::check::{Program, check_adhoc_recording, check_query, check_schema
 use adtb_lang::parse::{Options, parse_example, parse_schema};
 use adtb_lang::schema::{Schema, build};
 use adtb_lang::span::{FileDiag, FileId};
+use adtb_testkit::profile::assert_reached;
 use adtb_testkit::running::{self, Entry, decl_key, decl_span};
 use adtb_testkit::spec::{
     Block, FRAGMENT, Prepared, Registered, at, blocks, bundles, given_types, prelude_entries,
@@ -25,7 +26,7 @@ fn spec_examples_parse() {
             failures.push(format!("{}:{}: {}", b.file, b.line, msgs.join("; ")));
         }
     }
-    assert!(checked > 0, "no `adt` blocks found");
+    assert_reached("spec example parsed", checked, 300);
     assert!(
         failures.is_empty(),
         "{} of {checked} examples fail:\n{}",
@@ -51,10 +52,9 @@ fn every_spec_block_names_its_kind() {
 
 fn normalized_decls(src: &str) -> Vec<(String, String)> {
     use adtb_lang::ast::{Decl, ExampleItem};
-    let Ok(items) = parse_example(src, Options { elisions: true }).ok() else {
-        return Vec::new();
-    };
-    items
+    parse_example(src, Options { elisions: true })
+        .ok()
+        .unwrap_or_else(|e| panic!("an example does not parse: {e:?}\n{src}"))
         .into_iter()
         .filter_map(|i| match i {
             ExampleItem::Decl(Decl::Type(t)) => {
@@ -75,6 +75,7 @@ fn normalized_decls(src: &str) -> Vec<(String, String)> {
 fn prelude_source_matches_the_spec() {
     let prelude = include_str!("../src/prelude.adt");
     let ours = normalized_decls(prelude);
+    assert_reached("prelude type", ours.len(), 15);
     let spec: Vec<(String, String)> = blocks()
         .iter()
         .filter(|b| {
@@ -110,7 +111,7 @@ fn engine_source_matches_the_spec() {
         .flat_map(|b| {
             let items = parse_example(&b.text, Options { elisions: true })
                 .ok()
-                .unwrap_or_default();
+                .unwrap_or_else(|e| panic!("{}:{} does not parse: {e:?}", b.file, b.line));
             items
                 .into_iter()
                 .filter_map(|i| match i {
@@ -124,7 +125,10 @@ fn engine_source_matches_the_spec() {
         })
         .collect();
     let mut failures = Vec::new();
-    for e in prelude_entries().iter().filter(|e| e.file == "catalog.adt") {
+    let entries = prelude_entries();
+    let catalog: Vec<_> = entries.iter().filter(|e| e.file == "catalog.adt").collect();
+    assert_reached("catalog declaration", catalog.len(), 100);
+    for e in catalog {
         let name = format!("{} {}", e.key.0, e.key.1);
         let found: Vec<&String> = spec
             .iter()
@@ -445,7 +449,7 @@ fn spec_examples_check() {
             failures.push(format!("{}:{}:\n  {}", b.file, b.line, es.join("\n  ")));
         }
     }
-    assert!(checked > 0, "no `adt` blocks found");
+    assert_reached("spec example checked", checked, 250);
     assert!(
         failures.is_empty(),
         "{} of {checked} examples fail ({fragments} fragments):\n{}",

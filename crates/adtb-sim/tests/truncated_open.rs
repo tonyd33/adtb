@@ -16,7 +16,7 @@ use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenError, OpenOption
 use adtb_sim::{Config, Outcome, Sim, SimRuntime};
 use adtb_simkit::harness::finished;
 use adtb_simkit::{api, common};
-use adtb_testkit::profile::sweep;
+use adtb_testkit::profile::{assert_reached, share, sweep};
 
 const FILE: &str = "truncated_open.adt";
 const PAGE: usize = 8192;
@@ -165,9 +165,11 @@ fn assert_for_verify_only(got: &Result<Opened, OpenError>, what: &str) {
 }
 
 /// Assert open refused, or whatever calls run see the row: none of it is lost without a report.
-fn assert_nothing_silently_lost(got: &Result<Opened, OpenError>, what: &str) {
+/// Returns whether the open succeeded.
+#[must_use]
+fn assert_nothing_silently_lost(got: &Result<Opened, OpenError>, what: &str) -> bool {
     let Ok(opened) = got else {
-        return;
+        return false;
     };
     match &opened.select {
         Ok(rows) => assert_eq!(vec![ROW.to_string()], *rows, "{what}"),
@@ -176,6 +178,7 @@ fn assert_nothing_silently_lost(got: &Result<Opened, OpenError>, what: &str) {
         }) => assert!(!opened.marks.is_empty(), "{what}"),
         Err(e) => panic!("{what}: {e:?}"),
     }
+    true
 }
 
 #[test]
@@ -244,12 +247,14 @@ fn a_write_to_a_zeroed_page_of_a_relation_is_refused() {
 #[test]
 fn open_returns_on_a_file_cut_at_every_sector_of_its_first_pages() {
     let s = seeded();
+    let mut opens = 0;
     for sectors in sweep(1..65) {
         let len = sectors as usize * SECTOR;
         let what = format!("cut at {len} bytes");
         let got = opened(cut(&s.files, len), 1, &what);
-        assert_nothing_silently_lost(&got[0], &what);
+        opens += usize::from(assert_nothing_silently_lost(&got[0], &what));
     }
+    assert_reached("a cut file that opened", opens, share(1..65, 30));
 }
 
 #[test]
@@ -258,23 +263,27 @@ fn open_returns_on_a_file_cut_at_pages_across_it() {
     let pages = s.files[FILE].len() / PAGE;
     let lengths = sweep(0..64);
     let stride = pages.div_ceil(lengths.end as usize);
+    let mut opens = 0;
     for i in lengths {
         let len = ((i as usize * stride + 1) * PAGE).min(pages * PAGE);
         let what = format!("cut at {len} bytes");
         let got = opened(cut(&s.files, len), 1, &what);
-        assert_nothing_silently_lost(&got[0], &what);
+        opens += usize::from(assert_nothing_silently_lost(&got[0], &what));
     }
+    assert_reached("a cut file that opened", opens, share(0..64, 32));
 }
 
 #[test]
 fn open_returns_on_a_file_cut_at_each_of_its_last_pages() {
     let s = seeded();
     let pages = s.files[FILE].len() / PAGE;
+    let mut opens = 0;
     for page in s.roles.0 as usize..pages {
         let what = format!("cut at page {page}");
         let got = opened(cut(&s.files, page * PAGE), 1, &what);
-        assert_nothing_silently_lost(&got[0], &what);
+        opens += usize::from(assert_nothing_silently_lost(&got[0], &what));
     }
+    assert_reached("a cut file that opened", opens, 1);
 }
 
 fn select_answer(db: &Database<SimRuntime>, text: &str) -> Result<Vec<String>, Error> {

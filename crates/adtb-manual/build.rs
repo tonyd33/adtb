@@ -105,10 +105,40 @@ mod page {
     }
 }
 
+/// Returns the Markdown pages under `dir`.
+fn pages_under(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut pages = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+        let path = entry.expect("a directory entry").path();
+        if path.is_dir() {
+            pages.extend(pages_under(&path));
+        } else if path.extension().is_some_and(|e| e == "md") {
+            pages.push(path);
+        }
+    }
+    pages
+}
+
+/// Refuse a page with a Rust example that is not on [`PAGES`].
+fn assert_every_example_runs(manual: &Path) {
+    for path in pages_under(manual) {
+        let page = path.strip_prefix(manual).expect("a page under the manual");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{page:?}: {e}"));
+        assert!(
+            blocks(&text).1.is_empty() || PAGES.iter().any(|p| page == Path::new(p)),
+            "{} has a `rust` block, and it is not on PAGES",
+            page.display()
+        );
+    }
+}
+
 fn main() {
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     let mut directives = std::io::stdout();
     writeln!(directives, "cargo::rerun-if-changed=page/build.rs").expect("cargo reads directives");
+    writeln!(directives, "cargo::rerun-if-changed=../../docs/manual")
+        .expect("cargo reads directives");
+    assert_every_example_runs(Path::new("../../docs/manual"));
     for page in PAGES {
         let path = format!("../../docs/manual/{page}");
         writeln!(directives, "cargo::rerun-if-changed={path}").expect("cargo reads directives");

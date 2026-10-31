@@ -45,10 +45,16 @@ machine_unlock() {
 }
 
 # Print each process with an executable, working directory, open file or mapping under directory $1.
+# Print a line naming the failure when the scan cannot see this shell.
 pids_using() {
+  local links
+  links=$(find /proc/[0-9]*/exe /proc/[0-9]*/cwd /proc/[0-9]*/fd/ -maxdepth 1 -type l -printf '%l\t%p\n' 2>/dev/null || true)
+  if [[ $links != *$'\t'"/proc/$$/cwd"* ]]; then
+    echo "0 the process scan does not see this shell"
+    return 0
+  fi
   {
-    find /proc/[0-9]*/exe /proc/[0-9]*/cwd /proc/[0-9]*/fd/ -maxdepth 1 -type l -printf '%l\t%p\n' 2>/dev/null |
-      dir=$1 awk -F'\t' '$1 == ENVIRON["dir"] || index($1, ENVIRON["dir"] "/") == 1 { print $2 }' || true
+    dir=$1 awk -F'\t' '$1 == ENVIRON["dir"] || index($1, ENVIRON["dir"] "/") == 1 { print $2 }' <<<"$links"
     grep -lF -- "$1/" /proc/[0-9]*/maps 2>/dev/null || true
   } | cut -d/ -f3 | sort -un | while read -r pid; do
     printf '%s %s\n' "$pid" "$(cat "/proc/$pid/comm" 2>/dev/null)"

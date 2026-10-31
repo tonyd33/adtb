@@ -51,8 +51,8 @@ For a fresh clone, host prerequisites and optional editor setup, read
 - `cargo fmt --all --check`: check Rust formatting.
 - `work/tools/suite [ARGS]`: run tests through the shared nextest lock.
 - `check` (in the dev shell): run the full checks, including the campaign
-  application, the Loom models, Miri, dependency policy and source-size
-  limits.
+  application, the Loom models, Miri, dependency policy, source-size
+  limits and every `work/tools/*-test`.
 - `apps/campaign/` is its own cargo workspace, excluded from the root
   one. Build and test it from that directory.
 

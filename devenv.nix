@@ -50,7 +50,7 @@ in
     export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$DEVENV_ROOT/target}"
     cargo clippy --workspace --all-targets -- -D warnings
     cargo fmt --all --check
-    suite --no-tests=pass
+    suite
     loom
     miri
     app="$DEVENV_ROOT/apps/campaign/Cargo.toml"
@@ -64,6 +64,9 @@ in
     size-check
     docs-check
     tree-sitter-check
+    for t in "$DEVENV_ROOT"/work/tools/*-test; do
+      "$t"
+    done
   '';
 
   scripts.docs-build.exec = ''

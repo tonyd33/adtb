@@ -15,7 +15,7 @@ while IFS= read -r -d '' file; do
     echo "$file has $lines lines, over $limit"
     status=1
   fi
-done < <(find crates -name '*.rs' -not -path '*/tests/*' -not -name 'tests.rs' -not -name '*_tests.rs' -print0)
+done < <(find crates apps -name '*.rs' -not -path '*/target/*' -not -path '*/tests/*' -not -name 'tests.rs' -not -name '*_tests.rs' -print0)
 
 while IFS= read -r file; do
   if [[ ! -f $file ]]; then

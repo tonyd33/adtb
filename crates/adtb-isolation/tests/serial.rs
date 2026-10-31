@@ -3,6 +3,7 @@ mod memory;
 
 use adtb_isolation::{Outcome, Step, Txn, check, run};
 use adtb_testkit::Rng;
+use adtb_testkit::profile::assert_reached;
 use memory::{Memory, Mode};
 
 const KEYS: u64 = 4;
@@ -101,21 +102,30 @@ fn interleaved_script(rng: &mut Rng) -> Vec<Step> {
 
 #[test]
 fn interleavings_under_a_serializable_database_pass() {
+    let mut committed = 0;
     for seed in 0..2000 {
         let mut rng = Rng::new(seed);
         let steps = interleaved_script(&mut rng);
         let history = run(&mut Memory::new(Mode::Optimistic), &steps);
         assert_eq!(check(&history), Ok(vec![]), "seed {seed}");
+        committed += history
+            .iter()
+            .filter(|t| t.outcome == Outcome::Committed)
+            .count();
     }
+    assert_reached("a committed transaction", committed, 3000);
 }
 
 #[test]
 fn interleavings_under_snapshot_isolation_show_only_g2() {
+    let mut g2 = 0;
     for seed in 0..2000 {
         let mut rng = Rng::new(seed);
         let steps = interleaved_script(&mut rng);
         let history = run(&mut Memory::new(Mode::Snapshot), &steps);
         let found = common::kinds(&history);
         assert!(found.iter().all(|k| *k == "G2"), "seed {seed}: {found:?}");
+        g2 += found.len();
     }
+    assert_reached("a G2 anomaly", g2, 100);
 }

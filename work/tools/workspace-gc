@@ -54,11 +54,11 @@ workspaces() {
   done
 }
 
-# Prints the hours since anything under build directory $1 last changed.
+# Prints the hours since anything under build directory $1 last changed, 0 when nothing there reads.
 idle() {
   local newest
   newest=$(find "$1" -maxdepth 2 -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
-  jq -n --argjson now "$(date +%s)" --argjson built "${newest:-0}" '[0, (($now - $built) / 3600 | floor)] | max'
+  jq -n --argjson now "$(date +%s)" --argjson built "${newest:-$(date +%s)}" '[0, (($now - $built) / 3600 | floor)] | max'
 }
 
 # Prints `size<TAB>name<TAB>state<TAB>idle<TAB>verdict<TAB>dir` for each build directory.
@@ -155,12 +155,18 @@ case $mode in
     echo "free: $(free_gb) GB"
     ;;
   --clean)
-    targets | while IFS=$'\t' read -r size name _ _ verdict dir; do
+    unclean=0
+    while IFS=$'\t' read -r size name _ _ verdict dir; do
       [[ $verdict == clean ]] || continue
       echo "cleaning $dir ($name, $size)"
-      (cd "$root" && cargo clean --target-dir "$dir") || echo "$dir is not cleaned"
-    done
+      (cd "$root" && cargo clean --target-dir "$dir") || {
+        echo "$dir is not cleaned" >&2
+        unclean=1
+      }
+    done < <(targets)
+    wait "$!"
     echo "free: $(free_gb) GB"
+    exit "$unclean"
     ;;
   --clear-build)
     (($# >= 2)) || refuse "usage: --clear-build WORKSPACE, or main for the main checkout"

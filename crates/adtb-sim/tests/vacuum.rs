@@ -1283,6 +1283,7 @@ fn inspect(rt: SimRuntime, world: &Mutex<World>) -> Vec<String> {
 }
 
 /// Returns the number of crashes, and of those that fell during a vacuum.
+#[must_use]
 fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
     silence_fatal_panics();
     let mut sim = Sim::new(seed, Config::default());

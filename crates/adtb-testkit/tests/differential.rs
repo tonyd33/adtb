@@ -8,6 +8,7 @@ use std::ops::Range;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adtb::plan::{Rewrites, with_rewrites};
 use adtb::{
@@ -31,6 +32,12 @@ const QUERIES: usize = 24;
 /// Returns the seeds of one run of a drawn or corpus case.
 fn seeds() -> Range<u64> {
     seeds_of(CASES)
+}
+
+/// Returns `floor`, a floor measured over [`CASES`] seeds, scaled down when a run has fewer.
+fn floor_of_cases(floor: usize) -> usize {
+    let cases = seeds().end - seeds().start;
+    floor * cases.min(CASES) as usize / CASES as usize
 }
 
 /// Returns the seeds of one run, from `ADTB_DIFF_SEED`, else zero, `ADTB_DIFF_CASES` of them,
@@ -633,20 +640,30 @@ fn corpus_mutants_equal_reference() {
 
 #[test]
 fn sum_is_union_of_constructors() {
+    static PARTITIONS: AtomicUsize = AtomicUsize::new(0);
     sweep("constructor partition", |env, q| {
         let parts = q.by_ctor()?;
+        PARTITIONS.fetch_add(1, Ordering::Relaxed);
         let text = q.text();
         let whole = engine_eval(env.db, &text);
         let union = Got::union(parts.iter().map(|p| engine_eval(env.db, p)).collect());
         (!whole.agrees(&union, env.tolerance))
             .then(|| format!("`{text}` gives {whole:?}, the union of {parts:?} gives {union:?}"))
     });
+    profile::assert_reached(
+        "a query partitioned by constructor",
+        PARTITIONS.load(Ordering::Relaxed),
+        floor_of_cases(70),
+    );
 }
 
 #[test]
 fn predicate_partitions_bindings() {
+    static SPLITS: AtomicUsize = AtomicUsize::new(0);
+    static COUNTS: AtomicUsize = AtomicUsize::new(0);
     sweep("predicate partition", |env, q| {
         let split = q.by_predicate()?;
+        SPLITS.fetch_add(1, Ordering::Relaxed);
         let whole = engine_eval(env.db, &split.whole);
         let union = Got::union(split.parts.iter().map(|p| engine_eval(env.db, p)).collect());
         if !whole.agrees(&union, env.tolerance) {
@@ -656,6 +673,7 @@ fn predicate_partitions_bindings() {
             ));
         }
         let counts = q.counts()?;
+        COUNTS.fetch_add(1, Ordering::Relaxed);
         let total = engine_eval(env.db, &counts.whole);
         let sum = Got::sum(
             counts
@@ -671,6 +689,16 @@ fn predicate_partitions_bindings() {
             )
         })
     });
+    profile::assert_reached(
+        "a query split by predicate",
+        SPLITS.load(Ordering::Relaxed),
+        floor_of_cases(120),
+    );
+    profile::assert_reached(
+        "a count split",
+        COUNTS.load(Ordering::Relaxed),
+        floor_of_cases(120),
+    );
 }
 
 const REWRITES: usize = 12;

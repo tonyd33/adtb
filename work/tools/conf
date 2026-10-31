@@ -72,7 +72,7 @@ on_engine() {
   local status=$?
   if ((status == 124)); then
     echo "$1:0: engine: does not finish within 180s"
-  elif ! grep -q adtb-conformance-done <<<"$out"; then
+  elif ((status != 0)) || ! grep -q adtb-conformance-done <<<"$out"; then
     echo "$1:0: engine: aborts ($status): $(grep -v '^\s*$' <<<"$out" | tail -3 | paste -sd'/')"
   fi
   grep -o 'adtb-conformance-difference: .*' <<<"$out" \

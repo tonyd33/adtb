@@ -612,6 +612,7 @@ fn vacuum_runs_beside_writers_and_readers_holding_snapshots() {
 }
 
 /// Returns the rounds that crashed and those that crashed while a vacuum ran.
+#[must_use]
 fn crash_loop(seed: u64, faults: Faults, rounds: usize) -> (usize, usize) {
     silence_fatal_panics();
     let mut sim = Sim::new(
@@ -689,7 +690,7 @@ fn crashes_beside_concurrent_vacuum_recover_clean() {
 
 #[test]
 fn crash_beside_vacuum_at_seed_13_recovers_clean() {
-    crash_loop(
+    let (crashes, _) = crash_loop(
         13,
         Faults {
             torn_p: 0.5,
@@ -697,4 +698,5 @@ fn crash_beside_vacuum_at_seed_13_recovers_clean() {
         },
         3,
     );
+    seeds::assert_reached("a crash at seed 13", crashes, 1);
 }

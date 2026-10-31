@@ -207,6 +207,7 @@ fn without_static_routing_each_row_is_routed_by_its_tag() {
         },
     );
     let ps = pipelines(&query_of(&p.root).spine);
+    assert!(!ps.is_empty(), "the join plans no pipeline");
     for x in ps {
         assert!(emits(&x.chain).iter().all(|t| has_case(&p.terms, *t)));
     }

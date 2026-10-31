@@ -81,6 +81,13 @@ fn child(mode: &str, cap: Option<usize>) -> Output {
     command.output().expect("the child starts")
 }
 
+/// Assert the child ran `child_entry` and passed: `--exact` with no such test also exits 0.
+fn assert_entry_ran(child: &Output) {
+    assert!(child.status.success(), "{child:?}");
+    let stdout = String::from_utf8_lossy(&child.stdout);
+    assert!(stdout.contains(" 1 passed;"), "{stdout}");
+}
+
 fn cap_line(child: &Output) -> String {
     assert_eq!(child.status.signal(), Some(libc::SIGABRT), "{child:?}");
     let stderr = String::from_utf8_lossy(&child.stderr);
@@ -142,7 +149,7 @@ fn the_default_cap_aborts_a_test_that_did_not_raise_it() {
 #[test]
 fn a_raised_cap_lets_the_test_pass_the_default() {
     let child = child("raised_past_default", None);
-    assert!(child.status.success(), "{child:?}");
+    assert_entry_ran(&child);
 }
 
 #[test]
@@ -175,7 +182,7 @@ fn a_test_binary_started_with_core_dumps_on_zeroes_its_core_limit() {
     // SAFETY: the hook makes one async-signal-safe call and allocates only on failure.
     unsafe { command.pre_exec(move || set_core_limit(limit)) };
     let child = command.output().expect("the child starts");
-    assert!(child.status.success(), "{child:?}");
+    assert_entry_ran(&child);
 }
 
 #[test]

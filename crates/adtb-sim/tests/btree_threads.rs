@@ -577,6 +577,7 @@ fn crash_at_a_flush(sim: &mut Sim, world: &Arc<Mutex<World>>, seed: u64, shape: 
 /// Returns the rounds that crashed of `rounds` runs crashed at a time, and
 /// the rounds whose crash left a split for repair to finish, of those and of
 /// `cuts` runs cut at a log force inside an insert.
+#[must_use]
 fn threaded_crash_loop(seed: u64, rounds: usize, cuts: usize, shape: Shape) -> (usize, usize) {
     let mut sim = Sim::new(seed, crash_config());
     let world = Arc::new(Mutex::new(World {

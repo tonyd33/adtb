@@ -46,10 +46,15 @@ is_test() {
   [[ $path == */tests/* || $path == */tests.rs || $path == *_tests.rs ]] && return 0
   [[ -n $rev ]] || return 1
   if [[ -z ${test_start[$key]+set} ]]; then
-    test_start[$key]=$(jj file show -r "$rev" "$path" 2>/dev/null | awk '
+    local text
+    text=$(jj file show -r "$rev" "$path") || {
+      echo "quality-metrics: cannot read $path at $rev" >&2
+      exit 1
+    }
+    test_start[$key]=$(awk '
       cfg && /^(pub(\([a-z]+\))? )?mod / { print cfg; exit }
       { cfg = /^#\[cfg\(test\)\]/ ? NR : 0 }
-    ' || true)
+    ' <<<"$text")
   fi
   [[ -n ${test_start[$key]} ]] && ((line >= test_start[$key]))
 }

@@ -82,7 +82,7 @@ awk -F'\t' -v allow="$grammar/differential-allowlist" '
       n = split($3, diags, "; ")
       for (i = 1; i <= n; i++) {
         known = 0
-        for (c in classes) if (index(diags[i], c) == 1) known = 1
+        for (c in classes) if (index(diags[i], c) == 1) { known = 1; used[c] }
         if (!known) listed = 0
       }
       if (listed) allowed++
@@ -91,6 +91,7 @@ awk -F'\t' -v allow="$grammar/differential-allowlist" '
   }
   END {
     for (f in result) if (!(f in seen)) { print "parse result for no manifest path: " f; bad++ }
+    for (c in classes) if (!(c in used)) { print "differential-allowlist class no text needs: " c; bad++ }
     for (p in floor) {
       if (total[p] < floor[p]) { printf "%s: %d texts, under the floor of %d\n", p, total[p], floor[p]; bad++ }
     }
@@ -106,6 +107,7 @@ awk -F'\t' -v allow="$grammar/differential-allowlist" '
 status=0
 
 corpus_files=0
+shopt -s nullglob
 for expected in "$root"/tools/syntax/corpus/*.json; do
   corpus_files=$((corpus_files + 1))
   source="${expected%.json}.adt"

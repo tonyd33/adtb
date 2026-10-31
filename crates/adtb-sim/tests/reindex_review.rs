@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -13,6 +13,7 @@ use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::storage::{Damage, Quarantine};
 use adtb::{CallOptions, CancelToken, Database, Log, TxnCallOptions, TxnOptions};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
+use adtb_simkit::seeds::assert_reached;
 use adtb_simkit::{api, common, crash};
 
 const APP: &str = r"module app
@@ -407,8 +408,10 @@ fn write_skew(name: &str, rounds: usize, reindex: bool) -> usize {
     let start = Arc::new(Barrier::new(3));
     let mid = Arc::new(Barrier::new(2));
     let end = Arc::new(Barrier::new(3));
+    let left_duty = Arc::new(AtomicUsize::new(0));
     let spawn = |me: i64| {
         let (db, start, mid, end) = (db.clone(), start.clone(), mid.clone(), end.clone());
+        let left_duty = left_duty.clone();
         std::thread::spawn(move || {
             for _ in 0..rounds {
                 start.wait();
@@ -417,13 +420,15 @@ fn write_skew(name: &str, rounds: usize, reindex: bool) -> usize {
                 let read = t.query_text("from s in shifts where s.duty == 1 select s.id", &[], &o);
                 mid.wait();
                 let n = read.map(|mut r| r.remove(0).count()).unwrap_or(0);
-                if n >= 2 {
-                    let _w = t.query_text(
+                let wrote = n >= 2
+                    && t.query_text(
                         &format!("update s in shifts where key s == shifts.key({me}) set Shift {{ s with duty: 0 }}"),
                         &[], &o,
-                    );
+                    )
+                    .is_ok();
+                if t.commit(None).is_ok() && wrote {
+                    left_duty.fetch_add(1, Ordering::Relaxed);
                 }
-                let _c = t.commit(None);
                 end.wait();
             }
         })
@@ -462,6 +467,11 @@ fn write_skew(name: &str, rounds: usize, reindex: bool) -> usize {
     let jobs = job.join().unwrap();
     db.close().unwrap();
     assert!(!reindex || jobs > 0, "{name}: no rebuild ran");
+    assert_reached(
+        &format!("{name}: a side leaving duty"),
+        left_duty.load(Ordering::Relaxed),
+        rounds / 4,
+    );
     broken
 }
 

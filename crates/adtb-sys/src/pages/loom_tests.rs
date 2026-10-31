@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+
 use loom::sync::Arc;
 use loom::thread;
 
@@ -60,9 +62,17 @@ fn fill_at(version: u64, fills: [u8; 2]) -> u8 {
     }
 }
 
+/// Explore `body` under the model, and fail unless some execution set the flag for `what`.
+fn model_reaching(what: &str, body: impl Fn(&std::sync::Arc<AtomicBool>) + Send + Sync + 'static) {
+    let reach = std::sync::Arc::new(AtomicBool::new(false));
+    let reached = std::sync::Arc::clone(&reach);
+    loom::model(move || body(&reached));
+    assert!(reach.load(Relaxed), "no execution reached {what}");
+}
+
 #[test]
 fn a_shared_latch_sees_no_writer_or_all_of_one() {
-    loom::model(|| {
+    model_reaching("a shared latch", |reach| {
         let m = filled(0);
         let w = Arc::clone(&m);
         let writer = thread::spawn(move || {
@@ -71,6 +81,7 @@ fn a_shared_latch_sees_no_writer_or_all_of_one() {
             g.write(0, &[2; 16]);
         });
         if let Some(s) = m.lock_shared(PID, &Model) {
+            reach.store(true, Relaxed);
             let (state, version) = m.state(PID);
             assert_eq!(PageState::Shared(1), state);
             assert_eq!(
@@ -116,7 +127,7 @@ fn two_exclusive_latches_take_turns() {
 
 #[test]
 fn an_optimistic_read_sees_a_version_change_or_its_versions_page() {
-    loom::model(|| {
+    model_reaching("a validated read", |reach| {
         let m = filled(0);
         let w = Arc::clone(&m);
         let writer = thread::spawn(move || {
@@ -126,6 +137,7 @@ fn an_optimistic_read_sees_a_version_change_or_its_versions_page() {
             let mut out = [9; 16];
             r.read(0, &mut out);
             if r.validate() {
+                reach.store(true, Relaxed);
                 assert_eq!(
                     [fill_at(r.version, [0, 1]); 16],
                     out,
@@ -140,7 +152,7 @@ fn an_optimistic_read_sees_a_version_change_or_its_versions_page() {
 
 #[test]
 fn an_optimistic_copy_sees_a_version_change_or_its_versions_page() {
-    loom::model(|| {
+    model_reaching("a validated copy", |reach| {
         let m = filled(7);
         let w = Arc::clone(&m);
         let writer = thread::spawn(move || {
@@ -149,6 +161,7 @@ fn an_optimistic_copy_sees_a_version_change_or_its_versions_page() {
         if let Some(r) = m.optimistic(PID) {
             let out: [u8; 16] = r.copied(0, 16, |copy| copy.try_into().unwrap());
             if r.validate() {
+                reach.store(true, Relaxed);
                 assert_eq!(
                     [fill_at(r.version, [7, 1]); 16],
                     out,
@@ -163,7 +176,7 @@ fn an_optimistic_copy_sees_a_version_change_or_its_versions_page() {
 
 #[test]
 fn a_second_optimistic_copy_sees_nothing_of_the_first() {
-    loom::model(|| {
+    model_reaching("a validated copy", |reach| {
         let m = filled(0);
         let w = Arc::clone(&m);
         let writer = thread::spawn(move || {
@@ -175,6 +188,7 @@ fn a_second_optimistic_copy_sees_nothing_of_the_first() {
             };
             let out: [u8; 16] = r.copied(0, 16, |copy| copy.try_into().unwrap());
             if r.validate() {
+                reach.store(true, Relaxed);
                 assert_eq!(
                     [fill_at(r.version, [0, 1]); 16],
                     out,
@@ -189,7 +203,7 @@ fn a_second_optimistic_copy_sees_nothing_of_the_first() {
 
 #[test]
 fn an_upgrade_finds_the_bytes_its_read_saw() {
-    loom::model(|| {
+    model_reaching("an upgrade", |reach| {
         let m = filled(0);
         let w = Arc::clone(&m);
         let writer = thread::spawn(move || {
@@ -200,6 +214,7 @@ fn an_upgrade_finds_the_bytes_its_read_saw() {
             r.read(0, &mut out);
             let version = r.version;
             if let Some(mut g) = r.upgrade() {
+                reach.store(true, Relaxed);
                 assert_eq!(version, g.version);
                 assert_eq!(
                     out,
@@ -215,11 +230,15 @@ fn an_upgrade_finds_the_bytes_its_read_saw() {
 
 #[test]
 fn an_upgrade_excludes_a_shared_latch() {
-    loom::model(|| {
+    let upgraded = std::sync::Arc::new(AtomicBool::new(false));
+    let upgrade = std::sync::Arc::clone(&upgraded);
+    model_reaching("a shared latch", move |shared| {
         let m = filled(0);
         let rd = Arc::clone(&m);
+        let shared = std::sync::Arc::clone(shared);
         let reader = thread::spawn(move || {
             if let Some(s) = rd.lock_shared(PID, &Model) {
+                shared.store(true, Relaxed);
                 let version = rd.state(PID).1;
                 assert_eq!(
                     [fill_at(version, [0, 2]); 16],
@@ -231,10 +250,12 @@ fn an_upgrade_excludes_a_shared_latch() {
         });
         let r = m.optimistic(PID).expect("no writer latches the page");
         if let Some(mut g) = r.upgrade() {
+            upgrade.store(true, Relaxed);
             g.write(0, &[2; 16]);
         }
         reader.join().unwrap();
     });
+    assert!(upgraded.load(Relaxed), "no execution reached an upgrade");
 }
 
 #[test]
@@ -253,14 +274,16 @@ fn the_clock_never_refuses_an_upgrade() {
 
 #[test]
 fn share_hands_readers_the_page_it_wrote() {
-    loom::model(|| {
+    model_reaching("a validated read", |reach| {
         let m = filled(0);
         let rd = Arc::clone(&m);
+        let reach = std::sync::Arc::clone(reach);
         let reader = thread::spawn(move || {
             if let Some(r) = rd.optimistic(PID) {
                 let mut out = [9; 16];
                 r.read(0, &mut out);
                 if r.validate() {
+                    reach.store(true, Relaxed);
                     assert_eq!(
                         [fill_at(r.version, [0, 1]); 16],
                         out,
@@ -282,12 +305,13 @@ fn share_hands_readers_the_page_it_wrote() {
 
 #[test]
 fn the_clock_never_evicts_a_latched_page() {
-    loom::model(|| {
+    model_reaching("a shared latch beside the clock", |reach| {
         let m = filled(7);
         assert!(!m.mark(PID));
         let c = Arc::clone(&m);
         let clock = thread::spawn(move || sweep(&c));
         if let Some(s) = m.lock_shared(PID, &Model) {
+            reach.store(true, Relaxed);
             assert_eq!(
                 [7; 16],
                 plain_bytes(&m),
@@ -318,13 +342,14 @@ fn sweep(m: &PageMemory) {
 
 #[test]
 fn a_page_filled_after_eviction_keeps_its_fill() {
-    loom::model(|| {
+    model_reaching("a fill after eviction", |reach| {
         let m = filled(7);
         assert!(!m.mark(PID));
         let c = Arc::clone(&m);
         let clock = thread::spawn(move || sweep(&c));
         let mut g = m.lock_exclusive(PID, &Model);
         if !g.resident() {
+            reach.store(true, Relaxed);
             g.write(0, &[8; 16]);
         }
         drop(g);
@@ -340,7 +365,7 @@ fn a_page_filled_after_eviction_keeps_its_fill() {
 
 #[test]
 fn an_optimistic_read_clearing_the_mark_races_the_clock() {
-    loom::model(|| {
+    model_reaching("a validated read beside the clock", |reach| {
         let m = filled(7);
         assert!(!m.mark(PID));
         let c = Arc::clone(&m);
@@ -349,6 +374,7 @@ fn an_optimistic_read_clearing_the_mark_races_the_clock() {
             let mut out = [9; 16];
             r.read(0, &mut out);
             if r.validate() {
+                reach.store(true, Relaxed);
                 assert_eq!(1, r.version);
                 assert_eq!(
                     [7; 16], out,

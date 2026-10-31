@@ -327,6 +327,10 @@ SHIM
     users=$(pids_using "$scratch/a[b]")
     kill "$holder"
     [[ $users == *sleep* ]] || fail "a root with a glob character hides its users"
+    [[ -z $(pids_using "$scratch/nothing-here") ]] || fail "a directory nothing uses has users"
+    find() { return 1; }
+    [[ -n $(pids_using "$scratch/nothing-here") ]] || fail "a failed process scan reads as unused"
+    unset -f find
   )
 
   # clear-build needs an explicit workspace and empties debug and tmp, keeping the lock and the rest.

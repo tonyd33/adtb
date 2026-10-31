@@ -90,7 +90,9 @@ fn most_drawn_programs_reach_the_normaliser() {
             reached.entry(c.kind).or_default().push(r);
         }
     }
-    for (kind, rs) in reached {
+    for kind in [Kind::Adhoc, Kind::Schema] {
+        let rs = reached.get(&kind).map_or(&[][..], Vec::as_slice);
+        assert!(!rs.is_empty(), "{kind:?}: no unmutated case");
         let normalised = rs
             .iter()
             .filter(|r| matches!(r, Reached::Normalised))

@@ -816,6 +816,7 @@ fn crash_at_a_flush(sim: &mut Sim, world: &Arc<Mutex<World>>, seed: u64, seek: b
 ///
 /// Unless `seen` is set, each cut seeks a force that leaves a split
 /// incomplete, until one is repaired.
+#[must_use]
 fn crash_loop(seed: u64, rounds: usize, seen: bool) -> (usize, usize) {
     let mut sim = Sim::new(seed, crash_config());
     let world = Arc::new(Mutex::new(World::default()));

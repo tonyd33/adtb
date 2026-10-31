@@ -2283,7 +2283,7 @@ fn transact_fails_once_when_a_mark_lands_before_its_commit() {
 }
 
 #[test]
-fn every_commit_with_its_record_after_a_mark_is_refused() {
+fn a_mark_lsn_follows_every_commit_kept_before_it() {
     for seed_no in adtb_simkit::seeds::sweep(0..1) {
         let config = Config {
             switch_rate: 0.5,
@@ -2311,9 +2311,12 @@ fn every_commit_with_its_record_after_a_mark_is_refused() {
                 })
                 .collect();
             let marker = {
-                let (db, rt) = (db.clone(), rt.clone());
+                let (db, rt, kept) = (db.clone(), rt.clone(), kept.clone());
                 rt.clone().spawn("marker", move || {
-                    for _ in 0..40 {
+                    for _ in 0..4000 {
+                        if kept.lock().unwrap().len() >= 8 {
+                            break;
+                        }
                         rt.yield_now();
                     }
                     let page = index_page(&db, "app::notes", "index (about)");
@@ -2336,6 +2339,11 @@ fn every_commit_with_its_record_after_a_mark_is_refused() {
                     "seed {seed_no}: commit at {at}, mark at {marked:?}"
                 );
             }
+            adtb_simkit::seeds::assert_reached(
+                &format!("seed {seed_no}: commits before the mark"),
+                kept.lock().unwrap().len(),
+                8,
+            );
         });
     }
 }
