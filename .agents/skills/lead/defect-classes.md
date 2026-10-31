@@ -10,7 +10,7 @@ Causes that keep producing bugs across tracks, from the review of 2026-10-31. Co
 | Unbounded work over size, depth or sharing | about 16 | One budget, sized stacks, sharing-aware lowering | one-spend-budget |
 | Wildcards and copied rules | about 17 | Scoped lint, shared helper | compile-time-identity |
 | Catalog rows and identity by position or spelling | about 16 | Row codecs generated from `catalog.adt`, keyed by id | compile-time-identity |
-| Tests asserting less than they claim | about 20 | Diff-scoped mutation in the branch check | vacuity-gate |
+| Tests asserting less than they claim | about 20 before the audit, about 80 candidates after | Must-use tallies and floors, a reason helper, gates that run, diff-scoped mutation | test-audit-findings, vacuity-gate |
 
 Language and kernel fixes mostly removed their cause, and perf and refactor tracks mostly land without blockers. The classes above concentrate in failure paths, authority and grant carry.
 

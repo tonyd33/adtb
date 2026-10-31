@@ -35,3 +35,7 @@ The underlying gap: the rules that keep breaking were held by habit, with nothin
 What changed: the defect class register and five tickets, the wide view section of the lead skill, batches by cause, invariants in briefs with what enforces each, and bug reports stating cause and class.
 
 What I don't know yet: whether any of this works. No mechanism has landed. Process rules failed this week, so the weight has to sit on types, searching tests and mutation, and the measure is the class counts.
+
+### 2026-10-31: the test audit
+
+The maintainer asked for a wider look after one review found tautological assertions. About 80 candidates by reading, nothing run. Core model tests (key, batch, mvcc) held up. The worst were sweeps that pass having tested nothing, the check that binds the spec's prelude to code, and tool tests `check` never runs. A green `check` meant less than I had been treating it as. A delta review of the track I just landed had not flagged a test that passes with its limit removed, because I had not asked. The skill now asks. Floors go before fault-matrix, since its sweeps would inherit the same hole.

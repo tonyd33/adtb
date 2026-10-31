@@ -26,3 +26,7 @@ Third item only: `add default` and `drop default` resolve, the `UNRESOLVED` skip
 ## 2026-10-27: landed
 
 Landed with the resops track.
+
+## 2026-10-31: from the test audit
+
+`STAGED` in adtb-testkit/tests/differential.rs (`RemoveConstructor`, `DropUnique`, `DropCheck`) is skipped by the walks that run, and the `every_*` tests that draw them are `#[ignore]` with nothing running them. These operators never reach the engine in walks, and the ignore reason says the engine does not yet apply them as their laws state. This is an engine gap, not only a test gap.
