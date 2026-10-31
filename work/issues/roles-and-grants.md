@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
+branch: call-grants
 kind: feature
 priority: 410
-summary: "role authority exists; relation/field and call/family grants, definer checks and nonowner execution remain unfinished"
+summary: "registration and definer checks exist; call grants, binding and nonowner execution, system relation grants, ad hoc reads and writes, and management by text remain"
 depends-on:
   - asserted-principal-value-domain
   - custom-principal-global-lookup
@@ -468,3 +469,17 @@ naming those rows, as a revoke that orphans them is refused.
 ## 2026-10-30
 
 Ruling from server-fixes: a command result counts as the query that reads it. A role with `maintain` running `verify` while a finding holds a `witness` needs `read` on that relation. Until relation grants exist, it is refused with `Denied` and audited. Replace that with the real check here.
+
+## 2026-10-30: audit and remaining slices
+
+Read of main at 2e725780. A nonowner can take a session, register a bundle under grants it holds with option, retire or supersede it, run the commands its capabilities allow and give capabilities. It cannot run a query, a write or a registered call, including its own bundle's: all fail closed. Sections above that call definer checks or LogGrant identity unfinished are stale.
+
+Rulings adopted: security/grant-absent/refuse, grant-bare-family/refuse, owner-calls/bundle-and-schema-owner, call-check-when/submit-and-start, family-grant-unread/refuse-when-callables, family-option-cover/equal-ids-now, drop-grantor/refuse, bind-needs-grant/some-call. security.md 2.1, 3.2, 4.1 and applications.md 5 state them.
+
+Slices, each landable alone, none running nonowner work with owner rights:
+
+1. Call grants: `RoleAuthority::grant`, the first writer of bundle, query and family rows; `signature::Ids`, printer and reader of `FAMILY::q at v ...`; `Entry.result`; signed revoke by ids; `target_covers` family covers bundle; `drop_role` refusal.
+2. Checked binding and nonowner calls: `RoleAuthority::bind`, `RoleBinding::submit`, `owner` in server/task.rs deleted, `Denied`, `Call` and `Commit` audit rows. `BlockingMigration` waits for online migrations, split from this ticket.
+3. Deployment relation grants and `read_files` in `EffectiveGrants`, and the revoke refusal of 3.5 for them. Absorbs lacking-repeats-per-bundle.
+4. Ad hoc reads and writes for a role: remove the only-commands refusal in session.rs, `permission::adhoc`, real `explain`, `export`, `print schema`, `cancel call`, verify witness. Audit `Prepared::of_items` parameter values first. Absorbs permission-provider-follow-ups.
+5. Management by text with statement atomicity; `schema` also needs `adhoc`.

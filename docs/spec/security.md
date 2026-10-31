@@ -140,9 +140,12 @@ exist is refused. Replaying the log, as a restore does, keeps such a grant as a 
 allows nothing, and reports it; a restore lists every dormant grant in
 its report. `drop role R` is refused while any grant operator in the
 log names `R`, or `R` owns a bundle that is not retired or owns a
-family (§3.2). `drop role owner` and `create role owner` are refused.
+family (§3.2), or `R` is the grantor of a deployment grant, refused
+naming those rows; the schema owner revokes them first. `drop role
+owner` and `create role owner` are refused.
 
-Dropping a role atomically deletes the peer mappings naming it.
+Dropping a role atomically deletes its deployment grants and the peer
+mappings naming it.
 Other roles' peer mappings and their ordinals are unchanged. A refused
 drop changes none of them.
 Recreating the same role name does not restore its peer mappings;
@@ -283,7 +286,17 @@ row's target does
 ([catalog.md](catalog.md#26-other-catalog-relations)); such a target
 is compared with a row by the ids its names have at its own version,
 not by its text, and a grant is refused unless its signature has the
-ids of the one the live bundles share.
+ids of the one the live bundles share. A live bundle with no callables
+declares nothing; one whose signature cannot be read refuses the grant,
+naming it, until it is presented at an open or retired. `grant call
+web`, naming a family and no query, is refused.
+
+A call grant on a bundle or query is refused, naming the target, when
+the bundle is not registered or is retired, or the query is not a
+registered query or transaction of it; a schema function a bundle
+imports takes `grant call fn`. A superseded or expired bundle stays
+grantable. A role that may not give the grant is refused with `Denied`
+whether or not its target exists.
 
 Any grant may end in `with grant option`, which lets the grantee grant
 it on. A grant with grant option that would close a cycle, its grantee
@@ -291,7 +304,11 @@ being its grantor or a role its grantor's option descends from, is
 refused. A grantee holding a relation grant with grant option extends it
 only through the bundles it registers, whose callers then act within
 it under definer rights (§4.1). It never appends grant operators on
-that account: only a role holding `schema` appends them. `revoke`
+that account: only a role holding `schema` appends them. A family
+grant with grant option lets its holder give the query of a bundle
+exactly while that bundle's signature equals the recorded one, and a
+regrant with other ids is refused, naming the rows, when rows given
+under the old signature would be left uncovered. `revoke`
 takes the same forms and is of the same kind as the grant it revokes.
 
 Each grant is a row of `catalog::grants`, identified by its grantee,
@@ -483,6 +500,12 @@ grant call invoices::my_invoices to web
 
 `web` can run `my_invoices` and nothing else; the rows it gets are
 those the query selects for `caller`.
+
+The schema owner and a bundle's owner call its queries and transactions
+with no call grant. A family's owner has that right only on the
+bundles it owns. A call's grant is checked when it is submitted and
+when it leaves the queue; a call that has started finishes, retries
+included, whatever is revoked meanwhile.
 
 ### 4.2 What registering requires
 

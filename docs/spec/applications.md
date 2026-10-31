@@ -386,7 +386,9 @@ the bundle is not registered, is retired or superseded, has expired
 (§4.2), or pins a different version or
 hash than the handshake states; a catalog version that differs from
 the bundle's catalog pin is refused with
-`Rejected { reason: CatalogMismatch {..} }`.
+`Rejected { reason: CatalogMismatch {..} }`. A role that may call
+nothing in the bundle is refused with `Denied`, audited, and renews no
+lease; `adhoc` alone does not bind.
 
 A bound connection:
 
