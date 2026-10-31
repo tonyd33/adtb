@@ -46,9 +46,11 @@ source is compared as written.
 ### 2.2 Whitespace and comments
 
 Space, tab, carriage return and line feed separate tokens and are
-otherwise insignificant. The grammar is free-form: line breaks and
-indentation carry no meaning, and the layout used in examples is
-convention.
+otherwise insignificant. The grammar is free-form, with one exception:
+a word that starts an item (`add`, `drop` and the like), first on its
+line, ends a type's arguments and the target of `verify` before it.
+Otherwise line breaks and indentation carry no meaning, and the layout
+used in examples is convention.
 
 `--` starts a comment that runs to the end of the line. A comment is
 whitespace.
@@ -193,8 +195,8 @@ name is its family, then a hyphen, then its version: the digits and
 dots after the last hyphen. `web` is the family of `web-2.4`. After
 `grant call` and `revoke call`, `FAMILY::q` names query `q` in every
 bundle of the family. A
-`HASH` is a token only inside the parentheses of a `version`, and is
-written in full, 64 hex digits; an implementation must refuse a
+`HASH` is a token only inside the parentheses of a `version`, starts
+immediately after the `(`, and is written in full, 64 hex digits; an implementation must refuse a
 shorter one. Examples elide it as `c41e...`. A
 version is a position in the operator log shown with the hash of the
 log prefix up to that position ([evolution.md](evolution.md#2-versions)).
@@ -219,8 +221,8 @@ A `(` that follows an identifier with no whitespace between them
 starts the argument list of a call: `active()`, `scalar_len(t)`,
 `Email("a@b")`, `users.key(3)`. A `(` after whitespace never does:
 `fn display_name (i: Identity)` declares, and `top 3 by n (from ...)`
-gives `top` its operand. This is the only place whitespace is
-significant.
+gives `top` its operand. Apart from the line rule of §2.2, this is the
+only place whitespace is significant.
 
 Rulings: syntax/strings/double, syntax/equality/double, syntax/params/names, spec/textual-forms/interop
 
