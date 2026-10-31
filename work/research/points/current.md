@@ -561,6 +561,8 @@ accept:
   repl/upgrade/replicas-first: {title: A new engine replays the old log format; replicas upgrade before the primary, reason: 'replicas upgrade before the primary, which read-old makes safe'}
   repl/verify/manifest: {title: 'A manifest of page and segment checksums, checked without restoring', reason: every backup carries a manifest and is proven by a test restore that rechecks every invariant}
   repl/verify/restore-check: {title: 'Restore, replay, then re-check every sum invariant over the result', reason: every backup carries a manifest and is proven by a test restore that rechecks every invariant}
+  security/adhoc-function/call-and-reads: {title: 'The role''s call fn grant, and its body''s reads charged to the role', reason: calling is the privilege}
+  security/adhoc-names/charged: {title: 'A role without the schema catalog reads names only relations it holds a grant on, and types and constructors those relations reach; other names answer the same Denied', reason: holds one answer for absent and unread}
   security/assert/asserted: {title: An authenticated application role asserts an end-user principal per transaction, reason: 'the connection''s role, or an end-user principal asserted per transaction by an application role'}
   security/assert/connection: {title: The role the connection authenticated as, reason: 'the connection''s role, or an end-user principal asserted per transaction by an application role'}
   security/audit-store/relation: {title: An append-only system relation whose type is a sum of event kinds, reason: 'an append-only system relation of an event sum, written in its own system transaction so denied calls are recorded'}
@@ -575,6 +577,7 @@ accept:
   security/drop-grantor/refuse: {title: Refuse naming the rows while the role is grantor of any deployment row, reason: a drop must not bypass who may revoke a row nor the orphan refusal; one rule covers both shapes}
   security/encrypt/io-cost/staging: {title: Encrypt into a per-I/O staging buffer on write; decrypt in place in the frame on read, reason: 'encrypt into a staging buffer on write, so optimistic readers never see ciphertext'}
   security/encrypt/page: {title: The pager encrypts each page as it is written and decrypts it as it is read, reason: 'the pager owns every page write, so it encrypts there; the host cannot see engine-managed direct I/O'}
+  security/export-occupied/refuse: {title: Refused, reason: same as backup}
   security/family-grant-unread/refuse-when-callables: {title: 'A bundle with no callable rows is not counted; one with callable rows and no signature refuses, naming it', reason: unanimous forbids silently missing a live bundle; a header declares nothing}
   security/family-name-shape/refuse: {title: Refuse at registration a family whose name is itself FAMILY-VERSION, reason: one reading for a name; refuses early}
   security/family-option-cover/equal-ids-now: {title: It covers a bundle's query exactly while their ids are equal; a regrant that uncovers a given row is refused, reason: giving and calling cover the same; a regrant follows the orphan rule}
@@ -596,6 +599,7 @@ accept:
   security/owner-calls/bundle-and-schema-owner: {title: The schema owner and the bundle's owner may call it; a family owner needs a grant for a bundle it does not own, reason: 'the bundle runs under its owner rights already; a grant to oneself is refused, so rows only would strand the owner'}
   security/policy/in-queries: {title: 'In registered queries; there are no policies, only what each query selects', reason: 'application code runs only registered queries, so the query is the policy; predicates on relations would add a second meaning to every read'}
   security/principal/sum: {title: A schema-declared sum Principal the engine fills from the session, reason: 'Principal is User, Service or Anonymous, so no comparison silently fails'}
+  security/refusal-field/catalog-readers: {title: Only a role that reads the schema catalog relations; others get one fixed Denied, reason: name tells nothing to a catalog reader}
   security/register-priv/holds-reads: {title: 'The registrant must hold, with grant option, every relation grant the bundle uses', reason: 'registering under definer rights grants its reads, so the registrant must hold them with grant option'}
   security/retire-priv/owner-or-admin: {title: The bundle's owner or an administrator, reason: 'retiring stops clients, so it belongs to whoever deploys them'}
   security/rights/definer: {title: The bundle's rights; the caller needs only the call grant, reason: the caller needs only the call grant; the bundle's rights reach the rows}
@@ -604,10 +608,12 @@ accept:
   security/schema-priv/owner: {title: One schema-owner role, reason: one schema-owner role appends operators}
   security/subject/queries: {title: Grants on registered queries and bundles; calling one is the privilege, reason: applications are granted registered queries; the ad hoc role is granted constructor sets}
   security/subject/relations: {title: 'Grants on relation variables and constructor sets, checked against what a query reads', reason: applications are granted registered queries; the ad hoc role is granted constructor sets}
+  security/system-read/monitor-or-read: {title: 'monitor, or a read grant on that relation', reason: the grant is the narrow form of monitor}
   security/tamper/ledger: {title: Every commit's change set and audit records are hashed into blocks chained by hash, reason: commit change sets and audit records hashed into chained blocks; the head digest is exported}
   security/tenancy/file-each: {title: Each tenant is its own database file, reason: 'a database file per tenant isolates reads, keys, conflicts and resources with no policy machinery'}
   security/tenancy/fleet/fleet: {title: A tool applies the operator log to each tenant and pins bundles per tenant, reason: a tool applies the log to each tenant file and pins bundles per tenant}
   security/transition/transition: {title: Retag privileges name source and target constructor sets, reason: retag privileges name source and target constructor sets}
+  security/write-existence/stated: {title: 'A role with a write grant can tell by the constraint''s failure, and the spec says so', reason: constraints hold for every writer}
   spec/adhoc-failure/ends-text: {title: The first failing item ends the text; nothing commits; later items do not run; the error names its ordinal; inside an interactive transaction none of the text applies and the transaction stays open, reason: maintainer rulings on the third spec review; reasons in each option body}
   spec/adhoc-path/adhoc-write: {title: Ad hoc text may write for principals holding adhoc plus the write privileges, reason: loads and staging repairs need a path; constraints hold and every change set is audited}
   spec/adhoc/names/every-module: {title: 'Ad hoc text belongs to no module; an unqualified name resolves in every user module, then the prelude', reason: 'only an ambiguous name needs qualifying, and no session state is added'}

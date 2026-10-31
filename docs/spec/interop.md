@@ -604,6 +604,7 @@ in one of the formats of §2. Through a server it needs the
 `write_files` privilege and may write only inside the directories of
 the open setting `export_roots`, which is empty by default; a path
 outside them is refused with `Rejected { reason: Denied {..} }`. A
+path that exists is refused, and a failed export leaves no file. A
 caller of the in-process API writes any path the process can.
 
 ```adt

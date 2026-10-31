@@ -384,7 +384,8 @@ set. `insert`, `delete` and `retag` take no field list.
 A query reads a field when it projects it, compares it, aggregates it,
 groups or orders by it, follows a reference held in it, or returns a
 row or binder whole. A query that reads a field outside the role's
-grants is refused, naming the field. Matching a row and using only
+grants is refused, naming the field to a role that reads the schema
+catalog relations and with one fixed `Denied` to any other. Matching a row and using only
 granted fields of its binder reads only those fields. The key field of
 a relation is granted implicitly with any `read` on the relation, and
 is read whenever a row is ranged over.
@@ -568,6 +569,13 @@ including a `transact` block sent as one ad hoc call, need the role's
 `insert`, `update`, `delete` and `retag` grants for what they write.
 Constraints hold for ad hoc writes as for any other.
 
+Text that calls a schema function needs the role's `grant call fn`, and the
+function's reads are charged to the role. A role that does not read the
+schema catalog relations names only relations it holds a grant on, and the
+types and constructors those relations reach; any other name answers the same
+`Denied` whether it exists or not. Such a role can still tell the fields of a
+type it may name.
+
 ### 4.6 The schema owner
 
 One role per database file is the schema owner. Only it, and roles it
@@ -652,8 +660,8 @@ redacted, since the handle holds every privilege.
 
 Statistics, query plans and conflict details describe rows. Reading
 any `sys::` relation, `catalog::plans` or the plan of another
-principal's query needs `monitor`, which shows counts, timings and
-plan shapes. A column whose values reveal keys or field values of a
+principal's query needs `monitor` or a `read` grant on the relation;
+`monitor` shows counts, timings and plan shapes. A column whose values reveal keys or field values of a
 constructor relation also needs `read` on that constructor relation's
 rows and fields: `value` of `sys::field_values`, `keys` of
 `sys::conflicts`, `witness` of a `Violation` in `sys::verify_findings`,
@@ -671,6 +679,8 @@ The engine does not hide timing, the occurrence of serialization
 aborts, or resource use. What a registered query reveals through its
 result, its faults or a uniqueness refusal is the behaviour of that
 query, and is reviewed with its bundle.
+A role holding a write grant can tell whether a row it references exists from
+the constraint's failure.
 
 Rulings: security/leak/opaque-errors, security/leak/hidden-stats, ops/conflicts/leak/admin-only
 

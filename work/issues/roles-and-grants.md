@@ -512,3 +512,7 @@ Also:
 A live file scan blocks migrations with `has no translation`. Not handled in slice 3.
 
 Slice 3 landed: system relation grants and `read_files` count for a bundle owner, `file_roots` confines role sessions, expiry latches, and only the schema owner grants on `catalog::credentials`. Branch check exit 0, 3464 tests. Next: slice 4, ad hoc reads and writes for a role.
+
+## 2026-10-31: slice 4 reviewed
+
+Rulings: security/adhoc-names/charged, adhoc-function/call-and-reads, write-existence/stated, refusal-field/catalog-readers, system-read/monitor-or-read, export-occupied/refuse. Redaction stays per constraint for now and fails closed; 6.1 promises per row. Second round in the same workspace. A short text doubling through `let` costs exponential time and memory, also for the owner: bound it.

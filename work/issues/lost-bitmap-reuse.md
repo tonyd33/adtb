@@ -19,3 +19,7 @@ summary: "a lost or zeroed bitmap reads as free, so an allocation reuses named p
 Also: a zero directory root then an insert panics `directory node overflows`, heap/dir.rs:59. A zero large-store page then a vacuum panics, heap/page.rs:105. A large-store page in a lost group answers `Fatal Storage` with no mark on every retry. Zero B-tree and visibility-map pages are not refused, and a write reaching a zero directory node before any read still reads it as empty through `Space::find`.
 
 Direction: a blank bitmap page within a group that holds named pages is damage. Done when each case above refuses and marks, with a test.
+
+## 2026-10-31: first round reviewed
+
+Two blockers, both silent loss: open's `abort_unresolved` writes to a blank status page; recovery's checkpoint does not store the group count, so crash, reopen, crash, cut reuses a named page. Second round in the same workspace.

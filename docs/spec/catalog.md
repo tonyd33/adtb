@@ -206,7 +206,8 @@ read.
 ### 1.4 Visibility
 
 Reading any `sys::` relation, `catalog::plans` or the plan of
-another principal's query requires the `monitor` privilege (§9.3).
+another principal's query requires the `monitor` privilege (§9.3) or
+a `read` grant on the relation.
 `monitor` shows counts, timings and plan shapes. A column whose
 values reveal keys or field values of a constructor relation also
 needs read on that constructor relation's rows and fields
