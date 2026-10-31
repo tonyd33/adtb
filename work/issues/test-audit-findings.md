@@ -1,7 +1,6 @@
 ---
 created-at: 2026-10-31
-status: in-progress
-branch: test-audit-a
+status: open
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
@@ -61,3 +60,7 @@ Whole-file `#![expect(clippy::disallowed_methods)]` in adtb-sim/tests/truncated_
 ## slot-test is over-built
 
 Ruled 2026-10-31, after test-audit-a lands. It grew from 351 to 532 lines in one day, most of the growth protecting the script from itself: variable and PATH scrubbing, closing file descriptors, a checkout snapshot, a re-exec, and tests of those. Replace with: `mktemp -d`, scratch `HOME`, `XDG_*`, `CARGO_HOME` and `TMPDIR`, copy the tools, `cd` there, remove `$tools` so cases use only each scratch repository's copies, one `trap rm`. Delete `snapshot`, `variables_leading_to`, `scratch_only_cases`, the PATH and variable scrub, the descriptor loop and the outer and inner stages. Keep the cases that prove `slot`, `land`, `workspace-gc` and the lock. Target: under the 351 it started from plus the lock and campaign cases.
+
+## 2026-10-31: sections 1 and 2 landed
+
+Dropped on reading: evolve_grant_tests.rs:1611, evolve_memo_tests.rs:731 (stale), scenarios.rs:60. Open: the slot-test simplification, sections 3 to 5, narrowing the whole-file expects.
