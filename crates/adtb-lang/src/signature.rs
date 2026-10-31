@@ -1,14 +1,16 @@
 //! The callables of a bundle file with their ordinals and types, over the schema a replayed log
 //! builds: what a code generator emits typed calls from.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::ast::{self, BundleItem, FnDecl, Import, Operator, OperatorKind, QName};
 use crate::check::{Program, Query, Txn, check_query_in, check_txn_in};
 use crate::evolve::Source;
-use crate::parse::{Options, parse_bundle, parse_migration};
+use crate::parse::{Options, parse_adhoc, parse_bundle, parse_migration};
 use crate::resolve::{Visible, lookup_value};
-use crate::schema::{Schema, ValueDef};
-use crate::span::{Diag, Span};
-use crate::types::{FnId, Ty};
+use crate::schema::{PRELUDE, Schema, TypeDefKind, TypeMode, TypeScope, ValueDef, resolve_type};
+use crate::span::{Diag, FileId, Span};
+use crate::types::{Base, CtorSet, FnId, RelId, Ty, TypeId};
 
 /// A migration of a log that does not apply, numbered from 1.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +56,259 @@ pub struct Signature {
     pub kind: CallKind,
     pub params: Vec<(String, Ty)>,
     pub result: Ty,
+}
+
+/// A catalog id, or the name of a type a view's rows give, which has no entry among type ids.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Id {
+    Catalog(u64),
+    Name(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Shape {
+    Base(Base),
+    Param(u32),
+    Data {
+        def: Id,
+        args: Vec<Shape>,
+        ctors: Option<BTreeSet<Id>>,
+    },
+    Key {
+        rel: Id,
+        ctors: Option<BTreeSet<Id>>,
+    },
+    Set(Box<Shape>),
+    Group(Box<Shape>, Box<Shape>),
+    Tag(Box<Shape>),
+    Record(Vec<(String, Shape)>),
+    Sum {
+        ctors: Vec<(String, Vec<(String, Shape)>)>,
+        sel: Option<CtorSet>,
+    },
+    Fn(Box<Shape>, Box<Shape>),
+    Unit,
+    Change,
+}
+
+/// The constructors and fields of a named type, by id.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Named {
+    header: BTreeMap<Id, Shape>,
+    ctors: BTreeMap<Id, BTreeMap<Id, Shape>>,
+    base: Option<Shape>,
+}
+
+/// The identity of a callable's parameter and result types: two signatures are equal exactly when
+/// their `Ids` are, whatever names the schema gives their types at each's version.
+///
+/// A `Key` is its relation and selected constructors; the fields of the relation are not part of
+/// the identity. Parameter names are not either.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ids {
+    params: Vec<Shape>,
+    result: Shape,
+    named: BTreeMap<Id, Named>,
+}
+
+impl Ids {
+    /// Returns the identity of `params` and `result`, types of `schema`.
+    pub fn of(schema: &Schema, params: &[Ty], result: &Ty) -> Ids {
+        let mut w = IdWalk {
+            schema,
+            named: BTreeMap::new(),
+        };
+        let params = params.iter().map(|t| w.shape(t)).collect();
+        let result = w.shape(result);
+        Ids {
+            params,
+            result,
+            named: w.named,
+        }
+    }
+}
+
+struct IdWalk<'s> {
+    schema: &'s Schema,
+    named: BTreeMap<Id, Named>,
+}
+
+impl IdWalk<'_> {
+    fn type_id(&self, def: TypeId) -> Id {
+        self.schema.ids.types.get(&def).map_or_else(
+            || Id::Name(self.schema.ty(def).name.clone()),
+            |&id| Id::Catalog(id),
+        )
+    }
+
+    fn ctor_id(&self, def: TypeId, ctor: u32, name: &str) -> Id {
+        self.schema
+            .ids
+            .ctors
+            .get(&(def, ctor))
+            .map_or_else(|| Id::Name(name.to_owned()), |&id| Id::Catalog(id))
+    }
+
+    fn ctor_ids(&self, def: TypeId, set: &CtorSet) -> BTreeSet<Id> {
+        let ctors = self.schema.ty(def).ctors();
+        set.iter()
+            .map(|&c| self.ctor_id(def, c, &ctors[c as usize].name))
+            .collect()
+    }
+
+    fn fields(
+        &mut self,
+        def: TypeId,
+        ctor: Option<u32>,
+        fields: &[crate::schema::FieldDef],
+    ) -> BTreeMap<Id, Shape> {
+        fields
+            .iter()
+            .map(|f| {
+                let id = self
+                    .schema
+                    .ids
+                    .fields
+                    .get(&(def, ctor, f.name.clone()))
+                    .map_or_else(|| Id::Name(f.name.clone()), |&id| Id::Catalog(id));
+                (id, self.shape(&f.ty))
+            })
+            .collect()
+    }
+
+    fn name(&mut self, def: TypeId) {
+        let id = self.type_id(def);
+        if self.named.contains_key(&id) {
+            return;
+        }
+        self.named.insert(id.clone(), Named::default());
+        let named = match &self.schema.ty(def).kind {
+            TypeDefKind::Sum { header, ctors, .. } => Named {
+                header: self.fields(def, None, header),
+                ctors: ctors
+                    .iter()
+                    .zip(0u32..)
+                    .map(|(c, i)| {
+                        (
+                            self.ctor_id(def, i, &c.name),
+                            self.fields(def, Some(i), &c.fields),
+                        )
+                    })
+                    .collect(),
+                base: None,
+            },
+            TypeDefKind::Newtype { base, .. } => Named {
+                header: BTreeMap::new(),
+                ctors: BTreeMap::new(),
+                base: Some(self.shape(base)),
+            },
+        };
+        self.named.insert(id, named);
+    }
+
+    fn relation_id(&self, rel: RelId) -> Id {
+        self.schema.ids.relations.get(&rel).map_or_else(
+            || Id::Name(self.schema.relation(rel).name.clone()),
+            |&id| Id::Catalog(id),
+        )
+    }
+
+    fn shape(&mut self, ty: &Ty) -> Shape {
+        match ty {
+            Ty::Base(b) => Shape::Base(*b),
+            Ty::Param(i) => Shape::Param(*i),
+            Ty::Data { def, args, ctors } => {
+                self.name(*def);
+                Shape::Data {
+                    def: self.type_id(*def),
+                    args: args.iter().map(|a| self.shape(a)).collect(),
+                    ctors: ctors.as_ref().map(|c| self.ctor_ids(*def, c)),
+                }
+            }
+            Ty::Key { rel, ctors } => Shape::Key {
+                rel: self.relation_id(*rel),
+                ctors: ctors
+                    .as_ref()
+                    .map(|c| self.ctor_ids(self.schema.relation(*rel).elem_def, c)),
+            },
+            Ty::Set(t) | Ty::NonEmpty(t) => Shape::Set(Box::new(self.shape(t))),
+            Ty::Group(k, t) => Shape::Group(Box::new(self.shape(k)), Box::new(self.shape(t))),
+            Ty::Tag(t) => Shape::Tag(Box::new(self.shape(t))),
+            Ty::Record(fs) => Shape::Record(self.anonymous(fs)),
+            Ty::Sum { ctors, sel } => Shape::Sum {
+                ctors: ctors
+                    .iter()
+                    .map(|(c, fs)| (c.clone(), self.anonymous(fs)))
+                    .collect(),
+                sel: sel.clone(),
+            },
+            Ty::Fn(a, b) => Shape::Fn(Box::new(self.shape(a)), Box::new(self.shape(b))),
+            Ty::Unit => Shape::Unit,
+            Ty::Change => Shape::Change,
+        }
+    }
+
+    fn anonymous(&mut self, fields: &[(String, Ty)]) -> Vec<(String, Shape)> {
+        fields
+            .iter()
+            .map(|(n, t)| (n.clone(), self.shape(t)))
+            .collect()
+    }
+}
+
+/// Returns the target of a family call grant: `FAMILY::query at at (params) -> result`, with the
+/// types of `schema`, the schema of log version `at`, as `module::name`.
+pub fn family_target(
+    schema: &Schema,
+    family: &str,
+    query: &str,
+    at: u64,
+    params: &[(String, Ty)],
+    result: &Ty,
+) -> String {
+    let params: Vec<String> = params
+        .iter()
+        .map(|(n, t)| format!("{n}: {}", schema.show_ty_qualified(t)))
+        .collect();
+    format!(
+        "{family}::{query} at {at} ({}) -> {}",
+        params.join(", "),
+        schema.show_ty_qualified(result)
+    )
+}
+
+/// Returns the signature the family call target `target` writes, `None` for any other text.
+pub fn family_signature(target: &str) -> Option<ast::CallSignature> {
+    let items = parse_adhoc(&format!("revoke call {target} from r"), Options::default())
+        .ok()
+        .ok()?;
+    let [ast::AdhocItem::Revoke(revoke)] = items.as_slice() else {
+        return None;
+    };
+    match revoke.privileges.as_slice() {
+        [ast::Privilege::CallAt(s)] => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Returns the identity of `signature` read against `schema`, the schema of its log version.
+///
+/// Fail when a type does not resolve in `schema`; a schema type is written `module::name`.
+pub fn signature_ids(schema: &Schema, signature: &ast::CallSignature) -> Result<Ids, String> {
+    let scope = TypeScope {
+        module: PRELUDE,
+        params: &[],
+        mode: TypeMode::Signature,
+    };
+    let read = |t: &ast::Type| {
+        resolve_type(schema, &scope, t, &mut Vec::new(), FileId(0)).map_err(|(_, m)| m)
+    };
+    let params = signature
+        .params
+        .iter()
+        .map(|p| read(&p.ty))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Ids::of(schema, &params, &read(&signature.result)?))
 }
 
 /// What a callable of a bundle calls.

@@ -226,6 +226,12 @@ const ITEM_WORDS: &[&str] = &[
     "unmap",
 ];
 
+/// Returns whether `name` has the form of a bundle name: a family, a hyphen and a version.
+#[must_use]
+pub fn reads_as_bundle_name(name: &str) -> bool {
+    Parser::split_bundle_name(name).is_some()
+}
+
 impl<'s> Parser<'s> {
     fn tok(&self) -> Token {
         self.toks[self.pos]

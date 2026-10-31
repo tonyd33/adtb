@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use adtb_lang::ast::{self, BundleHeader, BundleName, ExprKind, HeaderClause, Lit};
 use adtb_lang::check::Command;
+use adtb_lang::parse::reads_as_bundle_name;
 use adtb_lang::schema::Schema;
 use adtb_lang::types::{RelId, Ty};
 
@@ -259,7 +260,7 @@ impl Stored {
     }
 
     /// Returns the calls stored for bundle `id`, without their row ids.
-    fn calls_of(&self, id: i64) -> Vec<&CallRow> {
+    pub(super) fn calls_of(&self, id: i64) -> Vec<&CallRow> {
         self.calls
             .get(&id)
             .map(|cs| cs.iter().map(|(_, c)| c).collect())
@@ -680,6 +681,13 @@ fn legacy(stored: &Stored) -> Vec<Fact> {
 /// Refuse the registration of `header` with `calls`: a retired bundle's name with `Retired`,
 /// and a name recorded with other content.
 pub(super) fn admitted(stored: &Stored, header: &Header, calls: &[CallRow]) -> Result<(), Error> {
+    let family = &header.family;
+    if !stored.deployed.families.contains_key(family) && reads_as_bundle_name(family) {
+        return Err(Error::invalid(format!(
+            "family `{family}` of bundle {} reads as a bundle name",
+            header.name
+        )));
+    }
     let Some(row) = stored.bundles.get(&header.name) else {
         return Ok(());
     };
@@ -989,15 +997,18 @@ impl<R: Runtime> Engine<R> {
     pub(super) fn supersede(&self, name: &str, by: &str) -> Result<DynRows, Error> {
         let _writer = self.bundle_writer.lock(&self.rt);
         let now = self.clock();
-        let s = *self.settings.lock(&self.rt);
+        let settings = *self.settings.lock(&self.rt);
         let (row, successor) = {
             let deployed = self.deployed.lock(&self.rt);
             (
                 known(&deployed.bundles, name)?.clone(),
-                known(&deployed.bundles, by)?.clone(),
+                deployed.bundles.get(by).cloned(),
             )
         };
-        if name == by || successor.header.family != row.header.family || !successor.live(now, &s) {
+        let replaces = |other: &Row| {
+            name != by && other.header.family == row.header.family && other.live(now, &settings)
+        };
+        if !successor.as_ref().is_some_and(replaces) {
             return Err(Error::invalid(format!(
                 "bundle {name} is superseded only by another live bundle of family {}",
                 row.header.family

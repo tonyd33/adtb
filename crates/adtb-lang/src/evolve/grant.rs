@@ -1,4 +1,5 @@
 use super::*;
+use crate::signature::Ids;
 
 const USER_IDS: &str = "every object of a user module has a catalog id";
 
@@ -607,6 +608,109 @@ impl Resolving<'_> {
     }
 }
 
+/// The signatures call targets stand for, which `catalog::grants` does not hold.
+pub trait CallSignatures {
+    /// Returns the identity of the family call target `target`, read at its own log version.
+    fn family(&self, target: &str) -> Option<Ids>;
+    /// Returns the identity of `query` as bundle `bundle` declares it.
+    fn query(&self, bundle: &str, query: &str) -> Option<Ids>;
+    /// Returns whether bundle `bundle` declares the callable `query`.
+    fn declares(&self, bundle: &str, query: &str) -> Option<bool>;
+}
+
+/// Returns `None` for every call target.
+#[derive(Clone, Copy, Debug)]
+pub struct NoCalls;
+
+impl CallSignatures for NoCalls {
+    fn family(&self, _: &str) -> Option<Ids> {
+        None
+    }
+
+    fn query(&self, _: &str, _: &str) -> Option<Ids> {
+        None
+    }
+
+    fn declares(&self, _: &str, _: &str) -> Option<bool> {
+        None
+    }
+}
+
+/// What a deployment grant gives.
+#[derive(Clone, Debug)]
+pub enum DeploymentGrant {
+    Capability(String),
+    /// A call grant on a bundle, by its name.
+    Bundle(String),
+    /// A call grant on a query of a bundle, by its bundle and query names.
+    Query(String, String),
+    /// A call grant on a family's query, with the target it writes, if it writes a signature.
+    Family {
+        family: String,
+        query: String,
+        written: Option<String>,
+    },
+    /// A grant on a system relation.
+    Relation(Stated),
+}
+
+/// Returns what privilege `p` of the deployment grant `text` gives.
+///
+/// Fail when `p` is an operator privilege or names a family and no query.
+pub fn deployment_grant(schema: &Schema, text: &str, p: &ast::Privilege) -> R<DeploymentGrant> {
+    Ok(match p {
+        ast::Privilege::Capability(c) => DeploymentGrant::Capability(c.text.clone()),
+        ast::Privilege::Call(ast::CallTarget::Bundle(b), query) => {
+            let bundle = format!("{}-{}", b.family, b.version);
+            match query {
+                Some(q) => DeploymentGrant::Query(bundle, q.text.clone()),
+                None => DeploymentGrant::Bundle(bundle),
+            }
+        }
+        ast::Privilege::Call(ast::CallTarget::Family(f, span), None) => {
+            return Err(vec![Diag::new(
+                *span,
+                format!("`grant call {f}` names a family and no query; grant a bundle by name"),
+            )]);
+        }
+        ast::Privilege::Call(ast::CallTarget::Family(f, _), Some(q)) => DeploymentGrant::Family {
+            family: f.clone(),
+            query: q.text.clone(),
+            written: None,
+        },
+        ast::Privilege::CallAt(s) => DeploymentGrant::Family {
+            family: s.family.clone(),
+            query: s.query.text.clone(),
+            written: Some(text[s.span.range()].to_owned()),
+        },
+        ast::Privilege::CallFn(f) => {
+            return Err(vec![Diag::new(
+                f.span(),
+                "`grant call fn` is a schema operator; write it in a migration",
+            )]);
+        }
+        _ => DeploymentGrant::Relation(system_privilege(schema, text, Statement::Grant, p)?),
+    })
+}
+
+fn system_privilege(
+    schema: &Schema,
+    text: &str,
+    statement: Statement,
+    p: &ast::Privilege,
+) -> R<Stated> {
+    let vis = crate::resolve::Visible::all(schema);
+    let mut r = Resolving {
+        schema,
+        vis: &vis,
+        statement,
+        system: true,
+        span: Span::new(0, text.len()),
+        refs: Vec::new(),
+    };
+    r.privilege(p)
+}
+
 /// What a deployment revoke matches among rows of `catalog::grants`.
 #[derive(Clone, Debug)]
 pub enum DeploymentRevoke {
@@ -615,8 +719,8 @@ pub enum DeploymentRevoke {
     Call(String),
     /// A family call grant written without a signature, by `FAMILY::q`.
     Family(String),
-    /// A family call grant written with a signature, by its tokens.
-    FamilyAt(Vec<String>),
+    /// A family call grant written with a signature: `FAMILY::q` and the whole target.
+    FamilyAt(String, String),
     /// A grant on a system relation.
     Relation(Stated),
 }
@@ -647,25 +751,17 @@ pub fn deployment_revoke(schema: &Schema, text: &str, p: &ast::Privilege) -> R<D
                 .as_ref()
                 .map_or(f.clone(), |q| format!("{f}::{}", q.text)),
         ),
-        ast::Privilege::CallAt(s) => DeploymentRevoke::FamilyAt(lexed(&text[s.span.range()])),
+        ast::Privilege::CallAt(s) => DeploymentRevoke::FamilyAt(
+            format!("{}::{}", s.family, s.query.text),
+            text[s.span.range()].to_owned(),
+        ),
         ast::Privilege::CallFn(f) => {
             return Err(vec![Diag::new(
                 f.span(),
                 "`grant call fn` is a schema operator; write it in a migration",
             )]);
         }
-        _ => {
-            let vis = crate::resolve::Visible::all(schema);
-            let mut r = Resolving {
-                schema,
-                vis: &vis,
-                statement: Statement::Revoke,
-                system: true,
-                span: Span::new(0, text.len()),
-                refs: Vec::new(),
-            };
-            DeploymentRevoke::Relation(r.privilege(p)?)
-        }
+        _ => DeploymentRevoke::Relation(system_privilege(schema, text, Statement::Revoke, p)?),
     })
 }
 
@@ -676,13 +772,21 @@ impl DeploymentRevoke {
             DeploymentRevoke::Capability(c) => c,
             DeploymentRevoke::Call(_)
             | DeploymentRevoke::Family(_)
-            | DeploymentRevoke::FamilyAt(_) => "call",
+            | DeploymentRevoke::FamilyAt(..) => "call",
             DeploymentRevoke::Relation(s) => s.privilege.privilege_name(),
         }
     }
 
     /// Returns whether this revoke matches a row with privilege `privilege` and target `target`.
-    pub fn matches(&self, schema: &Schema, privilege: &str, target: Option<&str>) -> bool {
+    /// A target with a signature matches by its ids at its own version, or by its tokens when
+    /// `calls` cannot read one of the two.
+    pub fn matches(
+        &self,
+        schema: &Schema,
+        calls: &dyn CallSignatures,
+        privilege: &str,
+        target: Option<&str>,
+    ) -> bool {
         if privilege != self.privilege() {
             return false;
         }
@@ -690,12 +794,15 @@ impl DeploymentRevoke {
             (DeploymentRevoke::Capability(_), None) => true,
             (DeploymentRevoke::Call(t), Some(row)) => t == row,
             (DeploymentRevoke::Family(t), Some(row)) => {
-                row == t
-                    || row
-                        .strip_prefix(t.as_str())
-                        .is_some_and(|r| r.starts_with(" at "))
+                row == t || family_query(row) == Some(t.as_str())
             }
-            (DeploymentRevoke::FamilyAt(t), Some(row)) => *t == lexed(row),
+            (DeploymentRevoke::FamilyAt(q, t), Some(row)) => {
+                family_query(row) == Some(q.as_str())
+                    && (lexed(t) == lexed(row)
+                        || calls
+                            .family(t)
+                            .is_some_and(|ids| calls.family(row) == Some(ids)))
+            }
             (DeploymentRevoke::Relation(s), Some(row)) => {
                 Granted::read_target(schema, privilege, row).is_some_and(|held| s.revokes(&held))
             }
@@ -704,39 +811,88 @@ impl DeploymentRevoke {
     }
 }
 
+/// Returns the `FAMILY::q` of a family call target with a signature.
+pub fn family_query(target: &str) -> Option<&str> {
+    target.split_once(" at ").map(|(q, _)| q)
+}
+
+/// Returns whether family target `by` covers call target `row`: a family row of its query or a
+/// bundle's query of its family, with equal ids. `None` when `calls` cannot read either.
+fn family_covers(calls: &dyn CallSignatures, by: &str, row: &str) -> Option<bool> {
+    let query = family_query(by)?;
+    let ids = |other: Option<Ids>| Some(calls.family(by)? == other?);
+    if family_query(row) == Some(query) {
+        return ids(calls.family(row));
+    }
+    let Some((bundle, q)) = row.split_once("::") else {
+        return Some(false);
+    };
+    let Some((family, _)) = bundle.rsplit_once('-') else {
+        return Some(false);
+    };
+    if format!("{family}::{q}") == query {
+        return ids(calls.query(bundle, q));
+    }
+    Some(false)
+}
+
+/// Returns whether whole bundle `bundle` declares the query of family target `family`. A bundle
+/// of the family `calls` cannot read counts as declaring it.
+fn bundle_declares(calls: &dyn CallSignatures, family: &str, bundle: &str) -> bool {
+    let Some((name, query)) = family_query(family).and_then(|t| t.split_once("::")) else {
+        return false;
+    };
+    !bundle.contains("::")
+        && bundle.rsplit_once('-').is_some_and(|(f, _)| f == name)
+        && calls.declares(bundle, query).unwrap_or(true)
+}
+
 /// Returns whether a row of `privilege` on target `row` is one a row on target `by` covers: the
-/// same target text, a query of the bundle `by` names, the family query of another signature, or
-/// on a relation the same or fewer constructors and fields.
+/// same target text, a query of the bundle `by` names, the family query or a bundle's query of
+/// equal ids, or on a relation the same or fewer constructors and fields. A call target whose
+/// signature `calls` cannot read is not covered.
 pub fn target_covers(
     schema: &Schema,
+    calls: &dyn CallSignatures,
     privilege: &str,
     by: Option<&str>,
     row: Option<&str>,
 ) -> bool {
+    covering(schema, calls, privilege, by, row).unwrap_or(false)
+}
+
+fn covering(
+    schema: &Schema,
+    calls: &dyn CallSignatures,
+    privilege: &str,
+    by: Option<&str>,
+    row: Option<&str>,
+) -> Option<bool> {
     let (Some(by), Some(row)) = (by, row) else {
-        return by == row;
+        return Some(by == row);
     };
     if by == row {
-        return true;
+        return Some(true);
     }
-    let family = |t: &'_ str| t.split_once(" at ").map(|(q, _)| q.to_owned());
-    if privilege == "call"
-        && (row.strip_prefix(by).is_some_and(|q| q.starts_with("::"))
-            || family(by).is_some_and(|q| family(row).is_some_and(|r| q == r)))
-    {
-        return true;
+    if privilege == "call" {
+        if row.strip_prefix(by).is_some_and(|q| q.starts_with("::")) {
+            return Some(true);
+        }
+        if family_query(by).is_some() {
+            return family_covers(calls, by, row);
+        }
     }
     let (Some(by), Some(row)) = (
         Granted::read_target(schema, privilege, by),
         Granted::read_target(schema, privilege, row),
     ) else {
-        return false;
+        return Some(false);
     };
     let within = |a: &GrantTarget, b: &GrantTarget| {
         a.relation == b.relation && b.ctors(schema).is_subset(&a.ctors(schema))
     };
     let fewer = |a: &GrantFields, b: &GrantFields| b.ids.iter().all(|x| a.ids.contains(x));
-    match (&by, &row) {
+    Some(match (&by, &row) {
         (Granted::Read(a, x), Granted::Read(b, y))
         | (Granted::Update(a, x), Granted::Update(b, y)) => within(a, b) && fewer(x, y),
         (Granted::Insert(a), Granted::Insert(b)) | (Granted::Delete(a), Granted::Delete(b)) => {
@@ -744,7 +900,7 @@ pub fn target_covers(
         }
         (Granted::Retag(a, b, _), Granted::Retag(x, y, _)) => within(a, x) && within(b, y),
         _ => by == row,
-    }
+    })
 }
 
 /// The role of the schema owner, the grantor of every operator grant.
@@ -762,35 +918,58 @@ pub struct GrantRow<'a> {
 }
 
 impl GrantRow<'_> {
-    fn covers(&self, schema: &Schema, row: &GrantRow<'_>) -> bool {
-        self.grant_option
-            && self.grantee == row.grantor
-            && self.privilege == row.privilege
-            && target_covers(schema, row.privilege, self.target, row.target)
+    fn gives(&self, row: &GrantRow<'_>) -> bool {
+        self.grant_option && self.grantee == row.grantor && self.privilege == row.privilege
     }
 
     /// Returns whether deleting this row's option takes the support of `row`: its grantee, not the
-    /// schema owner, gave `row` under the option.
-    pub fn supports(&self, schema: &Schema, row: &GrantRow<'_>) -> bool {
-        self.grantee != OWNER_ROLE && self.covers(schema, row)
+    /// schema owner, gave `row` under the option. A call target `calls` cannot read counts as
+    /// supported.
+    pub fn supports(
+        &self,
+        schema: &Schema,
+        calls: &dyn CallSignatures,
+        row: &GrantRow<'_>,
+    ) -> bool {
+        self.grantee != OWNER_ROLE
+            && self.gives(row)
+            && covering(schema, calls, row.privilege, self.target, row.target).unwrap_or(true)
     }
 
     /// Returns whether this row still supports `row` when another option of its grantee is lost:
     /// it covers `row`, is not dormant, and its grantor is another role.
-    pub fn keeps(&self, schema: &Schema, row: &GrantRow<'_>) -> bool {
-        !self.dormant && self.grantor != self.grantee && self.covers(schema, row)
+    pub fn keeps(&self, schema: &Schema, calls: &dyn CallSignatures, row: &GrantRow<'_>) -> bool {
+        !self.dormant
+            && self.grantor != self.grantee
+            && self.gives(row)
+            && target_covers(schema, calls, row.privilege, self.target, row.target)
     }
 }
 
 /// Returns whether a grant with grant option of `new` would close a cycle among the options of
 /// `rows`, dormant ones included: its grantee is its grantor, or a role its grantor's option
-/// descends from.
-pub fn closes_option_cycle(schema: &Schema, rows: &[GrantRow<'_>], new: GrantRow<'_>) -> bool {
+/// descends from. A family target overlaps a whole bundle of its family declaring its query. A
+/// call target `calls` cannot read counts as overlapping.
+pub fn closes_option_cycle(
+    schema: &Schema,
+    calls: &dyn CallSignatures,
+    rows: &[GrantRow<'_>],
+    new: GrantRow<'_>,
+) -> bool {
     let overlaps = |e: &GrantRow<'_>| {
+        let either = |by, row| covering(schema, calls, new.privilege, by, row).unwrap_or(true);
+        let whole = |family: Option<&str>, bundle: Option<&str>| {
+            new.privilege == "call"
+                && family
+                    .zip(bundle)
+                    .is_some_and(|(f, b)| bundle_declares(calls, f, b))
+        };
         e.grant_option
             && e.privilege == new.privilege
-            && (target_covers(schema, new.privilege, new.target, e.target)
-                || target_covers(schema, new.privilege, e.target, new.target))
+            && (either(new.target, e.target)
+                || either(e.target, new.target)
+                || whole(new.target, e.target)
+                || whole(e.target, new.target))
     };
     let mut seen = BTreeSet::new();
     let mut frontier = vec![new.grantee];

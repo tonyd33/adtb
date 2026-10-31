@@ -4,7 +4,10 @@ use std::sync::mpsc;
 use adtb_sys::os::{Backend, OsRuntime};
 use adtb_testkit::scratch::Scratch;
 
-use crate::api::{CallOptions, CreateOptions, Database, Log, OpenError, OpenOptions, RejectReason};
+use crate::api::bundle::Stored;
+use crate::api::{
+    CallOptions, CreateOptions, Database, Log, OpenError, OpenOptions, Registration, RejectReason,
+};
 use crate::catalog::Catalog;
 use crate::storage::{HEADER_LEN, Pager};
 
@@ -275,7 +278,7 @@ fn an_overlapping_drop_forces_a_canonical_grant_writer_to_recheck_the_role() {
                 let id = t.next_id(e, tx, t.grants)?;
                 changes.insert(
                     t.grants,
-                    t.grant_value(id, "web", Capability::Assert, "owner", true),
+                    t.grant_value(id, "web", "assert", None, "owner", true),
                 );
                 t.audit(
                     e,
@@ -479,7 +482,7 @@ fn a_damaged_page_met_writing_a_registrations_facts_is_a_storage_failure() {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let bundle = crate::api::Registration::bundle(format!(
+    let bundle = Registration::bundle(format!(
         "bundle tools-0.1 pins 1 ({hash}) edition \"2026-10\"\nimport shop\n"
     ))
     .expect("the bundle parses");
@@ -729,4 +732,56 @@ fn a_role_dropped_in_the_admit_window_refuses_with_its_audit_row() {
     assert_eq!(0, rows(&db, denied_rows).len());
     denied(authority.admit_principal(&w, &service, &[0; 32], None));
     assert_eq!(1, rows(&db, denied_rows).len());
+}
+
+/// Returns the refusal of the owner's family grant once `forge` has changed the deployment state
+/// of bundle `web-1.0`, which no running engine serves.
+fn family_grant_over_forged_mark(forge: impl Fn(&mut Stored, i64)) -> Error {
+    let text = "module shop\nadd module shop\nadd type Customer = { id: Key customers, name: Text }\nadd relation customers : Customer key id generate sequence\n";
+    let log = Log::new([text]);
+    let (_scratch, db) = opened(&log);
+    let authority = db.role_authority();
+    authority.create_role("bob").unwrap();
+    let hash: String = crate::catalog::version_hash(&db.engine.schema, &db.engine.source)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let bundle = format!(
+        "bundle web-1.0 pins 1 ({hash}) edition \"2026-10\"\nimport shop\nquery q (n: I64) -> Set Text = from c in customers select c.name\n"
+    );
+    let owner = authority.session("owner").unwrap();
+    authority
+        .register(&owner, &Registration::bundle(bundle).unwrap())
+        .unwrap();
+    let e = authority.engine.upgrade().unwrap();
+    e.registered.lock(&e.rt).clear();
+    {
+        let mut deployed = e.deployed.lock(&e.rt);
+        let mut stored = (**deployed).clone();
+        let id = stored.bundles["web-1.0"].id;
+        forge(&mut stored, id);
+        *deployed = std::sync::Arc::new(stored);
+    }
+    authority
+        .grant(&owner, "grant call web::q to bob")
+        .expect_err("the signature cannot be read")
+}
+
+#[test]
+fn a_live_bundle_whose_signature_cannot_be_read_refuses_a_family_grant() {
+    let unmarked = family_grant_over_forged_mark(|stored, id| {
+        stored.deployed.registered.remove(&id);
+    });
+    assert!(
+        unmarked.to_string().contains("web-1.0")
+            && unmarked.to_string().contains("until it is presented"),
+        "{unmarked}"
+    );
+    let garbled = family_grant_over_forged_mark(|stored, id| {
+        stored.deployed.registered.get_mut(&id).unwrap().text = "garbled".into();
+    });
+    assert!(
+        garbled.to_string().contains("web-1.0") && garbled.to_string().contains("cannot be read"),
+        "{garbled}"
+    );
 }

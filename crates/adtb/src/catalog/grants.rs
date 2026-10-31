@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb_lang::evolve::{GrantRow, LogGrant, closes_option_cycle};
+use adtb_lang::evolve::{GrantRow, LogGrant, NoCalls, closes_option_cycle};
 use adtb_lang::schema::Schema;
 use adtb_lang::types::RelId;
 
@@ -206,15 +206,18 @@ impl Catalog {
             if !s.log || !lost.grant_option || kept || !revoked.contains(lost.grantee) {
                 continue;
             }
-            for o in rows.iter().filter(|o| lost.supports(&self.schema, o)) {
+            for o in rows
+                .iter()
+                .filter(|o| lost.supports(&self.schema, &NoCalls, o))
+            {
                 let logged = grants.iter().any(|g| {
                     target(&into.schema, g)
-                        .is_ok_and(|t| log_grant_row(g, &t).keeps(&into.schema, o))
+                        .is_ok_and(|t| log_grant_row(g, &t).keeps(&into.schema, &NoCalls, o))
                 });
                 let deployed = stored
                     .iter()
                     .zip(&rows)
-                    .any(|(d, r)| !d.log && r.keeps(&self.schema, o));
+                    .any(|(d, r)| !d.log && r.keeps(&self.schema, &NoCalls, o));
                 if !logged && !deployed {
                     why.push(format!(
                         "revoking `{0}` from `{1}` takes the grant option of the grant of `{0}` on `{2}` that `{1}` gave to `{3}`",
@@ -233,7 +236,7 @@ impl Catalog {
                 .any(|(s, r)| Some(s.id) == g.row && r.grant_option);
             let text = target(&into.schema, g)?;
             let new = log_grant_row(g, &text);
-            if !had && closes_option_cycle(&into.schema, &rows, new) {
+            if !had && closes_option_cycle(&into.schema, &NoCalls, &rows, new) {
                 why.push(format!(
                     "`{}` on `{text}` with grant option to `{}` would close a cycle of grant options",
                     new.privilege, g.role

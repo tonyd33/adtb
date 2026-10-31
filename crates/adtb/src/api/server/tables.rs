@@ -24,6 +24,7 @@ pub(super) struct Role {
     pub(super) created: i64,
 }
 
+#[derive(Clone)]
 pub(super) struct Grant {
     pub(super) id: i64,
     pub(super) grantee: String,
@@ -48,6 +49,18 @@ impl Grant {
         }
     }
 
+    /// Returns the row printed for a refusal.
+    pub(super) fn printed(&self) -> String {
+        let on = self
+            .target
+            .as_ref()
+            .map_or_else(String::new, |t| format!(" on `{t}`"));
+        format!(
+            "`{}`{on} given by `{}` to `{}`",
+            self.privilege, self.grantor, self.grantee
+        )
+    }
+
     pub(super) fn capability(&self, capability: Capability, name: &str) -> bool {
         self.kind == "Deployment"
             && self.privilege == capability.name()
@@ -55,6 +68,14 @@ impl Grant {
             && self.grantee == name
             && !self.dormant
     }
+}
+
+/// A deployment grant being given: the identity of its row.
+pub(super) struct Given<'a> {
+    pub(super) grantor: &'a str,
+    pub(super) grantee: &'a str,
+    pub(super) privilege: &'a str,
+    pub(super) target: Option<&'a str>,
 }
 
 pub(super) struct Tables<'s> {
@@ -68,6 +89,74 @@ pub(super) struct Tables<'s> {
 }
 
 impl<'s> Tables<'s> {
+    /// Returns the row of `id` a deployment grant holds.
+    pub(super) fn deployment_grant(&self, id: i64, given: &Given<'_>, grant_option: bool) -> Grant {
+        Grant {
+            id,
+            grantee: given.grantee.to_owned(),
+            grantor: given.grantor.to_owned(),
+            grant_option,
+            kind: "Deployment".to_owned(),
+            privilege: given.privilege.to_owned(),
+            target: given.target.map(str::to_owned),
+            dormant: false,
+            value: self.grant_value(
+                id,
+                given.grantee,
+                given.privilege,
+                given.target,
+                given.grantor,
+                grant_option,
+            ),
+        }
+    }
+
+    /// Hold the row of `given` in `rows`: the row already held gains the option, and otherwise a
+    /// row is added.
+    pub(super) fn give_row<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        tx: &Txn,
+        rows: &mut Vec<Grant>,
+        given: &Given<'_>,
+        grant_option: bool,
+    ) -> Result<(), Error> {
+        let held = rows.iter().position(|g| {
+            g.kind == "Deployment"
+                && !g.dormant
+                && g.grantee == given.grantee
+                && g.grantor == given.grantor
+                && g.privilege == given.privilege
+                && g.target.as_deref() == given.target
+        });
+        match held {
+            Some(i) if rows[i].grant_option || !grant_option => {}
+            Some(i) => rows[i] = self.deployment_grant(rows[i].id, given, true),
+            None => {
+                let id = self.next_id(e, tx, self.grants)?;
+                rows.push(self.deployment_grant(id, given, grant_option));
+            }
+        }
+        Ok(())
+    }
+
+    /// Record the difference between the rows `before` and `after` of `catalog::grants`.
+    pub(super) fn write_rows(&self, changes: &mut Changes, before: &[Grant], after: &[Grant]) {
+        for old in before {
+            if !after.iter().any(|g| g.id == old.id && g.value == old.value) {
+                changes.delete(self.grants, old.value.clone());
+            }
+        }
+        for new in after {
+            if !before
+                .iter()
+                .any(|g| g.id == new.id && g.value == new.value)
+            {
+                changes.insert(self.grants, new.value.clone());
+            }
+        }
+    }
+
     pub(super) fn new(schema: &'s Schema, call: TxnId) -> Self {
         let module = schema
             .module_named("catalog")
@@ -201,6 +290,21 @@ impl<'s> Tables<'s> {
             .ok_or_else(|| denied("the authenticated role no longer exists"))
     }
 
+    /// Fail with `Invalid`, naming `name`, when no role has that name.
+    pub(super) fn grantee<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        tx: &Txn,
+        name: &str,
+    ) -> Result<(), Error> {
+        if self.roles(e, tx)?.iter().any(|r| r.name == name) {
+            return Ok(());
+        }
+        Err(Error::invalid(format!(
+            "the grantee `{name}` is not a role"
+        )))
+    }
+
     pub(super) fn role_value(&self, role: &Role) -> Val {
         self.row(
             self.roles,
@@ -266,7 +370,8 @@ impl<'s> Tables<'s> {
         &self,
         id: i64,
         role: &str,
-        capability: Capability,
+        privilege: &str,
+        target: Option<&str>,
         grantor: &str,
         grant_option: bool,
     ) -> Val {
@@ -285,8 +390,11 @@ impl<'s> Tables<'s> {
             vec![
                 ("id", Val::Int(id)),
                 ("kind", Val::ctor(kind, Vec::new())),
-                ("privilege", Val::text(capability.name())),
-                ("target", Val::none()),
+                ("privilege", Val::text(privilege)),
+                (
+                    "target",
+                    target.map_or_else(Val::none, |t| Val::some(Val::text(t))),
+                ),
                 ("grantee", Val::text(role)),
                 ("grantor", Val::text(grantor)),
                 ("grant_option", Val::bool(grant_option)),

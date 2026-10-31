@@ -142,6 +142,10 @@ struct Entry {
     params: Vec<Option<Var>>,
     /// The type of each declared parameter, in order.
     types: Vec<Ty>,
+    /// The name of each declared parameter, in order.
+    names: Vec<String>,
+    /// The result type as declared.
+    result: Ty,
     /// The variable of the unit parameter a body with no declared parameter takes.
     unit: Option<Var>,
     writes: bool,
@@ -198,6 +202,29 @@ impl Checked {
 
     pub(super) fn name(&self) -> &str {
         &self.name
+    }
+
+    fn declared(&self, query: &str) -> Option<&Entry> {
+        self.entries
+            .iter()
+            .find(|e| e.kind != Callable::Fn && e.name == query)
+    }
+
+    /// Returns the identity of the signature of the query or transaction `query`.
+    pub(super) fn call_ids(&self, query: &str) -> Option<signature::Ids> {
+        let e = self.declared(query)?;
+        Some(signature::Ids::of(&self.schema, &e.types, &e.result))
+    }
+
+    /// Returns the version the bundle pins and the family call target of its query or transaction
+    /// `query`, whose types are as they stand at that version.
+    pub(super) fn call_target(&self, query: &str) -> Option<(u64, String)> {
+        let e = self.declared(query)?;
+        let h = self.header.as_ref()?;
+        let params: Vec<(String, Ty)> = e.names.iter().cloned().zip(e.types.clone()).collect();
+        let target =
+            signature::family_target(&self.schema, &h.family, query, h.pins, &params, &e.result);
+        Some((h.pins, target))
     }
 
     /// Returns the catalog reader of a bundle's registration, at the version it pins.
@@ -803,6 +830,16 @@ fn translations(
     Ok(out)
 }
 
+/// Returns the bundle file `text` checked at the version it pins, whatever its state.
+pub(super) fn reread(over: &Over<'_>, text: &str) -> Result<Checked, Error> {
+    let r = Registration::bundle(text)?;
+    let h = r.header().expect("a bundle's registration has a header");
+    match pinned(over, h)? {
+        Some(pin) => checked(&pin.over(), &r),
+        None => checked(over, &r),
+    }
+}
+
 /// Check and normalise registration `r` over `over`.
 fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Error> {
     let (imports, items) = r.body()?;
@@ -843,7 +880,7 @@ fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Error> {
             Item::Query(q, checked) => {
                 let normal = norm::query(schema, program, &checked).map_err(no_normal)?;
                 let (signature, text) = decl(q.span, &q.name, &q.result);
-                let mut e = entry(&q.name.text, Callable::Query, q.params.len(), normal);
+                let mut e = entry(&q.name.text, Callable::Query, &c.signature, normal);
                 e.row.signature = signature;
                 e.row.text = text;
                 e
@@ -851,7 +888,7 @@ fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Error> {
             Item::Txn(t, checked) => {
                 let normal = norm::txn(schema, program, &checked).map_err(no_normal)?;
                 let (signature, text) = decl(t.span, &t.name, &t.result);
-                let mut e = entry(&t.name.text, Callable::Txn, t.params.len(), normal);
+                let mut e = entry(&t.name.text, Callable::Txn, &c.signature, normal);
                 e.row.signature = signature;
                 e.row.text = text;
                 e
@@ -879,9 +916,9 @@ fn spanned(text: &str, span: adtb_lang::span::Span) -> &str {
         .trim_end()
 }
 
-/// Returns the entry of a checked query or transaction `name` of `arity` declared parameters.
-fn entry(name: &str, kind: Callable, arity: usize, n: NormalQuery) -> Entry {
-    let (params, unit) = if arity == 0 {
+/// Returns the entry of a checked query or transaction `name` of signature `declared`.
+fn entry(name: &str, kind: Callable, declared: &signature::Signature, n: NormalQuery) -> Entry {
+    let (params, unit) = if declared.params.is_empty() {
         (Vec::new(), n.params.first().copied())
     } else {
         (n.params.iter().copied().map(Some).collect(), None)
@@ -906,6 +943,8 @@ fn entry(name: &str, kind: Callable, arity: usize, n: NormalQuery) -> Entry {
         body: n.body,
         params,
         types,
+        names: declared.params.iter().map(|(n, _)| n.clone()).collect(),
+        result: declared.result.clone(),
         unit,
         writes,
         retry,
@@ -972,6 +1011,8 @@ fn imported(schema: &Schema, program: &Program, f: &QName, id: FnId) -> Result<E
             text: format!("import fn {written}"),
         },
         types: def.params.iter().map(|(_, t)| t.clone()).collect(),
+        names: def.params.iter().map(|(n, _)| n.clone()).collect(),
+        result: def.result.clone(),
         params: names
             .iter()
             .map(|n| normal.params.get(n).copied())

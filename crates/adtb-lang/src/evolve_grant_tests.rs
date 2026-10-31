@@ -1,4 +1,6 @@
 use super::*;
+use crate::signature::Ids;
+use crate::types::Base;
 
 const GRANTS: &str = r"
 module auth
@@ -1802,10 +1804,10 @@ fn a_carried_grant_is_revoked_by_the_text_it_prints() {
 fn a_target_covers_its_queries_and_the_same_or_fewer_constructors_and_fields() {
     let s = grants();
     let schema = s.schema().unwrap();
-    let covers = |p, a, b| target_covers(&schema, p, Some(a), Some(b));
+    let covers = |p, a, b| target_covers(&schema, &NoCalls, p, Some(a), Some(b));
     assert!(covers("call", "web-2.4", "web-2.4::q"));
     assert!(!covers("call", "web-2.4", "web-2.5::q"));
-    assert!(covers(
+    assert!(!covers(
         "call",
         "web::q at 1 (x: I64) -> Text",
         "web::q at 2 (x: Text) -> Text"
@@ -1830,8 +1832,14 @@ fn a_target_covers_its_queries_and_the_same_or_fewer_constructors_and_fields() {
         "auth::identities.Google",
         "auth::identities.(Google | Apple)"
     ));
-    assert!(target_covers(&schema, "monitor", None, None));
-    assert!(!target_covers(&schema, "call", None, Some("web-2.4")));
+    assert!(target_covers(&schema, &NoCalls, "monitor", None, None));
+    assert!(!target_covers(
+        &schema,
+        &NoCalls,
+        "call",
+        None,
+        Some("web-2.4")
+    ));
 }
 
 #[test]
@@ -1846,7 +1854,7 @@ fn a_family_revoke_without_a_signature_matches_whatever_signature_the_row_record
         };
         deployment_revoke(&schema, text, &r.privileges[0])
             .expect("a deployment privilege")
-            .matches(&schema, "call", Some(row))
+            .matches(&schema, &NoCalls, "call", Some(row))
     };
     let row = "web::login_key at 41 (u: Key auth::users) -> Text";
     assert!(matches("revoke call web::login_key from app", row));
@@ -1918,7 +1926,7 @@ fn an_update_revoke_without_a_field_list_takes_every_frozen_set() {
 #[test]
 fn a_retag_target_covers_a_retag_between_fewer_constructors() {
     let schema = grants().schema().unwrap();
-    let covers = |a, b| target_covers(&schema, "retag", Some(a), Some(b));
+    let covers = |a, b| target_covers(&schema, &NoCalls, "retag", Some(a), Some(b));
     let whole = "auth::identities -> auth::identities";
     let part = "auth::identities.Google -> auth::identities.Apple";
     assert!(covers(whole, part));
@@ -1936,7 +1944,7 @@ fn an_option_closes_a_cycle_when_its_grantee_reaches_its_grantor() {
         grant_option: true,
         dormant: false,
     };
-    let closes = |rows: &[GrantRow<'_>], new| closes_option_cycle(&schema, rows, new);
+    let closes = |rows: &[GrantRow<'_>], new| closes_option_cycle(&schema, &NoCalls, rows, new);
     let held = edge("a", "b", Some("web-2.4"));
     assert!(closes(&[], edge("a", "a", None)));
     assert!(closes(&[held], edge("b", "a", Some("web-2.4"))));
@@ -1974,26 +1982,26 @@ fn an_option_supports_a_row_its_grantee_gave_of_the_same_privilege_on_a_covered_
         grant_option: false,
         ..monitor_row("ann", "bob")
     };
-    assert!(option.supports(&schema, &given));
-    assert!(option.keeps(&schema, &given));
+    assert!(option.supports(&schema, &NoCalls, &given));
+    assert!(option.keeps(&schema, &NoCalls, &given));
     let unheld = GrantRow {
         grant_option: false,
         ..option
     };
-    assert!(!unheld.supports(&schema, &given));
-    assert!(!unheld.keeps(&schema, &given));
+    assert!(!unheld.supports(&schema, &NoCalls, &given));
+    assert!(!unheld.keeps(&schema, &NoCalls, &given));
     let other_grantor = monitor_row("cal", "bob");
-    assert!(!option.supports(&schema, &other_grantor));
+    assert!(!option.supports(&schema, &NoCalls, &other_grantor));
     let other_privilege = GrantRow {
         privilege: "cancel",
         ..given
     };
-    assert!(!option.supports(&schema, &other_privilege));
+    assert!(!option.supports(&schema, &NoCalls, &other_privilege));
     let other_target = GrantRow {
         target: Some("web-2.4"),
         ..given
     };
-    assert!(!option.supports(&schema, &other_target));
+    assert!(!option.supports(&schema, &NoCalls, &other_target));
 }
 
 #[test]
@@ -2004,8 +2012,8 @@ fn a_dormant_option_supports_a_row_but_does_not_keep_it() {
         dormant: true,
         ..monitor_row("owner", "ann")
     };
-    assert!(dormant.supports(&schema, &given));
-    assert!(!dormant.keeps(&schema, &given));
+    assert!(dormant.supports(&schema, &NoCalls, &given));
+    assert!(!dormant.keeps(&schema, &NoCalls, &given));
 }
 
 #[test]
@@ -2013,8 +2021,8 @@ fn a_role_s_own_option_does_not_keep_a_row_it_gave() {
     let schema = grants().schema().unwrap();
     let given = monitor_row("ann", "bob");
     let own = monitor_row("ann", "ann");
-    assert!(own.supports(&schema, &given));
-    assert!(!own.keeps(&schema, &given));
+    assert!(own.supports(&schema, &NoCalls, &given));
+    assert!(!own.keeps(&schema, &NoCalls, &given));
 }
 
 #[test]
@@ -2022,8 +2030,8 @@ fn the_schema_owner_s_option_supports_nothing_that_can_be_orphaned() {
     let schema = grants().schema().unwrap();
     let option = monitor_row("web", "owner");
     let given = monitor_row("owner", "bob");
-    assert!(!option.supports(&schema, &given));
-    assert!(option.keeps(&schema, &given));
+    assert!(!option.supports(&schema, &NoCalls, &given));
+    assert!(option.keeps(&schema, &NoCalls, &given));
 }
 
 #[test]
@@ -2037,4 +2045,209 @@ fn a_retag_revoke_takes_its_except_pairs_in_any_order() {
         "module auth\nrevoke retag identities -> identities except (Apple -> Google, Google -> Apple) from ops",
     );
     assert_eq!(Vec::<String>::new(), rows(&s));
+}
+
+/// Signatures read by the schema at the version each target writes, and one bundle's query.
+struct FamilyAt(Vec<(u64, Schema)>, Ids);
+
+impl CallSignatures for FamilyAt {
+    fn declares(&self, _: &str, _: &str) -> Option<bool> {
+        None
+    }
+
+    fn family(&self, target: &str) -> Option<Ids> {
+        let s = crate::signature::family_signature(target)?;
+        let (_, schema) = self.0.iter().find(|(v, _)| *v == s.at)?;
+        crate::signature::signature_ids(schema, &s).ok()
+    }
+
+    fn query(&self, bundle: &str, query: &str) -> Option<Ids> {
+        (bundle == "web-2.4" && query == "q").then(|| self.1.clone())
+    }
+}
+
+const SIG_SHOP: &str = "module shop\nadd module shop\nadd type Kind = A | B { n: I64 }\nadd type Item = { id: Key items, kind: Kind }\nadd relation items : Item key id\n";
+
+fn sig_source(ops: &[&str]) -> Source {
+    let mut s = Source::default();
+    for text in ops {
+        let file = parse_migration(text, Options::default())
+            .ok()
+            .expect("the migration parses");
+        s = s.migrate(&file, text).expect("the migration applies");
+    }
+    s
+}
+
+fn ids_at(schema: &Schema, target: &str) -> Ids {
+    let s = crate::signature::family_signature(target).expect("a family target");
+    crate::signature::signature_ids(schema, &s).expect("the signature reads")
+}
+
+#[test]
+fn a_printed_family_target_reads_back_as_the_same_ids() {
+    let schema = sig_source(&[SIG_SHOP]).schema().unwrap();
+    let item = schema.module(schema.module_named("shop").unwrap()).types["Item"];
+    let rel = schema
+        .relations
+        .iter()
+        .position(|r| r.name == "items")
+        .unwrap();
+    let key = Ty::Key {
+        rel: RelId(rel as u32),
+        ctors: None,
+    };
+    let result = Ty::Set(Box::new(Ty::Record(vec![
+        (
+            "i".to_owned(),
+            Ty::Data {
+                def: item,
+                args: Vec::new(),
+                ctors: None,
+            },
+        ),
+        ("k".to_owned(), key.clone()),
+    ])));
+    let params = vec![("u".to_owned(), key.clone())];
+    let target = crate::signature::family_target(&schema, "web", "q", 1, &params, &result);
+    assert_eq!(
+        "web::q at 1 (u: Key shop::items) -> Set { i: shop::Item, k: Key shop::items }",
+        target
+    );
+    assert_eq!(Ids::of(&schema, &[key], &result), ids_at(&schema, &target));
+}
+
+#[test]
+fn a_rename_keeps_the_ids_and_a_constructor_or_field_change_does_not() {
+    let source = sig_source(&[SIG_SHOP]);
+    let target = "web::q at 1 () -> shop::Item";
+    let before = ids_at(&source.schema().unwrap(), target);
+    let renamed = sig_source(&[SIG_SHOP, "module shop\nrename type Item to Thing\n"]);
+    assert_eq!(
+        before,
+        ids_at(&renamed.schema().unwrap(), "web::q at 2 () -> shop::Thing")
+    );
+    let widened = sig_source(&[SIG_SHOP, "module shop\nadd constructor Kind.C\n"]);
+    assert_ne!(
+        before,
+        ids_at(&widened.schema().unwrap(), "web::q at 2 () -> shop::Item"),
+        "a nested named type's new constructor changes the signature"
+    );
+    let other = sig_source(&[
+        SIG_SHOP,
+        "module shop\nadd type Other = { id: I64, kind: Kind }\n",
+    ]);
+    assert_ne!(
+        before,
+        ids_at(&other.schema().unwrap(), "web::q at 2 () -> shop::Other"),
+    );
+}
+
+#[test]
+fn a_key_is_its_relation_and_selection_whatever_the_relation_gains() {
+    let source = sig_source(&[SIG_SHOP]);
+    let target = "web::q at 1 (u: Key shop::items) -> Text";
+    let before = ids_at(&source.schema().unwrap(), target);
+    let changed = sig_source(&[
+        SIG_SHOP,
+        "module shop\nadd field Item.note: Text fill \"\"\n",
+    ]);
+    assert_eq!(
+        before,
+        ids_at(
+            &changed.schema().unwrap(),
+            "web::q at 2 (u: Key shop::items) -> Text"
+        ),
+    );
+}
+
+#[test]
+fn a_parameter_name_is_not_part_of_the_ids() {
+    let schema = sig_source(&[SIG_SHOP]).schema().unwrap();
+    assert_eq!(
+        ids_at(&schema, "web::q at 1 (a: I64) -> Text"),
+        ids_at(&schema, "web::q at 1 (b: I64) -> Text"),
+    );
+    assert_ne!(
+        ids_at(&schema, "web::q at 1 (a: I64) -> Text"),
+        ids_at(&schema, "web::q at 1 (a: Text) -> Text"),
+    );
+    assert_ne!(
+        ids_at(&schema, "web::q at 1 () -> { a: I64 }"),
+        ids_at(&schema, "web::q at 1 () -> { b: I64 }"),
+    );
+}
+
+#[test]
+fn a_signature_writes_a_schema_type_as_module_and_name() {
+    let schema = sig_source(&[SIG_SHOP]).schema().unwrap();
+    let s = crate::signature::family_signature("web::q at 1 () -> Item").unwrap();
+    assert!(crate::signature::signature_ids(&schema, &s).is_err());
+    assert!(crate::signature::family_signature("web::q").is_none());
+}
+
+#[test]
+fn a_family_target_covers_by_ids_and_counts_an_unread_one_as_supported_only() {
+    let schema = sig_source(&[SIG_SHOP]).schema().unwrap();
+    let int = Ids::of(&schema, &[Ty::Base(Base::I64)], &Ty::Base(Base::Text));
+    let calls = FamilyAt(vec![(1, schema.clone()), (2, schema.clone())], int);
+    let family = "web::q at 1 (x: I64) -> Text";
+    let covers = |by, row| target_covers(&schema, &calls, "call", Some(by), Some(row));
+    assert!(covers(family, "web::q at 2 (y: I64) -> Text"));
+    assert!(!covers(family, "web::q at 2 (x: Text) -> Text"));
+    assert!(covers(family, "web-2.4::q"));
+    assert!(!covers("web::q at 1 (x: Text) -> Text", "web-2.4::q"));
+    assert!(!covers(family, "api-2.4::q"));
+    assert!(
+        !covers(family, "web-2.5::q"),
+        "an unread bundle is not covered"
+    );
+
+    let row = |grantor, grantee, target| GrantRow {
+        grantor,
+        grantee,
+        privilege: "call",
+        target: Some(target),
+        grant_option: true,
+        dormant: false,
+    };
+    let holder = row("owner", "ann", family);
+    let unread = row("ann", "bob", "web-2.5::q");
+    assert!(holder.supports(&schema, &calls, &unread));
+    assert!(!holder.keeps(&schema, &calls, &unread));
+    assert!(holder.supports(&schema, &calls, &row("ann", "bob", "web-2.4::q")));
+    assert!(!holder.supports(&schema, &calls, &row("ann", "bob", "api-2.4::q")));
+}
+
+#[test]
+fn a_whole_bundle_row_is_a_known_shape_to_a_family_row() {
+    let schema = grants().schema().unwrap();
+    let row = |grantor, grantee, target| GrantRow {
+        grantor,
+        grantee,
+        privilege: "call",
+        target: Some(target),
+        grant_option: true,
+        dormant: false,
+    };
+    let family = "web::q at 2 (n: I64) -> Set Text";
+    let option = row("owner", "ann", family);
+    assert!(!option.supports(&schema, &NoCalls, &row("ann", "cid", "mine-1.0")));
+    assert!(!option.supports(&schema, &NoCalls, &row("ann", "cid", "nohyphen::q")));
+    assert!(!option.supports(&schema, &NoCalls, &row("ann", "cid", "fn shop::names")));
+    assert!(option.supports(&schema, &NoCalls, &row("ann", "cid", "web-1.0::q")));
+
+    let closes = |held, new| closes_option_cycle(&schema, &NoCalls, &[held], new);
+    assert!(!closes(
+        row("g", "owner", family),
+        row("owner", "g", "fn shop::names")
+    ));
+    assert!(!closes(
+        row("g", "owner", family),
+        row("owner", "g", "mine-1.0")
+    ));
+    assert!(closes(
+        row("g", "owner", family),
+        row("owner", "g", "web-1.0")
+    ));
 }

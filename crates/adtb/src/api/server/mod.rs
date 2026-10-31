@@ -1,4 +1,5 @@
 mod call;
+mod grant;
 mod initialize;
 mod register;
 mod result;
@@ -11,7 +12,7 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Weak};
 
 use adtb_lang::ast::{AdhocItem, OperatorKind, Revoke};
-use adtb_lang::evolve::{GrantRow, Source, closes_option_cycle, deployment_revoke};
+use adtb_lang::evolve::{GrantRow, NoCalls, Source, closes_option_cycle, deployment_revoke};
 use adtb_lang::lex::{Tok, lex};
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::schema::Schema;
@@ -20,8 +21,9 @@ use adtb_lang::span::Diag;
 use crate::runtime::Runtime;
 
 use super::{Database, Engine, Error, OWNER_ROLE, RejectReason, TxnId};
+use grant::Calls;
 use store::Changes;
-use tables::{Grant, Role, Tables};
+use tables::{Given, Grant, Role, Tables};
 
 pub use result::{Completion, Format, Layout, ResultBatch};
 pub use session::RoleSession;
@@ -41,6 +43,23 @@ pub enum Capability {
 }
 
 impl Capability {
+    /// Returns the capability of name `name`.
+    fn named(name: &str) -> Option<Capability> {
+        [
+            Self::Adhoc,
+            Self::Assert,
+            Self::Schema,
+            Self::Monitor,
+            Self::Cancel,
+            Self::Maintain,
+            Self::Configure,
+            Self::ReadFiles,
+            Self::WriteFiles,
+        ]
+        .into_iter()
+        .find(|c| c.name() == name)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Adhoc => "adhoc",
@@ -107,8 +126,9 @@ impl<R: Runtime> RoleAuthority<R> {
         })
     }
 
-    /// Drop a role and its deployment grants, credentials and peer mappings. Refuse a role the
-    /// schema log names, or that owns a family or a bundle that is not retired.
+    /// Drop a role and the grants it holds, its credentials and peer mappings. Refuse a role the
+    /// schema log names, that owns a family or a bundle that is not retired, or that is the grantor
+    /// of a deployment grant, naming those rows.
     pub fn drop_role(&self, name: &str) -> Result<(), Error> {
         let name = role_name(name)?;
         let engine = self.engine.upgrade().ok_or_else(Error::closed)?;
@@ -122,9 +142,21 @@ impl<R: Runtime> RoleAuthority<R> {
             if let Some(why) = e.ownership(role.id.0) {
                 return Err(denied(why));
             }
+            let grants = t.grants(e, tx)?;
+            let given: Vec<String> = grants
+                .iter()
+                .filter(|g| g.kind == "Deployment" && g.grantor == name)
+                .map(Grant::printed)
+                .collect();
+            if !given.is_empty() {
+                return Err(Error::invalid(format!(
+                    "role `{name}` is the grantor of these grants: {}",
+                    given.join(", ")
+                )));
+            }
             changes.delete(t.roles, t.role_value(&role));
-            for grant in t.grants(e, tx)? {
-                if grant.grantee == name || grant.grantor == name {
+            for grant in grants {
+                if grant.grantee == name {
                     changes.delete(t.grants, grant.value);
                 }
             }
@@ -187,27 +219,18 @@ impl<R: Runtime> RoleAuthority<R> {
             let t = Tables::new(&e.schema, id);
             let grants = t.grants(e, tx)?;
             allowed(e, tx, &t, &grants)?;
-            t.role(e, tx, &name)?;
-            if grant_option && closes_cycle(e, &grants, grantor, &name, capability) {
-                return Err(Error::invalid(format!(
-                    "`{}` with grant option from `{grantor}` to `{name}` would close a cycle of grant options",
-                    capability.name()
-                )));
-            }
-            let existing = grants
-                .iter()
-                .find(|g| g.capability(capability, &name) && g.grantor == grantor);
-            let (id, effective_option) = match existing {
-                Some(g) => {
-                    changes.delete(t.grants, g.value.clone());
-                    (g.id, grant_option || g.grant_option)
-                }
-                None => (t.next_id(e, tx, t.grants)?, grant_option),
-            };
-            changes.insert(
-                t.grants,
-                t.grant_value(id, &name, capability, grantor, effective_option),
-            );
+            t.grantee(e, tx, &name)?;
+            let mut rows = grants.clone();
+            give_capability(
+                e,
+                tx,
+                &t,
+                &mut rows,
+                (grantor, &name),
+                capability,
+                grant_option,
+            )?;
+            t.write_rows(changes, &grants, &rows);
             let option = if grant_option {
                 " with grant option"
             } else {
@@ -255,6 +278,7 @@ impl<R: Runtime> RoleAuthority<R> {
             let t = Tables::new(&e.schema, id);
             allowed(e, tx, &t)?;
             let grants = t.grants(e, tx)?;
+            let calls = Calls::new(e);
             let mut deleted: BTreeSet<i64> = BTreeSet::new();
             for p in &statement.privileges {
                 let revoke = deployment_revoke(&e.schema, text, p)
@@ -265,7 +289,7 @@ impl<R: Runtime> RoleAuthority<R> {
                         g.kind == "Deployment"
                             && g.grantee == statement.from.text
                             && (issuer == OWNER_ROLE || g.grantor == issuer)
-                            && revoke.matches(&e.schema, &g.privilege, g.target.as_deref())
+                            && revoke.matches(&e.schema, &calls, &g.privilege, g.target.as_deref())
                     })
                     .map(|g| g.id)
                     .collect();
@@ -277,7 +301,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 deleted.extend(matching);
             }
             let gone = || grants.iter().filter(|g| deleted.contains(&g.id));
-            let orphans = orphans(&e.schema, &grants, &deleted);
+            let orphans = orphans(&e.schema, &calls, &grants, &deleted);
             if !orphans.is_empty() {
                 return Err(Error::invalid(format!(
                     "`{text}` takes a grant option these grants rely on: {}",
@@ -357,32 +381,36 @@ fn require<R: Runtime>(
 
 /// Returns each row that a deleted row's grant option supported and that no remaining option of
 /// its grantor from another role covers, printed.
-fn orphans(schema: &Schema, grants: &[Grant], deleted: &BTreeSet<i64>) -> Vec<String> {
+fn orphans(
+    schema: &Schema,
+    calls: &Calls<'_, impl Runtime>,
+    grants: &[Grant],
+    deleted: &BTreeSet<i64>,
+) -> Vec<String> {
     let (gone, left): (Vec<&Grant>, Vec<&Grant>) =
         grants.iter().partition(|g| deleted.contains(&g.id));
     left.iter()
         .filter(|o| {
             let row = o.row();
-            gone.iter().any(|g| g.row().supports(schema, &row))
-                && !left.iter().any(|g| g.row().keeps(schema, &row))
+            gone.iter().any(|g| g.row().supports(schema, calls, &row))
+                && !left.iter().any(|g| g.row().keeps(schema, calls, &row))
         })
-        .map(|o| {
-            format!(
-                "`{}` on {:?} given by `{}` to `{}`",
-                o.privilege, o.target, o.grantor, o.grantee
-            )
-        })
+        .map(|o| o.printed())
         .collect()
 }
 
-fn closes_cycle<R: Runtime>(
+/// Hold in `rows` the capability `grantor` gives `grantee`.
+///
+/// Fail with `Invalid` when the grant with grant option would close a cycle of grant options.
+fn give_capability<R: Runtime>(
     e: &Engine<R>,
-    grants: &[Grant],
-    grantor: &str,
-    grantee: &str,
+    tx: &crate::write::Txn,
+    t: &Tables<'_>,
+    rows: &mut Vec<Grant>,
+    (grantor, grantee): (&str, &str),
     capability: Capability,
-) -> bool {
-    let rows: Vec<GrantRow<'_>> = grants.iter().map(Grant::row).collect();
+    grant_option: bool,
+) -> Result<(), Error> {
     let new = GrantRow {
         grantor,
         grantee,
@@ -391,7 +419,20 @@ fn closes_cycle<R: Runtime>(
         grant_option: true,
         dormant: false,
     };
-    closes_option_cycle(&e.schema, &rows, new)
+    let held: Vec<GrantRow<'_>> = rows.iter().map(Grant::row).collect();
+    if grant_option && closes_option_cycle(&e.schema, &NoCalls, &held, new) {
+        return Err(Error::invalid(format!(
+            "`{}` with grant option from `{grantor}` to `{grantee}` would close a cycle of grant options",
+            capability.name()
+        )));
+    }
+    let given = Given {
+        grantor,
+        grantee,
+        privilege: capability.name(),
+        target: None,
+    };
+    t.give_row(e, tx, rows, &given, grant_option)
 }
 
 fn diagnosed(diags: &[Diag]) -> String {

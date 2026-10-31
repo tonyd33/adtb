@@ -7,6 +7,7 @@ use super::super::bundle::{self, Claim, Registrant, Stored};
 use super::super::registered::{self, Checked, Over, Registration};
 use super::super::text::DynRows;
 use super::super::{Engine, Error, OWNER_ID};
+use super::store;
 use super::tables::Tables;
 use super::{RoleAuthority, RoleSession, denied};
 
@@ -37,7 +38,7 @@ impl<R: Runtime> RoleAuthority<R> {
         let family = &claim.row.header.family;
         let family_owner = stored.deployed.families.get(family).copied();
         drop(stored);
-        self.access(true, |e, tx, id, changes| {
+        store::run(&e, true, &mut |e, tx, id, changes| {
             let t = Tables::new(&e.schema, id);
             self.checked(session, &t, e, tx)?;
             let by = session.id.0;

@@ -587,8 +587,17 @@ impl Schema {
     }
 
     pub fn show_ty_with(&self, ty: &Ty, params: &[String]) -> String {
+        self.shown(ty, params, false)
+    }
+
+    /// Returns `ty` as a signature writes it, each schema type and relation as `module::name`.
+    pub fn show_ty_qualified(&self, ty: &Ty) -> String {
+        self.shown(ty, &[], true)
+    }
+
+    fn shown(&self, ty: &Ty, params: &[String], qualified: bool) -> String {
         let atom = |t: &Ty| {
-            let s = self.show_ty_with(t, params);
+            let s = self.shown(t, params, qualified);
             let simple = match t {
                 Ty::Data { args, .. } => args.is_empty(),
                 Ty::Base(Base::Decimal(_))
@@ -618,7 +627,7 @@ impl Schema {
             }
         };
         let qualifier = |m: ModuleId| {
-            if m != PRELUDE && self.module(m).engine {
+            if m != PRELUDE && (qualified || self.module(m).engine) {
                 format!("{}::", self.module(m).name)
             } else {
                 String::new()
@@ -658,7 +667,7 @@ impl Schema {
             Ty::Record(fs) => {
                 let fs: Vec<String> = fs
                     .iter()
-                    .map(|(n, t)| format!("{n}: {}", self.show_ty_with(t, params)))
+                    .map(|(n, t)| format!("{n}: {}", self.shown(t, params, qualified)))
                     .collect();
                 format!("{{ {} }}", fs.join(", "))
             }
@@ -671,7 +680,7 @@ impl Schema {
                         } else {
                             let fs: Vec<String> = fs
                                 .iter()
-                                .map(|(n, t)| format!("{n}: {}", self.show_ty_with(t, params)))
+                                .map(|(n, t)| format!("{n}: {}", self.shown(t, params, qualified)))
                                 .collect();
                             format!("{c} {{ {} }}", fs.join(", "))
                         }
@@ -691,7 +700,7 @@ impl Schema {
                     }
                 }
             }
-            Ty::Fn(a, b) => format!("{} -> {}", atom(a), self.show_ty_with(b, params)),
+            Ty::Fn(a, b) => format!("{} -> {}", atom(a), self.shown(b, params, qualified)),
             Ty::Unit => "()".to_string(),
             Ty::Change => "a write".to_string(),
         }
