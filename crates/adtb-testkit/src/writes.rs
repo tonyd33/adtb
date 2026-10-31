@@ -1,3 +1,5 @@
+//! Hold the schema and rows of the write tests.
+
 use adtb_reference::Value;
 
 use crate::fixture::Fixture;

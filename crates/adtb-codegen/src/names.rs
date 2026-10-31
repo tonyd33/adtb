@@ -1,3 +1,5 @@
+//! Spell schema names as Rust identifiers.
+
 /// Returns `name` in upper camel case: each part between underscores capitalised.
 pub(crate) fn camel(name: &str) -> String {
     name.split('_')

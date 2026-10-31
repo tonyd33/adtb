@@ -1,3 +1,5 @@
+//! Hold Arrow batches: aligned buffers, columns and their types.
+
 mod buffer;
 mod column;
 mod types;

@@ -1,3 +1,5 @@
+//! Hold the catalog: relations, deployments, grants and their rows, and open and migrate them.
+
 mod change;
 mod deploy;
 mod deployment;

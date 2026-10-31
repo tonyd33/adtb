@@ -1,3 +1,5 @@
+//! Compile physical plans and run them on morsels of batches.
+
 mod code;
 mod frame;
 mod host;

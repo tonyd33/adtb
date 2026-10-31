@@ -1,3 +1,5 @@
+//! Size seed sweeps.
+
 use std::ops::Range;
 
 pub use adtb_testkit::profile::sweep;

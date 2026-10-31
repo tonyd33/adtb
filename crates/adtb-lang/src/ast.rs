@@ -1,3 +1,5 @@
+//! Define the syntax tree of schemas, queries and writes.
+
 use crate::span::Span;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

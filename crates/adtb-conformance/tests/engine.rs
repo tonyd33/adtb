@@ -8,18 +8,22 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
 use adtb_conformance::{panic_message, parse, run_engine_in, scripts};
+use adtb_heap_cap::test_child;
 use adtb_sim::{Config, Outcome, Sim};
 
 const SEED: u64 = 0;
 
 /// The script a child process runs, when set.
 const CHILD: &str = "ADTB_CONFORMANCE_ENGINE_FILE";
+
+/// How many scripts run at once.
+const MOST_WORKERS: usize = 8;
 
 const DEADLINE: Duration = Duration::from_secs(180);
 const POLL: Duration = Duration::from_millis(20);
@@ -80,14 +84,17 @@ fn child() {
 
 /// Returns each difference of the script at `path`, run in a child process.
 fn in_child(path: &Path) -> Vec<String> {
-    let mut child = Command::new(std::env::current_exe().expect("the test binary has a path"))
-        .args(["--exact", "child", "--nocapture", "--test-threads", "1"])
-        .env(CHILD, path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("the child starts");
+    let mut child = test_child(
+        std::env::current_exe().expect("the test binary has a path"),
+        MOST_WORKERS,
+    )
+    .args(["--exact", "child", "--nocapture", "--test-threads", "1"])
+    .env(CHILD, path)
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .expect("the child starts");
     let mut stdout = child.stdout.take().expect("stdout is piped");
     let mut stderr = child.stderr.take().expect("stderr is piped");
     let drain = |r: &mut dyn Read| {
@@ -136,7 +143,7 @@ fn run_part(part: &str) -> Vec<(String, Vec<String>)> {
     assert!(!files.is_empty(), "no scripts in {}", dir.display());
     let next = Mutex::new(files.iter());
     let done = Mutex::new(Vec::new());
-    let workers = thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let workers = thread::available_parallelism().map_or(4, |n| n.get().min(MOST_WORKERS));
     thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| {

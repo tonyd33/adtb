@@ -1,3 +1,5 @@
+//! Apply kernel primitives to values.
+
 use adtb_lang::kernel::Prim;
 use adtb_lang::textual::parse_uuid;
 use adtb_lang::types::{Base, Ty};

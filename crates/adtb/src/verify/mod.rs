@@ -1,3 +1,5 @@
+//! Check a file's structures against each other and report each problem.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 

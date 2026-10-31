@@ -1,3 +1,5 @@
+//! Read and keep a relation's rows as of a past time.
+
 use std::collections::BTreeMap;
 
 use crate::btree::Index;

@@ -1,3 +1,5 @@
+//! Define the resolved types and the ids of types, relations, functions and modules.
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TypeId(pub u32);
 

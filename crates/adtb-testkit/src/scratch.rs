@@ -1,3 +1,5 @@
+//! Hold a scratch directory for a test.
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 

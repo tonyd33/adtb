@@ -1,3 +1,5 @@
+//! Evaluate kernel terms over a database of constructor relations.
+
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;

@@ -1,0 +1,26 @@
+# The default run stays under 20 seconds a test; a test still running at 60 is killed.
+[profile.default]
+slow-timeout = { period = "20s", terminate-after = 3 }
+
+# Lists and starts every test binary, and builds them when an earlier step did not.
+[[profile.default.overrides]]
+filter = "test(=every_test_binary_has_the_heap_cap)"
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+# A test that spawns a capped binary belongs to the group naming the slots it holds. `test_child`
+# reads the group and divides those slots among its children; it panics in any other group.
+[[profile.default.overrides]]
+filter = "binary(/^(usage|heap_cap)$/)"
+threads-required = 2
+test-group = "slots-2"
+
+[test-groups.slots-2]
+max-threads = 64
+
+# For iteration: one seed per `profile::sweep` sweep, and no crash sweeps.
+[profile.quick]
+default-filter = "not test(/crash/)"
+
+# Every sweep at `profile::DEEP` times its default count of seeds or cases.
+[profile.deep]
+slow-timeout = { period = "120s", terminate-after = 10 }

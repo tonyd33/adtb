@@ -1,3 +1,5 @@
+//! Run statements: their stages, supplies, effects and rejections.
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 

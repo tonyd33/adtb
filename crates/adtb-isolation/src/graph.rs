@@ -1,3 +1,5 @@
+//! Hold the dependency graph of a history: its edges, components and paths.
+
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::history::{Dep, Edge};

@@ -1,3 +1,5 @@
+//! Split source text into tokens and hold the keyword table.
+
 use crate::span::{Diag, Span};
 use unicode_normalization::UnicodeNormalization;
 

@@ -1,3 +1,5 @@
+//! Type check programs, ad hoc commands and transactions, elaborating them to kernel terms.
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;

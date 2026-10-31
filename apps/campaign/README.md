@@ -76,8 +76,7 @@ registered calls, engine retries, player visibility and persistence.
 Run the HTTP flow tests with:
 
 ```sh
-cargo nextest run --manifest-path apps/campaign/Cargo.toml --test web \
-  --config-file .config/nextest.toml
+cargo nextest run --manifest-path apps/campaign/Cargo.toml --test web
 ```
 
 They use real database files and cover authorization, CSRF, invalid input,

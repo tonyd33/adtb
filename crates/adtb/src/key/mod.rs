@@ -1,3 +1,5 @@
+//! Encode index keys and entries, and hash values.
+
 mod codec;
 mod entry;
 mod hash;

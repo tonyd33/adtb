@@ -1,3 +1,5 @@
+//! Assign and hold the catalog ids of a schema's objects.
+
 use std::collections::BTreeMap;
 
 use crate::ast::{self, Decl, RelationClause};

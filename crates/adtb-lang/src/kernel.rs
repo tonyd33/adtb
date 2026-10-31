@@ -1,3 +1,5 @@
+//! Define the typed kernel: terms, primitives, aggregates and their store.
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 

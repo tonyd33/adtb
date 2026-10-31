@@ -1,3 +1,5 @@
+//! Hold the page size, file name and options of pager tests.
+
 use adtb::storage::Options;
 use adtb_sim::{Outcome, Sim, SimRuntime};
 

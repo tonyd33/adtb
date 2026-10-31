@@ -1,3 +1,5 @@
+//! Draw random numbers from a simulated runtime.
+
 use adtb::runtime::Entropy;
 use adtb_sim::SimRuntime;
 

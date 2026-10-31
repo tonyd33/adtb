@@ -5,8 +5,9 @@
 # workspace-gc --guard    print nothing when the disk has 30 GB free; else list the build
 #                         directories and fail
 # workspace-gc --clear-build WORKSPACE
-#                         empty target/debug, except its cargo lock, and target/tmp of WORKSPACE, or
-#                         of the main checkout for `main`; refuses when one is not exactly that
+#                         empty debug, except its cargo lock, and tmp of target/ and
+#                         apps/campaign/target/ of WORKSPACE, or of the main checkout for `main`;
+#                         refuses when one is not exactly that
 #                         directory, changed within ADTB_GC_IDLE_HOURS, or cargo, a process or a
 #                         run holding the machine lock from that workspace is using it
 #
@@ -98,27 +99,21 @@ clearable() {
   [[ -z $users ]] || refuse "$1 is in use by: $(echo "$users" | paste -sd,)"
 }
 
-# Empty target/debug of the workspace named $1, keeping its cargo lock, held throughout, for any
-# cargo that starts meanwhile, and target/tmp.
-clear_build() {
-  local name=$1 wsroot debug tmp lock
-  [[ $name != main ]] || name=default
-  wsroot=$(jj -R "$root" workspace list --ignore-working-copy -T 'name ++ "\t" ++ root ++ "\n"' |
-    awk -F'\t' -v name="$name" '$1 == name { print $2 }')
-  [[ $wsroot == /* ]] || refuse "no workspace named $1"
-  [[ -d $wsroot/.jj ]] || refuse "$wsroot holds no .jj"
-  lock=$(machine_lock_path)
-  if [[ -e $lock ]] && ! flock -n "$lock" true && [[ $(cat "$lock") == "$wsroot pid "* ]]; then
-    refuse "a run in $wsroot holds the machine lock"
-  fi
-  debug=$wsroot/target/debug
-  tmp=$wsroot/target/tmp
+# Refuse unless debug and tmp under build directory $1 can be emptied.
+clearable_build() {
+  local debug=$1/debug tmp=$1/tmp
   if [[ -e $debug ]]; then
     [[ -f $debug/.cargo-lock || -L $debug ]] || refuse "$debug is not a cargo build directory"
     [[ -L $debug ]] || flock -n "$debug/.cargo-lock" true || refuse "cargo holds the lock on $debug"
     clearable "$debug"
   fi
   [[ ! -e $tmp ]] || clearable "$tmp"
+}
+
+# Empty debug under build directory $1, keeping its cargo lock, held throughout, for any cargo that
+# starts meanwhile, and tmp.
+empty_build() {
+  local debug=$1/debug tmp=$1/tmp
   if [[ -e $debug ]]; then
     echo "clearing $debug ($(du -sh "$debug" | cut -f1))"
     flock -n "$debug/.cargo-lock" \
@@ -129,6 +124,24 @@ clear_build() {
     echo "clearing $tmp ($(du -sh "$tmp" | cut -f1))"
     find "$tmp" -mindepth 1 -maxdepth 1 -exec rm -rf --one-file-system -- {} +
   fi
+}
+
+# Empty the build directories of the workspace named $1.
+clear_build() {
+  local name=$1 wsroot lock
+  [[ $name != main ]] || name=default
+  wsroot=$(jj -R "$root" workspace list --ignore-working-copy -T 'name ++ "\t" ++ root ++ "\n"' |
+    awk -F'\t' -v name="$name" '$1 == name { print $2 }')
+  [[ $wsroot == /* ]] || refuse "no workspace named $1"
+  [[ -d $wsroot/.jj ]] || refuse "$wsroot holds no .jj"
+  lock=$(machine_lock_path)
+  if [[ -e $lock ]] && ! flock -n "$lock" true && [[ $(cat "$lock") == "$wsroot pid "* ]]; then
+    refuse "a run in $wsroot holds the machine lock"
+  fi
+  clearable_build "$wsroot/target"
+  clearable_build "$wsroot/apps/campaign/target"
+  empty_build "$wsroot/target"
+  empty_build "$wsroot/apps/campaign/target"
   echo "free: $(free_gb) GB"
 }
 

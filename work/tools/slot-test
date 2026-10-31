@@ -1,24 +1,148 @@
 #!/usr/bin/env bash
-# slot-test [--shell]   prove slot, land and workspace-gc --clear-build on a scratch repository, with
-#                       a real cargo build, or with `--shell` only the cases needing no cargo; fail
-#                       on the first broken expectation
+# slot-test [--shell]   prove slot, land, workspace-gc --clear-build and the machine lock on scratch
+#                       repositories: every case, or with `--shell` only those needing no cargo; fail
+#                       on the first broken expectation. It makes the scratch directory, runs a copy of
+#                       itself and the tools there as a child with the scratch directory as home, then
+#                       removes it and fails if the checkout it came from changed.
 set -euo pipefail
 
-tools=$(cd "$(dirname "$0")" && pwd)
-scratch=$(mktemp -d)
-export XDG_CACHE_HOME=$scratch/cache
-unset CARGO_TARGET_DIR
-main=$scratch/repo
+self=$(realpath "$0")
+
+# Print the path and modification time of everything in work/tools and at the top of target/debug
+# under checkout $1.
+snapshot() {
+  { find "$1/work/tools" "$1/target/debug" -maxdepth 1 -printf '%p %T@\n' 2>/dev/null || true; } | LC_ALL=C sort
+}
+
+if [[ ${1:-} != --inner ]]; then
+  origin=$(dirname "$(dirname "$(dirname "$self")")")
+  devenv=${DEVENV_ROOT:-$origin}
+  scratch=$(realpath "$(mktemp -d)")
+  trap 'rm -rf "$scratch"' EXIT
+  mkdir -p "$scratch/work/tools"
+  cp "$origin/work/tools"/{land,slot,slot-test,workspace-gc,common.bash} "$scratch/work/tools/"
+  printf '%s\n' "$origin" "$devenv" >"$scratch/origin"
+  before=$(snapshot "$origin")
+
+  set +e
+  (
+    set -e
+    # Keep each PATH entry under the checkout only as what it resolves to outside it.
+    path=$scratch/work/tools
+    IFS=: read -ra entries <<<"$PATH"
+    for entry in "${entries[@]}"; do
+      [[ $entry != "$origin"* && $entry != "$devenv"* ]] || entry=$(realpath -m "$entry")
+      [[ $entry == "$origin"* || $entry == "$devenv"* ]] || path+=:$entry
+    done
+    for name in $(compgen -e); do
+      [[ ${!name} != *"$origin"* && ${!name} != *"$devenv"* ]] || [[ $name == PATH ]] || unset "$name"
+    done
+    export RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}
+    export HOME=$scratch/home XDG_CONFIG_HOME=$scratch/home/.config XDG_CACHE_HOME=$scratch/home/.cache \
+      XDG_DATA_HOME=$scratch/home/.local/share XDG_STATE_HOME=$scratch/home/.local/state \
+      CARGO_HOME=$scratch/home/.cargo TMPDIR=$scratch/tmp
+    mkdir -p "$XDG_CONFIG_HOME/jj" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$CARGO_HOME" "$TMPDIR"
+    printf '[user]\nname = "slot-test"\nemail = "slot-test@example.invalid"\n' >"$XDG_CONFIG_HOME/jj/config.toml"
+    cd "$scratch"
+    unset OLDPWD
+    for fd in /proc/self/fd/*; do fd=${fd##*/}; ((fd < 3)) || eval "exec $fd>&-" 2>/dev/null || true; done
+    PATH=$path exec "$scratch/work/tools/slot-test" --inner "$@"
+  )
+  status=$?
+  set -e
+  after=$(snapshot "$origin")
+  if [[ $after != "$before" ]]; then
+    printf 'slot-test: the real checkout changed:\n' >&2
+    diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") >&2 || true
+    status=1
+  fi
+  exit "$status"
+fi
+
+shift
+scratch=$(dirname "$(dirname "$(dirname "$self")")")
+if [[ ! -f $scratch/origin ]]; then
+  printf 'slot-test: %s is not a scratch directory\n' "$scratch" >&2
+  exit 1
+fi
+tools=$scratch/work/tools
+export ADTB_MACHINE_LOCK=$scratch/suite.lock
+unset CARGO_TARGET_DIR ADTB_MACHINE_LOCK_HELD
 sleeper=
 cleanup() {
   [[ -z $sleeper ]] || kill "$sleeper" 2>/dev/null || true
-  rm -rf "$scratch"
 }
 trap cleanup EXIT
 
 fail() {
   printf 'slot-test: %s\n' "$1" >&2
   exit 1
+}
+
+# Succeed when nothing holds the machine lock within 3 s.
+lock_comes_free() {
+  local tries
+  for tries in {1..30}; do
+    flock -n "$ADTB_MACHINE_LOCK" true && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# Print the pid of a shell started in the background that takes the machine lock, prints `held`
+# to $1 and then runs the commands $2.
+lock_taker() {
+  bash -c 'source "$1/common.bash"; machine_lock taker; echo held >"$2"; eval "$3"' _ "$tools" "$1" "$2" >/dev/null 2>&1 &
+  echo $!
+}
+
+wait_for_file() {
+  local tries
+  for tries in {1..50}; do
+    [[ -s $1 ]] && return 0
+    sleep 0.1
+  done
+  fail "$1 stayed empty"
+}
+
+machine_lock_cases() {
+  local ready=$scratch/ready pid daemon a b
+  a=$(env -u ADTB_MACHINE_LOCK HOME=/nonexistent/a XDG_CACHE_HOME=/nonexistent/a bash -c 'source "$1/common.bash"; machine_lock_path' _ "$tools")
+  b=$(env -u ADTB_MACHINE_LOCK HOME=/nonexistent/b XDG_CACHE_HOME=/nonexistent/b bash -c 'source "$1/common.bash"; machine_lock_path' _ "$tools")
+  [[ $a == "$b" ]] || fail "HOME and XDG_CACHE_HOME choose the lock file: $a, $b"
+
+  : >"$ready"
+  pid=$(lock_taker "$ready" 'exec sleep 300')
+  wait_for_file "$ready"
+  flock -n "$ADTB_MACHINE_LOCK" true && fail "a shell holding the machine lock does not exclude"
+  kill -9 "$pid"
+  lock_comes_free || fail "a killed shell keeps the machine lock"
+
+  : >"$ready"
+  bash -c 'source "$1/common.bash"; machine_lock taker; sleep 300 >/dev/null 2>&1 & echo $! >"$2"' _ "$tools" "$ready" >/dev/null 2>&1
+  wait_for_file "$ready"
+  daemon=$(cat "$ready")
+  if ! lock_comes_free; then
+    kill "$daemon"
+    fail "a daemon that outlives its shell keeps the machine lock"
+  fi
+  kill "$daemon"
+
+  : >"$ready"
+  pid=$(lock_taker "$ready" 'machine_unlock; exec sleep 300')
+  wait_for_file "$ready"
+  lock_comes_free || fail "machine_unlock keeps the machine lock"
+  kill "$pid"
+}
+
+# Clearing a workspace empties the campaign application's build directory too.
+campaign_cap_cases() {
+  local app=$main/apps/campaign/target
+  mkdir -p "$app/debug/deps" "$app/tmp/kept"
+  touch "$app/debug/.cargo-lock" "$app/debug/deps/x" "$app/tmp/kept/y" "$app/evidence"
+  ADTB_GC_IDLE_HOURS=0 "$gc" --clear-build main >/dev/null
+  [[ $(ls -A "$app/debug") == .cargo-lock && -z $(ls -A "$app/tmp") && -f $app/evidence ]] ||
+    fail "--clear-build left the campaign build: $(ls -A "$app/debug" "$app/tmp")"
 }
 
 # Run $@ and require it to fail with output containing $1, which is shifted off.
@@ -46,26 +170,75 @@ names() {
   jj -R "$main" workspace list --ignore-working-copy -T 'name ++ "\n"' | LC_ALL=C sort | paste -sd' '
 }
 
-mkdir "$main"
-jj git init "$main" >/dev/null 2>&1
-mkdir -p "$main/work/tools" "$main/dep/src" "$main/app/src"
-cp "$tools"/{land,slot,workspace-gc,common.bash} "$main/work/tools/"
-cat >"$main/Cargo.toml" <<'TOML'
+# Make a new seeded repository at $scratch/$1 the one the cases act on.
+new_repo() {
+  main=$scratch/$1
+  mkdir "$main"
+  jj git init "$main" >/dev/null 2>&1
+  mkdir -p "$main/work/tools" "$main/dep/src" "$main/app/src"
+  cp "$tools"/{land,slot,workspace-gc,common.bash} "$main/work/tools/"
+  cat >"$main/Cargo.toml" <<'TOML'
 [workspace]
 resolver = "3"
 members = ["dep", "app"]
 TOML
-printf '[package]\nname = "dep"\nversion = "0.1.0"\nedition = "2024"\n' >"$main/dep/Cargo.toml"
-printf 'pub fn dep() -> u32 { 1 }\n' >"$main/dep/src/lib.rs"
-printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2024"\n[dependencies]\ndep = { path = "../dep" }\n' >"$main/app/Cargo.toml"
-printf 'pub fn app() -> u32 { dep::dep() }\n' >"$main/app/src/lib.rs"
-printf '/target\n/ignored-work\n' >"$main/.gitignore"
-jj -R "$main" describe -m 'chore: seed' >/dev/null 2>&1
-jj -R "$main" bookmark create main -r @ >/dev/null 2>&1
-jj -R "$main" new >/dev/null 2>&1
-land=$main/work/tools/land
-slot=$main/work/tools/slot
-gc=$main/work/tools/workspace-gc
+  printf '[package]\nname = "dep"\nversion = "0.1.0"\nedition = "2024"\n' >"$main/dep/Cargo.toml"
+  printf 'pub fn dep() -> u32 { 1 }\n' >"$main/dep/src/lib.rs"
+  printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2024"\n[dependencies]\ndep = { path = "../dep" }\n' >"$main/app/Cargo.toml"
+  printf 'pub fn app() -> u32 { dep::dep() }\n' >"$main/app/src/lib.rs"
+  printf '/target\n/apps/campaign/target\n/ignored-work\n' >"$main/.gitignore"
+  jj -R "$main" describe -m 'chore: seed' >/dev/null 2>&1
+  jj -R "$main" bookmark create main -r @ >/dev/null 2>&1
+  jj -R "$main" new >/dev/null 2>&1
+  land=$main/work/tools/land
+  slot=$main/work/tools/slot
+  gc=$main/work/tools/workspace-gc
+}
+
+# Print each exported variable with a value, or a part of one between colons, that resolves under a
+# line of file $1.
+variables_leading_to() {
+  local name part root value parts
+  for name in $(compgen -e); do
+    value=${!name:-}
+    IFS=: read -ra parts <<<"${value//$'\n'/:}"
+    for part in "${parts[@]}"; do
+      [[ $part == /* ]] || continue
+      part=$(realpath -m -- "$part")
+      while IFS= read -r root; do
+        [[ $part != "$root" && $part != "$root"/* ]] || printf '%s=%s\n' "$name" "$value"
+      done <"$1"
+    done
+  done
+}
+
+# No variable resolves into the checkout this ran from, each home a tool writes under is in scratch,
+# and the snapshot sees a change.
+scratch_only_cases() {
+  local name out fake before
+  out=$(variables_leading_to "$scratch/origin")
+  [[ -z $out ]] || fail "a variable leads to the real checkout: $out"
+  for name in land slot slot-test workspace-gc; do
+    [[ $(command -v "$name") == "$tools/$name" ]] || fail "$name resolves to $(command -v "$name")"
+  done
+  [[ ~ == "$scratch"/* ]] || fail "the home directory is outside scratch: $HOME"
+  [[ $(jj config path --user) == "$scratch"/* ]] || fail "jj writes its config to $(jj config path --user)"
+  [[ $(mktemp -u) == "$scratch"/* ]] || fail "temporary files go to $(mktemp -u)"
+  for name in XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME CARGO_HOME; do
+    [[ ${!name:-} == "$scratch"/* ]] || fail "$name is ${!name:-unset}"
+  done
+
+  fake=$scratch/snapshot
+  mkdir -p "$fake/work/tools" "$fake/target/debug"
+  touch "$fake/work/tools/x"
+  before=$(snapshot "$fake")
+  [[ $before == *"$fake/work/tools/x "* ]] || fail "the snapshot misses a tool: $before"
+  touch -d '2001-01-01' "$fake/work/tools/x"
+  [[ $(snapshot "$fake") != "$before" ]] || fail "the snapshot misses a changed time"
+  before=$(snapshot "$fake")
+  touch "$fake/target/debug/new"
+  [[ $(snapshot "$fake") != "$before" ]] || fail "the snapshot misses a new file"
+}
 
 # Kill the process in $sleeper, started with a working directory somewhere under test.
 stop_sleeper() {
@@ -80,8 +253,10 @@ main_tip() {
 
 # Give the checkout at $1 a build directory with output in debug and tmp, and evidence beside them.
 fake_target() {
-  mkdir -p "$1/target/debug/deps" "$1/target/tmp/kept"
-  touch "$1/target/debug/.cargo-lock" "$1/target/debug/deps/x" "$1/target/tmp/kept/y" "$1/target/evidence"
+  mkdir -p "$1/target/debug/deps" "$1/target/tmp/kept" "$1/apps/campaign/target/debug/deps"
+  touch "$1/target/debug/.cargo-lock" "$1/target/tmp/kept/y" "$1/target/evidence" "$1/apps/campaign/target/debug/.cargo-lock"
+  echo x >"$1/target/debug/deps/x"
+  echo x >"$1/apps/campaign/target/debug/deps/x"
 }
 
 # Cases that need no cargo. Each leaves every slot free or names its own track.
@@ -161,9 +336,8 @@ SHIM
   [[ -f $main/target/debug/deps/x ]] || fail "an empty argument cleared main"
   refused 'under' "$gc" --clear-build main
 
-  mkdir -p "$XDG_CACHE_HOME/adtb"
-  printf '%s pid 1 since now\n' "$main" >"$XDG_CACHE_HOME/adtb/suite.lock"
-  (exec 7>>"$XDG_CACHE_HOME/adtb/suite.lock" && flock 7 && exec sleep 300) &
+  printf '%s pid 1 since now\n' "$main" >"$ADTB_MACHINE_LOCK"
+  (exec 7>>"$ADTB_MACHINE_LOCK" && flock 7 && exec sleep 300) &
   sleeper=$!
   settle "$sleeper"
   refused 'holds the machine lock' env ADTB_GC_IDLE_HOURS=0 "$gc" --clear-build main
@@ -194,13 +368,20 @@ SHIM
   [[ $(ADTB_SLOT_CAP_GB=0 "$slot" above "${p2##*-slot-}" 2>/dev/null | tail -1) == "$p2" ]] || fail "reuse above the cap"
   [[ $(ls -A "$p2/target/debug") == .cargo-lock && -z $(ls -A "$p2/target/tmp") &&
     -f $p2/target/evidence ]] || fail "the cap did not clear debug and tmp alone"
+  [[ $(ls -A "$p2/apps/campaign/target/debug") == .cargo-lock ]] || fail "the cap did not clear the campaign build"
 }
 
+scratch_only_cases
+machine_lock_cases
+new_repo shell-repo
+shell_cases
+campaign_cap_cases
 if [[ ${1:-} == --shell ]]; then
-  shell_cases
   echo 'slot-test: shell cases ok'
   exit 0
 fi
+
+new_repo repo
 
 # A first track gets a new slot, builds and lands; the directory and target/ survive land.
 s1=$("$slot" track-a 2>/dev/null | tail -1)

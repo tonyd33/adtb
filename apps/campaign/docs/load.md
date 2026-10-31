@@ -3,16 +3,14 @@
 Run the workload from the repository root inside the dev shell:
 
 ```sh
-cargo nextest run --manifest-path apps/campaign/Cargo.toml \
-  --config-file .config/nextest.toml --test load
+cargo nextest run --manifest-path apps/campaign/Cargo.toml --test load
 ```
 
 The default and quick profiles run seed 4. The deep profile runs seeds 4
 through 11 through the shared `adtb_testkit::profile::sweep` mechanism:
 
 ```sh
-cargo nextest run --manifest-path apps/campaign/Cargo.toml \
-  --config-file .config/nextest.toml --profile deep --test load
+cargo nextest run --manifest-path apps/campaign/Cargo.toml --profile deep --test load
 ```
 
 Each seed starts from the same simulated-file population: two campaigns,

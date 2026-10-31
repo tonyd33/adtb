@@ -1,3 +1,5 @@
+//! Serve the campaign web application: routes, sessions and the pages of each role.
+
 mod auth;
 mod combat;
 mod dates;

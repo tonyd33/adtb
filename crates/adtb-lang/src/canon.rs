@@ -1,3 +1,5 @@
+//! Print terms in their canonical form, with names qualified.
+
 use std::collections::BTreeMap;
 use std::ops::Range;
 

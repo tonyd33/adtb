@@ -1,3 +1,5 @@
+//! Apply a statement's effects at its boundary and check the constraints there.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 

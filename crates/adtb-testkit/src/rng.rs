@@ -1,3 +1,5 @@
+//! Generate seeded random numbers for tests.
+
 /// SplitMix64: a seeded generator whose output depends only on the seed.
 #[derive(Clone, Debug)]
 pub struct Rng(u64);

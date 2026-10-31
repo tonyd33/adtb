@@ -1,3 +1,5 @@
+//! Hold the file, pages and log: the pager, allocation, recovery, backup and quarantine.
+
 mod alloc;
 mod block;
 mod crc;

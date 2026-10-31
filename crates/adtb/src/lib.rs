@@ -1,3 +1,4 @@
+//! The engine: catalog, planner, executor, transactions and storage.
 #![forbid(unsafe_code)]
 
 mod api;

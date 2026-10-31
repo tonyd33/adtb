@@ -1,3 +1,5 @@
+//! Issue simulated file operations and check their completions.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb::runtime::{AlignedBuf, Completion, Done, FileId, Io, IoError, Op, Runtime, Threads};

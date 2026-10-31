@@ -1,3 +1,5 @@
+//! Open and query a `Database` on the simulator from a test.
+
 use std::sync::Arc;
 use std::task::{Wake, Waker};
 

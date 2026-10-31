@@ -1,3 +1,5 @@
+//! Hold page memory: the reservation and each page's state word and latches.
+
 #[cfg(all(test, adtb_loom))]
 mod loom_tests;
 #[cfg(not(all(test, adtb_loom)))]

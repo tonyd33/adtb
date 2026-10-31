@@ -1,3 +1,5 @@
+//! Parse tokens into the syntax tree, reporting errors with recovery.
+
 mod adhoc;
 mod decl;
 mod expr;

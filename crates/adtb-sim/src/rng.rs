@@ -1,3 +1,5 @@
+//! Generate the simulator's seeded random numbers.
+
 /// SplitMix64: a seeded, portable generator whose output depends only on the seed.
 #[derive(Clone, Debug)]
 pub(crate) struct Rng(u64);

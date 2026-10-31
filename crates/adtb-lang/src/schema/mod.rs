@@ -1,3 +1,5 @@
+//! Hold a resolved schema: modules, types, relations and functions, and the built-in sources.
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, LazyLock};
 

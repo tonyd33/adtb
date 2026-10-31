@@ -1,3 +1,5 @@
+//! Drive the engine's storage and transaction layers directly from a simulator test.
+
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::ops::Bound;

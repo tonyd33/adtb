@@ -1,3 +1,4 @@
+//! The wire protocol around the engine.
 #![forbid(unsafe_code)]
 
 #[cfg(test)]

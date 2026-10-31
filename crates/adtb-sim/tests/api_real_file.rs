@@ -450,10 +450,6 @@ fn a_damaged_index_page_of_a_real_file_quarantines_its_index() {
 }
 
 #[test]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "a real thread bounds an open that may never return; removing it needs a bounded open"
-)]
 fn open_returns_on_a_real_file_cut_before_the_first_roles_page() {
     let path = scratch("cut").join("shop.adt");
     let log = Log::new([SHOP]);
@@ -475,25 +471,20 @@ fn open_returns_on_a_real_file_cut_before_the_first_roles_page() {
         .expect("the file")
         .set_len(at)
         .expect("the cut");
-    let (send, recv) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let db = adtb::open(&path, &log, &options()).expect("an open for verify");
-        let said = db.query_text(
-            "from c in customers select c.name",
-            &[],
-            &CallOptions::default(),
-        );
-        let quarantined = matches!(
+    let db = adtb::open(&path, &log, &options()).expect("an open for verify");
+    let said = db.query_text(
+        "from c in customers select c.name",
+        &[],
+        &CallOptions::default(),
+    );
+    assert!(
+        matches!(
             said,
             Err(adtb::Error::Fatal {
                 reason: adtb::FatalReason::Quarantined { .. },
             })
-        );
-        db.close().expect("a close");
-        send.send(quarantined).expect("the test waits");
-    });
-    let quarantined = recv
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("open returns");
-    assert!(quarantined);
+        ),
+        "{said:?}"
+    );
+    db.close().expect("a close");
 }

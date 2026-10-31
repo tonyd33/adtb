@@ -1,3 +1,4 @@
+//! The language front end: lexer, parser, checker, schema evolution and the typed kernel. No I/O.
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "test-heap-cap")]

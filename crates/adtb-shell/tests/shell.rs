@@ -4,7 +4,12 @@ extern crate adtb_lang as _;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
+
+use adtb_heap_cap::test_child;
+
+/// How many shells a test here runs at the same time.
+const MOST_AT_ONCE: usize = 2;
 
 const SCHEMA: &str = r"module test
 add module test
@@ -43,7 +48,7 @@ fn scratch(name: &str) -> (PathBuf, PathBuf) {
 }
 
 fn adtb(args: &[&str], stdin: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_adtb"))
+    let mut child = test_child(env!("CARGO_BIN_EXE_adtb"), MOST_AT_ONCE)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -610,7 +615,7 @@ fn verify_exits_1_on_a_finding_and_2_when_the_file_refuses_open() {
 fn verify_exits_2_while_another_process_holds_the_file() {
     let (schema, db) = scratch("verify-held");
     create(&schema, &db);
-    let mut holder = Command::new(env!("CARGO_BIN_EXE_adtb"))
+    let mut holder = test_child(env!("CARGO_BIN_EXE_adtb"), MOST_AT_ONCE)
         .arg(db.to_str().unwrap())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

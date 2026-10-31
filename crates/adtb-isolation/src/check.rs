@@ -1,3 +1,5 @@
+//! Find the anomalies of a list-append history.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::graph::{Graph, Kind};

@@ -1,3 +1,5 @@
+//! Encode and decode the wire protocol: frames, primitives and message reassembly.
+
 pub mod frame;
 pub mod primitives;
 mod reassembly;

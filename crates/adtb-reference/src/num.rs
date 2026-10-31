@@ -1,3 +1,5 @@
+//! Compute with decimals and rounding modes.
+
 use std::cmp::Ordering;
 
 use adtb_lang::types::Base;

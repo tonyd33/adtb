@@ -1,3 +1,5 @@
+//! Apply and check schema migrations: state, renames, row maps, grants and reverts.
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;

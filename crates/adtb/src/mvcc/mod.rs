@@ -1,3 +1,5 @@
+//! Run transactions: snapshots, the commit log, write conflicts and serializable checks.
+
 mod clog;
 mod conflict;
 mod past;

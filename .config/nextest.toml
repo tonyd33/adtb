@@ -33,6 +33,58 @@ threads-required = 2
 filter = "test(=a_crash_in_recovery_then_a_cut_never_reuses_a_named_page)"
 threads-required = 2
 
+[[profile.default.overrides]]
+filter = "test(=a_crash_at_each_stage_keeps_an_index_that_finds_every_row_and_leaks_nothing)"
+threads-required = 2
+
+# A test that spawns a capped binary belongs to the group naming the slots it holds. `test_child`
+# reads the group and divides those slots among its children; it panics in any other group.
+[[profile.default.overrides]]
+filter = "test(=a_raised_cap_lets_the_test_pass_the_default)"
+threads-required = 3
+test-group = "slots-3"
+
+[[profile.default.overrides]]
+filter = "binary(/^(shell|manual|probe|usage|engine|cap)$/) or test(=tests::the_nested_list_drops_the_callers_profile)"
+threads-required = 2
+test-group = "slots-2"
+
+[[profile.default.overrides]]
+filter = """
+binary(=server_adhoc) and (
+  test(=a_chain_of_different_ors_runs_on_the_reduced_stack) or
+  test(=a_chain_of_match_arms_runs_to_its_limit) or
+  test(=a_comprehension_chain_runs_to_its_limit) or
+  test(=a_function_chain_over_sets_runs_to_its_limit) or
+  test(=a_function_chain_runs_to_its_limit) or
+  test(=a_long_chain_of_lets_answers_and_does_not_take_the_stack) or
+  test(=a_long_chain_of_operators_answers_and_does_not_take_the_stack) or
+  test(=a_match_chain_runs_to_its_limit) or
+  test(=a_nesting_of_fixpoints_at_its_limit_runs_on_the_reduced_stack) or
+  test(=a_record_nesting_runs_to_its_limit) or
+  test(=a_set_nesting_runs_to_its_limit) or
+  test(=a_transact_of_a_thousand_inserts_runs_and_explains_on_the_reduced_stack) or
+  test(=a_type_one_level_past_its_limit_is_refused_for_its_height) or
+  test(=a_very_deep_type_is_refused_on_a_default_stack) or
+  test(=a_wide_doubling_at_its_limit_runs_on_the_reduced_stack) or
+  test(=a_write_at_the_height_limit_checks_its_constraint_on_the_reduced_stack) or
+  test(=an_aggregate_at_the_height_limit_runs_on_the_reduced_stack) or
+  test(=an_export_at_the_height_limit_runs_on_the_reduced_stack) or
+  test(=an_if_chain_runs_to_its_limit) or
+  test(=an_operator_chain_runs_to_its_limit) or
+  test(=explain_at_the_height_limit_runs_on_the_reduced_stack) or
+  test(=fused_loops_under_the_run_bound_run_on_the_reduced_stack)
+)
+"""
+threads-required = 2
+test-group = "slots-2"
+
+[test-groups.slots-2]
+max-threads = 64
+
+[test-groups.slots-3]
+max-threads = 64
+
 # For iteration: one seed per `profile::sweep` sweep, and no crash sweeps.
 [profile.quick]
 default-filter = "not test(/crash/)"

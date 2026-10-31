@@ -1,3 +1,5 @@
+//! Run conformance scripts on the engine and report each difference from what they state.
+
 use std::path::Path;
 
 use adtb::runtime::Runtime;

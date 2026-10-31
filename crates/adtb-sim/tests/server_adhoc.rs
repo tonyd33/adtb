@@ -1260,7 +1260,7 @@ fn on_stack(stack: &str, name: &str, body: impl FnOnce()) {
         body();
         return;
     }
-    let out = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+    let out = adtb_heap_cap::test_child(std::env::current_exe().expect("this test binary"), 1)
         .args(["--exact", name, "--nocapture"])
         .env(CHILD, std::process::id().to_string())
         .env("RUST_MIN_STACK", stack)

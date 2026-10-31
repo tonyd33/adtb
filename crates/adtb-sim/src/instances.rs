@@ -1,3 +1,5 @@
+//! Compile the engine at `SimRuntime` in this crate.
+
 use std::hint::black_box;
 
 use adtb::{AdHocTransaction, Database, Load, Registered, RoleAuthority, RoleSession, Task};

@@ -1,3 +1,5 @@
+//! The helpers the simulator's test binaries share.
+
 pub mod api;
 pub mod common;
 pub mod crash;

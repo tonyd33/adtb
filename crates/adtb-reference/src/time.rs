@@ -1,3 +1,5 @@
+//! Do calendar arithmetic on dates and periods.
+
 pub use adtb_lang::calendar::{
     MICROS_PER_DAY, at_day, civil_from_days, date_in_range, days_from_civil, days_in_month,
 };

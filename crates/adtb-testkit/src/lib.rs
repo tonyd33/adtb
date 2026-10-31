@@ -1,3 +1,5 @@
+//! The fixtures, generators and sweep sizes the test crates share.
+
 pub mod cases;
 pub mod corpus;
 pub mod draw;

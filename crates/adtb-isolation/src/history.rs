@@ -1,3 +1,5 @@
+//! Define list-append histories: transactions, operations, dependencies and anomalies.
+
 /// A transaction's id, unique within one history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TxnId(pub u64);

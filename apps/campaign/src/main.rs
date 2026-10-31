@@ -1,3 +1,5 @@
+//! Run the campaign server: read its arguments, open the database and serve the web application.
+
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;

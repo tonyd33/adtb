@@ -1,3 +1,5 @@
+//! Schedule simulated threads and I/O deterministically from a seed.
+
 use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;

@@ -5,7 +5,9 @@
 //!
 //! The cap bounds a whole nextest run: slots times [`DEFAULT_CAP`]. A test that needs more calls
 //! [`raise_cap`] and declares `threads-required` in `.config/nextest.toml`: its cap divided by
-//! [`DEFAULT_CAP`], rounded up, so it holds the slots its cap covers.
+//! [`DEFAULT_CAP`], rounded up, so it holds the slots its cap covers. A test that spawns a capped
+//! binary builds the command with [`test_child`] and belongs to a `slots-N` test group holding N
+//! slots. Clippy refuses `Command::new` everywhere else.
 //!
 //! Linking this crate installs the allocator, except under Miri. Test builds link it through the
 //! `test-heap-cap` feature of `adtb-lang` or `adtb-sys`.
@@ -14,7 +16,7 @@
 //! dumps no core.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::ffi::CStr;
+use std::ffi::{CStr, OsStr};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::Command;
@@ -25,6 +27,11 @@ pub const DEFAULT_CAP: usize = 3 << 29;
 pub const MAX_RAISED_CAP: usize = 4 * DEFAULT_CAP;
 
 const UNREAD: usize = 0;
+
+const CAP_VARIABLE: &str = "ADTB_TEST_HEAP_CAP";
+
+/// The slots a test run directly counts as holding: no scheduler holds any.
+const DIRECT_RUN_SLOTS: usize = 2;
 
 const CHUNK_HEADER: usize = 8;
 const CHUNK_ALIGN: usize = 16;
@@ -47,10 +54,72 @@ pub fn raise_cap(bytes: usize) {
     }
 }
 
+/// Returns this process's cap.
+#[must_use]
+pub fn current_cap() -> usize {
+    HEAP.cap()
+}
+
 /// Returns the nextest slots a test with a cap of `bytes` holds.
 #[must_use]
 pub const fn slots_for(bytes: usize) -> usize {
     bytes.div_ceil(DEFAULT_CAP)
+}
+
+/// Returns a command for `program` as a child of the calling test, one of at most `at_once` it runs
+/// at the same time, capped so the test's live processes together stay within its slots. The
+/// variable overrides the computed cap when this process has it.
+///
+/// # Panics
+///
+/// Under a nextest run, when the test is in no `slots-N` test group; when `at_once` is zero; when
+/// the test's own cap leaves its children nothing.
+#[must_use]
+pub fn test_child(program: impl AsRef<OsStr>, at_once: usize) -> Command {
+    let slots = held_slots();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one site every spawn goes through; goes if a spawn no longer needs a cap"
+    )]
+    let mut child = Command::new(program);
+    if env_cap().is_none() {
+        child.env(
+            CAP_VARIABLE,
+            child_cap(slots, at_once, HEAP.cap()).to_string(),
+        );
+    }
+    child
+}
+
+fn held_slots() -> usize {
+    if !in_nextest_run() {
+        return DIRECT_RUN_SLOTS;
+    }
+    let group = std::env::var("NEXTEST_TEST_GROUP").unwrap_or_default();
+    slots_of_group(&group).unwrap_or_else(|| {
+        panic!(
+            "a test that spawns a child belongs to a `slots-N` test group in .config/nextest.toml; this one is in `{group}`"
+        )
+    })
+}
+
+fn slots_of_group(group: &str) -> Option<usize> {
+    group.strip_prefix("slots-")?.parse().ok()
+}
+
+/// Returns the cap of each of `at_once` children of a test holding `slots`, itself capped at
+/// `parent_cap`.
+fn child_cap(slots: usize, at_once: usize, parent_cap: usize) -> usize {
+    assert!(
+        at_once > 0,
+        "a test states how many children it runs at once"
+    );
+    let cap = (slots * DEFAULT_CAP).saturating_sub(parent_cap) / at_once;
+    assert!(
+        cap > 0,
+        "{slots} slots leave nothing for {at_once} children beside a cap of {parent_cap}"
+    );
+    cap
 }
 
 /// Returns what malloc takes for a block: the size plus its header, rounded up to the chunk
@@ -177,15 +246,24 @@ fn cap_from_environment() -> usize {
 }
 
 fn env_cap() -> Option<usize> {
+    parse_cap(env_bytes(c"ADTB_TEST_HEAP_CAP")?)
+}
+
+/// Returns the value of `name`. Allocates nothing.
+fn env_bytes(name: &CStr) -> Option<&'static [u8]> {
     // SAFETY: the name is NUL terminated; no code in the test binaries calls `setenv` while
     // allocating threads run.
-    let value = unsafe { libc::getenv(c"ADTB_TEST_HEAP_CAP".as_ptr()) };
+    let value = unsafe { libc::getenv(name.as_ptr()) };
     if value.is_null() {
         return None;
     }
     // SAFETY: a non-null `getenv` result is a NUL terminated string.
-    let bytes = unsafe { CStr::from_ptr(value) }.to_bytes();
-    parse_cap(bytes)
+    Some(unsafe { CStr::from_ptr(value) }.to_bytes())
+}
+
+/// Returns whether this process belongs to a test nextest is running, listing excluded.
+fn in_nextest_run() -> bool {
+    env_bytes(c"NEXTEST_TEST_PHASE") == Some(b"run")
 }
 
 /// Returns the positive decimal number `bytes` spells.
@@ -253,6 +331,10 @@ fn abort_over_cap(live: usize, cap: usize) -> ! {
     line.text(" bytes of heap live, past the cap of ");
     line.number(cap);
     line.text("\n");
+    abort_with(&line)
+}
+
+fn abort_with(line: &Line) -> ! {
     // SAFETY: the pointer and length name initialised bytes of `line`.
     unsafe { libc::write(libc::STDERR_FILENO, line.bytes.as_ptr().cast(), line.len) };
     forgo_core_dump();
@@ -317,7 +399,8 @@ pub fn uncapped_test_binaries(manifest: &Path) -> Vec<String> {
 }
 
 fn list_command(manifest: &Path) -> Command {
-    let mut list = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut list = test_child(cargo, 1);
     list.args([
         "nextest",
         "list",
@@ -335,9 +418,9 @@ fn list_command(manifest: &Path) -> Command {
 }
 
 fn aborts_at_one_byte(binary: &str) -> bool {
-    Command::new(binary)
+    test_child(binary, 1)
         .arg("--list")
-        .env("ADTB_TEST_HEAP_CAP", "1")
+        .env(CAP_VARIABLE, "1")
         .output()
         .expect("the test binary starts")
         .status
@@ -445,13 +528,38 @@ mod tests {
     }
 
     #[test]
+    fn children_share_what_the_slots_leave_beside_the_parent() {
+        assert_eq!(child_cap(2, 1, DEFAULT_CAP), DEFAULT_CAP);
+        assert_eq!(child_cap(2, 8, DEFAULT_CAP), DEFAULT_CAP / 8);
+        assert_eq!(child_cap(3, 2, DEFAULT_CAP), DEFAULT_CAP);
+        assert_eq!(child_cap(3, 1, 2 * DEFAULT_CAP), DEFAULT_CAP);
+    }
+
+    #[test]
+    #[should_panic(expected = "leave nothing")]
+    fn a_test_in_one_slot_has_nothing_for_a_child() {
+        child_cap(1, 1, DEFAULT_CAP);
+    }
+
+    #[test]
+    #[should_panic(expected = "how many children")]
+    fn no_children_at_once_is_refused() {
+        child_cap(2, 0, DEFAULT_CAP);
+    }
+
+    #[test]
+    fn only_a_slots_group_states_slots() {
+        assert_eq!(slots_of_group("slots-2"), Some(2));
+        assert_eq!(slots_of_group("@global"), None);
+        assert_eq!(slots_of_group("slots-"), None);
+        assert_eq!(slots_of_group(""), None);
+    }
+
+    #[test]
     fn the_nested_list_drops_the_callers_profile() {
         let list = list_command(Path::new("Cargo.toml"));
         let profile = list.get_envs().find(|(name, _)| *name == "NEXTEST_PROFILE");
-        assert_eq!(
-            profile,
-            Some((std::ffi::OsStr::new("NEXTEST_PROFILE"), None))
-        );
+        assert_eq!(profile, Some((OsStr::new("NEXTEST_PROFILE"), None)));
     }
 
     #[test]

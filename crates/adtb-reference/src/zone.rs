@@ -1,3 +1,5 @@
+//! Convert between instants and civil times in named zones.
+
 use jiff::Timestamp;
 use jiff::civil::DateTime;
 use jiff::tz::{AmbiguousOffset, TimeZone};

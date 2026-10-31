@@ -1,3 +1,5 @@
+//! Run the `adtb` shell: parse its flags, open or create the file and read texts.
+
 mod schema;
 mod session;
 mod text;

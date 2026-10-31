@@ -70,25 +70,25 @@ Layers inside `adtb` (catalog, planner, transactions, storage) are
 modules, not crates. Their boundaries are still contracts and have
 design files of their own.
 
-| Boundary | Provider | Consumers | Design file |
-| --- | --- | --- | --- |
-| Typed kernel terms | `adtb-lang` | `adtb`, `adtb-reference`, code generators | [kernel.md](kernel.md) |
-| Textual value syntax | `adtb-lang` | `adtb`, `adtb-reference` | [kernel.md §9](kernel.md#9-textual-syntax) |
-| File records | `adtb-file` | `adtb`, `adtb-reference` | [oracle.md §1](oracle.md#1-evaluation-contract) |
-| Safe page memory and I/O buffers | `adtb-sys` | `adtb` | [sys.md](sys.md) |
-| I/O, time, threads, randomness | I/O backends, `adtb-sim` | `adtb` | [runtime.md](runtime.md) |
-| File, pages, log, recovery | pager and log | heaps, indexes, replication, backup, verify | [storage.md](storage.md) |
-| Structural verification | `verify` | catalog, maintenance commands, test harnesses | [verify.md](verify.md) |
-| Row versions and isolation | transactions | heaps, indexes, executor, vacuum | [mvcc.md](mvcc.md) |
-| Index entries and keys | indexes | heaps, transactions, planner | [indexes.md](indexes.md) |
-| Physical plans and batches | planner | executor, catalog | [execution.md](execution.md) |
-| Constraint and view maintenance | constraint and view compiler | transactions | [maintenance.md](maintenance.md) |
-| Staged schema changes | evolution | catalog, planner | [schema-change.md](schema-change.md) |
-| Log stream and replicas | primary | replicas, embedded replicas, backups | [replication.md](replication.md) |
-| Calls over the wire | `adtb-server` | `adtb` | [server.md](server.md) |
-| Typed bundles | `adtb` | generated code | [server.md §4.5](server.md#45-typed-bundles) |
-| Histories and anomalies | test harnesses | `adtb-isolation` | [runtime.md §6](runtime.md#6-isolation-histories) |
-| The test oracle | `adtb-reference` | test harness, `adtb-conformance` | [oracle.md](oracle.md) |
+| Boundary | Provider | Consumers | Design file | Entry point |
+| --- | --- | --- | --- | --- |
+| Typed kernel terms | `adtb-lang` | `adtb`, `adtb-reference`, code generators | [kernel.md](kernel.md) | `adtb_lang::kernel`: `Terms`, `Tm` |
+| Textual value syntax | `adtb-lang` | `adtb`, `adtb-reference` | [kernel.md §9](kernel.md#9-textual-syntax) | `adtb_lang::textual` |
+| File records | `adtb-file` | `adtb`, `adtb-reference` | [oracle.md §1](oracle.md#1-evaluation-contract) | `adtb_file`: `Files`, `records` |
+| Safe page memory and I/O buffers | `adtb-sys` | `adtb` | [sys.md](sys.md) | `adtb_sys::pages`: `PageMemory`; `adtb_sys::buf`: `AlignedBuf` |
+| I/O, time, threads, randomness | I/O backends, `adtb-sim` | `adtb` | [runtime.md](runtime.md) | `adtb_sys::runtime`: `Runtime`, `Io`; `adtb_sim`: `Sim`, `SimRuntime` |
+| File, pages, log, recovery | pager and log | heaps, indexes, replication, backup, verify | [storage.md](storage.md) | `adtb::storage`: `Pager` |
+| Structural verification | `verify` | catalog, maintenance commands, test harnesses | [verify.md](verify.md) | `adtb::verify`: `Inventory`, `Problem` |
+| Row versions and isolation | transactions | heaps, indexes, executor, vacuum | [mvcc.md](mvcc.md) | `adtb::mvcc`: `Transactions`, `Snapshot`, `Serializer` |
+| Index entries and keys | indexes | heaps, transactions, planner | [indexes.md](indexes.md) | `adtb::btree`: `BTree`, `Index`; `adtb::key`: `Entry`, `KeySchema` |
+| Physical plans and batches | planner | executor, catalog | [execution.md](execution.md) | `adtb::plan`: `Plan`; `adtb::batch`: `Schema`, `Column`; `adtb::exec`: `Program` |
+| Constraint and view maintenance | constraint and view compiler | transactions | [maintenance.md](maintenance.md) | `adtb::write`: `CheckPlan` |
+| Staged schema changes | evolution | catalog, planner | [schema-change.md](schema-change.md) | `adtb_lang::evolve`: `State`; `adtb::catalog`: `Rewrite` |
+| Log stream and replicas | primary | replicas, embedded replicas, backups | [replication.md](replication.md) | `adtb`: `Database`; `adtb::storage`: `Pager` |
+| Calls over the wire | `adtb-server` | `adtb` | [server.md](server.md) | `adtb_server::wire`: `Reassembler`; `adtb`: `Database` |
+| Typed bundles | `adtb` | generated code | [server.md §4.5](server.md#45-typed-bundles) | `adtb::typed`: `BundleDef`, `Callable` |
+| Histories and anomalies | test harnesses | `adtb-isolation` | [runtime.md §6](runtime.md#6-isolation-histories) | `adtb_isolation`: `check`, `run`, `Scenario` |
+| The test oracle | `adtb-reference` | test harness, `adtb-conformance` | [oracle.md](oracle.md) | `adtb_reference`: `Interpreter`, `Value` |
 
 Rulings: project/arch/crates/by-boundary
 

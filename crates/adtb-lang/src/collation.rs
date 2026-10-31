@@ -1,3 +1,5 @@
+//! Parse collation names and hold their settings.
+
 /// The version every collation name this binary supports carries after its `@`.
 pub const VERSION: &str = "cldr-49";
 

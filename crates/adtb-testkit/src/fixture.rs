@@ -1,3 +1,5 @@
+//! Build a checked schema with rows and an interpreter from text.
+
 use std::collections::BTreeMap;
 
 use adtb_lang::ast::{AdhocItem, BundleItem, ExampleItem};

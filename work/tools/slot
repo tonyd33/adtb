@@ -5,8 +5,9 @@
 # `land` frees a slot; its directory stays, so target/ stays valid for the next track. Refuses a
 # slot whose working copy has changes or a description, with commits not on main, holding files jj
 # does not track outside build output, or in use by a process. With N, refuses when slot-N is
-# unusable; without, skips such a slot and says why. Empties target/debug and target/tmp of a
-# reused slot when together they are above ADTB_SLOT_CAP_GB (default 20). One call runs at a time.
+# unusable; without, skips such a slot and says why. Empties debug and tmp of the build directories
+# of a reused slot when, in one of them, together they are above ADTB_SLOT_CAP_GB (default 20). One
+# call runs at a time.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -67,8 +68,8 @@ fi
 
 reuse() {
   local slot=$1 path=$2
-  if over_slot_cap "$path/target"; then
-    echo "$path/target is above the cap"
+  if over_slot_cap "$path/target" || over_slot_cap "$path/apps/campaign/target"; then
+    echo "a build directory of $path is above the cap"
     ADTB_GC_IDLE_HOURS=0 "$root/work/tools/workspace-gc" --clear-build "$slot"
   fi
   jj -R "$path" new main

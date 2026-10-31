@@ -1,3 +1,5 @@
+//! Define source spans and diagnostics.
+
 use std::fmt;
 use std::ops::Range;
 

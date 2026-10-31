@@ -1,3 +1,5 @@
+//! Track what each simulated client was told and judge recovery against it.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 

@@ -1,3 +1,5 @@
+//! Define the values the interpreter computes with.
+
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::rc::Rc;

@@ -1,3 +1,5 @@
+//! Normalise, map case, count graphemes and match regular expressions on text.
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;

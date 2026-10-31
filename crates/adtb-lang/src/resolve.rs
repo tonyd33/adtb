@@ -1,3 +1,5 @@
+//! Resolve names against scopes and module visibility.
+
 use std::collections::BTreeSet;
 
 use crate::ast::*;

@@ -1,3 +1,5 @@
+//! Run the write path: change sets, constraint checks, schema changes and reindexing.
+
 mod apply;
 mod check;
 mod delta;

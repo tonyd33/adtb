@@ -1,3 +1,5 @@
+//! Define the runtime interfaces: I/O, clock, threads and entropy.
+
 use std::ops::Add;
 use std::time::{Duration, SystemTime};
 

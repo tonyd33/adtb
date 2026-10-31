@@ -1,3 +1,5 @@
+//! Verify a pager's file after a simulated crash.
+
 use adtb::storage::Pager;
 use adtb::verify::{Inventory, repair, verify};
 use adtb_sim::SimRuntime;

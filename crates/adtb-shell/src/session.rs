@@ -1,3 +1,5 @@
+//! Run texts and backslash commands against an open database, printing their results.
+
 use std::fmt::Display;
 use std::io::{self, Write};
 

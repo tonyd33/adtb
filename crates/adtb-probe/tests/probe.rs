@@ -4,7 +4,9 @@ extern crate adtb_lang as _;
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+
+use adtb_heap_cap::test_child;
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -14,7 +16,7 @@ fn fixture(name: &str) -> PathBuf {
 
 /// Run the probe with `args` and `stdin`, returning its exit code, stdout and stderr.
 fn probe_all(args: &[&str], stdin: &str) -> (i32, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_adtb-probe"))
+    let mut child = test_child(env!("CARGO_BIN_EXE_adtb-probe"), 1)
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

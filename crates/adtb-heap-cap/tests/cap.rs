@@ -1,13 +1,15 @@
 //! The cap as a test binary sees it: a runaway dies alone, and no test binary goes without the cap.
 
-use adtb_heap_cap::{DEFAULT_CAP, raise_cap, slots_for};
+use adtb_heap_cap::{DEFAULT_CAP, current_cap, raise_cap, slots_for, test_child};
 use std::fs;
+use std::io::Write;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 const MODE: &str = "ADTB_HEAP_CAP_TEST_MODE";
 const CAP: &str = "ADTB_TEST_HEAP_CAP";
+const PHASE: &str = "NEXTEST_TEST_PHASE";
 const SMALL_BOX_CAP: usize = 268_435_456;
 
 fn core_limit() -> libc::rlimit {
@@ -46,6 +48,12 @@ fn run_mode(mode: &str) {
             std::hint::black_box(vec![0u8; DEFAULT_CAP + (1 << 20)]);
         }
         "core_limit" => assert_eq!(core_limit().rlim_cur, 0),
+        "print_cap" => {
+            writeln!(std::io::stdout(), "cap {}", current_cap()).expect("stdout takes the cap");
+        }
+        "spawn_a_child" => {
+            drop(test_child("true", 1));
+        }
         other => panic!("no mode {other}"),
     }
 }
@@ -58,15 +66,18 @@ fn child_entry() {
 }
 
 fn child(mode: &str, cap: Option<usize>) -> Output {
-    let mut command = Command::new(std::env::current_exe().expect("the test binary has a path"));
+    let mut command = test_child(
+        std::env::current_exe().expect("the test binary has a path"),
+        1,
+    );
     command
         .args(["--exact", "child_entry", "--nocapture"])
         .env(MODE, mode)
-        .env("RUST_TEST_THREADS", "2")
-        .env_remove(CAP);
-    if let Some(cap) = cap {
-        command.env(CAP, cap.to_string());
-    }
+        .env("RUST_TEST_THREADS", "2");
+    match cap {
+        Some(cap) => command.env(CAP, cap.to_string()),
+        None => command.env_remove(CAP),
+    };
     command.output().expect("the child starts")
 }
 
@@ -154,7 +165,10 @@ fn set_core_limit(limit: libc::rlimit) -> std::io::Result<()> {
 fn a_test_binary_started_with_core_dumps_on_zeroes_its_core_limit() {
     let mut limit = core_limit();
     limit.rlim_cur = limit.rlim_max.min(4096);
-    let mut command = Command::new(std::env::current_exe().expect("the test binary has a path"));
+    let mut command = test_child(
+        std::env::current_exe().expect("the test binary has a path"),
+        1,
+    );
     command
         .args(["--exact", "child_entry", "--nocapture"])
         .env(MODE, "core_limit");
@@ -289,6 +303,89 @@ fn rust_sources(dir: &Path, found: &mut Vec<PathBuf>) {
             found.push(path);
         }
     }
+}
+
+/// Returns the `slots-N` group of each override of a nextest config whose `threads-required` is
+/// not N.
+fn groups_without_their_slots(config: &str) -> Vec<String> {
+    config
+        .split("[[")
+        .filter_map(|block| {
+            let setting = |name: &str| {
+                block
+                    .lines()
+                    .find_map(|line| line.strip_prefix(name)?.strip_prefix(" = "))
+            };
+            let group = setting("test-group")?.trim_matches('"');
+            let slots = group.strip_prefix("slots-")?;
+            (setting("threads-required") != Some(slots)).then(|| group.to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn a_slots_group_without_its_slots_is_reported() {
+    let two = "[[o]]\nfilter = \"x\"\nthreads-required = 2\ntest-group = \"slots-2\"\n";
+    assert_eq!(groups_without_their_slots(two), Vec::<String>::new());
+    let one =
+        "[[o]]\nthreads-required = 1\ntest-group = \"slots-2\"\n[[o]]\nthreads-required = 2\n";
+    assert_eq!(groups_without_their_slots(one), ["slots-2"]);
+    assert_eq!(
+        groups_without_their_slots("[[o]]\ntest-group = \"slots-3\"\n"),
+        ["slots-3"]
+    );
+}
+
+#[test]
+fn every_slots_group_holds_its_slots() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dev_shell = fs::read_to_string(root.join("devenv.nix")).expect("devenv.nix reads");
+    assert!(
+        !dev_shell.contains("--config-file"),
+        "check runs each workspace with its own nextest config"
+    );
+    for config in [".config/nextest.toml", "apps/campaign/.config/nextest.toml"] {
+        let config = fs::read_to_string(root.join(config)).expect("the config reads");
+        assert!(config.contains("test-group = \"slots-2\""), "{config}");
+        assert_eq!(groups_without_their_slots(&config), Vec::<String>::new());
+    }
+}
+
+#[test]
+fn the_helpers_child_starts_with_the_cap_it_computed() {
+    let child = test_child(
+        std::env::current_exe().expect("the test binary has a path"),
+        4,
+    )
+    .args(["--exact", "child_entry", "--nocapture"])
+    .env(MODE, "print_cap")
+    .output()
+    .expect("the child starts");
+    assert!(child.status.success(), "{child:?}");
+    let stdout = String::from_utf8_lossy(&child.stdout);
+    let printed = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("cap "))
+        .unwrap_or_else(|| panic!("no cap line in {stdout}"));
+    let expected = std::env::var(CAP).unwrap_or_else(|_| (DEFAULT_CAP / 4).to_string());
+    assert_eq!(printed, expected);
+}
+
+#[test]
+fn a_test_in_no_slots_group_cannot_build_a_child() {
+    let child = test_child(
+        std::env::current_exe().expect("the test binary has a path"),
+        1,
+    )
+    .args(["--exact", "child_entry", "--nocapture"])
+    .env(MODE, "spawn_a_child")
+    .env(PHASE, "run")
+    .env("NEXTEST_TEST_GROUP", "@global")
+    .output()
+    .expect("the child starts");
+    assert!(!child.status.success(), "{child:?}");
+    let stderr = String::from_utf8_lossy(&child.stderr);
+    assert!(stderr.contains("`slots-N` test group"), "{stderr}");
 }
 
 #[test]

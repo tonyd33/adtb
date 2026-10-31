@@ -1,3 +1,4 @@
+//! Simulated storage, clock, randomness and scheduler, with fault injection.
 #![forbid(unsafe_code)]
 
 macro_rules! trace {

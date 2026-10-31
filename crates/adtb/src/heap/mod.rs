@@ -1,3 +1,5 @@
+//! Hold one heap per constructor: pages, slots, versions, large values and the visibility map.
+
 mod dir;
 mod fixed;
 mod handle;

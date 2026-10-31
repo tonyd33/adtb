@@ -286,6 +286,7 @@ fn crash_body(rt: &SimRuntime) -> Database<SimRuntime> {
 
 #[test]
 fn a_crash_at_each_stage_keeps_an_index_that_finds_every_row_and_leaks_nothing() {
+    adtb_heap_cap::raise_cap(3 << 30);
     for seed in seeds::sweep(0..1) {
         let times = phase_times(seed);
         assert!(times.len() >= 4, "seed {seed}: {times:?}");

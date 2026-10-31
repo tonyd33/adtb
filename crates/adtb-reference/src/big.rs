@@ -1,3 +1,5 @@
+//! Compute with arbitrary precision integers.
+
 use std::cmp::Ordering;
 
 /// A signed integer of any size.

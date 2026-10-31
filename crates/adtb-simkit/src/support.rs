@@ -1,3 +1,5 @@
+//! Bind heaps and indexes for a test world and convert values to their stored forms.
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

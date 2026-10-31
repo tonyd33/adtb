@@ -1,3 +1,5 @@
+//! The public interface: open a `Database`, run texts and calls, and read their results.
+
 mod arrow;
 mod bundle;
 mod command;

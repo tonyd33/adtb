@@ -1,3 +1,5 @@
+//! Normalise checked programs to the terms planners and the reference interpreter run.
+
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 

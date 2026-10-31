@@ -1,3 +1,5 @@
+//! Simulate storage: sectors, in-flight writes, torn writes and injected faults.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::ops::Range;

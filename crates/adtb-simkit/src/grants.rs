@@ -1,3 +1,5 @@
+//! Write roles and grants into a catalog from a test.
+
 use adtb::catalog::{Catalog, OWNER_ROLE, Rewrite, values};
 use adtb::key::Value;
 use adtb::mvcc::Transactions;

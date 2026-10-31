@@ -1,3 +1,5 @@
+//! Hold the B-link trees and the union indexes over them.
+
 pub mod build;
 mod index;
 mod leaf;

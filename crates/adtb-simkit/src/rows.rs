@@ -1,3 +1,5 @@
+//! Define the sample rows and heaps of heap tests.
+
 use std::collections::BTreeMap;
 
 use adtb::heap::{FieldType, Heap};

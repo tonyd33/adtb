@@ -6,22 +6,32 @@ no_core_dumps() {
 }
 
 machine_lock_path() {
-  printf '%s\n' "${XDG_CACHE_HOME:-$HOME/.cache}/adtb/suite.lock"
+  printf '%s\n' "${ADTB_MACHINE_LOCK:-/tmp/adtb-suite-$UID.lock}"
 }
 
-# Hold the machine-wide lock on fd 9 until the shell and its children exit or machine_unlock runs.
+# Hold the machine-wide lock until this shell exits or machine_unlock runs.
 # Children see ADTB_MACHINE_LOCK_HELD, so a tool `check` runs does not wait on its own parent.
 machine_lock() {
   [[ -z ${ADTB_MACHINE_LOCK_HELD:-} ]] || return 0
   machine_lock_file=$(machine_lock_path)
   mkdir -p "$(dirname "$machine_lock_file")"
-  exec 9>>"$machine_lock_file"
-  if ! flock -n 9; then
+  : >>"$machine_lock_file"
+  local waited=$SECONDS blocked=
+  if ! flock -n "$machine_lock_file" true; then
     echo "waiting for the machine lock, held by $(cat "$machine_lock_file")"
-    local waited=$SECONDS
-    flock 9
-    echo "waited $((SECONDS - waited))s"
+    blocked=1
   fi
+  exec 9< <(cd / && exec flock -o "$machine_lock_file" \
+    bash -c 'echo held; exec tail --pid="$1" -f /dev/null >/dev/null' _ "$$" 2>/dev/null </dev/null)
+  machine_lock_holder=$!
+  local said=
+  read -r -u 9 said || true
+  exec 9<&-
+  if [[ $said != held ]]; then
+    echo "the machine lock holder failed" >&2
+    return 1
+  fi
+  [[ -z $blocked ]] || echo "waited $((SECONDS - waited))s"
   printf '%s pid %s since %s\n' "${1:-$PWD}" "$$" "$(date +%T)" >"$machine_lock_file"
   export ADTB_MACHINE_LOCK_HELD=1
 }
@@ -30,8 +40,8 @@ machine_lock() {
 machine_unlock() {
   [[ -n ${machine_lock_file:-} ]] || return 0
   : >"$machine_lock_file"
-  flock -u 9
-  unset ADTB_MACHINE_LOCK_HELD machine_lock_file
+  kill "$machine_lock_holder"
+  unset ADTB_MACHINE_LOCK_HELD machine_lock_file machine_lock_holder
 }
 
 # Print each process with an executable, working directory, open file or mapping under directory $1.

@@ -1,3 +1,5 @@
+//! Wait for locks through a runtime's scheduler.
+
 use std::sync::{Mutex, MutexGuard, RwLockReadGuard, RwLockWriteGuard, TryLockError};
 
 use crate::runtime::Threads;

@@ -1,3 +1,4 @@
+//! The reference interpreter: the test oracle for the engine.
 #![forbid(unsafe_code)]
 
 mod big;

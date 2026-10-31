@@ -1,3 +1,5 @@
+//! Decide whether input so far is a complete text.
+
 use adtb_lang::ast::AdhocItem;
 use adtb_lang::lex::{Tok, lex};
 use adtb_lang::parse::{Options, parse_adhoc};

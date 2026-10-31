@@ -58,7 +58,7 @@ in
       <(sed -n '/^\[workspace.lints.rust\]/,$p' "$app")
     cargo clippy --manifest-path "$app" --all-targets -- -D warnings
     cargo fmt --manifest-path "$app" --all --check
-    cargo nextest run --manifest-path "$app" --config-file "$DEVENV_ROOT/.config/nextest.toml"
+    cargo nextest run --manifest-path "$app"
     cargo deny check
     cargo deny --manifest-path "$app" check
     size-check

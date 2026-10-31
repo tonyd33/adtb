@@ -1,3 +1,5 @@
+//! Admit kernel terms: stratification, boundedness, totality, aggregates and volatile reads.
+
 use std::collections::HashSet;
 
 use crate::check::{Adhoc, Program, Query, Txn};

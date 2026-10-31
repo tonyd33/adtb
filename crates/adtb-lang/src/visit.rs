@@ -1,3 +1,5 @@
+//! Walk every expression of a syntax tree.
+
 use crate::ast::*;
 
 /// Calls `f` on `e` and on every expression nested in it, writes and arms included.

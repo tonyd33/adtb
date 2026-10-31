@@ -1,3 +1,5 @@
+//! Run a simulated process that may crash, at chosen times.
+
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Once;
 use std::time::Duration;

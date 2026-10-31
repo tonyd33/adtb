@@ -1,3 +1,5 @@
+//! Turn a schema file of declarations into its first migration.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use adtb_lang::ast::{Decl, SchemaFile};

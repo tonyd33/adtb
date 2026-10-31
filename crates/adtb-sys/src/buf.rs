@@ -1,3 +1,5 @@
+//! Hold aligned buffers for direct I/O.
+
 use std::alloc::{self, Layout};
 use std::fmt;
 use std::ops::{Deref, DerefMut};

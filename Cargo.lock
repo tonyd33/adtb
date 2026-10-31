@@ -25,6 +25,7 @@ dependencies = [
 name = "adtb-codegen"
 version = "0.1.0"
 dependencies = [
+ "adtb-heap-cap",
  "adtb-lang",
  "clap",
 ]
@@ -45,6 +46,7 @@ name = "adtb-conformance"
 version = "0.1.0"
 dependencies = [
  "adtb",
+ "adtb-heap-cap",
  "adtb-lang",
  "adtb-reference",
  "adtb-sim",
@@ -100,6 +102,7 @@ version = "0.1.0"
 dependencies = [
  "adtb",
  "adtb-conformance",
+ "adtb-heap-cap",
  "adtb-lang",
  "adtb-sim",
  "clap",
@@ -135,6 +138,7 @@ name = "adtb-shell"
 version = "0.1.0"
 dependencies = [
  "adtb",
+ "adtb-heap-cap",
  "adtb-lang",
  "clap",
 ]

@@ -1,3 +1,5 @@
+//! Run conformance files from the command line.
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 

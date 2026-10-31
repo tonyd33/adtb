@@ -1,3 +1,5 @@
+//! Remove dead row versions and index entries.
+
 mod dead;
 mod run;
 mod verify;

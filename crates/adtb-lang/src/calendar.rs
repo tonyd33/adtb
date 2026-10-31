@@ -1,3 +1,5 @@
+//! Convert between civil dates and day counts.
+
 pub const MICROS_PER_DAY: i64 = 86_400_000_000;
 
 /// Returns the days since 1970-01-01 of a proleptic Gregorian date.
