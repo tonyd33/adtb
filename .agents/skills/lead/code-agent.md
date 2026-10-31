@@ -201,4 +201,4 @@ A test binary aborts past 1.5 GiB of live heap, charged by malloc chunk, by a co
 
 ## Waiting
 
-Write code with the edit tool, not a heredoc in a shell command. Never poll with an unbounded loop: run the command in the foreground, or in the background and wait for its notification. A wait for something else must have a time limit and must fail when the limit passes. An agent stuck this way gives no signal, and two such shells once held a track for 80 minutes.
+Never run a command that waits on input it will not get. Never poll with an unbounded loop: run the command in the foreground, or in the background and wait for its notification. A wait for something else must have a time limit and must fail when the limit passes. An agent stuck this way gives no signal, and two such shells once held a track for 80 minutes.

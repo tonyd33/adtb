@@ -31,3 +31,5 @@ S4 is in round 4, change yxnwxzvu, which replaces name-based cleanup by building
 ## 2026-10-31: tickets from round 4, after landing
 
 `write_pages` trusts a resealed part's chunk header, which can panic or write past `file_pages`; `restore` refuses servers. `restored` and `prove_in` hash every part twice. A failed read of the test database writes a `Proved::Failed` over a true proof; `a_failed_read_of_the_test_database_records_no_verdict` holds the spec, and fault-matrix's typed cause fixes it.
+
+From round 6, not fixed: a misnamed foreign segment, or one of another block size, reads Invalid and is ignored in recovery, so `log.rs:350` removes it; it needs hand-placed files. `list_race_panics` survives default and deep, so no test reaches the `NotFound` arm at claim's List. No test covers races or a restore interleaving on a real file.

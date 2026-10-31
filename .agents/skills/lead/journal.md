@@ -43,3 +43,7 @@ The maintainer asked for a wider look after one review found tautological assert
 ### 2026-10-31: slot-test
 
 The maintainer asked why slot-test looked so complex. It grew from 351 to 532 lines in a day, most of it protecting the script from itself. I took one accident, ruled an absolute guarantee bash cannot give, then patched each hole a reviewer found, and I read the result and called it right. My own skill says each wrapper needs a concrete unmet requirement, and I did not apply it. Asking for a guarantee creates machinery: ask what the accident needed, and what the smallest change is that stops it. A review that lists holes in a guarantee can mean the guarantee is wrong.
+
+### 2026-10-31: backup rounds 5 and 6
+
+Round 5 fixed the pairing by id, and the review then found `Database::open` deleting the same restored log on a failed create, on a path the simulator tests never use. The harness searched `open_in`, and the bug was one layer up. Same class, a sixth round. A mechanism only holds where its search reaches, so a search of a layer says nothing of the layer above: name the entry point a user calls. Also, I accepted in round 5 that a refused create leaves its file, to avoid name-based cleanup; the real rule was to remove what the call made, by a fact from the operation that made it.
