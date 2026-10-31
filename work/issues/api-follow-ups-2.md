@@ -2,7 +2,7 @@
 created-at: 2026-10-26
 status: open
 kind: bug
-priority: 782
+priority: 540
 summary: "SchemaRefused.operator and Serialization.on are empty, sys::conflicts is never written, and deadline, limit, cancel, assert and trace options do not run"
 ---
 

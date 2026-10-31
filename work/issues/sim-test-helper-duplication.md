@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: feature
 priority: 771
 summary: "commands.rs and files.rs re-add failure, is_invalid, run and other helpers that belong in support/api.rs"
+closed: 2026-10-31
 tags:
   - quality
   - sim
@@ -23,3 +24,9 @@ In the range that landed `crates/adtb-sim/tests/support/api.rs`, the new test fi
 - `in_txn_run` and `last` in `files.rs:859-870` are not specific to files.
 
 Fix: move them into `support/api.rs` under one name each.
+
+## 2026-10-31: closed by triage
+
+Obsolete. failure and is_invalid live in adtb-simkit/src/api.rs.
+
+## 2026-10-31: resolved

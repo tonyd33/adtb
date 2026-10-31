@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: wontfix
 kind: feature
 priority: 786
 summary: "CatalogIds in adtb-lang still holds bare u64 ids, and norm.rs present_step still carries a too_many_arguments expectation"
+closed: 2026-10-31
 tags:
   - quality
   - lang
@@ -22,3 +23,9 @@ Left by the catalog quality track, which could not touch adtb-lang:
 ## 2026-10-27: grants
 
 `Granted` and `GrantTarget` in `crates/adtb-lang/src/evolve/grant.rs` name objects by bare catalog ids; give them the newtype ids.
+
+## 2026-10-31: closed by triage
+
+Below the filing bar: a refactor with no observable defect.
+
+## 2026-10-31: wontfix

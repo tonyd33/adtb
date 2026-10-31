@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: resolved
 kind: bug
 priority: 779
 summary: "soundness.rs's dead_code and disallowed_methods expectations name why, not what would remove them"
+closed: 2026-10-31
 tags:
   - quality
   - test
@@ -17,3 +18,9 @@ tags:
 - soundness.rs:4-7: the `dead_code` reason names the unused part of the shared `running` module but not the condition for dropping it.
 
 Fix: phrase both reasons as the condition under which the expectation goes.
+
+## 2026-10-31: closed by triage
+
+Obsolete. Neither expect remains in tests/soundness.rs.
+
+## 2026-10-31: resolved

@@ -2,7 +2,7 @@
 created-at: 2026-10-26
 status: open
 kind: bug
-priority: 746
+priority: 470
 summary: "an index expression that faults has no stated behaviour, redefining a function an index calls leaves stale keys, and derived elements do not count for admission"
 ---
 

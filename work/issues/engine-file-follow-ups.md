@@ -2,7 +2,7 @@
 created-at: 2026-10-26
 status: open
 kind: bug
-priority: 790
+priority: 600
 summary: "the engine reads every file scan of a statement up front, refuses a file path that depends on a row, and reads files with std::fs instead of the runtime"
 tags:
   - engine

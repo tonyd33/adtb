@@ -2,7 +2,7 @@
 created-at: 2026-10-25
 status: open
 kind: feature
-priority: 318
+priority: 653
 summary: "no stress tests run the latch protocol and the B-link tree on real OS threads"
 depends-on:
   - real-runtime

@@ -2,7 +2,7 @@
 created-at: 2026-10-28
 status: open
 kind: bug
-priority: 830
+priority: 600
 summary: "recursive fix equations take their row origin only from the pre-pass, the pre-pass repeats synth side effects, and constructor restriction is untested on a multi-constructor sum"
 tags:
   - lang

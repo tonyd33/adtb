@@ -2,7 +2,7 @@
 created-at: 2026-10-27
 status: open
 kind: bug
-priority: 895
+priority: 590
 summary: "bundle and registered rows decode an unknown Registered constructor as ImportedFn, a malformed hides_new as false, and Option fields by constructor position"
 tags:
   - quality

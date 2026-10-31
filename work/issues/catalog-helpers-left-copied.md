@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: wontfix
 kind: bug
 priority: 896
 summary: "catalog relation lookups and by-name row builders survive beside catalog::values in migration, oplog, initialize and the server tables"
+closed: 2026-10-31
 tags:
   - quality
   - engine
@@ -21,3 +22,9 @@ grant-row-helpers-copied made `crates/adtb/src/catalog/values.rs` the one set of
 - `Shape::log_row` gets the `Some` constructor by calling `tag`, documented for nullary constructors, and destructuring with `unreachable!` (`crates/adtb/src/catalog/grants.rs:76`).
 
 Fix: use `values::relation` at the four sites, add a `values` lookup of a catalog type and of a constructor index for the type sites and `Some`, build `sum` and `initialize`'s row over `values::row`'s by-name step.
+
+## 2026-10-31: closed by triage
+
+Below the filing bar: a refactor with no observable defect.
+
+## 2026-10-31: wontfix

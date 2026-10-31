@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: wontfix
 kind: bug
 priority: 897
 summary: "the planner's same_term repeats kernel alpha_equal with an erased type test and a mapping checked in one direction only"
+closed: 2026-10-31
 tags:
   - quality
   - engine
@@ -19,3 +20,9 @@ tags:
 The one direction means two variables of `b` can map to one of `a`, so `same_term` can call `f(z, z)` the same as `f(x, y)` when `x` and `y` are binders of `b`. I found no reachable input: the caller seeds only the row variable (`probe.rs:234`) and binders in a normal arena are distinct. Not run; read only.
 
 Fix: one kernel function taking the seed and a type comparison, `alpha_equal` being its call with an empty seed and exact types.
+
+## 2026-10-31: closed by triage
+
+Below the filing bar: a refactor with no observable defect.
+
+## 2026-10-31: wontfix

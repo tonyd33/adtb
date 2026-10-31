@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: open
 kind: bug
-priority: 870
+priority: 480
 summary: "translation blames an unrelated operator for at blocks and file reads, explain skips translated bundles, and the pinned law cannot add fields to nested sums"
 ---
 

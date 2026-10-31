@@ -148,6 +148,14 @@ verification evidence.
   `quality`.
 - Run cargo-mutants and llvm-cov only at a milestone exit.
 
+## Follow-up queue
+
+Follow-up tickets must not outgrow the work that clears them. Report the open count, split by bug and feature, when a milestone status is asked for.
+
+- With two tracks, one works the queue, ahead of milestone work: a batch of tickets in one subsystem for one agent, lowest priority number first. With one track, alternate.
+- A review finding in the code of the track goes in that track's next round. File a ticket only for what lies outside the track, and only when it names an observable defect or a concrete measured cost. Note style findings and ideas in the receipt, and do not file them.
+- A batch that closes tickets also closes what it finds obsolete or duplicate, by reading the code, with a dated line saying why.
+
 ## Context
 
 Checkpoint at meaningful task boundaries and before the active session

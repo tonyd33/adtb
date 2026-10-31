@@ -2,7 +2,7 @@
 created-at: 2026-10-29
 status: open
 kind: bug
-priority: 425
+priority: 600
 summary: "the planner, code generation, constraint deltas and the permission evaluator do work once per path through a shared kernel subterm, exponential in a chain of inlined functions"
 ---
 

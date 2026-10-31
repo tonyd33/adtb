@@ -2,7 +2,7 @@
 created-at: 2026-10-27
 status: open
 kind: feature
-priority: 873
+priority: 600
 summary: "a migration that rewrites a relation, and remove constructor, free the old heaps at once, so history across them is lost"
 depends-on:
   - history-catalog

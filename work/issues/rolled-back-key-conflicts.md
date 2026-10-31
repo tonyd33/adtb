@@ -2,7 +2,7 @@
 created-at: 2026-10-25
 status: open
 kind: bug
-priority: 732
+priority: 500
 summary: a key a rolled-back statement inserted makes other inserters wait and fail serialization
 ---
 

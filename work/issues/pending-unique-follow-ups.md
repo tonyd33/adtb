@@ -2,7 +2,7 @@
 created-at: 2026-10-28
 status: open
 kind: feature
-priority: 860
+priority: 520
 summary: "a held old key's index ids come from a reserved range above 1<<31 kept apart from log ids by convention, and the review of held uniques left latent gaps and missing tests"
 tags:
   - engine

@@ -2,7 +2,7 @@
 created-at: 2026-10-26
 status: open
 kind: feature
-priority: 287
+priority: 651
 summary: "interop.md leaves open a missing literal path, record numbering under a glob, Text in JSON, value-level sum header columns, non-UTF-8 files and conformance file fixtures"
 tags:
   - spec

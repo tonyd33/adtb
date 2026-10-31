@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-26
-status: open
+status: wontfix
 kind: feature
 priority: 894
 summary: "forward relations are RelId(u32::MAX - i), unattached checks RelId(u32::MAX) and unresolved element types TypeId(u32::MAX), and three passes stay aligned only by skipping the same sentinel"
+closed: 2026-10-31
 tags:
   - quality
 ---
@@ -19,3 +20,9 @@ Placeholders are still ids picked from the top of the id space:
 - schema.rs:1008 with :1298, :1518, :2016, `crates/adtb-lang/src/ids.rs:435`, `crates/adtb-lang/src/resolve.rs:236` and `crates/adtb-lang/src/evolve/ids.rs:127`: a relation whose element type is unresolved has `elem_def: TypeId(u32::MAX)`.
 
 Fix: give `Ty::Key` a target that is either a `RelId` or an ahead index (`enum KeyTarget { Rel(RelId), Ahead(u32) }`), make `CheckDef::relation` an `Option<RelId>`, and `RelationDef::elem_def` an `Option<TypeId>` during build only, or keep unresolved relations out of `relations`. Have validate.rs pair each check with its name from the normal program rather than by position.
+
+## 2026-10-31: closed by triage
+
+Below the filing bar: a refactor with no observable defect.
+
+## 2026-10-31: wontfix

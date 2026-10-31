@@ -2,7 +2,7 @@
 created-at: 2026-10-26
 status: open
 kind: bug
-priority: 799
+priority: 510
 summary: "a declaration's type errors are missed mid-migration when another declaration fails to build, and the final recheck accepts it"
 ---
 

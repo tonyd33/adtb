@@ -2,7 +2,7 @@
 created-at: 2026-10-27
 status: open
 kind: feature
-priority: 876
+priority: 490
 summary: "safe-snapshot markers logged after the last durable commit are lost at a crash, raising the window from zero keeps nothing deleted before, and at blocks are not typed at their pinned version"
 tags:
   - engine

@@ -9,7 +9,6 @@ depends-on:
   - statistics-and-plan-pinning
   - dump-restore-backup
   - ops-config-resource-metrics
-  - fs-fault-real-backends
   - comparative-benchmarks
   - command-follow-ups
   - verify-online

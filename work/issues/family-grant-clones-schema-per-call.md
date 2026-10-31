@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-31
-status: open
+status: wontfix
 kind: bug
 priority: 725
 summary: "each call a family grant covers clones a schema and recomputes signature ids twice, once at submit and once leaving the queue"
+closed: 2026-10-31
 tags:
   - quality
   - engine
@@ -20,3 +21,9 @@ So a role's call through a family grant does this work at least twice per call, 
 Found by reading; not measured. Measure with the benchmarks before changing.
 
 Direction: a family target's text names a fixed version, so its ids never change: hold them on the engine by target. Hold each served callable's `Ids` on its `Entry`.
+
+## 2026-10-31: closed by triage
+
+Below the filing bar: no measured cost.
+
+## 2026-10-31: wontfix

@@ -2,7 +2,7 @@
 created-at: 2026-10-27
 status: open
 kind: feature
-priority: 311
+priority: 652
 summary: "Database::open always uses the pool backend, faults cannot be injected under io_uring, and the missing-operation refusal is untested"
 tags:
   - engine

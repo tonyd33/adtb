@@ -2,7 +2,7 @@
 created-at: 2026-10-25
 status: open
 kind: feature
-priority: 330
+priority: 654
 summary: "the simulator has no network and there is no worker event loop"
 tags: [sim]
 ---

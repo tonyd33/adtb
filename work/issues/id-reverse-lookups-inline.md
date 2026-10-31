@@ -1,9 +1,10 @@
 ---
 created-at: 2026-10-29
-status: open
+status: wontfix
 kind: bug
 priority: 898
 summary: "CatalogIds gained a reverse lookup for relations only, and constructor, field, type and set ids are still found by inline scans in six files"
+closed: 2026-10-31
 tags:
   - quality
   - lang
@@ -24,3 +25,9 @@ tags:
 `catalog::ids::relation` (`crates/adtb/src/catalog/ids.rs:72`) is now a one-line wrapper. lang-id-follow-ups covers the id types, not these lookups.
 
 Fix: add `ctor`, `field`, `type_def` and `set` reverse lookups beside `CatalogIds::relation` and call them at these sites.
+
+## 2026-10-31: closed by triage
+
+Below the filing bar: a refactor with no observable defect.
+
+## 2026-10-31: wontfix

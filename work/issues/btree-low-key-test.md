@@ -2,7 +2,7 @@
 created-at: 2026-10-25
 status: open
 kind: feature
-priority: 336
+priority: 655
 summary: only one seed of one test catches a missing low-key check in claim
 ---
 

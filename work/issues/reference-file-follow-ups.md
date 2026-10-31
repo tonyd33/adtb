@@ -2,7 +2,7 @@
 created-at: 2026-10-26
 status: open
 kind: feature
-priority: 286
+priority: 650
 summary: "the reference has no Parquet or Arrow scans, no file pinning, no constructor translation by file version and no newtype domain checks on read"
 tags:
   - reference
