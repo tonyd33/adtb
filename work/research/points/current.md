@@ -122,6 +122,7 @@ accept:
   evolution/in-log: {title: 'define, redefine and drop are operators in the log, rechecked like any change', reason: 'definitions change in the same log as data shape, so an add and the functions it breaks land together'}
   evolution/log-schema-only: {title: enable and deprecate are log operators; retire is a deployment command outside the log, reason: retirement is deployment state; an engine-written retire diverges the file's log from shipped migrations (spec/log-content)}
   evolution/merge: {title: Merge constructors into one, reason: 'the operator set is closed under inverses, so every change can be undone and versions translated'}
+  evolution/merge-deprecated/same-state: {title: 'Sources all deprecated give a deprecated product, a mix stays refused', reason: 'inverse closure is settled core; a product of only deprecated sources starts no writer, and a mix has no honest state'}
   evolution/merge-tag/discriminator: {title: Merged constructor keeps the old tag as a field, reason: 'keeping the tag makes merge the inverse of split, as inverse closure requires'}
   evolution/move-field: {title: Move a field between constructors or up to the sum, reason: 'the operator set is closed under inverses, so every change can be undone and versions translated'}
   evolution/nest: {title: 'Nest constructors under an intermediate sum, or un-nest', reason: 'the operator set is closed under inverses, so every change can be undone and versions translated'}

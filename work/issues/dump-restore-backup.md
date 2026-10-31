@@ -27,3 +27,7 @@ The S4 track makes these catalog.md edits with its code, since spec_corpus and s
 ## 2026-10-31: next step
 
 S4 is in round 4, change yxnwxzvu, which replaces name-based cleanup by building aside and publishing last (`Op::Rename`). Then: delta review, rebase, replace the `p.issuer` check in api/backup.rs `backup_to` with the Disk export roots that roles-adhoc landed, plus a target-inside-roots test, full check, land. S5 to S7 follow, after fault-matrix.
+
+## 2026-10-31: tickets from round 4, after landing
+
+`write_pages` trusts a resealed part's chunk header, which can panic or write past `file_pages`; `restore` refuses servers. `restored` and `prove_in` hash every part twice. A failed read of the test database writes a `Proved::Failed` over a true proof; `a_failed_read_of_the_test_database_records_no_verdict` holds the spec, and fault-matrix's typed cause fixes it.
