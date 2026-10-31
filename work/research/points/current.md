@@ -601,6 +601,7 @@ accept:
   security/owner-calls/bundle-and-schema-owner: {title: The schema owner and the bundle's owner may call it; a family owner needs a grant for a bundle it does not own, reason: 'the bundle runs under its owner rights already; a grant to oneself is refused, so rows only would strand the owner'}
   security/policy/in-queries: {title: 'In registered queries; there are no policies, only what each query selects', reason: 'application code runs only registered queries, so the query is the policy; predicates on relations would add a second meaning to every read'}
   security/principal/sum: {title: A schema-declared sum Principal the engine fills from the session, reason: 'Principal is User, Service or Anonymous, so no comparison silently fails'}
+  security/reached-names/shown: {title: 'The relation''s name and key form, as the value prints them', reason: The grant on the field gives its declared type}
   security/refusal-field/catalog-readers: {title: Only a role that reads the schema catalog relations; others get one fixed Denied, reason: name tells nothing to a catalog reader}
   security/register-priv/holds-reads: {title: 'The registrant must hold, with grant option, every relation grant the bundle uses', reason: 'registering under definer rights grants its reads, so the registrant must hold them with grant option'}
   security/reindex-fields/maintainer: {title: 'It says no index has these fields, which reveals a field list has an index to a maintain holder', reason: 'Operators name what to rebuild; reveals index shape, never rows'}

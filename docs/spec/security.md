@@ -574,7 +574,7 @@ function's reads are charged to the role. A role that does not read the
 schema catalog relations names only relations it holds a grant on, and the
 types and constructors those relations reach; any other name answers the same
 `Denied` whether it exists or not. Such a role can still tell the fields of a
-type it may name.
+type it may name, and a reference it may read prints the name of its target.
 A command a capability allows, such as `vacuum items` under `maintain`, names
 any relation, and `reindex` says when a relation has no index on the fields it
 names. Reads beside such a command stay charged.
