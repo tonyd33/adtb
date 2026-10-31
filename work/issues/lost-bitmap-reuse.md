@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: lost-bitmap
+status: resolved
 kind: bug
 priority: 411
 summary: "a lost or zeroed bitmap reads as free, so an allocation reuses named pages: rows vanish with no mark, and a bitmap zeroed in place overwrites live data"
+closed: 2026-10-31
 ---
 
 # Lost bitmap reuse
@@ -23,3 +23,9 @@ Direction: a blank bitmap page within a group that holds named pages is damage. 
 ## 2026-10-31: first round reviewed
 
 Two blockers, both silent loss: open's `abort_unresolved` writes to a blank status page; recovery's checkpoint does not store the group count, so crash, reopen, crash, cut reuses a named page. Second round in the same workspace.
+
+## 2026-10-31: landed
+
+A durable count of started bitmap groups in the file header, read with the groups inside the file, tells a lost group from a new one. A bitmap page holding no bitmap in a started group is damage. Blank status, commit log root and counter pages refuse at open and mark. Branch check exit 0, 3488 tests. Follow-ups: lost-bitmap-follow-ups, space-append-spin, truncated-to-nothing.
+
+## 2026-10-31: resolved
