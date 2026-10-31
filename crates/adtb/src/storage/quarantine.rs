@@ -393,9 +393,6 @@ impl<R: Runtime> Pager<R> {
         unheld: Option<Quarantine>,
         walk: impl FnOnce(&mut Holders),
     ) -> BTreeSet<Quarantine> {
-        if self.called_free(pid) {
-            return BTreeSet::new();
-        }
         let mut h = Holders {
             pid,
             held: BTreeSet::new(),

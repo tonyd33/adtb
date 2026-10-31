@@ -378,12 +378,13 @@ operating error and never handed out as data.
 | Bit rot, latent sector error | Checksum (or tag) mismatch on read |
 | Misdirected write | The page id seeds the checksum; a page read from the wrong place fails it |
 | Torn write | Checksum mismatch; repaired from a full-page image in the log (§5.2) |
+| Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a file ending before its first bitmap page refuses that page; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write of a heap |
 | Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); a page read back after the pool dropped it, older than it was then, while the pool's bounded table of dropped pages still holds it (§10.3) |
 
 A page that fails verification on read quarantines the heap or index
 holding it (§8).
 
-Outside what the engine detects: a device that drops a forced write of
+Outside what the engine detects: a lost or zeroed bitmap page, which reads as free so that an allocation can reuse a page it held; a device that drops a forced write of
 the last batch of the log before a crash, or damages a block of that
 batch, leaves the log ending at the batch before. Its commits were
 acknowledged and are lost without a report, since recovery cannot tell

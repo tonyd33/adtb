@@ -20,7 +20,7 @@ impl Heap {
     ) -> Result<(), PageError> {
         let mut found = Vec::new();
         {
-            let page = pager.read(pid)?;
+            let page = pager.read_formatted(pid)?;
             if !page::is_heap(&page) || storage::owner(&page) != self.id {
                 return Ok(());
             }

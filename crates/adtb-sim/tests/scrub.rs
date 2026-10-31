@@ -282,7 +282,7 @@ fn a_full_pass_drops_a_row_it_no_longer_finds() {
 
 #[test]
 fn a_pass_resumed_after_a_restart_keeps_what_its_first_part_found() {
-    let (mut rotted, page) = seeded(17, 5, &[("Some { value: 1h }", "0.0001")]);
+    let (mut rotted, page) = seeded(17, 5, &[("Some { value: 1h }", "0.00001")]);
     let at = page.0 as usize * PAGE;
     rotted.get_mut(FILE).expect("the file")[at + 300] ^= 0x10;
     let crash = time_cursor_passes(17, &rotted, page) + Duration::from_secs(1);

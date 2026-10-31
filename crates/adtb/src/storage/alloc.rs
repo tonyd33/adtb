@@ -3,7 +3,7 @@ use crate::runtime::Runtime;
 use std::collections::BTreeSet;
 
 use super::page::{self, FIRST_EDITABLE, HEADER_LEN, PageKind};
-use super::pager::{PageError, PageExclusive, Pager};
+use super::pager::{Damage, PageError, PageExclusive, Pager};
 use super::record::Edit;
 use super::{Lsn, Pid};
 
@@ -60,6 +60,31 @@ impl<R: Runtime> Pager<R> {
     /// Returns the bitmap page that covers group `g` of [`Self::bitmap_span`] pages.
     fn bitmap_page(&self, g: u64) -> Pid {
         Pid((g * self.bitmap_span()).max(Pid::FIRST_DATA.0))
+    }
+
+    /// Refuse each page the allocation bitmap marks allocated past the end of the file, and the
+    /// first bitmap page when the file ends before it.
+    ///
+    /// Preconditions: recovery has written every page the log holds.
+    pub(crate) fn refuse_cut_pages(&self) {
+        let pages = self.file_pages();
+        let span = self.bitmap_span();
+        let group = pages.saturating_sub(1) / span;
+        let map = self.bitmap_page(group);
+        if map.0 >= pages {
+            self.damage(map, Damage::Checksum);
+            return;
+        }
+        let Ok(bits) = self.read(map).map(|page| page[HEADER_LEN..].to_vec()) else {
+            return;
+        };
+        let first = group * span;
+        for pid in pages..first + span {
+            let i = (pid - first) as usize;
+            if bits[i / 8] >> (i % 8) & 1 == 1 {
+                self.damage(Pid(pid), Damage::Checksum);
+            }
+        }
     }
 
     /// Allocate a free page, set its header to `format`, `kind` and `owner`, and zero its contents.

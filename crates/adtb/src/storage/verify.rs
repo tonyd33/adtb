@@ -171,7 +171,13 @@ impl<R: Runtime> Pager<R> {
     /// Returns the end of the page numbers to check against `log`.
     pub fn pages_within(&self, log: &RetainedLog) -> u64 {
         let logged = log.last.keys().next_back().map_or(0, |p| p.0 + 1);
-        self.file_pages().max(logged)
+        let refused = self
+            .meta()
+            .damaged
+            .keys()
+            .next_back()
+            .map_or(0, |p| p.0 + 1);
+        self.file_pages().max(logged).max(refused)
     }
 
     /// Check page `pid` against `log`, refusing it from now on if its contents are lost. Read the
@@ -261,7 +267,7 @@ impl<R: Runtime> Pager<R> {
     }
 
     /// Returns the number of pages the data file spans now.
-    fn file_pages(&self) -> u64 {
+    pub(crate) fn file_pages(&self) -> u64 {
         let len = self.io(|d| d.size(self.data));
         len.div_ceil(self.page_size as u64)
     }

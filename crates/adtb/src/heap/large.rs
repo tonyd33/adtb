@@ -180,6 +180,7 @@ impl LargeStore {
                 Some(pid) => pid,
                 None => self.space.append(pager, Arrangement::Slotted, 1)?,
             };
+            drop(pager.read_formatted(pid)?);
             let mut stage = Stage::new();
             let mut pids = vec![pid];
             pids.extend(tail.map(|t| Pid(t.page())));
@@ -243,7 +244,7 @@ impl LargeStore {
         let mut out = Vec::with_capacity(pointer.len as usize);
         let mut at = Some(pointer.first);
         while let Some(tid) = at {
-            let page = pager.read(Pid(tid.page()))?;
+            let page = pager.read_formatted(Pid(tid.page()))?;
             let Slot::Normal { at: range, .. } = page::get(&page, usize::from(tid.slot())) else {
                 panic!("chunk {tid:?} of a large value is missing");
             };

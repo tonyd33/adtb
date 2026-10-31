@@ -449,6 +449,7 @@ impl<R: Runtime> Pager<R> {
 
     fn recover_and_mark(&self) -> Result<super::Recovery, OpenError> {
         let recovery = self.recover()?;
+        self.refuse_cut_pages();
         let marks = self.header.lock(&self.rt).0.quarantine;
         if marks == Pid(0) {
             let (new, marks) = self.reserve_marks()?;
@@ -543,6 +544,20 @@ impl<R: Runtime> Pager<R> {
     /// Returns the page `pid` under a shared latch; see [`Pager::shared`].
     pub fn read(&self, pid: Pid) -> Result<PageShared<'_>, PageError> {
         self.shared(pid)
+    }
+
+    /// Returns the page `pid` under a shared latch, as [`Pager::read`] does, refusing it when every
+    /// byte of it is zero.
+    ///
+    /// Preconditions: a structure in the database names `pid`, so the batch that named it formatted
+    /// it, and the caller holds no latch on `pid`.
+    pub fn read_formatted(&self, pid: Pid) -> Result<PageShared<'_>, PageError> {
+        let page = self.read(pid)?;
+        if page.iter().all(|&b| b == 0) {
+            drop(page);
+            return Err(self.damage(pid, Damage::Checksum));
+        }
+        Ok(page)
     }
 
     /// Panic, in debug builds and when `latch-checks` is on, if the calling thread latches more

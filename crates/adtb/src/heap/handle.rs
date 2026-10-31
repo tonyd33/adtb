@@ -394,7 +394,7 @@ impl Heap {
         pager: &Pager<R>,
         tid: Tid,
     ) -> Result<Option<Version>, PageError> {
-        let page = pager.read(Pid(tid.page()))?;
+        let page = pager.read_formatted(Pid(tid.page()))?;
         assert_eq!(
             self.id,
             storage::owner(&page),
@@ -437,7 +437,7 @@ impl Heap {
         for &pid in pages {
             let found;
             {
-                let page = pager.read(pid)?;
+                let page = pager.read_formatted(pid)?;
                 if !page::is_heap(&page) || storage::owner(&page) != self.id {
                     continue;
                 }
@@ -680,6 +680,7 @@ impl Heap {
         if self.hint.load(Ordering::Relaxed) == pid.0 {
             self.hint.store(0, Ordering::Relaxed);
         }
+        drop(pager.read_formatted(pid)?);
         let mut stage = Stage::new();
         let page = stage.page(pager, pid)?.clone();
         if !self.ours(pager, pid, &page)? {
@@ -827,7 +828,7 @@ impl Heap {
         pid: Pid,
         mut judge: impl FnMut(&Pager<R>, &Header) -> Result<Fate, PageError>,
     ) -> Result<Vec<u16>, PageError> {
-        let page = pager.read(pid)?.to_vec();
+        let page = pager.read_formatted(pid)?.to_vec();
         if !self.ours(pager, pid, &page)? {
             return Ok(Vec::new());
         }
@@ -1432,7 +1433,7 @@ pub fn walk<R: Runtime>(
             Some((pid, ref page)) if pid == at.page() => page,
             _ => {
                 &copy
-                    .insert((at.page(), pager.read(Pid(at.page()))?.to_vec()))
+                    .insert((at.page(), pager.read_formatted(Pid(at.page()))?.to_vec()))
                     .1
             }
         };

@@ -1404,3 +1404,18 @@ fn a_failed_scrap_leaves_the_page_damaged() {
         );
     });
 }
+
+#[test]
+fn verify_reports_a_refused_page_past_the_end_of_the_file_and_the_log() {
+    let mut sim = Sim::new(1, Config::default());
+    setup(&mut sim, &Client::new(), PLAIN);
+    let beyond = Pid(1 << 11);
+    let findings = with_pager(&mut sim, |p| {
+        p.damage(beyond, Damage::Checksum);
+        p.verify().findings
+    });
+    assert!(findings.contains(&Finding::Page {
+        pid: beyond,
+        damage: Damage::Checksum,
+    }));
+}

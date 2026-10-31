@@ -201,7 +201,7 @@ impl Space {
         let mut out = Vec::new();
         let mut todo = vec![self.root];
         while let Some(pid) = todo.pop() {
-            let node = &pager.read(pid)?.to_vec();
+            let node = &pager.read_formatted(pid)?.to_vec();
             let entries = (0..count(node)).map(|i| entry(node, i).0);
             if level(node) == 0 {
                 out.extend(entries.filter(|&p| p != HOLE));
