@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: quality-fixes33
+status: resolved
 kind: bug
 priority: 432
 summary: "a fatal I/O panic after the swap is caught as a failed rebuild, which frees the pages of the tree just swapped in"
+closed: 2026-10-30
 tags:
   - quality
   - engine
@@ -27,3 +27,9 @@ The index then names freed pages for the rest of the process, its mark is gone, 
 Found by reading; not run. Repro direction: a sim fault failing the log force during the `swap` phase of `reindex`.
 
 Fix direction: do not catch `fatal I/O error` panics as failures, and record the swap as done before anything after the in-memory change can unwind.
+
+## 2026-10-30
+
+Landed on main. Check passed, 3310 tests.
+
+## 2026-10-30: resolved

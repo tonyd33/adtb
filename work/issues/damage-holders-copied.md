@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: quality-fixes33
+status: resolved
 kind: bug
 priority: 896
 summary: "Database::holders and Catalog::holders each map a damaged page to its object, with the engine-module rule twice and different answers for the roots heap"
+closed: 2026-10-30
 tags:
   - quality
   - engine
@@ -19,3 +19,9 @@ tags:
 They differ on the roots heap: a damaged page there marks the database at open (`Some(Quarantine::Database)`) and marks nothing once running (`h.walk(None, ...)` over `kept_store`). Nothing states that difference where either copy can see it.
 
 Fix direction: one walk over a description both can build, taking the roots heap's object as a parameter.
+
+## 2026-10-30
+
+Landed on main. Check passed, 3310 tests.
+
+## 2026-10-30: resolved

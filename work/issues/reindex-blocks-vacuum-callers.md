@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: quality-fixes33
+status: resolved
 kind: bug
 priority: 655
 summary: "vacuum, verify and set_retention wait on the vacuum lock for the whole of a running reindex, holding a worker and ignoring cancel and deadline"
+closed: 2026-10-30
 tags:
   - quality
   - engine
@@ -21,3 +21,9 @@ A `vacuum` or `verify` task therefore sits on a scheduler worker for the rest of
 Found by reading; not run.
 
 Fix direction: poll a try-lock against the call's stops, as `wait_for_rebuilds` does, or suspend the task on the job as a gated write does.
+
+## 2026-10-30
+
+Landed on main. Check passed, 3310 tests.
+
+## 2026-10-30: resolved

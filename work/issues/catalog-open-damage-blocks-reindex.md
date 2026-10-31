@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: quality-fixes33
+status: resolved
 kind: bug
 priority: 468
 summary: "an open that cannot free a crashed schema change's pages leaves changing set, so every reindex fails with Internal and the damage can never be repaired"
+closed: 2026-10-30
 tags:
   - quality
   - engine
@@ -21,3 +21,9 @@ With `Changing::Schema(x)` or `NamingSequences` left set, `begin_reindexing` at 
 Found by reading; not run. Repro: crash a migration before its commit, damage a page of a user index, reopen, run `reindex` on it. Expect the index restored; reading gives the `Internal` finding.
 
 Fix direction: let a rebuild start over a leftover change that no running transaction owns, or finish the free at the next open once the rebuild has repaired the damage. Correct the doc either way.
+
+## 2026-10-30
+
+Landed on main. Check passed, 3310 tests.
+
+## 2026-10-30: resolved

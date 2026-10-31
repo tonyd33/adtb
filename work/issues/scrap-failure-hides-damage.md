@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: quality-fixes33
+status: resolved
 kind: bug
 priority: 562
 summary: "a failed Pager::scrap leaves a blank resident page with its damage forgotten, where replace_contents restores the damage"
+closed: 2026-10-30
 tags:
   - quality
   - engine
@@ -21,3 +21,9 @@ Later reads of that page get zeros with no error, and `overwritten` keeps a stal
 Found by reading; not run. Repro direction: damage a page of an old tree and its bitmap page, then `reindex`.
 
 Fix direction: share the restore with `replace_contents`, clearing `overwritten` too, and test a failed scrap.
+
+## 2026-10-30
+
+Landed on main. Check passed, 3310 tests.
+
+## 2026-10-30: resolved

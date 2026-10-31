@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: quality-fixes33
+status: resolved
 kind: bug
 priority: 897
 summary: "the gated writer tests sleep 30 ms and never observe the writer at the gate, so they pass if it was refused before reaching it, and bound elapsed wall time"
+closed: 2026-10-30
 tags:
   - quality
   - test
@@ -19,3 +19,9 @@ tags:
 A writer that had not reached the gate, or that failed for another reason, passes: a cancel before the gate is refused the same way. The error kind is never checked. Their bounds on `Instant::elapsed` (under 1 s) also depend on machine load.
 
 Fix direction: assert the error is the deadline, `Cancelled` or closed one, and observe the writer at the gate, for example by a counter of waits or a deterministic sim run.
+
+## 2026-10-30
+
+Landed on main. Check passed, 3310 tests.
+
+## 2026-10-30: resolved
