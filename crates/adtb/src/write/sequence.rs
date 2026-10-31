@@ -6,7 +6,7 @@ use adtb_lang::types::RelId;
 use crate::btree::Index;
 use crate::key::Value;
 use crate::runtime::Runtime;
-use crate::storage::{self, HEADER_LEN, PageError, PageKind, Pager, Pid};
+use crate::storage::{self, Damage, HEADER_LEN, PageError, PageKind, Pager, Pid};
 
 use super::Error;
 
@@ -57,14 +57,13 @@ impl Sequences {
 
     /// Read the counters of page `pid`. Each counter next draws its reservation's end.
     ///
-    /// Panics if `pid` is not a page of counters.
+    /// Refuse `pid`, from then on, if it is not a page of counters.
     pub fn open<R: Runtime>(pager: &Pager<R>, pid: Pid) -> Result<Sequences, PageError> {
         let page = pager.read(pid)?;
-        assert_eq!(
-            (PageKind::Catalog as u16, FORMAT),
-            (storage::kind(&page), storage::format(&page)),
-            "{pid:?} is a page of counters"
-        );
+        if (storage::kind(&page), storage::format(&page)) != (PageKind::Catalog as u16, FORMAT) {
+            drop(page);
+            return Err(pager.damage(pid, Damage::Checksum));
+        }
         let body = &page[HEADER_LEN..];
         let n = u32::from_le_bytes(body[..4].try_into().expect("4 bytes")) as usize;
         let mut counters = BTreeMap::new();

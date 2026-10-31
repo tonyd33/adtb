@@ -122,10 +122,13 @@ fn observe<'p, R: Runtime, T>(
         let read = pager.optimistic(pid)?;
         let result = read.read(apply);
         if read.validate() {
+            if result.is_err() {
+                drop(pager.read_formatted(pid)?);
+            }
             return Ok((result, read));
         }
     }
-    let page = pager.shared(pid)?;
+    let page = pager.read_formatted(pid)?;
     let read = pager.optimistic(pid)?;
     Ok((apply(&page), read))
 }

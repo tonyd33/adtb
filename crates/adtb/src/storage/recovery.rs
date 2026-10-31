@@ -40,7 +40,8 @@ fn damaged_at(lsn: Lsn, problem: LogProblem) -> OpenError {
 }
 
 impl<R: Runtime> Pager<R> {
-    pub(crate) fn recover(&self) -> Result<Recovery, OpenError> {
+    /// Replay the log and checkpoint. Returns what it did and the pages the file then holds.
+    pub(crate) fn recover(&self) -> Result<(Recovery, u64), OpenError> {
         let mut img = {
             let mut segments = self.segments.lock(&self.rt);
             self.io(|d| segments.load(d))
@@ -98,14 +99,16 @@ impl<R: Runtime> Pager<R> {
         }
         self.flush_pages(usize::MAX);
         assert!(self.meta().dirty.is_empty(), "recovery left a dirty page");
+        let pages = self.count_file_groups();
         self.checkpoint();
-        Ok(Recovery {
+        let recovery = Recovery {
             redo,
             end: s.end,
             applied: replay.applied,
             log: s.findings,
             damaged: self.damaged().into_iter().collect(),
-        })
+        };
+        Ok((recovery, pages))
     }
 
     fn replay(&self, st: &mut Replay, lsn: Lsn, record: Record) {

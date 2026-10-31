@@ -386,6 +386,7 @@ impl<R: Runtime> Pager<R> {
     /// - A walk stopped by damage quarantines its object. One stopped by an I/O failure, or on a
     ///   shape it could not follow in all its tries, leaves the page unmapped: `unheld` then plays
     ///   no part.
+    /// - An allocation bitmap page quarantines the database, with no walk.
     /// - The database's mark stands alone, as it covers every object.
     pub fn holders_of(
         &self,
@@ -393,6 +394,9 @@ impl<R: Runtime> Pager<R> {
         unheld: Option<Quarantine>,
         walk: impl FnOnce(&mut Holders),
     ) -> BTreeSet<Quarantine> {
+        if self.is_bitmap_page(pid) {
+            return BTreeSet::from([Quarantine::Database]);
+        }
         let mut h = Holders {
             pid,
             held: BTreeSet::new(),

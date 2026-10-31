@@ -219,7 +219,7 @@ impl Space {
         let mut todo = vec![self.root];
         while let Some(pid) = todo.pop() {
             out.push(pid);
-            let node = &pager.read(pid)?.to_vec();
+            let node = &pager.read_formatted(pid)?.to_vec();
             if level(node) > 0 {
                 todo.extend((0..count(node)).rev().map(|i| entry(node, i).0));
             }
@@ -231,7 +231,7 @@ impl Space {
     /// as `None`.
     pub fn check<R: Runtime>(&self, pager: &Pager<R>) -> Result<Check, PageError> {
         let mut found = Check::default();
-        let root = pager.read(self.root)?.to_vec();
+        let root = pager.read_formatted(self.root)?.to_vec();
         let at = Want {
             level: level(&root),
             capacity: capacity(&root),
@@ -249,7 +249,7 @@ impl Space {
         found: &mut Check,
     ) -> Result<(u8, bool), PageError> {
         let problems = &mut found.problems;
-        let node = pager.read(pid)?.to_vec();
+        let node = pager.read_formatted(pid)?.to_vec();
         if storage::kind(&node) != PageKind::FreeSpaceMap as u16
             || storage::owner(&node) != self.owner
         {
@@ -408,7 +408,7 @@ impl Space {
         position: u32,
         pid: Pid,
     ) -> Result<bool, PageError> {
-        let mut node = pager.read(self.root)?.to_vec();
+        let mut node = pager.read_formatted(self.root)?.to_vec();
         let cap = capacity(&node);
         for l in (0..=level(&node)).rev() {
             let i = digit(u64::from(position), l, cap);
@@ -419,7 +419,7 @@ impl Space {
             if l == 0 {
                 return Ok(child == pid);
             }
-            node = pager.read(child)?.to_vec();
+            node = pager.read_formatted(child)?.to_vec();
         }
         Ok(false)
     }
@@ -623,7 +623,7 @@ impl Space {
     }
 
     fn settle_node<R: Runtime>(&self, pager: &Pager<R>, pid: Pid) -> Result<(), PageError> {
-        let node = pager.read(pid)?.to_vec();
+        let node = pager.read_formatted(pid)?.to_vec();
         if level(&node) == 0 {
             return Ok(());
         }
@@ -638,11 +638,11 @@ impl Space {
     /// Returns every page whose entry is touched, with its position, in position order.
     pub fn touched<R: Runtime>(&self, pager: &Pager<R>) -> Result<Vec<(u32, Pid)>, PageError> {
         let mut out = Vec::new();
-        let root = pager.read(self.root)?.to_vec();
+        let root = pager.read_formatted(self.root)?.to_vec();
         let cap = capacity(&root);
         let mut todo = vec![(self.root, 0u64)];
         while let Some((pid, base)) = todo.pop() {
-            let node = pager.read(pid)?.to_vec();
+            let node = pager.read_formatted(pid)?.to_vec();
             let l = level(&node);
             for i in (0..count(&node)).rev() {
                 if !touched(&node, i) {

@@ -113,6 +113,10 @@ pub(crate) struct Meta {
     /// The LSN of pages the pool dropped, checked when they are read back.
     pub(crate) evicted: EvictedLsns,
     pub(crate) damaged: BTreeMap<Pid, Damage>,
+    /// The bitmap groups a batch has started: their bitmap pages are never blank. A batch counts
+    /// here only once it is in the log and while its bitmap page is latched, so a checkpoint that
+    /// captures a lower count finds that page dirty and its redo point covers the batch.
+    pub(crate) groups: u64,
     /// Damaged pages latched blank, whose next change logs an unchained full-page image.
     pub(crate) overwritten: BTreeSet<Pid>,
     /// Resident pages and pages being read in, in clock order.
@@ -333,6 +337,7 @@ impl<'a, R: Runtime> PageOptimistic<'a, R> {
 
 impl<R: Runtime> Pager<R> {
     fn assemble(rt: R, o: &Options, header: FileHeader, copy: u64, data: FileId) -> Self {
+        let bitmap_groups = header.bitmap_groups;
         let log = Log::new(header.log_block as usize, header.epoch);
         let segments = Segments::new(o.log_dir(), header.log_block as usize, header.segment_size);
         Pager(std::sync::Arc::new(Shared {
@@ -353,6 +358,7 @@ impl<R: Runtime> Pager<R> {
                 written: BTreeSet::new(),
                 evicted: EvictedLsns::new(EVICTED_PER_FRAME * o.pool_frames),
                 damaged: BTreeMap::new(),
+                groups: bitmap_groups,
                 overwritten: BTreeSet::new(),
                 resident: Vec::new(),
                 hand: 0,
@@ -395,6 +401,7 @@ impl<R: Runtime> Pager<R> {
             quarantine: Pid(0),
             epoch: 1,
             encryption: 0,
+            bitmap_groups: 0,
         };
         let pager = Pager::assemble(rt, options, header, 1, data);
         let made = pager.reserve_marks().and_then(|(new, marks)| {
@@ -448,8 +455,8 @@ impl<R: Runtime> Pager<R> {
     }
 
     fn recover_and_mark(&self) -> Result<super::Recovery, OpenError> {
-        let recovery = self.recover()?;
-        self.refuse_cut_pages();
+        let (recovery, pages) = self.recover()?;
+        self.refuse_cut_pages(pages);
         let marks = self.header.lock(&self.rt).0.quarantine;
         if marks == Pid(0) {
             let (new, marks) = self.reserve_marks()?;
@@ -553,6 +560,20 @@ impl<R: Runtime> Pager<R> {
     /// it, and the caller holds no latch on `pid`.
     pub fn read_formatted(&self, pid: Pid) -> Result<PageShared<'_>, PageError> {
         let page = self.read(pid)?;
+        if page.iter().all(|&b| b == 0) {
+            drop(page);
+            return Err(self.damage(pid, Damage::Checksum));
+        }
+        Ok(page)
+    }
+
+    /// Returns the exclusive latch on `pid`, as [`Pager::exclusive`] does, refusing the page when
+    /// every byte of it is zero.
+    ///
+    /// Preconditions: a structure in the database names `pid`, so the batch that named it formatted
+    /// it, and the caller holds no latch on `pid`.
+    pub fn exclusive_formatted(&self, pid: Pid) -> Result<PageExclusive<'_, R>, PageError> {
+        let page = self.exclusive(pid)?;
         if page.iter().all(|&b| b == 0) {
             drop(page);
             return Err(self.damage(pid, Damage::Checksum));
@@ -1036,23 +1057,25 @@ impl<R: Runtime> Pager<R> {
 
     /// Log a fuzzy checkpoint of the dirty page table, force it, and point the file header at it.
     pub fn checkpoint(&self) {
-        let at = {
+        let (at, groups) = {
             let mut log = self.log();
+            let groups = self.meta().groups;
             let lsn = log.next_lsn();
             let dirty: Vec<(Pid, Lsn)> = self.meta().dirty.iter().map(|(p, l)| (*p, *l)).collect();
             let redo = dirty.iter().map(|(_, l)| *l).min().unwrap_or(lsn);
-            log.append(&Record::Checkpoint { redo, dirty })
+            (log.append(&Record::Checkpoint { redo, dirty }), groups)
         };
         self.flush_log();
-        self.write_header(Some(at));
+        self.write_header(Some((at, groups)));
     }
 
-    /// Write the next header copy, pointing at the checkpoint at `checkpoint` unless the header
-    /// already names a later one.
-    fn write_header(&self, checkpoint: Option<Lsn>) {
+    /// Write the next header copy, pointing at the checkpoint of `checkpoint` unless the header
+    /// already names a later one. The header's bitmap group count only rises.
+    pub(super) fn write_header(&self, checkpoint: Option<(Lsn, u64)>) {
         let mut h = self.header.lock(&self.rt);
         let (header, copy) = &mut *h;
-        if let Some(at) = checkpoint {
+        if let Some((at, groups)) = checkpoint {
+            header.bitmap_groups = header.bitmap_groups.max(groups);
             if at < header.checkpoint {
                 return;
             }

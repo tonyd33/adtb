@@ -128,7 +128,7 @@ impl Vm {
             return Ok(false);
         };
         let i = bit_index(pager.page_size(), pid);
-        Ok(bit(&pager.read(leaf)?, i))
+        Ok(bit(&pager.read_formatted(leaf)?, i))
     }
 
     /// Set or clear the bit of `pid` in `stage`, latching its leaf.
@@ -220,7 +220,7 @@ impl Vm {
         let mut todo = vec![self.root];
         while let Some(at) = todo.pop() {
             out.push(at);
-            let node = &pager.read(at)?.to_vec();
+            let node = &pager.read_formatted(at)?.to_vec();
             if level(node) > 0 {
                 todo.extend(
                     (0..fanout(size) as usize)
@@ -238,7 +238,7 @@ impl Vm {
         let mut out = Vec::new();
         let mut todo = vec![(self.root, 0)];
         while let Some((at, base)) = todo.pop() {
-            let node = pager.read(at)?;
+            let node = pager.read_formatted(at)?;
             let l = level(&node);
             if l == 0 {
                 let set: u32 = node[BODY..].iter().map(|b| b.count_ones()).sum();

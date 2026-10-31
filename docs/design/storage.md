@@ -35,6 +35,28 @@ consecutive page ids; group `g` has its bitmap page at
 `max(g * group size, 2)`, inside the group it covers, and its own bit
 is set. Page 2 is therefore the first bitmap page.
 
+A group starts in the batch that first allocates in it, which formats
+its bitmap page. Groups start in order, so a file holding a page of
+group `g` has started every group up to `g`.
+
+Invariants:
+
+- A started group's bitmap page is never blank. A bitmap page that reads
+  blank in a started group is damage: it is refused, and no allocation or
+  free reads it as free.
+- A group is known started when the file header's bitmap group count
+  covers it, or its bitmap page lies inside the file once recovery has
+  written the pages the log holds.
+- Every group the header counts has its starting batch forced to the
+  log before the header copy is written, so a crash never leaves a count
+  past a group that did not start.
+- A header's checkpoint never lies past the batch that started a group
+  the header does not count: each open's recovery counts the groups the
+  file reaches into, once it has written what the log holds and before
+  its checkpoint, and a running checkpoint that captures a lower count
+  finds that group's bitmap page dirty.
+- The stored count only rises.
+
 ### 1.2 File header
 
 The file header is kept as two alternating copies, on pages 0 and 1.
@@ -81,6 +103,7 @@ offset  size  field
 88      4     current primary epoch
 92      4     encryption scheme, 0 for a plaintext file
 96            encryption parameters; zero in a plaintext file
+4088    8     allocation bitmap groups started (§1.1) as of the last checkpoint, 0 in a file written before the field
 ```
 
 A seed here, and for page checksums, is fed to the CRC-32C first as
@@ -378,13 +401,19 @@ operating error and never handed out as data.
 | Bit rot, latent sector error | Checksum (or tag) mismatch on read |
 | Misdirected write | The page id seeds the checksum; a page read from the wrong place fails it |
 | Torn write | Checksum mismatch; repaired from a full-page image in the log (§5.2) |
-| Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a file ending before its first bitmap page refuses that page; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write of a heap |
+| Truncated file | After recovery, a bit of the allocation bitmap set past the end of the file refuses that page, and a bitmap page of a started group past the end of the file (§1.1) reads blank and is refused as below; a page a directory entry, index entry, version chain or out-of-line pointer names that reads all zero is refused on every read and write that reaches it through that name |
+| Lost or zeroed bitmap | A blank bitmap page of a started group (§1.1) is refused on every allocation, free and read of the bitmap, before anything is written, and marks the database (§8) |
 | Lost write | Page LSN older than the retained log says it must be, in recovery (§7) and in `verify` and scrub ([../spec/catalog.md §11.1](../spec/catalog.md#111-verification)); a page read back after the pool dropped it, older than it was then, while the pool's bounded table of dropped pages still holds it (§10.3) |
 
 A page that fails verification on read quarantines the heap or index
 holding it (§8).
 
-Outside what the engine detects: a lost or zeroed bitmap page, which reads as free so that an allocation can reuse a page it held; a device that drops a forced write of
+A file written before the group count holds 0 there. Its first open
+stores the groups the file then reaches into, at recovery's checkpoint,
+so a cut from then on is found. An older engine zeroes the field on its
+next header write, and the next open here counts from the file end again.
+
+Outside what the engine detects: a cut that lost a whole bitmap group from a file whose header holds no count for it, because it predates the count or an older engine wrote it last, before an open here has stored the count; a device that drops a forced write of
 the last batch of the log before a crash, or damages a block of that
 batch, leaves the log ending at the batch before. Its commits were
 acknowledged and are lost without a report, since recovery cannot tell

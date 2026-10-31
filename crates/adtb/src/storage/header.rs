@@ -9,6 +9,7 @@ const MAGIC: [u8; 8] = *b"adtbfile";
 const LAYOUT: u32 = 1;
 const CHECKSUM: usize = 8;
 const ATOMIC_PAGE_WRITES: u16 = 1;
+const BITMAP_GROUPS: usize = REGION - 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileHeader {
@@ -28,6 +29,9 @@ pub struct FileHeader {
     pub epoch: u32,
     /// The encryption scheme; 0 is a plaintext file, the only one written so far.
     pub encryption: u32,
+    /// The allocation bitmap groups started by the time of the checkpoint this header names.
+    /// 0 in a file written before the field existed.
+    pub bitmap_groups: u64,
 }
 
 struct Cursor<'a> {
@@ -78,7 +82,8 @@ impl FileHeader {
         out.extend_from_slice(&self.quarantine.0.to_le_bytes());
         out.extend_from_slice(&self.epoch.to_le_bytes());
         out.extend_from_slice(&self.encryption.to_le_bytes());
-        out.resize(REGION, 0);
+        out.resize(BITMAP_GROUPS, 0);
+        out.extend_from_slice(&self.bitmap_groups.to_le_bytes());
         let sum = crc32c_skipping(Some(copy), &out, CHECKSUM);
         out[CHECKSUM..CHECKSUM + 4].copy_from_slice(&sum.to_le_bytes());
         out
@@ -113,6 +118,11 @@ impl FileHeader {
             quarantine: Pid(c.u64()),
             epoch: c.u32(),
             encryption: c.u32(),
+            bitmap_groups: Cursor {
+                bytes,
+                at: BITMAP_GROUPS,
+            }
+            .u64(),
         };
         valid_page_size(header.page_size).then_some(header)
     }

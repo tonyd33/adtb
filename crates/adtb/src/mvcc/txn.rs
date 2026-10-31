@@ -142,7 +142,7 @@ impl<R: Runtime> Transactions<R> {
         let found = clog
             .status_pages()
             .values()
-            .find_map(|&pid| pager.read(pid).err());
+            .find_map(|&pid| pager.read_formatted(pid).err());
         let damage = if found.is_some() || pager.is_quarantined(Quarantine::Database) {
             found
         } else {

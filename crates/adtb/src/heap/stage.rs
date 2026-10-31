@@ -32,7 +32,7 @@ impl<'p, R: Runtime> Stage<'p, R> {
     pub fn read(&self, pager: &'p Pager<R>, pid: Pid) -> Result<Vec<u8>, PageError> {
         match self.find(pid) {
             Some(i) => Ok(self.pages[i].1.clone()),
-            None => Ok(pager.read(pid)?.to_vec()),
+            None => Ok(pager.read_formatted(pid)?.to_vec()),
         }
     }
 
@@ -54,7 +54,7 @@ impl<'p, R: Runtime> Stage<'p, R> {
         let i = match self.find(pid) {
             Some(i) => i,
             None => {
-                let g = pager.exclusive(pid)?;
+                let g = pager.exclusive_formatted(pid)?;
                 let bytes = g.to_vec();
                 self.pages.push((g, bytes));
                 self.pages.len() - 1
@@ -65,7 +65,10 @@ impl<'p, R: Runtime> Stage<'p, R> {
 
     /// Stage `bytes` as the new contents of `pid`, latching it first if needed.
     pub fn put(&mut self, pager: &'p Pager<R>, pid: Pid, bytes: Vec<u8>) -> Result<(), PageError> {
-        *self.page(pager, pid)? = bytes;
+        match self.find(pid) {
+            Some(i) => self.pages[i].1 = bytes,
+            None => self.pages.push((pager.exclusive(pid)?, bytes)),
+        }
         Ok(())
     }
 

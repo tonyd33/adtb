@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 
+use adtb_sys::os::{Backend, Faults, OsRuntime};
+use adtb_testkit::scratch::Scratch;
+
 use super::alloc::diff;
 use super::block::{
     Batch, BlockState, InMemory, LogImage, LogProblem, Mode, Scan, frame, read_block, scan,
@@ -7,10 +10,39 @@ use super::block::{
 use super::crc::{Crc32c, crc32c, crc32c_skipping};
 use super::header::{FileHeader, choose};
 use super::page::{self, Verdict};
+use super::pager::{Options, Pager};
 use super::record::{Edit, Record};
 use super::{Lsn, Pid, Position};
 
 const BLOCK: usize = 128;
+
+#[test]
+fn an_older_checkpoint_keeps_the_group_count_and_a_lower_one_never_lowers_it() {
+    let scratch = Scratch::new("storage", "group-count");
+    let rt = OsRuntime::with_faults(
+        scratch.path(),
+        Backend::Pool { threads: 1 },
+        Faults::default(),
+    );
+    let options = Options {
+        pool_frames: 16,
+        max_pages: 1024,
+        ..Options::new("count.adt")
+    };
+    let pager = Pager::create(rt, &options).expect("create pager");
+    pager.write_header(Some((Lsn(0), 9)));
+    pager.close();
+    let file = std::fs::read(scratch.path().join("count.adt")).expect("read the file");
+    let page = pager.page_size();
+    let copies = [
+        FileHeader::decode(0, &file[..page]),
+        FileHeader::decode(1, &file[page..2 * page]),
+    ];
+    let [first, second] = copies;
+    let (_, newest) = choose(first, second).expect("a copy verifies");
+    assert_eq!(9, newest.bitmap_groups);
+}
+
 const SEGMENT: u64 = 16 * BLOCK as u64;
 
 #[test]
@@ -83,6 +115,7 @@ fn header(seq: u64) -> FileHeader {
         quarantine: Pid(11),
         epoch: 3,
         encryption: 0,
+        bitmap_groups: 3,
     }
 }
 

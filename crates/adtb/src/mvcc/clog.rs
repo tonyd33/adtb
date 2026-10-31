@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::runtime::Runtime;
 use crate::storage::{
-    FIRST_EDITABLE, HEADER_LEN, Lsn, PageError, PageKind, Pager, Pid, flags, header_edit, kind,
+    Damage, FIRST_EDITABLE, HEADER_LEN, Lsn, PageError, PageKind, PageShared, Pager, Pid, flags,
+    header_edit, kind,
 };
 
 use super::{Status, Xid};
@@ -41,11 +42,19 @@ fn set_role(page: &mut [u8], role: u16) {
     ));
 }
 
-fn check_role(pid: Pid, page: &[u8], role: u16) {
-    assert!(
-        kind(page) == PageKind::CommitLog as u16 && flags(page) == role,
-        "{pid:?} is not a commit log page of role {role}"
-    );
+/// Returns the commit log page `pid` under a shared latch. Refuses it, from then on, when it is not
+/// a commit log page of `role`.
+fn read_role<R: Runtime>(
+    pager: &Pager<R>,
+    pid: Pid,
+    role: u16,
+) -> Result<PageShared<'_>, PageError> {
+    let page = pager.read(pid)?;
+    if kind(&page) == PageKind::CommitLog as u16 && flags(&page) == role {
+        return Ok(page);
+    }
+    drop(page);
+    Err(pager.damage(pid, Damage::Checksum))
 }
 
 /// Returns the number of transaction ids one status page of a `page_size` page holds.
@@ -238,15 +247,13 @@ impl CommitLog {
 
     /// Read the commit log rooted at `root`: its root and directories, and no status page.
     pub(crate) fn load<R: Runtime>(pager: &Pager<R>, root: Pid) -> Result<CommitLog, PageError> {
-        let page = pager.read(root)?;
-        check_role(root, &page, ROOT_PAGE);
+        let page = read_role(pager, root, ROOT_PAGE)?;
         let state = Root::read(&page);
         drop(page);
         let mut directories = Vec::new();
         let mut at = Some(state.first_directory);
         while let Some(pid) = at {
-            let page = pager.read(pid)?;
-            check_role(pid, &page, DIRECTORY_PAGE);
+            let page = read_role(pager, pid, DIRECTORY_PAGE)?;
             let dir = Directory::read(pid, &page);
             at = dir.next;
             directories.push(dir);
@@ -281,7 +288,7 @@ impl CommitLog {
             let pid = self.page(n);
             let lo = from.0.max(n * self.per_page);
             let hi = to.0.min((n + 1) * self.per_page);
-            let page = pager.read(pid)?;
+            let page = pager.read_formatted(pid)?;
             let open: Vec<usize> = (lo - n * self.per_page..hi - n * self.per_page)
                 .map(|i| i as usize)
                 .filter(|&i| status_at(&page, i) == Status::InProgress)
@@ -416,7 +423,7 @@ impl CommitLog {
             return Ok(Status::Committed);
         }
         let (n, i) = locate(x, self.per_page);
-        Ok(status_at(&pager.read(self.page(n))?, i))
+        Ok(status_at(&pager.read_formatted(self.page(n))?, i))
     }
 
     /// Record that `x` committed and log its commit record, in one batch.

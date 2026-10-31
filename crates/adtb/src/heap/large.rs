@@ -269,7 +269,7 @@ impl LargeStore {
         let mut out = Vec::new();
         let mut at = Some(pointer.first);
         while let Some(t) = at {
-            let page = pager.read(Pid(t.page()))?;
+            let page = pager.read_formatted(Pid(t.page()))?;
             let c = chunk_at(&page, usize::from(t.slot()))
                 .unwrap_or_else(|| panic!("chunk {t:?} of a large value is missing"));
             out.push((t, c));
@@ -334,7 +334,7 @@ impl LargeStore {
         self.space.settle(pager)?;
         let mut freed = 0;
         for (position, pid) in self.space.touched(pager)? {
-            let page = pager.read(pid)?.to_vec();
+            let page = pager.read_formatted(pid)?.to_vec();
             let mut pending = false;
             for slot in 0..page::slot_count(&page) {
                 let Some(c) = chunk_at(&page, slot) else {
@@ -368,7 +368,7 @@ impl LargeStore {
         loop {
             let here = Pid(at.page());
             let next = {
-                let page = pager.read(here)?;
+                let page = pager.read_formatted(here)?;
                 match chunk_at(&page, usize::from(at.slot())) {
                     Some(c) if c.head && c.count == 0 && c.xmin == xmin => c.next,
                     _ => return Ok(freed),
@@ -518,7 +518,7 @@ impl LargeStore {
         let touched: BTreeSet<Pid> = self.space.check(pager)?.touched.into_iter().collect();
         let mut chunks = BTreeMap::new();
         for pid in self.space.pages(pager)? {
-            let page = pager.read(pid)?;
+            let page = pager.read_formatted(pid)?;
             if !page::is_heap(&page) || !page::check(&page).is_empty() {
                 continue;
             }
@@ -623,7 +623,7 @@ impl LargeStore {
             let Some((pid, cat)) = leaf else {
                 continue;
             };
-            let page = &pager.read(pid)?.to_vec();
+            let page = &pager.read_formatted(pid)?.to_vec();
             let ours = page::is_heap(page) && storage::owner(page) == self.id();
             if !ours || page::position(page) as usize != position {
                 problems.push((
