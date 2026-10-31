@@ -489,3 +489,7 @@ Slices, each landable alone, none running nonowner work with owner rights:
 Call grants on bundles, queries and families are written by `RoleAuthority::grant`; `drop_role` refuses a grantor. Branch check exit 0, 3363 tests. Next: slice 2, binding and nonowner calls.
 
 Left: `bundle_declares` compares declaration only, so `grant call web-2.0 to ann with grant option` is refused as a cycle by a family row at another signature. It fails closed and a revoke or the query form releases it. Compare ids when `calls.query` reads. `drop_role` takes the writer lock then enters, the reverse of `retire` and `supersede`; lock.rs spins so it does not deadlock, and 40 seeds finished.
+
+## 2026-10-30: from slice 2
+
+A `CallDescriptor`'s `Ty` names types by schema id, and a role's binder has no schema, so it cannot resolve them. The wire track builds the type descriptors of wire.md 7.2 from `RoleBinding`'s crate-private schema. Also there: wrong-length `args` gives `Invalid`, wire.md requires `Malformed`.

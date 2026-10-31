@@ -1158,7 +1158,7 @@ The reasons this part produces:
 | `Rejected` | `Denied` | The role lacks the grant the request needs | None |
 | `Rejected` | `Invalid` | Ad hoc text failed to parse or check; carries diagnostics | Fix the text |
 | `Rejected` | `SchemaMismatch` | An Append schema is not the target's row type (§7.3) | Fix the batches |
-| `Rejected` | `UnknownQuery` | No query, function or feed with that ordinal in the binding | Regenerate client code |
+| `Rejected` | `UnknownQuery` | No query, function or feed with that ordinal in the bound bundle | Regenerate client code |
 | `Rejected` | `KeyViolation` | Two rows of one statement's change set have one key, an insert gives the key of an existing row the statement does not delete, or an appended batch repeats a key; a repeated unique is `Violated` | Fix the input |
 | `Rejected` | `UnknownTransaction` | The id names no live transaction of this role and binding; on a Commit with a request number, the transaction did not commit, and without one nothing is known of its outcome | Rerun the transaction when it did not commit |
 | `Rejected` | `UnknownBundle` | The bundle is not registered | Register or deploy it |
