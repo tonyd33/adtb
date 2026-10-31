@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes33
 kind: bug
 priority: 896
 summary: "Database::holders and Catalog::holders each map a damaged page to its object, with the engine-module rule twice and different answers for the roots heap"

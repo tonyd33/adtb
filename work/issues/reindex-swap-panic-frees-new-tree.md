@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes33
 kind: bug
 priority: 432
 summary: "a fatal I/O panic after the swap is caught as a failed rebuild, which frees the pages of the tree just swapped in"

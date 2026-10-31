@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes33
 kind: bug
 priority: 665
 summary: "BTree::bulk checks no stop, so a close can wait out one bulk write of a reindex"

@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes33
 kind: bug
 priority: 562
 summary: "a failed Pager::scrap leaves a blank resident page with its damage forgotten, where replace_contents restores the damage"

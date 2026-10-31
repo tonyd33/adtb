@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes33
 kind: bug
 priority: 655
 summary: "vacuum, verify and set_retention wait on the vacuum lock for the whole of a running reindex, holding a worker and ignoring cancel and deadline"

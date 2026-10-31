@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes33
 kind: bug
 priority: 468
 summary: "an open that cannot free a crashed schema change's pages leaves changing set, so every reindex fails with Internal and the damage can never be repaired"

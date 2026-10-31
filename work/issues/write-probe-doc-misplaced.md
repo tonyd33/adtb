@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes33
 kind: bug
 priority: 899
 summary: "the doc comment of Stmt::probe sits on stopped, so stopped carries two docs and probe none"

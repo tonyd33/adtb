@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: quality-fixes33
 kind: bug
 priority: 897
 summary: "the gated writer tests sleep 30 ms and never observe the writer at the gate, so they pass if it was refused before reaching it, and bound elapsed wall time"
