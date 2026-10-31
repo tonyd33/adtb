@@ -210,7 +210,8 @@ end-user principal in its options
 
 ### 2.3 Close
 
-Close waits for running calls to finish, ends open interactive
+Close waits for running calls to finish, fails with `Closed` a call that
+is queued or waiting on a lock, ends open interactive
 transactions by rolling them back, takes a checkpoint, and releases the
 lock. Dropping the last handle closes the database. A process that
 exits without closing loses nothing committed: the next open recovers
