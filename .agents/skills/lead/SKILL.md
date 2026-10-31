@@ -61,7 +61,17 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
 - Mark the track's ticket `in-progress` with `branch` set to the
   workspace name.
 
-State the invariants of a correctness track in its brief, and ask for a test that searches for breaks at every op and interleaving. A second review round finding the same kind of bug means the design is wrong: replace the mechanism, do not patch the instance.
+State the invariants of a correctness track in its brief, and ask for a test that searches for breaks at every op and interleaving. A second review round finding the same kind of bug means the design is wrong: the next brief names the mechanism that replaces it, and lists no instances.
+
+## Wide view
+
+Do not act as a relay for review findings. Before a ruling or a next-round brief:
+
+- Name the finding's cause and check it against [the defect classes](defect-classes.md). A finding in a listed class goes to that class's mechanism, or the brief says why not.
+- State a ruling as the general rule it applies. If the rule is only the case in hand, say so, and look for what else breaks it across the code before adopting.
+- Ask whether the work reaches a user. Authority logic with no caller, or a setting nothing reads, is not done, whatever its tests say.
+
+At every quality cadence, and before a milestone exit, dispatch a fresh read-only agent to group fixes and open bugs since the last such review by cause, test the lead's rulings for patches, and rank at most five changes. Give it the question, not your conclusion. Verify its claims in code before acting, then update the classes. A milestone exit claim names the searching test that backs it.
 
 ## While tracks run
 
@@ -154,7 +164,7 @@ verification evidence.
 
 Follow-up tickets must not outgrow the work that clears them. Report the open count, split by bug and feature, when a milestone status is asked for.
 
-- With two tracks, one works the queue, ahead of milestone work: a batch of tickets in one subsystem for one agent, lowest priority number first. With one track, alternate.
+- With two tracks, one works the queue, ahead of milestone work: a batch of tickets sharing a cause for one agent, lowest priority number first, with the mechanism of [its class](defect-classes.md) before its instances. With one track, alternate.
 - A review finding in the code of the track goes in that track's next round. File a ticket only for what lies outside the track, and only when it names an observable defect or a concrete measured cost. Note style findings and ideas in the receipt, and do not file them.
 - A batch that closes tickets also closes what it finds obsolete or duplicate, by reading the code, with a dated line saying why.
 
