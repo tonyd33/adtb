@@ -1,7 +1,6 @@
 ---
 created-at: 2026-10-27
-status: in-progress
-branch: system-grants
+status: open
 kind: feature
 priority: 410
 summary: "registration and definer checks exist; call grants, binding and nonowner execution, system relation grants, ad hoc reads and writes, and management by text remain"
@@ -510,3 +509,5 @@ Also:
 ## 2026-10-30: from slice 3
 
 A live file scan blocks migrations with `has no translation`. Not handled in slice 3.
+
+Slice 3 landed: system relation grants and `read_files` count for a bundle owner, `file_roots` confines role sessions, expiry latches, and only the schema owner grants on `catalog::credentials`. Branch check exit 0, 3464 tests. Next: slice 4, ad hoc reads and writes for a role.
