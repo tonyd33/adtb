@@ -602,6 +602,7 @@ accept:
   security/principal/sum: {title: A schema-declared sum Principal the engine fills from the session, reason: 'Principal is User, Service or Anonymous, so no comparison silently fails'}
   security/refusal-field/catalog-readers: {title: Only a role that reads the schema catalog relations; others get one fixed Denied, reason: name tells nothing to a catalog reader}
   security/register-priv/holds-reads: {title: 'The registrant must hold, with grant option, every relation grant the bundle uses', reason: 'registering under definer rights grants its reads, so the registrant must hold them with grant option'}
+  security/reindex-fields/maintainer: {title: 'It says no index has these fields, which reveals a field list has an index to a maintain holder', reason: 'Operators name what to rebuild; reveals index shape, never rows'}
   security/retire-priv/owner-or-admin: {title: The bundle's owner or an administrator, reason: 'retiring stops clients, so it belongs to whoever deploys them'}
   security/rights/definer: {title: The bundle's rights; the caller needs only the call grant, reason: the caller needs only the call grant; the bundle's rights reach the rows}
   security/rights/deputy/caller-bound: {title: The engine passes the authenticated caller as an implicit parameter no client can set, reason: the authenticated principal is an implicit parameter no client sets}

@@ -576,7 +576,8 @@ types and constructors those relations reach; any other name answers the same
 `Denied` whether it exists or not. Such a role can still tell the fields of a
 type it may name.
 A command a capability allows, such as `vacuum items` under `maintain`, names
-any relation.
+any relation, and `reindex` says when a relation has no index on the fields it
+names. Reads beside such a command stay charged.
 
 ### 4.6 The schema owner
 
