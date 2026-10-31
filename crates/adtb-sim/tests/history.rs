@@ -40,6 +40,7 @@ fn opts() -> Options {
 }
 
 const LONG: Duration = Duration::from_secs(3600);
+const VACUUM_CRASH_SEEDS: [u64; 2] = [11, 14];
 
 /// Each key's value.
 type State = BTreeMap<i64, i64>;
@@ -808,18 +809,36 @@ fn crash_config() -> Config {
 
 #[test]
 fn a_crash_at_every_flush_while_vacuum_moves_versions_loses_no_past_row() {
-    let seed = 11;
+    let mut unindexed = 0;
+    for seed in VACUUM_CRASH_SEEDS {
+        unindexed += crash_every_flush_of_vacuum(seed);
+    }
+    assert!(
+        unindexed > 0,
+        "no crash of seeds {VACUUM_CRASH_SEEDS:?} left a copy without its entry"
+    );
+}
+
+/// Crash a vacuum at every flush. Returns how many copies the crashes left without an entry.
+fn crash_every_flush_of_vacuum(seed: u64) -> usize {
     let (sim, start, roots, marks) = recorded(
         seed,
         |db| history_of(db, seed, 400, 600),
         |db| {
             let report = db.vacuum_keeping_by(1);
-            assert!(report.moved > 0 && report.rounds > 3, "{report:?}");
+            assert!(
+                report.moved > 0 && report.rounds > 3,
+                "seed {seed}: {report:?}"
+            );
         },
     );
     let recording = sim.recording();
     let points = crash_points(&recording, start);
-    assert!(points.len() > 20, "{} crash points", points.len());
+    assert!(
+        points.len() > 20,
+        "seed {seed}: {} crash points",
+        points.len()
+    );
     let mut moved = BTreeSet::new();
     let mut unindexed = 0;
     for at in points {
@@ -831,31 +850,83 @@ fn a_crash_at_every_flush_while_vacuum_moves_versions_loses_no_past_row() {
             moved.insert(db.versions().1);
             let some: Vec<(Position, State)> = marks.iter().step_by(16).cloned().collect();
             let fewer: Vec<(Position, State)> = some.iter().step_by(5).cloned().collect();
-            check_reads(&db, &some, &format!("crash at {at}"));
-            check_probes(&db, &fewer, 600, &format!("crash at {at}"));
+            check_reads(&db, &some, &format!("seed {seed}: crash at {at}"));
+            check_probes(&db, &fewer, 600, &format!("seed {seed}: crash at {at}"));
             unindexed += db
                 .duplicated()
                 .iter()
                 .filter(|p| p.contains("unindexed"))
                 .count();
             db.vacuum_keeping();
-            check_reads(&db, &some, &format!("vacuum again after a crash at {at}"));
-            check_probes(
-                &db,
-                &fewer,
-                600,
-                &format!("vacuum again after a crash at {at}"),
-            );
-            assert_eq!(db.live.len(), db.versions().0, "crash at {at}");
+            let again = format!("seed {seed}: vacuum again after a crash at {at}");
+            check_reads(&db, &some, &again);
+            check_probes(&db, &fewer, 600, &again);
+            assert_eq!(db.live.len(), db.versions().0, "{again}");
             let problems = db.verify_file();
-            assert!(problems.is_empty(), "crash at {at}: {problems:?}");
+            assert!(problems.is_empty(), "{again}: {problems:?}");
         });
     }
     assert!(
         moved.len() > 3,
-        "crashes leave history at only {moved:?} versions"
+        "seed {seed}: crashes leave history at only {moved:?} versions"
     );
-    assert!(unindexed > 0, "no crash left a copy without its entry");
+    unindexed
+}
+
+/// A crash after a copy's log is forced and before its entry leaves the copy unindexed, and the
+/// next vacuum gives the copy its entry.
+#[test]
+fn a_vacuum_retry_indexes_a_copy_a_crash_left_without_its_entry() {
+    let seed = 19;
+    let mut sim = Sim::new(seed, Config::default());
+    sim.record();
+    let mut out = None;
+    finished(&mut sim, |rt| {
+        let (mut db, roots) = Db::create(rt, LONG);
+        db.write(&[(1, Some(1))]);
+        let first = db.mark();
+        db.write(&[(1, Some(2))]);
+        let second = db.mark();
+        db.pager.flush_log();
+        let mut dead = Vec::new();
+        db.heap()
+            .scan(&db.pager, |v| {
+                if v.header.xmax != 0 {
+                    dead.push(v);
+                }
+            })
+            .expect("heap scan");
+        let [version] = dead.as_slice() else {
+            panic!("one dead version: {dead:?}");
+        };
+        db.past_heap
+            .copy_version(&db.pager, db.heap(), version)
+            .expect("copy")
+            .expect("the first copy of a version");
+        db.pager.flush_log();
+        out = Some((roots, first, second));
+    });
+    let (roots, first, second) = out.unwrap();
+    let recording = sim.recording();
+    let files = recording.images(recording.len(), 1, seed).swap_remove(0);
+    let mut sim = Sim::with_files(seed, crash_config(), files);
+    finished(&mut sim, |rt| {
+        let db = Db::open(rt, roots, LONG);
+        let found = db.duplicated();
+        assert!(
+            found.iter().any(|p| p.contains("unindexed")),
+            "the crash left the copy unindexed: {found:?}"
+        );
+        assert_eq!(0, db.vacuum_keeping().moved, "no second copy");
+        let marks = [
+            (first, State::from([(1, 1)])),
+            (second, State::from([(1, 2)])),
+        ];
+        check_reads(&db, &marks, "after the retry");
+        assert_eq!(1, db.versions().1, "the one copy");
+        let problems = db.verify_file();
+        assert!(problems.is_empty(), "{problems:?}");
+    });
 }
 
 #[test]

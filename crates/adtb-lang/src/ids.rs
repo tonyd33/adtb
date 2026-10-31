@@ -718,6 +718,8 @@ pub const TYPES: &[FixedType] = &[
             ("MixedVersions", 345),
             ("MigrationInProgress", 372),
             ("DumpDamaged", 460),
+            ("BackupDamaged", 474),
+            ("RestorePointUnavailable", 475),
             ("Internal", 465),
             ("RowTooLarge", 467),
             ("Closed", 469),

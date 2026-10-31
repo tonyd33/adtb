@@ -646,3 +646,160 @@ fn verify_of_a_missing_file_exits_2_and_says_why() {
     assert_eq!(Some(2), out.status.code(), "{out:?}");
     assert!(stderr(&out).contains("db.adt"), "{out:?}");
 }
+
+#[test]
+fn backup_restore_and_verify_of_a_backup_exit_as_documented() {
+    let (schema, file) = scratch("backup_tool");
+    create(&schema, &file);
+    seed(&file);
+    let dir = file.parent().unwrap();
+    let (target, copy) = (dir.join("nested/bk"), dir.join("copy.adt"));
+    let target_arg = target.to_str().unwrap();
+    let copy_arg = copy.to_str().unwrap();
+    let schema_arg = schema.to_str().unwrap();
+    let file_arg = file.to_str().unwrap();
+    let ran = adtb(
+        &["backup", file_arg, target_arg, "--schema", schema_arg],
+        "",
+    );
+    assert_eq!(Some(0), ran.status.code(), "{ran:?}");
+    let again = adtb(
+        &["backup", file_arg, target_arg, "--schema", schema_arg],
+        "",
+    );
+    assert_eq!(Some(2), again.status.code(), "{again:?}");
+    let proved = adtb(&["verify", target_arg, "--schema", schema_arg], "");
+    assert_eq!(Some(0), proved.status.code(), "{proved:?}");
+    assert!(target.join("proof").exists());
+    let at_point = adtb(
+        &["restore", target_arg, copy_arg, "--before-version", "1"],
+        "",
+    );
+    assert_eq!(Some(2), at_point.status.code(), "{at_point:?}");
+    let restored = adtb(&["restore", target_arg, copy_arg], "");
+    assert_eq!(Some(0), restored.status.code(), "{restored:?}");
+    let over = adtb(&["restore", target_arg, copy_arg], "");
+    assert_eq!(Some(2), over.status.code(), "{over:?}");
+    let clean = adtb(&["verify", copy_arg, "--schema", schema_arg], "");
+    assert_eq!(Some(0), clean.status.code(), "{clean:?}");
+    let pages = target.join("pages");
+    let part = std::fs::read_dir(&pages)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut bytes = std::fs::read(&part).unwrap();
+    bytes[5000] ^= 1;
+    std::fs::write(&part, bytes).unwrap();
+    let damaged = adtb(&["verify", target_arg, "--schema", schema_arg], "");
+    assert_eq!(Some(2), damaged.status.code(), "{damaged:?}");
+    assert!(
+        String::from_utf8_lossy(&damaged.stderr).contains("pages/"),
+        "{damaged:?}"
+    );
+}
+
+#[test]
+fn restore_reads_a_relative_source_from_the_working_directory() {
+    let (schema, file) = scratch("restore_relative");
+    let dir = file.parent().unwrap().to_owned();
+    create(&schema, &file);
+    seed(&file);
+    let back_up = |from: &Path, to: &Path| {
+        let args = [
+            "backup",
+            from.to_str().unwrap(),
+            to.to_str().unwrap(),
+            "--schema",
+            schema.to_str().unwrap(),
+        ];
+        let ran = adtb(&args, "");
+        assert_eq!(Some(0), ran.status.code(), "{ran:?}");
+    };
+    back_up(&file, &dir.join("bk"));
+    let empty = dir.join("empty.adt");
+    create(&schema, &empty);
+    back_up(&empty, &dir.join("out/bk"));
+    let restored = test_child(env!("CARGO_BIN_EXE_adtb"), MOST_AT_ONCE)
+        .args(["restore", "bk", "out/new.adt"])
+        .current_dir(&dir)
+        .output()
+        .expect("the shell starts");
+    assert_eq!(Some(0), restored.status.code(), "{restored:?}");
+    let names = run(&dir.join("out/new.adt"), "from u in users select u.name");
+    assert_eq!(2, stdout(&names).len(), "{names:?}");
+}
+
+#[test]
+fn restore_prints_the_listed_damage_and_exits_zero() {
+    let (schema, file) = scratch("restore_damage");
+    let dir = file.parent().unwrap().to_owned();
+    create(&schema, &file);
+    seed(&file);
+    let target = dir.join("bk");
+    let args = [
+        "backup",
+        file.to_str().unwrap(),
+        target.to_str().unwrap(),
+        "--schema",
+        schema.to_str().unwrap(),
+    ];
+    let ran = adtb(&args, "");
+    assert_eq!(Some(0), ran.status.code(), "{ran:?}");
+    let at = target.join("manifest");
+    let text = String::from_utf8(std::fs::read(&at).unwrap()).unwrap();
+    let body = text
+        .trim_end_matches('\0')
+        .rsplit_once("checksum ")
+        .unwrap()
+        .0;
+    let body = format!("{body}damaged 3\n");
+    let sealed = format!("{body}checksum {}\n", adtb::storage::manifest_hash(&body));
+    let mut bytes = sealed.into_bytes();
+    bytes.resize(bytes.len().next_multiple_of(4096), 0);
+    std::fs::write(&at, bytes).unwrap();
+    let copy = dir.join("copy.adt");
+    let out = adtb(
+        &["restore", target.to_str().unwrap(), copy.to_str().unwrap()],
+        "",
+    );
+    assert_eq!(Some(0), out.status.code(), "{out:?}");
+    assert_eq!(vec!["page 3 was copied damaged".to_owned()], stdout(&out));
+}
+
+#[test]
+fn restore_to_the_backups_end_position_succeeds() {
+    let (schema, file) = scratch("restore_end");
+    let dir = file.parent().unwrap().to_owned();
+    create(&schema, &file);
+    seed(&file);
+    let target = dir.join("bk");
+    let args = [
+        "backup",
+        file.to_str().unwrap(),
+        target.to_str().unwrap(),
+        "--schema",
+        schema.to_str().unwrap(),
+    ];
+    let ran = adtb(&args, "");
+    assert_eq!(Some(0), ran.status.code(), "{ran:?}");
+    let text = String::from_utf8(std::fs::read(target.join("manifest")).unwrap()).unwrap();
+    let end = text
+        .lines()
+        .find_map(|l| l.strip_prefix("end "))
+        .unwrap()
+        .to_owned();
+    let copy = dir.join("copy.adt");
+    let out = adtb(
+        &[
+            "restore",
+            target.to_str().unwrap(),
+            copy.to_str().unwrap(),
+            "--to-position",
+            &end,
+        ],
+        "",
+    );
+    assert_eq!(Some(0), out.status.code(), "{out:?}");
+}

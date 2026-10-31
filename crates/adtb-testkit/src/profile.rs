@@ -20,6 +20,11 @@ pub fn count(n: u64) -> u64 {
     if is("quick") { n.min(1) } else { deep(n) }
 }
 
+/// Returns whether every case of a sweep runs, which the nextest profile `deep` asks.
+pub fn every_case() -> bool {
+    is("deep")
+}
+
 /// Returns the seeds from `seeds.start`, as many as [`count`] makes of its length.
 pub fn sweep(seeds: Range<u64>) -> Range<u64> {
     seeds.start..seeds.start + count(seeds.end - seeds.start)

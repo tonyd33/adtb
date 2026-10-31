@@ -1735,7 +1735,7 @@ fn admission_expired_deadline_does_not_renew() {
 #[test]
 fn admission_invalid_bookmark_does_not_renew() {
     let position = adtb::Position {
-        epoch: u32::MAX,
+        epoch: u64::MAX,
         lsn: u64::MAX,
     };
     admission_options_refusal(

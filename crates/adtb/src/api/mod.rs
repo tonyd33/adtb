@@ -1,9 +1,11 @@
 //! The public interface: open a `Database`, run texts and calls, and read their results.
 
 mod arrow;
+mod backup;
 mod bundle;
 mod command;
 mod error;
+mod failed_open;
 #[cfg(target_os = "linux")]
 mod file;
 mod host;
@@ -27,6 +29,7 @@ pub mod typed;
 mod value;
 mod verify;
 
+use failed_open::{FailedOpen, failed_create};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -52,6 +55,9 @@ use crate::storage::{self, LATCHES_PER_THREAD, Pager};
 use crate::write::{self, Bindings, Bounds, Local, Setup, Txn};
 
 pub use arrow::{ArrowSchema, ArrowStream, Field, RecordBatch};
+pub use backup::{ArchiveTarget, Proof, RestorePoint, proof_in, prove_in, restore_in};
+#[cfg(target_os = "linux")]
+pub use backup::{prove, restore};
 pub use error::{Error, FatalReason, Fault, Limit, OpenError, RejectReason, RetryReason};
 pub use host::{Determinism, HostFns};
 pub use load::{Appender, Load, LoadOptions, LoadReport};
@@ -193,7 +199,7 @@ impl OpenOptions {
 /// The place of a commit in the database's log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Position {
-    pub epoch: u32,
+    pub epoch: u64,
     pub lsn: u64,
 }
 
@@ -321,6 +327,9 @@ struct Engine<R: Runtime> {
     workers: usize,
     /// What the running rebuild jobs need of the engine.
     reindexing: reindex::Jobs<R>,
+    /// The directory a relative path of `backup` or `restore` resolves against, else the
+    /// runtime's.
+    targets: Lock<Option<PathBuf>>,
     #[cfg(target_os = "linux")]
     held: Lock<Option<file::Held>>,
 }
@@ -440,7 +449,8 @@ impl<R: Runtime> Database<R> {
         log: &Log,
         options: &OpenOptions,
     ) -> Result<Database<R>, OpenError> {
-        Ok(Database::of(Engine::open(rt, name, log, options)?))
+        let engine = Engine::open(rt, name, log, options).map_err(|failed| failed.error)?;
+        Ok(Database::of(engine))
     }
 
     /// Returns the schema ad hoc text is checked against.
@@ -580,28 +590,31 @@ impl Database<adtb_sys::os::OsRuntime> {
     /// every other open, and apply the migrations of `log` beyond the file's own.
     ///
     /// The runtime runs on io_uring where the host allows it, else on a pool of threads. An open
-    /// that creates the file and then fails removes the file and its log, leaving nothing behind.
+    /// that fails removes a file only if it created it, with the log directory only if it also
+    /// claimed that, and answers its refusal whether or not those removals succeed. A file it
+    /// found empty and wrote stays with its log, which a retry opens.
     pub fn open(
         path: impl AsRef<std::path::Path>,
         log: &Log,
         options: &OpenOptions,
     ) -> Result<Database, OpenError> {
         let path = path.as_ref();
-        let fresh = options.create.is_some() && !path.exists();
         let (held, dir, name) = file::Held::take(path, options.create.is_some())?;
         let rt = os_runtime(&dir, options.workers());
         match Engine::open(rt, &name, log, options) {
             Ok(engine) => {
                 *engine.held.lock(&engine.rt) = Some(held);
+                *engine.targets.lock(&engine.rt) = backup::resolved_root(options);
                 Ok(Database::of(engine))
             }
-            Err(e) => {
-                drop(held);
-                if fresh {
-                    let log_dir = dir.join(options.storage(&name).log_dir());
-                    remove(&dir.join(&name), &log_dir)?;
+            Err(failed) => {
+                if held.created() {
+                    let log_dir = failed
+                        .log_claimed
+                        .then(|| dir.join(options.storage(&name).log_dir()));
+                    file::remove_created(log_dir.as_deref(), &dir.join(&name));
                 }
-                Err(e)
+                Err(failed.error)
             }
         }
     }
@@ -619,17 +632,6 @@ fn os_runtime(dir: &std::path::Path, workers: usize) -> adtb_sys::os::OsRuntime 
         },
     )
     .unwrap_or_else(|_| OsRuntime::new(dir, Backend::Pool { threads: workers }))
-}
-
-/// Remove the database file `file` and its log directory `log`, whichever exist.
-#[cfg(target_os = "linux")]
-fn remove(file: &std::path::Path, log: &std::path::Path) -> Result<(), OpenError> {
-    let gone = |r: std::io::Result<()>| match r {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(OpenError::Io(e)),
-        _ => Ok(()),
-    };
-    gone(std::fs::remove_file(file))?;
-    gone(std::fs::remove_dir_all(log))
 }
 
 /// Open the database file at `path` as the one process that holds it and run `verify` over it,
@@ -833,33 +835,44 @@ fn refused(version: u64, reason: RejectReason) -> OpenError {
 }
 
 impl<R: Runtime> Engine<R> {
-    fn open(rt: R, name: &str, log: &Log, options: &OpenOptions) -> Result<Engine<R>, OpenError> {
+    fn open(rt: R, name: &str, log: &Log, options: &OpenOptions) -> Result<Engine<R>, FailedOpen> {
         let storage = options.storage(name);
-        let pager = match Pager::open(rt.clone(), &storage) {
-            Ok((p, _)) => p,
+        let unclaimed = |error| FailedOpen {
+            error,
+            log_claimed: false,
+        };
+        let (pager, log_claimed) = match Pager::open(rt.clone(), &storage) {
+            Ok((p, _)) => (p, false),
             Err(storage::OpenError::NotFound | storage::OpenError::NoHeader)
                 if options.create.is_some() =>
             {
-                Pager::create(rt.clone(), &storage).map_err(|e| match e {
-                    storage::OpenError::Exists => {
-                        corrupt("neither copy of the file header verifies")
-                    }
-                    other => corrupt(other),
-                })?
+                (
+                    Pager::create(rt.clone(), &storage).map_err(failed_create)?,
+                    true,
+                )
             }
-            Err(storage::OpenError::NotFound) => return Err(OpenError::NotFound),
-            Err(e) => return Err(corrupt(e)),
+            Err(storage::OpenError::NotFound) => return Err(unclaimed(OpenError::NotFound)),
+            Err(storage::OpenError::OtherLayout(layout)) => {
+                return Err(unclaimed(OpenError::Corrupt {
+                    detail: format!(
+                        "the file header has layout {layout}, not one this engine reads"
+                    ),
+                }));
+            }
+            Err(e) => return Err(unclaimed(corrupt(e))),
         };
-        Engine::on(rt.clone(), pager.clone(), log, options).or_else(|e| {
-            mark_open_damage(rt.clone(), &pager);
-            let opened = open_damage(&pager).map_or(Err(e), |damage| {
-                Engine::unread(rt, pager.clone(), options, damage)
-            });
-            if opened.is_err() {
-                pager.close();
-            }
-            opened
-        })
+        Engine::on(rt.clone(), pager.clone(), log, options)
+            .or_else(|e| {
+                mark_open_damage(rt.clone(), &pager);
+                let opened = open_damage(&pager).map_or(Err(e), |damage| {
+                    Engine::unread(rt, pager.clone(), options, damage)
+                });
+                if opened.is_err() {
+                    pager.close();
+                }
+                opened
+            })
+            .map_err(|error| FailedOpen { error, log_claimed })
     }
 
     /// Returns the engine of a file quarantined whole whose catalog cannot be trusted: the
@@ -946,6 +959,7 @@ impl<R: Runtime> Engine<R> {
             sched: Lock::new(None),
             workers: options.workers(),
             reindexing: reindex::Jobs::default(),
+            targets: Lock::new(options.file_root.clone()),
             #[cfg(target_os = "linux")]
             held: Lock::new(None),
         }
@@ -1176,7 +1190,13 @@ impl<R: Runtime> Engine<R> {
     fn reads_after(&self, after: Option<Position>) -> Result<(), Error> {
         let end = Position::from(self.pager.position(self.pager.durable()));
         match after {
-            Some(position) if position > end => {
+            Some(position)
+                if position > end
+                    || !self.pager.on_history(storage::Position {
+                        epoch: position.epoch,
+                        lsn: storage::Lsn(position.lsn),
+                    }) =>
+            {
                 Err(Error::rejected(RejectReason::PositionNotOnHistory {
                     position,
                 }))

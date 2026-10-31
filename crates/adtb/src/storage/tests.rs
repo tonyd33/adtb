@@ -46,6 +46,15 @@ fn an_older_checkpoint_keeps_the_group_count_and_a_lower_one_never_lowers_it() {
 const SEGMENT: u64 = 16 * BLOCK as u64;
 
 #[test]
+fn the_parent_of_a_path_keeps_the_root() {
+    use super::pager::parent;
+    assert_eq!("/", parent("/a"));
+    assert_eq!("/a", parent("/a/b"));
+    assert_eq!("a", parent("a/b"));
+    assert_eq!("", parent("a"));
+}
+
+#[test]
 fn crc32c_check_value() {
     assert_eq!(0xE306_9283, crc32c(b"123456789"));
     assert_eq!(0, crc32c(b""));
@@ -116,6 +125,7 @@ fn header(seq: u64) -> FileHeader {
         epoch: 3,
         encryption: 0,
         bitmap_groups: 3,
+        history: vec![(1, Lsn(500)), (2, Lsn(900))],
     }
 }
 
@@ -254,7 +264,14 @@ fn image(sizes: &[usize]) -> (LogImage<InMemory>, Vec<Lsn>) {
     let mut at = 0;
     let mut starts = Vec::new();
     for (i, &n) in sizes.iter().enumerate() {
-        let b = frame(Lsn(at as u64), i as u64 + 1, 1, &records(n), BLOCK);
+        let b = frame(
+            Lsn(at as u64),
+            i as u64 + 1,
+            1,
+            &[0; 16],
+            &records(n),
+            BLOCK,
+        );
         seg[at..at + b.len()].copy_from_slice(&b);
         starts.push(Lsn(at as u64));
         at += b.len();
@@ -285,7 +302,7 @@ fn scanned(img: &mut LogImage<InMemory>, mode: Mode) -> (Scan, Vec<Batch>, Vec<u
 
 #[test]
 fn frames_verify_where_they_lie() {
-    let b = frame(Lsn(256), 4, 1, &records(10), BLOCK);
+    let b = frame(Lsn(256), 4, 1, &[0; 16], &records(10), BLOCK);
     assert!(b.len() > BLOCK, "ten commits span blocks");
     let BlockState::Valid(h, _) = read_block(Lsn(256), &b[..BLOCK]) else {
         panic!("block 0 does not verify");
@@ -368,9 +385,16 @@ fn verify_resumes_after_a_gap() {
 fn a_stale_block_of_an_older_batch_is_never_a_continuation() {
     let (mut img, starts) = image(&[2]);
     let at = starts[1].0 as usize;
-    let discarded = frame(starts[1], 2, 1, &records(9), BLOCK);
-    let rewritten = frame(starts[1], 2, 1, &records(1), BLOCK);
-    let newer = frame(Lsn(starts[1].0 + BLOCK as u64), 3, 1, &records(1), BLOCK);
+    let discarded = frame(starts[1], 2, 1, &[0; 16], &records(9), BLOCK);
+    let rewritten = frame(starts[1], 2, 1, &[0; 16], &records(1), BLOCK);
+    let newer = frame(
+        Lsn(starts[1].0 + BLOCK as u64),
+        3,
+        1,
+        &[0; 16],
+        &records(1),
+        BLOCK,
+    );
     seg(&mut img)[at..at + discarded.len()].copy_from_slice(&discarded);
     seg(&mut img)[at..at + rewritten.len()].copy_from_slice(&rewritten);
     let at = at + BLOCK;
@@ -389,7 +413,7 @@ fn a_stale_block_of_an_older_batch_is_never_a_continuation() {
 #[test]
 fn batch_numbers_must_follow_on() {
     let (mut img, starts) = image(&[2, 2]);
-    let wrong = frame(starts[1], 7, 1, &records(2), BLOCK);
+    let wrong = frame(starts[1], 7, 1, &[0; 16], &records(2), BLOCK);
     let at = starts[1].0 as usize;
     seg(&mut img)[at..at + wrong.len()].copy_from_slice(&wrong);
     let (s, batches, _) = scanned(&mut img, Mode::Recovery);
@@ -448,4 +472,22 @@ mod evicted {
         let kept = (0..64).filter(|&n| t.get(Pid(n)).is_some()).count();
         assert_eq!(t.capacity(), kept, "the newest pages fill every slot");
     }
+}
+
+#[test]
+fn a_first_segment_opening_on_a_batch_begun_before_it_starts_at_the_next_batch() {
+    let block = 512;
+    let segment = 2 * block as u64;
+    let long = frame(Lsn(0), 1, 1, &[0; 16], &vec![7; block * 2], block);
+    let blocks = long.len() / block;
+    assert_eq!(3, blocks);
+    let mut held = vec![0; segment as usize];
+    held[..block].copy_from_slice(&long[2 * block..]);
+    let mut img = LogImage::in_memory(block, segment, BTreeMap::from([(segment, Some(held))]));
+    assert_eq!(Some(Lsn(segment + block as u64)), img.first_batch());
+    let whole = frame(Lsn(segment), 1, 1, &[0; 16], &[7; 8], block);
+    let mut held = vec![0; segment as usize];
+    held[..block].copy_from_slice(&whole);
+    let mut img = LogImage::in_memory(block, segment, BTreeMap::from([(segment, Some(held))]));
+    assert_eq!(Some(Lsn(segment)), img.first_batch());
 }

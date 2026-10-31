@@ -721,7 +721,7 @@ fn position(p: Position) -> Value {
     Value::ctor(
         0,
         vec![
-            Value::Int(i64::from(p.epoch)),
+            Value::Int(i64::try_from(p.epoch).unwrap()),
             Value::Int(i64::try_from(p.lsn).expect("an LSN fits")),
         ],
     )

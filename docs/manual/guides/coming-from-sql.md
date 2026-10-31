@@ -379,9 +379,9 @@ there for now:
   share a file](https://www.sqlite.org/wal.html).
 - A host language other than Rust. The manual documents the shell and
   [the Rust API](../reference/rust-api.md).
-- A dump or a backup from the engine. `dump`, restore, backups and
-  `compact` do not run yet, and `export` writes only CSV, so there is no
-  equivalent of `.dump` or `VACUUM`.
+- A dump from the engine. `dump` and `compact` do not run yet, and
+  `export` writes only CSV, so there is no equivalent of `.dump` or
+  `VACUUM`.
 - Encryption, log shipping and embedded replicas, which the manual does
   not yet cover.
 - Migration scripts. A change that needs a `script` is refused today.

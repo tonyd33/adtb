@@ -176,20 +176,23 @@ is one of:
 ```text
 enum Op {
   Open     { path, create }          // -> Opened { file, len }
+  CreateNew { path }                 // -> Opened { file, len: 0 }; Exists when the name is taken
   Read     { file, offset, buf }     // -> Read(n); n < buf.len() past the end of the file
   Write    { file, offset, buf }     // -> Written; the whole buffer
   Size     { file }                  // -> Size(len)
   Allocate { file, len }             // -> Allocated; the file is at least len bytes, new bytes zero
   Sync     { file }                  // -> Synced; fdatasync
   SyncDir  { dir }                   // -> Synced; fsync of the directory
-  List     { dir }                   // -> Listed(paths) of its files, in no particular order
+  List     { dir }                   // -> Listed(paths) of its entries, in no particular order
   Remove   { path }                  // -> Removed
-  CreateDir { dir }                  // -> Created; also when it exists already
+  RemoveDir { path }                 // -> Removed; the directory is empty
+  Rename   { from, to, replace }     // -> Renamed; both names in one directory
+  CreateDir { dir }                  // -> Created, or Present when it is a directory already
   Close    { file }                  // -> Closed
   Timer    { at }                    // -> Fired, once now() >= at
 }
 struct Completion { ticket, buf: Option<AlignedBuf>, result: Result<Done, IoError> }
-enum IoError { NotFound, Full, Failed }
+enum IoError { NotFound, Exists, NotADirectory, Full, Failed }
 ```
 
 Paths are relative to the database directory, separated by `/`; the
@@ -227,13 +230,30 @@ Postconditions every backend must meet:
   completes with `Full` may have changed any of its blocks.
 - `Size`, like `len` at `Open`, counts every write and allocation to
   the file that completed before the op was submitted.
-- `List` returns the full paths of the files in the directory, not its
-  subdirectories.
+- `List` returns the full paths of the entries of any kind in the
+  directory, and completes with `NotADirectory` when a component of its
+  path is a file.
+- `CreateNew` and `CreateDir` complete with `Exists` when an entry of
+  another kind has the name, a dangling symbolic link included. `CreateDir`
+  completes with `NotADirectory` when a directory above it is a file.
+- `Remove` of a directory and `RemoveDir` of a directory holding entries
+  complete with `Failed`; `RemoveDir` of a file completes with
+  `NotADirectory`, and of an absent path with `NotFound`.
 - A crash that loses the creation of a directory loses every file and
   directory under it, whatever forces they had.
 - `Close` forces nothing; the file's data and name stay as they were.
 
-TODO: renames are undecided.
+- `Rename` moves a file or a directory, with all under it, atomically,
+  and both names are in one directory. It completes with `Exists` when
+  `to` is taken, except that a directory replaces an empty directory
+  and, with `replace`, a file replaces a file. It completes with
+  `NotFound` when `from` is absent and `NotADirectory` when a directory
+  above them is a file. A `FileId` stays valid across it.
+- `SyncDir` of that directory forces a `Rename`; until then a crash may
+  lose it, whole, and the old names stay. `SyncDir` of an absent
+  directory completes with `NotFound`.
+- `Open`, `CreateNew`, `Remove` and `RemoveDir` complete with
+  `NotADirectory` when a directory above their path is a file.
 
 Rulings: project/arch/runtime/own-loop, buffer/io-path/direct, buffer/async/uring-fallback, buffer/platform/linux-first
 

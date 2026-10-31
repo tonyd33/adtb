@@ -115,6 +115,11 @@ pub enum Op {
         path: String,
         create: bool,
     },
+    /// Create and open the empty file `path`, failing with `Exists` when an entry of any kind has
+    /// that name, a dangling symbolic link included.
+    CreateNew {
+        path: String,
+    },
     /// Read up to `buf.len()` bytes at `offset`; a read past the end of the file is short.
     Read {
         file: FileId,
@@ -146,14 +151,28 @@ pub enum Op {
     SyncDir {
         dir: String,
     },
-    /// List the paths of the files in `dir`, in no particular order.
+    /// List the paths of the entries of any kind in `dir`, in no particular order.
     List {
         dir: String,
     },
     Remove {
         path: String,
     },
-    /// Create the directory `dir` if it is absent; its parent must exist.
+    /// Remove the empty directory `path`.
+    RemoveDir {
+        path: String,
+    },
+    /// Move the file or directory `from` to the name `to` in the same directory, atomically. Fail
+    /// with `Exists` when `to` is taken, unless `from` and `to` are directories and `to` is empty,
+    /// or `replace` is set and `from` and `to` are files. `SyncDir` of that directory forces it.
+    Rename {
+        from: String,
+        to: String,
+        replace: bool,
+    },
+    /// Create the directory `dir` if it is absent; its parent must exist. Completes as `Created`
+    /// when this op made it and `Present` when it was a directory already, and fails with `Exists`
+    /// when an entry of another kind has that name, a dangling symbolic link included.
     CreateDir {
         dir: String,
     },
@@ -177,7 +196,9 @@ pub enum Done {
     Synced,
     Listed(Vec<String>),
     Removed,
+    Renamed,
     Created,
+    Present,
     Closed,
     Fired,
 }
@@ -185,6 +206,10 @@ pub enum Done {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IoError {
     NotFound,
+    /// An entry already has the name.
+    Exists,
+    /// A component of the path is not a directory.
+    NotADirectory,
     /// The device has no space for the op; a `Full` `Write` may have changed any of its blocks.
     Full,
     /// The device refused the op; a failed `Write` may have changed any of its blocks.

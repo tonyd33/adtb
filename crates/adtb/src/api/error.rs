@@ -171,6 +171,13 @@ pub enum RejectReason {
     DumpDamaged {
         offset: i64,
     },
+    BackupDamaged {
+        part: String,
+    },
+    RestorePointUnavailable {
+        oldest: Position,
+        newest: Position,
+    },
     Internal {
         what: String,
     },
@@ -572,6 +579,13 @@ impl fmt::Display for RejectReason {
             R::UnknownEdition { edition } => write!(f, "no edition `{edition}`"),
             R::MigrationInProgress => f.write_str("a migration is in progress"),
             R::DumpDamaged { offset } => write!(f, "the dump is damaged at byte {offset}"),
+            R::BackupDamaged { part } => write!(f, "the backup's part `{part}` is damaged"),
+            R::RestorePointUnavailable { oldest, newest } => {
+                write!(
+                    f,
+                    "the source reaches only points from {oldest} to {newest}"
+                )
+            }
             R::Internal { what } => write!(f, "internal error: {what}"),
             R::RowTooLarge {
                 relation,
@@ -768,6 +782,11 @@ impl fmt::Display for Value<&RejectReason> {
             R::UnknownEdition { edition } => ("UnknownEdition", &[("edition", &Txt(edition))]),
             R::MigrationInProgress => ("MigrationInProgress", &[]),
             R::DumpDamaged { offset } => ("DumpDamaged", &[("offset", offset)]),
+            R::BackupDamaged { part } => ("BackupDamaged", &[("part", &Txt(part))]),
+            R::RestorePointUnavailable { oldest, newest } => (
+                "RestorePointUnavailable",
+                &[("oldest", &Shown(oldest)), ("newest", &Shown(newest))],
+            ),
             R::Internal { what } => ("Internal", &[("what", &Txt(what))]),
             R::RowTooLarge {
                 relation,

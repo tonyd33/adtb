@@ -265,6 +265,152 @@ fn a_refused_open_of_an_existing_file_keeps_it() {
     assert!(names(&db).is_empty());
 }
 
+/// Returns each entry under `dir`, by name, with the bytes of each file.
+fn tree(dir: &Path) -> std::collections::BTreeMap<std::ffi::OsString, Vec<u8>> {
+    std::fs::read_dir(dir)
+        .expect("the directory")
+        .map(|e| {
+            let e = e.expect("an entry");
+            (e.file_name(), std::fs::read(e.path()).expect("a file"))
+        })
+        .collect()
+}
+
+fn entries(dir: &Path) -> Vec<std::ffi::OsString> {
+    let mut out: Vec<_> = std::fs::read_dir(dir)
+        .expect("the directory")
+        .map(|e| e.expect("an entry").file_name())
+        .collect();
+    out.sort();
+    out
+}
+
+fn corrupt_detail(got: &Result<(), OpenError>) -> &str {
+    match got {
+        Err(OpenError::Corrupt { detail }) => detail,
+        other => panic!("expected a corrupt file, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_create_refused_on_a_log_with_no_file_leaves_the_log_and_makes_no_file() {
+    let dir = scratch("log-no-file");
+    let (path, aside) = (dir.join("shop.adt"), dir.join("moved.adt"));
+    let log_dir = dir.join("shop.adt-log");
+    let log = Log::new([SHOP]);
+    let db = adtb::open(&path, &log, &options()).expect("create");
+    db.query_text(
+        r#"insert customers { id: customers.key(1), name: "ann" }"#,
+        &[],
+        &CallOptions::default(),
+    )
+    .expect("insert");
+    db.close().expect("close");
+    std::fs::rename(&path, &aside).expect("move the file away");
+    let before = tree(&log_dir);
+    assert!(!before.is_empty(), "the close left a log");
+
+    let got = adtb::open(&path, &log, &options()).map(drop);
+    assert!(
+        corrupt_detail(&got).contains("log directory"),
+        "the refusal names the log: {got:?}"
+    );
+    assert!(
+        !path.exists(),
+        "a refused create leaves no file at the path"
+    );
+    assert_eq!(
+        before,
+        tree(&log_dir),
+        "a refused create leaves the log whole"
+    );
+
+    std::fs::rename(&aside, &path).expect("move the file back");
+    let db = adtb::open(&path, &log, &OpenOptions::default()).expect("the retry opens it");
+    assert_eq!(vec![r#""ann""#], names(&db));
+}
+
+#[test]
+fn a_create_refused_on_a_log_of_only_an_unknown_file_leaves_it() {
+    let dir = scratch("log-unknown");
+    let path = dir.join("shop.adt");
+    let log_dir = dir.join("shop.adt-log");
+    std::fs::create_dir(&log_dir).expect("the log directory");
+    std::fs::write(log_dir.join("mine"), b"kept").expect("a file");
+    let before = tree(&log_dir);
+
+    let got = adtb::open(&path, &Log::new([SHOP]), &options()).map(drop);
+    assert!(
+        corrupt_detail(&got).contains("log directory"),
+        "the refusal names the log: {got:?}"
+    );
+    assert!(
+        !path.exists(),
+        "a refused create leaves no file at the path"
+    );
+    assert_eq!(before, tree(&log_dir));
+}
+
+#[test]
+fn a_refused_create_on_a_file_it_found_empty_keeps_the_file_and_its_log() {
+    let dir = scratch("refused-empty");
+    let path = dir.join("shop.adt");
+    std::fs::write(&path, b"").expect("an empty file");
+    let refused = Log::new([SHOP, "module shop\nremove relation missing"]);
+    let got = adtb::open(&path, &refused, &options()).map(drop);
+    assert!(
+        matches!(got, Err(OpenError::MigrationRefused { version: 2, .. })),
+        "{got:?}"
+    );
+    assert_eq!(
+        vec![
+            std::ffi::OsString::from("shop.adt"),
+            std::ffi::OsString::from("shop.adt-log")
+        ],
+        entries(&dir),
+        "the file was not this call's, and its log stays with it"
+    );
+    adtb::open(&path, &Log::new([SHOP]), &options()).expect("a later open succeeds");
+}
+
+/// Stamp the header copy at offset `at` of `file` as copy `copy` of layout `layout`, whole.
+fn stamp_layout(file: &mut [u8], at: usize, copy: u64, layout: u32) {
+    const REGION: usize = 4096;
+    let region = &mut file[at..at + REGION];
+    region[12..16].copy_from_slice(&layout.to_le_bytes());
+    region[8..12].fill(0);
+    let sum = adtb::storage::Crc32c::new()
+        .update(&copy.to_le_bytes())
+        .update(region)
+        .finish();
+    region[8..12].copy_from_slice(&sum.to_le_bytes());
+}
+
+#[test]
+fn a_file_of_another_layout_is_refused_naming_the_layout_and_kept() {
+    let dir = scratch("old-layout");
+    let path = dir.join("shop.adt");
+    let log = Log::new([SHOP]);
+    adtb::open(&path, &log, &options())
+        .expect("create")
+        .close()
+        .expect("close");
+    let mut bytes = std::fs::read(&path).expect("the file");
+    let page_size = u32::from_le_bytes(bytes[40..44].try_into().expect("four bytes")) as usize;
+    stamp_layout(&mut bytes, 0, 0, 2);
+    stamp_layout(&mut bytes, page_size, 1, 2);
+    std::fs::write(&path, &bytes).expect("the old layout");
+
+    for opening in [options(), OpenOptions::default()] {
+        let got = adtb::open(&path, &log, &opening).map(drop);
+        assert!(
+            corrupt_detail(&got).contains("layout 2"),
+            "the refusal names the layout: {got:?}"
+        );
+        assert_eq!(bytes, std::fs::read(&path).expect("the file"));
+    }
+}
+
 /// A query that runs one fixpoint round per number up to ten million, far longer than any test
 /// waits for it.
 const LONG: &str =
@@ -487,4 +633,173 @@ fn open_returns_on_a_real_file_cut_before_the_first_roles_page() {
         "{said:?}"
     );
     db.close().expect("a close");
+}
+
+#[test]
+fn a_backup_of_a_real_file_restores_verifies_clean_and_continues() {
+    let dir = scratch("backup");
+    let (file, target, copy) = (
+        dir.join("app.adt"),
+        dir.join("nested/bk"),
+        dir.join("copy.adt"),
+    );
+    let log = Log::new([SHOP]);
+    let db = Database::open(&file, &log, &options()).unwrap();
+    for (id, name) in [(1, "ann"), (2, "bob")] {
+        let text = format!(r#"insert customers {{ id: customers.key({id}), name: "{name}" }}"#);
+        db.query_text(&text, &[], &CallOptions::default()).unwrap();
+    }
+    let text = format!("backup to {:?}", target.display().to_string());
+    db.query_text(&text, &[], &CallOptions::default()).unwrap();
+    db.close().unwrap();
+
+    let archive = adtb::ArchiveTarget::path(&target).unwrap();
+    let opening = OpenOptions {
+        create: None,
+        ..options()
+    };
+    adtb::restore(&archive, &copy, adtb::RestorePoint::Latest, opening.clone()).unwrap();
+    assert_eq!(
+        adtb::Proof::Proven,
+        adtb::prove(&archive, &log, &opening).unwrap()
+    );
+    assert_eq!(0, adtb::verify_file(&copy, &log, &opening).unwrap().count());
+
+    let db = Database::open(&copy, &log, &opening).unwrap();
+    assert_eq!(2, names(&db).len());
+    db.query_text(
+        r#"insert customers { id: customers.key(3), name: "cam" }"#,
+        &[],
+        &CallOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(3, names(&db).len());
+    db.close().unwrap();
+}
+
+#[test]
+fn backup_and_restore_write_through_no_symbolic_link() {
+    use std::os::unix::fs::symlink;
+    let dir = scratch("backup_links");
+    let file = dir.join("app.adt");
+    let log = Log::new([SHOP]);
+    let db = Database::open(&file, &log, &options()).unwrap();
+    db.query_text(
+        r#"insert customers { id: customers.key(1), name: "ann" }"#,
+        &[],
+        &CallOptions::default(),
+    )
+    .unwrap();
+    let back_up = |target: &Path| {
+        let text = format!("backup to {:?}", target.display().to_string());
+        db.query_text(&text, &[], &CallOptions::default())
+            .map(|_| ())
+    };
+    let victim = dir.join("victim");
+    std::fs::write(&victim, b"keep").unwrap();
+    let elsewhere = dir.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    for (name, to) in [
+        ("manifest", &victim),
+        ("pages", &elsewhere),
+        ("log", &elsewhere),
+    ] {
+        let target = dir.join(format!("link-{name}"));
+        std::fs::create_dir(&target).unwrap();
+        symlink(to, target.join(name)).unwrap();
+        let got = back_up(&target);
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.to_string().contains("holds files")),
+            "{name}: {got:?}"
+        );
+    }
+    let target = dir.join("bk");
+    back_up(&target).unwrap();
+    db.close().unwrap();
+    assert_eq!(b"keep".as_slice(), std::fs::read(&victim).unwrap());
+    assert_eq!(0, std::fs::read_dir(&elsewhere).unwrap().count());
+
+    let archive = adtb::ArchiveTarget::path(&target).unwrap();
+    let opening = OpenOptions {
+        create: None,
+        ..options()
+    };
+    let restore_to =
+        |path: &Path| adtb::restore(&archive, path, adtb::RestorePoint::Latest, opening.clone());
+    let dangling = dir.join("dangling.adt");
+    symlink(dir.join("absent.adt"), &dangling).unwrap();
+    let got = restore_to(&dangling);
+    assert!(
+        got.as_ref()
+            .is_err_and(|e| e.to_string().contains("exists")),
+        "{got:?}"
+    );
+    assert!(!dir.join("absent.adt").exists());
+    let linked = dir.join("linked.adt");
+    symlink(&victim, &linked).unwrap();
+    let got = restore_to(&linked);
+    assert!(
+        got.as_ref()
+            .is_err_and(|e| e.to_string().contains("exists")),
+        "{got:?}"
+    );
+    assert_eq!(b"keep".as_slice(), std::fs::read(&victim).unwrap());
+    restore_to(&dir.join("copy.adt")).unwrap();
+}
+
+/// Answer a file or a dangling symbolic link at a target or a restore's log directory as occupied,
+/// and back up under an ancestor that can be searched and not listed by others.
+#[test]
+fn a_file_or_dangling_link_at_a_target_is_occupied() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let dir = scratch("backup_taken");
+    let log = Log::new([SHOP]);
+    let db = Database::open(dir.join("app.adt"), &log, &options()).unwrap();
+    let back_up = |target: &Path| {
+        let text = format!("backup to {:?}", target.display().to_string());
+        db.query_text(&text, &[], &CallOptions::default())
+            .map(|_| ())
+    };
+    let file = dir.join("file");
+    std::fs::write(&file, b"keep").unwrap();
+    let dangling = dir.join("dangling");
+    symlink(dir.join("absent"), &dangling).unwrap();
+    for target in [&file, &dangling] {
+        let got = back_up(target);
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.to_string().contains("holds files")),
+            "{target:?}: {got:?}"
+        );
+    }
+    assert_eq!(b"keep".as_slice(), std::fs::read(&file).unwrap());
+    assert!(!dir.join("absent").exists());
+
+    let searched = dir.join("searched");
+    std::fs::create_dir(&searched).unwrap();
+    std::fs::set_permissions(&searched, std::fs::Permissions::from_mode(0o711)).unwrap();
+    let target = searched.join("under/bk");
+    back_up(&target).unwrap();
+    db.close().unwrap();
+
+    let archive = adtb::ArchiveTarget::path(&target).unwrap();
+    let opening = OpenOptions {
+        create: None,
+        ..options()
+    };
+    let restore_to =
+        |path: &Path| adtb::restore(&archive, path, adtb::RestorePoint::Latest, opening.clone());
+    std::fs::write(dir.join("one.adt-log"), b"keep").unwrap();
+    symlink(dir.join("absent"), dir.join("two.adt-log")).unwrap();
+    for name in ["one.adt", "two.adt"] {
+        let got = restore_to(&dir.join(name));
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| e.to_string().contains("exists")),
+            "{name}: {got:?}"
+        );
+        assert!(!dir.join(name).exists(), "{name}");
+    }
+    restore_to(&dir.join("copy.adt")).unwrap();
 }

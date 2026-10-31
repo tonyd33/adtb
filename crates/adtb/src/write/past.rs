@@ -102,13 +102,13 @@ pub(super) struct Pasts<R: Runtime> {
 
 /// Returns the position `v`, a value of the prelude's `Position`, or `None` when no commit can
 /// have it.
-fn position(v: &Val) -> Result<Option<Position>, exec::Error> {
+pub(crate) fn position(v: &Val) -> Result<Option<Position>, exec::Error> {
     let [Val::Int(epoch), Val::Int(lsn)] = v.fields()? else {
         return Err(exec::Error::Internal(format!(
             "a position is an epoch and an LSN, found {v:?}"
         )));
     };
-    Ok(u32::try_from(*epoch)
+    Ok(u64::try_from(*epoch)
         .ok()
         .zip(u64::try_from(*lsn).ok())
         .map(|(epoch, lsn)| Position {
@@ -381,7 +381,7 @@ fn position_value(at: Position) -> Val {
     Val::ctor(
         0,
         vec![
-            Val::Int(i64::from(at.epoch)),
+            Val::Int(i64::try_from(at.epoch).expect("a restore keeps the epoch within an I64")),
             Val::Int(i64::try_from(at.lsn.0).expect("commit LSN fits")),
         ],
     )

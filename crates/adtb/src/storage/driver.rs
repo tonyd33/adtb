@@ -45,9 +45,22 @@ impl<R: Runtime> Driver<R> {
         }
     }
 
+    /// Run `op` to completion and hand back its outcome, a failure included.
+    pub(crate) fn attempt(&mut self, op: Op) -> Completion {
+        self.run(op)
+    }
+
     fn run(&mut self, op: Op) -> Completion {
         let t = self.submit(op);
         self.wait(t)
+    }
+
+    pub(crate) fn create_new(&mut self, path: &str) -> Result<(FileId, u64), IoError> {
+        let path = path.to_owned();
+        match self.run(Op::CreateNew { path }).result? {
+            Done::Opened { file, len } => Ok((file, len)),
+            other => unreachable!("exclusive create completed as {other:?}"),
+        }
     }
 
     pub(crate) fn open(&mut self, path: &str, create: bool) -> Result<(FileId, u64), IoError> {
@@ -106,16 +119,6 @@ impl<R: Runtime> Driver<R> {
     pub(crate) fn allocate(&mut self, file: FileId, len: u64) {
         if let Err(e) = self.run(Op::Allocate { file, len }).result {
             fatal("allocate", e);
-        }
-    }
-
-    pub(crate) fn list(&mut self, dir: &str) -> Vec<String> {
-        let dir = dir.to_owned();
-        match self.run(Op::List { dir }).result {
-            Ok(Done::Listed(paths)) => paths,
-            Ok(other) => unreachable!("list completed as {other:?}"),
-            Err(IoError::NotFound) => Vec::new(),
-            Err(e) => fatal("list", e),
         }
     }
 

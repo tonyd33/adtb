@@ -4,7 +4,7 @@ use super::{Error, Result, limit};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Position {
-    pub epoch: u32,
+    pub epoch: u64,
     pub lsn: u64,
 }
 
@@ -171,7 +171,7 @@ impl<'a> Reader<'a> {
     pub fn position(&mut self) -> Result<Position> {
         self.atom(|reader| {
             Ok(Position {
-                epoch: reader.u32()?,
+                epoch: reader.u64()?,
                 lsn: reader.u64()?,
             })
         })
@@ -255,7 +255,7 @@ impl Writer {
     }
 
     pub fn position(&mut self, value: Position) {
-        self.u32(value.epoch);
+        self.u64(value.epoch);
         self.u64(value.lsn);
     }
     pub fn version(&mut self, value: Version) {

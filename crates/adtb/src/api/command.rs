@@ -49,7 +49,11 @@ pub(super) fn runs(c: &Command) -> Result<(), Error> {
         | Command::SupersedeBundle(..)
         | Command::CancelCall(_)
         | Command::PrintSchema
-        | Command::Export { .. } => Ok(()),
+        | Command::Export { .. }
+        | Command::Restore { .. }
+        | Command::Backup {
+            incremental: false, ..
+        } => Ok(()),
         other => Err(unsupported(&format!("`{}`", word(other)))),
     }
 }
@@ -77,9 +81,10 @@ pub(super) fn need<'c>(c: &'c ast::Command, params: &[String]) -> Need<'c> {
         {
             Need::Capabilities(&[Maintain])
         }
-        C::Vacuum(_) | C::Verify(_) | C::Compact | C::FinalizeUpgrade | C::Backup { .. } => {
+        C::Vacuum(_) | C::Verify(_) | C::Compact | C::FinalizeUpgrade => {
             Need::Capabilities(&[Maintain])
         }
+        C::Backup { .. } => Need::Capabilities(&[Maintain, WriteFiles]),
         C::TerminateSession(k) if key_value(k, params) => Need::Capabilities(&[Cancel]),
         C::SetSetting(_, v) if value(v, params) => Need::Capabilities(&[Configure]),
         C::RotateKek(_) | C::RotateDek | C::DestroyDek(_) => Need::Capabilities(&[Configure]),
@@ -132,6 +137,8 @@ pub(super) fn changes_data(c: &Command) -> bool {
             | Command::CancelCall(_)
             | Command::PrintSchema
             | Command::Export { .. }
+            | Command::Backup { .. }
+            | Command::Restore { .. }
     )
 }
 
@@ -264,7 +271,9 @@ pub(super) fn outside_transaction(c: &Command) -> Result<(), Error> {
         | Command::Reindex { .. }
         | Command::CancelCall(_)
         | Command::PrintSchema
-        | Command::Export { .. } => Err(Error::invalid(format!(
+        | Command::Export { .. }
+        | Command::Backup { .. }
+        | Command::Restore { .. } => Err(Error::invalid(format!(
             "`{}` does not run inside a transaction",
             word(c)
         ))),
@@ -471,7 +480,12 @@ impl<R: Runtime> Engine<R> {
     }
 
     /// Record that the issuer of `p` was refused while its text ran. Returns the refusal.
-    fn refused_running(&self, p: &Prepared, issuer: &Issuer, detail: String) -> write::Error {
+    pub(super) fn refused_running(
+        &self,
+        p: &Prepared,
+        issuer: &Issuer,
+        detail: String,
+    ) -> write::Error {
         match self.audit_denied(&issuer.role, p.caller(), &CallOrigin::AdHoc(issuer.text)) {
             Ok(()) => write::Error::Denied(detail),
             Err(e) => write::Error::Internal(format!("recording a denied call: {e:?}")),
@@ -567,7 +581,7 @@ impl<R: Runtime> Engine<R> {
         Ok(rows(schema, ty, vec![row]))
     }
 
-    fn text_of<'a>(&self, p: &'a Prepared, items: &'a [Tm]) -> Text<'a> {
+    pub(super) fn text_of<'a>(&self, p: &'a Prepared, items: &'a [Tm]) -> Text<'a> {
         Text {
             schema: p.schema(),
             terms: p.terms(),

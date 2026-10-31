@@ -57,7 +57,10 @@ impl<R: Runtime> Engine<R> {
         let mut between = |at: usize, local: &mut Local| -> Result<(), write::Error> {
             let commands = p.commands().iter().enumerate();
             for (nth, c) in commands.filter(|(_, c)| c.at == at) {
-                match self.deployment_command(&c.command, p) {
+                let run = self
+                    .deployment_command(&c.command, p)
+                    .or_else(|| self.file_command(tx, &c.command, p, local, &bounds));
+                match run {
                     Some(Ok(rows)) => ran.push((at, rows)),
                     Some(Err(e)) => {
                         refused = Some(e);

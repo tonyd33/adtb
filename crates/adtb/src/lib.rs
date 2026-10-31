@@ -25,12 +25,13 @@ pub use api::{
     OpenError, OpenOptions, Position, RecordBatch, Registered, Registration, RejectReason,
     RetryReason, RoleAuthority, RoleSession, TxnCallOptions, TxnId, TxnOptions,
 };
+pub use api::{ArchiveTarget, Proof, RestorePoint, proof_in, prove_in, restore_in};
 pub use api::{
     Binding, CallDescriptor, CallKind, Completion, Format, Layout, Observation, Pins, ResultBatch,
     RoleBinding, Task, TaskOptions,
 };
 pub use api::{BundleDef, Callable, CtorRelation, Key, Pending, Rows, typed};
 #[cfg(target_os = "linux")]
-pub use api::{VerifyFileError, open, verify_file};
+pub use api::{VerifyFileError, open, prove, restore, verify_file};
 pub use exec::HostError;
 pub use exec::Val as Value;

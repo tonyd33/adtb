@@ -1,6 +1,8 @@
+use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind};
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
@@ -21,6 +23,8 @@ pub(crate) type Outcome = (Option<AlignedBuf>, Result<Done, IoError>);
 pub(crate) fn error(e: &io::Error) -> IoError {
     match e.kind() {
         ErrorKind::NotFound => IoError::NotFound,
+        ErrorKind::AlreadyExists => IoError::Exists,
+        ErrorKind::NotADirectory => IoError::NotADirectory,
         ErrorKind::StorageFull | ErrorKind::QuotaExceeded => IoError::Full,
         _ => IoError::Failed,
     }
@@ -89,6 +93,7 @@ impl Files {
     pub(crate) fn perform(&self, op: Op) -> Outcome {
         match op {
             Op::Open { path, create } => (None, self.open(&path, create)),
+            Op::CreateNew { path } => (None, self.create_new(&path)),
             Op::Read { file, offset, buf } => self.read(file, offset, buf),
             Op::Write { file, offset, buf } => {
                 let r = self.file(file).write_all_at(&buf, offset);
@@ -109,7 +114,15 @@ impl Files {
                 None,
                 done(fs::remove_file(self.path(&path)), |()| Done::Removed),
             ),
-            Op::CreateDir { dir } => (None, done(create_dir(&self.path(&dir)), |()| Done::Created)),
+            Op::RemoveDir { path } => (
+                None,
+                done(fs::remove_dir(self.path(&path)), |()| Done::Removed),
+            ),
+            Op::Rename { from, to, replace } => (
+                None,
+                rename(&self.path(&from), &self.path(&to), replace).map(|()| Done::Renamed),
+            ),
+            Op::CreateDir { dir } => (None, create_dir(&self.path(&dir)).map_err(|e| error(&e))),
             Op::Close { file } => {
                 let mut open = self.open.write().unwrap_or_else(PoisonError::into_inner);
                 let slot = open.get_mut(file.0 as usize).and_then(Option::take);
@@ -121,10 +134,17 @@ impl Files {
     }
 
     fn open(&self, path: &str, create: bool) -> Result<Done, IoError> {
-        let file = OpenOptions::new()
+        self.opened(path, OpenOptions::new().create(create))
+    }
+
+    fn create_new(&self, path: &str) -> Result<Done, IoError> {
+        self.opened(path, OpenOptions::new().create_new(true))
+    }
+
+    fn opened(&self, path: &str, options: &mut OpenOptions) -> Result<Done, IoError> {
+        let file = options
             .read(true)
             .write(true)
-            .create(create)
             .custom_flags(libc::O_DIRECT)
             .open(self.path(path))
             .map_err(|e| error(&e))?;
@@ -160,14 +180,10 @@ impl Files {
     fn list(&self, dir: &str) -> io::Result<Vec<String>> {
         let mut out = Vec::new();
         for entry in fs::read_dir(self.path(dir))? {
-            let entry = entry?;
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
+            let name = entry?.file_name();
+            let name = name.to_string_lossy();
             out.push(if dir.is_empty() {
-                name.to_owned()
+                name.into_owned()
             } else {
                 format!("{dir}/{name}")
             });
@@ -176,10 +192,49 @@ impl Files {
     }
 }
 
-fn create_dir(path: &Path) -> io::Result<()> {
+fn create_dir(path: &Path) -> io::Result<Done> {
     match fs::create_dir(path) {
-        Err(e) if e.kind() == ErrorKind::AlreadyExists && path.is_dir() => Ok(()),
-        r => r,
+        Ok(()) => Ok(Done::Created),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists && path.is_dir() => Ok(Done::Present),
+        Err(e) => Err(e),
+    }
+}
+
+fn rename(from: &Path, to: &Path, replace: bool) -> Result<(), IoError> {
+    if replace {
+        return fs::rename(from, to).map_err(|e| error(&e));
+    }
+    match rename_no_replace(from, to) {
+        Err(e) if e.kind() == ErrorKind::AlreadyExists && from.is_dir() && to.is_dir() => {
+            fs::rename(from, to).map_err(|e| match e.kind() {
+                ErrorKind::DirectoryNotEmpty => IoError::Exists,
+                _ => error(&e),
+            })
+        }
+        r => r.map_err(|e| error(&e)),
+    }
+}
+
+fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
+    let c_path = |p: &Path| {
+        CString::new(p.as_os_str().as_bytes()).map_err(|_| io::Error::from(ErrorKind::InvalidInput))
+    };
+    let (from, to) = (c_path(from)?, c_path(to)?);
+    // SAFETY: both paths are NUL-terminated and outlive the call.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 

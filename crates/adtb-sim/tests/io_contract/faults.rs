@@ -331,6 +331,63 @@ fn a_crash_keeps_a_prefix_of_unforced_creations_and_removals() {
 }
 
 #[test]
+fn a_crash_may_lose_an_unforced_rename_and_removed_directory_whole() {
+    let mut seen = BTreeSet::new();
+    for seed in 0..SEEDS {
+        let dir = scratch(&format!("faults-rename-{seed}"));
+        let rt = faulty(
+            &dir,
+            Faults {
+                seed,
+                ..Faults::default()
+            },
+        );
+        let mut io = rt.io();
+        for name in ["from", "gone"] {
+            super::create_dir(&rt, &mut io, name).unwrap();
+        }
+        open(&rt, &mut io, "from/f", true).unwrap();
+        let force = |d: &str| Op::SyncDir { dir: d.to_owned() };
+        for d in ["from", ""] {
+            assert_eq!(
+                Ok(Done::Synced),
+                done(&rt, &mut io, force(d)),
+                "seed {seed}"
+            );
+        }
+        let remove = Op::RemoveDir {
+            path: "gone".into(),
+        };
+        assert_eq!(Ok(Done::Removed), done(&rt, &mut io, remove), "seed {seed}");
+        let rename = Op::Rename {
+            from: "from".into(),
+            to: "to".into(),
+            replace: false,
+        };
+        assert_eq!(Ok(Done::Renamed), done(&rt, &mut io, rename), "seed {seed}");
+        rt.crash();
+        let rt = plain(&dir);
+        let mut io = rt.io();
+        let names = list(&rt, &mut io, "").unwrap();
+        let expect = |names: &[&str]| names.iter().map(|&n| n.to_owned()).collect::<BTreeSet<_>>();
+        assert!(
+            names == expect(&["from", "gone"])
+                || names == expect(&["from"])
+                || names == expect(&["to"]),
+            "seed {seed}: {names:?}"
+        );
+        let inner = if names.contains("to") {
+            "to/f"
+        } else {
+            "from/f"
+        };
+        open(&rt, &mut io, inner, false).unwrap();
+        seen.insert(names.into_iter().collect::<Vec<_>>());
+    }
+    assert_eq!(3, seen.len(), "every prefix: {seen:?}");
+}
+
+#[test]
 fn a_crash_that_loses_a_directory_loses_its_files() {
     let mut lost = false;
     for seed in 0..SEEDS {

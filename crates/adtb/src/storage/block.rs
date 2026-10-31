@@ -5,9 +5,10 @@ use super::Lsn;
 use super::crc::crc32c_skipping;
 use super::record::{Malformed, Record};
 
-pub const BLOCK_HEADER: usize = 36;
+pub const BLOCK_HEADER: usize = 56;
 
-const CHECKSUM: usize = 28;
+const CHECKSUM: usize = 32;
+const FILE_ID: usize = 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockHeader {
@@ -15,8 +16,10 @@ pub struct BlockHeader {
     pub seq: u64,
     pub count: u32,
     pub index: u32,
-    pub epoch: u32,
+    pub epoch: u64,
     pub used: u16,
+    /// The id of the file this log belongs to.
+    pub file_id: [u8; 16],
 }
 
 fn payload(block: usize) -> usize {
@@ -32,7 +35,14 @@ pub fn data_lsn(start: Lsn, k: usize, block: usize) -> Lsn {
 /// Returns the blocks of a batch holding `data`, the first at `start`, padded after the last record.
 ///
 /// Panics if `data` is empty.
-pub fn frame(start: Lsn, seq: u64, epoch: u32, data: &[u8], block: usize) -> Vec<u8> {
+pub fn frame(
+    start: Lsn,
+    seq: u64,
+    epoch: u64,
+    file_id: &[u8; 16],
+    data: &[u8],
+    block: usize,
+) -> Vec<u8> {
     assert!(!data.is_empty(), "a batch holds at least one record");
     let chunks: Vec<&[u8]> = data.chunks(payload(block)).collect();
     let count = u32::try_from(chunks.len()).expect("batch exceeds u32 blocks");
@@ -43,8 +53,9 @@ pub fn frame(start: Lsn, seq: u64, epoch: u32, data: &[u8], block: usize) -> Vec
         b[8..16].copy_from_slice(&seq.to_le_bytes());
         b[16..20].copy_from_slice(&count.to_le_bytes());
         b[20..24].copy_from_slice(&(i as u32).to_le_bytes());
-        b[24..28].copy_from_slice(&epoch.to_le_bytes());
-        b[32..34].copy_from_slice(&(chunk.len() as u16).to_le_bytes());
+        b[24..32].copy_from_slice(&epoch.to_le_bytes());
+        b[36..38].copy_from_slice(&(chunk.len() as u16).to_le_bytes());
+        b[FILE_ID..BLOCK_HEADER].copy_from_slice(file_id);
         b[BLOCK_HEADER..BLOCK_HEADER + chunk.len()].copy_from_slice(chunk);
         let sum = crc32c_skipping(None, b, CHECKSUM);
         b[CHECKSUM..CHECKSUM + 4].copy_from_slice(&sum.to_le_bytes());
@@ -75,8 +86,9 @@ pub fn read_block(at: Lsn, b: &[u8]) -> BlockState<'_> {
         seq: u64_at(8),
         count: u32_at(16),
         index: u32_at(20),
-        epoch: u32_at(24),
-        used: u16::from_le_bytes([b[32], b[33]]),
+        epoch: u64_at(24),
+        used: u16::from_le_bytes([b[36], b[37]]),
+        file_id: b[FILE_ID..BLOCK_HEADER].try_into().unwrap(),
     };
     let fits = usize::from(header.used) <= payload(b.len());
     if header.lsn != at || header.count == 0 || header.index >= header.count || !fits {
@@ -127,6 +139,8 @@ pub struct LogImage<S> {
     pub segment: u64,
     /// The first LSN of every segment present, in order.
     pub bases: Vec<u64>,
+    /// The id of the file the log is read for: a block with another belongs to another file.
+    pub file_id: [u8; 16],
     pub source: S,
 }
 
@@ -137,6 +151,7 @@ impl LogImage<InMemory> {
             block,
             segment,
             bases: segments.keys().copied().collect(),
+            file_id: [0; 16],
             source: InMemory(segments),
         }
     }
@@ -183,7 +198,7 @@ impl<S: LogSource> LogImage<S> {
 pub struct Batch {
     pub start: Lsn,
     pub seq: u64,
-    pub epoch: u32,
+    pub epoch: u64,
     pub blocks: u32,
     pub data: Vec<u8>,
 }
@@ -218,6 +233,8 @@ pub enum LogProblem {
     Unreadable,
     /// An accepted batch whose records do not decode.
     Malformed,
+    /// A valid block another file's log wrote.
+    Foreign,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -276,7 +293,7 @@ fn accept<S: LogSource>(
         _ => return Err(Refusal::NotAccepted),
     };
     let (h0, d0) = first;
-    if h0.index != 0 || prev.is_some_and(|p| h0.seq != p + 1) {
+    if h0.file_id != img.file_id || h0.index != 0 || prev.is_some_and(|p| h0.seq != p + 1) {
         return Err(Refusal::NotAccepted);
     }
     let full = payload(img.block);
@@ -292,7 +309,11 @@ fn accept<S: LogSource>(
         let BlockState::Valid(h, d) = read_block(at, &bytes) else {
             return Err(Refusal::NotAccepted);
         };
-        let agrees = h.seq == h0.seq && h.count == h0.count && h.epoch == h0.epoch && h.index == i;
+        let agrees = h.seq == h0.seq
+            && h.count == h0.count
+            && h.epoch == h0.epoch
+            && h.file_id == h0.file_id
+            && h.index == i;
         if !agrees || last_used != full {
             return Err(Refusal::NotAccepted);
         }
@@ -379,6 +400,12 @@ pub fn scan<S: LogSource>(
                         lsn: at,
                         problem: LogProblem::Damaged,
                     }),
+                    BlockState::Valid(h, _) if h.file_id != img.file_id => {
+                        out.findings.push(LogFinding {
+                            lsn: at,
+                            problem: LogProblem::Foreign,
+                        });
+                    }
                     BlockState::Valid(h, _) => match prev {
                         Some(p) if h.seq <= p => out.findings.push(LogFinding {
                             lsn: at,
@@ -425,7 +452,10 @@ pub fn scan<S: LogSource>(
             .find(|f| {
                 matches!(
                     f.problem,
-                    LogProblem::Gap | LogProblem::Unreadable | LogProblem::Malformed
+                    LogProblem::Gap
+                        | LogProblem::Unreadable
+                        | LogProblem::Malformed
+                        | LogProblem::Foreign
                 )
             })
             .copied(),

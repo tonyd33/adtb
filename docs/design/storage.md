@@ -87,7 +87,7 @@ unused.
 offset  size  field
 0       8     magic "adtbfile"
 8       4     crc32c over the 4096 bytes with this field zeroed, seeded with the copy number (0 or 1)
-12      4     layout version of the copy, 1
+12      4     layout version of the copy, 3
 16      8     sequence number
 24      16    file id
 40      4     page size
@@ -100,10 +100,12 @@ offset  size  field
 64      8     LSN of the last checkpoint record
 72      8     page id of the catalog root, 0 before the catalog exists
 80      8     page id of the quarantine marks (§8), 0 before the page exists
-88      4     current primary epoch
-92      4     encryption scheme, 0 for a plaintext file
-96            encryption parameters; zero in a plaintext file
-4088    8     allocation bitmap groups started (§1.1) as of the last checkpoint, 0 in a file written before the field
+88      8     current primary epoch
+96      4     encryption scheme, 0 for a plaintext file
+100           encryption parameters; zero in a plaintext file
+2048    4     ended epochs of the file's history, n; at most 127, a restore past that forgets the oldest
+2052    16n   (u64 epoch, u64 log end where it ended), oldest first
+4088    8     allocation bitmap groups started (§1.1) as of the last checkpoint
 ```
 
 A seed here, and for page checksums, is fed to the CRC-32C first as
@@ -408,12 +410,7 @@ operating error and never handed out as data.
 A page that fails verification on read quarantines the heap or index
 holding it (§8).
 
-A file written before the group count holds 0 there. Its first open
-stores the groups the file then reaches into, at recovery's checkpoint,
-so a cut from then on is found. An older engine zeroes the field on its
-next header write, and the next open here counts from the file end again.
-
-Outside what the engine detects: a cut that lost a whole bitmap group from a file whose header holds no count for it, because it predates the count or an older engine wrote it last, before an open here has stored the count; a device that drops a forced write of
+Outside what the engine detects: a device that drops a forced write of
 the last batch of the log before a crash, or damages a block of that
 batch, leaves the log ending at the batch before. Its commits were
 acknowledged and are lost without a report, since recovery cannot tell
@@ -477,9 +474,9 @@ encrypted log block
   8     u64  batch sequence number   in clear
   16    u32  number of blocks        in clear
   20    u32  block index             in clear
-  24    u32  epoch                   in clear
-  28    u32  data key version        in clear
-  32    ...  ciphertext of bytes used and records
+  24    u64  epoch                   in clear
+  32    u32  data key version        in clear
+  36    ...  ciphertext of bytes used and records
   end-40     24-byte nonce
   end-16     16-byte Poly1305 tag
 ```
@@ -537,10 +534,7 @@ either lands whole or not at all, so no page can be torn. The engine
 detects the guarantee when it opens the file (for example from the
 atomic write unit `statx` reports for direct I/O) and records it in the
 file header; a file opened where the guarantee does not hold logs
-images again from its next change of each clean frame. While a backup
-runs ([replication.md §9](replication.md#9-backups)), full-page images
-are logged whatever the device guarantees, since the backup's page copy
-can be torn.
+images again from its next change of each clean frame.
 
 ### 5.3 Blocks and segments
 
@@ -566,12 +560,19 @@ log block
   8   u64  batch sequence number
   16  u32  number of blocks in the batch
   20  u32  index of this block within the batch, from 0
-  24  u32  epoch of the primary that wrote it (replication.md §6)
-  28  u32  crc32c over the whole block with this field zeroed
-  32  u16  bytes used
-  34  u16  reserved
-  36       records; a record may continue into the next block
+  24  u64  epoch of the primary that wrote it (replication.md §6)
+  32  u32  crc32c over the whole block with this field zeroed
+  36  u16  bytes used
+  38  u16  reserved
+  40  16   file id of the file this log belongs to
+  56       records; a record may continue into the next block
 ```
+
+Invariant: recovery replays a log only into the file it belongs to. A
+restored file and its log keep the id of the file backed up. Open
+answers damage when a valid block recovery reads holds another id. Creating a file claims its log
+directory after creating the file and refuses a directory holding
+anything else.
 
 A record never continues past the last block of its batch. A segment's
 name is the LSN of its first byte as sixteen lowercase hexadecimal
@@ -642,8 +643,8 @@ last record there. A full-page image of a page overwritten while damaged
 page's damage.
 
 The end of the log is found by batch. A batch is accepted when all of
-its blocks are present, each verifies, and they agree: the same
-sequence number, block count and epoch, indexes 0 to count minus 1,
+its blocks are present, each verifies, and they agree: the file's id,
+the same sequence number, block count and epoch, indexes 0 to count minus 1,
 and LSNs that continue one another and the previous batch. Its
 sequence number must be one more than the previous batch's. Replay
 stops at the first batch that is not accepted. That batch and every

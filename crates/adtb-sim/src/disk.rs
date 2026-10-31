@@ -106,14 +106,47 @@ enum NameOp {
     Create(String, Ino),
     Remove(String),
     MakeDir(String),
+    RemoveDir(String),
+    Rename(String, String),
 }
 
 impl NameOp {
     fn path(&self) -> &str {
         match self {
-            NameOp::Create(p, _) | NameOp::Remove(p) | NameOp::MakeDir(p) => p,
+            NameOp::Create(p, _)
+            | NameOp::Remove(p)
+            | NameOp::MakeDir(p)
+            | NameOp::RemoveDir(p)
+            | NameOp::Rename(_, p) => p,
         }
     }
+}
+
+/// Move the entry `from`, and all under it, to `to`, replacing what `to` holds.
+fn move_entry(
+    names: &mut BTreeMap<String, Ino>,
+    dirs: &mut BTreeSet<String>,
+    from: &str,
+    to: &str,
+) {
+    let under = format!("{from}/");
+    let moved = |p: &str| {
+        if p == from {
+            Some(to.to_owned())
+        } else {
+            p.strip_prefix(&under).map(|rest| format!("{to}/{rest}"))
+        }
+    };
+    dirs.remove(to);
+    names.remove(to);
+    *names = std::mem::take(names)
+        .into_iter()
+        .map(|(p, ino)| (moved(&p).unwrap_or(p), ino))
+        .collect();
+    *dirs = std::mem::take(dirs)
+        .into_iter()
+        .map(|p| moved(&p).unwrap_or(p))
+        .collect();
 }
 
 /// A write the crash finds still in flight.
@@ -154,6 +187,15 @@ enum Event {
     },
     MakeDir {
         path: String,
+        seq: u64,
+    },
+    RemoveDir {
+        path: String,
+        seq: u64,
+    },
+    Rename {
+        from: String,
+        to: String,
         seq: u64,
     },
     Sync {
@@ -290,10 +332,15 @@ impl Disk {
             .collect()
     }
 
+    pub(crate) fn dirs(&self) -> BTreeSet<String> {
+        self.dirs.clone()
+    }
+
     pub(crate) fn open(&mut self, path: &str, create: bool) -> Result<(Ino, u64), IoError> {
         if let Some(&ino) = self.names.get(path) {
             return Ok((ino, self.inodes[ino].visible.len() as u64));
         }
+        self.below_a_file(parent(path))?;
         if !create || !dir_exists(&self.dirs, parent(path)) {
             return Err(IoError::NotFound);
         }
@@ -311,7 +358,41 @@ impl Disk {
         Ok((ino, 0))
     }
 
+    pub(crate) fn create_new(&mut self, path: &str) -> Result<(Ino, u64), IoError> {
+        if self.names.contains_key(path) || self.dirs.contains(path) {
+            return Err(IoError::Exists);
+        }
+        self.open(path, true)
+    }
+
+    pub(crate) fn remove_dir(&mut self, path: &str) -> Result<(), IoError> {
+        if self.names.contains_key(path) {
+            return Err(IoError::NotADirectory);
+        }
+        self.below_a_file(parent(path))?;
+        if !self.dirs.contains(path) {
+            return Err(IoError::NotFound);
+        }
+        let holds = |p: &String| parent(p) == path;
+        if self.names.keys().any(holds) || self.dirs.iter().any(holds) {
+            return Err(IoError::Failed);
+        }
+        self.dirs.remove(path);
+        self.pending_names
+            .push((self.seq, NameOp::RemoveDir(path.to_owned())));
+        self.note(Event::RemoveDir {
+            path: path.to_owned(),
+            seq: self.seq,
+        });
+        self.seq += 1;
+        Ok(())
+    }
+
     pub(crate) fn remove(&mut self, path: &str) -> Result<(), IoError> {
+        if self.dirs.contains(path) {
+            return Err(IoError::Failed);
+        }
+        self.below_a_file(parent(path))?;
         if self.names.remove(path).is_none() {
             return Err(IoError::NotFound);
         }
@@ -325,10 +406,49 @@ impl Disk {
         Ok(())
     }
 
-    pub(crate) fn create_dir(&mut self, dir: &str) -> Result<(), IoError> {
-        if dir_exists(&self.dirs, dir) {
-            return Ok(());
+    pub(crate) fn rename(&mut self, from: &str, to: &str, replace: bool) -> Result<(), IoError> {
+        assert_eq!(
+            parent(from),
+            parent(to),
+            "a rename stays in one directory: {from} to {to}"
+        );
+        self.below_a_file(parent(to))?;
+        let from_is_dir = self.dirs.contains(from);
+        if !from_is_dir && !self.names.contains_key(from) {
+            return Err(IoError::NotFound);
         }
+        let to_is_file = self.names.contains_key(to);
+        let to_is_dir = self.dirs.contains(to);
+        let holds = |p: &String| parent(p) == to;
+        let allowed = if from_is_dir {
+            !to_is_file && !self.names.keys().any(holds) && !self.dirs.iter().any(holds)
+        } else {
+            !to_is_dir && (!to_is_file || replace)
+        };
+        if !allowed {
+            return Err(IoError::Exists);
+        }
+        move_entry(&mut self.names, &mut self.dirs, from, to);
+        self.pending_names
+            .push((self.seq, NameOp::Rename(from.to_owned(), to.to_owned())));
+        self.note(Event::Rename {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            seq: self.seq,
+        });
+        self.seq += 1;
+        Ok(())
+    }
+
+    /// Returns whether this call made the directory.
+    pub(crate) fn create_dir(&mut self, dir: &str) -> Result<bool, IoError> {
+        if self.names.contains_key(dir) {
+            return Err(IoError::Exists);
+        }
+        if dir_exists(&self.dirs, dir) {
+            return Ok(false);
+        }
+        self.below_a_file(dir)?;
         if !dir_exists(&self.dirs, parent(dir)) {
             return Err(IoError::NotFound);
         }
@@ -340,6 +460,18 @@ impl Disk {
             seq: self.seq,
         });
         self.seq += 1;
+        Ok(true)
+    }
+
+    /// Fail when `path` or a directory above it names a file.
+    fn below_a_file(&self, path: &str) -> Result<(), IoError> {
+        let mut at = path;
+        while !at.is_empty() {
+            if self.names.contains_key(at) {
+                return Err(IoError::NotADirectory);
+            }
+            at = parent(at);
+        }
         Ok(())
     }
 
@@ -348,13 +480,15 @@ impl Disk {
     }
 
     pub(crate) fn list(&self, dir: &str, rng: &mut Rng) -> Result<Vec<String>, IoError> {
+        self.below_a_file(dir)?;
         if !dir_exists(&self.dirs, dir) {
             return Err(IoError::NotFound);
         }
         let mut out: Vec<String> = self
             .names
             .keys()
-            .filter(|p| parent(p) == dir)
+            .chain(self.dirs.iter())
+            .filter(|p| !p.is_empty() && parent(p) == dir)
             .cloned()
             .collect();
         for i in (1..out.len()).rev() {
@@ -542,6 +676,10 @@ impl Disk {
             trace!(cx.trace, "fault fail sync dir {dir:?}");
             return Err(IoError::Failed);
         }
+        self.below_a_file(dir)?;
+        if !dir_exists(&self.dirs, dir) {
+            return Err(IoError::NotFound);
+        }
         let (forced, kept): (Vec<_>, Vec<_>) = self
             .pending_names
             .drain(..)
@@ -635,6 +773,10 @@ fn apply_name(names: &mut BTreeMap<String, Ino>, dirs: &mut BTreeSet<String>, op
         NameOp::MakeDir(path) => {
             dirs.insert(path);
         }
+        NameOp::RemoveDir(path) => {
+            dirs.remove(&path);
+        }
+        NameOp::Rename(from, to) => move_entry(names, dirs, &from, &to),
     }
 }
 
@@ -658,6 +800,16 @@ impl Recording {
             .collect()
     }
 
+    /// Returns each prefix length of the recording that ends with a rename.
+    pub fn renames(&self) -> Vec<usize> {
+        self.events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, Event::Rename { .. }))
+            .map(|(i, _)| i + 1)
+            .collect()
+    }
+
     /// Returns disk images a crash after the first `at` events may leave: the forced writes and
     /// name changes, plus each subset of the rest, or `max` random subsets when there are more.
     pub fn images(&self, at: usize, max: usize, seed: u64) -> Vec<BTreeMap<String, Vec<u8>>> {
@@ -670,7 +822,9 @@ impl Recording {
                 }),
                 Event::Create { path, seq, .. }
                 | Event::Remove { path, seq }
-                | Event::MakeDir { path, seq } => {
+                | Event::MakeDir { path, seq }
+                | Event::RemoveDir { path, seq }
+                | Event::Rename { to: path, seq, .. } => {
                     later.iter().any(|e| {
                         matches!(e, Event::SyncDir { dir, upto } if dir == parent(path) && upto > seq)
                     })
@@ -732,6 +886,14 @@ impl Recording {
                 }
                 Event::MakeDir { path, .. } => {
                     dirs.insert(path.clone());
+                }
+                Event::RemoveDir { path, .. } => {
+                    dirs.remove(path);
+                }
+                Event::Rename { from, to, .. } => {
+                    if names.contains_key(from) || dirs.contains(from) {
+                        move_entry(&mut names, &mut dirs, from, to);
+                    }
                 }
                 Event::Sync { .. } | Event::SyncDir { .. } => {}
             }

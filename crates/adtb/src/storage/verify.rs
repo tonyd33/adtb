@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::runtime::{AlignedBuf, Runtime};
 
-use super::block::{LogFinding, Mode, scan};
+use super::block::{LogFinding, LogProblem, Mode, scan};
+use super::log::parse_segment;
 use super::page::{self, Verdict};
 use super::pager::{Damage, Pager};
 use super::record::Record;
@@ -46,6 +47,26 @@ pub struct RetainedLog {
     safe_snapshots: Vec<(Lsn, Position, Vec<u8>)>,
 }
 
+impl RetainedLog {
+    /// Returns a log that says nothing of any page and reports the segment `what`, or the log's
+    /// start when `what` names none, as unreadable.
+    fn unreadable(end: Lsn, what: &str) -> RetainedLog {
+        let lsn = Lsn(parse_segment(what).unwrap_or(0));
+        RetainedLog {
+            end,
+            last: BTreeMap::new(),
+            broken: BTreeMap::new(),
+            complete: false,
+            findings: vec![Finding::Log(LogFinding {
+                lsn,
+                problem: LogProblem::Unreadable,
+            })],
+            commits: Vec::new(),
+            safe_snapshots: Vec::new(),
+        }
+    }
+}
+
 impl<R: Runtime> Pager<R> {
     /// Check every page of the file and the whole retained log, refusing from now on every page
     /// found damaged.
@@ -63,15 +84,19 @@ impl<R: Runtime> Pager<R> {
         self.verify_to(true)
     }
 
-    /// Returns the transaction of every commit record in the retained log.
+    /// Returns the transaction of every commit record in the retained log, none when its segments
+    /// cannot be listed or opened.
     pub fn logged_commits(&self) -> BTreeSet<u64> {
-        let mut img = {
+        let loaded = {
             let mut segments = self.segments.lock(&self.rt);
-            self.io(|d| segments.load(d))
+            self.io(|d| segments.try_load(d))
         };
         let mut commits = BTreeSet::new();
+        let Ok(mut img) = loaded else {
+            return commits;
+        };
         let block = img.block;
-        if let Some(first) = img.first() {
+        if let Some(first) = img.first_batch() {
             scan(&mut img, first, Mode::Verify, |batch, _| {
                 if let Ok(records) = batch.records(block) {
                     for (_, record) in records {
@@ -106,16 +131,20 @@ impl<R: Runtime> Pager<R> {
     pub fn read_log(&self, live: bool) -> RetainedLog {
         let end = self.log().next_lsn();
         self.flush_log();
-        let mut img = {
+        let loaded = {
             let mut segments = self.segments.lock(&self.rt);
-            self.io(|d| segments.load(d))
+            self.io(|d| segments.try_load(d))
+        };
+        let mut img = match loaded {
+            Ok(img) => img,
+            Err((what, _)) => return RetainedLog::unreadable(end, &what),
         };
         let mut commits = Vec::new();
         let mut safe_snapshots = Vec::new();
         let mut last: BTreeMap<Pid, Lsn> = BTreeMap::new();
         let mut broken: BTreeMap<Pid, Damage> = BTreeMap::new();
         let block = img.block;
-        let first = img.first();
+        let first = img.first_batch();
         let s = first.map(|first| {
             scan(&mut img, first, Mode::Verify, |batch, after_gap| {
                 if after_gap {

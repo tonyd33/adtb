@@ -141,6 +141,8 @@ fn buf_len(len: usize) -> u32 {
 pub(super) fn failure(errno: i32) -> IoError {
     match errno {
         libc::ENOENT => IoError::NotFound,
+        libc::EEXIST => IoError::Exists,
+        libc::ENOTDIR => IoError::NotADirectory,
         libc::ENOSPC | libc::EDQUOT => IoError::Full,
         _ => IoError::Failed,
     }
@@ -285,9 +287,9 @@ impl Work {
                 Step::Complete((
                     None,
                     if is_dir {
-                        Ok(Done::Created)
+                        Ok(Done::Present)
                     } else {
-                        Err(IoError::Failed)
+                        Err(IoError::Exists)
                     },
                 ))
             }
@@ -376,7 +378,12 @@ impl Uring {
             Op::SyncDir { dir } => Work::OpenDir { path: path(&dir) },
             Op::Remove { path: p } => Work::Remove { path: path(&p) },
             Op::CreateDir { dir } => Work::CreateDir { path: path(&dir) },
-            op @ Op::List { .. } => return self.pool.push(op, waiter),
+            op @ (Op::List { .. }
+            | Op::CreateNew { .. }
+            | Op::RemoveDir { .. }
+            | Op::Rename { .. }) => {
+                return self.pool.push(op, waiter);
+            }
             op @ Op::Close { .. } => {
                 let (buf, result) = self.files.perform(op);
                 return waiter.complete(buf, result);

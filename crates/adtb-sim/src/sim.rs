@@ -1,7 +1,7 @@
 //! Schedule simulated threads and I/O deterministically from a seed.
 
 use std::any::Any;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -214,6 +214,11 @@ impl Sim {
     /// Returns the contents of every file as a reader would see it now.
     pub fn files(&self) -> BTreeMap<String, Vec<u8>> {
         lock(&self.shared.state).disk.files()
+    }
+
+    /// Returns every directory as a reader would see it now.
+    pub fn dirs(&self) -> BTreeSet<String> {
+        lock(&self.shared.state).disk.dirs()
     }
 
     pub fn set_faults(&mut self, faults: Faults) {
@@ -467,6 +472,16 @@ impl State {
                 });
                 (None, r)
             }
+            Op::CreateNew { path } => {
+                let r = self.disk.create_new(&path).map(|(ino, len)| {
+                    self.handles.push(Some(ino));
+                    Done::Opened {
+                        file: FileId((self.handles.len() - 1) as u32),
+                        len,
+                    }
+                });
+                (None, r)
+            }
             Op::Read {
                 file,
                 offset,
@@ -503,7 +518,19 @@ impl State {
                 self.disk.list(&dir, &mut self.faults).map(Done::Listed),
             ),
             Op::Remove { path } => (None, self.disk.remove(&path).map(|()| Done::Removed)),
-            Op::CreateDir { dir } => (None, self.disk.create_dir(&dir).map(|()| Done::Created)),
+            Op::RemoveDir { path } => (None, self.disk.remove_dir(&path).map(|()| Done::Removed)),
+            Op::Rename { from, to, replace } => (
+                None,
+                self.disk
+                    .rename(&from, &to, replace)
+                    .map(|()| Done::Renamed),
+            ),
+            Op::CreateDir { dir } => (
+                None,
+                self.disk
+                    .create_dir(&dir)
+                    .map(|made| if made { Done::Created } else { Done::Present }),
+            ),
             Op::Close { file } => {
                 self.close(file);
                 (None, Ok(Done::Closed))

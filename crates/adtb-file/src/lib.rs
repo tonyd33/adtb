@@ -63,20 +63,33 @@ impl Disk {
         self
     }
 
+    /// Returns whether `path`, resolved against `root`, lies in the export roots.
+    pub fn exports_to(&self, path: &str) -> bool {
+        let at = resolved(&self.root.join(path));
+        self.exports
+            .iter()
+            .any(|r| at.starts_with(resolved(&self.root.join(r))))
+    }
+
+    /// Returns whether a name beside `path`, resolved against `root`, lies in the export roots.
+    pub fn exports_beside(&self, path: &str) -> bool {
+        let at = resolved(&self.root.join(path));
+        at.parent().is_some_and(|dir| {
+            self.exports
+                .iter()
+                .any(|r| dir.starts_with(resolved(&self.root.join(r))))
+        })
+    }
+
     /// Write `bytes` to a new file at `path`, resolved against `root`, which appears whole or not
     /// at all, leaving nothing else behind. Refuse a path that exists, even as a dangling symlink,
     /// with `Unreadable`. When `confined`, refuse a path resolving outside the export roots with
     /// `Outside`.
     pub fn write(&self, path: &str, bytes: &[u8], confined: bool) -> Result<(), Refused> {
-        let at = resolved(&self.root.join(path));
-        if confined
-            && !self
-                .exports
-                .iter()
-                .any(|r| at.starts_with(resolved(&self.root.join(r))))
-        {
+        if confined && !self.exports_to(path) {
             return Err(Refused::Outside(path.to_string()));
         }
+        let at = resolved(&self.root.join(path));
         let unwritable = |e: std::io::Error| Refused::Unreadable(format!("{path}: {e}"));
         let (partial, mut file) = unique_beside(&at).map_err(unwritable)?;
         let placed = file

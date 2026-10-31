@@ -9,5 +9,6 @@ pub mod grants;
 pub mod harness;
 pub mod recovery;
 pub mod rows;
+pub mod search;
 pub mod seeds;
 pub mod support;

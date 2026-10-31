@@ -168,7 +168,7 @@ fn directories_hold_files<R: Runtime>(rt: &R) {
     let mut io = rt.io();
     assert_eq!(Ok(Done::Created), create_dir(rt, &mut io, "d"));
     assert_eq!(
-        Ok(Done::Created),
+        Ok(Done::Present),
         create_dir(rt, &mut io, "d"),
         "creation is idempotent"
     );
@@ -179,10 +179,26 @@ fn directories_hold_files<R: Runtime>(rt: &R) {
     let expect = |names: &[&str]| Ok(names.iter().map(|&n| n.to_owned()).collect());
     assert_eq!(expect(&["d/a", "d/b"]), list(rt, &mut io, "d"));
     assert_eq!(
-        expect(&["e"]),
+        expect(&["d", "e"]),
         list(rt, &mut io, ""),
-        "a listing holds only files"
+        "a listing holds entries of any kind"
     );
+    assert_eq!(Err(IoError::NotADirectory), list(rt, &mut io, "e"));
+    assert_eq!(Err(IoError::NotADirectory), list(rt, &mut io, "e/f"));
+    assert_eq!(Err(IoError::Exists), create_dir(rt, &mut io, "e"));
+    assert_eq!(Err(IoError::NotADirectory), create_dir(rt, &mut io, "e/f"));
+    let removed = |rt: &R, io: &mut R::Io, path: &str| {
+        let path = path.to_owned();
+        done(rt, io, Op::Remove { path })
+    };
+    let removed_dir = |rt: &R, io: &mut R::Io, path: &str| {
+        let path = path.to_owned();
+        done(rt, io, Op::RemoveDir { path })
+    };
+    assert_eq!(Err(IoError::Failed), removed(rt, &mut io, "d"));
+    assert_eq!(Err(IoError::NotADirectory), removed_dir(rt, &mut io, "e"));
+    assert_eq!(Err(IoError::Failed), removed_dir(rt, &mut io, "d"));
+    assert_eq!(Err(IoError::NotFound), removed_dir(rt, &mut io, "absent"));
     assert_eq!(
         Ok(Done::Synced),
         done(rt, &mut io, Op::SyncDir { dir: "d".into() })
@@ -191,6 +207,103 @@ fn directories_hold_files<R: Runtime>(rt: &R) {
         Ok(Done::Synced),
         done(rt, &mut io, Op::SyncDir { dir: "".into() })
     );
+}
+
+fn below_a_file_and_absent_directories<R: Runtime>(rt: &R) {
+    let mut io = rt.io();
+    open(rt, &mut io, "plain", true).unwrap();
+    assert_eq!(
+        Err(IoError::NotADirectory),
+        open(rt, &mut io, "plain/x", false)
+    );
+    assert_eq!(
+        Err(IoError::NotADirectory),
+        open(rt, &mut io, "plain/x", true)
+    );
+    let path = || "plain/x".to_owned();
+    for op in [
+        Op::CreateNew { path: path() },
+        Op::Remove { path: path() },
+        Op::RemoveDir { path: path() },
+    ] {
+        assert_eq!(Err(IoError::NotADirectory), done(rt, &mut io, op));
+    }
+    let dir = "no-such-dir".into();
+    assert_eq!(
+        Err(IoError::NotFound),
+        done(rt, &mut io, Op::SyncDir { dir })
+    );
+}
+
+fn rename<R: Runtime>(
+    rt: &R,
+    io: &mut R::Io,
+    from: &str,
+    to: &str,
+    replace: bool,
+) -> Result<Done, IoError> {
+    let (from, to) = (from.to_owned(), to.to_owned());
+    done(rt, io, Op::Rename { from, to, replace })
+}
+
+fn renames_refuse_an_occupied_name<R: Runtime>(rt: &R) {
+    let mut io = rt.io();
+    for dir in ["d", "d/empty", "d/full", "d/src", "d/src/inner"] {
+        create_dir(rt, &mut io, dir).unwrap();
+    }
+    let (held, _) = open(rt, &mut io, "d/src/inner/f", true).unwrap();
+    write(rt, &mut io, held, 0, &block(7));
+    for path in ["d/full/g", "d/file", "d/other"] {
+        open(rt, &mut io, path, true).unwrap();
+    }
+    let mut refused = |from, to, error| {
+        assert_eq!(
+            Err(error),
+            rename(rt, &mut io, from, to, false),
+            "{from} to {to}"
+        );
+    };
+    refused("d/absent", "d/new", IoError::NotFound);
+    refused("d/src", "d/full", IoError::Exists);
+    refused("d/src", "d/file", IoError::Exists);
+    refused("d/file", "d/other", IoError::Exists);
+    refused("d/file", "d/empty", IoError::Exists);
+    refused("d/file/a", "d/file/b", IoError::NotADirectory);
+    assert_eq!(
+        Ok(Done::Renamed),
+        rename(rt, &mut io, "d/src", "d/empty", false),
+        "onto an empty directory"
+    );
+    assert_eq!(
+        Err(IoError::NotFound),
+        open(rt, &mut io, "d/src/inner/f", false)
+    );
+    let (again, _) = open(rt, &mut io, "d/empty/inner/f", false).unwrap();
+    assert_eq!(block(7), read(rt, &mut io, again, 0, BLOCK));
+    write(rt, &mut io, held, 0, &block(8));
+    assert_eq!(
+        block(8),
+        read(rt, &mut io, again, 0, BLOCK),
+        "an id outlives its name"
+    );
+    assert_eq!(
+        Ok(Done::Renamed),
+        rename(rt, &mut io, "d/empty", "d/fresh", false),
+        "onto nothing"
+    );
+    let (other, _) = open(rt, &mut io, "d/other", false).unwrap();
+    write(rt, &mut io, other, 0, &block(9));
+    assert_eq!(
+        Ok(Done::Renamed),
+        rename(rt, &mut io, "d/other", "d/file", true),
+        "a replacing rename"
+    );
+    let (file, len) = open(rt, &mut io, "d/file", false).unwrap();
+    assert_eq!(BLOCK as u64, len);
+    assert_eq!(block(9), read(rt, &mut io, file, 0, BLOCK));
+    assert_eq!(Err(IoError::NotFound), open(rt, &mut io, "d/other", false));
+    let dir = "d".into();
+    assert_eq!(Ok(Done::Synced), done(rt, &mut io, Op::SyncDir { dir }));
 }
 
 fn removed_files_are_gone_but_open<R: Runtime>(rt: &R) {
@@ -450,6 +563,8 @@ contract!(
     missing_files_are_not_found,
     directories_hold_files,
     removed_files_are_gone_but_open,
+    below_a_file_and_absent_directories,
+    renames_refuse_an_occupied_name,
     closed_files_reopen,
     every_op_completes_once,
     queues_on_many_threads_complete,

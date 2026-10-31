@@ -107,8 +107,8 @@ fn composite_golden_bytes() {
     writer.version(version);
     let bytes = writer.into_bytes();
     let mut expected = vec![
-        2, 255, 0, 2, 0xc3, 0xa9, 0, 1, 0x34, 0x12, 2, 1, 2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
-        1, 0, 0, 0, 0, 0, 0, 0,
+        2, 255, 0, 2, 0xc3, 0xa9, 0, 1, 0x34, 0x12, 2, 1, 2, 1, 2, 3, 4, 0, 0, 0, 0, 5, 6, 7, 8, 9,
+        10, 11, 12, 1, 0, 0, 0, 0, 0, 0, 0,
     ];
     expected.extend([0x42; 32]);
     assert_eq!(bytes, expected);
@@ -198,9 +198,9 @@ fn bounded_lengths_and_composite_atomicity() {
     let mut reader = Reader::new(&[2, 7], limits);
     assert_eq!(reader.bytes(), Err(Error::Incomplete { needed: 1 }));
     assert_eq!(reader.remaining(), [2, 7]);
-    let mut reader = Reader::new(&[0; 11], limits);
+    let mut reader = Reader::new(&[0; 15], limits);
     assert_eq!(reader.position(), Err(Error::Incomplete { needed: 1 }));
-    assert_eq!(reader.remaining(), [0; 11]);
+    assert_eq!(reader.remaining(), [0; 15]);
     let mut reader = Reader::new(&[0; 39], limits);
     assert_eq!(reader.version(), Err(Error::Incomplete { needed: 1 }));
     assert_eq!(reader.remaining(), [0; 39]);

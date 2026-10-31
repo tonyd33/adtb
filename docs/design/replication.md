@@ -57,7 +57,8 @@ Rulings: repl/standby-reads/safe-snapshot, repl/standby-reads/lag/force-point, r
 ## 3. Commit positions
 
 A commit returns its log position, a `Position = { epoch: I64, lsn:
-I64 }` whose values fit the wire's u32 epoch and u64 LSN.
+I64 }` whose values fit the wire's u64 epoch and LSN. The epoch rises at each promotion and, by a random
+step from 1 to 2^32, at each restore.
 
 ## 4. Vacuum feedback
 
@@ -140,11 +141,16 @@ Rulings: repl/embedded/ship-log, repl/embedded/embedded-replica, repl/embedded/l
 
 A backup is a page copy of the data file taken while writers run, plus
 the log from the redo LSN of a checkpoint taken at the copy's start to
-its end position. Full-page images are logged throughout, whatever the
-device guarantees ([storage.md §5.2](storage.md#52-full-page-images)),
-so replay from that redo LSN repairs torn and inconsistent pages. An
+its end position. A page read that fails verification is read again under
+the page's exclusive latch, so each page copied is a state the page held,
+and replay from that redo LSN brings it to the end position. An
 incremental backup copies only pages whose LSN exceeds the previous
 backup's start. Backups copy pages and log as stored, encrypted or not.
+
+A backup or restore builds under a private name beside its destination
+and publishes by `Rename` last, so a final name holds the whole result or
+nothing. A restore renames its log directory, then its file, whose name is
+the commit point. Nothing reads a private name.
 
 Every backup carries a manifest of page and segment checksums, checked
 without restoring, and is proven by a test restore: open, recover, then

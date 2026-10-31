@@ -152,7 +152,7 @@ impl Record {
                 CHECKPOINT
             }
             Record::SafeSnapshot { at, snapshot } => {
-                put_u32(out, at.epoch);
+                put_u64(out, at.epoch);
                 put_u64(out, at.lsn.0);
                 out.extend_from_slice(snapshot);
                 SAFE_SNAPSHOT
@@ -209,7 +209,7 @@ impl Record {
                 Record::Checkpoint { redo, dirty }
             }
             SAFE_SNAPSHOT => {
-                let epoch = b.u32()?;
+                let epoch = b.u64()?;
                 let lsn = Lsn(b.u64()?);
                 Record::SafeSnapshot {
                     at: Position { epoch, lsn },

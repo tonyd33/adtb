@@ -8,7 +8,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use adtb::{CreateOptions, Log, OpenOptions};
+use adtb::{ArchiveTarget, CallOptions, CreateOptions, Log, OpenOptions, Proof, RestorePoint};
 use adtb_lang::textual::print;
 use clap::{Parser, Subcommand};
 
@@ -67,12 +67,77 @@ enum Tool {
         )]
         log: Vec<PathBuf>,
     },
+    /// Copy the database FILE to the empty directory TARGET.
+    Backup {
+        #[arg(value_name = "FILE", help = "the database file")]
+        file: PathBuf,
+        #[arg(value_name = "TARGET", help = "the backup directory")]
+        target: PathBuf,
+        #[arg(long, help = "then prove the backup by a test restore")]
+        verify: bool,
+        #[arg(
+            long = "schema",
+            value_name = "FILE",
+            allow_hyphen_values = true,
+            help = "the next migration of the database's log; the first may instead be a \
+                    schema file of declarations"
+        )]
+        log: Vec<PathBuf>,
+    },
+    /// Write a new database file PATH from the backup at SOURCE.
+    Restore {
+        #[arg(value_name = "SOURCE", help = "the backup directory")]
+        source: PathBuf,
+        #[arg(value_name = "PATH", help = "the new database file")]
+        path: PathBuf,
+        #[arg(
+            long = "to-position",
+            value_name = "EPOCH/LSN",
+            help = "restore to this position"
+        )]
+        to_position: Option<String>,
+        #[arg(
+            long = "to-time",
+            value_name = "INSTANT",
+            help = "restore to this instant"
+        )]
+        to_time: Option<String>,
+        #[arg(
+            long = "before-version",
+            value_name = "N",
+            help = "restore to before this version"
+        )]
+        before_version: Option<u64>,
+    },
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    if let Some(Tool::Verify { file, log: paths }) = &args.tool {
-        return match verified(file, paths) {
+    if let Some(tool) = &args.tool {
+        let done = match tool {
+            Tool::Verify { file, log: paths } if file.is_dir() => proved(file, paths),
+            Tool::Verify { file, log: paths } => verified(file, paths),
+            Tool::Backup {
+                file,
+                target,
+                verify,
+                log: paths,
+            } => backed_up(file, target, *verify, paths),
+            Tool::Restore {
+                source,
+                path,
+                to_position,
+                to_time,
+                before_version,
+            } => restored(
+                source,
+                path,
+                to_position.as_deref(),
+                to_time.is_some(),
+                *before_version,
+            ),
+        };
+        return match done {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::FAILURE,
             Err(why) => {
@@ -137,6 +202,84 @@ fn verified(file: &Path, paths: &[PathBuf]) -> Result<bool, String> {
         clean = false;
     }
     Ok(clean)
+}
+
+/// Copy the database `file` to `target`, then prove the copy when `verify`. Returns whether it is
+/// proven or unasked to be, or why it could not run.
+fn backed_up(file: &Path, target: &Path, verify: bool, paths: &[PathBuf]) -> Result<bool, String> {
+    let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", file.display());
+    let log = log(paths)?;
+    let db = adtb::open(file, &log, &OpenOptions::default()).map_err(|e| failed(&e))?;
+    let absolute = std::path::absolute(target).map_err(|e| failed(&e))?;
+    let text = format!("backup to {:?}", absolute.display().to_string());
+    db.query_text(&text, &[], &CallOptions::default())
+        .map_err(|e| failed(&e))?;
+    db.close().map_err(|e| failed(&e))?;
+    if verify {
+        return proved(target, paths);
+    }
+    Ok(true)
+}
+
+/// Write the new database `path` from the backup at `source`, up to `position` as `EPOCH/LSN`, an
+/// instant if `timed`, or `before` a version, and print the pages its manifest lists as copied
+/// damaged. Returns true, or why it could not run.
+fn restored(
+    source: &Path,
+    path: &Path,
+    position: Option<&str>,
+    timed: bool,
+    before: Option<u64>,
+) -> Result<bool, String> {
+    let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", source.display());
+    let archive = ArchiveTarget::path(source).map_err(|e| failed(&e))?;
+    let to = match (position, before) {
+        (Some(position), _) => RestorePoint::Position(position_of(position)?),
+        (None, Some(version)) => RestorePoint::Version(version),
+        (None, None) if timed => RestorePoint::Version(0),
+        (None, None) => RestorePoint::Latest,
+    };
+    let damaged =
+        adtb::restore(&archive, path, to, OpenOptions::default()).map_err(|e| failed(&e))?;
+    let mut out = io::stdout();
+    for page in damaged {
+        writeln!(out, "page {page} was copied damaged").map_err(|e| failed(&e))?;
+    }
+    Ok(true)
+}
+
+/// Returns the position that `EPOCH/LSN` writes.
+fn position_of(text: &str) -> Result<adtb::Position, String> {
+    let parsed = text
+        .split_once('/')
+        .and_then(|(epoch, lsn)| Some((epoch.parse().ok()?, lsn.parse().ok()?)));
+    parsed
+        .map(|(epoch, lsn)| adtb::Position { epoch, lsn })
+        .ok_or_else(|| format!("`{text}` is not a position EPOCH/LSN"))
+}
+
+/// Prove the backup at `dir` by a test restore and print what keeps it from being proven. Returns
+/// whether it is proven, or why the test could not run.
+fn proved(dir: &Path, paths: &[PathBuf]) -> Result<bool, String> {
+    let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", dir.display());
+    let log = log(paths)?;
+    let archive = ArchiveTarget::path(dir).map_err(|e| failed(&e))?;
+    let proof = adtb::prove(&archive, &log, &OpenOptions::default()).map_err(|e| failed(&e))?;
+    let mut out = io::stdout();
+    match proof {
+        Proof::Proven => Ok(true),
+        Proof::Failed(found) => {
+            for line in found {
+                writeln!(out, "{line}").map_err(|e| failed(&e))?;
+            }
+            Ok(false)
+        }
+        Proof::Unproven { function } => {
+            let function = function.unwrap_or_default();
+            writeln!(out, "unproven: needs host function {function}").map_err(|e| failed(&e))?;
+            Ok(false)
+        }
+    }
 }
 
 /// Returns the log of the migration files at `paths`, the first of which may be a schema file.

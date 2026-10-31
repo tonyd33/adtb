@@ -239,6 +239,38 @@ order rows print in is not promised.
 Errors print on standard error, one per failed text. In the examples on
 these pages they appear where they happen.
 
+## Backup and restore
+
+`adtb backup FILE TARGET` copies the database to the empty directory `TARGET`
+and `adtb restore TARGET PATH` writes a new database file from it, recovered
+to the end of the copy. A restored file starts a new epoch. A restore prints each page the backup copied damaged, one line per page, and still exits 0. Neither overwrites
+anything: a target that holds files and a path that exists are refused.
+
+A run builds beside its destination under a name ending `.partial-` and a random
+tail, and takes the final name last. A crash can leave such a file or directory.
+Nothing reads it, and you may delete it. A crash during a restore can also leave
+the log directory `PATH-log` with no file at `PATH`: delete it to retry, since a
+restore refuses a log directory that holds files. An open that would create `PATH`
+refuses it too, leaves it whole and makes no file at `PATH`.
+
+A target that is a mount point fails: the run builds on the parent's device, copies
+there first, and the rename across devices answers a storage failure. Name a directory
+inside the mount.
+
+A failed force after the final name is taken answers the storage failure with the
+result in place, and a retry is refused. Run `adtb verify` on it to resolve it.
+
+`adtb verify TARGET` proves a backup: it rebuilds the database in a private
+scratch directory inside the backup, runs every check on it and records the result in
+a proof file beside the manifest. `adtb backup --verify` does the same at once.
+Pass the database's migrations with `--schema` when its checks need them.
+
+| Exit status | `adtb verify TARGET` | `adtb backup`, `adtb restore` |
+| --- | --- | --- |
+| 0 | proven | done |
+| 1 | a finding, printed, or unproven for want of a host function | with `--verify`, not proven |
+| 2 | could not run, a damaged part among the reasons | refused or could not run |
+
 ## Exit status
 
 | Status | When |

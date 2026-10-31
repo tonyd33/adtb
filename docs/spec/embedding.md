@@ -331,7 +331,7 @@ impl<B: BundleDef> Bundle<B> {
 
 pub struct Rows<T, E> { /* Iterator<Item = Result<T, E>> */ }
 pub struct Committed<T> { pub value: T, pub position: Position, pub attempts: u32 }
-pub struct Position { pub epoch: u32, pub lsn: u64 }
+pub struct Position { pub epoch: u64, pub lsn: u64 }
 
 pub struct CallOptions {
     pub deadline: Option<std::time::SystemTime>,

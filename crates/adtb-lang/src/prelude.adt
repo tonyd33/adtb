@@ -79,6 +79,8 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | UnknownEdition       { edition: Text }
                   | MigrationInProgress
                   | DumpDamaged          { offset: I64 }
+                  | BackupDamaged        { part: Text }
+                  | RestorePointUnavailable { oldest: Position, newest: Position }
                   | Internal             { what: Text }
                   | RowTooLarge          { relation: Text, ctor: Text, size: I64, limit: I64 }
                   | KeyTooLarge          { relation: Text, ctor: Text, index: Text, size: I64, limit: I64 }

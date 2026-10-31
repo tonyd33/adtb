@@ -882,6 +882,8 @@ type RejectReason = Violated             { constraint: Text, report: Report, red
                   | UnknownEdition       { edition: Text }
                   | MigrationInProgress
                   | DumpDamaged          { offset: I64 }
+                  | BackupDamaged        { part: Text }
+                  | RestorePointUnavailable { oldest: Position, newest: Position }
                   | Internal             { what: Text }
                   | RowTooLarge          { relation: Text, ctor: Text, size: I64, limit: I64 }
                   | KeyTooLarge          { relation: Text, ctor: Text, index: Text, size: I64, limit: I64 }
@@ -950,6 +952,8 @@ wire's 32-bit epoch and 64-bit log position.
 | `UnknownEdition` | a Hello asks for an edition the server does not implement | [wire.md](wire.md#32-hello) |
 | `MigrationInProgress` | a migration set was presented while a staged migration is pending | [evolution.md](evolution.md#23-applying-a-migration-set) |
 | `DumpDamaged` | a restore could not authenticate or decode the dump; `offset` is the byte offset of the first part that fails | [interop.md](interop.md#61-a-logical-dump) |
+| `BackupDamaged` | a restore or a test restore found a part of a backup that fails its check; `part` names the first, by its path in the backup or `manifest` | [interop.md](interop.md#71-backup) |
+| `RestorePointUnavailable` | the source of a restore cannot reach the chosen point; `oldest` and `newest` bound what it can | [interop.md](interop.md#72-point-in-time-restore) |
 | `Internal` | the statement broke a guarantee the engine's checker makes about a program, a bug in the engine; the statement fails and none of its effects are applied, the transaction stays open, and the engine keeps serving; `what` is implementation-defined | [transactions.md](transactions.md#52-meaning) |
 | `RowTooLarge` | a row of the statement's change set has a stored form larger than the engine's row limit; `relation` is its relation variable qualified by module, `ctor` its constructor, `size` and `limit` in bytes | [writes.md](writes.md#16-rows-too-large) |
 | `KeyTooLarge` | a new row's encoded index key payload exceeds its database-derived limit; `relation` is module-qualified, `ctor` is the row's constructor, `index` is the canonical index clause of [§2.2](#22-relation-variables-named-sets-and-indexes), and `size` and `limit` are payload bytes | [writes.md](writes.md#17-index-keys-too-large) |
@@ -1078,7 +1082,7 @@ Prelude:
 | 54 | `Report` | 55 (one constructor) |
 | 56 | `Position` | 57 (one constructor) |
 | 58 | `RetryReason` | 59 `Serialization`, 60 `SafePointTimeout`, 61 `Overloaded`, 62 `StreamIdle`, 63 `FileChanged`, 64 `Fenced`, 341 `ReplayConflict` |
-| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase`, 342 `CatalogMismatch`, 343 `EditionLocked`, 344 `UnknownEdition`, 345 `MixedVersions`, 372 `MigrationInProgress`, 460 `DumpDamaged`, 465 `Internal`, 467 `RowTooLarge`, 469 `Closed`, 471 `KeyTooLarge` |
+| 65 | `RejectReason` | 66 `Violated`, 67 `KeyViolation`, 68 `KeyChanged`, 69 `NotOpen`, 70 `UserError`, 71 `Faulted`, 72 `Denied`, 73 `Invalid`, 74 `SchemaRefused`, 75 `Untranslatable`, 76 `BadInput`, 77 `SchemaMismatch`, 78 `Cancelled`, 79 `Terminated`, 80 `DeadlineExceeded`, 81 `StatementLimit`, 82 `TransactionExpired`, 83 `TransactionBusy`, 84 `UnknownQuery`, 85 `UnknownTransaction`, 86 `UnknownBundle`, 87 `VersionMismatch`, 88 `Retired`, 89 `BundleExpired`, 90 `BundleStale`, 91 `BundleSuperseded`, 92 `DowngradeRefused`, 93 `TooOld`, 94 `HistoryUnavailable`, 95 `PositionNotOnHistory`, 96 `WrongVersion`, 97 `ReadOnlyReplica`, 98 `RequestExpired`, 99 `RequestReused`, 100 `AuthFailed`, 101 `UnsupportedProtocol`, 102 `UnknownDatabase`, 342 `CatalogMismatch`, 343 `EditionLocked`, 344 `UnknownEdition`, 345 `MixedVersions`, 372 `MigrationInProgress`, 460 `DumpDamaged`, 474 `BackupDamaged`, 475 `RestorePointUnavailable`, 465 `Internal`, 467 `RowTooLarge`, 469 `Closed`, 471 `KeyTooLarge` |
 | 103 | `FatalReason` | 104 `Malformed`, 105 `Quarantined`, 106 `MissingFunction`, 107 `Storage` |
 | 108 | `Notice` | 109 `LeaseExpiring`, 110 `ShuttingDown`, 111 `ConstructorEnabled`, 112 `BundleRetired`, 113 `BlockingMigration`, 114 `UpgradeRequired` |
 | 115 | `RejectedRow` | 116 (one constructor) |
@@ -1232,11 +1236,11 @@ Module `sys`, relation variables:
 | 371 | `sys::safe_snapshots` |
 
 
-Ids from 341 to 473 are listed in the rows of the types they belong
+Ids from 341 to 475 are listed in the rows of the types they belong
 to. `Person` and the other types of examples are not engine types and
 have no fixed id, nor has a `Principal` the schema declares
 ([security.md](security.md#11-the-principal-sum)). Ids 287 to 290, 306
-to 309 and from 474 to 1023 are unassigned.
+to 309 and from 476 to 1023 are unassigned.
 
 Fields and indexes have fixed ids in their own spaces. In edition
 2026-10 and catalog version 1, the engine's original fields take ids from 0:
@@ -1251,7 +1255,10 @@ from 471. They take ids 0 to 563:
 `RejectReason.KeyTooLarge` appends fields `relation`, `ctor`, `index`,
 `size` and `limit` at ids 564 to 568 without changing any earlier id,
 `ClauseBody.Privilege` its fields `privilege` and `target` at ids 569
-and 570, and `Finding.Structure` its field `where` at id 571.
+and 570, `Finding.Structure` its field `where` at id 571,
+`RejectReason.BackupDamaged` its field `part` at id 572, and
+`RejectReason.RestorePointUnavailable` its fields `oldest` and `newest` at
+ids 573 and 574.
 The engine's indexes take ids from 0: for
 each relation variable of the tables above in id order, the index of
 its key, then an index for each `unique` clause in written order;
@@ -1830,7 +1837,7 @@ transaction, a function or a constraint.
 | `destroy key dek n` | [security.md](security.md#94-rotation) | `configure` |
 | `dump to "path" [encrypt key]` | [interop.md](interop.md#6-dump-and-restore) | `maintain` and `read` on every relation dumped, and `write_files` through a server; the security section only with `schema` |
 | `restore from "source" to "path" [before version n \| at instant t \| at position p]` | [interop.md](interop.md#6-dump-and-restore) | in process or on a closed file only |
-| `backup to "target" [incremental]` | [interop.md](interop.md#71-backup) | `maintain` |
+| `backup to "target" [incremental]` | [interop.md](interop.md#71-backup) | `maintain`, and `write_files` through a server |
 
 Every command is available as an ad hoc statement over the server
 protocol and as a call of the in-process API; the command line tool

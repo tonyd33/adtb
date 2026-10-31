@@ -59,10 +59,10 @@ fn word(bytes: &[u8], at: usize) -> Option<u64> {
 }
 
 fn decode_marker(entry: &[u8]) -> Option<Marker> {
-    let epoch = !u32::from_be_bytes(entry.get(1..5)?.try_into().ok()?);
-    let lsn = !word(entry, 5)?;
-    let time = word(entry, 13)?;
-    let snapshot = Snapshot::decode(entry.get(21..)?)?;
+    let epoch = !word(entry, 1)?;
+    let lsn = !word(entry, 9)?;
+    let time = word(entry, 17)?;
+    let snapshot = Snapshot::decode(entry.get(25..)?)?;
     Some(Marker {
         at: Position {
             epoch,
@@ -143,12 +143,8 @@ impl Past {
             let malformed = btree::Error::Malformed(self.tree.root());
             let xid = Xid(word(&e, 1).ok_or(malformed)?);
             let time = word(&e, 9).ok_or(malformed)?;
-            let epoch = u32::from_be_bytes(
-                e.get(17..21)
-                    .and_then(|b| b.try_into().ok())
-                    .ok_or(malformed)?,
-            );
-            let lsn = Lsn(word(&e, 21).ok_or(malformed)?);
+            let epoch = word(&e, 17).ok_or(malformed)?;
+            let lsn = Lsn(word(&e, 25).ok_or(malformed)?);
             commits.push(Commit {
                 xid,
                 at: Position { epoch, lsn },

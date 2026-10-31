@@ -84,8 +84,36 @@ struct Entry {
 
 #[derive(Debug)]
 enum Undo {
-    Create { path: String, dir: bool },
-    Restore { path: String, bytes: Vec<u8> },
+    Create {
+        path: String,
+        dir: bool,
+    },
+    Restore {
+        path: String,
+        bytes: Vec<u8>,
+    },
+    RemovedDir {
+        path: String,
+    },
+    Renamed {
+        from: String,
+        to: String,
+        over: Over,
+    },
+}
+
+/// What a rename's destination held.
+#[derive(Debug)]
+enum Over {
+    Nothing,
+    EmptyDir,
+    File(Vec<u8>),
+}
+
+/// Returns `path` with its leading `from` changed to `to`, when `path` is `from` or lies under it.
+fn moved(path: &str, from: &str, to: &str) -> Option<String> {
+    let rest = path.strip_prefix(from)?;
+    (rest.is_empty() || rest.starts_with('/')).then(|| format!("{to}{rest}"))
 }
 
 fn parent(path: &str) -> &str {
@@ -154,6 +182,14 @@ impl Injector {
         }
         match op {
             Op::Open { path, create } => self.open(files, path, create),
+            Op::CreateNew { path } => {
+                let out = files.perform(Op::CreateNew { path: path.clone() });
+                if let Ok(Done::Opened { file, .. }) = out.1 {
+                    self.paths.insert(file, path.clone());
+                    self.created(path, false);
+                }
+                out
+            }
             Op::Read { file, offset, buf } => self.read(files, file, offset, buf),
             Op::Write { file, offset, buf } => self.write(files, file, offset, buf),
             Op::Allocate { .. } if self.draw(self.faults.fail_p) => (None, Err(IoError::Failed)),
@@ -169,6 +205,17 @@ impl Injector {
                 out
             }
             Op::Remove { path } => self.remove(files, path),
+            Op::RemoveDir { path } => {
+                let out = files.perform(Op::RemoveDir { path: path.clone() });
+                if out.1.is_ok() && self.faults.lose_unsynced {
+                    self.entries.push(Entry {
+                        parent: parent(&path).to_owned(),
+                        undo: Undo::RemovedDir { path },
+                    });
+                }
+                out
+            }
+            Op::Rename { from, to, replace } => self.rename(files, from, to, replace),
             Op::CreateDir { dir } => {
                 let existed = files.path(&dir).is_dir();
                 let out = files.perform(Op::CreateDir { dir: dir.clone() });
@@ -226,6 +273,47 @@ impl Injector {
                     undo: Undo::Restore { path, bytes },
                 });
             }
+        }
+        out
+    }
+
+    fn rename(&mut self, files: &Files, from: String, to: String, replace: bool) -> Outcome {
+        let target = files.path(&to);
+        let over = if target.is_dir() {
+            Over::EmptyDir
+        } else {
+            fs::read(&target).map_or(Over::Nothing, Over::File)
+        };
+        let out = files.perform(Op::Rename {
+            from: from.clone(),
+            to: to.clone(),
+            replace,
+        });
+        if out.1.is_err() {
+            return out;
+        }
+        for path in self.paths.values_mut() {
+            if let Some(now) = moved(path, &from, &to) {
+                *path = now;
+            }
+        }
+        let keys: Vec<String> = self.pending.keys().cloned().collect();
+        for key in keys {
+            if let Some(now) = moved(&key, &from, &to)
+                && let Some(pending) = self.pending.remove(&key)
+            {
+                self.pending.insert(now, pending);
+            }
+        }
+        self.bad = std::mem::take(&mut self.bad)
+            .into_iter()
+            .map(|(p, s)| (moved(&p, &from, &to).unwrap_or(p), s))
+            .collect();
+        if self.faults.lose_unsynced {
+            self.entries.push(Entry {
+                parent: parent(&to).to_owned(),
+                undo: Undo::Renamed { from, to, over },
+            });
         }
         out
     }
@@ -414,6 +502,13 @@ impl Injector {
                 Undo::Create { path, dir: true } => fs::remove_dir_all(files.path(&path)),
                 Undo::Create { path, dir: false } => fs::remove_file(files.path(&path)),
                 Undo::Restore { path, bytes } => fs::write(files.path(&path), bytes),
+                Undo::RemovedDir { path } => fs::create_dir(files.path(&path)),
+                Undo::Renamed { from, to, over } => fs::rename(files.path(&to), files.path(&from))
+                    .and_then(|()| match over {
+                        Over::Nothing => Ok(()),
+                        Over::EmptyDir => fs::create_dir(files.path(&to)),
+                        Over::File(bytes) => fs::write(files.path(&to), bytes),
+                    }),
             };
             match r {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => {

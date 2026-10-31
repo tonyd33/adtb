@@ -49,6 +49,7 @@ pub use adtb_lang::schema::Stage;
 pub use delta::{CheckPlan, Part};
 pub use input::Local;
 pub use past::Retained;
+pub(crate) use past::position;
 pub use reindex::{Failure, HoldWait, Rebuild, VacuumHold, panic_text};
 pub use stream::{Produced, Production};
 pub use verify::{Found, VerifyScope, VerifySnapshot};
@@ -424,7 +425,7 @@ pub struct Stop {
 
 impl Stop {
     /// Fail with what stops the statement at `now`, if it is stopped.
-    fn check(&self, now: Instant) -> Result<(), exec::Error> {
+    pub(crate) fn check(&self, now: Instant) -> Result<(), exec::Error> {
         if self.cancel.load(Ordering::Acquire) {
             return Err(exec::Error::Cancelled);
         }
@@ -436,7 +437,7 @@ impl Stop {
 
     /// Returns what stops a statement under `bounds`, its statement limit counted from `since`
     /// and unlimited without it, failing with `Blocked` carrying `suspend` at a wait.
-    fn of(bounds: &Bounds, since: Option<Instant>, suspend: Option<Rerun>) -> Stop {
+    pub(crate) fn of(bounds: &Bounds, since: Option<Instant>, suspend: Option<Rerun>) -> Stop {
         let limit = since
             .zip(bounds.limit)
             .map(|(since, after)| exec::Deadline {

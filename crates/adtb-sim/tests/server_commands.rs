@@ -195,9 +195,9 @@ const COMMANDS: &[Row] = &[
     },
     Row {
         spec: "`backup to \"target\" [incremental]`",
-        capability: "`maintain`",
+        capability: "`maintain`, and `write_files` through a server",
         forms: &[],
-        unsupported: &["backup to \"x\""],
+        unsupported: &["backup to \"x\" incremental"],
     },
 ];
 

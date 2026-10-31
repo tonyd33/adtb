@@ -25,7 +25,7 @@ Byte layouts below use these primitives:
 | `text` | `bytes` holding UTF-8 in Unicode NFC |
 | `opt T` | `u8` 0 (absent), or `u8` 1 followed by `T` |
 | `list T` | `uvarint` count, then that many `T` |
-| `position` | `u32` epoch, then `u64` log sequence number: a value of the prelude type `Position = { epoch: I64, lsn: I64 }` within those ranges, a commit position on one history as returned by commit ([transactions.md](transactions.md#8-commit-positions)) |
+| `position` | `u64` epoch, then `u64` log sequence number: a value of the prelude type `Position = { epoch: I64, lsn: I64 }` within those ranges, a commit position on one history as returned by commit ([transactions.md](transactions.md#8-commit-positions)) |
 | `version` | `u64` schema version (the operator log position), then 32 bytes of its content hash |
 
 A position whose epoch and log sequence number are not on this

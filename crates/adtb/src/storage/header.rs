@@ -6,10 +6,14 @@ use super::{Lsn, Pid};
 pub const REGION: usize = 4096;
 
 const MAGIC: [u8; 8] = *b"adtbfile";
-const LAYOUT: u32 = 1;
+const LAYOUT: u32 = 3;
 const CHECKSUM: usize = 8;
 const ATOMIC_PAGE_WRITES: u16 = 1;
 const BITMAP_GROUPS: usize = REGION - 8;
+const HISTORY: usize = 2048;
+const HISTORY_ENTRY: usize = 16;
+/// The ended epochs a header holds; a restore past it forgets the oldest.
+pub const HISTORY_CAPACITY: usize = (BITMAP_GROUPS - HISTORY - 4) / HISTORY_ENTRY;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileHeader {
@@ -26,12 +30,14 @@ pub struct FileHeader {
     pub catalog_root: Pid,
     /// The page holding the quarantine marks, 0 before it exists.
     pub quarantine: Pid,
-    pub epoch: u32,
+    pub epoch: u64,
     /// The encryption scheme; 0 is a plaintext file, the only one written so far.
     pub encryption: u32,
     /// The allocation bitmap groups started by the time of the checkpoint this header names.
-    /// 0 in a file written before the field existed.
     pub bitmap_groups: u64,
+    /// Each epoch of the file's history before the current one, oldest first, with the log's end
+    /// where it ended.
+    pub history: Vec<(u64, Lsn)>,
 }
 
 struct Cursor<'a> {
@@ -82,6 +88,12 @@ impl FileHeader {
         out.extend_from_slice(&self.quarantine.0.to_le_bytes());
         out.extend_from_slice(&self.epoch.to_le_bytes());
         out.extend_from_slice(&self.encryption.to_le_bytes());
+        out.resize(HISTORY, 0);
+        out.extend_from_slice(&(self.history.len() as u32).to_le_bytes());
+        for (epoch, end) in &self.history {
+            out.extend_from_slice(&epoch.to_le_bytes());
+            out.extend_from_slice(&end.0.to_le_bytes());
+        }
         out.resize(BITMAP_GROUPS, 0);
         out.extend_from_slice(&self.bitmap_groups.to_le_bytes());
         let sum = crc32c_skipping(Some(copy), &out, CHECKSUM);
@@ -91,14 +103,7 @@ impl FileHeader {
 
     /// Returns the header copy `copy` that `bytes` holds, or `None` if it fails verification.
     pub fn decode(copy: u64, bytes: &[u8]) -> Option<FileHeader> {
-        if bytes.len() < REGION || bytes[..8] != MAGIC {
-            return None;
-        }
-        let bytes = &bytes[..REGION];
-        let stored = u32::from_le_bytes(bytes[CHECKSUM..CHECKSUM + 4].try_into().unwrap());
-        if stored != crc32c_skipping(Some(copy), bytes, CHECKSUM) {
-            return None;
-        }
+        let bytes = whole_copy(copy, bytes)?;
         let mut c = Cursor { bytes, at: 12 };
         if c.u32() != LAYOUT {
             return None;
@@ -116,21 +121,45 @@ impl FileHeader {
             checkpoint: Lsn(c.u64()),
             catalog_root: Pid(c.u64()),
             quarantine: Pid(c.u64()),
-            epoch: c.u32(),
+            epoch: c.u64(),
             encryption: c.u32(),
             bitmap_groups: Cursor {
                 bytes,
                 at: BITMAP_GROUPS,
             }
             .u64(),
+            history: history(bytes)?,
         };
         valid_page_size(header.page_size).then_some(header)
     }
 }
 
+fn history(bytes: &[u8]) -> Option<Vec<(u64, Lsn)>> {
+    let mut c = Cursor { bytes, at: HISTORY };
+    let n = c.u32() as usize;
+    (n <= HISTORY_CAPACITY).then(|| (0..n).map(|_| (c.u64(), Lsn(c.u64()))).collect())
+}
+
 /// Returns the byte offsets where copy 1 may start: one per page size a file may have.
 pub fn second_copy_offsets() -> impl Iterator<Item = u64> {
     (MIN_PAGE_SIZE.trailing_zeros()..=MAX_PAGE_SIZE.trailing_zeros()).map(|s| 1u64 << s)
+}
+
+/// Returns the region of header copy `copy` when its magic and checksum hold.
+fn whole_copy(copy: u64, bytes: &[u8]) -> Option<&[u8]> {
+    if bytes.len() < REGION || bytes[..8] != MAGIC {
+        return None;
+    }
+    let bytes = &bytes[..REGION];
+    let stored = u32::from_le_bytes(bytes[CHECKSUM..CHECKSUM + 4].try_into().unwrap());
+    (stored == crc32c_skipping(Some(copy), bytes, CHECKSUM)).then_some(bytes)
+}
+
+/// Returns the layout of a whole header copy, when it is one this engine does not read.
+pub fn other_layout(copy: u64, bytes: &[u8]) -> Option<u32> {
+    let bytes = whole_copy(copy, bytes)?;
+    let layout = Cursor { bytes, at: 12 }.u32();
+    (layout != LAYOUT).then_some(layout)
 }
 
 /// Returns the copy to use, and its index: the valid copy with the higher sequence number.

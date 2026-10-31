@@ -87,8 +87,14 @@ pub enum OpenError {
     NotFound,
     /// `create` found a nonempty file.
     Exists,
+    /// `create` found the log directory holding what the new file did not write.
+    LogPresent,
+    /// `create` took the log directory, then failed on a page of the new file.
+    Unformatted(PageError),
     /// Neither copy of the file header verifies.
     NoHeader,
+    /// A whole copy of the file header is written in this layout, which this engine does not read.
+    OtherLayout(u32),
     /// The log is damaged where recovery needs it.
     Log(LogFinding),
     /// A page opening needs, an allocation bitmap page or the quarantine marks', is damaged.
@@ -165,7 +171,9 @@ pub struct Shared<R: Runtime> {
     pub(crate) atomic_page_writes: bool,
     pub(crate) mem: PageMemory,
     drivers: Lock<BTreeMap<ThreadId, Driver<R>>>,
-    header: Lock<(FileHeader, u64)>,
+    /// Held by a force of the data file from taking `written` to dropping pages from `dirty`.
+    forcing: Lock<()>,
+    pub(super) header: Lock<(FileHeader, u64)>,
     pub(crate) log: Lock<Log>,
     /// Held by the one thread writing and forcing a batch: the group commit leader.
     pub(crate) segments: Lock<Segments>,
@@ -196,7 +204,11 @@ impl<R: Runtime> std::fmt::Debug for Shared<R> {
 const EVICTED_PER_FRAME: usize = 4;
 
 pub(super) fn parent(path: &str) -> &str {
-    path.rsplit_once('/').map_or("", |(dir, _)| dir)
+    match path.rsplit_once('/') {
+        Some(("", _)) => "/",
+        Some((dir, _)) => dir,
+        None => "",
+    }
 }
 
 fn check_options(o: &Options) {
@@ -338,8 +350,13 @@ impl<'a, R: Runtime> PageOptimistic<'a, R> {
 impl<R: Runtime> Pager<R> {
     fn assemble(rt: R, o: &Options, header: FileHeader, copy: u64, data: FileId) -> Self {
         let bitmap_groups = header.bitmap_groups;
-        let log = Log::new(header.log_block as usize, header.epoch);
-        let segments = Segments::new(o.log_dir(), header.log_block as usize, header.segment_size);
+        let log = Log::new(header.log_block as usize, header.epoch, header.file_id);
+        let segments = Segments::new(
+            o.log_dir(),
+            header.log_block as usize,
+            header.segment_size,
+            header.file_id,
+        );
         Pager(std::sync::Arc::new(Shared {
             name: o.name.clone(),
             page_size: header.page_size as usize,
@@ -349,6 +366,7 @@ impl<R: Runtime> Pager<R> {
             atomic_page_writes: o.atomic_page_writes,
             mem: PageMemory::reserve(header.page_size as usize, o.max_pages),
             drivers: Lock::new(BTreeMap::new()),
+            forcing: Lock::new(()),
             header: Lock::new((header, copy)),
             log: Lock::new(log),
             segments: Lock::new(segments),
@@ -402,8 +420,17 @@ impl<R: Runtime> Pager<R> {
             epoch: 1,
             encryption: 0,
             bitmap_groups: 0,
+            history: Vec::new(),
         };
         let pager = Pager::assemble(rt, options, header, 1, data);
+        let claimed = {
+            let mut segments = pager.segments.lock(&pager.rt);
+            pager.io(|d| segments.claim(d))
+        };
+        if !claimed {
+            pager.close_files();
+            return Err(OpenError::LogPresent);
+        }
         let made = pager.reserve_marks().and_then(|(new, marks)| {
             pager.format_marks(new, marks)?;
             pager.header.lock(&pager.rt).0.quarantine = marks;
@@ -411,7 +438,7 @@ impl<R: Runtime> Pager<R> {
         });
         if let Err(e) = made {
             pager.close_files();
-            return Err(e.into());
+            return Err(OpenError::Unformatted(e));
         }
         pager.checkpoint();
         pager.write_header(None);
@@ -424,7 +451,9 @@ impl<R: Runtime> Pager<R> {
         let mut drv = Driver::new(rt.clone());
         let (data, _) = drv.open(&options.name, false).map_err(|e| match e {
             IoError::NotFound => OpenError::NotFound,
-            IoError::Full | IoError::Failed => OpenError::NoHeader,
+            IoError::Exists | IoError::NotADirectory | IoError::Full | IoError::Failed => {
+                OpenError::NoHeader
+            }
         })?;
         let read = |drv: &mut Driver<R>, at: u64| drv.read(data, at, REGION).ok();
         let first = read(&mut drv, 0).and_then(|b| FileHeader::decode(0, &b));
@@ -440,8 +469,14 @@ impl<R: Runtime> Pager<R> {
             }
         }
         let Some((copy, mut header)) = header::choose(first, second) else {
+            let layout = read(&mut drv, 0)
+                .and_then(|b| header::other_layout(0, &b))
+                .or_else(|| {
+                    header::second_copy_offsets()
+                        .find_map(|at| read(&mut drv, at).and_then(|b| header::other_layout(1, &b)))
+                });
             drv.close(data);
-            return Err(OpenError::NoHeader);
+            return Err(layout.map_or(OpenError::NoHeader, OpenError::OtherLayout));
         };
         header.atomic_page_writes = options.atomic_page_writes;
         let pager = Pager::assemble(rt, options, header, copy, data);
@@ -722,14 +757,20 @@ impl<R: Runtime> Pager<R> {
 
     /// Write `bytes`, page `pid` under a latch the caller holds, to the file.
     pub(crate) fn write_out(&self, pid: Pid, bytes: &[u8]) {
-        self.wait_durable(page::lsn(bytes));
-        let mut staged = AlignedBuf::from_slice(bytes);
-        page::seal(pid, &mut staged);
+        let staged = self.staged(pid, bytes);
         let offset = pid.0 * self.page_size as u64;
         self.io(|d| d.write_all(vec![(self.data, offset, staged)]));
         let mut m = self.meta();
         m.changed.remove(&pid);
         m.written.insert(pid);
+    }
+
+    /// Returns `bytes` sealed for the device, once the log holds everything the page depends on.
+    pub(super) fn staged(&self, pid: Pid, bytes: &[u8]) -> AlignedBuf {
+        self.wait_durable(page::lsn(bytes));
+        let mut staged = AlignedBuf::from_slice(bytes);
+        page::seal(pid, &mut staged);
+        staged
     }
 
     /// Apply `edits[i]` to the page under `guards[i]` and log them, one record per page with
@@ -1045,11 +1086,13 @@ impl<R: Runtime> Pager<R> {
     /// Force the data file and drop from the dirty page table every page written before the force
     /// with no change since.
     pub(crate) fn sync_data(&self) {
+        let _forcing = self.forcing.lock(&self.rt);
         let covered = std::mem::take(&mut self.meta().written);
         self.io(|d| d.sync_all(&[self.data]));
         let mut m = self.meta();
         for pid in covered {
-            if !m.changed.contains(&pid) {
+            // A page in `written` was written after the take, and this force may have missed it.
+            if !m.changed.contains(&pid) && !m.written.contains(&pid) {
                 m.dirty.remove(&pid);
             }
         }
@@ -1057,16 +1100,27 @@ impl<R: Runtime> Pager<R> {
 
     /// Log a fuzzy checkpoint of the dirty page table, force it, and point the file header at it.
     pub fn checkpoint(&self) {
-        let (at, groups) = {
+        self.log_checkpoint();
+    }
+
+    /// Take a checkpoint as [`Pager::checkpoint`] does. Returns its LSN, its redo LSN and the
+    /// bitmap groups it captured.
+    pub(super) fn log_checkpoint(&self) -> (Lsn, Lsn, u64) {
+        let (at, redo, groups) = {
             let mut log = self.log();
             let groups = self.meta().groups;
             let lsn = log.next_lsn();
             let dirty: Vec<(Pid, Lsn)> = self.meta().dirty.iter().map(|(p, l)| (*p, *l)).collect();
             let redo = dirty.iter().map(|(_, l)| *l).min().unwrap_or(lsn);
-            (log.append(&Record::Checkpoint { redo, dirty }), groups)
+            (
+                log.append(&Record::Checkpoint { redo, dirty }),
+                redo,
+                groups,
+            )
         };
         self.flush_log();
         self.write_header(Some((at, groups)));
+        (at, redo, groups)
     }
 
     /// Write the next header copy, pointing at the checkpoint of `checkpoint` unless the header
