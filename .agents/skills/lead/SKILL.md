@@ -78,6 +78,8 @@ Do not act as a relay for review findings. Before a ruling or a next-round brief
 - Check a script or tool's safety by what it can reach, not by what its cases do today. An `rm -rf` of a path the script did not itself make with `mktemp` is a blocker.
 - Do not call a plan deep or done. Report what landed and what can no longer go wrong. Say which claims were read and which were run.
 
+Reflect on your own leading at every wide review, once a track passes three rounds, after anything the maintainer had to catch, and at least once a session. Write in the journal what went well, what went poorly, and what you will do differently, naming the decision and not the mood. Start by reading its earlier entries and its bets: say which changes held and which did not, and drop what did not. A change you can make a rule, tool or type goes there, the same day.
+
 At every quality cadence, and before a milestone exit, dispatch a fresh read-only agent to group fixes and open bugs since the last such review by cause, test the lead's rulings for patches, and rank at most five changes. Give it the question, not your conclusion. Verify its claims in code before acting, then update the classes. A milestone exit claim names the searching test that backs it.
 
 ## While tracks run

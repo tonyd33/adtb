@@ -51,3 +51,13 @@ Round 5 fixed the pairing by id, and the review then found `Database::open` dele
 ### 2026-10-31: when review stops
 
 The maintainer asked for a principled reason the cycle would end, and I had none. My exit test was a clean review, and a review of a large surface never comes back clean. Rounds 6 and 7 of backup found defects already on main. Holding the branch protected nobody. The lead skill now defines a blocker by what the diff introduces or makes reachable, and caps delta reviews. Bet: track rounds fall to about three. Wrong if landed tracks start producing the data loss the cap let through.
+
+### 2026-10-31: reflection, end of the first day of this practice
+
+Went well: naming causes moved backup from name-based cleanup to build aside, and from paired names to a file id. The harness found a bug in new code that review missed. Running claims corrected a review twice. Going to the code for the root of a contradiction gave the merge ruling a general rule.
+
+Went poorly: I reported a hung track as running for 80 minutes. I gave a 20-minute estimate that assumed a clean review. I ruled absolute guarantees that became machinery, in slot-test and in a run-time child check, and replaced each within hours. I pushed once without reading first. The maintainer caught all of the largest problems: churn, slot-test, and no end to the review cycle.
+
+Do differently: state an end condition when starting a track, not when asked. Give a range and what it assumes. Ask what an accident needed before ruling. Check that a track moved before saying it is running. Read before each push, in its own command.
+
+Bets to check next time: whether I catch a problem of this size before the maintainer does. So far, no.
