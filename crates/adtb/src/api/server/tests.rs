@@ -279,8 +279,8 @@ fn an_overlapping_drop_forces_a_canonical_grant_writer_to_recheck_the_role() {
                 );
                 t.audit(
                     e,
-                    tx,
                     changes,
+                    "owner",
                     "grant assert to web with grant option".into(),
                 )
             })
@@ -715,4 +715,18 @@ fn an_audit_write_after_close_is_refused_as_closed() {
     db.close().expect("close");
     let got = engine.audit_denied("w", &caller, &[0; 32]);
     assert!(format!("{got:?}").contains("Closed"), "{got:?}");
+}
+
+#[test]
+fn a_role_dropped_in_the_admit_window_refuses_with_its_audit_row() {
+    let (_scratch, db) = opened(&Log::new(["module example\nadd module example\n"]));
+    let authority = db.role_authority();
+    authority.create_role("w").unwrap();
+    let w = authority.session("w").unwrap();
+    authority.drop_role("w").unwrap();
+    let denied_rows = "from a in catalog::audit.Denied select a.seq";
+    let service = super::service(&db.engine.schema, "w");
+    assert_eq!(0, rows(&db, denied_rows).len());
+    denied(authority.admit_principal(&w, &service, &[0; 32], None));
+    assert_eq!(1, rows(&db, denied_rows).len());
 }

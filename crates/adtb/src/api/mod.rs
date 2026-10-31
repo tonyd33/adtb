@@ -26,6 +26,7 @@ mod verify;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::task::Waker;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -268,6 +269,8 @@ struct Engine<R: Runtime> {
     /// Held across every write of a row of `catalog::bundles`, so that the row a writer reads
     /// from `deployed` is the one its write replaces.
     bundle_writer: Lock<()>,
+    /// Whether this process has drawn an audit sequence number past the highest row.
+    audit_seeded: AtomicBool,
     /// The file settings, as the latest commit holds them.
     settings: Lock<Settings>,
     role_mentions: BTreeSet<String>,
@@ -862,6 +865,7 @@ impl<R: Runtime> Engine<R> {
             catalog,
             findings: Lock::new(parts.findings),
             open: RwLock::new(true),
+            audit_seeded: AtomicBool::new(false),
             closing: Lock::new(()),
             close: Arc::default(),
             sched: Lock::new(None),
@@ -1093,7 +1097,7 @@ impl<R: Runtime> Engine<R> {
         let mut refused: Option<Error> = None;
         let mut between = |at: usize, local: &mut Local| -> Result<(), write::Error> {
             for c in p.commands().iter().filter(|c| c.at == at) {
-                match self.deployment_command(&c.command) {
+                match self.deployment_command(&c.command, p) {
                     Some(Ok(rows)) => ran.push((at, rows)),
                     Some(Err(e)) => {
                         refused = Some(e);

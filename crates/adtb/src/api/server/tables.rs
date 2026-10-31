@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use adtb_lang::evolve::GrantRow;
-use adtb_lang::schema::{Schema, ValueDef};
-use adtb_lang::textual::{Form, print};
+use adtb_lang::schema::{Schema, TypeDef, ValueDef};
+use adtb_lang::textual::{Form, parse, print};
 use adtb_lang::types::{RelId, Ty};
 
 use crate::catalog::layout;
@@ -11,7 +11,7 @@ use crate::exec::Val;
 use crate::runtime::Runtime;
 use crate::write::Txn;
 
-use super::super::{Engine, Error, FatalReason, OWNER_ROLE, TxnId};
+use super::super::{Engine, Error, FatalReason, RejectReason, TxnId};
 use super::store::Changes;
 use super::{Capability, denied};
 
@@ -332,54 +332,139 @@ impl<'s> Tables<'s> {
         Ok(())
     }
 
+    /// Record that `role`, running as its own service, made the deployment change `statement`.
     pub(super) fn audit<R: Runtime>(
         &self,
         e: &Engine<R>,
-        tx: &Txn,
         changes: &mut Changes,
+        role: &str,
         statement: String,
     ) -> Result<(), Error> {
-        let principal = e.principal(None)?;
+        let principal = service(self.schema, role);
         let event = ("statement", Val::text(&statement));
-        self.audit_row(e, tx, changes, "Grant", (OWNER_ROLE, &principal), event)
+        self.audit_row(e, changes, "Grant", (role, &principal), event)
     }
 
     /// Record that `role`, running for `caller`, was refused ad hoc text of hash `text`.
     pub(super) fn audit_denied<R: Runtime>(
         &self,
         e: &Engine<R>,
-        tx: &Txn,
         changes: &mut Changes,
         role: &str,
         caller: &Val,
         text: &[u8; 32],
     ) -> Result<(), Error> {
+        let event = ("origin", self.adhoc_origin(text)?);
+        self.audit_row(e, changes, "Denied", (role, caller), event)
+    }
+
+    /// Record that `role`, running for `caller`, retired `bundle`.
+    pub(super) fn audit_retire<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        changes: &mut Changes,
+        (role, caller): (&str, &Val),
+        bundle: &str,
+    ) -> Result<(), Error> {
+        let event = ("bundle", Val::text(bundle));
+        self.audit_row(e, changes, "Retire", (role, caller), event)
+    }
+
+    /// Returns the `Call` row numbered `seq` of ad hoc text `call`.
+    pub(super) fn call_row<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        seq: i64,
+        call: &CallRow<'_>,
+    ) -> Result<Val, Error> {
+        let fields = vec![
+            ("origin", self.adhoc_origin(call.text)?),
+            ("args", Val::Bytes(Arc::from(call.args.as_slice()))),
+            ("outcome", self.outcome(call.failed)?),
+        ];
+        self.event_row(e, seq, "Call", (call.role, call.caller), fields)
+    }
+
+    fn adhoc_origin(&self, text: &[u8; 32]) -> Result<Val, Error> {
+        let adhoc = self
+            .prelude_type("Origin")?
+            .ctor_index("AdHoc")
+            .ok_or_else(|| malformed("`Origin` declares `AdHoc`"))?;
+        Ok(Val::ctor(
+            adhoc,
+            vec![Val::Bytes(Arc::from(text.as_slice()))],
+        ))
+    }
+
+    fn outcome(&self, failed: Option<&Error>) -> Result<Val, Error> {
+        let def = self.prelude_type("Outcome")?;
+        let ctor = |name: &str| {
+            def.ctor_index(name)
+                .ok_or_else(|| malformed(format!("`Outcome` declares `{name}`")))
+        };
+        Ok(match failed {
+            None => Val::ctor(ctor("Succeeded")?, Vec::new()),
+            Some(error) => Val::ctor(ctor("Failed")?, vec![self.error_value(error)?]),
+        })
+    }
+
+    /// Returns `error` as a value of the prelude sum, or as `Internal` naming it when its text
+    /// does not read back.
+    fn error_value(&self, error: &Error) -> Result<Val, Error> {
         let prelude = self
             .schema
             .module_named("prelude")
             .ok_or_else(|| malformed("the schema has module prelude"))?;
-        let origin = self.schema.module(prelude).types["Origin"];
-        let adhoc = self
+        let ty = Ty::Data {
+            def: self.schema.module(prelude).types["Error"],
+            args: Vec::new(),
+            ctors: None,
+        };
+        let form = Form::of(self.schema, &ty);
+        let text = error.value().to_string();
+        parse::<Val>(&text, &form).or_else(|_| {
+            let internal = Error::rejected(RejectReason::Internal { what: text.clone() });
+            parse::<Val>(&internal.value().to_string(), &form)
+                .map_err(|_| malformed(format!("the error `{text}` reads as a value")))
+        })
+    }
+
+    fn prelude_type(&self, name: &str) -> Result<&'s TypeDef, Error> {
+        let prelude = self
             .schema
-            .ty(origin)
-            .ctor_index("AdHoc")
-            .ok_or_else(|| malformed("`Origin` declares `AdHoc`"))?;
-        let event = (
-            "origin",
-            Val::ctor(adhoc, vec![Val::Bytes(Arc::from(text.as_slice()))]),
-        );
-        self.audit_row(e, tx, changes, "Denied", (role, caller), event)
+            .module_named("prelude")
+            .ok_or_else(|| malformed("the schema has module prelude"))?;
+        let id = self
+            .schema
+            .module(prelude)
+            .types
+            .get(name)
+            .ok_or_else(|| malformed(format!("module prelude declares `{name}`")))?;
+        Ok(self.schema.ty(*id))
     }
 
     fn audit_row<R: Runtime>(
         &self,
         e: &Engine<R>,
-        tx: &Txn,
         changes: &mut Changes,
         ctor: &str,
-        (role, principal): (&str, &Val),
+        who: (&str, &Val),
         event: (&str, Val),
     ) -> Result<(), Error> {
+        let seq = e.audit_seq()?;
+        let row = self.event_row(e, seq, ctor, who, vec![event])?;
+        changes.insert(self.audit, row);
+        Ok(())
+    }
+
+    fn event_row<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        seq: i64,
+        ctor: &str,
+        (role, principal): (&str, &Val),
+        event: Vec<(&str, Val)>,
+    ) -> Result<Val, Error> {
         let ty = Ty::Data {
             def: self.schema.principal,
             args: Vec::new(),
@@ -387,23 +472,37 @@ impl<'s> Tables<'s> {
         };
         let principal = print(principal, &Form::of(self.schema, &ty))
             .map_err(|_| malformed("a principal prints"))?;
-        let id = self.next_id(e, tx, self.audit)?;
-        changes.insert(
-            self.audit,
-            self.row(
-                self.audit,
-                ctor,
-                vec![
-                    ("seq", Val::Int(id)),
-                    ("at", Val::Instant(e.clock())),
-                    ("role", Val::text(role)),
-                    ("principal", Val::text(&principal)),
-                    event,
-                ],
-            ),
-        );
-        Ok(())
+        let mut fields = vec![
+            ("seq", Val::Int(seq)),
+            ("at", Val::Instant(e.clock())),
+            ("role", Val::text(role)),
+            ("principal", Val::text(&principal)),
+        ];
+        fields.extend(event);
+        Ok(self.row(self.audit, ctor, fields))
     }
+
+    pub(super) fn audit_relation(&self) -> RelId {
+        self.audit
+    }
+}
+
+/// An ad hoc call as its `Call` audit row states it, `failed` its error unless it succeeded.
+pub(super) struct CallRow<'c> {
+    pub(super) role: &'c str,
+    pub(super) caller: &'c Val,
+    pub(super) text: &'c [u8; 32],
+    pub(super) args: &'c [u8; 32],
+    pub(super) failed: Option<&'c Error>,
+}
+
+/// Returns the `Service` principal of role `name`.
+pub(super) fn service(schema: &Schema, name: &str) -> Val {
+    let index = schema
+        .ty(schema.principal)
+        .ctor_index("Service")
+        .expect("the Principal type declares Service");
+    Val::ctor(index, vec![Val::text(name)])
 }
 
 fn malformed(detail: impl Into<String>) -> Error {

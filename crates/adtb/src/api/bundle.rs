@@ -18,7 +18,7 @@ use crate::storage::Pager;
 
 use super::error::{Error, RejectReason};
 use super::settings::Settings;
-use super::text::{DynRows, rows};
+use super::text::{DynRows, Prepared, rows};
 use super::{Engine, OWNER_ID, OWNER_ROLE, OpenError, corrupt};
 
 #[cfg(test)]
@@ -948,9 +948,13 @@ impl<R: Runtime> Engine<R> {
 
     /// Run `c` when it is a command on deployment state, `retire bundle` or `supersede
     /// bundle`, which no transaction holds. Returns its rows, `None` for any other command.
-    pub(super) fn deployment_command(&self, c: &Command) -> Option<Result<DynRows, Error>> {
+    pub(super) fn deployment_command(
+        &self,
+        c: &Command,
+        p: &Prepared,
+    ) -> Option<Result<DynRows, Error>> {
         match c {
-            Command::RetireBundle(b) => Some(self.retire(&bundle_name(b))),
+            Command::RetireBundle(b) => Some(self.retire(&bundle_name(b), p)),
             Command::SupersedeBundle(b, by) => {
                 Some(self.supersede(&bundle_name(b), &bundle_name(by)))
             }
@@ -958,15 +962,23 @@ impl<R: Runtime> Engine<R> {
         }
     }
 
-    /// Retire bundle `name`. Returns its row.
-    pub(super) fn retire(&self, name: &str) -> Result<DynRows, Error> {
+    /// Retire bundle `name` for the issuer of `p`, the row and its `Retire` audit row committing
+    /// together. Returns its row.
+    pub(super) fn retire(&self, name: &str, p: &Prepared) -> Result<DynRows, Error> {
         let _writer = self.bundle_writer.lock(&self.rt);
         let now = self.clock();
         let row = known(&self.deployed.lock(&self.rt).bundles, name)?.clone();
         let mut next = row.clone();
         if !matches!(row.state, State::Retired(_)) {
             next.state = State::Retired(now);
-            self.replace_bundle(&row, &next)?;
+            let t = Tables::of(&self.schema);
+            let role = p.issuer.as_ref().map_or(OWNER_ROLE, |i| &i.role);
+            self.retire_row(
+                t.bundles,
+                (t.bundle_value(&row), t.bundle_value(&next)),
+                (role, p.caller()),
+                name,
+            )?;
         }
         let out = self.bundle_rows(&next);
         self.put(next);

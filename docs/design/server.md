@@ -530,11 +530,38 @@ role and refuses every other role with `Denied`.
 command that names a statement; any other role holding `adhoc` submits
 commands that capabilities or bundle ownership alone decide, and the
 engine decides each from the parsed text at submit, before checking it
-against the schema. A refusal for a lack of privilege, also
+against the schema. A command value counts when it computes from
+literals and the call's parameters alone, reading no relation; any other
+value leaves the text to the embedded owner. The engine decides the same
+again when the task leaves the queue, before it runs: a revoke or role
+drop while queued stops the task with `Denied`. A revoke or drop while
+the statement runs does not stop it. A refusal for a lack of privilege, also
 of `verify` rows holding a `Violation` witness, writes a `Denied` row of
-`catalog::audit` in a system transaction, except on a database quarantined
-whole, which records none
-([storage.md §8](storage.md#8-quarantine)). The engine starts its task
+`catalog::audit` in a system transaction. On a database quarantined
+whole nothing writes an audit row, and a refusal that would write one
+answers `Quarantined`, except that of a `verify` witness
+([storage.md §8](storage.md#8-quarantine)).
+
+While a constructor or an index of `catalog::audit` is quarantined, a
+call that changed data, at its commit, or whose command would, before it
+runs, fails `Quarantined` and leaves nothing visible; a `Grant` or `Retire`
+row fails with its transaction. A call that changed nothing answers and
+writes no `Call` row: a read, a refusal, `verify`, `explain`, `vacuum`,
+`reindex`, and a write statement whose change set is empty.
+
+Every `RoleSession::submit_text` that checks or runs writes one `Call` row,
+except a call refused with `Denied`, which has its `Denied` row, and a call
+the queue refuses. A parameter that does not print as its type refuses the
+call before it checks, with no row. A write's row commits with it; any other call's row commits in
+a system transaction before the call settles. A task stopped while the engine
+closes writes none. `args` hashes the canonical text of the parameters;
+the wire encoding of values is not implemented in the engine. Retiring a
+bundle writes its `Retire` row in the transaction that retires it. `Grant`
+rows name the role that issued the change. Calls through the synchronous
+facade and registered calls write no `Call` row, and `Register`, `SchemaOp`,
+`Commit` and `Login` rows are not written.
+
+The engine starts its task
 scheduler on the first submit. A
 read holds its snapshot until the drain is acknowledged, dropped or
 cancelled. A task that is one read-only query of set type is produced a

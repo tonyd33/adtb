@@ -21,7 +21,11 @@ impl Changes {
         self.rows.push((relation, false, row));
     }
 
-    fn apply<R: Runtime>(&self, e: &Engine<R>, tx: &Txn) -> Result<(), crate::write::Error> {
+    pub(super) fn apply<R: Runtime>(
+        &self,
+        e: &Engine<R>,
+        tx: &Txn,
+    ) -> Result<(), crate::write::Error> {
         if self.rows.is_empty() {
             return Ok(());
         }

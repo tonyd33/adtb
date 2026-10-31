@@ -856,3 +856,35 @@ fn only_its_owner_or_the_schema_owner_registers_a_registered_bundle_again() {
         register(&db, "idle", &one).expect("its owner registers it again");
     });
 }
+
+#[test]
+fn a_retire_writes_one_audit_row_naming_the_role_that_retired() {
+    let mut sim = Sim::new(201, Config::default());
+    run(&mut sim, |rt| {
+        let db = shop(&rt);
+        let authority = db.role_authority();
+        let web = authority.session("web").expect("session");
+        register(&db, "web", &bundle("shop-1.0", &[SHOP, GRANTS], NAMES)).expect("web registers");
+        register(&db, "web", &bundle("shop-1.1", &[SHOP, GRANTS], NAMES)).expect("web registers");
+        authority
+            .grant_capability("web", Capability::Adhoc, false)
+            .expect("grant");
+        let retires = "from a in catalog::audit.Retire select { role: a.role, bundle: a.bundle, who: a.principal }";
+        api::task(&rt, &web, "retire bundle shop-1.0").expect("the owner retires");
+        let rows = query(&db, retires);
+        assert_eq!(1, rows.len(), "{rows:?}");
+        assert!(rows[0].contains("shop-1.0"), "{rows:?}");
+        assert!(rows[0].contains("role: \"web\""), "{rows:?}");
+        assert!(rows[0].contains("Service"), "{rows:?}");
+        api::task(&rt, &web, "retire bundle shop-1.0").expect("a second retire changes nothing");
+        assert_eq!(1, query(&db, retires).len());
+        db.query_text("retire bundle shop-1.1", &[], &CallOptions::default())
+            .expect("the in-process owner");
+        let rows = query(&db, retires);
+        assert_eq!(2, rows.len(), "{rows:?}");
+        assert!(
+            rows.iter().any(|r| r.contains("role: \"owner\"")),
+            "{rows:?}"
+        );
+    });
+}

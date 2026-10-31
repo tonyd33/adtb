@@ -27,6 +27,12 @@ pub(super) struct Touched {
     removes: BTreeSet<RelId>,
 }
 
+impl Touched {
+    pub(super) fn wrote(&self) -> bool {
+        !self.writes.is_empty()
+    }
+}
+
 /// Returns the type of the elements of a set of type `ty`.
 fn element(ty: &Ty) -> Option<&Ty> {
     match ty {
@@ -200,6 +206,12 @@ impl<R: Runtime> Database<R> {
             }
         }
         Ok(())
+    }
+
+    /// Fail if a row of `rel` cannot be written: the database, a constructor heap or an index of
+    /// `rel` is quarantined. A key spans the sum, so a mark on any constructor counts.
+    pub fn admit_relation(&self, rel: RelId) -> Result<(), Error> {
+        self.admit_vacuum(&self.rels[&rel])
     }
 
     /// Fail if the items of `text` read a quarantined constructor relation, write one a

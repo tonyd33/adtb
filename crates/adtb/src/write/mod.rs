@@ -325,6 +325,11 @@ pub struct Txn {
 }
 
 impl Txn {
+    /// Returns whether its statements that succeeded changed a relation of the file.
+    pub fn wrote(&self) -> bool {
+        self.written.borrow().wrote()
+    }
+
     /// Returns the transaction's id, `None` for a read-only one.
     pub fn xid(&self) -> Option<Xid> {
         self.xid

@@ -14,10 +14,13 @@ use crate::runtime::Runtime;
 use crate::write::{self, Deferral, Local, Outcome, Produced, Production, Rerun, Text, Txn};
 
 use super::super::arrow::BATCH_ROWS;
+use super::super::command::changes_data;
 use super::super::registered::Bound;
 use super::super::text::{DynRows, Prepared};
-use super::super::{Closes, Engine, Error, Halted, Position, TxnId};
+use super::super::{Closes, Engine, Error, Halted, Position, RejectReason, TxnId};
 use super::result::{Completion, Layout};
+use super::session::Readmission;
+use super::tables::CallRow;
 use super::task::{Out, Request, Shared, TaskOptions, stopped};
 
 /// What a task calls.
@@ -33,6 +36,14 @@ impl Work {
             Work::Text(p) => p,
         }
     }
+}
+
+/// What the call of ad hoc text keeps for its audit row and its recheck.
+pub(super) struct TextCall<R: Runtime> {
+    pub(super) role: String,
+    pub(super) text: [u8; 32],
+    pub(super) args: [u8; 32],
+    pub(super) readmission: Option<Readmission<R>>,
 }
 
 /// Where a call is.
@@ -99,6 +110,8 @@ pub(super) struct Call<R: Runtime> {
     close: Closes,
     shared: Arc<Shared<R>>,
     work: Work,
+    /// Ad hoc text not yet recorded in the audit.
+    text: Option<TextCall<R>>,
     opts: TaskOptions,
     grant: Option<Arc<Grant>>,
     phase: Phase<R>,
@@ -126,6 +139,7 @@ impl<R: Runtime> Call<R> {
         engine: &Arc<Engine<R>>,
         shared: Arc<Shared<R>>,
         work: Work,
+        text: Option<TextCall<R>>,
         opts: TaskOptions,
     ) -> Call<R> {
         Call {
@@ -133,9 +147,61 @@ impl<R: Runtime> Call<R> {
             close: engine.close.clone(),
             shared,
             work,
+            text,
             opts,
             grant: None,
             phase: Phase::Start,
+        }
+    }
+
+    /// Refuse a text whose role may no longer issue it, once, when the call leaves the queue. A
+    /// refusal has its `Denied` row and writes no `Call` row.
+    fn readmit(&mut self, e: &Engine<R>) -> Result<(), Error> {
+        let Some(text) = self.text.as_mut() else {
+            return Ok(());
+        };
+        let Some(readmission) = text.readmission.take() else {
+            return Ok(());
+        };
+        readmission.check(e, &text.text)
+    }
+
+    fn call_row<'c>(&'c self, text: &'c TextCall<R>, failed: Option<&'c Error>) -> CallRow<'c> {
+        CallRow {
+            role: &text.role,
+            caller: self.work.prepared().caller(),
+            text: &text.text,
+            args: &text.args,
+            failed,
+        }
+    }
+
+    /// Record a call that did not write, in a transaction of its own, unless it is recorded.
+    fn audit(&mut self, e: &Engine<R>, failed: Option<&Error>) -> Result<(), Error> {
+        let Some(text) = self.text.take() else {
+            return Ok(());
+        };
+        e.audit_call(&self.call_row(&text, failed))
+    }
+
+    /// Record the failure `err`, or the owner's request that replaces it. Returns the error to
+    /// settle with: a refusal has its `Denied` row and writes no `Call` row.
+    fn audited(&mut self, e: &Engine<R>, err: Error) -> Error {
+        let shown = match self.shared.state.lock(&self.shared.rt).request {
+            Some(r) => r.error(),
+            None => err,
+        };
+        if matches!(
+            shown,
+            Error::Rejected {
+                reason: RejectReason::Denied { .. }
+            }
+        ) {
+            self.text = None;
+        }
+        match self.audit(e, Some(&shown)) {
+            Ok(()) => shown,
+            Err(failed) => failed,
         }
     }
 
@@ -179,12 +245,19 @@ impl<R: Runtime> Call<R> {
             e.renew(b.name());
         }
         let p = self.work.prepared();
+        if self.text.is_some()
+            && p.commands().iter().any(|c| changes_data(&c.command))
+            && let Some(marked) = e.audit_unwritable()
+        {
+            return Err(marked);
+        }
         if let Some(rows) = e.verify_without_transaction(p) {
             self.phase = Phase::Output(Output {
                 results: self.whole(e, vec![rows?])?,
                 announced: false,
                 tx: None,
             });
+            self.audit(e, None)?;
             self.settle(Completion::Read {
                 snapshot: Position::from(e.pager.position(e.pager.durable())),
             });
@@ -453,6 +526,21 @@ impl<R: Runtime> Call<R> {
                 return Err(err);
             }
         };
+        let marked = self.text.as_ref().and_then(|_| e.audit_unwritable());
+        let row = match (&self.text, marked) {
+            (Some(_), Some(marked)) if tx.wrote() => {
+                e.abort(id, tx)?;
+                return Err(marked);
+            }
+            (Some(text), None) => e.audit_call_in(&tx, id, &self.call_row(text, None)),
+            _ => Ok(()),
+        };
+        if let Err(err) = row {
+            e.abort(id, tx)?;
+            self.retry(e, &mut w, err)?;
+            self.phase = Phase::Writing(w);
+            return Ok(Then::Next);
+        }
         let requested = self.shared.defer(|s| {
             s.committing = s.request.is_none();
             (s.request, [None, None])
@@ -462,6 +550,9 @@ impl<R: Runtime> Call<R> {
             return Err(r.error());
         }
         let done = e.db.commit(tx);
+        if done.is_ok() {
+            self.text = None;
+        }
         let after = self.shared.defer(|s| {
             s.committing = false;
             if let Ok(at) = &done {
@@ -632,6 +723,7 @@ impl<R: Runtime> Call<R> {
         }
         if let Some((id, tx)) = tx {
             let at = e.db.commit(tx).map_err(|err| e.write_error(id, err))?;
+            self.audit(e, None)?;
             self.settle(Completion::Read {
                 snapshot: Position::from(at),
             });
@@ -708,7 +800,10 @@ impl<R: Runtime> Resumable for Call<R> {
     fn run(&mut self, waker: &Waker) -> Step {
         let step = match self.engine.upgrade() {
             Some(e) => match e.enter() {
-                Ok(_open) => self.advance(&e, waker),
+                Ok(_open) => self
+                    .readmit(&e)
+                    .and_then(|()| self.advance(&e, waker))
+                    .map_err(|err| self.audited(&e, err)),
                 Err(err) => Err(err),
             },
             None => Err(Error::closed()),
@@ -724,7 +819,14 @@ impl<R: Runtime> Resumable for Call<R> {
     /// Settle the call as stopped. While the engine closes, its observer is woken once the close
     /// has ended.
     fn stop(mut self: Box<Self>, why: Stopped) {
-        self.fail(stopped(why));
+        let mut err = stopped(why);
+        if let Some(e) = self.engine.upgrade()
+            && let Some(open) = e.open.try_read()
+            && *open
+        {
+            err = self.audited(&e, err);
+        }
+        self.fail(err);
         let wakers = self.shared.deferred();
         let now = match self.close.lock(&self.shared.rt).as_mut() {
             Some(c) => {

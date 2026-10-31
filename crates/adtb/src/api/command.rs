@@ -2,9 +2,10 @@
 
 use std::collections::BTreeMap;
 
-use adtb_lang::ast::{self, BundleName, ExprKind, KeyArgs, RecordExpr, UnOp};
+use adtb_lang::ast::{self, BundleName, ExprKind, KeyArgs, RecordExpr};
 use adtb_lang::check::{Command, Explained, Program};
 use adtb_lang::kernel::{Kind, Terms, Tm, alpha_equal};
+use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Schema, ValueDef};
 use adtb_lang::types::{Base, CtorSet, RelId, Ty};
 
@@ -53,32 +54,32 @@ pub(super) fn runs(c: &Command) -> Result<(), Error> {
 pub(super) enum Need<'c> {
     Capabilities(&'static [Capability]),
     BundleOwner(&'c BundleName),
-    /// More than capabilities decide: reads the role must hold, the calls it owns, or a value the
-    /// checker would have to read a statement to refuse. No role issues it.
+    /// More than capabilities decide: reads the role must hold, the calls it owns, or a value that
+    /// may read a relation. No role issues it.
     SchemaOwner,
 }
 
-/// Returns what a role must hold to issue `c`.
-pub(super) fn need(c: &ast::Command) -> Need<'_> {
+/// Returns what a role must hold to issue `c`, a free name in `params` standing for a value.
+pub(super) fn need<'c>(c: &'c ast::Command, params: &[String]) -> Need<'c> {
     use Capability::{Cancel, Configure, Maintain, Schema, WriteFiles};
     use ast::Command as C;
     match c {
-        C::PinPlan(k) | C::UnpinPlan(k) if key_literal(k) => Need::Capabilities(&[Maintain]),
+        C::PinPlan(k) | C::UnpinPlan(k) if key_value(k, params) => Need::Capabilities(&[Maintain]),
         C::Reindex { index, .. }
-            if index
-                .as_ref()
-                .is_none_or(|(fields, _)| fields.iter().all(field_path)) =>
+            if index.as_ref().is_none_or(|(fields, _)| {
+                fields.iter().all(|f| field_path(f) || value(f, params))
+            }) =>
         {
             Need::Capabilities(&[Maintain])
         }
         C::Vacuum(_) | C::Verify(_) | C::Compact | C::FinalizeUpgrade | C::Backup { .. } => {
             Need::Capabilities(&[Maintain])
         }
-        C::TerminateSession(k) if key_literal(k) => Need::Capabilities(&[Cancel]),
-        C::SetSetting(_, value) if literal(value) => Need::Capabilities(&[Configure]),
+        C::TerminateSession(k) if key_value(k, params) => Need::Capabilities(&[Cancel]),
+        C::SetSetting(_, v) if value(v, params) => Need::Capabilities(&[Configure]),
         C::RotateKek(_) | C::RotateDek | C::DestroyDek(_) => Need::Capabilities(&[Configure]),
         C::ApplyMigrations(_) => Need::Capabilities(&[Schema]),
-        C::ArchiveAudit { through, .. } if literal(through) => {
+        C::ArchiveAudit { through, .. } if value(through, params) => {
             Need::Capabilities(&[Maintain, WriteFiles])
         }
         C::RetireBundle(b) | C::SupersedeBundle(b, _) => Need::BundleOwner(b),
@@ -98,29 +99,54 @@ pub(super) fn need(c: &ast::Command) -> Need<'_> {
     }
 }
 
-/// Returns whether `e` is written with literals, records and constructors alone.
-fn literal(e: &ast::Expr) -> bool {
-    let record = |r: &RecordExpr| matches!(r, RecordExpr::Fields(fields, _) if fields.iter().all(|(_, v)| literal(v)));
+/// Returns those of `params` that neither `caller` nor a name the schema declares shadows.
+pub(super) fn free_params(schema: &Schema, params: &[String]) -> Vec<String> {
+    let visible = Visible::all(schema);
+    let declared = |name: &str| {
+        name == "caller"
+            || visible
+                .modules
+                .iter()
+                .any(|&m| schema.module(m).values.contains_key(name))
+    };
+    params.iter().filter(|n| !declared(n)).cloned().collect()
+}
+
+/// Returns whether `c` changes data when it runs, outside the call's transaction.
+pub(super) fn changes_data(c: &Command) -> bool {
+    !matches!(
+        c,
+        Command::Explain { .. } | Command::Verify(_) | Command::Vacuum(_) | Command::Reindex { .. }
+    )
+}
+
+/// Returns whether `e` computes from literals and `params` alone, reading no relation. A field
+/// selection counts as reading.
+fn value(e: &ast::Expr, params: &[String]) -> bool {
+    let of = |e: &ast::Expr| value(e, params);
+    let record = |r: &RecordExpr| matches!(r, RecordExpr::Fields(fields, _) if fields.iter().all(|(_, v)| of(v)));
     match &e.kind {
         ExprKind::Lit(_) | ExprKind::Unit => true,
-        ExprKind::Unary(UnOp::Neg, inner) => literal(inner),
+        ExprKind::Name(q) => q.module.is_none() && params.contains(&q.name.text),
+        ExprKind::Unary(_, inner) => of(inner),
+        ExprKind::Binary(_, a, b) => of(a) && of(b),
         ExprKind::Record(r) => record(r),
         ExprKind::Ctor { record: r, .. } => r.as_ref().is_none_or(record),
         _ => false,
     }
 }
 
-/// Returns whether `e` is a literal or a relation's `key` of literals.
-fn key_literal(e: &ast::Expr) -> bool {
+/// Returns whether `e` is a [`value`] or a relation's `key` of values.
+fn key_value(e: &ast::Expr, params: &[String]) -> bool {
     match &e.kind {
         ExprKind::KeyCall(relation, args) => {
             matches!(relation.kind, ExprKind::Name(_))
                 && match args {
-                    KeyArgs::Value(v) => literal(v),
-                    KeyArgs::Named(fields) => fields.iter().all(|(_, v)| literal(v)),
+                    KeyArgs::Value(v) => value(v, params),
+                    KeyArgs::Named(fields) => fields.iter().all(|(_, v)| value(v, params)),
                 }
         }
-        _ => literal(e),
+        _ => value(e, params),
     }
 }
 
@@ -393,10 +419,8 @@ impl<R: Runtime> Engine<R> {
         if !found.any_left(|row| matches!(row, Val::Ctor(c, _) if *c == violation)) {
             return Ok(());
         }
-        if self.db.admit_database().is_ok() {
-            self.audit_denied(&issuer.role, caller, &issuer.text)
-                .map_err(|e| write::Error::Internal(format!("recording a denied call: {e:?}")))?;
-        }
+        self.audit_denied(&issuer.role, caller, &issuer.text)
+            .map_err(|e| write::Error::Internal(format!("recording a denied call: {e:?}")))?;
         Err(write::Error::Denied(format!(
             "role `{}` lacks `read` on the rows of the `Violation` witnesses of `verify`",
             issuer.role

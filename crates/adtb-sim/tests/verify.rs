@@ -865,6 +865,11 @@ fn verify_is_refused_and_audited_for_a_role_when_a_violation_holds_a_witness() {
             1,
             api::query(&db, "from a in catalog::audit.Denied select a.seq").len()
         );
+        assert_eq!(
+            1,
+            api::query(&db, "from a in catalog::audit.Call select a.seq").len(),
+            "the first verify succeeded; the refused one has only its Denied row"
+        );
     });
 }
 

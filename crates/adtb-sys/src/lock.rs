@@ -53,6 +53,15 @@ impl<T> RwLock<T> {
         }
     }
 
+    /// Returns the guard if no writer holds the lock, without waiting.
+    pub fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
+        match self.0.try_read() {
+            Ok(g) => Some(g),
+            Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
     /// Wait while a writer holds the lock, then share it with other readers.
     pub fn read(&self, threads: &impl Threads) -> RwLockReadGuard<'_, T> {
         loop {
@@ -73,5 +82,31 @@ impl<T> RwLock<T> {
                 Err(TryLockError::WouldBlock) => threads.yield_now(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_read_shares_with_readers_misses_a_writer_and_survives_poison() {
+        let lock = RwLock::new(7);
+        {
+            let first = lock.try_read().expect("no writer holds it");
+            let second = lock.try_read().expect("readers share it");
+            assert_eq!(14, *first + *second);
+        }
+        {
+            let writer = lock.0.write().expect("no one poisoned it");
+            assert!(lock.try_read().is_none());
+            drop(writer);
+        }
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _writer = lock.0.write().expect("no one poisoned it");
+            panic!("poison the lock");
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(7, *lock.try_read().expect("poison leaves it readable"));
     }
 }

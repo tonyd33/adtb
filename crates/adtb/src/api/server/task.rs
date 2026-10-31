@@ -6,6 +6,8 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::task::{Wake, Waker};
 use std::time::Duration;
 
+use adtb_lang::schema::Schema;
+use adtb_lang::textual::{Form, print};
 use adtb_lang::types::Ty;
 use adtb_sys::lock::Lock;
 
@@ -17,8 +19,10 @@ use super::super::{
     CallOptions, CancelToken, Engine, Error, Limit, OWNER_ROLE, Registered, RejectReason,
     RetryReason,
 };
-use super::call::{Call, Work};
+use super::call::{Call, TextCall, Work};
 use super::result::{Completion, Format, Layout, ResultBatch};
+use super::session::{Readmission, text_hash};
+use super::tables::CallRow;
 use super::{RoleAuthority, RoleSession, denied};
 
 /// The bytes a queued task's metadata counts for besides its arguments.
@@ -329,7 +333,8 @@ impl<R: Runtime> Registered<R> {
         let bound = self.bound(&e, ordinal, &args, caller)?;
         let bytes = TASK_BYTES + args.iter().map(Val::size).sum::<usize>();
         let class = bound.priority;
-        submit(&e, Work::Registered(Box::new(bound)), opts, class, bytes)
+        let work = Work::Registered(Box::new(bound));
+        submit(&e, work, None, opts, class, bytes)
     }
 }
 
@@ -337,9 +342,9 @@ impl<R: Runtime> RoleSession<R> {
     /// Submit ad hoc `text` as a task, each free name typed and bound by `params`.
     ///
     /// A role but the embedded owner holds `adhoc` and issues only commands, each needing what
-    /// the command requires. Refuse any other text of such a role with `Denied`, recorded in the
-    /// audit, before checking it against the schema, and a call the admission queue has no room
-    /// for, without running it.
+    /// the command requires, checked at submit and again when the task leaves the queue. Refuse
+    /// any other text of such a role with `Denied`, recorded in the audit, before checking it
+    /// against the schema, and a call the admission queue has no room for, without running it.
     pub fn submit_text(
         &self,
         text: &str,
@@ -349,24 +354,78 @@ impl<R: Runtime> RoleSession<R> {
         let authority = RoleAuthority {
             engine: self.engine.clone(),
         };
-        let caller = authority.admit_caller(self, text, opts.call.assert.as_ref())?;
+        let assertion = opts.call.assert.clone();
+        let hash = text_hash(text);
+        let caller = authority.admit_caller(self, &hash, assertion.as_ref())?;
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
+        let names: Vec<String> = params.iter().map(|(n, ..)| (*n).to_owned()).collect();
+        let parsed = Prepared::parsed(text);
+        let issuer = match &parsed {
+            Ok(items) => authority.admit_items(self, &e, items, &names, &caller, &hash)?,
+            Err(_) => None,
+        };
         let _open = e.enter()?;
-        let items = Prepared::parsed(text).map_err(|err| e.refusal().unwrap_or(err))?;
-        let issuer = authority.admit_items(self, &e, &items, &caller, text)?;
-        let p = Prepared::of_items(
-            &e.schema,
-            &e.program,
-            &e.explained(),
-            &items,
-            params,
-            caller,
-        );
-        let mut p = e.admit_text(p)?;
+        let args = args_hash(&e.schema, params)?;
+        let checked = parsed
+            .map_err(|err| e.refusal().unwrap_or(err))
+            .and_then(|items| {
+                let p = Prepared::of_items(
+                    &e.schema,
+                    &e.program,
+                    &e.explained(),
+                    &items,
+                    params,
+                    caller.clone(),
+                );
+                Ok((e.admit_text(p)?, items))
+            });
+        let (mut p, items) = match checked {
+            Ok(checked) => checked,
+            Err(err) => {
+                e.audit_call(&CallRow {
+                    role: &self.name,
+                    caller: &caller,
+                    text: &hash,
+                    args: &args,
+                    failed: Some(&err),
+                })?;
+                return Err(err);
+            }
+        };
         p.issuer = issuer;
+        let readmission = (self.name != OWNER_ROLE).then(|| Readmission {
+            session: self.clone(),
+            items,
+            params: names,
+            assertion,
+        });
+        let call = TextCall {
+            role: self.name.clone(),
+            text: hash,
+            args,
+            readmission,
+        };
         let bytes = TASK_BYTES + text.len() + p.bytes();
-        submit(&e, Work::Text(Box::new(p)), opts, Priority::AdHoc, bytes)
+        let work = Work::Text(Box::new(p));
+        submit(&e, work, Some(call), opts, Priority::AdHoc, bytes)
     }
+}
+
+/// Returns the BLAKE3-256 hash of the canonical text of `params`, by name.
+fn args_hash(schema: &Schema, params: &[(&str, Ty, Val)]) -> Result<[u8; 32], Error> {
+    let mut sorted: Vec<_> = params.iter().collect();
+    sorted.sort_by_key(|(name, ..)| *name);
+    let mut hasher = blake3::Hasher::new();
+    for (name, ty, value) in sorted {
+        let shown = print(value, &Form::of(schema, ty)).map_err(|_| {
+            Error::invalid(format!("parameter `{name}` does not print as its type"))
+        })?;
+        hasher.update(name.as_bytes());
+        hasher.update(b"=");
+        hasher.update(shown.as_bytes());
+        hasher.update(b"\n");
+    }
+    Ok(*hasher.finalize().as_bytes())
 }
 
 /// Returns the principal a task of `session` runs for, refusing every role but the embedded
@@ -384,6 +443,7 @@ fn owner<R: Runtime>(session: &RoleSession<R>, assert: Option<&Val>) -> Result<V
 fn submit<R: Runtime>(
     e: &Arc<Engine<R>>,
     work: Work,
+    text: Option<TextCall<R>>,
     mut opts: TaskOptions,
     class: Priority,
     bytes: usize,
@@ -415,7 +475,7 @@ fn submit<R: Runtime>(
         let id = t.on_cancel(Waker::from(stopper.clone()));
         (t, id)
     });
-    let call = Call::new(e, shared.clone(), work, opts);
+    let call = Call::new(e, shared.clone(), work, text, opts);
     match sched.admit(entry, Box::new(call)) {
         Ok(admitted) => {
             assert!(
@@ -477,6 +537,8 @@ mod tests {
     use crate::runtime::Threads;
 
     use super::super::super::{CreateOptions, Database, Log, OpenOptions};
+    use super::super::session::Readmission;
+    use super::super::tables::RoleId;
     use super::*;
 
     /// A waker counting the wakes a worker runs while the engine is held open for a call.
@@ -595,6 +657,68 @@ mod tests {
         drop(task);
         db.close().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_readmission_failing_but_for_denied_records_a_failed_call() {
+        let scratch = adtb_testkit::scratch::Scratch::new("readmit-fixtures", "readmit");
+        let rt = OsRuntime::new(scratch.path(), Backend::Pool { threads: 1 });
+        let log = Log::new(["module example\nadd module example\n"]);
+        let options = OpenOptions {
+            create: Some(CreateOptions::default()),
+            workers: Some(1),
+            pool_bytes: Some(4 * 1024 * 1024),
+            ..OpenOptions::default()
+        };
+        let db = Database::open_in(rt, "readmit.adt", &log, &options).expect("open");
+        let e = db.engine.clone();
+        let caller = e.principal(None).expect("principal");
+        let items = Prepared::parsed("verify").expect("parses");
+        let p = Prepared::of_items(&e.schema, &e.program, &e.explained(), &items, &[], caller)
+            .expect("checks");
+        let call = TextCall {
+            role: "w".to_owned(),
+            text: [0; 32],
+            args: [0; 32],
+            readmission: Some(Readmission {
+                session: RoleSession {
+                    engine: Weak::new(),
+                    id: RoleId(1),
+                    name: "w".to_owned(),
+                },
+                items: Vec::new(),
+                params: Vec::new(),
+                assertion: None,
+            }),
+        };
+        let work = Work::Text(Box::new(p));
+        let task = submit(
+            &e,
+            work,
+            Some(call),
+            TaskOptions::default(),
+            Priority::AdHoc,
+            0,
+        )
+        .expect("the queue has room");
+        let got = loop {
+            match task.observe(Waker::noop()) {
+                Observation::Done(done) => break done,
+                _ => std::thread::yield_now(),
+            }
+        };
+        assert!(
+            matches!(&got, Completion::Failed(e) if *e == Error::closed()),
+            "{got:?}"
+        );
+        let mut rows = db
+            .query_text(
+                "from a in catalog::audit.Call where a.role == \"w\" select a.seq",
+                &[],
+                &CallOptions::default(),
+            )
+            .expect("the audit reads");
+        assert_eq!(1, rows.remove(0).count());
     }
 
     #[test]

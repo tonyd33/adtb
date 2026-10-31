@@ -103,7 +103,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 created: e.clock(),
             };
             changes.insert(t.roles, t.role_value(&role));
-            t.audit(e, tx, changes, format!("create role {name}"))
+            t.audit(e, changes, OWNER_ROLE, format!("create role {name}"))
         })
     }
 
@@ -134,7 +134,7 @@ impl<R: Runtime> RoleAuthority<R> {
                 }
             }
             t.remove_peer_mappings(e, tx, changes, &name)?;
-            t.audit(e, tx, changes, format!("drop role {name}"))
+            t.audit(e, changes, OWNER_ROLE, format!("drop role {name}"))
         })
     }
 
@@ -215,8 +215,8 @@ impl<R: Runtime> RoleAuthority<R> {
             };
             t.audit(
                 e,
-                tx,
                 changes,
+                grantor,
                 format!("grant {} to {name}{option}", capability.name()),
             )
         })
@@ -287,7 +287,7 @@ impl<R: Runtime> RoleAuthority<R> {
             for g in gone() {
                 changes.delete(t.grants, g.value.clone());
             }
-            t.audit(e, tx, changes, text.to_owned())
+            t.audit(e, changes, issuer, text.to_owned())
         })
     }
 
