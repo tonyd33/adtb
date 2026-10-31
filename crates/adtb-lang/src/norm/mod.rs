@@ -7,6 +7,11 @@ use crate::kernel::{Agg, Frees, IndexField, Kind, Node, Terms, Tm, Var};
 use crate::schema::Schema;
 use crate::types::*;
 
+mod limit;
+
+pub use limit::expands_within_bound;
+use limit::{Budget, TOO_LARGE, planned_within_bound};
+
 /// The normal forms of a schema's bodies, in one arena.
 #[derive(Debug)]
 pub struct NormalProgram {
@@ -75,6 +80,13 @@ pub enum Root {
 pub struct Error {
     pub root: Root,
     pub message: String,
+}
+
+impl Error {
+    /// Returns whether the root was refused for passing a limit on what is normalised.
+    pub fn past_limit(&self) -> bool {
+        self.message == TOO_LARGE
+    }
 }
 
 fn at<T>(root: Root, r: Result<T, String>) -> Result<T, Error> {
@@ -147,7 +159,7 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
             _ => None,
         });
     }
-    Ok(NormalProgram {
+    let program = NormalProgram {
         terms: n.out,
         functions,
         constraints,
@@ -158,7 +170,9 @@ pub fn program(schema: &Schema, p: &Program) -> Result<NormalProgram, Error> {
         computed,
         index_fields,
         aggregates,
-    })
+    };
+    planned_within_bound(&program)?;
+    Ok(program)
 }
 
 /// Normalises checked ad hoc text, inlining the functions of `p`.
@@ -332,6 +346,7 @@ struct Normaliser<'a> {
     free: HashMap<(usize, Var), Var>,
     fv: [HashMap<Tm, FreeVars>; 2],
     memo: HashMap<MemoKey, Tm>,
+    budget: Budget,
 }
 
 impl<'a> Normaliser<'a> {
@@ -346,6 +361,7 @@ impl<'a> Normaliser<'a> {
             free: HashMap::new(),
             fv: [HashMap::new(), HashMap::new()],
             memo: HashMap::new(),
+            budget: Budget::new(src[0].len() + src[1].len()),
         }
     }
 
@@ -398,6 +414,7 @@ impl<'a> Normaliser<'a> {
     }
 
     fn root(&mut self, t: Tm) -> Result<Tm, String> {
+        self.budget.start(&self.out);
         let v = self.norm(t, &Cx::new(MAIN, Vec::new()))?;
         self.first_order(v)
     }
@@ -430,6 +447,7 @@ impl<'a> Normaliser<'a> {
             return Ok(None);
         }
         let params: Vec<Var> = vars.iter().map(|v| self.free_var(arena, *v)).collect();
+        self.budget.start(&self.out);
         let v = self.norm(body, &Cx::new(arena, Vec::new()))?;
         Ok(Some((params, self.first_order(v)?)))
     }
@@ -580,6 +598,14 @@ impl<'a> Normaliser<'a> {
     }
 
     fn norm(&mut self, t: Tm, cx: &Cx) -> Result<Val, String> {
+        self.budget.spend(&self.out)?;
+        self.budget.depth += 1;
+        let v = self.norm_step(t, cx);
+        self.budget.depth -= 1;
+        v
+    }
+
+    fn norm_step(&mut self, t: Tm, cx: &Cx) -> Result<Val, String> {
         let key = self.key(t, cx);
         if let Some(k) = &key
             && let Some(o) = self.memo.get(k)

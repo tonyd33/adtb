@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -10,6 +11,7 @@ use crate::catalog::layout::batch_type;
 
 use super::frame::{Frame, Sel};
 use super::host::{HostCall, Hosts};
+use super::memory::{Arena, Grant};
 use super::prim::{self, Op};
 use super::store::conv;
 use super::types::{At, base, ctors, field, key_fields, repr};
@@ -124,7 +126,25 @@ pub struct Code {
 }
 
 /// The values the instructions of a frame's code write, one column per register.
-struct Regs(Vec<Vec<Val>>);
+struct Regs(Vec<Vec<Val>>, RefCell<Option<Arena>>);
+
+impl Regs {
+    /// Hold the bytes of `args` of the grant of `sh` as long as these registers, when `op` joins
+    /// them into one value.
+    fn charge_join(&self, op: &Op, args: &[&Val], sh: &Shared) -> Result<(), Error> {
+        if !matches!(op, Op::ConcatText | Op::ConcatBytes) {
+            return Ok(());
+        }
+        let Some(grant) = &sh.grant else {
+            return Ok(());
+        };
+        let bytes = args.iter().map(|v| v.size()).sum();
+        self.1
+            .borrow_mut()
+            .get_or_insert_with(|| grant.arena())
+            .grow(bytes)
+    }
+}
 
 /// Where faults of rows go while they run.
 #[derive(Debug, Default)]
@@ -170,6 +190,8 @@ impl Catch {
 #[derive(Clone, Debug)]
 pub struct Shared {
     pub caller: Option<Val>,
+    /// The grant of the running call, charged for what a value grows to.
+    pub grant: Option<Arc<Grant>>,
     /// The `Fault` constructor of each fault, by `Fault as usize`.
     pub fault_ctors: Vec<u32>,
     pub hosts: Arc<Hosts>,
@@ -205,7 +227,7 @@ impl Code {
         catch: &mut Catch,
         sh: &Shared,
     ) -> Result<Vec<(u32, Val)>, Error> {
-        let mut regs = Regs(vec![Vec::new(); self.regs as usize]);
+        let mut regs = Regs(vec![Vec::new(); self.regs as usize], RefCell::new(None));
         self.run(&self.block, f, &mut regs, sel, catch, sh)?;
         Ok(sel
             .iter()
@@ -214,6 +236,12 @@ impl Code {
     }
 
     /// Evaluate the expression at one row of a frame of one row.
+    /// Returns the number of literals the code holds.
+    #[cfg(test)]
+    pub(super) fn literals(&self) -> usize {
+        self.lits.len()
+    }
+
     pub fn eval_one(&self, f: &mut Frame, sh: &Shared) -> Result<Val, Error> {
         let mut sel = vec![0];
         let mut v = self.eval(f, &mut sel, &mut Catch::off(), sh)?;
@@ -286,6 +314,7 @@ impl Code {
                     for &r in sel.iter() {
                         xs.clear();
                         xs.extend(args.iter().map(|o| self.get(*o, f, regs, r)));
+                        regs.charge_join(op, &xs, sh)?;
                         match prim::apply(op, &xs)? {
                             Ok(v) => out.push((r, v)),
                             Err(fault) => catch.fault(r, fault)?,
@@ -511,6 +540,8 @@ pub struct Compiler<'a> {
 struct Emit {
     regs: u32,
     lits: Vec<Val>,
+    /// The literal of each constant term, which a term written out many times holds once.
+    at: HashMap<Tm, Opd>,
 }
 
 impl Emit {
@@ -550,6 +581,7 @@ impl<'a> Compiler<'a> {
         let mut e = Emit {
             regs: 0,
             lits: Vec::new(),
+            at: HashMap::new(),
         };
         let block = self.block(&mut e, t)?;
         let code = Arc::new(Code {
@@ -621,10 +653,15 @@ impl<'a> Compiler<'a> {
         let kind = self.terms.kind(t);
         Ok(match kind {
             Kind::Var(v) => Opd::Var(v.0),
-            Kind::Const(c) => {
-                let v = self.constant(c, ty)?;
-                e.lit(v)
-            }
+            Kind::Const(c) => match e.at.get(&t) {
+                Some(opd) => *opd,
+                None => {
+                    let v = self.constant(c, ty)?;
+                    let opd = e.lit(v);
+                    e.at.insert(t, opd);
+                    opd
+                }
+            },
             Kind::Prim(p, xs) => {
                 let tys: Vec<Ty> = xs.iter().map(|x| self.terms.ty(*x).clone()).collect();
                 let consts = xs

@@ -135,6 +135,10 @@ struct GroupInfo {
 
 pub struct Checker<'a> {
     pub schema: &'a Schema,
+    /// The `fix` expressions around the expression being checked.
+    fixes: u32,
+    /// The nodes of the type of every term added.
+    type_nodes: usize,
     pub terms: Terms,
     /// The free variables of terms of `terms`.
     frees: Frees,
@@ -189,6 +193,8 @@ fn diag(span: Span, msg: impl Into<String>) -> Diag {
 impl<'a> Checker<'a> {
     pub fn new(schema: &'a Schema, vis: Visible, ctx: Context) -> Self {
         Checker {
+            fixes: 0,
+            type_nodes: 0,
             schema,
             terms: Terms::default(),
             frees: Frees::default(),
@@ -225,6 +231,7 @@ impl<'a> Checker<'a> {
     }
 
     fn add(&mut self, kind: Kind, ty: Ty) -> Tm {
+        self.type_nodes = self.type_nodes.saturating_add(ty.nodes());
         self.terms.add(kind, ty)
     }
 

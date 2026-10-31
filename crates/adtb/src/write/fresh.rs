@@ -23,6 +23,20 @@ fn holds_fresh(terms: &Terms, t: Tm, memo: &mut HashMap<Tm, bool>) -> bool {
     if let Some(&h) = memo.get(&t) {
         return h;
     }
+    if let Kind::Block(..) = terms.kind(t) {
+        let mut statements = Vec::new();
+        let mut at = t;
+        while let Kind::Block(w, k) = *terms.kind(at) {
+            statements.push((at, w));
+            at = k;
+        }
+        let mut h = holds_fresh(terms, at, memo);
+        for (block, w) in statements.into_iter().rev() {
+            h = holds_fresh(terms, w, memo) || h;
+            memo.insert(block, h);
+        }
+        return h;
+    }
     let h = matches!(terms.kind(t), Kind::Fresh(..))
         || terms
             .children(t)
@@ -59,6 +73,20 @@ fn walk(
         let p = terms.add(Kind::Record(fields), ty);
         out.insert(occ, (g, r));
         return p;
+    }
+    if let Kind::Block(..) = terms.kind(t) {
+        let mut statements = Vec::new();
+        let mut at = t;
+        while let Kind::Block(w, k) = *terms.kind(at) {
+            let ty = terms.ty(at).clone();
+            statements.push((walk(terms, w, scope, memo, out), ty));
+            at = k;
+        }
+        let rest = walk(terms, at, scope, memo, out);
+        return statements
+            .into_iter()
+            .rev()
+            .fold(rest, |k, (w, ty)| terms.add(Kind::Block(w, k), ty));
     }
     let kind = terms.kind(t).clone();
     let ty = terms.ty(t).clone();

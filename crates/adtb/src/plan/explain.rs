@@ -62,6 +62,23 @@ impl Node {
         }
     }
 
+    /// Remove from the tree what a run did unless `figures`, and the constructors a read leaves
+    /// out unless `constructors`.
+    pub fn hide(&mut self, figures: bool, constructors: bool) {
+        if !figures {
+            self.actual = None;
+        }
+        if !constructors {
+            self.pruned.clear();
+        }
+        for child in &mut self.children {
+            child.hide(figures, constructors);
+        }
+        for arm in &mut self.arms {
+            arm.child.hide(figures, constructors);
+        }
+    }
+
     /// Returns the tree as indented text, one operator per line.
     pub fn text(&self) -> String {
         let mut out = String::new();

@@ -29,6 +29,8 @@ use super::{Error, Exceeded, Fault, Options};
 pub struct Ctx<R: Runtime> {
     pub rt: R,
     pub program: Arc<Program>,
+    /// What every evaluation of this call shares.
+    pub shared: super::code::Shared,
     pub store: Arc<Store<R>>,
     pub grant: Arc<Grant>,
     pub options: Options,
@@ -106,7 +108,7 @@ fn faulted(e: Error, row: u32, catch: &mut Catch) -> Result<(), Error> {
 
 impl<R: Runtime> Ctx<R> {
     pub(super) fn sh(&self) -> &super::code::Shared {
-        &self.program.shared
+        &self.shared
     }
 
     /// Returns the value of the plan's root in `env`.
@@ -323,6 +325,7 @@ impl<R: Runtime> Ctx<R> {
         let cx = Arc::new(Ctx {
             rt: self.rt.clone(),
             program: self.program.clone(),
+            shared: self.shared.clone(),
             store,
             grant: self.grant.clone(),
             options: self.options,

@@ -183,6 +183,7 @@ impl Scalar {
             vars: terms.vars.len(),
             shared: code::Shared {
                 caller: None,
+                grant: None,
                 fault_ctors: ir::fault_ctors(schema),
                 hosts: Arc::default(),
             },
@@ -291,9 +292,14 @@ fn start<R: Runtime>(
     for (v, x) in params {
         env.bind_one(v.0, x.clone());
     }
+    let shared = code::Shared {
+        grant: Some(call.grant.clone()),
+        ..program.shared.clone()
+    };
     let cx = Arc::new(run::Ctx {
         spill: spill::Spill::new(rt.clone(), call.grant.clone(), call.options.spill_bytes),
         rt,
+        shared,
         program,
         store: call.store,
         grant: call.grant,

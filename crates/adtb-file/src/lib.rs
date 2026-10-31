@@ -5,7 +5,9 @@ mod json;
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use adtb_lang::kernel::FileFormat;
 use adtb_lang::schema::{Schema, TypeDefKind};
@@ -25,6 +27,7 @@ pub trait Files: Send + Sync {
 pub struct Disk {
     root: PathBuf,
     roots: Vec<PathBuf>,
+    exports: Vec<PathBuf>,
 }
 
 /// Why a confined read returned no files.
@@ -40,6 +43,7 @@ impl Disk {
         Disk {
             root: root.into(),
             roots: Vec::new(),
+            exports: Vec::new(),
         }
     }
 
@@ -49,6 +53,38 @@ impl Disk {
     pub fn within(mut self, roots: Vec<PathBuf>) -> Disk {
         self.roots = roots;
         self
+    }
+
+    /// Returns the disk whose confined writes stay in `roots`, each relative one resolved against
+    /// `root`.
+    #[must_use]
+    pub fn exporting(mut self, roots: Vec<PathBuf>) -> Disk {
+        self.exports = roots;
+        self
+    }
+
+    /// Write `bytes` to a new file at `path`, resolved against `root`, which appears whole or not
+    /// at all, leaving nothing else behind. Refuse a path that exists, even as a dangling symlink,
+    /// with `Unreadable`. When `confined`, refuse a path resolving outside the export roots with
+    /// `Outside`.
+    pub fn write(&self, path: &str, bytes: &[u8], confined: bool) -> Result<(), Refused> {
+        let at = resolved(&self.root.join(path));
+        if confined
+            && !self
+                .exports
+                .iter()
+                .any(|r| at.starts_with(resolved(&self.root.join(r))))
+        {
+            return Err(Refused::Outside(path.to_string()));
+        }
+        let unwritable = |e: std::io::Error| Refused::Unreadable(format!("{path}: {e}"));
+        let (partial, mut file) = unique_beside(&at).map_err(unwritable)?;
+        let placed = file
+            .write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .and_then(|()| fs::hard_link(&partial, &at));
+        fs::remove_file(&partial).map_err(unwritable)?;
+        placed.map_err(unwritable)
     }
 
     /// Returns the files `path` names as [`Files::read`] does, once `..` and symlinks resolve.
@@ -93,6 +129,25 @@ impl Disk {
                     .map_err(|e| Refused::Unreadable(format!("{name}: {e}")))
             })
             .collect()
+    }
+}
+
+/// Returns a file new to the directory of `at`, under a name no other caller holds, and its path.
+fn unique_beside(at: &Path) -> std::io::Result<(PathBuf, fs::File)> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let stem = at.file_name().unwrap_or_default().to_string_lossy();
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = at.with_file_name(format!(".{stem}.{}.{n}.partial", std::process::id()));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
     }
 }
 

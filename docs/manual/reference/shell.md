@@ -298,9 +298,9 @@ adtb> \q
 `retire bundle B` runs too, on a bundle a program registered
 ([the Rust API](rust-api.md#supersede-and-retire)). `supersede bundle`
 needs a live bundle to supersede by, and the shell has none. The
-specification lists more commands, among them `print schema`,
-`export`, `dump` and `register bundle`. The engine
+specification lists more commands, among them `compact`,
+`dump` and `register bundle`, and `export` to anything but CSV. The engine
 does not run them yet and answers, for example,
-`` `print schema` does not run in this engine yet ``. The commands and
+`` `compact` does not run in this engine yet ``. The commands and
 their privileges are in
 [the specification](../../spec/catalog.md#9-operational-commands).

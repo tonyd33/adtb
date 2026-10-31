@@ -925,7 +925,7 @@ fn rejection(schema: &Schema, r: Rejection) -> RejectReason {
     }
 }
 
-fn qualified(schema: &Schema, rel: RelId) -> String {
+pub(super) fn qualified(schema: &Schema, rel: RelId) -> String {
     let r = schema.relation(rel);
     format!("{}::{}", schema.module(r.module).name, r.name)
 }

@@ -81,7 +81,7 @@ specification describes:
 - The rest of the in-process API: feeds, notices, encryption and key
   sources, the metrics callback, `finalize_upgrade`, log shipping and
   embedded replicas.
-- Operations: `print schema`, `compact`, `export`, dump and
+- Operations: `compact`, `export` to anything but CSV, dump and
   restore and backups, which the engine refuses today with
   "does not run in this engine yet".
 - Migration scripts: the engine refuses `script` with "the engine does

@@ -12,13 +12,16 @@ use super::super::bundle::bundle_name;
 use super::super::command::{Need, free_params, need};
 use super::super::text::Issuer;
 use super::super::{Engine, Error, OWNER_ROLE, RejectReason, TxnId};
+use super::adhoc::Holds;
 use super::binding::RoleBinding;
+use super::call::Work;
 use super::store::{self, Changes};
 use super::tables::{CallOrigin, CallRow, RoleId, Tables, service};
 use super::{Capability, RoleAuthority, denied, require};
 
 #[derive(Clone, Debug)]
 pub struct RoleSession<R: Runtime = adtb_sys::os::OsRuntime> {
+    pub(super) serial: u64,
     pub(super) engine: Weak<Engine<R>>,
     pub(super) id: RoleId,
     pub(super) name: String,
@@ -100,10 +103,10 @@ impl<R: Runtime> RoleAuthority<R> {
         self.record_refusal(session, service, origin, got)
     }
 
-    /// Refuse parsed ad hoc `items` of `session` unless the role may issue all of them, with
-    /// `Denied` recorded in the audit, before anything checks them against the schema. Returns
-    /// the issuer of a role but the schema owner, which issues only commands that capabilities or
-    /// bundle ownership decide.
+    /// Refuse parsed ad hoc `items` of `session` unless the role may issue the commands among
+    /// them and they hold no statement of management, with `Denied` recorded in the audit, before
+    /// the checker reads them. Returns the issuer of a role but the schema owner;
+    /// [`RoleAuthority::admit_prepared`] decides its queries and writes once they are checked.
     pub(super) fn admit_items(
         &self,
         session: &RoleSession<R>,
@@ -125,17 +128,22 @@ impl<R: Runtime> RoleAuthority<R> {
             e.audit_denied(&session.name, caller, &origin)?;
             Err(denied(detail))
         };
-        let commands: Vec<_> = items
-            .iter()
-            .filter_map(|item| match item {
-                AdhocItem::Command(c, _) => Some(c),
-                _ => None,
-            })
-            .collect();
-        if commands.len() != items.len() {
-            return refuse("ad hoc statements run only for the embedded owner's role".to_owned());
-        }
-        for c in commands {
+        for item in items {
+            let c = match item {
+                AdhocItem::Command(c, _) => c,
+                AdhocItem::Expr(_)
+                | AdhocItem::Write(_)
+                | AdhocItem::Transact(_)
+                | AdhocItem::Temp(_) => continue,
+                AdhocItem::Grant(_)
+                | AdhocItem::Revoke(_)
+                | AdhocItem::Role(..)
+                | AdhocItem::Peer(..) => {
+                    return refuse(
+                        "management statements run only for the embedded owner's role".to_owned(),
+                    );
+                }
+            };
             match need(c, &params) {
                 Need::Capabilities(capabilities) => {
                     for capability in capabilities {
@@ -165,6 +173,8 @@ impl<R: Runtime> RoleAuthority<R> {
         Ok(Some(Issuer {
             role: session.name.clone(),
             text: *text,
+            session: session.serial,
+            holds: None,
         }))
     }
 
@@ -208,6 +218,7 @@ pub(super) enum Readmission<R: Runtime> {
         session: RoleSession<R>,
         text: [u8; 32],
         items: Vec<AdhocItem>,
+        args: [u8; 32],
         params: Vec<String>,
         assertion: Option<Val>,
     },
@@ -220,27 +231,35 @@ pub(super) enum Readmission<R: Runtime> {
 
 impl<R: Runtime> Readmission<R> {
     /// Refuse the call with `Denied`, recorded in the audit, unless the session's role may still
-    /// make it, and a registered call whose bundle has left its lifecycle.
-    pub(super) fn check(&self, e: &Engine<R>) -> Result<(), Error> {
+    /// make it, and a registered call whose bundle has left its lifecycle. Returns what the role
+    /// of checked text `work` holds now.
+    pub(super) fn check(&self, e: &Engine<R>, work: &Work) -> Result<Option<Holds>, Error> {
         match self {
             Readmission::Text {
                 session,
                 text,
                 items,
                 params,
+                args,
                 assertion,
             } => {
                 let authority = session.authority();
                 let caller = authority.admit_caller(session, text, assertion.as_ref())?;
-                authority
-                    .admit_items(session, e, items, params, &caller, text)
-                    .map(drop)
+                let issuer = authority.admit_items(session, e, items, params, &caller, text)?;
+                match (issuer, work) {
+                    (Some(issuer), Work::Text(p)) => authority
+                        .admit_prepared(session, e, p, &caller, &issuer, args)
+                        .map(Some),
+                    _ => Ok(None),
+                }
             }
             Readmission::Registered {
                 binding,
                 ordinal,
                 assertion,
-            } => binding.recheck(e, *ordinal, assertion.as_ref()),
+            } => binding
+                .recheck(e, *ordinal, assertion.as_ref())
+                .map(|()| None),
         }
     }
 }

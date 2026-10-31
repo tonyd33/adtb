@@ -1,3 +1,4 @@
+mod adhoc;
 mod binding;
 mod call;
 mod grant;
@@ -10,6 +11,7 @@ mod tables;
 mod task;
 
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
 use adtb_lang::ast::{AdhocItem, OperatorKind, Revoke};
@@ -27,9 +29,11 @@ use store::Changes;
 pub(super) use tables::CallOrigin;
 use tables::{Given, Grant, Role, Tables};
 
+pub(super) use adhoc::{Holds, holds_monitor, monitored};
 pub use binding::{Binding, CallDescriptor, CallKind, Pins, RoleBinding};
 pub use result::{Completion, Format, Layout, ResultBatch};
 pub use session::RoleSession;
+pub(super) use task::Running;
 pub use task::{Observation, Task, TaskOptions};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +106,7 @@ impl<R: Runtime> RoleAuthority<R> {
             let t = Tables::new(&e.schema, id);
             let role = t.role(e, tx, &name)?;
             Ok(RoleSession {
+                serial: e.sessions.fetch_add(1, Ordering::Relaxed),
                 engine: self.engine.clone(),
                 id: role.id,
                 name: role.name,

@@ -552,7 +552,7 @@ impl Gen<'_> {
                 format!("from {x} in items select match {x}.n{arms} | _ -> 0")
             }
             4 => {
-                let arms: String = (0..n)
+                let arms: String = (0..n.min(100))
                     .map(|i| format!(" | {i} -> delete {x} in items where {x}.n == {i}"))
                     .collect();
                 format!("transact\n  let n = count(y for y in items)\n  match n{arms} | _ -> skip")

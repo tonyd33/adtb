@@ -88,6 +88,9 @@ impl Analyzer<'_> {
     }
 
     pub(super) fn target(&self, rel: RelId, ctor: u32) -> Result<Target, Error> {
+        if is_temp(self.schema, rel) {
+            return Ok(TEMP_TARGET);
+        }
         let def = self.schema.relation(rel).elem_def;
         Ok(Target {
             relation: RelationId(
@@ -110,6 +113,9 @@ impl Analyzer<'_> {
     }
 
     pub(super) fn field_id(&self, rel: RelId, ctor: u32, name: &str) -> Result<FieldId, Error> {
+        if is_temp(self.schema, rel) {
+            return Ok(FieldId(u64::MAX));
+        }
         let def = self.schema.relation(rel).elem_def;
         let own = (!self.schema.ty(def).header().iter().any(|f| f.name == name)).then_some(ctor);
         let key = (def, own, name.to_string());

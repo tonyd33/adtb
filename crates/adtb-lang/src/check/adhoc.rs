@@ -526,17 +526,9 @@ impl Checker<'_> {
             CtorScope::One(c) => CtorSel::One(c.clone()),
             CtorScope::Many(cs) => CtorSel::Many(cs.clone()),
         };
-        let set = self.relation_sel(rel, &sel).map_err(|e| diag(span, e))?;
         let schema = self.schema;
         let r = schema.relation(rel);
-        let normal = |s: Option<CtorSet>| s.and_then(|s| schema.normalize_ctors(r.elem_def, s));
-        let want = normal(Some(set.clone()));
-        let ctx = std::mem::replace(&mut self.ctx, Context::Schema);
-        let found = self.declared_position(rel, Some(set), fields, |ix| {
-            ix.fields.len() == fields.len() && normal(ix.scope.clone()) == want
-        });
-        self.ctx = ctx;
-        found?.ok_or_else(|| {
+        let none = || {
             diag(
                 span,
                 format!(
@@ -544,7 +536,16 @@ impl Checker<'_> {
                     r.name
                 ),
             )
-        })
+        };
+        let set = self.relation_sel(rel, &sel).map_err(|_| none())?;
+        let normal = |s: Option<CtorSet>| s.and_then(|s| schema.normalize_ctors(r.elem_def, s));
+        let want = normal(Some(set.clone()));
+        let ctx = std::mem::replace(&mut self.ctx, Context::Schema);
+        let found = self.declared_position(rel, Some(set), fields, |ix| {
+            ix.fields.len() == fields.len() && normal(ix.scope.clone()) == want
+        });
+        self.ctx = ctx;
+        found.ok().flatten().ok_or_else(none)
     }
 
     /// Returns the position among `rel`'s indexes of the one index whose fields are `fields`.
@@ -874,6 +875,7 @@ pub(super) fn temp_relations(
             out.modules.push(crate::schema::ModuleDef {
                 name: TEMP_MODULE.to_string(),
                 engine: false,
+                hidden: false,
                 types: BTreeMap::new(),
                 values: BTreeMap::new(),
             });

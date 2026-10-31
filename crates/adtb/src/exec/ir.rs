@@ -317,6 +317,7 @@ pub fn compile(
         heaps: infos,
         shared: Shared {
             caller,
+            grant: None,
             fault_ctors: fault_ctors(schema),
             hosts: Arc::default(),
         },

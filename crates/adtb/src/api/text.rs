@@ -1,20 +1,23 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adtb_lang::ast::AdhocItem;
-use adtb_lang::check::{AdhocCommand, Bundles, Command, Explained, Program, check_adhoc_recording};
+use adtb_lang::check::{
+    AdhocCommand, Bundles, Command, Explained, Program, Ref, check_adhoc_recording,
+};
 use adtb_lang::kernel::{Const, Kind, Terms, Tm, Var};
 use adtb_lang::norm;
 use adtb_lang::parse::{Options, parse_adhoc};
 use adtb_lang::schema::Schema;
 use adtb_lang::textual::Form;
-use adtb_lang::types::Ty;
+use adtb_lang::types::{FnId, Ty};
 
 use crate::exec::Val;
 use crate::write::Outcome;
 
 use super::command;
 use super::error::Error;
+use super::server::Holds;
 
 /// The rows one item of ad hoc text returned, with their type.
 #[derive(Debug)]
@@ -57,6 +60,8 @@ pub(super) struct Prepared {
     pub items: Vec<Tm>,
     pub commands: Vec<AdhocCommand>,
     pub params: Vec<(Var, Val)>,
+    /// The functions the text names.
+    pub functions: BTreeSet<FnId>,
     /// The principal the text runs for.
     pub caller: Val,
     /// Whether an item writes.
@@ -69,11 +74,24 @@ pub(super) struct Prepared {
     pub issuer: Option<Issuer>,
 }
 
+const TEXT_TOO_LARGE: &str = "the text expands past what the engine plans";
+
+/// Why ad hoc items do not run.
+pub(super) enum TextError {
+    /// The checker refused them, in terms of what the schema holds.
+    Checker(Error),
+    Other(Error),
+}
+
 /// The role a text was admitted for and the audit identity of the text.
 #[derive(Clone, Debug)]
 pub(super) struct Issuer {
     pub role: String,
     pub text: [u8; 32],
+    /// The session sending the text.
+    pub session: u64,
+    /// What the role held when the text was last checked.
+    pub holds: Option<Holds>,
 }
 
 impl Prepared {
@@ -107,6 +125,22 @@ impl Prepared {
         params: &[(&str, Ty, Val)],
         caller: Val,
     ) -> Result<Prepared, Error> {
+        Self::naming(schema, schema, program, bundles, items, params, caller).map_err(|e| match e {
+            TextError::Checker(e) | TextError::Other(e) => e,
+        })
+    }
+
+    /// Returns `items` checked as [`Prepared::of_items`] does, resolving names in `names`, a copy of
+    /// `schema` with the same ids.
+    pub(super) fn naming(
+        schema: &Arc<Schema>,
+        names: &Schema,
+        program: &Program,
+        bundles: &Bundles,
+        items: &[AdhocItem],
+        params: &[(&str, Ty, Val)],
+        caller: Val,
+    ) -> Result<Prepared, TextError> {
         if items.iter().any(|i| {
             !matches!(
                 i,
@@ -117,22 +151,45 @@ impl Prepared {
                     | AdhocItem::Command(..)
             )
         }) {
-            return Err(Error::invalid(
+            return Err(TextError::Other(Error::invalid(
                 "only queries, writes, transact blocks, temp relations and commands run as ad hoc \
                  text in process",
-            ));
+            )));
         }
         let types: BTreeMap<String, Ty> = params
             .iter()
             .map(|(n, ty, _)| ((*n).to_owned(), ty.clone()))
             .collect();
-        let adhoc = check_adhoc_recording(schema, program, items, &types, bundles, None)
-            .map_err(Error::diagnostics)?;
+        let mut named = Vec::new();
+        let mut adhoc =
+            check_adhoc_recording(names, program, items, &types, bundles, Some(&mut named))
+                .map_err(|d| TextError::Checker(Error::diagnostics(d)))?;
+        adhoc.temps = adhoc.temps.map(|t| t.with_names_of(schema));
+        let functions = named
+            .into_iter()
+            .filter_map(|(_, r)| match r {
+                Ref::Function(f) => Some(f),
+                _ => None,
+            })
+            .collect();
         let normal = norm::adhoc(adhoc.schema(schema), program, &adhoc).map_err(|e| {
-            Error::rejected(super::error::RejectReason::Internal {
-                what: format!("checked ad hoc text has no normal form: {e:?}"),
+            TextError::Other(if e.past_limit() {
+                Error::invalid(e.message)
+            } else {
+                Error::rejected(super::error::RejectReason::Internal {
+                    what: format!("checked ad hoc text has no normal form: {e:?}"),
+                })
             })
         })?;
+        let roots: Vec<Tm> = normal
+            .items
+            .iter()
+            .copied()
+            .chain(normal.commands.iter().flat_map(|c| c.command.terms()))
+            .collect();
+        if !norm::expands_within_bound(&normal.terms, &roots) {
+            return Err(TextError::Other(Error::invalid(TEXT_TOO_LARGE)));
+        }
         let bound = params
             .iter()
             .filter_map(|(n, _, v)| normal.params.get(*n).map(|x| (*x, v.clone())))
@@ -141,7 +198,7 @@ impl Prepared {
         let mut retry: Option<u64> = None;
         let mut deferrable = false;
         for c in &normal.commands {
-            command::runs(&c.command)?;
+            command::runs(&c.command).map_err(TextError::Other)?;
             if let Command::Explain {
                 analyze: true,
                 target: Explained::Statement(t),
@@ -161,7 +218,7 @@ impl Prepared {
         }
         if writes {
             for c in &normal.commands {
-                command::outside_transaction(&c.command)?;
+                command::outside_transaction(&c.command).map_err(TextError::Other)?;
             }
         }
         Ok(Prepared {
@@ -170,12 +227,18 @@ impl Prepared {
             items: normal.items,
             commands: normal.commands,
             params: bound,
+            functions,
             caller,
             writes,
             retry,
             deferrable,
             issuer: None,
         })
+    }
+
+    /// Returns the functions the text names.
+    pub(super) fn functions(&self) -> &BTreeSet<FnId> {
+        &self.functions
     }
 
     /// Returns the schema the text's terms name declarations of.

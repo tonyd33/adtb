@@ -171,8 +171,8 @@ adtb> from p in pets where p.name == who select p
 `who` is a parameter of this text, but the call supplies no value for it
 adtb> insert pets { name: "kit", lives: 3 }
 a single row is inserted into one constructor of Pet: name it, or insert constructor values with `from (...)`
-adtb> print schema
-`print schema` does not run in this engine yet
+adtb> compact
+`compact` does not run in this engine yet
 adtb> \q
 ```
 

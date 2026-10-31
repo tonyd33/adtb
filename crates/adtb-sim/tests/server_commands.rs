@@ -77,7 +77,7 @@ const COMMANDS: &[Row] = &[
         spec: "`cancel call c`",
         capability: "own calls, or `cancel`",
         forms: &[],
-        unsupported: &["cancel call sys::calls.key(1)"],
+        unsupported: &[],
     },
     Row {
         spec: "`terminate session s`",
@@ -143,7 +143,7 @@ const COMMANDS: &[Row] = &[
         spec: "`export (q) to \"path\"`",
         capability: "`write_files`, through a server",
         forms: &[],
-        unsupported: &["export (from i in items select i) to \"x.csv\""],
+        unsupported: &[],
     },
     Row {
         spec: "`register bundle \"file\"`",
@@ -161,7 +161,7 @@ const COMMANDS: &[Row] = &[
         spec: "`print schema`",
         capability: "none beyond reading the catalog",
         forms: &[],
-        unsupported: &["print schema"],
+        unsupported: &[],
     },
     Row {
         spec: "`archive audit through n to \"path\"`",
@@ -322,10 +322,7 @@ fn grant_all(db: &Database<SimRuntime>, role: &str) {
 
 /// The commands the engine does not run that no capability lets a role issue.
 const OWNER_ONLY_UNSUPPORTED: &[&str] = &[
-    "cancel call sys::calls.key(1)",
-    "export (from i in items select i) to \"x.csv\"",
     "register bundle \"x.adb\"",
-    "print schema",
     "dump to \"x\"",
     "restore from \"a\" to \"b\"",
 ];
@@ -510,7 +507,7 @@ fn a_parse_failure_answers_invalid_and_needs_adhoc_first() {
 }
 
 #[test]
-fn print_schema_runs_only_for_the_owner() {
+fn print_schema_is_refused_a_role_that_cannot_read_the_catalog() {
     let mut sim = Sim::new(150, Config::default());
     run(&mut sim, |rt| {
         let db = opened_secrets(&rt);
@@ -518,8 +515,7 @@ fn print_schema_runs_only_for_the_owner() {
         authority.create_role("w").expect("role");
         grant_all(&db, "w");
         let w = authority.session("w").expect("session");
-        let detail = denied_detail(task(&rt, &w, "print schema"));
-        assert!(detail.contains("owner"), "{detail}");
+        denied_detail(task(&rt, &w, "print schema"));
         assert_eq!(1, audit_denied(&db, "w"));
     });
 }
@@ -540,7 +536,7 @@ fn a_refusal_on_a_dropped_role_session_is_audited() {
 }
 
 #[test]
-fn a_statement_or_a_statement_inside_a_command_runs_only_for_the_owner() {
+fn a_role_holding_no_relation_grant_runs_no_statement_alone_or_inside_a_command() {
     let mut sim = Sim::new(142, Config::default());
     run(&mut sim, |rt| {
         let db = opened_schema(&rt);
@@ -565,8 +561,33 @@ fn a_statement_or_a_statement_inside_a_command_runs_only_for_the_owner() {
             "set setting RetryLimit = { retries: count(i for i in items) }",
         ] {
             let before = audit_denied(&db, "web");
-            refused_and_audited(&db, "web", text, "owner", task(&rt, &web, text), before);
+            refused_and_audited(&db, "web", text, "role", task(&rt, &web, text), before);
         }
+    });
+}
+
+#[test]
+fn a_read_grant_revoked_while_queued_stops_the_text_with_its_audit_row() {
+    let mut sim = Sim::new(186, Config::default());
+    run(&mut sim, |rt| {
+        let q = held(&rt);
+        let authority = q.db.role_authority();
+        authority.create_role("dba").expect("role");
+        authority
+            .grant_capability("dba", Capability::Adhoc, false)
+            .expect("grant");
+        let owner = authority.session("owner").expect("session");
+        authority
+            .grant(&owner, "grant read catalog::roles to dba")
+            .expect("grant");
+        let dba = authority.session("dba").expect("session");
+        let task = queued_text(&q, &dba, "from r in catalog::roles select r.name");
+        authority
+            .revoke(&owner, "revoke read catalog::roles from dba")
+            .expect("revoke");
+        release(&rt, &q);
+        denied(finish(&rt, &task));
+        assert_eq!(1, audit_denied(&q.db, "dba"));
     });
 }
 
@@ -1377,7 +1398,7 @@ fn a_refused_call_forces_no_rerun_of_another_roles_write() {
 }
 
 #[test]
-fn a_parameter_that_does_not_print_as_its_type_refuses_with_no_row() {
+fn a_parameter_that_does_not_print_as_its_type_refuses_with_its_row() {
     let mut sim = Sim::new(185, Config::default());
     run(&mut sim, |rt| {
         let db = opened_secrets(&rt);
@@ -1391,7 +1412,7 @@ fn a_parameter_that_does_not_print_as_its_type_refuses_with_no_row() {
         );
         let shown = format!("{:?}", got.map(drop));
         assert!(shown.contains("does not print"), "{shown}");
-        assert_eq!(before, audit_calls(&db, "owner"));
+        assert_eq!(before + 1, audit_calls(&db, "owner"));
     });
 }
 

@@ -28,7 +28,7 @@ mod verify;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::task::Waker;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -117,6 +117,9 @@ pub struct OpenOptions {
     /// The directories a server reads files from, none when empty. A relative one resolves as a
     /// file scan's path does. The in-process API is not confined to them.
     pub file_roots: Vec<PathBuf>,
+    /// The directories a server exports into, none when empty. A relative one resolves as a file
+    /// scan's path does. The in-process API is not confined to them.
+    pub export_roots: Vec<PathBuf>,
     /// What open registers once its migrations apply, all or none.
     pub registrations: Vec<Registration>,
     /// The bodies of the schema's host functions, bound before migrations run.
@@ -289,6 +292,10 @@ struct Engine<R: Runtime> {
     /// Held across every write of a row of `catalog::bundles`, so that the row a writer reads
     /// from `deployed` is the one its write replaces.
     bundle_writer: Lock<()>,
+    /// The number the next role session takes.
+    sessions: AtomicU64,
+    /// The calls of role sessions, by the key of their row of `sys::calls`.
+    calls: Lock<server::Running<R>>,
     /// Whether this process has drawn an audit sequence number past the highest row.
     audit_seeded: AtomicBool,
     /// The file settings, as the latest commit holds them.
@@ -921,6 +928,8 @@ impl<R: Runtime> Engine<R> {
             deployed: Lock::new(Arc::new(parts.deployed)),
             deployment: catalog.deployment(),
             bundle_writer: Lock::new(()),
+            sessions: AtomicU64::new(1),
+            calls: Lock::new(server::Running::default()),
             settings: Lock::new(parts.settings),
             role_mentions,
             pager,
@@ -1072,7 +1081,8 @@ impl<R: Runtime> Engine<R> {
                     .clone()
                     .map(Disk::new)
                     .unwrap_or_default()
-                    .within(options.file_roots.clone()),
+                    .within(options.file_roots.clone())
+                    .exporting(options.export_roots.clone()),
             )
             .with_hosts(hosts)
             .with_volatile(volatile)

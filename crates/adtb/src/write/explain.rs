@@ -59,10 +59,14 @@ impl<R: Runtime> Stmt<'_, R> {
 
     fn block_node(&self, d: &Describe<'_>, t: Tm, scope: &mut Vec<Var>) -> Result<Node, Error> {
         match self.terms().kind(t).clone() {
-            Kind::Block(w, k) => {
-                let first = self.write_node(d, w, scope)?;
-                let rest = self.block_node(d, k, scope)?;
-                Ok(Node::new("Then", "", vec![first, rest]))
+            Kind::Block(w, mut k) => {
+                let mut steps = vec![self.write_node(d, w, scope)?];
+                while let Kind::Block(w, next) = self.terms().kind(k).clone() {
+                    steps.push(self.write_node(d, w, scope)?);
+                    k = next;
+                }
+                steps.push(self.block_node(d, k, scope)?);
+                Ok(Node::new("Then", "", steps))
             }
             Kind::LetBang(x, w, k) => {
                 let bound = self.write_node(d, w, scope)?;

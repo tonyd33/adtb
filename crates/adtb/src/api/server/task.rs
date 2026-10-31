@@ -1,23 +1,26 @@
 //! The calls the server submits: each an owned task that the engine's workers run in steps, whose
 //! results the transport observes in batches under the capacity it supplies.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, OnceLock, Weak};
 use std::task::{Wake, Waker};
 use std::time::Duration;
 
-use adtb_lang::schema::Schema;
+use adtb_lang::ast::{self, AdhocItem};
+use adtb_lang::schema::{ModuleDef, Schema, ValueDef};
 use adtb_lang::textual::{Form, print};
-use adtb_lang::types::Ty;
+use adtb_lang::types::{RelId, Ty};
 use adtb_sys::lock::Lock;
 
 use crate::exec::{Admitted, Entry, Grant, Priority, Refusal, Refused, Stopped, Val};
 use crate::runtime::Runtime;
 
 use super::super::text::Prepared;
+use super::super::text::TextError;
 use super::super::{
     CallOptions, CancelToken, Engine, Error, Limit, OWNER_ROLE, RejectReason, RetryReason,
 };
+use super::adhoc::refused_text;
 use super::call::{Call, RoleCall, Work};
 use super::result::{Completion, Format, Layout, ResultBatch};
 use super::session::{Readmission, text_hash};
@@ -227,6 +230,7 @@ pub struct Task<R: Runtime = adtb_sys::os::OsRuntime> {
     cancel: CancelToken,
     /// The caller's token, and the registration on it that stops the call.
     caller: Option<(CancelToken, u64)>,
+    call: Option<i64>,
 }
 
 impl<R: Runtime> std::fmt::Debug for Task<R> {
@@ -237,7 +241,51 @@ impl<R: Runtime> std::fmt::Debug for Task<R> {
     }
 }
 
+/// The calls of role sessions that have not ended.
+pub(in super::super) struct Running<R: Runtime> {
+    next: i64,
+    calls: BTreeMap<i64, (u64, Arc<Stopper<R>>)>,
+}
+
+impl<R: Runtime> Default for Running<R> {
+    fn default() -> Self {
+        Running {
+            next: 1,
+            calls: BTreeMap::new(),
+        }
+    }
+}
+
+impl<R: Runtime> Running<R> {
+    /// Returns the key of a new call of `session`, forgetting those that have ended.
+    fn add(&mut self, session: u64, stopper: Arc<Stopper<R>>) -> i64 {
+        self.calls.retain(|_, (_, s)| s.shared.strong_count() > 0);
+        let id = self.next;
+        self.next += 1;
+        self.calls.insert(id, (session, stopper));
+        id
+    }
+
+    /// Returns the session of call `id`, unless the call has ended.
+    pub(in super::super) fn session(&self, id: i64) -> Option<u64> {
+        let (session, s) = self.calls.get(&id)?;
+        s.shared.upgrade().map(|_| *session)
+    }
+
+    /// Cancel call `id` unless the call has ended.
+    pub(in super::super) fn stop(&self, id: i64) {
+        if let Some((_, s)) = self.calls.get(&id) {
+            s.wake_by_ref();
+        }
+    }
+}
+
 impl<R: Runtime> Task<R> {
+    /// Returns the key of the call's row of `sys::calls`, for a role session's call.
+    pub fn call(&self) -> Option<i64> {
+        self.call
+    }
+
     /// Returns the next layout or batch, the end of the batches, the completion, or pending
     /// with `waker` registered. Never runs a statement.
     pub fn observe(&self, waker: &Waker) -> Observation {
@@ -317,10 +365,10 @@ impl<R: Runtime> Drop for Task<R> {
 impl<R: Runtime> RoleSession<R> {
     /// Submit ad hoc `text` as a task, each free name typed and bound by `params`.
     ///
-    /// A role but the embedded owner holds `adhoc` and issues only commands, each needing what
-    /// the command requires, checked at submit and again when the task leaves the queue. Refuse
-    /// any other text of such a role with `Denied`, recorded in the audit, before checking it
-    /// against the schema, and a call the admission queue has no room for, without running it.
+    /// A role but the embedded owner holds `adhoc`, and its text needs what each command requires
+    /// and the grants for all it reads and writes, checked at submit and again when the task leaves
+    /// the queue. Refuse other text with `Denied`, recorded in the audit, and a call the admission
+    /// queue has no room for, without running it.
     pub fn submit_text(
         &self,
         text: &str,
@@ -337,49 +385,100 @@ impl<R: Runtime> RoleSession<R> {
         let e = self.engine.upgrade().ok_or_else(Error::closed)?;
         let names: Vec<String> = params.iter().map(|(n, ..)| (*n).to_owned()).collect();
         let parsed = Prepared::parsed(text);
-        let issuer = match &parsed {
+        let mut issuer = match &parsed {
             Ok(items) => authority.admit_items(self, &e, items, &names, &caller, &hash)?,
             Err(_) => None,
         };
         let _open = e.enter()?;
+        let held = (self.name != OWNER_ROLE)
+            .then(|| authority.holds(self))
+            .transpose()?;
+        let unseen = held.as_ref().filter(|h| !h.schema);
+        let refused = || {
+            if let Some(quarantined) = e.refusal() {
+                return quarantined;
+            }
+            match e.audit_denied(&self.name, &caller, &origin) {
+                Ok(()) => refused_text(&self.name),
+                Err(err) => err,
+            }
+        };
+        let failed = |args: &[u8; 32], err: Error| {
+            e.audit_call(&CallRow {
+                role: &self.name,
+                caller: &caller,
+                origin: &origin,
+                args,
+                failed: Some(&err),
+            })
+            .map_or_else(|audit| audit, |()| err)
+        };
+        if unseen.is_some_and(|h| {
+            params
+                .iter()
+                .any(|(_, ty, _)| !declared(&e.schema, ty) || !h.names.may_type(&e.schema, ty))
+        }) {
+            return Err(refused());
+        }
+        if let Some((name, ..)) = params.iter().find(|(_, ty, _)| !declared(&e.schema, ty)) {
+            let err = Error::invalid(format!("parameter `{name}` has no type of the schema"));
+            return Err(failed(&names_hash(&names), err));
+        }
         let typed: Vec<_> = params.iter().map(|(n, t, v)| (*n, t, v)).collect();
-        let args = args_hash(&e.schema, &typed)?;
+        let args = match args_hash(&e.schema, &typed) {
+            Ok(args) => args,
+            Err(err) => return Err(failed(&names_hash(&names), err)),
+        };
+        let capability_only = parsed
+            .as_ref()
+            .is_ok_and(|items| items.iter().all(is_capability_command));
+        let hides = unseen.is_some() && parsed.is_ok() && !capability_only;
+        let view = unseen.map(|h| {
+            let commanded = match &parsed {
+                Ok(items) if capability_only => commanded(&e.schema, items),
+                _ => Vec::new(),
+            };
+            h.names.naming(commanded).view(&e.schema)
+        });
         let checked = parsed
-            .map_err(|err| e.refusal().unwrap_or(err))
+            .map_err(|err| TextError::Other(e.refusal().unwrap_or(err)))
             .and_then(|items| {
-                let p = Prepared::of_items(
+                let p = Prepared::naming(
                     &e.schema,
+                    view.as_ref().unwrap_or(&e.schema),
                     &e.program,
                     &e.explained(),
                     &items,
                     params,
                     caller.clone(),
-                );
-                Ok((e.admit_text(p)?, items))
+                )?;
+                let p = e.admit_text(Ok(p)).map_err(TextError::Other)?;
+                Ok((p, items))
             });
         let (mut p, items) = match checked {
             Ok(checked) => checked,
-            Err(err) => {
-                e.audit_call(&CallRow {
-                    role: &self.name,
-                    caller: &caller,
-                    origin: &origin,
-                    args: &args,
-                    failed: Some(&err),
-                })?;
-                return Err(err);
+            Err(TextError::Checker(_)) if hides => return Err(refused()),
+            Err(TextError::Checker(err)) => {
+                let err = e.refusal().unwrap_or(err);
+                return Err(failed(&args, err));
             }
+            Err(TextError::Other(err)) => return Err(failed(&args, err)),
         };
+        if let Some(issuer) = &mut issuer {
+            issuer.holds = Some(authority.admit_prepared(self, &e, &p, &caller, issuer, &args)?);
+        }
         p.issuer = issuer;
         let readmission = (self.name != OWNER_ROLE).then(|| Readmission::Text {
             session: self.clone(),
             text: hash,
             items,
             params: names,
+            args,
             assertion,
         });
         let call = RoleCall {
             role: self.name.clone(),
+            session: self.serial,
             origin,
             args,
             readmission,
@@ -388,6 +487,121 @@ impl<R: Runtime> RoleSession<R> {
         let work = Work::Text(Box::new(p));
         submit(&e, work, Some(call), opts, Priority::AdHoc, bytes)
     }
+}
+
+/// Returns whether `set` selects constructors among `count`, each once, in order.
+fn selects(set: Option<&[u32]>, count: usize) -> bool {
+    set.is_none_or(|s| {
+        !s.is_empty()
+            && s.windows(2).all(|w| w[0] < w[1])
+            && s.iter().all(|c| (*c as usize) < count)
+    })
+}
+
+/// Returns whether every declaration and constructor `ty` names is one of `schema`, and it is a
+/// value's type.
+fn declared(schema: &Schema, ty: &Ty) -> bool {
+    match ty {
+        Ty::Base(_) | Ty::Unit => true,
+        Ty::Data { def, args, ctors } => {
+            (def.0 as usize) < schema.types.len()
+                && args.len() == schema.ty(*def).params.len()
+                && selects(ctors.as_deref(), schema.ty(*def).ctors().len())
+                && args.iter().all(|t| declared(schema, t))
+        }
+        Ty::Key { rel, ctors } => {
+            (rel.0 as usize) < schema.relations.len()
+                && selects(
+                    ctors.as_deref(),
+                    schema.ty(schema.relation(*rel).elem_def).ctors().len(),
+                )
+        }
+        Ty::Set(t) | Ty::NonEmpty(t) | Ty::Tag(t) => declared(schema, t),
+        Ty::Group(k, t) => declared(schema, k) && declared(schema, t),
+        Ty::Record(fields) => fields.iter().all(|(_, t)| declared(schema, t)),
+        Ty::Sum { ctors, sel } => {
+            selects(sel.as_deref(), ctors.len())
+                && ctors
+                    .iter()
+                    .all(|(_, fields)| fields.iter().all(|(_, t)| declared(schema, t)))
+        }
+        Ty::Param(_) | Ty::Fn(..) | Ty::Change => false,
+    }
+}
+
+/// Returns whether `item` is a command a capability alone decides, holding no expression the
+/// role's grants decide.
+fn is_capability_command(item: &AdhocItem) -> bool {
+    let AdhocItem::Command(command, _) = item else {
+        return false;
+    };
+    match command {
+        ast::Command::Vacuum(_)
+        | ast::Command::Verify(_)
+        | ast::Command::Reindex { .. }
+        | ast::Command::Compact
+        | ast::Command::FinalizeUpgrade
+        | ast::Command::RetireBundle(_)
+        | ast::Command::SupersedeBundle(..)
+        | ast::Command::RegisterBundle(_)
+        | ast::Command::ApplyMigrations(_)
+        | ast::Command::PrintSchema
+        | ast::Command::RotateKek(_)
+        | ast::Command::RotateDek
+        | ast::Command::DestroyDek(_)
+        | ast::Command::Backup { .. } => true,
+        ast::Command::Explain { .. }
+        | ast::Command::PinPlan(_)
+        | ast::Command::UnpinPlan(_)
+        | ast::Command::CancelCall(_)
+        | ast::Command::TerminateSession(_)
+        | ast::Command::SetSetting(..)
+        | ast::Command::Export { .. }
+        | ast::Command::ArchiveAudit { .. }
+        | ast::Command::Dump { .. }
+        | ast::Command::Restore { .. } => false,
+    }
+}
+
+/// Returns every relation of a user module the relation names in `items` may denote.
+fn commanded(schema: &Schema, items: &[AdhocItem]) -> Vec<RelId> {
+    let mut out = Vec::new();
+    for item in items {
+        let AdhocItem::Command(
+            ast::Command::Vacuum(name)
+            | ast::Command::Verify(Some(name))
+            | ast::Command::Reindex { relation: name, .. },
+            _,
+        ) = item
+        else {
+            continue;
+        };
+        let denoted = |module: &ModuleDef| match module.values.get(&name.name.text) {
+            Some(ValueDef::Relation(r)) if !module.engine => Some(*r),
+            _ => None,
+        };
+        match &name.module {
+            Some(m) => out.extend(
+                schema
+                    .module_named(&m.text)
+                    .and_then(|id| denoted(schema.module(id))),
+            ),
+            None => out.extend(schema.modules.iter().filter_map(denoted)),
+        }
+    }
+    out
+}
+
+/// Returns the audit's arguments hash of a text whose values do not print: that of their names.
+fn names_hash(names: &[String]) -> [u8; 32] {
+    let mut sorted: Vec<&String> = names.iter().collect();
+    sorted.sort();
+    let mut hasher = blake3::Hasher::new();
+    for name in sorted {
+        hasher.update(name.as_bytes());
+        hasher.update(&[0]);
+    }
+    *hasher.finalize().as_bytes()
 }
 
 /// Returns the BLAKE3-256 hash of the canonical text of `params`, by name.
@@ -438,6 +652,9 @@ pub(super) fn submit<R: Runtime>(
         admitted: OnceLock::new(),
         cancel: cancel.clone(),
     });
+    let call_id = role_call
+        .as_ref()
+        .map(|c| e.calls.lock(rt).add(c.session, stopper.clone()));
     let caller = opts.call.cancel.replace(cancel.clone()).map(|t| {
         let id = t.on_cancel(Waker::from(stopper.clone()));
         (t, id)
@@ -457,6 +674,7 @@ pub(super) fn submit<R: Runtime>(
                 admitted,
                 cancel,
                 caller,
+                call: call_id,
             })
         }
         Err(Refused { reason, .. }) => {
@@ -645,10 +863,12 @@ mod tests {
             .expect("checks");
         let call = RoleCall {
             role: "w".to_owned(),
+            session: 0,
             origin: CallOrigin::AdHoc([0; 32]),
             args: [0; 32],
             readmission: Some(Readmission::Text {
                 session: RoleSession {
+                    serial: 0,
                     engine: Weak::new(),
                     id: RoleId(1),
                     name: "w".to_owned(),
@@ -656,6 +876,7 @@ mod tests {
                 text: [0; 32],
                 items: Vec::new(),
                 params: Vec::new(),
+                args: [0; 32],
                 assertion: None,
             }),
         };

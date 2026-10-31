@@ -223,6 +223,55 @@ pub enum Ty {
 }
 
 impl Ty {
+    /// Returns the number of nodes of the type's tree.
+    pub fn nodes(&self) -> usize {
+        let mut nodes = 0;
+        let mut stack = vec![self];
+        while let Some(t) = stack.pop() {
+            nodes += 1;
+            match t {
+                Ty::Base(_) | Ty::Param(_) | Ty::Key { .. } | Ty::Unit | Ty::Change => {}
+                Ty::Data { args, .. } => stack.extend(args),
+                Ty::Set(x) | Ty::NonEmpty(x) | Ty::Tag(x) => stack.push(x),
+                Ty::Group(a, b) | Ty::Fn(a, b) => stack.extend([&**a, &**b]),
+                Ty::Record(fields) => stack.extend(fields.iter().map(|(_, f)| f)),
+                Ty::Sum { ctors, .. } => {
+                    stack.extend(ctors.iter().flat_map(|(_, fs)| fs.iter().map(|(_, f)| f)));
+                }
+            }
+        }
+        nodes
+    }
+
+    /// Returns whether the type's tree has at most `limit` nodes and `height` levels, visiting at
+    /// most `limit` nodes.
+    pub fn within(&self, limit: usize, height: u32) -> bool {
+        let mut left = limit;
+        let mut stack = vec![(self, 0)];
+        while let Some((t, level)) = stack.pop() {
+            if level > height {
+                return false;
+            }
+            let Some(rest) = left.checked_sub(1) else {
+                return false;
+            };
+            left = rest;
+            let under: Vec<&Ty> = match t {
+                Ty::Base(_) | Ty::Param(_) | Ty::Key { .. } | Ty::Unit | Ty::Change => Vec::new(),
+                Ty::Data { args, .. } => args.iter().collect(),
+                Ty::Set(x) | Ty::NonEmpty(x) | Ty::Tag(x) => vec![&**x],
+                Ty::Group(a, b) | Ty::Fn(a, b) => vec![&**a, &**b],
+                Ty::Record(fields) => fields.iter().map(|(_, f)| f).collect(),
+                Ty::Sum { ctors, .. } => ctors
+                    .iter()
+                    .flat_map(|(_, fs)| fs.iter().map(|(_, f)| f))
+                    .collect(),
+            };
+            stack.extend(under.into_iter().map(|x| (x, level + 1)));
+        }
+        true
+    }
+
     pub fn subst(&self, args: &[Ty]) -> Ty {
         match self {
             Ty::Param(i) => args.get(*i as usize).cloned().unwrap_or(Ty::Param(*i)),

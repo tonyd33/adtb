@@ -166,12 +166,12 @@ fn commands_naming_relations_check() {
     adhoc_refuses(
         &[],
         "reindex identities index (email) in Nope",
-        "neither a constructor",
+        "declares no index or unique with these fields in this constructor set",
     );
     adhoc_refuses(
         &[],
         "reindex identities index (nosuch) in EmailPass",
-        "no `nosuch`",
+        "declares no index or unique with these fields in this constructor set",
     );
 }
 
@@ -432,6 +432,8 @@ fn long_list(n: i64, row: impl Fn(i64) -> String) -> String {
     format!("[{}]", rows.join(", "))
 }
 
+const PAST_THE_NORMALISER: &str = "the text expands past what the engine normalises";
+
 fn normalises(what: &str, text: &str) {
     let (s, a) = adhoc(&[], text).unwrap_or_else(|e| panic!("{what} does not check: {e:?}"));
     let p = check_schema(&s).expect("the schema checks");
@@ -642,20 +644,11 @@ fn two_thousand_match_arms_check_and_normalise() {
     let write_arms: String = (0..2000)
         .map(|i| format!(" | {i} -> insert users {{ name: \"{i}\" }}"))
         .collect();
-    let texts = [
-        (
-            "a query match",
-            format!("from r in raws select match r.n{arms} | _ -> 0"),
-        ),
-        (
-            "a write match",
-            format!("transact let n = 1 match n{write_arms} | _ -> skip"),
-        ),
-    ];
+    let query = format!("from r in raws select match r.n{arms} | _ -> 0");
+    let write = format!("transact let n = 1 match n{write_arms} | _ -> skip");
     on_small_stack(|| {
-        for (what, text) in &texts {
-            normalises(what, text);
-        }
+        normalises("a query match", &query);
+        adhoc_refuses(&[], &write, PAST_THE_NORMALISER);
     });
 }
 
@@ -685,18 +678,16 @@ fn four_thousand_match_arms_and_alternatives_check_and_normalise() {
                 arms(&|i| format!(" | {i} if r.id == raws.key({i}) -> {i}"))
             ),
         ),
-        (
-            "alternatives",
-            format!(
-                "from r in raws select match r.n | {} -> 1 | _ -> 0",
-                alts.join(" | ")
-            ),
-        ),
     ];
+    let alternatives = format!(
+        "from r in raws select match r.n | {} -> 1 | _ -> 0",
+        alts.join(" | ")
+    );
     on_small_stack(|| {
         for (what, text) in &texts {
             normalises(what, text);
         }
+        adhoc_refuses(&[], &alternatives, PAST_THE_NORMALISER);
     });
 }
 
@@ -943,12 +934,10 @@ fn reindex_refuses_an_index_that_is_not_declared() {
 
 #[test]
 fn reindex_still_type_checks_its_fields_and_scope() {
-    reindex_refused("reindex logins index (email) in Sso", "email");
-    reindex_refused(
-        "reindex logins index (user) in Nope",
-        "neither a constructor",
-    );
-    reindex_refused("reindex logins index (nosuch) in Sso", "nosuch");
+    let none = "declares no index or unique with these fields in this constructor set";
+    reindex_refused("reindex logins index (email) in Sso", none);
+    reindex_refused("reindex logins index (user) in Nope", none);
+    reindex_refused("reindex logins index (nosuch) in Sso", none);
 }
 
 #[test]

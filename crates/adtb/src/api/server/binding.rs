@@ -363,6 +363,7 @@ impl<R: Runtime> RoleBinding<R> {
         };
         let call = RoleCall {
             role: session.name.clone(),
+            session: session.serial,
             origin,
             args: hash,
             readmission: Some(Readmission::Registered {

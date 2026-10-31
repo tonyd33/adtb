@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use adtb_lang::check::check_schema;
-use adtb_lang::kernel::{Const, Kind, Terms, Tm};
+use adtb_lang::kernel::{Const, Kind, Prim, Terms, Tm};
 use adtb_lang::parse::{Options, parse_schema};
 use adtb_lang::schema::{Schema, build};
 use adtb_lang::span::FileId;
@@ -627,10 +627,24 @@ fn empty_schema() -> Schema {
     schema
 }
 
+#[test]
+fn a_constant_written_out_twice_is_one_literal() {
+    let schema = empty_schema();
+    let mut terms = Terms::default();
+    let text = Ty::Base(Base::Text);
+    let c = terms.add(Kind::Const(Const::Text("x".to_owned())), text.clone());
+    let joined = terms.add(Kind::Prim(Prim::Concat, vec![c, c]), text);
+    let code = Compiler::new(&schema, &terms)
+        .code(joined)
+        .expect("the code");
+    assert_eq!(1, code.literals());
+}
+
 fn eval_term(schema: &Schema, terms: &Terms, t: Tm) -> Result<Val, Error> {
     let code = Compiler::new(schema, terms).code(t)?;
     let shared = Shared {
         caller: None,
+        grant: None,
         fault_ctors: Vec::new(),
         hosts: Arc::default(),
     };

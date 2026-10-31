@@ -16,6 +16,7 @@ impl Builder<'_> {
         self.schema.modules.push(ModuleDef {
             name: name.to_string(),
             engine,
+            hidden: false,
             types: BTreeMap::new(),
             values: BTreeMap::new(),
         });

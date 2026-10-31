@@ -7,12 +7,13 @@ use adtb_lang::check::{Command, Explained, Program};
 use adtb_lang::kernel::{Kind, Terms, Tm, alpha_equal};
 use adtb_lang::resolve::Visible;
 use adtb_lang::schema::{Schema, ValueDef};
+use adtb_lang::textual::{Form, print};
 use adtb_lang::types::{Base, CtorSet, RelId, Ty};
 
 use crate::exec::Val;
 use crate::plan::explain::{Actual, Node, json_text, object};
 use crate::runtime::Runtime;
-use crate::write::{self, Bounds, HoldWait, Local, Outcome, Text, Txn, VacuumHold};
+use crate::write::{self, Bounds, HoldWait, Local, Outcome, Rejection, Text, Txn, VacuumHold};
 
 use super::server::CallOrigin;
 use super::text::{DynRows, Issuer, Prepared, rows};
@@ -45,7 +46,10 @@ pub(super) fn runs(c: &Command) -> Result<(), Error> {
         | Command::Reindex { .. }
         | Command::SetSetting { .. }
         | Command::RetireBundle(_)
-        | Command::SupersedeBundle(..) => Ok(()),
+        | Command::SupersedeBundle(..)
+        | Command::CancelCall(_)
+        | Command::PrintSchema
+        | Command::Export { .. } => Ok(()),
         other => Err(unsupported(&format!("`{}`", word(other)))),
     }
 }
@@ -84,17 +88,21 @@ pub(super) fn need<'c>(c: &'c ast::Command, params: &[String]) -> Need<'c> {
             Need::Capabilities(&[Maintain, WriteFiles])
         }
         C::RetireBundle(b) | C::SupersedeBundle(b, _) => Need::BundleOwner(b),
+        C::Explain {
+            target: ast::ExplainTarget::Registered { .. },
+            ..
+        } => Need::SchemaOwner,
+        C::Explain { .. } | C::PrintSchema => Need::Capabilities(&[]),
+        C::CancelCall(k) if key_value(k, params) => Need::Capabilities(&[]),
+        C::Export { .. } => Need::Capabilities(&[WriteFiles]),
         C::PinPlan(_)
         | C::UnpinPlan(_)
         | C::Reindex { .. }
         | C::TerminateSession(_)
         | C::SetSetting(..)
         | C::ArchiveAudit { .. }
-        | C::Explain { .. }
         | C::CancelCall(_)
-        | C::Export { .. }
         | C::RegisterBundle(_)
-        | C::PrintSchema
         | C::Dump { .. }
         | C::Restore { .. } => Need::SchemaOwner,
     }
@@ -117,7 +125,13 @@ pub(super) fn free_params(schema: &Schema, params: &[String]) -> Vec<String> {
 pub(super) fn changes_data(c: &Command) -> bool {
     !matches!(
         c,
-        Command::Explain { .. } | Command::Verify(_) | Command::Vacuum(_) | Command::Reindex { .. }
+        Command::Explain { .. }
+            | Command::Verify(_)
+            | Command::Vacuum(_)
+            | Command::Reindex { .. }
+            | Command::CancelCall(_)
+            | Command::PrintSchema
+            | Command::Export { .. }
     )
 }
 
@@ -134,6 +148,80 @@ fn value(e: &ast::Expr, params: &[String]) -> bool {
         ExprKind::Record(r) => record(r),
         ExprKind::Ctor { record: r, .. } => r.as_ref().is_none_or(record),
         _ => false,
+    }
+}
+
+/// Returns the CSV of `rows` of type `elem`, a header of column names then a line per row.
+fn export_csv<'v>(
+    schema: &Schema,
+    elem: &Ty,
+    rows: impl Iterator<Item = &'v Val>,
+    sums_text: bool,
+) -> Result<Vec<u8>, write::Error> {
+    let columns = columns(schema, elem).ok_or_else(|| {
+        write::Error::Unsupported("`export` of rows that are not flat records".into())
+    })?;
+    for (name, ty) in &columns {
+        let plain = match ty {
+            Ty::Base(_) | Ty::Key { .. } => true,
+            Ty::Data { .. } => sums_text,
+            _ => false,
+        };
+        if !plain {
+            return Err(write::Error::Unsupported(format!(
+                "`export` of column `{name}` to CSV"
+            )));
+        }
+    }
+    let line = |cells: Vec<String>| {
+        let quoted: Vec<String> = cells.iter().map(|c| csv_cell(c)).collect();
+        format!("{}\n", quoted.join(","))
+    };
+    let mut out = line(columns.iter().map(|(n, _)| n.clone()).collect());
+    for row in rows {
+        let fields = match row {
+            Val::Ctor(_, fields) => fields.as_ref(),
+            other => other.fields()?,
+        };
+        let mut cells = Vec::with_capacity(columns.len());
+        for ((_, ty), value) in columns.iter().zip(fields) {
+            cells.push(match value {
+                Val::Text(t) => t.to_string(),
+                other => print(other, &Form::of(schema, ty))
+                    .map_err(|e| write::Error::Internal(format!("printing a cell: {e:?}")))?,
+            });
+        }
+        out.push_str(&line(cells));
+    }
+    Ok(out.into_bytes())
+}
+
+/// Returns the columns of a row of type `ty`: a record's fields, or those of a sum of one
+/// constructor.
+fn columns(schema: &Schema, ty: &Ty) -> Option<Vec<(String, Ty)>> {
+    match ty {
+        Ty::Record(fields) => Some(fields.clone()),
+        Ty::Data { def, args, .. } => match schema.ty(*def).ctors() {
+            [only] => Some(
+                schema
+                    .ty(*def)
+                    .header()
+                    .iter()
+                    .chain(&only.fields)
+                    .map(|f| (f.name.clone(), f.ty.subst(args)))
+                    .collect(),
+            ),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn csv_cell(cell: &str) -> String {
+    if cell.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", cell.replace('"', "\"\""))
+    } else {
+        cell.to_owned()
     }
 }
 
@@ -171,9 +259,15 @@ pub(super) fn holds_off_vacuum(c: &Command) -> bool {
 /// Refuse a command that belongs to no transaction, for running inside one.
 pub(super) fn outside_transaction(c: &Command) -> Result<(), Error> {
     match c {
-        Command::Vacuum(_) | Command::Verify(_) | Command::Reindex { .. } => Err(Error::invalid(
-            format!("`{}` does not run inside a transaction", word(c)),
-        )),
+        Command::Vacuum(_)
+        | Command::Verify(_)
+        | Command::Reindex { .. }
+        | Command::CancelCall(_)
+        | Command::PrintSchema
+        | Command::Export { .. } => Err(Error::invalid(format!(
+            "`{}` does not run inside a transaction",
+            word(c)
+        ))),
         _ => Ok(()),
     }
 }
@@ -283,11 +377,14 @@ impl<R: Runtime> Engine<R> {
             } => {
                 let one = self.text_of(p, std::slice::from_ref(t));
                 let node = self.db.explain(tx, one, *t)?;
-                let (node, extra) = if *analyze {
+                let (mut node, extra) = if *analyze {
                     self.analyzed(tx, one, node, local, bounds)?
                 } else {
                     (node, Vec::new())
                 };
+                if let Some(holds) = p.issuer.as_ref().and_then(|i| i.holds.as_ref()) {
+                    node.hide(holds.monitor, holds.schema);
+                }
                 let ty = Ty::Record(vec![
                     ("document".into(), Ty::Base(Base::Text)),
                     ("text".into(), Ty::Base(Base::Text)),
@@ -322,8 +419,152 @@ impl<R: Runtime> Engine<R> {
                 let held = self.db.hold_vacuum(HoldWait::of(&bounds, at))?;
                 self.set_setting(tx, p, (*setting, *value), local, bounds, &held)
             }
+            Command::CancelCall(key) => self.cancel_call(tx, p, *key, local, bounds),
+            Command::PrintSchema => {
+                let ty = Ty::Record(vec![("text".into(), Ty::Base(Base::Text))]);
+                let row = Val::record(vec![Val::text(&self.printed_schema())]);
+                Ok(rows(schema, ty, vec![row]))
+            }
+            Command::Export {
+                source,
+                path,
+                sums_text,
+            } => self.export(tx, p, (*source, path, *sums_text), local, bounds),
             other => Err(write::Error::Unsupported(format!("`{}`", word(other)))),
         }
+    }
+
+    /// Returns the folded schema: its version and hash, then each module's declarations.
+    fn printed_schema(&self) -> String {
+        let hash = crate::catalog::version_hash(&self.schema, &self.source);
+        let hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        let mut out = format!("-- version {} hash {hash}\n", self.source.version);
+        let mut module = None;
+        for d in &self.source.decls {
+            if module != Some(&d.module) {
+                out.push_str(&format!("module {}\n", d.module));
+                module = Some(&d.module);
+            }
+            out.push_str(&d.text);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Returns the value of `t`, a term of `p` reading no relation.
+    fn value_of(
+        &self,
+        tx: &Txn,
+        p: &Prepared,
+        t: Tm,
+        local: &mut Local,
+        bounds: Bounds,
+    ) -> Result<Val, write::Error> {
+        let given = self.text_of(p, std::slice::from_ref(&t));
+        let mut got = self
+            .db
+            .statements(tx, given, local, bounds)
+            .map_err(|f| f.error)?;
+        got.pop()
+            .map(|o| o.result)
+            .ok_or_else(|| write::Error::Internal("a statement of one item has one outcome".into()))
+    }
+
+    /// Record that the issuer of `p` was refused while its text ran. Returns the refusal.
+    fn refused_running(&self, p: &Prepared, issuer: &Issuer, detail: String) -> write::Error {
+        match self.audit_denied(&issuer.role, p.caller(), &CallOrigin::AdHoc(issuer.text)) {
+            Ok(()) => write::Error::Denied(detail),
+            Err(e) => write::Error::Internal(format!("recording a denied call: {e:?}")),
+        }
+    }
+
+    /// Stop the call of key `key`. A role without `cancel` stops only calls of its own session, and
+    /// its refusal does not say whether the call exists. Returns the row of the call stopped.
+    fn cancel_call(
+        &self,
+        tx: &Txn,
+        p: &Prepared,
+        key: Tm,
+        local: &mut Local,
+        bounds: Bounds,
+    ) -> Result<DynRows, write::Error> {
+        let schema = p.schema();
+        let Val::Int(id) = self.value_of(tx, p, key, local, bounds)? else {
+            return Err(write::Error::Internal(
+                "a key of `sys::calls` is an I64".into(),
+            ));
+        };
+        let calls = self.calls.lock(&self.rt);
+        let session = calls.session(id);
+        if let Some(issuer) = &p.issuer
+            && !issuer.holds.as_ref().is_some_and(|h| h.cancel)
+            && session != Some(issuer.session)
+        {
+            drop(calls);
+            let detail = format!("role `{}` lacks `cancel` for this call", issuer.role);
+            return Err(self.refused_running(p, issuer, detail));
+        }
+        calls.stop(id);
+        drop(calls);
+        let ty = Ty::Record(vec![(
+            "call".into(),
+            Ty::Key {
+                rel: engine_relation(schema, "sys", "calls")?,
+                ctors: None,
+            },
+        )]);
+        let stopped = session.map(|_| Val::record(vec![Val::Int(id)]));
+        Ok(rows(schema, ty, stopped.into_iter().collect()))
+    }
+
+    /// Write the rows of `source` to `path` by its extension.
+    /// Returns the path and the number of rows.
+    fn export(
+        &self,
+        tx: &Txn,
+        p: &Prepared,
+        (source, path, sums_text): (Tm, &str, bool),
+        local: &mut Local,
+        bounds: Bounds,
+    ) -> Result<DynRows, write::Error> {
+        let schema = p.schema();
+        let confined = bounds.confined;
+        if !path.ends_with(".csv") {
+            return Err(write::Error::Unsupported(format!(
+                "`export` to `{path}`; only CSV is written"
+            )));
+        }
+        let Ty::Set(elem) = p.terms().ty(source) else {
+            return Err(write::Error::Internal("an export's source is a set".into()));
+        };
+        let Val::Set(found) = self.value_of(tx, p, source, local, bounds)? else {
+            return Err(write::Error::Internal("an export's source is a set".into()));
+        };
+        let bytes = export_csv(schema, elem, found.iter(), sums_text)?;
+        let outside = format!("path `{path}` is outside export_roots");
+        self.db
+            .files()
+            .write(path, &bytes, confined)
+            .map_err(|refused| match (refused, &p.issuer) {
+                (adtb_file::Refused::Outside(_), Some(issuer)) => {
+                    self.refused_running(p, issuer, outside.clone())
+                }
+                (adtb_file::Refused::Outside(_), None) => write::Error::Denied(outside.clone()),
+                (adtb_file::Refused::Unreadable(detail), _) => {
+                    write::Error::Rejected(Rejection::BadInput {
+                        source: path.to_owned(),
+                        line: 0,
+                        detail,
+                    })
+                }
+            })?;
+        let ty = Ty::Record(vec![
+            ("path".into(), Ty::Base(Base::Text)),
+            ("rows".into(), Ty::Base(Base::I64)),
+        ]);
+        let count = i64::try_from(found.len()).unwrap_or(i64::MAX);
+        let row = Val::record(vec![Val::text(path), Val::Int(count)]);
+        Ok(rows(schema, ty, vec![row]))
     }
 
     fn text_of<'a>(&self, p: &'a Prepared, items: &'a [Tm]) -> Text<'a> {
@@ -427,7 +668,30 @@ impl<R: Runtime> Engine<R> {
             .ty(schema.relation(findings).elem_def)
             .ctor_index("Violation")
             .ok_or_else(|| write::Error::Internal("`Finding` declares `Violation`".into()))?;
-        if !found.any_left(|row| matches!(row, Val::Ctor(c, _) if *c == violation)) {
+        let finding = schema.ty(schema.relation(findings).elem_def);
+        let constraint_at = finding.header().len();
+        let constraints = &schema.ids.constraints;
+        let holds = issuer.holds.as_ref();
+        let unreadable = |row: &Val| {
+            let Val::Ctor(c, fields) = row else {
+                return false;
+            };
+            if *c != violation {
+                return false;
+            }
+            let at = constraints
+                .iter()
+                .find(|(_, id)| {
+                    matches!(
+                        fields.get(constraint_at),
+                        Some(Val::Int(i)) if u64::try_from(*i) == Ok(**id)
+                    )
+                })
+                .map(|(at, _)| *at);
+            !at.zip(holds)
+                .is_some_and(|(at, h)| h.reads_constraint(self, at))
+        };
+        if !found.any_left(unreadable) {
             return Ok(());
         }
         self.audit_denied(&issuer.role, caller, &CallOrigin::AdHoc(issuer.text))

@@ -874,6 +874,42 @@ fn verify_is_refused_and_audited_for_a_role_when_a_violation_holds_a_witness() {
 }
 
 #[test]
+fn a_role_reading_what_the_constraint_reads_sees_the_witness() {
+    api::once(65, |rt| {
+        let grant = "module app\ngrant read users to dba\n";
+        let db = open_app(rt.clone());
+        let authority = db.role_authority();
+        authority.create_role("dba").unwrap();
+        for capability in [Capability::Adhoc, Capability::Maintain] {
+            authority
+                .grant_capability("dba", capability, false)
+                .unwrap();
+        }
+        db.close().unwrap();
+        let db = Database::open_in(rt.clone(), NAME, &Log::new([APP, grant]), &api::options(2))
+            .expect("the database opens");
+        seed_app(&db);
+        let w = db.write_path();
+        let heap = w.heap_named("app::users", "User").unwrap();
+        let ix = index(&db, "app::users", "key id");
+        let id = entry(&db, &ix, Value::I64(1)).ctor;
+        beneath(&db, |tx| {
+            let row = vec![Value::I64(99), Value::Text(String::new())];
+            let tid = heap.insert(w.pager(), tx.xid().unwrap().0, &row).unwrap();
+            let by_id = Entry {
+                key: vec![Value::I64(99)],
+                ctor: id,
+                tid,
+            };
+            assert!(ix.insert(w.pager(), &by_id).unwrap());
+        });
+        let dba = db.role_authority().session("dba").unwrap();
+        let shown = api::task_rows(&rt, &dba, "verify").expect("the witness is its to read");
+        assert!(shown.iter().any(|row| row.contains("99")), "{shown:?}");
+    });
+}
+
+#[test]
 fn a_witness_refused_on_a_marked_database_is_denied_with_no_audit_row() {
     api::once(64, |rt| {
         let db = open_app(rt.clone());

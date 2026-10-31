@@ -83,7 +83,26 @@ fn is_int(ty: &Ty) -> bool {
     matches!(ty, Ty::Base(b) if int_range(*b).is_some())
 }
 
+/// The most nodes the type of an expression may have.
+const MAX_TYPE_NODES: usize = 1 << 14;
+
+/// The most levels the type of an expression may have, within any thread's default stack.
+const MAX_TYPE_HEIGHT: u32 = 64;
+
+/// The most nodes the types of all the terms of an ad hoc text may have together.
+const MAX_TEXT_TYPE_NODES: usize = 1 << 22;
+
 impl Checker<'_> {
+    fn sized(&self, out: Out, span: Span) -> R<Out> {
+        if !out.ty.within(MAX_TYPE_NODES, MAX_TYPE_HEIGHT) {
+            return Err(diag(span, "the type of this expression is too large"));
+        }
+        if self.adhoc() && self.type_nodes > MAX_TEXT_TYPE_NODES {
+            return Err(diag(span, "the types of this text are too large"));
+        }
+        Ok(out)
+    }
+
     /// Checks `e` against `expected`.
     pub fn check(&mut self, e: &Expr, expected: &Ty) -> R<Out> {
         let out = match &e.kind {
@@ -128,6 +147,7 @@ impl Checker<'_> {
             }
             _ => self.synth(e)?,
         };
+        let out = self.sized(out, e.span)?;
         self.subsume(out, expected, e.span)
     }
 
@@ -156,6 +176,11 @@ impl Checker<'_> {
 
     /// Synthesizes the type of `e`.
     pub fn synth(&mut self, e: &Expr) -> R<Out> {
+        let out = self.synthesized(e)?;
+        self.sized(out, e.span)
+    }
+
+    fn synthesized(&mut self, e: &Expr) -> R<Out> {
         match &e.kind {
             ExprKind::Lit(_) => self.literal(e, None),
             ExprKind::Name(q) => self.name(q),

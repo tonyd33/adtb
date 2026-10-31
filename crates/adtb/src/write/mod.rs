@@ -661,6 +661,16 @@ impl<R: Runtime> Database<R> {
         &self.txns
     }
 
+    /// Returns the normal program of the schema the database runs.
+    pub fn normal(&self) -> &NormalProgram {
+        &self.normal
+    }
+
+    /// Returns the files file scans read and exports write.
+    pub fn files(&self) -> &Disk {
+        &self.files
+    }
+
     /// Returns the database reading the files of file scans through `files`.
     pub fn with_files(mut self, files: Disk) -> Self {
         self.files = files;

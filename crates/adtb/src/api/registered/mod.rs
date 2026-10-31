@@ -4,17 +4,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
 
-use adtb_lang::ast::{BundleItem, FnDecl, Import, QName};
-use adtb_lang::check::{Bundles, Program, check_adhoc};
+use adtb_lang::ast::{BundleItem, Import};
+use adtb_lang::check::{Bundles, Program};
 use adtb_lang::evolve::{DeployedGrant, LogGrant, Source};
 use adtb_lang::kernel::{Kind, Terms, Tm, Var};
 use adtb_lang::norm::{self, NormalProgram, NormalQuery};
-use adtb_lang::parse::{Options, parse_adhoc, parse_bundle, parse_bundle_body, parse_migration};
+use adtb_lang::parse::{Options, parse_bundle, parse_bundle_body, parse_migration};
 use adtb_lang::permission::{self, EffectiveGrants, Mode, Requirement, Requirements};
 use adtb_lang::schema::Schema;
-use adtb_lang::signature::{self, Item};
+use adtb_lang::signature;
 use adtb_lang::translate::{Map, Pinned, Untranslatable};
-use adtb_lang::types::{FnId, Ty};
+use adtb_lang::types::Ty;
 
 use crate::catalog::{self, Catalog};
 use crate::exec::{Priority, Val};
@@ -25,10 +25,15 @@ use super::bundle::{self, CallRow, EDITION, Header, Passed, Stored};
 use super::error::{Error, RejectReason};
 use super::pinned;
 use super::reads::Reads;
+use super::server::{holds_monitor, monitored};
 use super::settings::Settings;
 use super::text::{DynRows, Prepared, rows};
 use super::txn::{AdHocTransaction, Committed, TxnCallOptions};
 use super::{CallOptions, Database, Engine, OWNER_ID, OpenError};
+
+mod check;
+
+use check::checked;
 
 /// The queries, transactions and imported schema functions one unit registers: a bundle file
 /// with its header, or the imports and items of one without.
@@ -341,7 +346,9 @@ impl<'a> Lacking<'a> {
                 .roles
                 .entry(role.to_owned())
                 .or_insert_with(|| EffectiveGrants::of(run.schema, log, deployed, role));
-            for r in needs.missing(held, Mode::Registration) {
+            let monitor = holds_monitor(deployed, role);
+            let missing = needs.missing(held, Mode::Registration).into_iter();
+            for r in missing.filter(|r| !(monitor && monitored(run.schema, r))) {
                 let (does, privilege) = r.text(run.schema);
                 out.push(if matches!(r, Requirement::ReadFiles) {
                     format!("{} {does}; {role} lacks {privilege}", e.name)
@@ -910,198 +917,6 @@ pub(super) fn reread(over: &Over<'_>, text: &str) -> Result<Checked, Error> {
     }
 }
 
-/// Check and normalise registration `r` over `over`.
-fn checked(over: &Over<'_>, r: &Registration) -> Result<Checked, Error> {
-    let (imports, items) = r.body()?;
-    let vis = signature::visible(over.schema, &imports).map_err(Error::invalid)?;
-    let fns: Vec<&FnDecl> = items
-        .iter()
-        .filter_map(|i| match i {
-            BundleItem::Fn(f) => Some(f),
-            _ => None,
-        })
-        .collect();
-    let extended = signature::with_functions(over.source, over.schema, &vis, &fns, &r.text)
-        .map_err(Error::invalid)?
-        .map(|(s, p)| (Arc::new(s), Arc::new(p)));
-    let (schema, program) = match &extended {
-        Some((s, p)) => (s, p),
-        None => (over.schema, over.program),
-    };
-    let functions: String = fns
-        .iter()
-        .map(|f| format!("\n{}", spanned(&r.text, f.span)))
-        .collect();
-    let decl = |span, name: &adtb_lang::ast::Ident, result: &adtb_lang::ast::Type| {
-        let signature = r
-            .text
-            .get(name.span.end as usize..result.span.end as usize)
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
-        (signature, format!("{}{functions}", spanned(&r.text, span)))
-    };
-    let calls =
-        signature::calls(schema, program, &vis, &imports, &items).map_err(Error::diagnostic)?;
-    let mut entries = Vec::new();
-    for c in calls {
-        let mut e = match c.item {
-            Item::Fn(f, id) => imported(schema, program, f, id)?,
-            Item::Query(q, checked) => {
-                let normal = norm::query(schema, program, &checked).map_err(no_normal)?;
-                let (signature, text) = decl(q.span, &q.name, &q.result);
-                let mut e = entry(&q.name.text, Callable::Query, &c.signature, normal);
-                e.row.signature = signature;
-                e.row.text = text;
-                e
-            }
-            Item::Txn(t, checked) => {
-                let normal = norm::txn(schema, program, &checked).map_err(no_normal)?;
-                let (signature, text) = decl(t.span, &t.name, &t.result);
-                let mut e = entry(&t.name.text, Callable::Txn, &c.signature, normal);
-                e.row.signature = signature;
-                e.row.text = text;
-                e
-            }
-        };
-        e.row.ordinal = i64::from(c.signature.ordinal);
-        entries.push(e);
-    }
-    Ok(Checked {
-        name: r.name.clone(),
-        schema: extended
-            .as_ref()
-            .map_or_else(|| over.schema.clone(), |(s, _)| s.clone()),
-        program: extended.map_or_else(|| over.program.clone(), |(_, p)| p),
-        text: r.text.clone(),
-        entries,
-        header: r.header.clone(),
-    })
-}
-
-/// Returns the text `span` covers in `text`.
-fn spanned(text: &str, span: adtb_lang::span::Span) -> &str {
-    text.get(span.start as usize..span.end as usize)
-        .unwrap_or_default()
-        .trim_end()
-}
-
-/// Returns the entry of a checked query or transaction `name` of signature `declared`.
-fn entry(name: &str, kind: Callable, declared: &signature::Signature, n: NormalQuery) -> Entry {
-    let (params, unit) = if declared.params.is_empty() {
-        (Vec::new(), n.params.first().copied())
-    } else {
-        (n.params.iter().copied().map(Some).collect(), None)
-    };
-    let (writes, retry) = shape(&n.terms, n.body);
-    let types = params
-        .iter()
-        .flatten()
-        .map(|&v| n.terms.var_info(v).ty.clone())
-        .collect();
-    Entry {
-        name: name.to_owned(),
-        kind,
-        row: CallRow {
-            kind: kind.ctor(),
-            name: name.to_owned(),
-            ordinal: 0,
-            signature: String::new(),
-            text: String::new(),
-        },
-        terms: Arc::new(n.terms),
-        body: n.body,
-        params,
-        types,
-        names: declared.params.iter().map(|(n, _)| n.clone()).collect(),
-        result: declared.result.clone(),
-        unit,
-        function: None,
-        function_name: None,
-        writes,
-        retry,
-        served: None,
-    }
-}
-
-/// Returns whether `t` writes and the `retry n` of the `transact` block it is.
-fn shape(terms: &Terms, t: Tm) -> (bool, Option<u64>) {
-    let retry = match terms.kind(t) {
-        Kind::Transact(_, o) => o.retry,
-        _ => None,
-    };
-    (terms.writes(t), retry)
-}
-
-/// Returns the entry that calls the schema function `id`, imported by the name `f`.
-fn imported(schema: &Schema, program: &Program, f: &QName, id: FnId) -> Result<Entry, Error> {
-    let failed = |m: String| Error::invalid(format!("fn `{}`: {m}", f.name.text));
-    let def = schema.function(id);
-    let names: Vec<String> = (0..def.params.len()).map(|i| format!("arg{i}")).collect();
-    let qualified = format!("{}::{}", schema.module(def.module).name, def.name);
-    let text = format!("{qualified}({})", names.join(", "));
-    let items = parse_adhoc(&text, Options::default())
-        .ok()
-        .map_err(|ds| failed(joined(ds.iter().map(|d| d.message.as_str()))))?;
-    let types: BTreeMap<String, Ty> = names
-        .iter()
-        .cloned()
-        .zip(def.params.iter().map(|(_, t)| t.clone()))
-        .collect();
-    let adhoc = check_adhoc(schema, program, &items, &types).map_err(|mut ds| {
-        if let Some(first) = ds.first_mut() {
-            first.message = format!("fn `{}`: {}", f.name.text, first.message);
-        }
-        Error::diagnostics(ds)
-    })?;
-    let normal = norm::adhoc(schema, program, &adhoc).map_err(no_normal)?;
-    let [body] = normal.items.as_slice() else {
-        return Err(no_normal("a call is one item"));
-    };
-    let (writes, retry) = shape(&normal.terms, *body);
-    let shown: Vec<String> = def
-        .params
-        .iter()
-        .map(|(n, t)| format!("{n}: {}", schema.show_ty(t)))
-        .collect();
-    let written = match &f.module {
-        Some(m) => format!("{}::{}", m.text, f.name.text),
-        None => f.name.text.clone(),
-    };
-    Ok(Entry {
-        name: f.name.text.clone(),
-        kind: Callable::Fn,
-        row: CallRow {
-            kind: Callable::Fn.ctor(),
-            name: f.name.text.clone(),
-            ordinal: 0,
-            signature: format!("({}) -> {}", shown.join(", "), schema.show_ty(&def.result)),
-            text: format!("import fn {written}"),
-        },
-        types: def.params.iter().map(|(_, t)| t.clone()).collect(),
-        names: def.params.iter().map(|(n, _)| n.clone()).collect(),
-        result: def.result.clone(),
-        params: names
-            .iter()
-            .map(|n| normal.params.get(n).copied())
-            .collect(),
-        unit: None,
-        body: *body,
-        terms: Arc::new(normal.terms),
-        writes,
-        retry,
-        served: None,
-        function: schema.ids.functions.get(&id).copied(),
-        function_name: Some(qualified),
-    })
-}
-
-fn no_normal(e: impl std::fmt::Debug) -> Error {
-    Error::rejected(RejectReason::Internal {
-        what: format!("a checked registered call has no normal form: {e:?}"),
-    })
-}
-
 fn joined<'a>(ms: impl Iterator<Item = &'a str>) -> String {
     ms.collect::<Vec<_>>().join("\n")
 }
@@ -1333,6 +1148,7 @@ fn prepared(checked: &Checked, entry: &Entry, args: &[Val], caller: Val) -> Prep
         items: vec![body],
         commands: Vec::new(),
         params,
+        functions: BTreeSet::new(),
         caller,
         writes: entry.writes,
         retry: entry.retry,

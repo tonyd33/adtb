@@ -10,6 +10,7 @@ mod aggregate;
 mod coverage;
 mod eval;
 mod grants;
+mod names;
 mod shape;
 mod value;
 mod write;
@@ -18,6 +19,7 @@ mod write;
 mod tests;
 
 pub use coverage::{EffectiveGrant, EffectiveGrants, Mode, Right};
+pub use names::Nameable;
 use value::{Env, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -56,9 +58,73 @@ pub struct Requirements {
     keys: BTreeSet<(Target, FieldId)>,
 }
 
+/// The target every row of a temp relation stands for. A temp relation has no identity in the
+/// schema, and its text alone reads and writes it.
+const TEMP_TARGET: Target = Target {
+    relation: RelationId(u64::MAX),
+    constructor: ConstructorId(u64::MAX),
+};
+
+fn is_temp(schema: &Schema, rel: RelId) -> bool {
+    schema.module_named(crate::check::TEMP_MODULE) == Some(schema.relation(rel).module)
+}
+
 impl Requirements {
     pub fn iter(&self) -> impl Iterator<Item = &Requirement> {
         self.required.iter()
+    }
+
+    /// Returns the requirements of reading every field of every constructor of `relations`.
+    pub fn whole(
+        schema: &Schema,
+        relations: impl IntoIterator<Item = RelId>,
+    ) -> Result<Requirements, Error> {
+        use crate::ids::Slot;
+        let mut out = Requirements::default();
+        for rel in relations {
+            let def = schema.relation(rel).elem_def;
+            let relation = RelationId(
+                *schema
+                    .ids
+                    .relations
+                    .get(&rel)
+                    .ok_or(Error::MissingIdentity(Slot::Relation(rel)))?,
+            );
+            let header: Vec<&str> = schema
+                .ty(def)
+                .header()
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect();
+            for (at, ctor) in schema.ty(def).ctors().iter().enumerate() {
+                let at = at as u32;
+                let target = Target {
+                    relation,
+                    constructor: ConstructorId(
+                        *schema
+                            .ids
+                            .ctors
+                            .get(&(def, at))
+                            .ok_or(Error::MissingIdentity(Slot::Ctor(def, at)))?,
+                    ),
+                };
+                out.required.insert(Requirement::ReadConstructor(target));
+                let own = ctor.fields.iter().map(|f| f.name.as_str());
+                for name in header.iter().copied().chain(own) {
+                    let scope = (!header.contains(&name)).then_some(at);
+                    let id = schema
+                        .ids
+                        .fields
+                        .get(&(def, scope, name.to_string()))
+                        .ok_or_else(|| {
+                            Error::MissingIdentity(Slot::Field(def, scope, name.to_string()))
+                        })?;
+                    out.required
+                        .insert(Requirement::ReadField(target, FieldId(*id)));
+                }
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -67,6 +133,8 @@ pub enum Error {
     Normalization(crate::norm::Error),
     MissingIdentity(crate::ids::Slot),
     InvalidKernel(&'static str),
+    /// The term asks more of the analysis than any one root may.
+    TooLarge,
 }
 
 /// Returns the requirements of a checked registered query.
@@ -130,6 +198,8 @@ fn analyze(
         requirements: Requirements::default(),
         next_id: 0,
         snapshot: 0,
+        steps: 0,
+        depth: 0,
     };
     let mut env = Env::new();
     for &var in params {
@@ -139,6 +209,12 @@ fn analyze(
     analyzer.consume(&value);
     Ok(analyzer.requirements)
 }
+
+/// The most terms the analysis of one root evaluates.
+const MAX_STEPS: u32 = 1 << 20;
+
+/// The most nested evaluations of one root, within any thread's default stack.
+const MAX_EVAL_DEPTH: u32 = 64;
 
 #[derive(Clone, Copy, Debug)]
 enum Arena {
@@ -153,6 +229,8 @@ struct Analyzer<'a> {
     requirements: Requirements,
     next_id: u64,
     snapshot: u64,
+    steps: u32,
+    depth: u32,
 }
 
 impl Analyzer<'_> {

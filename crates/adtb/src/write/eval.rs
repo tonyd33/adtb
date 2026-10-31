@@ -447,23 +447,25 @@ impl<'a, R: Runtime> Stmt<'a, R> {
 
     /// Evaluates block term `t`, adding the effects of its writes to `out`. Returns its result.
     fn block(&self, t: Tm, env: &Env, out: &mut Effects) -> Result<Val, Error> {
-        match self.terms.kind(t) {
-            Kind::Block(w, k) => {
-                let (w, k) = (*w, *k);
-                self.write(w, env, out)?;
-                self.block(k, env, out)
-            }
-            Kind::LetBang(x, w, k) => {
-                let (x, w, k) = (*x, *w, *k);
-                let v = self.bind_write(w, env, out)?;
-                self.block(k, &bind(env, x, v), out)
-            }
-            Kind::Let(x, e, k) => {
-                let (x, e, k) = (*x, *e, *k);
-                let v = self.eval(Arena::Statement, e, env)?;
-                self.block(k, &bind(env, x, v), out)
-            }
-            _ => self.eval(Arena::Statement, t, env),
+        let (mut t, mut env) = (t, env.clone());
+        loop {
+            t = match self.terms.kind(t) {
+                Kind::Block(w, k) => {
+                    self.write(*w, &env, out)?;
+                    *k
+                }
+                Kind::LetBang(x, w, k) => {
+                    let v = self.bind_write(*w, &env, out)?;
+                    env = bind(&env, *x, v);
+                    *k
+                }
+                Kind::Let(x, e, k) => {
+                    let v = self.eval(Arena::Statement, *e, &env)?;
+                    env = bind(&env, *x, v);
+                    *k
+                }
+                _ => return self.eval(Arena::Statement, t, &env),
+            };
         }
     }
 

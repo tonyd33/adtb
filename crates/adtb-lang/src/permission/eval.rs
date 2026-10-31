@@ -4,6 +4,17 @@ use crate::kernel::{Kind, Prim};
 
 impl Analyzer<'_> {
     pub(super) fn eval(&mut self, arena: Arena, tm: Tm, env: &Env) -> Result<Value, Error> {
+        self.steps += 1;
+        if self.steps > MAX_STEPS || self.depth > MAX_EVAL_DEPTH {
+            return Err(Error::TooLarge);
+        }
+        self.depth += 1;
+        let value = self.eval_step(arena, tm, env);
+        self.depth -= 1;
+        value
+    }
+
+    fn eval_step(&mut self, arena: Arena, tm: Tm, env: &Env) -> Result<Value, Error> {
         let node = self.terms(arena).node(tm).clone();
         match node.kind {
             Kind::Var(v) => env
@@ -34,10 +45,13 @@ impl Analyzer<'_> {
                     ))?;
                 self.bind_eval(arena, var, *value, body, env)
             }
-            Kind::Block(write, body) => {
+            Kind::Block(mut write, mut body) => loop {
                 self.eval(arena, write, env)?;
-                self.eval(arena, body, env)
-            }
+                match self.terms(arena).kind(body) {
+                    Kind::Block(w, b) => (write, body) = (*w, *b),
+                    _ => break self.eval(arena, body, env),
+                }
+            },
             Kind::Lam(..) | Kind::App(..) => Err(Error::InvalidKernel(
                 "normal expression contains no function value",
             )),

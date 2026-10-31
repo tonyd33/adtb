@@ -38,6 +38,33 @@ pub struct EffectiveGrants {
     pub read_files: bool,
 }
 
+impl Requirement {
+    fn on_temp(&self) -> bool {
+        match self {
+            Requirement::ReadConstructor(t)
+            | Requirement::ReadField(t, _)
+            | Requirement::Insert(t)
+            | Requirement::Delete(t)
+            | Requirement::UpdateField(t, _) => *t == TEMP_TARGET,
+            Requirement::Retag { relation, .. } => *relation == TEMP_TARGET.relation,
+            Requirement::ReadFiles => false,
+        }
+    }
+
+    /// Returns the relation the requirement names, by its catalog id.
+    pub fn relation(&self) -> Option<RelationId> {
+        match self {
+            Requirement::ReadConstructor(t)
+            | Requirement::ReadField(t, _)
+            | Requirement::Insert(t)
+            | Requirement::Delete(t)
+            | Requirement::UpdateField(t, _) => Some(t.relation),
+            Requirement::Retag { relation, .. } => Some(*relation),
+            Requirement::ReadFiles => None,
+        }
+    }
+}
+
 impl Requirements {
     /// Returns every requirement the explicit effective snapshot does not cover.
     pub fn missing(&self, grants: &EffectiveGrants, mode: Mode) -> Vec<Requirement> {
@@ -46,6 +73,9 @@ impl Requirements {
             .filter(|r| {
                 if matches!(r, Requirement::ReadFiles) {
                     return !grants.read_files;
+                }
+                if r.on_temp() {
+                    return false;
                 }
                 !grants.relations.iter().any(|g| {
                     (mode == Mode::Ordinary || g.grant_option) && self.covered(r, &g.right)

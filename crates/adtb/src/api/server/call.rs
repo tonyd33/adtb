@@ -41,6 +41,8 @@ impl Work {
 /// What a role's call keeps for its audit row and its recheck.
 pub(super) struct RoleCall<R: Runtime> {
     pub(super) role: String,
+    /// The session making the call.
+    pub(super) session: u64,
     pub(super) origin: CallOrigin,
     pub(super) args: [u8; 32],
     pub(super) readmission: Option<Readmission<R>>,
@@ -172,7 +174,13 @@ impl<R: Runtime> Call<R> {
         let Some(readmission) = call.readmission.take() else {
             return Ok(());
         };
-        readmission.check(e)
+        let holds = readmission.check(e, &self.work)?;
+        if let (Some(holds), Work::Text(p)) = (holds, &mut self.work)
+            && let Some(issuer) = &mut p.issuer
+        {
+            issuer.holds = Some(holds);
+        }
+        Ok(())
     }
 
     fn call_row<'c>(&'c self, call: &'c RoleCall<R>, failed: Option<&'c Error>) -> CallRow<'c> {
@@ -199,6 +207,16 @@ impl<R: Runtime> Call<R> {
         let shown = match self.shared.state.lock(&self.shared.rt).request {
             Some(r) => r.error(),
             None => err,
+        };
+        let shown = match self
+            .work
+            .prepared()
+            .issuer
+            .as_ref()
+            .and_then(|i| i.holds.as_ref())
+        {
+            Some(holds) => holds.redact(e, shown),
+            None => shown,
         };
         if matches!(
             shown,

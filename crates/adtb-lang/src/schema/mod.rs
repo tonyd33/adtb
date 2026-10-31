@@ -30,6 +30,8 @@ pub struct ModuleDef {
     pub name: String,
     /// Whether the engine declares the module: the prelude, `catalog` or `sys`.
     pub engine: bool,
+    /// Whether no name finds the module, in a view of the schema for a role naming nothing in it.
+    pub hidden: bool,
     pub types: BTreeMap<String, TypeId>,
     pub values: BTreeMap<String, ValueDef>,
 }
@@ -324,7 +326,7 @@ impl Schema {
     pub fn module_named(&self, name: &str) -> Option<ModuleId> {
         self.modules
             .iter()
-            .position(|m| m.name == name)
+            .position(|m| !m.hidden && m.name == name)
             .map(|i| ModuleId(i as u32))
     }
 
@@ -364,6 +366,15 @@ impl Schema {
 
     pub fn prelude_type(&self, name: &str) -> TypeId {
         self.module(PRELUDE).types[name]
+    }
+
+    /// Returns the schema with each module of `other` named as `other` names it.
+    #[must_use]
+    pub fn with_names_of(mut self, other: &Schema) -> Schema {
+        for (at, module) in other.modules.iter().enumerate() {
+            self.modules[at].clone_from(module);
+        }
+        self
     }
 
     /// Resolve unqualified `Principal` from the root, and other type names from the module, prelude or built-ins.

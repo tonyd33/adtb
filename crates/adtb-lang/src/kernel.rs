@@ -358,6 +358,10 @@ impl Terms {
         Tm(self.nodes.len() as u32 - 1)
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
     pub fn var(&mut self, name: &str, ty: Ty) -> Var {
         self.vars.push(VarInfo {
             name: name.to_string(),

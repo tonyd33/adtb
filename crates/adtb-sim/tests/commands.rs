@@ -454,7 +454,7 @@ fn set_setting_holds_whatever_the_transaction_does() {
 #[test]
 fn a_command_the_engine_does_not_run_is_refused_whole() {
     with_db(|db| {
-        for text in ["compact", "print schema", "finalize upgrade"] {
+        for text in ["compact", "finalize upgrade"] {
             let e = failure(db, text);
             assert!(is_invalid(&e), "`{text}`: {e:?}");
         }

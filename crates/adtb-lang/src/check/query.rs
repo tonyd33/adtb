@@ -18,6 +18,9 @@ pub(super) struct Body {
     binders: Vec<Var>,
 }
 
+/// The most `fix` expressions around one another. Checking a `fix` checks its bodies several times.
+const MAX_FIX_NESTING: u32 = 8;
+
 impl Checker<'_> {
     pub(super) fn at(
         &mut self,
@@ -598,6 +601,24 @@ impl Checker<'_> {
     }
 
     pub(super) fn fix(
+        &mut self,
+        binds: &[(ast::Ident, Expr)],
+        body: &Expr,
+        expected: Option<&Ty>,
+    ) -> R<Out> {
+        if self.fixes == MAX_FIX_NESTING {
+            return Err(diag(
+                body.span,
+                "this text nests too many `fix` expressions",
+            ));
+        }
+        self.fixes += 1;
+        let out = self.fix_nested(binds, body, expected);
+        self.fixes -= 1;
+        out
+    }
+
+    fn fix_nested(
         &mut self,
         binds: &[(ast::Ident, Expr)],
         body: &Expr,

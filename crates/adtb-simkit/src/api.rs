@@ -122,19 +122,33 @@ impl Wake for Unpark {
 /// Submit `text` for `session` as a task and drain it, returning the failure of the submission or
 /// the call.
 pub fn task(rt: &SimRuntime, session: &RoleSession<SimRuntime>, text: &str) -> Result<(), Error> {
+    task_rows(rt, session, text).map(drop)
+}
+
+/// Submit `text` as [`task`] does. Returns each row as its debug form.
+pub fn task_rows(
+    rt: &SimRuntime,
+    session: &RoleSession<SimRuntime>,
+    text: &str,
+) -> Result<Vec<String>, Error> {
     let task = session.submit_text(text, &[], TaskOptions::default())?;
     let waker = Waker::from(Arc::new(Unpark {
         rt: rt.clone(),
         thread: rt.current(),
     }));
     task.supply(usize::MAX);
+    let mut rows = Vec::new();
     loop {
         match task.observe(&waker) {
             Observation::Pending => rt.park(),
-            Observation::Layout(_) | Observation::Batch(_) => {}
+            Observation::Layout(_) => {}
+            Observation::Batch(b) => {
+                let batch = b.rows().expect("a task of values");
+                rows.extend(batch.iter().map(|v| format!("{v:?}")));
+            }
             Observation::End => task.drained(),
             Observation::Done(Completion::Failed(e)) => return Err(e),
-            Observation::Done(_) => return Ok(()),
+            Observation::Done(_) => return Ok(rows),
         }
     }
 }

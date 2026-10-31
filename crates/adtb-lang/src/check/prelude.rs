@@ -175,13 +175,11 @@ impl Checker<'_> {
                     .span_arg(&x.ty)
                     .ok_or_else(|| self.wrong(name, &[&x.ty], span))?;
                 let y = if name == "covers" && !matches!(self.span_arg_expr(b), Some(true)) {
-                    let probe = self.synth(b);
-                    match probe {
-                        Ok(o) if self.span_arg(&o.ty).is_some() => {
-                            self.subsume(o, &x.ty, b.span)?
-                        }
-                        Ok(o) => self.subsume(o, &t, b.span)?,
-                        Err(_) => self.check(b, &t)?,
+                    let o = self.synth(b)?;
+                    if self.span_arg(&o.ty).is_some() {
+                        self.subsume(o, &x.ty, b.span)?
+                    } else {
+                        self.subsume(o, &t, b.span)?
                     }
                 } else {
                     self.check(b, &x.ty)?
