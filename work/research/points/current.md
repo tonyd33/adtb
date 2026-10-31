@@ -548,6 +548,7 @@ accept:
   repl/pitr/log-archive: {title: 'Continuous log archive; restore replays a base to a position, time or named point', reason: restore to any log position or schema version from an archive}
   repl/pitr/op-log-point: {title: A schema operator is a named restore point, reason: restore to any log position or schema version from an archive}
   repl/proof-host-fn/unproven: {title: 'Unproven, naming the function', reason: 'nothing found wrong, nothing shown right'}
+  repl/restore-epoch-step/random-step: {title: A restore raises the epoch by a random step, reason: Keeps Position shape; a collision is negligible}
   repl/restore-epoch/bump: {title: A restore raises the epoch, reason: two histories must not share positions}
   repl/restore-point/one-reason: {title: 'One RestorePointUnavailable with the reachable range, for out of range, a chain gap and a point on a dump', reason: range tells the operator what to ask for}
   repl/schema/forward-leases: {title: A replica forwards bundle lease renewals and connections to the primary, reason: schema operators travel in the log; leases renewed at a replica are forwarded to the primary}
