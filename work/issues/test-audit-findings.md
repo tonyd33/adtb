@@ -52,3 +52,7 @@ A `refused_with(reason)` helper, `#[must_use]` on `fails`, and a house-check fla
 ## 5. Replace confirming tests by searches
 
 Later, inside the mechanism tracks: sequences against a model of crashes; flip any byte of any log block; random grant, revoke and drop against a model of `require`; every Op crossed with every Val class; generated joins for plan_bounded; a translation agrees or refuses; concurrent `next_turn` calls under sim seeds.
+
+## From queue-tooling round 3
+
+Whole-file `#![expect(clippy::disallowed_methods)]` in adtb-sim/tests/truncated_open.rs and reindex_review.rs, for thread spawns, would also let a bare `Command::new` through. Neither file spawns one today. Narrow them to the sites.
