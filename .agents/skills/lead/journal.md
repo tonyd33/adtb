@@ -69,3 +69,9 @@ The review cap held on its first real use. staged-operators got one delta review
 I wrote the test-audit-b review's blocker list too widely, adding a lint that passes a violation. The reviewer reported one by that list. It loses no data and gives no wrong answer, so by the written rule it is a ticket, and I ruled so. The prompt should quote the rule and add nothing to it.
 
 The test-audit-b suite was stopped for low memory, and I had not looked at machine memory before starting two tracks and a check on a machine other work was also using. The heap cap and the machine lock bound what this repository's tests use, not what is free. Going forward: read free memory and swap before a full check, and do not start one when they are short. If this recurs, it belongs in `workspace-gc --guard`, next to disk, not in this journal.
+
+### 2026-10-31: resumption and contract evidence
+
+The review cap still holds: test-audit-b goes to verification with its review findings ticketed, not another review round. The prior handoff's claim that the branch was on main was stale by a documentation delta. I started linting before checking its parent, stopped that run, rebased, and restarted. Live ancestry must precede checks even when the handoff says it is current.
+
+The pinned-write investigation separated an explicit contract violation from an unrun candidate. Hidden-row overwrite already contradicts the key-refusal rule, whereas the ordinary nested-field scan appears to have the required reader gate. Existing upsert tests expect faulty outcomes. The next track runs both through the public API before choosing a fix. This tests the earlier bet about mechanisms: a shared source-scope contract must cover probes as well as scans; another field-shape patch would not.
