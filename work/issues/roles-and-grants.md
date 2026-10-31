@@ -1,7 +1,6 @@
 ---
 created-at: 2026-10-27
 status: in-progress
-branch: roles-adhoc
 kind: feature
 priority: 410
 summary: "registration and definer checks exist; call grants, binding and nonowner execution, system relation grants, ad hoc reads and writes, and management by text remain"
@@ -520,3 +519,11 @@ Rulings: security/adhoc-names/charged, adhoc-function/call-and-reads, write-exis
 ## 2026-10-31: from slice 4 round 2
 
 Ruled: security/capability-names/any-relation. Engine modules stay nameable, since the spec names them; a parameter `Key r` is allowed when a nameable type references `r`; registration accepts `monitor` for `sys::` reads. Left for later: a schema's constraint, default or computed roots that expand are not bounded.
+
+## 2026-10-31: slice 4 landed
+
+Ad hoc reads and writes run for a role under its own grants, change uotvruxr. Work limits landed as separate bounds, as deliberate debt: `one-spend-budget` replaces them, and bounds memory and time before a socket accepts text. The spec states no run height limit yet; that goes in with the budget, so the limit stated is the lasting one.
+
+Slice 5, and any new grant form, waits for a socket call, by the 2026-10-31 wide review.
+
+Left for that later work: per-row redaction; rows of `sys::calls` and `sys::sessions`; export formats; printing a schema's grants and write states; a bound on schema constraint or default roots expansion. Round 4 test pins not tightened, in work that `vacuity-gate` should catch: `reindex_answers_one_way` compares answers only to each other, at-limit tests have no past-limit pin, the thousand-insert test checks `Ok(1)` with no row count, and three test names are stale.
