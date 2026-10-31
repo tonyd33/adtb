@@ -259,7 +259,8 @@ a deployment grant written in a migration.
 
 A bundle name is `FAMILY-VERSION`, where `VERSION` is the digits and
 dots after the last hyphen: `web-2.4` is version `2.4` of the family
-`web`. A family's owner is the role that registered its first bundle;
+`web`. A family name that is itself of that form, as `web-2` in
+`web-2-1.0`, is refused at registration. A family's owner is the role that registered its first bundle;
 only that role or the schema owner may register a bundle into the
 family. A call grant that names a family resolves the query in every
 live bundle of the family when it is granted and records the one

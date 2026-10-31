@@ -566,6 +566,7 @@ accept:
   security/encrypt/io-cost/staging: {title: Encrypt into a per-I/O staging buffer on write; decrypt in place in the frame on read, reason: 'encrypt into a staging buffer on write, so optimistic readers never see ciphertext'}
   security/encrypt/page: {title: The pager encrypts each page as it is written and decrypts it as it is read, reason: 'the pager owns every page write, so it encrypts there; the host cannot see engine-managed direct I/O'}
   security/family-grant-unread/refuse-when-callables: {title: 'A bundle with no callable rows is not counted; one with callable rows and no signature refuses, naming it', reason: unanimous forbids silently missing a live bundle; a header declares nothing}
+  security/family-name-shape/refuse: {title: Refuse at registration a family whose name is itself FAMILY-VERSION, reason: one reading for a name; refuses early}
   security/family-option-cover/equal-ids-now: {title: It covers a bundle's query exactly while their ids are equal; a regrant that uncovers a given row is refused, reason: giving and calling cover the same; a regrant follows the orphan rule}
   security/family-signature/unanimous: {title: Freeze the one signature every live bundle declaring the query shares; refuse otherwise, reason: a family grant never covers some live bundles silently and not others; the refusal says to grant per bundle until the older one is released}
   security/fields/field-list: {title: A grant lists the fields of each constructor it covers, reason: a grant lists the fields of each constructor it covers}

@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-30
-status: in-progress
-branch: command-rerun
+status: resolved
 kind: bug
 priority: 426
 summary: "a statement that suspends after a command in one text reruns the command, so a command takes effect twice"
+closed: 2026-10-30
 ---
 
 # Command rerun after suspend
@@ -17,3 +17,7 @@ Ruling, from quality-fixes33: a command takes effect once. Reads with commands a
 ## 2026-10-30
 
 Vacuum, verify and reindex beside a write are refused already; `set setting`, `retire bundle`, `supersede bundle` and `explain` are what can precede one. Ruling ops/command-retry/surface: a text in which a command ran is not rerun on a serialization failure. wire.md 6.4 states it. Includes a commit failure, embedded and server.
+
+Landed. A statement after a command polls with its stops and holds its worker; a text in which a command ran is not rerun. Branch check exit 0, 3329 tests.
+
+## 2026-10-30: resolved
