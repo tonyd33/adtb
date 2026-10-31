@@ -73,6 +73,11 @@ Do not act as a relay for review findings. Before a ruling or a next-round brief
 - State a ruling as the general rule it applies. If the rule is only the case in hand, say so, and look for what else breaks it across the code before adopting.
 - Ask whether the work reaches a user. Authority logic with no caller, or a setting nothing reads, is not done, whatever its tests say.
 
+- Prefer the enforcer that needs no one to remember it, in this order: type, lint, searching test, process. When a review shows a run-time heuristic can fire falsely or be missed, ask what the compiler could refuse instead.
+- Judge tests by [Test value](../../../AGENTS.md#test-value). Ask each reviewer to name, for each new test that matters, the mutation that would make it fail, and to report assertions that cannot fail. Before deleting a test on an audit's word, check what covers it. A read-only finding is a candidate; mutation is the measure.
+- Check a script or tool's safety by what it can reach, not by what its cases do today. Any `rm -rf` of a path from a variable is a blocker.
+- Do not call a plan deep or done. Report what landed and what can no longer go wrong. Say which claims were read and which were run.
+
 At every quality cadence, and before a milestone exit, dispatch a fresh read-only agent to group fixes and open bugs since the last such review by cause, test the lead's rulings for patches, and rank at most five changes. Give it the question, not your conclusion. Verify its claims in code before acting, then update the classes. A milestone exit claim names the searching test that backs it.
 
 ## While tracks run

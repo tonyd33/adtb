@@ -125,6 +125,24 @@ root (devenv also puts each on PATH as `NAME`):
   `target/` stays valid; `land` frees it. `slot-test` proves `slot`, `land`
   and `--clear-build` on a scratch repository; `--shell` skips the cargo builds.
 
+## Invariants and fixes
+
+Before writing code a correctness rule depends on, state the rule and what enforces it: the type system, a lint, a test that searches, or nothing with a written reason. Prefer them in that order.
+
+- Do not stand a string or a position in for identity, or a panic in for an error, or a per-path check in for one gate.
+- A bug fix's report states its cause, its defect class from `.agents/skills/lead/defect-classes.md`, and what stops the next instance. Fix the cause when it is in reach. If a fix only handles the input in hand, say so.
+- A limit states the rule it comes from, not only the value that passes today.
+
+## Test value
+
+A test earns its place by being able to fail when the behaviour breaks. Before adding one, name the change to the code that would make it fail, and try it when the code is at hand.
+
+- Assert the exact outcome: the refusal reason and value, not `is_err` or a substring. Do not compare two answers only with each other when both could be the same wrong answer. Do not repeat the code's own predicate as the expected value. An expected value comes from outside the code under test.
+- A loop or sweep checks that it ran, and that it reached the case it is for. No `|| true`, ignored results or skipped conditions on what is under test. A script's check must report its failure.
+- A name claims only what the test checks.
+- For a general property, write the test that searches: every op, every interleaving, generated pairs, n against 2n. One input from a review confirms that input alone.
+- Do not pin a detail no contract states, or test the standard library, a derive or a getter. Do not add what a stronger test in the same binary covers. Delete a test only after naming what covers it.
+
 ## Knowledge base
 
 Facts about other databases, formats, languages and papers live in
