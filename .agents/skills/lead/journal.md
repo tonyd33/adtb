@@ -39,3 +39,7 @@ What I don't know yet: whether any of this works. No mechanism has landed. Proce
 ### 2026-10-31: the test audit
 
 The maintainer asked for a wider look after one review found tautological assertions. About 80 candidates by reading, nothing run. Core model tests (key, batch, mvcc) held up. The worst were sweeps that pass having tested nothing, the check that binds the spec's prelude to code, and tool tests `check` never runs. A green `check` meant less than I had been treating it as. A delta review of the track I just landed had not flagged a test that passes with its limit removed, because I had not asked. The skill now asks. Floors go before fault-matrix, since its sweeps would inherit the same hole.
+
+### 2026-10-31: slot-test
+
+The maintainer asked why slot-test looked so complex. It grew from 351 to 532 lines in a day, most of it protecting the script from itself. I took one accident, ruled an absolute guarantee bash cannot give, then patched each hole a reviewer found, and I read the result and called it right. My own skill says each wrapper needs a concrete unmet requirement, and I did not apply it. Asking for a guarantee creates machinery: ask what the accident needed, and what the smallest change is that stops it. A review that lists holes in a guarantee can mean the guarantee is wrong.

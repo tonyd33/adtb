@@ -57,3 +57,7 @@ Later, inside the mechanism tracks: sequences against a model of crashes; flip a
 ## From queue-tooling round 3
 
 Whole-file `#![expect(clippy::disallowed_methods)]` in adtb-sim/tests/truncated_open.rs and reindex_review.rs, for thread spawns, would also let a bare `Command::new` through. Neither file spawns one today. Narrow them to the sites.
+
+## slot-test is over-built
+
+Ruled 2026-10-31, after test-audit-a lands. It grew from 351 to 532 lines in one day, most of the growth protecting the script from itself: variable and PATH scrubbing, closing file descriptors, a checkout snapshot, a re-exec, and tests of those. Replace with: `mktemp -d`, scratch `HOME`, `XDG_*`, `CARGO_HOME` and `TMPDIR`, copy the tools, `cd` there, remove `$tools` so cases use only each scratch repository's copies, one `trap rm`. Delete `snapshot`, `variables_leading_to`, `scratch_only_cases`, the PATH and variable scrub, the descriptor loop and the outer and inner stages. Keep the cases that prove `slot`, `land`, `workspace-gc` and the lock. Target: under the 351 it started from plus the lock and campaign cases.
