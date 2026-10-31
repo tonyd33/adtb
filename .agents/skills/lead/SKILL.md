@@ -61,6 +61,8 @@ Be firm and opinionated about the project's design and direction. Refuse a reque
 - Mark the track's ticket `in-progress` with `branch` set to the
   workspace name.
 
+State the invariants of a correctness track in its brief, and ask for a test that searches for breaks at every op and interleaving. A second review round finding the same kind of bug means the design is wrong: replace the mechanism, do not patch the instance.
+
 ## While tracks run
 
 - Rule on the design questions agents raise. Settle a hard call yourself

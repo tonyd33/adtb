@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-30
-status: open
+status: in-progress
+branch: queue-tooling
 kind: bug
 priority: 400
 summary: the machine lock is held by a daemon that inherits its descriptor and is per HOME or XDG_CACHE_HOME; apps/campaign/target has no cap outside --clean

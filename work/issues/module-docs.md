@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-25
-status: open
+status: in-progress
+branch: queue-tooling
 kind: feature
 priority: 92
 summary: "no module states what it owns, and the design README names no code entry points"

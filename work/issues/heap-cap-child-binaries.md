@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
+branch: queue-tooling
 kind: bug
 priority: 487
 summary: "A test's spawned child binary has its own heap cap outside the nextest slot arithmetic"

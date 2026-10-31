@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-27
-status: open
+status: in-progress
+branch: queue-tooling
 kind: bug
 priority: 65
 summary: essential agent briefs and handoffs live in ignored files and the local checkpoint mixes old state with prior permissions
