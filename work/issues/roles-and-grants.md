@@ -1,7 +1,6 @@
 ---
 created-at: 2026-10-27
-status: in-progress
-branch: call-grants
+status: open
 kind: feature
 priority: 410
 summary: "registration and definer checks exist; call grants, binding and nonowner execution, system relation grants, ad hoc reads and writes, and management by text remain"
@@ -483,3 +482,9 @@ Slices, each landable alone, none running nonowner work with owner rights:
 3. Deployment relation grants and `read_files` in `EffectiveGrants`, and the revoke refusal of 3.5 for them. Absorbs lacking-repeats-per-bundle.
 4. Ad hoc reads and writes for a role: remove the only-commands refusal in session.rs, `permission::adhoc`, real `explain`, `export`, `print schema`, `cancel call`, verify witness. Audit `Prepared::of_items` parameter values first. Absorbs permission-provider-follow-ups.
 5. Management by text with statement atomicity; `schema` also needs `adhoc`.
+
+## 2026-10-30: slice 1 landed
+
+Call grants on bundles, queries and families are written by `RoleAuthority::grant`; `drop_role` refuses a grantor. Branch check exit 0, 3363 tests. Next: slice 2, binding and nonowner calls.
+
+Left: `bundle_declares` compares declaration only, so `grant call web-2.0 to ann with grant option` is refused as a cycle by a family row at another signature. It fails closed and a revoke or the query form releases it. Compare ids when `calls.query` reads. `drop_role` takes the writer lock then enters, the reverse of `retire` and `supersede`; lock.rs spins so it does not deadlock, and 40 seeds finished.
