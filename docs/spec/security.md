@@ -231,7 +231,8 @@ Grants are of two kinds:
   and `sys::` relations are deployment state. They are ad hoc
   statements, not in the log and not hashed, and a dump carries them
   in its security section. Capability grants and grants on system
-  relations are given by a role holding `schema`; a call grant on a
+  relations are given by a role holding `schema`, except that only the
+  schema owner grants on `catalog::credentials`; a call grant on a
   bundle or one of its queries is given by the bundle's owner or by
   the schema owner, and a call grant on a family by the family's owner
   or by the schema owner.

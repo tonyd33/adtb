@@ -320,7 +320,8 @@ calls on the bundle with `Rejected { reason: BundleExpired {..} }`. The
 primary treats the lease as expired only once the further grace of the
 file setting `LeaseGrace` (1 hour by default) has passed. A renewal of
 an expired lease, made at the primary or forwarded to it, is refused
-with `BundleExpired`; no renewal extends an expired lease.
+with `BundleExpired`; no renewal extends an expired lease, and neither
+does raising `LeaseGrace` or the default lease.
 
 A bundle whose header has no `lease` clause takes its lease duration
 from a database setting ([catalog.md](catalog.md#10-configuration)),
