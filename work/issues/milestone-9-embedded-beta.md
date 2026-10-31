@@ -36,3 +36,7 @@ Milestone 9 of docs/plan.md. Exit: the suite and every test method pass; benchma
 ## 2026-10-29: audit
 
 work/briefs/review-m9-audit.md: 6 of 53 requirements done, 14 partial, 33 absent. Order: verify-online, quarantine-wired, scrub-worker, dump-restore-backup (S4 to S6), then settings and the rest. Rulings adopted so far: spec/verify-structure/structure, spec/verify-scope/per-scope, spec/tool-name/adtb; OpenTelemetry and traces move to milestone 10. The other rulings in the report are made when their slice is dispatched.
+
+## 2026-10-31: next step
+
+By the wide review, new background jobs wait for fault-matrix. Order: test-audit-findings, then fault-matrix, compile-time-identity and vacuity-gate, then the remaining slices named in depends-on. Exit needs a searching test named for each claim, and the audit of 2026-10-29 must be re-run first, since its counts are stale.

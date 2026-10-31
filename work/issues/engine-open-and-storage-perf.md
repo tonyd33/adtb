@@ -28,3 +28,7 @@ Caching parsed declarations targets 1.8% of suite cycles, so the fix is a memo o
 ## 2026-10-30: hardware CRC
 
 `adtb_sys::crc32c::update` uses the CPU instruction on x86-64 and aarch64, the table as fallback and under Miri. Same bytes on disk: 40800 differential cases against the old code, no difference. Cycles on two crash sweeps -18.5% and -12.1%. Not done: no test fails when `update` always takes the table; the aarch64 instruction was compiled but never executed; no file written by the old binary was opened.
+
+## 2026-10-31: next step
+
+Hardware CRC landed. What remains is the memo on `Source::built` and `reserve_page`'s read of a free page, each to be measured against a stop line first. The item on seed loops outside `profile::sweep` goes with test-audit-findings. No track is running.

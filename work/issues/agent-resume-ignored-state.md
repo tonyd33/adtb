@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-27
-status: in-progress
-branch: queue-tooling
+status: resolved
 kind: bug
 priority: 65
 summary: essential agent briefs and handoffs live in ignored files and the local checkpoint mixes old state with prior permissions
+closed: 2026-10-31
 tags:
   - tooling
   - devex
@@ -40,3 +40,9 @@ question file was ignored in main and absent from sibling workspaces. Track
 that existing question byte-for-byte; no rulings changed. Successors use main's
 authoritative research space until rebased. This repairs the concrete missing
 reference, not the broader clone-only resumption acceptance above.
+
+## 2026-10-31: done
+
+A clone-only test found `quandary check` and `quandary rulings` work; `tix check` was not confirmed. Those three tickets, which had no next-step text a clone-only successor could use, now have it.
+
+## 2026-10-31: resolved

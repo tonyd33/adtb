@@ -1,10 +1,10 @@
 ---
 created-at: 2026-10-31
-status: in-progress
-branch: queue-tooling
+status: resolved
 kind: bug
 priority: 486
 summary: "Measure test heap peaks under the deep profile, where a sweep could abort at the default cap"
+closed: 2026-10-31
 ---
 
 # Heap cap deep peaks
@@ -12,3 +12,9 @@ summary: "Measure test heap peaks under the deep profile, where a sweep could ab
 ## Report
 
 Peaks behind the `threads-required` overrides in `.config/nextest.toml` were measured at the default profile. `profile::DEEP` multiplies seeds and cases, so a sweep can pass 1.5 GiB and abort falsely. Run the deep profile once with peaks logged, and raise what needs it.
+
+## 2026-10-31: fixed
+
+Deep ran once with peaks logged. One false abort, the reindex crash sweep at 2.87 GiB, raised to 3 GiB with 2 slots. That margin is thin, the full deep run was not repeated after the raise, and campaign was not measured.
+
+## 2026-10-31: resolved

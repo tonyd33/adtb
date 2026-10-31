@@ -1,6 +1,7 @@
 ---
 created-at: 2026-10-31
-status: open
+status: in-progress
+branch: test-audit-a
 kind: bug
 priority: 400
 summary: "tests that cannot fail, read refusals coarsely or are not run by check"
