@@ -32,6 +32,7 @@ fn write(db: &Database<SimRuntime>, text: &str) {
         .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
 }
 
+#[must_use]
 fn fails(db: &Database<SimRuntime>, text: &str) -> Error {
     match db.query_text(text, &[], &CallOptions::default()) {
         Ok(rows) => panic!("`{text}` succeeds with {} results", rows.len()),
@@ -441,6 +442,7 @@ fn a_value_constructor_a_stored_value_holds_is_neither_disabled_nor_removed() {
 
 /// Open a database at `SHOP` and `before`, write `stored`, then return the refusal of
 /// reopening it with `later` appended.
+#[must_use]
 fn refused_after(seed: u64, before: &[&str], stored: &str, later: &[&str]) -> (u64, String) {
     let mut sim = Sim::new(seed, Config::default());
     let mut log = vec![SHOP];
@@ -1623,13 +1625,18 @@ add constraint no_blank_login = from i in identities
 #[test]
 fn a_reader_naming_nothing_at_its_version_is_not_registered() {
     at_catalog(105, &[AUTH], |catalog, pager, txns| {
-        assert!(
-            catalog
-                .register(reader("bad", 1, vec![whole("auth::nothing")]))
-                .is_err()
+        assert_eq!(
+            vec!["bundle bad at version 1: there is no relation auth::nothing"],
+            refused(catalog.register(reader("bad", 1, vec![whole("auth::nothing")])))
         );
-        assert!(catalog.register(reader("future", 2, Vec::new())).is_err());
-        assert!(catalog.release(pager, txns, "unknown").is_err());
+        assert_eq!(
+            vec!["bundle future is pinned at version 2, which the log does not hold"],
+            refused(catalog.register(reader("future", 2, Vec::new())))
+        );
+        assert_eq!(
+            vec!["bundle unknown is not live"],
+            refused(catalog.release(pager, txns, "unknown"))
+        );
     });
 }
 

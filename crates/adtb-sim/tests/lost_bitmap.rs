@@ -3,7 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adtb::storage::{self, Crc32c, HEADER_LEN, Options, PageKind, Pager, Pid, Quarantine};
+use adtb::storage::{
+    self, Crc32c, Damage, HEADER_LEN, Options, PageError, PageKind, Pager, Pid, Quarantine,
+};
 use adtb::{CallOptions, Database, Error, FatalReason, Log, OpenOptions};
 use adtb_sim::{Config, Sim, SimRuntime};
 use adtb_simkit::api;
@@ -315,12 +317,21 @@ fn every_allocator_path_refuses_a_zeroed_bitmap() {
     damaged_run(&files, "allocator paths", |db| {
         let w = db.write_path();
         let p = w.pager();
-        assert!(p.free(page).is_err(), "free");
-        assert!(p.is_free(page).is_err(), "is_free");
-        assert!(p.allocated().is_err(), "allocated");
-        assert!(p.allocate(1, PageKind::Catalog, 1).is_err(), "allocate");
-        assert!(
-            p.reserve().page(1, PageKind::Catalog, 1).is_err(),
+        let lost = PageError {
+            pid: Pid::FIRST_DATA,
+            damage: Damage::Checksum,
+        };
+        assert_eq!(lost, p.free(page).unwrap_err(), "free");
+        assert_eq!(lost, p.is_free(page).unwrap_err(), "is_free");
+        assert_eq!(lost, p.allocated().unwrap_err(), "allocated");
+        assert_eq!(
+            lost,
+            p.allocate(1, PageKind::Catalog, 1).unwrap_err(),
+            "allocate"
+        );
+        assert_eq!(
+            lost,
+            p.reserve().page(1, PageKind::Catalog, 1).unwrap_err(),
             "reserve"
         );
     });
@@ -648,11 +659,18 @@ fn assert_second_group_refused(files: Files, named: Pid, what: &str) {
     let mut sim = Sim::with_files(1, Config::default(), files);
     finished(&mut sim, |rt| {
         let pager = pager_of(rt);
-        assert!(pager.is_free(named).is_err(), "{what}: is_free");
-        assert!(pager.free(named).is_err(), "{what}: free");
-        assert!(pager.allocated().is_err(), "{what}: allocated");
-        let got = pager.allocate(1, PageKind::Catalog, 1);
-        assert!(got.is_err(), "{what}: allocate {got:?}");
+        let lost = PageError {
+            pid: Pid(SMALL_SPAN),
+            damage: Damage::Checksum,
+        };
+        assert_eq!(lost, pager.is_free(named).unwrap_err(), "{what}: is_free");
+        assert_eq!(lost, pager.free(named).unwrap_err(), "{what}: free");
+        assert_eq!(lost, pager.allocated().unwrap_err(), "{what}: allocated");
+        assert_eq!(
+            lost,
+            pager.allocate(1, PageKind::Catalog, 1).unwrap_err(),
+            "{what}: allocate"
+        );
         assert_eq!(
             BTreeSet::from([Quarantine::Database]),
             pager.holders_of(Pid(SMALL_SPAN), None, |_| {}),

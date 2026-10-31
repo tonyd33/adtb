@@ -4,6 +4,7 @@
 use adtb_simkit::api;
 use adtb_simkit::grants;
 use adtb_simkit::harness;
+use adtb_testkit::refused_with;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1141,10 +1142,9 @@ fn a_deployment_revoke_leaves_a_log_row_of_the_same_text() {
         let owner = authority.session("owner").expect("session");
         let before = by_id(&db);
         id_of(&before, &["kind: Log", "shop::shown"]);
-        assert!(
-            authority
-                .revoke(&owner, "revoke call shop::shown from web")
-                .is_err()
+        refused_with(
+            authority.revoke(&owner, "revoke call shop::shown from web"),
+            "`revoke call shop::shown from web` matches no grant `owner` may revoke",
         );
         assert_eq!(before, by_id(&db));
     });

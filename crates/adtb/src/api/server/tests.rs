@@ -324,8 +324,11 @@ fn a_rebuild_does_not_overwrite_another_change_of_the_catalog() {
     catalog.end_reindexing(&pager).unwrap();
     Catalog::naming_sequences(&pager, catalog.root()).unwrap();
     assert!(catalog.begin_reindexing(&pager).unwrap());
-    assert!(
-        catalog.end_reindexing(&pager).is_err(),
+    assert_eq!(
+        Err(crate::catalog::Error::Internal(
+            "a rebuild of indexes ended during the catalog's change NamingSequences".to_string()
+        )),
+        catalog.end_reindexing(&pager),
         "the change stays for the next open to free"
     );
     assert!(catalog.begin_reindexing(&pager).unwrap());
@@ -505,6 +508,7 @@ fn a_damaged_page_met_writing_a_registrations_facts_is_a_storage_failure() {
     );
 }
 
+#[must_use]
 fn invalid(result: Result<(), Error>) -> String {
     match result {
         Err(Error::Rejected {
@@ -588,7 +592,10 @@ fn a_grant_on_a_system_relation_is_revoked_by_its_text_and_widens_as_a_log_grant
             .unwrap();
         replace_grant(&authority, "privilege", Val::text("read"));
         replace_grant(&authority, "target", Val::some(Val::text(row)));
-        invalid(authority.revoke(&owner, wrong));
+        assert_eq!(
+            format!("`{wrong}` matches no grant `owner` may revoke"),
+            invalid(authority.revoke(&owner, wrong))
+        );
         authority.revoke(&owner, revoke).unwrap();
     }
 }
@@ -749,7 +756,7 @@ fn an_audit_write_after_close_is_refused_as_closed() {
         &caller,
         &crate::api::server::CallOrigin::AdHoc([0; 32]),
     );
-    assert!(format!("{got:?}").contains("Closed"), "{got:?}");
+    assert_eq!("Err(Rejected { reason: Closed })", format!("{got:?}"));
 }
 
 #[test]

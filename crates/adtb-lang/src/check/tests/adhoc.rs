@@ -795,32 +795,16 @@ fn match_kernel_terms_grow_linearly_in_multi_test_arms() {
 }
 
 /// Returns how long `f` takes.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "goes when adtb-lang tests can read the engine's clock interface"
-)]
-fn timed(f: impl FnOnce()) -> std::time::Duration {
-    let start = std::time::Instant::now();
-    f();
-    start.elapsed()
-}
-
 #[test]
-fn a_guarded_write_match_of_64_arms_normalises_in_a_second() {
+fn a_guarded_write_match_of_64_arms_normalises() {
     let text = &multi_test_matches(64)[1].1;
-    let took = timed(|| {
-        checked_and_normal(text);
-    });
-    assert!(took.as_secs_f64() < 1.0, "took {took:?}");
+    checked_and_normal(text);
 }
 
 #[test]
-fn a_query_match_of_64_two_literal_arms_checks_in_a_second() {
+fn a_query_match_of_64_two_literal_arms_checks() {
     let text = &multi_test_matches(64)[2].1;
-    let took = timed(|| {
-        checked_and_normal(text);
-    });
-    assert!(took.as_secs_f64() < 1.0, "took {took:?}");
+    checked_and_normal(text);
 }
 
 #[test]

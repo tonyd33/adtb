@@ -375,16 +375,18 @@ fn a_dropped_transaction_of_a_closed_database_rolls_back_quietly() {
     once(8, |rt| {
         let db = open(&rt);
         let other = db.clone();
-        let t = other.begin(&TxnOptions::default()).expect("begin");
+        let mut t = other.begin(&TxnOptions::default()).expect("begin");
+        t.query_text(
+            r#"insert customers { name: "ann" }"#,
+            &[],
+            &TxnCallOptions::default(),
+        )
+        .expect("the insert");
         db.close().expect("close");
         drop(t);
-        let t = {
-            let again = open(&rt);
-            let t = again.begin(&TxnOptions::default()).expect("begin");
-            t.rollback().expect("rollback");
-            again
-        };
-        t.close().expect("close");
+        let again = open(&rt);
+        assert_eq!(Vec::<String>::new(), names(&again));
+        again.close().expect("close");
     });
 }
 

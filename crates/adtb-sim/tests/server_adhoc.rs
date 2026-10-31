@@ -1,5 +1,6 @@
 //! Ad hoc text of a role: charged against its own grants, and revealing nothing it cannot read.
 
+use adtb_testkit::refused_with;
 use std::ffi::{c_int, c_ulong};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -248,7 +249,7 @@ fn a_read_passes_only_within_constructors_and_fields_held() {
 fn a_text_it_may_not_run_is_refused_at_the_send() {
     scenario(630, |_, db| {
         let got = session(&db, "reader").submit_text(READ_DOCS, &[], TaskOptions::default());
-        assert!(got.is_err(), "{got:?}");
+        refused_with(got, "denied: role `reader` may not run this text");
     });
 }
 
@@ -1007,7 +1008,7 @@ fn a_role_reading_the_schema_is_told_what_it_names_wrong() {
             "cataloged",
             "from s in secrets select s.salary",
         ));
-        assert!(why.contains("salary") || why.contains("secrets"), "{why}");
+        assert_eq!("role `cataloged` reads secrets.Secret and lacks read", why);
         let why = detail(send(&rt, &db, "cataloged", "pure_answer()"));
         assert!(why.contains("pure_answer"), "{why}");
         let bad = typed(
@@ -1690,7 +1691,7 @@ fn a_dropped_role_runs_nothing() {
         let held = session(&db, "other");
         authority.drop_role("other").expect("drop");
         let got = held.submit_text("1", &[], TaskOptions::default()).map(drop);
-        assert!(got.is_err(), "{got:?}");
+        refused_with(got, "denied: the authenticated role no longer exists");
         assert!(send(&rt, &db, "reader", "1").is_ok());
     });
 }
@@ -2129,6 +2130,12 @@ fn a_directly_nested_text_stops_for_every_kind() {
                 send(&rt, &db, "owner", &nested(kind, 30, "nosuch")).map(drop)
             );
             assert!(got == absent || got.contains("nests more than 64"), "{got}");
+            let got = format!(
+                "{:?}",
+                send(&rt, &db, "owner", &nested(kind, 70, "1")).map(drop)
+            );
+            let deep = "Err(Rejected { reason: Invalid { detail: \"the text nests more than 64 levels deep";
+            assert!(got.starts_with(deep), "{got}");
         }
     });
 }

@@ -30,7 +30,13 @@ fn an_older_checkpoint_keeps_the_group_count_and_a_lower_one_never_lowers_it() {
         ..Options::new("count.adt")
     };
     let pager = Pager::create(rt, &options).expect("create pager");
-    pager.write_header(Some((Lsn(0), 9)));
+    pager.write_header(Some((Lsn(u64::MAX / 2), 7)));
+    pager.write_header(Some((Lsn(1), 9)));
+    pager.write_header(Some((Lsn(u64::MAX / 2), 3)));
+    let at_header = pager.header.lock(&pager.rt).0.checkpoint;
+    assert_eq!(Lsn(u64::MAX / 2), at_header);
+    assert_eq!(9, pager.header.lock(&pager.rt).0.bitmap_groups);
+    pager.write_header(None);
     pager.close();
     let file = std::fs::read(scratch.path().join("count.adt")).expect("read the file");
     let page = pager.page_size();

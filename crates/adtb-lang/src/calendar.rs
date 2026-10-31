@@ -58,7 +58,16 @@ mod tests {
             let (y, m, d) = civil_from_days(z);
             assert_eq!(z, days_from_civil(y, m, d));
         }
-        assert_eq!((1970, 1, 1), civil_from_days(0));
-        assert_eq!((2000, 2, 29), civil_from_days(days_from_civil(2000, 2, 29)));
+        for (day, date) in [
+            (0, (1970, 1, 1)),
+            (-1, (1969, 12, 31)),
+            (59, (1970, 3, 1)),
+            (365, (1971, 1, 1)),
+            (11_016, (2000, 2, 29)),
+            (11_017, (2000, 3, 1)),
+            (-25_508, (1900, 3, 1)),
+        ] {
+            assert_eq!(date, civil_from_days(day), "day {day}");
+        }
     }
 }

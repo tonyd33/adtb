@@ -381,9 +381,14 @@ fn a_correlated_count_probes_the_index_per_row_unflattened() {
 fn grouped_aggregates_are_computed_by_the_group() {
     let f = running();
     agrees(&f, GROUP, &[]);
-    let p = adhoc_plan(&f, GROUP, &[], Rewrites::ALL);
+    assert_eq!((false, 1), group_of(&f, GROUP));
+}
+
+/// Returns whether the group of `text` keeps its rows, and how many aggregates it computes.
+fn group_of(f: &Fixture, text: &str) -> (bool, usize) {
+    let p = adhoc_plan(f, text, &[], Rewrites::ALL);
     let ps = pipelines(&query_of(&p.root).spine);
-    let group = steps(&ps[0].chain)
+    steps(&ps[0].chain)
         .into_iter()
         .find_map(|s| match s {
             Step::Bind(_, Eval::Query(q)) => match &q.sink {
@@ -392,41 +397,40 @@ fn grouped_aggregates_are_computed_by_the_group() {
             },
             _ => None,
         })
-        .expect("a group");
-    assert_eq!((false, 1), group);
+        .expect("a group")
 }
 
 #[test]
 fn a_partial_sum_in_a_strict_position_is_computed_by_the_group() {
     let f = running();
-    agrees(
-        &f,
-        "from o in orders group o by o.user into g select { user: g.key, total: sum(x.total for x in g) }",
-        &[],
-    );
-    agrees(
-        &f,
-        "from o in orders group o by o.user into g
+    for (text, group) in [
+        (
+            "from o in orders group o by o.user into g select { user: g.key, total: sum(x.total for x in g) }",
+            (false, 1),
+        ),
+        (
+            "from o in orders group o by o.user into g
          select { user: g.key, top: max(x.total for x in g), n: count(x for x in g where x.qty > 0) }",
-        &[],
-    );
-    agrees(
-        &f,
-        "from o in orders group o by o.user into g
+            (false, 2),
+        ),
+        (
+            "from o in orders group o by o.user into g
          select { user: g.key, ids: from x in g select x.id, n: count(x for x in g) }",
-        &[],
-    );
+            (true, 1),
+        ),
+    ] {
+        agrees(&f, text, &[]);
+        assert_eq!(group, group_of(&f, text), "{text}");
+    }
 }
 
 #[test]
 fn a_sum_under_a_guard_is_left_to_the_body() {
     let f = running();
-    agrees(
-        &f,
-        "from o in orders group o by o.user into g
-         select { user: g.key, big: if count(x for x in g) > 1 then sum(x.total for x in g) else 0 }",
-        &[],
-    );
+    let text = "from o in orders group o by o.user into g
+         select { user: g.key, big: if count(x for x in g) > 1 then sum(x.total for x in g) else 0 }";
+    agrees(&f, text, &[]);
+    assert_eq!((true, 1), group_of(&f, text));
 }
 
 #[test]
@@ -1076,6 +1080,10 @@ fn a_range_probe_joins_on_a_bound_from_the_outer_row() {
     agrees(&f, text, &[]);
     let text = "from a in orders, b in orders where b.id > a.id and b.qty < a.qty select { a: a.id, b: b.id }";
     agrees(&f, text, &[]);
+    let p = adhoc_plan(&f, text, &[], Rewrites::ALL);
+    let ends = range_ends(&p);
+    assert_eq!(1, ends.len(), "{ends:?}");
+    assert!(ends[0].1.is_some() && ends[0].2.is_none(), "{ends:?}");
 }
 
 #[test]

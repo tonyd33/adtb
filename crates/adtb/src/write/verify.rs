@@ -531,14 +531,18 @@ mod tests {
 
     #[test]
     fn every_other_problem_is_a_finding() {
-        assert!(matches!(
-            found(Problem::Leaked),
-            Some(Found::Structure { .. })
-        ));
-        assert!(matches!(
-            found(Problem::Unallocated),
-            Some(Found::Structure { .. })
-        ));
+        for problem in [
+            Problem::Unlogged,
+            Problem::Leaked,
+            Problem::Unallocated,
+            Problem::Shared("a".into(), "b".into()),
+            Problem::Structure("a".into()),
+        ] {
+            assert!(
+                matches!(found(problem.clone()), Some(Found::Structure { .. })),
+                "{problem:?}"
+            );
+        }
         assert!(matches!(
             found(Problem::Damaged(Damage::Checksum)),
             Some(Found::Checksum { .. })

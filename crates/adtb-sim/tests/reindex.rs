@@ -1,6 +1,7 @@
 //! `reindex`: its job row, rebuilds under writers and across crashes, and the release of a
 //! quarantined index.
 
+use adtb_testkit::refused_with;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -819,9 +820,9 @@ fn a_real_file_restores_a_damaged_index_and_keeps_it_across_a_reopen() {
     std::fs::write(&path, bytes).unwrap();
     let db = Database::open(&path, &log, &real_options()).unwrap();
     let probe = "from g in identities.Google where g.user == users.key(5) select g.gid";
-    assert!(
-        db.query_text(probe, &[], &adtb::CallOptions::default())
-            .is_err()
+    refused_with(
+        db.query_text(probe, &[], &adtb::CallOptions::default()),
+        "fatal: app::identities index (user) in (Google | Apple) is quarantined",
     );
     assert_eq!(1, db.write_path().pager().quarantined().len());
     run(&db, USER_REINDEX);

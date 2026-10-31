@@ -133,13 +133,22 @@ fn compaction_keeps_slots_and_bytes() {
     for v in &versions {
         page::insert(&mut p, v, Flags::NONE).unwrap();
     }
+    slotted::release(&mut p, 3, Some(slotted::Content::Dead));
     slotted::compact(&mut p);
+    let mut lowest = p.len();
     for (s, v) in versions.iter().enumerate() {
+        if s == 3 {
+            assert_eq!(Slot::Dead, page::get(&p, s));
+            continue;
+        }
         let Slot::Normal { at, .. } = page::get(&p, s) else {
             panic!("slot {s} is empty");
         };
+        lowest = lowest.min(at.start);
         assert_eq!(&v[..], &p[at]);
     }
+    let stride = versions[0].len().next_multiple_of(8);
+    assert_eq!(p.len() - 9 * stride, lowest, "the hole of slot 3 is closed");
 }
 
 #[test]

@@ -77,7 +77,16 @@ fn create(schema: &Path, db: &Path) {
     assert!(out.status.success(), "create: {out:?}");
 }
 
+/// Returns the output of `-c text`, asserting it exits 0.
+#[track_caller]
 fn run(db: &Path, text: &str) -> Output {
+    let out = refused_run(db, text);
+    assert!(out.status.success(), "`{text}`: {out:?}");
+    out
+}
+
+/// Returns the output of `-c text`, whatever its exit status.
+fn refused_run(db: &Path, text: &str) -> Output {
     adtb(&[db.to_str().unwrap(), "-c", text], "")
 }
 
@@ -164,7 +173,7 @@ fn a_failing_text_prints_its_error_and_exits_with_one() {
     let (schema, db) = scratch("fails");
     create(&schema, &db);
     seed(&db);
-    let out = run(
+    let out = refused_run(
         &db,
         r#"insert identities.Google { user: users.key(1), gid: "g-ann" }"#,
     );
@@ -181,7 +190,7 @@ fn a_failing_text_prints_its_error_and_exits_with_one() {
 fn a_text_that_does_not_check_is_rejected_as_invalid() {
     let (schema, db) = scratch("invalid");
     create(&schema, &db);
-    let out = run(&db, "from u in nowhere select u");
+    let out = refused_run(&db, "from u in nowhere select u");
     assert_eq!(Some(1), out.status.code(), "{out:?}");
     assert!(
         stderr(&out).starts_with("`nowhere` is a parameter of this text"),
@@ -264,7 +273,10 @@ fn a_blank_line_runs_an_unfinished_text_so_its_error_shows() {
     let script = "from u in users\n\nfrom u in users select u.name\n";
     let out = adtb(&[db.to_str().unwrap()], script);
     assert_eq!(Some(1), out.status.code(), "{out:?}");
-    assert_eq!(1, stderr(&out).lines().count(), "{out:?}");
+    assert_eq!(
+        "expected `select`, found the end of the text\n",
+        stderr(&out)
+    );
 }
 
 #[test]
@@ -282,6 +294,22 @@ from u in users select u.name
     let mut rows = stdout(&out);
     rows.sort();
     assert_eq!(vec![r#""ann""#, r#""bo""#], rows);
+}
+
+#[test]
+fn a_transact_block_refused_by_a_later_line_writes_nothing() {
+    let (schema, db) = scratch("transact-refused");
+    create(&schema, &db);
+    let script = r#"transact
+  insert users { name: "ann" }
+  insert users { name: 1 }
+
+from u in users select u.name
+"#;
+    let out = adtb(&[db.to_str().unwrap()], script);
+    assert_eq!(Some(1), out.status.code(), "{out:?}");
+    assert_eq!("expected Text, found I64\n", stderr(&out));
+    assert_eq!(Vec::<String>::new(), stdout(&out));
 }
 
 #[test]
@@ -376,7 +404,7 @@ fn committed_rows_survive_reopening_the_file() {
 #[test]
 fn opening_a_missing_file_without_create_fails() {
     let (_, db) = scratch("missing");
-    let out = run(&db, "from u in users select u.name");
+    let out = refused_run(&db, "from u in users select u.name");
     assert_eq!(Some(1), out.status.code(), "{out:?}");
     assert!(
         stderr(&out).ends_with("the file does not exist\n"),
@@ -466,8 +494,7 @@ fn a_refused_create_leaves_nothing_at_the_path() {
 
 #[test]
 fn a_refused_migration_prints_one_line_per_message() {
-    let bad =
-        "module demo\ntype P = { id: Key ps, n: Int }\nrelation ps : P key id generate sequence\n";
+    let bad = "module demo\ntype P = { id: Key ps, n: Int, m: Float }\nrelation ps : P key id generate sequence\n";
     let (dir, db) = scratch_with("messages", &[("bad", bad)]);
     let out = adtb(
         &[
@@ -478,12 +505,11 @@ fn a_refused_migration_prints_one_line_per_message() {
         ],
         "",
     );
-    let err = stderr(&out);
-    assert!(
-        err.contains(":\n  no type `Int`; did you mean `I64`?\n"),
-        "{err}"
+    assert_eq!(Some(1), out.status.code(), "{out:?}");
+    assert_eq!(
+        "DIR/db.adt: migration 1 is refused:\n  no type `Int`; did you mean `I64`?\n  no type `Float`; did you mean `F64`?\n  no type `P`\n",
+        stderr(&out).replace(dir.to_str().unwrap(), "DIR")
     );
-    assert!(!err.contains("Rejected"), "{err}");
 }
 
 #[test]
@@ -608,7 +634,10 @@ fn verify_exits_1_on_a_finding_and_2_when_the_file_refuses_open() {
     std::fs::write(&db, &flipped).unwrap();
     let out = adtb(&["verify", db.to_str().unwrap()], "");
     assert_eq!(Some(2), out.status.code(), "{out:?}");
-    assert!(!stderr(&out).is_empty(), "{out:?}");
+    assert_eq!(
+        "DB: the file is corrupt: NoHeader\n",
+        stderr(&out).replace(db.to_str().unwrap(), "DB")
+    );
 }
 
 #[test]
@@ -644,7 +673,10 @@ fn verify_of_a_missing_file_exits_2_and_says_why() {
     let (_, db) = scratch("verify-missing");
     let out = adtb(&["verify", db.to_str().unwrap()], "");
     assert_eq!(Some(2), out.status.code(), "{out:?}");
-    assert!(stderr(&out).contains("db.adt"), "{out:?}");
+    assert_eq!(
+        "DB: the file does not exist\n",
+        stderr(&out).replace(db.to_str().unwrap(), "DB")
+    );
 }
 
 #[test]

@@ -217,8 +217,10 @@ mod tests {
             let start = usize::from(places[0] % 32);
             let len = (usize::from(places[1]) << 8 | usize::from(places[2])) % (bytes.len() - 32);
             let part = &bytes[start..start + len];
-            let got = paths(!0, part);
-            assert!(got.iter().all(|&c| c == got[0]), "seed {seed}: {got:x?}");
+            let want = bitwise(!0, part);
+            for got in paths(!0, part) {
+                assert_eq!(want, got, "seed {seed}");
+            }
         }
     }
 

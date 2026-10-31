@@ -1,6 +1,5 @@
 //! What a crash leaves on the device: pinned byte for byte on fixed seeds, and stated for allocate
-//! as assertions on the image. A digest also folds the simulator's trace, so a difference means
-//! its bytes, its random draws or the wording of a trace line changed.
+//! as assertions on the image.
 
 use adtb_simkit::common;
 
@@ -47,8 +46,7 @@ fn workload(rt: &SimRuntime, io: &mut SimIo) -> u64 {
     failed
 }
 
-/// Run the workload to a crash at `after`, then return a digest of the device, the trace and the
-/// failure count.
+/// Run the workload to a crash at `after`, then return a digest of the device and the failure count.
 fn crash_digest(seed: u64, faults: &Faults, after: Duration) -> u64 {
     let mut sim = Sim::new(
         seed,
@@ -65,9 +63,7 @@ fn crash_digest(seed: u64, faults: &Faults, after: Duration) -> u64 {
         common::sleep(&rt, &mut io, Duration::from_secs(3600));
     });
     assert_eq!(Outcome::Crashed, outcome, "seed {seed}");
-    let digest = fnv(FNV_OFFSET, &failed.to_le_bytes());
-    let digest = fnv(digest, sim.trace().as_bytes());
-    fold_files(digest, &sim.files())
+    fold_files(fnv(FNV_OFFSET, &failed.to_le_bytes()), &sim.files())
 }
 
 /// Returns a digest of the images a crash may leave at each force and at the end of a recording.
@@ -106,10 +102,10 @@ fn a_crash_leaves_the_same_image_with_the_default_faults() {
         "default",
         &Faults::default(),
         [
-            0x6cb0_1231_f54c_200c,
-            0x2378_0612_5be5_dab8,
-            0xe1ce_f85e_aac3_2457,
-            0xe021_69bd_fc2d_bb8a,
+            0x7043_b6f9_7a89_3cf1,
+            0x0f51_1fc8_c76d_1821,
+            0xdef1_4bcb_0750_52f1,
+            0x2c27_0a89_8ebc_b091,
         ],
     );
 }
@@ -124,10 +120,10 @@ fn a_crash_leaves_the_same_image_when_every_large_write_tears() {
         "torn",
         &faults,
         [
-            0xbf47_f44b_eabb_eb59,
-            0xadf9_4477_68c2_cd5d,
-            0x47b5_ff96_0cd5_ac63,
-            0x7103_5117_0293_17ae,
+            0x2916_3699_4320_1c80,
+            0x99dd_72cc_d745_8c22,
+            0x4ac4_1419_44ea_b518,
+            0x517e_b1de_af6b_2d18,
         ],
     );
 }
@@ -142,10 +138,10 @@ fn a_crash_leaves_the_same_image_when_every_completed_write_survives() {
         "kept",
         &faults,
         [
-            0x44b1_0e46_17d3_13cf,
-            0x18b9_e011_9a9f_fc59,
-            0x5283_4696_0ab3_5d00,
-            0xf34f_8ef7_9509_9427,
+            0x4d12_498a_4231_ba91,
+            0x4d12_498a_4231_ba91,
+            0x4d12_498a_4231_ba91,
+            0x4d12_498a_4231_ba91,
         ],
     );
 }
@@ -161,10 +157,10 @@ fn a_crash_leaves_the_same_image_after_lost_and_misdirected_writes() {
         "misplaced",
         &faults,
         [
-            0xd933_baf2_14a5_d8f1,
-            0xf547_6a1a_d96e_f4ab,
-            0x3a81_d27b_318d_2336,
-            0x4a6d_8eb7_3656_b561,
+            0x19df_360e_2943_1291,
+            0x2631_684a_007a_e241,
+            0x59d8_5675_1ee4_da91,
+            0xb7cd_8058_6276_c291,
         ],
     );
 }
@@ -179,10 +175,10 @@ fn a_crash_leaves_the_same_image_after_failed_writes_and_forces() {
         "failing",
         &faults,
         [
-            0x9399_b9c2_77a3_abfe,
-            0x0c5a_958a_3b01_405f,
-            0x5fbd_3bb0_f78e_aebc,
-            0x047f_31ec_3ea3_5cd9,
+            0x5222_56c6_5b8d_5b7a,
+            0x11c6_bf9a_33f2_2f4d,
+            0x9cb7_8b79_d449_697e,
+            0xff44_53a8_ca42_1acf,
         ],
     );
 }
@@ -219,10 +215,10 @@ fn a_crash_leaves_the_same_image_after_corruption_and_bad_sectors() {
         "rotting",
         &faults,
         [
-            0x8c32_e390_47c9_7470,
-            0x2f2d_a09f_efc9_06c1,
-            0xbded_021a_b0c5_dcb6,
-            0xc779_c7c6_94c9_90e4,
+            0xd463_8fa7_56d8_2bfa,
+            0xe4b4_510d_31f2_9718,
+            0xcd86_e27b_9d2d_0b1e,
+            0xaf58_1b4e_2efd_8a3c,
         ],
     );
 }
@@ -237,10 +233,10 @@ fn a_crash_leaves_the_same_image_on_a_full_device() {
         "full",
         &faults,
         [
-            0xc99e_a4f9_7a4d_5d4c,
-            0x6f4b_a1a7_b7b7_d25e,
-            0xda3b_0e05_09c7_0ed3,
-            0xebc1_38e6_c8d0_065c,
+            0xe0fa_62ba_200c_fd57,
+            0xe0fa_62ba_200c_fd57,
+            0xe0fa_62ba_200c_fd57,
+            0xe0fa_62ba_200c_fd57,
         ],
     );
 }

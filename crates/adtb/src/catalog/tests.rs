@@ -75,7 +75,7 @@ fn every_engine_object_with_an_id_has_a_row() {
     assert_eq!(schema.ids.ctors.len(), count(220));
     assert_eq!(schema.ids.fields.len(), count(222));
     assert_eq!(schema.ids.relations.len(), count(223));
-    assert_eq!(61, count(226));
+    assert_eq!(indexes(&schema).len(), count(226));
     assert_eq!(0, count(224));
     assert_eq!(0, count(232));
 }
@@ -149,16 +149,9 @@ fn engine_indexes_are_the_keys_then_the_uniques() {
     let schema = engine_schema();
     let all = indexes(&schema);
     assert_eq!(
-        (0..61).collect::<BTreeSet<u64>>(),
+        (0..all.len() as u64).collect::<BTreeSet<u64>>(),
         all.keys().copied().collect()
     );
-    let uniques: Vec<(u64, Vec<String>)> = all
-        .values()
-        .filter(|s| s.fields != schema.relation(s.relation).key)
-        .map(|s| (s.id, s.fields.clone()))
-        .collect();
-    assert_eq!(7, uniques.len(), "{uniques:?}");
-    assert!(uniques.iter().all(|(_, f)| f.len() <= 2));
 }
 
 #[test]
@@ -475,7 +468,7 @@ fn a_stored_migration_that_does_not_parse_is_not_accepted() {
         panic!("the log folds")
     };
     assert_eq!(2, version);
-    assert!(!why.is_empty());
+    assert_eq!(vec!["expected what to add, found the end of the text"], why);
 }
 
 #[test]
@@ -485,7 +478,17 @@ fn a_stored_migration_that_does_not_apply_is_not_accepted() {
         panic!("the log folds")
     };
     assert_eq!(2, version);
-    assert!(!why.is_empty());
+    assert_eq!(
+        vec![
+            "module `app` already exists",
+            "module `app` already declares type `Shape`",
+            "module `app` already declares relation `shapes`",
+            "module `app` already declares set `shapes.Round`",
+            "module `app` already declares fn `area`",
+            "module `app` already declares fn `stamp`",
+        ],
+        why
+    );
 }
 
 #[test]

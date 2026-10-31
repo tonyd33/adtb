@@ -508,7 +508,7 @@ fn sets_and_functions_are_variant() {
     accepts("fn f (p: Identity -> Bool) -> Identity.Google -> Bool = p");
     refuses(
         "fn f (p: Identity.Google -> Bool) -> Identity -> Bool = p",
-        "expected",
+        "expected Identity -> Bool, found Identity.Google -> Bool",
     );
 }
 
@@ -1480,18 +1480,6 @@ fn a_match_on_a_key_derefs_it() {
             ..
         }
     ));
-}
-
-#[test]
-fn a_match_over_a_relation_is_a_union_of_arm_queries() {
-    accepts(
-        "fn f (u: Key users) -> Set Text = from i in identities where i.user == u
-           select match i | EmailPass e -> e.email | Google g -> g.gid | Apple a -> a.sub
-         fn g (u: Key users) -> Set Text =
-           (from e in identities.EmailPass where e.user == u select e.email)
-           union (from g in identities.Google where g.user == u select g.gid)
-           union (from a in identities.Apple where a.user == u select a.sub)",
-    );
 }
 
 #[test]

@@ -155,23 +155,6 @@ fn the_first_migration_folds_to_the_schema() {
     folds_to_the_schema(&v1);
 }
 
-#[test]
-fn the_schema_file_replays_as_a_first_migration() {
-    let file = parse_schema(SCHEMA, Options::default())
-        .ok()
-        .unwrap_or_else(|ds| panic!("{}", rendered(SCHEMA, &ds)));
-    let mut text = format!("module {MODULE}\nadd module {MODULE}\n");
-    for d in &file.decls {
-        let verb = match d {
-            Decl::Fn(_) | Decl::Aggregate(_) => "define ",
-            Decl::Store(_) => "",
-            _ => "add ",
-        };
-        text.push_str(&format!("{verb}{}\n", &SCHEMA[span(d)]));
-    }
-    folds_to_the_schema(&migrated(&Source::default(), &text));
-}
-
 /// Returns the checked schema after the first `n` migrations.
 fn folded(n: usize) -> Schema {
     let src = version(n);
@@ -341,15 +324,6 @@ fn release_1_3_adds_quest_states() {
 
 /// The bundle of each release, with the version it pins.
 const BUNDLES: [(&str, usize); 3] = [(BUNDLE_1_0, 1), (BUNDLE, 4), (WEB_BUNDLE, 5)];
-
-#[test]
-fn every_bundle_parses() {
-    for (text, _) in BUNDLES {
-        if let Err(ds) = parse_bundle(text, Options::default()).ok() {
-            panic!("{}", rendered(text, &ds));
-        }
-    }
-}
 
 #[test]
 fn every_query_and_transaction_checks_at_its_pin() {

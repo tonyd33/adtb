@@ -146,7 +146,13 @@ fn a_damaged_mark_page_quarantines_the_database() {
     let mut sim = Sim::with_files(4, Config::default(), files);
     with_pager(&mut sim, |p| {
         assert!(p.is_quarantined(Quarantine::Database));
-        assert!(p.quarantine(Quarantine::Heap(1)).is_err());
+        assert_eq!(
+            Err(PageError {
+                pid: page,
+                damage: Damage::Checksum,
+            }),
+            p.quarantine(Quarantine::Heap(1))
+        );
     });
 }
 
@@ -2147,6 +2153,7 @@ fn mark_named(db: &Database<SimRuntime>, relation: &str, ctor: &str) -> Quaranti
 
 /// Commit a transaction that runs `write`, with `mark` set after the write. Returns what the
 /// commit fails with.
+#[must_use]
 fn refused_commit(db: &Database<SimRuntime>, write: &str, mark: Quarantine) -> String {
     let mut t = db.begin(&TxnOptions::default()).unwrap();
     api::in_txn_results(&mut t, write);

@@ -123,8 +123,11 @@ fn decimals_add_at_the_larger_scale_and_compare_across_scales() {
 #[test]
 fn a_wide_sum_is_exact_whatever_its_order() {
     let big = Wide::from_i128(i128::MAX);
-    let s = big.add(big).and_then(|s| s.add(Wide::from_i128(i128::MIN)));
-    assert_eq!(Some(i128::MAX - 1), s.and_then(Wide::to_i128));
+    let small = Wide::from_i128(i128::MIN);
+    for (a, b, c) in [(big, big, small), (big, small, big), (small, big, big)] {
+        let s = a.add(b).and_then(|s| s.add(c));
+        assert_eq!(Some(i128::MAX - 1), s.and_then(Wide::to_i128));
+    }
     assert_eq!(None, Wide::from_i128(10i128.pow(38)).digits38());
     assert_eq!(
         Some(-(10i128.pow(38) - 1)),

@@ -2,6 +2,7 @@
 //! submit and on leaving the queue, definer rights, audit rows and lease renewal.
 
 use adtb_simkit::api;
+use adtb_testkit::refused_with;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1237,6 +1238,7 @@ const READ_CTORS: &str = "grant read catalog::constructors to ann with grant opt
 
 const REVOKE_CTORS: &str = "revoke read catalog::constructors from ann";
 
+#[must_use]
 fn refused_register(f: &Fixture, role: &str, reg: &Registration) -> String {
     match f.db.role_authority().register(&f.session(role), reg) {
         Err(Error::Rejected {
@@ -1832,11 +1834,13 @@ fn a_bundle_a_migration_expired_past_stays_expired_when_the_grace_rises() {
         f.db.close().expect("close");
         let f = reopened(&rt, later);
         assert_expired(f.bind("web", "one-1.0"));
-        assert!(
-            f.db.role_authority()
-                .register(&f.session("ann"), &one)
-                .is_err(),
-            "registering again runs the checks"
+        refused_with(
+            f.db.role_authority().register(&f.session("ann"), &one),
+            concat!(
+                "denied: q reads customers.Customer; ann lacks read with grant option\n",
+                "q reads customers.Customer (id); ann lacks read with grant option\n",
+                "q reads customers.Customer (name); ann lacks read with grant option",
+            ),
         );
         assert_expired(f.bind("web", "one-1.0"));
     });
@@ -1927,9 +1931,9 @@ fn a_migration_grants_no_write_on_a_system_relation() {
         for privilege in ["read", "insert"] {
             let bad = format!("module shop\ngrant {privilege} catalog::grants to ann\n");
             let log: &[&str] = &[SHOP, GRANTS, &bad];
-            assert!(
-                opened(&rt, log, vec![]).is_err(),
-                "`{privilege}` is deployment state"
+            refused_with(
+                opened(&rt, log, vec![]),
+                "migration 3 is refused: a grant on a `catalog::` or `sys::` relation is deployment state, an ad hoc statement, never an operator in a migration",
             );
         }
     });

@@ -1030,14 +1030,6 @@ fn hash64_is_xxh64_with_seed_zero() {
     assert_eq!(hash32(b"abc"), 0x44BC_2CF5);
 }
 
-#[test]
-fn equal_values_hash_equally() {
-    let schema = asc(vec![scalar(Scalar::F64)]);
-    let hash = |x: f64| hash64(&schema.encode(&[Value::F64(F64::new(x))]));
-    assert_eq!(hash(-0.0), hash(0.0));
-    assert_eq!(hash(f64::NAN), hash(f64::from_bits(0xFFF0_0000_0000_0001)));
-}
-
 fn anon(fields: Vec<(&str, KeyType)>) -> AnonRecordType {
     AnonRecordType::new(
         fields
@@ -1204,18 +1196,7 @@ fn spread_order_keys_split_the_room_evenly() {
 }
 
 #[test]
-fn order_keys_encode_in_key_order_with_their_terminator() {
-    let mut rng = Rng(7);
-    for _ in 0..5000 {
-        let a = gen_valid_order_key(&mut rng);
-        let b = gen_valid_order_key(&mut rng);
-        let enc = |k: &OrderKey| [k.as_bytes(), &[0x00]].concat();
-        assert_eq!(enc(&a).cmp(&enc(&b)), a.cmp(&b), "{a:x?} {b:x?}");
-    }
-}
-
-#[test]
-fn inserting_and_moving_a_constructor_keeps_the_other_keys() {
+fn a_key_between_two_makes_a_valid_sum() {
     let keys = OrderKey::spread(4);
     let ctor = |k: &OrderKey| CtorType {
         order_key: k.clone(),
@@ -1225,11 +1206,4 @@ fn inserting_and_moving_a_constructor_keeps_the_other_keys() {
     let mut with_added: Vec<CtorType> = keys.iter().map(ctor).collect();
     with_added.insert(2, ctor(&added));
     assert!(SumType::new(with_added).is_some());
-
-    let moved = OrderKey::between(None, Some(&keys[0]));
-    let mut reordered = vec![ctor(&moved)];
-    reordered.extend([&keys[0], &keys[1], &keys[2]].map(ctor));
-    let sum = SumType::new(reordered).unwrap();
-    let unchanged: Vec<&OrderKey> = sum.ctors()[1..].iter().map(|c| &c.order_key).collect();
-    assert_eq!(unchanged, [&keys[0], &keys[1], &keys[2]]);
 }

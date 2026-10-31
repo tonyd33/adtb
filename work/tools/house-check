@@ -4,6 +4,7 @@
 #
 # DIR defaults to the workspace holding this script.
 # Rules: an em dash anywhere; an added size-allowlist entry; an added lint expectation in Rust;
+# an asserted bare `.is_err()` in Rust;
 # in Rust comments, markdown bold, a section sign, a rule id
 # or a recognized third-person doc verb; a doc summary of two sentences that each start
 # `Returns`, one of its lines added. List added ordinary comments other than `// SAFETY:` for invariant review.
@@ -24,7 +25,7 @@ jj diff --git "$@" | awk '
           "vacuums validates visits waits walks wraps writes", words)
     for (i in words) verbs[words[i]] = 1
   }
-  /^\+\+\+ / { file = substr($0, 7); block = 0; safety = -1; next }
+  /^\+\+\+ / { file = substr($0, 7); block = 0; safety = -1; open_assert = 0; next }
   /^@@ / {
     block = 0
     split($3, hunk, ",")
@@ -46,6 +47,9 @@ jj diff --git "$@" | awk '
     if (file == "work/tools/size-allowlist") report("size allowlist entry")
     if (file ~ /\.rs$/ && text ~ /#!?\[expect\(/) report("lint suppression: fix the code or justify it in the report")
     if (file !~ /\.rs$/) next
+    if (text ~ /assert!\($/) open_assert = 1
+    if ((open_assert || text ~ /assert!\(/) && text ~ /\.is_err\(\)/) report("bare is_err: assert the refusal reason")
+    if (text ~ /^[ \t]*\);?$/) open_assert = 0
     at = match(text, /(^|[ \t])\/\//)
     if (!at) next
     comment = substr(text, at)

@@ -191,6 +191,14 @@ fn a_sort_key_is_stable_for_its_name() {
     let Value::SortKey(bytes) = &k else {
         panic!("a sort key, found {k:?}")
     };
-    assert!(!bytes.is_empty());
-    assert_eq!(Ok(k.clone()), f.eval(r#"collate("Straße", "de@cldr-49")"#));
+    assert_eq!(
+        &vec![
+            79, 81, 77, 43, 79, 79, 51, 1, 66, 112, 6, 1, 220, 195, 224, 211, 5
+        ],
+        bytes
+    );
+    assert_eq!(
+        Ok(k.clone()),
+        fixture().eval(r#"collate("Straße", "de@cldr-49")"#)
+    );
 }

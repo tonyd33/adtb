@@ -57,8 +57,8 @@ fn a_query_with_other_rows_differs() {
 #[test]
 fn a_set_result_without_rowsort_is_in_printed_order() {
     assert_eq!(
-        1,
-        differences("query\n  from t in ts select t.n\n----\n2\n1\n").len()
+        vec!["got [1, 2]".to_string()],
+        differences("query\n  from t in ts select t.n\n----\n2\n1\n")
     );
 }
 
@@ -100,8 +100,8 @@ fn text_that_does_not_check_is_refused_as_invalid() {
 #[test]
 fn a_query_that_writes_differs() {
     assert_eq!(
-        1,
-        differences("query\n  insert ts { id: ts.key(3), n: 5 }\n----\n()\n").len()
+        vec!["refused with Invalid: a read-only transaction does not write".to_string()],
+        differences("query\n  insert ts { id: ts.key(3), n: 5 }\n----\n()\n")
     );
 }
 
@@ -115,7 +115,10 @@ fn a_query_of_two_statements_differs() {
 fn an_ordered_result_compares_in_order() {
     let q = "query\n  from t in ts select t.n order by t.n desc\n----\n";
     assert_eq!(Vec::<String>::new(), differences(&format!("{q}2\n1\n")));
-    assert_eq!(1, differences(&format!("{q}1\n2\n")).len());
+    assert_eq!(
+        vec!["got [2, 1]".to_string()],
+        differences(&format!("{q}1\n2\n"))
+    );
 }
 
 #[test]

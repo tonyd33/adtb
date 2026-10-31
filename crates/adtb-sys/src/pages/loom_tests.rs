@@ -348,7 +348,8 @@ fn a_page_filled_after_eviction_keeps_its_fill() {
         let c = Arc::clone(&m);
         let clock = thread::spawn(move || sweep(&c));
         let mut g = m.lock_exclusive(PID, &Model);
-        if !g.resident() {
+        let refilled = !g.resident();
+        if refilled {
             reach.store(true, Relaxed);
             g.write(0, &[8; 16]);
         }
@@ -356,10 +357,17 @@ fn a_page_filled_after_eviction_keeps_its_fill() {
         clock.join().unwrap();
         let (state, version) = m.state(PID);
         let bytes = plain_bytes(&m);
-        assert!(
-            bytes == [7; 16] || bytes == [8; 16] || state == PageState::Evicted,
-            "a fill after eviction was lost: {bytes:?} in {state:?} at version {version}"
-        );
+        if refilled {
+            assert!(
+                bytes == [8; 16] && state != PageState::Evicted,
+                "a fill after eviction was lost: {bytes:?} in {state:?} at version {version}"
+            );
+        } else {
+            assert!(
+                bytes == [7; 16] || state == PageState::Evicted,
+                "the first fill was lost: {bytes:?} in {state:?} at version {version}"
+            );
+        }
     });
 }
 

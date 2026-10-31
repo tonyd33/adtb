@@ -45,8 +45,9 @@ fn merging_runs_of_a_unique_index_refuses_two_entries_of_a_key_that_count() {
         Err(BuildError::Duplicate(b"k".to_vec())),
         merge_runs(run(true), true, &|| false)
     );
-    assert!(merge_runs(run(false), true, &|| false).is_ok());
-    assert!(merge_runs(run(true), false, &|| false).is_ok());
+    let merged = || Ok(vec![b"k1".to_vec(), b"k2".to_vec(), b"z1".to_vec()]);
+    assert_eq!(merged(), merge_runs(run(false), true, &|| false));
+    assert_eq!(merged(), merge_runs(run(true), false, &|| false));
 }
 
 #[test]
@@ -156,7 +157,8 @@ fn removed_cells_are_reclaimed_by_compaction() {
         k.push(i + 100);
         node::insert(&mut p, usize::from(i), &leaf(&k));
     }
-    assert_eq!(keys(&p).len(), usize::from(n));
+    let want: Vec<Vec<u8>> = (0..n).map(|i| [&big[..], &[i + 100]].concat()).collect();
+    assert_eq!(want, keys(&p));
 }
 
 #[test]
@@ -206,7 +208,7 @@ fn out_of_bounds_offsets_are_refused() {
 }
 
 #[test]
-fn the_largest_entries_still_split_into_two_pages() {
+fn three_largest_entries_and_two_fences_fit_a_page() {
     let max = BTree::max_entry_len(PAGE);
     let item = Item::link(vec![0; max], Pid(1));
     let fence = 2 + max;

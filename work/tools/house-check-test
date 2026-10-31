@@ -136,4 +136,24 @@ fn added() {}
 RS
 expect 1 'fixture.rs:6: comment, keep only for an invariant: // The key stays unique.'
 
+cat >fixture.rs <<'RS'
+/// Writes the unchanged item.
+fn unchanged() {}
+fn added() {
+    assert!(got.is_err());
+    assert!(
+        got
+            .is_err(),
+        "the reason"
+    );
+    assert!(got.is_ok());
+    assert!(
+        got.is_ok()
+    );
+    let bad = got.is_err();
+}
+RS
+expect 1 'fixture.rs:4: bare is_err: assert the refusal reason:     assert!(got.is_err());
+fixture.rs:7: bare is_err: assert the refusal reason:             .is_err(),'
+
 printf 'house-check fixtures passed\n'

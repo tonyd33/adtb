@@ -112,7 +112,11 @@ fn timer_fires_at_its_time() {
     run(&mut sim, |rt, io| {
         let before = rt.now();
         sleep(rt, io, Duration::from_millis(5));
-        assert!(rt.now() >= before + Duration::from_millis(5));
+        let now = rt.now();
+        assert!(
+            now >= before + Duration::from_millis(5) && now < before + Duration::from_millis(6),
+            "{now:?}"
+        );
     });
 }
 
@@ -156,13 +160,16 @@ fn entropy_is_seeded() {
 
 #[test]
 fn fill_uses_the_seeded_stream() {
-    let mut sim = Sim::new(10, Config::default());
-    let bytes = run(&mut sim, |rt, _| {
-        let mut b = [0u8; 12];
-        rt.fill(&mut b);
-        b
-    });
-    assert_ne!([0u8; 12], bytes);
+    let bytes = |seed| {
+        run(&mut Sim::new(seed, Config::default()), |rt, _| {
+            let mut b = [0u8; 12];
+            rt.fill(&mut b);
+            b
+        })
+    };
+    assert_ne!([0u8; 12], bytes(10));
+    assert_eq!(bytes(10), bytes(10));
+    assert_ne!(bytes(10), bytes(11));
 }
 
 #[test]

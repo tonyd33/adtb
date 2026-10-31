@@ -138,6 +138,7 @@ fn nothing_an_error_directive_runs_commits() {
     assert_eq!(Vec::<String>::new(), found);
 }
 
+#[must_use]
 fn refused(script: &str) -> (usize, String) {
     let d = parse(script).expect_err("the script does not read");
     (d.line, d.message)

@@ -3,6 +3,7 @@
     reason = "drives real threads and clocks against a real file; removing it needs these races on the simulator"
 )]
 
+use adtb_testkit::refused_with;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use adtb::runtime::{Clock, Runtime, Threads};
 use adtb::storage::{Damage, Quarantine};
-use adtb::{CallOptions, CancelToken, Database, Log, TxnCallOptions, TxnOptions};
+use adtb::{CallOptions, CancelToken, Database, Log, TxnCallOptions, TxnOptions, Value};
 use adtb_sim::{Config, Faults, Outcome, Sim, SimRuntime};
 use adtb_simkit::seeds::assert_reached;
 use adtb_simkit::{api, common, crash};
@@ -69,15 +70,20 @@ struct Writer {
     model: BTreeMap<i64, Row>,
     next: i64,
     owner_base: i64,
+    unique_refusals: usize,
     bad: Arc<Mutex<Vec<String>>>,
 }
 
 impl Writer {
     /// Record a failure of `what` unless it is a serialization failure.
     fn check(&self, e: &adtb::Error, what: &str) {
-        let s = format!("{e:?}");
-        if !s.contains("Serialization") {
-            self.bad.lock().unwrap().push(format!("{what}: {s}"));
+        if !matches!(
+            e,
+            adtb::Error::Retry {
+                reason: adtb::RetryReason::Serialization { .. }
+            }
+        ) {
+            self.bad.lock().unwrap().push(format!("{what}: {e:?}"));
         }
     }
 
@@ -173,17 +179,69 @@ impl Writer {
     }
 
     fn refused_duplicate(&mut self) {
-        if let Some(r) = self.model.values().find(|r| r.a) {
+        if let Some((&key, r)) = self.model.iter().find(|(_, r)| r.a) {
+            let read = format!("from t in things.A where key t == things.key({key}) select t");
+            let old = self
+                .db
+                .query_text(&read, &[], &CallOptions::default())
+                .and_then(|mut results| {
+                    results
+                        .pop()
+                        .expect("a select has one result")
+                        .collect::<Result<Vec<_>, _>>()
+                });
+            let mut old = match old {
+                Ok(rows) => rows,
+                Err(e) => {
+                    self.check(&e, "duplicate source");
+                    return;
+                }
+            };
+            assert_eq!(1, old.len(), "the writer owns the row it duplicates");
+            let old = old.remove(0);
             self.next += 1;
+            let new = Value::ctor(
+                0,
+                vec![
+                    Value::Int(self.next),
+                    Value::Int(0),
+                    Value::text("n"),
+                    Value::text(&r.val),
+                ],
+            );
+            let expected = adtb::Error::Rejected {
+                reason: adtb::RejectReason::Violated {
+                    constraint: "app::things.unique(a) in A".into(),
+                    report: vec![
+                        Value::record(vec![old.clone(), new.clone()]),
+                        Value::record(vec![new, old]),
+                    ],
+                    redacted: 0,
+                },
+            };
             let t = format!(
                 r#"insert things.A {{ id: things.key({}), owner: 0, note: "n", a: "{}" }}"#,
                 self.next, r.val
             );
-            if run(&self.db, &t).is_ok() {
-                self.bad
+            match run(&self.db, &t) {
+                Ok(_) => self
+                    .bad
                     .lock()
                     .unwrap()
-                    .push(format!("duplicate a {} admitted", r.val));
+                    .push(format!("duplicate a {} admitted", r.val)),
+                Err(mut e) => {
+                    if let adtb::Error::Rejected {
+                        reason: adtb::RejectReason::Violated { report, .. },
+                    } = &mut e
+                    {
+                        report.sort();
+                    }
+                    if e == expected {
+                        self.unique_refusals += 1;
+                    } else {
+                        self.check(&e, "duplicate");
+                    }
+                }
             }
         }
     }
@@ -249,6 +307,7 @@ fn writer(
         model: BTreeMap::new(),
         next: w * 1_000_000,
         owner_base: w * 100,
+        unique_refusals: 0,
         bad,
     };
     let mut x = (w as u64 + 1) * 0x9E37_79B9;
@@ -278,6 +337,27 @@ fn writer(
         }
     }
     me.model
+}
+
+#[test]
+fn refused_duplicate_checks_the_named_unique_report() {
+    let bad = Arc::new(Mutex::new(Vec::new()));
+    let mut me = Writer {
+        db: open(&path("duplicate-report")),
+        model: BTreeMap::new(),
+        next: 0,
+        owner_base: 0,
+        unique_refusals: 0,
+        bad: Arc::clone(&bad),
+    };
+    me.insert();
+    me.refused_duplicate();
+    assert_eq!(1, me.unique_refusals);
+    assert_eq!(Vec::<String>::new(), *bad.lock().unwrap());
+    assert_eq!(
+        vec![r#"A { id: things.key(1), owner: 0, note: "n", a: "L1" }"#],
+        run(&me.db, "from t in things select t").unwrap()
+    );
 }
 
 fn stress(name: &str, reindexes: usize, verify_beside: bool) {
@@ -971,10 +1051,9 @@ fn a_damaged_history_key_index_is_rebuilt_from_the_history_heap() {
         let read = seed_history(&db);
         assert_eq!(vec!["1007"], api::query(&db, &read), "before the damage");
         db.damage_page(history_root(&db), Damage::Checksum);
-        let refused = db.query_text(&read, &[], &CallOptions::default());
-        assert!(
-            refused.is_err(),
-            "a read of the past through a damaged tree"
+        refused_with(
+            db.query_text(&read, &[], &CallOptions::default()),
+            "fatal: app::ts key id is quarantined",
         );
         assert_eq!(1, marks(&db).len(), "{:?}", marks(&db));
         assert!(
@@ -1023,7 +1102,10 @@ fn a_history_page_damaged_during_the_build_is_not_released_unrepaired() {
         db.on_reindex_phase(Arc::new(move |phase| {
             if phase == "build" && !once.swap(true, Ordering::AcqRel) {
                 d.damage_page(history_root(&d), Damage::Checksum);
-                assert!(d.query_text(&r, &[], &CallOptions::default()).is_err());
+                refused_with(
+                    d.query_text(&r, &[], &CallOptions::default()),
+                    "fatal: app::ts key id is quarantined",
+                );
             }
         }));
         api::results(&db, "reindex ts");
@@ -1047,7 +1129,10 @@ fn a_history_tree_that_cannot_be_rebuilt_keeps_the_mark() {
         let heap = w.history_heap_named("app::ts", "T").unwrap();
         let page = heap.pages(w.pager()).unwrap()[0];
         db.damage_page(history_root(&db), Damage::Checksum);
-        assert!(db.query_text(&read, &[], &CallOptions::default()).is_err());
+        refused_with(
+            db.query_text(&read, &[], &CallOptions::default()),
+            "fatal: app::ts key id is quarantined",
+        );
         let before = marks(&db);
         assert_eq!(1, before.len(), "{before:?}");
         db.damage_page(page, Damage::Checksum);

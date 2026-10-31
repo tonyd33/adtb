@@ -3,6 +3,7 @@
 
 use adtb_simkit::api;
 use adtb_simkit::harness;
+use adtb_testkit::refused_with;
 
 use std::collections::BTreeSet;
 
@@ -48,6 +49,7 @@ fn write(db: &Database<SimRuntime>, text: &str) {
         .unwrap_or_else(|e| panic!("`{text}` fails: {e:?}"));
 }
 
+#[must_use]
 fn fails(db: &Database<SimRuntime>, text: &str) -> Error {
     match db.query_text(text, &[], &CallOptions::default()) {
         Ok(rows) => panic!("`{text}` succeeds with {} results", rows.len()),
@@ -1476,7 +1478,14 @@ fn a_redefined_computed_field_reads_its_new_expression_and_a_dropped_one_is_gone
     let drop = "module shop\ndrop computed customers.shout\n";
     after(81, &[SHOUT, drop], |db| {
         let db = db.expect("the drop applies");
-        fails(&db, "from c in customers select c.shout");
+        refused_with(
+            db.query_text(
+                "from c in customers select c.shout",
+                &[],
+                &CallOptions::default(),
+            ),
+            "Customer has no field `shout`",
+        );
     });
 }
 
@@ -1484,7 +1493,14 @@ fn a_redefined_computed_field_reads_its_new_expression_and_a_dropped_one_is_gone
 fn reverting_an_added_computed_field_drops_it() {
     after(82, &[SHOUT, "module shop\nrevert 0002\n"], |db| {
         let db = db.expect("the revert applies");
-        fails(&db, "from c in customers select c.shout");
+        refused_with(
+            db.query_text(
+                "from c in customers select c.shout",
+                &[],
+                &CallOptions::default(),
+            ),
+            "Customer has no field `shout`",
+        );
     });
 }
 

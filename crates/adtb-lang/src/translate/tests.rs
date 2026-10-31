@@ -70,6 +70,7 @@ fn translated(log: &[&str], pin: usize, body: &str) -> R<NormalQuery> {
 }
 
 /// Returns the operator and reason of the refusal of translating `body`.
+#[must_use]
 fn refused_across(log: &[&str], pin: usize, body: &str) -> (String, String) {
     match translated(log, pin, body) {
         Ok(_) => panic!("`{body}` translates"),

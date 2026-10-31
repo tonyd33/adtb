@@ -455,11 +455,35 @@ fn bundle_family_may_contain_hyphens() {
 
 #[test]
 fn version_hash_is_64_hex_digits() {
-    let src = r#"bundle web-1.0 pins 12 (c41e) edition "2026-10""#;
-    assert!(parse_bundle(src, STRICT).ok().is_err());
-    let src = r#"bundle web-1.0 pins 12 (c41e...) edition "2026-10""#;
-    assert!(parse_bundle(src, STRICT).ok().is_err());
-    assert_eq!(example(src).len(), 1);
+    let with_hash = |hash: &str| format!(r#"bundle web-1.0 pins 12 ({hash}) edition "2026-10""#);
+    let refusal = |src: &str| match parse_bundle(src, STRICT).ok() {
+        Ok(_) => panic!("{src}: accepted"),
+        Err(d) => d[0].message.clone(),
+    };
+    assert_eq!(
+        "a version hash is exactly 64 hex digits",
+        refusal(&with_hash("c41e"))
+    );
+    assert_eq!(
+        "a version hash is exactly 64 hex digits",
+        refusal(&with_hash(&"a".repeat(63)))
+    );
+    assert_eq!(
+        "a version hash is exactly 64 hex digits",
+        refusal(&with_hash(&"a".repeat(65)))
+    );
+    assert_eq!(
+        "a version hash is exactly 64 hex digits",
+        refusal(&with_hash(&"g".repeat(64)))
+    );
+    assert!(
+        parse_bundle(&with_hash(&"a".repeat(64)), STRICT)
+            .ok()
+            .is_ok()
+    );
+    let src = with_hash("c41e...");
+    assert_eq!("a version hash is exactly 64 hex digits", refusal(&src));
+    assert_eq!(example(&src).len(), 1);
 }
 
 #[test]

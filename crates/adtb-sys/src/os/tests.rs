@@ -58,8 +58,16 @@ fn a_spawned_thread_is_forgotten_once_joined() {
 fn a_spawned_thread_is_unparked_by_its_id_before_it_parks() {
     let rt = runtime();
     let rt2 = rt.clone();
-    let id = rt.spawn("child", move || rt2.park());
+    let unparked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = unparked.clone();
+    let id = rt.spawn("child", move || {
+        while !seen.load(std::sync::atomic::Ordering::Acquire) {
+            thread::yield_now();
+        }
+        rt2.park();
+    });
     rt.unpark(id);
+    unparked.store(true, std::sync::atomic::Ordering::Release);
     rt.join(id);
 }
 

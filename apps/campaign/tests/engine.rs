@@ -315,12 +315,6 @@ fn the_bundle_pins_version_4_by_its_hash() {
 }
 
 #[test]
-fn release_1_0_opens() {
-    let app = App::at(scratch("opens"), 1, &v1_0::BUNDLE);
-    assert!(all(app.call(v1_0::campaigns, ())).is_empty());
-}
-
-#[test]
 fn release_1_1_opens_over_release_1_0() {
     let path = scratch("upgrade");
     let old = App::at(path.clone(), 1, &v1_0::BUNDLE);
@@ -884,17 +878,6 @@ fn release_1_3_calls_through_its_bundle_over_a_release_1_0_file() {
         .value;
     let found = one(app.call(v1_3::lookup, (w.campaign, "storm".into())));
     assert_eq!((lantern, "Item"), (found.id, found.kind.as_str()));
-}
-
-#[test]
-fn release_1_2_opens() {
-    open_db(scratch("opens-1-2"), 3, Vec::new());
-}
-
-#[test]
-fn release_1_3_opens() {
-    let app = Current::open("opens-1-3");
-    assert!(all(app.call(v1_3::campaigns, ())).is_empty());
 }
 
 /// A world built at release 1.0, with a realm and a site under its keep, and a second

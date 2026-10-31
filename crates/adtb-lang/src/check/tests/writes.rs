@@ -217,13 +217,13 @@ fn an_insert_into_a_constructor_set_refuses_another_constructor() {
         &[],
         "insert identities.OAuth from (
            from x in imports.Email select EmailPass { user: x.user, email: x.addr, hash: x.h })",
-        "expected",
+        "expected Identity.(Google | Apple), found Identity.EmailPass",
     );
     no(
         &[],
         "insert identities.Google from (
            from x in imports.Email select EmailPass { user: x.user, email: x.addr, hash: x.h })",
-        "expected",
+        "expected Identity.Google, found Identity.EmailPass",
     );
 }
 
@@ -242,7 +242,7 @@ fn a_single_row_goes_into_one_constructor() {
     no(
         &[],
         "insert identities from (from x in imports.Oauth select { user: x.user, gid: x.sub })",
-        "expected",
+        "expected Identity, found { gid: Text, user: Key users }",
     );
 }
 

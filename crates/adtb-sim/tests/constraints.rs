@@ -179,6 +179,7 @@ fn refusals(src: &str) -> Vec<(String, String)> {
 }
 
 /// Returns the one refusal of schema `src`.
+#[must_use]
 fn refused(src: &str) -> (String, String) {
     let why = refusals(src);
     match why.as_slice() {

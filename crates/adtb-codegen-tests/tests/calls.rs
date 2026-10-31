@@ -395,7 +395,7 @@ fn calls_inside_an_interactive_transaction_commit_with_it() {
 }
 
 #[test]
-fn transact_reruns_a_closure_and_returns_its_commit() {
+fn transact_runs_a_closure_once_and_returns_its_commit() {
     once(0, |rt| {
         let db = open(&rt);
         let app = app(&db);
@@ -493,9 +493,15 @@ fn a_refused_call_returns_the_bundle_error_type() {
     once(0, |rt| {
         let db = open(&rt);
         let got = app(&db).call(queries::note, (Key(99), "lost".into()), &opts());
-        assert!(
-            matches!(got, Err(Error::Rejected { .. })),
-            "a note of no customer is refused: {got:?}"
+        let Err(refusal) = got else {
+            panic!("a note of no customer is refused");
+        };
+        assert_eq!(
+            concat!(
+                r#"Rejected { reason: Violated { constraint: "shop::notes.Note.customer", "#,
+                r#"report: [Ctor(0, [Int(1), Int(99), Text("lost")])], redacted: 0 } }"#
+            ),
+            format!("{refusal:?}")
         );
     });
 }
