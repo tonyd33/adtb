@@ -686,6 +686,13 @@ The engine records:
 A database quarantined whole writes nothing, so nothing is audited while
 the quarantine holds ([catalog.md](catalog.md#112-quarantine)).
 
+While a constructor of `catalog::audit` is quarantined, a call that writes
+data fails with `Quarantined`, since a change must not commit unrecorded.
+A read, a refusal and `verify` answer, and their rows are not written.
+
+A call in process has no connection role and writes no `Call` row. A call
+that never starts, refused `Overloaded` or stopped by a close, writes none.
+
 ### 8.2 The audit relation
 
 Audit records are rows of the catalog relation `catalog::audit`,

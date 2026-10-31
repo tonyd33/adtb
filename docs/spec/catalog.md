@@ -1799,7 +1799,8 @@ Rulings: ops/admission/queue, ops/admission/grant, ops/quota/priority, ops/quota
 
 Operations that are effects rather than data are commands: statements
 beside queries and writes. A command is checked like any statement and
-returns a relation describing what it did. A command is not a write:
+returns a relation describing what it did. Its values read no relation.
+A command is not a write:
 it does not belong to a transaction, an abort does not undo it, and it
 must not appear inside a `transact` block, a registered query or
 transaction, a function or a constraint.

@@ -390,6 +390,7 @@ accept:
   ops/admin/role/capabilities: {title: 'Separate privileges to monitor, cancel, maintain and configure', reason: 'monitor, cancel, maintain and configure are separate privileges'}
   ops/admission/grant: {title: A call is admitted when its plan's memory grant fits the query budget, reason: 'a call runs when its plan''s memory grant fits the budget, which bounds the sum over concurrent queries'}
   ops/admission/queue: {title: 'Work queues per resource ordered by priority, then transaction start', reason: waiting calls queue by priority class then transaction start; the grant decides when the head runs}
+  ops/audit-quarantine/reads-answer: {title: 'A call that writes data fails `Quarantined`; a read, a refusal and `verify` answer, with their rows unwritten', reason: 'a change must not commit unrecorded, and one damaged audit page must not stop reads or verify'}
   ops/cancel/cancel: {title: Cancel the running call; the transaction stays open and may roll back, reason: 'cancel a call, end a session, or cancel by token in process'}
   ops/cancel/terminate: {title: End the session and abort its transaction, reason: 'cancel a call, end a session, or cancel by token in process'}
   ops/cancel/token: {title: The embedded API takes a cancellation token per call, reason: 'cancel a call, end a session, or cancel by token in process'}
